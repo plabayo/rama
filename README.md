@@ -286,8 +286,8 @@ Examples of the kind of web services you might build with rama in function of yo
 
 ### Datastar
 
-[![Crates.io][https://img.shields.io/crates/v/datastar.svg]][https://crates.io/crates/datastar]
-[![Docs.rs][https://img.shields.io/docsrs/datastar/latest]][https://docs.rs/datastar/latest/datastar/index.html]
+[![Crates.io](https://img.shields.io/crates/v/datastar.svg)](https://crates.io/crates/datastar)
+[![Docs.rs](https://img.shields.io/docsrs/datastar/latest)](https://docs.rs/datastar/latest/datastar/index.html)
 
 Rama is also supported in the official Rust SDK of [🚀 data-\*](https://data-star.dev).
 Learn more about it at <https://ramaproxy.org/book/web_servers.html#datastar> or see it in

@@ -36,8 +36,8 @@ do feel free to use Rama for using [Http Clients](./http_clients.md) and [Web Se
 >
 > — <https://data-star.dev/>
 
-[![Crates.io][https://img.shields.io/crates/v/datastar.svg]][https://crates.io/crates/datastar]
-[![Docs.rs][https://img.shields.io/docsrs/datastar/latest]][https://docs.rs/datastar/latest/datastar/index.html]
+[![Crates.io](https://img.shields.io/crates/v/datastar.svg)](https://crates.io/crates/datastar)
+[![Docs.rs](https://img.shields.io/docsrs/datastar/latest)](https://docs.rs/datastar/latest/datastar/index.html)
 
 Rama is also supported in the official Rust SDK of [🚀 data-\*](https://data-star.dev).
 You can see it in action at [datastar > examples > rust > rama](https://github.com/starfederation/datastar/blob/develop/examples/rust/rama/hello-world/src/main.rs):
