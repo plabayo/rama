@@ -45,6 +45,16 @@ where
 /// A static [`Service`] that serves a pre-defined response.
 pub struct StaticService<R>(R);
 
+impl<R> StaticService<R>
+where
+    R: IntoResponse + Clone + Send + Sync + 'static,
+{
+    /// Create a new [`StaticService`] with the given response.
+    pub fn new(response: R) -> Self {
+        Self(response)
+    }
+}
+
 impl<T> fmt::Debug for StaticService<T>
 where
     T: fmt::Debug,
