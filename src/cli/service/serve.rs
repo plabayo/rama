@@ -1,7 +1,4 @@
-//! Serve '[`Service`] that serves a file or directory using [`ServeDir`], or a placeholder page.
-//!
-//! [`Service`]: crate::Service
-//! [`ServeDir`]: crate::ServeDir
+//! Serve '[`Service`] that serves a file or directory using [`ServeFile`] or [`ServeDir`], or a placeholder page.
 
 use crate::{
     Layer, Service,

@@ -1,4 +1,4 @@
-//! Serve service that serves a file, directory or placeholder page
+//! Serve service that serves a file, directory or placeholder page.
 
 use clap::Args;
 use rama::{
