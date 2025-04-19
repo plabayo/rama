@@ -247,10 +247,9 @@ impl<H> ServeServiceBuilder<H>
 where
     H: Layer<ServeService, Service: Service<(), Request, Response = Response, Error = BoxError>>,
 {
-    #[allow(unused_mut)]
     /// build a tcp service ready to serve files
     pub fn build(
-        mut self,
+        self,
         executor: Executor,
     ) -> Result<impl Service<(), TcpStream, Response = (), Error = Infallible>, BoxError> {
         let tcp_forwarded_layer = match &self.forward {
