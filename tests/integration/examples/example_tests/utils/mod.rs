@@ -43,8 +43,8 @@ pub(super) type ClientService<State> = BoxService<State, Request, Response, BoxE
 
 /// Runner for examples.
 pub(super) struct ExampleRunner<State = ()> {
-    server_process: Child,
-    client: ClientService<State>,
+    pub(super) server_process: Child,
+    pub(super) client: ClientService<State>,
 }
 
 /// to ensure we only ever register tracing once,
@@ -105,6 +105,7 @@ where
         {
             inner_client.set_tls_connector_config(TlsConnectorConfig::Boring(Some(ClientConfig {
                 server_verify_mode: Some(ServerVerifyMode::Disable),
+                store_server_certificate_chain: true,
                 extensions: Some(vec![
                     ClientHelloExtension::ApplicationLayerProtocolNegotiation(vec![
                         ApplicationProtocol::HTTP_2,

@@ -1,32 +1,33 @@
 use super::utils::{self, ClientService};
 use rama::{
     Context, Layer, Service,
-    error::{BoxError, OpaqueError},
+    context::RequestContextExt,
+    error::BoxError,
+    http::{
+        Response,
+        client::{EasyHttpWebClient, TlsConnectorConfig},
+        layer::{
+            decompression::DecompressionLayer,
+            follow_redirect::FollowRedirectLayer,
+            required_header::AddRequiredRequestHeadersLayer,
+            retry::{ManagedPolicy, RetryLayer},
+            trace::TraceLayer,
+        },
+    },
     layer::MapResultLayer,
-};
-use rama_http::{
-    Request, Response,
-    dep::http_body,
-    layer::{
-        decompression::DecompressionLayer,
-        follow_redirect::FollowRedirectLayer,
-        required_header::AddRequiredRequestHeadersLayer,
-        retry::{ManagedPolicy, RetryLayer},
-        trace::TraceLayer,
+    net::{
+        address::{Domain, Host},
+        tls::{
+            ApplicationProtocol, DataEncoding,
+            client::{
+                ClientConfig, ClientHelloExtension, NegotiatedTlsParameters, ServerVerifyMode,
+            },
+        },
     },
+    tls::boring::dep::boring::x509::X509,
+    utils::{backoff::ExponentialBackoff, rng::HasherRng},
 };
-use rama_http_backend::client::HttpConnector;
-use rama_net::{
-    address::{Domain, Host},
-    client::{ConnectorService, EstablishedClientConnection},
-    tls::{
-        ApplicationProtocol, DataEncoding,
-        client::{ClientConfig, ClientHelloExtension, NegotiatedTlsParameters, ServerVerifyMode},
-    },
-};
-use rama_tcp::client::service::TcpConnector;
-use rama_tls::boring::{client::TlsConnector, dep::boring::x509::X509};
-use rama_utils::{backoff::ExponentialBackoff, rng::HasherRng};
+
 use std::{str::FromStr, time::Duration};
 
 #[tokio::test]
@@ -62,10 +63,9 @@ async fn test_tls_rustls_dynamic_certs() {
         (default_chain, None),
     ];
 
-    for (chain, host) in tests.into_iter() {
-        let mut runner =
-            utils::ExampleRunner::interactive("tls_rustls_dynamic_certs", Some("rustls"));
+    let mut runner = utils::ExampleRunner::interactive("tls_rustls_dynamic_certs", Some("rustls"));
 
+    for (chain, host) in tests.into_iter() {
         let client = http_client(&host);
         runner.set_client(client);
 
@@ -77,11 +77,14 @@ async fn test_tls_rustls_dynamic_certs() {
 
         let certificates = response
             .extensions()
-            .get::<PeerCertificates>()
+            .get::<RequestContextExt>()
+            .and_then(|ext| ext.get::<NegotiatedTlsParameters>())
             .unwrap()
+            .peer_certificate_chain
             .clone()
-            .0;
-        assert_eq!(chain, certificates.clone());
+            .unwrap();
+
+        assert_eq!(chain, certificates);
     }
 }
 
@@ -90,7 +93,7 @@ where
     State: Clone + Send + Sync + 'static,
 {
     let host = host.map(|host| Host::Name(Domain::from_str(host).unwrap()));
-    let inner_client = HttpClient::new(ClientConfig {
+    let tls_config = ClientConfig {
         server_verify_mode: Some(ServerVerifyMode::Disable),
         extensions: Some(vec![
             ClientHelloExtension::ServerName(host),
@@ -101,7 +104,9 @@ where
         ]),
         store_server_certificate_chain: true,
         ..Default::default()
-    });
+    };
+    let mut inner_client = EasyHttpWebClient::new();
+    inner_client.set_tls_connector_config(TlsConnectorConfig::Boring(Some(tls_config)));
 
     (
         MapResultLayer::new(map_internal_client_error),
@@ -141,56 +146,3 @@ where
         Err(err) => Err(err.into()),
     }
 }
-
-// Custom http client so we can extract client certificates. In the future
-// this won't be needed once we can extract data out of context. This is a
-// simplified version of the default http client.
-
-// TODO refactor once a solution is merged to this issue: https://github.com/plabayo/rama/issues/364
-
-#[derive(Debug, Clone)]
-struct HttpClient {
-    tls_config: ClientConfig,
-}
-
-impl HttpClient {
-    fn new(tls_config: ClientConfig) -> Self {
-        Self { tls_config }
-    }
-}
-
-impl<State, Body> Service<State, Request<Body>> for HttpClient
-where
-    State: Clone + Send + Sync + 'static,
-    Body: http_body::Body<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
-{
-    type Response = Response;
-    type Error = OpaqueError;
-
-    async fn serve(
-        &self,
-        ctx: Context<State>,
-        req: Request<Body>,
-    ) -> Result<Self::Response, Self::Error> {
-        let tcp_connector = TcpConnector::new();
-        let tls_connector_data = self.tls_config.clone().try_into().unwrap();
-        let connector = HttpConnector::new(
-            TlsConnector::auto(tcp_connector).with_connector_data(tls_connector_data),
-        );
-
-        let EstablishedClientConnection { ctx, req, conn } = connector.connect(ctx, req).await?;
-
-        // Extra logic to extract certificates
-        let params = ctx.get::<NegotiatedTlsParameters>().unwrap();
-        let cert_chain = params.peer_certificate_chain.clone().unwrap();
-        let peer_certs = PeerCertificates(cert_chain);
-
-        let mut resp = conn.serve(ctx, req).await.unwrap();
-        resp.extensions_mut().insert(peer_certs);
-
-        Ok(resp)
-    }
-}
-
-#[derive(Debug, Clone)]
-struct PeerCertificates(DataEncoding);

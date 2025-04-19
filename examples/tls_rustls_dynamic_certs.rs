@@ -51,10 +51,6 @@
 //! *  SSL certificate verify result: self signed certificate (18), continuing anyway.
 //! ```
 
-// these dependencies are re-exported by rama for your convenience,
-// as to make it easy to use them and ensure that the versions remain compatible
-// (given most do not have a stable release yet)
-
 // rama provides everything out of the box to build a TLS termination proxy
 use rama::{
     Context, Layer,
@@ -96,8 +92,9 @@ async fn main() {
 
     let shutdown = Shutdown::default();
 
-    // Dynamic cert issuing with rustls is not directly supported by rama. But since we can work with
-    // native rustls configs, doing this is very much possible (if the issuer doesn't require async)
+    // Dynamic certs using [`ResolvesServerCert`] in rustls are loaded synchronously, if you need to
+    // load them in an async way, see example `tls_rustls_dynamic_config` for how to provide a different
+    // [`rustls::ServerConfig`] depending on received client_hello in an async context (TODO will be added this week)
 
     let dynamic_issuer = Arc::new(DynamicIssuer::new());
     let config = ServerConfig::builder_with_protocol_versions(ALL_VERSIONS)
@@ -143,18 +140,30 @@ struct DynamicIssuer {
 
 impl DynamicIssuer {
     fn new() -> Self {
+        let example_data = Arc::new(
+            load_certificate(
+                include_bytes!("./assets/example.com.crt"),
+                include_bytes!("./assets/example.com.key"),
+            )
+            .expect("load example data"),
+        );
+
+        let second_example_data = Arc::new(
+            load_certificate(
+                include_bytes!("./assets/second_example.com.crt"),
+                include_bytes!("./assets/second_example.com.key"),
+            )
+            .expect("load second example data"),
+        );
+
         Self {
-            example_data: Arc::new(example_self_signed_auth().expect("load example data")),
-            second_example_data: Arc::new(
-                second_example_self_signed_auth().expect("load second example data"),
-            ),
-            default_data: Arc::new(example_self_signed_auth().expect("load default data")),
+            example_data: example_data.clone(),
+            second_example_data,
+            // We reuse example_data as default data also to keep this simple, but in a more realistic setup you probably will never do this
+            default_data: example_data,
         }
     }
 }
-
-// Currently this only supports a non async dynamic issuer. If you need an async one feel free to open an issue for it,
-// as that will require some work in rama because doing that needs access to the `Acceptor` interface.
 
 impl ResolvesServerCert for DynamicIssuer {
     fn resolve(
@@ -183,40 +192,14 @@ impl ResolvesServerCert for DynamicIssuer {
     }
 }
 
-pub fn example_self_signed_auth() -> Result<CertifiedKey, OpaqueError> {
-    let cert_chain = pemfile::certs(&mut BufReader::new(
-        &include_bytes!("./assets/example.com.crt")[..],
-    ))
-    .collect::<Result<Vec<_>, _>>()
-    .context("collect cert chain")?;
+fn load_certificate(cert_chain: &[u8], private_key: &[u8]) -> Result<CertifiedKey, OpaqueError> {
+    let cert_chain = pemfile::certs(&mut BufReader::new(cert_chain))
+        .collect::<Result<Vec<_>, _>>()
+        .context("collect cert chain")?;
 
-    let priv_key_der = pemfile::private_key(&mut BufReader::new(
-        &include_bytes!("./assets/example.com.key")[..],
-    ))
-    .context("load private key")?
-    .context("non empty key")?;
-
-    let provider = Arc::new(aws_lc_rs::default_provider());
-    let signing_key = provider
-        .key_provider
-        .load_private_key(priv_key_der)
-        .context("load private key")?;
-
-    Ok(CertifiedKey::new(cert_chain, signing_key))
-}
-
-pub fn second_example_self_signed_auth() -> Result<CertifiedKey, OpaqueError> {
-    let cert_chain = pemfile::certs(&mut BufReader::new(
-        &include_bytes!("./assets/second_example.com.crt")[..],
-    ))
-    .collect::<Result<Vec<_>, _>>()
-    .context("collect cert chain")?;
-
-    let priv_key_der = pemfile::private_key(&mut BufReader::new(
-        &include_bytes!("./assets/second_example.com.key")[..],
-    ))
-    .context("load private key")?
-    .context("non empty key")?;
+    let priv_key_der = pemfile::private_key(&mut BufReader::new(private_key))
+        .context("load private key")?
+        .context("non empty key")?;
 
     let provider = Arc::new(aws_lc_rs::default_provider());
     let signing_key = provider

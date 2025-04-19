@@ -28,10 +28,6 @@
 //!
 //! You should see a response with `HTTP/1.0 200 ok` and the body `Hello world!`.
 
-// these dependencies are re-exported by rama for your convenience,
-// as to make it easy to use them and ensure that the versions remain compatible
-// (given most do not have a stable release yet)
-
 // rama provides everything out of the box to build a TLS termination proxy
 use rama::{
     Context, Layer,
