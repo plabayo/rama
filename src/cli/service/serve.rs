@@ -332,19 +332,3 @@ impl Service<(), Request> for ServeService {
         Ok(Html(include_str!("../../../docs/index.html")).into_response())
     }
 }
-
-pub mod mode {
-    //! operation modes of the serve service
-
-    #[derive(Debug, Clone)]
-    #[non_exhaustive]
-    pub struct Placheholder;
-
-    #[derive(Debug, Clone)]
-    #[non_exhaustive]
-    pub struct File;
-
-    #[derive(Debug, Clone)]
-    #[non_exhaustive]
-    pub struct Dir;
-}
