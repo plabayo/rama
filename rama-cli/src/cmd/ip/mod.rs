@@ -5,6 +5,7 @@ use rama::{
     cli::{ForwardKind, service::ip::IpServiceBuilder},
     combinators::Either,
     error::BoxError,
+    net::address::SocketAddress,
     rt::Executor,
     tcp::server::TcpListener,
 };
@@ -15,13 +16,9 @@ use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberI
 #[derive(Debug, Args)]
 /// rama ip service (returns the ip address of the client)
 pub struct CliCommandIp {
-    #[arg(long, short = 'p', default_value_t = 8080)]
-    /// the port to listen on
-    port: u16,
-
-    #[arg(long, short = 'i', default_value = "127.0.0.1")]
-    /// the interface to listen on
-    interface: String,
+    /// the address to bind to
+    #[arg(long, default_value = "127.0.0.1:8080")]
+    bind: SocketAddress,
 
     #[arg(long, short = 'c', default_value_t = 0)]
     /// the number of concurrent connections to allow
@@ -91,12 +88,11 @@ pub async fn run(cfg: CliCommandIp) -> Result<(), BoxError> {
         )
     };
 
-    let address = format!("{}:{}", cfg.interface, cfg.port);
-    tracing::info!("starting ip service on: {}", address);
+    tracing::info!("starting ip service on: {}", cfg.bind);
 
     graceful.spawn_task_fn(async move |guard| {
         let tcp_listener = TcpListener::build()
-            .bind(address)
+            .bind(cfg.bind)
             .await
             .expect("bind ip service");
 

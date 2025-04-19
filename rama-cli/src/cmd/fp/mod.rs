@@ -31,6 +31,7 @@ use rama::{
         limit::policy::ConcurrentPolicy,
     },
     net::{
+        address::SocketAddress,
         stream::layer::http::BodyLimitLayer,
         tls::{
             ApplicationProtocol, DataEncoding,
@@ -64,13 +65,9 @@ pub struct StorageAuthorized;
 #[derive(Debug, Args)]
 /// rama fp service (used for FP collection in purpose of UA emulation)
 pub struct CliCommandFingerprint {
-    #[arg(short = 'p', long, default_value_t = 8080)]
-    /// the port to listen on
-    port: u16,
-
-    #[arg(short = 'i', long, default_value = "127.0.0.1")]
-    /// the interface to listen on
-    interface: String,
+    /// the address to bind to
+    #[arg(long, default_value = "127.0.0.1:8080")]
+    bind: SocketAddress,
 
     #[arg(short = 'c', long, default_value_t = 0)]
     /// the number of concurrent connections to allow
@@ -225,7 +222,7 @@ pub async fn run(cfg: CliCommandFingerprint) -> Result<(), BoxError> {
         Some(cfg) => Some(cfg.try_into()?),
     };
 
-    let address = format!("{}:{}", cfg.interface, cfg.port);
+    let address = cfg.bind;
     let ch_headers = all_client_hint_header_name_strings()
         .join(", ")
         .parse::<HeaderValue>()
@@ -307,7 +304,7 @@ pub async fn run(cfg: CliCommandFingerprint) -> Result<(), BoxError> {
         let storage_auth = std::env::var("RAMA_FP_STORAGE_COOKIE").ok();
 
         let tcp_listener = TcpListener::build_with_state(Arc::new(State::new(acme_data, pg_url, storage_auth.as_deref()).await.expect("create state")))
-            .bind(&address)
+            .bind(address)
             .await
             .expect("bind TCP Listener");
 

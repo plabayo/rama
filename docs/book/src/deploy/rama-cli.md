@@ -20,6 +20,7 @@ Commands:
   echo   rama echo service (echos the http request and tls client config)
   ip     rama ip service (returns the ip address of the client)
   fp     rama fp service (used for FP collection in purpose of UA emulation)
+  serve  rama serve service (serves a file, directory or placeholder page)
   help   Print this message or the help of the given subcommand(s)
 
 Options:
