@@ -329,15 +329,15 @@ where
             }
         };
 
-        let serve_service = match self.content_path {
+        let serve_service = match &self.content_path {
             None => Either3::A(
                 Html(include_str!("../../../docs/index.html"))
                     .into_endpoint_service()
                     .boxed(),
             ),
-            Some(ref path) if path.is_file() => Either3::B(ServeFile::new(path.clone())),
-            Some(ref path) if path.is_dir() => Either3::C(ServeDir::new(path)),
-            Some(ref path) => {
+            Some(path) if path.is_file() => Either3::B(ServeFile::new(path.clone())),
+            Some(path) if path.is_dir() => Either3::C(ServeDir::new(path)),
+            Some(path) => {
                 return Err(OpaqueError::from_display(format!(
                     "invalid path {path:?}: no such file or directory"
                 ))
