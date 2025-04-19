@@ -2,6 +2,7 @@
 
 use std::{
     io::{BufRead, BufReader},
+    net::SocketAddr,
     process::Child,
     thread,
 };
@@ -26,8 +27,8 @@ impl RamaService {
             .command()
             .stdout(std::process::Stdio::piped())
             .arg("ip")
-            .arg("-p")
-            .arg(port.to_string())
+            .arg("--bind")
+            .arg(format!("127.0.0.1:{port}"))
             .env(
                 "RUST_LOG",
                 std::env::var("RUST_LOG").unwrap_or("info".into()),
@@ -86,8 +87,8 @@ impl RamaService {
         builder
             .stdout(std::process::Stdio::piped())
             .arg("echo")
-            .arg("-p")
-            .arg(port.to_string())
+            .arg("--bind")
+            .arg(format!("127.0.0.1:{port}"))
             .env(
                 "RUST_LOG",
                 std::env::var("RUST_LOG").unwrap_or("info".into()),
