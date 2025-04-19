@@ -57,21 +57,21 @@ macro_rules! __enum_builder {
             }
         }
 
-        impl ::serde::Serialize for $enum_name {
+        impl $crate::macros::enums::__SerdeSerialize for $enum_name {
             #[inline]
             fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
             where
-                S: ::serde::Serializer,
+                S: $crate::macros::enums::__SerdeSerializer,
             {
                 u8::from(*self).serialize(serializer)
             }
         }
 
-        impl<'de> ::serde::Deserialize<'de> for $enum_name {
+        impl<'de> $crate::macros::enums::__SerdeDeserialize<'de> for $enum_name {
             #[inline]
             fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
             where
-                D: ::serde::Deserializer<'de>,
+                D: $crate::macros::enums::__SerdeDeserializer<'de>,
             {
                 let n = u8::deserialize(deserializer)?;
                 Ok(n.into())
@@ -147,21 +147,21 @@ macro_rules! __enum_builder {
             }
         }
 
-        impl ::serde::Serialize for $enum_name {
+        impl $crate::macros::enums::__SerdeSerialize for $enum_name {
             #[inline]
             fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
             where
-                S: ::serde::Serializer,
+                S: $crate::macros::enums::__SerdeSerializer,
             {
                 u16::from(*self).serialize(serializer)
             }
         }
 
-        impl<'de> ::serde::Deserialize<'de> for $enum_name {
+        impl<'de> $crate::macros::enums::__SerdeDeserialize<'de> for $enum_name {
             #[inline]
             fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
             where
-                D: ::serde::Deserializer<'de>,
+                D: $crate::macros::enums::__SerdeDeserializer<'de>,
             {
                 let n = u16::deserialize(deserializer)?;
                 Ok(n.into())
@@ -290,11 +290,11 @@ macro_rules! __enum_builder {
             }
         }
 
-        impl ::serde::Serialize for $enum_name {
+        impl $crate::macros::enums::__SerdeSerialize for $enum_name {
             #[inline]
             fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
             where
-                S: ::serde::Serializer,
+                S: $crate::macros::enums::__SerdeSerializer,
             {
                 match self {
                     $( $enum_name::$enum_var => {
@@ -307,11 +307,11 @@ macro_rules! __enum_builder {
             }
         }
 
-        impl<'de> ::serde::Deserialize<'de> for $enum_name {
+        impl<'de> $crate::macros::enums::__SerdeDeserialize<'de> for $enum_name {
             #[inline]
             fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
             where
-                D: ::serde::Deserializer<'de>,
+                D: $crate::macros::enums::__SerdeDeserializer<'de>,
             {
                 let b = <::std::borrow::Cow<'de, [u8]>>::deserialize(deserializer)?;
                 Ok(b.as_ref().into())
@@ -322,3 +322,9 @@ macro_rules! __enum_builder {
 
 #[doc(inline)]
 pub use crate::__enum_builder as enum_builder;
+
+#[doc(hidden)]
+pub use ::serde::{
+    Deserialize as __SerdeDeserialize, Deserializer as __SerdeDeserializer,
+    Serialize as __SerdeSerialize, Serializer as __SerdeSerializer,
+};
