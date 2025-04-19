@@ -42,7 +42,8 @@ where
     }
 }
 
-struct StaticService<R>(R);
+/// A static [`Service`] that serves a pre-defined response.
+pub struct StaticService<R>(R);
 
 impl<T> fmt::Debug for StaticService<T>
 where
