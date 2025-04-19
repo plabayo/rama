@@ -255,13 +255,12 @@ async fn http_mitm_proxy(ctx: Context, req: Request) -> Result<Response, Infalli
             ),
         ));
 
-    let base_tls_cfg = ctx
+    let mut base_tls_cfg = ctx
         .get::<SecureTransport>()
         .and_then(|st| st.client_hello())
         .cloned()
         .map(Into::into)
         .unwrap_or_else(|| ClientConfig {
-            server_verify_mode: Some(ServerVerifyMode::Disable),
             extensions: Some(vec![
                 ClientHelloExtension::ApplicationLayerProtocolNegotiation(vec![
                     ApplicationProtocol::HTTP_2,
@@ -270,6 +269,7 @@ async fn http_mitm_proxy(ctx: Context, req: Request) -> Result<Response, Infalli
             ]),
             ..Default::default()
         });
+    base_tls_cfg.server_verify_mode = Some(ServerVerifyMode::Disable);
 
     // TODO: this tls stack API needs to be easier and more performant; but especially less messy
 
