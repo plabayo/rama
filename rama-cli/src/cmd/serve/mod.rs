@@ -7,9 +7,12 @@ use rama::{
     error::BoxError,
     http::{IntoResponse, Request, Response, matcher::HttpMatcher},
     layer::HijackLayer,
-    net::tls::{
-        ApplicationProtocol, DataEncoding,
-        server::{SelfSignedData, ServerAuth, ServerAuthData, ServerConfig},
+    net::{
+        address::SocketAddress,
+        tls::{
+            ApplicationProtocol, DataEncoding,
+            server::{SelfSignedData, ServerAuth, ServerAuthData, ServerConfig},
+        },
     },
     rt::Executor,
     tcp::server::TcpListener,
@@ -31,13 +34,9 @@ pub struct CliCommandServe {
     #[arg()]
     path: Option<PathBuf>,
 
-    #[arg(short = 'p', long, default_value_t = 8080)]
-    /// the port to listen on
-    port: u16,
-
-    #[arg(short = 'i', long, default_value = "127.0.0.1")]
-    /// the interface to listen on
-    interface: String,
+    /// the address to bind to
+    #[arg(long, default_value = "127.0.0.1:8080")]
+    bind: SocketAddress,
 
     #[arg(short = 'c', long, default_value_t = 0)]
     /// the number of concurrent connections to allow
@@ -149,12 +148,11 @@ pub async fn run(cfg: CliCommandServe) -> Result<(), BoxError> {
         .build(Executor::graceful(graceful.guard()))
         .expect("build serve service");
 
-    let address = format!("{}:{}", cfg.interface, cfg.port);
-    tracing::info!("starting serve service on: {}", address);
+    tracing::info!("starting serve service on: {}", cfg.bind);
 
     graceful.spawn_task_fn(async move |guard| {
         let tcp_listener = TcpListener::build()
-            .bind(address)
+            .bind(cfg.bind)
             .await
             .expect("bind serve service");
 
