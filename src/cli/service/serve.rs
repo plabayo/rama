@@ -4,7 +4,7 @@
 //! [`ServeDir`]: crate::ServeDir
 
 use crate::{
-    Context, Layer, Service,
+    Layer, Service,
     cli::ForwardKind,
     combinators::{Either3, Either7},
     error::{BoxError, OpaqueError},
@@ -22,9 +22,13 @@ use crate::{
     proxy::haproxy::server::HaProxyLayer,
     rt::Executor,
 };
+use rama_core::service::BoxService;
 use rama_http::{
     response::Html,
-    service::fs::{ServeDir, ServeFile},
+    service::{
+        fs::{ServeDir, ServeFile},
+        web::IntoEndpointService,
+    },
 };
 
 use std::{convert::Infallible, path::PathBuf, time::Duration};
@@ -300,9 +304,11 @@ where
 
     fn build_serve(&self) -> ServeService {
         match self.content_path {
-            None => Either3::A(ServeStaticHtml(Html(include_str!(
-                "../../../docs/index.html"
-            )))),
+            None => Either3::A(
+                Html(include_str!("../../../docs/index.html"))
+                    .into_endpoint_service()
+                    .boxed(),
+            ),
             Some(ref path) if path.is_file() => Either3::B(ServeFile::new(path.clone())),
             Some(ref path) if path.is_dir() => Either3::C(ServeDir::new(path)),
             Some(_) => {
@@ -351,19 +357,5 @@ where
     }
 }
 
+type ServeStaticHtml = BoxService<(), Request, Response, Infallible>;
 type ServeService = Either3<ServeStaticHtml, ServeFile, ServeDir>;
-
-#[derive(Debug, Clone)]
-#[non_exhaustive]
-/// The inner serve-service used by the [`ServeServiceBuilder`] to serve predefined HTML content.
-/// This is used when no content path is provided.
-pub struct ServeStaticHtml(Html<&'static str>);
-
-impl Service<(), Request> for ServeStaticHtml {
-    type Response = Response;
-    type Error = BoxError;
-
-    async fn serve(&self, _ctx: Context<()>, _req: Request) -> Result<Self::Response, Self::Error> {
-        Ok(self.0.clone().into_response())
-    }
-}
