@@ -18,13 +18,19 @@ use rama::{
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as ENGINE;
 
-use std::{convert::Infallible, time::Duration};
+use std::{convert::Infallible, path::PathBuf, time::Duration};
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Debug, Args)]
 /// rama serve service (serves a file, directory or placeholder page)
 pub struct CliCommandServe {
+    /// The path to the file or directory to serve
+    ///
+    /// If not provided, a placeholder page will be served.
+    #[arg()]
+    path: Option<PathBuf>,
+
     #[arg(short = 'p', long, default_value_t = 8080)]
     /// the port to listen on
     port: u16,
@@ -139,6 +145,7 @@ pub async fn run(cfg: CliCommandServe) -> Result<(), BoxError> {
         .maybe_forward(cfg.forward)
         .maybe_tls_server_config(maybe_tls_server_config)
         .http_layer(maybe_acme_service)
+        .maybe_content_path(cfg.path)
         .build(Executor::graceful(graceful.guard()))
         .expect("build serve service");
 
