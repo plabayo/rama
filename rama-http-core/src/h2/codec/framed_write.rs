@@ -8,7 +8,7 @@ use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio_util::io::poll_write_buf;
 
-use std::io::{self, Cursor};
+use std::io::{self, Cursor, ErrorKind};
 
 // A macro to get around a method needing to borrow &mut self
 macro_rules! limited_write_buf {
@@ -170,7 +170,17 @@ where
             ready!(self.flush(cx))?;
             self.final_flush_done = true;
         }
-        Pin::new(&mut self.inner).poll_shutdown(cx)
+
+        // Mac OS and BSD variants can throw this error if shutdown was already called (eg by tcp reset).
+        // This is not a problem on linux since this error will be ignored inside the kernel.
+        // Catching this here will prevent this (harmless) error from blowing up.
+        // TODO: remove this once the root causes of this issue are fixed
+        // - https://github.com/tokio-rs/tokio/issues/4665
+        // - https://github.com/hyperium/h2/issues/843
+        match ready!(Pin::new(&mut self.inner).poll_shutdown(cx)) {
+            Err(err) if err.kind() == ErrorKind::NotConnected => Poll::Ready(Ok(())),
+            result => Poll::Ready(result),
+        }
     }
 }
 
