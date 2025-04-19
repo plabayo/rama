@@ -19,12 +19,11 @@ use crate::{
     proxy::haproxy::server::HaProxyLayer,
     rt::Executor,
 };
-use rama_core::service::BoxService;
 use rama_http::{
     response::Html,
     service::{
         fs::{ServeDir, ServeFile},
-        web::IntoEndpointService,
+        web::StaticService,
     },
 };
 
@@ -330,11 +329,9 @@ where
         };
 
         let serve_service = match &self.content_path {
-            None => Either3::A(
-                Html(include_str!("../../../docs/index.html"))
-                    .into_endpoint_service()
-                    .boxed(),
-            ),
+            None => Either3::A(StaticService::new(Html(include_str!(
+                "../../../docs/index.html"
+            )))),
             Some(path) if path.is_file() => Either3::B(ServeFile::new(path.clone())),
             Some(path) if path.is_dir() => Either3::C(ServeDir::new(path)),
             Some(path) => {
@@ -358,5 +355,5 @@ where
     }
 }
 
-type ServeStaticHtml = BoxService<(), Request, Response, Infallible>;
+type ServeStaticHtml = StaticService<Html<&'static str>>;
 type ServeService = Either3<ServeStaticHtml, ServeFile, ServeDir>;
