@@ -2,6 +2,7 @@ use crate::dep::http_body::{self, Body as HttpBody};
 use crate::layer::set_status::SetStatus;
 use crate::{Body, HeaderValue, Method, Request, Response, StatusCode, header};
 use bytes::Bytes;
+use include_dir::Dir;
 use percent_encoding::percent_decode;
 use rama_core::error::BoxError;
 use rama_core::{Context, Service};
@@ -17,6 +18,13 @@ mod open_file;
 
 #[cfg(test)]
 mod tests;
+
+
+#[derive(Clone, Debug)]
+enum DirSource {
+    Filesystem(PathBuf),
+    Embedded(Dir<'static>),
+}
 
 // default capacity 64KiB
 const DEFAULT_CAPACITY: usize = 65536;
@@ -65,7 +73,7 @@ const DEFAULT_CAPACITY: usize = 65536;
 /// ```
 #[derive(Clone, Debug)]
 pub struct ServeDir<F = DefaultServeDirFallback> {
-    base: PathBuf,
+    base: DirSource,
     buf_chunk_size: usize,
     precompressed_variants: Option<PrecompressedVariants>,
     // This is used to specialise implementation for
@@ -85,7 +93,20 @@ impl ServeDir<DefaultServeDirFallback> {
         base.push(path.as_ref());
 
         Self {
-            base,
+            base: DirSource::Filesystem(base),
+            buf_chunk_size: DEFAULT_CAPACITY,
+            precompressed_variants: None,
+            variant: ServeVariant::Directory {
+                append_index_html_on_directories: true,
+            },
+            fallback: None,
+            call_fallback_on_method_not_allowed: false,
+        }
+    }
+
+    pub fn new_embedded(path: Dir<'static>) -> Self {
+        Self {
+            base: DirSource::Embedded(path),
             buf_chunk_size: DEFAULT_CAPACITY,
             precompressed_variants: None,
             variant: ServeVariant::Directory {
@@ -101,10 +122,12 @@ impl ServeDir<DefaultServeDirFallback> {
         P: AsRef<Path>,
     {
         Self {
-            base: path.as_ref().to_owned(),
+            base: DirSource::Filesystem(path.as_ref().to_path_buf()),
             buf_chunk_size: DEFAULT_CAPACITY,
             precompressed_variants: None,
-            variant: ServeVariant::SingleFile { mime },
+            variant: ServeVariant::SingleFile {
+                mime,
+            },
             fallback: None,
             call_fallback_on_method_not_allowed: false,
         }
@@ -515,7 +538,7 @@ impl<F> ServeDir<F> {
 
         let path_to_file = match self
             .variant
-            .build_and_validate_path(&self.base, req.uri().path())
+            .build_and_validate_path(self.base.clone(), req.uri().path())
         {
             Some(path_to_file) => path_to_file,
             None => {
@@ -540,19 +563,26 @@ impl<F> ServeDir<F> {
         )
         .collect();
 
-        let variant = self.variant.clone();
+        match self.base.clone() {
+            DirSource::Filesystem(_) => {
+                let variant = self.variant.clone();
 
-        let open_file_result = open_file::open_file(
-            variant,
-            path_to_file,
-            req,
-            negotiated_encodings,
-            range_header,
-            buf_chunk_size,
-        )
-        .await;
+                let open_file_result = open_file::open_file(
+                    variant,
+                    path_to_file,
+                    req,
+                    negotiated_encodings,
+                    range_header,
+                    buf_chunk_size,
+                )
+                    .await;
 
-        future::consume_open_file_result(open_file_result, fallback_and_request).await
+                future::consume_open_file_result(open_file_result, fallback_and_request).await
+            },
+            DirSource::Embedded(path) => {
+                // handle file here
+            }
+        }
     }
 }
 
@@ -597,7 +627,7 @@ enum ServeVariant {
 }
 
 impl ServeVariant {
-    fn build_and_validate_path(&self, base_path: &Path, requested_path: &str) -> Option<PathBuf> {
+    fn build_and_validate_path(&self, source: DirSource, requested_path: &str) -> Option<PathBuf> {
         match self {
             ServeVariant::Directory {
                 append_index_html_on_directories: _,
@@ -607,29 +637,47 @@ impl ServeVariant {
                 let path_decoded = percent_decode(path.as_ref()).decode_utf8().ok()?;
                 let path_decoded = Path::new(&*path_decoded);
 
-                let mut path_to_file = base_path.to_path_buf();
-                for component in path_decoded.components() {
-                    match component {
-                        Component::Normal(comp) => {
-                            // protect against paths like `/foo/c:/bar/baz` (#204)
-                            if Path::new(&comp)
-                                .components()
-                                .all(|c| matches!(c, Component::Normal(_)))
-                            {
-                                path_to_file.push(comp)
-                            } else {
-                                return None;
+                match source {
+                    DirSource::Filesystem(mut path) => {
+                        for component in path_decoded.components() {
+                            match component {
+                                Component::Normal(comp) => {
+                                    // protect against paths like `/foo/c:/bar/baz` (#204)
+                                    if Path::new(&comp)
+                                        .components()
+                                        .all(|c| matches!(c, Component::Normal(_)))
+                                    {
+                                        path.push(comp)
+                                    } else {
+                                        return None;
+                                    }
+                                }
+                                Component::CurDir => {}
+                                Component::Prefix(_) | Component::RootDir | Component::ParentDir => {
+                                    return None;
+                                }
                             }
                         }
-                        Component::CurDir => {}
-                        Component::Prefix(_) | Component::RootDir | Component::ParentDir => {
-                            return None;
+                        Some(path)
+                    }
+                    DirSource::Embedded(path) => {
+                        match path.get_file(path_decoded) {
+                            Some(file) => Some(file.path().to_path_buf()),
+                            None => None,
                         }
                     }
                 }
-                Some(path_to_file)
             }
-            ServeVariant::SingleFile { mime: _ } => Some(base_path.to_path_buf()),
+            ServeVariant::SingleFile { mime: _ } => {
+                match source {
+                    DirSource::Filesystem(base_path) => {
+                        Some(base_path.to_path_buf())
+                    },
+                    DirSource::Embedded(_) => {
+                        unreachable!()
+                    }
+                }
+            }
         }
     }
 }
