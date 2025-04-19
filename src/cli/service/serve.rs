@@ -261,7 +261,7 @@ where
             _ => None,
         };
 
-        let http_service = self.build_http();
+        let http_service = self.build_http()?;
 
         #[cfg(all(feature = "rustls", not(feature = "boring")))]
         let tls_cfg = self.tls_server_config;
@@ -302,25 +302,13 @@ where
         Ok(tcp_service_builder.into_layer(http_transport_service))
     }
 
-    fn build_serve(&self) -> ServeService {
-        match self.content_path {
-            None => Either3::A(
-                Html(include_str!("../../../docs/index.html"))
-                    .into_endpoint_service()
-                    .boxed(),
-            ),
-            Some(ref path) if path.is_file() => Either3::B(ServeFile::new(path.clone())),
-            Some(ref path) if path.is_dir() => Either3::C(ServeDir::new(path)),
-            Some(_) => {
-                todo!("non-existing file/dir error handling")
-            }
-        }
-    }
-
     /// build an http service ready to serve files
     pub fn build_http(
         &self,
-    ) -> impl Service<(), Request, Response: IntoResponse, Error = Infallible> + use<H> {
+    ) -> Result<
+        impl Service<(), Request, Response: IntoResponse, Error = Infallible> + use<H>,
+        BoxError,
+    > {
         let http_forwarded_layer = match &self.forward {
             None | Some(ForwardKind::HaProxy) => None,
             Some(ForwardKind::Forwarded) => Some(Either7::A(GetForwardedHeadersLayer::forwarded())),
@@ -344,16 +332,32 @@ where
             }
         };
 
-        let serve_service = self.build_serve();
+        let serve_service = match self.content_path {
+            None => Either3::A(
+                Html(include_str!("../../../docs/index.html"))
+                    .into_endpoint_service()
+                    .boxed(),
+            ),
+            Some(ref path) if path.is_file() => Either3::B(ServeFile::new(path.clone())),
+            Some(ref path) if path.is_dir() => Either3::C(ServeDir::new(path)),
+            Some(ref path) => {
+                return Err(OpaqueError::from_display(format!(
+                    "invalid path {path:?}: no such file or directory"
+                ))
+                .into_boxed());
+            }
+        };
 
-        (
+        let http_service = (
             TraceLayer::new_for_http(),
             AddRequiredResponseHeadersLayer::default(),
             UserAgentClassifierLayer::new(),
             ConsumeErrLayer::default(),
             http_forwarded_layer,
         )
-            .into_layer(self.http_service_builder.layer(serve_service))
+            .into_layer(self.http_service_builder.layer(serve_service));
+
+        Ok(http_service)
     }
 }
 
