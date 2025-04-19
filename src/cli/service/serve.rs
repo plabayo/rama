@@ -227,8 +227,8 @@ impl<H> ServeServiceBuilder<H> {
         }
     }
 
-    pub fn content_path(mut self, path: PathBuf) -> Self {
-        self.content_path = Some(path);
+    pub fn content_path(mut self, path: impl Into<PathBuf>) -> Self {
+        self.content_path = Some(path.into());
         self
     }
 
@@ -237,8 +237,8 @@ impl<H> ServeServiceBuilder<H> {
         self
     }
 
-    pub fn set_content_path(&mut self, path: PathBuf) -> &mut Self {
-        self.content_path = Some(path);
+    pub fn set_content_path(&mut self, path: impl Into<PathBuf>) -> &mut Self {
+        self.content_path = Some(path.into());
         self
     }
 }
