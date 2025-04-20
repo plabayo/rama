@@ -1,5 +1,5 @@
 use super::{
-    ServeVariant,
+    DirectoryServeMode, ServeVariant,
     headers::{IfModifiedSince, IfUnmodifiedSince, LastModified},
 };
 use crate::{HeaderValue, Method, Request, Uri, header};
@@ -17,6 +17,7 @@ use tokio::{fs::File, io::AsyncSeekExt};
 pub(super) enum OpenFileOutput {
     FileOpened(Box<FileOpened>),
     Redirect { location: HeaderValue },
+    Html(String),
     FileNotFound,
     PreconditionFailed,
     NotModified,
@@ -56,18 +57,12 @@ pub(super) async fn open_file(
         .and_then(IfModifiedSince::from_header_value);
 
     let mime = match variant {
-        ServeVariant::Directory {
-            append_index_html_on_directories,
-        } => {
+        ServeVariant::Directory { serve_mode } => {
             // Might already at this point know a redirect or not found result should be
             // returned which corresponds to a Some(output). Otherwise the path might be
             // modified and proceed to the open file/metadata future.
-            if let Some(output) = maybe_redirect_or_append_path(
-                &mut path_to_file,
-                req.uri(),
-                append_index_html_on_directories,
-            )
-            .await
+            if let Some(output) =
+                maybe_serve_directory(&mut path_to_file, req.uri(), serve_mode).await?
             {
                 return Ok(output);
             }
@@ -246,29 +241,92 @@ async fn file_metadata_with_fallback(
     Ok((file, encoding))
 }
 
-async fn maybe_redirect_or_append_path(
+async fn maybe_serve_directory(
     path_to_file: &mut PathBuf,
     uri: &Uri,
-    append_index_html_on_directories: bool,
-) -> Option<OpenFileOutput> {
+    mode: DirectoryServeMode,
+) -> Result<Option<OpenFileOutput>, std::io::Error> {
     if !is_dir(path_to_file).await {
-        return None;
+        return Ok(None);
     }
 
-    if !append_index_html_on_directories {
-        return Some(OpenFileOutput::FileNotFound);
-    }
+    match mode {
+        DirectoryServeMode::AppendIndexHtml => {
+            if uri.path().ends_with('/') {
+                path_to_file.push("index.html");
+                Ok(None)
+            } else {
+                let uri = match append_slash_on_path(uri.clone()) {
+                    Ok(uri) => uri,
+                    Err(err) => return Ok(Some(err)),
+                };
+                let location = HeaderValue::from_str(&uri.to_string()).unwrap();
+                Ok(Some(OpenFileOutput::Redirect { location }))
+            }
+        }
+        DirectoryServeMode::NotFound => Ok(Some(OpenFileOutput::FileNotFound)),
+        DirectoryServeMode::HtmlFileList => {
+            let mut entries = vec![];
 
-    if uri.path().ends_with('/') {
-        path_to_file.push("index.html");
-        None
-    } else {
-        let uri = match append_slash_on_path(uri.clone()) {
-            Ok(uri) => uri,
-            Err(err) => return Some(err),
-        };
-        let location = HeaderValue::from_str(&uri.to_string()).unwrap();
-        Some(OpenFileOutput::Redirect { location })
+            let mut dir = tokio::fs::read_dir(&path_to_file).await?;
+            while let Some(entry) = dir.next_entry().await? {
+                let file_name = entry.file_name();
+                let file_name_str = file_name.to_string_lossy();
+                entries.push(format!(
+                    "<li><a href=\"{1}{2}{0}\">{0}</a></li>",
+                    file_name_str,
+                    uri.path().trim_end_matches('/'),
+                    if uri.path().trim_start_matches('/').is_empty() {
+                        ""
+                    } else {
+                        "/"
+                    }
+                ));
+            }
+            let listing = entries.join("\n");
+
+            let mut nav_parts = vec![];
+            let mut current_path = String::new();
+            for part in uri.path().trim_start_matches('/').split('/') {
+                if !part.is_empty() {
+                    current_path.push('/');
+                    current_path.push_str(part);
+                    nav_parts.push(format!("<a href=\"{0}\">{1}</a>", current_path, part));
+                }
+            }
+            let breadcrumb = if nav_parts.is_empty() {
+                "<a href=\"/\">/</a>".to_owned()
+            } else {
+                format!(
+                    "<a href=\"/\">/</a> &raquo; {}",
+                    nav_parts.join(" &raquo; ")
+                )
+            };
+
+            let html = format!(
+                r#"<!DOCTYPE HTML>
+            <html lang="en">
+            <head>
+            <meta charset="utf-8">
+            <title>Directory listing for .{0}</title>
+            </head>
+            <body>
+            <h1>Directory listing for .{0}</h1>
+            <div>{2}</div>
+            <hr>
+            <ul>
+            {1}
+            </ul>
+            <hr>
+            </body>
+            </html>"#,
+                uri.path(),
+                listing,
+                breadcrumb,
+            );
+
+            Ok(Some(OpenFileOutput::Html(html)))
+        }
     }
 }
 

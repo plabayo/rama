@@ -53,6 +53,10 @@ async fn hello_world(ReadSignals(signals): ReadSignals<Signals>) -> impl IntoRes
 }
 ```
 
+<div class="book-article-image-center">
+<img style="width: 50%" src="img/rama_datastar.jpg" alt="llama cruising through space empowered by the powerfull rama/datastar combo">
+</div>
+
 You can join the discord server of [🚀 data-\*](https://data-star.dev) at <https://discord.gg/sGfFuw9k>,
 after which you can join [the #general-rust channel](https://discord.com/channels/1296224603642925098/1315397669954392146)
 for any datastar specific help.
@@ -104,7 +108,7 @@ that you'll recognise from `axum`, just as available for `rama` services:
   a web service example showcasing how one might do a key value store web service using `Rama`;
 - [/examples/http_web_service_dir_and_api.rs](https://github.com/plabayo/rama/tree/main/examples/http_web_service_dir_and_api.rs):
   a web service example showcasing how one can make a web service to serve a website which includes an XHR API;
-- [/examples/http_web_router.rs](./examples/http_web_router.rs):
+- [/examples/http_web_router.rs](https://github.com/plabayo/rama/tree/main/examples/http_web_router.rs):
   a web service example showcasing demonstrating how to create a web router,
   which is excellent for the typical path-centric routing,
   and an approach you'll recognise from most other web frameworks out there.
