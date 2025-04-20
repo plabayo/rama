@@ -108,7 +108,7 @@ that you'll recognise from `axum`, just as available for `rama` services:
   a web service example showcasing how one might do a key value store web service using `Rama`;
 - [/examples/http_web_service_dir_and_api.rs](https://github.com/plabayo/rama/tree/main/examples/http_web_service_dir_and_api.rs):
   a web service example showcasing how one can make a web service to serve a website which includes an XHR API;
-- [/examples/http_web_router.rs](./examples/http_web_router.rs):
+- [/examples/http_web_router.rs](https://github.com/plabayo/rama/tree/main/examples/http_web_router.rs):
   a web service example showcasing demonstrating how to create a web router,
   which is excellent for the typical path-centric routing,
   and an approach you'll recognise from most other web frameworks out there.
