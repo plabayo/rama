@@ -145,17 +145,13 @@ pub async fn run(cfg: CliCommandServe) -> Result<(), BoxError> {
         .maybe_tls_server_config(maybe_tls_server_config)
         .http_layer(maybe_acme_service)
         .maybe_content_path(cfg.path)
-        .build(Executor::graceful(graceful.guard()))
-        .expect("build serve service");
+        .build(Executor::graceful(graceful.guard()))?;
 
     tracing::info!("starting serve service on: {}", cfg.bind);
 
-    graceful.spawn_task_fn(async move |guard| {
-        let tcp_listener = TcpListener::build()
-            .bind(cfg.bind)
-            .await
-            .expect("bind serve service");
+    let tcp_listener = TcpListener::build().bind(cfg.bind).await?;
 
+    graceful.spawn_task_fn(async move |guard| {
         tracing::info!("serve service ready");
         tcp_listener.serve_graceful(guard, tcp_service).await;
     });
