@@ -73,13 +73,31 @@ async fn test_http_serve_dir() {
 async fn test_http_serve_dir_index() {
     let _guard = utils::RamaService::serve(63107, Some(PathBuf::from("test-files")));
 
-    let cases = vec![
-        "https://127.0.0.1:63107",
-        "https://127.0.0.1:63107/index.html",
-    ];
+    // root (dir)
+    {
+        let lines = utils::RamaService::http(vec!["https://127.0.0.1:63107"]).unwrap();
+        assert!(lines.contains("GET /"), "req method, lines: {lines:?}",);
+        assert!(
+            lines.contains("HTTP/2.0 200 OK"),
+            "res status, lines: {lines:?}",
+        );
+        assert!(
+            lines.contains("content-type: text/html"),
+            "res content-type, lines: {lines:?}",
+        );
+        assert!(
+            lines.contains("Directory listing for"),
+            "res index.html, lines: {lines:?}",
+        );
+        assert!(
+            lines.contains("index.html"),
+            "res index.html, lines: {lines:?}",
+        );
+    }
 
-    for url in cases {
-        let lines = utils::RamaService::http(vec![url]).unwrap();
+    // index.html
+    {
+        let lines = utils::RamaService::http(vec!["https://127.0.0.1:63107/index.html"]).unwrap();
         assert!(lines.contains("GET /"), "req method, lines: {lines:?}",);
         assert!(
             lines.contains("HTTP/2.0 200 OK"),
