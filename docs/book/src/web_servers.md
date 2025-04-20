@@ -53,6 +53,10 @@ async fn hello_world(ReadSignals(signals): ReadSignals<Signals>) -> impl IntoRes
 }
 ```
 
+<div class="book-article-image-center">
+<img style="width: 50%" src="../img/rama_datastar.jpg" alt="llama cruising through space empowered by the powerfull rama/datastar combo">
+</div>
+
 You can join the discord server of [🚀 data-\*](https://data-star.dev) at <https://discord.gg/sGfFuw9k>,
 after which you can join [the #general-rust channel](https://discord.com/channels/1296224603642925098/1315397669954392146)
 for any datastar specific help.
