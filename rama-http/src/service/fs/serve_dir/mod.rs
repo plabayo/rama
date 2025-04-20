@@ -89,7 +89,7 @@ impl ServeDir<DefaultServeDirFallback> {
             buf_chunk_size: DEFAULT_CAPACITY,
             precompressed_variants: None,
             variant: ServeVariant::Directory {
-                append_index_html_on_directories: true,
+                serve_mode: Default::default(),
             },
             fallback: None,
             call_fallback_on_method_not_allowed: false,
@@ -112,34 +112,22 @@ impl ServeDir<DefaultServeDirFallback> {
 }
 
 impl<F> ServeDir<F> {
-    /// If the requested path is a directory append `index.html`.
-    ///
-    /// This is useful for static sites.
-    ///
-    /// Defaults to `true`.
-    pub fn append_index_html_on_directories(mut self, append: bool) -> Self {
+    /// Set the [`DirectoryServeMode`].
+    pub fn with_directory_serve_mode(mut self, mode: DirectoryServeMode) -> Self {
         match &mut self.variant {
-            ServeVariant::Directory {
-                append_index_html_on_directories,
-            } => {
-                *append_index_html_on_directories = append;
+            ServeVariant::Directory { serve_mode } => {
+                *serve_mode = mode;
                 self
             }
             ServeVariant::SingleFile { mime: _ } => self,
         }
     }
 
-    /// If the requested path is a directory append `index.html`.
-    ///
-    /// This is useful for static sites.
-    ///
-    /// Defaults to `true`.
-    pub fn set_append_index_html_on_directories(&mut self, append: bool) -> &mut Self {
+    /// Set the [`DirectoryServeMode`].
+    pub fn set_directory_serve_mode(&mut self, mode: DirectoryServeMode) -> &mut Self {
         match &mut self.variant {
-            ServeVariant::Directory {
-                append_index_html_on_directories,
-            } => {
-                *append_index_html_on_directories = append;
+            ServeVariant::Directory { serve_mode } => {
+                *serve_mode = mode;
                 self
             }
             ServeVariant::SingleFile { mime: _ } => self,
@@ -584,24 +572,33 @@ where
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DirectoryServeMode {
+    #[default]
+    /// If the requested path is a directory append `index.html`.
+    ///
+    /// This is useful for static sites
+    AppendIndexHtml,
+    /// If the requested path is a directory
+    /// handle it as resource "not found" (404).
+    NotFound,
+    /// Show the file tree of the directory as file tree
+    /// which can be navigated.
+    HtmlFileList,
+}
+
 // Allow the ServeDir service to be used in the ServeFile service
 // with almost no overhead
 #[derive(Clone, Debug)]
 enum ServeVariant {
-    Directory {
-        append_index_html_on_directories: bool,
-    },
-    SingleFile {
-        mime: HeaderValue,
-    },
+    Directory { serve_mode: DirectoryServeMode },
+    SingleFile { mime: HeaderValue },
 }
 
 impl ServeVariant {
     fn build_and_validate_path(&self, base_path: &Path, requested_path: &str) -> Option<PathBuf> {
         match self {
-            ServeVariant::Directory {
-                append_index_html_on_directories: _,
-            } => {
+            ServeVariant::Directory { serve_mode: _ } => {
                 let path = requested_path.trim_start_matches('/');
 
                 let path_decoded = percent_decode(path.as_ref()).decode_utf8().ok()?;

@@ -2,7 +2,7 @@ use crate::Body;
 use crate::dep::http_body::Body as HttpBody;
 use crate::dep::http_body_util::BodyExt;
 use crate::header::ALLOW;
-use crate::service::fs::{ServeDir, ServeFile};
+use crate::service::fs::{DirectoryServeMode, ServeDir, ServeFile};
 use crate::{Method, Response, header};
 use crate::{Request, StatusCode};
 use brotli::BrotliDecompress;
@@ -10,6 +10,7 @@ use bytes::Bytes;
 use flate2::bufread::{DeflateDecoder, GzDecoder};
 use rama_core::service::service_fn;
 use rama_core::{Context, Service};
+use rama_http_types::BodyExtractExt;
 use std::convert::Infallible;
 use std::io::Read;
 
@@ -401,7 +402,7 @@ async fn redirect_to_trailing_slash_on_dir() {
 
 #[tokio::test]
 async fn empty_directory_without_index() {
-    let svc = ServeDir::new("..").append_index_html_on_directories(false);
+    let svc = ServeDir::new("..").with_directory_serve_mode(DirectoryServeMode::NotFound);
 
     let req = Request::new(Body::empty());
     let res = svc.serve(Context::default(), req).await.unwrap();
@@ -414,8 +415,25 @@ async fn empty_directory_without_index() {
 }
 
 #[tokio::test]
+async fn serve_directory_as_file_tree() {
+    let svc =
+        ServeDir::new("../test-files").with_directory_serve_mode(DirectoryServeMode::HtmlFileList);
+
+    let req = Request::new(Body::empty());
+    let res = svc.serve(Context::default(), req).await.unwrap();
+
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(res.headers()["content-type"], "text/html");
+
+    let payload = res.into_body().try_into_string().await.unwrap();
+    assert!(payload.contains("Directory listing for"));
+    assert!(payload.contains("hello.txt"));
+    assert!(payload.contains("index.html"));
+}
+
+#[tokio::test]
 async fn empty_directory_without_index_no_information_leak() {
-    let svc = ServeDir::new("..").append_index_html_on_directories(false);
+    let svc = ServeDir::new("..").with_directory_serve_mode(DirectoryServeMode::NotFound);
 
     let req = Request::builder()
         .uri("/test-files")
@@ -767,7 +785,7 @@ async fn with_fallback_svc_and_not_append_index_html_on_directories() {
     }
 
     let svc = ServeDir::new("..")
-        .append_index_html_on_directories(false)
+        .with_directory_serve_mode(DirectoryServeMode::NotFound)
         .fallback(service_fn(fallback));
 
     let req = Request::builder().uri("/").body(Body::empty()).unwrap();

@@ -7,8 +7,8 @@ use crate::{
 };
 use bytes::Bytes;
 use rama_core::{Context, Service, error::BoxError};
-use rama_http_types::dep::http_body;
-use rama_http_types::headers::encoding::Encoding;
+use rama_http_types::{IntoResponse, headers::encoding::Encoding};
+use rama_http_types::{dep::http_body, response::Html};
 use std::{convert::Infallible, io};
 
 pub(super) async fn consume_open_file_result<State, ReqBody, ResBody, F>(
@@ -30,6 +30,8 @@ where
                 .insert(rama_http_types::header::LOCATION, location);
             Ok(res)
         }
+
+        Ok(OpenFileOutput::Html(payload)) => Ok(Html(payload).into_response()),
 
         Ok(OpenFileOutput::FileNotFound) => {
             if let Some((fallback, ctx, request)) = fallback_and_request {

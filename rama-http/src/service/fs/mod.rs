@@ -17,7 +17,7 @@ mod serve_file;
 
 #[doc(inline)]
 pub use self::{
-    serve_dir::{DefaultServeDirFallback, ServeDir},
+    serve_dir::{DefaultServeDirFallback, DirectoryServeMode, ServeDir},
     serve_file::ServeFile,
 };
 

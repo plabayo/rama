@@ -15,7 +15,7 @@ use crate::{
         response::Html,
         server::HttpServer,
         service::{
-            fs::{ServeDir, ServeFile},
+            fs::{DirectoryServeMode, ServeDir, ServeFile},
             web::StaticService,
         },
     },
@@ -331,7 +331,9 @@ where
                 "../../../docs/index.html"
             )))),
             Some(path) if path.is_file() => Either3::B(ServeFile::new(path.clone())),
-            Some(path) if path.is_dir() => Either3::C(ServeDir::new(path)),
+            Some(path) if path.is_dir() => Either3::C(
+                ServeDir::new(path).with_directory_serve_mode(DirectoryServeMode::HtmlFileList),
+            ),
             Some(path) => {
                 return Err(OpaqueError::from_display(format!(
                     "invalid path {path:?}: no such file or directory"
