@@ -12,19 +12,17 @@ use crate::{
             forwarded::GetForwardedHeadersLayer, required_header::AddRequiredResponseHeadersLayer,
             trace::TraceLayer, ua::UserAgentClassifierLayer,
         },
+        response::Html,
         server::HttpServer,
+        service::{
+            fs::{ServeDir, ServeFile},
+            web::StaticService,
+        },
     },
     layer::{ConsumeErrLayer, LimitLayer, TimeoutLayer, limit::policy::ConcurrentPolicy},
     net::stream::layer::http::BodyLimitLayer,
     proxy::haproxy::server::HaProxyLayer,
     rt::Executor,
-};
-use rama_http::{
-    response::Html,
-    service::{
-        fs::{ServeDir, ServeFile},
-        web::StaticService,
-    },
 };
 
 use std::{convert::Infallible, path::PathBuf, time::Duration};
