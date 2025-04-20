@@ -2,7 +2,7 @@
 
 use std::{
     io::{BufRead, BufReader},
-    net::SocketAddr,
+    path::PathBuf,
     process::Child,
     thread,
 };
@@ -151,6 +151,72 @@ impl RamaService {
         let mut args = vec!["http", "--debug", "-v", "--all", "-F", "-k"];
         args.extend(input_args);
         Self::run(args)
+    }
+
+    /// Start the rama serve service with the given port and content path.
+    pub(super) fn serve(port: u16, path: Option<PathBuf>) -> Self {
+        let secure = true;
+
+        let mut builder = escargot::CargoBuild::new()
+            .package("rama-cli")
+            .bin("rama")
+            .target_dir("./target/")
+            .run()
+            .unwrap()
+            .command();
+
+        if secure {
+            const BASE64: base64::engine::GeneralPurpose =
+                base64::engine::general_purpose::STANDARD;
+
+            builder.env(
+                "RAMA_TLS_CRT",
+                BASE64.encode(include_bytes!("./example_tls.crt")),
+            );
+            builder.env(
+                "RAMA_TLS_KEY",
+                BASE64.encode(include_bytes!("./example_tls.key")),
+            );
+        }
+
+        builder
+            .stdout(std::process::Stdio::piped())
+            .arg("serve")
+            .arg("--bind")
+            .arg(format!("127.0.0.1:{port}"))
+            .env(
+                "RUST_LOG",
+                std::env::var("RUST_LOG").unwrap_or("info".into()),
+            );
+
+        if secure {
+            builder.arg("-s");
+        }
+
+        if let Some(path) = path {
+            builder.arg(path);
+        }
+
+        let mut process = builder.spawn().unwrap();
+
+        let stdout = process.stdout.take().unwrap();
+        let mut stdout = BufReader::new(stdout).lines();
+
+        for line in &mut stdout {
+            let line = line.unwrap();
+            if line.contains("serve service ready") {
+                break;
+            }
+        }
+
+        thread::spawn(move || {
+            for line in stdout {
+                let line = line.unwrap();
+                println!("rama serve >> {}", line);
+            }
+        });
+
+        Self { process }
     }
 }
 
