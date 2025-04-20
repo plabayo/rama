@@ -8,7 +8,7 @@ use rama::{
     Context, Service,
     cli::ForwardKind,
     combinators::Either7,
-    error::{BoxError, OpaqueError},
+    error::{BoxError, ErrorContext, OpaqueError},
     http::{
         HeaderName, HeaderValue, IntoResponse, Request,
         header::COOKIE,
@@ -228,6 +228,19 @@ pub async fn run(cfg: CliCommandFingerprint) -> Result<(), BoxError> {
         .parse::<HeaderValue>()
         .expect("parse header value");
 
+    let pg_url = std::env::var("DATABASE_URL").ok();
+    let storage_auth = std::env::var("RAMA_FP_STORAGE_COOKIE").ok();
+
+    let tcp_listener = TcpListener::build_with_state(Arc::new(
+        State::new(acme_data, pg_url, storage_auth.as_deref())
+            .await
+            .expect("create state"),
+    ))
+    .bind(address)
+    .await
+    .map_err(OpaqueError::from_boxed)
+    .context("bind fp service")?;
+
     graceful.spawn_task_fn(async move |guard|  {
         let inner_http_service = HijackLayer::new(
                 HttpMatcher::header_exists(HeaderName::from_static("referer"))
@@ -300,13 +313,8 @@ pub async fn run(cfg: CliCommandFingerprint) -> Result<(), BoxError> {
             })
         );
 
-        let pg_url = std::env::var("DATABASE_URL").ok();
-        let storage_auth = std::env::var("RAMA_FP_STORAGE_COOKIE").ok();
 
-        let tcp_listener = TcpListener::build_with_state(Arc::new(State::new(acme_data, pg_url, storage_auth.as_deref()).await.expect("create state")))
-            .bind(address)
-            .await
-            .expect("bind TCP Listener");
+
 
         match cfg.http_version {
             HttpVersion::Auto => {

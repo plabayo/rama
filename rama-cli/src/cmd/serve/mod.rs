@@ -4,7 +4,7 @@ use clap::Args;
 use rama::{
     Service,
     cli::{ForwardKind, service::serve::ServeServiceBuilder},
-    error::BoxError,
+    error::{BoxError, ErrorContext, OpaqueError},
     http::{IntoResponse, Request, Response, matcher::HttpMatcher},
     layer::HijackLayer,
     net::{
@@ -145,11 +145,16 @@ pub async fn run(cfg: CliCommandServe) -> Result<(), BoxError> {
         .maybe_tls_server_config(maybe_tls_server_config)
         .http_layer(maybe_acme_service)
         .maybe_content_path(cfg.path)
-        .build(Executor::graceful(graceful.guard()))?;
+        .build(Executor::graceful(graceful.guard()))
+        .map_err(OpaqueError::from_boxed)
+        .context("build serve service")?;
 
     tracing::info!("starting serve service on: {}", cfg.bind);
-
-    let tcp_listener = TcpListener::build().bind(cfg.bind).await?;
+    let tcp_listener = TcpListener::build()
+        .bind(cfg.bind)
+        .await
+        .map_err(OpaqueError::from_boxed)
+        .context("bind serve service")?;
 
     graceful.spawn_task_fn(async move |guard| {
         tracing::info!("serve service ready");

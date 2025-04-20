@@ -3,7 +3,7 @@
 use clap::Args;
 use rama::{
     Context, Layer, Service,
-    error::BoxError,
+    error::{BoxError, ErrorContext, OpaqueError},
     http::{
         Body, IntoResponse, Request, Response, StatusCode,
         client::EasyHttpWebClient,
@@ -58,13 +58,13 @@ pub async fn run(cfg: CliCommandProxy) -> Result<(), BoxError> {
     let graceful = rama::graceful::Shutdown::default();
 
     tracing::info!("starting proxy on: {}", cfg.bind);
+    let tcp_service = TcpListener::build()
+        .bind(cfg.bind)
+        .await
+        .map_err(OpaqueError::from_boxed)
+        .context("bind proxy service")?;
 
     graceful.spawn_task_fn(async move |guard| {
-        let tcp_service = TcpListener::build()
-            .bind(cfg.bind)
-            .await
-            .expect("bind proxy to 127.0.0.1:62001");
-
         let exec = Executor::graceful(guard.clone());
         let http_service = HttpServer::auto(exec).service(
             (

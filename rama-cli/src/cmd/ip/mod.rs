@@ -4,7 +4,7 @@ use clap::Args;
 use rama::{
     cli::{ForwardKind, service::ip::IpServiceBuilder},
     combinators::Either,
-    error::BoxError,
+    error::{BoxError, ErrorContext, OpaqueError},
     net::address::SocketAddress,
     rt::Executor,
     tcp::server::TcpListener,
@@ -89,13 +89,13 @@ pub async fn run(cfg: CliCommandIp) -> Result<(), BoxError> {
     };
 
     tracing::info!("starting ip service on: {}", cfg.bind);
+    let tcp_listener = TcpListener::build()
+        .bind(cfg.bind)
+        .await
+        .map_err(OpaqueError::from_boxed)
+        .context("bind ip service")?;
 
     graceful.spawn_task_fn(async move |guard| {
-        let tcp_listener = TcpListener::build()
-            .bind(cfg.bind)
-            .await
-            .expect("bind ip service");
-
         tracing::info!("ip service ready");
         tcp_listener.serve_graceful(guard, tcp_service).await;
     });

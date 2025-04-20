@@ -4,7 +4,7 @@ use clap::Args;
 use rama::{
     Service,
     cli::{ForwardKind, service::echo::EchoServiceBuilder},
-    error::BoxError,
+    error::{BoxError, ErrorContext, OpaqueError},
     http::{IntoResponse, Request, Response, matcher::HttpMatcher},
     layer::HijackLayer,
     net::{
@@ -141,16 +141,17 @@ pub async fn run(cfg: CliCommandEcho) -> Result<(), BoxError> {
         .http_layer(maybe_acme_service)
         .with_user_agent_database(Arc::new(UserAgentDatabase::embedded()))
         .build(Executor::graceful(graceful.guard()))
-        .expect("build echo service");
+        .map_err(OpaqueError::from_boxed)
+        .context("build echo service")?;
 
     tracing::info!("starting echo service on: {}", cfg.bind);
+    let tcp_listener = TcpListener::build()
+        .bind(cfg.bind)
+        .await
+        .map_err(OpaqueError::from_boxed)
+        .context("bind echo service")?;
 
     graceful.spawn_task_fn(async move |guard| {
-        let tcp_listener = TcpListener::build()
-            .bind(cfg.bind)
-            .await
-            .expect("bind echo service");
-
         tracing::info!("echo service ready");
         tcp_listener.serve_graceful(guard, tcp_service).await;
     });
