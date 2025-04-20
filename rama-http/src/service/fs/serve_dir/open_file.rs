@@ -295,7 +295,7 @@ async fn maybe_serve_directory(
                 }
             }
             let breadcrumb = if nav_parts.is_empty() {
-                "<a href=\"/\">/</a>".to_string()
+                "<a href=\"/\">/</a>".to_owned()
             } else {
                 format!(
                     "<a href=\"/\">/</a> &raquo; {}",
