@@ -3,7 +3,7 @@
 use clap::Args;
 use rama::{
     Context, Layer, Service,
-    error::BoxError,
+    error::{BoxError, ErrorContext, OpaqueError},
     http::{
         Body, IntoResponse, Request, Response, StatusCode,
         client::EasyHttpWebClient,
@@ -16,9 +16,10 @@ use rama::{
         server::HttpServer,
     },
     layer::{LimitLayer, TimeoutLayer, limit::policy::ConcurrentPolicy},
-    net::conn::is_connection_error,
-    net::http::RequestContext,
-    net::stream::layer::http::BodyLimitLayer,
+    net::{
+        address::SocketAddress, conn::is_connection_error, http::RequestContext,
+        stream::layer::http::BodyLimitLayer,
+    },
     rt::Executor,
     service::service_fn,
     tcp::{client::default_tcp_connect, server::TcpListener},
@@ -30,13 +31,9 @@ use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberI
 #[derive(Debug, Args)]
 /// rama proxy server
 pub struct CliCommandProxy {
-    #[arg(long, short = 'p', default_value_t = 8080)]
-    /// the port to listen on
-    port: u16,
-
-    #[arg(long, short = 'i', default_value = "127.0.0.1")]
-    /// the interface to listen on
-    interface: String,
+    /// the address to bind to
+    #[arg(long, default_value = "127.0.0.1:8080")]
+    bind: SocketAddress,
 
     #[arg(long, short = 'c', default_value_t = 0)]
     /// the number of concurrent connections to allow (0 = no limit)
@@ -60,15 +57,14 @@ pub async fn run(cfg: CliCommandProxy) -> Result<(), BoxError> {
 
     let graceful = rama::graceful::Shutdown::default();
 
-    let address = format!("{}:{}", cfg.interface, cfg.port);
-    tracing::info!("starting proxy on: {}", address);
+    tracing::info!("starting proxy on: {}", cfg.bind);
+    let tcp_service = TcpListener::build()
+        .bind(cfg.bind)
+        .await
+        .map_err(OpaqueError::from_boxed)
+        .context("bind proxy service")?;
 
     graceful.spawn_task_fn(async move |guard| {
-        let tcp_service = TcpListener::build()
-            .bind(address)
-            .await
-            .expect("bind proxy to 127.0.0.1:62001");
-
         let exec = Executor::graceful(guard.clone());
         let http_service = HttpServer::auto(exec).service(
             (

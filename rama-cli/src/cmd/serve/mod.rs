@@ -1,9 +1,9 @@
-//! Echo service that echos the http request and tls client config
+//! Serve service that serves a file, directory or placeholder page.
 
 use clap::Args;
 use rama::{
     Service,
-    cli::{ForwardKind, service::echo::EchoServiceBuilder},
+    cli::{ForwardKind, service::serve::ServeServiceBuilder},
     error::{BoxError, ErrorContext, OpaqueError},
     http::{IntoResponse, Request, Response, matcher::HttpMatcher},
     layer::HijackLayer,
@@ -16,19 +16,24 @@ use rama::{
     },
     rt::Executor,
     tcp::server::TcpListener,
-    ua::profile::UserAgentDatabase,
 };
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as ENGINE;
 
-use std::{convert::Infallible, sync::Arc, time::Duration};
+use std::{convert::Infallible, path::PathBuf, time::Duration};
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Debug, Args)]
-/// rama echo service (echos the http request and tls client config)
-pub struct CliCommandEcho {
+/// rama serve service (serves a file, directory or placeholder page)
+pub struct CliCommandServe {
+    /// The path to the file or directory to serve
+    ///
+    /// If not provided, a placeholder page will be served.
+    #[arg()]
+    path: Option<PathBuf>,
+
     /// the address to bind to
     #[arg(long, default_value = "127.0.0.1:8080")]
     bind: SocketAddress,
@@ -60,12 +65,12 @@ pub struct CliCommandEcho {
     forward: Option<ForwardKind>,
 
     #[arg(long, short = 's')]
-    /// run echo service in secure mode (enable TLS)
+    /// run serve service in secure mode (enable TLS)
     secure: bool,
 }
 
-/// run the rama echo service
-pub async fn run(cfg: CliCommandEcho) -> Result<(), BoxError> {
+/// run the rama serve service
+pub async fn run(cfg: CliCommandServe) -> Result<(), BoxError> {
     tracing_subscriber::registry()
         .with(fmt::layer())
         .with(
@@ -133,26 +138,26 @@ pub async fn run(cfg: CliCommandEcho) -> Result<(), BoxError> {
 
     let graceful = rama::graceful::Shutdown::default();
 
-    let tcp_service = EchoServiceBuilder::new()
+    let tcp_service = ServeServiceBuilder::new()
         .concurrent(cfg.concurrent)
         .timeout(Duration::from_secs(cfg.timeout))
         .maybe_forward(cfg.forward)
         .maybe_tls_server_config(maybe_tls_server_config)
         .http_layer(maybe_acme_service)
-        .with_user_agent_database(Arc::new(UserAgentDatabase::embedded()))
+        .maybe_content_path(cfg.path)
         .build(Executor::graceful(graceful.guard()))
         .map_err(OpaqueError::from_boxed)
-        .context("build echo service")?;
+        .context("build serve service")?;
 
-    tracing::info!("starting echo service on: {}", cfg.bind);
+    tracing::info!("starting serve service on: {}", cfg.bind);
     let tcp_listener = TcpListener::build()
         .bind(cfg.bind)
         .await
         .map_err(OpaqueError::from_boxed)
-        .context("bind echo service")?;
+        .context("bind serve service")?;
 
     graceful.spawn_task_fn(async move |guard| {
-        tracing::info!("echo service ready");
+        tracing::info!("serve service ready");
         tcp_listener.serve_graceful(guard, tcp_service).await;
     });
 
