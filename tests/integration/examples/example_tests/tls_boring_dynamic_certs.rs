@@ -32,7 +32,7 @@ use std::{str::FromStr, time::Duration};
 
 #[tokio::test]
 #[ignore]
-async fn test_tls_rustls_dynamic_certs() {
+async fn test_tls_boring_dynamic_certs() {
     utils::init_tracing();
 
     let chain = DataEncoding::DerStack(
