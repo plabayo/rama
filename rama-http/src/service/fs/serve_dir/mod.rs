@@ -11,6 +11,7 @@ use std::{
     convert::Infallible,
     path::{Component, Path, PathBuf},
 };
+use crate::service::fs::serve_dir::open_file::open_file_embedded;
 
 pub(crate) mod future;
 mod headers;
@@ -538,7 +539,7 @@ impl<F> ServeDir<F> {
 
         let path_to_file = match self
             .variant
-            .build_and_validate_path(self.base.clone(), req.uri().path())
+            .build_and_validate_path(&self.base, req.uri().path())
         {
             Some(path_to_file) => path_to_file,
             None => {
@@ -563,26 +564,33 @@ impl<F> ServeDir<F> {
         )
         .collect();
 
-        match self.base.clone() {
+        let open_file_result =  match &self.base {
             DirSource::Filesystem(_) => {
                 let variant = self.variant.clone();
 
-                let open_file_result = open_file::open_file(
+                open_file::open_file(
                     variant,
                     path_to_file,
                     req,
                     negotiated_encodings,
                     range_header,
                     buf_chunk_size,
-                )
-                    .await;
+                ).await
 
-                future::consume_open_file_result(open_file_result, fallback_and_request).await
             },
             DirSource::Embedded(path) => {
-                // handle file here
+                open_file_embedded(
+                    path,
+                    path_to_file,
+                    req,
+                    range_header,
+                    buf_chunk_size,
+                )
             }
-        }
+        };
+
+        future::consume_open_file_result(open_file_result, fallback_and_request).await
+
     }
 }
 
@@ -627,7 +635,7 @@ enum ServeVariant {
 }
 
 impl ServeVariant {
-    fn build_and_validate_path(&self, source: DirSource, requested_path: &str) -> Option<PathBuf> {
+    fn build_and_validate_path(&self, source: &DirSource, requested_path: &str) -> Option<PathBuf> {
         match self {
             ServeVariant::Directory {
                 append_index_html_on_directories: _,
@@ -638,7 +646,8 @@ impl ServeVariant {
                 let path_decoded = Path::new(&*path_decoded);
 
                 match source {
-                    DirSource::Filesystem(mut path) => {
+                    DirSource::Filesystem(path) => {
+                        let mut path = path.clone();
                         for component in path_decoded.components() {
                             match component {
                                 Component::Normal(comp) => {
