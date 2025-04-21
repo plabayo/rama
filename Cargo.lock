@@ -2545,6 +2545,7 @@ dependencies = [
  "bitflags",
  "brotli 8.0.0",
  "bytes",
+ "chrono",
  "const_format",
  "csv",
  "flate2",
