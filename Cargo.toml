@@ -446,6 +446,10 @@ name = "tls_rustls_dynamic_certs"
 required-features = ["rustls", "http-full"]
 
 [[example]]
+name = "tls_rustls_dynamic_config"
+required-features = ["rustls", "http-full"]
+
+[[example]]
 name = "tls_boring_termination"
 required-features = ["boring", "haproxy", "http-full"]
 

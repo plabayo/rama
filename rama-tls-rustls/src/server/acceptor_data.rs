@@ -194,8 +194,10 @@ impl TlsAcceptorDataBuilder {
         self.server_config.into()
     }
 
-    /// Convert current config to rustls config. Useful if you want to use some logic this builder
-    /// provides and then continue on directly with a native rustls config
+    /// Convert current config into a rustls config.
+    ///
+    /// Useful if you want to use some utilities this builder provides and
+    /// then continue on directly with a native rustls config
     pub fn into_rustls_config(self) -> rustls::ServerConfig {
         self.server_config
     }
