@@ -3,9 +3,11 @@ use crate::layer::set_status::SetStatus;
 use crate::{Body, HeaderValue, Method, Request, Response, StatusCode, header};
 use bytes::Bytes;
 use percent_encoding::percent_decode;
-use rama_core::error::BoxError;
+use rama_core::error::{BoxError, OpaqueError};
 use rama_core::{Context, Service};
 use rama_http_types::headers::encoding::{SupportedEncodings, parse_accept_encoding_headers};
+use std::fmt;
+use std::str::FromStr;
 use std::{
     convert::Infallible,
     path::{Component, Path, PathBuf},
@@ -585,6 +587,44 @@ pub enum DirectoryServeMode {
     /// Show the file tree of the directory as file tree
     /// which can be navigated.
     HtmlFileList,
+}
+
+impl fmt::Display for DirectoryServeMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                DirectoryServeMode::AppendIndexHtml => "append-index",
+                DirectoryServeMode::NotFound => "not-found",
+                DirectoryServeMode::HtmlFileList => "html-file-list",
+            }
+        )
+    }
+}
+
+impl FromStr for DirectoryServeMode {
+    type Err = OpaqueError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        rama_utils::macros::match_ignore_ascii_case_str! {
+            match(s) {
+                "append-index" | "append_index" => Ok(Self::AppendIndexHtml),
+                "not-found" | "not_found" => Ok(Self::NotFound),
+                "html-file-list" | "html_file_list" => Ok(Self::HtmlFileList),
+                _ => Err(OpaqueError::from_display("invalid DirectoryServeMode str")),
+            }
+        }
+    }
+}
+
+impl TryFrom<&str> for DirectoryServeMode {
+    type Error = OpaqueError;
+
+    #[inline]
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        value.parse()
+    }
 }
 
 // Allow the ServeDir service to be used in the ServeFile service

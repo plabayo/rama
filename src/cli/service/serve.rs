@@ -58,7 +58,9 @@ pub struct ServeServiceBuilder<H> {
     http_version: Option<Version>,
 
     http_service_builder: H,
+
     content_path: Option<PathBuf>,
+    dir_serve_mode: DirectoryServeMode,
 }
 
 impl Default for ServeServiceBuilder<()> {
@@ -77,6 +79,7 @@ impl Default for ServeServiceBuilder<()> {
             http_service_builder: (),
 
             content_path: None,
+            dir_serve_mode: DirectoryServeMode::HtmlFileList,
         }
     }
 }
@@ -222,21 +225,47 @@ impl<H> ServeServiceBuilder<H> {
             http_service_builder: (self.http_service_builder, layer),
 
             content_path: self.content_path,
+            dir_serve_mode: self.dir_serve_mode,
         }
     }
 
+    /// Set the content path to serve (by default it will serve the rama homepage).
     pub fn content_path(mut self, path: impl Into<PathBuf>) -> Self {
         self.content_path = Some(path.into());
         self
     }
 
+    /// Maybe set the content path to serve (by default it will serve the rama homepage).
     pub fn maybe_content_path(mut self, path: Option<PathBuf>) -> Self {
         self.content_path = path;
         self
     }
 
+    /// Set the content path to serve (by default it will serve the rama homepage).
     pub fn set_content_path(&mut self, path: impl Into<PathBuf>) -> &mut Self {
         self.content_path = Some(path.into());
+        self
+    }
+
+    /// Set the [`DirectoryServeMode`] which defines how to serve directories.
+    ///
+    /// By default it will use [`DirectoryServeMode::HtmlFileList`].
+    ///
+    /// Note that this is only used in case the content path is defined (e.g. using [`Self::content_path`])
+    /// and that path points to a valid directory.
+    pub fn directory_serve_mode(mut self, mode: DirectoryServeMode) -> Self {
+        self.dir_serve_mode = mode;
+        self
+    }
+
+    /// Set the [`DirectoryServeMode`] which defines how to serve directories.
+    ///
+    /// By default it will use [`DirectoryServeMode::HtmlFileList`].
+    ///
+    /// Note that this is only used in case the content path is defined (e.g. using [`Self::content_path`])
+    /// and that path points to a valid directory.
+    pub fn set_directory_serve_mode(&mut self, mode: DirectoryServeMode) -> &mut Self {
+        self.dir_serve_mode = mode;
         self
     }
 }
@@ -331,9 +360,9 @@ where
                 "../../../docs/index.html"
             )))),
             Some(path) if path.is_file() => Either3::B(ServeFile::new(path.clone())),
-            Some(path) if path.is_dir() => Either3::C(
-                ServeDir::new(path).with_directory_serve_mode(DirectoryServeMode::HtmlFileList),
-            ),
+            Some(path) if path.is_dir() => {
+                Either3::C(ServeDir::new(path).with_directory_serve_mode(self.dir_serve_mode))
+            }
             Some(path) => {
                 return Err(OpaqueError::from_display(format!(
                     "invalid path {path:?}: no such file or directory"

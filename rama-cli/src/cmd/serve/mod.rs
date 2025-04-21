@@ -5,7 +5,9 @@ use rama::{
     Service,
     cli::{ForwardKind, service::serve::ServeServiceBuilder},
     error::{BoxError, ErrorContext, OpaqueError},
-    http::{IntoResponse, Request, Response, matcher::HttpMatcher},
+    http::{
+        IntoResponse, Request, Response, matcher::HttpMatcher, service::fs::DirectoryServeMode,
+    },
     layer::HijackLayer,
     net::{
         address::SocketAddress,
@@ -67,6 +69,16 @@ pub struct CliCommandServe {
     #[arg(long, short = 's')]
     /// run serve service in secure mode (enable TLS)
     secure: bool,
+
+    #[arg(long, default_value_t = DirectoryServeMode::HtmlFileList)]
+    /// define how to serve directories
+    ///
+    /// 'append-index': only serve directories if it contains an index.html
+    ///
+    /// 'not-found': return 404 for directories
+    ///
+    /// 'html-file-list': render directory file structure as a html page (default)
+    dir_serve: DirectoryServeMode,
 }
 
 /// run the rama serve service
@@ -145,6 +157,7 @@ pub async fn run(cfg: CliCommandServe) -> Result<(), BoxError> {
         .maybe_tls_server_config(maybe_tls_server_config)
         .http_layer(maybe_acme_service)
         .maybe_content_path(cfg.path)
+        .directory_serve_mode(cfg.dir_serve)
         .build(Executor::graceful(graceful.guard()))
         .map_err(OpaqueError::from_boxed)
         .context("build serve service")?;
