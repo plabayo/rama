@@ -58,7 +58,7 @@ use rama::{
     graceful::Shutdown,
     http::{IntoResponse, Request, Response, server::HttpServer},
     layer::ConsumeErrLayer,
-    net::{address::Domain, tls::ApplicationProtocol, tls::client::ClientHello},
+    net::{address::Domain, tls::client::ClientHello},
     rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
@@ -102,7 +102,7 @@ async fn main() {
         .with_cert_resolver(dynamic_issuer);
 
     let acceptor_data = TlsAcceptorDataBuilder::from(config)
-        .with_alpn_protocols(&[ApplicationProtocol::HTTP_11, ApplicationProtocol::HTTP_2])
+        .with_alpn_protocols_http_auto()
         .with_env_key_logger()
         .expect("with env keylogger")
         .build();

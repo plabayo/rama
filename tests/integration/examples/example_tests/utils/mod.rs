@@ -127,7 +127,7 @@ where
         {
             let data = TlsConnectorDataBuilder::new()
                 .with_no_cert_verifier()
-                .with_alpn_protocols(&[ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11])
+                .with_alpn_protocols_http_auto()
                 .with_env_key_logger()
                 .expect("connector with env keylogger")
                 .build();

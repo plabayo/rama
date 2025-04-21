@@ -111,6 +111,18 @@ impl TlsAcceptorDataBuilder {
         self
     }
 
+    /// Set alpn protocols to most commonly used http protocols: [`ApplicationProtocol::HTTP_2`], [`ApplicationProtocol::HTTP_11`]
+    pub fn set_alpn_protocols_http_auto(&mut self) -> &mut Self {
+        self.set_alpn_protocols(&[ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11]);
+        self
+    }
+
+    /// Same as [`Self::set_alpn_protocols_http_auto`] but consuming self
+    pub fn with_alpn_protocols_http_auto(mut self) -> Self {
+        self.set_alpn_protocols_http_auto();
+        self
+    }
+
     /// Build [`TlsAcceptorData`] from the current config
     pub fn build(self) -> TlsAcceptorData {
         TlsAcceptorData {

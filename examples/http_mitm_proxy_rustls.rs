@@ -20,27 +20,22 @@
 //! # Run the example
 //!
 //! ```sh
-//! cargo run --example http_mitm_proxy --features=http-full,rustls
-//! ```
-//!
-//! Or alternatively run it using boring (ssl)
-//!
-//! ```sh
-//! cargo run --example http_mitm_proxy --features=http-full,boring
+//! cargo run --example http_mitm_proxy_rustls --features=http-full,rustls
 //! ```
 //!
 //! # Expected output
 //!
-//! The server will start and listen on `:62017`. You can use `curl` to interact with the service:
+//! The server will start and listen on `:62019`. You can use `curl` to interact with the service:
 //!
 //! ```sh
-//! curl -v -x http://127.0.0.1:62017 --proxy-user 'john:secret' http://www.example.com/
-//! curl -k -v -x http://127.0.0.1:62017 --proxy-user 'john:secret' https://www.example.com/
+//! curl -v -x http://127.0.0.1:62019 --proxy-user 'john:secret' http://www.example.com/
+//! curl -k -v -x http://127.0.0.1:62019 --proxy-user 'john:secret' https://www.example.com/
 //! ```
 
 use rama::{
     Layer, Service,
     error::{BoxError, ErrorContext, OpaqueError},
+    http::layer::compress_adapter::CompressAdaptLayer,
     http::{
         Body, IntoResponse, Request, Response, StatusCode,
         client::{EasyHttpWebClient, TlsConnectorConfig},
@@ -50,7 +45,6 @@ use rama::{
             remove_header::{RemoveRequestHeaderLayer, RemoveResponseHeaderLayer},
             required_header::AddRequiredRequestHeadersLayer,
             trace::TraceLayer,
-            traffic_writer::{self, RequestWriterInspector},
             upgrade::{UpgradeLayer, Upgraded},
         },
         matcher::MethodMatcher,
@@ -58,47 +52,25 @@ use rama::{
     },
     layer::ConsumeErrLayer,
     net::{
-        http::RequestContext,
-        stream::layer::http::BodyLimitLayer,
-        tls::{ApplicationProtocol, server::SelfSignedData},
+        http::RequestContext, stream::layer::http::BodyLimitLayer, tls::server::SelfSignedData,
         user::Basic,
     },
     rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
-};
-
-#[cfg(feature = "boring")]
-use rama::{
-    net::tls::{
-        client::{ClientConfig, ClientHelloExtension, ServerVerifyMode},
-        server::{ServerAuth, ServerConfig},
+    tls::rustls::{
+        client::TlsConnectorDataBuilder,
+        server::{TlsAcceptorData, TlsAcceptorDataBuilder, TlsAcceptorLayer},
     },
-    tls::boring::server::{TlsAcceptorData, TlsAcceptorLayer},
 };
 
-#[cfg(all(feature = "rustls", not(feature = "boring")))]
-use rama::tls::rustls::{
-    client::TlsConnectorDataBuilder,
-    server::{TlsAcceptorData, TlsAcceptorDataBuilder, TlsAcceptorLayer},
-};
-
-use rama_http::layer::compress_adapter::CompressAdaptLayer;
-use rama_ua::{
-    emulate::{
-        SelectedUserAgentProfile, UserAgentEmulateHttpConnectModifier,
-        UserAgentEmulateHttpRequestModifier, UserAgentEmulateLayer,
-    },
-    profile::UserAgentDatabase,
-};
-use std::{convert::Infallible, sync::Arc, time::Duration};
+use std::{convert::Infallible, time::Duration};
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Debug, Clone)]
 struct State {
     mitm_tls_service_data: TlsAcceptorData,
-    ua_db: Arc<UserAgentDatabase>,
 }
 
 type Context = rama::Context<State>;
@@ -114,25 +86,23 @@ async fn main() -> Result<(), BoxError> {
         )
         .init();
 
-    #[cfg(any(feature = "boring", feature = "rustls"))]
     let mitm_tls_service_data =
         new_mitm_tls_service_data().context("generate self-signed mitm tls cert")?;
 
     let state = State {
         mitm_tls_service_data,
-        ua_db: Arc::new(UserAgentDatabase::embedded()),
     };
 
     let graceful = rama::graceful::Shutdown::default();
 
     graceful.spawn_task_fn(async |guard| {
-        let tcp_service = TcpListener::build_with_state(state.clone())
-            .bind("127.0.0.1:62017")
+        let tcp_service = TcpListener::build_with_state(state)
+            .bind("127.0.0.1:62019")
             .await
-            .expect("bind tcp proxy to 127.0.0.1:62017");
+            .expect("bind tcp proxy to 127.0.0.1:62019");
 
         let exec = Executor::graceful(guard.clone());
-        let http_mitm_service = new_http_mitm_proxy(&Context::with_state(state));
+        let http_mitm_service = new_http_mitm_proxy();
         let http_service = HttpServer::auto(exec).service(
             (
                 TraceLayer::new_for_http(),
@@ -197,11 +167,12 @@ async fn http_connect_proxy(ctx: Context, upgraded: Upgraded) -> Result<(), Infa
     // as we otherwise might not be able to define the scheme/authority
     // for upstream http requests.
 
-    let http_service = new_http_mitm_proxy(&ctx);
+    let http_service = new_http_mitm_proxy();
 
     let http_transport_service = HttpServer::auto(ctx.executor().clone()).service(http_service);
 
     let https_service = TlsAcceptorLayer::new(ctx.state().mitm_tls_service_data.clone())
+        .with_store_client_hello(true)
         .into_layer(http_transport_service);
 
     https_service
@@ -212,16 +183,11 @@ async fn http_connect_proxy(ctx: Context, upgraded: Upgraded) -> Result<(), Infa
     Ok(())
 }
 
-fn new_http_mitm_proxy(
-    ctx: &Context,
-) -> impl Service<State, Request, Response = Response, Error = Infallible> {
+fn new_http_mitm_proxy() -> impl Service<State, Request, Response = Response, Error = Infallible> {
     (
         MapResponseBodyLayer::new(Body::new),
         TraceLayer::new_for_http(),
         ConsumeErrLayer::default(),
-        UserAgentEmulateLayer::new(ctx.state().ua_db.clone())
-            .try_auto_detect_user_agent(true)
-            .optional(true),
         RemoveResponseHeaderLayer::hop_by_hop(),
         RemoveRequestHeaderLayer::hop_by_hop(),
         CompressAdaptLayer::default(),
@@ -236,52 +202,16 @@ async fn http_mitm_proxy(ctx: Context, req: Request) -> Result<Response, Infalli
 
     // NOTE: use a custom connector (layers) in case you wish to add custom features,
     // such as upstream proxies or other configurations
-    let mut client = EasyHttpWebClient::default()
-        .with_http_conn_req_inspector(UserAgentEmulateHttpConnectModifier::default())
-        .with_http_conn_req_inspector((
-            UserAgentEmulateHttpRequestModifier::default(),
-            // these layers are for example purposes only,
-            // best not to print requests like this in production...
-            //
-            // If you want to see the request that actually is send to the server
-            // you also usually do not want it as a layer, but instead plug the inspector
-            // directly JIT-style into your http (client) connector.
-            RequestWriterInspector::stdout_unbounded(
-                ctx.executor(),
-                Some(traffic_writer::WriterMode::Headers),
-            ),
-        ));
+    let mut client = EasyHttpWebClient::default();
 
-    #[cfg(feature = "boring")]
-    {
-        let config = ClientConfig {
-            server_verify_mode: Some(ServerVerifyMode::Disable),
-            extensions: (!ctx.contains::<SelectedUserAgentProfile>()).then_some(vec![
-                ClientHelloExtension::ApplicationLayerProtocolNegotiation(vec![
-                    ApplicationProtocol::HTTP_2,
-                    ApplicationProtocol::HTTP_11,
-                ]),
-            ]),
-            ..Default::default()
-        };
+    let data = TlsConnectorDataBuilder::new()
+        .with_no_cert_verifier()
+        .with_alpn_protocols_http_auto()
+        .with_env_key_logger()
+        .expect("with env key logger")
+        .build();
 
-        client.set_tls_connector_config(TlsConnectorConfig::Boring(Some(config)));
-    };
-
-    #[cfg(all(feature = "rustls", not(feature = "boring")))]
-    {
-        let mut builder = TlsConnectorDataBuilder::new().with_no_cert_verifier();
-        if !ctx.contains::<SelectedUserAgentProfile>() {
-            builder
-                .set_alpn_protocols(&[ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11]);
-        }
-        let data = builder
-            .with_env_key_logger()
-            .expect("with env key logger")
-            .build();
-
-        client.set_tls_connector_config(TlsConnectorConfig::Rustls(Some(data)))
-    };
+    client.set_tls_connector_config(TlsConnectorConfig::Rustls(Some(data)));
 
     match client.serve(ctx, req).await {
         Ok(resp) => Ok(resp),
@@ -298,24 +228,6 @@ async fn http_mitm_proxy(ctx: Context, req: Request) -> Result<Response, Infalli
 // NOTE: for a production service you ideally use
 // an issued TLS cert (if possible via ACME). Or at the very least
 // load it in from memory/file, so that your clients can install the certificate for trust.
-#[cfg(feature = "boring")]
-fn new_mitm_tls_service_data() -> Result<TlsAcceptorData, OpaqueError> {
-    let tls_server_config = ServerConfig {
-        application_layer_protocol_negotiation: Some(vec![
-            ApplicationProtocol::HTTP_2,
-            ApplicationProtocol::HTTP_11,
-        ]),
-        ..ServerConfig::new(ServerAuth::SelfSigned(SelfSignedData {
-            organisation_name: Some("Example Server Acceptor".to_owned()),
-            ..Default::default()
-        }))
-    };
-    tls_server_config
-        .try_into()
-        .context("create tls server config")
-}
-
-#[cfg(all(feature = "rustls", not(feature = "boring")))]
 fn new_mitm_tls_service_data() -> Result<TlsAcceptorData, OpaqueError> {
     let data = TlsAcceptorDataBuilder::new_self_signed(SelfSignedData {
         organisation_name: Some("Example Server Acceptor".to_owned()),
