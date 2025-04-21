@@ -13,9 +13,15 @@
 
 [Examples](https://github.com/plabayo/rama/tree/main/examples):
 
-- [/examples/http_mitm_proxy.rs](https://github.com/plabayo/rama/tree/main/examples/http_mitm_proxy.rs):
+- [/examples/http_mitm_proxy_boring.rs](https://github.com/plabayo/rama/tree/main/examples/http_mitm_proxy_boring.rs):
   Spawns a minimal http proxy which accepts http/1.1 and h2 connections alike,
-  and proxies them to the target host;
+  and proxies them to the target host, using boring for tls;
+  - Similar to [/examples/http_connect_proxy.rs](https://github.com/plabayo/rama/tree/main/examples/http_connect_proxy.rs)
+    but MITM for both http and https requests alike.
+
+- [/examples/http_mitm_proxy_rustls.rs](https://github.com/plabayo/rama/tree/main/examples/http_mitm_proxy_rustls.rs):
+  Spawns a minimal http proxy which accepts http/1.1 and h2 connections alike,
+  and proxies them to the target host, using rustls for tls;
   - Similar to [/examples/http_connect_proxy.rs](https://github.com/plabayo/rama/tree/main/examples/http_connect_proxy.rs)
     but MITM for both http and https requests alike.
 

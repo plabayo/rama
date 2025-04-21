@@ -15,18 +15,12 @@
 //! It combines concepts that can seen in action separately in the following examples:
 //!
 //! - [`http_connect_proxy`](./http_connect_proxy.rs);
-//! - [`tls_rustls_termination`](./tls_rustls_termination.rs);
+//! - [`tls_boring_termination`](./tls_boring_termination.rs);
 //!
 //! # Run the example
 //!
 //! ```sh
-//! cargo run --example http_mitm_proxy --features=http-full,rustls
-//! ```
-//!
-//! Or alternatively run it using boring (ssl)
-//!
-//! ```sh
-//! cargo run --example http_mitm_proxy --features=http-full,boring
+//! cargo run --example http_mitm_proxy_boring --features=http-full,boring
 //! ```
 //!
 //! # Expected output
@@ -45,6 +39,7 @@ use rama::{
         Body, IntoResponse, Request, Response, StatusCode,
         client::{EasyHttpWebClient, TlsConnectorConfig},
         layer::{
+            compress_adapter::CompressAdaptLayer,
             map_response_body::MapResponseBodyLayer,
             proxy_auth::ProxyAuthLayer,
             remove_header::{RemoveRequestHeaderLayer, RemoveResponseHeaderLayer},
@@ -60,39 +55,29 @@ use rama::{
     net::{
         http::RequestContext,
         stream::layer::http::BodyLimitLayer,
-        tls::{ApplicationProtocol, server::SelfSignedData},
+        tls::{
+            ApplicationProtocol, SecureTransport,
+            client::{
+                ClientConfig, ClientHelloExtension, ServerVerifyMode,
+                extract_client_config_from_ctx,
+            },
+            server::{SelfSignedData, ServerAuth, ServerConfig},
+        },
         user::Basic,
     },
     rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
-};
-
-use rama::net::tls::client::{
-    ClientConfig, ClientHelloExtension, ServerVerifyMode, extract_client_config_from_ctx,
-};
-
-#[cfg(feature = "boring")]
-use rama::{
-    net::tls::server::{ServerAuth, ServerConfig},
     tls::boring::server::{TlsAcceptorData, TlsAcceptorLayer},
-};
-
-#[cfg(all(feature = "rustls", not(feature = "boring")))]
-use rama::tls::rustls::{
-    client::TlsConnectorData,
-    server::{TlsAcceptorData, TlsAcceptorDataBuilder, TlsAcceptorLayer},
-};
-
-use rama_http::layer::compress_adapter::CompressAdaptLayer;
-use rama_net::tls::SecureTransport;
-use rama_ua::{
-    emulate::{
-        UserAgentEmulateHttpConnectModifier, UserAgentEmulateHttpRequestModifier,
-        UserAgentEmulateLayer,
+    ua::{
+        emulate::{
+            UserAgentEmulateHttpConnectModifier, UserAgentEmulateHttpRequestModifier,
+            UserAgentEmulateLayer,
+        },
+        profile::UserAgentDatabase,
     },
-    profile::UserAgentDatabase,
 };
+
 use std::{convert::Infallible, sync::Arc, time::Duration};
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
@@ -116,7 +101,6 @@ async fn main() -> Result<(), BoxError> {
         )
         .init();
 
-    #[cfg(any(feature = "boring", feature = "rustls"))]
     let mitm_tls_service_data =
         new_mitm_tls_service_data().context("generate self-signed mitm tls cert")?;
 
@@ -284,16 +268,7 @@ async fn http_mitm_proxy(ctx: Context, req: Request) -> Result<Response, Infalli
         None => base_tls_cfg,
     };
 
-    #[cfg(feature = "boring")]
-    {
-        client.set_tls_connector_config(TlsConnectorConfig::Boring(Some(tls_client_config)));
-    };
-
-    #[cfg(all(feature = "rustls", not(feature = "boring")))]
-    {
-        let data = TlsConnectorData::from(tls_client_config);
-        client.set_tls_connector_config(TlsConnectorConfig::Rustls(Some(data)))
-    };
+    client.set_tls_connector_config(TlsConnectorConfig::Boring(Some(tls_client_config)));
 
     match client.serve(ctx, req).await {
         Ok(resp) => Ok(resp),
@@ -310,7 +285,6 @@ async fn http_mitm_proxy(ctx: Context, req: Request) -> Result<Response, Infalli
 // NOTE: for a production service you ideally use
 // an issued TLS cert (if possible via ACME). Or at the very least
 // load it in from memory/file, so that your clients can install the certificate for trust.
-#[cfg(feature = "boring")]
 fn new_mitm_tls_service_data() -> Result<TlsAcceptorData, OpaqueError> {
     let tls_server_config = ServerConfig {
         application_layer_protocol_negotiation: Some(vec![
@@ -325,19 +299,4 @@ fn new_mitm_tls_service_data() -> Result<TlsAcceptorData, OpaqueError> {
     tls_server_config
         .try_into()
         .context("create tls server config")
-}
-
-#[cfg(all(feature = "rustls", not(feature = "boring")))]
-fn new_mitm_tls_service_data() -> Result<TlsAcceptorData, OpaqueError> {
-    let data = TlsAcceptorDataBuilder::new_self_signed(SelfSignedData {
-        organisation_name: Some("Example Server Acceptor".to_owned()),
-        ..Default::default()
-    })
-    .context("self signed builder")?
-    .with_alpn_protocols_http_auto()
-    .with_env_key_logger()
-    .context("with env key logger")?
-    .build();
-
-    Ok(data)
 }

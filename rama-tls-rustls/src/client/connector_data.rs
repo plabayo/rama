@@ -6,8 +6,7 @@ use crate::key_log::KeyLogFile;
 use crate::verify::NoServerCertVerifier;
 use rama_core::error::{BoxError, ErrorContext, OpaqueError};
 use rama_net::address::Host;
-use rama_net::tls::client::{ClientHello, ClientHelloExtension, ServerVerifyMode};
-use rama_net::tls::{ApplicationProtocol, KeyLogIntent, client::ClientConfig as RamaClientConfig};
+use rama_net::tls::{ApplicationProtocol, KeyLogIntent};
 use rustls::client::danger::ServerCertVerifier;
 use std::sync::{Arc, OnceLock};
 
@@ -36,43 +35,6 @@ impl From<Arc<ClientConfig>> for TlsConnectorData {
             server_name: None,
             store_server_certificate_chain: false,
         }
-    }
-}
-
-impl From<ClientHello> for TlsConnectorData {
-    #[inline]
-    fn from(value: ClientHello) -> Self {
-        let cfg = RamaClientConfig::from(value);
-        cfg.into()
-    }
-}
-
-impl From<RamaClientConfig> for TlsConnectorData {
-    fn from(value: RamaClientConfig) -> Self {
-        let mut builder = TlsConnectorDataBuilder::new()
-            .with_store_server_certificate_chain(value.store_server_certificate_chain);
-        if matches!(
-            value.server_verify_mode.as_ref(),
-            Some(ServerVerifyMode::Disable)
-        ) {
-            builder.set_no_cert_verifier();
-        }
-        for ext in value.extensions.iter().flatten() {
-            match ext {
-                ClientHelloExtension::ServerName(host) => {
-                    if let Some(host) = host.clone() {
-                        builder.set_server_name(host);
-                    }
-                }
-                ClientHelloExtension::ApplicationLayerProtocolNegotiation(
-                    application_protocols,
-                ) => {
-                    builder.set_alpn_protocols(application_protocols);
-                }
-                _ => (),
-            }
-        }
-        builder.build()
     }
 }
 
