@@ -41,9 +41,11 @@ test-spec: test-spec-h2
 test-ignored:
 	cargo test --features=cli,telemetry,compression,http-full,proxy-full,tcp,rustls --workspace -- --ignored
 
-qa: lint check clippy doc test
+qa-quick: lint check clippy doc
 
-qa-full: lint check clippy doc hack test test-ignored fuzz-60s check-links
+qa: qa-quick test
+
+qa-full: qa hack test-ignored fuzz-60s check-links
 
 upgrades:
     cargo upgrades
