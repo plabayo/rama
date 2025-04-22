@@ -1,35 +1,101 @@
 use crate::dep::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use crate::dep::rcgen::{self, KeyPair};
-use crate::dep::rustls::ServerConfig;
+use crate::dep::rustls;
 use crate::key_log::KeyLogFile;
 use rama_core::error::{ErrorContext, OpaqueError};
 use rama_net::address::{Domain, Host};
 use rama_net::tls::server::SelfSignedData;
 use rama_net::tls::{ApplicationProtocol, KeyLogIntent};
 use rustls::ALL_VERSIONS;
+use std::pin::Pin;
 use std::sync::Arc;
 
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug)]
 /// Internal data used as configuration/input for the [`super::TlsAcceptorService`].
 ///
 /// Created by converting a [`rustls::ServerConfig`] into it directly,
 /// or by using [`TlsAcceptorDataBuilder`] to create this in a more ergonomic way.
 pub struct TlsAcceptorData {
-    pub(super) server_config: Arc<ServerConfig>,
+    pub(super) server_config: ServerConfig,
 }
 
-impl From<ServerConfig> for TlsAcceptorData {
+#[derive(Clone)]
+/// [`ServerConfig`] used to configure rustls
+///
+/// This can either be a directly stored [`rustls::ServerConfig`], or a [`rustls::ServerConfig`]
+/// returned by a [`DynamicConfigProvider`] based on the received client hello
+pub(super) enum ServerConfig {
+    Stored(Arc<rustls::ServerConfig>),
+    Async(Arc<dyn DynDynamicConfigProvider + Send + Sync>),
+}
+
+impl std::fmt::Debug for ServerConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Stored(arg0) => f.debug_tuple("Stored").field(arg0).finish(),
+            Self::Async(_) => f
+                .debug_tuple("Async")
+                .field(&"dynamic config provider")
+                .finish(),
+        }
+    }
+}
+
+impl From<rustls::ServerConfig> for TlsAcceptorData {
     #[inline]
-    fn from(value: ServerConfig) -> Self {
+    fn from(value: rustls::ServerConfig) -> Self {
         Arc::new(value).into()
     }
 }
 
-impl From<Arc<ServerConfig>> for TlsAcceptorData {
-    fn from(value: Arc<ServerConfig>) -> Self {
+impl From<Arc<rustls::ServerConfig>> for TlsAcceptorData {
+    fn from(value: Arc<rustls::ServerConfig>) -> Self {
         Self {
-            server_config: value,
+            server_config: ServerConfig::Stored(value),
         }
+    }
+}
+
+impl<D: DynamicConfigProvider> From<D> for TlsAcceptorData {
+    fn from(value: D) -> Self {
+        Arc::new(value).into()
+    }
+}
+
+impl<D: DynamicConfigProvider> From<Arc<D>> for TlsAcceptorData {
+    fn from(value: Arc<D>) -> Self {
+        Self {
+            server_config: ServerConfig::Async(value),
+        }
+    }
+}
+
+pub trait DynamicConfigProvider: Send + Sync + 'static {
+    fn get_config(
+        &self,
+        client_hello: rustls::server::ClientHello<'_>,
+    ) -> impl Future<Output = Result<Arc<rustls::ServerConfig>, OpaqueError>> + Send;
+}
+
+/// Internal trait to support dynamic dispatch of trait with async fn.
+/// See trait [`rama_core::service::svc::DynService`] for more info about this pattern.
+pub(super) trait DynDynamicConfigProvider {
+    fn get_config<'a, 'b: 'a>(
+        &'a self,
+        client_hello: rustls::server::ClientHello<'b>,
+    ) -> Pin<Box<dyn Future<Output = Result<Arc<rustls::ServerConfig>, OpaqueError>> + Send + 'a>>;
+}
+
+impl<T> DynDynamicConfigProvider for T
+where
+    T: DynamicConfigProvider,
+{
+    fn get_config<'a, 'b: 'a>(
+        &'a self,
+        client_hello: rustls::server::ClientHello<'b>,
+    ) -> Pin<Box<dyn Future<Output = Result<Arc<rustls::ServerConfig>, OpaqueError>> + Send + 'a>>
+    {
+        Box::pin(self.get_config(client_hello))
     }
 }
 
@@ -37,11 +103,11 @@ impl From<Arc<ServerConfig>> for TlsAcceptorData {
 ///
 /// If this doesn't work for your use case, no problem [`TlsConnectorData`] can be created from a raw [`rustls::ServerConfig`]
 pub struct TlsAcceptorDataBuilder {
-    server_config: ServerConfig,
+    server_config: rustls::ServerConfig,
 }
 
-impl From<ServerConfig> for TlsAcceptorDataBuilder {
-    fn from(value: ServerConfig) -> Self {
+impl From<rustls::ServerConfig> for TlsAcceptorDataBuilder {
+    fn from(value: rustls::ServerConfig) -> Self {
         Self {
             server_config: value,
         }
@@ -55,7 +121,7 @@ impl TlsAcceptorDataBuilder {
         cert_chain: Vec<CertificateDer<'static>>,
         key_der: PrivateKeyDer<'static>,
     ) -> Result<Self, OpaqueError> {
-        let config = ServerConfig::builder_with_protocol_versions(ALL_VERSIONS)
+        let config = rustls::ServerConfig::builder_with_protocol_versions(ALL_VERSIONS)
             .with_no_client_auth()
             .with_single_cert(cert_chain, key_der)
             .context("new tls acceptor builder with single cert")?;
@@ -69,7 +135,7 @@ impl TlsAcceptorDataBuilder {
     /// generated certificate chain and private key
     pub fn new_self_signed(data: SelfSignedData) -> Result<Self, OpaqueError> {
         let (cert_chain, key_der) = self_signed_server_auth(data)?;
-        let config = ServerConfig::builder_with_protocol_versions(ALL_VERSIONS)
+        let config = rustls::ServerConfig::builder_with_protocol_versions(ALL_VERSIONS)
             .with_no_client_auth()
             .with_single_cert(cert_chain, key_der)
             .context("new tls acceptor builder with self signed data")?;
@@ -125,9 +191,15 @@ impl TlsAcceptorDataBuilder {
 
     /// Build [`TlsAcceptorData`] from the current config
     pub fn build(self) -> TlsAcceptorData {
-        TlsAcceptorData {
-            server_config: Arc::new(self.server_config),
-        }
+        self.server_config.into()
+    }
+
+    /// Convert current config into a rustls config.
+    ///
+    /// Useful if you want to use some utilities this builder provides and
+    /// then continue on directly with a native rustls config
+    pub fn into_rustls_config(self) -> rustls::ServerConfig {
+        self.server_config
     }
 }
 
