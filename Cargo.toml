@@ -382,8 +382,12 @@ name = "http_listener_hello"
 required-features = ["http-full"]
 
 [[example]]
-name = "http_mitm_proxy"
-required-features = ["http-full"]
+name = "http_mitm_proxy_boring"
+required-features = ["http-full", "boring"]
+
+[[example]]
+name = "http_mitm_proxy_rustls"
+required-features = ["http-full", "rustls"]
 
 [[example]]
 name = "http_pooled_client"
