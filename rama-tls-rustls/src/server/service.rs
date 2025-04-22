@@ -12,6 +12,7 @@ use rama_net::{
 use rama_utils::macros::define_inner_service_accessors;
 
 use super::TlsAcceptorData;
+use super::acceptor_data::ServerConfig;
 
 /// A [`Service`] which accepts TLS connections and delegates the underlying transport
 /// stream to the given service.
@@ -67,8 +68,6 @@ where
     type Error = BoxError;
 
     async fn serve(&self, mut ctx: Context<T>, stream: IO) -> Result<Self::Response, Self::Error> {
-        let tls_acceptor_data = ctx.get::<TlsAcceptorData>().unwrap_or(&self.data);
-
         let acceptor = LazyConfigAcceptor::new(Acceptor::default(), stream);
 
         let start = acceptor.await?;
@@ -79,9 +78,13 @@ where
             SecureTransport::default()
         };
 
-        let stream = start
-            .into_stream(tls_acceptor_data.server_config.clone())
-            .await?;
+        let tls_acceptor_data = ctx.get::<TlsAcceptorData>().unwrap_or(&self.data);
+        let server_config = match &tls_acceptor_data.server_config {
+            ServerConfig::Stored(server_config) => server_config.clone(),
+            ServerConfig::Async(dynamic) => dynamic.get_config(start.client_hello()).await?,
+        };
+
+        let stream = start.into_stream(server_config).await?;
         let (_, conn_data_ref) = stream.get_ref();
         ctx.insert(NegotiatedTlsParameters {
             protocol_version: conn_data_ref

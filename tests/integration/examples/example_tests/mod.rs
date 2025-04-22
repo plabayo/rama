@@ -17,7 +17,9 @@ mod http_key_value_store;
 #[cfg(feature = "http-full")]
 mod http_listener_hello;
 #[cfg(all(feature = "http-full", feature = "rustls"))]
-mod http_mitm_proxy;
+mod http_mitm_proxy_boring;
+#[cfg(all(feature = "http-full", feature = "rustls"))]
+mod http_mitm_proxy_rustls;
 #[cfg(feature = "http-full")]
 mod http_pooled_client;
 #[cfg(feature = "http-full")]
@@ -53,6 +55,9 @@ mod tls_boring_dynamic_certs;
 // We should be able to verify these rustls cert using a boring client
 #[cfg(all(feature = "boring", feature = "http-full"))]
 mod tls_rustls_dynamic_certs;
+
+#[cfg(all(feature = "boring", feature = "http-full"))]
+mod tls_rustls_dynamic_config;
 
 #[cfg(all(feature = "boring", feature = "haproxy", feature = "http-full"))]
 mod tls_boring_termination;

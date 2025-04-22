@@ -3,7 +3,7 @@ use rama::{
     Context, Layer,
     http::{BodyExtractExt, Request, response::Json, server::HttpServer},
     net::address::ProxyAddress,
-    net::tls::{ApplicationProtocol, server::SelfSignedData},
+    net::tls::server::SelfSignedData,
     rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
@@ -36,7 +36,7 @@ async fn test_http_mitm_proxy() {
         ..Default::default()
     })
     .expect("self signed acceptor data")
-    .with_alpn_protocols(&[ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11])
+    .with_alpn_protocols_http_auto()
     .with_env_key_logger()
     .expect("with env key logger")
     .build();
@@ -60,7 +60,7 @@ async fn test_http_mitm_proxy() {
             .await;
     });
 
-    let runner = utils::ExampleRunner::interactive("http_mitm_proxy", Some("rustls"));
+    let runner = utils::ExampleRunner::interactive("http_mitm_proxy_boring", Some("boring"));
 
     let mut ctx = Context::default();
     ctx.insert(ProxyAddress::try_from("http://john:secret@127.0.0.1:62017").unwrap());
