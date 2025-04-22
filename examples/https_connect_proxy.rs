@@ -101,7 +101,7 @@ async fn main() {
             ..Default::default()
         })
         .expect("self signed acceptor data")
-        .with_alpn_protocols(&[ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11])
+        .with_alpn_protocols_http_auto()
         .with_env_key_logger()
         .expect("with env key logger")
         .build()

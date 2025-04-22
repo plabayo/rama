@@ -83,7 +83,7 @@ impl TlsConnectorData {
     pub fn new_http_auto() -> Result<TlsConnectorData, OpaqueError> {
         Ok(TlsConnectorDataBuilder::new()
             .with_env_key_logger()?
-            .with_alpn_protocols(&[ApplicationProtocol::HTTP_11, ApplicationProtocol::HTTP_2])
+            .with_alpn_protocols_http_auto()
             .build())
     }
 
@@ -191,6 +191,18 @@ impl TlsConnectorDataBuilder {
     /// Same as [`Self::set_alpn_protocols`] but consuming self
     pub fn with_alpn_protocols(mut self, protos: &[ApplicationProtocol]) -> Self {
         self.set_alpn_protocols(protos);
+        self
+    }
+
+    /// Set alpn protocols to most commonly used http protocols: [`ApplicationProtocol::HTTP_2`], [`ApplicationProtocol::HTTP_11`]
+    pub fn set_alpn_protocols_http_auto(&mut self) -> &mut Self {
+        self.set_alpn_protocols(&[ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11]);
+        self
+    }
+
+    /// Same as [`Self::set_alpn_protocols_http_auto`] but consuming self
+    pub fn with_alpn_protocols_http_auto(mut self) -> Self {
+        self.set_alpn_protocols_http_auto();
         self
     }
 

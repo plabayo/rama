@@ -3,14 +3,17 @@ use super::{
     headers::{IfModifiedSince, IfUnmodifiedSince, LastModified},
 };
 use crate::{HeaderValue, Method, Request, Uri, header};
+use chrono::{DateTime, Local};
 use http_range_header::RangeUnsatisfiableError;
 use rama_http_types::headers::{encoding::Encoding, specifier::QualityValue};
 use std::{
     ffi::OsStr,
+    fmt,
     fs::Metadata,
     io::{self, SeekFrom},
     ops::RangeInclusive,
     path::{Path, PathBuf},
+    time::SystemTime,
 };
 use tokio::{fs::File, io::AsyncSeekExt};
 
@@ -266,24 +269,58 @@ async fn maybe_serve_directory(
         }
         DirectoryServeMode::NotFound => Ok(Some(OpenFileOutput::FileNotFound)),
         DirectoryServeMode::HtmlFileList => {
-            let mut entries = vec![];
+            let mut rows = vec![];
 
             let mut dir = tokio::fs::read_dir(&path_to_file).await?;
             while let Some(entry) = dir.next_entry().await? {
                 let file_name = entry.file_name();
                 let file_name_str = file_name.to_string_lossy();
-                entries.push(format!(
-                    "<li><a href=\"{1}{2}{0}\">{0}</a></li>",
+
+                let metadata = entry.metadata().await?;
+                let is_dir = metadata.is_dir();
+                let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+                let datetime: DateTime<Local> = modified.into();
+                let modified_str = datetime.format("%Y-%m-%d %H:%M:%S %:z").to_string();
+
+                let mime = if is_dir {
+                    None
+                } else {
+                    mime_guess::from_path(file_name_str.as_ref()).first()
+                };
+                let emoji = emoji_for_mime(mime, is_dir);
+
+                let hs = if metadata.is_dir() {
+                    HumanSize::None
+                } else {
+                    format_size(metadata.len())
+                };
+
+                rows.push(format!(
+                    "<tr><td>{5} <a href=\"{1}{2}{0}\">{0}</a></td><td>{3}</td><td>{4}</td></tr>",
                     file_name_str,
                     uri.path().trim_end_matches('/'),
                     if uri.path().trim_start_matches('/').is_empty() {
                         ""
                     } else {
                         "/"
-                    }
+                    },
+                    modified_str,
+                    hs,
+                    emoji,
                 ));
             }
-            let listing = entries.join("\n");
+
+            let table = format!(
+                r#"<table style="width:100%; border-collapse:collapse;">
+            <thead>
+            <tr><th align="left">Name</th><th align="left">Last Modified</th><th align="left">Size</th></tr>
+            </thead>
+            <tbody>
+            {0}
+            </tbody>
+            </table>"#,
+                rows.join("\n")
+            );
 
             let mut nav_parts = vec![];
             let mut current_path = String::new();
@@ -321,12 +358,77 @@ async fn maybe_serve_directory(
             </body>
             </html>"#,
                 uri.path(),
-                listing,
+                table,
                 breadcrumb,
             );
 
             Ok(Some(OpenFileOutput::Html(html)))
         }
+    }
+}
+
+enum HumanSize {
+    None,
+    Bytes(u64),
+    KiloBytes(f64),
+    MegaBytes(f64),
+    GigaBytes(f64),
+    TeraBytes(f64),
+}
+
+impl fmt::Display for HumanSize {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            HumanSize::None => write!(f, "--"),
+            HumanSize::Bytes(n) => write!(f, "{n}B"),
+            HumanSize::KiloBytes(d) => write!(f, "{d:.1}KB"),
+            HumanSize::MegaBytes(d) => write!(f, "{d:.1}MB"),
+            HumanSize::GigaBytes(d) => write!(f, "{d:.1}GB"),
+            HumanSize::TeraBytes(d) => write!(f, "{d:.1}TB"),
+        }
+    }
+}
+
+fn format_size(bytes: u64) -> HumanSize {
+    const MAX_UNITS: usize = 5;
+
+    let mut size = bytes as f64;
+    let mut unit = 0;
+
+    while size >= 1024.0 && unit < MAX_UNITS - 1 {
+        size /= 1024.0;
+        unit += 1;
+    }
+    match unit {
+        0 => HumanSize::Bytes(size as u64),
+        1 => HumanSize::KiloBytes(size),
+        2 => HumanSize::MegaBytes(size),
+        3 => HumanSize::GigaBytes(size),
+        _ => HumanSize::TeraBytes(size),
+    }
+}
+
+fn emoji_for_mime(mime: Option<mime::Mime>, is_dir: bool) -> &'static str {
+    if is_dir {
+        return "📁";
+    }
+
+    match mime
+        .as_ref()
+        .map(|m| (m.type_().as_str(), m.subtype().as_str()))
+    {
+        Some(("text", "css")) => "🎨",
+        Some(("text", _)) => "📄",
+        Some(("image", _)) => "🖼️",
+        Some(("audio", _)) => "🎵",
+        Some(("video", _)) => "🎬",
+        Some(("application", "pdf")) => "📕",
+        Some(("application", "zip" | "x-tar")) => "🗜️",
+        Some(("application", "json" | "xml")) => "🔧",
+        Some(("application", "msword")) => "📃",
+        Some(("application", "vnd.ms-excel")) => "📊",
+        Some(("application", "javascript")) => "🧩",
+        _ => "📄",
     }
 }
 
@@ -378,4 +480,113 @@ fn append_slash_on_path(uri: Uri) -> Result<Uri, OpenFileOutput> {
         tracing::error!(?err, "redirect uri failed to build");
         OpenFileOutput::InvalidRedirectUri
     })
+}
+
+#[cfg(test)]
+mod test {
+    use std::str::FromStr;
+
+    use super::*;
+    use mime::Mime;
+
+    #[test]
+    fn test_emoji_for_mime() {
+        struct Case {
+            mime: Option<Mime>,
+            is_dir: bool,
+            expected: &'static str,
+        }
+
+        let cases = [
+            Case {
+                mime: None,
+                is_dir: true,
+                expected: "📁",
+            },
+            Case {
+                mime: Some(Mime::from_str("text/plain").unwrap()),
+                is_dir: false,
+                expected: "📄",
+            },
+            Case {
+                mime: Some(Mime::from_str("image/png").unwrap()),
+                is_dir: false,
+                expected: "🖼️",
+            },
+            Case {
+                mime: Some(Mime::from_str("audio/mpeg").unwrap()),
+                is_dir: false,
+                expected: "🎵",
+            },
+            Case {
+                mime: Some(Mime::from_str("application/pdf").unwrap()),
+                is_dir: false,
+                expected: "📕",
+            },
+            Case {
+                mime: Some(Mime::from_str("application/zip").unwrap()),
+                is_dir: false,
+                expected: "🗜️",
+            },
+            Case {
+                mime: Some(Mime::from_str("application/json").unwrap()),
+                is_dir: false,
+                expected: "🔧",
+            },
+            Case {
+                mime: Some(Mime::from_str("application/octet-stream").unwrap()),
+                is_dir: false,
+                expected: "📄",
+            },
+        ];
+
+        for case in cases {
+            let actual = emoji_for_mime(case.mime.clone(), case.is_dir);
+            assert_eq!(actual, case.expected, "Failed on case: {:?}", case.mime);
+        }
+    }
+
+    #[test]
+    fn test_format_size() {
+        struct Case {
+            input: u64,
+            expected: &'static str,
+        }
+
+        let cases = [
+            Case {
+                input: 0,
+                expected: "0B",
+            },
+            Case {
+                input: 512,
+                expected: "512B",
+            },
+            Case {
+                input: 1023,
+                expected: "1023B",
+            },
+            Case {
+                input: 1024,
+                expected: "1.0KB",
+            },
+            Case {
+                input: 1048576,
+                expected: "1.0MB",
+            },
+            Case {
+                input: 1073741824,
+                expected: "1.0GB",
+            },
+            Case {
+                input: 1099511627776,
+                expected: "1.0TB",
+            },
+        ];
+
+        for case in cases {
+            let actual = format_size(case.input).to_string();
+            assert_eq!(actual, case.expected, "Failed on input: {}", case.input);
+        }
+    }
 }

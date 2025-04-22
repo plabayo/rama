@@ -36,10 +36,7 @@ use rama::{
         service::web::WebService,
     },
     layer::TraceErrLayer,
-    net::{
-        address::{Authority, Host},
-        tls::ApplicationProtocol,
-    },
+    net::address::{Authority, Host},
     rt::Executor,
     tcp::{
         client::service::{Forwarder, TcpConnector},
@@ -84,13 +81,12 @@ async fn main() {
     let (tls_client_data, tls_server_data) = {
         let (client_cert_chain, client_priv_key) = self_signed_client_auth().unwrap();
         let client_cert = client_cert_chain[0].clone();
-        let http_versions = &[ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11];
 
         let tls_client_data =
             TlsConnectorDataBuilder::new_with_client_auth(client_cert_chain, client_priv_key)
                 .expect("connector with client auth")
                 .with_no_cert_verifier()
-                .with_alpn_protocols(http_versions)
+                .with_alpn_protocols_http_auto()
                 .with_server_name(SERVER_AUTHORITY.into_host())
                 .with_env_key_logger()
                 .expect("connector with env keylogger")
@@ -119,7 +115,7 @@ async fn main() {
 
         // Or convert [`rustls::ServerConfig`] to [`TlsAcceptorDataBuilder`] to make use of some of the utils rama provides
         let tls_server_data = TlsAcceptorDataBuilder::from(server_config)
-            .with_alpn_protocols(http_versions)
+            .with_alpn_protocols_http_auto()
             .with_env_key_logger()
             .expect("acceptor with env keylogger")
             .build();
