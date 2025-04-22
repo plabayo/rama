@@ -16,7 +16,7 @@ mod sealed {
     impl<T: Sealed> Sealed for &T {}
 }
 
-/// Sealed rait for converting HTTP request headers into a curl command
+/// Sealed trait for converting HTTP request headers into a curl command
 
 pub trait IntoCurlHeadersCommand: sealed::Sealed {
     fn into_curl_headers_command(&self) -> Result<String, OpaqueError>;
@@ -39,6 +39,7 @@ B: http_body::Body<Data = Bytes, Error = Into<BoxError>> + Send + Sync
 
 impl<B> IntoCurlHeadersCommand for Parts {
     fn into_curl_headers_commandh(&self) -> Result<String, OpaqueError> {
+        // TODO: to use the implementation method from headers.rs
         todo!()
     }
 }
@@ -48,6 +49,7 @@ where
 B: http_body::Body<Data = Bytes, Error = Into<BoxError>> + Send + Sync
 {
     fn into_curl_command(self) -> Result<(String, Request), OpaqueError> {
+        // TODO: to use the implementation method from body.rs
         todo!()
     }
 }
