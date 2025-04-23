@@ -63,6 +63,7 @@ use rama::{
     service::service_fn,
     tcp::server::TcpListener,
     tls::rustls::{
+        RamaFrom,
         dep::{
             pemfile,
             rustls::{
@@ -171,7 +172,7 @@ impl ResolvesServerCert for DynamicIssuer {
         client_hello: rama_tls_rustls::dep::rustls::server::ClientHello<'_>,
     ) -> Option<Arc<CertifiedKey>> {
         // Convert to rama client hello, because we are used to working with that, this is however not needed and can be skipped
-        let client_hello = ClientHello::from(client_hello);
+        let client_hello = ClientHello::rama_from(client_hello);
 
         let key = match client_hello.ext_server_name() {
             Some(host) => match host {
