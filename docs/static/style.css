@@ -621,13 +621,20 @@ sup a:hover {
 
 .installation-option {
     display: flex;
-    align-items: center;
-    gap: 1rem;
+    flex-direction: column;
+    gap: 0.5rem;
     background-color: var(--rama-background);
     border: 1px solid var(--rama-border);
     border-radius: 4px;
     padding: 1rem;
     transition: all 0.2s ease;
+}
+
+@media (min-width: 640px) {
+    .installation-option {
+        flex-direction: row;
+        align-items: center;
+    }
 }
 
 .copy-button {
@@ -644,6 +651,17 @@ sup a:hover {
     font-size: 0.875rem;
     font-weight: 600;
     transition: all 0.2s ease;
+    position: relative;
+    overflow: hidden;
+    width: 100%;
+    justify-content: space-between;
+}
+
+@media (min-width: 640px) {
+    .copy-button {
+        width: auto;
+        min-width: 200px;
+    }
 }
 
 .copy-button:hover {
@@ -651,7 +669,16 @@ sup a:hover {
     transform: translateY(-1px);
 }
 
+.copy-button span {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex: 1;
+    text-align: left;
+}
+
 .copy-button svg {
+    flex-shrink: 0;
     width: 1rem;
     height: 1rem;
     transition: all 0.2s ease;
@@ -691,7 +718,16 @@ sup a:hover {
 .installation-option .description {
     color: var(--rama-text-secondary);
     font-size: 0.875rem;
-    margin-left: auto;
+    text-align: left;
+    padding: 0.5rem 0;
+}
+
+@media (min-width: 640px) {
+    .installation-option .description {
+        text-align: right;
+        padding: 0;
+        margin-left: auto;
+    }
 }
 
 .installation-links {
