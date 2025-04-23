@@ -121,3 +121,13 @@ automated processes look like a human.
 > This example showcases how you can make use of the [`match_service`](https://docs.rs/rama-http/latest/rama_http/service/web/macro.match_service.html)
 > macro to create a `Box`-free service router. Another example of this approach can be seen in the
 > [http_service_match.rs](https://github.com/plabayo/rama/tree/main/examples/http_service_match.rs) example.
+
+Other server examples:
+
+- [/examples/http_form.rs](https://github.com/plabayo/rama/tree/main/examples/http_form.rs):
+  an example showing how to create a server that accepts form data for a request, both via POST submissions
+  and URL query parameters;
+- [/examples/http_service_fs.rs](https://github.com/plabayo/rama/tree/main/examples/http_service_fs.rs):
+  a file system service example for serving static files from your local filesystem;
+- [/examples/http_user_agent_classifier.rs](https://github.com/plabayo/rama/tree/main/examples/http_user_agent_classifier.rs):
+  an example demonstrating how to classify and respond differently based on the User-Agent header;
