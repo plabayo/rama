@@ -17,7 +17,8 @@
 }
 
 html {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+        "Helvetica Neue", Arial, sans-serif;
     font-size: 16px;
     line-height: 1.5;
     color: var(--rama-text);
@@ -70,48 +71,6 @@ header {
     gap: 1rem;
     justify-content: center;
     margin-bottom: 4rem;
-}
-
-.btn {
-    display: inline-block;
-    padding: 0.75rem 1.5rem;
-    border-radius: 4px;
-    text-decoration: none;
-    font-weight: 600;
-    transition: all 0.2s ease;
-}
-
-.btn-primary {
-    background-color: var(--rama-secondary);
-    color: var(--rama-background);
-    font-weight: 600;
-    text-shadow: none;
-}
-
-.btn-primary:visited {
-    color: var(--rama-background);
-}
-
-.btn-primary:hover {
-    background-color: var(--rama-hover);
-    color: var(--rama-background);
-    transform: translateY(-2px);
-}
-
-.btn-secondary {
-    background-color: transparent;
-    color: var(--rama-secondary);
-    border: 2px solid var(--rama-secondary);
-}
-
-.btn-secondary:visited {
-    color: var(--rama-secondary);
-}
-
-.btn-secondary:hover {
-    background-color: var(--rama-secondary);
-    color: var(--rama-primary);
-    transform: translateY(-2px);
 }
 
 .features {
@@ -299,7 +258,7 @@ a {
 }
 
 a::after {
-    content: '';
+    content: "";
     position: absolute;
     width: 100%;
     height: 1px;
@@ -380,15 +339,15 @@ a:visited {
 }
 
 .status-done {
-    color: #4CAF50;
+    color: #4caf50;
 }
 
 .status-wip {
-    color: #FFC107;
+    color: #ffc107;
 }
 
 .status-todo {
-    color: #F44336;
+    color: #f44336;
 }
 
 .feature-list a {
@@ -491,9 +450,51 @@ a:visited {
     transition: color 0.2s ease;
 }
 
-.modularity a:hover {
+.modularity not.modularity-cta :hover {
     color: var(--rama-hover);
     text-decoration: underline;
+}
+
+.btn {
+    display: inline-block;
+    padding: 0.75rem 1.5rem;
+    border-radius: 4px;
+    text-decoration: none;
+    font-weight: 600;
+    transition: all 0.2s ease;
+}
+
+.btn-primary {
+    background-color: var(--rama-secondary);
+    color: var(--rama-background);
+    font-weight: 600;
+    text-shadow: none;
+}
+
+.btn-primary:visited {
+    color: var(--rama-background);
+}
+
+.btn-primary:hover {
+    background-color: var(--rama-hover);
+    color: var(--rama-background);
+    transform: translateY(-2px);
+}
+
+.btn-secondary {
+    background-color: transparent;
+    color: var(--rama-secondary);
+    border: 2px solid var(--rama-secondary);
+}
+
+.btn-secondary:visited {
+    color: var(--rama-secondary);
+}
+
+.btn-secondary:hover {
+    background-color: var(--rama-secondary);
+    color: var(--rama-primary);
+    transform: translateY(-2px);
 }
 
 /* Footnote styles */
@@ -523,4 +524,4 @@ sup a:hover {
     display: inline-block;
     margin-right: 0.5em;
     font-size: 0.9em;
-} 
+}
