@@ -1,3 +1,5 @@
+use bytes::Bytes;
+
 use super::BytesRejection;
 use crate::Request;
 use crate::dep::http_body_util::BodyExt;
@@ -42,23 +44,27 @@ where
     type Rejection = JsonRejection;
 
     async fn from_request(req: Request) -> Result<Self, Self::Rejection> {
-        if !crate::service::web::extract::has_any_content_type(
-            req.headers(),
-            &[&mime::APPLICATION_JSON],
-        ) {
-            return Err(InvalidJsonContentType.into());
+        // Extracted into separate fn so it's only compiled once for all T.
+        async fn extract_json_bytes(req: Request) -> Result<Bytes, JsonRejection> {
+            if !crate::service::web::extract::has_any_content_type(
+                req.headers(),
+                &[&mime::APPLICATION_JSON],
+            ) {
+                return Err(InvalidJsonContentType.into());
+            }
+
+            let body = req.into_body();
+
+            match body.collect().await {
+                Ok(c) => Ok(c.to_bytes()),
+                Err(err) => Err(BytesRejection::from_err(err).into()),
+            }
         }
 
-        let body = req.into_body();
-        match body.collect().await {
-            Ok(c) => {
-                let b = c.to_bytes();
-                match serde_json::from_slice(&b) {
-                    Ok(s) => Ok(Self(s)),
-                    Err(err) => Err(FailedToDeserializeJson::from_err(err).into()),
-                }
-            }
-            Err(err) => Err(BytesRejection::from_err(err).into()),
+        let b = extract_json_bytes(req).await?;
+        match serde_json::from_slice(&b) {
+            Ok(s) => Ok(Self(s)),
+            Err(err) => Err(FailedToDeserializeJson::from_err(err).into()),
         }
     }
 }
