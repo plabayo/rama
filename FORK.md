@@ -11,7 +11,7 @@ as a distant relative.
 
 - <https://github.com/hyperium/h2/tree/adab70fd9f9e5ce3099d274a4b548a27bfdee4dc>
 - <https://github.com/hyperium/hyper/tree/v1.6.0>
-- <https://github.com/hyperium/hyper-util/tree/v0.1.10>
+- <https://github.com/hyperium/hyper-util/tree/e74ab7888638e768de17c47ed5f20c8b623a308f>
 
 ### tower-rs
 
