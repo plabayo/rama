@@ -62,7 +62,7 @@
 > When necessary, we've forked other crates due to incompatibilities in needs or scope.
 > While this creates additional work for us, we willingly do so when it aligns with our mission
 > of empowering Rama users, including ourselves. You can find more information about these forks
-> in the [FORK.md](./FORK.md) document.
+> in the [FORK.md](./docs/fork/README.md) document.
 > We strive to preserve the code layout of forked modules to maintain synchronization with upstream
 > and push patches upstream where possible.
 

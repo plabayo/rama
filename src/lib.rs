@@ -30,7 +30,7 @@
 //! > Where required we had to fork other crates due to an incompatibility in needs or scope.
 //! > While this is unfortunate as it leads to more work for us, we gladly do so in cases
 //! > where it fits our mission of empowering rama users, including ourselves.
-//! > You can find more information about these forks at <https://github.com/plabayo/rama/blob/main/FORK.md>.
+//! > You can find more information about these forks at <https://github.com/plabayo/rama/blob/main/docs/fork/README.md>.
 //! > As much as possible we preserve the code layout of forked code modules to be able
 //! > to keep in sync with upstream and push patches upstream where applicable.
 //!
