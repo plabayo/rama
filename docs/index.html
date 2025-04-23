@@ -1,10 +1,10 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
     <head>
         <meta charset="UTF-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 
-        <title>ラマ</title>
+        <title>Rama (ラマ) - Modular Service Framework for Rust</title>
 
         <link
             rel="icon"
@@ -32,177 +32,77 @@
             content="https://raw.githubusercontent.com/plabayo/rama/main/docs/img/rama_banner.jpeg"
         />
 
-        <style>
-            :root {
-                --width-target: calc(100vw / 6);
-                --height-target: calc(100vh / 3);
-                --size: min(var(--width-target), var(--height-target));
-                --margin-vertical: calc((100vh - var(--size) * 2) / 2);
-                --margin-horizontal: calc((100vw - var(--size) * 5) / 2);
-            }
-
-            * {
-                margin: 0;
-                padding: 0;
-            }
-
-            html {
-                background-color: #000000;
-                color: #ffffff;
-                overflow: hidden;
-                text-align: center;
-                font-family: monospace;
-                font-size: var(--size);
-                line-height: var(--size);
-            }
-
-            a {
-                color: white;
-                text-decoration: none;
-            }
-
-            a:hover {
-                text-shadow: 0 0 5px rgb(0, 200, 0);
-                color: rgb(0, 200, 0);
-            }
-
-            body {
-                display: grid;
-                grid-template-columns: repeat(4, 1fr);
-                margin: var(--margin-vertical) var(--margin-horizontal);
-            }
-
-            body > * {
-                width: var(--size);
-            }
-
-            body > div {
-                height: var(--size);
-                text-shadow: 0 0 5px #fff;
-            }
-
-            body > a:nth-child(n + 5) {
-                align-items: center;
-                display: flex;
-                font-size: calc(var(--size) / 9);
-                height: calc(var(--size) / 2);
-                justify-content: center;
-                line-height: calc(var(--size) / 9);
-            }
-
-            /* just is an isogram */
-            #r:after {
-                content: "r";
-            }
-
-            #r:hover:after {
-                content: "⛰️";
-            }
-
-            #a:after {
-                content: "a";
-            }
-
-            #a:hover:after {
-                content: "📖";
-            }
-
-            #m:after {
-                content: "m";
-            }
-
-            #m:hover:after {
-                content: "💬";
-            }
-
-            #a2:after {
-                content: "a";
-            }
-
-            #a2:hover:after {
-                content: "📦";
-            }
-
-            #sponsor:after {
-                content: "🤍 ラマ";
-            }
-
-            #sponsor:hover:after {
-                content: "💚 ラマ";
-            }
-
-            #shop:after {
-                content: "格納";
-            }
-
-            #shop:hover:after {
-                content: "🛍️ shop";
-            }
-        </style>
+        <link rel="stylesheet" href="static/css/style.css">
     </head>
 
     <body>
-        <a
-            href="https://github.com/plabayo/rama"
-            title="the official github repository of rama"
-            id="r"
-        >
-        </a>
-        <a
-            href="https://ramaproxy.org/book"
-            title="learn more about rama and how to use it"
-            id="a"
-        >
-        </a>
-        <a
-            href="https://discord.gg/29EetaSYCD"
-            title="join the plabayo discord server to reach out to us about rama"
-            id="m"
-        >
-        </a>
-        <a
-            href="https://crates.io/crates/rama"
-            title="official rama rust crate info page"
-            id="a2"
-        >
-        </a>
+        <header>
+            <div class="logo">🦙 Rama (ラマ)</div>
+            <div class="tagline">Modular Service Framework for Rust</div>
+        </header>
 
-        <a
-            href="https://github.com/plabayo/rama"
-            title="the official github repository of rama"
-            >github</a
-        >
-        <a
-            href="https://ramaproxy.org/book"
-            title="learn more about rama and how to use it"
-            >manual</a
-        >
-        <a
-            href="https://discord.gg/29EetaSYCD"
-            title="join the plabayo discord server to reach out to us about rama"
-            >discord</a
-        >
-        <a
-            href="https://crates.io/crates/rama"
-            title="official rama rust crate info page"
-            >crates.io</a
-        >
+        <main>
+            <section class="hero">
+                <h1>Move and Transform Network Packets</h1>
+                <p>Rama is a powerful, modular service framework for Rust that helps you build proxies, servers, and clients with full control over your network stack.</p>
+                <div class="cta-buttons">
+                    <a href="https://ramaproxy.org/book" class="btn btn-primary">Get Started</a>
+                    <a href="https://github.com/plabayo/rama" class="btn btn-secondary">View on GitHub</a>
+                </div>
+            </section>
 
-        <a
-            href="https://plabayo.threadless.com/ "
-            title="purchase plabayo rama merchandise to support us"
-            id="shop"
-        ></a>
-        <a
-            href="https://ramaproxy.org/book/sponsor.html"
-            title="sponsor plabayo to support rama"
-            id="sponsor"
-        ></a>
-        <a
-            href="https://fp.ramaproxy.org"
-            title="ramaproxy.org fingerprinting service"
-            >»FP</a
-        >
-        <div></div>
+            <section class="features">
+                <div class="feature-card">
+                    <h3>🚀 Async-First</h3>
+                    <p>Built on Tokio, Rama provides a modern async runtime for high-performance network applications.</p>
+                </div>
+                <div class="feature-card">
+                    <h3>🔌 Modular</h3>
+                    <p>Pick and choose the components you need. From TCP/UDP to HTTP and TLS, build your perfect stack.</p>
+                </div>
+                <div class="feature-card">
+                    <h3>🛡️ Type-Safe</h3>
+                    <p>Leverage Rust's type system to build robust and maintainable network services.</p>
+                </div>
+                <div class="feature-card">
+                    <h3>🌐 Protocol Support</h3>
+                    <p>Support for HTTP/1.1, HTTP/2, TLS, and more. Build proxies, servers, and clients with ease.</p>
+                </div>
+                <div class="feature-card">
+                    <h3>📊 Telemetry</h3>
+                    <p>Built-in support for tracing and metrics to help you monitor and debug your services.</p>
+                </div>
+                <div class="feature-card">
+                    <h3>🔍 Fingerprinting</h3>
+                    <p>Advanced fingerprinting capabilities for HTTP and TLS layers to help with emulation.</p>
+                </div>
+            </section>
+
+            <section class="links">
+                <div class="link-card">
+                    <a href="https://ramaproxy.org/book">📚 Documentation</a>
+                </div>
+                <div class="link-card">
+                    <a href="https://docs.rs/rama">📖 API Reference</a>
+                </div>
+                <div class="link-card">
+                    <a href="https://discord.gg/29EetaSYCD">💬 Discord</a>
+                </div>
+                <div class="link-card">
+                    <a href="https://crates.io/crates/rama">📦 Crates.io</a>
+                </div>
+                <div class="link-card">
+                    <a href="https://fp.ramaproxy.org">🔍 Fingerprinting</a>
+                </div>
+                <div class="link-card">
+                    <a href="https://plabayo.threadless.com">🛍️ Merchandise</a>
+                </div>
+            </section>
+        </main>
+
+        <footer>
+            <p>© 2024 Plabayo. Rama is dual-licensed under MIT and Apache 2.0.</p>
+            <p>🦙 Made with love for the Rust community.</p>
+        </footer>
     </body>
 </html>
