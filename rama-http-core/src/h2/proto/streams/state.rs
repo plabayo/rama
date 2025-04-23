@@ -408,15 +408,16 @@ impl State {
         )
     }
 
-    pub(super) fn is_closed(&self) -> bool {
-        matches!(self.inner, Inner::Closed(_))
-    }
-
-    pub(super) fn is_recv_closed(&self) -> bool {
+    pub(super) fn is_recv_end_stream(&self) -> bool {
+        // In either case END_STREAM has been received
         matches!(
             self.inner,
-            Inner::Closed(..) | Inner::HalfClosedRemote(..) | Inner::ReservedLocal
+            Inner::Closed(Cause::EndStream) | Inner::HalfClosedRemote(..)
         )
+    }
+
+    pub(super) fn is_closed(&self) -> bool {
+        matches!(self.inner, Inner::Closed(_))
     }
 
     pub(super) fn is_send_closed(&self) -> bool {
