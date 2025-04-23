@@ -7,6 +7,7 @@ This animal is used as a our mascot and spiritual inspiration of this framework.
 It was chosen to honor our connection with Peru, the homeland of this magnificent animal,
 and translated into Japanese because we gratefully have built _rama_
 upon the broad shoulders of [Tokio and its community](https://tokio.rs/).
+The name reminds us to the city of Tokyo.
 
 ## On which platform can I run rama?
 
