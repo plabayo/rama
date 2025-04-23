@@ -323,4 +323,204 @@ a:hover::after {
 /* Remove visited styles */
 a:visited {
     color: var(--rama-secondary);
+}
+
+.features-table {
+    padding: 4rem 0;
+    background-color: var(--rama-background);
+}
+
+.features-table h2 {
+    text-align: center;
+    margin-bottom: 3rem;
+    font-size: 2.5rem;
+    color: var(--rama-text);
+}
+
+.features-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: 2rem;
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 0 2rem;
+}
+
+.feature-category {
+    background-color: var(--rama-card-bg);
+    border-radius: 8px;
+    padding: 1.5rem;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+}
+
+.feature-category h3 {
+    color: var(--rama-text);
+    margin-bottom: 1rem;
+    font-size: 1.25rem;
+    border-bottom: 2px solid var(--rama-secondary);
+    padding-bottom: 0.5rem;
+}
+
+.feature-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+}
+
+.feature-list li {
+    display: flex;
+    align-items: center;
+    margin-bottom: 0.75rem;
+    color: var(--rama-text);
+}
+
+.feature-status {
+    margin-right: 0.5rem;
+    font-size: 1.1rem;
+}
+
+.status-done {
+    color: #4CAF50;
+}
+
+.status-wip {
+    color: #FFC107;
+}
+
+.status-todo {
+    color: #F44336;
+}
+
+.feature-list a {
+    color: var(--rama-text);
+    text-decoration: none;
+    transition: color 0.3s ease;
+    border-bottom: 1px dashed currentColor;
+}
+
+.feature-list a:hover {
+    color: var(--rama-secondary);
+    border-bottom: 1px solid transparent;
+}
+
+.feature-notes {
+    max-width: 800px;
+    margin: 3rem auto 0;
+    padding: 0 2rem;
+}
+
+.feature-notes h3 {
+    color: var(--rama-text);
+    margin-bottom: 1rem;
+    font-size: 1.25rem;
+}
+
+.feature-notes ul {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+}
+
+.feature-notes li {
+    color: var(--rama-text);
+    margin-bottom: 0.75rem;
+    line-height: 1.5;
+}
+
+.feature-notes a {
+    color: var(--rama-secondary);
+    text-decoration: none;
+    transition: color 0.3s ease;
+}
+
+.feature-notes a:hover {
+    text-decoration: underline;
+}
+
+.modularity {
+    background-color: var(--rama-card-bg);
+    border: 1px solid var(--rama-border);
+    border-radius: 8px;
+    padding: 2rem;
+    margin-bottom: 4rem;
+    max-width: 800px;
+    margin-left: auto;
+    margin-right: auto;
+}
+
+.modularity h2 {
+    color: var(--rama-secondary);
+    margin-bottom: 1.5rem;
+    text-align: center;
+}
+
+.modularity p {
+    color: var(--rama-text-secondary);
+    margin-bottom: 1.5rem;
+    line-height: 1.6;
+}
+
+.modularity ul {
+    list-style-type: none;
+    padding-left: 0;
+    margin-bottom: 1.5rem;
+}
+
+.modularity ul li {
+    color: var(--rama-text-secondary);
+    margin-bottom: 0.75rem;
+    padding-left: 1.5rem;
+    position: relative;
+}
+
+.modularity ul li::before {
+    content: "→";
+    color: var(--rama-secondary);
+    position: absolute;
+    left: 0;
+}
+
+.modularity-cta {
+    text-align: center;
+    margin-top: 2rem;
+}
+
+.modularity a {
+    color: var(--rama-secondary);
+    text-decoration: none;
+    transition: color 0.2s ease;
+}
+
+.modularity a:hover {
+    color: var(--rama-hover);
+    text-decoration: underline;
+}
+
+/* Footnote styles */
+sup {
+    font-size: 0.6em;
+    vertical-align: super;
+    line-height: 1;
+    margin-left: 5px;
+}
+
+sup a {
+    color: var(--accent-color);
+    text-decoration: none;
+    padding: 0.1em 0.2em;
+    border-radius: 0.2em;
+    background-color: rgba(255, 255, 255, 0.1);
+    transition: background-color 0.2s ease;
+}
+
+sup a:hover {
+    background-color: rgba(255, 255, 255, 0.2);
+    text-decoration: underline;
+}
+
+/* Feature status styles */
+.feature-status {
+    display: inline-block;
+    margin-right: 0.5em;
+    font-size: 0.9em;
 } 

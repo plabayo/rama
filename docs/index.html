@@ -5,7 +5,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 
-    <title>Rama (ラマ) - Modular Service Framework for Rust</title>
+    <title>Rama</title>
 
     <link rel="icon"
         href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%2210 0 100 100%22><text y=%22.90em%22 font-size=%2290%22>🦙</text></svg>" />
@@ -28,18 +28,32 @@
 <body>
     <header>
         <div class="logo">🦙 Rama (ラマ)</div>
-        <div class="tagline">Modular Service Framework for Rust</div>
     </header>
 
     <main>
         <section class="hero">
-            <h1>Move and Transform Network Packets</h1>
             <p>Rama is a powerful, modular service framework for Rust that helps you build proxies, servers, and clients
                 with full control over your network stack.</p>
             <div class="cta-buttons">
                 <a href="https://ramaproxy.org/book" class="btn btn-primary">Get Started</a>
                 <a href="https://github.com/plabayo/rama" class="btn btn-secondary">View on GitHub</a>
                 <a href="https://ramaproxy.org/book/faq.html" class="btn btn-secondary">FAQ</a>
+                <a href="https://github.com/plabayo/rama/tree/main/examples" class="btn btn-secondary">Examples</a>
+            </div>
+        </section>
+
+        <section class="modularity">
+            <h2>Built for Modularity</h2>
+            <p>Rama's architecture is built around the <a href="https://docs.rs/tower/latest/tower/">Tower</a>-like service model, enabling services to be stacked, branched, and composed. This design allows for:</p>
+            <ul>
+                <li>Flexible middleware (Layers) and service composition</li>
+                <li>Custom service implementations using your preferred libraries</li>
+                <li>Easy integration with existing Rust ecosystem crates</li>
+            </ul>
+            <p>Want to use <a href="https://docs.rs/curl/latest/curl/">curl</a> or <a href="https://docs.rs/hyper/latest/hyper/">hyper</a> for HTTP? Prefer <a href="https://www.openssl.org/">OpenSSL</a> or <a href="https://www.gnutls.org/">GnuTLS</a> for TLS? Rama's modular design lets you build custom services while still benefiting from its core features.</p>
+            <p>Our built-in services are intentionally minimal, making them easy to extend or modify. The entire codebase is open for you to use as inspiration, adapt, and build upon.</p>
+            <div class="modularity-cta">
+                <a href="https://ramaproxy.org/book/intro/services_all_the_way_down.html" class="btn btn-secondary">Learn More About Services</a>
             </div>
         </section>
 
@@ -92,13 +106,13 @@
                 <p>Advanced fingerprinting capabilities for HTTP and TLS layers to help with emulation and security
                     testing.</p>
                 <div class="card-link">
-                    <a href="https://fp.ramaproxy.org">Test Fingerprinting →</a>
+                    <a href="https://ramaproxy.org/book/intro/user_agent.html#fingerprinting">UA Fingerprinting →</a>
                 </div>
             </div>
             <div class="feature-card">
                 <h3>🚀 Async-First</h3>
-                <p>Built on <a href="https://tokio.rs">Tokio</a>, Rama provides a modern async runtime for
-                    high-performance network applications.</p>
+                <p>Built from the ground up with asynchronous programming in mind, Rama uses <a href="https://tokio.rs">Tokio</a>
+                    as its one and only runtime for maximum performance and concurrency.</p>
                 <div class="card-link">
                     <a href="https://ramaproxy.org/book/why_rama.html">Why Rama →</a>
                 </div>
@@ -110,6 +124,205 @@
                 <div class="card-link">
                     <a href="https://ramaproxy.org/book/rust.html">Built with Rust →</a>
                 </div>
+            </div>
+            <div class="feature-card">
+                <h3>📦 Binary</h3>
+                <p>
+                    Download and use Rama as a standalone binary CLI tool.
+                    No need to build from source or integrate into your Rust project to benefit from Rama's capabilities.
+                </p>
+                <div class="card-link">
+                    <a href="https://ramaproxy.org/book/deploy/rama-cli.html">Install Instructions →</a>
+                </div>
+            </div>
+        </section>
+
+        <section class="features-table">
+            <h2>🔋 Batteries Included</h2>
+            <div class="features-grid">
+                <div class="feature-category">
+                    <h3>Transports</h3>
+                    <ul class="feature-list">
+                        <li><span class="feature-status status-done">✅</span><a href="https://ramaproxy.org/docs/rama/tcp/index.html">TCP</a></li>
+                        <li><span class="feature-status status-done">✅</span><a href="https://ramaproxy.org/docs/rama/udp/index.html">UDP</a></li>
+                        <li><span class="feature-status status-done">✅</span><a href="https://ramaproxy.org/docs/rama/net/stream/layer/index.html">Middleware</a></li>
+                    </ul>
+                </div>
+
+                <div class="feature-category">
+                    <h3>HTTP</h3>
+                    <ul class="feature-list">
+                        <li><span class="feature-status status-done">✅</span><a href="https://ramaproxy.org/docs/rama/http/server/service/struct.HttpServer.html#method.auto">Auto</a></li>
+                        <li><span class="feature-status status-done">✅</span><a href="https://ramaproxy.org/docs/rama/http/server/service/struct.HttpServer.html#method.http1">HTTP/1.1</a></li>
+                        <li><span class="feature-status status-done">✅</span><a href="https://ramaproxy.org/docs/rama/http/server/service/struct.HttpServer.html#method.h2">H2</a></li>
+                        <li><span class="feature-status status-wip">🏗️</span>H3 <sup><a href="#footnote-2">2</a></sup></li>
+                        <li><span class="feature-status status-done">✅</span><a href="https://ramaproxy.org/docs/rama/http/layer/index.html">Middleware</a></li>
+                    </ul>
+                </div>
+
+                <div class="feature-category">
+                    <h3>Web Server</h3>
+                    <ul class="feature-list">
+                        <li><span class="feature-status status-done">✅</span><a href="https://ramaproxy.org/docs/rama/http/service/fs/index.html">FS</a></li>
+                        <li><span class="feature-status status-done">✅</span><a href="https://ramaproxy.org/docs/rama/http/service/redirect/struct.Redirect.html">Redirect</a></li>
+                        <li><span class="feature-status status-done">✅</span><a href="https://ramaproxy.org/docs/rama/http/service/web/struct.Router.html">Router</a></li>
+                        <li><span class="feature-status status-done">✅</span><a href="https://ramaproxy.org/docs/rama/http/service/web/struct.WebService.html">Dyn Router</a></li>
+                        <li><span class="feature-status status-done">✅</span><a href="https://docs.rs/rama-http/latest/rama_http/service/web/macro.match_service.html">Static Router</a></li>
+                        <li><span class="feature-status status-done">✅</span><a href="https://ramaproxy.org/docs/rama/http/service/web/extract/index.html">Handler Extractors</a></li>
+                        <li><span class="feature-status status-done">✅</span><a href="https://ramaproxy.org/docs/rama/http/service/web/k8s/index.html">K8s Healthcheck</a></li>
+                    </ul>
+                </div>
+
+                <div class="feature-category">
+                    <h3>HTTP Client</h3>
+                    <ul class="feature-list">
+                        <li><span class="feature-status status-done">✅</span><a href="https://ramaproxy.org/docs/rama/http/client/struct.EasyHttpWebClient.html">Easy Client</a></li>
+                        <li><span class="feature-status status-done">✅</span><a href="https://ramaproxy.org/docs/rama/http/service/client/trait.HttpClientExt.html">High Level API</a></li>
+                        <li><span class="feature-status status-done">✅</span><a href="https://ramaproxy.org/docs/rama/http/client/proxy/layer/struct.HttpProxyConnector.html">Proxy Connect</a></li>
+                        <li><span class="feature-status status-todo">❌</span><a href="https://github.com/plabayo/rama/issues/189">Chromium Http(s)</a> <sup><a href="#footnote-3">3</a></sup></li>
+                    </ul>
+                </div>
+
+                <div class="feature-category">
+                    <h3>TLS</h3>
+                    <ul class="feature-list">
+                        <li><span class="feature-status status-done">✅</span><a href="https://ramaproxy.org/docs/rama/tls/rustls/index.html">Rustls</a></li>
+                        <li><span class="feature-status status-done">✅</span><a href="https://ramaproxy.org/docs/rama/tls/boring/index.html">BoringSSL</a></li>
+                        <li><span class="feature-status status-todo">❌</span>NSS <sup><a href="#footnote-3">3</a></sup></li>
+                    </ul>
+                </div>
+
+                <div class="feature-category">
+                    <h3>DNS</h3>
+                    <ul class="feature-list">
+                        <li><span class="feature-status status-done">✅</span><a href="https://ramaproxy.org/docs/rama/dns/trait.DnsResolver.html">DNS Resolver</a></li>
+                    </ul>
+                </div>
+
+                <div class="feature-category">
+                    <h3>Proxy Protocols</h3>
+                    <ul class="feature-list">
+                        <li><span class="feature-status status-done">✅</span><a href="https://ramaproxy.org/docs/rama/proxy/haproxy/index.html">PROXY Protocol</a></li>
+                        <li><span class="feature-status status-done">✅</span><a href="https://github.com/plabayo/rama/blob/main/examples/http_connect_proxy.rs">HTTP Proxy</a></li>
+                        <li><span class="feature-status status-done">✅</span><a href="https://github.com/plabayo/rama/blob/main/examples/https_connect_proxy.rs">HTTPS Proxy</a></li>
+                        <li><span class="feature-status status-wip">🏗️</span>SOCKS5 <sup><a href="#footnote-1">1</a></sup></li>
+                    </ul>
+                </div>
+
+                <div class="feature-category">
+                    <h3>Web Protocols</h3>
+                    <ul class="feature-list">
+                        <li><span class="feature-status status-wip">🏗️</span>Web Sockets <sup><a href="#footnote-1">1</a></sup></li>
+                        <li><span class="feature-status status-todo">❌</span>Web Transport <sup><a href="#footnote-3">3</a></sup></li>
+                        <li><span class="feature-status status-todo">❌</span>gRPC <sup><a href="#footnote-3">3</a></sup></li>
+                    </ul>
+                </div>
+
+                <div class="feature-category">
+                    <h3>Async-Method Trait Services</h3>
+                    <ul class="feature-list">
+                        <li><span class="feature-status status-done">✅</span><a href="https://ramaproxy.org/docs/rama/service/trait.Service.html">Service</a></li>
+                        <li><span class="feature-status status-done">✅</span><a href="https://ramaproxy.org/docs/rama/layer/trait.Layer.html">Layer</a></li>
+                        <li><span class="feature-status status-done">✅</span><a href="https://ramaproxy.org/docs/rama/context/index.html">Context</a></li>
+                        <li><span class="feature-status status-done">✅</span><a href="https://ramaproxy.org/docs/rama/service/struct.BoxService.html">Dynanmic Dispatch</a></li>
+                        <li><span class="feature-status status-done">✅</span><a href="https://ramaproxy.org/docs/rama/layer/index.html">Middleware</a></li>
+                    </ul>
+                </div>
+
+                <div class="feature-category">
+                    <h3>Telemetry</h3>
+                    <ul class="feature-list">
+                        <li><span class="feature-status status-done">✅</span><a href="https://tracing.rs/tracing/">Tracing</a></li>
+                        <li><span class="feature-status status-done">✅</span><a href="https://ramaproxy.org/docs/rama/telemetry/opentelemetry/index.html">OpenTelemetry</a></li>
+                        <li><span class="feature-status status-done">✅</span><a href="https://ramaproxy.org/docs/rama/http/layer/opentelemetry/index.html">HTTP Metrics</a></li>
+                        <li><span class="feature-status status-done">✅</span><a href="https://ramaproxy.org/docs/rama/net/stream/layer/opentelemetry/index.html">Transport Metrics</a></li>
+                    </ul>
+                </div>
+
+                <div class="feature-category">
+                    <h3>Upstream Proxies</h3>
+                    <ul class="feature-list">
+                        <li><span class="feature-status status-done">✅</span><a href="https://ramaproxy.org/docs/rama/proxy/struct.MemoryProxyDB.html">MemoryProxyDB</a></li>
+                        <li><span class="feature-status status-done">✅</span><a href="https://ramaproxy.org/docs/rama/username/index.html">L4 Username Config</a></li>
+                        <li><span class="feature-status status-done">✅</span><a href="https://ramaproxy.org/docs/rama/proxy/struct.ProxyFilter.html">Proxy Filters</a></li>
+                    </ul>
+                </div>
+
+                <div class="feature-category">
+                    <h3>User Agent (UA)</h3>
+                    <ul class="feature-list">
+                        <li><span class="feature-status status-done">✅</span><a href="https://ramaproxy.org/docs/rama/ua/profile/struct.HttpProfile.html">Http Emulation</a></li>
+                        <li><span class="feature-status status-done">✅</span><a href="https://ramaproxy.org/docs/rama/ua/profile/struct.TlsProfile.html">Tls Emulation</a></li>
+                        <li><span class="feature-status status-done">✅</span><a href="https://ramaproxy.org/docs/rama/ua/struct.UserAgent.html">UA Parsing</a></li>
+                    </ul>
+                </div>
+
+                <div class="feature-category">
+                    <h3>Fingerprinting</h3>
+                    <ul class="feature-list">
+                        <li><span class="feature-status status-done">✅</span><a href="https://ramaproxy.org/docs/rama/net/fingerprint/struct.Ja3.html">Ja3</a></li>
+                        <li><span class="feature-status status-done">✅</span><a href="https://ramaproxy.org/docs/rama/net/fingerprint/struct.Ja4.html">Ja4</a></li>
+                        <li><span class="feature-status status-done">✅</span><a href="https://ramaproxy.org/docs/rama/net/fingerprint/struct.Ja4H.html">Ja4H</a></li>
+                        <li><span class="feature-status status-wip">🏗️</span><a href="https://github.com/plabayo/rama/issues/517">Akamai passive h2</a> <sup><a href="#footnote-1">1</a></sup></li>
+                        <li><span class="feature-status status-wip">🏗️</span><a href="https://github.com/plabayo/rama/issues/518">Peetprint (tls)</a> <sup><a href="#footnote-1">1</a></sup></li>
+                    </ul>
+                </div>
+
+                <div class="feature-category">
+                    <h3>Utilities</h3>
+                    <ul class="feature-list">
+                        <li><span class="feature-status status-done">✅</span><a href="https://ramaproxy.org/docs/rama/error/index.html">Error Handling</a></li>
+                        <li><span class="feature-status status-done">✅</span><a href="https://ramaproxy.org/docs/rama/graceful/index.html">Graceful Shutdown</a></li>
+                        <li><span class="feature-status status-done">✅</span><a href="https://ramaproxy.org/docs/rama/net/client/struct.Pool.html">Connection Pool</a></li>
+                        <li><span class="feature-status status-wip">🏗️</span>IP2Loc <sup><a href="#footnote-2">2</a></sup></li>
+                    </ul>
+                </div>
+
+                <div class="feature-category">
+                    <h3>Graphical Interface</h3>
+                    <ul class="feature-list">
+                        <li><span class="feature-status status-wip">🏗️</span>Traffic Logger <sup><a href="#footnote-2">2</a></sup></li>
+                        <li><span class="feature-status status-wip">🏗️</span>Curl Export <sup><a href="#footnote-2">2</a></sup></li>
+                        <li><span class="feature-status status-wip">🏗️</span><a href="https://ratatui.rs/">TUI Implementation</a> <sup><a href="#footnote-2">2</a></sup></li>
+                        <li><span class="feature-status status-todo">❌</span>Traffic Intercept <sup><a href="#footnote-3">3</a></sup></li>
+                        <li><span class="feature-status status-todo">❌</span>Traffic Replay <sup><a href="#footnote-3">3</a></sup></li>
+                    </ul>
+                </div>
+
+                <div class="feature-category">
+                    <h3>Binary</h3>
+                    <ul class="feature-list">
+                        <li><span class="feature-status status-done">✅</span><a href="https://ramaproxy.org/book/deploy/rama-cli">Prebuilt Binaries</a></li>
+                        <li><span class="feature-status status-wip">🏗️</span>Proxy Config <sup><a href="#footnote-2">2</a></sup></li>
+                        <li><span class="feature-status status-done">✅</span>HTTP Client</li>
+                        <li><span class="feature-status status-todo">❌</span>WASM Plugins <sup><a href="#footnote-3">3</a></sup></li>
+                    </ul>
+                </div>
+
+                <div class="feature-category">
+                    <h3>Data Scraping</h3>
+                    <ul class="feature-list">
+                        <li><span class="feature-status status-wip">🏗️</span>Html Processor <sup><a href="#footnote-2">2</a></sup></li>
+                        <li><span class="feature-status status-todo">❌</span>Json Processor <sup><a href="#footnote-3">3</a></sup></li>
+                    </ul>
+                </div>
+
+                <div class="feature-category">
+                    <h3>Browser</h3>
+                    <ul class="feature-list">
+                        <li><span class="feature-status status-todo">❌</span>JS Engine <sup><a href="#footnote-3">3</a></sup></li>
+                        <li><span class="feature-status status-todo">❌</span><a href="https://developer.mozilla.org/en-US/docs/Web/API">Web API</a>&nbsp; Emulation <sup><a href="#footnote-3">3</a></sup></li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="feature-notes">
+                <h3>🗒️ Footnotes</h3>
+                <ul>
+                    <li id="footnote-1"><sup>1</sup> Part of <a href="https://github.com/plabayo/rama/milestone/1">v0.2.0 milestone (ETA: 2025 Q2)</a></li>
+                    <li id="footnote-2"><sup>2</sup> Part of <a href="https://github.com/plabayo/rama/milestone/2">v0.3.0 milestone (ETA: 2025 Q3)</a></li>
+                    <li id="footnote-3"><sup>3</sup> No immediate plans, but on our radar. Please <a href="https://github.com/plabayo/rama/issues">open an issue</a> to request this feature if you have an immediate need for it. Please add sufficient motivation/reasoning and consider <a href="https://ramaproxy.org/book/sponsor.html">becoming a sponsor</a> to help accelerate its priority.</li>
+                </ul>
             </div>
         </section>
 
@@ -231,6 +444,9 @@
                         </g>
                     </svg>
                 </a>
+            </div>
+            <div class="sponsor-message" style="max-width: 800px; margin: 0 auto;">
+                <p>Special thanks to all our <a href="https://github.com/plabayo/rama/graphs/contributors">contributors</a> and <a href="https://github.com/sponsors/plabayo">sponsors</a> who make Rama possible. Your support helps us build a better proxy framework for the Rust community.</p>
             </div>
             <div class="sponsor-cta">
                 <p>Want to support Rama?</p>
