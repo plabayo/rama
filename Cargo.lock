@@ -2681,7 +2681,6 @@ dependencies = [
  "rama-http-types",
  "rama-macros",
  "rama-utils",
- "rustls",
  "serde",
  "serde_json",
  "sha2",

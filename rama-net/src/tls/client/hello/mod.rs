@@ -11,9 +11,6 @@ use crate::tls::{
     SupportedGroup, enums::CompressionAlgorithm,
 };
 
-#[cfg(feature = "rustls")]
-mod rustls;
-
 #[cfg(feature = "boring")]
 mod boring;
 

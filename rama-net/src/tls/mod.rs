@@ -128,26 +128,3 @@ mod boring {
         }
     }
 }
-
-#[cfg(feature = "rustls")]
-mod rustls {
-    use super::*;
-    use ::rustls::pki_types::CertificateDer;
-
-    impl From<&CertificateDer<'static>> for DataEncoding {
-        fn from(value: &CertificateDer<'static>) -> Self {
-            DataEncoding::Der(value.as_ref().into())
-        }
-    }
-
-    impl From<&[CertificateDer<'static>]> for DataEncoding {
-        fn from(value: &[CertificateDer<'static>]) -> Self {
-            DataEncoding::DerStack(
-                value
-                    .iter()
-                    .map(|cert| Into::<Vec<u8>>::into(cert.as_ref()))
-                    .collect(),
-            )
-        }
-    }
-}
