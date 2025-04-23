@@ -256,7 +256,6 @@ rustversion = { workspace = true }
 base64 = { workspace = true, optional = true }
 bytes = { workspace = true, optional = true }
 hex = { workspace = true, optional = true }
-matchit = { workspace = true, optional = true }
 rama-core = { version = "0.2.0-alpha.13", path = "rama-core" }
 rama-dns = { version = "0.2.0-alpha.13", path = "rama-dns", optional = true }
 rama-haproxy = { version = "0.2.0-alpha.13", path = "rama-haproxy", optional = true }

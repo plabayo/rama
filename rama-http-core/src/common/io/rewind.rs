@@ -55,7 +55,6 @@ where
             // If there are no remaining bytes, let the bytes get dropped.
             if !prefix.is_empty() {
                 let copy_len = cmp::min(prefix.len(), buf.remaining());
-                // TODO: There should be a way to do following two lines cleaner...
                 buf.put_slice(&prefix[..copy_len]);
                 prefix.advance(copy_len);
                 // Put back what's left

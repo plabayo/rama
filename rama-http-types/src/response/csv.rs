@@ -1,5 +1,6 @@
 use crate::response::{IntoResponse, Response};
 use crate::{Body, dep::http::StatusCode};
+use bytes::buf::Writer;
 use bytes::{BufMut, BytesMut};
 use csv;
 use headers::ContentType;
@@ -87,12 +88,11 @@ where
     T: IntoIterator<Item: Serialize> + std::fmt::Debug,
 {
     fn into_response(self) -> Response {
-        // Use a small initial capacity of 128 bytes like serde_json::to_vec
-        // https://docs.rs/serde_json/1.0.82/src/serde_json/ser.rs.html#2189
-        let mut buf = BytesMut::with_capacity(128).writer();
-        {
-            let mut wtr = csv::Writer::from_writer(&mut buf);
-            let res: Result<Vec<_>, _> = self.0.into_iter().map(|rec| wtr.serialize(rec)).collect();
+        // Extracted into separate fn so it's only compiled once for all T.
+        fn make_respone(
+            res: csv::Result<Vec<()>>,
+            mut wtr: csv::Writer<Writer<BytesMut>>,
+        ) -> Response {
             if let Err(err) = res {
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
@@ -109,13 +109,34 @@ where
                 )
                     .into_response();
             }
+
+            let bw = match wtr.into_inner() {
+                Ok(bw) => bw,
+                Err(err) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Headers::single(ContentType::text_utf8()),
+                        err.to_string(),
+                    )
+                        .into_response();
+                }
+            };
+
+            (
+                [(CONTENT_TYPE, HeaderValue::from_static("text/csv"))],
+                bw.into_inner().freeze(),
+            )
+                .into_response()
         }
 
-        (
-            [(CONTENT_TYPE, HeaderValue::from_static("text/csv"))],
-            buf.into_inner().freeze(),
-        )
-            .into_response()
+        // Use a small initial capacity of 128 bytes like serde_json::to_vec
+        // https://docs.rs/serde_json/1.0.82/src/serde_json/ser.rs.html#2189
+        let buf = BytesMut::with_capacity(128).writer();
+
+        let mut wtr = csv::Writer::from_writer(buf);
+        let res: Result<Vec<_>, _> = self.0.into_iter().map(|rec| wtr.serialize(rec)).collect();
+
+        make_respone(res, wtr)
     }
 }
 

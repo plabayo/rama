@@ -21,6 +21,9 @@ clippy-fix *ARGS:
 typos:
 	typos -w
 
+extra-checks:
+	{{justfile_directory()}}/scripts/extra-checks.sh
+
 doc:
 	RUSTDOCFLAGS="-D rustdoc::broken-intra-doc-links" cargo doc --all-features --no-deps
 
@@ -41,7 +44,7 @@ test-spec: test-spec-h2
 test-ignored:
 	cargo test --features=cli,telemetry,compression,http-full,proxy-full,tcp,rustls --workspace -- --ignored
 
-qq: lint check clippy doc
+qq: lint check clippy doc extra-checks
 
 qa: qq test
 

@@ -89,13 +89,19 @@ where
     T: Serialize,
 {
     fn into_response(self) -> Response {
-        match serde_html_form::to_string(&self.0) {
-            Ok(body) => (Headers::single(ContentType::form_url_encoded()), body).into_response(),
-            Err(err) => {
-                tracing::error!(error = %err, "response error");
-                StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        // Extracted into separate fn so it's only compiled once for all T.
+        fn make_response(ser_result: Result<String, serde_html_form::ser::Error>) -> Response {
+            match ser_result {
+                Ok(body) => {
+                    (Headers::single(ContentType::form_url_encoded()), body).into_response()
+                }
+                Err(err) => {
+                    tracing::error!(error = %err, "response error");
+                    StatusCode::INTERNAL_SERVER_ERROR.into_response()
+                }
             }
         }
+        make_response(serde_html_form::to_string(&self.0))
     }
 }
 

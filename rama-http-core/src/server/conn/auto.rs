@@ -56,6 +56,8 @@ impl Builder {
     /// Only accepts HTTP/2
     ///
     /// Does not do anything if used with [`serve_connection_with_upgrades`]
+    ///
+    /// [`serve_connection_with_upgrades`]: Builder::serve_connection_with_upgrades
     pub fn http2_only(mut self) -> Self {
         assert!(self.version.is_none());
         self.version = Some(Version::H2);
@@ -65,10 +67,30 @@ impl Builder {
     /// Only accepts HTTP/1
     ///
     /// Does not do anything if used with [`serve_connection_with_upgrades`]
+    ///
+    /// [`serve_connection_with_upgrades`]: Builder::serve_connection_with_upgrades
     pub fn http1_only(mut self) -> Self {
         assert!(self.version.is_none());
         self.version = Some(Version::H1);
         self
+    }
+
+    /// Returns `true` if this builder can serve an HTTP/1.1-based connection.
+    pub fn is_http1_available(&self) -> bool {
+        match self.version {
+            Some(Version::H1) => true,
+            Some(Version::H2) => false,
+            _ => true,
+        }
+    }
+
+    /// Returns `true` if this builder can serve an HTTP/2-based connection.
+    pub fn is_http2_available(&self) -> bool {
+        match self.version {
+            Some(Version::H1) => false,
+            Some(Version::H2) => true,
+            _ => true,
+        }
     }
 
     /// Bind a connection together with a [`Service`].
@@ -101,10 +123,6 @@ impl Builder {
     /// Bind a connection together with a [`Service`], with the ability to
     /// handle HTTP upgrades. This requires that the IO object implements
     /// `Send`.
-    ///
-    /// Note that if you ever want to use [`hyper::upgrade::Upgraded::downcast`]
-    /// with this crate, you'll need to use [`hyper_util::server::conn::auto::upgrade::downcast`]
-    /// instead. See the documentation of the latter to understand why.
     pub fn serve_connection_with_upgrades<I, S>(
         &self,
         io: I,
@@ -204,7 +222,12 @@ where
 }
 
 pin_project! {
-    /// Connection future.
+    /// A [`Future`](core::future::Future) representing an HTTP/1 connection, returned from
+    /// [`Builder::serve_connection`](struct.Builder.html#method.serve_connection).
+    ///
+    /// To drive HTTP on this connection this future **must be polled**, typically with
+    /// `.await`. If it isn't polled, no progress will be made on this connection.
+    #[must_use = "futures do nothing unless polled"]
     pub struct Connection<'a, I, S>
     where
         S: HttpService<Incoming>,
@@ -343,7 +366,12 @@ where
 }
 
 pin_project! {
-    /// Connection future.
+    /// An upgradable [`Connection`], returned by
+    /// [`Builder::serve_upgradable_connection`](struct.Builder.html#method.serve_connection_with_upgrades).
+    ///
+    /// To drive HTTP on this connection this future **must be polled**, typically with
+    /// `.await`. If it isn't polled, no progress will be made on this connection.
+    #[must_use = "futures do nothing unless polled"]
     pub struct UpgradeableConnection<'a, I, S>
     where
         S: HttpService<Incoming>,
@@ -474,6 +502,16 @@ impl Http1Builder<'_> {
         Http2Builder { inner: self.inner }
     }
 
+    /// Set whether the `date` header should be included in HTTP responses.
+    ///
+    /// Note that including the `date` header is recommended by RFC 7231.
+    ///
+    /// Default is true.
+    pub fn auto_date_header(&mut self, enabled: bool) -> &mut Self {
+        self.inner.http1.auto_date_header(enabled);
+        self
+    }
+
     /// Set whether HTTP/1 connections should support half-closures.
     ///
     /// Clients can chose to shutdown their write-side while waiting
@@ -503,6 +541,18 @@ impl Http1Builder<'_> {
     /// Default is false.
     pub fn title_case_headers(&mut self, enabled: bool) -> &mut Self {
         self.inner.http1.title_case_headers(enabled);
+        self
+    }
+
+    /// Set whether HTTP/1 connections will silently ignored malformed header lines.
+    ///
+    /// If this is enabled and a header line does not start with a valid header
+    /// name, or does not include a colon at all, the line will be silently ignored
+    /// and no error will be reported.
+    ///
+    /// Default is false.
+    pub fn ignore_invalid_headers(&mut self, enabled: bool) -> &mut Self {
+        self.inner.http1.ignore_invalid_headers(enabled);
         self
     }
 
@@ -545,7 +595,7 @@ impl Http1Builder<'_> {
     /// Setting this to true will force hyper to use queued strategy
     /// which may eliminate unnecessary cloning on some TLS backends
     ///
-    /// Default is `auto`. In this mode hyper will try to guess which
+    /// Default is `auto`. In this mode rama-http-core will try to guess which
     /// mode to use
     pub fn writev(&mut self, val: bool) -> &mut Self {
         self.inner.http1.writev(val);
@@ -621,12 +671,25 @@ impl Http2Builder<'_> {
         self
     }
 
+    /// Configures the maximum number of local reset streams allowed before a GOAWAY will be sent.
+    ///
+    /// If not set, rama-http-core will use a default, currently of 1024.
+    ///
+    /// If `None` is supplied, rama-http-core will not apply any limit.
+    /// This is not advised, as it can potentially expose servers to DOS vulnerabilities.
+    ///
+    /// See <https://rustsec.org/advisories/RUSTSEC-2024-0003.html> for more information.
+    pub fn max_local_error_reset_streams(&mut self, max: impl Into<Option<usize>>) -> &mut Self {
+        self.inner.http2.max_local_error_reset_streams(max);
+        self
+    }
+
     /// Sets the [`SETTINGS_INITIAL_WINDOW_SIZE`][spec] option for HTTP2
     /// stream-level flow control.
     ///
     /// Passing `None` will do nothing.
     ///
-    /// If not set, hyper will use a default.
+    /// If not set, rama-http-core will use a default.
     ///
     /// [spec]: https://http2.github.io/http2-spec/#SETTINGS_INITIAL_WINDOW_SIZE
     pub fn initial_stream_window_size(&mut self, sz: impl Into<Option<u32>>) -> &mut Self {
@@ -638,7 +701,7 @@ impl Http2Builder<'_> {
     ///
     /// Passing `None` will do nothing.
     ///
-    /// If not set, hyper will use a default.
+    /// If not set, rama-http-core will use a default.
     pub fn initial_connection_window_size(&mut self, sz: impl Into<Option<u32>>) -> &mut Self {
         self.inner.http2.initial_connection_window_size(sz);
         self
@@ -658,7 +721,7 @@ impl Http2Builder<'_> {
     ///
     /// Passing `None` will do nothing.
     ///
-    /// If not set, hyper will use a default.
+    /// If not set, rama-http-core will use a default.
     pub fn max_frame_size(&mut self, sz: impl Into<Option<u32>>) -> &mut Self {
         self.inner.http2.max_frame_size(sz);
         self
@@ -728,6 +791,16 @@ impl Http2Builder<'_> {
     /// Default is currently ~16MB, but may change.
     pub fn max_header_list_size(&mut self, max: u32) -> &mut Self {
         self.inner.http2.max_header_list_size(max);
+        self
+    }
+
+    /// Set whether the `date` header should be included in HTTP responses.
+    ///
+    /// Note that including the `date` header is recommended by RFC 7231.
+    ///
+    /// Default is true.
+    pub fn auto_date_header(&mut self, enabled: bool) -> &mut Self {
+        self.inner.http2.auto_date_header(enabled);
         self
     }
 

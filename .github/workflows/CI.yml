@@ -59,6 +59,9 @@ jobs:
       - name: rustfmt
         run: |
           cargo fmt --all --check
+      - name: extra-checks
+        run: |
+          ./scripts/extra-checks.sh
 
   check-all-features:
     runs-on: ubuntu-latest
