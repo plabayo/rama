@@ -68,6 +68,8 @@ jobs:
           cp -r book/book/* www/book
           mkdir -p www/docs
           cp -r ../target/doc/* www/docs
+          mkdir -p www/static
+          cp -r .static/* www/static
           cp index.html www/index.html
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
