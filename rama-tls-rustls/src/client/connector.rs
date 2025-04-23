@@ -1,7 +1,7 @@
 use super::TlsConnectorData;
 use crate::dep::tokio_rustls::{TlsConnector as RustlsConnector, client::TlsStream};
-use crate::prelude::*;
 use crate::types::TlsTunnel;
+use crate::{RamaInto, RamaTryFrom};
 use pin_project_lite::pin_project;
 use private::{ConnectorKindAuto, ConnectorKindSecure, ConnectorKindTunnel};
 use rama_core::error::ErrorContext;

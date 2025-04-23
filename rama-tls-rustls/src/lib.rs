@@ -28,11 +28,6 @@ mod type_conversion;
 use rama_utils::macros::enums::rama_from_into_traits;
 rama_from_into_traits!();
 
-pub mod prelude {
-    #[doc(inline)]
-    pub use super::{RamaFrom, RamaInto, RamaTryFrom};
-}
-
 pub mod types {
     //! common tls types
     #[doc(inline)]

@@ -335,8 +335,7 @@ pub use crate::__enum_builder as enum_builder;
 /// where the normal from/into doesn't work. Main use case right now for
 /// this trait is to support defining conversions from rama tls types (rama-net)
 /// to external types (eg rustls) in tls crates (eg rama-tls-rustls). This macro
-/// should be called from the root module, and ideally these traits are also
-/// added to the prelude of that crate
+/// should be called from the root module.
 macro_rules! __rama_from_into_traits {
     () => {
         pub trait RamaFrom<T> {
