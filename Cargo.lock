@@ -2365,7 +2365,6 @@ dependencies = [
  "hex",
  "http",
  "itertools 0.14.0",
- "matchit",
  "opentelemetry-otlp",
  "opentelemetry_sdk",
  "pin-project-lite",
@@ -2748,27 +2747,16 @@ dependencies = [
  "rama-core",
  "rama-net",
  "rama-utils",
- "rcgen",
- "rustls",
- "rustls-native-certs",
- "rustls-pemfile",
- "rustls-pki-types",
  "tokio",
- "tokio-rustls",
  "tracing",
- "webpki-roots",
 ]
 
 [[package]]
 name = "rama-tls-rustls"
 version = "0.2.0-alpha.13"
 dependencies = [
- "flume",
- "itertools 0.14.0",
- "parking_lot",
  "pin-project-lite",
  "rama-core",
- "rama-http-types",
  "rama-net",
  "rama-utils",
  "rcgen",
@@ -2803,16 +2791,10 @@ name = "rama-udp"
 version = "0.2.0-alpha.13"
 dependencies = [
  "bytes",
- "futures-core",
- "futures-sink",
- "futures-util",
- "pin-project-lite",
  "rama-core",
  "rama-net",
- "rama-utils",
  "tokio",
  "tokio-util",
- "tracing",
 ]
 
 [[package]]
@@ -3695,9 +3677,9 @@ dependencies = [
 
 [[package]]
 name = "tokio-util"
-version = "0.7.14"
+version = "0.7.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6b9590b93e6fcc1739458317cccd391ad3955e2bde8913edf6f95f9e65a8f034"
+checksum = "66a539a9ad6d5d281510d5bd368c973d636c02dbf8a67300bfb6b950696ad7df"
 dependencies = [
  "bytes",
  "futures-core",
