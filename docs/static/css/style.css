@@ -73,7 +73,7 @@ header {
     margin-bottom: 4rem;
 }
 
-.features {
+.features-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
     gap: 2rem;
@@ -152,7 +152,6 @@ header {
 .sponsor-logos a {
     display: block;
     padding: 1.5rem;
-    background-color: var(--rama-background);
     border-radius: 8px;
     transition: all 0.3s ease;
 }
@@ -244,7 +243,7 @@ footer {
         flex-direction: column;
     }
 
-    .features {
+    .features-grid {
         grid-template-columns: 1fr;
     }
 }
@@ -289,6 +288,7 @@ a:visited {
     background-color: var(--rama-background);
 }
 
+.features h2,
 .features-table h2 {
     text-align: center;
     margin-bottom: 3rem;
@@ -524,4 +524,189 @@ sup a:hover {
     display: inline-block;
     margin-right: 0.5em;
     font-size: 0.9em;
+}
+
+.copy-button {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.75rem 1.25rem;
+    background-color: var(--rama-secondary);
+    color: var(--rama-background);
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-family: monospace;
+    font-size: 0.875rem;
+    font-weight: 600;
+    transition: all 0.2s ease;
+    position: relative;
+    overflow: hidden;
+}
+
+.copy-button:hover {
+    background-color: var(--rama-hover);
+    transform: translateY(-1px);
+}
+
+.copy-button svg {
+    width: 1rem;
+    height: 1rem;
+    transition: all 0.2s ease;
+}
+
+.copy-button:hover svg {
+    transform: scale(1.1);
+}
+
+.copy-button::after {
+    content: "Copied!";
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-color: var(--rama-secondary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.875rem;
+    font-weight: 600;
+    opacity: 0;
+    transform: translateY(100%);
+    transition: all 0.3s ease;
+}
+
+.copy-button.copied::after {
+    opacity: 1;
+    transform: translateY(0);
+}
+
+.copy-button.copied svg {
+    opacity: 0;
+}
+
+.installation-section {
+    background-color: var(--rama-card-bg);
+    border: 1px solid var(--rama-border);
+    border-radius: 8px;
+    padding: 2rem;
+    margin: 4rem auto;
+    max-width: 800px;
+}
+
+.installation-section h2 {
+    color: var(--rama-secondary);
+    margin-bottom: 1.5rem;
+    text-align: center;
+}
+
+.installation-section p {
+    color: var(--rama-text-secondary);
+    margin-bottom: 1.5rem;
+    line-height: 1.6;
+}
+
+.installation-options {
+    display: flex;
+    flex-direction: column;
+    gap: 1.5rem;
+    margin: 2rem 0;
+}
+
+.installation-option {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    background-color: var(--rama-background);
+    border: 1px solid var(--rama-border);
+    border-radius: 4px;
+    padding: 1rem;
+    transition: all 0.2s ease;
+}
+
+.copy-button {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.75rem 1.25rem;
+    background-color: var(--rama-secondary);
+    color: var(--rama-background);
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-family: monospace;
+    font-size: 0.875rem;
+    font-weight: 600;
+    transition: all 0.2s ease;
+}
+
+.copy-button:hover {
+    background-color: var(--rama-hover);
+    transform: translateY(-1px);
+}
+
+.copy-button svg {
+    width: 1rem;
+    height: 1rem;
+    transition: all 0.2s ease;
+}
+
+.copy-button:hover svg {
+    transform: scale(1.1);
+}
+
+.copy-button::after {
+    content: "Copied!";
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-color: var(--rama-secondary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.875rem;
+    font-weight: 600;
+    opacity: 0;
+    transform: translateY(100%);
+    transition: all 0.3s ease;
+}
+
+.copy-button.copied::after {
+    opacity: 1;
+    transform: translateY(0);
+}
+
+.copy-button.copied svg {
+    opacity: 0;
+}
+
+.installation-option .description {
+    color: var(--rama-text-secondary);
+    font-size: 0.875rem;
+    margin-left: auto;
+}
+
+.installation-links {
+    display: flex;
+    justify-content: center;
+    gap: 2rem;
+    margin-top: 2rem;
+    flex-wrap: wrap;
+}
+
+.installation-links a {
+    color: var(--rama-secondary);
+    text-decoration: none;
+    font-weight: 600;
+    transition: all 0.2s ease;
+    padding: 0.5rem 1rem;
+    border-radius: 4px;
+}
+
+.installation-links a:hover {
+    color: var(--rama-hover);
+    background-color: rgba(0, 200, 0, 0.1);
 }
