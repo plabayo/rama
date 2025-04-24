@@ -15,9 +15,7 @@
 //!
 //! You should see the homepage in your browser with the title "Rama + Tower".
 
-// rama provides everything out of the box to build a complete web service.
-/// Everything else we need is provided by the standard library, community crates or tokio.
-use pin_project_lite::pin_project;
+/// rama provides everything out of the box to build a complete web service.
 use rama::{
     Layer as _,
     error::{BoxError, OpaqueError},
@@ -35,6 +33,8 @@ use rama::{
     },
 };
 
+/// Everything else we need is provided by the standard library, community crates or tokio.
+use pin_project_lite::pin_project;
 use std::{
     convert::Infallible,
     future::{Ready, ready},
