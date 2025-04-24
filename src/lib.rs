@@ -61,7 +61,7 @@
 //! | ✅ upstream [proxies](proxy) | ✅ [MemoryProxyDB](crate::proxy::MemoryProxyDB) ⸱ ✅ [Username Config] ⸱ ✅ [Proxy Filters](crate::proxy::ProxyFilter) |
 //! | ✅ [User Agent (UA)](https://ramaproxy.org/book/intro/user_agent) | ✅ [Http Emulation](crate::ua::profile::HttpProfile) ⸱ ✅ [Tls Emulation](crate::ua::profile::TlsProfile) ⸱ ✅ [UA Parsing](crate::ua::UserAgent) |
 //! | ✅ [Fingerprinting](crate::net::fingerprint) | ✅ [Ja3](crate::net::fingerprint::Ja3) ⸱ ✅ [Ja4](crate::net::fingerprint::Ja4) ⸱ ✅ [Ja4H](crate::net::fingerprint::Ja4H) ⸱ 🏗️ [Akamai passive h2](https://github.com/plabayo/rama/issues/517) <sup>(1)</sup> ⸱ 🏗️ [Peetprint (tls)](https://github.com/plabayo/rama/issues/518) <sup>(1)</sup> |
-//! | ✅ utilities | ✅ [error handling](crate::error) ⸱ ✅ [graceful shutdown](crate::graceful) ⸱ ✅ [Connection Pool](crate::net::client::Pool) ⸱ 🏗️ IP2Loc <sup>(2)</sup> |
+//! | ✅ utilities | ✅ [error handling](crate::error) ⸱ ✅ [graceful shutdown](crate::graceful) ⸱ ✅ [Connection Pool](crate::net::client::Pool) ⸱ ✅ [Tower Adapter](crate::utils::tower)  ⸱ 🏗️ IP2Loc <sup>(2)</sup> |
 //! | 🏗️ Graphical Interface | 🏗️ traffic logger <sup>(2)</sup> ⸱ 🏗️ curl export <sup>(2)</sup> ⸱ 🏗️ [TUI implementation](https://ratatui.rs/) <sup>(2)</sup> ⸱ ❌ traffic intercept <sup>(3)</sup> ⸱ ❌ traffic replay <sup>(3)</sup> |
 //! | ✅ binary | ✅ [prebuilt binaries](https://ramaproxy.org/book/deploy/rama-cli) ⸱ 🏗️ proxy config <sup>(2)</sup> ⸱ ✅ http client <sup>(1)</sup> ⸱ ❌ WASM Plugins <sup>(3)</sup> |
 //! | 🏗️ data scraping | 🏗️ Html Processor <sup>(2)</sup> ⸱ ❌ Json Processor <sup>(3)</sup> |
@@ -192,6 +192,7 @@
 //! - [`rama-http`](https://crates.io/crates/rama-http): rama http services, layers and utilities
 //! - [`rama-http-backend`](https://crates.io/crates/rama-http-backend): default http backend for `rama`
 //! - [`rama-http-core`](https://crates.io/crates/rama-http-core): http protocol implementation driving `rama-http-backend`
+//! - [`rama-tower`](https://crates.io/crates/rama-tower): provide [tower](https://github.com/tower-rs/tower) compatibility for `rama`
 //!
 //! `rama` crates that live in <https://github.com/plabayo/rama-boring> (forks of `cloudflare/boring`):
 //!
@@ -419,5 +420,13 @@ pub use ::rama_ua as ua;
 #[cfg(feature = "cli")]
 pub mod cli;
 
-#[doc(inline)]
-pub use ::rama_utils as utils;
+pub mod utils {
+    //! utilities for rama
+
+    #[doc(inline)]
+    pub use ::rama_utils::*;
+
+    #[cfg(feature = "tower")]
+    #[doc(inline)]
+    pub use ::rama_tower as tower;
+}

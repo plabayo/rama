@@ -43,6 +43,7 @@ Here is a list of all `rama` crates:
 - [`rama-http`](https://crates.io/crates/rama-http): rama http services, layers and utilities
 - [`rama-http-backend`](https://crates.io/crates/rama-http-backend): default http backend for `rama`
 - [`rama-http-core`](https://crates.io/crates/rama-http-core): http protocol implementation driving `rama-http-backend`
+- [`rama-tower`](https://crates.io/crates/rama-tower): provide [tower](https://github.com/tower-rs/tower) compatibility for `rama`
 
 `rama` crates that live in <https://github.com/plabayo/rama-boring> (forks of `cloudflare/boring`):
 
