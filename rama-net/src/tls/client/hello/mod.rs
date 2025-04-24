@@ -11,9 +11,6 @@ use crate::tls::{
     SupportedGroup, enums::CompressionAlgorithm,
 };
 
-#[cfg(feature = "rustls")]
-mod rustls;
-
 #[cfg(feature = "boring")]
 mod boring;
 
@@ -34,6 +31,20 @@ pub struct ClientHello {
 }
 
 impl ClientHello {
+    pub fn new(
+        protocol_version: ProtocolVersion,
+        cipher_suites: Vec<CipherSuite>,
+        compression_algorithms: Vec<CompressionAlgorithm>,
+        extensions: Vec<ClientHelloExtension>,
+    ) -> Self {
+        Self {
+            protocol_version,
+            cipher_suites,
+            compression_algorithms,
+            extensions,
+        }
+    }
+
     /// Return all [`ProtocolVersion`]s defined in this [`ClientHello`].
     pub fn protocol_version(&self) -> ProtocolVersion {
         self.protocol_version

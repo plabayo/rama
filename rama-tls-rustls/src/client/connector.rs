@@ -1,6 +1,7 @@
 use super::TlsConnectorData;
 use crate::dep::tokio_rustls::{TlsConnector as RustlsConnector, client::TlsStream};
 use crate::types::TlsTunnel;
+use crate::{RamaInto, RamaTryFrom};
 use pin_project_lite::pin_project;
 use private::{ConnectorKindAuto, ConnectorKindSecure, ConnectorKindTunnel};
 use rama_core::error::ErrorContext;
@@ -404,7 +405,7 @@ impl<S, K> TlsConnector<S, K> {
             .or(self.connector_data.clone())
             .unwrap_or(TlsConnectorData::new_http_auto()?);
 
-        let server_name = rustls_pki_types::ServerName::try_from(
+        let server_name = rustls_pki_types::ServerName::rama_try_from(
             connector_data.server_name.unwrap_or(server_host),
         )?;
 
@@ -415,7 +416,7 @@ impl<S, K> TlsConnector<S, K> {
         let (_, conn_data_ref) = stream.get_ref();
 
         let server_certificate_chain = if connector_data.store_server_certificate_chain {
-            conn_data_ref.peer_certificates().map(Into::into)
+            conn_data_ref.peer_certificates().map(RamaInto::rama_into)
         } else {
             None
         };
@@ -424,7 +425,7 @@ impl<S, K> TlsConnector<S, K> {
             protocol_version: conn_data_ref
                 .protocol_version()
                 .context("no protocol version available")?
-                .into(),
+                .rama_into(),
             application_layer_protocol: conn_data_ref
                 .alpn_protocol()
                 .map(ApplicationProtocol::from),

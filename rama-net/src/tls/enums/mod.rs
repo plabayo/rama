@@ -4,9 +4,6 @@
 use rama_core::error::OpaqueError;
 use rama_utils::macros::enums::enum_builder;
 
-#[cfg(feature = "rustls")]
-mod rustls;
-
 #[cfg(feature = "boring")]
 mod boring;
 #[cfg(feature = "boring")]
