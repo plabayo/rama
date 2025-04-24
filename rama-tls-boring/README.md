@@ -13,7 +13,7 @@
 [![Paypal Donation][paypal-badge]][paypal-url]
 
 [crates-badge]: https://img.shields.io/crates/v/rama-tls.svg
-[crates-url]: https://crates.io/crates/rama-tls
+[crates-url]: https://crates.io/crates/rama-tls-boring
 [docs-badge]: https://img.shields.io/docsrs/rama-tls-boring/latest
 [docs-url]: https://docs.rs/rama-tls-boring/latest/rama_tls_boring/index.html
 [license-mit-badge]: https://img.shields.io/badge/license-MIT-blue.svg
@@ -37,9 +37,9 @@
 🦙 Rama (ラマ) is a modular service framework for the 🦀 Rust language to move and transform your network packets.
 The reasons behind the creation of rama can be read in [the "Why Rama" chapter](https://ramaproxy.org/book/why_rama).
 
-## rama-tls-rustls
+## rama-tls-boring
 
-Tls implementations for `rama` using rustls.
+Tls implementations for `rama` using boring.
 
 Learn more about `rama`:
 
