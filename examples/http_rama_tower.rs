@@ -63,8 +63,8 @@ async fn main() {
     let graceful = rama::graceful::Shutdown::default();
 
     let router: Router<()> = Router::new().get("/", ServiceAdapter::new(HelloSvc));
-    let app =
-        LayerAdapter::new((Timeout(Duration::from_secs(30)), AddHelloMarkerHeader)).layer(router);
+    let app = LayerAdapter::new((Timeout(Duration::from_secs(30)), AddHelloMarkerHeader))
+        .into_layer(router);
 
     graceful.spawn_task_fn(async |guard| {
         tracing::info!("running service at: {ADDRESS}");
