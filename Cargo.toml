@@ -160,6 +160,7 @@ jemallocator = { package = "tikv-jemallocator", version = "0.6" }
 mimalloc = { version = "0.1", default-features = false }
 chrono = "0.4"
 smol_str = "0.3"
+include_dir = { version = "0.7", features = ["metadata"] }
 
 [workspace.lints.rust]
 unreachable_pub = "deny"
