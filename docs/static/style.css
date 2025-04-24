@@ -460,6 +460,24 @@ a:visited {
     text-decoration: underline;
 }
 
+.partnership {
+    padding: 2rem 1rem;
+    text-align: center;
+    max-width: 800px;
+    margin: 0 auto;
+}
+
+.partnership h2 {
+    margin-bottom: 1.5rem;
+    color: var(--text-color);
+}
+
+.partnership p {
+    margin-bottom: 1rem;
+    line-height: 1.6;
+    color: var(--text-color-secondary);
+}
+
 .btn {
     display: inline-block;
     padding: 0.75rem 1.5rem;
