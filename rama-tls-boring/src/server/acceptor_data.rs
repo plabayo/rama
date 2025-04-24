@@ -1,3 +1,4 @@
+use crate::RamaTryFrom;
 use crate::core::{
     asn1::Asn1Time,
     bn::{BigNum, MsbOption},
@@ -114,7 +115,7 @@ impl TlsCertSource {
                 if let Some(maybe_client_hello) = maybe_client_hello {
                     let cb_maybe_client_hello = maybe_client_hello.clone();
                     builder.set_select_certificate_callback(move |boring_client_hello| {
-                        let maybe_client_hello = match RamaClientHello::try_from(boring_client_hello) {
+                        let maybe_client_hello = match RamaClientHello::rama_try_from(boring_client_hello) {
                             Ok(ch) => Some(ch),
                             Err(err) => {
                                 tracing::warn!(err = %err, "failed to extract boringssl client hello");
@@ -134,7 +135,7 @@ impl TlsCertSource {
                 let cb_maybe_client_hello = maybe_client_hello.clone();
                 builder.set_select_certificate_callback(move |client_hello| {
                     if let Some(cb_maybe_client_hello) = &cb_maybe_client_hello {
-                        let maybe_client_hello = match RamaClientHello::try_from(&client_hello) {
+                        let maybe_client_hello = match RamaClientHello::rama_try_from(&client_hello) {
                             Ok(ch) => Some(ch),
                             Err(err) => {
                                 tracing::warn!(err = %err, "failed to extract boringssl client hello");
@@ -186,7 +187,7 @@ impl TlsCertSource {
 
                 builder.set_async_select_certificate_callback(move |client_hello| {
                     let rama_client_hello =
-                        RamaClientHello::try_from(&*client_hello).map_err(|err| {
+                        RamaClientHello::rama_try_from(&*client_hello).map_err(|err| {
                             tracing::error!(error = %err, "boring: failed converting to rama client hello");
                             AsyncSelectCertError{}
                         })?;

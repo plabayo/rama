@@ -21,6 +21,10 @@ pub mod client;
 pub mod server;
 
 pub mod keylog;
+pub mod type_conversion;
+
+use rama_utils::macros::enums::rama_from_into_traits;
+rama_from_into_traits!();
 
 pub mod types {
     //! common tls types
