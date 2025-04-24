@@ -58,7 +58,7 @@
 //! | 🏗️ web protocols | 🏗️ Web Sockets <sup>(1)</sup> ⸱ ❌ Web Transport <sup>(3)</sup> ⸱ ❌ gRPC <sup>(3)</sup> |
 //! | ✅ [async-method trait](https://blog.rust-lang.org/inside-rust/2023/05/03/stabilizing-async-fn-in-trait.html) services | ✅ [Service] ⸱ ✅ [Layer] ⸱ ✅ [context] ⸱ ✅ [dyn dispatch](crate::service::BoxService) ⸱ ✅ [middleware](crate::layer) |
 //! | ✅ [telemetry] | ✅ [tracing](https://tracing.rs/tracing/) ⸱ ✅ [opentelemetry][telemetry::opentelemetry] ⸱ ✅ [http metrics](crate::http::layer::opentelemetry) ⸱ ✅ [transport metrics](crate::net::stream::layer::opentelemetry) |
-//! | ✅ upstream [proxies](proxy) | ✅ [MemoryProxyDB](crate::proxy::MemoryProxyDB) ⸱ ✅ [L4 Username Config] ⸱ ✅ [Proxy Filters](crate::proxy::ProxyFilter) |
+//! | ✅ upstream [proxies](proxy) | ✅ [MemoryProxyDB](crate::proxy::MemoryProxyDB) ⸱ ✅ [Username Config] ⸱ ✅ [Proxy Filters](crate::proxy::ProxyFilter) |
 //! | ✅ [User Agent (UA)](https://ramaproxy.org/book/intro/user_agent) | ✅ [Http Emulation](crate::ua::profile::HttpProfile) ⸱ ✅ [Tls Emulation](crate::ua::profile::TlsProfile) ⸱ ✅ [UA Parsing](crate::ua::UserAgent) |
 //! | ✅ [Fingerprinting](crate::net::fingerprint) | ✅ [Ja3](crate::net::fingerprint::Ja3) ⸱ ✅ [Ja4](crate::net::fingerprint::Ja4) ⸱ ✅ [Ja4H](crate::net::fingerprint::Ja4H) ⸱ 🏗️ [Akamai passive h2](https://github.com/plabayo/rama/issues/517) <sup>(1)</sup> ⸱ 🏗️ [Peetprint (tls)](https://github.com/plabayo/rama/issues/518) <sup>(1)</sup> |
 //! | ✅ utilities | ✅ [error handling](crate::error) ⸱ ✅ [graceful shutdown](crate::graceful) ⸱ ✅ [Connection Pool](crate::net::client::Pool) ⸱ 🏗️ IP2Loc <sup>(2)</sup> |
@@ -67,7 +67,7 @@
 //! | 🏗️ data scraping | 🏗️ Html Processor <sup>(2)</sup> ⸱ ❌ Json Processor <sup>(3)</sup> |
 //! | ❌ browser | ❌ JS Engine <sup>(3)</sup> ⸱ ❌ [Web API](https://developer.mozilla.org/en-US/docs/Web/API) Emulation <sup>(3)</sup> |
 //!
-//! [L4 Username Config]: https://docs.rs/rama-core/latest/rama_core/username/index.html
+//! [Username Config]: https://docs.rs/rama-core/latest/rama_core/username/index.html
 //!
 //! > 🗒️ _Footnotes_
 //! >
