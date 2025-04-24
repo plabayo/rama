@@ -17,7 +17,7 @@ workspace = true
 default = []
 tls = ["dep:rama-tls", "rama-net/tls"]
 rustls = ["tls", "rama-net/rustls", "rama-tls-rustls"]
-boring = ["tls", "rama-net/boring", "rama-tls/boring"]
+boring = ["tls", "rama-net/boring", "rama-tls?/boring"]
 
 [dependencies]
 const_format = { workspace = true }
