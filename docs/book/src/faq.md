@@ -47,6 +47,9 @@ Yes. While it is not recommended to do so you can use the `rama-tower` crate to 
 You can find an example on how to do this at
 <https://github.com/plabayo/rama/blob/main/examples/http_rama_tower.rs>.
 
+Please make sure to read the lib docs at <https://ramaproxy.org/docs/rama/utils/tower/index.html>
+if you're planning to make use of it.
+
 ## Can I build Web Services with Rama?
 
 Yes you can, there are even some examples:
