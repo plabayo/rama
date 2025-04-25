@@ -43,7 +43,7 @@ pub mod core {
     #[doc(inline)]
     pub use rama_boring::*;
 
-    pub mod boring_tokio {
+    pub mod tokio {
         //! Full Re-export of the [`rama-boring-tokio`] crate.
         //!
         //! [`rama-boring-tokio`]: https://docs.rs/rama-boring-tokio

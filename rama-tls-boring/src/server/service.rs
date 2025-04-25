@@ -2,8 +2,8 @@ use super::TlsAcceptorData;
 use crate::{
     RamaTryInto,
     core::{
-        boring_tokio::SslStream,
         ssl::{AlpnError, SslAcceptor, SslMethod, SslRef},
+        tokio::SslStream,
     },
     keylog::new_key_log_file_handle,
     types::SecureTransport,
