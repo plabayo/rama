@@ -360,6 +360,23 @@ macro_rules! __rama_from_into_traits {
             type Error;
             fn rama_try_from(value: T) -> Result<Self, Self::Error>;
         }
+
+        pub trait RamaTryInto<T>: Sized {
+            type Error;
+            fn rama_try_into(self) -> Result<T, Self::Error>;
+        }
+
+        impl<T, U> RamaTryInto<U> for T
+        where
+            U: RamaTryFrom<T>,
+        {
+            type Error = U::Error;
+
+            #[inline]
+            fn rama_try_into(self) -> Result<U, U::Error> {
+                U::rama_try_from(self)
+            }
+        }
     };
 }
 

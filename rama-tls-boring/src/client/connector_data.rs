@@ -1,3 +1,4 @@
+use crate::RamaTryInto;
 use itertools::Itertools;
 use rama_boring::{
     asn1::Asn1Time,
@@ -24,9 +25,7 @@ use std::{fmt, sync::Arc};
 use tracing::{debug, trace};
 
 #[cfg(feature = "compression")]
-use crate::boring::client::compress_certificate::{
-    BrotliCertificateCompressor, ZlibCertificateCompressor,
-};
+use super::compress_certificate::{BrotliCertificateCompressor, ZlibCertificateCompressor};
 
 use crate::keylog::new_key_log_file_handle;
 
@@ -574,7 +573,7 @@ impl TlsConnectorData {
                                 return None;
                             }
 
-                            match (*c).try_into() {
+                            match (*c).rama_try_into() {
                                 Ok(v) => Some(v),
                                 Err(c) => {
                                 trace!("ignore unsupported support group (curve) {c} (file issue if you require it");
@@ -605,7 +604,7 @@ impl TlsConnectorData {
                                 "TlsConnectorData: builder: from std client config: min version: {:?}",
                                 min_ver
                             );
-                            min_ssl_version = Some((*min_ver).try_into().map_err(|v| {
+                            min_ssl_version = Some((*min_ver).rama_try_into().map_err(|v| {
                                 OpaqueError::from_display(format!("protocol version {v}"))
                                     .context("build boring ssl connector: min proto version")
                             })?);
@@ -627,7 +626,7 @@ impl TlsConnectorData {
                                 "TlsConnectorData: builder: from std client config: max version: {:?}",
                                 max_ver
                             );
-                            max_ssl_version = Some((*max_ver).try_into().map_err(|v| {
+                            max_ssl_version = Some((*max_ver).rama_try_into().map_err(|v| {
                                 OpaqueError::from_display(format!("protocol version {v}"))
                                     .context("build boring ssl connector: max proto version")
                             })?);
@@ -645,7 +644,7 @@ impl TlsConnectorData {
                                 return None;
                             }
 
-                            match (*s).try_into() {
+                            match (*s).rama_try_into() {
                                 Ok(v) => Some(v),
                                 Err(s) => {
                                     trace!("ignore unsupported signatured schemes {s} (file issue if you require it");
@@ -670,7 +669,7 @@ impl TlsConnectorData {
                             schemes
                                 .iter()
                                 .filter_map(|s| {
-                                    match (*s).try_into() {
+                                    match (*s).rama_try_into() {
                                         Ok(v) => Some(v),
                                         Err(s) => {
                                             trace!("ignore unsupported signatured scheme for delegated creds {s} (file issue if you require it");

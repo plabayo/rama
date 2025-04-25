@@ -19,7 +19,7 @@ members = [
     "rama-proxy",
     "rama-socks5",
     "rama-tcp",
-    "rama-tls",
+    "rama-tls-boring",
     "rama-tls-rustls",
     "rama-tower",
     "rama-ua",
@@ -232,10 +232,10 @@ full = [
     "tower",
 ]
 telemetry = ["rama-core/telemetry", "rama-net?/telemetry", "rama-http?/telemetry"]
-compression = ["http", "rama-http?/compression", "rama-tls?/compression"]
-tls = ["net", "dep:rama-tls", "rama-net?/tls", "rama-http?/tls", "rama-http-backend?/tls", "rama-ua?/tls"]
-rustls = ["tls", "dep:rama-tls-rustls", "rama-net?/rustls", "rama-http-backend?/rustls"]
-boring = ["tls", "rama-tls?/boring", "rama-net?/boring", "rama-http-backend?/boring"]
+compression = ["http", "rama-http?/compression", "rama-tls-boring?/compression"]
+tls = ["net", "rama-net?/tls", "rama-http?/tls", "rama-http-backend?/tls", "rama-ua?/tls"]
+rustls = ["tls", "dep:rama-tls-rustls", "rama-http-backend?/rustls"]
+boring = ["tls", "dep:rama-tls-boring", "rama-http-backend?/boring"]
 cli = ["dep:base64", "dep:bytes", "dep:hex", "dep:serde", "dep:serde_json", "dep:serde_html_form", "dep:tracing", "dep:tokio", "http"]
 net = ["dep:rama-net"]
 dns = ["net", "dep:rama-dns"]
@@ -269,7 +269,7 @@ rama-http-core = { version = "0.2.0-alpha.13", path = "rama-http-core", optional
 rama-net = { version = "0.2.0-alpha.13", path = "rama-net", optional = true }
 rama-proxy = { version = "0.2.0-alpha.13", path = "rama-proxy", optional = true }
 rama-tcp = { version = "0.2.0-alpha.13", path = "rama-tcp", optional = true }
-rama-tls = { version = "0.2.0-alpha.13", path = "rama-tls", optional = true }
+rama-tls-boring = { version = "0.2.0-alpha.13", path = "rama-tls-boring", optional = true }
 rama-tls-rustls = { version = "0.2.0-alpha.13", path = "rama-tls-rustls", optional = true }
 rama-tower = { version = "0.2.0-alpha.13", path = "rama-tower", optional = true }
 rama-ua = { version = "0.2.0-alpha.13", path = "rama-ua", optional = true }

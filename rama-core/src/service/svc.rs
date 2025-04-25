@@ -11,7 +11,7 @@ pub trait Service<S, Request>: Sized + Send + Sync + 'static {
     type Response: Send + 'static;
 
     /// The type of error returned by the service.
-    type Error: Send + Sync + 'static;
+    type Error: Send + 'static;
 
     /// Serve a response or error for the given request,
     /// using the given context.

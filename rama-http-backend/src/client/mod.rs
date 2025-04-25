@@ -25,7 +25,7 @@ use rama_tcp::client::service::TcpConnector;
 use rama_net::tls::client::{ClientConfig, ProxyClientConfig, extract_client_config_from_ctx};
 
 #[cfg(feature = "boring")]
-use rama_tls::boring::client::{
+use rama_tls_boring::client::{
     TlsConnector as BoringTlsConnector, TlsConnectorData as BoringTlsConnectorData,
 };
 
