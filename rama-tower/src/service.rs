@@ -55,7 +55,7 @@ impl<T: fmt::Debug> fmt::Debug for ServiceAdapter<T> {
 
 impl<T, State, Request> rama_core::Service<State, Request> for ServiceAdapter<T>
 where
-    T: TowerService<Request, Response: Send + 'static, Error: Send + Sync + 'static, Future: Send>
+    T: TowerService<Request, Response: Send + 'static, Error: Send + 'static, Future: Send>
         + Clone
         + Send
         + Sync
@@ -133,7 +133,7 @@ impl<T: fmt::Debug> fmt::Debug for SharedServiceAdapter<T> {
 
 impl<T, State, Request> rama_core::Service<State, Request> for SharedServiceAdapter<T>
 where
-    T: TowerService<Request, Response: Send + 'static, Error: Send + Sync + 'static, Future: Send>
+    T: TowerService<Request, Response: Send + 'static, Error: Send + 'static, Future: Send>
         + Send
         + Sync
         + 'static,

@@ -142,7 +142,7 @@ where
     S: 'static,
     Request: 'static,
     Response: Send + 'static,
-    Error: Send + Sync + 'static,
+    Error: Send + 'static,
 {
     type Response = Response;
     type Error = Error;
