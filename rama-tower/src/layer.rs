@@ -20,6 +20,16 @@ impl<S: fmt::Debug> fmt::Debug for ContextWrap<S> {
     }
 }
 
+/// Trait to be implemented for any request that can "smuggle" [`Context`]s.
+///
+/// - if the `http` feature is enabled it will already be implemented for
+///   [`rama_http_types::Request`];
+/// - for types that do have this capability and you work with tower services
+///   which do not care about the specific type of the request that passes through it,
+///   you can make use of [`RequestStatePair`] using the tower map-request capabilities,
+///   to easily swap between the pair and direct request format.
+///
+/// [`Context`]: rama_core::Context
 pub trait ContextSmuggler<S> {
     /// inject the context into the smuggler.
     fn inject_ctx(&mut self, ctx: rama_core::Context<S>);
@@ -34,7 +44,7 @@ mod http {
     use super::*;
     use rama_http_types::Request;
 
-    impl<S: Clone + Send + Sync + 'static> ContextSmuggler<S> for Request {
+    impl<B, S: Clone + Send + Sync + 'static> ContextSmuggler<S> for Request<B> {
         fn inject_ctx(&mut self, ctx: rama_core::Context<S>) {
             let wrap = ContextWrap(ctx);
             self.extensions_mut().insert(wrap);
@@ -49,8 +59,10 @@ mod http {
 
 /// Simple implementation of a [`ContextSmuggler`].
 pub struct RequestStatePair<R, S> {
-    request: R,
-    ctx: Option<rama_core::Context<S>>,
+    /// the inner reuqest
+    pub request: R,
+    /// the storage to "smuggle" the ctx"
+    pub ctx: Option<rama_core::Context<S>>,
 }
 
 impl<R: fmt::Debug, S: fmt::Debug> fmt::Debug for RequestStatePair<R, S> {
