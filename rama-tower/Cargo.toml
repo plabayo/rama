@@ -1,0 +1,35 @@
+[package]
+name = "rama-tower"
+description = "tower support for rama"
+version = { workspace = true }
+license = { workspace = true }
+edition = { workspace = true }
+repository = { workspace = true }
+keywords = ["io", "async", "tower", "rama"]
+categories = ["asynchronous", "network-programming", "web-programming"]
+authors = { workspace = true }
+rust-version = { workspace = true }
+
+[lints]
+workspace = true
+
+[features]
+default = []
+http = ["dep:rama-http-types"]
+
+[dependencies]
+rama-core = { version = "0.2.0-alpha.13", path = "../rama-core" }
+rama-http-types = { version = "0.2.0-alpha.13", path = "../rama-http-types", optional = true }
+rama-utils = { version = "0.2.0-alpha.13", path = "../rama-utils" }
+tokio = { workspace = true }
+tower-layer = { workspace = true }
+tower-service = { workspace = true }
+
+[dev-dependencies]
+
+[package.metadata.cargo-public-api-crates]
+allowed = []
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

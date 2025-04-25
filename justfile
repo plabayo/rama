@@ -159,6 +159,7 @@ publish:
     cargo publish -p rama-haproxy
     cargo publish -p rama-proxy
     cargo publish -p rama-socks5
+    cargo publish -p rama-tower
     cargo publish -p rama
     cargo publish -p rama-cli
 

@@ -63,3 +63,16 @@ and [http clients](./http_clients.md):
 * Be able to trust that your incoming and outgoing Application Http data has not been modified (e.g. Http header casing and order is preserved);
 
 Continue to read this book to learn more about using Rama for either of these purposes.
+
+## Tower Compatible
+
+Rama is tower-compatible. While it is not the goal to use tower
+for all your service needs in rama, we do want to allow
+to reuse existing tower layers and services where desired.
+
+You can find an example on how to do this at
+<https://github.com/plabayo/rama/blob/main/examples/http_rama_tower.rs>.
+
+<div class="book-article-image-center">
+<img style="width: 50%" src="https://raw.githubusercontent.com/plabayo/rama/main/docs/img/rama_tower.jpg)" alt="rama tower visual representation">
+</div>

@@ -50,6 +50,9 @@ This directory contains example implementations demonstrating various features a
 - [`tcp_listener_layers.rs`](./tcp_listener_layers.rs) - TCP listener with layers
 - [`udp_codec.rs`](./udp_codec.rs) - UDP codec implementation
 
+## Tower
+- [`http_rama_tower.rs`](./http_rama_tower.rs) - How to integrate tower into your rama HTTP stack
+
 ## Running Examples
 
 Most examples can be run using cargo with the appropriate feature flags. For example:

@@ -21,6 +21,7 @@ members = [
     "rama-tcp",
     "rama-tls-boring",
     "rama-tls-rustls",
+    "rama-tower",
     "rama-ua",
     "rama-udp",
     "rama-utils",
@@ -160,6 +161,8 @@ jemallocator = { package = "tikv-jemallocator", version = "0.6" }
 mimalloc = { version = "0.1", default-features = false }
 chrono = "0.4"
 smol_str = "0.3"
+tower-service = "0.3"
+tower-layer = "0.3"
 
 [workspace.lints.rust]
 unreachable_pub = "deny"
@@ -226,27 +229,29 @@ full = [
     "udp",
     "http-full",
     "proxy-full",
+    "tower",
 ]
-telemetry = ["rama-core/telemetry", "rama-net/telemetry", "rama-http/telemetry"]
-compression = ["http", "rama-http/compression", "rama-tls-boring/compression"]
-tls = ["net", "rama-net/tls", "rama-http/tls", "rama-http-backend/tls", "rama-ua/tls"]
-rustls = ["tls", "dep:rama-tls-rustls", "rama-net/rustls", "rama-http-backend/rustls"]
-boring = ["tls", "dep:rama-tls-boring", "rama-net/boring", "rama-http-backend/boring"]
+telemetry = ["rama-core/telemetry", "rama-net?/telemetry", "rama-http?/telemetry"]
+compression = ["http", "rama-http?/compression", "rama-tls-boring?/compression"]
+tls = ["net", "rama-net?/tls", "rama-http?/tls", "rama-http-backend?/tls", "rama-ua?/tls"]
+rustls = ["tls", "dep:rama-tls-rustls", "rama-http-backend?/rustls"]
+boring = ["tls", "dep:rama-tls-boring", "rama-http-backend?/boring"]
 cli = ["dep:base64", "dep:bytes", "dep:hex", "dep:serde", "dep:serde_json", "dep:serde_html_form", "dep:tracing", "dep:tokio", "http"]
 net = ["dep:rama-net"]
 dns = ["net", "dep:rama-dns"]
 tcp = ["dns", "dep:rama-tcp"]
 udp = ["net", "dep:rama-udp"]
-http = ["net", "dep:rama-http", "net", "ua", "rama-net/http", "rama-tcp/http"]
+http = ["net", "dep:rama-http", "net", "ua", "rama-net?/http", "rama-tcp?/http", "rama-tower?/http"]
 http-full = ["http", "tcp", "dep:rama-http-backend", "dep:rama-http-core", "ua-embed-profiles", "compression"]
 proxy = ["dep:rama-proxy"]
 haproxy = ["dep:rama-haproxy"]
 ua = ["dep:rama-ua"]
-ua-embed-profiles = ["ua", "rama-ua/embed-profiles"]
-proxy-memory-db = ["proxy", "rama-proxy/memory-db", "rama-net/venndb"]
-proxy-live-update = ["proxy", "rama-proxy/live-update"]
-proxy-csv = ["proxy", "rama-proxy/csv"]
+ua-embed-profiles = ["ua", "rama-ua?/embed-profiles"]
+proxy-memory-db = ["proxy", "rama-proxy?/memory-db", "rama-net/venndb"]
+proxy-live-update = ["proxy", "rama-proxy?/live-update"]
+proxy-csv = ["proxy", "rama-proxy?/csv"]
 proxy-full = ["proxy-memory-db", "proxy-live-update", "proxy-csv", "haproxy"]
+tower = ["dep:rama-tower"]
 
 [build-dependencies]
 rustversion = { workspace = true }
@@ -266,6 +271,7 @@ rama-proxy = { version = "0.2.0-alpha.13", path = "rama-proxy", optional = true 
 rama-tcp = { version = "0.2.0-alpha.13", path = "rama-tcp", optional = true }
 rama-tls-boring = { version = "0.2.0-alpha.13", path = "rama-tls-boring", optional = true }
 rama-tls-rustls = { version = "0.2.0-alpha.13", path = "rama-tls-rustls", optional = true }
+rama-tower = { version = "0.2.0-alpha.13", path = "rama-tower", optional = true }
 rama-ua = { version = "0.2.0-alpha.13", path = "rama-ua", optional = true }
 rama-udp = { version = "0.2.0-alpha.13", path = "rama-udp", optional = true }
 rama-utils = { version = "0.2.0-alpha.13", path = "rama-utils" }
@@ -414,6 +420,14 @@ required-features = ["http-full", "telemetry"]
 
 [[example]]
 name = "http_user_agent_classifier"
+required-features = ["http-full"]
+
+[[example]]
+name = "http_rama_tower"
+required-features = ["http-full", "tower"]
+
+[[example]]
+name = "http_web_router"
 required-features = ["http-full"]
 
 [[example]]

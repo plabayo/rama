@@ -42,26 +42,10 @@ in attitude here and would allow you to start a conversation about it.
 
 ## Can Tower be used?
 
-Initially Rama was designed fully around the idea of Tower. The initial design of Rama took many
-iterations and was R&D'd over a timespan of about a year, in between other work and parenting.
-We switched between [`tower`](https://crates.io/crates/tower), [`tower-async`](https://crates.io/crates/tower-async) (our own public fork of tower) and back to [`tower`](https://crates.io/crates/tower) again...
+Yes. While it is not recommended to do so you can use the `rama-tower` crate to achieve this.
 
-It became clear however that the version of [`tower`](https://crates.io/crates/tower) at the time was incompatible with the ideas
-which we wanted it to have:
-
-- We are not interested in the `poll_ready` code of tower,
-  and in fact it would be harmful if something is used which makes use of it
-  (Axum warns for it, but strictly it is possible...);
-  - This idea is also further elaborated in the FAQ of our tower-async fork:
-    <https://github.com/plabayo/tower-async?tab=readme-ov-file#faq>
-- We want to start to prepare for an `async`-ready future as soon as we can...
-
-All in all, it was clear after several iterations that usage of tower did more
-harm then it did good. What was supposed to be a stack to help us implement our vision,
-became a hurdle instead.
-
-This is not the fault of tower, but more a sign that it did not age well,
-or perhaps... it is actually a very different beast altogether.
+You can find an example on how to do this at
+<https://github.com/plabayo/rama/blob/main/examples/http_rama_tower.rs>.
 
 ## Can I build Web Services with Rama?
 

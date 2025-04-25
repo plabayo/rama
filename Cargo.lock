@@ -2379,6 +2379,7 @@ dependencies = [
  "rama-tcp",
  "rama-tls-boring",
  "rama-tls-rustls",
+ "rama-tower",
  "rama-ua",
  "rama-udp",
  "rama-utils",
@@ -2766,6 +2767,18 @@ dependencies = [
  "tokio-rustls",
  "tracing",
  "webpki-roots",
+]
+
+[[package]]
+name = "rama-tower"
+version = "0.2.0-alpha.13"
+dependencies = [
+ "rama-core",
+ "rama-http-types",
+ "rama-utils",
+ "tokio",
+ "tower-layer",
+ "tower-service",
 ]
 
 [[package]]
