@@ -2377,7 +2377,7 @@ dependencies = [
  "rama-net",
  "rama-proxy",
  "rama-tcp",
- "rama-tls",
+ "rama-tls-boring",
  "rama-tls-rustls",
  "rama-ua",
  "rama-udp",
@@ -2574,7 +2574,7 @@ dependencies = [
  "rama-http-types",
  "rama-net",
  "rama-tcp",
- "rama-tls",
+ "rama-tls-boring",
  "rama-tls-rustls",
  "rama-utils",
  "tokio",
@@ -2676,7 +2676,6 @@ dependencies = [
  "pin-project-lite",
  "psl",
  "quickcheck",
- "rama-boring",
  "rama-core",
  "rama-http-types",
  "rama-macros",
@@ -2731,7 +2730,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "rama-tls"
+name = "rama-tls-boring"
 version = "0.2.0-alpha.13"
 dependencies = [
  "brotli",

@@ -37,7 +37,10 @@ use rama::{
     net::{
         forwarded::Forwarded,
         stream::SocketInfo,
-        tls::server::{SelfSignedData, ServerAuth, ServerConfig},
+        tls::{
+            SecureTransport,
+            server::{SelfSignedData, ServerAuth, ServerConfig},
+        },
     },
     proxy::haproxy::{
         client::HaProxyLayer as HaProxyClientLayer, server::HaProxyLayer as HaProxyServerLayer,
@@ -48,10 +51,7 @@ use rama::{
         client::service::{Forwarder, TcpConnector},
         server::TcpListener,
     },
-    tls::{
-        boring::server::{TlsAcceptorData, TlsAcceptorLayer},
-        types::SecureTransport,
-    },
+    tls::boring::server::{TlsAcceptorData, TlsAcceptorLayer},
 };
 
 // everything else is provided by the standard library, community crates or tokio

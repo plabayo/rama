@@ -1,8 +1,9 @@
 use super::TlsAcceptorData;
 use crate::{
-    boring::dep::{
-        boring::ssl::{AlpnError, SslAcceptor, SslMethod, SslRef},
-        boring_tokio::SslStream,
+    RamaTryInto,
+    core::{
+        ssl::{AlpnError, SslAcceptor, SslMethod, SslRef},
+        tokio::SslStream,
     },
     keylog::new_key_log_file_handle,
     types::SecureTransport,
@@ -115,7 +116,7 @@ where
 
         if let Some(min_ver) = tls_config.protocol_versions.iter().flatten().min() {
             acceptor_builder
-                .set_min_proto_version(Some((*min_ver).try_into().map_err(|v| {
+                .set_min_proto_version(Some((*min_ver).rama_try_into().map_err(|v| {
                     OpaqueError::from_display(format!("protocol version {v}"))
                         .context("build boring ssl acceptor: min proto version")
                 })?))
@@ -124,7 +125,7 @@ where
 
         if let Some(max_ver) = tls_config.protocol_versions.iter().flatten().max() {
             acceptor_builder
-                .set_max_proto_version(Some((*max_ver).try_into().map_err(|v| {
+                .set_max_proto_version(Some((*max_ver).rama_try_into().map_err(|v| {
                     OpaqueError::from_display(format!("protocol version {v}"))
                         .context("build boring ssl acceptor: max proto version")
                 })?))
@@ -195,10 +196,14 @@ where
 
         match stream.ssl().session() {
             Some(ssl_session) => {
-                let protocol_version = ssl_session.protocol_version().try_into().map_err(|v| {
-                    OpaqueError::from_display(format!("protocol version {v}"))
-                        .context("boring ssl acceptor: min proto version")
-                })?;
+                let protocol_version =
+                    ssl_session
+                        .protocol_version()
+                        .rama_try_into()
+                        .map_err(|v| {
+                            OpaqueError::from_display(format!("protocol version {v}"))
+                                .context("boring ssl acceptor: min proto version")
+                        })?;
                 let application_layer_protocol = stream
                     .ssl()
                     .selected_alpn_protocol()

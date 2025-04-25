@@ -12,10 +12,7 @@ mod hello;
 #[doc(inline)]
 pub use hello::{ClientHello, ClientHelloExtension, ECHClientHello};
 
-#[cfg(any(test, feature = "boring"))]
 mod parser;
-
-#[cfg(any(test, feature = "boring"))]
 pub use parser::parse_client_hello;
 
 mod config;

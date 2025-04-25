@@ -15,9 +15,9 @@ workspace = true
 
 [features]
 default = []
-tls = ["dep:rama-tls", "rama-net/tls"]
+tls = ["rama-net/tls"]
 rustls = ["tls", "rama-net/rustls", "rama-tls-rustls"]
-boring = ["tls", "rama-net/boring", "rama-tls/boring"]
+boring = ["tls", "rama-net/boring", "rama-tls-boring"]
 
 [dependencies]
 const_format = { workspace = true }
@@ -28,7 +28,7 @@ rama-http-core = { version = "0.2.0-alpha.13", path = "../rama-http-core" }
 rama-http-types = { version = "0.2.0-alpha.13", path = "../rama-http-types" }
 rama-net = { version = "0.2.0-alpha.13", path = "../rama-net", features = ["http"] }
 rama-tcp = { version = "0.2.0-alpha.13", path = "../rama-tcp", features = ["http"] }
-rama-tls = { version = "0.2.0-alpha.13", path = "../rama-tls", optional = true }
+rama-tls-boring = { version = "0.2.0-alpha.13", path = "../rama-tls-boring", optional = true }
 rama-tls-rustls = { version = "0.2.0-alpha.13", path = "../rama-tls-rustls", optional = true }
 rama-utils = { version = "0.2.0-alpha.13", path = "../rama-utils" }
 tokio = { workspace = true, features = ["macros"] }
