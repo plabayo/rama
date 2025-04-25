@@ -1,3 +1,4 @@
+use crate::RamaInto;
 use crate::dep::rustls::server::Acceptor;
 use crate::dep::tokio_rustls::{LazyConfigAcceptor, server::TlsStream};
 use crate::types::SecureTransport;
@@ -73,7 +74,7 @@ where
         let start = acceptor.await?;
 
         let secure_transport = if self.store_client_hello {
-            SecureTransport::with_client_hello(start.client_hello().into())
+            SecureTransport::with_client_hello(start.client_hello().rama_into())
         } else {
             SecureTransport::default()
         };
@@ -90,7 +91,7 @@ where
             protocol_version: conn_data_ref
                 .protocol_version()
                 .context("no protocol version available")?
-                .into(),
+                .rama_into(),
             application_layer_protocol: conn_data_ref
                 .alpn_protocol()
                 .map(ApplicationProtocol::from),

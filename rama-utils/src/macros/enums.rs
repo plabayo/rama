@@ -324,7 +324,66 @@ macro_rules! __enum_builder {
 pub use crate::__enum_builder as enum_builder;
 
 #[doc(hidden)]
-pub use ::serde::{
+pub use serde::{
     Deserialize as __SerdeDeserialize, Deserializer as __SerdeDeserializer,
     Serialize as __SerdeSerialize, Serializer as __SerdeSerializer,
 };
+
+#[macro_export]
+/// Rama alternative for [`From`],[`Into`],[`TryFrom`] to workaround the orphan rule
+///
+/// Orphan rule happens because we neither own the type or the trait where we want
+/// to define their actual implementation.
+///
+/// By adding these traits to crates where we have this problem
+/// we can workaround that. This will become the standard approach
+/// where the normal from/into doesn't work. Main use case right now for
+/// this trait is to support defining conversions from rama tls types (rama-net)
+/// to external types (eg rustls) in tls crates (eg rama-tls-rustls). This macro
+/// should be called from the root module.
+macro_rules! __rama_from_into_traits {
+    () => {
+        pub trait RamaFrom<T> {
+            fn rama_from(value: T) -> Self;
+        }
+
+        pub trait RamaInto<T>: Sized {
+            fn rama_into(self) -> T;
+        }
+
+        impl<T, U> RamaInto<U> for T
+        where
+            U: RamaFrom<T>,
+        {
+            #[inline]
+            fn rama_into(self) -> U {
+                U::rama_from(self)
+            }
+        }
+
+        pub trait RamaTryFrom<T>: Sized {
+            type Error;
+            fn rama_try_from(value: T) -> Result<Self, Self::Error>;
+        }
+
+        pub trait RamaTryInto<T>: Sized {
+            type Error;
+            fn rama_try_into(self) -> Result<T, Self::Error>;
+        }
+
+        impl<T, U> RamaTryInto<U> for T
+        where
+            U: RamaTryFrom<T>,
+        {
+            type Error = U::Error;
+
+            #[inline]
+            fn rama_try_into(self) -> Result<U, U::Error> {
+                U::rama_try_from(self)
+            }
+        }
+    };
+}
+
+#[doc(inline)]
+pub use crate::__rama_from_into_traits as rama_from_into_traits;

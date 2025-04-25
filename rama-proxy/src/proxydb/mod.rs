@@ -127,7 +127,7 @@ pub trait ProxyDB: Send + Sync + 'static {
     ///
     /// Examples are generic I/O issues or
     /// even more common if no proxy match could be found.
-    type Error: Send + Sync + 'static;
+    type Error: Send + 'static;
 
     /// Same as [`Self::get_proxy`] but with a predicate
     /// to filter out found proxies that do not match the given predicate.

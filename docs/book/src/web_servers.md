@@ -24,8 +24,10 @@ As such Axum has a lot of code to do the heavy lifting for you and make building
 
 Rama has these as well, but the user experience especially for compiler error diagnostics might be better with Axum, as they took a lot of care in getting that as right as can possibly be.
 
-There are of course also other difference, some bigger then others. Point being, use Axum if you need to build
-specialised Web Servers, use Rama in case your prime focus is on proxies instead.
+There are of course also other difference, some bigger then others. Point being, use Axum
+if you are building a very typical kind of web service. And use rama for your web Services
+in case you require control over your network stack, have special needs, like the project in general
+or in case the web service(s) are part of a bigger picture project such as a custom proxy stack.
 
 If you are a bit like us,
 do feel free to use Rama for using [Http Clients](./http_clients.md) and [Web Services](./web_servers.md). Either way the choice is yours, but keep in mind that Rama might still have some sharp edges, whereas an excellent project like [Axum](https://docs.rs/axum/latest/axum) will be a much smoother and easier experience for most.

@@ -12,10 +12,10 @@
 [![GitHub Sponsors][ghs-badge]][ghs-url]
 [![Paypal Donation][paypal-badge]][paypal-url]
 
-[crates-badge]: https://img.shields.io/crates/v/rama-tls.svg
-[crates-url]: https://crates.io/crates/rama-tls
-[docs-badge]: https://img.shields.io/docsrs/rama-tls/latest
-[docs-url]: https://docs.rs/rama-tls/latest/rama_tls/index.html
+[crates-badge]: https://img.shields.io/crates/v/rama-tower.svg
+[crates-url]: https://crates.io/crates/rama-tower
+[docs-badge]: https://img.shields.io/docsrs/rama-tower/latest
+[docs-url]: https://docs.rs/rama-tower/latest/rama_tower/index.html
 [license-mit-badge]: https://img.shields.io/badge/license-MIT-blue.svg
 [license-mit-url]: https://github.com/plabayo/rama/blob/main/LICENSE-MIT
 [license-apache-badge]: https://img.shields.io/badge/license-APACHE-blue.svg
@@ -37,11 +37,15 @@
 🦙 Rama (ラマ) is a modular service framework for the 🦀 Rust language to move and transform your network packets.
 The reasons behind the creation of rama can be read in [the "Why Rama" chapter](https://ramaproxy.org/book/why_rama).
 
-## rama-tls
+## rama-tower
 
-Tls implementations for `rama`.
+Support using tower services and layers into your rama stack.
+
+Crate used by the end-user `rama` crate.
 
 Learn more about `rama`:
 
 - Github: <https://github.com/plabayo/rama>
 - Book: <https://ramaproxy.org/book/>
+
+![rama tower visual representation](../docs/img/rama_tower.jpg)

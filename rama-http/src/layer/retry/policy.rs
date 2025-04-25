@@ -185,7 +185,7 @@ macro_rules! impl_retry_policy_either {
             $($param: Policy<State, Response, Error>),+,
             State: Clone + Send + Sync + 'static,
             Response: Send + 'static,
-            Error: Send + Sync + 'static,
+            Error: Send + 'static,
         {
             async fn retry(
                 &self,

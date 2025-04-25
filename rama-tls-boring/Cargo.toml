@@ -1,6 +1,6 @@
 [package]
-name = "rama-tls"
-description = "tls implementations for rama"
+name = "rama-tls-boring"
+description = "tls implementations for rama using boring"
 version = { workspace = true }
 license = { workspace = true }
 edition = { workspace = true }
@@ -15,7 +15,6 @@ workspace = true
 
 [features]
 default = []
-boring = ["dep:rama-boring", "dep:rama-boring-tokio", "rama-net/boring", "dep:moka"]
 compression = ["dep:flate2", "dep:brotli"]
 
 [dependencies]
@@ -23,14 +22,14 @@ brotli = { workspace = true, optional = true }
 flate2 = { workspace = true, optional = true }
 flume = { workspace = true, features = ["async"] }
 itertools = { workspace = true }
-moka = { workspace = true, features = ["sync"], optional = true }
+moka = { workspace = true, features = ["sync"] }
 parking_lot = { workspace = true }
 pin-project-lite = { workspace = true }
-rama-boring = { workspace = true, optional = true }
-rama-boring-tokio = { workspace = true, optional = true }
-rama-core = { version = "0.2.0-alpha.13", path = "../rama-core" }
-rama-net = { version = "0.2.0-alpha.13", path = "../rama-net", features = ["http", "tls"] }
-rama-utils = { version = "0.2.0-alpha.13", path = "../rama-utils" }
+rama-boring = { workspace = true }
+rama-boring-tokio = { workspace = true }
+rama-core = { version = "0.2.0-alpha.14", path = "../rama-core" }
+rama-net = { version = "0.2.0-alpha.14", path = "../rama-net", features = ["http", "tls"] }
+rama-utils = { version = "0.2.0-alpha.14", path = "../rama-utils" }
 tokio = { workspace = true, features = ["macros", "io-std"] }
 tracing = { workspace = true }
 

@@ -17,8 +17,6 @@ workspace = true
 default = []
 http = ["dep:rama-http-types", "dep:sha2", "dep:itertools", "dep:hex"]
 tls = ["dep:hex", "dep:md5", "dep:sha2", "dep:itertools"]
-rustls = ["tls", "dep:rustls"]
-boring = ["tls", "dep:rama-boring", "dep:nom"]
 telemetry = ["rama-core/telemetry"]
 
 [dependencies]
@@ -32,16 +30,14 @@ hex = { workspace = true, optional = true }
 ipnet = { workspace = true }
 itertools = { workspace = true, optional = true }
 md5 = { workspace = true, optional = true }
-nom = { workspace = true, optional = true }
+nom = { workspace = true }
 parking_lot = { workspace = true }
 pin-project-lite = { workspace = true }
 psl = { workspace = true }
-rama-boring = { workspace = true, optional = true }
-rama-core = { version = "0.2.0-alpha.13", path = "../rama-core" }
-rama-http-types = { version = "0.2.0-alpha.13", path = "../rama-http-types", optional = true }
-rama-macros = { version = "0.2.0-alpha.13", path = "../rama-macros" }
-rama-utils = { version = "0.2.0-alpha.13", path = "../rama-utils" }
-rustls = { workspace = true, optional = true }
+rama-core = { version = "0.2.0-alpha.14", path = "../rama-core" }
+rama-http-types = { version = "0.2.0-alpha.14", path = "../rama-http-types", optional = true }
+rama-macros = { version = "0.2.0-alpha.14", path = "../rama-macros" }
+rama-utils = { version = "0.2.0-alpha.14", path = "../rama-utils" }
 serde = { workspace = true, features = ["derive"] }
 sha2 = { workspace = true, optional = true }
 smol_str = { workspace = true }

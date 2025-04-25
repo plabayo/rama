@@ -10,8 +10,14 @@ for example in $(cd $SCRIPT_DIR/.. && find examples -type f -name '*.rs' -not -n
     if ! grep -qr "$example" docs/book; then
         echo "❌ Example $example, missing in rama book"
         exit_code=1
+    elif ! grep -q "$(basename "$example" .rs)" Cargo.toml; then
+        echo "❌ Example "$(basename "$example" .rs)", missing in workspace Cargo.toml"
+        exit_code=1
+    elif ! grep -q "./$(basename "$example")" examples/README.md; then
+        echo "❌ Example "$(basename "$example" .rs)", missing in examples README.md"
+        exit_code=1
     else
-        echo "✅ Example $example, found in rama book"
+        echo "✅ Example $example, found in all expected locations"
     fi
 done
 

@@ -4,15 +4,6 @@
 use rama_core::error::OpaqueError;
 use rama_utils::macros::enums::enum_builder;
 
-#[cfg(feature = "rustls")]
-mod rustls;
-
-#[cfg(feature = "boring")]
-mod boring;
-#[cfg(feature = "boring")]
-#[doc(inline)]
-pub use boring::openssl_cipher_list_str_from_cipher_list;
-
 enum_builder! {
     /// The `ProtocolVersion` TLS protocol enum.  Values in this enum are taken
     /// from the various RFCs covering TLS, and are listed by IANA.

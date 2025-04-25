@@ -15,7 +15,7 @@ use rama::{
     tcp::client::{Request, service::TcpConnector},
     tls::boring::{
         client::{TlsConnectorData, TlsConnectorLayer},
-        dep::boring::x509::X509,
+        core::x509::X509,
     },
 };
 use tokio::net::TcpStream;
@@ -117,7 +117,7 @@ struct LoggingService<S> {
 impl<S, State, Req> Service<State, Req> for LoggingService<S>
 where
     S: Service<State, Req, Response = EstablishedClientConnection<TcpStream, State, Req>>,
-    S::Error: Send + Sync + 'static,
+    S::Error: Send + 'static,
     State: Send + Sync + 'static,
     Req: Send + 'static,
 {

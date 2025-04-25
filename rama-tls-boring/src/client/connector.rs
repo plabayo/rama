@@ -1,3 +1,4 @@
+use crate::RamaTryInto;
 use private::{ConnectorKindAuto, ConnectorKindSecure, ConnectorKindTunnel};
 use rama_boring_tokio::SslStream;
 use rama_core::error::{BoxError, ErrorExt, OpaqueError};
@@ -422,10 +423,14 @@ impl<S, K> TlsConnector<S, K> {
 
         let params = match stream.ssl().session() {
             Some(ssl_session) => {
-                let protocol_version = ssl_session.protocol_version().try_into().map_err(|v| {
-                    OpaqueError::from_display(format!("protocol version {v}"))
-                        .context("boring ssl connector: min proto version")
-                })?;
+                let protocol_version =
+                    ssl_session
+                        .protocol_version()
+                        .rama_try_into()
+                        .map_err(|v| {
+                            OpaqueError::from_display(format!("protocol version {v}"))
+                                .context("boring ssl connector: min proto version")
+                        })?;
                 let application_layer_protocol = stream
                     .ssl()
                     .selected_alpn_protocol()
@@ -441,7 +446,7 @@ impl<S, K> TlsConnector<S, K> {
                     .then(|| stream.ssl().peer_cert_chain())
                     .flatten()
                 {
-                    Some(chain) => Some(chain.try_into()?),
+                    Some(chain) => Some(chain.rama_try_into()?),
                     None => None,
                 };
 

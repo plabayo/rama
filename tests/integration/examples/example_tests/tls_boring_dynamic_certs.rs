@@ -24,10 +24,9 @@ use rama::{
             },
         },
     },
-    tls::boring::dep::boring::x509::X509,
+    tls::boring::core::x509::X509,
     utils::{backoff::ExponentialBackoff, rng::HasherRng},
 };
-
 use std::{str::FromStr, time::Duration};
 
 #[tokio::test]

@@ -8,7 +8,7 @@ use crate::{Context, Service};
 /// anyway not yet be produced at the point this inspector would be layered.
 pub trait RequestInspector<StateIn, RequestIn>: Send + Sync + 'static {
     /// The type of error returned by the service.
-    type Error: Send + Sync + 'static;
+    type Error: Send + 'static;
     type RequestOut: Send + 'static;
     type StateOut: Clone + Send + Sync + 'static;
 

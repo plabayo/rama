@@ -157,7 +157,7 @@ pub trait ConcurrentTracker: Send + Sync + 'static {
 
     /// The error that is returned when the concurrent request limit is reached,
     /// which is also returned in case a used backoff failed.
-    type Error: Send + Sync + 'static;
+    type Error: Send + 'static;
 
     /// Try to access the resource, returning a guard if successful,
     /// or an error if the limit is reached.

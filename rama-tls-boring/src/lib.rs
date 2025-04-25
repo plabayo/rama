@@ -1,4 +1,4 @@
-//! TLS implementations for Rama.
+//! TLS implementations for Rama using boring ssl.
 //!
 //! # Rama
 //!
@@ -17,10 +17,14 @@
 #![cfg_attr(test, allow(clippy::float_cmp))]
 #![cfg_attr(not(test), warn(clippy::print_stdout, clippy::dbg_macro))]
 
-#[cfg(feature = "boring")]
-pub mod boring;
+pub mod client;
+pub mod server;
 
 pub mod keylog;
+pub mod type_conversion;
+
+use rama_utils::macros::enums::rama_from_into_traits;
+rama_from_into_traits!();
 
 pub mod types {
     //! common tls types
@@ -29,4 +33,21 @@ pub mod types {
         ApplicationProtocol, CipherSuite, CompressionAlgorithm, ECPointFormat, ExtensionId,
         ProtocolVersion, SecureTransport, SignatureScheme, SupportedGroup, TlsTunnel, client,
     };
+}
+
+pub mod core {
+    //! Re-export of the [`rama-boring`] crate.
+    //!
+    //! [`rama-boring`]: https://docs.rs/rama-boring
+
+    #[doc(inline)]
+    pub use rama_boring::*;
+
+    pub mod tokio {
+        //! Full Re-export of the [`rama-boring-tokio`] crate.
+        //!
+        //! [`rama-boring-tokio`]: https://docs.rs/rama-boring-tokio
+        #[doc(inline)]
+        pub use rama_boring_tokio::*;
+    }
 }

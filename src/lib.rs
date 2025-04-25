@@ -58,16 +58,16 @@
 //! | 🏗️ web protocols | 🏗️ Web Sockets <sup>(1)</sup> ⸱ ❌ Web Transport <sup>(3)</sup> ⸱ ❌ gRPC <sup>(3)</sup> |
 //! | ✅ [async-method trait](https://blog.rust-lang.org/inside-rust/2023/05/03/stabilizing-async-fn-in-trait.html) services | ✅ [Service] ⸱ ✅ [Layer] ⸱ ✅ [context] ⸱ ✅ [dyn dispatch](crate::service::BoxService) ⸱ ✅ [middleware](crate::layer) |
 //! | ✅ [telemetry] | ✅ [tracing](https://tracing.rs/tracing/) ⸱ ✅ [opentelemetry][telemetry::opentelemetry] ⸱ ✅ [http metrics](crate::http::layer::opentelemetry) ⸱ ✅ [transport metrics](crate::net::stream::layer::opentelemetry) |
-//! | ✅ upstream [proxies](proxy) | ✅ [MemoryProxyDB](crate::proxy::MemoryProxyDB) ⸱ ✅ [L4 Username Config] ⸱ ✅ [Proxy Filters](crate::proxy::ProxyFilter) |
+//! | ✅ upstream [proxies](proxy) | ✅ [MemoryProxyDB](crate::proxy::MemoryProxyDB) ⸱ ✅ [Username Config] ⸱ ✅ [Proxy Filters](crate::proxy::ProxyFilter) |
 //! | ✅ [User Agent (UA)](https://ramaproxy.org/book/intro/user_agent) | ✅ [Http Emulation](crate::ua::profile::HttpProfile) ⸱ ✅ [Tls Emulation](crate::ua::profile::TlsProfile) ⸱ ✅ [UA Parsing](crate::ua::UserAgent) |
 //! | ✅ [Fingerprinting](crate::net::fingerprint) | ✅ [Ja3](crate::net::fingerprint::Ja3) ⸱ ✅ [Ja4](crate::net::fingerprint::Ja4) ⸱ ✅ [Ja4H](crate::net::fingerprint::Ja4H) ⸱ 🏗️ [Akamai passive h2](https://github.com/plabayo/rama/issues/517) <sup>(1)</sup> ⸱ 🏗️ [Peetprint (tls)](https://github.com/plabayo/rama/issues/518) <sup>(1)</sup> |
-//! | ✅ utilities | ✅ [error handling](crate::error) ⸱ ✅ [graceful shutdown](crate::graceful) ⸱ ✅ [Connection Pool](crate::net::client::Pool) ⸱ 🏗️ IP2Loc <sup>(2)</sup> |
+//! | ✅ utilities | ✅ [error handling](crate::error) ⸱ ✅ [graceful shutdown](crate::graceful) ⸱ ✅ [Connection Pool](crate::net::client::Pool) ⸱ ✅ [Tower Adapter](crate::utils::tower)  ⸱ 🏗️ IP2Loc <sup>(2)</sup> |
 //! | 🏗️ Graphical Interface | 🏗️ traffic logger <sup>(2)</sup> ⸱ 🏗️ curl export <sup>(2)</sup> ⸱ 🏗️ [TUI implementation](https://ratatui.rs/) <sup>(2)</sup> ⸱ ❌ traffic intercept <sup>(3)</sup> ⸱ ❌ traffic replay <sup>(3)</sup> |
 //! | ✅ binary | ✅ [prebuilt binaries](https://ramaproxy.org/book/deploy/rama-cli) ⸱ 🏗️ proxy config <sup>(2)</sup> ⸱ ✅ http client <sup>(1)</sup> ⸱ ❌ WASM Plugins <sup>(3)</sup> |
 //! | 🏗️ data scraping | 🏗️ Html Processor <sup>(2)</sup> ⸱ ❌ Json Processor <sup>(3)</sup> |
 //! | ❌ browser | ❌ JS Engine <sup>(3)</sup> ⸱ ❌ [Web API](https://developer.mozilla.org/en-US/docs/Web/API) Emulation <sup>(3)</sup> |
 //!
-//! [L4 Username Config]: https://docs.rs/rama-core/latest/rama_core/username/index.html
+//! [Username Config]: https://docs.rs/rama-core/latest/rama_core/username/index.html
 //!
 //! > 🗒️ _Footnotes_
 //! >
@@ -182,8 +182,8 @@
 //! - [`rama-dns`](https://crates.io/crates/rama-dns): DNS support for rama
 //! - [`rama-tcp`](https://crates.io/crates/rama-tcp): TCP support for rama
 //! - [`rama-udp`](https://crates.io/crates/rama-udp): UDP support for rama
+//! - [`rama-tls-boring`](https://crates.io/crates/rama-tls-boring): [Boring](https://github.com/plabayo/rama-boring) tls support for rama
 //! - [`rama-tls-rustls`](https://crates.io/crates/rama-tls-rustls): [Rustls](https://github.com/rustls/rustls) support for rama
-//! - [`rama-tls`](https://crates.io/crates/rama-tls): TLS support for rama (types, `rustls` and `boring`)
 //! - [`rama-proxy`](https://crates.io/crates/rama-proxy): proxy types and utilities for rama
 //! - [`rama-socks5`](https://crates.io/crates/rama-socks5): SOCKS5 support for rama
 //! - [`rama-haproxy`](https://crates.io/crates/rama-haproxy): rama HaProxy support
@@ -192,6 +192,7 @@
 //! - [`rama-http`](https://crates.io/crates/rama-http): rama http services, layers and utilities
 //! - [`rama-http-backend`](https://crates.io/crates/rama-http-backend): default http backend for `rama`
 //! - [`rama-http-core`](https://crates.io/crates/rama-http-core): http protocol implementation driving `rama-http-backend`
+//! - [`rama-tower`](https://crates.io/crates/rama-tower): provide [tower](https://github.com/tower-rs/tower) compatibility for `rama`
 //!
 //! `rama` crates that live in <https://github.com/plabayo/rama-boring> (forks of `cloudflare/boring`):
 //!
@@ -379,9 +380,9 @@ pub use ::rama_core::telemetry;
 
 #[cfg(any(feature = "rustls", feature = "boring"))]
 pub mod tls {
-    #[cfg(feature = "tls")]
+    #[cfg(feature = "boring")]
     #[doc(inline)]
-    pub use ::rama_tls::*;
+    pub use ::rama_tls_boring as boring;
 
     #[cfg(feature = "rustls")]
     #[doc(inline)]
@@ -423,5 +424,13 @@ pub use ::rama_ua as ua;
 #[cfg(feature = "cli")]
 pub mod cli;
 
-#[doc(inline)]
-pub use ::rama_utils as utils;
+pub mod utils {
+    //! utilities for rama
+
+    #[doc(inline)]
+    pub use ::rama_utils::*;
+
+    #[cfg(feature = "tower")]
+    #[doc(inline)]
+    pub use ::rama_tower as tower;
+}

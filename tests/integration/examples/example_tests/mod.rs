@@ -22,6 +22,8 @@ mod http_mitm_proxy_boring;
 mod http_mitm_proxy_rustls;
 #[cfg(feature = "http-full")]
 mod http_pooled_client;
+#[cfg(all(feature = "http-full", feature = "tower"))]
+mod http_rama_tower;
 #[cfg(feature = "http-full")]
 mod http_rate_limit;
 #[cfg(feature = "http-full")]
