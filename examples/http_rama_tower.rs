@@ -63,8 +63,11 @@ async fn main() {
     let graceful = rama::graceful::Shutdown::default();
 
     let router: Router<()> = Router::new().get("/", ServiceAdapter::new(HelloSvc));
-    let app = LayerAdapter::new((Timeout(Duration::from_secs(30)), AddHelloMarkerHeader))
-        .into_layer(router);
+    let app = LayerAdapter::new((
+        TimeoutLayer(Duration::from_secs(30)),
+        AddHelloMarkerHeaderLayer,
+    ))
+    .into_layer(router);
 
     graceful.spawn_task_fn(async |guard| {
         tracing::info!("running service at: {ADDRESS}");
@@ -86,12 +89,12 @@ async fn main() {
 
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
-struct AddHelloMarkerHeader;
+struct AddHelloMarkerHeaderLayer;
 
 #[derive(Debug, Clone, Default)]
 struct AddHelloMarkerHeaderService<S>(S);
 
-impl<S> Layer<S> for AddHelloMarkerHeader {
+impl<S> Layer<S> for AddHelloMarkerHeaderLayer {
     type Service = AddHelloMarkerHeaderService<S>;
 
     fn layer(&self, inner: S) -> Self::Service {
@@ -122,7 +125,7 @@ where
 }
 
 #[derive(Debug, Clone)]
-struct Timeout(Duration);
+struct TimeoutLayer(Duration);
 
 #[derive(Debug, Clone, Default)]
 struct TimeoutService<S> {
@@ -140,7 +143,7 @@ pin_project! {
     }
 }
 
-impl<S> Layer<S> for Timeout {
+impl<S> Layer<S> for TimeoutLayer {
     type Service = TimeoutService<S>;
 
     fn layer(&self, inner: S) -> Self::Service {
