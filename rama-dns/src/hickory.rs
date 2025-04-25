@@ -3,6 +3,7 @@
 use crate::DnsResolver;
 use hickory_resolver::{
     Name, TokioResolver,
+    config::ResolverConfig,
     name_server::TokioConnectionProvider,
     proto::rr::rdata::{A, AAAA},
 };
@@ -41,6 +42,67 @@ impl HickoryDns {
     /// Construct a new [`HickoryDns`] instance with the [`Default`] setup.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    #[inline]
+    /// Construct a new non-shared [`HickoryDns`] instance using Google's nameservers.
+    ///
+    /// Creates a default configuration, using `8.8.8.8`, `8.8.4.4` and `2001:4860:4860::8888`,
+    /// `2001:4860:4860::8844` (thank you, Google).
+    ///
+    /// Please see Google's [privacy
+    /// statement](https://developers.google.com/speed/public-dns/privacy) for important information
+    /// about what they track, many ISP's track similar information in DNS.
+    ///
+    /// To use the system configuration see: [`Self::new_system`].
+    pub fn new_google() -> Self {
+        Self::builder()
+            .with_config(ResolverConfig::google())
+            .build()
+    }
+
+    #[inline]
+    /// Construct a new non-shared [`HickoryDns`] instance using Cloudflare's nameservers.
+    ///
+    /// Creates a default configuration, using `1.1.1.1`, `1.0.0.1` and `2606:4700:4700::1111`, `2606:4700:4700::1001` (thank you, Cloudflare).
+    ///
+    /// Please see: <https://www.cloudflare.com/dns/>
+    ///
+    /// To use the system configuration see: [`Self::new_system`].
+    pub fn new_cloudflare() -> Self {
+        Self::builder()
+            .with_config(ResolverConfig::cloudflare())
+            .build()
+    }
+
+    #[inline]
+    /// Construct a new non-shared [`HickoryDns`] instance using Quad9's nameservers.
+    ///
+    /// Creates a configuration, using `9.9.9.9`, `149.112.112.112` and `2620:fe::fe`, `2620:fe::fe:9`,
+    /// the "secure" variants of the quad9 settings (thank you, Quad9).
+    ///
+    /// Please see: <https://www.quad9.net/faq/>
+    ///
+    /// To use the system configuration see: [`Self::new_system`].
+    pub fn new_quad9() -> Self {
+        Self::builder().with_config(ResolverConfig::quad9()).build()
+    }
+
+    #[cfg(any(unix, target_os = "windows"))]
+    /// Construct a new [`HickoryDns`] with the system configuration.
+    ///
+    /// This will use `/etc/resolv.conf` on Unix OSes and the registry on Windows.
+    pub fn try_new_system() -> Result<Self, OpaqueError> {
+        Ok(TokioResolver::builder_tokio()
+            .context("build async dns resolver with system conf")?
+            .build()
+            .into())
+    }
+}
+
+impl From<TokioResolver> for HickoryDns {
+    fn from(value: TokioResolver) -> Self {
+        Self(Arc::new(value))
     }
 }
 

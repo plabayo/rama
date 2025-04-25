@@ -138,6 +138,7 @@ parking_lot = "0.12"
 const_format = "0.2"
 hickory-resolver = { version = "0.25", default-features = false, features = [
     "tokio",
+    "system-config",
 ] }
 arc-swap = "1.7"
 flume = "0.11"
