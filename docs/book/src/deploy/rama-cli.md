@@ -33,7 +33,7 @@ Options:
 The easiest way to install `rama` is by using `cargo`:
 
 ```sh
-cargo install rama-cli@0.2.0-alpha.12
+cargo install rama-cli@0.2.0-alpha.13
 ```
 
 This will install `rama-cli` from source and make it available
@@ -42,7 +42,7 @@ a pre-built binary when available for your platform you can do so
 using [`cargo binstall`](https://github.com/cargo-bins/cargo-binstall):
 
 ```sh
-cargo binstall rama-cli@0.2.0-alpha.12
+cargo binstall rama-cli@0.2.0-alpha.13
 ```
 
 On 🍎 MacOS you can also install the `rama` binary using [HomeBrew](https://brew.sh/):

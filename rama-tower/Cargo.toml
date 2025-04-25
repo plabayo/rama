@@ -18,8 +18,8 @@ default = []
 http = ["dep:rama-http-types"]
 
 [dependencies]
-rama-core = { version = "0.2.0-alpha.13", path = "../rama-core" }
-rama-http-types = { version = "0.2.0-alpha.13", path = "../rama-http-types", optional = true }
+rama-core = { version = "0.2.0-alpha.14", path = "../rama-core" }
+rama-http-types = { version = "0.2.0-alpha.14", path = "../rama-http-types", optional = true }
 tokio = { workspace = true }
 tower-layer = { workspace = true }
 tower-service = { workspace = true }
