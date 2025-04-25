@@ -2775,7 +2775,6 @@ version = "0.2.0-alpha.13"
 dependencies = [
  "rama-core",
  "rama-http-types",
- "rama-utils",
  "tokio",
  "tower-layer",
  "tower-service",
