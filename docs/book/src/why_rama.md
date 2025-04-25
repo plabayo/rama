@@ -74,5 +74,5 @@ You can find an example on how to do this at
 <https://github.com/plabayo/rama/blob/main/examples/http_rama_tower.rs>.
 
 <div class="book-article-image-center">
-<img style="width: 50%" src="https://raw.githubusercontent.com/plabayo/rama/main/docs/img/rama_tower.jpg)" alt="rama tower visual representation">
+<img style="width: 50%" src="https://raw.githubusercontent.com/plabayo/rama/main/docs/img/rama_tower.jpg" alt="rama tower visual representation">
 </div>
