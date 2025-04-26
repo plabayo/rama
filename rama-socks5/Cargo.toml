@@ -15,13 +15,16 @@ workspace = true
 
 [features]
 default = []
+dns = ["dep:rama-dns", "dep:rand"]
 
 [dependencies]
 bytes = { workspace = true }
-rama-core = { version = "0.2.0-alpha.8", path = "../rama-core" }
-rama-net = { version = "0.2.0-alpha.8", path = "../rama-net", features = ["http"] }
-rama-tcp = { version = "0.2.0-alpha.8", path = "../rama-tcp", features = ["http"] }
-rama-utils = { version = "0.2.0-alpha.8", path = "../rama-utils" }
+rama-core = { version = "0.2.0-alpha.13", path = "../rama-core" }
+rama-dns = { version = "0.2.0-alpha.13", path = "../rama-dns", optional = true }
+rama-net = { version = "0.2.0-alpha.13", path = "../rama-net", features = ["http"] }
+rama-tcp = { version = "0.2.0-alpha.13", path = "../rama-tcp", features = ["http"] }
+rama-utils = { version = "0.2.0-alpha.13", path = "../rama-utils" }
+rand = { workspace = true, optional = true }
 smallvec = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }

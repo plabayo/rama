@@ -3,6 +3,7 @@
 use crate::Context;
 use crate::error::BoxError;
 use std::pin::Pin;
+use std::sync::Arc;
 
 /// A [`Service`] that produces rama services,
 /// to serve requests with, be it transport layer requests or application layer requests.
@@ -23,9 +24,7 @@ pub trait Service<S, Request>: Sized + Send + Sync + 'static {
 
     /// Box this service to allow for dynamic dispatch.
     fn boxed(self) -> BoxService<S, Request, Self::Response, Self::Error> {
-        BoxService {
-            inner: Box::new(self),
-        }
+        BoxService::new(self)
     }
 }
 
@@ -114,19 +113,21 @@ where
 
 /// A boxed [`Service`], to serve requests with,
 /// for where you require dynamic dispatch.
+#[derive(Clone)]
 pub struct BoxService<S, Request, Response, Error> {
     inner:
-        Box<dyn DynService<S, Request, Response = Response, Error = Error> + Send + Sync + 'static>,
+        Arc<dyn DynService<S, Request, Response = Response, Error = Error> + Send + Sync + 'static>,
 }
 
 impl<S, Request, Response, Error> BoxService<S, Request, Response, Error> {
     /// Create a new [`BoxService`] from the given service.
+    #[inline]
     pub fn new<T>(service: T) -> Self
     where
         T: Service<S, Request, Response = Response, Error = Error>,
     {
         Self {
-            inner: Box::new(service),
+            inner: Arc::new(service),
         }
     }
 }
@@ -147,12 +148,18 @@ where
     type Response = Response;
     type Error = Error;
 
+    #[inline]
     fn serve(
         &self,
         ctx: Context<S>,
         req: Request,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
         self.inner.serve_box(ctx, req)
+    }
+
+    #[inline]
+    fn boxed(self) -> BoxService<S, Request, Response, Error> {
+        self
     }
 }
 

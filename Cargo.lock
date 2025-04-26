@@ -2745,9 +2745,11 @@ version = "0.2.0-alpha.14"
 dependencies = [
  "bytes",
  "rama-core",
+ "rama-dns",
  "rama-net",
  "rama-tcp",
  "rama-utils",
+ "rand 0.9.1",
  "smallvec",
  "tokio",
  "tokio-test",

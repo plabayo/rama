@@ -1,5 +1,3 @@
-use std::fmt;
-
 use crate::{
     Socks5Auth,
     proto::{
@@ -9,6 +7,8 @@ use crate::{
     },
 };
 use rama_net::{address::Authority, stream::Stream};
+use rama_utils::macros::generate_field_setters;
+use std::fmt;
 
 #[derive(Debug, Clone, Default)]
 /// Socks5 client implementation of [RFC 1928]
@@ -24,6 +24,8 @@ impl Client {
     pub fn new() -> Self {
         Self::default()
     }
+
+    generate_field_setters!(auth, Socks5Auth);
 }
 
 #[derive(Debug)]
@@ -149,8 +151,6 @@ impl std::error::Error for HandshakeError {
 }
 
 impl Client {
-    rama_utils::macros::generate_field_setters!(auth, Socks5Auth);
-
     /// Establish a connection with a Socks5 server making use of the [`Command::Connect`] flow.
     ///
     /// In case the handshake was sucessfull it will return
