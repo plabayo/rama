@@ -12,6 +12,12 @@
 //! Learn more about User Agents (UA) and why Rama supports it
 //! at <https://ramaproxy.org/book/intro/user_agent.html>.
 //!
+//! # Emulation
+//!
+//! Check out the [emulate] module for user-agent emulation
+//! or learn more about it at
+//! <https://ramaproxy.org/book/intro/user_agent.html#user-agent-emulation>.
+//!
 //! # Rama
 //!
 //! Crate used by the end-user `rama` crate and `rama` crate authors alike.
