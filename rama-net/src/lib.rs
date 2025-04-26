@@ -22,6 +22,7 @@ pub mod client;
 pub mod conn;
 pub mod forwarded;
 pub mod mode;
+pub mod proxy;
 pub mod stream;
 pub mod test_utils;
 pub mod user;

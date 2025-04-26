@@ -1,10 +1,8 @@
-use rama_core::{
-    Context, Service,
-    error::{BoxError, ErrorExt, OpaqueError},
-};
+use rama_core::{Context, Service, error::BoxError};
 use rama_net::{
     address::Authority,
     client::EstablishedClientConnection,
+    proxy::{ProxyRequest, StreamForwardService},
     stream::{Socket, Stream},
 };
 use rama_tcp::client::{Request as TcpRequest, service::TcpConnector};
@@ -86,13 +84,6 @@ pub struct Connector<C, S> {
     // instead of the actual local address used to connect
     hide_local_address: bool,
 }
-
-pub struct ProxyRequest<S, T> {
-    pub source: S,
-    pub target: T,
-}
-
-// ^ TODO: this might be useful to move to somewhere else??
 
 impl<C, S> Connector<C, S> {
     /// Create a new [`Connector`].
@@ -185,78 +176,6 @@ impl<C: Clone, S: Clone> Clone for Connector<C, S> {
             connector: self.connector.clone(),
             service: self.service.clone(),
             hide_local_address: self.hide_local_address,
-        }
-    }
-}
-
-impl<S: fmt::Debug, T: fmt::Debug> fmt::Debug for ProxyRequest<S, T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ProxyRequest")
-            .field("source", &self.source)
-            .field("target", &self.target)
-            .finish()
-    }
-}
-
-impl<S: Clone, T: Clone> Clone for ProxyRequest<S, T> {
-    fn clone(&self) -> Self {
-        Self {
-            source: self.source.clone(),
-            target: self.target.clone(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Default)]
-#[non_exhaustive]
-/// A proxy [`Service`] which takes a [`ProxyRequest`]
-/// and copies the bytes of both the source and target [`Stream`]s
-/// bidirectionally.
-pub struct StreamForwardService;
-
-// ^ TODO: this might be useful to move to somewhere else??
-
-impl StreamForwardService {
-    #[inline]
-    /// Create a new [`StreamForwardService`].
-    pub fn new() -> Self {
-        Self::default()
-    }
-}
-
-impl<State, S, T> Service<State, ProxyRequest<S, T>> for StreamForwardService
-where
-    State: Clone + Send + Sync + 'static,
-    S: Stream + Unpin,
-    T: Stream + Unpin,
-{
-    type Response = ();
-    type Error = OpaqueError;
-
-    async fn serve(
-        &self,
-        _ctx: Context<State>,
-        ProxyRequest {
-            mut source,
-            mut target,
-        }: ProxyRequest<S, T>,
-    ) -> Result<Self::Response, Self::Error> {
-        match tokio::io::copy_bidirectional(&mut source, &mut target).await {
-            Ok((bytes_copied_north, bytes_copied_south)) => {
-                tracing::trace!(
-                    %bytes_copied_north,
-                    %bytes_copied_south,
-                    "(proxy) I/O stream forwarder finished"
-                );
-                Ok(())
-            }
-            Err(err) => {
-                if rama_net::conn::is_connection_error(&err) {
-                    Ok(())
-                } else {
-                    Err(err.context("(proxy) I/O stream forwarder"))
-                }
-            }
         }
     }
 }

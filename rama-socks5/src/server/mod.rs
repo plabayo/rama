@@ -18,13 +18,11 @@ use rama_net::stream::Stream;
 use std::fmt;
 
 mod connect;
-pub use connect::{
-    Connector, DefaultConnector, ProxyRequest, Socks5Connector, StreamForwardService,
-};
+pub use connect::{Connector, DefaultConnector, Socks5Connector};
 
 // TODO:
-// - move primitive connect types to rama-net
-// - use these primitive types in rama-socks5 as well as rama-tcp (proxy)
+// - [x] move primitive connect types to rama-net
+// - [ ] use these primitive types in rama-socks5 as well as rama-tcp (proxy)
 
 mod bind;
 pub use bind::Socks5Binder;
