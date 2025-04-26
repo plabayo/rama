@@ -403,6 +403,7 @@ overhead. So `rama`'s performance is comparable to [`hyper`] and frameworks that
 Here's a list of external benchmarks:
 
 - http server benchmark @ <https://web-frameworks-benchmark.netlify.app/result>
+- http server + client benchmark @ <https://sharkbench.dev/web>
 
 Please [open an issue](https://github.com/plabayo/rama/issues) or Pull Request (PR) in case
 you are aware of any other benchmarks of interest in regards to http(s) servers,
