@@ -478,67 +478,81 @@ a:visited {
     color: var(--text-color-secondary);
 }
 
-
 .section-title {
     position: relative;
-    cursor: pointer;
 }
 
-.section-title:hover::before,
-.section-title:target::before {
+.section-title > a:hover::before,
+.section-title:target > a::before {
     position: absolute;
     content: "»";
     margin-inline-start: -20px;
     color: var(--primary-color);
     opacity: 0.7;
+    top: 50%;
+    transform: translateY(-50%);
 }
 
-h2#features.section-title::before {
+h2#features.section-title > a::before {
     position: absolute;
     content: "🧩";
     margin-inline-start: -50px;
+    top: 50%;
+    transform: translateY(-50%);
 }
 
-h2#features.section-title:hover::before,
-h2#features.section-title:target::before {
+h2#features.section-title > a:hover::before,
+h2#features.section-title:target > a::before {
     position: absolute;
     content: "»";
     margin-inline-start: -30px;
     color: var(--primary-color);
     opacity: 0.7;
+    top: 50%;
+    transform: translateY(-50%);
 }
 
-h2#features-table.section-title::before {
+h2#features-table.section-title > a::before {
     position: absolute;
     content: "🔋";
     margin-inline-start: -50px;
+    top: 50%;
+    transform: translateY(-50%);
 }
 
-h2#features-table.section-title:hover::before,
-h2#features-table.section-title:target::before {
+h2#features-table.section-title > a:hover::before,
+h2#features-table.section-title:target > a::before {
     position: absolute;
     content: "»";
     margin-inline-start: -30px;
     color: var(--primary-color);
     opacity: 0.7;
+    top: 50%;
+    transform: translateY(-50%);
 }
 
-h2#partnership.section-title::before {
+h2#partnership.section-title > a::before {
     position: absolute;
     content: "🤝";
     margin-inline-start: -30px;
+    top: 50%;
+    transform: translateY(-50%);
 }
 
-h2#partnership.section-title:hover::before,
-h2#partnership.section-title:target::before {
+h2#partnership.section-title > a:hover::before,
+h2#partnership.section-title:target > a::before {
     position: absolute;
     content: "»";
     margin-inline-start: -20px;
     color: var(--primary-color);
     opacity: 0.7;
+    top: 50%;
+    transform: translateY(-50%);
 }
 
-.section-title a {
+.section-title > a {
+    cursor: pointer;
+    width: fit-content;
     color: inherit;
     text-decoration: none;
 }
