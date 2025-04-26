@@ -20,10 +20,6 @@ use std::fmt;
 mod connect;
 pub use connect::{Connector, DefaultConnector, Socks5Connector};
 
-// TODO:
-// - [x] move primitive connect types to rama-net
-// - [ ] use these primitive types in rama-socks5 as well as rama-tcp (proxy)
-
 mod bind;
 pub use bind::Socks5Binder;
 
