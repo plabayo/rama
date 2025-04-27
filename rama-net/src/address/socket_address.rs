@@ -105,12 +105,7 @@ impl SocketAddress {
     }
 
     /// Gets the [`IpAddr`] reference.
-    pub fn ip_addr(&self) -> &IpAddr {
-        &self.ip_addr
-    }
-
-    /// Consumes the [`SocketAddress`] and returns the [`IpAddr`].
-    pub fn into_ip_addr(self) -> IpAddr {
+    pub fn ip_addr(&self) -> IpAddr {
         self.ip_addr
     }
 

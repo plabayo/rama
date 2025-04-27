@@ -1,15 +1,21 @@
-use std::{io, net::IpAddr, sync::Arc};
+use std::{
+    fmt, io,
+    net::{IpAddr, Ipv4Addr},
+    sync::Arc,
+    time::Duration,
+};
 
-use rama_core::{Context, error::BoxError};
+use rama_core::{Context, Service, error::BoxError};
 use rama_net::{
-    address::{Authority, SocketAddress},
+    address::{Authority, Host, SocketAddress},
+    proxy::{ProxyRequest, StreamForwardService},
     stream::Stream,
 };
 use rama_tcp::{TcpStream, server::TcpListener};
-
-use crate::proto::{ReplyKind, server::Reply};
+use rama_utils::macros::generate_field_setters;
 
 use super::Error;
+use crate::proto::{ReplyKind, server::Reply};
 
 /// Types which can be used as socks5 [`Command::Bind`] drivers on the server side.
 ///
@@ -17,37 +23,34 @@ use super::Error;
 ///
 /// The actual underlying trait is sealed and not exposed for usage.
 /// No custom binders can be implemented. You can however customise
-/// the individual steps as provided and used by `Binder` (TODO).
+/// the individual steps as provided and used by `Binder`.
 ///
 /// [`Socks5Acceptor`]: crate::server::Socks5Acceptor
 /// [`Command::Bind`]: crate::proto::Command::Bind
-pub trait Socks5Binder: Socks5BinderSeal {}
+pub trait Socks5Binder<S, State>: Socks5BinderSeal<S, State> {}
 
-impl<C> Socks5Binder for C where C: Socks5BinderSeal {}
+impl<S, State, C> Socks5Binder<S, State> for C where C: Socks5BinderSeal<S, State> {}
 
-pub trait Socks5BinderSeal: Send + Sync + 'static {
-    fn accept_bind<S, State>(
+pub trait Socks5BinderSeal<S, State>: Send + Sync + 'static {
+    fn accept_bind(
         &self,
         ctx: Context<State>,
         stream: S,
         destination: Authority,
-    ) -> impl Future<Output = Result<(), Error>> + Send + '_
-    where
-        S: Stream + Unpin,
-        State: Clone + Send + Sync + 'static;
+    ) -> impl Future<Output = Result<(), Error>> + Send + '_;
 }
 
-impl Socks5BinderSeal for () {
-    async fn accept_bind<S, State>(
+impl<S, State> Socks5BinderSeal<S, State> for ()
+where
+    S: Stream + Unpin,
+    State: Clone + Send + Sync + 'static,
+{
+    async fn accept_bind(
         &self,
         _ctx: Context<State>,
         mut stream: S,
         destination: Authority,
-    ) -> Result<(), Error>
-    where
-        S: Stream + Unpin,
-        State: Clone + Send + Sync + 'static,
-    {
+    ) -> Result<(), Error> {
         tracing::debug!(
             %destination,
             "socks5 server: abort: command not supported: Bind",
@@ -63,6 +66,9 @@ impl Socks5BinderSeal for () {
     }
 }
 
+/// Default [`Binder`] type.
+pub type DefaultBinder = Binder<(), StreamForwardService>;
+
 /// Only "useful" public [`Socks5Binder`] implementation,
 /// which actually is able to accept bind requests and process them.
 ///
@@ -76,6 +82,9 @@ impl Socks5BinderSeal for () {
 pub struct Binder<A, S> {
     acceptor: A,
     service: S,
+
+    strict: bool,
+    accept_timeout: Option<Duration>,
 }
 
 impl<A, S> Binder<A, S> {
@@ -85,31 +94,30 @@ impl<A, S> Binder<A, S> {
     /// you can also use a [`Default`] [`Binder`] and overwrite the specific component
     /// using [`Binder::with_acceptor`] or [`Binder::with_service`].
     pub fn new(acceptor: A, service: S) -> Self {
-        Self { acceptor, service }
+        Self {
+            acceptor,
+            service,
+            strict: false,
+            accept_timeout: None,
+        }
     }
 }
 
 impl<A, S> Binder<A, S> {
-    /// Overwrite the [`Binder`]'s acceptor [`Service`]
+    /// Overwrite the [`Binder`]'s [`AcceptorFactory`],
     /// used to open a listener, return the address and
     /// wait for an incoming connection which it will return.
-    ///
-    /// Any [`Service`] can be used as long as it has the signature:
-    ///
-    /// ```plain
-    /// (Context<State>, Acceptor)
-    ///     -> (EstablishedConnection<T, State, TcpRequest>, Into<BoxError>)
-    /// ```
     pub fn with_acceptor<T>(self, acceptor: T) -> Binder<T, S> {
-        // TODO: change doc comment
         Binder {
             acceptor,
             service: self.service,
+            strict: self.strict,
+            accept_timeout: self.accept_timeout,
         }
     }
 
     /// Overwrite the [`Connector`]'s [`Service`]
-    /// used to actually do the proxy between the source and target [`Stream`].
+    /// used to actually do the proxy between the source and incoming bind [`Stream`].
     ///
     /// Any [`Service`] can be used as long as it has the signature:
     ///
@@ -117,10 +125,49 @@ impl<A, S> Binder<A, S> {
     /// (Context<State>, ProxyRequest) -> ((), Into<BoxError>)
     /// ```
     pub fn with_service<T>(self, service: T) -> Binder<A, T> {
-        // TODO: change doc comment
         Binder {
             acceptor: self.acceptor,
             service,
+            strict: self.strict,
+            accept_timeout: self.accept_timeout,
+        }
+    }
+
+    /// Define whether or not to strictly compare the incoming
+    /// connection's address against the bind request bind address, partly or fully, if defined at all.
+    pub fn set_strict_security(&mut self, strict: bool) -> &mut Self {
+        self.strict = strict;
+        self
+    }
+
+    /// Define whether or not to strictly compare the incoming
+    /// connection's address against the bind request bind address, partly or fully, if defined at all.
+    pub fn with_strict_security(mut self, strict: bool) -> Self {
+        self.strict = strict;
+        self
+    }
+
+    generate_field_setters!(accept_timeout, Duration);
+}
+
+impl<A: fmt::Debug, S: fmt::Debug> fmt::Debug for Binder<A, S> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Binder")
+            .field("acceptor", &self.acceptor)
+            .field("service", &self.service)
+            .field("strict", &self.strict)
+            .field("accept_timeout", &self.accept_timeout)
+            .finish()
+    }
+}
+
+impl<A: Clone, S: Clone> Clone for Binder<A, S> {
+    fn clone(&self) -> Self {
+        Self {
+            acceptor: self.acceptor.clone(),
+            service: self.service.clone(),
+            strict: self.strict,
+            accept_timeout: self.accept_timeout,
         }
     }
 }
@@ -217,150 +264,180 @@ where
     }
 }
 
-// TODO: implement default binder, binder, and core logic
 // TODO: add mock binder
 // TODO: add test
 
-// impl Default for DefaultConnector {
-//     fn default() -> Self {
-//         Self {
-//             connector: TcpConnector::default(),
-//             service: StreamForwardService::default(),
-//             hide_local_address: false,
-//         }
-//     }
-// }
+impl Default for DefaultBinder {
+    fn default() -> Self {
+        Self {
+            acceptor: (),
+            service: StreamForwardService::default(),
+            strict: false,
+            accept_timeout: Some(Duration::from_secs(60)),
+        }
+    }
+}
 
-// impl<C: fmt::Debug, S: fmt::Debug> fmt::Debug for Connector<C, S> {
-//     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-//         f.debug_struct("Connector")
-//             .field("connector", &self.connector)
-//             .field("service", &self.service)
-//             .field("hide_local_address", &self.hide_local_address)
-//             .finish()
-//     }
-// }
+impl<S, State, F, StreamService> Socks5BinderSeal<S, State> for Binder<F, StreamService>
+where
+    S: Stream + Unpin,
+    State: Clone + Send + Sync + 'static,
+    F: AcceptorFactory<Error: Into<BoxError>>,
+    <F::Acceptor as Acceptor>::Stream: Unpin,
+    StreamService: Service<
+            State,
+            ProxyRequest<S, <F::Acceptor as Acceptor>::Stream>,
+            Response = (),
+            Error: Into<BoxError>,
+        >,
+{
+    async fn accept_bind(
+        &self,
+        ctx: Context<State>,
+        mut stream: S,
+        destination: Authority,
+    ) -> Result<(), Error> {
+        tracing::trace!(
+            %destination,
+            "socks5 server: bind: try to create acceptor",
+        );
 
-// impl<C: Clone, S: Clone> Clone for Connector<C, S> {
-//     fn clone(&self) -> Self {
-//         Self {
-//             connector: self.connector.clone(),
-//             service: self.service.clone(),
-//             hide_local_address: self.hide_local_address,
-//         }
-//     }
-// }
+        let (dest_host, dest_port) = destination.into_parts();
+        let dest_addr = match dest_host {
+            Host::Name(domain) => {
+                tracing::debug!(
+                    %domain,
+                    "bind command does not accept domain as bind address",
+                );
+                let reply_kind = ReplyKind::AddressTypeNotSupported;
+                Reply::error_reply(reply_kind)
+                    .write_to(&mut stream)
+                    .await
+                    .map_err(|err| {
+                        Error::io(err).with_context("write server reply: bind failed")
+                    })?;
+                return Err(Error::aborted("bind failed").with_context(reply_kind));
+            }
+            Host::Address(ip_addr) => ip_addr,
+        };
+        let destination = SocketAddress::new(dest_addr, dest_port);
 
-// impl<S, T, State, InnerConnector, StreamService> Socks5ConnectorSeal<S, State>
-//     for Connector<InnerConnector, StreamService>
-// where
-//     S: Stream + Unpin,
-//     T: Stream + Socket + Unpin,
-//     State: Clone + Send + Sync + 'static,
-//     InnerConnector: Service<
-//             State,
-//             TcpRequest,
-//             Response = EstablishedClientConnection<T, State, TcpRequest>,
-//             Error: Into<BoxError>,
-//         >,
-//     StreamService: Service<State, ProxyRequest<S, T>, Response = (), Error: Into<BoxError>>,
-// {
-//     async fn accept_connect(
-//         &self,
-//         ctx: Context<State>,
-//         mut stream: S,
-//         destination: Authority,
-//     ) -> Result<(), Error> {
-//         tracing::trace!(
-//             %destination,
-//             "socks5 server: connect: try to establish connection",
-//         );
+        // TODO: allow bind interface to be customised?
 
-//         let EstablishedClientConnection {
-//             ctx, conn: target, ..
-//         } = match self
-//             .connector
-//             .serve(ctx, TcpRequest::new(destination.clone()))
-//             .await
-//         {
-//             Ok(ecs) => ecs,
-//             Err(err) => {
-//                 let err: BoxError = err.into();
-//                 tracing::debug!(
-//                     %destination,
-//                     ?err,
-//                     "socks5 server: abort: connect failed",
-//                 );
+        let acceptor: F::Acceptor = self
+            .acceptor
+            .make_acceptor(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)))
+            .await
+            .map_err(Error::service)?;
 
-//                 let reply_kind = if let Some(err) = err.downcast_ref::<std::io::Error>() {
-//                     match err.kind() {
-//                         std::io::ErrorKind::PermissionDenied => ReplyKind::ConnectionNotAllowed,
-//                         std::io::ErrorKind::HostUnreachable => ReplyKind::HostUnreachable,
-//                         std::io::ErrorKind::NetworkUnreachable => ReplyKind::NetworkUnreachable,
-//                         std::io::ErrorKind::TimedOut | std::io::ErrorKind::UnexpectedEof => {
-//                             ReplyKind::TtlExpired
-//                         }
-//                         _ => ReplyKind::ConnectionRefused,
-//                     }
-//                 } else {
-//                     ReplyKind::ConnectionRefused
-//                 };
+        let bind_address = acceptor.local_addr().map_err(Error::io)?;
+        Reply::new(bind_address.into())
+            .write_to(&mut stream)
+            .await
+            .map_err(|err| {
+                Error::io(err).with_context("write server reply: bind: acceptor listener ready")
+            })?;
 
-//                 Reply::error_reply(reply_kind)
-//                     .write_to(&mut stream)
-//                     .await
-//                     .map_err(|err| {
-//                         Error::io(err).with_context("write server reply: connect failed")
-//                     })?;
-//                 return Err(Error::aborted("connect failed").with_context(reply_kind));
-//             }
-//         };
+        let accept_future = acceptor.accept();
 
-//         let local_addr = target
-//             .local_addr()
-//             .map(Into::into)
-//             .inspect_err(|err| {
-//                 tracing::debug!(
-//                     %destination,
-//                     %err,
-//                     "socks5 server: connect: failed to retrieve local addr from established conn, use default '0.0.0.0:0'",
-//                 );
-//             })
-//             .unwrap_or(Authority::default_ipv4(0));
-//         let peer_addr = target.peer_addr();
+        let result = match self.accept_timeout {
+            Some(duration) => match tokio::time::timeout(duration, accept_future).await {
+                Ok(result) => result,
+                Err(err) => {
+                    tracing::debug!(
+                        timeout_err=?err,
+                        "accept future timed out",
+                    );
+                    let reply_kind = ReplyKind::TtlExpired;
+                    Reply::error_reply(reply_kind)
+                        .write_to(&mut stream)
+                        .await
+                        .map_err(|err| {
+                            Error::io(err).with_context("write server reply: bind failed")
+                        })?;
+                    return Err(Error::aborted("bind failed").with_context(reply_kind));
+                }
+            },
+            None => accept_future.await,
+        };
 
-//         tracing::trace!(
-//             %destination,
-//             %local_addr,
-//             ?peer_addr,
-//             "socks5 server: connect: connection established, serve pipe",
-//         );
+        let (target, incoming_addr) = match result {
+            Ok((stream, addr)) => (stream, addr),
+            Err(err) => {
+                let err: BoxError = err.into();
+                tracing::debug!(
+                    %destination,
+                    ?err,
+                    "socks5 server: abort: bind failed",
+                );
 
-//         Reply::new(if self.hide_local_address {
-//             Authority::default_ipv4(0)
-//         } else {
-//             local_addr.clone()
-//         })
-//         .write_to(&mut stream)
-//         .await
-//         .map_err(|err| Error::io(err).with_context("write server reply: connect succeeded"))?;
+                let reply_kind = (&err).into();
+                Reply::error_reply(reply_kind)
+                    .write_to(&mut stream)
+                    .await
+                    .map_err(|err| {
+                        Error::io(err).with_context("write server reply: bind failed")
+                    })?;
+                return Err(Error::aborted("bind failed").with_context(reply_kind));
+            }
+        };
 
-//         tracing::trace!(
-//             %destination,
-//             %local_addr,
-//             ?peer_addr,
-//             "socks5 server: connect: reply sent, start serving source-target pipe",
-//         );
+        if self.strict {
+            let destination_ip_addr = destination.ip_addr();
+            let incoming_ip_addr = incoming_addr.ip_addr();
+            if !destination_ip_addr.is_unspecified() && destination_ip_addr != incoming_ip_addr {
+                tracing::debug!(
+                    %destination_ip_addr,
+                    %incoming_ip_addr,
+                    "strict mode: security: unexpected incoming ip address",
+                );
+                let reply_kind = ReplyKind::ConnectionNotAllowed;
+                Reply::error_reply(reply_kind)
+                    .write_to(&mut stream)
+                    .await
+                    .map_err(|err| {
+                        Error::io(err)
+                            .with_context("write server reply: invalid incoming ip address")
+                    })?;
+                return Err(Error::aborted("bind failed").with_context(reply_kind));
+            }
 
-//         self.service
-//             .serve(
-//                 ctx,
-//                 ProxyRequest {
-//                     source: stream,
-//                     target,
-//                 },
-//             )
-//             .await
-//             .map_err(|err| Error::service(err).with_context("serve connect pipe"))
-//     }
-// }
+            let destination_port = destination.port();
+            let incoming_port = incoming_addr.port();
+            if destination_port != 0 && destination_port != incoming_port {
+                tracing::debug!(
+                    %destination_ip_addr,
+                    %destination_port,
+                    %incoming_ip_addr,
+                    %incoming_port,
+                    "strict mode: security: unexpected incoming port",
+                );
+                let reply_kind = ReplyKind::ConnectionNotAllowed;
+                Reply::error_reply(reply_kind)
+                    .write_to(&mut stream)
+                    .await
+                    .map_err(|err| {
+                        Error::io(err).with_context("write server reply: invalid incoming port")
+                    })?;
+                return Err(Error::aborted("bind failed").with_context(reply_kind));
+            }
+        } else {
+            tracing::trace!(
+                %destination,
+                %incoming_addr,
+                "non-strict mode: do not validate address of incoming connection",
+            );
+        }
+
+        self.service
+            .serve(
+                ctx,
+                ProxyRequest {
+                    source: stream,
+                    target,
+                },
+            )
+            .await
+            .map_err(|err| Error::service(err).with_context("serve bind pipe"))
+    }
+}

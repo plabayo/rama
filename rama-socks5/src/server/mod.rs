@@ -21,7 +21,7 @@ mod connect;
 pub use connect::{Connector, DefaultConnector, Socks5Connector};
 
 mod bind;
-pub use bind::{Acceptor, AcceptorFactory, Binder, Socks5Binder};
+pub use bind::{Acceptor, AcceptorFactory, Binder, DefaultBinder, Socks5Binder};
 
 mod udp;
 pub use udp::Socks5UdpAssociator;
@@ -276,12 +276,12 @@ impl std::error::Error for Error {
 
 impl<C, B, U> Socks5Acceptor<C, B, U>
 where
-    B: Socks5Binder,
     U: Socks5UdpAssociator,
 {
     pub async fn accept<S, State>(&self, ctx: Context<State>, mut stream: S) -> Result<(), Error>
     where
         C: Socks5Connector<S, State>,
+        B: Socks5Binder<S, State>,
         S: Stream + Unpin,
         State: Clone + Send + Sync + 'static,
     {

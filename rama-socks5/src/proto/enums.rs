@@ -1,3 +1,4 @@
+use rama_core::error::BoxError;
 use rama_utils::macros::enums::enum_builder;
 
 enum_builder! {
@@ -136,5 +137,23 @@ enum_builder! {
         TtlExpired => 0x06,
         CommandNotSupported => 0x07,
         AddressTypeNotSupported => 0x08,
+    }
+}
+
+impl From<&BoxError> for ReplyKind {
+    fn from(err: &BoxError) -> Self {
+        if let Some(err) = err.downcast_ref::<std::io::Error>() {
+            match err.kind() {
+                std::io::ErrorKind::PermissionDenied => ReplyKind::ConnectionNotAllowed,
+                std::io::ErrorKind::HostUnreachable => ReplyKind::HostUnreachable,
+                std::io::ErrorKind::NetworkUnreachable => ReplyKind::NetworkUnreachable,
+                std::io::ErrorKind::TimedOut | std::io::ErrorKind::UnexpectedEof => {
+                    ReplyKind::TtlExpired
+                }
+                _ => ReplyKind::ConnectionRefused,
+            }
+        } else {
+            ReplyKind::ConnectionRefused
+        }
     }
 }

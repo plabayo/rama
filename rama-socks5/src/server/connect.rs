@@ -6,7 +6,8 @@ use rama_net::{
     stream::{Socket, Stream},
 };
 use rama_tcp::client::{Request as TcpRequest, service::TcpConnector};
-use std::fmt;
+use rama_utils::macros::generate_field_setters;
+use std::{fmt, time::Duration};
 
 use super::Error;
 use crate::proto::{ReplyKind, server::Reply};
@@ -83,6 +84,12 @@ pub struct Connector<C, S> {
     // if true it uses the 0.0.0.0:0 bind address
     // instead of the actual local address used to connect
     hide_local_address: bool,
+
+    // ideally we would not do this and instead rely on the timeout layer...
+    // sadly however because of the "state" concept it is a bit impossible to use that here,
+    // without also knowing the state.. Another good reason to get rid of that context everywhere,
+    // see: <https://github.com/plabayo/rama/issues/462>
+    connect_timeout: Option<Duration>,
 }
 
 impl<C, S> Connector<C, S> {
@@ -96,6 +103,7 @@ impl<C, S> Connector<C, S> {
             connector,
             service,
             hide_local_address: false,
+            connect_timeout: None,
         }
     }
 
@@ -112,6 +120,8 @@ impl<C, S> Connector<C, S> {
         self.hide_local_address = hide;
         self
     }
+
+    generate_field_setters!(connect_timeout, Duration);
 }
 
 impl<C, S> Connector<C, S> {
@@ -130,6 +140,7 @@ impl<C, S> Connector<C, S> {
             connector,
             service: self.service,
             hide_local_address: self.hide_local_address,
+            connect_timeout: self.connect_timeout,
         }
     }
 
@@ -146,6 +157,7 @@ impl<C, S> Connector<C, S> {
             connector: self.connector,
             service,
             hide_local_address: self.hide_local_address,
+            connect_timeout: self.connect_timeout,
         }
     }
 }
@@ -156,6 +168,7 @@ impl Default for DefaultConnector {
             connector: TcpConnector::default(),
             service: StreamForwardService::default(),
             hide_local_address: false,
+            connect_timeout: Some(Duration::from_secs(60)),
         }
     }
 }
@@ -166,6 +179,7 @@ impl<C: fmt::Debug, S: fmt::Debug> fmt::Debug for Connector<C, S> {
             .field("connector", &self.connector)
             .field("service", &self.service)
             .field("hide_local_address", &self.hide_local_address)
+            .field("connect_timeout", &self.connect_timeout)
             .finish()
     }
 }
@@ -176,6 +190,7 @@ impl<C: Clone, S: Clone> Clone for Connector<C, S> {
             connector: self.connector.clone(),
             service: self.service.clone(),
             hide_local_address: self.hide_local_address,
+            connect_timeout: self.connect_timeout,
         }
     }
 }
@@ -205,13 +220,36 @@ where
             "socks5 server: connect: try to establish connection",
         );
 
+        // TODO: replace with timeout layer once possible
+
+        let connect_future = self
+            .connector
+            .serve(ctx, TcpRequest::new(destination.clone()));
+
+        let result = match self.connect_timeout {
+            Some(duration) => match tokio::time::timeout(duration, connect_future).await {
+                Ok(result) => result,
+                Err(err) => {
+                    tracing::debug!(
+                        timeout_err=?err,
+                        "connect future timed out",
+                    );
+                    let reply_kind = ReplyKind::TtlExpired;
+                    Reply::error_reply(reply_kind)
+                        .write_to(&mut stream)
+                        .await
+                        .map_err(|err| {
+                            Error::io(err).with_context("write server reply: connect failed")
+                        })?;
+                    return Err(Error::aborted("connect failed").with_context(reply_kind));
+                }
+            },
+            None => connect_future.await,
+        };
+
         let EstablishedClientConnection {
             ctx, conn: target, ..
-        } = match self
-            .connector
-            .serve(ctx, TcpRequest::new(destination.clone()))
-            .await
-        {
+        } = match result {
             Ok(ecs) => ecs,
             Err(err) => {
                 let err: BoxError = err.into();
@@ -221,20 +259,7 @@ where
                     "socks5 server: abort: connect failed",
                 );
 
-                let reply_kind = if let Some(err) = err.downcast_ref::<std::io::Error>() {
-                    match err.kind() {
-                        std::io::ErrorKind::PermissionDenied => ReplyKind::ConnectionNotAllowed,
-                        std::io::ErrorKind::HostUnreachable => ReplyKind::HostUnreachable,
-                        std::io::ErrorKind::NetworkUnreachable => ReplyKind::NetworkUnreachable,
-                        std::io::ErrorKind::TimedOut | std::io::ErrorKind::UnexpectedEof => {
-                            ReplyKind::TtlExpired
-                        }
-                        _ => ReplyKind::ConnectionRefused,
-                    }
-                } else {
-                    ReplyKind::ConnectionRefused
-                };
-
+                let reply_kind = (&err).into();
                 Reply::error_reply(reply_kind)
                     .write_to(&mut stream)
                     .await
