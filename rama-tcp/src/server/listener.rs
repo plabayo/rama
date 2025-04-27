@@ -243,6 +243,14 @@ impl<State> TcpListener<State>
 where
     State: Clone + Send + Sync + 'static,
 {
+    /// Accept a single connection from this listener,
+    /// what you can do with whatever you want.
+    #[inline]
+    pub async fn accept(&self) -> std::io::Result<(TcpStream, SocketAddress)> {
+        let (stream, addr) = self.inner.accept().await?;
+        Ok((stream, addr.into()))
+    }
+
     /// Serve connections from this listener with the given service.
     ///
     /// This method will block the current listener for each incoming connection,

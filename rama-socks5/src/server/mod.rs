@@ -21,7 +21,7 @@ mod connect;
 pub use connect::{Connector, DefaultConnector, Socks5Connector};
 
 mod bind;
-pub use bind::Socks5Binder;
+pub use bind::{Acceptor, AcceptorFactory, Binder, Socks5Binder};
 
 mod udp;
 pub use udp::Socks5UdpAssociator;
