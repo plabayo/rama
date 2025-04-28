@@ -1,13 +1,8 @@
-use std::{
-    fmt, io,
-    net::{IpAddr, Ipv4Addr},
-    sync::Arc,
-    time::Duration,
-};
+use std::{fmt, io, sync::Arc, time::Duration};
 
 use rama_core::{Context, Service, error::BoxError};
 use rama_net::{
-    address::{Authority, Host, SocketAddress},
+    address::{Authority, Host, Interface, SocketAddress},
     proxy::{ProxyRequest, StreamForwardService},
     stream::Stream,
 };
@@ -83,6 +78,8 @@ pub struct Binder<A, S> {
     acceptor: A,
     service: S,
 
+    bind_interface: Interface,
+
     strict: bool,
     accept_timeout: Option<Duration>,
 }
@@ -97,6 +94,7 @@ impl<A, S> Binder<A, S> {
         Self {
             acceptor,
             service,
+            bind_interface: Interface::default_ipv4(0),
             strict: false,
             accept_timeout: None,
         }
@@ -111,6 +109,7 @@ impl<A, S> Binder<A, S> {
         Binder {
             acceptor,
             service: self.service,
+            bind_interface: self.bind_interface,
             strict: self.strict,
             accept_timeout: self.accept_timeout,
         }
@@ -128,6 +127,7 @@ impl<A, S> Binder<A, S> {
         Binder {
             acceptor: self.acceptor,
             service,
+            bind_interface: self.bind_interface,
             strict: self.strict,
             accept_timeout: self.accept_timeout,
         }
@@ -147,6 +147,18 @@ impl<A, S> Binder<A, S> {
         self
     }
 
+    /// Define the (network) [`Interface`] to bind to.
+    pub fn set_bind_interface(&mut self, interface: Interface) -> &mut Self {
+        self.bind_interface = interface;
+        self
+    }
+
+    /// Define the (network) [`Interface`] to bind to.
+    pub fn with_bind_interface(mut self, interface: Interface) -> Self {
+        self.bind_interface = interface;
+        self
+    }
+
     generate_field_setters!(accept_timeout, Duration);
 }
 
@@ -155,6 +167,7 @@ impl<A: fmt::Debug, S: fmt::Debug> fmt::Debug for Binder<A, S> {
         f.debug_struct("Binder")
             .field("acceptor", &self.acceptor)
             .field("service", &self.service)
+            .field("bind_interface", &self.bind_interface)
             .field("strict", &self.strict)
             .field("accept_timeout", &self.accept_timeout)
             .finish()
@@ -166,6 +179,7 @@ impl<A: Clone, S: Clone> Clone for Binder<A, S> {
         Self {
             acceptor: self.acceptor.clone(),
             service: self.service.clone(),
+            bind_interface: self.bind_interface.clone(),
             strict: self.strict,
             accept_timeout: self.accept_timeout,
         }
@@ -179,12 +193,10 @@ pub trait AcceptorFactory: Send + Sync + 'static {
     /// Error to be returned in case of failure.
     type Error: Send + 'static;
 
-    // TODO: support also Interface names etc for unix envs and w/e, to be added to rama-net
-
     /// Create a new [`Acceptor`] ready to do the 2-step "bind" dance.
     fn make_acceptor(
         &self,
-        interface: IpAddr,
+        interface: Interface,
     ) -> impl Future<Output = Result<Self::Acceptor, Self::Error>> + Send + '_;
 }
 
@@ -194,7 +206,7 @@ impl<F: AcceptorFactory> AcceptorFactory for Arc<F> {
 
     fn make_acceptor(
         &self,
-        interface: IpAddr,
+        interface: Interface,
     ) -> impl Future<Output = Result<Self::Acceptor, Self::Error>> + Send + '_ {
         (**self).make_acceptor(interface)
     }
@@ -206,16 +218,15 @@ impl AcceptorFactory for () {
 
     fn make_acceptor(
         &self,
-        interface: IpAddr,
+        interface: Interface,
     ) -> impl Future<Output = Result<Self::Acceptor, Self::Error>> + Send + '_ {
-        TcpListener::bind(SocketAddress::new(interface, 0))
-        // TODO: support other interfaces, not just ip addr, e.g. IF_NAME (eth0, ...)
+        TcpListener::bind(interface)
     }
 }
 
 impl<F, Fut, A, E> AcceptorFactory for F
 where
-    F: FnOnce(IpAddr) -> Fut + Clone + Send + Sync + 'static,
+    F: FnOnce(Interface) -> Fut + Clone + Send + Sync + 'static,
     Fut: Future<Output = Result<A, E>> + Send + 'static,
     A: Acceptor,
     E: Send + 'static,
@@ -225,7 +236,7 @@ where
 
     fn make_acceptor(
         &self,
-        interface: IpAddr,
+        interface: Interface,
     ) -> impl Future<Output = Result<Self::Acceptor, Self::Error>> + Send + '_ {
         (self.clone())(interface)
     }
@@ -272,6 +283,7 @@ impl Default for DefaultBinder {
         Self {
             acceptor: (),
             service: StreamForwardService::default(),
+            bind_interface: Interface::default_ipv4(0),
             strict: false,
             accept_timeout: Some(Duration::from_secs(60)),
         }
@@ -322,11 +334,9 @@ where
         };
         let destination = SocketAddress::new(dest_addr, dest_port);
 
-        // TODO: allow bind interface to be customised?
-
         let acceptor: F::Acceptor = self
             .acceptor
-            .make_acceptor(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)))
+            .make_acceptor(self.bind_interface.clone())
             .await
             .map_err(Error::service)?;
 

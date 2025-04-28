@@ -33,3 +33,11 @@ pub use proxy::ProxyAddress;
 mod domain_address;
 #[doc(inline)]
 pub use domain_address::DomainAddress;
+
+mod interface;
+#[doc(inline)]
+pub use interface::Interface;
+
+#[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+#[doc(inline)]
+pub use interface::DeviceName;
