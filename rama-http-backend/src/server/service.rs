@@ -12,7 +12,7 @@ use rama_http_core::server::conn::auto::Http2Builder as InnerAutoHttp2Builder;
 use rama_http_core::server::conn::http1::Builder as Http1ConnBuilder;
 use rama_http_core::server::conn::http2::Builder as H2ConnBuilder;
 use rama_http_types::{IntoResponse, Request};
-use rama_net::address::Interface;
+use rama_net::socket::Interface;
 use rama_net::stream::Stream;
 use rama_tcp::server::TcpListener;
 use std::convert::Infallible;

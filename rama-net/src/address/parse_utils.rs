@@ -1,7 +1,7 @@
 use rama_core::error::{ErrorExt, OpaqueError};
 use std::net::{IpAddr, Ipv6Addr};
 
-pub(super) fn split_port_from_str(s: &str) -> Result<(&str, u16), OpaqueError> {
+pub(crate) fn split_port_from_str(s: &str) -> Result<(&str, u16), OpaqueError> {
     if let Some(colon) = s.as_bytes().iter().rposition(|c| *c == b':') {
         match s[colon + 1..].parse() {
             Ok(port) => Ok((&s[..colon], port)),
@@ -12,7 +12,7 @@ pub(super) fn split_port_from_str(s: &str) -> Result<(&str, u16), OpaqueError> {
     }
 }
 
-pub(super) fn try_to_parse_str_to_ip(value: &str) -> Option<IpAddr> {
+pub(crate) fn try_to_parse_str_to_ip(value: &str) -> Option<IpAddr> {
     if value.starts_with('[') || value.ends_with(']') {
         let value = value
             .strip_prefix('[')

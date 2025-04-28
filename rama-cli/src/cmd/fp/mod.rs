@@ -31,7 +31,7 @@ use rama::{
         limit::policy::ConcurrentPolicy,
     },
     net::{
-        address::SocketAddress,
+        socket::Interface,
         stream::layer::http::BodyLimitLayer,
         tls::{
             ApplicationProtocol, DataEncoding,
@@ -65,9 +65,9 @@ pub struct StorageAuthorized;
 #[derive(Debug, Args)]
 /// rama fp service (used for FP collection in purpose of UA emulation)
 pub struct CliCommandFingerprint {
-    /// the address to bind to
+    /// the interface to bind to
     #[arg(long, default_value = "127.0.0.1:8080")]
-    bind: SocketAddress,
+    bind: Interface,
 
     #[arg(short = 'c', long, default_value_t = 0)]
     /// the number of concurrent connections to allow
@@ -222,7 +222,6 @@ pub async fn run(cfg: CliCommandFingerprint) -> Result<(), BoxError> {
         Some(cfg) => Some(cfg.try_into()?),
     };
 
-    let address = cfg.bind;
     let ch_headers = all_client_hint_header_name_strings()
         .join(", ")
         .parse::<HeaderValue>()
@@ -236,10 +235,14 @@ pub async fn run(cfg: CliCommandFingerprint) -> Result<(), BoxError> {
             .await
             .expect("create state"),
     ))
-    .bind(address)
+    .bind(cfg.bind.clone())
     .await
     .map_err(OpaqueError::from_boxed)
     .context("bind fp service")?;
+
+    let bind_address = tcp_listener
+        .local_addr()
+        .context("get local addr of tcp listener")?;
 
     graceful.spawn_task_fn(async move |guard|  {
         let inner_http_service = HijackLayer::new(
@@ -318,7 +321,11 @@ pub async fn run(cfg: CliCommandFingerprint) -> Result<(), BoxError> {
 
         match cfg.http_version {
             HttpVersion::Auto => {
-                tracing::info!("FP Service (auto) listening on: {address}");
+                tracing::info!(
+                    bind = %cfg.bind,
+                    %bind_address,
+                    "FP Service (auto) listening",
+                );
                 tcp_listener
                     .serve_graceful(
                         guard.clone(),
@@ -329,7 +336,11 @@ pub async fn run(cfg: CliCommandFingerprint) -> Result<(), BoxError> {
                     .await;
             }
             HttpVersion::H1 => {
-                tracing::info!("FP Service (http/1.1) listening on: {address}");
+                tracing::info!(
+                    bind = %cfg.bind,
+                    %bind_address,
+                    "FP Service (HTTP/1.1) listening",
+                );
                 tcp_listener
                     .serve_graceful(
                         guard,
@@ -338,7 +349,11 @@ pub async fn run(cfg: CliCommandFingerprint) -> Result<(), BoxError> {
                     .await;
             }
             HttpVersion::H2 => {
-                tracing::info!("FP Service (h2) listening on: {address}");
+                tracing::info!(
+                    bind = %cfg.bind,
+                    %bind_address,
+                    "FP Service (H2) listening",
+                );
                 tcp_listener
                     .serve_graceful(
                         guard.clone(),

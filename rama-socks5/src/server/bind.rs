@@ -2,8 +2,9 @@ use std::{fmt, io, sync::Arc, time::Duration};
 
 use rama_core::{Context, Service, error::BoxError};
 use rama_net::{
-    address::{Authority, Host, Interface, SocketAddress},
+    address::{Authority, Host, SocketAddress},
     proxy::{ProxyRequest, StreamForwardService},
+    socket::Interface,
     stream::Stream,
 };
 use rama_tcp::{TcpStream, server::TcpListener};

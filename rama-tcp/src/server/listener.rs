@@ -4,8 +4,8 @@ use rama_core::error::BoxError;
 use rama_core::error::ErrorContext;
 use rama_core::graceful::ShutdownGuard;
 use rama_core::rt::Executor;
-use rama_net::address::Interface;
 use rama_net::address::SocketAddress;
+use rama_net::socket::Interface;
 use rama_net::stream::SocketInfo;
 use std::fmt;
 use std::pin::pin;
@@ -14,7 +14,7 @@ use std::{io, net::SocketAddr};
 use tokio::net::TcpListener as TokioTcpListener;
 
 #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
-use rama_net::address::DeviceName;
+use rama_net::socket::{DeviceName, SocketOptions};
 
 use crate::TcpStream;
 
@@ -122,25 +122,14 @@ where
         })
     }
 
-    #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
-    /// Creates a new TcpListener, which will be bound to the specified (interface) device name).
+    #[cfg(any(windows, unix))]
+    /// Creates a new TcpListener, which will be bound to the specified socket.
     ///
     /// The returned listener is ready for accepting connections.
-    pub async fn bind_device<N: TryInto<DeviceName, Error: Into<BoxError>>>(
+    pub fn bind_socket(
         self,
-        name: N,
+        socket: rama_net::socket::core::Socket,
     ) -> Result<TcpListener<S>, BoxError> {
-        let name = name.try_into().map_err(Into::<BoxError>::into)?;
-        let socket = rama_net::socket::Socket::new(
-            rama_net::socket::Domain::IPV4,
-            rama_net::socket::Type::STREAM,
-            Some(rama_net::socket::Protocol::TCP),
-        )
-        .context("create tcp socket")?;
-        socket
-            .bind_device(Some(name.as_bytes()))
-            .context("bind device name")?;
-
         let listener = std::net::TcpListener::from(socket);
         listener
             .set_nonblocking(true)
@@ -149,6 +138,24 @@ where
             inner: TokioTcpListener::from_std(listener)?,
             state: self.state,
         })
+    }
+
+    #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+    /// Creates a new TcpListener, which will be bound to the specified (interface) device name).
+    ///
+    /// The returned listener is ready for accepting connections.
+    pub fn bind_device<N: TryInto<DeviceName, Error: Into<BoxError>>>(
+        self,
+        name: N,
+    ) -> Result<TcpListener<S>, BoxError> {
+        let name = name.try_into().map_err(Into::<BoxError>::into)?;
+        let socket = SocketOptions {
+            device: Some(name),
+            ..SocketOptions::default_tcp()
+        }
+        .try_build_socket()
+        .context("create tcp ipv4 socket attached to device")?;
+        Self::bind_socket(self, socket)
     }
 
     /// Creates a new TcpListener, which will be bound to the specified interface.
@@ -161,7 +168,13 @@ where
         match interface.try_into().map_err(Into::<BoxError>::into)? {
             Interface::Address(addr) => self.bind_address(addr).await,
             #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
-            Interface::Device(name) => self.bind_device(name).await,
+            Interface::Device(name) => self.bind_device(name),
+            Interface::Socket(opts) => {
+                let socket = opts
+                    .try_build_socket()
+                    .context("build socket from options")?;
+                self.bind_socket(socket)
+            }
         }
     }
 }
@@ -215,15 +228,26 @@ impl TcpListener<()> {
         TcpListenerBuilder::default().bind_address(addr).await
     }
 
+    #[cfg(any(windows, unix))]
+    /// Creates a new TcpListener, which will be bound to the specified socket.
+    ///
+    /// The returned listener is ready for accepting connections.
+    pub fn bind_socket(
+        self,
+        socket: rama_net::socket::core::Socket,
+    ) -> Result<TcpListener<()>, BoxError> {
+        TcpListenerBuilder::default().bind_socket(socket)
+    }
+
     #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
     /// Creates a new TcpListener, which will be bound to the specified (interface) device name.
     ///
     /// The returned listener is ready for accepting connections.
-    pub async fn bind_device<N: TryInto<DeviceName, Error: Into<BoxError>>>(
+    pub fn bind_device<N: TryInto<DeviceName, Error: Into<BoxError>>>(
         self,
         name: N,
     ) -> Result<TcpListener<()>, BoxError> {
-        TcpListenerBuilder::default().bind_device(name).await
+        TcpListenerBuilder::default().bind_device(name)
     }
 
     /// Creates a new TcpListener, which will be bound to the specified interface.
@@ -275,11 +299,11 @@ impl From<TokioTcpListener> for TcpListener<()> {
 }
 
 #[cfg(any(windows, unix))]
-impl TryFrom<rama_net::socket::Socket> for TcpListener<()> {
+impl TryFrom<rama_net::socket::core::Socket> for TcpListener<()> {
     type Error = std::io::Error;
 
     #[inline]
-    fn try_from(value: rama_net::socket::Socket) -> Result<Self, Self::Error> {
+    fn try_from(value: rama_net::socket::core::Socket) -> Result<Self, Self::Error> {
         let listener = std::net::TcpListener::from(value);
         listener.try_into()
     }

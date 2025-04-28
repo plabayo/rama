@@ -5,7 +5,7 @@ use rama::{
     cli::{ForwardKind, service::ip::IpServiceBuilder},
     combinators::Either,
     error::{BoxError, ErrorContext, OpaqueError},
-    net::address::SocketAddress,
+    net::socket::Interface,
     rt::Executor,
     tcp::server::TcpListener,
 };
@@ -16,9 +16,9 @@ use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberI
 #[derive(Debug, Args)]
 /// rama ip service (returns the ip address of the client)
 pub struct CliCommandIp {
-    /// the address to bind to
+    /// the interface to bind to
     #[arg(long, default_value = "127.0.0.1:8080")]
-    bind: SocketAddress,
+    bind: Interface,
 
     #[arg(long, short = 'c', default_value_t = 0)]
     /// the number of concurrent connections to allow
@@ -88,15 +88,27 @@ pub async fn run(cfg: CliCommandIp) -> Result<(), BoxError> {
         )
     };
 
-    tracing::info!("starting ip service on: {}", cfg.bind);
+    tracing::info!(
+        bind = %cfg.bind,
+        "starting ip service",
+    );
     let tcp_listener = TcpListener::build()
-        .bind(cfg.bind)
+        .bind(cfg.bind.clone())
         .await
         .map_err(OpaqueError::from_boxed)
         .context("bind ip service")?;
 
+    let bind_address = tcp_listener
+        .local_addr()
+        .context("get local addr of tcp listener")?;
+
     graceful.spawn_task_fn(async move |guard| {
-        tracing::info!("ip service ready");
+        tracing::info!(
+            bind = %cfg.bind,
+            %bind_address,
+            "ip service ready",
+        );
+
         tcp_listener.serve_graceful(guard, tcp_service).await;
     });
 

@@ -1,29 +1,31 @@
-use super::{SocketAddress, parse_utils::try_to_parse_str_to_ip};
+use crate::address::{SocketAddress, parse_utils::try_to_parse_str_to_ip};
+use rama_core::error::{ErrorContext, OpaqueError};
 use std::{
     fmt,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
     str::FromStr,
+    sync::Arc,
 };
 
-use rama_core::error::{ErrorContext, OpaqueError};
-
-// TODO: once there is demand for it, also add a third variant to [`Interface`]: `SocketOptions`,
-// which basically be a struct that can be used to combine address+device,
-// but also to set all kind of other options (e.g. reuse ip addr, ...)
-
-/// The interface to bind a socket to.
+/// The interface to bind a [`Socket`] to.
 ///
-/// NOTE that you set both an address and device name for a single socket,
-/// this utility type is however for the most easy cases only, because
-/// besides these options there are still many others.
-///
-/// For any advanced special-purpose use-case it is expected that folks use
-/// raw sockets directly and turn those into streams/listeners afterwards.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// [`Socket`]: super::core::Socket
+#[derive(Debug, Clone)]
 pub enum Interface {
+    /// Bind to a [`Socket`] address (ip + port), the most common choice
+    ///
+    /// [`Socket`]: super::core::Socket
     Address(SocketAddress),
     #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+    /// Bind to a network device interface name, using IPv4/TCP.
+    ///
+    /// Use [`SocketOptions`] if you want more finegrained control,
+    /// or make a raw [`Socket`] yourself.
+    ///
+    /// [`Socket`]: super::core::Socket
     Device(DeviceName),
+    /// Bind to a socket with the following options.
+    Socket(Arc<SocketOptions>),
 }
 
 impl Interface {
@@ -36,15 +38,19 @@ impl Interface {
 #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
 pub use device::DeviceName;
 
+use super::SocketOptions;
+
 #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
 mod device {
     use super::*;
     use smol_str::SmolStr;
 
     #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    /// Name of a (network) interface device name, e.g. `eth0`.
     pub struct DeviceName(SmolStr);
 
     impl DeviceName {
+        /// Create a new [`DeviceName`].
         pub const fn new(name: &'static str) -> Self {
             if !is_valid(name.as_bytes()) {
                 panic!("static str is not a valid (interface) device name");
@@ -158,6 +164,9 @@ mod device {
             false
         } else {
             let mut i = 0;
+            if DEVICE_FIRST_CHARS[s[0] as usize] == 0 {
+                return false;
+            }
             while i < s.len() {
                 if DEVICE_CHARS[s[i] as usize] == 0 {
                     return false;
@@ -201,6 +210,37 @@ mod device {
             0,     0,     0,     0,     0,     0,     0,     0,     0,     0, // 24x
             0,     0,     0,     0,     0,     0                              // 25x
     ];
+
+    #[rustfmt::skip]
+    const DEVICE_FIRST_CHARS: [u8; 256] = [
+        //  0      1      2      3      4      5      6      7      8      9
+            0,     0,     0,     0,     0,     0,     0,     0,     0,     0,    //   x
+            0,     0,     0,     0,     0,     0,     0,     0,     0,     0,    //  1x
+            0,     0,     0,     0,     0,     0,     0,     0,     0,     0,    //  2x
+            0,     0,     0,     0,     0,     0,     0,     0,     0,     0,    //  3x
+            0,     0,     0,     0,     0,     0,     0,     0,     0,     0,    //  4x
+            0,     0,     0,     0,     0,     0,     0,     0,     0,     0,    //  5x
+            0,     0,     0,     0,     0,     b'A',  b'B',  b'C',  b'D',  b'E', //  6x
+            b'F',  b'G',  b'H',  b'I',  b'J',  b'K',  b'L',  b'M',  b'N',  b'O', //  7x
+            b'P',  b'Q',  b'R',  b'S',  b'T',  b'U',  b'V',  b'W',  b'X',  b'Y', //  8x
+            b'Z',     0,     0,     0,     0,     0,     0,  b'a',  b'b',  b'c', //  9x
+            b'd',  b'e',  b'f',  b'g',  b'h',  b'i',  b'j',  b'k',  b'l',  b'm', // 10x
+            b'n',  b'o',  b'p',  b'q',  b'r',  b's',  b't',  b'u',  b'v',  b'w', // 11x
+            b'x',  b'y',  b'z',     0,     0,     0,     0,     0,     0,  0,    // 12x
+            0,     0,     0,     0,     0,     0,     0,     0,     0,     0,    // 13x
+            0,     0,     0,     0,     0,     0,     0,     0,     0,     0,    // 14x
+            0,     0,     0,     0,     0,     0,     0,     0,     0,     0,    // 15x
+            0,     0,     0,     0,     0,     0,     0,     0,     0,     0,    // 16x
+            0,     0,     0,     0,     0,     0,     0,     0,     0,     0,    // 17x
+            0,     0,     0,     0,     0,     0,     0,     0,     0,     0,    // 18x
+            0,     0,     0,     0,     0,     0,     0,     0,     0,     0,    // 19x
+            0,     0,     0,     0,     0,     0,     0,     0,     0,     0,    // 20x
+            0,     0,     0,     0,     0,     0,     0,     0,     0,     0,    // 21x
+            0,     0,     0,     0,     0,     0,     0,     0,     0,     0,    // 22x
+            0,     0,     0,     0,     0,     0,     0,     0,     0,     0,    // 23x
+            0,     0,     0,     0,     0,     0,     0,     0,     0,     0,    // 24x
+            0,     0,     0,     0,     0,     0                                 // 25x
+    ];
 }
 
 impl Interface {
@@ -209,7 +249,7 @@ impl Interface {
     /// # Example
     ///
     /// ```
-    /// use rama_net::address::Interface;
+    /// use rama_net::socket::Interface;
     ///
     /// let interface = Interface::local_ipv4(8080);
     /// assert_eq!("127.0.0.1:8080", interface.to_string());
@@ -224,7 +264,7 @@ impl Interface {
     /// # Example
     ///
     /// ```
-    /// use rama_net::address::Interface;
+    /// use rama_net::socket::Interface;
     ///
     /// let interface = Interface::local_ipv6(8080);
     /// assert_eq!("[::1]:8080", interface.to_string());
@@ -239,7 +279,7 @@ impl Interface {
     /// # Example
     ///
     /// ```
-    /// use rama_net::address::Interface;
+    /// use rama_net::socket::Interface;
     ///
     /// let interface = Interface::default_ipv4(8080);
     /// assert_eq!("0.0.0.0:8080", interface.to_string());
@@ -254,7 +294,7 @@ impl Interface {
     /// # Example
     ///
     /// ```
-    /// use rama_net::address::Interface;
+    /// use rama_net::socket::Interface;
     ///
     /// let interface = Interface::default_ipv6(8080);
     /// assert_eq!("[::]:8080", interface.to_string());
@@ -268,7 +308,7 @@ impl Interface {
     /// # Example
     ///
     /// ```
-    /// use rama_net::address::Interface;
+    /// use rama_net::socket::Interface;
     ///
     /// let interface = Interface::broadcast_ipv4(8080);
     /// assert_eq!("255.255.255.255:8080", interface.to_string());
@@ -355,12 +395,27 @@ impl From<([u8; 16], u16)> for Interface {
     }
 }
 
+impl From<SocketOptions> for Interface {
+    #[inline]
+    fn from(value: SocketOptions) -> Self {
+        Self::Socket(Arc::new(value))
+    }
+}
+
+impl From<Arc<SocketOptions>> for Interface {
+    #[inline]
+    fn from(value: Arc<SocketOptions>) -> Self {
+        Self::Socket(value)
+    }
+}
+
 impl fmt::Display for Interface {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Interface::Address(socket_address) => write!(f, "{socket_address}"),
             #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
             Interface::Device(name) => write!(f, "{name}"),
+            Interface::Socket(opts) => write!(f, "{opts:?}"),
         }
     }
 }
@@ -396,7 +451,18 @@ impl TryFrom<&str> for Interface {
     type Error = OpaqueError;
 
     fn try_from(s: &str) -> Result<Self, Self::Error> {
-        let (ip_addr, port) = crate::address::parse_utils::split_port_from_str(s)?;
+        let (ip_addr, port) = match crate::address::parse_utils::split_port_from_str(s) {
+            Ok(t) => t,
+            Err(err) => {
+                #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+                if let Ok(name) = DeviceName::try_from(s) {
+                    return Ok(Self::Device(name));
+                }
+
+                return Err(err);
+            }
+        };
+
         match try_to_parse_str_to_ip(ip_addr) {
             Some(ip_addr) => match ip_addr {
                 IpAddr::V6(_) if !s.starts_with('[') => Err(OpaqueError::from_display(
@@ -448,8 +514,18 @@ impl<'de> serde::Deserialize<'de> for Interface {
     where
         D: serde::Deserializer<'de>,
     {
-        let s = <std::borrow::Cow<'de, str>>::deserialize(deserializer)?;
-        s.parse().map_err(serde::de::Error::custom)
+        #[allow(clippy::large_enum_variant)]
+        #[derive(serde::Deserialize)]
+        #[serde(untagged)]
+        enum Variants {
+            Str(String),
+            Opts(SocketOptions),
+        }
+
+        match Variants::deserialize(deserializer)? {
+            Variants::Str(s) => s.parse().map_err(serde::de::Error::custom),
+            Variants::Opts(opts) => Ok(Interface::Socket(Arc::new(opts))),
+        }
     }
 }
 
@@ -469,7 +545,10 @@ mod tests {
                 assert_eq!(socket_address.port(), port, "parsing: {}", s);
             }
             #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
-            Interface::Device(name) => panic!("unexpected device name '{name}: parsing '{s}"),
+            Interface::Device(name) => panic!("unexpected device name '{name}': parsing '{s}'"),
+            Interface::Socket(opts) => {
+                panic!("unexpected socket options '{opts:?}': parsing '{s}'")
+            }
         }
     }
 
@@ -521,6 +600,9 @@ mod tests {
             }
             #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
             Interface::Device(name) => assert_eq!(s, name.as_str()),
+            Interface::Socket(opts) => {
+                panic!("unexpected socket options '{opts:?}': parsing '{s}'")
+            }
         }
     }
 
@@ -560,11 +642,16 @@ mod tests {
             "[::1]",
             "2001:db8:3333:4444:5555:6666:7777:8888",
             "[2001:db8:3333:4444:5555:6666:7777:8888]",
+            #[cfg(not(any(target_os = "android", target_os = "fuchsia", target_os = "linux")))]
             "example.com",
+            #[cfg(not(any(target_os = "android", target_os = "fuchsia", target_os = "linux")))]
             "example.com:",
+            #[cfg(not(any(target_os = "android", target_os = "fuchsia", target_os = "linux")))]
             "example.com:-1",
             "example.com:999999",
+            #[cfg(not(any(target_os = "android", target_os = "fuchsia", target_os = "linux")))]
             "example.com:80",
+            #[cfg(not(any(target_os = "android", target_os = "fuchsia", target_os = "linux")))]
             "example:com",
             "[127.0.0.1]:80",
             "2001:db8:3333:4444:5555:6666:7777:8888:80",

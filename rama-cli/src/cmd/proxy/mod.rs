@@ -17,7 +17,7 @@ use rama::{
     },
     layer::{LimitLayer, TimeoutLayer, limit::policy::ConcurrentPolicy},
     net::{
-        address::SocketAddress, conn::is_connection_error, http::RequestContext,
+        conn::is_connection_error, http::RequestContext, socket::Interface,
         stream::layer::http::BodyLimitLayer,
     },
     rt::Executor,
@@ -31,9 +31,9 @@ use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberI
 #[derive(Debug, Args)]
 /// rama proxy server
 pub struct CliCommandProxy {
-    /// the address to bind to
+    /// the interface to bind to
     #[arg(long, default_value = "127.0.0.1:8080")]
-    bind: SocketAddress,
+    bind: Interface,
 
     #[arg(long, short = 'c', default_value_t = 0)]
     /// the number of concurrent connections to allow (0 = no limit)
@@ -57,12 +57,20 @@ pub async fn run(cfg: CliCommandProxy) -> Result<(), BoxError> {
 
     let graceful = rama::graceful::Shutdown::default();
 
-    tracing::info!("starting proxy on: {}", cfg.bind);
+    tracing::info!(
+        bind = %cfg.bind,
+        "starting proxy on",
+    );
+
     let tcp_service = TcpListener::build()
-        .bind(cfg.bind)
+        .bind(cfg.bind.clone())
         .await
         .map_err(OpaqueError::from_boxed)
         .context("bind proxy service")?;
+
+    let bind_address = tcp_service
+        .local_addr()
+        .context("get local addr of tcp listener")?;
 
     graceful.spawn_task_fn(async move |guard| {
         let exec = Executor::graceful(guard.clone());
@@ -85,6 +93,12 @@ pub async fn run(cfg: CliCommandProxy) -> Result<(), BoxError> {
             BodyLimitLayer::symmetric(2 * 1024 * 1024),
             (cfg.concurrent > 0).then(|| LimitLayer::new(ConcurrentPolicy::max(cfg.concurrent))),
             (cfg.timeout > 0).then(|| TimeoutLayer::new(Duration::from_secs(cfg.timeout))),
+        );
+
+        tracing::info!(
+            bind = %cfg.bind,
+            %bind_address,
+            "proxy ready",
         );
 
         tcp_service

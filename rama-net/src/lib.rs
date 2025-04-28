@@ -44,4 +44,4 @@ pub mod tls;
 pub mod fingerprint;
 
 #[cfg(any(windows, unix))]
-pub use ::socket2 as socket;
+pub mod socket;

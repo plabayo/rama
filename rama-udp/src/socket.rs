@@ -60,7 +60,7 @@ impl UdpSocket {
     /// This function is intended to be used to wrap a UDP socket from the
     /// standard library in the Tokio equivalent.
     ///
-    /// This can be used in conjunction with `rama_net::socket::Socket` interface to
+    /// This can be used in conjunction with `rama_net::socket::core::Socket` interface to
     /// configure a socket before it's handed off, such as setting options like
     /// `reuse_address` or binding to multiple addresses.
     ///
@@ -120,11 +120,11 @@ impl UdpSocket {
         self.inner.into_std()
     }
 
-    /// Expose a reference to `self` as a [`rama_net::socket::SockRef`].
+    /// Expose a reference to `self` as a [`rama_net::socket::core::SockRef`].
     #[cfg(any(windows, unix))]
     #[inline]
-    pub fn as_socket(&self) -> rama_net::socket::SockRef<'_> {
-        rama_net::socket::SockRef::from(self)
+    pub fn as_socket(&self) -> rama_net::socket::core::SockRef<'_> {
+        rama_net::socket::core::SockRef::from(self)
     }
 
     /// Returns the local address that this socket is bound to.
@@ -779,11 +779,11 @@ impl UdpSocket {
 }
 
 #[cfg(any(windows, unix))]
-impl TryFrom<rama_net::socket::Socket> for UdpSocket {
+impl TryFrom<rama_net::socket::core::Socket> for UdpSocket {
     type Error = std::io::Error;
 
     #[inline]
-    fn try_from(value: rama_net::socket::Socket) -> Result<Self, Self::Error> {
+    fn try_from(value: rama_net::socket::core::Socket) -> Result<Self, Self::Error> {
         let socket = std::net::UdpSocket::from(value);
         socket.try_into()
     }
