@@ -423,7 +423,7 @@ async fn serve_directory_as_file_tree() {
     let res = svc.serve(Context::default(), req).await.unwrap();
 
     assert_eq!(res.status(), StatusCode::OK);
-    assert_eq!(res.headers()["content-type"], "text/html");
+    assert_eq!(res.headers()["content-type"], "text/html; charset=UTF-8");
 
     let payload = res.into_body().try_into_string().await.unwrap();
     assert!(payload.contains("Directory listing for"));
