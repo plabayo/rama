@@ -95,7 +95,7 @@ async fn main() {
 
     // Dynamic certs using [`ResolvesServerCert`] in rustls are loaded synchronously, if you need to
     // load them in an async way, see example `tls_rustls_dynamic_config` for how to provide a different
-    // [`rustls::ServerConfig`] depending on received client_hello in an async context (TODO will be added this week)
+    // [`rustls::ServerConfig`] depending on received client_hello in an async context
 
     let dynamic_issuer = Arc::new(DynamicIssuer::new());
     let config = ServerConfig::builder_with_protocol_versions(ALL_VERSIONS)
