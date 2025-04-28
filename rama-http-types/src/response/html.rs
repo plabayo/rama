@@ -1,9 +1,7 @@
 use crate::{Body, IntoResponse, Response};
-use headers::ContentType;
+use http::{HeaderValue, header::CONTENT_TYPE};
 use rama_utils::macros::impl_deref;
 use std::fmt;
-
-use super::Headers;
 
 /// An HTML response.
 ///
@@ -29,7 +27,14 @@ where
     T: Into<Body>,
 {
     fn into_response(self) -> Response {
-        (Headers::single(ContentType::html()), self.0.into()).into_response()
+        (
+            [(
+                CONTENT_TYPE,
+                HeaderValue::from_static("text/html; charset=UTF-8"),
+            )],
+            self.0.into(),
+        )
+            .into_response()
     }
 }
 

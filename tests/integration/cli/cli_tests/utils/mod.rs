@@ -4,10 +4,13 @@ use std::{
     io::{BufRead, BufReader},
     path::PathBuf,
     process::Child,
+    sync::Once,
     thread,
 };
 
 use base64::Engine;
+use tracing::level_filters::LevelFilter;
+use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Debug)]
 /// A wrapper around a rama service process.
@@ -204,7 +207,7 @@ impl RamaService {
 
         for line in &mut stdout {
             let line = line.unwrap();
-            if line.contains("serve service ready") {
+            if line.contains("ready to serve") {
                 break;
             }
         }
@@ -224,4 +227,24 @@ impl Drop for RamaService {
     fn drop(&mut self) {
         self.process.kill().expect("kill server process");
     }
+}
+
+/// to ensure we only ever register tracing once,
+/// in the first test that gets run.
+///
+/// Dirty but it works, good enough for tests.
+static INIT_TRACING_ONCE: Once = Once::new();
+
+/// Initialize tracing for example tests
+pub(super) fn init_tracing() {
+    INIT_TRACING_ONCE.call_once(|| {
+        let _ = tracing_subscriber::registry()
+            .with(fmt::layer())
+            .with(
+                EnvFilter::builder()
+                    .with_default_directive(LevelFilter::TRACE.into())
+                    .from_env_lossy(),
+            )
+            .try_init();
+    });
 }

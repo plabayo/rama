@@ -1,10 +1,11 @@
-use std::path::PathBuf;
-
 use super::utils;
+use std::path::PathBuf;
 
 #[tokio::test]
 #[ignore]
 async fn test_http_serve_placeholder() {
+    utils::init_tracing();
+
     let _guard = utils::RamaService::serve(63104, None);
     let lines = utils::RamaService::http(vec!["https://127.0.0.1:63104"]).unwrap();
 
@@ -26,6 +27,8 @@ async fn test_http_serve_placeholder() {
 #[tokio::test]
 #[ignore]
 async fn test_http_serve_file() {
+    utils::init_tracing();
+
     let _guard = utils::RamaService::serve(63105, Some(PathBuf::from("test-files/hello.txt")));
     let lines = utils::RamaService::http(vec!["https://127.0.0.1:63105"]).unwrap();
 
@@ -47,6 +50,8 @@ async fn test_http_serve_file() {
 #[tokio::test]
 #[ignore]
 async fn test_http_serve_dir() {
+    utils::init_tracing();
+
     let _guard = utils::RamaService::serve(63106, Some(PathBuf::from("test-files")));
     let lines = utils::RamaService::http(vec!["https://127.0.0.1:63106/hello.txt"]).unwrap();
 
@@ -71,6 +76,8 @@ async fn test_http_serve_dir() {
 #[tokio::test]
 #[ignore]
 async fn test_http_serve_dir_index() {
+    utils::init_tracing();
+
     let _guard = utils::RamaService::serve(63107, Some(PathBuf::from("test-files")));
 
     // root (dir)
@@ -117,6 +124,8 @@ async fn test_http_serve_dir_index() {
 #[tokio::test]
 #[ignore]
 async fn test_http_serve_dir_404() {
+    utils::init_tracing();
+
     let _guard = utils::RamaService::serve(63108, Some(PathBuf::from("test-files")));
     let lines = utils::RamaService::http(vec!["https://127.0.0.1:63108/missing.txt"]).unwrap();
     assert!(
