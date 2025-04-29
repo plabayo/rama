@@ -1,7 +1,7 @@
 use super::{HttpClientService, svc::SendRequest};
 use rama_core::{
     Context, Layer, Service,
-    error::{BoxError, OpaqueError},
+    error::{BoxError, ErrorContext, OpaqueError},
     inspect::RequestInspector,
 };
 use rama_http_core::h2::frame::Priority;
@@ -12,9 +12,17 @@ use rama_http_types::{
     proto::h2::PseudoHeaderOrder,
 };
 use rama_net::{
-    client::{ConnectorService, EstablishedClientConnection},
+    Protocol,
+    address::Authority,
+    client::{
+        ConnStoreFiFoReuseLruDrop, ConnectorService, EstablishedClientConnection, Pool,
+        PooledConnector, ReqToConnID,
+    },
+    http::RequestContext,
     stream::Stream,
 };
+use rama_utils::macros::nz;
+use std::{marker::PhantomData, num::NonZero};
 use tokio::sync::Mutex;
 
 use rama_utils::macros::define_inner_service_accessors;
@@ -64,6 +72,14 @@ impl<S, I1, I2> HttpConnector<S, I1, I2> {
             http_req_inspector_jit: self.http_req_inspector_jit,
             http_req_inspector_svc: http_req_inspector,
         }
+    }
+
+    pub fn with_connection_pool<Storage, R>(
+        self,
+        pool: Pool<Storage>,
+        req_to_conn_id: R,
+    ) -> PooledConnector<HttpConnector<S, I1, I2>, Storage, R> {
+        PooledConnector::new(self, pool, req_to_conn_id)
     }
 
     define_inner_service_accessors!();
@@ -212,9 +228,10 @@ where
 }
 
 /// A [`Layer`] that produces an [`HttpConnector`].
-pub struct HttpConnectorLayer<I1 = (), I2 = ()> {
+pub struct HttpConnectorLayer<I1 = (), I2 = (), P = ()> {
     http_req_inspector_jit: I1,
     http_req_inspector_svc: I2,
+    pool_and_req_to_conn_id: P,
 }
 
 impl HttpConnectorLayer {
@@ -223,22 +240,37 @@ impl HttpConnectorLayer {
         Self {
             http_req_inspector_jit: (),
             http_req_inspector_svc: (),
+            pool_and_req_to_conn_id: (),
         }
     }
 }
 
-impl<I1, I2> HttpConnectorLayer<I1, I2> {
-    pub fn with_jit_req_inspector<T>(self, http_req_inspector: T) -> HttpConnectorLayer<T, I2> {
+impl<I1, I2, P> HttpConnectorLayer<I1, I2, P> {
+    pub fn with_jit_req_inspector<T>(self, http_req_inspector: T) -> HttpConnectorLayer<T, I2, P> {
         HttpConnectorLayer {
             http_req_inspector_jit: http_req_inspector,
             http_req_inspector_svc: self.http_req_inspector_svc,
+            pool_and_req_to_conn_id: self.pool_and_req_to_conn_id,
         }
     }
 
-    pub fn with_svc_req_inspector<T>(self, http_req_inspector: T) -> HttpConnectorLayer<I1, T> {
+    pub fn with_svc_req_inspector<T>(self, http_req_inspector: T) -> HttpConnectorLayer<I1, T, P> {
         HttpConnectorLayer {
             http_req_inspector_jit: self.http_req_inspector_jit,
             http_req_inspector_svc: http_req_inspector,
+            pool_and_req_to_conn_id: self.pool_and_req_to_conn_id,
+        }
+    }
+
+    pub fn with_connection_pool<T, R>(
+        self,
+        pool: T,
+        req_to_conn_id: R,
+    ) -> HttpConnectorLayer<I1, I2, (T, R)> {
+        HttpConnectorLayer {
+            http_req_inspector_jit: self.http_req_inspector_jit,
+            http_req_inspector_svc: self.http_req_inspector_svc,
+            pool_and_req_to_conn_id: (pool, req_to_conn_id),
         }
     }
 }
@@ -252,15 +284,17 @@ impl<I1: fmt::Debug, I2: fmt::Debug> fmt::Debug for HttpConnectorLayer<I1, I2> {
     }
 }
 
-impl<I1, I2> Clone for HttpConnectorLayer<I1, I2>
+impl<I1, I2, P> Clone for HttpConnectorLayer<I1, I2, P>
 where
     I1: Clone,
     I2: Clone,
+    P: Clone,
 {
     fn clone(&self) -> Self {
         Self {
             http_req_inspector_jit: self.http_req_inspector_jit.clone(),
             http_req_inspector_svc: self.http_req_inspector_svc.clone(),
+            pool_and_req_to_conn_id: self.pool_and_req_to_conn_id.clone(),
         }
     }
 }
@@ -271,7 +305,7 @@ impl Default for HttpConnectorLayer {
     }
 }
 
-impl<I1: Clone, I2: Clone, S> Layer<S> for HttpConnectorLayer<I1, I2> {
+impl<I1: Clone, I2: Clone, S> Layer<S> for HttpConnectorLayer<I1, I2, ()> {
     type Service = HttpConnector<S, I1, I2>;
 
     fn layer(&self, inner: S) -> Self::Service {
@@ -288,5 +322,145 @@ impl<I1: Clone, I2: Clone, S> Layer<S> for HttpConnectorLayer<I1, I2> {
             http_req_inspector_jit: self.http_req_inspector_jit,
             http_req_inspector_svc: self.http_req_inspector_svc,
         }
+    }
+}
+
+impl<I1: Clone, I2: Clone, S, Storage, R: Clone> Layer<S>
+    for HttpConnectorLayer<I1, I2, (Pool<Storage>, R)>
+{
+    type Service = PooledConnector<HttpConnector<S, I1, I2>, Storage, R>;
+
+    fn layer(&self, inner: S) -> Self::Service {
+        let (pool, req_to_conn_id) = self.pool_and_req_to_conn_id.clone();
+        HttpConnector {
+            inner,
+            http_req_inspector_jit: self.http_req_inspector_jit.clone(),
+            http_req_inspector_svc: self.http_req_inspector_svc.clone(),
+        }
+        .with_connection_pool(pool, req_to_conn_id)
+    }
+
+    fn into_layer(self, inner: S) -> Self::Service {
+        let (pool, req_to_conn_id) = self.pool_and_req_to_conn_id;
+        HttpConnector {
+            inner,
+            http_req_inspector_jit: self.http_req_inspector_jit,
+            http_req_inspector_svc: self.http_req_inspector_svc,
+        }
+        .with_connection_pool(pool, req_to_conn_id)
+    }
+}
+
+#[non_exhaustive]
+#[derive(Clone, Debug)]
+/// [`HttpConnectionPoolBuilder`] can be used to build a connection pool to be used
+/// together with a [`HttpConnector`]
+pub struct HttpConnectionPoolBuilder<ConnID = BasicHttpConId, R = BasicHttpConnIdentifier> {
+    max_active: NonZero<u16>,
+    max_total: NonZero<u16>,
+    req_to_conn_id: R,
+    _phantom_data: PhantomData<ConnID>,
+}
+
+impl HttpConnectionPoolBuilder {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl<ConnID, R> HttpConnectionPoolBuilder<ConnID, R>
+where
+    ConnID: Clone + Send + Sync + PartialEq + std::fmt::Debug + 'static,
+{
+    pub fn set_max_active(&mut self, value: NonZero<u16>) -> &mut Self {
+        self.max_active = value;
+        self
+    }
+
+    pub fn with_max_active(mut self, value: NonZero<u16>) -> Self {
+        self.set_max_active(value);
+        self
+    }
+
+    pub fn set_max_total(&mut self, value: NonZero<u16>) -> &mut Self {
+        self.max_total = value;
+        self
+    }
+
+    pub fn with_max_total(mut self, value: NonZero<u16>) -> Self {
+        self.set_max_total(value);
+        self
+    }
+
+    pub fn with_request_to_conn_id<T, State, Request>(
+        self,
+        value: T,
+    ) -> HttpConnectionPoolBuilder<T::ConnID, T>
+    where
+        T: ReqToConnID<State, Request>,
+    {
+        HttpConnectionPoolBuilder {
+            max_active: self.max_active,
+            max_total: self.max_total,
+            req_to_conn_id: value,
+            _phantom_data: PhantomData,
+        }
+    }
+
+    // TODO find way to get rid of this generic
+    pub fn build<Body: Send + 'static>(
+        self,
+    ) -> Result<
+        (
+            Pool<ConnStoreFiFoReuseLruDrop<HttpClientService<Body>, ConnID>>,
+            R,
+        ),
+        OpaqueError,
+    > {
+        let pool = Pool::new(self.max_active, self.max_total).context("create connection pool")?;
+        Ok((pool, self.req_to_conn_id))
+    }
+}
+
+impl Default for HttpConnectionPoolBuilder {
+    fn default() -> Self {
+        Self {
+            max_active: nz!(10),
+            max_total: nz!(20),
+            req_to_conn_id: BasicHttpConnIdentifier,
+            _phantom_data: PhantomData,
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+#[non_exhaustive]
+pub struct BasicHttpConnIdentifier;
+
+type BasicHttpConId = (Protocol, Authority);
+
+impl<State, Body> ReqToConnID<State, Request<Body>> for BasicHttpConnIdentifier {
+    type ConnID = BasicHttpConId;
+
+    fn id(&self, ctx: &Context<State>, req: &Request<Body>) -> Result<Self::ConnID, OpaqueError> {
+        let req_ctx = match ctx.get::<RequestContext>() {
+            Some(ctx) => ctx,
+            None => &RequestContext::try_from((ctx, req))?,
+        };
+
+        Ok((req_ctx.protocol.clone(), req_ctx.authority.clone()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test() {
+        let connector = HttpConnector::new(());
+        // TODO find way to get rid of this generic...
+        let (pool, req_to_conn_id) = HttpConnectionPoolBuilder::new().build::<u8>().unwrap();
+        let connector = connector.with_connection_pool(pool, req_to_conn_id);
     }
 }
