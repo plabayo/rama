@@ -7,40 +7,10 @@ use rama_core::{
 use rama_net::{
     address::Authority,
     client::{ConnectorService, EstablishedClientConnection},
-    proxy::{ProxyRequest, StreamForwardService},
+    proxy::{ProxyRequest, ProxyTarget, StreamForwardService},
     stream::Stream,
 };
-use rama_utils::macros::impl_deref;
 use std::fmt;
-
-/// [`Forwarder`] using [`Forwarder::ctx`] requires this struct
-/// to be present in the [`Context`].
-#[derive(Debug, Clone)]
-pub struct ForwardAuthority(Authority);
-
-impl ForwardAuthority {
-    /// Create a new [`ForwardAuthority`] for the given target [`Authority`].
-    pub fn new(authority: impl Into<Authority>) -> Self {
-        Self(authority.into())
-    }
-}
-
-impl<A> From<A> for ForwardAuthority
-where
-    A: Into<Authority>,
-{
-    fn from(authority: A) -> Self {
-        Self::new(authority)
-    }
-}
-
-impl AsRef<Authority> for ForwardAuthority {
-    fn as_ref(&self) -> &Authority {
-        &self.0
-    }
-}
-
-impl_deref!(ForwardAuthority: Authority);
 
 #[derive(Debug, Clone)]
 enum ForwarderKind {
@@ -131,12 +101,13 @@ where
     async fn serve(&self, ctx: Context<S>, source: T) -> Result<Self::Response, Self::Error> {
         let authority = match &self.kind {
             ForwarderKind::Static(target) => target.clone(),
-            ForwarderKind::Dynamic => ctx
-                .get::<ForwardAuthority>()
-                .map(|f| f.0.clone())
-                .ok_or_else(|| {
-                    OpaqueError::from_display("missing forward authority").into_boxed()
-                })?,
+            ForwarderKind::Dynamic => {
+                ctx.get::<ProxyTarget>()
+                    .map(|f| f.0.clone())
+                    .ok_or_else(|| {
+                        OpaqueError::from_display("missing forward authority").into_boxed()
+                    })?
+            }
         };
 
         let req = TcpRequest::new(authority.clone());

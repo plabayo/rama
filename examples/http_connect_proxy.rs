@@ -66,25 +66,29 @@ use rama::{
             proxy_auth::ProxyAuthLayer,
             remove_header::{RemoveRequestHeaderLayer, RemoveResponseHeaderLayer},
             trace::TraceLayer,
-            upgrade::{UpgradeLayer, Upgraded},
+            upgrade::UpgradeLayer,
         },
         matcher::{DomainMatcher, HttpMatcher, MethodMatcher},
         response::Json,
         server::HttpServer,
         service::web::{extract::Path, match_service},
     },
-    layer::HijackLayer,
+    layer::{ConsumeErrLayer, HijackLayer},
     net::{
-        address::Domain, conn::is_connection_error, http::RequestContext, stream::ClientSocketInfo,
-        stream::layer::http::BodyLimitLayer, user::Basic,
+        address::Domain,
+        http::RequestContext,
+        proxy::ProxyTarget,
+        stream::{ClientSocketInfo, layer::http::BodyLimitLayer},
+        user::Basic,
     },
     rt::Executor,
     service::service_fn,
-    tcp::{client::default_tcp_connect, server::TcpListener},
+    tcp::server::TcpListener,
     username::{
         UsernameLabelParser, UsernameLabelState, UsernameLabels, UsernameOpaqueLabelParser,
     },
 };
+use rama_tcp::client::service::Forwarder;
 use serde::Deserialize;
 use serde_json::json;
 use std::{convert::Infallible, sync::Arc, time::Duration};
@@ -147,7 +151,7 @@ async fn main() {
                     UpgradeLayer::new(
                         MethodMatcher::CONNECT,
                         service_fn(http_connect_accept),
-                        service_fn(http_connect_proxy),
+                        ConsumeErrLayer::default().into_layer(Forwarder::ctx()),
                     ),
                     RemoveResponseHeaderLayer::hop_by_hop(),
                     RemoveRequestHeaderLayer::hop_by_hop(),
@@ -173,8 +177,14 @@ async fn http_connect_accept<S>(
 where
     S: Clone + Send + Sync + 'static,
 {
-    match ctx.get_or_try_insert_with_ctx::<RequestContext, _>(|ctx| (ctx, &req).try_into()) {
-        Ok(request_ctx) => tracing::info!("accept CONNECT to {}", request_ctx.authority),
+    match ctx
+        .get_or_try_insert_with_ctx::<RequestContext, _>(|ctx| (ctx, &req).try_into())
+        .map(|ctx| ctx.authority.clone())
+    {
+        Ok(authority) => {
+            tracing::info!(%authority, "accept CONNECT (lazy): insert proxy target into context");
+            ctx.insert(ProxyTarget(authority));
+        }
         Err(err) => {
             tracing::error!(err = %err, "error extracting authority");
             return Err(StatusCode::BAD_REQUEST.into_response());
@@ -182,31 +192,6 @@ where
     }
 
     Ok((StatusCode::OK.into_response(), ctx, req))
-}
-
-async fn http_connect_proxy<S>(ctx: Context<S>, mut upgraded: Upgraded) -> Result<(), Infallible>
-where
-    S: Clone + Send + Sync + 'static,
-{
-    let authority = ctx // assumption validated by `http_connect_accept`
-        .get::<RequestContext>()
-        .unwrap()
-        .authority
-        .clone();
-    tracing::info!("CONNECT to {authority}");
-    let (mut stream, _) = match default_tcp_connect(&ctx, authority).await {
-        Ok(stream) => stream,
-        Err(err) => {
-            tracing::error!(error = %err, "error connecting to host");
-            return Ok(());
-        }
-    };
-    if let Err(err) = tokio::io::copy_bidirectional(&mut upgraded, &mut stream).await {
-        if !is_connection_error(&err) {
-            tracing::error!(error = %err, "error copying data");
-        }
-    }
-    Ok(())
 }
 
 async fn http_plain_proxy<S>(ctx: Context<S>, req: Request) -> Result<Response, Infallible>
