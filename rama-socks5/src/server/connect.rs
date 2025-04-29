@@ -5,7 +5,10 @@ use rama_net::{
     proxy::{ProxyRequest, StreamForwardService},
     stream::{Socket, Stream},
 };
-use rama_tcp::client::{Request as TcpRequest, service::TcpConnector};
+use rama_tcp::client::{
+    Request as TcpRequest,
+    service::{DefaultForwarder, TcpConnector},
+};
 use rama_utils::macros::generate_field_setters;
 use std::{fmt, time::Duration};
 
@@ -67,7 +70,7 @@ where
 /// Default [`Connector`] type.
 pub type DefaultConnector = Connector<TcpConnector, StreamForwardService>;
 
-/// Only "useful" public [`Socks5Connector`] implementation,
+/// Proxy Forward [`Socks5Connector`] implementation,
 /// which actually is able to accept connect requests and process them.
 ///
 /// The [`Default`] implementation establishes a connection for the requested
@@ -77,6 +80,12 @@ pub type DefaultConnector = Connector<TcpConnector, StreamForwardService>;
 /// You can customise the [`Connector`] fully by creating it using [`Connector::new`]
 /// or overwrite any of the default components using either or both of [`Connector::with_connector`]
 /// and [`Connector::with_service`].
+///
+/// ## Lazy Connectors
+///
+/// Please use [`LazyConnector`] in case you do not want the connctor to establish
+/// a connection yet and instead only want to do so once you have the first request,
+/// which can be useful for things such as MITM socks5 proxies for http(s) traffic.
 pub struct Connector<C, S> {
     connector: C,
     service: S,
@@ -316,6 +325,91 @@ where
             )
             .await
             .map_err(|err| Error::service(err).with_context("serve connect pipe"))
+    }
+}
+
+/// Lazy [`Socks5Connector`] implementation,
+/// which accepts a connection but does delegates all the work
+/// on the egress side to the inner (stream) service.
+///
+/// This connector is useful for use-cases such as MITM proxies,
+/// or proxy routers that need more information from the proxied traffic
+/// itself to know what to do with it prior to be able to establish a connection.
+///
+/// ## Default Connectors
+///
+/// Please use [`Connector`] for a more common use-case for socks5 proxies,
+/// where it does establish a connection eagerly, ready for piping
+/// between incoming src stream and (established) target stream.
+pub struct LazyConnector<S> {
+    service: S,
+}
+
+impl<S> LazyConnector<S> {
+    /// Create a new [`LazyConnector`].
+    ///
+    /// The [default `LazyConnector`] forwards the stream as-is to the
+    /// received proxy target.
+    pub fn new(service: S) -> Self {
+        Self { service }
+    }
+}
+
+impl Default for LazyConnector<DefaultForwarder> {
+    fn default() -> Self {
+        Self {
+            service: DefaultForwarder::ctx(),
+        }
+    }
+}
+
+impl<S: fmt::Debug> fmt::Debug for LazyConnector<S> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LazyConnector")
+            .field("service", &self.service)
+            .finish()
+    }
+}
+
+impl<S: Clone> Clone for LazyConnector<S> {
+    fn clone(&self) -> Self {
+        Self {
+            service: self.service.clone(),
+        }
+    }
+}
+
+impl<S, State, StreamService> Socks5ConnectorSeal<S, State> for LazyConnector<StreamService>
+where
+    S: Stream + Unpin,
+    State: Clone + Send + Sync + 'static,
+    StreamService: Service<State, S, Response = (), Error: Into<BoxError>>,
+{
+    async fn accept_connect(
+        &self,
+        ctx: Context<State>,
+        mut stream: S,
+        destination: Authority,
+    ) -> Result<(), Error> {
+        tracing::trace!(
+            %destination,
+            "socks5 server: lazy connect: try to establish connection",
+        );
+
+        Reply::new(Authority::default_ipv4(0))
+            .write_to(&mut stream)
+            .await
+            .map_err(|err| Error::io(err).with_context("write server reply: connect succeeded"))?;
+
+        tracing::trace!(
+            %destination,
+            "socks5 server: lazy connect: reply sent, delegate to inner stream service",
+        );
+
+        self.service
+            .serve(ctx, stream)
+            .await
+            .map_err(|err| Error::service(err).with_context("inner stream (proxy) service"))
     }
 }
 

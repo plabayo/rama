@@ -5,6 +5,9 @@
 //! supports the [`Command::Connect`] method using the [`DefaultConnector`],
 //! but custom connectors as well as binders and udp associators
 //! are optionally possible.
+//!
+//! For MITM socks5 proxies you can use [`LazyConnector`] as the
+//! connector service of [`Socks5Acceptor`].
 
 use crate::{
     Socks5Auth,
@@ -18,7 +21,7 @@ use rama_net::stream::Stream;
 use std::fmt;
 
 mod connect;
-pub use connect::{Connector, DefaultConnector, Socks5Connector};
+pub use connect::{Connector, DefaultConnector, LazyConnector, Socks5Connector};
 
 mod bind;
 pub use bind::{Acceptor, AcceptorFactory, Binder, DefaultBinder, Socks5Binder};
