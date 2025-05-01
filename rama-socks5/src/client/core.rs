@@ -10,6 +10,8 @@ use rama_net::{address::Authority, stream::Stream};
 use rama_utils::macros::generate_field_setters;
 use std::fmt;
 
+use super::bind::Binder;
+
 #[derive(Debug, Clone, Default)]
 /// Socks5 client implementation of [RFC 1928]
 ///
@@ -43,14 +45,14 @@ impl HandshakeError {
         }
     }
 
-    fn protocol(value: ProtocolError) -> Self {
+    pub(crate) fn protocol(value: ProtocolError) -> Self {
         Self {
             kind: HandshakeErrorKind::Protocol(value),
             context: None,
         }
     }
 
-    fn reply_kind(kind: ReplyKind) -> Self {
+    pub(crate) fn reply_kind(kind: ReplyKind) -> Self {
         Self {
             kind: HandshakeErrorKind::Reply(kind),
             context: None,
@@ -71,7 +73,7 @@ impl HandshakeError {
         }
     }
 
-    fn with_context(mut self, context: &'static str) -> Self {
+    pub(crate) fn with_context(mut self, context: &'static str) -> Self {
         self.context = Some(context);
         self
     }
@@ -188,6 +190,52 @@ impl Client {
 
         tracing::trace!(%selected_method, %destination, "socks5 client: connected");
         Ok(server_reply.bind_address)
+    }
+
+    /// Establish a connection with a Socks5 server making use of the [`Command::Bind`] flow.
+    ///
+    /// This method returns a [`Binder`] that contains the address to which the target server
+    /// is to connect to the socks5 server on behalf of the client (callee of this call).
+    /// The [`Binder`] takes ownership over of the input [`Stream`] such that it can
+    /// await the established connection from target server to socks5 server.
+    pub async fn handshake_bind<S: Stream + Unpin>(
+        &self,
+        mut stream: S,
+        destination: &Authority,
+    ) -> Result<Binder<S>, HandshakeError> {
+        let selected_method = match self.auth.as_ref() {
+            Some(auth) => self.handshake_headers_auth(&mut stream, auth).await?,
+            None => self.handshake_headers_no_auth(&mut stream).await?,
+        };
+
+        let request = RequestRef::new(Command::Bind, destination);
+        request
+            .write_to(&mut stream)
+            .await
+            .map_err(|err| HandshakeError::io(err).with_context("write client request: bind"))?;
+
+        tracing::trace!(
+            %selected_method,
+            socks5 = %destination,
+            "socks5 client: bind handshake initiated"
+        );
+
+        let server_reply = server::Reply::read_from(&mut stream)
+            .await
+            .map_err(|err| HandshakeError::protocol(err).with_context("read server reply"))?;
+        if server_reply.reply != ReplyKind::Succeeded {
+            return Err(HandshakeError::reply_kind(server_reply.reply)
+                .with_context("server responded with non-success reply"));
+        }
+
+        tracing::trace!(
+            %selected_method,
+            socks5 = %destination,
+            server = %server_reply.bind_address,
+            "socks5 client: socks5 server ready to bind",
+        );
+
+        Ok(Binder::new(stream, server_reply.bind_address))
     }
 
     async fn handshake_headers_auth<S: Stream + Unpin>(

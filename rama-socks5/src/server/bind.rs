@@ -440,6 +440,13 @@ where
             );
         }
 
+        Reply::new(incoming_addr.into())
+            .write_to(&mut stream)
+            .await
+            .map_err(|err| {
+                Error::io(err).with_context("write server reply: bind: connection received")
+            })?;
+
         self.service
             .serve(
                 ctx,

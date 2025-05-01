@@ -1,5 +1,7 @@
 mod core;
-pub use core::Client;
+pub use core::Client as Socks5Client;
+
+pub mod bind;
 
 mod proxy_connector;
 mod proxy_error;

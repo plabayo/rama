@@ -46,9 +46,9 @@
 
 pub mod proto;
 
-mod client;
-pub use client::Client as Socks5Client;
-pub use client::{Socks5ProxyConnector, Socks5ProxyConnectorLayer, Socks5ProxyError};
+pub mod client;
+pub use client::Socks5Client;
+pub use client::{Socks5ProxyConnector, Socks5ProxyConnectorLayer};
 
 pub mod server;
 pub use server::Socks5Acceptor;
