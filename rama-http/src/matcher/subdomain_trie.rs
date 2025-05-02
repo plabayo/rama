@@ -23,6 +23,10 @@ impl SubdomainTrieMatcher {
         Self { trie }
     }
 
+    // Checks if the reversed domain has an ancestor in the trie.
+    //
+    // The domain is reversed to match the way Radix Tries store domains. `get_ancestor` is used
+    // to check if any prefix of the reversed domain exists in the trie, indicating a match.
     pub fn is_match(&self, domain: impl AsRef<str>) -> bool {
         let reversed = reverse_domain(domain.as_ref());
         self.trie.get_ancestor(&reversed).is_some()
@@ -101,6 +105,8 @@ mod subdomain_trie_tests {
         assert_eq!(reverse_domain("example.com"), "com.example.");
         assert_eq!(reverse_domain(".example.com"), "com.example.");
         assert_eq!(reverse_domain("sub.example.com"), "com.example.sub.");
+        assert_eq!(reverse_domain("localhost"), "localhost.");
+        assert_eq!(reverse_domain(""), ".");
     }
 
     #[test]
