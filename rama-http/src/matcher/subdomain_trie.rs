@@ -1,12 +1,12 @@
-use trie_rs::TrieBuilder;
+use radix_trie::Trie;
 use crate::Request;
 use rama_core::{Context, context::Extensions, matcher::Matcher};
 use rama_net::http::RequestContext;
-use rama_net::address::{Host};
+use rama_net::address::Host;
 
 #[derive(Debug, Clone)]
 pub struct SubdomainTrieMatcher {
-    trie: trie_rs::Trie<u8>,
+    trie: Trie<String, ()>
 }
 
 impl SubdomainTrieMatcher {
@@ -15,33 +15,18 @@ impl SubdomainTrieMatcher {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        let mut builder = TrieBuilder::new();
+        let mut trie = Trie::new();
         for domain in domains {
             let reversed = reverse_domain(domain.as_ref());
-            builder.push(reversed.as_bytes());
+            trie.insert(reversed, ());
         }
-        let trie = builder.build();
         Self { trie }
     }
 
-    pub fn is_match(&self, domain: &str) -> bool {
-        let reversed = reverse_domain(domain);
-        let domain_parts = reversed.split('.');
-
-        let mut prefix = String::new();
-
-        for part in domain_parts {
-            prefix.push_str(part);
-            prefix.push('.');
-
-            if self.trie.exact_match(prefix.as_bytes()) {
-                return true;
-            }
-        }
-        
-        false
+    pub fn is_match(&self, domain: impl AsRef<str>) -> bool {
+        let reversed = reverse_domain(domain.as_ref());
+        self.trie.get_ancestor(&reversed).is_some()
     }
-
 }
 
 fn reverse_domain(domain: &str) -> String {
@@ -58,51 +43,52 @@ impl<State, Body> Matcher<State, Request<Body>> for SubdomainTrieMatcher {
         ctx: &Context<State>,
         req: &Request<Body>,
     ) -> bool {
-        let host = match ctx.get::<RequestContext>() {
-            Some(req_ctx) => req_ctx.authority.host().clone(),
+        let match_authority = |ctx: &RequestContext| {
+            match ctx.authority.host() {
+                Host::Name(domain) => {
+                    let is_match = self.is_match(domain.as_str());
+                    tracing::trace!("SubdomainTrieMatcher: matching domain = {}, matched = {}", domain, is_match);
+                    is_match
+                }
+                Host::Address(address) => {
+                    tracing::trace!(
+                        %address,
+                        "SubdomainTrieMatcher: ignoring numeric address",
+                    );
+                    false
+                }
+            }
+        };
+
+        match ctx.get() {
+            Some(req_ctx) => match_authority(req_ctx),
             None => {
                 let req_ctx: RequestContext = match (ctx, req).try_into() {
                     Ok(rc) => rc,
                     Err(err) => {
-                        tracing::error!(error = %err, "SubdomainTrieMatcher: failed to extract request context");
+                        tracing::debug!(
+                            error = %err,
+                            "SubdomainTrieMatcher: failed to extract request context",
+                        );
                         return false;
                     }
                 };
-                let host = req_ctx.authority.host().clone();
+                let is_match = match_authority(&req_ctx);
                 if let Some(ext) = ext {
                     ext.insert(req_ctx);
                 }
-                host
-            }
-        };
-
-        match host {
-            Host::Name(domain) => {
-                let is_match = self.is_match(domain.as_str());
-                tracing::trace!("SubdomainTrieMatcher: matching '{}' => {}", domain, is_match);
                 is_match
-            }
-            Host::Address(_) => {
-                tracing::trace!("SubdomainTrieMatcher: ignoring numeric address");
-                false
             }
         }
     }
 }
 
-impl FromIterator<String> for SubdomainTrieMatcher {
-    fn from_iter<I: IntoIterator<Item = String>>(iter: I) -> Self {
-        let domains: Vec<String> = iter.into_iter().collect();
-
-        SubdomainTrieMatcher::new(domains)
-    }
-}
-
-impl<'a> FromIterator<&'a str> for SubdomainTrieMatcher {
-    fn from_iter<I: IntoIterator<Item = &'a str>>(iter: I) -> Self {
-        let domains: Vec<&str> = iter.into_iter().collect();
-
-        SubdomainTrieMatcher::new(domains)
+impl<S> FromIterator<S> for SubdomainTrieMatcher
+where S: AsRef<str>,
+{
+    #[inline]
+    fn from_iter<I: IntoIterator<Item = S>>(iter: I) -> Self {
+        SubdomainTrieMatcher::new(iter)
     }
 }
 
@@ -126,22 +112,8 @@ mod subdomain_trie_tests {
         assert!(matcher.is_match("sub.example.com"));
         assert!(!matcher.is_match("domain.org"));
         assert!(!matcher.is_match("other.com"));
-    }
-
-    #[test]
-    fn test_from_iterator_string() {
-        let domains: Vec<String> = vec!["example.com".to_string(), "sub.domain.org".to_string()];
-        let matcher: SubdomainTrieMatcher = domains.into_iter().collect();
-
-        assert!(matcher.is_match("example.com"));
-    }
-
-    #[test]
-    fn test_from_iterator_str() {
-        let domains: Vec<&str> = vec!["example.com", "sub.domain.org"];
-        let matcher: SubdomainTrieMatcher = domains.into_iter().collect();
-
-        assert!(matcher.is_match("example.com"));
+        assert!(!matcher.is_match(""));
+        assert!(!matcher.is_match("localhost"));
     }
 
     #[test]

@@ -615,6 +615,42 @@ impl<State, Body> HttpMatcher<State, Body> {
         self.or(Self::custom(matcher))
     }
 
+    /// Create a [`SubdomainTrieMatcher`] matcher that matches if the request domain is a subdomain of the provided domains.
+    ///
+    /// See [`SubdomainTrieMatcher`] for more information.
+    pub fn any_subdomain<I, S>(domains: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        HttpMatcher {
+            kind: HttpMatcherKind::SubdomainTrie(SubdomainTrieMatcher::new(domains)),
+            negate: false,
+        }
+    }
+
+    /// Add a [`SubdomainTrieMatcher`] matcher that matches if the request domain is a subdomain of the provided domains on top of the existing set of [`HttpMatcher`] matchers.
+    ///
+    /// See [`SubdomainTrieMatcher`] for more information.
+    pub fn and_any_subdomain<I, S>(self, domains: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        self.and(Self::any_subdomain(domains))
+    }
+
+    /// Create a [`SubdomainTrieMatcher`] matcher that matches if the request domain is a subdomain of the provided domains as an alternative to the existing set of [`HttpMatcher`] matchers.
+    ///
+    /// See [`SubdomainTrieMatcher`] for more information.
+    pub fn or_any_subdomain<I, S>(self, domains: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        self.or(Self::any_subdomain(domains))
+    }
+
     /// Create a [`PathMatcher`] matcher to match for a POST request.
     pub fn post(path: impl AsRef<str>) -> Self {
         Self::method_post().and_path(path)

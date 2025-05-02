@@ -58,7 +58,7 @@ tokio = { workspace = true, features = ["macros", "fs", "io-std"] }
 tokio-util = { workspace = true, features = ["io"] }
 tracing = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
-trie-rs = "0.4.2"
+radix_trie = { workspace = true }
 
 [dev-dependencies]
 brotli = { workspace = true }
