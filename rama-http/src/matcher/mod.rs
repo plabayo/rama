@@ -34,6 +34,10 @@ mod header;
 #[doc(inline)]
 pub use header::HeaderMatcher;
 
+mod subdomain_trie;
+#[doc(inline)]
+pub use subdomain_trie::SubdomainTrieMatcher;
+
 /// A matcher that is used to match an http [`Request`]
 pub struct HttpMatcher<State, Body> {
     kind: HttpMatcherKind<State, Body>,
@@ -80,6 +84,8 @@ pub enum HttpMatcherKind<State, Body> {
     ///
     /// [`SocketAddr`]: std::net::SocketAddr
     Socket(SocketMatcher<State, Request<Body>>),
+    /// [`SubdomainTrieMatcher`], a matcher based on domain and subdomains using a trie structure.
+    SubdomainTrie(SubdomainTrieMatcher),
     /// A custom matcher that implements [`rama_core::matcher::Matcher`].
     Custom(Arc<dyn rama_core::matcher::Matcher<State, Request<Body>>>),
 }
@@ -96,6 +102,7 @@ impl<State, Body> Clone for HttpMatcherKind<State, Body> {
             Self::Uri(inner) => Self::Uri(inner.clone()),
             Self::Header(inner) => Self::Header(inner.clone()),
             Self::Socket(inner) => Self::Socket(inner.clone()),
+            Self::SubdomainTrie(inner) => Self::SubdomainTrie(inner.clone()),
             Self::Custom(inner) => Self::Custom(inner.clone()),
         }
     }
@@ -113,6 +120,7 @@ impl<State, Body> fmt::Debug for HttpMatcherKind<State, Body> {
             Self::Uri(inner) => f.debug_tuple("Uri").field(inner).finish(),
             Self::Header(inner) => f.debug_tuple("Header").field(inner).finish(),
             Self::Socket(inner) => f.debug_tuple("Socket").field(inner).finish(),
+            Self::SubdomainTrie(inner) => f.debug_tuple("SubdomainTrie").field(inner).finish(),
             Self::Custom(_) => f.debug_tuple("Custom").finish(),
         }
     }
@@ -716,6 +724,7 @@ where
             HttpMatcherKind::Header(header) => header.matches(ext, ctx, req),
             HttpMatcherKind::Socket(socket) => socket.matches(ext, ctx, req),
             HttpMatcherKind::Any(all) => all.iter().matches_or(ext, ctx, req),
+            HttpMatcherKind::SubdomainTrie(subdomain_trie) => subdomain_trie.matches(ext, ctx, req),
             HttpMatcherKind::Custom(matcher) => matcher.matches(ext, ctx, req),
         }
     }
