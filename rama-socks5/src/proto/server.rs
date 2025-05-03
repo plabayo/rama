@@ -113,11 +113,11 @@ pub struct Reply {
 
 impl Reply {
     /// Create a new success [`Reply`].
-    pub fn new(bind_address: Authority) -> Self {
+    pub fn new(addr: impl Into<Authority>) -> Self {
         Self {
             version: ProtocolVersion::Socks5,
             reply: ReplyKind::Succeeded,
-            bind_address,
+            bind_address: addr.into(),
         }
     }
 

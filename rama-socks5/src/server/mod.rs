@@ -23,11 +23,11 @@ use std::fmt;
 mod connect;
 pub use connect::{Connector, DefaultConnector, LazyConnector, Socks5Connector};
 
-mod bind;
-pub use bind::{Acceptor, AcceptorFactory, Binder, DefaultBinder, Socks5Binder};
+pub mod bind;
+pub use bind::{Binder, DefaultBinder, Socks5Binder};
 
-mod udp;
-pub use udp::Socks5UdpAssociator;
+pub mod udp;
+pub use udp::{Socks5UdpAssociator, UdpRelay};
 
 /// Socks5 server implementation of [RFC 1928]
 ///
@@ -163,6 +163,7 @@ impl<C: Clone, B: Clone, U: Clone> Clone for Socks5Acceptor<C, B, U> {
 pub struct Error {
     kind: ErrorKind,
     context: ErrorContext,
+    source: Option<BoxError>,
 }
 
 #[derive(Debug)]
@@ -187,15 +188,17 @@ impl From<ReplyKind> for ErrorContext {
 impl Error {
     fn io(err: std::io::Error) -> Self {
         Self {
-            kind: ErrorKind::IO(err),
+            kind: ErrorKind::IO,
             context: ErrorContext::None,
+            source: Some(err.into()),
         }
     }
 
-    fn protocol(value: ProtocolError) -> Self {
+    fn protocol(err: ProtocolError) -> Self {
         Self {
-            kind: ErrorKind::Protocol(value),
+            kind: ErrorKind::Protocol,
             context: ErrorContext::None,
+            source: Some(err.into()),
         }
     }
 
@@ -203,13 +206,15 @@ impl Error {
         Self {
             kind: ErrorKind::Aborted(reason),
             context: ErrorContext::None,
+            source: None,
         }
     }
 
     fn service(error: impl Into<BoxError>) -> Self {
         Self {
-            kind: ErrorKind::Service(error.into()),
+            kind: ErrorKind::Service,
             context: ErrorContext::None,
+            source: Some(error.into()),
         }
     }
 
@@ -217,14 +222,19 @@ impl Error {
         self.context = context.into();
         self
     }
+
+    fn with_source(mut self, err: impl Into<BoxError>) -> Self {
+        self.source = Some(err.into());
+        self
+    }
 }
 
 #[derive(Debug)]
 enum ErrorKind {
-    IO(std::io::Error),
-    Protocol(ProtocolError),
+    IO,
+    Protocol,
     Aborted(&'static str),
-    Service(BoxError),
+    Service,
 }
 
 impl fmt::Display for ErrorContext {
@@ -241,20 +251,17 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let context = &self.context;
         match &self.kind {
-            ErrorKind::IO(error) => {
-                write!(f, "server: handshake eror: I/O: {error} ({context})")
+            ErrorKind::IO => {
+                write!(f, "server: handshake eror: I/O ({context})")
             }
-            ErrorKind::Protocol(error) => {
-                write!(
-                    f,
-                    "server: handshake eror: protocol error: {error} ({context})"
-                )
+            ErrorKind::Protocol => {
+                write!(f, "server: handshake eror: protocol error ({context})")
             }
             ErrorKind::Aborted(reason) => {
                 write!(f, "server: handshake eror: aborted: {reason} ({context})")
             }
-            ErrorKind::Service(error) => {
-                write!(f, "server: service eror: {error} ({context})")
+            ErrorKind::Service => {
+                write!(f, "server: service eror ({context})")
             }
         }
     }
@@ -262,28 +269,15 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match &self.kind {
-            ErrorKind::IO(err) => Some(
-                err.source()
-                    .unwrap_or(err as &(dyn std::error::Error + 'static)),
-            ),
-            ErrorKind::Protocol(err) => Some(
-                err.source()
-                    .unwrap_or(err as &(dyn std::error::Error + 'static)),
-            ),
-            ErrorKind::Aborted(_) => None,
-            ErrorKind::Service(err) => err.source(),
-        }
+        self.source.as_ref().and_then(|e| e.source())
     }
 }
 
-impl<C, B, U> Socks5Acceptor<C, B, U>
-where
-    U: Socks5UdpAssociator,
-{
+impl<C, B, U> Socks5Acceptor<C, B, U> {
     pub async fn accept<S, State>(&self, ctx: Context<State>, mut stream: S) -> Result<(), Error>
     where
         C: Socks5Connector<S, State>,
+        U: Socks5UdpAssociator<S, State>,
         B: Socks5Binder<S, State>,
         S: Stream + Unpin,
         State: Clone + Send + Sync + 'static,

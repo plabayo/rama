@@ -1,6 +1,6 @@
-use std::{fmt, io, sync::Arc, time::Duration};
+use std::{fmt, io, time::Duration};
 
-use rama_core::{Context, Service, error::BoxError};
+use rama_core::{Context, Service, error::BoxError, layer::timeout::DefaultTimeout};
 use rama_net::{
     address::{Authority, Host, SocketAddress},
     proxy::{ProxyRequest, StreamForwardService},
@@ -63,7 +63,7 @@ where
 }
 
 /// Default [`Binder`] type.
-pub type DefaultBinder = Binder<(), StreamForwardService>;
+pub type DefaultBinder = Binder<DefaultTimeout<()>, StreamForwardService>;
 
 /// Only "useful" public [`Socks5Binder`] implementation,
 /// which actually is able to accept bind requests and process them.
@@ -116,7 +116,7 @@ impl<A, S> Binder<A, S> {
         }
     }
 
-    /// Overwrite the [`Connector`]'s [`Service`]
+    /// Overwrite the [`Binder`]'s [`Service`]
     /// used to actually do the proxy between the source and incoming bind [`Stream`].
     ///
     /// Any [`Service`] can be used as long as it has the signature:
@@ -188,7 +188,7 @@ impl<A: Clone, S: Clone> Clone for Binder<A, S> {
 }
 
 /// An [`AcceptorFactory`] used to create a [`Acceptor`] in function of a [`Binder`].
-pub trait AcceptorFactory: Send + Sync + 'static {
+pub trait AcceptorFactory<S>: Send + Sync + 'static {
     /// The [`Acceptor`] to be returned by this factory;
     type Acceptor: Acceptor;
     /// Error to be returned in case of failure.
@@ -197,49 +197,49 @@ pub trait AcceptorFactory: Send + Sync + 'static {
     /// Create a new [`Acceptor`] ready to do the 2-step "bind" dance.
     fn make_acceptor(
         &self,
+        ctx: Context<S>,
         interface: Interface,
-    ) -> impl Future<Output = Result<Self::Acceptor, Self::Error>> + Send + '_;
+    ) -> impl Future<Output = Result<(Self::Acceptor, Context<S>), Self::Error>> + Send + '_;
 }
 
-impl<F: AcceptorFactory> AcceptorFactory for Arc<F> {
-    type Acceptor = F::Acceptor;
-    type Error = F::Error;
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
+/// Default [`AcceptorFactory`] used by [`DefaultBinder`].
+pub struct DefaultAcceptorFactory;
 
-    fn make_acceptor(
-        &self,
-        interface: Interface,
-    ) -> impl Future<Output = Result<Self::Acceptor, Self::Error>> + Send + '_ {
-        (**self).make_acceptor(interface)
-    }
-}
-
-impl AcceptorFactory for () {
-    type Acceptor = TcpListener<()>;
+impl<S> Service<S, Interface> for DefaultAcceptorFactory
+where
+    S: Clone + Send + Sync + 'static,
+{
+    type Response = (TcpListener<()>, Context<S>);
     type Error = BoxError;
 
-    fn make_acceptor(
+    async fn serve(
         &self,
+        ctx: Context<S>,
         interface: Interface,
-    ) -> impl Future<Output = Result<Self::Acceptor, Self::Error>> + Send + '_ {
-        TcpListener::bind(interface)
+    ) -> Result<Self::Response, Self::Error> {
+        let acceptor = TcpListener::bind(interface).await?;
+        Ok((acceptor, ctx))
     }
 }
 
-impl<F, Fut, A, E> AcceptorFactory for F
+impl<S, A, State> AcceptorFactory<State> for S
 where
-    F: FnOnce(Interface) -> Fut + Clone + Send + Sync + 'static,
-    Fut: Future<Output = Result<A, E>> + Send + 'static,
+    S: Service<State, Interface, Response = (A, Context<State>), Error: Send + 'static>,
+    State: Clone + Send + Sync + 'static,
     A: Acceptor,
-    E: Send + 'static,
 {
     type Acceptor = A;
-    type Error = E;
+    type Error = S::Error;
 
     fn make_acceptor(
         &self,
+        ctx: Context<State>,
         interface: Interface,
-    ) -> impl Future<Output = Result<Self::Acceptor, Self::Error>> + Send + '_ {
-        (self.clone())(interface)
+    ) -> impl Future<Output = Result<(Self::Acceptor, Context<State>), Self::Error>> + Send + '_
+    {
+        self.serve(ctx, interface)
     }
 }
 
@@ -282,7 +282,7 @@ where
 impl Default for DefaultBinder {
     fn default() -> Self {
         Self {
-            acceptor: (),
+            acceptor: DefaultTimeout::new((), Duration::from_secs(30)),
             service: StreamForwardService::default(),
             bind_interface: Interface::default_ipv4(0),
             strict: false,
@@ -295,7 +295,7 @@ impl<S, State, F, StreamService> Socks5BinderSeal<S, State> for Binder<F, Stream
 where
     S: Stream + Unpin,
     State: Clone + Send + Sync + 'static,
-    F: AcceptorFactory<Error: Into<BoxError>>,
+    F: AcceptorFactory<State, Error: Into<BoxError>>,
     <F::Acceptor as Acceptor>::Stream: Unpin,
     StreamService: Service<
             State,
@@ -335,14 +335,44 @@ where
         };
         let destination = SocketAddress::new(dest_addr, dest_port);
 
-        let acceptor: F::Acceptor = self
+        let (acceptor, ctx) = match self
             .acceptor
-            .make_acceptor(self.bind_interface.clone())
+            .make_acceptor(ctx, self.bind_interface.clone())
             .await
-            .map_err(Error::service)?;
+        {
+            Ok(twin) => twin,
+            Err(err) => {
+                let err = err.into();
+                tracing::debug!(error = %err, "make bind listener failed",);
+                let reply_kind = ReplyKind::GeneralServerFailure;
+                Reply::error_reply(reply_kind)
+                    .write_to(&mut stream)
+                    .await
+                    .map_err(|err| {
+                        Error::io(err).with_context("write server reply: make bind listener failed")
+                    })?;
+                return Err(Error::aborted("make bind listener failed")
+                    .with_context(reply_kind)
+                    .with_source(err));
+            }
+        };
 
-        let bind_address = acceptor.local_addr().map_err(Error::io)?;
-        Reply::new(bind_address.into())
+        let bind_address = match acceptor.local_addr() {
+            Ok(addr) => addr,
+            Err(err) => {
+                tracing::debug!(error = %err, "retrieve local addr of (tcp) acceptor failed");
+                let reply_kind = ReplyKind::GeneralServerFailure;
+                Reply::error_reply(reply_kind)
+                    .write_to(&mut stream)
+                    .await
+                    .map_err(|err| {
+                        Error::io(err).with_context("write server reply: make bind listener failed")
+                    })?;
+                return Err(Error::aborted("make bind listener failed").with_context(reply_kind));
+            }
+        };
+
+        Reply::new(bind_address)
             .write_to(&mut stream)
             .await
             .map_err(|err| {
@@ -389,7 +419,9 @@ where
                     .map_err(|err| {
                         Error::io(err).with_context("write server reply: bind failed")
                     })?;
-                return Err(Error::aborted("bind failed").with_context(reply_kind));
+                return Err(Error::aborted("bind failed")
+                    .with_context(reply_kind)
+                    .with_source(err));
             }
         };
 
@@ -440,7 +472,7 @@ where
             );
         }
 
-        Reply::new(incoming_addr.into())
+        Reply::new(incoming_addr)
             .write_to(&mut stream)
             .await
             .map_err(|err| {

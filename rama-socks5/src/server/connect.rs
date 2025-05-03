@@ -275,7 +275,9 @@ where
                     .map_err(|err| {
                         Error::io(err).with_context("write server reply: connect failed")
                     })?;
-                return Err(Error::aborted("connect failed").with_context(reply_kind));
+                return Err(Error::aborted("connect failed")
+                    .with_context(reply_kind)
+                    .with_source(err));
             }
         };
 

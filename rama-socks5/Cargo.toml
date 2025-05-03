@@ -23,6 +23,7 @@ rama-core = { version = "0.2.0-alpha.13", path = "../rama-core" }
 rama-dns = { version = "0.2.0-alpha.13", path = "../rama-dns", optional = true }
 rama-net = { version = "0.2.0-alpha.13", path = "../rama-net", features = ["http"] }
 rama-tcp = { version = "0.2.0-alpha.13", path = "../rama-tcp", features = ["http"] }
+rama-udp = { version = "0.2.0-alpha.13", path = "../rama-udp" }
 rama-utils = { version = "0.2.0-alpha.13", path = "../rama-utils" }
 rand = { workspace = true, optional = true }
 smallvec = { workspace = true }

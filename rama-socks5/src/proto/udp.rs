@@ -130,7 +130,7 @@ impl UdpHeader {
         write_authority_to_buf(&self.destination, buf);
     }
 
-    fn serialized_len(&self) -> usize {
+    pub(crate) fn serialized_len(&self) -> usize {
         5 + authority_length(&self.destination)
     }
 }
