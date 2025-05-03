@@ -1,12 +1,12 @@
-use radix_trie::Trie;
 use crate::Request;
+use radix_trie::Trie;
 use rama_core::{Context, context::Extensions, matcher::Matcher};
-use rama_net::http::RequestContext;
 use rama_net::address::Host;
+use rama_net::http::RequestContext;
 
 #[derive(Debug, Clone)]
 pub struct SubdomainTrieMatcher {
-    trie: Trie<String, ()>
+    trie: Trie<String, ()>,
 }
 
 impl SubdomainTrieMatcher {
@@ -47,20 +47,22 @@ impl<State, Body> Matcher<State, Request<Body>> for SubdomainTrieMatcher {
         ctx: &Context<State>,
         req: &Request<Body>,
     ) -> bool {
-        let match_authority = |ctx: &RequestContext| {
-            match ctx.authority.host() {
-                Host::Name(domain) => {
-                    let is_match = self.is_match(domain.as_str());
-                    tracing::trace!("SubdomainTrieMatcher: matching domain = {}, matched = {}", domain, is_match);
+        let match_authority = |ctx: &RequestContext| match ctx.authority.host() {
+            Host::Name(domain) => {
+                let is_match = self.is_match(domain.as_str());
+                tracing::trace!(
+                    "SubdomainTrieMatcher: matching domain = {}, matched = {}",
+                    domain,
                     is_match
-                }
-                Host::Address(address) => {
-                    tracing::trace!(
-                        %address,
-                        "SubdomainTrieMatcher: ignoring numeric address",
-                    );
-                    false
-                }
+                );
+                is_match
+            }
+            Host::Address(address) => {
+                tracing::trace!(
+                    %address,
+                    "SubdomainTrieMatcher: ignoring numeric address",
+                );
+                false
             }
         };
 
@@ -88,7 +90,8 @@ impl<State, Body> Matcher<State, Request<Body>> for SubdomainTrieMatcher {
 }
 
 impl<S> FromIterator<S> for SubdomainTrieMatcher
-where S: AsRef<str>,
+where
+    S: AsRef<str>,
 {
     #[inline]
     fn from_iter<I: IntoIterator<Item = S>>(iter: I) -> Self {
@@ -124,7 +127,7 @@ mod subdomain_trie_tests {
 
     #[test]
     fn test_path_matching_with_trie() {
-        let domains: Vec<String> = vec!["example.com".to_string(), "sub.domain.org".to_string()];
+        let domains: Vec<String> = vec!["example.com".to_owned(), "sub.domain.org".to_owned()];
         let matcher: SubdomainTrieMatcher = domains.into_iter().collect();
 
         let path = "sub.example.com";
@@ -137,7 +140,7 @@ mod subdomain_trie_tests {
 
     #[test]
     fn test_non_matching_path() {
-        let domains: Vec<String> = vec!["example.com".to_string()];
+        let domains: Vec<String> = vec!["example.com".to_owned()];
         let matcher: SubdomainTrieMatcher = domains.into_iter().collect();
 
         let path = "nonmatching.com";
@@ -148,4 +151,3 @@ mod subdomain_trie_tests {
         assert!(!matcher.matches(None, &ctx, &request));
     }
 }
-

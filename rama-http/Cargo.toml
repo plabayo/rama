@@ -43,6 +43,7 @@ mime_guess = { workspace = true }
 nanoid = { workspace = true }
 percent-encoding = { workspace = true }
 pin-project-lite = { workspace = true }
+radix_trie = { workspace = true }
 rama-core = { version = "0.2.0-alpha.14", path = "../rama-core" }
 rama-http-types = { version = "0.2.0-alpha.14", path = "../rama-http-types" }
 rama-macros = { version = "0.2.0-alpha.14", path = "../rama-macros" }
@@ -58,7 +59,6 @@ tokio = { workspace = true, features = ["macros", "fs", "io-std"] }
 tokio-util = { workspace = true, features = ["io"] }
 tracing = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
-radix_trie = { workspace = true }
 
 [dev-dependencies]
 brotli = { workspace = true }
