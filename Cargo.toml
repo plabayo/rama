@@ -164,6 +164,7 @@ chrono = "0.4"
 smol_str = "0.3"
 tower-service = "0.3"
 tower-layer = "0.3"
+radix_trie = "0.2"
 
 [workspace.lints.rust]
 unreachable_pub = "deny"
