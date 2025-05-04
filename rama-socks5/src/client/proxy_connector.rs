@@ -24,7 +24,7 @@ use ::{
     tokio::sync::mpsc,
 };
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 /// A [`Layer`] which wraps the given service with a [`Socks5ProxyConnector`].
 ///
 /// See [`Socks5ProxyConnector`] for more information.
@@ -33,6 +33,27 @@ pub struct Socks5ProxyConnectorLayer {
     auth: Option<Socks5Auth>,
     #[cfg(feature = "dns")]
     dns_resolver: Option<BoxDnsResolver<OpaqueError>>,
+}
+
+#[cfg(feature = "dns")]
+impl Default for Socks5ProxyConnectorLayer {
+    fn default() -> Self {
+        Self {
+            required: false,
+            auth: None,
+            dns_resolver: Some(rama_dns::HickoryDns::default().boxed()),
+        }
+    }
+}
+
+#[cfg(not(feature = "dns"))]
+impl Default for Socks5ProxyConnectorLayer {
+    fn default() -> Self {
+        Self {
+            required: false,
+            auth: None,
+        }
+    }
 }
 
 impl Socks5ProxyConnectorLayer {
@@ -71,6 +92,29 @@ impl Socks5ProxyConnectorLayer {
 
 #[cfg(feature = "dns")]
 impl Socks5ProxyConnectorLayer {
+    /// Attach the [`Default`] [`DnsResolver`] to this [`Socks5ProxyConnectorLayer`].
+    ///
+    /// It will tried to be used (best-effort) to resolve domain addresses
+    /// as IP addresses if the `socks5` protocol is used, but not for the `socks5h` protocol.
+    ///
+    /// In case of an error with resolving the domain address the connector
+    /// will anyway use the domain instead of the ip.
+    pub fn with_default_dns_resolver(mut self) -> Self {
+        self.dns_resolver = Some(rama_dns::HickoryDns::default().boxed());
+        self
+    }
+    /// Attach the [`Default`] [`DnsResolver`] to this [`Socks5ProxyConnectorLayer`].
+    ///
+    /// It will tried to be used (best-effort) to resolve domain addresses
+    /// as IP addresses if the `socks5` protocol is used, but not for the `socks5h` protocol.
+    ///
+    /// In case of an error with resolving the domain address the connector
+    /// will anyway use the domain instead of the ip.
+    pub fn set_default_dns_resolver(&mut self) -> &mut Self {
+        self.dns_resolver = Some(rama_dns::HickoryDns::default().boxed());
+        self
+    }
+
     /// Attach a [`DnsResolver`] to this [`Socks5ProxyConnectorLayer`].
     ///
     /// It will tried to be used (best-effort) to resolve domain addresses

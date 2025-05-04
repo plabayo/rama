@@ -68,7 +68,7 @@ impl UdpSocket {
     /// Creates a new [`UdpSocket`], which will be bound to the specified (interface) device name).
     ///
     /// The returned socket is ready for accepting connections and connecting to others.
-    pub async fn bind_device<N: TryInto<DeviceName, Error: Into<BoxError>>>(
+    pub async fn bind_device<N: TryInto<DeviceName, Error: Into<BoxError>> + Send + 'static>(
         name: N,
     ) -> Result<UdpSocket, BoxError> {
         tokio::task::spawn_blocking(|| {

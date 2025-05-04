@@ -4,7 +4,7 @@ use rama_core::{Context, Service, error::BoxError, layer::timeout::DefaultTimeou
 use rama_net::{
     address::{Authority, Host, SocketAddress},
     proxy::{ProxyRequest, StreamForwardService},
-    socket::Interface,
+    socket::{Interface, SocketService},
     stream::Stream,
 };
 use rama_tcp::{TcpStream, server::TcpListener};
@@ -63,7 +63,7 @@ where
 }
 
 /// Default [`Binder`] type.
-pub type DefaultBinder = Binder<DefaultTimeout<()>, StreamForwardService>;
+pub type DefaultBinder = Binder<DefaultTimeout<DefaultAcceptorFactory>, StreamForwardService>;
 
 /// Only "useful" public [`Socks5Binder`] implementation,
 /// which actually is able to accept bind requests and process them.
@@ -187,21 +187,6 @@ impl<A: Clone, S: Clone> Clone for Binder<A, S> {
     }
 }
 
-/// An [`AcceptorFactory`] used to create a [`Acceptor`] in function of a [`Binder`].
-pub trait AcceptorFactory<S>: Send + Sync + 'static {
-    /// The [`Acceptor`] to be returned by this factory;
-    type Acceptor: Acceptor;
-    /// Error to be returned in case of failure.
-    type Error: Send + 'static;
-
-    /// Create a new [`Acceptor`] ready to do the 2-step "bind" dance.
-    fn make_acceptor(
-        &self,
-        ctx: Context<S>,
-        interface: Interface,
-    ) -> impl Future<Output = Result<(Self::Acceptor, Context<S>), Self::Error>> + Send + '_;
-}
-
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
 /// Default [`AcceptorFactory`] used by [`DefaultBinder`].
@@ -221,25 +206,6 @@ where
     ) -> Result<Self::Response, Self::Error> {
         let acceptor = TcpListener::bind(interface).await?;
         Ok((acceptor, ctx))
-    }
-}
-
-impl<S, A, State> AcceptorFactory<State> for S
-where
-    S: Service<State, Interface, Response = (A, Context<State>), Error: Send + 'static>,
-    State: Clone + Send + Sync + 'static,
-    A: Acceptor,
-{
-    type Acceptor = A;
-    type Error = S::Error;
-
-    fn make_acceptor(
-        &self,
-        ctx: Context<State>,
-        interface: Interface,
-    ) -> impl Future<Output = Result<(Self::Acceptor, Context<State>), Self::Error>> + Send + '_
-    {
-        self.serve(ctx, interface)
     }
 }
 
@@ -281,13 +247,10 @@ where
 
 impl Default for DefaultBinder {
     fn default() -> Self {
-        Self {
-            acceptor: DefaultTimeout::new((), Duration::from_secs(30)),
-            service: StreamForwardService::default(),
-            bind_interface: Interface::default_ipv4(0),
-            strict: false,
-            accept_timeout: Some(Duration::from_secs(60)),
-        }
+        Self::new(
+            DefaultTimeout::new(DefaultAcceptorFactory::default(), Duration::from_secs(30)),
+            StreamForwardService::default(),
+        )
     }
 }
 
@@ -295,11 +258,10 @@ impl<S, State, F, StreamService> Socks5BinderSeal<S, State> for Binder<F, Stream
 where
     S: Stream + Unpin,
     State: Clone + Send + Sync + 'static,
-    F: AcceptorFactory<State, Error: Into<BoxError>>,
-    <F::Acceptor as Acceptor>::Stream: Unpin,
+    F: SocketService<State, Socket: Acceptor<Stream: Unpin>>,
     StreamService: Service<
             State,
-            ProxyRequest<S, <F::Acceptor as Acceptor>::Stream>,
+            ProxyRequest<S, <F::Socket as Acceptor>::Stream>,
             Response = (),
             Error: Into<BoxError>,
         >,
@@ -335,11 +297,7 @@ where
         };
         let destination = SocketAddress::new(dest_addr, dest_port);
 
-        let (acceptor, ctx) = match self
-            .acceptor
-            .make_acceptor(ctx, self.bind_interface.clone())
-            .await
-        {
+        let (acceptor, ctx) = match self.acceptor.bind(ctx, self.bind_interface.clone()).await {
             Ok(twin) => twin,
             Err(err) => {
                 let err = err.into();

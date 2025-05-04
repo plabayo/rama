@@ -11,3 +11,7 @@ pub use interface::DeviceName;
 pub mod opts;
 #[doc(inline)]
 pub use opts::SocketOptions;
+
+mod svc;
+#[doc(inline)]
+pub use svc::SocketService;

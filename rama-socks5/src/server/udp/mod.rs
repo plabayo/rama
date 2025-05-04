@@ -1,13 +1,11 @@
 use std::{fmt, time::Duration};
 
-use bytes::BytesMut;
 use rama_core::{
-    Context, Service, combinators::Either, error::BoxError, inspect::RequestInspector,
-    layer::timeout::DefaultTimeout,
+    Context, Service, combinators::Either, error::BoxError, layer::timeout::DefaultTimeout,
 };
 use rama_net::{
     address::{Authority, Host, SocketAddress},
-    socket::Interface,
+    socket::{Interface, SocketService},
     stream::Stream,
 };
 use rama_udp::UdpSocket;
@@ -15,17 +13,21 @@ use rama_utils::macros::generate_field_setters;
 
 #[cfg(feature = "dns")]
 use ::{
-    rama_core::error::{ErrorContext, OpaqueError},
+    rama_core::error::OpaqueError,
     rama_dns::{BoxDnsResolver, DnsResolver},
-    rama_net::mode::DnsResolveIpMode,
-    rand::seq::IteratorRandom,
-    std::net::IpAddr,
-    tokio::sync::mpsc,
 };
 
-use crate::proto::{ReplyKind, server::Reply, udp::UdpHeader};
-
 use super::Error;
+use crate::proto::{ReplyKind, server::Reply};
+
+mod inspect;
+use inspect::UdpPacketProxy;
+pub use inspect::{
+    AsyncUdpInspector, DirectUdpRelay, RelayDirection, RelayRequest, SyncUdpInspector,
+    UdpInspectAction, UdpInspector,
+};
+
+mod relay;
 
 /// Types which can be used as socks5 [`Command::UdpAssociate`] drivers on the server side.
 ///
@@ -80,16 +82,6 @@ where
     }
 }
 
-/// Binder to establish a [`UdpSocket`] for the given [`Interface`].
-pub trait UdpBinder<S>: Send + Sync + 'static {
-    /// Bind to a [`UdpSocket`] for the given [`Interface`] or return an error.
-    fn bind(
-        &self,
-        ctx: Context<S>,
-        interface: Interface,
-    ) -> impl Future<Output = Result<(UdpSocket, Context<S>), BoxError>> + Send + '_;
-}
-
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
 /// [`Default`] [`UdpBinder`] implementation.
@@ -109,42 +101,8 @@ impl<S: Clone + Send + Sync + 'static> Service<S, Interface> for DefaultUdpBinde
     }
 }
 
-impl<S, State> UdpBinder<State> for S
-where
-    S: Service<State, Interface, Response = (UdpSocket, Context<State>), Error: Into<BoxError>>,
-    State: Clone + Send + Sync + 'static,
-{
-    async fn bind(
-        &self,
-        ctx: Context<State>,
-        interface: Interface,
-    ) -> Result<(UdpSocket, Context<State>), BoxError> {
-        self.serve(ctx, interface).await.map_err(Into::into)
-    }
-}
-
-#[derive(Debug, Clone)]
-/// A request to be relayed between client and server in either direction.
-pub struct RelayRequest {
-    /// Relay direction
-    pub direction: RelayDirection,
-    /// Udp association header data
-    pub header: UdpHeader,
-    /// Udp packet to be relayed
-    pub payload: Vec<u8>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-/// Direction in which we relay
-pub enum RelayDirection {
-    /// From client to server
-    North,
-    /// From server to client
-    Sotuh,
-}
-
 /// Default [`UdpBinder`] type.
-pub type DefaultRelay = UdpRelay<DefaultTimeout<DefaultUdpBinder>, ()>;
+pub type DefaultRelay = UdpRelay<DefaultTimeout<DefaultUdpBinder>, DirectUdpRelay>;
 
 /// Only "useful" public [`Socks5UdpAssociator`] implementation,
 /// which actually is able to accept udp-relay requests and process them.
@@ -168,24 +126,57 @@ pub struct UdpRelay<B, I> {
     bind_north_interface: Interface,
     bind_south_interface: Interface,
 
+    north_buffer_size: usize,
+    south_buffer_size: usize,
+
     relay_timeout: Option<Duration>,
 }
 
-impl<B, I> UdpRelay<B, I> {
+impl<B> UdpRelay<B, DirectUdpRelay> {
     /// Create a new [`UdpRelay`].
-    ///
-    /// In case you only wish to overwrite one of these components
-    /// you can also use a [`Default`] [`UdpRelay`] and overwrite the specific component
-    /// using [`UdpRelay::with_binder`] or [`UdpRelay::with_inspector`].
-    pub fn new(binder: B, inspector: I) -> Self {
+    pub fn new(binder: B) -> Self {
         Self {
             binder,
-            inspector,
+            inspector: DirectUdpRelay::default(),
             #[cfg(feature = "dns")]
             dns_resolver: None,
             bind_north_interface: Interface::default_ipv4(0),
             bind_south_interface: Interface::default_ipv4(0),
+            north_buffer_size: 2048,
+            south_buffer_size: 2048,
             relay_timeout: None,
+        }
+    }
+
+    /// Overwrite the [`Connector`]'s [`Inspector`]
+    /// that can be used to inspect / modify a udp packet to be relayed synchronously.
+    pub fn with_sync_inspector<T>(self, inspector: T) -> UdpRelay<B, SyncUdpInspector<T>> {
+        UdpRelay {
+            binder: self.binder,
+            inspector: SyncUdpInspector(inspector),
+            #[cfg(feature = "dns")]
+            dns_resolver: self.dns_resolver,
+            bind_north_interface: self.bind_north_interface,
+            bind_south_interface: self.bind_south_interface,
+            north_buffer_size: self.north_buffer_size,
+            south_buffer_size: self.south_buffer_size,
+            relay_timeout: self.relay_timeout,
+        }
+    }
+
+    /// Overwrite the [`Connector`]'s [`Inspector`]
+    /// that can be used to inspect / modify a udp packet to be relayed asynchronously.
+    pub fn with_async_inspector<T>(self, inspector: T) -> UdpRelay<B, AsyncUdpInspector<T>> {
+        UdpRelay {
+            binder: self.binder,
+            inspector: AsyncUdpInspector(inspector),
+            #[cfg(feature = "dns")]
+            dns_resolver: self.dns_resolver,
+            bind_north_interface: self.bind_north_interface,
+            bind_south_interface: self.bind_south_interface,
+            north_buffer_size: self.north_buffer_size,
+            south_buffer_size: self.south_buffer_size,
+            relay_timeout: self.relay_timeout,
         }
     }
 }
@@ -202,26 +193,8 @@ impl<B, I> UdpRelay<B, I> {
             dns_resolver: self.dns_resolver,
             bind_north_interface: self.bind_north_interface,
             bind_south_interface: self.bind_south_interface,
-            relay_timeout: self.relay_timeout,
-        }
-    }
-
-    /// Overwrite the [`Connector`]'s [`Inspector`]
-    /// that can be used to inspect / modify a udp packet to be relayed
-    ///
-    /// Any [`Inspector`] can be used as long as it has the signature:
-    ///
-    /// ```plain
-    /// (Context<()>, RelayRequest) -> ((Context<()>, RelayRequest), Into<BoxError>)
-    /// ```
-    pub fn with_inspector<T>(self, inspector: T) -> UdpRelay<B, T> {
-        UdpRelay {
-            binder: self.binder,
-            inspector,
-            #[cfg(feature = "dns")]
-            dns_resolver: self.dns_resolver,
-            bind_north_interface: self.bind_north_interface,
-            bind_south_interface: self.bind_south_interface,
+            north_buffer_size: self.north_buffer_size,
+            south_buffer_size: self.south_buffer_size,
             relay_timeout: self.relay_timeout,
         }
     }
@@ -300,11 +273,91 @@ impl<B, I> UdpRelay<B, I> {
         self
     }
 
+    /// Set the size of the buffer used to read south traffic.
+    ///
+    /// Use:
+    /// - [`UdpRelay::set_buffer_size`]: to only set the buffer size for both the north and south direction;
+    /// - [`UdpRelay::set_buffer_size_north`]: to only set the buffer size for the north direction.
+    pub fn set_buffer_size_south(&mut self, n: usize) -> &mut Self {
+        self.south_buffer_size = n;
+        self
+    }
+
+    /// Set the size of the buffer used to read north traffic.
+    ///
+    /// Use:
+    /// - [`UdpRelay::set_buffer_size`]: to only set the buffer size for both the north and south direction;
+    /// - [`UdpRelay::set_buffer_size_south`]: to only set the buffer size for the south direction.
+    pub fn set_buffer_size_north(&mut self, n: usize) -> &mut Self {
+        self.north_buffer_size = n;
+        self
+    }
+
+    /// Set the size of the buffer used to read both north and south traffic.
+    ///
+    /// Use:
+    /// - [`UdpRelay::set_buffer_size_north`]: to only set the buffer size for the north direction.
+    /// - [`UdpRelay::set_buffer_size_south`]: to only set the buffer size for the south direction.
+    pub fn set_buffer_size(&mut self, n: usize) -> &mut Self {
+        self.north_buffer_size = n;
+        self.south_buffer_size = n;
+        self
+    }
+
+    /// Set the size of the buffer used to read south traffic.
+    ///
+    /// Use:
+    /// - [`UdpRelay::with_buffer_size`]: to only set the buffer size for both the north and south direction;
+    /// - [`UdpRelay::with_buffer_size_north`]: to only set the buffer size for the north direction.
+    pub fn with_buffer_size_south(mut self, n: usize) -> Self {
+        self.south_buffer_size = n;
+        self
+    }
+
+    /// Set the size of the buffer used to read north traffic.
+    ///
+    /// Use:
+    /// - [`UdpRelay::with_buffer_size`]: to only set the buffer size for both the north and south direction;
+    /// - [`UdpRelay::with_buffer_size_south`]: to only set the buffer size for the south direction.
+    pub fn with_buffer_size_north(mut self, n: usize) -> Self {
+        self.north_buffer_size = n;
+        self
+    }
+
+    /// Set the size of the buffer used to read both north and south traffic.
+    ///
+    /// Use:
+    /// - [`UdpRelay::with_buffer_size_north`]: to only set the buffer size for the north direction.
+    /// - [`UdpRelay::with_buffer_size_south`]: to only set the buffer size for the south direction.
+    pub fn with_buffer_size(mut self, n: usize) -> Self {
+        self.north_buffer_size = n;
+        self.south_buffer_size = n;
+        self
+    }
+
     generate_field_setters!(relay_timeout, Duration);
 }
 
 #[cfg(feature = "dns")]
 impl<B, I> UdpRelay<B, I> {
+    /// Attach a the [`Default`] [`DnsResolver`] to this [`UdpRelay`].
+    ///
+    /// It will be used to best-effort resolve the domain name,
+    /// in case a domain name is passed to forward to the target server.
+    pub fn with_default_dns_resolver(mut self) -> Self {
+        self.dns_resolver = Some(rama_dns::HickoryDns::default().boxed());
+        self
+    }
+
+    /// Attach a the [`Default`] [`DnsResolver`] to this [`UdpRelay`].
+    ///
+    /// It will be used to best-effort resolve the domain name,
+    /// in case a domain name is passed to forward to the target server.
+    pub fn set_default_dns_resolver(&mut self) -> &mut Self {
+        self.dns_resolver = Some(rama_dns::HickoryDns::default().boxed());
+        self
+    }
+
     /// Attach a [`DnsResolver`] to this [`UdpRelay`].
     ///
     /// It will be used to best-effort resolve the domain name,
@@ -325,115 +378,6 @@ impl<B, I> UdpRelay<B, I> {
         self.dns_resolver = Some(resolver.boxed());
         self
     }
-
-    async fn resolve_authority(
-        &self,
-        authority: Authority,
-        dns_mode: DnsResolveIpMode,
-    ) -> Result<SocketAddress, BoxError> {
-        let (host, port) = authority.into_parts();
-        let ip_addr = match host {
-            Host::Name(domain) => match dns_mode {
-                DnsResolveIpMode::SingleIpV4 => {
-                    let ips = self
-                        .dns_resolver
-                        .ipv4_lookup(domain.clone())
-                        .await
-                        .map_err(OpaqueError::from_boxed)
-                        .context("failed to lookup ipv4 addresses")?;
-                    ips.into_iter()
-                        .choose(&mut rand::rng())
-                        .map(IpAddr::V4)
-                        .context("select ipv4 address for resolved domain")?
-                }
-                DnsResolveIpMode::SingleIpV6 => {
-                    let ips = self
-                        .dns_resolver
-                        .ipv6_lookup(domain.clone())
-                        .await
-                        .map_err(OpaqueError::from_boxed)
-                        .context("failed to lookup ipv6 addresses")?;
-                    ips.into_iter()
-                        .choose(&mut rand::rng())
-                        .map(IpAddr::V6)
-                        .context("select ipv6 address for resolved domain")?
-                }
-                DnsResolveIpMode::Dual | DnsResolveIpMode::DualPreferIpV4 => {
-                    let (tx, mut rx) = mpsc::unbounded_channel();
-
-                    tokio::spawn({
-                        let tx = tx.clone();
-                        let domain = domain.clone();
-                        let dns_resolver = self.dns_resolver.clone();
-                        async move {
-                            match dns_resolver.ipv4_lookup(domain).await {
-                                Ok(ips) => {
-                                    if let Some(ip) = ips.into_iter().choose(&mut rand::rng()) {
-                                        if let Err(err) = tx.send(IpAddr::V4(ip)) {
-                                            tracing::trace!(
-                                                ?err,
-                                                %ip,
-                                                "failed to send ipv4 lookup result"
-                                            )
-                                        }
-                                    }
-                                }
-                                Err(err) => tracing::debug!(
-                                    ?err,
-                                    "failed to lookup ipv4 addresses for domain"
-                                ),
-                            }
-                        }
-                    });
-
-                    tokio::spawn({
-                        let domain = domain.clone();
-                        let dns_resolver = self.dns_resolver.clone();
-                        async move {
-                            match dns_resolver.ipv6_lookup(domain).await {
-                                Ok(ips) => {
-                                    if let Some(ip) = ips.into_iter().choose(&mut rand::rng()) {
-                                        if let Err(err) = tx.send(IpAddr::V6(ip)) {
-                                            tracing::trace!(
-                                                ?err,
-                                                %ip,
-                                                "failed to send ipv6 lookup result"
-                                            )
-                                        }
-                                    }
-                                }
-                                Err(err) => tracing::debug!(
-                                    ?err,
-                                    "failed to lookup ipv6 addresses for domain"
-                                ),
-                            }
-                        }
-                    });
-
-                    rx.recv().await.context("receive resolved ip address")?
-                }
-            },
-            Host::Address(ip_addr) => ip_addr,
-        };
-        Ok((ip_addr, port).into())
-    }
-}
-
-#[cfg(not(feature = "dns"))]
-impl<B, I> UdpRelay<B, I> {
-    async fn resolve_authority(&self, authority: Authority) -> Result<SocketAddress, BoxError> {
-        let (host, port) = authority.into_parts();
-        let ip_addr = match host {
-            Host::Name(domain) => {
-                return Err(OpaqueError::from_display(
-                    "dns names as target not supported: no dns server defined",
-                )
-                .into());
-            }
-            Host::Address(ip_addr) => ip_addr,
-        };
-        Ok((ip_addr, port).into())
-    }
 }
 
 impl<B: fmt::Debug, I: fmt::Debug> fmt::Debug for UdpRelay<B, I> {
@@ -445,7 +389,9 @@ impl<B: fmt::Debug, I: fmt::Debug> fmt::Debug for UdpRelay<B, I> {
         #[cfg(feature = "dns")]
         d.field("dns_resolver", &self.dns_resolver);
 
-        d.field("bind_north_interface", &self.bind_north_interface)
+        d.field("north_buffer_size", &self.north_buffer_size)
+            .field("south_buffer_size", &self.south_buffer_size)
+            .field("bind_north_interface", &self.bind_north_interface)
             .field("bind_south_interface", &self.bind_south_interface)
             .field("relay_timeout", &self.relay_timeout)
             .finish()
@@ -461,15 +407,32 @@ impl<B: Clone, I: Clone> Clone for UdpRelay<B, I> {
             dns_resolver: self.dns_resolver.clone(),
             bind_north_interface: self.bind_north_interface.clone(),
             bind_south_interface: self.bind_south_interface.clone(),
+            north_buffer_size: self.north_buffer_size,
+            south_buffer_size: self.south_buffer_size,
             relay_timeout: self.relay_timeout,
         }
     }
 }
 
+impl Default for DefaultRelay {
+    fn default() -> Self {
+        let relay = Self::new(DefaultTimeout::new(
+            DefaultUdpBinder::default(),
+            Duration::from_secs(30),
+        ));
+        #[cfg(feature = "dns")]
+        {
+            relay.with_default_dns_resolver()
+        }
+        #[cfg(not(feature = "dns"))]
+        relay
+    }
+}
+
 impl<B, I, S, State> Socks5UdpAssociatorSeal<S, State> for UdpRelay<B, I>
 where
-    B: UdpBinder<State>,
-    I: RequestInspector<State, RelayRequest, StateOut = State, RequestOut = RelayRequest>,
+    B: SocketService<State, Socket = UdpSocket>,
+    I: UdpPacketProxy<State>,
     S: Stream + Unpin,
     State: Clone + Send + Sync + 'static,
 {
@@ -511,10 +474,13 @@ where
         {
             Ok(twin) => twin,
             Err(err) => {
+                let err = err.into();
+
                 tracing::debug!(
                     error=%err,
                     "udp north socket bind failed",
                 );
+
                 let reply_kind = ReplyKind::GeneralServerFailure;
                 Reply::error_reply(reply_kind)
                     .write_to(&mut stream)
@@ -554,10 +520,13 @@ where
         {
             Ok(twin) => twin,
             Err(err) => {
+                let err = err.into();
+
                 tracing::debug!(
                     error=%err,
                     "udp south socket bind failed",
                 );
+
                 let reply_kind = ReplyKind::GeneralServerFailure;
                 Reply::error_reply(reply_kind)
                     .write_to(&mut stream)
@@ -580,10 +549,6 @@ where
                     .with_context("write server reply: udp associate: north+south sockets ready")
             })?;
 
-        let mut north_buf = [0u8; 4096];
-        let mut south_buf = [0u8; 4096];
-        let mut north_w_buf = BytesMut::new();
-
         let mut empty = tokio::io::empty();
         let mut drop_stream_fut = std::pin::pin!(tokio::io::copy(&mut empty, &mut stream));
         let mut timeout_fut = std::pin::pin!(match self.relay_timeout {
@@ -591,119 +556,46 @@ where
             None => Either::B(std::future::pending::<()>()),
         });
 
-        #[cfg(feature = "dns")]
-        let dns_mode = ctx.get::<DnsResolveIpMode>().copied().unwrap_or_default();
+        let udp_relay = self.inspector.proxy_udp_packets(
+            ctx,
+            client_address,
+            socket_north,
+            self.north_buffer_size,
+            socket_south,
+            self.south_buffer_size,
+            #[cfg(feature = "dns")]
+            self.dns_resolver.clone(),
+        );
 
-        loop {
-            tokio::select! {
-                _ = &mut drop_stream_fut => {
-                    tracing::trace!(
-                        %client_address,
-                        "socks5 server: udp associate: tcp stream dropped: drop relay",
-                    );
-                    return Ok(());
-                }
+        tokio::select! {
+            _ = &mut drop_stream_fut => {
+                tracing::trace!(
+                    %client_address,
+                    "socks5 server: udp associate: tcp stream dropped: drop relay",
+                );
+            }
 
-                _ = &mut timeout_fut => {
-                    tracing::debug!(
-                        %client_address,
-                        "socks5 server: udp associate: timeout reached: drop relay",
-                    );
-                    return Err(Error::io(std::io::Error::new(std::io::ErrorKind::TimedOut, "relay timeout reached")));
-                }
+            _ = &mut timeout_fut => {
+                tracing::debug!(
+                    %client_address,
+                    "socks5 server: udp associate: timeout reached: drop relay",
+                );
+                return Err(Error::io(std::io::Error::new(std::io::ErrorKind::TimedOut, "relay timeout reached")));
+            }
 
-                Ok((len, src)) = socket_north.recv_from(&mut north_buf) => {
-                    if src != client_address {
-                        tracing::debug!(
-                            %src,
-                            %client_address,
-                            "socks5 server: udp associate: drop unknown traffic",
-                        );
-                        continue;
-                    }
-
-                    let mut buf = &north_buf[..len];
-                    let target_authority = match UdpHeader::read_from(&mut buf).await {
-                        Ok(header) => {
-                            if header.fragment_number != 0 {
-                                tracing::debug!(
-                                    %src,
-                                    %client_address,
-                                    fragment_number = header.fragment_number,
-                                    "socks5 server: udp associate: received north packet with non-zero fragment number: drop it",
-                                );
-                                continue;
-                            }
-                            header.destination
-                        },
-                        Err(err) => {
-                            tracing::debug!(
-                                %err,
-                                %src,
-                                %client_address,
-                                "socks5 server: udp associate: received invalid north packet: drop it",
-                            );
-                            continue;
-                        }
-                    };
-
-                    #[cfg(feature = "dns")]
-                    let target_result = self.resolve_authority(target_authority, dns_mode).await;
-                    #[cfg(not(feature = "dns"))]
-                    let target_result = self.resolve_authority(target_authority).await;
-
-                    let server_address = match target_result {
-                        Ok(addr) => addr,
-                        Err(err) => {
-                            tracing::debug!(
-                                %err,
-                                %src,
-                                %client_address,
-                                "socks5 server: udp associate: failed to resolve target authority: drop it",
-                            );
-                            continue;
-                        }
-                    };
-
-                    tracing::debug!(
-                        %client_address,
-                        %server_address,
-                        "socks5 server: udp associate: forward packet from north to south",
-                    );
-
-                    // TODO: support request intercept
-
-                    socket_south
-                        .send_to(buf, server_address)
-                        .await
-                        .map_err(|err| Error::service(err).with_context("I/O: forward packet from north to south"))?;
-                }
-
-                // Receive from target (response to be wrapped and relayed to client)
-                Ok((resp_len, server_address)) = socket_south.recv_from(&mut south_buf) => {
-                    let header = UdpHeader {
-                        fragment_number: 0,
-                        destination: server_address.into(),
-                    };
-
-                    // TODO: support request intercept
-
-                    north_w_buf.clear();
-                    north_w_buf.reserve(resp_len + header.serialized_len());
-                    header.write_to_buf(&mut north_w_buf);
-                    north_w_buf.extend_from_slice(&south_buf[..resp_len]);
-
-                    tracing::debug!(
-                        %client_address,
-                        %server_address,
-                        "socks5 server: udp associate: forward packet from south to north",
-                    );
-                    socket_north
-                        .send_to(&north_w_buf[..], client_address)
-                        .await
-                        .map_err(|err| Error::service(err).with_context("I/O: forward packet from south to north"))?;
-                }
+            Err(err) = udp_relay => {
+                tracing::debug!(
+                    %client_address,
+                    "socks5 server: udp associate: udp relay: exit with an error",
+                );
+                return Err(err);
             }
         }
+
+        tracing::trace!(
+            %client_address,
+            "socks5 server: udp associate: udp relay: done",
+        );
+        Ok(())
     }
 }
