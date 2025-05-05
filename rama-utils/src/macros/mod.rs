@@ -202,20 +202,6 @@ macro_rules! __impl_deref {
 #[doc(inline)]
 pub use crate::__impl_deref as impl_deref;
 
-#[doc(hidden)]
-#[macro_export]
-macro_rules! __nz {
-    (0) => {
-        compile_error!("nz!(0) is invalid")
-    };
-    ($n:literal) => {
-        std::num::NonZero::new($n).unwrap()
-    };
-}
-#[doc(inline)]
-/// Create NonZero from literal
-pub use crate::__nz as nz;
-
 #[doc(inline)]
 pub use rama_macros::paste;
 

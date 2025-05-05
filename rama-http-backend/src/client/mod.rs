@@ -10,7 +10,13 @@ use rama_core::{
     inspect::RequestInspector,
 };
 use rama_http_types::{Request, Response, Version, dep::http_body};
-use rama_net::client::{EstablishedClientConnection, NoPool, Pool};
+use rama_net::client::{
+    EstablishedClientConnection,
+    pool::{
+        NoPool, Pool, PooledConnector,
+        http::{BasicHttpConId, BasicHttpConnIdentifier},
+    },
+};
 use rama_tcp::client::service::TcpConnector;
 
 #[cfg(feature = "boring")]
@@ -38,7 +44,7 @@ pub use svc::HttpClientService;
 
 mod conn;
 #[doc(inline)]
-pub use conn::{BasicHttpConId, BasicHttpConnIdentifier, HttpConnector, HttpConnectorLayer};
+pub use conn::{HttpConnector, HttpConnectorLayer};
 use tracing::trace;
 
 pub mod http_inspector;
@@ -452,8 +458,11 @@ where
         // set the runtime http req inspector
         let connector = connector.with_svc_req_inspector(self.http_req_inspector_svc.clone());
 
-        let connector =
-            connector.with_connection_pool(self.connection_pool.clone(), BasicHttpConnIdentifier);
+        let connector = PooledConnector::new(
+            connector,
+            self.connection_pool.clone(),
+            BasicHttpConnIdentifier::default(),
+        );
 
         let EstablishedClientConnection { conn, ctx, req } = connector.serve(ctx, req).await?;
 

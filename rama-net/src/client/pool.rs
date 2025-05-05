@@ -6,7 +6,6 @@ use rama_core::{Context, Layer, Service};
 use rama_utils::macros::generate_field_setters;
 use std::collections::VecDeque;
 use std::fmt::Debug;
-use std::num::NonZeroU16;
 use std::ops::{Deref, DerefMut};
 use std::pin::Pin;
 use std::sync::OnceLock;
@@ -105,6 +104,7 @@ struct PooledConnection<C, ID> {
     pool_slot: PoolSlot,
 }
 
+/// Connection pool that uses FiFo for reuse and LRU to evict connections
 pub struct FiFoReuseLruDropPool<C, ID> {
     storage: Arc<Mutex<VecDeque<PooledConnection<C, ID>>>>,
     total_slots: Arc<Semaphore>,
@@ -124,16 +124,13 @@ impl<C, ID> Clone for FiFoReuseLruDropPool<C, ID> {
 }
 
 impl<C, ID> FiFoReuseLruDropPool<C, ID> {
-    pub fn new(active: NonZeroU16, total: NonZeroU16) -> Self {
-        let active = u16::from(active).into();
-        let total = u16::from(total).into();
-
-        let storage = Arc::new(Mutex::new(VecDeque::with_capacity(total)));
+    pub fn new(max_active: usize, max_total: usize) -> Self {
+        let storage = Arc::new(Mutex::new(VecDeque::with_capacity(max_total)));
         Self {
             storage,
             returner: OnceLock::new(),
-            total_slots: Arc::new(Semaphore::const_new(total)),
-            active_slots: Arc::new(Semaphore::const_new(active)),
+            total_slots: Arc::new(Semaphore::const_new(max_total)),
+            active_slots: Arc::new(Semaphore::const_new(max_active)),
         }
     }
 }
@@ -460,25 +457,32 @@ where
     ) -> Result<Self::Response, Self::Error> {
         let conn_id = self.req_to_conn_id.id(&ctx, &req)?;
 
-        let pool_result = if let Some(duration) = self.wait_for_pool_timeout {
-            timeout(duration, self.pool.get_conn(&conn_id))
-                .await
-                .map_err(OpaqueError::from_std)?
-        } else {
-            self.pool.get_conn(&conn_id).await
-        };
+        // Try to get connection from pool, if no connection is found, we will have to create a new
+        // one use the returned create permit
+        let create_permit = {
+            let pool = ctx.get::<P>().unwrap_or(&self.pool);
 
-        let create_permit = match pool_result? {
-            ConnectionResult::Connection(c) => {
-                return Ok(EstablishedClientConnection { ctx, conn: c, req });
+            let pool_result = if let Some(duration) = self.wait_for_pool_timeout {
+                timeout(duration, pool.get_conn(&conn_id))
+                    .await
+                    .map_err(OpaqueError::from_std)?
+            } else {
+                pool.get_conn(&conn_id).await
+            };
+
+            match pool_result? {
+                ConnectionResult::Connection(c) => {
+                    return Ok(EstablishedClientConnection { ctx, conn: c, req });
+                }
+                ConnectionResult::CreatePermit(permit) => permit,
             }
-            ConnectionResult::CreatePermit(permit) => permit,
         };
 
         let EstablishedClientConnection { ctx, req, conn } =
             self.inner.connect(ctx, req).await.map_err(Into::into)?;
 
-        let conn = self.pool.create(conn_id, conn, create_permit).await;
+        let pool = ctx.get::<P>().unwrap_or(&self.pool);
+        let conn = pool.create(conn_id, conn, create_permit).await;
         Ok(EstablishedClientConnection { ctx, req, conn })
     }
 }
@@ -515,12 +519,103 @@ impl<S, P: Clone, R: Clone> Layer<S> for PooledConnectorLayer<P, R> {
     }
 }
 
+#[cfg(feature = "http")]
+pub mod http {
+    use std::time::Duration;
+
+    use super::{FiFoReuseLruDropPool, PooledConnector, ReqToConnID};
+    use crate::{Protocol, address::Authority, client::pool::OpaqueError, http::RequestContext};
+    use rama_core::Context;
+    use rama_http_types::Request;
+
+    #[derive(Debug, Default)]
+    #[non_exhaustive]
+    /// [`BasicHttpConnIdentifier`] can be used together with a [`super::Pool`] to create a basic http connection pool
+    pub struct BasicHttpConnIdentifier;
+
+    pub type BasicHttpConId = (Protocol, Authority);
+
+    impl<State, Body> ReqToConnID<State, Request<Body>> for BasicHttpConnIdentifier {
+        type ID = BasicHttpConId;
+
+        fn id(&self, ctx: &Context<State>, req: &Request<Body>) -> Result<Self::ID, OpaqueError> {
+            let req_ctx = match ctx.get::<RequestContext>() {
+                Some(ctx) => ctx,
+                None => &RequestContext::try_from((ctx, req))?,
+            };
+
+            Ok((req_ctx.protocol.clone(), req_ctx.authority.clone()))
+        }
+    }
+
+    pub struct HttpPooledConnectorBuilder {
+        max_total: usize,
+        max_active: usize,
+        wait_for_pool_timeout: Option<Duration>,
+    }
+
+    impl Default for HttpPooledConnectorBuilder {
+        fn default() -> Self {
+            Self {
+                max_total: 100,
+                max_active: 20,
+                wait_for_pool_timeout: None,
+            }
+        }
+    }
+
+    impl HttpPooledConnectorBuilder {
+        pub fn new() -> Self {
+            Self::default()
+        }
+
+        /// Set the max amount of connections that this connection pool will contain
+        ///
+        /// This is the sum of active connections and idle connections. When this limit
+        /// is hit idle contains will be replaced with new ones.
+        pub fn max_total(mut self, max: usize) -> Self {
+            self.max_total = max;
+            self
+        }
+
+        /// Set the max amount of connections that can actively be used
+        ///
+        /// Requesting a connection from the pool will block until the pool
+        /// is below max capacity again.
+        pub fn max_active(mut self, max: usize) -> Self {
+            self.max_active = max;
+            self
+        }
+
+        /// When a pool is operation at max active capacity wait for this duration
+        /// before the connector raises a timeout error
+        pub fn with_wait_for_pool_timeout(mut self, duration: Duration) -> Self {
+            self.wait_for_pool_timeout = Some(duration);
+            self
+        }
+
+        pub fn maybe_with_wait_for_pool_timeout(mut self, duration: Option<Duration>) -> Self {
+            self.wait_for_pool_timeout = duration;
+            self
+        }
+
+        pub fn build<C, S>(
+            self,
+            inner: S,
+        ) -> PooledConnector<S, FiFoReuseLruDropPool<C, BasicHttpConId>, BasicHttpConnIdentifier>
+        {
+            let pool = FiFoReuseLruDropPool::new(self.max_active, self.max_total);
+            PooledConnector::new(inner, pool, BasicHttpConnIdentifier)
+                .maybe_with_wait_for_pool_timeout(self.wait_for_pool_timeout)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::client::EstablishedClientConnection;
     use rama_core::{Context, Service};
-    use rama_utils::macros::nz;
     use std::{
         convert::Infallible,
         sync::atomic::{AtomicI16, Ordering},
@@ -573,7 +668,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_should_reuse_connections() {
-        let pool = FiFoReuseLruDropPool::new(nz!(5), nz!(10));
+        let pool = FiFoReuseLruDropPool::new(5, 10);
         // We use a closure here to maps all requests to `()` id, this will result in all connections being shared and the pool
         // acting like like a global connection pool (eg database connection pool where all connections can be used).
         let svc = PooledConnector::new(
@@ -596,7 +691,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_conn_id_to_separate() {
-        let pool = FiFoReuseLruDropPool::new(nz!(5), nz!(10));
+        let pool = FiFoReuseLruDropPool::new(5, 10);
         let svc = PooledConnector::new(TestService::default(), pool, StringRequestLengthID {});
 
         {
@@ -653,7 +748,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_pool_max_size() {
-        let pool = FiFoReuseLruDropPool::new(nz!(1), nz!(1));
+        let pool = FiFoReuseLruDropPool::new(1, 1);
         let svc = PooledConnector::new(TestService::default(), pool, StringRequestLengthID {})
             .with_wait_for_pool_timeout(Duration::from_millis(50));
 
