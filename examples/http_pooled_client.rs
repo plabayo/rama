@@ -27,9 +27,10 @@ use rama::{
         LimitLayer,
         limit::{Policy, PolicyOutput, policy::PolicyResult},
     },
-    net::client::Pool,
+    net::client::FiFoReuseLruDropPool,
     rt::Executor,
     tcp::server::TcpListener,
+    utils::macros::nz,
 };
 
 // Everything else we need is provided by the standard library, community crates or tokio.
@@ -54,7 +55,8 @@ async fn main() {
     tokio::spawn(run_server(ADDRESS, ready_tx));
     ready_rx.await.unwrap();
 
-    let client = EasyHttpWebClient::default().with_connection_pool(Pool::default());
+    let pool = FiFoReuseLruDropPool::new(nz!(5), nz!(10));
+    let client = EasyHttpWebClient::default().with_connection_pool(pool);
 
     let resp = client
         .get(format!("http://{ADDRESS}/"))

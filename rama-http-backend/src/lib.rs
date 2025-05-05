@@ -20,11 +20,15 @@ pub mod server;
 
 #[cfg(test)]
 mod tests {
-    use super::{client::HttpConnector, server::HttpServer};
+    use super::{
+        client::{BasicHttpConnIdentifier, HttpConnector},
+        server::HttpServer,
+    };
     use futures::future::join;
     use rama_core::{Context, Service, rt::Executor, service::service_fn};
     use rama_http_types::{Body, Request, Response, Version};
-    use rama_net::test_utils::client::MockConnectorService;
+    use rama_net::{client::FiFoReuseLruDropPool, test_utils::client::MockConnectorService};
+    use rama_utils::macros::nz;
     use std::{
         convert::Infallible,
         time::{Duration, Instant},
@@ -103,5 +107,19 @@ mod tests {
             .version(version)
             .body(Body::from("a reandom request body"))
             .unwrap()
+    }
+
+    async fn test() {
+        let connector = HttpConnector::new(MockConnectorService::new(|| {
+            HttpServer::auto(Executor::default()).service(service_fn(server_svc_fn))
+        }));
+        let pool = FiFoReuseLruDropPool::new(nz!(5), nz!(10));
+        let connector = connector.with_connection_pool(pool, BasicHttpConnIdentifier);
+        let ctx = Context::default();
+        let req = create_test_request(Version::HTTP_2);
+        let _result = connector.serve(ctx, req).await;
+        // // let pool = ;
+        // let connector = connector
+        //     .with_connection_pool(FiFoReuseLruDropPool::new(5, 10), BasicHttpConnIdentifier);
     }
 }

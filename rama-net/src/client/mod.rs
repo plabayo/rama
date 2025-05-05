@@ -7,8 +7,8 @@ pub use conn::{ConnectorService, EstablishedClientConnection};
 mod pool;
 #[doc(inline)]
 pub use pool::{
-    ConnStoreFiFoReuseLruDrop, LeasedConnection, Pool, PoolStorage, PooledConnector,
-    PooledConnectorLayer, ReqToConnID,
+    FiFoReuseLruDropPool, LeasedConnection, NoPool, Pool, PooledConnector, PooledConnectorLayer,
+    ReqToConnID,
 };
 
 mod either_conn;
