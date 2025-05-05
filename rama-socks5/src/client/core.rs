@@ -1,11 +1,13 @@
 use crate::{
     Socks5Auth,
+    client::udp::UdpSocketRelayBinder,
     proto::{
         Command, ProtocolError, ReplyKind, SocksMethod, UsernamePasswordSubnegotiationVersion,
         client::{Header, RequestRef, UsernamePasswordRequestRef},
         server,
     },
 };
+use rama_core::error::BoxError;
 use rama_net::{address::Authority, stream::Stream};
 use rama_utils::macros::generate_field_setters;
 use std::fmt;
@@ -38,9 +40,16 @@ pub struct HandshakeError {
 }
 
 impl HandshakeError {
-    fn io(err: std::io::Error) -> Self {
+    pub(crate) fn io(err: std::io::Error) -> Self {
         Self {
             kind: HandshakeErrorKind::IO(err),
+            context: None,
+        }
+    }
+
+    pub(crate) fn other(err: impl Into<BoxError>) -> Self {
+        Self {
+            kind: HandshakeErrorKind::Other(err.into()),
             context: None,
         }
     }
@@ -86,7 +95,8 @@ impl HandshakeError {
         match self.kind {
             HandshakeErrorKind::IO(_)
             | HandshakeErrorKind::Protocol(_)
-            | HandshakeErrorKind::MethodMismatch(_) => ReplyKind::GeneralServerFailure,
+            | HandshakeErrorKind::MethodMismatch(_)
+            | HandshakeErrorKind::Other(_) => ReplyKind::GeneralServerFailure,
             HandshakeErrorKind::Unauthorized(_) => ReplyKind::ConnectionNotAllowed,
             HandshakeErrorKind::Reply(reply_kind) => reply_kind,
         }
@@ -100,6 +110,7 @@ enum HandshakeErrorKind {
     MethodMismatch(SocksMethod),
     Reply(ReplyKind),
     Unauthorized(u8),
+    Other(BoxError),
 }
 
 impl fmt::Display for HandshakeError {
@@ -133,6 +144,9 @@ impl fmt::Display for HandshakeError {
                     "client: handshake error: unauthorized: {status} ({context})"
                 )
             }
+            HandshakeErrorKind::Other(error) => {
+                write!(f, "client: handshake eror: other: {error} ({context})")
+            }
         }
     }
 }
@@ -147,7 +161,8 @@ impl std::error::Error for HandshakeError {
             ),
             HandshakeErrorKind::MethodMismatch(_)
             | HandshakeErrorKind::Reply(_)
-            | HandshakeErrorKind::Unauthorized(_) => None,
+            | HandshakeErrorKind::Unauthorized(_)
+            | HandshakeErrorKind::Other(_) => None,
         }
     }
 }
@@ -208,6 +223,8 @@ impl Client {
             None => self.handshake_headers_no_auth(&mut stream).await?,
         };
 
+        // TODO: double check why we are sending destination here from fn param? Is that even legit?
+
         let request = RequestRef::new(Command::Bind, destination);
         request
             .write_to(&mut stream)
@@ -236,6 +253,28 @@ impl Client {
         );
 
         Ok(Binder::new(stream, server_reply.bind_address))
+    }
+
+    /// Establish a connection with a Socks5 server making use of the [`Command::UdpAssociate`] flow.
+    ///
+    /// This method returns a [`UdpSocketRelayBinder`] that can be used
+    /// to bind to an interface as to get a [`UdpSocketRelay`] ready to to send udp packets through
+    /// socks5 proxy server to the required.
+    pub async fn handshake_udp<S: Stream + Unpin>(
+        &self,
+        mut stream: S,
+    ) -> Result<UdpSocketRelayBinder<S>, HandshakeError> {
+        let selected_method = match self.auth.as_ref() {
+            Some(auth) => self.handshake_headers_auth(&mut stream, auth).await?,
+            None => self.handshake_headers_no_auth(&mut stream).await?,
+        };
+
+        tracing::trace!(
+            %selected_method,
+            "socks5 client: ready for udp association",
+        );
+
+        Ok(UdpSocketRelayBinder::new(stream))
     }
 
     async fn handshake_headers_auth<S: Stream + Unpin>(

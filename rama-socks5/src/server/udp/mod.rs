@@ -414,6 +414,9 @@ impl<B: Clone, I: Clone> Clone for UdpRelay<B, I> {
     }
 }
 
+// TODO: add mock relay
+// TODO: add test
+
 impl Default for DefaultRelay {
     fn default() -> Self {
         let relay = Self::new(DefaultTimeout::new(

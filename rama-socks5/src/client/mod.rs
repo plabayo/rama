@@ -2,6 +2,7 @@ mod core;
 pub use core::Client as Socks5Client;
 
 pub mod bind;
+pub mod udp;
 
 mod proxy_connector;
 mod proxy_error;
