@@ -32,7 +32,7 @@ pub struct DirectUdpRelay;
 impl<State: Clone + Send + Sync + 'static> UdpPacketProxy<State> for DirectUdpRelay {
     async fn proxy_udp_packets(
         &self,
-        ctx: Context<State>,
+        #[cfg_attr(not(feature = "dns"), expect(unused_variables))] ctx: Context<State>,
         client_address: SocketAddress,
         north: UdpSocket,
         north_read_buf_size: usize,

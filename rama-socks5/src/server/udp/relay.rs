@@ -3,7 +3,7 @@ use std::io::ErrorKind;
 use bytes::{Bytes, BytesMut};
 use rama_core::{
     Context,
-    error::{BoxError, ErrorContext, ErrorExt},
+    error::{BoxError, ErrorContext, ErrorExt, OpaqueError},
 };
 use rama_net::address::{Authority, Host, SocketAddress};
 use rama_udp::UdpSocket;
@@ -12,7 +12,6 @@ use crate::proto::udp::UdpHeader;
 
 #[cfg(feature = "dns")]
 use ::{
-    rama_core::error::OpaqueError,
     rama_dns::{BoxDnsResolver, DnsResolver},
     rama_net::mode::DnsResolveIpMode,
     rand::seq::IteratorRandom,
@@ -364,11 +363,10 @@ fn is_fatal_io_error(err: &std::io::Error) -> bool {
 
 #[cfg(not(feature = "dns"))]
 impl UdpSocketRelay {
-    pub(super) fn maybe_with_dns_resolver<State>(
-        mut self,
-        ctx: &Context<State>,
-        resolver: Option<BoxDnsResolver<OpaqueError>>,
-    ) -> Self {
+    pub(super) async fn authority_to_socket_address(
+        &self,
+        authority: Authority,
+    ) -> Result<SocketAddress, BoxError> {
         let (host, port) = authority.into_parts();
         let ip_addr = match host {
             Host::Name(domain) => {
