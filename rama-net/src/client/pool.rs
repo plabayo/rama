@@ -49,6 +49,11 @@ pub trait Pool<C, ID>: Send + Sync + 'static {
 }
 
 #[derive(Debug, Clone)]
+/// Connection pool that doesn't store connections and has no limits.
+///
+/// Basically this pool operates like there would be no connection pooling.
+/// Can be used in places where were we work with a [`PooledConnector`], but
+/// don't want connection pooling to happen.
 pub struct NoPool;
 
 impl<C, ID> Pool<C, ID> for NoPool
@@ -142,7 +147,7 @@ where
 {
     /// Create returner here instead of in [`FiFoReuseLruDropPool::new`] so we dont have to enforce trait
     /// bounds there, this makes working with a pool a lot more ergonomic
-    fn get_or_create_returner(&self) -> Weak<dyn Fn(PooledConnection<C, ID>) + Send + Sync> {
+    fn returner(&self) -> Weak<dyn Fn(PooledConnection<C, ID>) + Send + Sync> {
         let returner = self.returner.get_or_init(|| {
             let weak_storage = Arc::downgrade(&self.storage);
             Arc::new(move |conn| {
@@ -188,7 +193,7 @@ where
             return Ok(ConnectionResult::Connection(LeasedConnection {
                 active_slot,
                 pooled_conn: Some(pooled_conn),
-                returner: self.get_or_create_returner(),
+                returner: self.returner(),
             }));
         }
 
@@ -211,7 +216,7 @@ where
         let (active_slot, pool_slot) = permit;
         LeasedConnection {
             active_slot,
-            returner: self.get_or_create_returner(),
+            returner: self.returner(),
             pooled_conn: Some(PooledConnection {
                 id,
                 conn,
@@ -458,7 +463,7 @@ where
         let conn_id = self.req_to_conn_id.id(&ctx, &req)?;
 
         // Try to get connection from pool, if no connection is found, we will have to create a new
-        // one use the returned create permit
+        // one using the returned create permit
         let create_permit = {
             let pool = ctx.get::<P>().unwrap_or(&self.pool);
 
@@ -572,7 +577,7 @@ pub mod http {
         /// Set the max amount of connections that this connection pool will contain
         ///
         /// This is the sum of active connections and idle connections. When this limit
-        /// is hit idle contains will be replaced with new ones.
+        /// is hit idle connections will be replaced with new ones.
         pub fn max_total(mut self, max: usize) -> Self {
             self.max_total = max;
             self
@@ -587,7 +592,7 @@ pub mod http {
             self
         }
 
-        /// When a pool is operation at max active capacity wait for this duration
+        /// When a pool is operating at max active capacity wait for this duration
         /// before the connector raises a timeout error
         pub fn with_wait_for_pool_timeout(mut self, duration: Duration) -> Self {
             self.wait_for_pool_timeout = Some(duration);

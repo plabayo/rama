@@ -467,7 +467,6 @@ where
         let EstablishedClientConnection { conn, ctx, req } = connector.serve(ctx, req).await?;
 
         // NOTE: stack might change request version based on connector data,
-        // let connection = self.connect(connector, ctx, req).await?;
         trace!(uri = %uri, "send http req to connector stack");
 
         let result = conn.serve(ctx, req).await;
