@@ -57,7 +57,7 @@
 >
 > In some cases, we've had to fork external crates to accommodate our specific needs or scope requirements.
 > While this creates additional maintenance work, we believe it's worthwhile to support our mission of
-> empowering Rama users. Details about these forks can be found in our [FORK.md](https://github.com/plabayo/rama/blob/main/docs/fork/README.md).
+> empowering Rama users. Details about these forks can be found in our [FORK.md](https://github.com/plabayo/rama/blob/main/docs/thirdparty/fork/README.md).
 > We maintain the original code structure in these forks to facilitate upstream synchronization and
 > contribute patches back when possible.
 
