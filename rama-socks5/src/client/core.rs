@@ -2,13 +2,17 @@ use crate::{
     Socks5Auth,
     client::udp::UdpSocketRelayBinder,
     proto::{
-        Command, ProtocolError, ReplyKind, SocksMethod, UsernamePasswordSubnegotiationVersion,
-        client::{Header, RequestRef, UsernamePasswordRequestRef},
+        Command, ProtocolError, ProtocolVersion, ReplyKind, SocksMethod,
+        UsernamePasswordSubnegotiationVersion,
+        client::{Header, Request, RequestRef, UsernamePasswordRequestRef},
         server,
     },
 };
 use rama_core::error::BoxError;
-use rama_net::{address::Authority, stream::Stream};
+use rama_net::{
+    address::{Authority, SocketAddress},
+    stream::Stream,
+};
 use rama_utils::macros::generate_field_setters;
 use std::fmt;
 
@@ -216,16 +220,17 @@ impl Client {
     pub async fn handshake_bind<S: Stream + Unpin>(
         &self,
         mut stream: S,
-        destination: &Authority,
     ) -> Result<Binder<S>, HandshakeError> {
         let selected_method = match self.auth.as_ref() {
             Some(auth) => self.handshake_headers_auth(&mut stream, auth).await?,
             None => self.handshake_headers_no_auth(&mut stream).await?,
         };
 
-        // TODO: double check why we are sending destination here from fn param? Is that even legit?
-
-        let request = RequestRef::new(Command::Bind, destination);
+        let request = Request {
+            version: ProtocolVersion::Socks5,
+            command: Command::Bind,
+            destination: SocketAddress::local_ipv4(0).into(),
+        };
         request
             .write_to(&mut stream)
             .await
@@ -233,7 +238,6 @@ impl Client {
 
         tracing::trace!(
             %selected_method,
-            socks5 = %destination,
             "socks5 client: bind handshake initiated"
         );
 
@@ -247,7 +251,6 @@ impl Client {
 
         tracing::trace!(
             %selected_method,
-            socks5 = %destination,
             server = %server_reply.bind_address,
             "socks5 client: socks5 server ready to bind",
         );

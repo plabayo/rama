@@ -2,7 +2,7 @@ use std::{fmt, io, time::Duration};
 
 use rama_core::{Context, Service, error::BoxError, layer::timeout::DefaultTimeout};
 use rama_net::{
-    address::{Authority, Host, SocketAddress},
+    address::{Authority, SocketAddress},
     proxy::{ProxyRequest, StreamForwardService},
     socket::{Interface, SocketService},
     stream::Stream,
@@ -81,7 +81,6 @@ pub struct Binder<A, S> {
 
     bind_interface: Interface,
 
-    strict: bool,
     accept_timeout: Option<Duration>,
 }
 
@@ -96,7 +95,6 @@ impl<A, S> Binder<A, S> {
             acceptor,
             service,
             bind_interface: Interface::default_ipv4(0),
-            strict: false,
             accept_timeout: None,
         }
     }
@@ -111,7 +109,6 @@ impl<A, S> Binder<A, S> {
             acceptor,
             service: self.service,
             bind_interface: self.bind_interface,
-            strict: self.strict,
             accept_timeout: self.accept_timeout,
         }
     }
@@ -129,23 +126,8 @@ impl<A, S> Binder<A, S> {
             acceptor: self.acceptor,
             service,
             bind_interface: self.bind_interface,
-            strict: self.strict,
             accept_timeout: self.accept_timeout,
         }
-    }
-
-    /// Define whether or not to strictly compare the incoming
-    /// connection's address against the bind request bind address, partly or fully, if defined at all.
-    pub fn set_strict_security(&mut self, strict: bool) -> &mut Self {
-        self.strict = strict;
-        self
-    }
-
-    /// Define whether or not to strictly compare the incoming
-    /// connection's address against the bind request bind address, partly or fully, if defined at all.
-    pub fn with_strict_security(mut self, strict: bool) -> Self {
-        self.strict = strict;
-        self
     }
 
     /// Define the (network) [`Interface`] to bind to.
@@ -169,7 +151,6 @@ impl<A: fmt::Debug, S: fmt::Debug> fmt::Debug for Binder<A, S> {
             .field("acceptor", &self.acceptor)
             .field("service", &self.service)
             .field("bind_interface", &self.bind_interface)
-            .field("strict", &self.strict)
             .field("accept_timeout", &self.accept_timeout)
             .finish()
     }
@@ -181,7 +162,6 @@ impl<A: Clone, S: Clone> Clone for Binder<A, S> {
             acceptor: self.acceptor.clone(),
             service: self.service.clone(),
             bind_interface: self.bind_interface.clone(),
-            strict: self.strict,
             accept_timeout: self.accept_timeout,
         }
     }
@@ -272,30 +252,7 @@ where
         mut stream: S,
         destination: Authority,
     ) -> Result<(), Error> {
-        tracing::trace!(
-            %destination,
-            "socks5 server: bind: try to create acceptor",
-        );
-
-        let (dest_host, dest_port) = destination.into_parts();
-        let dest_addr = match dest_host {
-            Host::Name(domain) => {
-                tracing::debug!(
-                    %domain,
-                    "bind command does not accept domain as bind address",
-                );
-                let reply_kind = ReplyKind::AddressTypeNotSupported;
-                Reply::error_reply(reply_kind)
-                    .write_to(&mut stream)
-                    .await
-                    .map_err(|err| {
-                        Error::io(err).with_context("write server reply: bind failed")
-                    })?;
-                return Err(Error::aborted("bind failed").with_context(reply_kind));
-            }
-            Host::Address(ip_addr) => ip_addr,
-        };
-        let destination = SocketAddress::new(dest_addr, dest_port);
+        tracing::trace!("socks5 server: bind: try to create acceptor (ignore dst: {destination})",);
 
         let (acceptor, ctx) = match self.acceptor.bind(ctx, self.bind_interface.clone()).await {
             Ok(twin) => twin,
@@ -383,52 +340,10 @@ where
             }
         };
 
-        if self.strict {
-            let destination_ip_addr = destination.ip_addr();
-            let incoming_ip_addr = incoming_addr.ip_addr();
-            if !destination_ip_addr.is_unspecified() && destination_ip_addr != incoming_ip_addr {
-                tracing::debug!(
-                    %destination_ip_addr,
-                    %incoming_ip_addr,
-                    "strict mode: security: unexpected incoming ip address",
-                );
-                let reply_kind = ReplyKind::ConnectionNotAllowed;
-                Reply::error_reply(reply_kind)
-                    .write_to(&mut stream)
-                    .await
-                    .map_err(|err| {
-                        Error::io(err)
-                            .with_context("write server reply: invalid incoming ip address")
-                    })?;
-                return Err(Error::aborted("bind failed").with_context(reply_kind));
-            }
-
-            let destination_port = destination.port();
-            let incoming_port = incoming_addr.port();
-            if destination_port != 0 && destination_port != incoming_port {
-                tracing::debug!(
-                    %destination_ip_addr,
-                    %destination_port,
-                    %incoming_ip_addr,
-                    %incoming_port,
-                    "strict mode: security: unexpected incoming port",
-                );
-                let reply_kind = ReplyKind::ConnectionNotAllowed;
-                Reply::error_reply(reply_kind)
-                    .write_to(&mut stream)
-                    .await
-                    .map_err(|err| {
-                        Error::io(err).with_context("write server reply: invalid incoming port")
-                    })?;
-                return Err(Error::aborted("bind failed").with_context(reply_kind));
-            }
-        } else {
-            tracing::trace!(
-                %destination,
-                %incoming_addr,
-                "non-strict mode: do not validate address of incoming connection",
-            );
-        }
+        tracing::trace!(
+            remote_address = %incoming_addr,
+            "incoming connection received on bind address",
+        );
 
         Reply::new(incoming_addr)
             .write_to(&mut stream)
