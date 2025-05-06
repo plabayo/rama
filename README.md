@@ -62,7 +62,7 @@
 > When necessary, we've forked other crates due to incompatibilities in needs or scope.
 > While this creates additional work for us, we willingly do so when it aligns with our mission
 > of empowering Rama users, including ourselves. You can find more information about these forks
-> in the [FORK.md](./docs/fork/README.md) document.
+> in the [FORK.md](./docs/thirdparty/fork/README.md) document.
 > We strive to preserve the code layout of forked modules to maintain synchronization with upstream
 > and push patches upstream where possible.
 
@@ -98,7 +98,7 @@ This framework comes with 🔋 batteries included, giving you the full freedom t
 | ✅ upstream [proxies](https://ramaproxy.org/docs/rama/proxy/index.html) | ✅ [MemoryProxyDB](https://ramaproxy.org/docs/rama/proxy/struct.MemoryProxyDB.html) ⸱ ✅ [Username Config](https://ramaproxy.org/docs/rama/username/index.html) ⸱ ✅ [Proxy Filters](https://ramaproxy.org/docs/rama/proxy/struct.ProxyFilter.html) |
 | ✅ [User Agent (UA)](https://ramaproxy.org/book/intro/user_agent) | ✅ [Http Emulation](https://ramaproxy.org/docs/rama/ua/profile/struct.HttpProfile.html) ⸱ ✅ [Tls Emulation](https://ramaproxy.org/docs/rama/ua/profile/struct.TlsProfile.html) ⸱ ✅ [UA Parsing](https://ramaproxy.org/docs/rama/ua/struct.UserAgent.html) |
 | ✅ [Fingerprinting](https://ramaproxy.org/docs/rama/net/fingerprint/index.html) | ✅ [Ja3](https://ramaproxy.org/docs/rama/net/fingerprint/struct.Ja3.html) ⸱ ✅ [Ja4](https://ramaproxy.org/docs/rama/net/fingerprint/struct.Ja4.html) ⸱ ✅ [Ja4H](https://ramaproxy.org/docs/rama/net/fingerprint/struct.Ja4H.html) ⸱ 🏗️ [Akamai passive h2](https://github.com/plabayo/rama/issues/517) <sup>(1)</sup> ⸱ 🏗️ [Peetprint (tls)](https://github.com/plabayo/rama/issues/518) <sup>(1)</sup> |
-| ✅ utilities | ✅ [error handling](https://ramaproxy.org/docs/rama/error/index.html) ⸱ ✅ [graceful shutdown](https://ramaproxy.org/docs/rama/graceful/index.html) ⸱ ✅ [Connection Pool](https://ramaproxy.org/docs/rama/net/client/struct.Pool.html) ⸱ ✅ [Tower Adapter](https://ramaproxy.org/docs/rama/utils/tower/index.html) ⸱ 🏗️ IP2Loc <sup>(2)</sup> |
+| ✅ utilities | ✅ [error handling](https://ramaproxy.org/docs/rama/error/index.html) ⸱ ✅ [graceful shutdown](https://ramaproxy.org/docs/rama/graceful/index.html) ⸱ ✅ [Connection Pooling](https://ramaproxy.org/docs/rama/net/client/pool/index.html) ⸱ ✅ [Tower Adapter](https://ramaproxy.org/docs/rama/utils/tower/index.html) ⸱ 🏗️ IP2Loc <sup>(2)</sup> |
 | 🏗️ Graphical Interface | 🏗️ traffic logger <sup>(2)</sup> ⸱ 🏗️ curl export <sup>(2)</sup> ⸱ 🏗️ [TUI implementation](https://ratatui.rs/) <sup>(2)</sup> ⸱ ❌ traffic intercept <sup>(3)</sup> ⸱ ❌ traffic replay <sup>(3)</sup> |
 | ✅ binary | ✅ [prebuilt binaries](https://ramaproxy.org/book/deploy/rama-cli) ⸱ 🏗️ proxy config <sup>(2)</sup> ⸱ ✅ http client ⸱ ❌ WASM Plugins <sup>(3)</sup> |
 | 🏗️ data scraping | 🏗️ Html Processor <sup>(2)</sup> ⸱ ❌ Json Processor <sup>(3)</sup> |

@@ -9,9 +9,9 @@ as a distant relative.
 
 ### hyperium
 
-- <https://github.com/hyperium/h2/tree/adab70fd9f9e5ce3099d274a4b548a27bfdee4dc>
+- <https://github.com/hyperium/h2/tree/e4ed3502f111302ba601799bf70b4aecd37466fd>
   - License:
-    - Original: <https://github.com/hyperium/h2/blob/adab70fd9f9e5ce3099d274a4b548a27bfdee4dc/LICENSE>
+    - Original: <https://github.com/hyperium/h2/blob/e4ed3502f111302ba601799bf70b4aecd37466fd/LICENSE>
     - Type: MIT
     - Copy: [./licenses/h2](./licenses/h2)
 - <https://github.com/hyperium/hyper/tree/v1.6.0>
@@ -27,35 +27,35 @@ as a distant relative.
 
 ### tower-rs
 
-- <https://github.com/tower-rs/tower/tree/abb375d08cf0ba34c1fe76f66f1aba3dc4341013>
+- <https://github.com/tower-rs/tower/tree/81658e65ad6dbddaf4fa7d0f19361e4c56d85c80>
   - Service / Layer traits
   - Some layers such as timeout, filter, most of util ones
   - License:
-    - Original: <https://github.com/tower-rs/tower/blob/abb375d08cf0ba34c1fe76f66f1aba3dc4341013/LICENSE>
+    - Original: <https://github.com/tower-rs/tower/blob/81658e65ad6dbddaf4fa7d0f19361e4c56d85c80/LICENSE>
     - Type: MIT
     - Copy: [./licenses/tower](./licenses/tower)
-- <https://github.com/tower-rs/tower-http/tree/6c20928e50a7462cd4abfe7ad404dc03c8445de9>
+- <https://github.com/tower-rs/tower-http/tree/2c3f8f3723e710323c71871a30c5925d7a077b44>
   - pretty much everything
   - now kept directly in sync "conceptual logic wise",
     but originally forked as an actual `tower-async` package as found in
     <https://github.com/plabayo/tower-async/tree/57798b7baea8e212197a226a2481fa282591dda4>
   - License:
-    - Original: <https://github.com/tower-rs/tower-http/blob/6c20928e50a7462cd4abfe7ad404dc03c8445de9/tower-http/LICENSE>
+    - Original: <https://github.com/tower-rs/tower-http/blob/2c3f8f3723e710323c71871a30c5925d7a077b44/tower-http/LICENSE>
     - Type: MIT
     - Copy: [./licenses/tower-http](./licenses/tower-http)
 
 ## Relative Forks
 
-- <https://github.com/tokio-rs/axum/tree/9c9cbb5c5f72452825388d63db4f1e36c0d9b3aa>
+- <https://github.com/tokio-rs/axum/tree/7d1dbeb3af6c709b20708cbfcf0a29bcbcc40692>
   - IntoResponse Code
   - (Optional)FromRequest/ (Optional)FromRequestParts code
   - Error/BoxError
   - web::extract inspiration + Path (param) deserializion code
   - License:
     - Originals:
-      - <https://github.com/tokio-rs/axum/blob/9c9cbb5c5f72452825388d63db4f1e36c0d9b3aa/axum-core/LICENSE>
-      - <https://github.com/tokio-rs/axum/blob/9c9cbb5c5f72452825388d63db4f1e36c0d9b3aa/axum-extra/LICENSE>
-      - <https://github.com/tokio-rs/axum/blob/9c9cbb5c5f72452825388d63db4f1e36c0d9b3aa/axum/LICENSE>
+      - <https://github.com/tokio-rs/axum/blob/7d1dbeb3af6c709b20708cbfcf0a29bcbcc40692/axum-core/LICENSE>
+      - <https://github.com/tokio-rs/axum/blob/7d1dbeb3af6c709b20708cbfcf0a29bcbcc40692/axum-extra/LICENSE>
+      - <https://github.com/tokio-rs/axum/blob/7d1dbeb3af6c709b20708cbfcf0a29bcbcc40692/axum/LICENSE>
     - Type: MIT
     - Copies:
       - [./licenses/axum-core](./licenses/axum-core)

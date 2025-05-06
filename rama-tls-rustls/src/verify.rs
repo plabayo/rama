@@ -5,8 +5,8 @@
 use crate::dep::rustls::{
     DigitallySignedStruct, SignatureScheme,
     client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
+    pki_types::{CertificateDer, ServerName, UnixTime},
 };
-use rustls_pki_types::{CertificateDer, ServerName, UnixTime};
 
 /// Cert verifier that does not verify the server certificate.
 #[derive(Debug)]

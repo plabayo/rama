@@ -18,8 +18,8 @@ default = []
 
 [dependencies]
 bytes = { workspace = true }
-rama-core = { version = "0.2.0-alpha.14", path = "../rama-core" }
-rama-net = { version = "0.2.0-alpha.14", path = "../rama-net" }
+rama-core = { version = "0.2.0-alpha.15", path = "../rama-core" }
+rama-net = { version = "0.2.0-alpha.15", path = "../rama-net" }
 tokio = { workspace = true, features = ["macros", "net"] }
 tokio-util = { workspace = true, features = ["net", "codec"] }
 

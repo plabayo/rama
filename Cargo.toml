@@ -28,7 +28,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.2.0-alpha.14"
+version = "0.2.0-alpha.15"
 license = "MIT OR Apache-2.0"
 edition = "2024"
 repository = "https://github.com/plabayo/rama"
@@ -111,7 +111,7 @@ serde_html_form = "0.2"
 syn = "2.0"
 sync_wrapper = "1.0"
 tempfile = "3.19"
-tokio = "1.44"
+tokio = "1.45"
 spmc = "0.3"
 tokio-graceful = "0.2"
 tokio-rustls = { version = "0.26", default-features = false, features = [
@@ -133,7 +133,7 @@ unicode-normalization = "0.1"
 iri-string = "0.7"
 escargot = "0.5"
 divan = "0.1"
-webpki-roots = "0.26"
+webpki-roots = "1.0"
 terminal-prompt = "0.2"
 parking_lot = "0.12"
 const_format = "0.2"
@@ -165,6 +165,7 @@ chrono = "0.4"
 smol_str = "0.3"
 tower-service = "0.3"
 tower-layer = "0.3"
+radix_trie = "0.2"
 
 [workspace.lints.rust]
 unreachable_pub = "deny"
@@ -263,22 +264,22 @@ rustversion = { workspace = true }
 base64 = { workspace = true, optional = true }
 bytes = { workspace = true, optional = true }
 hex = { workspace = true, optional = true }
-rama-core = { version = "0.2.0-alpha.14", path = "rama-core" }
-rama-dns = { version = "0.2.0-alpha.14", path = "rama-dns", optional = true }
-rama-haproxy = { version = "0.2.0-alpha.14", path = "rama-haproxy", optional = true }
-rama-http = { version = "0.2.0-alpha.14", path = "rama-http", optional = true }
-rama-http-backend = { version = "0.2.0-alpha.14", path = "rama-http-backend", optional = true }
-rama-http-core = { version = "0.2.0-alpha.14", path = "rama-http-core", optional = true }
-rama-net = { version = "0.2.0-alpha.14", path = "rama-net", optional = true }
-rama-proxy = { version = "0.2.0-alpha.14", path = "rama-proxy", optional = true }
-rama-socks5 = { version = "0.2.0-alpha.14", path = "rama-socks5", optional = true }
-rama-tcp = { version = "0.2.0-alpha.14", path = "rama-tcp", optional = true }
-rama-tls-boring = { version = "0.2.0-alpha.14", path = "rama-tls-boring", optional = true }
-rama-tls-rustls = { version = "0.2.0-alpha.14", path = "rama-tls-rustls", optional = true }
-rama-tower = { version = "0.2.0-alpha.14", path = "rama-tower", optional = true }
-rama-ua = { version = "0.2.0-alpha.14", path = "rama-ua", optional = true }
-rama-udp = { version = "0.2.0-alpha.14", path = "rama-udp", optional = true }
-rama-utils = { version = "0.2.0-alpha.14", path = "rama-utils" }
+rama-core = { version = "0.2.0-alpha.15", path = "rama-core" }
+rama-dns = { version = "0.2.0-alpha.15", path = "rama-dns", optional = true }
+rama-haproxy = { version = "0.2.0-alpha.15", path = "rama-haproxy", optional = true }
+rama-http = { version = "0.2.0-alpha.15", path = "rama-http", optional = true }
+rama-http-backend = { version = "0.2.0-alpha.15", path = "rama-http-backend", optional = true }
+rama-http-core = { version = "0.2.0-alpha.15", path = "rama-http-core", optional = true }
+rama-net = { version = "0.2.0-alpha.15", path = "rama-net", optional = true }
+rama-proxy = { version = "0.2.0-alpha.15", path = "rama-proxy", optional = true }
+rama-socks5 = { version = "0.2.0-alpha.15", path = "rama-socks5", optional = true }
+rama-tcp = { version = "0.2.0-alpha.15", path = "rama-tcp", optional = true }
+rama-tls-boring = { version = "0.2.0-alpha.15", path = "rama-tls-boring", optional = true }
+rama-tls-rustls = { version = "0.2.0-alpha.15", path = "rama-tls-rustls", optional = true }
+rama-tower = { version = "0.2.0-alpha.15", path = "rama-tower", optional = true }
+rama-ua = { version = "0.2.0-alpha.15", path = "rama-ua", optional = true }
+rama-udp = { version = "0.2.0-alpha.15", path = "rama-udp", optional = true }
+rama-utils = { version = "0.2.0-alpha.15", path = "rama-utils" }
 serde = { workspace = true, optional = true }
 serde_html_form = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
