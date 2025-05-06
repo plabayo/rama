@@ -6,7 +6,10 @@
 
 use super::core::HandshakeError;
 use crate::proto::{ReplyKind, server};
-use rama_net::{address::Authority, stream::Stream};
+use rama_net::{
+    address::{Authority, SocketAddress},
+    stream::Stream,
+};
 use std::fmt;
 
 /// [`Binder`] is used to await for the socks5 server
@@ -21,7 +24,8 @@ use std::fmt;
 /// [`bind_address`]: Binder::bind_address
 pub struct Binder<S> {
     stream: S,
-    bind_address: Authority,
+    requested_bind_address: Option<SocketAddress>,
+    selected_bind_address: SocketAddress,
 }
 
 /// Error that is returned in case the bind process while
@@ -82,23 +86,34 @@ pub struct BindOutput<S> {
 }
 
 impl<S: Stream + Unpin> Binder<S> {
-    pub(crate) fn new(stream: S, bind_address: Authority) -> Self {
+    pub(crate) fn new(
+        stream: S,
+        requested_bind_address: Option<SocketAddress>,
+        selected_bind_address: SocketAddress,
+    ) -> Self {
         Self {
             stream,
-            bind_address,
+            requested_bind_address,
+            selected_bind_address,
         }
+    }
+
+    /// Address of the address requested by
+    /// the socks5 (bind) client, if requested at all.
+    pub fn requested_bind_address(&self) -> Option<SocketAddress> {
+        self.requested_bind_address
     }
 
     /// Address of the socket that the socks5 server has opened
     /// for the target server to connect to.
-    pub fn bind_address(&self) -> &Authority {
-        &self.bind_address
+    pub fn selected_bind_address(&self) -> SocketAddress {
+        self.selected_bind_address
     }
 
     /// Wait for the server to connect to the socks5 server
-    /// using the [bind address].
+    /// using the [selected bind address].
     ///
-    /// [bind address]: Self::bind_address
+    /// [selected bind address]: Self::selected_bind_address
     pub async fn connect(mut self) -> Result<BindOutput<S>, BindError<S>> {
         let server = match server::Reply::read_from(&mut self.stream).await {
             Ok(reply) => {
@@ -120,7 +135,7 @@ impl<S: Stream + Unpin> Binder<S> {
         };
 
         tracing::trace!(
-            bind = %self.bind_address,
+            bind_address = %self.selected_bind_address,
             %server,
             "socks5: bind handshake complete",
         );

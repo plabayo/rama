@@ -5,12 +5,12 @@ use crate::{
         Command, ProtocolError, ProtocolVersion, ReplyKind, SocksMethod,
         UsernamePasswordSubnegotiationVersion,
         client::{Header, Request, RequestRef, UsernamePasswordRequestRef},
-        server,
+        server::{self, Reply},
     },
 };
 use rama_core::error::BoxError;
 use rama_net::{
-    address::{Authority, SocketAddress},
+    address::{Authority, Host, SocketAddress},
     stream::Stream,
 };
 use rama_utils::macros::generate_field_setters;
@@ -213,6 +213,13 @@ impl Client {
 
     /// Establish a connection with a Socks5 server making use of the [`Command::Bind`] flow.
     ///
+    /// Usually you do not request a bind address yourself, but for some special-purpose or local
+    /// setups it might be desired that the client requests a specific bind interface to the server.
+    ///
+    /// Note that the server is free to ignore this request, even when requested.
+    /// You can use [`Binder::selected_bind_address`] to compare it with [`Binder::requested_bind_address`]
+    /// in case your special purpose use-case requires the client's bind address choice to be respected.
+    ///
     /// This method returns a [`Binder`] that contains the address to which the target server
     /// is to connect to the socks5 server on behalf of the client (callee of this call).
     /// The [`Binder`] takes ownership over of the input [`Stream`] such that it can
@@ -220,16 +227,19 @@ impl Client {
     pub async fn handshake_bind<S: Stream + Unpin>(
         &self,
         mut stream: S,
+        requested_bind_address: Option<SocketAddress>,
     ) -> Result<Binder<S>, HandshakeError> {
         let selected_method = match self.auth.as_ref() {
             Some(auth) => self.handshake_headers_auth(&mut stream, auth).await?,
             None => self.handshake_headers_no_auth(&mut stream).await?,
         };
 
+        let destination = requested_bind_address.unwrap_or_else(|| SocketAddress::local_ipv4(0));
+
         let request = Request {
             version: ProtocolVersion::Socks5,
             command: Command::Bind,
-            destination: SocketAddress::local_ipv4(0).into(),
+            destination: destination.into(),
         };
         request
             .write_to(&mut stream)
@@ -237,6 +247,7 @@ impl Client {
             .map_err(|err| HandshakeError::io(err).with_context("write client request: bind"))?;
 
         tracing::trace!(
+            requested_bind_address = %destination,
             %selected_method,
             "socks5 client: bind handshake initiated"
         );
@@ -249,13 +260,41 @@ impl Client {
                 .with_context("server responded with non-success reply"));
         }
 
+        let (select_host, selected_port) = server_reply.bind_address.into_parts();
+        let selected_addr = match select_host {
+            Host::Name(domain) => {
+                tracing::debug!(
+                    %domain,
+                    "bind command response does not accept domain as bind address",
+                );
+                let reply_kind = ReplyKind::AddressTypeNotSupported;
+                Reply::error_reply(reply_kind)
+                    .write_to(&mut stream)
+                    .await
+                    .map_err(|err| {
+                        HandshakeError::io(err).with_context("read server response: bind failed")
+                    })?;
+                return Err(
+                    HandshakeError::reply_kind(ReplyKind::AddressTypeNotSupported)
+                        .with_context("selected bind addr cannot be a domain name"),
+                );
+            }
+            Host::Address(ip_addr) => ip_addr,
+        };
+        let selected_bind_address = SocketAddress::new(selected_addr, selected_port);
+
         tracing::trace!(
             %selected_method,
-            server = %server_reply.bind_address,
+            requested_bind_address = %destination,
+            %selected_bind_address,
             "socks5 client: socks5 server ready to bind",
         );
 
-        Ok(Binder::new(stream, server_reply.bind_address))
+        Ok(Binder::new(
+            stream,
+            requested_bind_address,
+            selected_bind_address,
+        ))
     }
 
     /// Establish a connection with a Socks5 server making use of the [`Command::UdpAssociate`] flow.
