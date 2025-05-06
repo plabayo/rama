@@ -48,7 +48,26 @@ pub trait Pool<C, ID>: Send + Sync + 'static {
     ) -> impl Future<Output = Self::Connection> + Send;
 }
 
-#[derive(Debug, Clone)]
+/// Result returned by a successful call to [`Pool::get_conn`]
+pub enum ConnectionResult<C, P> {
+    /// Connection which matches given ID and is ready to be used
+    Connection(C),
+    /// If no connection is found for the given ID a [`Pool::CreatePermit`]
+    /// is returned. This permit can be used to create/add a new connection to the pool.
+    CreatePermit(P),
+}
+
+impl<C: Debug, P: Debug> Debug for ConnectionResult<C, P> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Connection(arg0) => f.debug_tuple("Connection").field(arg0).finish(),
+            Self::CreatePermit(arg0) => f.debug_tuple("CreatePermit").field(arg0).finish(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 /// Connection pool that doesn't store connections and has no limits.
 ///
 /// Basically this pool operates like there would be no connection pooling.
@@ -74,11 +93,6 @@ where
     async fn create(&self, _id: ID, conn: C, _permit: Self::CreatePermit) -> Self::Connection {
         conn
     }
-}
-
-pub enum ConnectionResult<C, P> {
-    Connection(C),
-    CreatePermit(P),
 }
 
 /// [`LeasedConnection`] is a connection that is temporarily leased from a pool
@@ -181,12 +195,12 @@ where
                 .context("get active pool slot")?,
         );
 
+        let mut storage = self.storage.lock();
         let pooled_conn = {
-            let mut connections = self.storage.lock();
-            connections
+            storage
                 .iter()
                 .position(|stored| &stored.id == id)
-                .and_then(|idx| connections.remove(idx))
+                .and_then(|idx| storage.remove(idx))
         };
 
         if let Some(pooled_conn) = pooled_conn {
@@ -201,8 +215,7 @@ where
             Ok(permit) => PoolSlot(permit),
             Err(_) => {
                 // By poping from back when we have no new Poolslot available we implement LRU drop policy
-                self.storage
-                    .lock()
+                storage
                     .pop_back()
                     .context("get least recently used connection from storage")?
                     .pool_slot

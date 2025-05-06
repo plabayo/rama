@@ -148,7 +148,7 @@ impl Default for EasyHttpWebClient {
             proxy_tls_connector_config: Some(TlsConnectorConfig::Boring(None)),
             #[cfg(all(feature = "rustls", not(feature = "boring")))]
             proxy_tls_connector_config: Some(TlsConnectorConfig::Rustls(None)),
-            connection_pool: NoPool,
+            connection_pool: NoPool::default(),
             proxy_http_connect_version: Some(Version::HTTP_11),
             http_req_inspector_jit: (),
             http_req_inspector_svc: (),
@@ -311,7 +311,7 @@ impl<I1, I2, P> EasyHttpWebClient<I1, I2, P> {
             proxy_http_connect_version: self.proxy_http_connect_version,
             http_req_inspector_jit: self.http_req_inspector_jit,
             http_req_inspector_svc: self.http_req_inspector_svc,
-            connection_pool: NoPool,
+            connection_pool: NoPool::default(),
         }
     }
 
