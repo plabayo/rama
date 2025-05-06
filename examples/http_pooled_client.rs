@@ -54,7 +54,7 @@ async fn main() {
     tokio::spawn(run_server(ADDRESS, ready_tx));
     ready_rx.await.unwrap();
 
-    let pool = FiFoReuseLruDropPool::new(5, 10);
+    let pool = FiFoReuseLruDropPool::new(5, 10).unwrap();
     let client = EasyHttpWebClient::default().with_connection_pool(pool);
 
     let resp = client

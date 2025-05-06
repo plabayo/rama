@@ -143,14 +143,24 @@ impl<C, ID> Clone for FiFoReuseLruDropPool<C, ID> {
 }
 
 impl<C, ID> FiFoReuseLruDropPool<C, ID> {
-    pub fn new(max_active: usize, max_total: usize) -> Self {
+    pub fn new(max_active: usize, max_total: usize) -> Result<Self, OpaqueError> {
+        if max_active == 0 || max_total == 0 {
+            return Err(OpaqueError::from_display(
+                "max_active or max_total of 0 will make this pool unusable",
+            ));
+        }
+        if max_active > max_total {
+            return Err(OpaqueError::from_display(
+                "max_active should be smaller or equal to max_total",
+            ));
+        }
         let storage = Arc::new(Mutex::new(VecDeque::with_capacity(max_total)));
-        Self {
+        Ok(Self {
             storage,
             returner: OnceLock::new(),
             total_slots: Arc::new(Semaphore::const_new(max_total)),
             active_slots: Arc::new(Semaphore::const_new(max_active)),
-        }
+        })
     }
 }
 
@@ -419,7 +429,7 @@ impl<C, ID: Debug> Debug for FiFoReuseLruDropPool<C, ID> {
 /// not unique and multiple connections can have the same ID. IDs are used to filter
 /// which connections can be used for a specific Request in a way that is indepent of
 /// what a Request is.
-pub trait ReqToConnID<State, Request>: Sized + Send + Sync + 'static {
+pub trait ReqToConnID<State, Request>: Sized + Clone + Send + Sync + 'static {
     type ID: Send + Sync + PartialEq + Clone + 'static;
 
     fn id(&self, ctx: &Context<State>, request: &Request) -> Result<Self::ID, OpaqueError>;
@@ -427,7 +437,7 @@ pub trait ReqToConnID<State, Request>: Sized + Send + Sync + 'static {
 
 impl<State, Request, ID, F> ReqToConnID<State, Request> for F
 where
-    F: Fn(&Context<State>, &Request) -> Result<ID, OpaqueError> + Send + Sync + 'static,
+    F: Fn(&Context<State>, &Request) -> Result<ID, OpaqueError> + Clone + Send + Sync + 'static,
     ID: Send + Sync + PartialEq + Clone + 'static,
 {
     type ID = ID;
@@ -546,7 +556,7 @@ pub mod http {
     use rama_core::Context;
     use rama_http_types::Request;
 
-    #[derive(Debug, Default)]
+    #[derive(Clone, Debug, Default)]
     #[non_exhaustive]
     /// [`BasicHttpConnIdentifier`] can be used together with a [`super::Pool`] to create a basic http connection pool
     pub struct BasicHttpConnIdentifier;
@@ -620,11 +630,13 @@ pub mod http {
         pub fn build<C, S>(
             self,
             inner: S,
-        ) -> PooledConnector<S, FiFoReuseLruDropPool<C, BasicHttpConId>, BasicHttpConnIdentifier>
-        {
-            let pool = FiFoReuseLruDropPool::new(self.max_active, self.max_total);
-            PooledConnector::new(inner, pool, BasicHttpConnIdentifier)
-                .maybe_with_wait_for_pool_timeout(self.wait_for_pool_timeout)
+        ) -> Result<
+            PooledConnector<S, FiFoReuseLruDropPool<C, BasicHttpConId>, BasicHttpConnIdentifier>,
+            OpaqueError,
+        > {
+            let pool = FiFoReuseLruDropPool::new(self.max_active, self.max_total)?;
+            Ok(PooledConnector::new(inner, pool, BasicHttpConnIdentifier)
+                .maybe_with_wait_for_pool_timeout(self.wait_for_pool_timeout))
         }
     }
 }
@@ -671,6 +683,7 @@ mod tests {
         }
     }
 
+    #[derive(Clone)]
     /// [`StringRequestLengthID`] will map Requests of type String, to usize id representing their
     /// chars length. In practise this will mean that Requests of the same char length will be
     /// able to reuse the same connections
@@ -686,7 +699,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_should_reuse_connections() {
-        let pool = FiFoReuseLruDropPool::new(5, 10);
+        let pool = FiFoReuseLruDropPool::new(5, 10).unwrap();
         // We use a closure here to maps all requests to `()` id, this will result in all connections being shared and the pool
         // acting like like a global connection pool (eg database connection pool where all connections can be used).
         let svc = PooledConnector::new(
@@ -709,7 +722,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_conn_id_to_separate() {
-        let pool = FiFoReuseLruDropPool::new(5, 10);
+        let pool = FiFoReuseLruDropPool::new(5, 10).unwrap();
         let svc = PooledConnector::new(TestService::default(), pool, StringRequestLengthID {});
 
         {
@@ -766,7 +779,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_pool_max_size() {
-        let pool = FiFoReuseLruDropPool::new(1, 1);
+        let pool = FiFoReuseLruDropPool::new(1, 1).unwrap();
         let svc = PooledConnector::new(TestService::default(), pool, StringRequestLengthID {})
             .with_wait_for_pool_timeout(Duration::from_millis(50));
 
