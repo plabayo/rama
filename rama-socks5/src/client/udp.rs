@@ -1,8 +1,9 @@
 use bytes::BytesMut;
+use crossbeam_queue::ArrayQueue;
 use rama_core::error::{BoxError, OpaqueError};
 use rama_net::{address::SocketAddress, socket::Interface, stream::Stream};
 use rama_udp::UdpSocket;
-use std::{io, net::SocketAddr};
+use std::{io, net::SocketAddr, sync::Arc};
 
 use crate::proto::{Command, ProtocolVersion, ReplyKind, client::Request, server, udp::UdpHeader};
 
@@ -84,6 +85,7 @@ impl<S: Stream + Unpin> UdpSocketRelayBinder<S> {
         Ok(UdpSocketRelay {
             stream: self.stream,
             socket,
+            buf_pool: Arc::new(ArrayQueue::new(32)),
         })
     }
 }
@@ -95,6 +97,8 @@ pub struct UdpSocketRelay<S> {
     stream: S,
 
     socket: UdpSocket,
+
+    buf_pool: Arc<ArrayQueue<BytesMut>>,
 }
 
 impl<S> UdpSocketRelay<S> {
@@ -122,10 +126,23 @@ impl<S> UdpSocketRelay<S> {
             fragment_number: 0,
             destination: socket_addr.into(),
         };
-        let mut buf = BytesMut::with_capacity(header.serialized_len() + b.len());
+
+        let required_capacity = header.serialized_len() + b.len();
+
+        let mut buf = match self.buf_pool.pop() {
+            Some(mut buf) => {
+                buf.clear();
+                buf
+            }
+            None => BytesMut::with_capacity(required_capacity),
+        };
+
         header.write_to_buf(&mut buf);
         buf.extend_from_slice(b);
-        Ok(self.socket.send(&buf).await?)
+        let n = self.socket.send(&buf).await?;
+
+        let _ = self.buf_pool.push(buf);
+        Ok(n)
     }
 
     /// Receives a single datagram message from the socks5 udp associate proxy.

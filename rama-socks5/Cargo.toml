@@ -19,6 +19,7 @@ dns = ["dep:rama-dns", "dep:rand"]
 
 [dependencies]
 bytes = { workspace = true }
+crossbeam-queue = { workspace = true }
 rama-core = { version = "0.2.0-alpha.13", path = "../rama-core" }
 rama-dns = { version = "0.2.0-alpha.13", path = "../rama-dns", optional = true }
 rama-net = { version = "0.2.0-alpha.13", path = "../rama-net", features = ["http"] }

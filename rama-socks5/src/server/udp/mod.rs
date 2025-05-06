@@ -206,7 +206,8 @@ impl<B, I> UdpRelay<B, I> {
     /// - [`UdpRelay::set_bind_south_interface`]: to only set [`Interface`] for the south direction.
     ///
     /// By default it binds the udp sockets at `0.0.0.0:0`.
-    pub fn set_bind_interface(&mut self, interface: Interface) -> &mut Self {
+    pub fn set_bind_interface(&mut self, interface: impl Into<Interface>) -> &mut Self {
+        let interface = interface.into();
         self.bind_north_interface = interface.clone();
         self.bind_south_interface = interface;
         self
@@ -219,7 +220,8 @@ impl<B, I> UdpRelay<B, I> {
     /// - [`UdpRelay::with_bind_south_interface`]: to only set [`Interface`] for the south direction.
     ///
     /// By default it binds the udp sockets at `0.0.0.0:0`.
-    pub fn with_bind_interface(mut self, interface: Interface) -> Self {
+    pub fn with_bind_interface(mut self, interface: impl Into<Interface>) -> Self {
+        let interface = interface.into();
         self.bind_north_interface = interface.clone();
         self.bind_south_interface = interface;
         self
@@ -232,8 +234,8 @@ impl<B, I> UdpRelay<B, I> {
     /// - [`UdpRelay::set_bind_south_interface`]: to only set [`Interface`] for the south direction.
     ///
     /// By default it binds the udp sockets at `0.0.0.0:0`.
-    pub fn set_bind_north_interface(&mut self, interface: Interface) -> &mut Self {
-        self.bind_north_interface = interface;
+    pub fn set_bind_north_interface(&mut self, interface: impl Into<Interface>) -> &mut Self {
+        self.bind_north_interface = interface.into();
         self
     }
 
@@ -244,8 +246,8 @@ impl<B, I> UdpRelay<B, I> {
     /// - [`UdpRelay::with_bind_south_interface`]: to only set [`Interface`] for the south direction.
     ///
     /// By default it binds the udp sockets at `0.0.0.0:0`.
-    pub fn with_bind_north_interface(mut self, interface: Interface) -> Self {
-        self.bind_north_interface = interface;
+    pub fn with_bind_north_interface(mut self, interface: impl Into<Interface>) -> Self {
+        self.bind_north_interface = interface.into();
         self
     }
 
@@ -256,8 +258,8 @@ impl<B, I> UdpRelay<B, I> {
     /// - [`UdpRelay::set_bind_north_interface`]: to only set [`Interface`] for the north direction.
     ///
     /// By default it binds the udp sockets at `0.0.0.0:0`.
-    pub fn set_bind_south_interface(&mut self, interface: Interface) -> &mut Self {
-        self.bind_south_interface = interface;
+    pub fn set_bind_south_interface(&mut self, interface: impl Into<Interface>) -> &mut Self {
+        self.bind_south_interface = interface.into();
         self
     }
 
@@ -268,8 +270,8 @@ impl<B, I> UdpRelay<B, I> {
     /// - [`UdpRelay::with_bind_north_interface`]: to only set [`Interface`] for the north direction.
     ///
     /// By default it binds the udp sockets at `0.0.0.0:0`.
-    pub fn with_bind_south_interface(mut self, interface: Interface) -> Self {
-        self.bind_south_interface = interface;
+    pub fn with_bind_south_interface(mut self, interface: impl Into<Interface>) -> Self {
+        self.bind_south_interface = interface.into();
         self
     }
 

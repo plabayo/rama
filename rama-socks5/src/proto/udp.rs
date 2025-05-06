@@ -2,8 +2,8 @@
 //!
 //! [RFC 1928]: https://datatracker.ietf.org/doc/html/rfc1928
 
-use bytes::{BufMut, BytesMut};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use bytes::BufMut;
+use tokio::io::{AsyncRead, AsyncReadExt};
 
 use crate::proto::common::write_authority_to_buf;
 
@@ -109,18 +109,6 @@ impl UdpHeader {
         })
     }
 
-    /// Write the [`UdpPacket`] in binary format as specified by [RFC 1928] into the writer.
-    ///
-    /// [RFC 1928]: https://datatracker.ietf.org/doc/html/rfc1928
-    pub async fn write_to<W>(&self, w: &mut W) -> Result<(), std::io::Error>
-    where
-        W: AsyncWrite + Unpin,
-    {
-        let mut buf = BytesMut::with_capacity(self.serialized_len());
-        self.write_to_buf(&mut buf);
-        w.write_all(&buf).await
-    }
-
     /// Write the [`UdpPacket`] in binary format as specified by [RFC 1928] into the buffer.
     ///
     /// [RFC 1928]: https://datatracker.ietf.org/doc/html/rfc1928
@@ -137,10 +125,24 @@ impl UdpHeader {
 
 #[cfg(test)]
 mod tests {
+    use bytes::BytesMut;
     use rama_net::address::Authority;
+    use tokio::io::{AsyncWrite, AsyncWriteExt};
 
     use super::*;
     use crate::proto::test_write_read_eq;
+
+    impl UdpHeader {
+        // to expensive in production, so only enable in tests
+        pub async fn write_to<W>(&self, w: &mut W) -> Result<(), std::io::Error>
+        where
+            W: AsyncWrite + Unpin,
+        {
+            let mut buf = BytesMut::with_capacity(self.serialized_len());
+            self.write_to_buf(&mut buf);
+            w.write_all(&buf).await
+        }
+    }
 
     #[tokio::test]
     async fn test_udp_packet_write_read_eq() {

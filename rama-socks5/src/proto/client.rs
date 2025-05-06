@@ -4,6 +4,8 @@
 //! [RFC 1928]: https://datatracker.ietf.org/doc/html/rfc1928
 //! [RFC 1929]: https://datatracker.ietf.org/doc/html/rfc1929
 
+use std::net::IpAddr;
+
 use super::{
     Command, ProtocolError, ProtocolVersion, SocksMethod, UsernamePasswordSubnegotiationVersion,
     common::{authority_length, read_authority, write_authority_to_buf},
@@ -92,9 +94,31 @@ impl Header {
     where
         W: AsyncWrite + Unpin,
     {
-        let mut buf = BytesMut::with_capacity(self.serialized_len());
-        self.write_to_buf(&mut buf);
-        w.write_all(&buf).await
+        let n = self.serialized_len();
+        if n == 3 {
+            tracing::trace!(%n, "write socks5 client header w/ 1 method: on stack");
+            let mut buf = [0u8; 3];
+            self.write_to_buf(&mut buf.as_mut_slice());
+            w.write_all(&buf[..]).await
+        } else if n == 4 {
+            tracing::trace!(%n, "write socks5 client header w/ 2 methods: on stack");
+            let mut buf = [0u8; 4];
+            self.write_to_buf(&mut buf.as_mut_slice());
+            w.write_all(&buf[..]).await
+        } else if n == 5 {
+            tracing::trace!(%n, "write socks5 client header w/ 3 methods: on stack");
+            let mut buf = [0u8; 4];
+            self.write_to_buf(&mut buf.as_mut_slice());
+            w.write_all(&buf[..]).await
+        } else {
+            tracing::trace!(
+                %n,
+                "write socks5 client header w/ > 3 methods: on heap",
+            );
+            let mut buf = BytesMut::with_capacity(n);
+            self.write_to_buf(&mut buf);
+            w.write_all(&buf).await
+        }
     }
 
     /// Write the client [`Header`] in binary format as specified by [RFC 1928] into the buffer.
@@ -239,9 +263,51 @@ impl RequestRef<'_> {
     where
         W: AsyncWrite + Unpin,
     {
-        let mut buf = BytesMut::with_capacity(self.serialized_len());
-        self.write_to_buf(&mut buf);
-        w.write_all(&buf).await
+        let n = self.serialized_len();
+
+        match self.destination.host() {
+            rama_net::address::Host::Address(IpAddr::V4(_)) => {
+                tracing::trace!(%n, "write socks5 client request w/ Ipv4 addr: on stack");
+                debug_assert_eq!(4 + 4 + 2, n);
+                let mut buf = [0u8; 10];
+                self.write_to_buf(&mut buf.as_mut_slice());
+                w.write_all(&buf[..]).await
+            }
+            rama_net::address::Host::Name(_) => {
+                const SMALL_LEN: usize = 32 + 1 + 6;
+                const MED_LEN: usize = 64 + 1 + 6;
+
+                if n <= SMALL_LEN {
+                    tracing::trace!(
+                        %n,
+                        "write socks5 client request w/ (small) domain name: on stack",
+                    );
+                    let mut buf = [0u8; SMALL_LEN];
+                    self.write_to_buf(&mut buf.as_mut_slice());
+                    w.write_all(&buf[..n]).await
+                } else if n <= MED_LEN {
+                    tracing::trace!(
+                        %n,
+                        "write socks5 client request w/ (medium) domain name: on stack",
+                    );
+                    let mut buf = [0u8; MED_LEN];
+                    self.write_to_buf(&mut buf.as_mut_slice());
+                    w.write_all(&buf[..n]).await
+                } else {
+                    tracing::trace!(%n, "write socks5 client request w/ (large) domain name: on heap");
+                    let mut buf = BytesMut::with_capacity(n);
+                    self.write_to_buf(&mut buf);
+                    w.write_all(&buf).await
+                }
+            }
+            rama_net::address::Host::Address(IpAddr::V6(_)) => {
+                tracing::trace!(%n, "write socks5 client request w/ Ipv6 addr: on stack");
+                debug_assert_eq!(4 + 16 + 2, n);
+                let mut buf = [0u8; 22];
+                self.write_to_buf(&mut buf.as_mut_slice());
+                w.write_all(&buf[..]).await
+            }
+        }
     }
 
     /// Write the client [`Request`] in binary format as specified by [RFC 1928] into the buffer.
@@ -407,9 +473,33 @@ impl<'a> UsernamePasswordRequestRef<'a> {
     where
         W: AsyncWrite + Unpin,
     {
-        let mut buf = BytesMut::with_capacity(self.serialized_len());
-        self.write_to_buf(&mut buf);
-        w.write_all(&buf).await
+        const SMALL_LEN: usize = 3 + 8 + 8;
+        const MED_LEN: usize = 3 + 16 + 16;
+        const LARGE_LEN: usize = 3 + 32 + 32;
+
+        let n = self.serialized_len();
+
+        if n <= SMALL_LEN {
+            tracing::trace!(%n, "write socks5 Username/Password request w/ (small) credentials: on stack");
+            let mut buf = [0u8; SMALL_LEN];
+            self.write_to_buf(&mut buf.as_mut_slice());
+            w.write_all(&buf[..n]).await
+        } else if n <= MED_LEN {
+            tracing::trace!(%n, "write socks5 Username/Password request w/ (medium) credentials: on stack");
+            let mut buf = [0u8; MED_LEN];
+            self.write_to_buf(&mut buf.as_mut_slice());
+            w.write_all(&buf[..n]).await
+        } else if n <= LARGE_LEN {
+            tracing::trace!(%n, "write socks5 Username/Password request w/ (large) credentials: on stack");
+            let mut buf = [0u8; LARGE_LEN];
+            self.write_to_buf(&mut buf.as_mut_slice());
+            w.write_all(&buf[..n]).await
+        } else {
+            tracing::trace!(%n, "write socks5 Username/Password request w/ (jumbo) credentials: on heap");
+            let mut buf = BytesMut::with_capacity(n);
+            self.write_to_buf(&mut buf);
+            w.write_all(&buf).await
+        }
     }
 
     /// Write the client [`UsernamePasswordRequest`] in binary format as specified by [RFC 1929] into the buffer.
@@ -466,6 +556,15 @@ mod tests {
             Request {
                 version: ProtocolVersion::Socks5,
                 command: Command::Connect,
+                destination: Authority::local_ipv4(1234)
+            },
+            Request,
+        );
+
+        test_write_read_eq!(
+            Request {
+                version: ProtocolVersion::Socks5,
+                command: Command::Connect,
                 destination: Authority::local_ipv6(1450)
             },
             Request,
@@ -493,6 +592,15 @@ mod tests {
                 version: UsernamePasswordSubnegotiationVersion::One,
                 username: b"a",
                 password: Some(b"b"),
+            },
+            UsernamePasswordRequest,
+        );
+
+        test_write_read_eq!(
+            UsernamePasswordRequestRef {
+                version: UsernamePasswordSubnegotiationVersion::One,
+                username: b"adasdadadadadsadasdasdasdasddada",
+                password: Some(b"bdafasdfdasdadasfsfsfdsasdasdsadsadsad"),
             },
             UsernamePasswordRequest,
         );

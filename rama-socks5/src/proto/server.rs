@@ -2,6 +2,8 @@
 //!
 //! [RFC 1928]: https://datatracker.ietf.org/doc/html/rfc1928
 
+use std::net::IpAddr;
+
 use super::{
     ProtocolError, ProtocolVersion, ReplyKind, SocksMethod, UsernamePasswordSubnegotiationVersion,
     common::{authority_length, read_authority, write_authority_to_buf},
@@ -65,11 +67,10 @@ impl Header {
     where
         W: AsyncWrite + Unpin,
     {
-        let mut buf = BytesMut::with_capacity(self.serialized_len());
-        self.write_to_buf(&mut buf);
-        w.write_all(&buf).await?;
-
-        Ok(())
+        tracing::trace!(n = 2, "write socks5 server headerr: on stack");
+        let mut buf = [0u8; 2];
+        self.write_to_buf(&mut buf.as_mut_slice());
+        w.write_all(&buf[..]).await
     }
 
     /// Write the server [`Header`] in binary format as specified by [RFC 1928] into the buffer.
@@ -80,6 +81,7 @@ impl Header {
         buf.put_u8(self.method.into());
     }
 
+    #[allow(unused)]
     #[allow(clippy::unused_self)]
     const fn serialized_len(&self) -> usize {
         1 + 1
@@ -168,9 +170,51 @@ impl Reply {
     where
         W: AsyncWrite + Unpin,
     {
-        let mut buf = BytesMut::with_capacity(self.serialized_len());
-        self.write_to_buf(&mut buf);
-        w.write_all(&buf).await
+        let n = self.serialized_len();
+
+        match self.bind_address.host() {
+            rama_net::address::Host::Address(IpAddr::V4(_)) => {
+                tracing::trace!(%n, "write socks5 server reply w/ Ipv4 addr: on stack");
+                debug_assert_eq!(4 + 4 + 2, n);
+                let mut buf = [0u8; 10];
+                self.write_to_buf(&mut buf.as_mut_slice());
+                w.write_all(&buf[..]).await
+            }
+            rama_net::address::Host::Name(_) => {
+                const SMALL_LEN: usize = 32 + 1 + 6;
+                const MED_LEN: usize = 64 + 1 + 6;
+
+                if n <= SMALL_LEN {
+                    tracing::trace!(
+                        %n,
+                        "write socks5 server reply w/ (small) domain name: on stack",
+                    );
+                    let mut buf = [0u8; SMALL_LEN];
+                    self.write_to_buf(&mut buf.as_mut_slice());
+                    w.write_all(&buf[..n]).await
+                } else if n <= MED_LEN {
+                    tracing::trace!(
+                        %n,
+                        "write socks5 server reply w/ (medium) domain name: on stack",
+                    );
+                    let mut buf = [0u8; MED_LEN];
+                    self.write_to_buf(&mut buf.as_mut_slice());
+                    w.write_all(&buf[..n]).await
+                } else {
+                    tracing::trace!(%n, "write socks5 server reply w/ (large) domain name: on heap");
+                    let mut buf = BytesMut::with_capacity(n);
+                    self.write_to_buf(&mut buf);
+                    w.write_all(&buf).await
+                }
+            }
+            rama_net::address::Host::Address(IpAddr::V6(_)) => {
+                tracing::trace!(%n, "write socks5 server reply w/ Ipv6 addr: on stack");
+                debug_assert_eq!(4 + 16 + 2, n);
+                let mut buf = [0u8; 22];
+                self.write_to_buf(&mut buf.as_mut_slice());
+                w.write_all(&buf[..]).await
+            }
+        }
     }
 
     /// Write the server [`Reply`] in binary format as specified by [RFC 1928] into the buffer.
@@ -283,9 +327,10 @@ impl UsernamePasswordResponse {
     where
         W: AsyncWrite + Unpin,
     {
-        let mut buf = BytesMut::with_capacity(self.serialized_len());
-        self.write_to_buf(&mut buf);
-        w.write_all(&buf).await
+        tracing::trace!(n = 2, "write socks5 server headerr: on stack");
+        let mut buf = [0u8; 2];
+        self.write_to_buf(&mut buf.as_mut_slice());
+        w.write_all(&buf[..]).await
     }
 
     /// Write the server [`UsernamePasswordResponse`] in binary format as specified by [RFC 1928] into the buffer.
@@ -296,9 +341,10 @@ impl UsernamePasswordResponse {
         buf.put_u8(self.status);
     }
 
+    #[allow(unused)]
     #[allow(clippy::unused_self)]
     fn serialized_len(&self) -> usize {
-        2
+        1 + 1
     }
 }
 
