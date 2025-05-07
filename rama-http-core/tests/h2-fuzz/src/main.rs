@@ -122,7 +122,7 @@ mod test {
         Ok(())
     }
 
-    fn main() {
+    pub fn main() {
         tracing_subscriber::registry()
             .with(fmt::layer())
             .with(
