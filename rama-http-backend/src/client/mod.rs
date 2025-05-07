@@ -19,6 +19,8 @@ use rama_net::client::{
 };
 use rama_tcp::client::service::TcpConnector;
 
+pub mod builder;
+
 #[cfg(feature = "boring")]
 use rama_net::tls::client::{ClientConfig, ProxyClientConfig, extract_client_config_from_ctx};
 

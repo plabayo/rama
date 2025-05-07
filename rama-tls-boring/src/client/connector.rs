@@ -211,6 +211,8 @@ impl<S> TlsConnector<S, ConnectorKindSecure> {
     }
 }
 
+pub type TunnelTlsConnector<S> = TlsConnector<S, ConnectorKindTunnel>;
+
 impl<S> TlsConnector<S, ConnectorKindTunnel> {
     /// Creates a new [`TlsConnector`] which will establish
     /// a secure connection if the request is to be tunneled.
