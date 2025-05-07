@@ -70,7 +70,6 @@ libfuzzer-sys = "0.4"
 honggfuzz = "0.5"
 itertools = "0.14"
 mime = "0.3.17"
-crossbeam-queue = { version = "0.3" }
 mime_guess = { version = "2", default-features = false }
 percent-encoding = "2.3"
 pin-project-lite = "0.2"
