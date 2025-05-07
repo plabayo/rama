@@ -15,8 +15,10 @@ case "$ARCH-$OS" in
     "aarch64-linux") FILENAME="rama.aarch64-unknown-linux-musl.tar.xz" ;;
     "arm-linux") FILENAME="rama-arm.unknown-linux-musleabihf.tar.xz" ;;
     "armv7l-linux") FILENAME="rama.armv7-unknown-linux-musleabihf.tar.xz" ;;
+    "i686-windows") FILENAME="rama-i686-pc-windows-gnu.tar.gz" ;;
     "i686-linux") FILENAME="rama.i686-unknown-linux-musl.tar.xz" ;;
     "x86_64-darwin") FILENAME="rama.x86_64-apple-darwin.tar.xz" ;;
+    "x86_64-windows") FILENAME="rama-x86_64-pc-windows-gnu.tar.gz" ;;
     "x86_64-linux") FILENAME="rama.x86_64-unknown-linux-musl.tar.xz" ;;
     *) echo "Unknown system architecture: $ARCH-$OS"; exit 1 ;;
 esac
