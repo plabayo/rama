@@ -8,7 +8,7 @@ COPY . .
 # Will build and cache the binary and dependent crates in release mode
 RUN --mount=type=cache,target=/usr/local/cargo,from=rust:latest,source=/usr/local/cargo \
     --mount=type=cache,target=target \
-    cargo build -p rama-cli -F jemalloc --release && \
+    cargo build -p rama-cli --release && \
     mkdir -p ./bin && mv ./target/release/rama ./bin/rama
 
 # Runtime image
