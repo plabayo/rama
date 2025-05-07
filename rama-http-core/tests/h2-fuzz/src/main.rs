@@ -120,6 +120,7 @@ async fn run(script: &[u8]) -> Result<(), rama_http_core::h2::Error> {
     Ok(())
 }
 
+#[cfg(not(windows))]
 fn main() {
     tracing_subscriber::registry()
         .with(fmt::layer())
