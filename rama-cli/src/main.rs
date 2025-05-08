@@ -12,11 +12,11 @@ use cmd::{echo, fp, http, ip, proxy, serve, tls};
 
 pub mod error;
 
-#[cfg(all(not(feature = "mimalloc"), feature = "jemalloc"))]
+#[cfg(unix)]
 #[global_allocator]
 static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
 
-#[cfg(feature = "mimalloc")]
+#[cfg(windows)]
 #[global_allocator]
 static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
