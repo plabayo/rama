@@ -89,17 +89,37 @@ We also make use of [`cargo vet`](https://github.com/mozilla/cargo-vet) to
 
 ## 🦀 | Compatibility
 
+### Tier 1 Platforms
+
 Rama (ラマ) is developed mostly on MacOS M-Series machines and run in production
-on a variety of Linux systems. There is no windows support, and neither do we test on that platform.
+on a variety of Linux systems. These are tier 1 platofrms.
 
 | platform | tested | test platform |
 |----------|--------|---------------|
 | MacOS    | ✅     | MacOS Apple Silicon (developer laptop) and macos-12 Intel ([GitHub Action](https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners/about-github-hosted-runners)) |
 | Linux    | ✅     | Ubuntu 22.04 ([GitHub Action](https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners/about-github-hosted-runners)) |
 
+### Tier 2 platforms
+
+These platforms we do not run ourselves but do have basic support, meaning:
+
+* the code compiles and checks;
+* unit tests pass
+* binaries get build for each release of `rama-cli`
+
+As we do not use this platform ourselves and neither do we run integration tests on them,
+we can however not promise that there are no issues with these builds.
+
+| platform | tested | test platform |
+|----------|--------|---------------|
+| Windows    | ✅     | Windows latest (x64) ([GitHub Action](https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners/about-github-hosted-runners)) |
+
+### Other Platforms
+
 Please [open a ticket](https://github.com/plabayo/rama/issues) in case you have compatibility issues for your setup/platform.
-Our goal is not to support all possible platformns in the world, but we do want to
-support as many as we reasonably can.
+Our goal is not to support all possible platforms in the world, but we do want to
+support as many as we reasonably can. Such platforms will only happen
+and continue to happen with community/ecosystem support.
 
 ### Minimum supported Rust version
 
