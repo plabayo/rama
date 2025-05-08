@@ -14,7 +14,7 @@ use rama_http_types::header::{
 use rama_http_types::proto::h1::headers::original::OriginalHttp1Headers;
 use rama_http_types::{HeaderMap, HeaderName};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
-use tracing::{debug, trace, warn};
+use tracing::{debug, trace};
 
 use crate::body::Body;
 use crate::proto::h2::ping::Recorder;
