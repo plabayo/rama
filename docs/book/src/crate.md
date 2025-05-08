@@ -105,10 +105,10 @@ These platforms we do not run ourselves but do have basic support, meaning:
 
 * the code compiles and checks;
 * unit tests pass
-* binaries get build for each release of `rama-cli`
 
 As we do not use this platform ourselves and neither do we run integration tests on them,
-we can however not promise that there are no issues with these builds.
+we can however not promise that there are no issues with these builds. Neither do
+we provide prebuild binaries for this platform.
 
 | platform | tested | test platform |
 |----------|--------|---------------|
