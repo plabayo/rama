@@ -229,6 +229,7 @@ where
         ));
     }
 
+    drop(tx);
     if let Some((stream, addr)) = rx.recv().await {
         connected.store(true, Ordering::Release);
         return Ok((stream, addr));
