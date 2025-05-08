@@ -50,7 +50,7 @@ jobs:
       - name: Build release
         timeout-minutes: 120
         run: |
-          cross build --release -p rama-cli --target ${{ matrix.target.name }} --features ${{ matrix.target.features }}
+          cross build --release -p rama-cli --target ${{ matrix.target.name }}
 
       - name: Package
         run: |
