@@ -279,14 +279,14 @@ fn sanitize_client_req_header<S, B>(
             req
         }
         Version::HTTP_3 => {
-            tracing::warn!(
+            tracing::debug!(
                 uri = %req.uri(),
                 "h3 request detected, but sanitize_client_req_header does not yet support this",
             );
             req
         }
         _ => {
-            tracing::warn!(
+            tracing::debug!(
                 uri = %req.uri(),
                 method = ?req.method(),
                 "request with unknown version detected, sanitize_client_req_header cannot support this",
