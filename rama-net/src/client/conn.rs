@@ -81,3 +81,22 @@ where
         self.serve(ctx, req)
     }
 }
+
+// impl<S, State, Request, Connection> Service<State, Request> for S
+// where
+//     S: ConnectorService<State, Request, Connection = Connection, Error: Into<BoxError>>,
+// {
+//     type Response = EstablishedClientConnection<S::Connection, State, Request>;
+//     type Error = S::Error;
+
+//     fn serve(
+//         &self,
+//         ctx: Context<State>,
+//         req: Request,
+//     ) -> impl Future<
+//         Output = Result<EstablishedClientConnection<Connection, State, Request>, Self::Error>,
+//     > + Send
+//     + '_ {
+//         self.connect(ctx, req)
+//     }
+// }

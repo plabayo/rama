@@ -84,10 +84,9 @@ impl<T> ConnectorBuilder<T, Transport> {
         }
     }
 
-    pub fn without_proxy(self) -> ConnectorBuilder<HttpProxyConnector<T>, Proxy> {
-        let connector = HttpProxyConnector::optional(self.connector);
+    pub fn without_proxy(self) -> ConnectorBuilder<T, Proxy> {
         ConnectorBuilder {
-            connector,
+            connector: self.connector,
             _phantom: PhantomData,
         }
     }

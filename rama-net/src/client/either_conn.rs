@@ -28,6 +28,8 @@ impl_either_conn!(impl_iterator_either);
 
 use crate::client::EstablishedClientConnection;
 
+use super::ConnectorService;
+
 macro_rules! impl_service_either_conn {
     ($id:ident, $($param:ident),+ $(,)?) => {
         rama_macros::paste! {
@@ -115,3 +117,62 @@ macro_rules! impl_service_either_conn_connected {
 }
 
 impl_either_conn_connected!(impl_service_either_conn_connected);
+
+pub struct EitherConnector<S, T, F> {
+    conditional: T,
+    default: S,
+    decider: F,
+}
+
+impl<S, T, F> EitherConnector<S, T, F> {
+    pub fn new(
+        conditional: T,
+        default: S,
+        decider: F,
+    ) -> EitherConnector<EitherConn<T, S>, EitherConn<T, S>, F> {
+        let conditional: EitherConn<T, S> = EitherConn::A(conditional);
+        let default: EitherConn<T, S> = EitherConn::B(default);
+
+        EitherConnector {
+            conditional,
+            default,
+            decider,
+        }
+    }
+}
+
+impl<State, Request, T, S, X, Y, F> Service<State, Request>
+    for EitherConnector<EitherConn<T, S>, EitherConn<T, S>, F>
+where
+    Request: Send + 'static,
+    State: Clone + Send + Sync + 'static,
+    S: Service<
+            State,
+            Request,
+            Response = EstablishedClientConnection<X, State, Request>,
+            Error: Into<BoxError>,
+        >,
+    T: Service<
+            State,
+            Request,
+            Response = EstablishedClientConnection<Y, State, Request>,
+            Error: Into<BoxError>,
+        >,
+    X: Send + 'static,
+    Y: Send + 'static,
+    F: Fn(&Context<State>, &Request) -> bool + Send + Sync + 'static,
+{
+    type Response = EstablishedClientConnection<EitherConnConnected<Y, X>, State, Request>;
+    type Error = BoxError;
+
+    async fn serve(
+        &self,
+        ctx: Context<State>,
+        req: Request,
+    ) -> Result<Self::Response, Self::Error> {
+        match (self.decider)(&ctx, &req) {
+            true => self.conditional.serve(ctx, req).await.map_err(Into::into),
+            false => self.default.serve(ctx, req).await.map_err(Into::into),
+        }
+    }
+}
