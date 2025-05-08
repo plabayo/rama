@@ -24,19 +24,12 @@ jobs:
       matrix:
         target:
           - name: x86_64-unknown-linux-gnu
-            features: mimalloc
           - name: aarch64-unknown-linux-gnu
-            features: mimalloc
           - name: armv7-unknown-linux-gnueabi
-            features: jemalloc
           - name: armv7-unknown-linux-gnueabihf
-            features: jemalloc
           - name: arm-unknown-linux-gnueabi
-            features: jemalloc
           - name: arm-unknown-linux-gnueabihf
-            features: jemalloc
           - name: i686-unknown-linux-gnu
-            features: jemalloc
 
     steps:
       - uses: actions/checkout@v4
@@ -129,5 +122,48 @@ jobs:
           files: |
             target/${{ matrix.target }}/release/*.tar.xz
             target/${{ matrix.target }}/release/*.sha256
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          tag_name: ${{ inputs.tag || github.ref_name }}
+
+  build-release-windows:
+    runs-on: ubuntu-latest
+    env:
+      RUST_BACKTRACE: full
+    strategy:
+      fail-fast: true
+      matrix:
+        target:
+          - x86_64-pc-windows-gnu
+          - i686-pc-windows-gnu
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{env.RUST_TOOLCHAIN}}
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
+
+      - name: Install cross
+        run: |
+          cargo install --git https://github.com/cross-rs/cross --branch main cross
+
+      - name: Build release
+        run: |
+          cross build --release -p rama-cli --target ${{ matrix.target }}
+
+      - name: Package
+        run: |
+          cd target/${{ matrix.target }}/release && tar -cJf rama.${{ matrix.target }}.tar.xz rama.exe
+
+      - name: Upload Github Assets
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          files: target/${{ matrix.target }}/release/*.tar.xz
           prerelease: ${{ contains(github.ref_name, '-') }}
           tag_name: ${{ inputs.tag || github.ref_name }}

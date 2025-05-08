@@ -904,3 +904,23 @@ mod sys {
         }
     }
 }
+
+#[cfg(windows)]
+mod sys {
+    use super::UdpSocket;
+    use std::os::windows::prelude::*;
+
+    impl AsRawSocket for UdpSocket {
+        #[inline]
+        fn as_raw_socket(&self) -> RawSocket {
+            self.inner.as_raw_socket()
+        }
+    }
+
+    impl AsSocket for UdpSocket {
+        #[inline]
+        fn as_socket(&self) -> BorrowedSocket<'_> {
+            self.inner.as_socket()
+        }
+    }
+}
