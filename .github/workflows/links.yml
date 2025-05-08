@@ -16,6 +16,7 @@ jobs:
         id: lychee
         uses: lycheeverse/lychee-action@v2.4.0
         with:
+          args: --base . --verbose --no-progress './**/*.md' './**/*.html' './**/*.rst' --max-concurrency 20 --max-retries 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Create Issue From File
