@@ -18,9 +18,9 @@ default = []
 
 [dependencies]
 pin-project-lite = { workspace = true }
-rama-core = { version = "0.2.0-alpha.15", path = "../rama-core" }
-rama-net = { version = "0.2.0-alpha.15", path = "../rama-net", features = ["http", "tls"] }
-rama-utils = { version = "0.2.0-alpha.15", path = "../rama-utils" }
+rama-core = { workspace = true }
+rama-net = { workspace = true, features = ["http", "tls"] }
+rama-utils = { workspace = true }
 rcgen = { workspace = true }
 rustls = { workspace = true }
 rustls-native-certs = { workspace = true }

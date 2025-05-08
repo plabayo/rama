@@ -7,8 +7,8 @@ edition = "2024"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
-rama-http-core = { path = "../..", features = ["unstable"] }
-rama-http-types = { path = "../../../rama-http-types" }
+rama-http-core = { workspace = true, features = ["unstable"] }
+rama-http-types = { workspace = true }
 
 bytes = { workspace = true }
 futures = { workspace = true }
