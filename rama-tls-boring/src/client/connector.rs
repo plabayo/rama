@@ -211,7 +211,7 @@ impl<S> TlsConnector<S, ConnectorKindSecure> {
     }
 }
 
-pub type TunnelTlsConnector<S> = TlsConnector<S, ConnectorKindTunnel>;
+pub type BoringTunnelTlsConnector<S> = TlsConnector<S, ConnectorKindTunnel>;
 
 impl<S> TlsConnector<S, ConnectorKindTunnel> {
     /// Creates a new [`TlsConnector`] which will establish

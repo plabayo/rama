@@ -2,7 +2,7 @@
 
 mod connector;
 #[doc(inline)]
-pub use connector::{AutoTlsStream, TlsConnector, TlsConnectorLayer};
+pub use connector::{AutoTlsStream, RustlsTunnelTlsConnector, TlsConnector, TlsConnectorLayer};
 
 mod connector_data;
 #[doc(inline)]

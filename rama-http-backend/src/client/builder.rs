@@ -20,13 +20,14 @@ use rama_net::tls::client::{ClientConfig, ProxyClientConfig, extract_client_conf
 
 #[cfg(feature = "boring")]
 use rama_tls_boring::client::{
-    TlsConnector as BoringTlsConnector, TlsConnectorData as BoringTlsConnectorData,
-    TunnelTlsConnector,
+    BoringTunnelTlsConnector, TlsConnector as BoringTlsConnector,
+    TlsConnectorData as BoringTlsConnectorData,
 };
 
 #[cfg(feature = "rustls")]
 use rama_tls_rustls::client::{
-    TlsConnector as RustlsTlsConnector, TlsConnectorData as RustlsTlsConnectorData,
+    RustlsTunnelTlsConnector, TlsConnector as RustlsTlsConnector,
+    TlsConnectorData as RustlsTlsConnectorData,
 };
 
 use super::{HttpConnector, proxy::layer::HttpProxyConnector};
@@ -66,9 +67,23 @@ impl<T> ConnectorBuilder<T, Transport> {
     pub fn with_proxy_and_boring_tls(
         self,
         config: ClientConfig,
-    ) -> ConnectorBuilder<HttpProxyConnector<TunnelTlsConnector<T>>, Proxy> {
+    ) -> ConnectorBuilder<HttpProxyConnector<BoringTunnelTlsConnector<T>>, Proxy> {
         let connector = BoringTlsConnector::tunnel(self.connector, None)
             .with_connector_data(config.try_into().unwrap());
+        let connector = HttpProxyConnector::optional(connector);
+        ConnectorBuilder {
+            connector,
+            _phantom: PhantomData,
+        }
+    }
+
+    pub fn with_proxy_and_rustls_tls(
+        self,
+        config: RustlsTlsConnectorData,
+    ) -> ConnectorBuilder<HttpProxyConnector<RustlsTunnelTlsConnector<T>>, Proxy> {
+        let connector =
+            RustlsTlsConnector::tunnel(self.connector, None).with_connector_data(config);
+
         let connector = HttpProxyConnector::optional(connector);
         ConnectorBuilder {
             connector,
@@ -99,6 +114,17 @@ impl<T> ConnectorBuilder<T, Proxy> {
     ) -> ConnectorBuilder<BoringTlsConnector<T>, Tls> {
         let connector = BoringTlsConnector::auto(self.connector)
             .with_connector_data(config.try_into().unwrap());
+        ConnectorBuilder {
+            connector,
+            _phantom: PhantomData,
+        }
+    }
+
+    pub fn with_rustls_tls(
+        self,
+        config: RustlsTlsConnectorData,
+    ) -> ConnectorBuilder<RustlsTlsConnector<T>, Tls> {
+        let connector = RustlsTlsConnector::auto(self.connector).with_connector_data(config);
         ConnectorBuilder {
             connector,
             _phantom: PhantomData,
@@ -144,11 +170,11 @@ impl<T, I1, I2> ConnectorBuilder<HttpConnector<T, I1, I2>, Http> {
     }
 }
 
-fn test() {
-    let x = ConnectorBuilder::new()
-        .with_proxy_and_boring_tls(config)
-        .with_boring_tls(config)
-        .with_http()
-        .with_jit_req_inspector(config)
-        .build();
-}
+// fn test() {
+//     let x = ConnectorBuilder::new()
+//         .with_proxy_and_boring_tls(config)
+//         .with_boring_tls(config)
+//         .with_http()
+//         .with_jit_req_inspector(config)
+//         .build();
+// }

@@ -99,6 +99,8 @@ impl TlsConnectorLayer<ConnectorKindTunnel> {
     }
 }
 
+pub type RustlsTunnelTlsConnector<S> = TlsConnector<S, ConnectorKindTunnel>;
+
 impl<K: Clone, S> Layer<S> for TlsConnectorLayer<K> {
     type Service = TlsConnector<S, K>;
 
