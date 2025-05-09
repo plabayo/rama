@@ -36,11 +36,11 @@
 //! stating your name and age.
 
 use rama::Layer;
+use rama::http::Response;
 use rama::http::layer::trace::TraceLayer;
 use rama::http::matcher::HttpMatcher;
-use rama::http::response::Html;
+use rama::http::service::web::response::{Html, IntoResponse};
 use rama::http::service::web::{WebService, extract::Form};
-use rama::http::{IntoResponse, Response};
 use rama::{http::server::HttpServer, rt::Executor};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;

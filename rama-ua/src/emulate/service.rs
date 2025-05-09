@@ -4,6 +4,7 @@ use rama_core::{
     Context, Service,
     error::{BoxError, ErrorContext, OpaqueError},
 };
+use rama_http_headers::{ClientHint, all_client_hints};
 use rama_http_types::{
     HeaderMap, HeaderName, HeaderValue, Method, Request, Uri, Version,
     conn::{H2ClientContextParams, Http1ClientContextParams, StreamDependencyParams},
@@ -11,7 +12,6 @@ use rama_http_types::{
         ACCEPT, ACCEPT_LANGUAGE, AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, COOKIE, HOST, ORIGIN,
         REFERER, USER_AGENT,
     },
-    headers::{ClientHint, all_client_hints},
     proto::{
         h1::{
             Http1HeaderMap,

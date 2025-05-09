@@ -1,0 +1,40 @@
+[package]
+name = "rama-http-headers"
+description = "typed http headers for rama"
+version = { workspace = true }
+license = { workspace = true }
+edition = { workspace = true }
+repository = { workspace = true }
+keywords = ["http", "headers", "rama"]
+categories = ["web-programming"]
+authors = { workspace = true }
+rust-version = { workspace = true }
+
+[lints]
+workspace = true
+
+[dependencies]
+base64 = { workspace = true }
+bytes = { workspace = true }
+httpdate = { workspace = true }
+mime = { workspace = true }
+rama-core = { workspace = true }
+rama-error = { workspace = true }
+rama-http-types = { workspace = true }
+rama-macros = { workspace = true }
+rama-net = { workspace = true, features = ["http"] }
+rama-utils = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+sha1 = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full"] }
+tokio-test = { workspace = true }
+
+[package.metadata.cargo-public-api-crates]
+allowed = []
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

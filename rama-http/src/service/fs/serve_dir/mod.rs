@@ -1,11 +1,11 @@
 use crate::dep::http_body::{self, Body as HttpBody};
+use crate::headers::encoding::{SupportedEncodings, parse_accept_encoding_headers};
 use crate::layer::set_status::SetStatus;
 use crate::{Body, HeaderValue, Method, Request, Response, StatusCode, header};
 use bytes::Bytes;
 use percent_encoding::percent_decode;
 use rama_core::error::{BoxError, OpaqueError};
 use rama_core::{Context, Service};
-use rama_http_types::headers::encoding::{SupportedEncodings, parse_accept_encoding_headers};
 use std::fmt;
 use std::str::FromStr;
 use std::{
@@ -35,36 +35,6 @@ const DEFAULT_CAPACITY: usize = 65536;
 /// - On unix, any segment of the path referenced as directory is actually an
 ///   existing file (`/file.html/something`)
 /// - We don't have necessary permissions to read the file
-///
-/// # Example
-///
-/// ```rust,no_run
-/// use rama_http_backend::server::HttpServer;
-/// use rama_http::service::fs::{ServeDir, ServeFile};
-/// use rama_core::{
-///     rt::Executor,
-///     Layer, layer::TraceErrLayer,
-/// };
-/// use rama_tcp::server::TcpListener;
-///
-/// #[tokio::main]
-/// async fn main() {
-///     let exec = Executor::default();
-///
-///     let listener = TcpListener::bind("127.0.0.1:8080")
-///         .await
-///         .expect("bind TCP Listener");
-///
-///     // This will serve files in the "assets" directory and
-///     // its subdirectories
-///     let http_fs_server = HttpServer::auto(exec).service(ServeDir::new("assets"));
-///
-///     // Serve the HTTP server over TCP
-///     listener
-///         .serve(TraceErrLayer::new().into_layer(http_fs_server))
-///         .await;
-/// }
-/// ```
 #[derive(Clone, Debug)]
 pub struct ServeDir<F = DefaultServeDirFallback> {
     base: PathBuf,
@@ -294,39 +264,6 @@ impl<F> ServeDir<F> {
     ///
     /// The status code returned by the fallback will not be altered. Use
     /// [`ServeDir::not_found_service`] to set a fallback and always respond with `404 Not Found`.
-    ///
-    /// # Example
-    ///
-    /// This can be used to respond with a different file:
-    ///
-    /// ```rust,no_run
-    /// use rama_core::{
-    ///     rt::Executor,
-    ///     Layer, layer::TraceErrLayer,
-    /// };
-    /// use rama_tcp::server::TcpListener;
-    /// use rama_http_backend::server::HttpServer;
-    /// use rama_http::service::fs::{ServeDir, ServeFile};
-    ///
-    /// #[tokio::main]
-    /// async fn main() {
-    ///     let exec = Executor::default();
-    ///
-    ///     let listener = TcpListener::bind("127.0.0.1:8080")
-    ///         .await
-    ///         .expect("bind TCP Listener");
-    ///
-    ///     // This will serve files in the "assets" directory and
-    ///     // its subdirectories, and use assets/not_found.html as the fallback page
-    ///     let fs_server = ServeDir::new("assets").fallback(ServeFile::new("assets/not_found.html"));
-    ///     let http_fs_server = HttpServer::auto(exec).service(fs_server);
-    ///
-    ///     // Serve the HTTP server over TCP
-    ///     listener
-    ///         .serve(TraceErrLayer::new().into_layer(http_fs_server))
-    ///         .await;
-    /// }
-    /// ```
     pub fn fallback<F2>(self, new_fallback: F2) -> ServeDir<F2> {
         ServeDir {
             base: self.base,
@@ -341,42 +278,6 @@ impl<F> ServeDir<F> {
     /// Set the fallback service and override the fallback's status code to `404 Not Found`.
     ///
     /// This service will be called if there is no file at the path of the request.
-    ///
-    /// # Example
-    ///
-    /// This can be used to respond with a different file:
-    ///
-    /// ```rust,no_run
-    /// use rama_core::{
-    ///     rt::Executor,
-    ///     layer::TraceErrLayer,
-    ///     Layer,
-    /// };
-    /// use rama_tcp::server::TcpListener;
-    /// use rama_http_backend::server::HttpServer;
-    /// use rama_http::service::fs::{ServeDir, ServeFile};
-    ///
-    /// #[tokio::main]
-    /// async fn main() {
-    ///     let exec = Executor::default();
-    ///
-    ///     let listener = TcpListener::bind("127.0.0.1:8080")
-    ///         .await
-    ///         .expect("bind TCP Listener");
-    ///
-    ///     // This will serve files in the "assets" directory and
-    ///     // its subdirectories, and use assets/not_found.html as the not_found page
-    ///     let fs_server = ServeDir::new("assets").not_found_service(ServeFile::new("assets/not_found.html"));
-    ///     let http_fs_server = HttpServer::auto(exec).service(fs_server);
-    ///
-    ///     // Serve the HTTP server over TCP
-    ///     listener
-    ///         .serve(TraceErrLayer::new().into_layer(http_fs_server))
-    ///         .await;
-    /// }
-    /// ```
-    ///
-    /// Setups like this are often found in single page applications.
     pub fn not_found_service<F2>(self, new_fallback: F2) -> ServeDir<SetStatus<F2>> {
         self.fallback(SetStatus::new(new_fallback, StatusCode::NOT_FOUND))
     }
@@ -407,62 +308,6 @@ impl<F> ServeDir<F> {
     ///
     /// If you want to manually control how the error response is generated you can make a new
     /// service that wraps a `ServeDir` and calls `try_call` instead of `call`.
-    ///
-    /// # Example
-    ///
-    /// ```rust,no_run
-    /// use rama_core::{
-    ///     rt::Executor,
-    ///     service::service_fn,
-    ///     layer::TraceErrLayer,
-    ///     Context, Layer,
-    /// };
-    /// use rama_tcp::server::TcpListener;
-    /// use rama_http_backend::server::HttpServer;
-    /// use rama_http::service::fs::ServeDir;
-    /// use rama_http::{Body, Request, Response, StatusCode};
-    /// use std::convert::Infallible;
-    ///
-    /// #[tokio::main]
-    /// async fn main() {
-    ///     let exec = Executor::default();
-    ///
-    ///     let listener = TcpListener::bind("127.0.0.1:8080")
-    ///         .await
-    ///         .expect("bind TCP Listener");
-    ///
-    ///     // This will serve files in the "assets" directory and
-    ///     // its subdirectories, and use assets/not_found.html as the fallback page
-    ///     let http_fs_server = HttpServer::auto(exec).service(service_fn(serve_dir));
-    ///
-    ///     // Serve the HTTP server over TCP
-    ///     listener
-    ///         .serve(TraceErrLayer::new().into_layer(http_fs_server))
-    ///         .await;
-    /// }
-    ///
-    /// async fn serve_dir<State>(
-    ///     ctx: Context<State>,
-    ///     request: Request,
-    /// ) -> Result<Response<Body>, Infallible>
-    /// where
-    ///     State: Clone + Send + Sync + 'static,
-    /// {
-    ///     let service = ServeDir::new("assets");
-    ///
-    ///     match service.try_call(ctx, request).await {
-    ///         Ok(response) => Ok(response),
-    ///         Err(_) => {
-    ///             let body = Body::from("Something went wrong...");
-    ///             let response = Response::builder()
-    ///                 .status(StatusCode::INTERNAL_SERVER_ERROR)
-    ///                 .body(body)
-    ///                 .unwrap();
-    ///             Ok(response)
-    ///         }
-    ///     }
-    /// }
-    /// ```
     pub async fn try_call<State, ReqBody, FResBody>(
         &self,
         ctx: Context<State>,

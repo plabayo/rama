@@ -20,7 +20,8 @@
 use std::net::{IpAddr, Ipv4Addr};
 
 use rama::{
-    http::{Request, response::Json, server::HttpServer},
+    http::service::web::response::Json,
+    http::{Request, server::HttpServer},
     rt::Executor,
     service::service_fn,
 };

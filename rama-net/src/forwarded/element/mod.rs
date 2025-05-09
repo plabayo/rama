@@ -255,7 +255,7 @@ impl ForwardedElement {
 
 impl fmt::Display for ForwardedAuthority {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match &self.port {
+        match self.port {
             Some(port) => match &self.host {
                 Host::Address(IpAddr::V6(ip)) => write!(f, "[{ip}]:{port}"),
                 host => write!(f, "{host}:{port}"),

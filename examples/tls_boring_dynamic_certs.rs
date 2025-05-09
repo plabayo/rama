@@ -57,6 +57,7 @@ use rama::{
     error::OpaqueError,
     graceful::Shutdown,
     http::server::HttpServer,
+    http::service::web::response::IntoResponse,
     http::{Request, Response},
     layer::ConsumeErrLayer,
     net::{
@@ -65,7 +66,7 @@ use rama::{
         tls::{
             DataEncoding,
             client::ClientHello,
-            server::{DynamicCertIssuer, ServerAuthData, ServerCertIssuerData},
+            server::{CacheKind, DynamicCertIssuer, ServerAuthData, ServerCertIssuerData},
         },
     },
     rt::Executor,
@@ -73,8 +74,6 @@ use rama::{
     tcp::server::TcpListener,
     tls::boring::server::{TlsAcceptorData, TlsAcceptorLayer},
 };
-use rama_http::IntoResponse;
-use rama_net::tls::server::CacheKind;
 
 // everything else is provided by the standard library, community crates or tokio
 use std::{convert::Infallible, time::Duration};

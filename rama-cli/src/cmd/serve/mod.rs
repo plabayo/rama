@@ -5,9 +5,8 @@ use rama::{
     Service,
     cli::{ForwardKind, service::serve::ServeServiceBuilder},
     error::{BoxError, ErrorContext, OpaqueError},
-    http::{
-        IntoResponse, Request, Response, matcher::HttpMatcher, service::fs::DirectoryServeMode,
-    },
+    http::service::web::response::IntoResponse,
+    http::{Request, Response, matcher::HttpMatcher, service::fs::DirectoryServeMode},
     layer::HijackLayer,
     net::{
         socket::Interface,

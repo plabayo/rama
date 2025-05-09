@@ -31,9 +31,9 @@ use rama::{
     graceful::Shutdown,
     http::{
         layer::trace::TraceLayer,
-        response::{Html, Redirect},
         server::HttpServer,
         service::web::WebService,
+        service::web::response::{Html, Redirect},
     },
     layer::TraceErrLayer,
     net::address::{Authority, Host},

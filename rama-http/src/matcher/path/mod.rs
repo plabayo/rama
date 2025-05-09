@@ -1,4 +1,5 @@
-use crate::{IntoResponse, Request, StatusCode};
+use crate::service::web::response::IntoResponse;
+use crate::{Request, StatusCode};
 use rama_core::{Context, context::Extensions};
 use std::collections::HashMap;
 

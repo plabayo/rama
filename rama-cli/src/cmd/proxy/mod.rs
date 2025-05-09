@@ -4,8 +4,9 @@ use clap::Args;
 use rama::{
     Context, Layer, Service,
     error::{BoxError, ErrorContext, OpaqueError},
+    http::service::web::response::IntoResponse,
     http::{
-        Body, IntoResponse, Request, Response, StatusCode,
+        Body, Request, Response, StatusCode,
         client::EasyHttpWebClient,
         layer::{
             remove_header::{RemoveRequestHeaderLayer, RemoveResponseHeaderLayer},

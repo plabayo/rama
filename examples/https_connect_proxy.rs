@@ -27,11 +27,12 @@ use rama::{
     Context, Layer, Service,
     graceful::Shutdown,
     http::{
-        Body, IntoResponse, Request, Response, StatusCode,
+        Body, Request, Response, StatusCode,
         client::EasyHttpWebClient,
         layer::{proxy_auth::ProxyAuthLayer, trace::TraceLayer, upgrade::UpgradeLayer},
         matcher::MethodMatcher,
         server::HttpServer,
+        service::web::response::IntoResponse,
     },
     layer::ConsumeErrLayer,
     net::{

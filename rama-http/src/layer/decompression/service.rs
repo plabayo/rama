@@ -2,13 +2,13 @@ use std::fmt;
 
 use super::{DecompressionBody, body::BodyInner};
 use crate::dep::http_body::Body;
+use crate::headers::encoding::{AcceptEncoding, SupportedEncodings};
 use crate::layer::util::compression::{CompressionLevel, WrapBody};
 use crate::{
     Request, Response,
     header::{self, ACCEPT_ENCODING},
 };
 use rama_core::{Context, Service};
-use rama_http_types::headers::encoding::{AcceptEncoding, SupportedEncodings};
 use rama_utils::macros::define_inner_service_accessors;
 
 /// Decompresses response bodies of the underlying service.

@@ -3,10 +3,11 @@
 //! If the request is not authorized a `407 Proxy Authentication Required` response will be sent.
 
 use crate::header::PROXY_AUTHENTICATE;
+use crate::headers::authorization::Authority;
 use crate::headers::{HeaderMapExt, ProxyAuthorization, authorization::Credentials};
 use crate::{Request, Response, StatusCode};
 use rama_core::{Context, Layer, Service};
-use rama_net::user::{UserId, auth::Authority};
+use rama_net::user::UserId;
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
 use std::marker::PhantomData;

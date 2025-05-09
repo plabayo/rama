@@ -1,6 +1,9 @@
 //! k8s web service
 
-use crate::{IntoResponse, Request, Response, StatusCode, matcher::HttpMatcher};
+use crate::{
+    Request, Response, StatusCode, matcher::HttpMatcher,
+    service::web::endpoint::response::IntoResponse,
+};
 use rama_core::{
     Context, Service,
     service::{BoxService, service_fn},

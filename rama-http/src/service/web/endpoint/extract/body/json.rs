@@ -7,7 +7,7 @@ use crate::dep::http_body_util::BodyExt;
 use crate::service::web::extract::{FromRequest, OptionalFromRequest};
 use crate::utils::macros::{composite_http_rejection, define_http_rejection};
 
-pub use crate::response::Json;
+pub use crate::service::web::endpoint::response::Json;
 
 define_http_rejection! {
     #[status = UNSUPPORTED_MEDIA_TYPE]

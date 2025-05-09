@@ -5,7 +5,7 @@ use crate::service::web::extract::FromRequest;
 use crate::utils::macros::{composite_http_rejection, define_http_rejection};
 use bytes::{Buf, Bytes};
 
-pub use crate::response::Csv;
+pub use crate::service::web::endpoint::response::Csv;
 
 define_http_rejection! {
     #[status = UNSUPPORTED_MEDIA_TYPE]

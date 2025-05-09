@@ -8,11 +8,11 @@ use rama_core::rt::Executor;
 use rama_http_core::body::Incoming;
 use rama_http_core::client::conn::{http1, http2};
 use rama_http_core::upgrade;
+use rama_http_headers::{Header, HeaderMapExt};
 use rama_http_types::Response;
 use rama_http_types::{
     Body, HeaderName, HeaderValue, Method, Request, StatusCode, Version,
     header::{HOST, USER_AGENT},
-    headers::{Header, HeaderMapExt},
 };
 use rama_net::{address::Authority, stream::Stream};
 

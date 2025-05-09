@@ -32,7 +32,7 @@ macro_rules! __define_http_rejection {
         #[non_exhaustive]
         pub struct $name;
 
-        impl $crate::IntoResponse for $name {
+        impl $crate::service::web::endpoint::IntoResponse for $name {
             fn into_response(self) -> $crate::Response {
                 $crate::__log_http_rejection!(
                     rejection_type = $name,
@@ -98,7 +98,7 @@ macro_rules! __define_http_rejection {
             }
         }
 
-        impl $crate::IntoResponse for $name {
+        impl $crate::service::web::endpoint::IntoResponse for $name {
             fn into_response(self) -> $crate::Response {
                 $crate::__log_http_rejection!(
                     rejection_type = $name,
@@ -156,7 +156,7 @@ macro_rules! __composite_http_rejection {
             ),+
         }
 
-        impl $crate::IntoResponse for $name {
+        impl $crate::service::web::endpoint::IntoResponse for $name {
             fn into_response(self) -> $crate::Response {
                 match self {
                     $(

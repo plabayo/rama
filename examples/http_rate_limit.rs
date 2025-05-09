@@ -39,9 +39,10 @@ use std::{convert::Infallible, sync::Arc, time::Duration};
 use rama::{
     combinators::Either,
     error::BoxError,
+    http::service::web::response::{IntoResponse, Json},
     http::{
-        HeaderName, HeaderValue, IntoResponse, Request, Response, StatusCode, matcher::HttpMatcher,
-        response::Json, server::HttpServer,
+        HeaderName, HeaderValue, Request, Response, StatusCode, matcher::HttpMatcher,
+        server::HttpServer,
     },
     layer::{
         Layer, LimitLayer, MapResultLayer, TraceErrLayer,

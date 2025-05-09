@@ -24,6 +24,11 @@ as a distant relative.
     - Original: <https://github.com/hyperium/hyper-util/blob/e74ab7888638e768de17c47ed5f20c8b623a308f/LICENSE>
     - Type: MIT
     - Copy: [./licenses/hyper-util](./licenses/hyper-util)
+- <https://github.com/hyperium/headers/tree/d425d3ca90261683150eda8292c3f14f0d3db3ee>
+  - License:
+    - Original: <https://github.com/hyperium/headers/blob/d425d3ca90261683150eda8292c3f14f0d3db3ee/LICENSE>
+    - Type: MIT
+    - Copy: [./licenses/headers](./licenses/headers)
 
 ### tower-rs
 

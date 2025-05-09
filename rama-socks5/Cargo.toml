@@ -19,12 +19,12 @@ dns = ["dep:rama-dns", "dep:rand"]
 
 [dependencies]
 bytes = { workspace = true }
-rama-core = { version = "0.2.0-alpha.13", path = "../rama-core" }
-rama-dns = { version = "0.2.0-alpha.13", path = "../rama-dns", optional = true }
-rama-net = { version = "0.2.0-alpha.13", path = "../rama-net", features = ["http"] }
-rama-tcp = { version = "0.2.0-alpha.13", path = "../rama-tcp", features = ["http"] }
-rama-udp = { version = "0.2.0-alpha.13", path = "../rama-udp" }
-rama-utils = { version = "0.2.0-alpha.13", path = "../rama-utils" }
+rama-core = { workspace = true }
+rama-dns = { workspace = true, optional = true }
+rama-net = { workspace = true, features = ["http"] }
+rama-tcp = { workspace = true, features = ["http"] }
+rama-udp = { workspace = true }
+rama-utils = { workspace = true }
 rand = { workspace = true, optional = true }
 smallvec = { workspace = true }
 tokio = { workspace = true }

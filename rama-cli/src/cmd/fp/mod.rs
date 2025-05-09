@@ -9,20 +9,20 @@ use rama::{
     cli::ForwardKind,
     combinators::Either7,
     error::{BoxError, ErrorContext, OpaqueError},
+    http::service::web::response::{IntoResponse, Redirect},
     http::{
-        HeaderName, HeaderValue, IntoResponse, Request,
+        HeaderName, HeaderValue, Request,
         header::COOKIE,
         headers::{
-            CFConnectingIp, ClientIp, Cookie, HeaderMapExt, TrueClientIp, XClientIp, XRealIp,
-            client_hints::all_client_hint_header_name_strings,
+            Cookie, HeaderMapExt, all_client_hint_header_name_strings,
+            forwarded::{CFConnectingIp, ClientIp, TrueClientIp, XClientIp, XRealIp},
         },
         layer::{
             catch_panic::CatchPanicLayer, compression::CompressionLayer,
-            forwarded::GetForwardedHeadersLayer, required_header::AddRequiredResponseHeadersLayer,
+            forwarded::GetForwardedHeaderLayer, required_header::AddRequiredResponseHeadersLayer,
             set_header::SetResponseHeaderLayer, trace::TraceLayer, ua::UserAgentClassifierLayer,
         },
         matcher::HttpMatcher,
-        response::Redirect,
         server::HttpServer,
         service::web::match_service,
     },
@@ -123,33 +123,32 @@ pub async fn run(cfg: CliCommandFingerprint) -> Result<(), BoxError> {
 
     let (tcp_forwarded_layer, http_forwarded_layer) = match &cfg.forward {
         None => (None, None),
-        Some(ForwardKind::Forwarded) => (
-            None,
-            Some(Either7::A(GetForwardedHeadersLayer::forwarded())),
-        ),
+        Some(ForwardKind::Forwarded) => {
+            (None, Some(Either7::A(GetForwardedHeaderLayer::forwarded())))
+        }
         Some(ForwardKind::XForwardedFor) => (
             None,
-            Some(Either7::B(GetForwardedHeadersLayer::x_forwarded_for())),
+            Some(Either7::B(GetForwardedHeaderLayer::x_forwarded_for())),
         ),
         Some(ForwardKind::XClientIp) => (
             None,
-            Some(Either7::C(GetForwardedHeadersLayer::<XClientIp>::new())),
+            Some(Either7::C(GetForwardedHeaderLayer::<XClientIp>::new())),
         ),
         Some(ForwardKind::ClientIp) => (
             None,
-            Some(Either7::D(GetForwardedHeadersLayer::<ClientIp>::new())),
+            Some(Either7::D(GetForwardedHeaderLayer::<ClientIp>::new())),
         ),
         Some(ForwardKind::XRealIp) => (
             None,
-            Some(Either7::E(GetForwardedHeadersLayer::<XRealIp>::new())),
+            Some(Either7::E(GetForwardedHeaderLayer::<XRealIp>::new())),
         ),
         Some(ForwardKind::CFConnectingIp) => (
             None,
-            Some(Either7::F(GetForwardedHeadersLayer::<CFConnectingIp>::new())),
+            Some(Either7::F(GetForwardedHeaderLayer::<CFConnectingIp>::new())),
         ),
         Some(ForwardKind::TrueClientIp) => (
             None,
-            Some(Either7::G(GetForwardedHeadersLayer::<TrueClientIp>::new())),
+            Some(Either7::G(GetForwardedHeaderLayer::<TrueClientIp>::new())),
         ),
         Some(ForwardKind::HaProxy) => (Some(HaProxyLayer::default()), None),
     };

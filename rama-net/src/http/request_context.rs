@@ -314,7 +314,6 @@ mod tests {
     use super::*;
     use crate::forwarded::{Forwarded, ForwardedElement, NodeId};
     use rama_http_types::header::FORWARDED;
-    use rama_http_types::headers::HeaderMapExt;
 
     #[test]
     fn test_request_context_from_request() {
@@ -413,7 +412,7 @@ mod tests {
             let req = req_builder.body(()).unwrap();
             let mut ctx = Context::default();
 
-            let forwarded = req.headers().typed_get::<Forwarded>().unwrap();
+            let forwarded: Forwarded = req.headers().get(FORWARDED).unwrap().try_into().unwrap();
             ctx.insert(forwarded);
 
             let req_ctx = ctx

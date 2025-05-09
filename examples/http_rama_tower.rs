@@ -19,9 +19,9 @@
 use rama::{
     Layer as _,
     error::{BoxError, OpaqueError},
+    http::service::web::response::Html,
     http::{
-        HeaderValue, Request, layer::trace::TraceLayer, response::Html, server::HttpServer,
-        service::web::Router,
+        HeaderValue, Request, layer::trace::TraceLayer, server::HttpServer, service::web::Router,
     },
     layer::ConsumeErrLayer,
     net::address::SocketAddress,

@@ -15,9 +15,9 @@
 use rama::{
     Context, Layer, Service,
     http::{
-        Body, BodyExtractExt, IntoResponse, Request, Response, StatusCode,
+        Body, BodyExtractExt, Request, Response, StatusCode,
         client::EasyHttpWebClient,
-        headers::{Accept, Authorization, HeaderMapExt, authorization::Basic},
+        headers::{Accept, Authorization, HeaderMapExt},
         layer::{
             auth::{AddAuthorizationLayer, AsyncRequireAuthorizationLayer},
             compression::CompressionLayer,
@@ -25,11 +25,12 @@ use rama::{
             retry::{ManagedPolicy, RetryLayer},
             trace::TraceLayer,
         },
-        response::Json,
         server::HttpServer,
         service::client::HttpClientExt,
         service::web::WebService,
+        service::web::response::{IntoResponse, Json},
     },
+    net::user::Basic,
     rt::Executor,
     utils::{backoff::ExponentialBackoff, rng::HasherRng},
 };

@@ -41,9 +41,9 @@ use rama::{
     Context, Layer,
     http::{
         layer::{opentelemetry::RequestMetricsLayer, trace::TraceLayer},
-        response::Html,
         server::HttpServer,
         service::web::WebService,
+        service::web::response::Html,
     },
     net::stream::layer::opentelemetry::NetworkMetricsLayer,
     rt::Executor,

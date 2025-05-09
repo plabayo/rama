@@ -36,7 +36,7 @@ use rama::{
     Layer, Service,
     error::{BoxError, ErrorContext, OpaqueError},
     http::{
-        Body, IntoResponse, Request, Response, StatusCode,
+        Body, Request, Response, StatusCode,
         client::{EasyHttpWebClient, TlsConnectorConfig},
         layer::{
             compress_adapter::CompressAdaptLayer,
@@ -50,6 +50,7 @@ use rama::{
         },
         matcher::MethodMatcher,
         server::HttpServer,
+        service::web::response::IntoResponse,
     },
     layer::ConsumeErrLayer,
     net::{

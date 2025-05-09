@@ -6,7 +6,7 @@ use rama::{
         self, HeaderMap, HeaderName, Request,
         conn::LastPeerPriorityParams,
         dep::http::{Extensions, request::Parts},
-        headers::Forwarded,
+        headers::forwarded::Forwarded,
         proto::{
             h1::Http1HeaderMap,
             h2::{PseudoHeaderOrder, frame::InitialPeerSettings},

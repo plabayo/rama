@@ -1,6 +1,7 @@
 //! Extract utilities to develop endpoint services efortless.
 
-use crate::{HeaderMap, IntoResponse, dep::http::request::Parts, dep::mime, header};
+use super::IntoResponse;
+use crate::{HeaderMap, dep::http::request::Parts, dep::mime, header};
 use rama_core::Context;
 
 pub mod host;

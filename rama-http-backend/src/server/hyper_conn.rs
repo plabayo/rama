@@ -69,8 +69,9 @@ mod private {
     use crate::server::HttpServeResult;
     use crate::server::hyper_conn::{map_boxed_http_core_result, map_http_core_result};
     use rama_core::{Context, Service};
+    use rama_http::service::web::response::IntoResponse;
     use rama_http_core::service::RamaHttpService;
-    use rama_http_types::{IntoResponse, Request};
+    use rama_http_types::Request;
     use rama_net::stream::Stream;
     use rama_utils::future::Fuse;
     use std::convert::Infallible;
