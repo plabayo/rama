@@ -60,7 +60,7 @@ use rama::{
     Context, Layer, Service,
     context::{Extensions, RequestContextExt},
     http::{
-        Body, IntoResponse, Request, Response, StatusCode,
+        Body, Request, Response, StatusCode,
         client::EasyHttpWebClient,
         layer::{
             proxy_auth::ProxyAuthLayer,
@@ -69,9 +69,12 @@ use rama::{
             upgrade::{UpgradeLayer, Upgraded},
         },
         matcher::{DomainMatcher, HttpMatcher, MethodMatcher},
-        response::Json,
         server::HttpServer,
-        service::web::{extract::Path, match_service},
+        service::web::{
+            extract::Path,
+            match_service,
+            response::{IntoResponse, Json},
+        },
     },
     layer::HijackLayer,
     net::{

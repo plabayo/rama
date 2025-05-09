@@ -6,10 +6,6 @@ mod id;
 #[doc(inline)]
 pub use id::UserId;
 
-mod credentials;
+pub mod credentials;
 #[doc(inline)]
 pub use credentials::{Basic, Bearer, ProxyCredential};
-
-// todo: decouple from http
-#[cfg(feature = "http")]
-pub mod auth;

@@ -24,7 +24,9 @@ const_format = { workspace = true }
 futures = { workspace = true }
 h2 = { workspace = true }
 rama-core = { workspace = true }
+rama-http = { workspace = true }
 rama-http-core = { workspace = true }
+rama-http-headers = { workspace = true }
 rama-http-types = { workspace = true }
 rama-net = { workspace = true, features = ["http"] }
 rama-tcp = { workspace = true, features = ["http"] }

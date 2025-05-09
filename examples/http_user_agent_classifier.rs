@@ -19,7 +19,11 @@
 use rama::{
     Context, Layer,
     http::layer::ua::{UserAgent, UserAgentClassifierLayer},
-    http::{HeaderName, IntoResponse, Request, Response, response::Json, server::HttpServer},
+    http::{
+        HeaderName, Request, Response,
+        server::HttpServer,
+        service::web::response::{IntoResponse, Json},
+    },
     rt::Executor,
     service::service_fn,
 };

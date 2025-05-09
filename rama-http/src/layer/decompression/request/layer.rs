@@ -1,6 +1,6 @@
 use super::service::RequestDecompression;
+use crate::headers::encoding::AcceptEncoding;
 use rama_core::Layer;
-use rama_http_types::headers::encoding::AcceptEncoding;
 
 /// Decompresses request bodies and calls its underlying service.
 ///

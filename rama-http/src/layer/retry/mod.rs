@@ -171,7 +171,8 @@ where
 mod test {
     use super::*;
     use crate::{
-        BodyExtractExt, IntoResponse, Response, StatusCode, layer::retry::managed::DoNotRetry,
+        BodyExtractExt, Response, StatusCode, layer::retry::managed::DoNotRetry,
+        service::web::response::IntoResponse,
     };
     use rama_core::{Context, Layer, service::service_fn};
     use rama_utils::{backoff::ExponentialBackoff, rng::HasherRng};

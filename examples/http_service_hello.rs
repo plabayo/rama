@@ -23,7 +23,7 @@ use bytes::Bytes;
 use rama::{
     Context, Layer,
     http::{
-        IntoResponse, Request, header,
+        Request, header,
         layer::{
             compression::CompressionLayer,
             sensitive_headers::{
@@ -31,8 +31,8 @@ use rama::{
             },
             trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer},
         },
-        response::Html,
         server::HttpServer,
+        service::web::response::{Html, IntoResponse},
     },
     layer::{MapResponseLayer, TimeoutLayer, TraceErrLayer},
     net::stream::{

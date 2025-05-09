@@ -5,7 +5,8 @@ use rama::{
     Service,
     cli::{ForwardKind, service::echo::EchoServiceBuilder},
     error::{BoxError, ErrorContext, OpaqueError},
-    http::{IntoResponse, Request, Response, matcher::HttpMatcher},
+    http::service::web::response::IntoResponse,
+    http::{Request, Response, matcher::HttpMatcher},
     layer::HijackLayer,
     net::{
         address::SocketAddress,

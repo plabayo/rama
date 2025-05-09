@@ -6,17 +6,17 @@ use crate::{
     combinators::{Either3, Either7},
     error::{BoxError, OpaqueError},
     http::{
-        IntoResponse, Request, Response, Version,
-        headers::{CFConnectingIp, ClientIp, TrueClientIp, XClientIp, XRealIp},
+        Request, Response, Version,
+        headers::forwarded::{CFConnectingIp, ClientIp, TrueClientIp, XClientIp, XRealIp},
         layer::{
-            forwarded::GetForwardedHeadersLayer, required_header::AddRequiredResponseHeadersLayer,
+            forwarded::GetForwardedHeaderLayer, required_header::AddRequiredResponseHeadersLayer,
             trace::TraceLayer, ua::UserAgentClassifierLayer,
         },
-        response::Html,
         server::HttpServer,
         service::{
             fs::{DirectoryServeMode, ServeDir, ServeFile},
             web::StaticService,
+            web::response::{Html, IntoResponse},
         },
     },
     layer::{ConsumeErrLayer, LimitLayer, TimeoutLayer, limit::policy::ConcurrentPolicy},
@@ -334,24 +334,24 @@ where
     > {
         let http_forwarded_layer = match &self.forward {
             None | Some(ForwardKind::HaProxy) => None,
-            Some(ForwardKind::Forwarded) => Some(Either7::A(GetForwardedHeadersLayer::forwarded())),
+            Some(ForwardKind::Forwarded) => Some(Either7::A(GetForwardedHeaderLayer::forwarded())),
             Some(ForwardKind::XForwardedFor) => {
-                Some(Either7::B(GetForwardedHeadersLayer::x_forwarded_for()))
+                Some(Either7::B(GetForwardedHeaderLayer::x_forwarded_for()))
             }
             Some(ForwardKind::XClientIp) => {
-                Some(Either7::C(GetForwardedHeadersLayer::<XClientIp>::new()))
+                Some(Either7::C(GetForwardedHeaderLayer::<XClientIp>::new()))
             }
             Some(ForwardKind::ClientIp) => {
-                Some(Either7::D(GetForwardedHeadersLayer::<ClientIp>::new()))
+                Some(Either7::D(GetForwardedHeaderLayer::<ClientIp>::new()))
             }
             Some(ForwardKind::XRealIp) => {
-                Some(Either7::E(GetForwardedHeadersLayer::<XRealIp>::new()))
+                Some(Either7::E(GetForwardedHeaderLayer::<XRealIp>::new()))
             }
             Some(ForwardKind::CFConnectingIp) => {
-                Some(Either7::F(GetForwardedHeadersLayer::<CFConnectingIp>::new()))
+                Some(Either7::F(GetForwardedHeaderLayer::<CFConnectingIp>::new()))
             }
             Some(ForwardKind::TrueClientIp) => {
-                Some(Either7::G(GetForwardedHeadersLayer::<TrueClientIp>::new()))
+                Some(Either7::G(GetForwardedHeaderLayer::<TrueClientIp>::new()))
             }
         };
 

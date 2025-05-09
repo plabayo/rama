@@ -20,11 +20,11 @@
 #[doc(inline)]
 pub use ::rama_http_types::{
     Body, BodyDataStream, BodyExtractExt, BodyLimit, HeaderMap, HeaderName, HeaderValue, Method,
-    Request, Scheme, StatusCode, Uri, Version, conn, header, proto,
-    response::{self, IntoResponse, Response},
+    Request, Response, Scheme, StatusCode, Uri, Version, conn, header, proto,
 };
 
-pub mod headers;
+pub use ::rama_http_headers as headers;
+
 pub mod matcher;
 
 pub mod layer;

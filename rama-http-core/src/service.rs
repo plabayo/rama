@@ -1,5 +1,6 @@
 use bytes::Bytes;
 use rama_core::{Context, Service, error::BoxError};
+use rama_http::service::web::response::IntoResponse;
 use rama_http_types::{Request, Response};
 use std::{convert::Infallible, fmt};
 
@@ -56,7 +57,7 @@ where
         + Send
         + Sync
         + 'static,
-    R: rama_http_types::IntoResponse + Send + 'static,
+    R: IntoResponse + Send + 'static,
 {
     fn serve_http(
         &self,
@@ -103,7 +104,7 @@ mod sealed {
             + Send
             + Sync
             + 'static,
-        R: rama_http_types::IntoResponse + Send + 'static,
+        R: IntoResponse + Send + 'static,
     {
     }
 

@@ -27,7 +27,7 @@ use rama::{
     Context, Layer, Service,
     graceful::Shutdown,
     http::{
-        Body, IntoResponse, Request, Response, StatusCode,
+        Body, Request, Response, StatusCode,
         client::EasyHttpWebClient,
         layer::{
             proxy_auth::ProxyAuthLayer,
@@ -36,6 +36,7 @@ use rama::{
         },
         matcher::MethodMatcher,
         server::HttpServer,
+        service::web::response::IntoResponse,
     },
     net::conn::is_connection_error,
     net::http::RequestContext,

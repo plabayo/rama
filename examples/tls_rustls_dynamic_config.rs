@@ -52,7 +52,7 @@ use rama::{
     Context, Layer,
     error::{ErrorContext, OpaqueError},
     graceful::Shutdown,
-    http::{IntoResponse, Request, Response, server::HttpServer},
+    http::{Request, Response, server::HttpServer, service::web::response::IntoResponse},
     layer::ConsumeErrLayer,
     rt::Executor,
     service::service_fn,

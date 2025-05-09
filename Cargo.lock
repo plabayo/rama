@@ -2546,6 +2546,7 @@ dependencies = [
  "radix_trie",
  "rama-core",
  "rama-http-backend",
+ "rama-http-headers",
  "rama-http-types",
  "rama-macros",
  "rama-net",
@@ -2575,7 +2576,9 @@ dependencies = [
  "futures",
  "h2",
  "rama-core",
+ "rama-http",
  "rama-http-core",
+ "rama-http-headers",
  "rama-http-types",
  "rama-net",
  "rama-tcp",
@@ -2607,6 +2610,7 @@ dependencies = [
  "quickcheck",
  "rama-core",
  "rama-error",
+ "rama-http",
  "rama-http-types",
  "rama-utils",
  "rand 0.9.1",
@@ -2621,6 +2625,27 @@ dependencies = [
  "walkdir",
  "want",
  "webpki-roots",
+]
+
+[[package]]
+name = "rama-http-headers"
+version = "0.2.0"
+dependencies = [
+ "base64 0.22.1",
+ "bytes",
+ "httpdate",
+ "mime",
+ "rama-core",
+ "rama-error",
+ "rama-http-types",
+ "rama-macros",
+ "rama-net",
+ "rama-utils",
+ "serde",
+ "sha1",
+ "tokio",
+ "tokio-test",
+ "tracing",
 ]
 
 [[package]]
@@ -2790,6 +2815,7 @@ version = "0.2.0"
 dependencies = [
  "itertools 0.14.0",
  "rama-core",
+ "rama-http-headers",
  "rama-http-types",
  "rama-net",
  "rama-utils",

@@ -305,7 +305,7 @@ mod private {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{IntoResponse, StatusCode};
+    use crate::{StatusCode, service::web::response::IntoResponse};
     use rama_utils::{backoff::ExponentialBackoff, rng::HasherRng};
     use std::time::Duration;
 

@@ -12,6 +12,7 @@ members = [
     "rama-http-core",
     "rama-http-core/tests/h2-fuzz",
     "rama-http-core/tests/h2-support",
+    "rama-http-headers",
     "rama-http-types",
     "rama-macros",
     "rama-macros/tests/macros",
@@ -68,6 +69,7 @@ rama-boring-tokio = "0.2.0-alpha.6"
 ipnet = "2.11"
 libfuzzer-sys = "0.4"
 honggfuzz = "0.5"
+sha1 = "0.10"
 itertools = "0.14"
 mime = "0.3.17"
 mime_guess = { version = "2", default-features = false }
@@ -173,6 +175,7 @@ rama-http = { version = "0.2.0", path = "./rama-http" }
 rama-http-backend = { version = "0.2.0", path = "./rama-http-backend" }
 rama-http-core = { version = "0.2.0", path = "./rama-http-core" }
 rama-http-types = { version = "0.2.0", path = "./rama-http-types" }
+rama-http-headers = { version = "0.2.0", path = "./rama-http-headers" }
 rama-macros = { version = "0.2.0", path = "./rama-macros" }
 rama-net = { version = "0.2.0", path = "./rama-net" }
 rama-proxy = { version = "0.2.0", path = "./rama-proxy" }

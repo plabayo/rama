@@ -4,8 +4,9 @@
 //!
 //! ```
 //! use rama_http::{
-//!     service::client::HttpClientExt, IntoResponse, Request, Response, StatusCode,
+//!     service::client::HttpClientExt, Request, Response, StatusCode,
 //!     layer::ua::{PlatformKind, UserAgent, UserAgentClassifierLayer, UserAgentKind, UserAgentInfo},
+//!     service::web::response::IntoResponse,
 //! };
 //! use rama_core::{Context, Layer, service::service_fn};
 //! use std::convert::Infallible;
@@ -28,7 +29,7 @@
 //!
 //! let _ = service
 //!     .get("http://www.example.com")
-//!     .typed_header(rama_http_types::headers::UserAgent::from_static(UA))
+//!     .typed_header(rama_http::headers::UserAgent::from_static(UA))
 //!     .send(Context::default())
 //!     .await
 //!     .unwrap();
@@ -202,7 +203,8 @@ mod tests {
     use super::*;
     use crate::layer::required_header::AddRequiredRequestHeadersLayer;
     use crate::service::client::HttpClientExt;
-    use crate::{IntoResponse, Response, StatusCode, headers};
+    use crate::service::web::response::IntoResponse;
+    use crate::{Response, StatusCode, headers};
     use rama_core::Context;
     use rama_core::service::service_fn;
     use std::convert::Infallible;

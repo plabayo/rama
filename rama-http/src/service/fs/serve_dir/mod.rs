@@ -1,11 +1,11 @@
 use crate::dep::http_body::{self, Body as HttpBody};
+use crate::headers::encoding::{SupportedEncodings, parse_accept_encoding_headers};
 use crate::layer::set_status::SetStatus;
 use crate::{Body, HeaderValue, Method, Request, Response, StatusCode, header};
 use bytes::Bytes;
 use percent_encoding::percent_decode;
 use rama_core::error::{BoxError, OpaqueError};
 use rama_core::{Context, Service};
-use rama_http_types::headers::encoding::{SupportedEncodings, parse_accept_encoding_headers};
 use std::fmt;
 use std::str::FromStr;
 use std::{
