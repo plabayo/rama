@@ -95,6 +95,7 @@ impl UdpSocket {
             Interface::Address(addr) => UdpSocket::bind_address(addr).await,
             #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
             Interface::Device(name) => UdpSocket::bind_device(name).await,
+            #[cfg(any(windows, unix))]
             Interface::Socket(opts) => {
                 let socket = opts
                     .try_build_socket()

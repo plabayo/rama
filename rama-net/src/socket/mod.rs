@@ -10,6 +10,7 @@ pub use interface::DeviceName;
 
 pub mod opts;
 #[doc(inline)]
+#[cfg(any(windows, unix))]
 pub use opts::SocketOptions;
 
 mod svc;
