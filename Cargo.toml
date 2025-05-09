@@ -29,7 +29,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0-alpha.1"
 license = "MIT OR Apache-2.0"
 edition = "2024"
 repository = "https://github.com/plabayo/rama"
@@ -167,26 +167,26 @@ smol_str = "0.3"
 tower-service = "0.3"
 tower-layer = "0.3"
 radix_trie = "0.2"
-rama-core = { version = "0.2.0", path = "./rama-core" }
-rama-dns = { version = "0.2.0", path = "./rama-dns" }
-rama-error = { version = "0.2.0", path = "./rama-error" }
-rama-haproxy = { version = "0.2.0", path = "./rama-haproxy" }
-rama-http = { version = "0.2.0", path = "./rama-http" }
-rama-http-backend = { version = "0.2.0", path = "./rama-http-backend" }
-rama-http-core = { version = "0.2.0", path = "./rama-http-core" }
-rama-http-types = { version = "0.2.0", path = "./rama-http-types" }
-rama-http-headers = { version = "0.2.0", path = "./rama-http-headers" }
-rama-macros = { version = "0.2.0", path = "./rama-macros" }
-rama-net = { version = "0.2.0", path = "./rama-net" }
-rama-proxy = { version = "0.2.0", path = "./rama-proxy" }
-rama-socks5 = { version = "0.2.0", path = "./rama-socks5" }
-rama-tcp = { version = "0.2.0", path = "./rama-tcp" }
-rama-tls-boring = { version = "0.2.0", path = "./rama-tls-boring" }
-rama-tls-rustls = { version = "0.2.0", path = "./rama-tls-rustls" }
-rama-tower = { version = "0.2.0", path = "./rama-tower" }
-rama-ua = { version = "0.2.0", path = "./rama-ua" }
-rama-udp = { version = "0.2.0", path = "./rama-udp" }
-rama-utils = { version = "0.2.0", path = "./rama-utils" }
+rama-core = { version = "0.3.0-alpha.1", path = "./rama-core" }
+rama-dns = { version = "0.3.0-alpha.1", path = "./rama-dns" }
+rama-error = { version = "0.3.0-alpha.1", path = "./rama-error" }
+rama-haproxy = { version = "0.3.0-alpha.1", path = "./rama-haproxy" }
+rama-http = { version = "0.3.0-alpha.1", path = "./rama-http" }
+rama-http-backend = { version = "0.3.0-alpha.1", path = "./rama-http-backend" }
+rama-http-core = { version = "0.3.0-alpha.1", path = "./rama-http-core" }
+rama-http-types = { version = "0.3.0-alpha.1", path = "./rama-http-types" }
+rama-http-headers = { version = "0.3.0-alpha.1", path = "./rama-http-headers" }
+rama-macros = { version = "0.3.0-alpha.1", path = "./rama-macros" }
+rama-net = { version = "0.3.0-alpha.1", path = "./rama-net" }
+rama-proxy = { version = "0.3.0-alpha.1", path = "./rama-proxy" }
+rama-socks5 = { version = "0.3.0-alpha.1", path = "./rama-socks5" }
+rama-tcp = { version = "0.3.0-alpha.1", path = "./rama-tcp" }
+rama-tls-boring = { version = "0.3.0-alpha.1", path = "./rama-tls-boring" }
+rama-tls-rustls = { version = "0.3.0-alpha.1", path = "./rama-tls-rustls" }
+rama-tower = { version = "0.3.0-alpha.1", path = "./rama-tower" }
+rama-ua = { version = "0.3.0-alpha.1", path = "./rama-ua" }
+rama-udp = { version = "0.3.0-alpha.1", path = "./rama-udp" }
+rama-utils = { version = "0.3.0-alpha.1", path = "./rama-utils" }
 
 [workspace.lints.rust]
 unreachable_pub = "deny"
