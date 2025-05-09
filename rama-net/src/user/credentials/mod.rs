@@ -4,19 +4,13 @@ mod basic;
 
 #[cfg(feature = "http")]
 #[doc(inline)]
-pub use basic::BASIC_SCHEME;
-
-#[doc(inline)]
-pub use basic::Basic;
+pub use basic::{BASIC_SCHEME, Basic};
 
 mod bearer;
 
 #[cfg(feature = "http")]
 #[doc(inline)]
-pub use bearer::BEARER_SCHEME;
-
-#[doc(inline)]
-pub use bearer::Bearer;
+pub use bearer::{BEARER_SCHEME, Bearer};
 
 mod proxy;
 #[doc(inline)]

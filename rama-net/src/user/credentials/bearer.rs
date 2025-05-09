@@ -74,7 +74,6 @@ impl Bearer {
     }
 }
 
-#[cfg(feature = "http")]
 /// Http Credentail scheme for basic credentails
 pub const BEARER_SCHEME: &str = "Bearer";
 

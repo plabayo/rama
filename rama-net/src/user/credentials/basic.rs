@@ -161,7 +161,6 @@ impl PartialEq<Basic> for Basic {
 
 impl Eq for Basic {}
 
-#[cfg(feature = "http")]
 /// Http Credentail scheme for basic credentails
 pub const BASIC_SCHEME: &str = "Basic";
 
