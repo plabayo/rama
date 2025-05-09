@@ -66,8 +66,7 @@ brotli = { workspace = true }
 flate2 = { workspace = true }
 itertools = { workspace = true }
 parking_lot = { workspace = true }
-rama-http-backend = { version = "0.2.0", path = "../rama-http-backend" }
-rama-tcp = { version = "0.2.0", path = "../rama-tcp" }
+rama-tcp = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tokio-test = { workspace = true }

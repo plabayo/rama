@@ -2545,7 +2545,6 @@ dependencies = [
  "pin-project-lite",
  "radix_trie",
  "rama-core",
- "rama-http-backend",
  "rama-http-headers",
  "rama-http-types",
  "rama-macros",

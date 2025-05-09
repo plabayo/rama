@@ -35,36 +35,6 @@ const DEFAULT_CAPACITY: usize = 65536;
 /// - On unix, any segment of the path referenced as directory is actually an
 ///   existing file (`/file.html/something`)
 /// - We don't have necessary permissions to read the file
-///
-/// # Example
-///
-/// ```rust,no_run
-/// use rama_http_backend::server::HttpServer;
-/// use rama_http::service::fs::{ServeDir, ServeFile};
-/// use rama_core::{
-///     rt::Executor,
-///     Layer, layer::TraceErrLayer,
-/// };
-/// use rama_tcp::server::TcpListener;
-///
-/// #[tokio::main]
-/// async fn main() {
-///     let exec = Executor::default();
-///
-///     let listener = TcpListener::bind("127.0.0.1:8080")
-///         .await
-///         .expect("bind TCP Listener");
-///
-///     // This will serve files in the "assets" directory and
-///     // its subdirectories
-///     let http_fs_server = HttpServer::auto(exec).service(ServeDir::new("assets"));
-///
-///     // Serve the HTTP server over TCP
-///     listener
-///         .serve(TraceErrLayer::new().into_layer(http_fs_server))
-///         .await;
-/// }
-/// ```
 #[derive(Clone, Debug)]
 pub struct ServeDir<F = DefaultServeDirFallback> {
     base: PathBuf,
