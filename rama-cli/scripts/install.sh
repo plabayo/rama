@@ -12,7 +12,7 @@ OS=$(uname -s | tr '[:upper:]' '[:lower:]')
 case "$ARCH-$OS" in
     "aarch64-darwin") FILENAME="rama.aarch64-apple-darwin.tar.xz" ;;
     "arm64-darwin") FILENAME="rama.aarch64-apple-darwin.tar.xz" ;;
-    "aarch64-linux") FILENAME="rama.aarch64-unknown-linux-musl.tar.xz" ;;
+    "aarch64-linux") FILENAME="rama.aarch64-unknown-linux-gnu.tar.xz" ;;
     "arm-linux") FILENAME="rama-arm.unknown-linux-musleabihf.tar.xz" ;;
     "armv7l-linux") FILENAME="rama.armv7-unknown-linux-musleabihf.tar.xz" ;;
     "i686-linux") FILENAME="rama.i686-unknown-linux-musl.tar.xz" ;;
