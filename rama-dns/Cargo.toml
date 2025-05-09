@@ -18,9 +18,9 @@ default = []
 
 [dependencies]
 hickory-resolver = { workspace = true }
-rama-core = { version = "0.2.0-alpha.15", path = "../rama-core" }
-rama-net = { version = "0.2.0-alpha.15", path = "../rama-net" }
-rama-utils = { version = "0.2.0-alpha.15", path = "../rama-utils" }
+rama-core = { workspace = true }
+rama-net = { workspace = true }
+rama-utils = { workspace = true }
 serde = { workspace = true }
 tokio = { workspace = true, features = ["macros", "net"] }
 

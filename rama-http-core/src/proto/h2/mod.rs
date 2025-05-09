@@ -14,7 +14,7 @@ use rama_http_types::header::{
 use rama_http_types::proto::h1::headers::original::OriginalHttp1Headers;
 use rama_http_types::{HeaderMap, HeaderName};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
-use tracing::{debug, trace, warn};
+use tracing::{debug, trace};
 
 use crate::body::Body;
 use crate::proto::h2::ping::Recorder;
@@ -40,7 +40,7 @@ static CONNECTION_HEADERS: [&HeaderName; 4] =
 fn strip_connection_headers(headers: &mut HeaderMap, is_request: bool) {
     for header in CONNECTION_HEADERS {
         if headers.remove(header).is_some() {
-            warn!("Connection header illegal in HTTP/2: {}", header.as_str());
+            debug!("Connection header illegal in HTTP/2: {}", header.as_str());
         }
     }
 
@@ -49,15 +49,15 @@ fn strip_connection_headers(headers: &mut HeaderMap, is_request: bool) {
             .get(TE)
             .is_some_and(|te_header| te_header != "trailers")
         {
-            warn!("TE headers not set to \"trailers\" are illegal in HTTP/2 requests");
+            debug!("TE headers not set to \"trailers\" are illegal in HTTP/2 requests");
             headers.remove(TE);
         }
     } else if headers.remove(TE).is_some() {
-        warn!("TE headers illegal in HTTP/2 responses");
+        debug!("TE headers illegal in HTTP/2 responses");
     }
 
     if let Some(header) = headers.remove(CONNECTION) {
-        warn!(
+        debug!(
             "Connection header illegal in HTTP/2: {}",
             CONNECTION.as_str()
         );

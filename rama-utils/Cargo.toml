@@ -16,7 +16,7 @@ workspace = true
 [dependencies]
 parking_lot = { workspace = true }
 pin-project-lite = { workspace = true }
-rama-macros = { version = "0.2.0-alpha.15", path = "../rama-macros" }
+rama-macros = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 tokio = { workspace = true, features = ["time", "macros"] }
 

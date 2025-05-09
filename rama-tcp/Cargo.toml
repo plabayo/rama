@@ -18,11 +18,11 @@ default = []
 http = ["dep:rama-http-types", "rama-net/http"]
 
 [dependencies]
-rama-core = { version = "0.2.0-alpha.15", path = "../rama-core" }
-rama-dns = { version = "0.2.0-alpha.15", path = "../rama-dns" }
-rama-http-types = { version = "0.2.0-alpha.15", path = "../rama-http-types", optional = true }
-rama-net = { version = "0.2.0-alpha.15", path = "../rama-net" }
-rama-utils = { version = "0.2.0-alpha.15", path = "../rama-utils" }
+rama-core = { workspace = true }
+rama-dns = { workspace = true }
+rama-http-types = { workspace = true, optional = true }
+rama-net = { workspace = true }
+rama-utils = { workspace = true }
 tokio = { workspace = true, features = ["macros", "net"] }
 tracing = { workspace = true }
 
