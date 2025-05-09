@@ -32,6 +32,11 @@ You can become a regular financial contributor to Rama by paying for a monthly s
 
 Alternatively you can also become a (monthly subscriber) sponsor or pay a one-time donation via [Github Sponsors][ghs-url]. For one-time donations you are also free to use ["Buy me a Coffee"][bmac-url] or ["Paypal Donations"][paypal-url] in case you are more at ease with any of these.
 
+Donations can also be paid in the following cryptocurrency:
+
+* Bitcoin: `bc1qk3383nfzcag9lymwv83m7empa6qu2vspqjkpw4`
+* Ethereum: `0xc0C5aCdB0E6c560132c93Df721E1Cd220f6fD4aa`
+
 Sponsors help us continue to maintain and improve `rama`, as well as other
 Free and Open Source (FOSS) technology. It also helps us to create
 educational content such as <https://github.com/plabayo/learn-rust-101>,

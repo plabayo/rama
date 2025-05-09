@@ -547,6 +547,11 @@ Finally, you can also support us by shopping Plabayo <3 `ラマ` merchandise �
 
 We would like to extend our thanks to the following sponsors for funding Rama (ラマ) development. If you are interested in becoming a sponsor, you can do so by becoming a [sponsor][ghs-url]. One time payments are accepted [at GitHub][ghs-url] as well as at ["Buy me a Coffee"][bmac-url]. One-time and monthly financial contributions are also possible via Paypal, should you feel more at ease with that at ["Paypal Donations"][paypal-url].
 
+Donations can also be paid in the following cryptocurrency:
+
+* Bitcoin: `bc1qk3383nfzcag9lymwv83m7empa6qu2vspqjkpw4`
+* Ethereum: `0xc0C5aCdB0E6c560132c93Df721E1Cd220f6fD4aa`
+
 If you wish to financially support us through other means you can best
 start a conversation with us by sending an email to [glen@plabayo.tech](mailto:glen@plabayo.tech).
 
