@@ -141,6 +141,19 @@ mdbook-serve:
 	cd docs/book && mdbook serve
 
 publish:
+    cargo publish -p rama-error
+    cargo publish -p rama-macros
+    cargo publish -p rama-utils
+    cargo publish -p rama-core
+    cargo publish -p rama-http-types
+    cargo publish -p rama-net
+    cargo publish -p rama-http-headers
+    cargo publish -p rama-ua
+    cargo publish -p rama-dns
+    cargo publish -p rama-tcp
+    cargo publish -p rama-udp
+    cargo publish -p rama-tls-boring
+    cargo publish -p rama-tls-rustls
     cargo publish -p rama-http
     cargo publish -p rama-http-core
     cargo publish -p rama-http-backend
