@@ -310,6 +310,7 @@ impl From<TcpKeepAlive> for SocketTcpKeepAlive {
             target_os = "openbsd",
             target_os = "redox",
             target_os = "solaris",
+            target_os = "windows",
             target_os = "nto",
             target_os = "espidf",
             target_os = "vita",
@@ -808,7 +809,7 @@ pub struct SocketOptions {
     /// Sets the CPU affinity of the [`Socket`].
     pub cpu_affinity: Option<usize>,
 
-    #[cfg(not(any(target_os = "solaris", target_os = "illumos")))]
+    #[cfg(all(unix, not(any(target_os = "solaris", target_os = "illumos"))))]
     /// Set value for the `SO_REUSEPORT` option on this [`Socket`].
     ///
     /// This indicates that further calls to `bind` may allow reuse of local
@@ -1003,6 +1004,7 @@ impl SocketOptions {
         }
 
         #[cfg(not(any(
+            windows,
             target_os = "dragonfly",
             target_os = "fuchsia",
             target_os = "illumos",
@@ -1098,7 +1100,7 @@ impl SocketOptions {
             socket.set_cpu_affinity(cpu)?;
         }
 
-        #[cfg(not(any(target_os = "solaris", target_os = "illumos")))]
+        #[cfg(all(unix, not(any(target_os = "solaris", target_os = "illumos"))))]
         if let Some(reuse) = self.reuse_port {
             socket.set_reuse_port(reuse)?;
         }
