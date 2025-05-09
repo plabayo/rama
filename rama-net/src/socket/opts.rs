@@ -717,7 +717,7 @@ pub struct SocketOptions {
     /// thereby avoiding the frequent sending of small packets.
     pub tcp_no_delay: Option<bool>,
 
-    #[cfg(not(target_os = "redox"))]
+    #[cfg(all(unix, not(target_os = "redox")))]
     /// Sets the value of the `TCP_MAXSEG` option on this [`Socket`].
     ///
     /// The `TCP_MAXSEG` option denotes the TCP Maximum Segment Size
@@ -1060,7 +1060,7 @@ impl SocketOptions {
             socket.set_nodelay(no_delay)?;
         }
 
-        #[cfg(not(target_os = "redox"))]
+        #[cfg(all(unix, not(target_os = "redox")))]
         if let Some(mss) = self.tcp_max_segments {
             socket.set_mss(mss)?;
         }
