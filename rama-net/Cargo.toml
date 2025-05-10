@@ -25,7 +25,6 @@ bytes = { workspace = true }
 const_format = { workspace = true }
 flume = { workspace = true, features = ["async"] }
 futures-lite = { workspace = true }
-headers = { workspace = true }
 hex = { workspace = true, optional = true }
 ipnet = { workspace = true }
 itertools = { workspace = true, optional = true }
