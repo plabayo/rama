@@ -51,9 +51,12 @@ where
     }
 }
 
+/// default [`Timeout`]
+pub type DefaultTimeout<S> = Timeout<S, LayerErrorStatic<Elapsed>>;
+
 // ===== impl Timeout =====
 
-impl<S> Timeout<S, LayerErrorStatic<Elapsed>> {
+impl<S> DefaultTimeout<S> {
     /// Creates a new [`Timeout`]
     pub fn new(inner: S, timeout: Duration) -> Self {
         Self::with_error(inner, timeout, error::Elapsed::new(timeout))

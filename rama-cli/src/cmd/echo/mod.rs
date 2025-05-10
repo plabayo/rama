@@ -9,7 +9,7 @@ use rama::{
     http::{Request, Response, matcher::HttpMatcher},
     layer::HijackLayer,
     net::{
-        address::SocketAddress,
+        socket::Interface,
         tls::{
             ApplicationProtocol, DataEncoding,
             server::{SelfSignedData, ServerAuth, ServerAuthData, ServerConfig},
@@ -30,9 +30,9 @@ use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberI
 #[derive(Debug, Args)]
 /// rama echo service (echos the http request and tls client config)
 pub struct CliCommandEcho {
-    /// the address to bind to
+    /// the interface to bind to
     #[arg(long, default_value = "127.0.0.1:8080")]
-    bind: SocketAddress,
+    bind: Interface,
 
     #[arg(short = 'c', long, default_value_t = 0)]
     /// the number of concurrent connections to allow
@@ -145,15 +145,27 @@ pub async fn run(cfg: CliCommandEcho) -> Result<(), BoxError> {
         .map_err(OpaqueError::from_boxed)
         .context("build echo service")?;
 
-    tracing::info!("starting echo service on: {}", cfg.bind);
+    tracing::info!(
+        bind = %cfg.bind,
+        "starting echo service",
+    );
     let tcp_listener = TcpListener::build()
-        .bind(cfg.bind)
+        .bind(cfg.bind.clone())
         .await
         .map_err(OpaqueError::from_boxed)
         .context("bind echo service")?;
 
+    let bind_address = tcp_listener
+        .local_addr()
+        .context("get local addr of tcp listener")?;
+
     graceful.spawn_task_fn(async move |guard| {
-        tracing::info!("echo service ready");
+        tracing::info!(
+            bind = %cfg.bind,
+            %bind_address,
+            "echo service ready",
+        );
+
         tcp_listener.serve_graceful(guard, tcp_service).await;
     });
 

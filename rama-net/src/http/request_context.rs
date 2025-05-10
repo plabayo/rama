@@ -1,4 +1,5 @@
 use crate::forwarded::Forwarded;
+use crate::proxy::ProxyTarget;
 use crate::transport::{TransportContext, TransportProtocol, TryRefIntoTransportContext};
 use crate::{
     Protocol,
@@ -76,12 +77,18 @@ impl<Body, State> TryFrom<(&Context<State>, &Request<Body>)> for RequestContext 
             .unwrap_or_else(|| protocol.default_port().unwrap_or(80));
         tracing::trace!(uri = %uri, "request context: detected default port: {default_port}");
 
-        let authority = match ctx.get().and_then(try_get_host_from_secure_transport) {
-            Some(h) => {
+        let proxy_authority_opt: Option<Authority> = ctx.get::<ProxyTarget>().map(|t| t.0.clone());
+        let sni_host_opt = ctx.get().and_then(try_get_host_from_secure_transport);
+        let authority = match (proxy_authority_opt, sni_host_opt) {
+            (Some(authority), _) => {
+                tracing::trace!(uri = %uri, %authority, "request context: use proxy target as authority");
+                authority
+            },
+            (None, Some(h)) => {
                 tracing::trace!(uri = %uri, host = %h, "request context: detected host from SNI");
                 (h, default_port).into()
             },
-            None => uri
+            (None, None) => uri
                 .host()
                 .and_then(|h| Host::try_from(h).ok().map(|h| {
                     tracing::trace!(uri = %uri, host = %h, "request context: detected host from (abs) uri");
@@ -155,12 +162,18 @@ impl<State> TryFrom<(&Context<State>, &Parts)> for RequestContext {
             .unwrap_or_else(|| protocol.default_port().unwrap_or(80));
         tracing::trace!(uri = %uri, "request context: detected default port: {default_port}");
 
-        let authority = match ctx.get().and_then(try_get_host_from_secure_transport) {
-            Some(h) => {
+        let proxy_authority_opt: Option<Authority> = ctx.get::<ProxyTarget>().map(|t| t.0.clone());
+        let sni_host_opt = ctx.get().and_then(try_get_host_from_secure_transport);
+        let authority = match (proxy_authority_opt, sni_host_opt) {
+            (Some(authority), _) => {
+                tracing::trace!(uri = %uri, %authority, "request context: use proxy target as authority");
+                authority
+            }
+            (None, Some(h)) => {
                 tracing::trace!(uri = %uri, host = %h, "request context: detected host from SNI");
                 (h, default_port).into()
             }
-            None => {
+            (None, None) => {
                 uri
                     .host()
                     .and_then(|h| Host::try_from(h).ok().map(|h| {

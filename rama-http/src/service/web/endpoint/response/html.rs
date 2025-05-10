@@ -1,10 +1,8 @@
-use super::IntoResponse;
+use super::{Headers, IntoResponse};
 use crate::headers::ContentType;
 use crate::{Body, Response};
 use rama_utils::macros::impl_deref;
 use std::fmt;
-
-use super::Headers;
 
 /// An HTML response.
 ///
