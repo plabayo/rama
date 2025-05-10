@@ -25,7 +25,6 @@ pub enum Interface {
     /// [`Socket`]: super::core::Socket
     Device(DeviceName),
     /// Bind to a socket with the following options.
-    #[cfg(any(windows, unix))]
     Socket(Arc<SocketOptions>),
 }
 
@@ -39,7 +38,6 @@ impl Interface {
 #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
 pub use device::DeviceName;
 
-#[cfg(any(windows, unix))]
 use super::SocketOptions;
 
 #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
@@ -397,7 +395,6 @@ impl From<([u8; 16], u16)> for Interface {
     }
 }
 
-#[cfg(any(windows, unix))]
 impl From<SocketOptions> for Interface {
     #[inline]
     fn from(value: SocketOptions) -> Self {
@@ -405,7 +402,6 @@ impl From<SocketOptions> for Interface {
     }
 }
 
-#[cfg(any(windows, unix))]
 impl From<Arc<SocketOptions>> for Interface {
     #[inline]
     fn from(value: Arc<SocketOptions>) -> Self {
@@ -419,7 +415,6 @@ impl fmt::Display for Interface {
             Interface::Address(socket_address) => write!(f, "{socket_address}"),
             #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
             Interface::Device(name) => write!(f, "{name}"),
-            #[cfg(any(windows, unix))]
             Interface::Socket(opts) => write!(f, "{opts:?}"),
         }
     }
@@ -524,13 +519,11 @@ impl<'de> serde::Deserialize<'de> for Interface {
         #[serde(untagged)]
         enum Variants {
             Str(String),
-            #[cfg(any(windows, unix))]
             Opts(SocketOptions),
         }
 
         match Variants::deserialize(deserializer)? {
             Variants::Str(s) => s.parse().map_err(serde::de::Error::custom),
-            #[cfg(any(windows, unix))]
             Variants::Opts(opts) => Ok(Interface::Socket(Arc::new(opts))),
         }
     }
@@ -553,7 +546,6 @@ mod tests {
             }
             #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
             Interface::Device(name) => panic!("unexpected device name '{name}': parsing '{s}'"),
-            #[cfg(any(windows, unix))]
             Interface::Socket(opts) => {
                 panic!("unexpected socket options '{opts:?}': parsing '{s}'")
             }
@@ -608,7 +600,6 @@ mod tests {
             }
             #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
             Interface::Device(name) => assert_eq!(s, name.as_str()),
-            #[cfg(any(windows, unix))]
             Interface::Socket(opts) => {
                 panic!("unexpected socket options '{opts:?}': parsing '{s}'")
             }
