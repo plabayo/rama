@@ -1,4 +1,6 @@
 use crate::dep::http_body_util::BodyExt;
+use bytes::Bytes;
+use futures_core::Stream;
 use rama_error::{BoxError, ErrorContext, OpaqueError};
 
 /// An extension trait for [`Body`] that provides methods to extract data from it.
@@ -12,6 +14,9 @@ pub trait BodyExtractExt: private::Sealed {
 
     /// Try to turn the (contained) body in an utf-8 string.
     fn try_into_string(self) -> impl Future<Output = Result<String, OpaqueError>> + Send;
+
+    /// Try to turn the (contained) body into a stream of bytes.
+    fn into_stream(self) -> impl Stream<Item = Result<Bytes, OpaqueError>> + Send;
 }
 
 impl<Body> BodyExtractExt for crate::Response<Body>
@@ -39,6 +44,10 @@ where
         let bytes = body.to_bytes();
         String::from_utf8(bytes.to_vec()).context("parse body as utf-8 string")
     }
+
+    async fn into_stream(self) -> Result<Bytes, OpaqueError> {
+        todo!()
+    }
 }
 
 impl<Body> BodyExtractExt for crate::Request<Body>
@@ -65,6 +74,10 @@ where
         let bytes = body.to_bytes();
         String::from_utf8(bytes.to_vec()).context("parse request body as utf-8 string")
     }
+
+    async fn into_stream(self) -> Result<Bytes, OpaqueError> {
+        todo!()
+    }
 }
 
 impl<B: Into<crate::Body> + Send + 'static> BodyExtractExt for B {
@@ -79,6 +92,10 @@ impl<B: Into<crate::Body> + Send + 'static> BodyExtractExt for B {
         let body = self.into().collect().await.context("collect body")?;
         let bytes = body.to_bytes();
         String::from_utf8(bytes.to_vec()).context("parse body as utf-8 string")
+    }
+
+    async fn into_stream(self) -> Result<Bytes, OpaqueError> {
+        todo!()
     }
 }
 
