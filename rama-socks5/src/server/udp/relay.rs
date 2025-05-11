@@ -1,10 +1,7 @@
 use std::io::ErrorKind;
 
 use bytes::{Bytes, BytesMut};
-use rama_core::{
-    Context,
-    error::{BoxError, ErrorContext, ErrorExt, OpaqueError},
-};
+use rama_core::error::{BoxError, ErrorExt, OpaqueError};
 use rama_net::address::{Authority, Host, SocketAddress};
 use rama_udp::UdpSocket;
 
@@ -12,6 +9,7 @@ use crate::proto::udp::UdpHeader;
 
 #[cfg(feature = "dns")]
 use ::{
+    rama_core::{Context, error::ErrorContext},
     rama_dns::{BoxDnsResolver, DnsResolver},
     rama_net::mode::DnsResolveIpMode,
     rand::seq::IteratorRandom,
@@ -369,7 +367,7 @@ impl UdpSocketRelay {
     ) -> Result<SocketAddress, BoxError> {
         let (host, port) = authority.into_parts();
         let ip_addr = match host {
-            Host::Name(domain) => {
+            Host::Name(_) => {
                 return Err(OpaqueError::from_display(
                     "dns names as target not supported: no dns server defined",
                 )
