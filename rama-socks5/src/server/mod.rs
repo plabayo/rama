@@ -27,7 +27,7 @@ pub mod bind;
 pub use bind::{Binder, DefaultBinder, Socks5Binder};
 
 pub mod udp;
-pub use udp::{Socks5UdpAssociator, UdpRelay};
+pub use udp::{DefaultUdpRelay, Socks5UdpAssociator, UdpRelay};
 
 /// Socks5 server implementation of [RFC 1928]
 ///
@@ -104,7 +104,7 @@ impl<B, U> Socks5Acceptor<(), B, U> {
     /// Attach a [`Socks5Connector`] to this [`Socks5Acceptor`],
     /// used to accept incoming [`Command::Connect`] [`client::Request`]s.
     ///
-    /// Use [`Socks5Acceptor::with_default_connector`] in case you
+    /// Use [`Socks5Acceptor::with_default_connector`] in case
     /// the [`DefaultConnector`] serves your needs just fine.
     pub fn with_connector<C>(self, connector: C) -> Socks5Acceptor<C, B, U> {
         Socks5Acceptor {
@@ -116,7 +116,7 @@ impl<B, U> Socks5Acceptor<(), B, U> {
         }
     }
 
-    /// Attach a the [`DefaultConnector`] to this [`Socks5Acceptor`],
+    /// Attach the [`DefaultConnector`] to this [`Socks5Acceptor`],
     /// used to accept incoming [`Command::Connect`] [`client::Request`]s.
     ///
     /// Use [`Socks5Acceptor::with_connector`] in case you want to use a custom
@@ -124,6 +124,60 @@ impl<B, U> Socks5Acceptor<(), B, U> {
     #[inline]
     pub fn with_default_connector(self) -> Socks5Acceptor<DefaultConnector, B, U> {
         self.with_connector(DefaultConnector::default())
+    }
+}
+
+impl<C, U> Socks5Acceptor<C, (), U> {
+    /// Attach a [`Socks5Binder`] to this [`Socks5Acceptor`],
+    /// used to accept incoming [`Command::Bind`] [`client::Request`]s.
+    ///
+    /// Use [`Socks5Acceptor::with_default_binder`] in case
+    /// the [`DefaultConnector`] serves your needs just fine.
+    pub fn with_binder<B>(self, binder: B) -> Socks5Acceptor<C, B, U> {
+        Socks5Acceptor {
+            connector: self.connector,
+            binder,
+            udp_associator: self.udp_associator,
+            auth: self.auth,
+            auth_opt: self.auth_opt,
+        }
+    }
+
+    /// Attach the [`DefaultBinder`] to this [`Socks5Acceptor`],
+    /// used to accept incoming [`Command::Bind`] [`client::Request`]s.
+    ///
+    /// Use [`Socks5Acceptor::with_binder`] in case you want to use a custom
+    /// [`Socks5Binder`] or customised [`Binder`].
+    #[inline]
+    pub fn with_default_binder(self) -> Socks5Acceptor<C, DefaultBinder, U> {
+        self.with_binder(DefaultBinder::default())
+    }
+}
+
+impl<C, B> Socks5Acceptor<C, B, ()> {
+    /// Attach a [`Socks5UdpAssociator`] to this [`Socks5Acceptor`],
+    /// used to accept incoming [`Command::UdpAssociate`] [`client::Request`]s.
+    ///
+    /// Use [`Socks5Acceptor::with_default_udp_associator`] in case
+    /// the [`DefaultUdpRelay`] serves your needs just fine.
+    pub fn with_udp_associator<U>(self, udp_associator: U) -> Socks5Acceptor<C, B, U> {
+        Socks5Acceptor {
+            connector: self.connector,
+            binder: self.binder,
+            udp_associator,
+            auth: self.auth,
+            auth_opt: self.auth_opt,
+        }
+    }
+
+    /// Attach the [`DefaultUdpRelay`] to this [`Socks5Acceptor`],
+    /// used to accept incoming [`Command::UdpAssociate`] [`client::Request`]s.
+    ///
+    /// Use [`Socks5Acceptor::with_udp_associator`] in case you want to use a custom
+    /// [`Socks5UdpAssociator`] or customised [`udp::UdpRelay`].
+    #[inline]
+    pub fn with_default_udp_associator(self) -> Socks5Acceptor<C, B, DefaultUdpRelay> {
+        self.with_udp_associator(DefaultUdpRelay::default())
     }
 }
 
@@ -446,273 +500,4 @@ impl<C, B, U> Socks5Acceptor<C, B, U> {
 }
 
 #[cfg(test)]
-mod test {
-    use rama_net::address::Authority;
-
-    use super::*;
-    use crate::server::connect::MockConnector;
-
-    #[tokio::test]
-    async fn test_socks5_acceptor_no_auth_client_connect_failure_method_not_supported() {
-        let stream = tokio_test::io::Builder::new()
-            // client header
-            .read(b"\x05\x01\x00")
-            // server header
-            .write(b"\x05\x00")
-            // client request
-            .read(b"\x05\x01\x00\x01\x00\x00\x00\x00\x00\x00")
-            // server reply
-            .write(b"\x05\x07\x00\x01\x00\x00\x00\x00\x00\x00")
-            .build();
-
-        let server = Socks5Acceptor::new();
-        let result = server.accept(Context::default(), stream).await;
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn test_socks5_acceptor_auth_flow_declined_connect_failure_method_not_supported() {
-        let stream = tokio_test::io::Builder::new()
-            // client header
-            .read(b"\x05\x02\x00\x02")
-            // server header
-            .write(b"\x05\x00")
-            // client request
-            .read(b"\x05\x01\x00\x01\x00\x00\x00\x00\x00\x00")
-            // server reply
-            .write(b"\x05\x07\x00\x01\x00\x00\x00\x00\x00\x00")
-            .build();
-
-        let server = Socks5Acceptor::new();
-        let result = server.accept(Context::default(), stream).await;
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn test_socks5_acceptor_auth_flow_used_connect_failure_method_not_supported() {
-        let stream = tokio_test::io::Builder::new()
-            // client header
-            .read(b"\x05\x02\x00\x02")
-            // server header
-            .write(b"\x05\x02")
-            // client username-password request
-            .read(b"\x01\x04john\x06secret")
-            // server username-password response
-            .write(b"\x01\x00")
-            // client request
-            .read(b"\x05\x01\x00\x01\x00\x00\x00\x00\x00\x00")
-            // server reply
-            .write(b"\x05\x07\x00\x01\x00\x00\x00\x00\x00\x00")
-            .build();
-
-        let server =
-            Socks5Acceptor::new().with_auth(Socks5Auth::username_password("john", "secret"));
-        let result = server.accept(Context::default(), stream).await;
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn test_socks5_acceptor_auth_flow_username_only_sed_connect_failure_method_not_supported()
-    {
-        let stream = tokio_test::io::Builder::new()
-            // client header
-            .read(b"\x05\x02\x00\x02")
-            // server header
-            .write(b"\x05\x02")
-            // client username-password request
-            .read(b"\x01\x04john\x00")
-            // server username-password response
-            .write(b"\x01\x00")
-            // client request
-            .read(b"\x05\x01\x00\x01\x00\x00\x00\x00\x00\x00")
-            // server reply
-            .write(b"\x05\x07\x00\x01\x00\x00\x00\x00\x00\x00")
-            .build();
-
-        let server = Socks5Acceptor::new().with_auth(Socks5Auth::username("john"));
-        let result = server.accept(Context::default(), stream).await;
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn test_socks5_acceptor_auth_flow_used_connect_failure_unauthorized() {
-        let stream = tokio_test::io::Builder::new()
-            // client header
-            .read(b"\x05\x02\x00\x02")
-            // server header
-            .write(b"\x05\x02")
-            // client username-password request
-            .read(b"\x01\x03jan\x06secret")
-            // server username-password response
-            .write(b"\x01\x01")
-            .build();
-
-        let server =
-            Socks5Acceptor::new().with_auth(Socks5Auth::username_password("john", "secret"));
-        let result = server.accept(Context::default(), stream).await;
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn test_socks5_acceptor_auth_flow_used_connect_failure_unauthorized_missing_password() {
-        let stream = tokio_test::io::Builder::new()
-            // client header
-            .read(b"\x05\x02\x00\x02")
-            // server header
-            .write(b"\x05\x02")
-            // client username-password request
-            .read(b"\x01\x04john\x00")
-            // server username-password response
-            .write(b"\x01\x01")
-            .build();
-
-        let server =
-            Socks5Acceptor::new().with_auth(Socks5Auth::username_password("john", "secret"));
-        let result = server.accept(Context::default(), stream).await;
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn test_socks5_acceptor_no_auth_client_connect_mock_failure() {
-        let stream = tokio_test::io::Builder::new()
-            // client header
-            .read(b"\x05\x01\x00")
-            // server header
-            .write(b"\x05\x00")
-            // client request
-            .read(b"\x05\x01\x00\x01\x00\x00\x00\x00\x00\x00")
-            // server reply
-            .write(b"\x05\x05\x00\x01\x00\x00\x00\x00\x00\x00")
-            .build();
-
-        let server = Socks5Acceptor::new()
-            .with_connector(MockConnector::new_err(ReplyKind::ConnectionRefused));
-        let result = server.accept(Context::default(), stream).await;
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn test_socks5_acceptor_no_auth_client_connect_mock_success_no_data() {
-        let stream = tokio_test::io::Builder::new()
-            // client header
-            .read(b"\x05\x01\x00")
-            // server header
-            .write(b"\x05\x00")
-            // client request
-            .read(b"\x05\x01\x00\x01\x00\x00\x00\x00\x00\x00")
-            // server reply
-            .write(&[b'\x05', b'\x00', b'\x00', b'\x01', 127, 0, 0, 1, 0, 42])
-            .build();
-
-        let server =
-            Socks5Acceptor::new().with_connector(MockConnector::new(Authority::local_ipv4(42)));
-        let result = server.accept(Context::default(), stream).await;
-        assert!(result.is_ok());
-    }
-
-    #[tokio::test]
-    async fn test_socks5_acceptor_no_auth_client_connect_mock_success_with_data() {
-        let stream = tokio_test::io::Builder::new()
-            // client header
-            .read(b"\x05\x01\x00")
-            // server header
-            .write(b"\x05\x00")
-            // client request
-            .read(b"\x05\x01\x00\x01\x00\x00\x00\x00\x00\x00")
-            // server reply
-            .write(&[b'\x05', b'\x00', b'\x00', b'\x01', 127, 0, 0, 1, 0, 42])
-            // client data
-            .read(b"ping")
-            // server data
-            .write(b"pong")
-            .build();
-
-        let server = Socks5Acceptor::new().with_connector(
-            MockConnector::new(Authority::local_ipv4(42)).with_proxy_data(
-                tokio_test::io::Builder::new()
-                    // client data
-                    .write(b"ping")
-                    // server data
-                    .read(b"pong")
-                    .build(),
-            ),
-        );
-        let result = server.accept(Context::default(), stream).await;
-        assert!(result.is_ok());
-    }
-
-    #[tokio::test]
-    async fn test_socks5_acceptor_with_auth_flow_client_connect_mock_success_with_data() {
-        let stream = tokio_test::io::Builder::new()
-            // client header
-            .read(b"\x05\x02\x00\x02")
-            // server header
-            .write(b"\x05\x02")
-            // client username-password request
-            .read(b"\x01\x04john\x06secret")
-            // server username-password response
-            .write(b"\x01\x00")
-            // client request
-            .read(b"\x05\x01\x00\x01\x00\x00\x00\x00\x00\x00")
-            // server reply
-            .write(&[b'\x05', b'\x00', b'\x00', b'\x01', 127, 0, 0, 1, 0, 42])
-            // client data
-            .read(b"ping")
-            // server data
-            .write(b"pong")
-            .build();
-
-        let server = Socks5Acceptor::new()
-            .with_auth(Socks5Auth::username_password("john", "secret"))
-            .with_connector(
-                MockConnector::new(Authority::local_ipv4(42)).with_proxy_data(
-                    tokio_test::io::Builder::new()
-                        // client data
-                        .write(b"ping")
-                        // server data
-                        .read(b"pong")
-                        .build(),
-                ),
-            );
-        let result = server.accept(Context::default(), stream).await;
-        assert!(result.is_ok());
-    }
-
-    #[tokio::test]
-    async fn test_socks5_acceptor_with_auth_flow_username_only_client_connect_mock_success_with_data()
-     {
-        let stream = tokio_test::io::Builder::new()
-            // client header
-            .read(b"\x05\x02\x00\x02")
-            // server header
-            .write(b"\x05\x02")
-            // client username-password request
-            .read(b"\x01\x04john\x00")
-            // server username-password response
-            .write(b"\x01\x00")
-            // client request
-            .read(b"\x05\x01\x00\x01\x00\x00\x00\x00\x00\x00")
-            // server reply
-            .write(&[b'\x05', b'\x00', b'\x00', b'\x01', 127, 0, 0, 1, 0, 42])
-            // client data
-            .read(b"ping")
-            // server data
-            .write(b"pong")
-            .build();
-
-        let server = Socks5Acceptor::new()
-            .with_auth(Socks5Auth::username("john"))
-            .with_connector(
-                MockConnector::new(Authority::local_ipv4(42)).with_proxy_data(
-                    tokio_test::io::Builder::new()
-                        // client data
-                        .write(b"ping")
-                        // server data
-                        .read(b"pong")
-                        .build(),
-                ),
-            );
-        let result = server.accept(Context::default(), stream).await;
-        assert!(result.is_ok());
-    }
-}
+mod test;

@@ -246,9 +246,6 @@ where
     }
 }
 
-// TODO: add mock binder
-// TODO: add test
-
 impl Default for DefaultBinder {
     fn default() -> Self {
         Self::new(
@@ -438,5 +435,159 @@ where
             )
             .await
             .map_err(|err| Error::service(err).with_context("serve bind pipe"))
+    }
+}
+
+#[cfg(test)]
+pub(crate) use test::MockBinder;
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use std::{ops::DerefMut, sync::Arc};
+    use tokio::sync::Mutex;
+
+    #[derive(Debug)]
+    pub(crate) struct MockBinder {
+        reply: MockReply,
+    }
+
+    #[derive(Debug)]
+    enum MockReply {
+        Success {
+            bind_addr: Authority,
+            second_reply: MockSecondReply,
+        },
+        Error(ReplyKind),
+    }
+
+    #[derive(Debug)]
+    enum MockSecondReply {
+        Success {
+            recv_addr: Authority,
+            target: Option<Arc<Mutex<tokio_test::io::Mock>>>,
+        },
+        Error(ReplyKind),
+    }
+
+    impl MockBinder {
+        pub(crate) fn new(bind_addr: Authority, recv_addr: Authority) -> Self {
+            Self {
+                reply: MockReply::Success {
+                    bind_addr,
+                    second_reply: MockSecondReply::Success {
+                        recv_addr,
+                        target: None,
+                    },
+                },
+            }
+        }
+        pub(crate) fn new_err(reply: ReplyKind) -> Self {
+            Self {
+                reply: MockReply::Error(reply),
+            }
+        }
+        pub(crate) fn new_bind_err(bind_addr: Authority, reply: ReplyKind) -> Self {
+            Self {
+                reply: MockReply::Success {
+                    bind_addr,
+                    second_reply: MockSecondReply::Error(reply),
+                },
+            }
+        }
+
+        pub(crate) fn with_proxy_data(mut self, target: tokio_test::io::Mock) -> Self {
+            self.reply = match self.reply {
+                MockReply::Success {
+                    bind_addr,
+                    second_reply:
+                        MockSecondReply::Success {
+                            recv_addr,
+                            target: None,
+                        },
+                } => MockReply::Success {
+                    bind_addr,
+                    second_reply: MockSecondReply::Success {
+                        recv_addr,
+                        target: Some(Arc::new(Mutex::new(target))),
+                    },
+                },
+                _ => unreachable!(),
+            };
+            self
+        }
+    }
+
+    impl<S, State> Socks5BinderSeal<S, State> for MockBinder
+    where
+        S: Stream + Unpin,
+        State: Clone + Send + Sync + 'static,
+    {
+        async fn accept_bind(
+            &self,
+            _ctx: Context<State>,
+            mut stream: S,
+            _requested_bind_address: Authority,
+        ) -> Result<(), Error> {
+            match &self.reply {
+                MockReply::Success {
+                    bind_addr,
+                    second_reply,
+                } => {
+                    Reply::new(bind_addr.clone())
+                        .write_to(&mut stream)
+                        .await
+                        .map_err(Error::io)?;
+
+                    match second_reply {
+                        MockSecondReply::Success { recv_addr, target } => {
+                            Reply::new(recv_addr.clone())
+                                .write_to(&mut stream)
+                                .await
+                                .map_err(Error::io)?;
+
+                            if let Some(target) = target.as_ref() {
+                                let mut target = target.lock().await;
+                                match tokio::io::copy_bidirectional(&mut stream, target.deref_mut())
+                                    .await
+                                {
+                                    Ok((bytes_copied_north, bytes_copied_south)) => {
+                                        tracing::trace!(
+                                            %bytes_copied_north,
+                                            %bytes_copied_south,
+                                            "(proxy) I/O stream forwarder finished"
+                                        );
+                                        Ok(())
+                                    }
+                                    Err(err) => {
+                                        if rama_net::conn::is_connection_error(&err) {
+                                            Ok(())
+                                        } else {
+                                            Err(Error::io(err))
+                                        }
+                                    }
+                                }
+                            } else {
+                                Ok(())
+                            }
+                        }
+                        MockSecondReply::Error(reply_kind) => {
+                            Reply::error_reply(*reply_kind)
+                                .write_to(&mut stream)
+                                .await
+                                .map_err(Error::io)?;
+                            Err(Error::aborted("mock abort 2nd reply").with_context(*reply_kind))
+                        }
+                    }
+                }
+                MockReply::Error(reply_kind) => {
+                    Reply::error_reply(*reply_kind)
+                        .write_to(&mut stream)
+                        .await
+                        .map_err(Error::io)?;
+                    Err(Error::aborted("mock abort 1st reply").with_context(*reply_kind))
+                }
+            }
+        }
     }
 }

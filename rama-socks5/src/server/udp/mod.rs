@@ -102,7 +102,7 @@ impl<S: Clone + Send + Sync + 'static> Service<S, Interface> for DefaultUdpBinde
 }
 
 /// Default [`UdpBinder`] type.
-pub type DefaultRelay = UdpRelay<DefaultTimeout<DefaultUdpBinder>, DirectUdpRelay>;
+pub type DefaultUdpRelay = UdpRelay<DefaultTimeout<DefaultUdpBinder>, DirectUdpRelay>;
 
 /// Only "useful" public [`Socks5UdpAssociator`] implementation,
 /// which actually is able to accept udp-relay requests and process them.
@@ -419,7 +419,7 @@ impl<B: Clone, I: Clone> Clone for UdpRelay<B, I> {
 // TODO: add mock relay
 // TODO: add test
 
-impl Default for DefaultRelay {
+impl Default for DefaultUdpRelay {
     fn default() -> Self {
         let relay = Self::new(DefaultTimeout::new(
             DefaultUdpBinder::default(),
