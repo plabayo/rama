@@ -604,3 +604,9 @@ where
         Ok(())
     }
 }
+
+#[cfg(test)]
+pub(crate) use test::MockUdpAssociator;
+
+#[cfg(test)]
+mod test;

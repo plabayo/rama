@@ -2,6 +2,7 @@ use super::*;
 
 mod bind;
 mod connect;
+mod udp;
 
 #[tokio::test]
 async fn test_socks5_acceptor_auth_flow_used_failure_unauthorized() {
