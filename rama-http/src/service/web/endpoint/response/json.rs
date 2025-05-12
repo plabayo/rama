@@ -1,7 +1,7 @@
 use super::IntoResponse;
 use crate::headers::ContentType;
 use crate::{Body, Response, dep::http::StatusCode};
-use bytes::{BufMut, BytesMut};
+use rama_core::bytes::{BufMut, BytesMut};
 use rama_core::error::OpaqueError;
 use rama_utils::macros::impl_deref;
 use serde::Serialize;

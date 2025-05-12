@@ -1,6 +1,6 @@
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as ENGINE;
-use bytes::Bytes;
+use rama_core::bytes::Bytes;
 use rama_http_types::HeaderValue;
 use sha1::{Digest, Sha1};
 

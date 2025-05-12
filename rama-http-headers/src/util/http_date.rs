@@ -2,7 +2,7 @@ use std::fmt;
 use std::str::FromStr;
 use std::time::SystemTime;
 
-use bytes::Bytes;
+use rama_core::bytes::Bytes;
 use rama_error::OpaqueError;
 use rama_http_types::header::HeaderValue;
 

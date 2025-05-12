@@ -2,7 +2,7 @@ use std::fmt;
 use std::iter::FromIterator;
 use std::marker::PhantomData;
 
-use bytes::BytesMut;
+use rama_core::bytes::BytesMut;
 use rama_http_types::HeaderValue;
 
 use crate::Error;

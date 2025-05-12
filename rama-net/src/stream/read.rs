@@ -1,5 +1,5 @@
-use bytes::Bytes;
 use pin_project_lite::pin_project;
+use rama_core::bytes::Bytes;
 use std::{
     fmt,
     io::Cursor,

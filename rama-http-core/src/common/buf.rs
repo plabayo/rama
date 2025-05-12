@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::io::IoSlice;
 
-use bytes::{Buf, BufMut, Bytes, BytesMut};
+use rama_core::bytes::{Buf, BufMut, Bytes, BytesMut};
 
 pub(crate) struct BufList<T> {
     bufs: VecDeque<T>,

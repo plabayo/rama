@@ -1,4 +1,4 @@
-use bytes::BytesMut;
+use rama_core::bytes::BytesMut;
 use rama_http_types::{
     HeaderMap, HeaderValue, Method,
     header::{CONTENT_LENGTH, OccupiedEntry, TRANSFER_ENCODING, ValueIter},

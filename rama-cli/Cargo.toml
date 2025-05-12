@@ -16,7 +16,6 @@ workspace = true
 
 [dependencies]
 base64 = { workspace = true }
-bytes = { workspace = true }
 chrono = { workspace = true }
 clap = { workspace = true }
 deadpool-postgres = { workspace = true }

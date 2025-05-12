@@ -190,7 +190,7 @@ pub trait ClassifyResponse: Send + Sync + 'static {
     /// };
     /// use rama_http::{Response, StatusCode};
     /// use rama_http::dep::http_body_util::Empty;
-    /// use bytes::Bytes;
+    /// use rama_core::bytes::Bytes;
     ///
     /// fn transform_failure_class(class: ServerErrorsFailureClass) -> NewFailureClass {
     ///     match class {

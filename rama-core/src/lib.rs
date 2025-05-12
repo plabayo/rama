@@ -47,3 +47,12 @@ pub mod username;
 
 #[cfg(feature = "telemetry")]
 pub mod telemetry;
+
+pub mod bytes {
+    //! Re-export of [bytes](https://docs.rs/bytes/latest/bytes/) crate.
+    //!
+    //! Exported for your convenience.
+
+    #[doc(inline)]
+    pub use ::bytes::*;
+}

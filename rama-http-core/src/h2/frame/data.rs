@@ -1,5 +1,5 @@
 use crate::h2::frame::{Error, Frame, Head, Kind, StreamId, util};
-use bytes::{Buf, BufMut, Bytes};
+use rama_core::bytes::{Buf, BufMut, Bytes};
 
 use std::fmt;
 

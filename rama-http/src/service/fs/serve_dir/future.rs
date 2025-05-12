@@ -7,7 +7,7 @@ use crate::{
     service::fs::AsyncReadBody,
     service::web::response::{Html, IntoResponse},
 };
-use bytes::Bytes;
+use rama_core::bytes::Bytes;
 use rama_core::{Context, Service, error::BoxError};
 use rama_http_types::dep::http_body;
 use std::{convert::Infallible, io};

@@ -4,7 +4,7 @@ use std::io::{self, IoSlice};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use bytes::{Buf, BufMut, Bytes, BytesMut};
+use rama_core::bytes::{Buf, BufMut, Bytes, BytesMut};
 use std::task::ready;
 use tokio::io::AsyncRead;
 use tokio::io::AsyncWrite;

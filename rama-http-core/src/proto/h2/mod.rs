@@ -4,9 +4,9 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use crate::h2::{Reason, RecvStream, SendStream};
-use bytes::{Buf, Bytes};
 use futures_util::ready;
 use pin_project_lite::pin_project;
+use rama_core::bytes::{Buf, Bytes};
 use rama_core::error::BoxError;
 use rama_http_types::header::{
     CONNECTION, KEEP_ALIVE, PROXY_CONNECTION, TE, TRANSFER_ENCODING, UPGRADE,

@@ -900,7 +900,7 @@ mod tests {
     use Header;
 
     // use proto::ServerTransaction;
-    use bytes::BytesMut;
+    use rama_core::bytes::BytesMut;
 
     use mime;
 

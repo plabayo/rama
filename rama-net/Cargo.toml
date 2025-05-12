@@ -21,7 +21,6 @@ telemetry = ["rama-core/telemetry"]
 
 [dependencies]
 base64 = { workspace = true }
-bytes = { workspace = true }
 const_format = { workspace = true }
 flume = { workspace = true, features = ["async"] }
 futures-lite = { workspace = true }

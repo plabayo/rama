@@ -1,5 +1,5 @@
 use crate::h2::frame::{Error, Frame, Head, Kind, StreamId};
-use bytes::BufMut;
+use rama_core::bytes::BufMut;
 
 const ACK_FLAG: u8 = 0x1;
 

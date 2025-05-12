@@ -140,7 +140,7 @@ use crate::h2::frame::{Headers, Pseudo, Reason, Settings, StreamId};
 use crate::h2::proto::{self, Error};
 use crate::h2::{FlowControl, PingPong, RecvStream, SendStream};
 
-use bytes::{Buf, Bytes};
+use rama_core::bytes::{Buf, Bytes};
 use rama_http_types::dep::http::{request, uri};
 use rama_http_types::proto::h1::headers::original::OriginalHttp1Headers;
 use rama_http_types::proto::h2::PseudoHeaderOrder;
@@ -294,7 +294,7 @@ pub struct PushPromises {
 /// ```
 /// # use tokio::io::{AsyncRead, AsyncWrite};
 /// # use rama_http_core::h2::client::*;
-/// # use bytes::Bytes;
+/// # use rama_core::bytes::Bytes;
 /// #
 /// # async fn doc<T: AsyncRead + AsyncWrite + Unpin>(my_io: T)
 ///     -> Result<((SendRequest<Bytes>, Connection<T, Bytes>)), rama_http_core::h2::Error>
@@ -650,7 +650,7 @@ impl Builder {
     /// ```
     /// # use tokio::io::{AsyncRead, AsyncWrite};
     /// # use rama_http_core::h2::client::*;
-    /// # use bytes::Bytes;
+    /// # use rama_core::bytes::Bytes;
     /// #
     /// # async fn doc<T: AsyncRead + AsyncWrite + Unpin>(my_io: T)
     /// # -> Result<((SendRequest<Bytes>, Connection<T, Bytes>)), rama_http_core::h2::Error>
@@ -727,7 +727,7 @@ impl Builder {
     /// ```
     /// # use tokio::io::{AsyncRead, AsyncWrite};
     /// # use rama_http_core::h2::client::*;
-    /// # use bytes::Bytes;
+    /// # use rama_core::bytes::Bytes;
     /// #
     /// # async fn doc<T: AsyncRead + AsyncWrite + Unpin>(my_io: T)
     /// # -> Result<((SendRequest<Bytes>, Connection<T, Bytes>)), rama_http_core::h2::Error>
@@ -762,7 +762,7 @@ impl Builder {
     /// ```
     /// # use tokio::io::{AsyncRead, AsyncWrite};
     /// # use rama_http_core::h2::client::*;
-    /// # use bytes::Bytes;
+    /// # use rama_core::bytes::Bytes;
     /// #
     /// # async fn doc<T: AsyncRead + AsyncWrite + Unpin>(my_io: T)
     /// # -> Result<((SendRequest<Bytes>, Connection<T, Bytes>)), rama_http_core::h2::Error>
@@ -796,7 +796,7 @@ impl Builder {
     /// ```
     /// # use tokio::io::{AsyncRead, AsyncWrite};
     /// # use rama_http_core::h2::client::*;
-    /// # use bytes::Bytes;
+    /// # use rama_core::bytes::Bytes;
     /// #
     /// # async fn doc<T: AsyncRead + AsyncWrite + Unpin>(my_io: T)
     /// # -> Result<((SendRequest<Bytes>, Connection<T, Bytes>)), rama_http_core::h2::Error>
@@ -836,7 +836,7 @@ impl Builder {
     /// ```
     /// # use tokio::io::{AsyncRead, AsyncWrite};
     /// # use rama_http_core::h2::client::*;
-    /// # use bytes::Bytes;
+    /// # use rama_core::bytes::Bytes;
     /// #
     /// # async fn doc<T: AsyncRead + AsyncWrite + Unpin>(my_io: T)
     /// # -> Result<((SendRequest<Bytes>, Connection<T, Bytes>)), rama_http_core::h2::Error>
@@ -885,7 +885,7 @@ impl Builder {
     /// ```
     /// # use tokio::io::{AsyncRead, AsyncWrite};
     /// # use rama_http_core::h2::client::*;
-    /// # use bytes::Bytes;
+    /// # use rama_core::bytes::Bytes;
     /// #
     /// # async fn doc<T: AsyncRead + AsyncWrite + Unpin>(my_io: T)
     /// # -> Result<((SendRequest<Bytes>, Connection<T, Bytes>)), rama_http_core::h2::Error>
@@ -931,7 +931,7 @@ impl Builder {
     /// ```
     /// # use tokio::io::{AsyncRead, AsyncWrite};
     /// # use rama_http_core::h2::client::*;
-    /// # use bytes::Bytes;
+    /// # use rama_core::bytes::Bytes;
     /// #
     /// # async fn doc<T: AsyncRead + AsyncWrite + Unpin>(my_io: T)
     /// # -> Result<((SendRequest<Bytes>, Connection<T, Bytes>)), rama_http_core::h2::Error>
@@ -976,7 +976,7 @@ impl Builder {
     /// ```
     /// # use tokio::io::{AsyncRead, AsyncWrite};
     /// # use rama_http_core::h2::client::*;
-    /// # use bytes::Bytes;
+    /// # use rama_core::bytes::Bytes;
     /// #
     /// # async fn doc<T: AsyncRead + AsyncWrite + Unpin>(my_io: T)
     /// # -> Result<((SendRequest<Bytes>, Connection<T, Bytes>)), rama_http_core::h2::Error>
@@ -1022,7 +1022,7 @@ impl Builder {
     /// # use tokio::io::{AsyncRead, AsyncWrite};
     /// # use rama_http_core::h2::client::*;
     /// # use std::time::Duration;
-    /// # use bytes::Bytes;
+    /// # use rama_core::bytes::Bytes;
     /// #
     /// # async fn doc<T: AsyncRead + AsyncWrite + Unpin>(my_io: T)
     /// # -> Result<((SendRequest<Bytes>, Connection<T, Bytes>)), rama_http_core::h2::Error>
@@ -1082,7 +1082,7 @@ impl Builder {
     /// ```
     /// # use tokio::io::{AsyncRead, AsyncWrite};
     /// # use rama_http_core::h2::client::*;
-    /// # use bytes::Bytes;
+    /// # use rama_core::bytes::Bytes;
     /// #
     /// # async fn doc<T: AsyncRead + AsyncWrite + Unpin>(my_io: T)
     /// # -> Result<((SendRequest<Bytes>, Connection<T, Bytes>)), rama_http_core::h2::Error>
@@ -1138,7 +1138,7 @@ impl Builder {
     /// # use tokio::io::{AsyncRead, AsyncWrite};
     /// # use rama_http_core::h2::client::*;
     /// # use std::time::Duration;
-    /// # use bytes::Bytes;
+    /// # use rama_core::bytes::Bytes;
     /// #
     /// # async fn doc<T: AsyncRead + AsyncWrite + Unpin>(my_io: T)
     /// # -> Result<((SendRequest<Bytes>, Connection<T, Bytes>)), rama_http_core::h2::Error>
@@ -1181,7 +1181,7 @@ impl Builder {
     /// ```
     /// # use tokio::io::{AsyncRead, AsyncWrite};
     /// # use rama_http_core::h2::client::*;
-    /// # use bytes::Bytes;
+    /// # use rama_core::bytes::Bytes;
     /// #
     /// # async fn doc<T: AsyncRead + AsyncWrite + Unpin>(my_io: T)
     /// # -> Result<((SendRequest<Bytes>, Connection<T, Bytes>)), rama_http_core::h2::Error>
@@ -1238,7 +1238,7 @@ impl Builder {
     /// ```
     /// # use tokio::io::{AsyncRead, AsyncWrite};
     /// # use rama_http_core::h2::client::*;
-    /// # use bytes::Bytes;
+    /// # use rama_core::bytes::Bytes;
     /// #
     /// # async fn doc<T: AsyncRead + AsyncWrite + Unpin>(my_io: T)
     ///     -> Result<((SendRequest<Bytes>, Connection<T, Bytes>)), rama_http_core::h2::Error>

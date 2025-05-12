@@ -4,7 +4,7 @@
 //!
 //! ```
 //! use std::convert::Infallible;
-//! use bytes::Bytes;
+//! use rama_core::bytes::Bytes;
 //!
 //! use rama_http::{Body, Request, Response, Method, header};
 //! use rama_http::layer::cors::{Any, CorsLayer};
@@ -50,8 +50,10 @@ use crate::dep::http::{
     HeaderMap, HeaderValue, Method, Request, Response,
     header::{self, HeaderName},
 };
-use bytes::{BufMut, BytesMut};
-use rama_core::{Context, Layer, Service};
+use rama_core::{
+    Context, Layer, Service,
+    bytes::{BufMut, BytesMut},
+};
 use rama_utils::macros::define_inner_service_accessors;
 use std::{array, fmt, mem};
 

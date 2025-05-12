@@ -29,7 +29,7 @@ pub use super::assert::assert_frame_eq;
 
 // Re-export useful crates
 pub use tokio_test::io as mock_io;
-pub use {bytes, futures, http, tokio::io as tokio_io, tracing, tracing_subscriber};
+pub use {futures, http, rama_core::bytes, tokio::io as tokio_io, tracing, tracing_subscriber};
 
 // Re-export primary future types
 pub use futures::{Future, Sink, Stream};
@@ -41,7 +41,7 @@ pub use super::future_ext::{TestFuture, join, join_all, join3, join4, select, tr
 pub use super::client_ext::SendRequestExt;
 
 // Re-export HTTP types
-pub use bytes::{Buf, BufMut, Bytes, BytesMut};
+pub use rama_core::bytes::{Buf, BufMut, Bytes, BytesMut};
 pub use rama_http_types::{
     HeaderMap, Method, Request, Response, StatusCode, Version, dep::http::uri,
 };
