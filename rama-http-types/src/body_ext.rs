@@ -15,7 +15,7 @@ pub trait BodyExtractExt: private::Sealed {
     /// Try to turn the (contained) body in an utf-8 string.
     fn try_into_string(self) -> impl Future<Output = Result<String, OpaqueError>> + Send;
 
-    /// Try to turn the (contained) body into a stream of bytes.
+    /// Turn the (contained) body into a stream of bytes.
     fn into_stream(self) -> impl Stream<Item = Result<Bytes, OpaqueError>> + Send;
 }
 
