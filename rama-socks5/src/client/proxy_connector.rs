@@ -142,7 +142,7 @@ impl<S> Layer<S> for Socks5ProxyConnectorLayer {
 
     #[cfg(not(feature = "dns"))]
     fn layer(&self, inner: S) -> Self::Service {
-        Socks5ProxyConnector::new(inner, self.required).maybe_with_auth(self.auth.clone())
+        Socks5ProxyConnector::new(inner, self.required)
     }
 }
 

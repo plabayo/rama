@@ -511,6 +511,10 @@ required-features = ["dns", "socks5", "http-full"]
 name = "socks5_connect_proxy_over_tls"
 required-features = ["socks5", "boring", "http-full"]
 
+[[example]]
+name = "socks5_bind_proxy"
+required-features = ["socks5"]
+
 [profile.release]
 codegen-units = 1
 incremental = false

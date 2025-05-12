@@ -67,3 +67,18 @@ That said, regardless if you expose yourself as an [http proxy](./http.md) or so
 you can if you want to still run your proxy as a [Man In The Middle Proxy](./mitm.md),
 and at that point you are no longer a transport proxy, but do see the http requests coming by,
 regardless if they were initially secured via tls.
+
+## SOCKS5 BIND
+
+In addition to the common `CONNECT`, the SOCKS5 protocol also supports a less frequently used command: `BIND`.
+
+Where `CONNECT` is used for outgoing connections to a remote server, `BIND` enables the proxy to **accept incoming connections** from a third party on behalf of the client. This is useful in protocols where the client needs to listen for a peer (e.g., FTP active mode, SIP, or custom peer-to-peer scenarios).
+
+When a client sends a `BIND` request to a SOCKS5 proxy, it asks the proxy to open a listening socket. The proxy responds with the bound address and port. The client then waits for the proxy to accept an incoming connection from the peer. Once a connection is accepted, the proxy notifies the client and begins relaying data between the peer and the client.
+
+You can try this flow using the following example:
+
+- [/examples/socks5_bind_proxy.rs](https://github.com/plabayo/rama/tree/main/examples/socks5_bind_proxy.rs):
+  Spawns a SOCKS5 proxy that supports the `BIND` command and allows you to experiment with incoming peer connections via the proxy.
+
+This makes `BIND` a useful tool for reverse connection setups and client-initiated listeners in NAT'd environments or restricted network conditions.

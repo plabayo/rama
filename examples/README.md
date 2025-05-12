@@ -44,7 +44,9 @@ This directory contains example implementations demonstrating various features a
 - [`socks5_connect_proxy_mitm_proxy.rs`](./socks5_connect_proxy_mitm_proxy.rs) -
   SOCKS5 CONNECT proxy implementation with HTTP(S) MITM Capabilities
 - [`socks5_connect_proxy_over_tls.rs`](./socks5_connect_proxy_over_tls.rs) -
-  SOCKS5 CONNECT proxy implementation showing how to run it within a TLS tunnel
+  SOCKS5 CONNECT proxy implementation showing how to run it within a TLS tunnel w/ self-contained socks5 client
+- [`socks5_bind_proxy.rs`](./socks5_bind_proxy.rs) -
+  SOCKS5 BIND proxy implementation showing how to run it from both client and server
 
 ## TLS and Security
 ### Rustls
