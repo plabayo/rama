@@ -1,7 +1,7 @@
 use super::{DecoderError, NeedMore};
 use crate::h2::ext::Protocol;
 
-use bytes::Bytes;
+use rama_core::bytes::Bytes;
 use rama_http_types::{HeaderName, HeaderValue, Method, StatusCode};
 use std::fmt;
 

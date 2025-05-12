@@ -10,9 +10,9 @@ use self::framed_write::FramedWrite;
 use crate::h2::frame::{self, Data, Frame};
 use crate::h2::proto::Error;
 
-use bytes::Buf;
 use futures_core::Stream;
 use futures_sink::Sink;
+use rama_core::bytes::Buf;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -196,7 +196,7 @@ where
 }
 
 // TODO: remove (or improve) this
-impl<T> From<T> for Codec<T, bytes::Bytes>
+impl<T> From<T> for Codec<T, rama_core::bytes::Bytes>
 where
     T: AsyncRead + AsyncWrite + Unpin,
 {

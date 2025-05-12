@@ -1,7 +1,7 @@
 use std::convert::TryFrom;
 use std::fmt;
 
-use bytes::Bytes;
+use rama_core::bytes::Bytes;
 use rama_http_types::HeaderValue;
 use rama_http_types::dep::http::uri::{self, Authority, Scheme, Uri};
 

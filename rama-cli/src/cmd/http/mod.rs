@@ -499,7 +499,7 @@ fn map_internal_client_error<E, Body>(
 ) -> Result<Response, BoxError>
 where
     E: Into<BoxError>,
-    Body: rama::http::dep::http_body::Body<Data = bytes::Bytes, Error: Into<BoxError>>
+    Body: rama::http::dep::http_body::Body<Data = rama::bytes::Bytes, Error: Into<BoxError>>
         + Send
         + Sync
         + 'static,

@@ -9,7 +9,7 @@ use crate::layer::{
     util::compression::{CompressionLevel, WrapBody},
 };
 use crate::{HeaderValue, Request, Response, StatusCode, header};
-use bytes::Buf;
+use rama_core::bytes::Buf;
 use rama_core::error::BoxError;
 use rama_core::{Context, Service};
 use rama_utils::macros::define_inner_service_accessors;

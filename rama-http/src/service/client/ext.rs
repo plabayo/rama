@@ -691,7 +691,7 @@ mod test {
     ) -> Result<Response, rama_core::error::BoxError>
     where
         E: Into<rama_core::error::BoxError>,
-        Body: crate::dep::http_body::Body<Data = bytes::Bytes, Error: Into<BoxError>>
+        Body: crate::dep::http_body::Body<Data = rama_core::bytes::Bytes, Error: Into<BoxError>>
             + Send
             + Sync
             + 'static,

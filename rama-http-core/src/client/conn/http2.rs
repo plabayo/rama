@@ -568,7 +568,7 @@ mod tests {
         async fn run(io: impl AsyncRead + AsyncWrite + Send + Unpin + 'static) {
             let (_sender, conn) = crate::client::conn::http2::handshake::<
                 _,
-                http_body_util::Empty<bytes::Bytes>,
+                http_body_util::Empty<rama_core::bytes::Bytes>,
             >(Executor::default(), io)
             .await
             .unwrap();

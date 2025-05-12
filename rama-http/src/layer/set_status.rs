@@ -4,7 +4,7 @@
 //!
 //! ```
 //! use std::{iter::once, convert::Infallible};
-//! use bytes::Bytes;
+//! use rama_core::bytes::Bytes;
 //! use rama_http::layer::set_status::SetStatusLayer;
 //! use rama_http::{Body, Request, Response, StatusCode};
 //! use rama_core::service::service_fn;

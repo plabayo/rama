@@ -4,7 +4,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use bytes::{Buf, Bytes};
+use rama_core::bytes::{Buf, Bytes};
 use rama_core::error::BoxError;
 use rama_http_types::{Request, Response, StatusCode};
 use std::task::ready;
@@ -718,7 +718,7 @@ mod tests {
             // Block at 0 for now, but we will release this response before
             // the request is ready to write later...
             let (mut tx, rx) = crate::client::dispatch::channel();
-            let conn = Conn::<_, bytes::Bytes, ClientTransaction>::new(io);
+            let conn = Conn::<_, rama_core::bytes::Bytes, ClientTransaction>::new(io);
             let mut dispatcher = Dispatcher::new(Client::new(rx), conn);
 
             // First poll is needed to allow tx to send...
@@ -751,7 +751,7 @@ mod tests {
             .build_with_handle();
 
         let (mut tx, rx) = crate::client::dispatch::channel();
-        let mut conn = Conn::<_, bytes::Bytes, ClientTransaction>::new(io);
+        let mut conn = Conn::<_, rama_core::bytes::Bytes, ClientTransaction>::new(io);
         conn.set_write_strategy_queue();
 
         let dispatcher = Dispatcher::new(Client::new(rx), conn);
@@ -780,7 +780,7 @@ mod tests {
             .build();
 
         let (mut tx, rx) = crate::client::dispatch::channel();
-        let conn = Conn::<_, bytes::Bytes, ClientTransaction>::new(io);
+        let conn = Conn::<_, rama_core::bytes::Bytes, ClientTransaction>::new(io);
         let mut dispatcher = tokio_test::task::spawn(Dispatcher::new(Client::new(rx), conn));
 
         // First poll is needed to allow tx to send...

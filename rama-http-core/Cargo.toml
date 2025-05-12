@@ -24,7 +24,6 @@ unstable = []
 
 [dependencies]
 atomic-waker = { workspace = true }
-bytes = { workspace = true }
 fnv = { workspace = true }
 futures-channel = { workspace = true }
 futures-core = { workspace = true }

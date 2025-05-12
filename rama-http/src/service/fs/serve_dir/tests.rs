@@ -6,8 +6,8 @@ use crate::service::fs::{DirectoryServeMode, ServeDir, ServeFile};
 use crate::{Method, Response, header};
 use crate::{Request, StatusCode};
 use brotli::BrotliDecompress;
-use bytes::Bytes;
 use flate2::bufread::{DeflateDecoder, GzDecoder};
+use rama_core::bytes::Bytes;
 use rama_core::service::service_fn;
 use rama_core::{Context, Service};
 use rama_http_types::BodyExtractExt;
@@ -450,7 +450,7 @@ async fn empty_directory_without_index_no_information_leak() {
 
 async fn body_into_text<B>(body: B) -> String
 where
-    B: HttpBody<Data = bytes::Bytes, Error: std::fmt::Debug> + Unpin,
+    B: HttpBody<Data = rama_core::bytes::Bytes, Error: std::fmt::Debug> + Unpin,
 {
     let bytes = body.collect().await.unwrap().to_bytes();
     String::from_utf8(bytes.to_vec()).unwrap()

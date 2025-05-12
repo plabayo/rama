@@ -1,5 +1,5 @@
 use crate::UdpFramed;
-use bytes::BufMut;
+use rama_core::bytes::BufMut;
 use rama_core::error::{BoxError, ErrorContext};
 use rama_net::{address::SocketAddress, socket::Interface};
 use std::{

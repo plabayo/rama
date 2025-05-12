@@ -13,7 +13,6 @@ use std::task::{Context, Poll};
 use std::thread;
 use std::time::Duration;
 
-use bytes::Bytes;
 use futures_channel::oneshot;
 use futures_util::future::{self, Either, FutureExt};
 use rama::error::{BoxError, OpaqueError};
@@ -23,6 +22,7 @@ use rama::http::core::service::RamaHttpService;
 use rama::http::dep::http_body_util::{BodyExt, Empty, Full, StreamBody, combinators::BoxBody};
 use rama::http::header::{HeaderMap, HeaderName, HeaderValue};
 use rama::rt::Executor;
+use rama_core::bytes::Bytes;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tokio::net::{TcpListener as TkTcpListener, TcpListener, TcpStream as TkTcpStream};
 

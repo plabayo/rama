@@ -5,7 +5,7 @@
 //! # Example
 //!
 //! ```
-//! use bytes::Bytes;
+//! use rama_core::bytes::Bytes;
 //!
 //! use rama_http::layer::auth::{AsyncRequireAuthorizationLayer, AsyncAuthorizeRequest};
 //! use rama_http::{Body, Request, Response, StatusCode, header::AUTHORIZATION};
@@ -75,7 +75,7 @@
 //! Or using a closure:
 //!
 //! ```
-//! use bytes::Bytes;
+//! use rama_core::bytes::Bytes;
 //!
 //! use rama_http::layer::auth::{AsyncRequireAuthorizationLayer, AsyncAuthorizeRequest};
 //! use rama_http::{Body, Request, Response, StatusCode};

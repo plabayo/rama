@@ -1,4 +1,4 @@
-use bytes::Bytes;
+use rama_core::bytes::Bytes;
 
 use super::BytesRejection;
 use crate::dep::http_body_util::BodyExt;

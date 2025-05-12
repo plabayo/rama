@@ -2,7 +2,7 @@ use crate::h2::codec::UserError;
 use crate::h2::frame::Reason;
 use crate::h2::proto::{self, WindowSize};
 
-use bytes::{Buf, Bytes};
+use rama_core::bytes::{Buf, Bytes};
 use rama_http_types::HeaderMap;
 use rama_http_types::proto::h1::headers::original::OriginalHttp1Headers;
 

@@ -1,7 +1,7 @@
 use std::fmt;
 
 use super::Error;
-use bytes::{Buf, Bytes};
+use rama_core::bytes::{Buf, Bytes};
 
 /// Strip padding from the given payload.
 ///

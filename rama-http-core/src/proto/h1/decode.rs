@@ -3,7 +3,7 @@ use std::fmt;
 use std::io;
 use std::task::{Context, Poll};
 
-use bytes::{BufMut, Bytes, BytesMut};
+use rama_core::bytes::{BufMut, Bytes, BytesMut};
 use rama_http_types::dep::http_body::Frame;
 use rama_http_types::{HeaderMap, HeaderName, HeaderValue};
 use std::task::ready;
@@ -740,7 +740,7 @@ mod tests {
     use super::Decoder;
     use super::ChunkedState;
     use futures::{Async, Poll};
-    use bytes::{BytesMut, Bytes};
+    use rama_core::bytes::{BytesMut, Bytes};
     use crate::mock::AsyncIo;
     */
 

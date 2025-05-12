@@ -7,7 +7,7 @@ use crate::{
     dep::http::Extensions,
     header::{self, HeaderMap, HeaderName, HeaderValue},
 };
-use bytes::{Buf, Bytes, BytesMut, buf::Chain};
+use rama_core::bytes::{Buf, Bytes, BytesMut, buf::Chain};
 use rama_core::error::BoxError;
 use rama_http_types::dep::{http, http_body};
 use rama_utils::macros::all_the_tuples_no_last_special_case;

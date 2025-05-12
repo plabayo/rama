@@ -15,7 +15,6 @@ workspace = true
 
 [dependencies]
 base64 = { workspace = true }
-bytes = { workspace = true }
 httpdate = { workspace = true }
 mime = { workspace = true }
 rama-core = { workspace = true }
