@@ -38,7 +38,7 @@ This directory contains example implementations demonstrating various features a
 
 - [`https_connect_proxy.rs`](./https_connect_proxy.rs) - HTTPS CONNECT proxy implementation
 
-### Socks5 Proxies:
+### Socks5 Proxies
 
 - [`socks5_connect_proxy.rs`](./socks5_connect_proxy.rs) - SOCKS5 CONNECT proxy implementation
 - [`socks5_connect_proxy_mitm_proxy.rs`](./socks5_connect_proxy_mitm_proxy.rs) -
