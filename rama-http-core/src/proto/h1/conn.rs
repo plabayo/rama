@@ -5,8 +5,8 @@ use std::pin::Pin;
 use std::task::{Context, Poll, ready};
 use std::time::Duration;
 
-use rama_core::bytes::{Buf, Bytes};
 use httparse::ParserConfig;
+use rama_core::bytes::{Buf, Bytes};
 use rama_http_types::dep::http_body::Frame;
 use rama_http_types::header::{CONNECTION, TE};
 use rama_http_types::{HeaderMap, HeaderValue, Method, Version};

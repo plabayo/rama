@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use crate::h2::server::{Connection, Handshake, SendResponse};
 use crate::h2::{Reason, RecvStream};
-use rama_core::bytes::Bytes;
 use pin_project_lite::pin_project;
+use rama_core::bytes::Bytes;
 use rama_core::error::BoxError;
 use rama_core::rt::Executor;
 use rama_http_types::{Method, Request, Response, header};

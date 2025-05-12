@@ -1,10 +1,10 @@
 #![deny(warnings)]
 
-use rama_core::bytes::Buf;
 use futures_util::StreamExt;
 use futures_util::stream;
 use rama::http::dep::http_body::Frame;
 use rama::http::dep::http_body_util::{BodyExt, StreamBody};
+use rama_core::bytes::Buf;
 
 #[global_allocator]
 static ALLOC: divan::AllocProfiler = divan::AllocProfiler::system();

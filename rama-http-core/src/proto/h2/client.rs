@@ -6,13 +6,13 @@ use std::{
     time::Duration,
 };
 
-use rama_core::bytes::Bytes;
 use futures_channel::mpsc::{Receiver, Sender};
 use futures_channel::{mpsc, oneshot};
 use futures_util::future::{Either, FusedFuture, FutureExt as _};
 use futures_util::ready;
 use futures_util::stream::{StreamExt as _, StreamFuture};
 use pin_project_lite::pin_project;
+use rama_core::bytes::Bytes;
 use rama_core::error::BoxError;
 use rama_core::rt::Executor;
 use rama_http_types::{

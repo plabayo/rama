@@ -10,8 +10,8 @@ use tokio::io::AsyncRead;
 use tokio::io::AsyncWrite;
 use tokio::io::ReadBuf;
 
-use rama_core::bytes::Bytes;
 use pin_project_lite::pin_project;
+use rama_core::bytes::Bytes;
 
 use crate::body::Incoming;
 use crate::common::io::Rewind;

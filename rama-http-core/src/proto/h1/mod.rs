@@ -1,5 +1,5 @@
-use rama_core::bytes::BytesMut;
 use httparse::ParserConfig;
+use rama_core::bytes::BytesMut;
 use rama_http_types::dep::http;
 use rama_http_types::{HeaderMap, Method, Version};
 
