@@ -2,7 +2,7 @@ use crate::h2::hpack::{Decoder, Encoder, Header};
 
 use rama_http_types::{HeaderName, HeaderValue};
 
-use bytes::BytesMut;
+use rama_core::bytes::BytesMut;
 use quickcheck::{Arbitrary, Gen, QuickCheck, TestResult};
 use rand::distr::slice::Choose;
 use rand::rngs::StdRng;

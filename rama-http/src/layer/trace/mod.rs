@@ -96,7 +96,7 @@
 //! use std::time::Duration;
 //! use tracing::Span;
 //! use std::convert::Infallible;
-//! use bytes::Bytes;
+//! use rama_core::bytes::Bytes;
 //!
 //! # async fn handle(request: Request) -> Result<Response, Infallible> {
 //! #     Ok(Response::new(Body::from("foo")))
@@ -463,7 +463,7 @@ mod tests {
     use crate::dep::http_body_util::BodyExt as _;
     use crate::layer::classify::ServerErrorsFailureClass;
     use crate::{Body, HeaderMap, Request, Response};
-    use bytes::Bytes;
+    use rama_core::bytes::Bytes;
     use rama_core::error::BoxError;
     use rama_core::service::service_fn;
     use rama_core::{Context, Layer, Service};

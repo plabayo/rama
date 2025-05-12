@@ -7,10 +7,10 @@ edition = "2024"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
+rama-core = { workspace = true }
 rama-http-core = { workspace = true, features = ["unstable"] }
 rama-http-types = { workspace = true }
 
-bytes = { workspace = true }
 futures = { workspace = true }
 http = { workspace = true }
 tokio = { workspace = true, features = ["time"] }

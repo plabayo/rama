@@ -8,9 +8,9 @@ use rama_utils::macros::impl_deref;
 ///
 /// [`Bytes`]: https://docs.rs/bytes/latest/bytes/struct.Bytes.html
 #[derive(Debug, Clone)]
-pub struct Bytes(pub bytes::Bytes);
+pub struct Bytes(pub rama_core::bytes::Bytes);
 
-impl_deref!(Bytes: bytes::Bytes);
+impl_deref!(Bytes: rama_core::bytes::Bytes);
 
 define_http_rejection! {
     #[status = BAD_REQUEST]

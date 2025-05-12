@@ -1120,9 +1120,9 @@ dependencies = [
 name = "h2-support"
 version = "0.1.0"
 dependencies = [
- "bytes",
  "futures",
  "http",
+ "rama-core",
  "rama-http-core",
  "rama-http-types",
  "tokio",
@@ -2410,7 +2410,6 @@ name = "rama-cli"
 version = "0.3.0-alpha.1"
 dependencies = [
  "base64",
- "bytes",
  "chrono",
  "clap",
  "deadpool-postgres",
@@ -2432,6 +2431,7 @@ dependencies = [
 name = "rama-core"
 version = "0.3.0-alpha.1"
 dependencies = [
+ "bytes",
  "futures-lite",
  "opentelemetry",
  "opentelemetry-semantic-conventions",
@@ -2496,7 +2496,6 @@ dependencies = [
  "base64",
  "bitflags",
  "brotli",
- "bytes",
  "chrono",
  "const_format",
  "csv",
@@ -2563,7 +2562,6 @@ name = "rama-http-core"
 version = "0.3.0-alpha.1"
 dependencies = [
  "atomic-waker",
- "bytes",
  "env_logger 0.11.8",
  "fnv",
  "futures-channel",
@@ -2601,7 +2599,6 @@ name = "rama-http-headers"
 version = "0.3.0-alpha.1"
 dependencies = [
  "base64",
- "bytes",
  "httpdate",
  "mime",
  "rama-core",
@@ -2621,7 +2618,6 @@ dependencies = [
 name = "rama-http-types"
 version = "0.3.0-alpha.1"
 dependencies = [
- "bytes",
  "const_format",
  "csv",
  "futures-core",
@@ -2660,7 +2656,6 @@ name = "rama-net"
 version = "0.3.0-alpha.1"
 dependencies = [
  "base64",
- "bytes",
  "const_format",
  "flume",
  "futures-lite",
@@ -2797,7 +2792,6 @@ dependencies = [
 name = "rama-udp"
 version = "0.3.0-alpha.1"
 dependencies = [
- "bytes",
  "rama-core",
  "rama-net",
  "tokio",

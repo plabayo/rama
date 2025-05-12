@@ -2,8 +2,10 @@ use std::collections::HashMap;
 use std::fmt;
 use std::io::IoSlice;
 
-use bytes::buf::{Chain, Take};
-use bytes::{Buf, Bytes};
+use rama_core::bytes::{
+    buf::{Chain, Take},
+    {Buf, Bytes},
+};
 use rama_http_types::{
     HeaderMap, HeaderName, HeaderValue,
     header::{
@@ -436,7 +438,7 @@ impl std::error::Error for NotEof {}
 
 #[cfg(test)]
 mod tests {
-    use bytes::BufMut;
+    use rama_core::bytes::BufMut;
     use rama_http_types::{
         HeaderMap, HeaderName, HeaderValue,
         header::{

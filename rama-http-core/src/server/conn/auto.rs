@@ -10,7 +10,7 @@ use tokio::io::AsyncRead;
 use tokio::io::AsyncWrite;
 use tokio::io::ReadBuf;
 
-use bytes::Bytes;
+use rama_core::bytes::Bytes;
 use pin_project_lite::pin_project;
 
 use crate::body::Incoming;

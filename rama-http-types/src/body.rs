@@ -4,10 +4,10 @@ use crate::dep::{
     http_body::{self, Body as _, Frame},
     http_body_util::{self, BodyExt},
 };
-use bytes::Bytes;
 use futures_core::TryStream;
 use futures_lite::stream::Stream;
 use pin_project_lite::pin_project;
+use rama_core::bytes::Bytes;
 use rama_error::{BoxError, OpaqueError};
 use std::pin::Pin;
 use std::task::{Context, Poll};

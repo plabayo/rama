@@ -1,4 +1,4 @@
-use bytes::Bytes;
+use rama_core::bytes::Bytes;
 use serde::{Deserialize, Serialize, de::Error};
 use std::{fmt, str::FromStr};
 

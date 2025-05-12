@@ -21,10 +21,10 @@ pub type WindowSize = usize;
 pub const DEFAULT_WINDOW_SIZE: WindowSize = (1 << 16) - 1;
 
 // This is our test Codec type
-pub type Codec<T> = rama_http_core::h2::Codec<T, bytes::Bytes>;
+pub type Codec<T> = rama_http_core::h2::Codec<T, rama_core::bytes::Bytes>;
 
 // This is the frame type that is sent
-pub type SendFrame = rama_http_core::h2::frame::Frame<bytes::Bytes>;
+pub type SendFrame = rama_http_core::h2::frame::Frame<rama_core::bytes::Bytes>;
 
 #[macro_export]
 macro_rules! trace_init {

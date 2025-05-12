@@ -1,6 +1,6 @@
 #![deny(warnings)]
 
-use bytes::Buf;
+use rama_core::bytes::Buf;
 use futures_util::StreamExt;
 use futures_util::stream;
 use rama::http::dep::http_body::Frame;

@@ -22,6 +22,7 @@ telemetry = [
 ]
 
 [dependencies]
+bytes = { workspace = true }
 futures-lite = { workspace = true }
 opentelemetry = { workspace = true, optional = true }
 opentelemetry-semantic-conventions = { workspace = true, optional = true }

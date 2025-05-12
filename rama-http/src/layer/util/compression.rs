@@ -1,7 +1,7 @@
 //! Types used by compression and decompression middleware.
 
 use crate::dep::http_body::{Body, Frame};
-use bytes::{Buf, Bytes, BytesMut};
+use rama_core::bytes::{Buf, Bytes, BytesMut};
 use futures_lite::Stream;
 use futures_lite::ready;
 use pin_project_lite::pin_project;

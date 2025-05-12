@@ -6,7 +6,7 @@ use std::{
     time::Duration,
 };
 
-use bytes::Bytes;
+use rama_core::bytes::Bytes;
 use futures_channel::mpsc::{Receiver, Sender};
 use futures_channel::{mpsc, oneshot};
 use futures_util::future::{Either, FusedFuture, FutureExt as _};

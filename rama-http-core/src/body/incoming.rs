@@ -2,7 +2,7 @@ use std::fmt;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use bytes::Bytes;
+use rama_core::bytes::Bytes;
 use futures_channel::{mpsc, oneshot};
 use futures_util::{Stream, stream::FusedStream}; // for mpsc::Receiver
 use rama_http_types::HeaderMap;

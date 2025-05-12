@@ -17,9 +17,9 @@ use rama::http::{Method, Request, StatusCode, Uri, Version};
 
 use super::support;
 
-use bytes::Bytes;
 use futures_channel::oneshot;
 use futures_util::future::{self, FutureExt, TryFuture, TryFutureExt};
+use rama_core::bytes::Bytes;
 use tokio::net::TcpStream;
 
 fn s(buf: &[u8]) -> &str {
@@ -247,7 +247,7 @@ macro_rules! test {
         let rt = $runtime;
 
         #[allow(unused_assignments, unused_mut)]
-        let mut body = BodyExt::boxed(rama::http::dep::http_body_util::Empty::<bytes::Bytes>::new());
+        let mut body = BodyExt::boxed(rama::http::dep::http_body_util::Empty::<rama_core::bytes::Bytes>::new());
         let mut req_builder = Request::builder();
         $(
             test!(@client_request; req_builder, body, addr, $c_req_prop: $c_req_val);
@@ -1488,9 +1488,9 @@ mod conn {
     use std::thread;
     use std::time::Duration;
 
-    use bytes::{Buf, Bytes};
     use futures_channel::{mpsc, oneshot};
     use futures_util::future::{self, FutureExt, TryFutureExt, poll_fn};
+    use rama_core::bytes::{Buf, Bytes};
     use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _, ReadBuf};
     use tokio::net::{TcpListener as TkTcpListener, TcpStream};
 
@@ -2725,7 +2725,7 @@ mod conn {
                 _,
                 bytes::Bytes,
             >(
-                rama::http::dep::http_body_util::Full::<bytes::Bytes>::from("baguette"),
+                rama::http::dep::http_body_util::Full::<rama_core::bytes::Bytes>::from("baguette"),
                 |_| panic!("oopsie"),
             ))
             .unwrap();

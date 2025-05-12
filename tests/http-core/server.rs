@@ -13,7 +13,7 @@ use std::task::{Context, Poll};
 use std::thread;
 use std::time::Duration;
 
-use bytes::Bytes;
+use rama_core::bytes::Bytes;
 use futures_channel::oneshot;
 use futures_util::future::{self, Either, FutureExt};
 use rama::error::{BoxError, OpaqueError};

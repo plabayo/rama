@@ -31,7 +31,7 @@ use rama::{
 };
 
 // everything else is provided by the standard library, community crates or tokio
-use bytes::Bytes;
+use rama_core::bytes::Bytes;
 use futures::{FutureExt, SinkExt, StreamExt};
 use std::net::SocketAddr;
 use std::time::Duration;

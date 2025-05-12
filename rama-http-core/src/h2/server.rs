@@ -120,7 +120,7 @@ use crate::h2::frame::{self, Pseudo, PushPromiseHeaderError, Reason, Settings, S
 use crate::h2::proto::{self, Config, Error, Prioritized};
 use crate::h2::{FlowControl, PingPong, RecvStream, SendStream};
 
-use bytes::{Buf, Bytes};
+use rama_core::bytes::{Buf, Bytes};
 use rama_http_types::proto::h1::headers::original::OriginalHttp1Headers;
 use rama_http_types::proto::h2::PseudoHeaderOrder;
 use rama_http_types::{HeaderMap, Method, Request, Response};

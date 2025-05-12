@@ -1,4 +1,4 @@
-use bytes::Bytes;
+use rama_core::bytes::Bytes;
 use rama_core::{Context, Service, error::BoxError};
 use rama_http::service::web::response::IntoResponse;
 use rama_http_types::{Request, Response};

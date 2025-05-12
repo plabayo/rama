@@ -1,8 +1,8 @@
 use super::IntoResponse;
 use crate::{Body, Response, dep::http::StatusCode};
-use bytes::buf::Writer;
-use bytes::{BufMut, BytesMut};
 use csv;
+use rama_core::bytes::buf::Writer;
+use rama_core::bytes::{BufMut, BytesMut};
 use rama_core::error::OpaqueError;
 use rama_http_headers::ContentType;
 use rama_utils::macros::impl_deref;

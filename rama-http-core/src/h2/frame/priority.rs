@@ -1,4 +1,4 @@
-use bytes::BufMut;
+use rama_core::bytes::BufMut;
 use rama_http_types::conn::{PriorityParams, StreamDependencyParams};
 
 use crate::h2::frame::*;

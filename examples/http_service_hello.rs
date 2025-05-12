@@ -19,7 +19,7 @@
 //! You should see a response with `HTTP/1.1 200 OK` and a HTML body containing
 //! the peer address, the path of the request and the stats of the bytes read and written.
 
-use bytes::Bytes;
+use rama_core::bytes::Bytes;
 use rama::{
     Context, Layer,
     http::{

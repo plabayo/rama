@@ -47,3 +47,10 @@ pub mod username;
 
 #[cfg(feature = "telemetry")]
 pub mod telemetry;
+
+pub mod bytes {
+    ///! TODO docs
+
+    #[doc(inline)]
+    pub use ::bytes::*;
+}

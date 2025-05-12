@@ -11,7 +11,7 @@ use async_compression::tokio::bufread::BrotliDecoder;
 use async_compression::tokio::bufread::GzipDecoder;
 use async_compression::tokio::bufread::ZlibDecoder;
 use async_compression::tokio::bufread::ZstdDecoder;
-use bytes::{Buf, Bytes};
+use rama_core::bytes::{Buf, Bytes};
 use futures_lite::ready;
 use pin_project_lite::pin_project;
 use std::task::Context;

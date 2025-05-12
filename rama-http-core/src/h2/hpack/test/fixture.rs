@@ -1,6 +1,6 @@
 use crate::h2::hpack::{Decoder, Encoder, Header};
 
-use bytes::BytesMut;
+use rama_core::bytes::BytesMut;
 use hex::FromHex;
 use serde_json::Value;
 

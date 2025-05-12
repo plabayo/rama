@@ -104,7 +104,7 @@
 //! Or using a closure:
 //!
 //! ```
-//! use bytes::Bytes;
+//! use rama_core::bytes::Bytes;
 //! use rama_http::{Body, Request, Response, StatusCode, header::ACCEPT};
 //! use rama_http::layer::validate_request::{ValidateRequestHeaderLayer, ValidateRequest};
 //! use rama_core::service::service_fn;

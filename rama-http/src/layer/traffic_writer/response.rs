@@ -3,7 +3,7 @@ use crate::dep::http_body;
 use crate::dep::http_body_util::BodyExt;
 use crate::io::write_http_response;
 use crate::{Body, Request, Response};
-use bytes::Bytes;
+use rama_core::bytes::Bytes;
 use rama_core::error::{BoxError, ErrorContext, OpaqueError};
 use rama_core::rt::Executor;
 use rama_core::{Context, Layer, Service};

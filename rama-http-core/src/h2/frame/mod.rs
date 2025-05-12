@@ -1,6 +1,6 @@
 use crate::h2::hpack;
 
-use bytes::Bytes;
+use rama_core::bytes::Bytes;
 
 use std::fmt;
 

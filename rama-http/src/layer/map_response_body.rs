@@ -3,7 +3,7 @@
 //! # Example
 //!
 //! ```
-//! use bytes::Bytes;
+//! use rama_core::bytes::Bytes;
 //! use rama_http::{Body, Request, Response};
 //! use rama_http::dep::http_body;
 //! use std::convert::Infallible;

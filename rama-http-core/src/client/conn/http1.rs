@@ -4,7 +4,7 @@ use std::fmt;
 use std::pin::Pin;
 use std::task::{Context, Poll, ready};
 
-use bytes::Bytes;
+use rama_core::bytes::Bytes;
 use httparse::ParserConfig;
 use rama_core::error::BoxError;
 use rama_http_types::{Request, Response};

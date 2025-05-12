@@ -6,7 +6,7 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-use bytes::Bytes;
+use rama_core::bytes::Bytes;
 use http::StatusCode;
 use rama::Context;
 use rama::http::core::server;

@@ -1,6 +1,6 @@
 use super::StreamId;
 
-use bytes::BufMut;
+use rama_core::bytes::BufMut;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct Head {

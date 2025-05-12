@@ -3,7 +3,7 @@ use std::{
     str::{self, FromStr},
 };
 
-use bytes::Bytes;
+use rama_core::bytes::Bytes;
 use rama_http_types::header::HeaderValue;
 
 use super::IterExt;

@@ -1,4 +1,4 @@
-use bytes::{Buf, Bytes};
+use rama_core::bytes::{Buf, Bytes};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::{cmp, io};
@@ -105,7 +105,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::Rewind;
-    use bytes::Bytes;
+    use rama_core::bytes::Bytes;
     use tokio::io::AsyncReadExt;
 
     #[cfg(not(miri))]

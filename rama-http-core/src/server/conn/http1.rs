@@ -6,7 +6,7 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 
 use crate::upgrade::Upgraded;
-use bytes::Bytes;
+use rama_core::bytes::Bytes;
 use futures_util::ready;
 use httparse::ParserConfig;
 use tokio::io::{AsyncRead, AsyncWrite};

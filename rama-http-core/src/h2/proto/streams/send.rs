@@ -6,7 +6,7 @@ use crate::h2::codec::UserError;
 use crate::h2::frame::{self, Reason};
 use crate::h2::proto::{self, Error, Initiator};
 
-use bytes::Buf;
+use rama_core::bytes::Buf;
 use tokio::io::AsyncWrite;
 
 use std::borrow::Cow;

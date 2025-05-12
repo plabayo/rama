@@ -2,8 +2,8 @@ use std::mem::MaybeUninit;
 
 use std::fmt::{self, Write as _};
 
-use bytes::Bytes;
-use bytes::BytesMut;
+use rama_core::bytes::Bytes;
+use rama_core::bytes::BytesMut;
 use rama_http_types::dep::http;
 use rama_http_types::header::Entry;
 use rama_http_types::header::{self, HeaderMap, HeaderValue};
@@ -1412,7 +1412,7 @@ fn extend(dst: &mut Vec<u8>, data: &[u8]) {
 
 #[cfg(test)]
 mod tests {
-    use bytes::BytesMut;
+    use rama_core::bytes::BytesMut;
     use rama_http_types::proto::h1::headers::original::OriginalHttp1Headers;
 
     use super::*;

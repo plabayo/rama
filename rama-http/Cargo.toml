@@ -29,7 +29,6 @@ async-compression = { workspace = true, features = [
 ], optional = true }
 base64 = { workspace = true }
 bitflags = { workspace = true }
-bytes = { workspace = true }
 chrono = { workspace = true }
 const_format = { workspace = true }
 csv = { workspace = true }

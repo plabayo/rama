@@ -17,7 +17,6 @@ workspace = true
 default = []
 
 [dependencies]
-bytes = { workspace = true }
 rama-core = { workspace = true }
 rama-net = { workspace = true }
 tokio = { workspace = true, features = ["macros", "net"] }
