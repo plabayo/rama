@@ -12,7 +12,7 @@
 //! # Socks5
 //!
 //! - If you need a socks5 server your best starting point is probably the [`Socks5Acceptor`];
-//! - The [`Socks5Client`] is a low level acceptor that can be used to build client-side socks5-ready connectors;
+//! - The [`Socks5Client`] is a low level connector that can be used to build client-side socks5-ready connectors;
 //!
 //! Feel free to use the [`proto`] module directly if you wish to implement your own
 //! socks5 client/server logic using these protocol building blocks.

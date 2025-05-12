@@ -52,7 +52,7 @@ pub enum Protocol {
     #[default]
     /// Protocol corresponding to `TCP` (`sys::IPPROTO_TCP`)
     TCP,
-    /// Protocol corresponding to `UDP` (`sys::IPPROTO_TCP`)
+    /// Protocol corresponding to `UDP` (`sys::IPPROTO_UDP`)
     UDP,
     #[cfg(target_os = "linux")]
     /// Protocol corresponding to `MPTCP` (`sys::IPPROTO_MPTCP`)
@@ -92,10 +92,14 @@ impl From<Protocol> for SocketProtocol {
 /// Specification of communication semantics on a [`Socket`].
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, Eq, PartialEq)]
 pub enum Type {
-    /// Protocol corresponding to `ICMPv4` (`sys::IPPROTO_ICMP`)
+    /// Type corresponding to `SOCK_STREAM`.
+    ///
+    /// Used for protocols such as [`Protocol::TCP`].
     #[default]
     Stream,
-    /// Protocol corresponding to `ICMPv6` (`sys::IPPROTO_ICMPV6`)
+    /// Type corresponding to `SOCK_DGRAM`.
+    ///
+    /// Used for protocols such as [`Protocol::UDP`].
     Datagram,
     #[cfg(target_os = "linux")]
     /// Type corresponding to `SOCK_DCCP`.

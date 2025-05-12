@@ -109,7 +109,7 @@ pub type DefaultUdpRelay = UdpRelay<DefaultTimeout<DefaultUdpBinder>, DirectUdpR
 ///
 /// The [`Default`] implementation opens a new (udp) socket for accepting 1
 /// incoming connection. Once received it will relay incoming packets
-/// to the target udp socket and relay received packets from the altter
+/// to the target udp socket and relay received packets from the latter
 /// back to the socks5 server cient. Prefixing these upd packets
 /// using [`UdpHeader`].
 ///
@@ -415,9 +415,6 @@ impl<B: Clone, I: Clone> Clone for UdpRelay<B, I> {
         }
     }
 }
-
-// TODO: add mock relay
-// TODO: add test
 
 impl Default for DefaultUdpRelay {
     fn default() -> Self {

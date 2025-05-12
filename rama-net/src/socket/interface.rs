@@ -181,6 +181,7 @@ mod device {
     const DEVICE_MAX_LEN: usize = 15;
 
     #[rustfmt::skip]
+    /// Valid byte values for a device name.
     const DEVICE_CHARS: [u8; 256] = [
         //  0      1      2      3      4      5      6      7      8      9
             0,     0,     0,     0,     0,     0,     0,     0,     0,     0, //   x

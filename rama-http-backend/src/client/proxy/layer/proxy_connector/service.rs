@@ -111,9 +111,8 @@ impl<S, State, Request> Service<State, Request> for HttpProxyConnector<S>
 where
     S: ConnectorService<State, Request, Connection: Stream + Unpin, Error: Into<BoxError>>,
     State: Clone + Send + Sync + 'static,
-    Request: TryRefIntoTransportContext<State, Error: Into<BoxError> + Send + Sync + 'static>
-        + Send
-        + 'static,
+    Request:
+        TryRefIntoTransportContext<State, Error: Into<BoxError> + Send + 'static> + Send + 'static,
 {
     type Response =
         EstablishedClientConnection<Either<S::Connection, upgrade::Upgraded>, State, Request>;

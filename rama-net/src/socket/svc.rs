@@ -12,8 +12,7 @@ pub trait SocketService<State>: Send + Sync + 'static {
     /// Error returned in case of connection / setup failure
     type Error: Into<BoxError> + Send + 'static;
 
-    /// Establish a connection, which often involves some kind of handshake,
-    /// or connection revival.
+    /// Create a binding to a Unix/Linux/Windows socket.
     fn bind(
         &self,
         ctx: Context<State>,

@@ -1,6 +1,8 @@
+use std::fmt;
+
 use crate::proto::SocksMethod;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum Socks5Auth {
     /// Username/Password Authentication for SOCKS V5
     ///
@@ -9,6 +11,18 @@ pub enum Socks5Auth {
         username: Vec<u8>,
         password: Option<Vec<u8>>,
     },
+}
+
+impl fmt::Debug for Socks5Auth {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Socks5Auth::UsernamePassword { username, password } => f
+                .debug_struct("Socks5Auth::UsernamePassword")
+                .field("username", &username)
+                .field("password_defined", &password.is_some())
+                .finish(),
+        }
+    }
 }
 
 impl Socks5Auth {

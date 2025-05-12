@@ -35,23 +35,13 @@ pub struct Socks5ProxyConnectorLayer {
     dns_resolver: Option<BoxDnsResolver<OpaqueError>>,
 }
 
-#[cfg(feature = "dns")]
 impl Default for Socks5ProxyConnectorLayer {
     fn default() -> Self {
         Self {
             required: false,
             auth: None,
+            #[cfg(feature = "dns")]
             dns_resolver: Some(rama_dns::HickoryDns::default().boxed()),
-        }
-    }
-}
-
-#[cfg(not(feature = "dns"))]
-impl Default for Socks5ProxyConnectorLayer {
-    fn default() -> Self {
-        Self {
-            required: false,
-            auth: None,
         }
     }
 }
@@ -94,7 +84,7 @@ impl Socks5ProxyConnectorLayer {
 impl Socks5ProxyConnectorLayer {
     /// Attach the [`Default`] [`DnsResolver`] to this [`Socks5ProxyConnectorLayer`].
     ///
-    /// It will tried to be used (best-effort) to resolve domain addresses
+    /// It will try to be used (best-effort) to resolve domain addresses
     /// as IP addresses if the `socks5` protocol is used, but not for the `socks5h` protocol.
     ///
     /// In case of an error with resolving the domain address the connector
@@ -105,7 +95,7 @@ impl Socks5ProxyConnectorLayer {
     }
     /// Attach the [`Default`] [`DnsResolver`] to this [`Socks5ProxyConnectorLayer`].
     ///
-    /// It will tried to be used (best-effort) to resolve domain addresses
+    /// It will try to be used (best-effort) to resolve domain addresses
     /// as IP addresses if the `socks5` protocol is used, but not for the `socks5h` protocol.
     ///
     /// In case of an error with resolving the domain address the connector
@@ -117,7 +107,7 @@ impl Socks5ProxyConnectorLayer {
 
     /// Attach a [`DnsResolver`] to this [`Socks5ProxyConnectorLayer`].
     ///
-    /// It will tried to be used (best-effort) to resolve domain addresses
+    /// It will try to be used (best-effort) to resolve domain addresses
     /// as IP addresses if the `socks5` protocol is used, but not for the `socks5h` protocol.
     ///
     /// In case of an error with resolving the domain address the connector
@@ -129,7 +119,7 @@ impl Socks5ProxyConnectorLayer {
 
     /// Attach a [`DnsResolver`] to this [`Socks5ProxyConnectorLayer`].
     ///
-    /// It will tried to be used (best-effort) to resolve domain addresses
+    /// It will try to be used (best-effort) to resolve domain addresses
     /// as IP addresses if the `socks5` protocol is used, but not for the `socks5h` protocol.
     ///
     /// In case of an error with resolving the domain address the connector
@@ -231,7 +221,7 @@ impl<S> Socks5ProxyConnector<S> {
 impl<S> Socks5ProxyConnector<S> {
     /// Attach a [`DnsResolver`] to this [`Socks5ProxyConnector`].
     ///
-    /// It will tried to be used (best-effort) to resolve domain addresses
+    /// It will try to be used (best-effort) to resolve domain addresses
     /// as IP addresses if the `socks5` protocol is used, but not for the `socks5h` protocol.
     ///
     /// In case of an error with resolving the domain address the connector
@@ -243,7 +233,7 @@ impl<S> Socks5ProxyConnector<S> {
 
     /// Attach a [`DnsResolver`] to this [`Socks5ProxyConnector`].
     ///
-    /// It will tried to be used (best-effort) to resolve domain addresses
+    /// It will try to be used (best-effort) to resolve domain addresses
     /// as IP addresses if the `socks5` protocol is used, but not for the `socks5h` protocol.
     ///
     /// In case of an error with resolving the domain address the connector
@@ -390,9 +380,8 @@ impl<S, State, Request> Service<State, Request> for Socks5ProxyConnector<S>
 where
     S: ConnectorService<State, Request, Connection: Stream + Unpin, Error: Into<BoxError>>,
     State: Clone + Send + Sync + 'static,
-    Request: TryRefIntoTransportContext<State, Error: Into<BoxError> + Send + Sync + 'static>
-        + Send
-        + 'static,
+    Request:
+        TryRefIntoTransportContext<State, Error: Into<BoxError> + Send + 'static> + Send + 'static,
 {
     type Response = EstablishedClientConnection<S::Connection, State, Request>;
     type Error = BoxError;
@@ -426,14 +415,6 @@ where
             }
             None => None,
         };
-
-        let transport_ctx = ctx
-            .get_or_try_insert_with_ctx(|ctx| req.try_ref_into_transport_ctx(ctx))
-            .map_err(|err| {
-                OpaqueError::from_boxed(err.into())
-                    .context("socks5 proxy connector: get transport context")
-            })?
-            .clone();
 
         let established_conn =
             self.inner
@@ -469,7 +450,19 @@ where
         };
         // and do the handshake otherwise...
 
-        let EstablishedClientConnection { ctx, req, mut conn } = established_conn;
+        let EstablishedClientConnection {
+            mut ctx,
+            req,
+            mut conn,
+        } = established_conn;
+
+        let transport_ctx = ctx
+            .get_or_try_insert_with_ctx(|ctx| req.try_ref_into_transport_ctx(ctx))
+            .map_err(|err| {
+                OpaqueError::from_boxed(err.into())
+                    .context("socks5 proxy connector: get transport context")
+            })?
+            .clone();
 
         tracing::trace!(
             %proxy_address,

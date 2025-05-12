@@ -4,7 +4,7 @@
 //! [RFC 1928]: https://datatracker.ietf.org/doc/html/rfc1928
 //! [RFC 1929]: https://datatracker.ietf.org/doc/html/rfc1929
 
-use std::net::IpAddr;
+use std::{fmt, net::IpAddr};
 
 use super::{
     Command, ProtocolError, ProtocolVersion, SocksMethod, UsernamePasswordSubnegotiationVersion,
@@ -107,7 +107,7 @@ impl Header {
             w.write_all(&buf[..]).await
         } else if n == 5 {
             tracing::trace!(%n, "write socks5 client header w/ 3 methods: on stack");
-            let mut buf = [0u8; 4];
+            let mut buf = [0u8; 5];
             self.write_to_buf(&mut buf.as_mut_slice());
             w.write_all(&buf[..]).await
         } else {
@@ -325,7 +325,7 @@ impl RequestRef<'_> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 /// Initial username-password negotiation starts with the client sending this request.
 ///
 /// Once the SOCKS V5 server has started, and the client has selected the
@@ -359,6 +359,16 @@ pub struct UsernamePasswordRequest {
     pub version: UsernamePasswordSubnegotiationVersion,
     pub username: Vec<u8>,
     pub password: Option<Vec<u8>>,
+}
+
+impl fmt::Debug for UsernamePasswordRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("UsernamePasswordRequest")
+            .field("version", &self.username)
+            .field("username", &self.username)
+            .field("password_defined", &self.password.is_some())
+            .finish()
+    }
 }
 
 impl UsernamePasswordRequest {
@@ -431,7 +441,7 @@ impl UsernamePasswordRequest {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 /// Initial username-password negotiation starts with the client sending this request.
 ///
 /// Reference (write-only) version of [`UsernamePasswordRequest`],
@@ -440,6 +450,16 @@ pub struct UsernamePasswordRequestRef<'a> {
     pub version: UsernamePasswordSubnegotiationVersion,
     pub username: &'a [u8],
     pub password: Option<&'a [u8]>,
+}
+
+impl fmt::Debug for UsernamePasswordRequestRef<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("UsernamePasswordRequestRef")
+            .field("version", &self.username)
+            .field("username", &self.username)
+            .field("password_defined", &self.password.is_some())
+            .finish()
+    }
 }
 
 impl PartialEq<UsernamePasswordRequest> for UsernamePasswordRequestRef<'_> {
