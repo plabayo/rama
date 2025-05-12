@@ -49,7 +49,9 @@ pub mod username;
 pub mod telemetry;
 
 pub mod bytes {
-    ///! TODO docs
+    //! Re-export of [bytes](https://docs.rs/bytes/latest/bytes/) crate.
+    //!
+    //! Exported for your convenience.
 
     #[doc(inline)]
     pub use ::bytes::*;
