@@ -18,7 +18,6 @@ default = []
 dns = ["dep:rama-dns", "dep:rand"]
 
 [dependencies]
-bytes = { workspace = true }
 rama-core = { workspace = true }
 rama-dns = { workspace = true, optional = true }
 rama-net = { workspace = true, features = ["http"] }

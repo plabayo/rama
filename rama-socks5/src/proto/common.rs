@@ -1,7 +1,7 @@
 use std::net::IpAddr;
 
 use super::AddressType;
-use bytes::BufMut;
+use rama_core::bytes::BufMut;
 use rama_core::error::OpaqueError;
 use rama_net::address::{Authority, Domain, Host};
 use tokio::io::{AsyncRead, AsyncReadExt};

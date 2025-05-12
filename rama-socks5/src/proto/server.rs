@@ -8,7 +8,7 @@ use super::{
     ProtocolError, ProtocolVersion, ReplyKind, SocksMethod, UsernamePasswordSubnegotiationVersion,
     common::{authority_length, read_authority, write_authority_to_buf},
 };
-use bytes::{BufMut, BytesMut};
+use rama_core::bytes::{BufMut, BytesMut};
 use rama_net::address::Authority;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 

@@ -1,4 +1,4 @@
-use bytes::BytesMut;
+use rama_core::bytes::BytesMut;
 use rama_core::error::{BoxError, OpaqueError};
 use rama_net::{address::SocketAddress, socket::Interface, stream::Stream};
 use rama_udp::UdpSocket;

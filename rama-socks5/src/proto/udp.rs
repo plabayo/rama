@@ -2,7 +2,7 @@
 //!
 //! [RFC 1928]: https://datatracker.ietf.org/doc/html/rfc1928
 
-use bytes::BufMut;
+use rama_core::bytes::BufMut;
 use tokio::io::{AsyncRead, AsyncReadExt};
 
 use crate::proto::common::write_authority_to_buf;
@@ -125,7 +125,7 @@ impl UdpHeader {
 
 #[cfg(test)]
 mod tests {
-    use bytes::BytesMut;
+    use rama_core::bytes::BytesMut;
     use rama_net::address::Authority;
     use tokio::io::{AsyncWrite, AsyncWriteExt};
 
