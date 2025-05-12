@@ -82,3 +82,18 @@ You can try this flow using the following example:
   Spawns a SOCKS5 proxy that supports the `BIND` command and allows you to experiment with incoming peer connections via the proxy.
 
 This makes `BIND` a useful tool for reverse connection setups and client-initiated listeners in NAT'd environments or restricted network conditions.
+
+## SOCKS5 UDP ASSOCIATE
+
+The `UDP ASSOCIATE` command in SOCKS5 allows a client to proxy **UDP datagrams** through the SOCKS5 server. This is essential for supporting protocols that are UDP-based, such as DNS, QUIC, VoIP, gaming traffic, or any custom UDP-based application.
+
+When the client sends a `UDP ASSOCIATE` request, it provides a local IP/port hint (or just `0.0.0.0:0`) and receives from the proxy a `BND.ADDR:BND.PORT` in return. This is the address the client should send UDP packets to. The client then sends UDP datagrams, each wrapped in a lightweight SOCKS5 UDP header, to that address. The proxy receives these datagrams, unpacks them, forwards them to the intended destination, and can relay responses back to the client in the same wrapped format.
+
+The TCP connection used to initiate the UDP ASSOCIATE must remain open for the duration of the UDP session, as it controls the lifetime of the association.
+
+You can test this functionality using the following example:
+
+- [/examples/socks5_udp_associate.rs](https://github.com/plabayo/rama/tree/main/examples/socks5_udp_associate.rs):
+  Spawns a SOCKS5 proxy that supports the `UDP ASSOCIATE` command, enabling proxying of UDP traffic over a TCP-controlled SOCKS5 session.
+
+This command enables powerful use cases like full DNS proxying or tunneling UDP through restrictive firewalls via a single TCP-controlled proxy session.

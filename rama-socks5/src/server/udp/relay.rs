@@ -56,12 +56,20 @@ impl UdpSocketRelay {
 
             north,
             north_max_size: south_read_buf_size,
-            north_read_buf: BytesMut::with_capacity(north_read_buf_size),
+            north_read_buf: {
+                let mut b = BytesMut::with_capacity(north_read_buf_size);
+                b.resize(north_read_buf_size, 0);
+                b
+            },
             north_write_buf: BytesMut::new(),
 
             south,
             south_max_size: north_read_buf_size,
-            south_read_buf: BytesMut::with_capacity(south_read_buf_size),
+            south_read_buf: {
+                let mut b = BytesMut::with_capacity(south_read_buf_size);
+                b.resize(south_read_buf_size, 0);
+                b
+            },
 
             #[cfg(feature = "dns")]
             dns_resolve_mode: DnsResolveIpMode::default(),
@@ -80,10 +88,13 @@ impl UdpSocketRelay {
 
     pub(super) async fn recv(&mut self) -> Result<Option<UdpRelayState>, BoxError> {
         self.north_read_buf.clear();
+        self.north_read_buf.resize(self.north_max_size, 0);
+
         self.south_read_buf.clear();
+        self.south_read_buf.resize(self.south_max_size, 0);
 
         tokio::select! {
-            result = self.north.recv_from(&mut self.north_read_buf) => {
+            result = self.north.recv_from(&mut self.north_read_buf[..]) => {
                 match result {
                     Ok((len, src)) => {
                         tracing::trace!(
@@ -140,7 +151,7 @@ impl UdpSocketRelay {
                         // remove header from payload
                         let offset = len - buf.len();
                         self.north_read_buf.copy_within(offset.., 0);
-                        self.north_read_buf.resize(len-offset, 0);
+                        self.north_read_buf.truncate(len-offset);
 
                         Ok(Some(UdpRelayState::ReadNorth(server_address)))
                     }
@@ -156,7 +167,7 @@ impl UdpSocketRelay {
                 }
             }
 
-            result = self.south.recv_from(&mut self.south_read_buf) => {
+            result = self.south.recv_from(&mut self.south_read_buf[..]) => {
                 match result {
                     Ok((len, src)) => {
                         tracing::trace!(
@@ -164,6 +175,7 @@ impl UdpSocketRelay {
                             %src,
                             "south socket: received packet",
                         );
+                        self.south_read_buf.truncate(len);
                         Ok(Some(UdpRelayState::ReadSouth(src)))
                     }
 
@@ -264,7 +276,7 @@ impl UdpSocketRelay {
             destination: server_address.into(),
         };
 
-        self.north_write_buf.clear();
+        self.north_write_buf.truncate(0);
 
         match data {
             Some(data) => {
@@ -286,8 +298,6 @@ impl UdpSocketRelay {
                     return Ok(());
                 }
 
-                self.north_write_buf
-                    .resize(data.len() + header.serialized_len(), 0);
                 header.write_to_buf(&mut self.north_write_buf);
                 self.north_write_buf.extend_from_slice(&data);
             }
@@ -312,7 +322,7 @@ impl UdpSocketRelay {
         {
             Ok(len) => {
                 tracing::trace!(
-                    len = %self.north_read_buf.len(),
+                    len = %self.north_write_buf.len(),
                     write_len = len,
                     client = %self.client_address,
                     server = %server_address,

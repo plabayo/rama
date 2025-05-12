@@ -106,11 +106,11 @@ async fn main() {
 async fn spawn_socks5_server() -> SocketAddress {
     let tcp_service = TcpListener::bind(SocketAddress::local_ipv4(0))
         .await
-        .expect("bind socks5-over-tls CONNECT proxy on open port");
+        .expect("bind socks5 BIND proxy on open port");
 
     let bind_addr = tcp_service
         .local_addr()
-        .expect("get bind address of socks5-over-tls proxy server")
+        .expect("get bind address of socks5 proxy server")
         .into();
 
     let socks5_acceptor = Socks5Acceptor::new()

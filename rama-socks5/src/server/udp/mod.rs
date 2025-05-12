@@ -552,7 +552,7 @@ where
             })?;
 
         let mut empty = tokio::io::empty();
-        let mut drop_stream_fut = std::pin::pin!(tokio::io::copy(&mut empty, &mut stream));
+        let mut drop_stream_fut = std::pin::pin!(tokio::io::copy(&mut stream, &mut empty));
         let mut timeout_fut = std::pin::pin!(match self.relay_timeout {
             Some(timeout) => Either::A(tokio::time::sleep(timeout)),
             None => Either::B(std::future::pending::<()>()),

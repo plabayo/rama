@@ -138,12 +138,12 @@ impl<S> UdpSocketRelay<S> {
             destination: socket_addr.into(),
         };
 
-        self.write_buffer.clear();
+        self.write_buffer.truncate(0);
 
         header.write_to_buf(&mut self.write_buffer);
         self.write_buffer.extend_from_slice(b);
 
-        Ok(self.socket.send(&self.write_buffer).await?)
+        Ok(self.socket.send(&self.write_buffer[..]).await?)
     }
 
     /// Receives a single datagram message from the socks5 udp associate proxy.
@@ -163,7 +163,7 @@ impl<S> UdpSocketRelay<S> {
             .into_boxed());
         }
 
-        let header_len = header.serialized_len();
+        let header_offset = header.serialized_len() - 1;
 
         let (host, port) = header.destination.into_parts();
         let from: SocketAddress = match host {
@@ -176,8 +176,8 @@ impl<S> UdpSocketRelay<S> {
             rama_net::address::Host::Address(ip_addr) => (ip_addr, port).into(),
         };
 
-        buf.copy_within(header_len.., 0);
-        Ok((n - header_len, from))
+        buf.copy_within(header_offset.., 0);
+        Ok((n - header_offset, from))
     }
 }
 

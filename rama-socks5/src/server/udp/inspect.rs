@@ -332,7 +332,7 @@ where
                             tracing::trace!(%server_address, "block request: north -> south: inspecter blocked");
                         }
                         UdpInspectAction::Modify(bytes) => {
-                            tracing::trace!(%server_address, "relay request: north -> south: forward modified bytes");
+                            tracing::trace!(len = %bytes.len(), %server_address, "relay request: north -> south: forward modified bytes");
                             relay
                                 .send_to_south(Some(bytes), server_address)
                                 .await
@@ -347,7 +347,7 @@ where
                         &ctx,
                         RelayDirection::North,
                         server_address,
-                        relay.north_read_buf_slice(),
+                        relay.south_read_buf_slice(),
                     )
                         .map_err(Into::into)
                         .inspect_err(|err| {
@@ -367,7 +367,7 @@ where
                             tracing::trace!(%server_address, "block request: south -> north: inspecter blocked");
                         }
                         UdpInspectAction::Modify(bytes) => {
-                            tracing::trace!(%server_address, "relay request: south -> north: forward modified bytes");
+                            tracing::trace!(len = %bytes.len(), %server_address, "relay request: south -> north: forward modified bytes");
                             relay
                                 .send_to_north(Some(bytes), server_address)
                                 .await

@@ -47,6 +47,8 @@ This directory contains example implementations demonstrating various features a
   SOCKS5 CONNECT proxy implementation showing how to run it within a TLS tunnel w/ self-contained socks5 client
 - [`socks5_bind_proxy.rs`](./socks5_bind_proxy.rs) -
   SOCKS5 BIND proxy implementation showing how to run it from both client and server
+- [`socks5_udp_associate.rs`](./socks5_udp_associate.rs) -
+  SOCKS5 UDP Associate client+server example w/ sync inspector added
 
 ## TLS and Security
 ### Rustls
