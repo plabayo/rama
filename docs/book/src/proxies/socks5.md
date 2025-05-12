@@ -8,11 +8,14 @@
     </div>
 </div>
 
-There are currently
-[no examples found in the `/examples` dir](https://github.com/plabayo/rama/tree/main/examples)
-on how to create such a proxy using rama. If you are interested in contributing this
-you can create an issue at <https://github.com/plabayo/rama/issues> and we'll
-help you to get this shipped.
+[Examples](https://github.com/plabayo/rama/tree/main/examples):
+
+- [/examples/socks5_connect_proxy.rs](https://github.com/plabayo/rama/tree/main/examples/socks5_connect_proxy.rs):
+  Spawns a minimal socks5 CONNECT proxy with authentication, snappy and easy;
+- [/examples/socks5_connect_proxy_mitm_proxy.rs](https://github.com/plabayo/rama/tree/main/examples/socks5_connect_proxy_mitm_proxy.rs):
+  Spawns a socks5 CONNECT proxy with authentication and HTTP MITM capabilities;
+- [/examples/socks5_connect_proxy_over_tls.rs](https://github.com/plabayo/rama/tree/main/examples/socks5_connect_proxy_over_tls.rs):
+  Spawns a socks5 CONNECT proxy implementation which runs within a TLS tunnel
 
 ## Description
 

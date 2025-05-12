@@ -160,7 +160,7 @@ where
             .await
     }
 
-    /// Listen for connections on the given address, serving HTTP connections.
+    /// Listen for connections on the given [`Interface`], serving HTTP connections.
     ///
     /// It's a shortcut in case you don't need to operate on the transport layer directly.
     pub async fn listen<S, Response, I>(self, interface: I, service: S) -> HttpServeResult
@@ -178,7 +178,7 @@ where
         Ok(())
     }
 
-    /// Listen for connections on the given address, serving HTTP connections.
+    /// Listen for connections on the given [`Interface`], serving HTTP connections.
     ///
     /// Same as [`Self::listen`], but including the given state in the [`Service`]'s [`Context`].
     ///

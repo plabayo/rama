@@ -1,4 +1,4 @@
-//! An example to showcase how one can build an unauthenticated http proxy server.
+//! An example to showcase how one can build an authenticated http proxy server.
 //!
 //! This example also demonstrates how one can define their own username label parser,
 //! next to the built-in username label parsers.
@@ -86,12 +86,13 @@ use rama::{
     },
     rt::Executor,
     service::service_fn,
+    tcp::client::service::Forwarder,
     tcp::server::TcpListener,
     username::{
         UsernameLabelParser, UsernameLabelState, UsernameLabels, UsernameOpaqueLabelParser,
     },
 };
-use rama_tcp::client::service::Forwarder;
+
 use serde::Deserialize;
 use serde_json::json;
 use std::{convert::Infallible, sync::Arc, time::Duration};

@@ -16,8 +16,9 @@ use crate::{
         server::{Header, Reply, UsernamePasswordResponse},
     },
 };
-use rama_core::{Context, error::BoxError};
-use rama_net::stream::Stream;
+use rama_core::{Context, Service, error::BoxError};
+use rama_net::{socket::Interface, stream::Stream};
+use rama_tcp::{TcpStream, server::TcpListener};
 use std::fmt;
 
 mod connect;
@@ -496,6 +497,72 @@ impl<C, B, U> Socks5Acceptor<C, B, U> {
                 Err(Error::aborted("no acceptable methods"))
             }
         }
+    }
+}
+
+impl<C, B, U, State, S> Service<State, S> for Socks5Acceptor<C, B, U>
+where
+    C: Socks5Connector<S, State>,
+    U: Socks5UdpAssociator<S, State>,
+    B: Socks5Binder<S, State>,
+    S: Stream + Unpin,
+    State: Clone + Send + Sync + 'static,
+{
+    type Response = ();
+    type Error = Error;
+
+    #[inline]
+    fn serve(
+        &self,
+        ctx: Context<State>,
+        stream: S,
+    ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
+        self.accept(ctx, stream)
+    }
+}
+
+impl<C, B, U> Socks5Acceptor<C, B, U>
+where
+    C: Socks5Connector<TcpStream, ()>,
+    U: Socks5UdpAssociator<TcpStream, ()>,
+    B: Socks5Binder<TcpStream, ()>,
+{
+    /// Listen for connections on the given [`Interface`], serving Socks5(h) connections.
+    ///
+    /// It's a shortcut in case you don't need to operate on the transport layer directly.
+    pub async fn listen<I>(self, interface: I) -> Result<(), BoxError>
+    where
+        I: TryInto<Interface, Error: Into<BoxError>>,
+    {
+        let tcp = TcpListener::bind(interface).await?;
+        tcp.serve(self).await;
+        Ok(())
+    }
+}
+
+impl<C, B, U> Socks5Acceptor<C, B, U> {
+    /// Listen for connections on the given [`Interface`], serving Socks5(h) connections.
+    ///
+    /// Same as [`Self::listen`], but including the given state in the [`Service`]'s [`Context`].
+    ///
+    /// [`Service`]: rama_core::Service
+    /// [`Context`]: rama_core::Context
+    pub async fn listen_with_state<State, I>(
+        self,
+        state: State,
+        interface: I,
+    ) -> Result<(), BoxError>
+    where
+        C: Socks5Connector<TcpStream, State>,
+        U: Socks5UdpAssociator<TcpStream, State>,
+        B: Socks5Binder<TcpStream, State>,
+        State: Clone + Send + Sync + 'static,
+        State: Clone + Send + Sync + 'static,
+        I: TryInto<Interface, Error: Into<BoxError>>,
+    {
+        let tcp = TcpListener::build_with_state(state).bind(interface).await?;
+        tcp.serve(self).await;
+        Ok(())
     }
 }
 

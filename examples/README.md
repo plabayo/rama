@@ -27,10 +27,24 @@ This directory contains example implementations demonstrating various features a
 - [`http_pooled_client.rs`](./http_pooled_client.rs) - Connection pooling client
 
 ## Proxies
+
+### Http Proxies
+
 - [`http_connect_proxy.rs`](./http_connect_proxy.rs) - HTTP CONNECT proxy implementation
-- [`https_connect_proxy.rs`](./https_connect_proxy.rs) - HTTPS CONNECT proxy implementation
 - [`http_mitm_proxy_rustls.rs`](./http_mitm_proxy_rustls.rs) - MITM proxy using Rustls
 - [`http_mitm_proxy_boring.rs`](./http_mitm_proxy_boring.rs) - MITM proxy using BoringSSL
+
+### Http within TLS Proxies
+
+- [`https_connect_proxy.rs`](./https_connect_proxy.rs) - HTTPS CONNECT proxy implementation
+
+### Socks5 Proxies:
+
+- [`socks5_connect_proxy.rs`](./socks5_connect_proxy.rs) - SOCKS5 CONNECT proxy implementation
+- [`socks5_connect_proxy_mitm_proxy.rs`](./socks5_connect_proxy_mitm_proxy.rs) -
+  SOCKS5 CONNECT proxy implementation with HTTP(S) MITM Capabilities
+- [`socks5_connect_proxy_over_tls.rs`](./socks5_connect_proxy_over_tls.rs) -
+  SOCKS5 CONNECT proxy implementation showing how to run it within a TLS tunnel
 
 ## TLS and Security
 ### Rustls

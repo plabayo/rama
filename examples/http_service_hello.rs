@@ -21,6 +21,7 @@
 
 use rama::{
     Context, Layer,
+    bytes::Bytes,
     http::{
         Request, header,
         layer::{
@@ -43,7 +44,7 @@ use rama::{
     tcp::server::TcpListener,
     utils::latency::LatencyUnit,
 };
-use rama_core::bytes::Bytes;
+
 use std::{sync::Arc, time::Duration};
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};

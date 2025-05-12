@@ -1,5 +1,7 @@
 use std::fmt;
 
+use rama_net::user;
+
 use crate::proto::SocksMethod;
 
 #[derive(Clone)]
@@ -51,5 +53,24 @@ impl Socks5Auth {
         match self {
             Socks5Auth::UsernamePassword { .. } => SocksMethod::UsernamePassword,
         }
+    }
+}
+
+impl From<&user::Basic> for Socks5Auth {
+    fn from(value: &user::Basic) -> Self {
+        Self::UsernamePassword {
+            username: value.username().as_bytes().to_vec(),
+            password: {
+                let password = value.password();
+                (!password.is_empty()).then(|| password.as_bytes().to_vec())
+            },
+        }
+    }
+}
+
+impl From<user::Basic> for Socks5Auth {
+    #[inline]
+    fn from(value: user::Basic) -> Self {
+        Socks5Auth::from(&value)
     }
 }

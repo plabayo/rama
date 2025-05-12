@@ -1,4 +1,4 @@
-use crate::{Socks5Auth, Socks5Client, client::proxy_error::Socks5ProxyError};
+use crate::{Socks5Client, client::proxy_error::Socks5ProxyError};
 use rama_core::{
     Context, Layer, Service,
     error::{BoxError, ErrorExt, OpaqueError},
@@ -8,8 +8,9 @@ use rama_net::{
     client::{ConnectorService, EstablishedClientConnection},
     stream::Stream,
     transport::TryRefIntoTransportContext,
+    user::ProxyCredential,
 };
-use rama_utils::macros::{define_inner_service_accessors, generate_field_setters};
+use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
 
 #[cfg(feature = "dns")]
@@ -30,7 +31,6 @@ use ::{
 /// See [`Socks5ProxyConnector`] for more information.
 pub struct Socks5ProxyConnectorLayer {
     required: bool,
-    auth: Option<Socks5Auth>,
     #[cfg(feature = "dns")]
     dns_resolver: Option<BoxDnsResolver<OpaqueError>>,
 }
@@ -39,7 +39,6 @@ impl Default for Socks5ProxyConnectorLayer {
     fn default() -> Self {
         Self {
             required: false,
-            auth: None,
             #[cfg(feature = "dns")]
             dns_resolver: Some(rama_dns::HickoryDns::default().boxed()),
         }
@@ -56,7 +55,6 @@ impl Socks5ProxyConnectorLayer {
     pub fn optional() -> Self {
         Self {
             required: false,
-            auth: None,
             #[cfg(feature = "dns")]
             dns_resolver: None,
         }
@@ -71,13 +69,10 @@ impl Socks5ProxyConnectorLayer {
     pub fn required() -> Self {
         Self {
             required: true,
-            auth: None,
             #[cfg(feature = "dns")]
             dns_resolver: None,
         }
     }
-
-    generate_field_setters!(auth, Socks5Auth);
 }
 
 #[cfg(feature = "dns")]
@@ -138,8 +133,7 @@ impl<S> Layer<S> for Socks5ProxyConnectorLayer {
 
     #[cfg(feature = "dns")]
     fn layer(&self, inner: S) -> Self::Service {
-        let mut connector =
-            Socks5ProxyConnector::new(inner, self.required).maybe_with_auth(self.auth.clone());
+        let mut connector = Socks5ProxyConnector::new(inner, self.required);
         if let Some(resolver) = self.dns_resolver.clone() {
             connector.set_dns_resolver(resolver);
         }
@@ -159,7 +153,6 @@ impl<S> Layer<S> for Socks5ProxyConnectorLayer {
 pub struct Socks5ProxyConnector<S> {
     inner: S,
     required: bool,
-    auth: Option<Socks5Auth>,
     #[cfg(feature = "dns")]
     dns_resolver: Option<BoxDnsResolver<OpaqueError>>,
 }
@@ -168,8 +161,7 @@ impl<S: fmt::Debug> fmt::Debug for Socks5ProxyConnector<S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut d = f.debug_struct("Socks5ProxyConnector");
         d.field("inner", &self.inner)
-            .field("required", &self.required)
-            .field("auth", &self.auth);
+            .field("required", &self.required);
         #[cfg(feature = "dns")]
         d.field("dns_resolver", &self.dns_resolver);
         d.finish()
@@ -181,7 +173,6 @@ impl<S: Clone> Clone for Socks5ProxyConnector<S> {
         Self {
             inner: self.inner.clone(),
             required: self.required,
-            auth: self.auth.clone(),
             #[cfg(feature = "dns")]
             dns_resolver: self.dns_resolver.clone(),
         }
@@ -194,7 +185,6 @@ impl<S> Socks5ProxyConnector<S> {
         Self {
             inner,
             required,
-            auth: None,
             #[cfg(feature = "dns")]
             dns_resolver: None,
         }
@@ -211,8 +201,6 @@ impl<S> Socks5ProxyConnector<S> {
     pub fn required(inner: S) -> Self {
         Self::new(inner, true)
     }
-
-    generate_field_setters!(auth, Socks5Auth);
 
     define_inner_service_accessors!();
 }
@@ -470,7 +458,33 @@ where
             "socks5 proxy connector: connected to proxy",
         );
 
-        let client = Socks5Client::new().maybe_with_auth(self.auth.clone());
+        let mut client = Socks5Client::new();
+
+        match &proxy_address.credential {
+            Some(ProxyCredential::Basic(basic)) => {
+                tracing::trace!(
+                    %proxy_address,
+                    authority = %transport_ctx.authority,
+                    "socks5 proxy connector: continue handshake with authorisation",
+                );
+                client.set_auth(basic.into());
+            }
+            Some(ProxyCredential::Bearer(_)) => {
+                return Err(OpaqueError::from_display(
+                    "socks5proxy does not support auth with bearer credential",
+                )
+                .into_boxed());
+            }
+            None => {
+                tracing::trace!(
+                    %proxy_address,
+                    authority = %transport_ctx.authority,
+                    "socks5 proxy connector: continue handshake without authorisation",
+                );
+            }
+        }
+
+        // .maybe_with_auth(self.auth.clone());
         match client
             .handshake_connect(&mut conn, &transport_ctx.authority)
             .await
