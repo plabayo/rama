@@ -169,9 +169,9 @@ impl<I1, I2, P> EasyHttpWebClient<I1, I2, P> {
     generate_set_and_with!(
         /// Set the [`TlsConnectorLayer`] that this [`EasyHttpWebClient`] will use.
         pub fn tls_connector_config(
-            &mut self,
+            mut self,
             layer: impl Into<Option<TlsConnectorConfig>>,
-        ) -> &mut Self {
+        ) -> Self {
             self.tls_connector_config = layer.into();
             self
         }
