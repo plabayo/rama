@@ -18,6 +18,7 @@ use rama_net::client::{
     },
 };
 use rama_tcp::client::service::TcpConnector;
+use rama_utils::macros::generate_set_and_with;
 
 #[cfg(feature = "boring")]
 use rama_net::tls::client::{ClientConfig, ProxyClientConfig, extract_client_config_from_ctx};
@@ -165,25 +166,16 @@ impl EasyHttpWebClient {
 
 impl<I1, I2, P> EasyHttpWebClient<I1, I2, P> {
     #[cfg(any(feature = "rustls", feature = "boring"))]
-    /// Set the [`TlsConnectorLayer`] of this [`EasyHttpWebClient`].
-    pub fn set_tls_connector_config(&mut self, layer: TlsConnectorConfig) -> &mut Self {
-        self.tls_connector_config = Some(layer);
-        self
-    }
-
-    #[cfg(any(feature = "rustls", feature = "boring"))]
-    /// Replace this [`EasyHttpWebClient`] with the [`TlsConnectorLayer`] set.
-    pub fn with_tls_connector_config(mut self, layer: TlsConnectorConfig) -> Self {
-        self.tls_connector_config = Some(layer);
-        self
-    }
-
-    #[cfg(any(feature = "rustls", feature = "boring"))]
-    /// Replace this [`EasyHttpWebClient`] with an option of [`TlsConfig`] set.
-    pub fn maybe_with_tls_connector_config(mut self, layer: Option<TlsConnectorConfig>) -> Self {
-        self.tls_connector_config = layer;
-        self
-    }
+    generate_set_and_with!(
+        /// Set the [`TlsConnectorLayer`] that this [`EasyHttpWebClient`] will use.
+        pub fn tls_connector_config(
+            &mut self,
+            layer: impl Into<Option<TlsConnectorConfig>>,
+        ) -> &mut Self {
+            self.tls_connector_config = layer.into();
+            self
+        }
+    );
 
     #[cfg(any(feature = "rustls", feature = "boring"))]
     /// Set the [`TlsConfig`] for the https proxy tunnel if needed within this [`EasyHttpWebClient`].
