@@ -233,6 +233,37 @@ macro_rules! __generate_field_setters {
 
 pub use crate::__generate_field_setters as generate_field_setters;
 
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __generate_set_and_with {
+    (
+        $(
+            $(#[$outer_doc:meta])*
+            $vis:vis fn $fn_name:ident(&mut $self_token:ident, $param_name:ident: $param_ty:ty) -> &mut Self {
+                $($body:tt)*
+            }
+        )*
+    ) => {
+        rama_utils::macros::paste! {
+            $(
+                $(#[$outer_doc])*
+                ///
+                /// This is a variant of $fn_name that consumes Self
+                $vis fn [<with_ $fn_name>](mut $self_token, $param_name: $param_ty) -> Self {
+                    $($body)*
+                }
+
+                $(#[$outer_doc])*
+                $vis fn [<set_ $fn_name>](&mut $self_token, $param_name: $param_ty) -> &mut Self {
+                    $($body)*
+                }
+            )*
+        }
+    };
+}
+
+pub use crate::__generate_set_and_with as generate_set_and_with;
+
 #[cfg(test)]
 mod test {
     use super::*;
