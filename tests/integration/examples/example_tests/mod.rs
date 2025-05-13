@@ -54,7 +54,21 @@ mod udp_codec;
 #[cfg(all(feature = "boring", feature = "http-full"))]
 mod tls_boring_dynamic_certs;
 
-// We should be able to verify these rustls cert using a boring client
+#[cfg(all(feature = "dns", feature = "socks5", feature = "http-full"))]
+mod socks5_connect_proxy;
+
+#[cfg(all(feature = "dns", feature = "socks5", feature = "http-full"))]
+mod socks5_connect_proxy_mitm_proxy;
+
+#[cfg(all(feature = "socks5", feature = "boring", feature = "http-full"))]
+mod socks5_connect_proxy_over_tls;
+
+#[cfg(feature = "socks5")]
+mod socks5_bind_proxy;
+
+#[cfg(feature = "socks5")]
+mod socks5_udp_associate;
+
 #[cfg(all(feature = "boring", feature = "http-full"))]
 mod tls_rustls_dynamic_certs;
 

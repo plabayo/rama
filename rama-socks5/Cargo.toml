@@ -15,10 +15,22 @@ workspace = true
 
 [features]
 default = []
+dns = ["dep:rama-dns", "dep:rand"]
 
 [dependencies]
+rama-core = { workspace = true }
+rama-dns = { workspace = true, optional = true }
+rama-net = { workspace = true, features = ["http"] }
+rama-tcp = { workspace = true, features = ["http"] }
+rama-udp = { workspace = true }
+rama-utils = { workspace = true }
+rand = { workspace = true, optional = true }
+smallvec = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
+tokio-test = { workspace = true }
 
 [package.metadata.cargo-public-api-crates]
 allowed = []

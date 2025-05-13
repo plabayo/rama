@@ -44,6 +44,7 @@ use rama::{
     layer::ConsumeErrLayer,
     net::forwarded::Forwarded,
     net::stream::{SocketInfo, Stream},
+    net::tls::server::SelfSignedData,
     proxy::haproxy::{
         client::HaProxyLayer as HaProxyClientLayer, server::HaProxyLayer as HaProxyServerLayer,
     },
@@ -54,7 +55,6 @@ use rama::{
     },
     tls::rustls::server::{TlsAcceptorDataBuilder, TlsAcceptorLayer},
 };
-use rama_net::tls::server::SelfSignedData;
 
 // everything else is provided by the standard library, community crates or tokio
 use std::{convert::Infallible, time::Duration};

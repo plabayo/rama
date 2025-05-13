@@ -261,19 +261,20 @@ rustls = ["tls", "dep:rama-tls-rustls", "rama-http-backend?/rustls"]
 boring = ["tls", "dep:rama-tls-boring", "rama-http-backend?/boring"]
 cli = ["dep:base64", "dep:bytes", "dep:hex", "dep:serde", "dep:serde_json", "dep:serde_html_form", "dep:tracing", "dep:tokio", "http"]
 net = ["dep:rama-net"]
-dns = ["net", "dep:rama-dns"]
+dns = ["net", "dep:rama-dns", "rama-socks5?/dns"]
 tcp = ["dns", "dep:rama-tcp"]
 udp = ["net", "dep:rama-udp"]
 http = ["net", "dep:rama-http", "net", "ua", "rama-net?/http", "rama-tcp?/http", "rama-tower?/http"]
 http-full = ["http", "tcp", "dep:rama-http-backend", "dep:rama-http-core", "ua-embed-profiles", "compression"]
 proxy = ["dep:rama-proxy"]
 haproxy = ["dep:rama-haproxy"]
+socks5 = ["dep:rama-socks5", "udp", "tcp", "rama-net/http", "rama-tcp/http"]
 ua = ["dep:rama-ua"]
 ua-embed-profiles = ["ua", "rama-ua?/embed-profiles"]
 proxy-memory-db = ["proxy", "rama-proxy?/memory-db", "rama-net/venndb"]
 proxy-live-update = ["proxy", "rama-proxy?/live-update"]
 proxy-csv = ["proxy", "rama-proxy?/csv"]
-proxy-full = ["proxy-memory-db", "proxy-live-update", "proxy-csv", "haproxy"]
+proxy-full = ["proxy-memory-db", "proxy-live-update", "proxy-csv", "haproxy", "socks5"]
 tower = ["dep:rama-tower"]
 
 [build-dependencies]
@@ -291,6 +292,7 @@ rama-http-backend = { workspace = true, optional = true }
 rama-http-core = { workspace = true, optional = true }
 rama-net = { workspace = true, optional = true }
 rama-proxy = { workspace = true, optional = true }
+rama-socks5 = { workspace = true, optional = true }
 rama-tcp = { workspace = true, optional = true }
 rama-tls-boring = { workspace = true, optional = true }
 rama-tls-rustls = { workspace = true, optional = true }
@@ -496,6 +498,26 @@ required-features = ["boring", "haproxy", "http-full"]
 [[example]]
 name = "tls_rustls_termination"
 required-features = ["rustls", "haproxy", "http-full"]
+
+[[example]]
+name = "socks5_connect_proxy"
+required-features = ["dns", "socks5"]
+
+[[example]]
+name = "socks5_connect_proxy_mitm_proxy"
+required-features = ["dns", "socks5", "http-full"]
+
+[[example]]
+name = "socks5_connect_proxy_over_tls"
+required-features = ["socks5", "boring", "http-full"]
+
+[[example]]
+name = "socks5_bind_proxy"
+required-features = ["socks5"]
+
+[[example]]
+name = "socks5_udp_associate"
+required-features = ["socks5"]
 
 [profile.release]
 codegen-units = 1

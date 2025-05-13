@@ -1,12 +1,15 @@
 use crate::UdpFramed;
 use rama_core::bytes::BufMut;
 use rama_core::error::{BoxError, ErrorContext};
-use rama_net::address::SocketAddress;
+use rama_net::{address::SocketAddress, socket::Interface};
 use std::{
     io,
     net::{Ipv4Addr, Ipv6Addr, SocketAddr},
 };
 use tokio::net::UdpSocket as TokioUdpSocket;
+
+#[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+use rama_net::socket::{DeviceName, SocketOptions};
 
 /// A UDP socket.
 ///
@@ -27,24 +30,20 @@ use tokio::net::UdpSocket as TokioUdpSocket;
 /// same socket. An example of such usage can be found further down.
 ///
 /// [`Arc`]: std::sync::Arc
-///
-/// # Streams
-///
-/// TODO: document
 #[derive(Debug)]
 pub struct UdpSocket {
     inner: TokioUdpSocket,
 }
 
 impl UdpSocket {
-    /// Creates a new UdpSocket, which will be bound to the specified address.
+    /// Creates a new [`UdpSocket`], which will be bound to the specified address.
     ///
     /// The returned socket is ready for accepting connections and connecting to others.
     ///
     /// Binding with a port number of 0 will request that the OS assigns a port
     /// to this listener. The port allocated can be queried via the `local_addr`
     /// method.
-    pub async fn bind<A: TryInto<SocketAddress, Error: Into<BoxError>>>(
+    pub async fn bind_address<A: TryInto<SocketAddress, Error: Into<BoxError>>>(
         addr: A,
     ) -> Result<Self, BoxError> {
         let socket_addr = addr.try_into().map_err(Into::into)?;
@@ -55,12 +54,62 @@ impl UdpSocket {
         Ok(Self { inner })
     }
 
+    #[cfg(any(windows, unix))]
+    /// Creates a new [`UdpSocket`], which will be bound to the specified socket.
+    ///
+    /// The returned socket is ready for accepting connections and connecting to others.
+    pub async fn bind_socket(socket: rama_net::socket::core::Socket) -> Result<Self, BoxError> {
+        tokio::task::spawn_blocking(|| bind_socket_internal(socket))
+            .await
+            .context("await blocking bind socket task")?
+    }
+
+    #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+    /// Creates a new [`UdpSocket`], which will be bound to the specified (interface) device name).
+    ///
+    /// The returned socket is ready for accepting connections and connecting to others.
+    pub async fn bind_device<N: TryInto<DeviceName, Error: Into<BoxError>> + Send + 'static>(
+        name: N,
+    ) -> Result<UdpSocket, BoxError> {
+        tokio::task::spawn_blocking(|| {
+            let name = name.try_into().map_err(Into::<BoxError>::into)?;
+            let socket = SocketOptions {
+                device: Some(name),
+                ..SocketOptions::default_udp()
+            }
+            .try_build_socket()
+            .context("create udp ipv4 socket attached to device")?;
+            bind_socket_internal(socket)
+        })
+        .await
+        .context("await blocking bind socket task")?
+    }
+
+    /// Creates a new UdpSocket, which will be bound to the specified interface.
+    ///
+    /// The returned socket is ready for accepting connections and connecting to others.
+    pub async fn bind<I: TryInto<Interface, Error: Into<BoxError>>>(
+        interface: I,
+    ) -> Result<Self, BoxError> {
+        match interface.try_into().map_err(Into::<BoxError>::into)? {
+            Interface::Address(addr) => UdpSocket::bind_address(addr).await,
+            #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+            Interface::Device(name) => UdpSocket::bind_device(name).await,
+            Interface::Socket(opts) => {
+                let socket = opts
+                    .try_build_socket()
+                    .context("build udp socket from options")?;
+                UdpSocket::bind_socket(socket).await
+            }
+        }
+    }
+
     /// Creates new `UdpSocket` from a previously bound `std::net::UdpSocket`.
     ///
     /// This function is intended to be used to wrap a UDP socket from the
     /// standard library in the Tokio equivalent.
     ///
-    /// This can be used in conjunction with `rama_net::socket::Socket` interface to
+    /// This can be used in conjunction with `rama_net::socket::core::Socket` interface to
     /// configure a socket before it's handed off, such as setting options like
     /// `reuse_address` or binding to multiple addresses.
     ///
@@ -120,11 +169,11 @@ impl UdpSocket {
         self.inner.into_std()
     }
 
-    /// Expose a reference to `self` as a [`rama_net::socket::SockRef`].
+    /// Expose a reference to `self` as a [`rama_net::socket::core::SockRef`].
     #[cfg(any(windows, unix))]
     #[inline]
-    pub fn as_socket(&self) -> rama_net::socket::SockRef<'_> {
-        rama_net::socket::SockRef::from(self)
+    pub fn as_socket(&self) -> rama_net::socket::core::SockRef<'_> {
+        rama_net::socket::core::SockRef::from(self)
     }
 
     /// Returns the local address that this socket is bound to.
@@ -778,12 +827,22 @@ impl UdpSocket {
     }
 }
 
+fn bind_socket_internal(socket: rama_net::socket::core::Socket) -> Result<UdpSocket, BoxError> {
+    let socket = std::net::UdpSocket::from(socket);
+    socket
+        .set_nonblocking(true)
+        .context("set socket as non-blocking")?;
+    Ok(UdpSocket {
+        inner: TokioUdpSocket::from_std(socket)?,
+    })
+}
+
 #[cfg(any(windows, unix))]
-impl TryFrom<rama_net::socket::Socket> for UdpSocket {
+impl TryFrom<rama_net::socket::core::Socket> for UdpSocket {
     type Error = std::io::Error;
 
     #[inline]
-    fn try_from(value: rama_net::socket::Socket) -> Result<Self, Self::Error> {
+    fn try_from(value: rama_net::socket::core::Socket) -> Result<Self, Self::Error> {
         let socket = std::net::UdpSocket::from(value);
         socket.try_into()
     }

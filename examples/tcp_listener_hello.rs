@@ -17,11 +17,11 @@
 //! You should see a response with `HTTP/1.1 200 OK` and a body with the source code of this example.
 
 use rama::{
+    net::address::SocketAddress,
     net::stream::{Socket, Stream},
     service::service_fn,
     tcp::server::TcpListener,
 };
-use rama_net::address::SocketAddress;
 use std::{
     convert::Infallible,
     net::{IpAddr, Ipv4Addr},

@@ -170,14 +170,14 @@ impl DynamicIssuer {
 impl ResolvesServerCert for DynamicIssuer {
     fn resolve(
         &self,
-        client_hello: rama_tls_rustls::dep::rustls::server::ClientHello<'_>,
+        client_hello: rama::tls::rustls::dep::rustls::server::ClientHello<'_>,
     ) -> Option<Arc<CertifiedKey>> {
         // Convert to rama client hello, because we are used to working with that, this is however not needed and can be skipped
         let client_hello = ClientHello::rama_from(client_hello);
 
         let key = match client_hello.ext_server_name() {
             Some(host) => match host {
-                rama_net::address::Host::Name(domain) => {
+                rama::net::address::Host::Name(domain) => {
                     if domain == &Domain::from_static("example") {
                         self.example_data.clone()
                     } else if domain == &Domain::from_static("second.example") {
@@ -186,7 +186,7 @@ impl ResolvesServerCert for DynamicIssuer {
                         self.example_data.clone()
                     }
                 }
-                rama_net::address::Host::Address(_ip_addr) => self.default_data.clone(),
+                rama::net::address::Host::Address(_ip_addr) => self.default_data.clone(),
             },
             None => self.example_data.clone(),
         };

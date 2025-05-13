@@ -25,7 +25,7 @@ use std::{
 };
 
 /// A resolver of domains into IP addresses.
-pub trait DnsResolver: Send + Sync + 'static {
+pub trait DnsResolver: Sized + Send + Sync + 'static {
     /// Error returned by the [`DnsResolver`]
     type Error;
 
@@ -40,6 +40,11 @@ pub trait DnsResolver: Send + Sync + 'static {
         &self,
         domain: Domain,
     ) -> impl Future<Output = Result<Vec<Ipv6Addr>, Self::Error>> + Send + '_;
+
+    /// Box this resolver to allow for dynamic dispatch.
+    fn boxed(self) -> BoxDnsResolver<Self::Error> {
+        BoxDnsResolver::new(self)
+    }
 }
 
 impl<R: DnsResolver> DnsResolver for Arc<R> {
@@ -93,3 +98,7 @@ pub use deny_all::{DenyAllDns, DnsDeniedError};
 pub mod chain;
 
 mod variant;
+
+mod boxed;
+#[doc(inline)]
+pub use boxed::BoxDnsResolver;

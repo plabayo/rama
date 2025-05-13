@@ -2349,6 +2349,7 @@ dependencies = [
  "rama-http-core",
  "rama-net",
  "rama-proxy",
+ "rama-socks5",
  "rama-tcp",
  "rama-tls-boring",
  "rama-tls-rustls",
@@ -2707,6 +2708,19 @@ dependencies = [
 [[package]]
 name = "rama-socks5"
 version = "0.3.0-alpha.1"
+dependencies = [
+ "rama-core",
+ "rama-dns",
+ "rama-net",
+ "rama-tcp",
+ "rama-udp",
+ "rama-utils",
+ "rand 0.9.1",
+ "smallvec",
+ "tokio",
+ "tokio-test",
+ "tracing",
+]
 
 [[package]]
 name = "rama-tcp"

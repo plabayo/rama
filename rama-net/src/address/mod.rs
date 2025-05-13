@@ -25,7 +25,7 @@ pub use socket_address::SocketAddress;
 
 mod proxy;
 
-mod parse_utils;
+pub(crate) mod parse_utils;
 
 #[doc(inline)]
 pub use proxy::ProxyAddress;

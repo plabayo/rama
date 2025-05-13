@@ -8,11 +8,14 @@
     </div>
 </div>
 
-There are currently
-[no examples found in the `/examples` dir](https://github.com/plabayo/rama/tree/main/examples)
-on how to create such a proxy using rama. If you are interested in contributing this
-you can create an issue at <https://github.com/plabayo/rama/issues> and we'll
-help you to get this shipped.
+[Examples](https://github.com/plabayo/rama/tree/main/examples):
+
+- [/examples/socks5_connect_proxy.rs](https://github.com/plabayo/rama/tree/main/examples/socks5_connect_proxy.rs):
+  Spawns a minimal socks5 CONNECT proxy with authentication, snappy and easy;
+- [/examples/socks5_connect_proxy_mitm_proxy.rs](https://github.com/plabayo/rama/tree/main/examples/socks5_connect_proxy_mitm_proxy.rs):
+  Spawns a socks5 CONNECT proxy with authentication and HTTP MITM capabilities;
+- [/examples/socks5_connect_proxy_over_tls.rs](https://github.com/plabayo/rama/tree/main/examples/socks5_connect_proxy_over_tls.rs):
+  Spawns a socks5 CONNECT proxy implementation which runs within a TLS tunnel
 
 ## Description
 
@@ -64,3 +67,33 @@ That said, regardless if you expose yourself as an [http proxy](./http.md) or so
 you can if you want to still run your proxy as a [Man In The Middle Proxy](./mitm.md),
 and at that point you are no longer a transport proxy, but do see the http requests coming by,
 regardless if they were initially secured via tls.
+
+## SOCKS5 BIND
+
+In addition to the common `CONNECT`, the SOCKS5 protocol also supports a less frequently used command: `BIND`.
+
+Where `CONNECT` is used for outgoing connections to a remote server, `BIND` enables the proxy to **accept incoming connections** from a third party on behalf of the client. This is useful in protocols where the client needs to listen for a peer (e.g., FTP active mode, SIP, or custom peer-to-peer scenarios).
+
+When a client sends a `BIND` request to a SOCKS5 proxy, it asks the proxy to open a listening socket. The proxy responds with the bound address and port. The client then waits for the proxy to accept an incoming connection from the peer. Once a connection is accepted, the proxy notifies the client and begins relaying data between the peer and the client.
+
+You can try this flow using the following example:
+
+- [/examples/socks5_bind_proxy.rs](https://github.com/plabayo/rama/tree/main/examples/socks5_bind_proxy.rs):
+  Spawns a SOCKS5 proxy that supports the `BIND` command and allows you to experiment with incoming peer connections via the proxy.
+
+This makes `BIND` a useful tool for reverse connection setups and client-initiated listeners in NAT'd environments or restricted network conditions.
+
+## SOCKS5 UDP ASSOCIATE
+
+The `UDP ASSOCIATE` command in SOCKS5 allows a client to proxy **UDP datagrams** through the SOCKS5 server. This is essential for supporting protocols that are UDP-based, such as DNS, QUIC, VoIP, gaming traffic, or any custom UDP-based application.
+
+When the client sends a `UDP ASSOCIATE` request, it provides a local IP/port hint (or just `0.0.0.0:0`) and receives from the proxy a `BND.ADDR:BND.PORT` in return. This is the address the client should send UDP packets to. The client then sends UDP datagrams, each wrapped in a lightweight SOCKS5 UDP header, to that address. The proxy receives these datagrams, unpacks them, forwards them to the intended destination, and can relay responses back to the client in the same wrapped format.
+
+The TCP connection used to initiate the UDP ASSOCIATE must remain open for the duration of the UDP session, as it controls the lifetime of the association.
+
+You can test this functionality using the following example:
+
+- [/examples/socks5_udp_associate.rs](https://github.com/plabayo/rama/tree/main/examples/socks5_udp_associate.rs):
+  Spawns a SOCKS5 proxy that supports the `UDP ASSOCIATE` command, enabling proxying of UDP traffic over a TCP-controlled SOCKS5 session.
+
+This command enables powerful use cases like full DNS proxying or tunneling UDP through restrictive firewalls via a single TCP-controlled proxy session.

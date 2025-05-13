@@ -1,7 +1,7 @@
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as ENGINE;
 use rama_core::error::{ErrorContext, OpaqueError};
-use std::borrow::Cow;
+use std::{borrow::Cow, fmt};
 
 #[cfg(feature = "http")]
 use rama_http_types::HeaderValue;
@@ -12,7 +12,7 @@ pub struct Basic {
     data: BasicData,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 enum BasicData {
     Username(Cow<'static, str>),
     Pair {
@@ -23,6 +23,23 @@ enum BasicData {
         decoded: String,
         colon_pos: usize,
     },
+}
+
+impl fmt::Debug for BasicData {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            BasicData::Username(username) => f
+                .debug_tuple("BasicData::Username")
+                .field(&username)
+                .finish(),
+            BasicData::Pair { username, .. } => f
+                .debug_struct("BasicData::Pair")
+                .field("username", &username)
+                .field("password", &"***")
+                .finish(),
+            BasicData::Decoded { .. } => f.debug_tuple("BasicData::Decoded").field(&"***").finish(),
+        }
+    }
 }
 
 impl Basic {
