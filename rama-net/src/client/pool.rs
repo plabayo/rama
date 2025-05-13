@@ -3,7 +3,7 @@ use crate::stream::Socket;
 use parking_lot::Mutex;
 use rama_core::error::{BoxError, ErrorContext, OpaqueError};
 use rama_core::{Context, Layer, Service};
-use rama_utils::macros::generate_field_setters;
+use rama_utils::macros::{generate_field_setters, generate_set_and_with};
 use std::collections::VecDeque;
 use std::fmt::Debug;
 use std::ops::{Deref, DerefMut};
@@ -464,7 +464,16 @@ impl<S, P, R> PooledConnector<S, P, R> {
         }
     }
 
-    generate_field_setters!(wait_for_pool_timeout, Duration);
+    generate_set_and_with!(
+        /// Set timeout after which requesting a connection from the pool will timeout
+        ///
+        /// If no timeout is specified there will be no limit, this could be dangerous
+        /// depending on how many users are waiting for a connection
+        pub fn wait_for_pool_timeout(&mut self, timeout: impl Into<Option<Duration>>) -> &mut Self {
+            self.wait_for_pool_timeout = timeout.into();
+            self
+        }
+    );
 }
 
 impl<State, Request, S, P, R> Service<State, Request> for PooledConnector<S, P, R>
@@ -538,12 +547,12 @@ impl<S, P: Clone, R: Clone> Layer<S> for PooledConnectorLayer<P, R> {
 
     fn layer(&self, inner: S) -> Self::Service {
         PooledConnector::new(inner, self.pool.clone(), self.req_to_conn_id.clone())
-            .maybe_with_wait_for_pool_timeout(self.wait_for_pool_timeout)
+            .with_wait_for_pool_timeout(self.wait_for_pool_timeout)
     }
 
     fn into_layer(self, inner: S) -> Self::Service {
         PooledConnector::new(inner, self.pool, self.req_to_conn_id)
-            .maybe_with_wait_for_pool_timeout(self.wait_for_pool_timeout)
+            .with_wait_for_pool_timeout(self.wait_for_pool_timeout)
     }
 }
 
@@ -636,7 +645,7 @@ pub mod http {
         > {
             let pool = FiFoReuseLruDropPool::new(self.max_active, self.max_total)?;
             Ok(PooledConnector::new(inner, pool, BasicHttpConnIdentifier)
-                .maybe_with_wait_for_pool_timeout(self.wait_for_pool_timeout))
+                .with_wait_for_pool_timeout(self.wait_for_pool_timeout))
         }
     }
 }
