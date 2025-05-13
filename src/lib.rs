@@ -80,7 +80,7 @@
 //! - 🚦 [Reverse proxies](https://ramaproxy.org/book/proxies/reverse);
 //! - 🔓 [TLS Termination proxies](https://ramaproxy.org/book/proxies/tls);
 //! - 🌐 [HTTP(S) proxies](https://ramaproxy.org/book/proxies/http);
-//! - 🧦 [SOCKS5 proxies](https://ramaproxy.org/book/proxies/socks5) (will be implemented in `v0.3`);
+//! - 🧦 [SOCKS5 proxies](https://ramaproxy.org/book/proxies/socks5);
 //! - 🔎 [MITM proxies](https://ramaproxy.org/book/proxies/mitm);
 //! - 🕵️‍♀️ [Distortion proxies](https://ramaproxy.org/book/proxies/distort).
 //!
