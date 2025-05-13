@@ -15,7 +15,6 @@ workspace = true
 
 [dependencies]
 const_format = { workspace = true }
-csv = { workspace = true }
 futures-core = { workspace = true }
 futures-lite = { workspace = true }
 http = { workspace = true }
@@ -29,7 +28,6 @@ rama-error = { workspace = true }
 rama-macros = { workspace = true }
 rama-utils = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
-serde_html_form = { workspace = true }
 serde_json = { workspace = true }
 smallvec = { workspace = true }
 sync_wrapper = { workspace = true }

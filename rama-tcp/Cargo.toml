@@ -22,7 +22,6 @@ rama-core = { workspace = true }
 rama-dns = { workspace = true }
 rama-http-types = { workspace = true, optional = true }
 rama-net = { workspace = true }
-rama-utils = { workspace = true }
 tokio = { workspace = true, features = ["macros", "net"] }
 tracing = { workspace = true }
 
