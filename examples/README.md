@@ -49,6 +49,8 @@ This directory contains example implementations demonstrating various features a
   SOCKS5 BIND proxy implementation showing how to run it from both client and server
 - [`socks5_udp_associate.rs`](./socks5_udp_associate.rs) -
   SOCKS5 UDP Associate client+server example w/ sync inspector added
+- [`socks5_udp_associate_framed.rs`](./socks5_udp_associate_framed.rs) -
+  Same as `socks5_udp_associate.rs` but demonstrating how to combine it with frames
 
 ## TLS and Security
 ### Rustls

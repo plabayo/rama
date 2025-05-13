@@ -2,10 +2,12 @@ use crate::UdpFramed;
 use rama_core::bytes::BufMut;
 use rama_core::error::{BoxError, ErrorContext};
 use rama_net::{address::SocketAddress, socket::Interface};
+use std::task::{Context, Poll};
 use std::{
     io,
     net::{Ipv4Addr, Ipv6Addr, SocketAddr},
 };
+use tokio::io::ReadBuf;
 use tokio::net::UdpSocket as TokioUdpSocket;
 
 #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
@@ -301,6 +303,28 @@ impl UdpSocket {
         self.inner.send(buf).await
     }
 
+    /// Same as [`Self::send`] but polled.
+    ///
+    /// Note that on multiple calls to a `poll_*` method in the send direction,
+    /// only the `Waker` from the `Context` passed to the most recent call will
+    /// be scheduled to receive a wakeup.
+    ///
+    /// # Return value
+    ///
+    /// The function returns:
+    ///
+    /// * `Poll::Pending` if the socket is not available to write
+    /// * `Poll::Ready(Ok(n))` `n` is the number of bytes sent
+    /// * `Poll::Ready(Err(e))` if an error is encountered.
+    ///
+    /// # Errors
+    ///
+    /// This function may encounter any standard I/O error except `WouldBlock`.
+    #[inline]
+    pub fn poll_send(&self, cx: &mut Context<'_>, buf: &[u8]) -> Poll<io::Result<usize>> {
+        self.inner.poll_send(cx, buf)
+    }
+
     /// Receives a single datagram message on the socket from the remote address
     /// to which it is connected. On success, returns the number of bytes read.
     ///
@@ -341,6 +365,28 @@ impl UdpSocket {
     #[inline]
     pub async fn recv(&self, buf: &mut [u8]) -> io::Result<usize> {
         self.inner.recv(buf).await
+    }
+
+    /// Same as [`Self::recv`] but polled.
+    ///
+    /// Note that on multiple calls to a `poll_*` method in the `recv` direction, only the
+    /// `Waker` from the `Context` passed to the most recent call will be scheduled to
+    /// receive a wakeup.
+    ///
+    /// # Return value
+    ///
+    /// The function returns:
+    ///
+    /// * `Poll::Pending` if the socket is not ready to read
+    /// * `Poll::Ready(Ok(()))` reads data `ReadBuf` if the socket is ready
+    /// * `Poll::Ready(Err(e))` if an error is encountered.
+    ///
+    /// # Errors
+    ///
+    /// This function may encounter any standard I/O error except `WouldBlock`.
+    #[inline]
+    pub fn poll_recv(&self, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<io::Result<()>> {
+        self.inner.poll_recv(cx, buf)
     }
 
     /// Receives a single datagram message on the socket from the remote address
@@ -458,6 +504,37 @@ impl UdpSocket {
         Ok(self.inner.send_to(buf, tokio_socket_addr).await?)
     }
 
+    #[inline]
+    /// Same as [`Self::send_to`] but polled.
+    ///
+    /// Note that on multiple calls to a `poll_*` method in the send direction, only the
+    /// `Waker` from the `Context` passed to the most recent call will be scheduled to
+    /// receive a wakeup.
+    ///
+    /// # Return value
+    ///
+    /// The function returns:
+    ///
+    /// * `Poll::Pending` if the socket is not ready to write
+    /// * `Poll::Ready(Ok(n))` `n` is the number of bytes sent.
+    /// * `Poll::Ready(Err(e))` if an error is encountered.
+    ///
+    /// # Errors
+    ///
+    /// This function may encounter any standard I/O error except `WouldBlock`.
+    pub fn poll_send_to<A: TryInto<SocketAddress, Error: Into<BoxError>>>(
+        &self,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+        addr: A,
+    ) -> Poll<Result<usize, BoxError>> {
+        let socket_addr = addr.try_into().map_err(Into::into)?;
+        let tokio_socket_addr: SocketAddr = socket_addr.into();
+        self.inner
+            .poll_send_to(cx, buf, tokio_socket_addr)
+            .map_err(BoxError::from)
+    }
+
     /// Receives a single datagram message on the socket. On success, returns
     /// the number of bytes read and the origin.
     ///
@@ -502,6 +579,15 @@ impl UdpSocket {
     pub async fn recv_from(&self, buf: &mut [u8]) -> io::Result<(usize, SocketAddress)> {
         let (n, addr) = self.inner.recv_from(buf).await?;
         Ok((n, addr.into()))
+    }
+
+    /// Same as [`Self::recv_from`] but polled.
+    pub fn poll_recv_from(
+        &self,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<SocketAddress>> {
+        self.inner.poll_recv_from(cx, buf).map_ok(Into::into)
     }
 
     /// Receives a single datagram from the connected address without removing it from the queue.

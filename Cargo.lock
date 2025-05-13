@@ -2706,6 +2706,9 @@ dependencies = [
 name = "rama-socks5"
 version = "0.3.0-alpha.1"
 dependencies = [
+ "byteorder",
+ "futures-core",
+ "futures-sink",
  "rama-core",
  "rama-dns",
  "rama-net",

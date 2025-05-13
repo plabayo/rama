@@ -2,14 +2,16 @@
 //!
 //! [RFC 1928]: https://datatracker.ietf.org/doc/html/rfc1928
 
+use byteorder::{BigEndian, ReadBytesExt};
 use rama_core::bytes::BufMut;
+use std::io::Read;
 use tokio::io::{AsyncRead, AsyncReadExt};
 
 use crate::proto::common::write_authority_to_buf;
 
 use super::{
     ProtocolError,
-    common::{authority_length, read_authority},
+    common::{authority_length, read_authority, read_authority_sync},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -109,6 +111,25 @@ impl UdpHeader {
         })
     }
 
+    /// Read the [`UdpPacket`], decoded from binary format as specified by [RFC 1928] from the reader.
+    ///
+    /// [RFC 1928]: https://datatracker.ietf.org/doc/html/rfc1928
+    pub fn read_from_sync<R>(r: &mut R) -> Result<Self, ProtocolError>
+    where
+        R: Read,
+    {
+        let _rsv = r.read_u16::<BigEndian>()?;
+
+        let fragment_number = r.read_u8()?;
+
+        let destination = read_authority_sync(r)?;
+
+        Ok(UdpHeader {
+            fragment_number,
+            destination,
+        })
+    }
+
     /// Write the [`UdpPacket`] in binary format as specified by [RFC 1928] into the buffer.
     ///
     /// [RFC 1928]: https://datatracker.ietf.org/doc/html/rfc1928
@@ -127,10 +148,11 @@ impl UdpHeader {
 mod tests {
     use rama_core::bytes::BytesMut;
     use rama_net::address::Authority;
+    use std::io::Write;
     use tokio::io::{AsyncWrite, AsyncWriteExt};
 
     use super::*;
-    use crate::proto::test_write_read_eq;
+    use crate::proto::{test_write_read_eq, test_write_read_sync_eq};
 
     impl UdpHeader {
         // to expensive in production, so only enable in tests
@@ -142,11 +164,32 @@ mod tests {
             self.write_to_buf(&mut buf);
             w.write_all(&buf).await
         }
+
+        // to expensive in production, so only enable in tests
+        pub fn write_to_sync<W>(&self, w: &mut W) -> Result<(), std::io::Error>
+        where
+            W: Write,
+        {
+            let mut buf = BytesMut::with_capacity(self.serialized_len());
+            self.write_to_buf(&mut buf);
+            w.write_all(&buf)
+        }
     }
 
     #[tokio::test]
     async fn test_udp_packet_write_read_eq() {
         test_write_read_eq!(
+            UdpHeader {
+                fragment_number: 2,
+                destination: Authority::local_ipv6(45),
+            },
+            UdpHeader
+        );
+    }
+
+    #[test]
+    fn test_udp_packet_write_read_sync_eq() {
+        test_write_read_sync_eq!(
             UdpHeader {
                 fragment_number: 2,
                 destination: Authority::local_ipv6(45),

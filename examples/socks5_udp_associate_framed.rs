@@ -3,7 +3,7 @@
 //! # Run the example
 //!
 //! ```sh
-//! cargo run --example socks5_udp_associate --features=socks5
+//! cargo run --example socks5_udp_associate_framed --features=socks5
 //! ```
 //!
 //! # Expected output
@@ -14,6 +14,7 @@
 
 use rama::{
     Context,
+    bytes::Bytes,
     net::address::SocketAddress,
     proxy::socks5::{Socks5Acceptor, Socks5Auth},
     proxy::socks5::{
@@ -25,9 +26,10 @@ use rama::{
     },
     tcp::client::default_tcp_connect,
     tcp::server::TcpListener,
-    udp::UdpSocket,
+    udp::{UdpSocket, codec::BytesCodec},
 };
 
+use futures::{FutureExt, SinkExt, StreamExt};
 use std::convert::Infallible;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
@@ -72,27 +74,28 @@ async fn main() {
     tokio::spawn(async move {
         tracing::info!("server: ready");
 
-        let mut buf = [0u8; 4];
-        let (_, client_addr) = udp_server
-            .recv_from(&mut buf)
-            .await
-            .expect("server read 'ping'");
+        let mut fs = udp_server.into_framed(BytesCodec::new());
 
-        assert_eq!(b"ping", &buf[..]);
+        let (bytes, client_addr) = fs
+            .next()
+            .map(|result| result.expect("server read 'ping' bytes"))
+            .await
+            .expect("server decode 'ping'  bytes");
+
+        assert_eq!(b"ping", &bytes[..]);
 
         tracing::info!("server: write pong via socks5 proxy to client");
 
-        udp_server
-            .send_to(b"pong", client_addr)
+        fs.send((Bytes::from("pong"), client_addr))
             .await
-            .expect("server write 'pong'");
+            .expect("server write 'pong' bytes");
 
         // read something that will never come,
         // so we stay blocked until client drops
-        let _ = udp_server.recv(&mut buf).await;
+        let _ = fs.next().await;
     });
 
-    let mut udp_socket_relay = udp_binder
+    let udp_socket_relay = udp_binder
         .bind(SocketAddress::local_ipv4(0))
         .await
         .expect("server to be connected");
@@ -103,23 +106,25 @@ async fn main() {
 
     tracing::info!(%udp_client_addr, "client: socket created");
 
+    let mut udp_framed_relay = udp_socket_relay.into_framed(BytesCodec::new());
+
     tracing::info!("client: write ping via socks5 proxy to server");
 
-    udp_socket_relay
-        .send_to(b"ping", udp_server_addr)
+    udp_framed_relay
+        .send((Bytes::from("ping"), udp_server_addr.into()))
         .await
         .expect("client write 'ping'");
 
     tracing::info!("client: read pong via socks5 proxy from server");
 
-    let mut buf = [0u8; 2048];
-    let (n, recv_udp_server_addr) = udp_socket_relay
-        .recv_from(&mut buf)
+    let (bytes, recv_udp_server_addr) = udp_framed_relay
+        .next()
+        .map(|result| result.expect("client read 'PONG'"))
         .await
-        .expect("client read 'PONG'");
+        .expect("client decode 'PONG'");
 
     assert_eq!(recv_udp_server_addr, udp_server_addr);
-    assert_eq!(b"PONG", &buf[..n]);
+    assert_eq!(b"PONG", &bytes[..]);
 
     tracing::info!("ping-pong (with pong uppercased to PONG) succeeded, bye now!")
 }

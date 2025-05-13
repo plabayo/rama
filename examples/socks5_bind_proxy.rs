@@ -14,14 +14,15 @@
 
 use rama::{
     Context,
-    proxy::socks5::{Socks5Acceptor, Socks5Auth},
+    net::address::SocketAddress,
+    proxy::socks5::{
+        Socks5Acceptor, Socks5Auth, Socks5Client, client::bind::BindOutput, server::DefaultBinder,
+    },
+    tcp::client::default_tcp_connect,
     tcp::server::TcpListener,
 };
-use rama_net::address::SocketAddress;
-use rama_socks5::{Socks5Client, client::bind::BindOutput, server::DefaultBinder};
-use rama_tcp::client::default_tcp_connect;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 

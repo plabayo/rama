@@ -126,6 +126,7 @@ tracing-subscriber = "0.3"
 tracing-tree = "0.4"
 trybuild = "1.0"
 uuid = "1.16"
+byteorder = "1.5"
 nanoid = "0.4"
 zstd = "0.13"
 venndb = "0.5"
@@ -517,6 +518,10 @@ required-features = ["socks5"]
 
 [[example]]
 name = "socks5_udp_associate"
+required-features = ["socks5"]
+
+[[example]]
+name = "socks5_udp_associate_framed"
 required-features = ["socks5"]
 
 [profile.release]

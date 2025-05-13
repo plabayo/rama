@@ -69,6 +69,9 @@ mod socks5_bind_proxy;
 #[cfg(feature = "socks5")]
 mod socks5_udp_associate;
 
+#[cfg(feature = "socks5")]
+mod socks5_udp_associate_framed;
+
 #[cfg(all(feature = "boring", feature = "http-full"))]
 mod tls_rustls_dynamic_certs;
 
