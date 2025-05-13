@@ -45,6 +45,14 @@ but can just as easily sniff the application packets and as such be [a MITM prox
 It can even go further and actively mold the packets and therefore be more of
 [a Distortion proxy](./distort.md).
 
+## Socks5 Protocol
+
+Rama's implementation of the SOCKS5 Protocols [RFC 1928] and [RFC 1929]
+can be found here: <https://ramaproxy.org/docs/rama/proxy/socks5/proto/index.html>
+
+[RFC 1928]: https://datatracker.ietf.org/doc/html/rfc1928
+[RFC 1929]: https://datatracker.ietf.org/doc/html/1929
+
 ## Transport Proxies
 
 Proxies that operate on the TCP/UDP layers are also referred to as "transport proxies".
@@ -59,7 +67,7 @@ you can if you want to still run your proxy as a [Man In The Middle Proxy](./mit
 and at that point you are no longer a transport proxy, but do see the http requests coming by,
 regardless if they were initially secured via tls.
 
-## Chapter: SOCKS5 CONNECT
+## Socks5 command: CONNECT
 
 ### Overview
 
@@ -138,7 +146,7 @@ Client                Proxy (Rama)           Target Server
   | <==== TCP Relay ============================> |
 ```
 
-## SOCKS5 BIND
+## Socks5 command: BIND
 
 In addition to the common `CONNECT`, the SOCKS5 protocol also supports a less frequently used command: `BIND`.
 
@@ -197,7 +205,7 @@ Client                Proxy (Rama)            Peer (Remote)
   | <==== TCP Relay =============================> |
 ```
 
-## SOCKS5 UDP ASSOCIATE
+## Socks5 command: UDP ASSOCIATE
 
 The `UDP ASSOCIATE` command in SOCKS5 allows a client to proxy **UDP datagrams** through the SOCKS5 server. This is essential for supporting protocols that are UDP-based, such as DNS, QUIC, VoIP, gaming traffic, or any custom UDP-based application.
 
