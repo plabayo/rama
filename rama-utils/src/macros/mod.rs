@@ -402,6 +402,14 @@ mod test {
             should_execute: bool,
         }
 
+        struct AlsoABool(bool);
+
+        impl From<AlsoABool> for bool {
+            fn from(value: AlsoABool) -> Self {
+                value.0
+            }
+        }
+
         impl Builder {
             generate_set_and_with!(
                 /// Configure maybe something
@@ -421,7 +429,7 @@ mod test {
             );
         }
 
-        let test_string = "test".to_string();
+        let test_string = "test".to_owned();
 
         let builder = Builder::default();
         assert_eq!(builder.something, None);
@@ -442,13 +450,16 @@ mod test {
         assert_eq!(builder.something, Some(test_string.clone()));
 
         let builder = Builder::default();
-        assert_eq!(builder.should_execute, false);
+        assert!(!builder.should_execute);
         let builder = builder.with_should_execute(true);
-        assert_eq!(builder.should_execute, true);
+        assert!(builder.should_execute);
 
         let mut builder = Builder::default();
-        assert_eq!(builder.should_execute, false);
+        assert!(!builder.should_execute);
         builder.set_should_execute(true);
-        assert_eq!(builder.should_execute, true);
+        assert!(builder.should_execute);
+
+        let builder = Builder::default().with_should_execute(AlsoABool(true));
+        assert!(builder.should_execute)
     }
 }
