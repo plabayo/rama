@@ -1,4 +1,4 @@
-use crate::dep::http_body_util::BodyExt;
+use crate::{dep::http_body_util::BodyExt, BodyDataStream};
 use bytes::Bytes;
 use futures_core::Stream;
 use rama_error::{BoxError, ErrorContext, OpaqueError};
@@ -45,8 +45,8 @@ where
         String::from_utf8(bytes.to_vec()).context("parse body as utf-8 string")
     }
 
-    async fn into_stream(self) -> Result<Bytes, OpaqueError> {
-        todo!()
+    fn into_stream(self) -> BodyDataStream {
+        self.into_body().into_data_stream()
     }
 }
 
