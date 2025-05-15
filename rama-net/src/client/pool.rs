@@ -469,7 +469,7 @@ impl<S, P, R> PooledConnector<S, P, R> {
         ///
         /// If no timeout is specified there will be no limit, this could be dangerous
         /// depending on how many users are waiting for a connection
-        pub fn wait_for_pool_timeout(mut self, timeout: impl Into<Option<Duration>>) -> Self {
+        pub fn wait_for_pool_timeout(mut self, timeout: Option<Duration>) -> Self {
             self.wait_for_pool_timeout = timeout.into();
             self
         }
@@ -547,12 +547,12 @@ impl<S, P: Clone, R: Clone> Layer<S> for PooledConnectorLayer<P, R> {
 
     fn layer(&self, inner: S) -> Self::Service {
         PooledConnector::new(inner, self.pool.clone(), self.req_to_conn_id.clone())
-            .with_wait_for_pool_timeout(self.wait_for_pool_timeout)
+            .maybe_with_wait_for_pool_timeout(self.wait_for_pool_timeout)
     }
 
     fn into_layer(self, inner: S) -> Self::Service {
         PooledConnector::new(inner, self.pool, self.req_to_conn_id)
-            .with_wait_for_pool_timeout(self.wait_for_pool_timeout)
+            .maybe_with_wait_for_pool_timeout(self.wait_for_pool_timeout)
     }
 }
 
@@ -645,7 +645,7 @@ pub mod http {
         > {
             let pool = FiFoReuseLruDropPool::new(self.max_active, self.max_total)?;
             Ok(PooledConnector::new(inner, pool, BasicHttpConnIdentifier)
-                .with_wait_for_pool_timeout(self.wait_for_pool_timeout))
+                .maybe_with_wait_for_pool_timeout(self.wait_for_pool_timeout))
         }
     }
 }

@@ -239,6 +239,40 @@ macro_rules! __generate_set_and_with {
     (
         $(
             $(#[$outer_doc:meta])*
+            $vis:vis fn $fn_name:ident(mut $self_token:ident, $param_name:ident: Option<$param_ty:ty> $(,)?) -> Self {
+                $($body:tt)*
+            }
+        )*
+    ) => {
+        rama_utils::macros::paste! {
+            $(
+                $(#[$outer_doc])*
+                $vis fn [<maybe_with_ $fn_name>](mut $self_token, $param_name: Option<$param_ty>) -> Self {
+                    $($body)*
+                }
+
+                $(#[$outer_doc])*
+                $vis fn [<maybe_set_ $fn_name>](&mut $self_token, $param_name: Option<$param_ty>) -> &mut Self {
+                    $($body)*
+                }
+
+                $(#[$outer_doc])*
+                $vis fn [<with_ $fn_name>](mut $self_token, $param_name: $param_ty) -> Self {
+                    let $param_name = Some($param_name);
+                    $($body)*
+                }
+
+                $(#[$outer_doc])*
+                $vis fn [<set_ $fn_name>](&mut $self_token, $param_name: $param_ty) -> &mut Self {
+                    let $param_name = Some($param_name);
+                    $($body)*
+                }
+            )*
+        }
+    };
+    (
+        $(
+            $(#[$outer_doc:meta])*
             $vis:vis fn $fn_name:ident(mut $self_token:ident, $($param_name:ident: $param_ty:ty),+ $(,)?) -> Self {
                 $($body:tt)*
             }
