@@ -167,18 +167,18 @@ impl EasyHttpWebClient {
 impl<I1, I2, P> EasyHttpWebClient<I1, I2, P> {
     #[cfg(any(feature = "rustls", feature = "boring"))]
     generate_set_and_with!(
-        /// Set the [`TlsConnectorLayer`] that this [`EasyHttpWebClient`] will use.
-        pub fn tls_connector_config(mut self, layer: Option<TlsConnectorConfig>) -> Self {
-            self.tls_connector_config = layer;
+        /// Set the [`TlsConnectorConfig`] that this [`EasyHttpWebClient`] will use.
+        pub fn tls_connector_config(mut self, config: Option<TlsConnectorConfig>) -> Self {
+            self.tls_connector_config = config;
             self
         }
     );
 
     #[cfg(any(feature = "rustls", feature = "boring"))]
     generate_set_and_with!(
-        /// Set the [`TlsConfig`] for the https proxy tunnel if needed within this [`EasyHttpWebClient`].
-        pub fn proxy_tls_connector_config(mut self, layer: Option<TlsConnectorConfig>) -> Self {
-            self.proxy_tls_connector_config = layer;
+        /// Set the [`TlsConnectorConfig`] for the https proxy tunnel if needed within this [`EasyHttpWebClient`].
+        pub fn proxy_tls_connector_config(mut self, config: Option<TlsConnectorConfig>) -> Self {
+            self.proxy_tls_connector_config = config;
             self
         }
     );
