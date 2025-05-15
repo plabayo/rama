@@ -168,64 +168,31 @@ impl<I1, I2, P> EasyHttpWebClient<I1, I2, P> {
     #[cfg(any(feature = "rustls", feature = "boring"))]
     generate_set_and_with!(
         /// Set the [`TlsConnectorLayer`] that this [`EasyHttpWebClient`] will use.
-        pub fn tls_connector_config(
-            mut self,
-            layer: impl Into<Option<TlsConnectorConfig>>,
-        ) -> Self {
+        pub fn tls_connector_config(mut self, layer: Option<TlsConnectorConfig>) -> Self {
             self.tls_connector_config = layer.into();
             self
         }
     );
 
     #[cfg(any(feature = "rustls", feature = "boring"))]
-    /// Set the [`TlsConfig`] for the https proxy tunnel if needed within this [`EasyHttpWebClient`].
-    pub fn set_proxy_tls_connector_config(&mut self, layer: TlsConnectorConfig) -> &mut Self {
-        self.proxy_tls_connector_config = Some(layer);
-        self
-    }
+    generate_set_and_with!(
+        /// Set the [`TlsConfig`] for the https proxy tunnel if needed within this [`EasyHttpWebClient`].
+        pub fn proxy_tls_connector_config(mut self, layer: Option<TlsConnectorConfig>) -> Self {
+            self.proxy_tls_connector_config = layer;
+            self
+        }
+    );
 
-    #[cfg(any(feature = "rustls", feature = "boring"))]
-    /// Replace this [`EasyHttpWebClient`] set for the https proxy tunnel if needed within this [`TlsConfig`].
-    pub fn with_proxy_tls_connector_config(mut self, layer: TlsConnectorConfig) -> Self {
-        self.proxy_tls_connector_config = Some(layer);
-        self
-    }
-
-    #[cfg(any(feature = "rustls", feature = "boring"))]
-    /// Replace this [`EasyHttpWebClient`] set for the https proxy tunnel if needed within this [`TlsConfig`].
-    pub fn maybe_proxy_with_tls_connector_config(
-        mut self,
-        layer: Option<TlsConnectorConfig>,
-    ) -> Self {
-        self.proxy_tls_connector_config = layer;
-        self
-    }
-
-    /// Set the HTTP version to use for the Http Proxy CONNECT request.
-    ///
-    /// By default this is set to HTTP/1.1.
-    pub fn with_proxy_http_connect_version(mut self, version: Version) -> Self {
-        self.proxy_http_connect_version = Some(version);
-        self
-    }
-
-    /// Set the HTTP version to use for the Http Proxy CONNECT request.
-    pub fn set_proxy_http_connect_version(&mut self, version: Version) -> &mut Self {
-        self.proxy_http_connect_version = Some(version);
-        self
-    }
-
-    /// Set the HTTP version to auto detect for the Http Proxy CONNECT request.
-    pub fn with_proxy_http_connect_auto_version(mut self) -> Self {
-        self.proxy_http_connect_version = None;
-        self
-    }
-
-    /// Set the HTTP version to auto detect for the Http Proxy CONNECT request.
-    pub fn set_proxy_http_connect_auto_version(&mut self) -> &mut Self {
-        self.proxy_http_connect_version = None;
-        self
-    }
+    generate_set_and_with!(
+        /// Set the HTTP version to use for the Http Proxy CONNECT request.
+        ///
+        /// By default this is set to HTTP/1.1.
+        /// If this is not set to None the version will be negotiated automatically
+        pub fn proxy_http_connect_version(mut self, version: Option<Version>) -> Self {
+            self.proxy_http_connect_version = version;
+            self
+        }
+    );
 
     #[cfg(any(feature = "rustls", feature = "boring"))]
     pub fn with_http_conn_req_inspector<T>(
