@@ -3,7 +3,7 @@ use crate::stream::Socket;
 use parking_lot::Mutex;
 use rama_core::error::{BoxError, ErrorContext, OpaqueError};
 use rama_core::{Context, Layer, Service};
-use rama_utils::macros::{generate_field_setters, generate_set_and_with};
+use rama_utils::macros::generate_set_and_with;
 use std::collections::VecDeque;
 use std::fmt::Debug;
 use std::ops::{Deref, DerefMut};
@@ -539,7 +539,16 @@ impl<P, R> PooledConnectorLayer<P, R> {
         }
     }
 
-    generate_field_setters!(wait_for_pool_timeout, Duration);
+    generate_set_and_with!(
+        /// Set timeout after which requesting a connection from the pool will timeout
+        ///
+        /// If no timeout is specified there will be no limit, this could be dangerous
+        /// depending on how many users are waiting for a connection
+        pub fn wait_for_pool_timeout(mut self, timeout: Option<Duration>) -> Self {
+            self.wait_for_pool_timeout = timeout;
+            self
+        }
+    );
 }
 
 impl<S, P: Clone, R: Clone> Layer<S> for PooledConnectorLayer<P, R> {
