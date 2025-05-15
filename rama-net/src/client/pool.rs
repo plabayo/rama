@@ -470,7 +470,7 @@ impl<S, P, R> PooledConnector<S, P, R> {
         /// If no timeout is specified there will be no limit, this could be dangerous
         /// depending on how many users are waiting for a connection
         pub fn wait_for_pool_timeout(mut self, timeout: Option<Duration>) -> Self {
-            self.wait_for_pool_timeout = timeout.into();
+            self.wait_for_pool_timeout = timeout;
             self
         }
     );
