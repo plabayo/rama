@@ -244,7 +244,7 @@ macro_rules! __generate_set_and_with {
             }
         )*
     ) => {
-        rama_utils::macros::paste! {
+        $crate::macros::paste! {
             $(
                 $(#[$outer_doc])*
                 $vis fn [<maybe_with_ $fn_name>](mut $self_token, $param_name: Option<$param_ty>) -> Self {
@@ -267,6 +267,18 @@ macro_rules! __generate_set_and_with {
                     let $param_name = Some($param_name);
                     $($body)*
                 }
+
+                $(#[$outer_doc])*
+                $vis fn [<without_ $fn_name>](mut $self_token) -> Self {
+                    let $param_name = None;
+                    $($body)*
+                }
+
+                $(#[$outer_doc])*
+                $vis fn [<unset_ $fn_name>](&mut $self_token) -> &mut Self {
+                    let $param_name = None;
+                    $($body)*
+                }
             )*
         }
     };
@@ -278,7 +290,7 @@ macro_rules! __generate_set_and_with {
             }
         )*
     ) => {
-        rama_utils::macros::paste! {
+        $crate::macros::paste! {
             $(
                 $(#[$outer_doc])*
                 $vis fn [<with_ $fn_name>](mut $self_token, $($param_name: $param_ty),+) -> Self {
