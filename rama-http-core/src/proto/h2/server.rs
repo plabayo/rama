@@ -87,6 +87,9 @@ pin_project! {
     }
 }
 
+// TODO: revisit later to see if we really want this
+
+#[allow(clippy::large_enum_variant)]
 enum State<T> {
     Handshaking {
         ping_config: ping::Config,

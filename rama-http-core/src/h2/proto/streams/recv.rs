@@ -150,9 +150,12 @@ impl Recv {
         Ok(Some(id))
     }
 
+    // TODO: revisit to see if we can avoid large result here
+
     /// Transition the stream state based on receiving headers
     ///
     /// The caller ensures that the frame represents headers and not trailers.
+    #[allow(clippy::result_large_err)]
     pub(super) fn recv_headers(
         &mut self,
         frame: frame::Headers,

@@ -460,11 +460,7 @@ where
                 wr_len = %wr_n,
                 "failed to write entire datagram to socket"
             );
-            Err(io::Error::new(
-                io::ErrorKind::Other,
-                "failed to write entire datagram to socket",
-            )
-            .into())
+            Err(io::Error::other("failed to write entire datagram to socket").into())
         };
 
         Poll::Ready(res)

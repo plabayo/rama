@@ -1695,10 +1695,7 @@ mod conn {
             support::runtime().block_on(rx).unwrap();
 
             // Aborts the body in an abnormal fashion.
-            let _ = sender.try_send(Err(Box::new(std::io::Error::new(
-                io::ErrorKind::Other,
-                "body write aborted",
-            ))));
+            let _ = sender.try_send(Err(Box::new(std::io::Error::other("body write aborted"))));
         });
 
         let req = Request::builder()

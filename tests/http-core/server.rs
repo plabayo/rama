@@ -3359,10 +3359,7 @@ where
         }
 
         if pos == buf.len() {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                "read_until buffer filled",
-            ));
+            return Err(io::Error::other("read_until buffer filled"));
         }
     }
     buf.truncate(pos);

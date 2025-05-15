@@ -111,7 +111,7 @@ where
         .map(|body| {
             body.map_err(|err| match err.into().downcast::<io::Error>() {
                 Ok(err) => *err,
-                Err(err) => io::Error::new(io::ErrorKind::Other, err),
+                Err(err) => io::Error::other(err),
             })
             .boxed()
         })

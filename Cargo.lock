@@ -2372,9 +2372,9 @@ dependencies = [
 
 [[package]]
 name = "rama-boring"
-version = "0.2.0-alpha.6"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1f9f292c90071be607788a32902eb469aa700cbedb3a7ff89f9e7aea4748a50f"
+checksum = "642f47434dbb6a574e585ac008ee7fef3149b2c97db578809409d7abfc4a4dba"
 dependencies = [
  "bitflags",
  "foreign-types",
@@ -2385,9 +2385,9 @@ dependencies = [
 
 [[package]]
 name = "rama-boring-sys"
-version = "0.2.0-alpha.6"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b4d21214d5d8f7fadddfed54a23ebcbf1c9b7d48bf330866973e6a125e0ff731"
+checksum = "cad3f5684d3a43d706a2510cacf6a69deacc3187a78262e5c97b93dad42388af"
 dependencies = [
  "autocfg",
  "bindgen 0.71.1",
@@ -2398,9 +2398,9 @@ dependencies = [
 
 [[package]]
 name = "rama-boring-tokio"
-version = "0.2.0-alpha.6"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ad64d69fd3d8a3e02c58bf2869d1dd549fa99bef763cf50839113aa3a9c5e121"
+checksum = "803429a9e7cb01f0e6f715b7a3cd05999b8706babb90e76653f357b9c297abde"
 dependencies = [
  "rama-boring",
  "rama-boring-sys",
