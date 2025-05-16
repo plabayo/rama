@@ -28,11 +28,10 @@
 //!
 //! You should see in all the above examples the responses from the server.
 
-use http::StatusCode;
 use rama::{
     Context, Layer, Service,
     http::{
-        Body, Request, Response,
+        Body, Request, Response, StatusCode,
         client::EasyHttpWebClient,
         layer::{
             compress_adapter::CompressAdaptLayer,

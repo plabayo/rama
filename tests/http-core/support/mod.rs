@@ -6,8 +6,8 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-use http::StatusCode;
 use rama::Context;
+use rama::http::StatusCode;
 use rama::http::core::server;
 use rama::http::core::service::RamaHttpService;
 use rama::http::dep::http_body_util::{BodyExt, Full};

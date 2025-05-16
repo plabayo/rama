@@ -20,10 +20,12 @@
 //! This example finishes automatically as it tests itself with a rama socks5 client
 //! that goes through Tls, with the power of rama. Be empowered, be brave, go forward.
 
-use http::Request;
 use rama::{
     Context, Service,
-    http::{Body, BodyExtractExt, client::HttpConnector, server::HttpServer, service::web::Router},
+    http::{
+        Body, BodyExtractExt, Request, client::HttpConnector, server::HttpServer,
+        service::web::Router,
+    },
     net::{
         Protocol,
         address::{ProxyAddress, SocketAddress},
