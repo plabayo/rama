@@ -1,4 +1,4 @@
-use crate::{dep::http_body_util::BodyExt, BodyDataStream};
+use crate::dep::http_body_util::BodyExt;
 use bytes::Bytes;
 use futures_core::Stream;
 use rama_error::{BoxError, ErrorContext, OpaqueError};
@@ -7,6 +7,9 @@ use rama_error::{BoxError, ErrorContext, OpaqueError};
 ///
 /// [`Body`]: crate::Body
 pub trait BodyExtractExt: private::Sealed {
+    type StreamData;
+    type StreamError;
+
     /// Try to deserialize the (contained) body as a JSON object.
     fn try_into_json<T: serde::de::DeserializeOwned + Send + 'static>(
         self,
@@ -15,14 +18,19 @@ pub trait BodyExtractExt: private::Sealed {
     /// Try to turn the (contained) body in an utf-8 string.
     fn try_into_string(self) -> impl Future<Output = Result<String, OpaqueError>> + Send;
 
-    /// Turn the (contained) body into a stream of bytes.
-    fn into_stream(self) -> impl Stream<Item = Result<Bytes, OpaqueError>> + Send;
+    /// Turn the (contained) body into a stream of data.
+    fn into_data_stream(
+        self,
+    ) -> impl Stream<Item = Result<Self::StreamData, Self::StreamError>> + Send;
 }
 
 impl<Body> BodyExtractExt for crate::Response<Body>
 where
     Body: crate::dep::http_body::Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static,
 {
+    type StreamData = Body::Data;
+    type StreamError = Body::Error;
+
     async fn try_into_json<T: serde::de::DeserializeOwned + Send + 'static>(
         self,
     ) -> Result<T, OpaqueError> {
@@ -45,7 +53,9 @@ where
         String::from_utf8(bytes.to_vec()).context("parse body as utf-8 string")
     }
 
-    fn into_stream(self) -> BodyDataStream {
+    fn into_data_stream(
+        self,
+    ) -> impl Stream<Item = Result<Self::StreamData, Self::StreamError>> + Send {
         self.into_body().into_data_stream()
     }
 }
@@ -54,6 +64,9 @@ impl<Body> BodyExtractExt for crate::Request<Body>
 where
     Body: crate::dep::http_body::Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static,
 {
+    type StreamData = Body::Data;
+    type StreamError = Body::Error;
+
     async fn try_into_json<T: serde::de::DeserializeOwned + Send + 'static>(
         self,
     ) -> Result<T, OpaqueError> {
@@ -75,12 +88,17 @@ where
         String::from_utf8(bytes.to_vec()).context("parse request body as utf-8 string")
     }
 
-    async fn into_stream(self) -> Result<Bytes, OpaqueError> {
-        todo!()
+    fn into_data_stream(
+        self,
+    ) -> impl Stream<Item = Result<Self::StreamData, Self::StreamError>> + Send {
+        self.into_body().into_data_stream()
     }
 }
 
 impl<B: Into<crate::Body> + Send + 'static> BodyExtractExt for B {
+    type StreamData = Bytes;
+    type StreamError = BoxError;
+
     async fn try_into_json<T: serde::de::DeserializeOwned + Send + 'static>(
         self,
     ) -> Result<T, OpaqueError> {
@@ -94,8 +112,11 @@ impl<B: Into<crate::Body> + Send + 'static> BodyExtractExt for B {
         String::from_utf8(bytes.to_vec()).context("parse body as utf-8 string")
     }
 
-    async fn into_stream(self) -> Result<Bytes, OpaqueError> {
-        todo!()
+    fn into_data_stream(
+        self,
+    ) -> impl Stream<Item = Result<Self::StreamData, Self::StreamError>> + Send {
+        let body: crate::Body = self.into();
+        body.into_data_stream()
     }
 }
 
