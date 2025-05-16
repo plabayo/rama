@@ -84,7 +84,13 @@ where
 
         let offset = TLS_HEADER_PEEK_LEN - n;
         if offset > 0 {
-            peek_buf.copy_within(..n, offset);
+            tracing::trace!(
+                %n,
+                "move tls peek buffer cursor due to reading not enough"
+            );
+            for i in offset..0 {
+                peek_buf[i + offset] = peek_buf[i];
+            }
         }
 
         let stream = TlsPeekStream {
@@ -219,10 +225,7 @@ mod test {
     async fn test_peek_router_read_eof() {
         const CONTENT: &'static [u8] = b"\x16\x03\x03\x00\x2afoo";
 
-        async fn tls_service_fn(
-            _ctx: Context<()>,
-            mut stream: impl Stream + Unpin,
-        ) -> Result<&'static str, BoxError> {
+        async fn tls_service_fn(mut stream: impl Stream + Unpin) -> Result<&'static str, BoxError> {
             let mut v = Vec::default();
             let _ = stream.read_to_end(&mut v).await?;
             assert_eq!(CONTENT, v);
@@ -241,6 +244,35 @@ mod test {
             .await
             .unwrap();
         assert_eq!("ok", response);
+    }
+
+    #[tokio::test]
+    async fn test_peek_router_read_no_tls_eof() {
+        const CONTENT: &'static [u8] = b"foo";
+
+        async fn tls_service_fn() -> Result<&'static str, BoxError> {
+            Ok("tls")
+        }
+        let tls_service = service_fn(tls_service_fn);
+
+        async fn plain_service_fn(
+            mut stream: impl Stream + Unpin,
+        ) -> Result<&'static str, BoxError> {
+            let mut v = Vec::default();
+            let _ = stream.read_to_end(&mut v).await?;
+            assert_eq!(CONTENT, v);
+
+            Ok("plain")
+        }
+        let plain_service = service_fn(plain_service_fn);
+
+        let peek_tls_svc = TlsPeekRouter::new(tls_service).with_fallback(plain_service);
+
+        let response = peek_tls_svc
+            .serve(Context::default(), std::io::Cursor::new(CONTENT.to_vec()))
+            .await
+            .unwrap();
+        assert_eq!("plain", response);
     }
 
     #[tokio::test]
