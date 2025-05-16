@@ -5,7 +5,7 @@
 use crate::http::RequestContext;
 use crate::{Protocol, address::Authority};
 use rama_core::{Context, error::OpaqueError};
-use rama_http_types::{Request, Version, dep::http::request::Parts as HttpParts};
+use rama_http_types::{HttpRequestParts, Version};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// The context as relevant to the transport layer,
@@ -51,32 +51,14 @@ pub trait TryRefIntoTransportContext<State> {
     ) -> Result<TransportContext, Self::Error>;
 }
 
-impl<State, Body> TryFrom<(&Context<State>, &Request<Body>)> for TransportContext {
+impl<T: HttpRequestParts, State> TryFrom<(&Context<State>, &T)> for TransportContext {
     type Error = OpaqueError;
 
-    fn try_from(
-        (ctx, req): (&Context<State>, &Request<Body>),
-    ) -> Result<TransportContext, Self::Error> {
+    fn try_from((ctx, req): (&Context<State>, &T)) -> Result<TransportContext, Self::Error> {
         Ok(match ctx.get::<RequestContext>() {
             Some(req_ctx) => req_ctx.into(),
             None => {
                 let req_ctx = RequestContext::try_from((ctx, req))?;
-                req_ctx.into()
-            }
-        })
-    }
-}
-
-impl<State> TryFrom<(&Context<State>, &HttpParts)> for TransportContext {
-    type Error = OpaqueError;
-
-    fn try_from(
-        (ctx, parts): (&Context<State>, &HttpParts),
-    ) -> Result<TransportContext, Self::Error> {
-        Ok(match ctx.get::<RequestContext>() {
-            Some(req_ctx) => req_ctx.into(),
-            None => {
-                let req_ctx = RequestContext::try_from((ctx, parts))?;
                 req_ctx.into()
             }
         })
