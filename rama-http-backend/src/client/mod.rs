@@ -18,6 +18,7 @@ use rama_net::client::{
     },
 };
 use rama_tcp::client::service::TcpConnector;
+use rama_utils::macros::generate_set_and_with;
 
 #[cfg(feature = "boring")]
 use rama_net::tls::client::{ClientConfig, ProxyClientConfig, extract_client_config_from_ctx};
@@ -165,75 +166,33 @@ impl EasyHttpWebClient {
 
 impl<I1, I2, P> EasyHttpWebClient<I1, I2, P> {
     #[cfg(any(feature = "rustls", feature = "boring"))]
-    /// Set the [`TlsConnectorLayer`] of this [`EasyHttpWebClient`].
-    pub fn set_tls_connector_config(&mut self, layer: TlsConnectorConfig) -> &mut Self {
-        self.tls_connector_config = Some(layer);
-        self
-    }
+    generate_set_and_with!(
+        /// Set the [`TlsConnectorConfig`] that this [`EasyHttpWebClient`] will use.
+        pub fn tls_connector_config(mut self, config: Option<TlsConnectorConfig>) -> Self {
+            self.tls_connector_config = config;
+            self
+        }
+    );
 
     #[cfg(any(feature = "rustls", feature = "boring"))]
-    /// Replace this [`EasyHttpWebClient`] with the [`TlsConnectorLayer`] set.
-    pub fn with_tls_connector_config(mut self, layer: TlsConnectorConfig) -> Self {
-        self.tls_connector_config = Some(layer);
-        self
-    }
+    generate_set_and_with!(
+        /// Set the [`TlsConnectorConfig`] for the https proxy tunnel if needed within this [`EasyHttpWebClient`].
+        pub fn proxy_tls_connector_config(mut self, config: Option<TlsConnectorConfig>) -> Self {
+            self.proxy_tls_connector_config = config;
+            self
+        }
+    );
 
-    #[cfg(any(feature = "rustls", feature = "boring"))]
-    /// Replace this [`EasyHttpWebClient`] with an option of [`TlsConfig`] set.
-    pub fn maybe_with_tls_connector_config(mut self, layer: Option<TlsConnectorConfig>) -> Self {
-        self.tls_connector_config = layer;
-        self
-    }
-
-    #[cfg(any(feature = "rustls", feature = "boring"))]
-    /// Set the [`TlsConfig`] for the https proxy tunnel if needed within this [`EasyHttpWebClient`].
-    pub fn set_proxy_tls_connector_config(&mut self, layer: TlsConnectorConfig) -> &mut Self {
-        self.proxy_tls_connector_config = Some(layer);
-        self
-    }
-
-    #[cfg(any(feature = "rustls", feature = "boring"))]
-    /// Replace this [`EasyHttpWebClient`] set for the https proxy tunnel if needed within this [`TlsConfig`].
-    pub fn with_proxy_tls_connector_config(mut self, layer: TlsConnectorConfig) -> Self {
-        self.proxy_tls_connector_config = Some(layer);
-        self
-    }
-
-    #[cfg(any(feature = "rustls", feature = "boring"))]
-    /// Replace this [`EasyHttpWebClient`] set for the https proxy tunnel if needed within this [`TlsConfig`].
-    pub fn maybe_proxy_with_tls_connector_config(
-        mut self,
-        layer: Option<TlsConnectorConfig>,
-    ) -> Self {
-        self.proxy_tls_connector_config = layer;
-        self
-    }
-
-    /// Set the HTTP version to use for the Http Proxy CONNECT request.
-    ///
-    /// By default this is set to HTTP/1.1.
-    pub fn with_proxy_http_connect_version(mut self, version: Version) -> Self {
-        self.proxy_http_connect_version = Some(version);
-        self
-    }
-
-    /// Set the HTTP version to use for the Http Proxy CONNECT request.
-    pub fn set_proxy_http_connect_version(&mut self, version: Version) -> &mut Self {
-        self.proxy_http_connect_version = Some(version);
-        self
-    }
-
-    /// Set the HTTP version to auto detect for the Http Proxy CONNECT request.
-    pub fn with_proxy_http_connect_auto_version(mut self) -> Self {
-        self.proxy_http_connect_version = None;
-        self
-    }
-
-    /// Set the HTTP version to auto detect for the Http Proxy CONNECT request.
-    pub fn set_proxy_http_connect_auto_version(&mut self) -> &mut Self {
-        self.proxy_http_connect_version = None;
-        self
-    }
+    generate_set_and_with!(
+        /// Set the HTTP version to use for the Http Proxy CONNECT request.
+        ///
+        /// By default this is set to HTTP/1.1.
+        /// If this is not set to None the version will be negotiated automatically
+        pub fn proxy_http_connect_version(mut self, version: Option<Version>) -> Self {
+            self.proxy_http_connect_version = version;
+            self
+        }
+    );
 
     #[cfg(any(feature = "rustls", feature = "boring"))]
     pub fn with_http_conn_req_inspector<T>(

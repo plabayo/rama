@@ -233,6 +233,75 @@ macro_rules! __generate_field_setters {
 
 pub use crate::__generate_field_setters as generate_field_setters;
 
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __generate_set_and_with {
+    (
+        $(#[$outer_doc:meta])*
+        $vis:vis fn $fn_name:ident(mut $self_token:ident, $param_name:ident: Option<$param_ty:ty> $(,)?) -> Self {
+            $($body:tt)*
+        }
+    ) => {
+        $crate::macros::paste! {
+
+            $(#[$outer_doc])*
+            $vis fn [<maybe_with_ $fn_name>](mut $self_token, $param_name: Option<$param_ty>) -> Self {
+                $($body)*
+            }
+
+            $(#[$outer_doc])*
+            $vis fn [<maybe_set_ $fn_name>](&mut $self_token, $param_name: Option<$param_ty>) -> &mut Self {
+                $($body)*
+            }
+
+            $(#[$outer_doc])*
+            $vis fn [<with_ $fn_name>](mut $self_token, $param_name: $param_ty) -> Self {
+                let $param_name = Some($param_name);
+                $($body)*
+            }
+
+            $(#[$outer_doc])*
+            $vis fn [<set_ $fn_name>](&mut $self_token, $param_name: $param_ty) -> &mut Self {
+                let $param_name = Some($param_name);
+                $($body)*
+            }
+
+            $(#[$outer_doc])*
+            $vis fn [<without_ $fn_name>](mut $self_token) -> Self {
+                let $param_name = None;
+                $($body)*
+            }
+
+            $(#[$outer_doc])*
+            $vis fn [<unset_ $fn_name>](&mut $self_token) -> &mut Self {
+                let $param_name = None;
+                $($body)*
+            }
+
+        }
+    };
+    (
+        $(#[$outer_doc:meta])*
+        $vis:vis fn $fn_name:ident(mut $self_token:ident, $($param_name:ident: $param_ty:ty),+ $(,)?) -> Self {
+            $($body:tt)*
+        }
+    ) => {
+        $crate::macros::paste! {
+            $(#[$outer_doc])*
+            $vis fn [<with_ $fn_name>](mut $self_token, $($param_name: $param_ty),+) -> Self {
+                $($body)*
+            }
+
+            $(#[$outer_doc])*
+            $vis fn [<set_ $fn_name>](&mut $self_token, $($param_name: $param_ty),+) -> &mut Self {
+                $($body)*
+            }
+        }
+    };
+}
+
+pub use crate::__generate_set_and_with as generate_set_and_with;
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -323,5 +392,74 @@ mod test {
         match_ignore_ascii_case_str!(match ("hello") {
             "world" => (),
         })
+    }
+
+    #[test]
+    fn test_generate_set_and_with() {
+        #[derive(Default)]
+        struct Builder {
+            something: Option<String>,
+            should_execute: bool,
+        }
+
+        struct AlsoABool(bool);
+
+        impl From<AlsoABool> for bool {
+            fn from(value: AlsoABool) -> Self {
+                value.0
+            }
+        }
+
+        impl Builder {
+            generate_set_and_with!(
+                /// Configure maybe something
+                fn something(mut self, value: Option<String>) -> Self {
+                    self.something = value;
+                    self
+                }
+            );
+            generate_set_and_with!(
+                /// Should this execute something
+                ///
+                /// We can use Into if we want to
+                fn should_execute(mut self, value: impl Into<bool>) -> Self {
+                    self.should_execute = value.into();
+                    self
+                }
+            );
+        }
+
+        let test_string = "test".to_owned();
+
+        let builder = Builder::default();
+        assert_eq!(builder.something, None);
+        let builder = builder.with_something(test_string.clone());
+        assert_eq!(builder.something, Some(test_string.clone()));
+        let builder = builder.without_something();
+        assert_eq!(builder.something, None);
+        let builder = builder.maybe_with_something(Some(test_string.clone()));
+        assert_eq!(builder.something, Some(test_string.clone()));
+
+        let mut builder = Builder::default();
+        assert_eq!(builder.something, None);
+        builder.set_something(test_string.clone());
+        assert_eq!(builder.something, Some(test_string.clone()));
+        builder.unset_something();
+        assert_eq!(builder.something, None);
+        builder.maybe_set_something(Some(test_string.clone()));
+        assert_eq!(builder.something, Some(test_string.clone()));
+
+        let builder = Builder::default();
+        assert!(!builder.should_execute);
+        let builder = builder.with_should_execute(true);
+        assert!(builder.should_execute);
+
+        let mut builder = Builder::default();
+        assert!(!builder.should_execute);
+        builder.set_should_execute(true);
+        assert!(builder.should_execute);
+
+        let builder = Builder::default().with_should_execute(AlsoABool(true));
+        assert!(builder.should_execute)
     }
 }
