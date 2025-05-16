@@ -172,9 +172,11 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for TlsPeekStream<S> {
 
 #[cfg(test)]
 mod test {
-    use rama_core::service::service_fn;
+    use rama_core::service::{RejectError, service_fn};
     use std::convert::Infallible;
     use tokio::io::{AsyncWriteExt, duplex};
+
+    use crate::stream::Stream;
 
     use super::*;
 
@@ -211,6 +213,34 @@ mod test {
             .await
             .unwrap();
         assert_eq!("plain", response);
+    }
+
+    #[tokio::test]
+    async fn test_peek_router_read_eof() {
+        const CONTENT: &'static [u8] = b"\x16\x03\x03\x00\x2afoo";
+
+        async fn tls_service_fn(
+            _ctx: Context<()>,
+            mut stream: impl Stream + Unpin,
+        ) -> Result<&'static str, BoxError> {
+            let mut v = Vec::default();
+            let _ = stream.read_to_end(&mut v).await?;
+            assert_eq!(CONTENT, v);
+
+            Ok("ok")
+        }
+        let tls_service = service_fn(tls_service_fn);
+
+        let peek_tls_svc =
+            TlsPeekRouter::new(tls_service).with_fallback(
+                RejectService::<&'static str, RejectError>::new(RejectError::default()),
+            );
+
+        let response = peek_tls_svc
+            .serve(Context::default(), std::io::Cursor::new(CONTENT.to_vec()))
+            .await
+            .unwrap();
+        assert_eq!("ok", response);
     }
 
     #[tokio::test]
