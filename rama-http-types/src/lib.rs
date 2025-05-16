@@ -26,9 +26,8 @@ pub use body_limit::BodyLimit;
 mod body_ext;
 pub use body_ext::BodyExtractExt;
 
-/// Type alias for [`http::Request`] whose body type
-/// defaults to [`Body`], the most common body type used with rama.
-pub type Request<T = Body> = http::Request<T>;
+mod request;
+pub use request::{HttpRequestParts, Request};
 
 /// Type alias for [`http::Response`] whose body type defaults to [`Body`], the most common body
 /// type used with rama.
