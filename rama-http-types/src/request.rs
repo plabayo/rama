@@ -1,14 +1,21 @@
-use crate::body::Body;
-use http::{Extensions, HeaderMap, HeaderValue, Method, Uri, Version, request::Parts};
+use crate::{
+    body::Body,
+    dep::http::{Extensions, HeaderMap, HeaderValue, Method, Uri, Version, request::Parts},
+};
 
-/// Type alias for [`http::Request`] whose body type
+/// Type alias for [`HttpRequest`] whose body type
 /// defaults to [`Body`], the most common body type used with rama.
+///
+/// [`HttpRequest`]: crate::dep::http::Request
 pub type Request<T = Body> = http::Request<T>;
 
-/// [`HttpRequestParts`] is used in places where don't need the [`Body`] of the [`http::Request`]
+/// [`HttpRequestParts`] is used in places where we don't need the [`ReqBody`] of the [`HttpRequest`]
 ///
-/// In those places we need to support using [`http::Request`] and [`http::request::Parts`]. By using
+/// In those places we need to support using [`HttpRequest`] and [`Parts`]. By using
 /// this trait we can support both types behind a single generic that implements this trait.
+///
+/// [`ReqBody`]: crate::dep::http_body::Body
+/// [`HttpRequest`]: crate::dep::http::Request
 pub trait HttpRequestParts {
     fn method(&self) -> &Method;
     fn method_mut(&mut self) -> &mut Method;
