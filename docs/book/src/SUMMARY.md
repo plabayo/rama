@@ -31,6 +31,7 @@
     - [🧦 SOCKS5 proxies](./proxies/socks5.md)
     - [🔎 MITM proxies](./proxies/mitm.md)
     - [🕵️‍♀️ Distortion proxies](./proxies/distort.md)
+- [Protocol Inspection](./proxies/protocol_inspection.md)
 
 # Deploy
 
