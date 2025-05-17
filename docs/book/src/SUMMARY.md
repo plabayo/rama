@@ -29,8 +29,10 @@
     - [🔓 TLS Termination proxies](./proxies/tls.md)
     - [🌐 HTTP(S) proxies](./proxies/http.md)
     - [🧦 SOCKS5 proxies](./proxies/socks5.md)
+    - [🔎 SNI proxies](./proxies/sni.md)
     - [🔎 MITM proxies](./proxies/mitm.md)
     - [🕵️‍♀️ Distortion proxies](./proxies/distort.md)
+- [Protocol Inspection](./proxies/protocol_inspection.md)
 
 # Deploy
 

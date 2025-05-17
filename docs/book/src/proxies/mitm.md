@@ -1,29 +1,28 @@
-# 🔎 MITM proxies
+# 🔎 MITM Proxies
 
 <div class="book-article-intro">
-    <img src="../img/proxy_llama_mitm.jpeg" alt="artistical representation of rama MITM proxy as llama snooping into cargo packages">
+    <img src="../img/proxy_llama_mitm.jpeg" alt="artistic representation of rama MITM proxy as llama snooping into cargo packages">
     <div>
-        A Man-In-The-Middle proxy (MITM) is a proxy which sits in between the client and the server.
-        That by itself is nothing special and is in fact what all proxies do. What defines this kind of
-        proxy is that it actively interprets the application layer packets. It might also
-        modify the packets as they pass, but more often then not inspecting and tracking
-        is all it does.
+        A Man-In-The-Middle (MITM) proxy is a proxy that sits between the client and the server.
+        While this positioning is common to all proxies, what distinguishes an MITM proxy is its
+        active interpretation of application layer packets. Although it may modify packets as they pass through,
+        its primary function is typically to inspect and track the traffic.
     </div>
 </div>
 
 [Examples](https://github.com/plabayo/rama/tree/main/examples):
 
 - [/examples/http_mitm_proxy_boring.rs](https://github.com/plabayo/rama/tree/main/examples/http_mitm_proxy_boring.rs):
-  Spawns a minimal http proxy which accepts http/1.1 and h2 connections alike,
-  and proxies them to the target host, using boring for tls;
+  A minimal HTTP proxy that accepts both HTTP/1.1 and HTTP/2 connections,
+  proxying them to the target host using Boring for TLS.
   - Similar to [/examples/http_connect_proxy.rs](https://github.com/plabayo/rama/tree/main/examples/http_connect_proxy.rs)
-    but MITM for both http and https requests alike.
+    but with MITM capabilities for both HTTP and HTTPS requests.
 
 - [/examples/http_mitm_proxy_rustls.rs](https://github.com/plabayo/rama/tree/main/examples/http_mitm_proxy_rustls.rs):
-  Spawns a minimal http proxy which accepts http/1.1 and h2 connections alike,
-  and proxies them to the target host, using rustls for tls;
+  A minimal HTTP proxy that accepts both HTTP/1.1 and HTTP/2 connections,
+  proxying them to the target host using Rustls for TLS.
   - Similar to [/examples/http_connect_proxy.rs](https://github.com/plabayo/rama/tree/main/examples/http_connect_proxy.rs)
-    but MITM for both http and https requests alike.
+    but with MITM capabilities for both HTTP and HTTPS requests.
 
 ## Description
 
@@ -41,16 +40,10 @@ digraph {
 
 </div>
 
-A MITM proxy is typically setup as [an HTTP Proxy](./http.md), but in case you
-want it can be setup as [a SOCKS5 proxy](./socks5.md) instead.
+An MITM proxy is typically set up as [an HTTP Proxy](./http.md), but it can alternatively be configured as [a SOCKS5 proxy](./socks5.md).
 
 ## Transparent Proxies
 
-Man-In-The-Middle (MITM) proxies that only wish to inspect the traffic without destructive modification,
-can (try to) mirror the incoming client on the various network layers (tcp, tls and http). This is a kind
-of User-Agent emulation but in function of the original User-Agent rather than a popular one with huge market share.
+MITM proxies that only wish to inspect traffic without destructive modification can attempt to mirror the incoming client across various network layers (TCP, TLS, and HTTP). This approach is a form of User-Agent emulation, but it operates based on the original User-Agent rather than emulating a popular one with significant market share.
 
-Such proxies are also referred to as transparent proxies and you might be able to see
-some network inspection software expose an option called "transparent mode" or "hidden".
-If at that point they still are able to inspect your https traffic it is very well possible
-that they are acting like a "transparent proxy".
+These proxies are often referred to as transparent proxies, and you may notice network inspection software offering options labeled as "transparent mode" or "hidden." If such software can still inspect your HTTPS traffic, it's likely operating as a "transparent proxy."
