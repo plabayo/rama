@@ -223,7 +223,7 @@ mod test {
 
     #[tokio::test]
     async fn test_peek_router_read_eof() {
-        const CONTENT: &'static [u8] = b"\x16\x03\x03\x00\x2afoo";
+        const CONTENT: &[u8] = b"\x16\x03\x03\x00\x2afoo";
 
         async fn tls_service_fn(mut stream: impl Stream + Unpin) -> Result<&'static str, BoxError> {
             let mut v = Vec::default();
@@ -248,7 +248,7 @@ mod test {
 
     #[tokio::test]
     async fn test_peek_router_read_no_tls_eof() {
-        const CONTENT: &'static [u8] = b"foo";
+        const CONTENT: &[u8] = b"foo";
 
         async fn tls_service_fn() -> Result<&'static str, BoxError> {
             Ok("tls")
