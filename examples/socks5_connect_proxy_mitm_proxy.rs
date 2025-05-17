@@ -2,17 +2,10 @@
 //! which is built to MITM http(s) traffic. The MITM part is very similar to
 //! the "http_mitm_proxy_boring.rs" example.
 //!
-//! TODO: change this example to make use of AutoTlsAcceptor logic once possible,
-//! as for now that is not a thing that rama offers. Meaning for now it can only do
-//! out of the box either always TLS or never tls. You can of course implement your own
-//! wrapper service already in case you need it more urgent than we provide it.
-//!
-//! > Tracked as <https://github.com/plabayo/rama/issues/547>
-//!
 //! # Run the example
 //!
 //! ```sh
-//! cargo run --example socks5_connect_proxy_mitm_proxy --features=dns,socks5,http-full
+//! cargo run --example socks5_connect_proxy_mitm_proxy --features=dns,socks5,boring,http-full
 //! ```
 //!
 //! # Expected output
@@ -22,17 +15,18 @@
 //! ```sh
 //! curl -v -x socks5://127.0.0.1:62022 --proxy-user 'john:secret' http://www.example.com/
 //! curl -v -x socks5h://127.0.0.1:62022 --proxy-user 'john:secret' http://www.example.com/
+//! curl -k -v -x socks5://127.0.0.1:62022 --proxy-user 'john:secret' https://www.example.com/
+//! curl -k -v -x socks5h://127.0.0.1:62022 --proxy-user 'john:secret' https://www.example.com/
 //! ```
-//!
-//! > NOTE: no tls traffic for now, see _TODO_ above.
 //!
 //! You should see in all the above examples the responses from the server.
 
 use rama::{
-    Context, Layer, Service,
+    Layer, Service,
+    error::{ErrorContext, OpaqueError},
     http::{
         Body, Request, Response, StatusCode,
-        client::EasyHttpWebClient,
+        client::{EasyHttpWebClient, TlsConnectorConfig},
         layer::{
             compress_adapter::CompressAdaptLayer,
             map_response_body::MapResponseBodyLayer,
@@ -42,18 +36,28 @@ use rama::{
             traffic_writer::{self, RequestWriterInspector},
         },
         server::HttpServer,
-        service::web::response::IntoResponse,
     },
     layer::ConsumeErrLayer,
+    net::tls::{
+        ApplicationProtocol, SecureTransport,
+        client::{
+            ClientConfig, ClientHelloExtension, ServerVerifyMode, extract_client_config_from_ctx,
+        },
+        server::{SelfSignedData, ServerAuth, ServerConfig, TlsPeekRouter},
+    },
     proxy::socks5::{Socks5Acceptor, Socks5Auth, server::LazyConnector},
     rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
+    tls::boring::server::{TlsAcceptorData, TlsAcceptorLayer},
 };
 
 use std::{convert::Infallible, time::Duration};
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
+
+type State = ();
+type Context = rama::Context<State>;
 
 #[tokio::main]
 async fn main() {
@@ -66,18 +70,26 @@ async fn main() {
         )
         .init();
 
+    let mitm_tls_service_data =
+        new_mitm_tls_service_data().expect("generate self-signed mitm tls cert");
+
     let graceful = rama::graceful::Shutdown::default();
 
     let http_mitm_service = new_http_mitm_proxy();
     let http_service =
         HttpServer::auto(Executor::graceful(graceful.guard())).service(http_mitm_service);
+    let https_service = TlsAcceptorLayer::new(mitm_tls_service_data)
+        .with_store_client_hello(true)
+        .into_layer(http_service.clone());
+
+    let auto_https_service = TlsPeekRouter::new(https_service).with_fallback(http_service);
 
     let tcp_service = TcpListener::bind("127.0.0.1:62022")
         .await
         .expect("bind proxy to 127.0.0.1:62022");
     let socks5_acceptor = Socks5Acceptor::new()
         .with_auth(Socks5Auth::username_password("john", "secret"))
-        .with_connector(LazyConnector::new(http_service));
+        .with_connector(LazyConnector::new(auto_https_service));
     graceful.spawn_task_fn(|guard| tcp_service.serve_graceful(guard, socks5_acceptor));
 
     graceful
@@ -86,7 +98,7 @@ async fn main() {
         .expect("graceful shutdown");
 }
 
-fn new_http_mitm_proxy() -> impl Service<(), Request, Response = Response, Error = Infallible> {
+fn new_http_mitm_proxy() -> impl Service<State, Request, Response = Response, Error = Infallible> {
     (
         MapResponseBodyLayer::new(Body::new),
         TraceLayer::new_for_http(),
@@ -99,13 +111,13 @@ fn new_http_mitm_proxy() -> impl Service<(), Request, Response = Response, Error
         .into_layer(service_fn(http_mitm_proxy))
 }
 
-async fn http_mitm_proxy(ctx: Context<()>, req: Request) -> Result<Response, Infallible> {
+async fn http_mitm_proxy(ctx: Context, req: Request) -> Result<Response, Infallible> {
     // This function will receive all requests going through this proxy,
     // be it sent via HTTP or HTTPS, both are equally visible. Hence... MITM
 
     // NOTE: use a custom connector (layers) in case you wish to add custom features,
     // such as upstream proxies or other configurations
-    let client = EasyHttpWebClient::default().with_http_conn_req_inspector((
+    let mut client = EasyHttpWebClient::default().with_http_conn_req_inspector(
         // these layers are for example purposes only,
         // best not to print requests like this in production...
         //
@@ -116,13 +128,66 @@ async fn http_mitm_proxy(ctx: Context<()>, req: Request) -> Result<Response, Inf
             ctx.executor(),
             Some(traffic_writer::WriterMode::Headers),
         ),
-    ));
+    );
+
+    let mut base_tls_cfg = ctx
+        .get::<SecureTransport>()
+        .and_then(|st| st.client_hello())
+        .cloned()
+        .map(Into::into)
+        .unwrap_or_else(|| ClientConfig {
+            extensions: Some(vec![
+                ClientHelloExtension::ApplicationLayerProtocolNegotiation(vec![
+                    ApplicationProtocol::HTTP_2,
+                    ApplicationProtocol::HTTP_11,
+                ]),
+            ]),
+            ..Default::default()
+        });
+    base_tls_cfg.server_verify_mode = Some(ServerVerifyMode::Disable);
+
+    // TODO: this tls stack API needs to be easier and more performant; but especially less messy
+
+    let tls_client_config = match extract_client_config_from_ctx(&ctx) {
+        Some(chain) => {
+            let mut cfg = base_tls_cfg;
+            for other_cfg in chain.iter() {
+                cfg.merge(other_cfg.clone());
+            }
+            cfg
+        }
+        None => base_tls_cfg,
+    };
+
+    client.set_tls_connector_config(TlsConnectorConfig::Boring(Some(tls_client_config)));
 
     match client.serve(ctx, req).await {
         Ok(resp) => Ok(resp),
         Err(err) => {
             tracing::error!(error = ?err, "error in client request");
-            Ok(StatusCode::INTERNAL_SERVER_ERROR.into_response())
+            Ok(Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .body(Body::empty())
+                .unwrap())
         }
     }
+}
+
+// NOTE: for a production service you ideally use
+// an issued TLS cert (if possible via ACME). Or at the very least
+// load it in from memory/file, so that your clients can install the certificate for trust.
+fn new_mitm_tls_service_data() -> Result<TlsAcceptorData, OpaqueError> {
+    let tls_server_config = ServerConfig {
+        application_layer_protocol_negotiation: Some(vec![
+            ApplicationProtocol::HTTP_2,
+            ApplicationProtocol::HTTP_11,
+        ]),
+        ..ServerConfig::new(ServerAuth::SelfSigned(SelfSignedData {
+            organisation_name: Some("Example Server Acceptor".to_owned()),
+            ..Default::default()
+        }))
+    };
+    tls_server_config
+        .try_into()
+        .context("create tls server config")
 }
