@@ -88,7 +88,7 @@ where
                 %n,
                 "move tls peek buffer cursor due to reading not enough"
             );
-            for i in offset..0 {
+            for i in (0..n).rev() {
                 peek_buf[i + offset] = peek_buf[i];
             }
         }
@@ -130,7 +130,7 @@ impl<S: AsyncRead + Unpin> AsyncRead for TlsPeekStream<S> {
             let to_copy = remaining.len().min(buf.remaining());
 
             if to_copy > 0 {
-                buf.put_slice(&self.prefix[..to_copy]);
+                buf.put_slice(&remaining[..to_copy]);
                 self.offset += to_copy;
                 return Poll::Ready(Ok(()));
             }
@@ -248,31 +248,34 @@ mod test {
 
     #[tokio::test]
     async fn test_peek_router_read_no_tls_eof() {
-        const CONTENT: &[u8] = b"foo";
+        let cases = ["", "foo", "abcd", "abcde", "foobarbazbananas"];
+        for content in cases {
+            async fn tls_service_fn() -> Result<Vec<u8>, BoxError> {
+                Ok("tls".as_bytes().to_vec())
+            }
+            let tls_service = service_fn(tls_service_fn);
 
-        async fn tls_service_fn() -> Result<&'static str, BoxError> {
-            Ok("tls")
+            async fn plain_service_fn(
+                mut stream: impl Stream + Unpin,
+            ) -> Result<Vec<u8>, BoxError> {
+                let mut v = Vec::default();
+                let _ = stream.read_to_end(&mut v).await?;
+                Ok(v)
+            }
+            let plain_service = service_fn(plain_service_fn);
+
+            let peek_tls_svc = TlsPeekRouter::new(tls_service).with_fallback(plain_service);
+
+            let response = peek_tls_svc
+                .serve(
+                    Context::default(),
+                    std::io::Cursor::new(content.as_bytes().to_vec()),
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(content.as_bytes(), &response[..]);
         }
-        let tls_service = service_fn(tls_service_fn);
-
-        async fn plain_service_fn(
-            mut stream: impl Stream + Unpin,
-        ) -> Result<&'static str, BoxError> {
-            let mut v = Vec::default();
-            let _ = stream.read_to_end(&mut v).await?;
-            assert_eq!(CONTENT, v);
-
-            Ok("plain")
-        }
-        let plain_service = service_fn(plain_service_fn);
-
-        let peek_tls_svc = TlsPeekRouter::new(tls_service).with_fallback(plain_service);
-
-        let response = peek_tls_svc
-            .serve(Context::default(), std::io::Cursor::new(CONTENT.to_vec()))
-            .await
-            .unwrap();
-        assert_eq!("plain", response);
     }
 
     #[tokio::test]
