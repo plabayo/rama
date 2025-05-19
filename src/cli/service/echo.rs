@@ -596,6 +596,10 @@ impl Service<(), Request> for EchoService {
                             "id": extension.id().to_string(),
                             "data": v.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
                         }),
+                        ClientHelloExtension::ApplicationSettings(v) => json!({
+                            "id": extension.id().to_string(),
+                            "data": v.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+                        }),
                         ClientHelloExtension::SupportedGroups(v) => json!({
                             "id": extension.id().to_string(),
                             "data": v.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
