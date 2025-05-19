@@ -126,7 +126,7 @@ impl ClientHello {
         None
     }
 
-    /// Return the application layer protocols supported for negotiation by this client
+    /// Return the application layer protocols for which alps is supported
     /// if it is set in the [`ClientHelloExtension`] defined in this [`ClientHello`].
     ///
     /// See [`ClientHelloExtension::ApplicationSettings`] for more information about these protocols (ALPS).

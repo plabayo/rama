@@ -132,10 +132,7 @@ fn parse_tls_client_hello_extension(i: &[u8]) -> IResult<&[u8], ClientHelloExten
             let (i, ech) = parse_ech_client_hello(ext_data)?;
             Ok((i, ClientHelloExtension::EncryptedClientHello(ech)))
         }
-        ExtensionId::OLD_APPLICATION_SETTINGS => {
-            parse_tls_extension_application_settings_content(ext_data)
-        }
-        ExtensionId::APPLICATION_SETTINGS => {
+        ExtensionId::APPLICATION_SETTINGS | ExtensionId::OLD_APPLICATION_SETTINGS => {
             parse_tls_extension_application_settings_content(ext_data)
         }
         _ => Ok((
