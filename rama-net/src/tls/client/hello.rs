@@ -126,7 +126,7 @@ impl ClientHello {
         None
     }
 
-        /// Return the application layer protocols supported for negotiation by this client
+    /// Return the application layer protocols supported for negotiation by this client
     /// if it is set in the [`ClientHelloExtension`] defined in this [`ClientHello`].
     ///
     /// See [`ClientHelloExtension::ApplicationSettings`] for more information about these protocols (ALPS).
@@ -220,7 +220,7 @@ pub enum ClientHelloExtension {
     ApplicationLayerProtocolNegotiation(Vec<ApplicationProtocol>),
     /// Used by the client for negotiating application-layer protocol settings (ALPS)
     /// within the TLS handshake.
-    /// Through doing that, the settings can be made available to the application 
+    /// Through doing that, the settings can be made available to the application
     /// as soon as the handshake completes, and can be associated with TLS session
     /// tickets automatically at the TLS layer.
     ///
@@ -278,12 +278,12 @@ impl ClientHelloExtension {
             ClientHelloExtension::ApplicationLayerProtocolNegotiation(_) => {
                 ExtensionId::APPLICATION_LAYER_PROTOCOL_NEGOTIATION
             }
+            ClientHelloExtension::ApplicationSettings(_) => ExtensionId::APPLICATION_SETTINGS,
             ClientHelloExtension::SupportedVersions(_) => ExtensionId::SUPPORTED_VERSIONS,
             ClientHelloExtension::CertificateCompression(_) => ExtensionId::COMPRESS_CERTIFICATE,
             ClientHelloExtension::DelegatedCredentials(_) => ExtensionId::DELEGATED_CREDENTIAL,
             ClientHelloExtension::RecordSizeLimit(_) => ExtensionId::RECORD_SIZE_LIMIT,
             ClientHelloExtension::EncryptedClientHello(_) => ExtensionId::ENCRYPTED_CLIENT_HELLO,
-            ClientHelloExtension::ApplicationSettings(_) => ExtensionId::APPLICATION_SETTINGS,
             ClientHelloExtension::Opaque { id, .. } => *id,
         }
     }

@@ -302,6 +302,19 @@ fn parse_protocol_name(i: &[u8]) -> IResult<&[u8], ApplicationProtocol> {
     Ok((&[], alpn))
 }
 
+fn parse_tls_extension_application_settings_content(
+    i: &[u8],
+) -> IResult<&[u8], ClientHelloExtension> {
+    map_parser(
+        length_data(be_u16),
+        map(
+            parse_protocol_name_list,
+            ClientHelloExtension::ApplicationSettings,
+        ),
+    )
+    .parse(i)
+}
+
 fn parse_u8_type<T: From<u8>>(i: &[u8]) -> IResult<&[u8], Vec<T>> {
     let v = i.iter().map(|i| T::from(*i)).collect();
     Ok((&[], v))
@@ -351,17 +364,6 @@ fn parse_ech_client_hello(input: &[u8]) -> IResult<&[u8], ECHClientHello> {
         }
         false => Ok((input, ECHClientHello::Inner)),
     }
-}
-
-fn parse_tls_extension_application_settings_content(i: &[u8]) -> IResult<&[u8], ClientHelloExtension> {
-    map_parser(
-        length_data(be_u16),
-        map(
-            parse_protocol_name_list,
-            ClientHelloExtension::ApplicationSettings,
-        ),
-    )
-    .parse(i)
 }
 
 #[cfg(test)]
