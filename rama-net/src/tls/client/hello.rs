@@ -126,6 +126,19 @@ impl ClientHello {
         None
     }
 
+        /// Return the application layer protocols supported for negotiation by this client
+    /// if it is set in the [`ClientHelloExtension`] defined in this [`ClientHello`].
+    ///
+    /// See [`ClientHelloExtension::ApplicationSettings`] for more information about these protocols (ALPS).
+    pub fn ext_alps(&self) -> Option<&[ApplicationProtocol]> {
+        for ext in &self.extensions {
+            if let ClientHelloExtension::ApplicationSettings(alpns) = ext {
+                return Some(&alpns[..]);
+            }
+        }
+        None
+    }
+
     /// Return the TLS versions supported by this client
     /// if it is set in the [`ClientHelloExtension`] defined in this [`ClientHello`].
     ///
@@ -205,6 +218,16 @@ pub enum ClientHelloExtension {
     ///
     /// - <https://www.iana.org/go/rfc7301>
     ApplicationLayerProtocolNegotiation(Vec<ApplicationProtocol>),
+    /// Used by the client for negotiating application-layer protocol settings (ALPS)
+    /// within the TLS handshake.
+    /// Through doing that, the settings can be made available to the application 
+    /// as soon as the handshake completes, and can be associated with TLS session
+    /// tickets automatically at the TLS layer.
+    ///
+    /// # Reference
+    ///
+    /// - <https://www.ietf.org/archive/id/draft-vvv-tls-alps-01.html>
+    ApplicationSettings(Vec<ApplicationProtocol>),
     /// used by the client to indicate which versions of TLS it supports
     ///
     /// # Reference
@@ -260,6 +283,7 @@ impl ClientHelloExtension {
             ClientHelloExtension::DelegatedCredentials(_) => ExtensionId::DELEGATED_CREDENTIAL,
             ClientHelloExtension::RecordSizeLimit(_) => ExtensionId::RECORD_SIZE_LIMIT,
             ClientHelloExtension::EncryptedClientHello(_) => ExtensionId::ENCRYPTED_CLIENT_HELLO,
+            ClientHelloExtension::ApplicationSettings(_) => ExtensionId::APPLICATION_SETTINGS,
             ClientHelloExtension::Opaque { id, .. } => *id,
         }
     }
