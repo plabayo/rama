@@ -426,6 +426,7 @@ enum_builder! {
         TLS_ECDHE_PSK_WITH_AES_128_CCM_SHA256 => 0xd005,
         SSL_RSA_FIPS_WITH_DES_CBC_SHA => 0xfefe,
         SSL_RSA_FIPS_WITH_3DES_EDE_CBC_SHA => 0xfeff,
+        DRAFT_TLS_GOSTR341112_256_WITH_28147_CNT_IMIT => 0xff85,
     }
 }
 
