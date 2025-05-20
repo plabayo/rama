@@ -19,7 +19,7 @@ use rama_http_types::{
     Method, Request, Response, StatusCode, dep::http_body, proto::h2::frame::SettingOrder,
 };
 use tokio::io::{AsyncRead, AsyncWrite};
-use tracing::{debug, trace, warn};
+use tracing::{Instrument, debug, trace, warn};
 
 use super::ping::{Ponger, Recorder};
 use super::{H2Upgraded, PipeToSendStream, SendBuf, ping};
@@ -213,9 +213,12 @@ where
         is_terminated: false,
     };
 
-    exec.spawn_task(H2ClientFuture::Task {
-        task: ConnTask::new(conn, conn_drop_rx, cancel_tx),
-    });
+    exec.spawn_task(
+        H2ClientFuture::Task {
+            task: ConnTask::new(conn, conn_drop_rx, cancel_tx),
+        }
+        .instrument(tracing::trace_span!("Client::h2::task")),
+    );
 
     Ok(ClientTask {
         ping,
@@ -568,7 +571,8 @@ where
                         };
                         // Clear send task
                         let fut: H2ClientFuture<_, T> = H2ClientFuture::Pipe { pipe };
-                        self.executor.spawn_task(fut);
+                        self.executor
+                            .spawn_task(fut.instrument(tracing::trace_span!("Client::h2::pipe")));
                     }
                 }
             }
@@ -588,7 +592,8 @@ where
                 call_back: Some(f.cb),
             },
         };
-        self.executor.spawn_task(fut);
+        self.executor
+            .spawn_task(fut.instrument(tracing::trace_span!("Client::h2::send")));
     }
 }
 

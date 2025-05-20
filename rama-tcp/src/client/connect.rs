@@ -19,6 +19,7 @@ use tokio::sync::{
     Semaphore,
     mpsc::{Sender, channel},
 };
+use tracing::Instrument;
 
 use crate::TcpStream;
 
@@ -200,33 +201,39 @@ where
     let sem = Arc::new(Semaphore::new(3));
 
     if dns_mode.ipv4_supported() {
-        ctx.spawn(tcp_connect_inner_branch(
-            dns_mode,
-            dns.clone(),
-            connect_mode,
-            connector.clone(),
-            IpKind::Ipv4,
-            domain.clone(),
-            port,
-            tx.clone(),
-            connected.clone(),
-            sem.clone(),
-        ));
+        ctx.spawn(
+            tcp_connect_inner_branch(
+                dns_mode,
+                dns.clone(),
+                connect_mode,
+                connector.clone(),
+                IpKind::Ipv4,
+                domain.clone(),
+                port,
+                tx.clone(),
+                connected.clone(),
+                sem.clone(),
+            )
+            .instrument(tracing::trace_span!("Client::tcp::connect::dns_v4")),
+        );
     }
 
     if dns_mode.ipv6_supported() {
-        ctx.spawn(tcp_connect_inner_branch(
-            dns_mode,
-            dns.clone(),
-            connect_mode,
-            connector.clone(),
-            IpKind::Ipv6,
-            domain.clone(),
-            port,
-            tx.clone(),
-            connected.clone(),
-            sem.clone(),
-        ));
+        ctx.spawn(
+            tcp_connect_inner_branch(
+                dns_mode,
+                dns.clone(),
+                connect_mode,
+                connector.clone(),
+                IpKind::Ipv6,
+                domain.clone(),
+                port,
+                tx.clone(),
+                connected.clone(),
+                sem.clone(),
+            )
+            .instrument(tracing::trace_span!("Client::tcp::connect::dns_v6")),
+        );
     }
 
     drop(tx);

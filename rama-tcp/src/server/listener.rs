@@ -12,6 +12,7 @@ use std::pin::pin;
 use std::sync::Arc;
 use std::{io, net::SocketAddr};
 use tokio::net::TcpListener as TokioTcpListener;
+use tracing::Instrument;
 
 #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
 use rama_net::socket::{DeviceName, SocketOptions};
@@ -416,13 +417,17 @@ where
                         Ok((socket, peer_addr)) => {
                             let service = service.clone();
                             let mut ctx = ctx.clone();
+                            let local_addr = socket.local_addr().ok();
 
                             guard.spawn_task(async move {
-                                let local_addr = socket.local_addr().ok();
                                 ctx.insert(SocketInfo::new(local_addr, peer_addr));
 
                                 let _ = service.serve(ctx, socket).await;
-                            });
+                            }.instrument(tracing::trace_span!(
+                                "Server::tcp::serve",
+                                local_addr = %local_addr.map(Into::into).unwrap_or_else(|| SocketAddress::default_ipv4(0)),
+                                %peer_addr,
+                            )));
                         }
                         Err(err) => {
                             handle_accept_err(err).await;

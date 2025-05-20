@@ -4,6 +4,7 @@ use rama_core::{
     error::{BoxError, OpaqueError},
     inspect::RequestInspector,
 };
+use rama_http::header::USER_AGENT;
 use rama_http_core::h2::frame::Priority;
 use rama_http_types::{
     Request, Version,
@@ -19,7 +20,7 @@ use tokio::sync::Mutex;
 
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
-use tracing::trace;
+use tracing::{Instrument, trace};
 
 /// A [`Service`] which establishes an HTTP Connection.
 pub struct HttpConnector<S, I1 = (), I2 = ()> {
@@ -160,11 +161,21 @@ where
 
                 let (sender, conn) = builder.handshake(io).await?;
 
-                ctx.spawn(async move {
-                    if let Err(err) = conn.await {
-                        tracing::debug!("connection failed: {:?}", err);
+                let conn_span = tracing::trace_span!(
+                    "Client::h2::conn::serve",
+                    http.request.method = %req.method().as_str(),
+                    uri.full = %req.uri(),
+                    url.scheme = %req.uri().scheme_str().unwrap_or_default(),
+                    user_agent.original = %req.headers().get(USER_AGENT).and_then(|v| v.to_str().ok()).unwrap_or_default(),
+                );
+                ctx.spawn(
+                    async move {
+                        if let Err(err) = conn.await {
+                            tracing::debug!("connection failed: {:?}", err);
+                        }
                     }
-                });
+                    .instrument(conn_span),
+                );
 
                 let svc = HttpClientService {
                     sender: SendRequest::Http2(sender),
@@ -185,11 +196,21 @@ where
                 }
                 let (sender, conn) = builder.handshake(io).await?;
 
-                ctx.spawn(async move {
-                    if let Err(err) = conn.await {
-                        tracing::debug!("connection failed: {:?}", err);
+                let conn_span = tracing::trace_span!(
+                    "Client::h1::conn::serve",
+                    http.request.method = %req.method().as_str(),
+                    uri.full = %req.uri(),
+                    url.scheme = %req.uri().scheme_str().unwrap_or_default(),
+                    user_agent.original = %req.headers().get(USER_AGENT).and_then(|v| v.to_str().ok()).unwrap_or_default(),
+                );
+                ctx.spawn(
+                    async move {
+                        if let Err(err) = conn.await {
+                            tracing::debug!("connection failed: {:?}", err);
+                        }
                     }
-                });
+                    .instrument(conn_span),
+                );
 
                 let svc = HttpClientService {
                     sender: SendRequest::Http1(Mutex::new(sender)),

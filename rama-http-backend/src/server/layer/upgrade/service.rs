@@ -7,6 +7,7 @@ use rama_core::{Context, Service, context::Extensions, matcher::Matcher, service
 use rama_http_types::Request;
 use rama_utils::macros::define_inner_service_accessors;
 use std::{convert::Infallible, fmt, sync::Arc};
+use tracing::Instrument;
 
 /// Upgrade service can be used to handle the possibility of upgrading a request,
 /// after which it will pass down the transport RW to the attached upgrade service.
@@ -99,17 +100,27 @@ where
             return match handler.responder.serve(ctx, req).await {
                 Ok((resp, ctx, mut req)) => {
                     let handler = handler.handler.clone();
-                    exec.spawn_task(async move {
-                        match rama_http_core::upgrade::on(&mut req).await {
-                            Ok(upgraded) => {
-                                let _ = handler.serve(ctx, upgraded).await;
-                            }
-                            Err(e) => {
-                                // TODO: do we need to allow the user to hook into this?
-                                tracing::error!(error = %e, "upgrade error");
+                    let span = tracing::trace_span!(
+                        "Server::upgrade::serve",
+                        http.request.method = %req.method().as_str(),
+                        url.path = %req.uri().path(),
+                        url.query = req.uri().query().unwrap_or_default(),
+                        url.scheme = %req.uri().scheme().map(|s| s.as_str()).unwrap_or_default(),
+                    );
+                    exec.spawn_task(
+                        async move {
+                            match rama_http_core::upgrade::on(&mut req).await {
+                                Ok(upgraded) => {
+                                    let _ = handler.serve(ctx, upgraded).await;
+                                }
+                                Err(e) => {
+                                    // TODO: do we need to allow the user to hook into this?
+                                    tracing::error!(error = %e, "upgrade error");
+                                }
                             }
                         }
-                    });
+                        .instrument(span),
+                    );
                     Ok(resp)
                 }
                 Err(e) => Ok(e),

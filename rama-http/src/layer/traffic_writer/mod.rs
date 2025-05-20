@@ -21,6 +21,7 @@ mod response;
 pub use response::{
     DoNotWriteResponse, ResponseWriter, ResponseWriterLayer, ResponseWriterService,
 };
+use tracing::Instrument;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 /// Http writer mode.
@@ -197,7 +198,7 @@ impl BidirectionalWriter<Sender<BidirectionalMessage>> {
                     tracing::error!(err = %err, "failed to write separator to writer")
                 }
             }
-        });
+        }.instrument(tracing::trace_span!("TrafficWriter::bidirectional::bounded")));
 
         Self { sender: tx }
     }
@@ -227,45 +228,52 @@ impl BidirectionalWriter<Sender<BidirectionalMessage>> {
             None => (false, false),
         };
 
-        executor.spawn_task(async move {
-            let mut last_request = None;
-            let mut last_response = None;
+        executor.spawn_task(
+            async move {
+                let mut last_request = None;
+                let mut last_response = None;
 
-            while let Some(msg) = rx.recv().await {
-                match msg {
-                    BidirectionalMessage::Request(req) => last_request = Some(req),
-                    BidirectionalMessage::Response(res) => last_response = Some(res),
+                while let Some(msg) = rx.recv().await {
+                    match msg {
+                        BidirectionalMessage::Request(req) => last_request = Some(req),
+                        BidirectionalMessage::Response(res) => last_response = Some(res),
+                    }
+                }
+
+                if let Some(req) = last_request {
+                    if let Err(err) = write_http_request(
+                        &mut writer,
+                        req,
+                        write_request_headers,
+                        write_request_body,
+                    )
+                    .await
+                    {
+                        tracing::error!(err = %err, "failed to write last http request to writer")
+                    }
+                    if let Err(err) = writer.write_all(b"\r\n").await {
+                        tracing::error!(err = %err, "failed to write separator to writer")
+                    }
+                }
+
+                if let Some(res) = last_response {
+                    if let Err(err) = write_http_response(
+                        &mut writer,
+                        res,
+                        write_response_headers,
+                        write_response_body,
+                    )
+                    .await
+                    {
+                        tracing::error!(err = %err, "failed to write last http response to writer")
+                    }
+                    if let Err(err) = writer.write_all(b"\r\n").await {
+                        tracing::error!(err = %err, "failed to write separator to writer")
+                    }
                 }
             }
-
-            if let Some(req) = last_request {
-                if let Err(err) =
-                    write_http_request(&mut writer, req, write_request_headers, write_request_body)
-                        .await
-                {
-                    tracing::error!(err = %err, "failed to write last http request to writer")
-                }
-                if let Err(err) = writer.write_all(b"\r\n").await {
-                    tracing::error!(err = %err, "failed to write separator to writer")
-                }
-            }
-
-            if let Some(res) = last_response {
-                if let Err(err) = write_http_response(
-                    &mut writer,
-                    res,
-                    write_response_headers,
-                    write_response_body,
-                )
-                .await
-                {
-                    tracing::error!(err = %err, "failed to write last http response to writer")
-                }
-                if let Err(err) = writer.write_all(b"\r\n").await {
-                    tracing::error!(err = %err, "failed to write separator to writer")
-                }
-            }
-        });
+            .instrument(tracing::trace_span!("TrafficWriter::bidirectional::last")),
+        );
 
         Self { sender: tx }
     }
