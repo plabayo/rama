@@ -1,4 +1,4 @@
-🧘 Zen of Services
+# 🧘 Zen of Services
 
 In case reading the ["🗼 Services all the way down 🐢"](./services_all_the_way_down.md) was your first introduction to [services][service],
 and even if you have no extensive experience with it yet, working
