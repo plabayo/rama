@@ -52,6 +52,11 @@ This directory contains example implementations demonstrating various features a
 - [`socks5_udp_associate_framed.rs`](./socks5_udp_associate_framed.rs) -
   Same as `socks5_udp_associate.rs` but demonstrating how to combine it with frames
 
+### Combo Proxies:
+
+- [`socks5_and_http_proxy.rs`](./socks5_and_http_proxy.rs) -
+  combines `http_connect_proxy` and `socks5_connect_proxy` into a single server.
+
 ## TLS and Security
 ### Rustls
 - [`tls_rustls_termination.rs`](./tls_rustls_termination.rs) - TLS termination with Rustls

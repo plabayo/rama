@@ -21,6 +21,10 @@ use rama_net::{socket::Interface, stream::Stream};
 use rama_tcp::{TcpStream, server::TcpListener};
 use std::fmt;
 
+mod peek;
+#[doc(inline)]
+pub use peek::{NoSocks5RejectError, Socks5PeekRouter};
+
 mod connect;
 pub use connect::{Connector, DefaultConnector, LazyConnector, Socks5Connector};
 

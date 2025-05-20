@@ -524,6 +524,10 @@ required-features = ["socks5"]
 name = "socks5_udp_associate_framed"
 required-features = ["socks5"]
 
+[[example]]
+name = "socks5_and_http_proxy"
+required-features = ["dns", "socks5", "http-full"]
+
 [profile.release]
 codegen-units = 1
 incremental = false
