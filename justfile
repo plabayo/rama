@@ -2,6 +2,7 @@ fmt:
 	cargo fmt --all
 
 sort:
+	@just install-cargo-tool-if-needed cargo-sort
 	cargo sort --workspace --grouped
 
 lint: fmt sort
@@ -24,6 +25,9 @@ typos:
 extra-checks:
 	{{justfile_directory()}}/scripts/extra-checks.sh
 
+install-cargo-tool-if-needed tool:
+	@cargo install --list | grep -q "{{tool}}" || cargo install {{tool}}
+
 doc:
 	RUSTDOCFLAGS="-D rustdoc::broken-intra-doc-links" cargo doc --all-features --no-deps
 
@@ -31,6 +35,7 @@ doc-open:
 	RUSTDOCFLAGS="-D rustdoc::broken-intra-doc-links" cargo doc --all-features --no-deps --open
 
 hack:
+	@just install-cargo-tool-if-needed cargo-hack
 	cargo hack check --each-feature --no-dev-deps --workspace
 
 test:
@@ -44,25 +49,11 @@ test-spec: test-spec-h2
 test-ignored:
 	cargo test --features=cli,telemetry,compression,http-full,proxy-full,tcp,rustls --workspace -- --ignored
 
-qq: ensure-dev-dependencies lint check clippy doc extra-checks
+qq: lint check clippy doc extra-checks
 
 qa: qq test
 
 qa-full: qa hack test-ignored fuzz-60s check-links
-
-ensure-dev-dependencies:
-	@just check-dev-dependencies || just install-dev-dependencies
-
-install-dev-dependencies:
-	cargo install cargo-sort cargo-hack cargo-expand cargo-machete
-
-check-dev-dependencies:
-	#!/usr/bin/env bash
-	installed=$(cargo install --list)
-	echo "$installed" | grep -q "cargo-sort"
-	echo "$installed" | grep -q "cargo-hack"
-	echo "$installed" | grep -q "cargo-expand"
-	echo "$installed" | grep -q "cargo-machete"
 
 upgrades:
     cargo upgrades
@@ -143,6 +134,7 @@ miri:
 	cargo +nightly miri test
 
 detect-unused-deps:
+	@just install-cargo-tool-if-needed cargo-machete
 	cargo machete --skip-target-dir
 
 detect-biggest-fn:
