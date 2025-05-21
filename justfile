@@ -44,11 +44,25 @@ test-spec: test-spec-h2
 test-ignored:
 	cargo test --features=cli,telemetry,compression,http-full,proxy-full,tcp,rustls --workspace -- --ignored
 
-qq: lint check clippy doc extra-checks
+qq: ensure-dev-dependencies lint check clippy doc extra-checks
 
 qa: qq test
 
 qa-full: qa hack test-ignored fuzz-60s check-links
+
+ensure-dev-dependencies:
+	@just check-dev-dependencies || just install-dev-dependencies
+
+install-dev-dependencies:
+	cargo install cargo-sort cargo-hack cargo-expand cargo-machete
+
+check-dev-dependencies:
+	#!/usr/bin/env bash
+	installed=$(cargo install --list)
+	echo "$installed" | grep -q "cargo-sort"
+	echo "$installed" | grep -q "cargo-hack"
+	echo "$installed" | grep -q "cargo-expand"
+	echo "$installed" | grep -q "cargo-machete"
 
 upgrades:
     cargo upgrades
