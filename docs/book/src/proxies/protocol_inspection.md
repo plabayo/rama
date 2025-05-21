@@ -126,6 +126,8 @@ This pattern allows for flexible protocol handling while maintaining clean separ
 - Handle protocol-specific processing
 - Integrate with MITM capabilities when needed
 
+[`socks5_and_http_proxy.rs`](https://github.com/plabayo/rama/tree/main/examples/socks5_and_http_proxy.rs) is another example of such protocol inspection. This code is used to be able to support a socks5 proxy that can also be something else next to it(e.g. an http proxy).
+
 ## Best Practices
 
 1. **Efficient Detection**:
