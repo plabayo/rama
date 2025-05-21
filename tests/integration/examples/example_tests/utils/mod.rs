@@ -93,7 +93,7 @@ where
             .command()
             .env(
                 "RUST_LOG",
-                std::env::var("RUST_LOG").unwrap_or("info".into()),
+                std::env::var("RUST_LOG").unwrap_or("trace".into()),
             )
             .env("SSLKEYLOGFILE", "./target/test_ssl_key_log.txt")
             .spawn()
