@@ -16,7 +16,7 @@ use rama::net::tls::server::ServerConfig;
 use rama::rt::Executor;
 use rama::service::service_fn;
 use rama::tls::boring::client::TlsConnector;
-use rama::tls::boring::client::TlsConnectorData;
+use rama::tls::boring::client::TlsConnectorDataBuilder;
 use rama::tls::boring::server::TlsAcceptorLayer;
 use rama::ua::emulate::{
     UserAgentEmulateHttpConnectModifier, UserAgentEmulateHttpRequestModifier, UserAgentEmulateLayer,
@@ -301,8 +301,9 @@ async fn test_ua_emulation() {
                     ..Default::default()
                 });
                 let tls_connector_data =
-                    TlsConnectorData::try_from_multiple_client_configs(chain_ref.iter())
-                        .expect(description);
+                    TlsConnectorDataBuilder::try_from_multiple_client_configs(chain_ref.iter())
+                        .expect(description)
+                        .build_shared_builder();
                 let connector = HttpConnector::new(
                     TlsConnector::secure(MockConnectorService::new(service_fn(server_svc_fn)))
                         .with_connector_data(tls_connector_data),
@@ -372,8 +373,9 @@ async fn test_ua_embedded_profiles_are_all_resulting_in_correct_traffic_flow() {
                         ..Default::default()
                     });
                     let tls_connector_data =
-                        TlsConnectorData::try_from_multiple_client_configs(chain_ref.iter())
-                            .unwrap();
+                        TlsConnectorDataBuilder::try_from_multiple_client_configs(chain_ref.iter())
+                            .unwrap()
+                            .build_shared_builder();
                     let connector = HttpConnector::new(
                         TlsConnector::secure(MockConnectorService::new(service_fn(server_svc_fn)))
                             .with_connector_data(tls_connector_data),

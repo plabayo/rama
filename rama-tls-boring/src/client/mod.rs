@@ -17,3 +17,9 @@ mod connector_data;
 #[doc(inline)]
 pub use connector_data::{TlsConnectorData, TlsConnectorDataBuilder};
 
+#[cfg(feature = "ua")]
+mod emulate_ua;
+
+#[cfg(feature = "ua")]
+#[doc(inline)]
+pub use emulate_ua::{EmulateTlsLayer, EmulateTlsService};

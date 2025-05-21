@@ -16,6 +16,7 @@ workspace = true
 [features]
 default = []
 compression = ["dep:flate2", "dep:brotli"]
+ua = ["dep:rama-ua"]
 
 [dependencies]
 brotli = { workspace = true, optional = true }
@@ -28,6 +29,7 @@ pin-project-lite = { workspace = true }
 rama-boring = { workspace = true }
 rama-boring-tokio = { workspace = true }
 rama-core = { workspace = true }
+rama-ua = { workspace = true, optional = true }
 rama-net = { workspace = true, features = ["http", "tls"] }
 rama-utils = { workspace = true }
 tokio = { workspace = true, features = ["macros", "io-std"] }
