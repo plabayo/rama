@@ -15,4 +15,5 @@ pub use connector::{TlsConnector, TlsConnectorLayer, tls_connect};
 
 mod connector_data;
 #[doc(inline)]
-pub use connector_data::TlsConnectorData;
+pub use connector_data::{TlsConnectorData, TlsConnectorDataBuilder};
+

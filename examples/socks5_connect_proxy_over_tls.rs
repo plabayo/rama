@@ -30,7 +30,7 @@ use rama::{
         Protocol,
         address::{ProxyAddress, SocketAddress},
         client::{ConnectorService, EstablishedClientConnection},
-        tls::client::{ClientConfig, ServerVerifyMode},
+        tls::client::ServerVerifyMode,
         tls::server::{SelfSignedData, ServerAuth, ServerConfig},
         user::{Basic, ProxyCredential},
     },
@@ -38,7 +38,7 @@ use rama::{
     rt::Executor,
     tcp::{client::service::TcpConnector, server::TcpListener},
     tls::boring::{
-        client::TlsConnector,
+        client::{TlsConnector, TlsConnectorDataBuilder},
         server::{TlsAcceptorData, TlsAcceptorService},
     },
 };
@@ -67,15 +67,12 @@ async fn main() {
         "local servers up and running",
     );
 
+    let tls_conn_data = TlsConnectorDataBuilder::new()
+        .with_server_verify_mode(ServerVerifyMode::Disable)
+        .build_shared_builder();
+
     let client = HttpConnector::new(Socks5ProxyConnector::required(
-        TlsConnector::secure(TcpConnector::new()).with_connector_data(
-            ClientConfig {
-                server_verify_mode: Some(ServerVerifyMode::Disable),
-                ..Default::default()
-            }
-            .try_into()
-            .expect("create TLS Connector data"),
-        ),
+        TlsConnector::secure(TcpConnector::new()).with_connector_data(tls_conn_data),
     ));
 
     let mut ctx = Context::default();

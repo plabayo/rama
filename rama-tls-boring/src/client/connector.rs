@@ -9,16 +9,18 @@ use rama_net::stream::Stream;
 use rama_net::tls::ApplicationProtocol;
 use rama_net::tls::client::NegotiatedTlsParameters;
 use rama_net::transport::TryRefIntoTransportContext;
+use rama_utils::macros::generate_set_and_with;
 use std::fmt;
+use std::sync::Arc;
 
-use super::{AutoTlsStream, TlsConnectorData, TlsStream};
+use super::{AutoTlsStream, TlsConnectorData, TlsConnectorDataBuilder, TlsStream};
 use crate::types::TlsTunnel;
 
 /// A [`Layer`] which wraps the given service with a [`TlsConnector`].
 ///
 /// See [`TlsConnector`] for more information.
 pub struct TlsConnectorLayer<K = ConnectorKindAuto> {
-    connector_data: Option<TlsConnectorData>,
+    connector_data: Option<Arc<TlsConnectorDataBuilder>>,
     kind: K,
 }
 
@@ -41,26 +43,16 @@ impl<K: Clone> Clone for TlsConnectorLayer<K> {
 }
 
 impl<K> TlsConnectorLayer<K> {
-    /// Attach [`TlsConnectorData`] to this [`TlsConnectorLayer`],
-    /// to be used instead of a globally shared [`TlsConnectorData::default`].
-    pub fn with_connector_data(mut self, connector_data: TlsConnectorData) -> Self {
-        self.connector_data = Some(connector_data);
-        self
-    }
-
-    /// Maybe attach [`TlsConnectorData`] to this [`TlsConnectorLayer`],
-    /// to be used if `Some` instead of a globally shared [`TlsConnectorData::default`].
-    pub fn maybe_with_connector_data(mut self, connector_data: Option<TlsConnectorData>) -> Self {
-        self.connector_data = connector_data;
-        self
-    }
-
-    /// Attach [`TlsConnectorData`] to this [`TlsConnectorLayer`],
-    /// to be used instead of a globally shared default client config.
-    pub fn set_connector_data(&mut self, connector_data: TlsConnectorData) -> &mut Self {
-        self.connector_data = Some(connector_data);
-        self
-    }
+    generate_set_and_with!(
+        /// Set base [`TlsConnectorDataBuilder`] that will be used for this connector
+        pub fn connector_data(
+            mut self,
+            connector_data: Option<Arc<TlsConnectorDataBuilder>>,
+        ) -> Self {
+            self.connector_data = connector_data;
+            self
+        }
+    );
 }
 
 impl TlsConnectorLayer<ConnectorKindAuto> {
@@ -132,7 +124,7 @@ impl Default for TlsConnectorLayer<ConnectorKindAuto> {
 /// establish a secure connection.
 pub struct TlsConnector<S, K = ConnectorKindAuto> {
     inner: S,
-    connector_data: Option<TlsConnectorData>,
+    connector_data: Option<Arc<TlsConnectorDataBuilder>>,
     kind: K,
 }
 
@@ -166,32 +158,23 @@ impl<S, K> TlsConnector<S, K> {
         }
     }
 
-    /// Attach [`TlsConnectorData`] to this [`TlsConnector`],
-    /// to be used instead of a globally shared [`TlsConnectorData::default`].
-    ///
-    /// NOTE: for a smooth interaction with HTTP you most likely do want to
-    /// create tls connector data to at the very least define the ALPN's correctly.
-    ///
-    /// E.g. if you create an auto client, you want to make sure your ALPN can handle all.
-    /// It will be then also be the [`TlsConnector`] that sets the request http version correctly.
-    pub fn with_connector_data(mut self, connector_data: TlsConnectorData) -> Self {
-        self.connector_data = Some(connector_data);
-        self
-    }
-
-    /// Maybe attach [`TlsConnectorData`] to this [`TlsConnector`],
-    /// to be used if `Some` instead of a globally shared [`TlsConnectorData::default`].
-    pub fn maybe_with_connector_data(mut self, connector_data: Option<TlsConnectorData>) -> Self {
-        self.connector_data = connector_data;
-        self
-    }
-
-    /// Attach [`TlsConnectorData`] to this [`TlsConnector`],
-    /// to be used instead of a globally shared default client config.
-    pub fn set_connector_data(&mut self, connector_data: TlsConnectorData) -> &mut Self {
-        self.connector_data = Some(connector_data);
-        self
-    }
+    generate_set_and_with!(
+        /// Attach [`TlsConnectorData`] to this [`TlsConnector`],
+        /// to be used instead of a globally shared [`TlsConnectorData::default`].
+        ///
+        /// NOTE: for a smooth interaction with HTTP you most likely do want to
+        /// create tls connector data to at the very least define the ALPN's correctly.
+        ///
+        /// E.g. if you create an auto client, you want to make sure your ALPN can handle all.
+        /// It will be then also be the [`TlsConnector`] that sets the request http version correctly.
+        pub fn connector_data(
+            mut self,
+            connector_data: Option<Arc<TlsConnectorDataBuilder>>,
+        ) -> Self {
+            self.connector_data = connector_data;
+            self
+        }
+    );
 }
 
 impl<S> TlsConnector<S, ConnectorKindAuto> {
@@ -266,9 +249,8 @@ where
 
         let host = transport_ctx.authority.host().clone();
 
-        let connector_data = ctx.get::<TlsConnectorData>().cloned();
-
-        let (stream, negotiated_params) = self.handshake(connector_data, host, conn).await?;
+        let connector_data = self.connector_data(&mut ctx)?;
+        let (stream, negotiated_params) = handshake(connector_data, host, conn).await?;
 
         tracing::trace!(
             authority = %transport_ctx.authority,
@@ -317,9 +299,8 @@ where
 
         let host = transport_ctx.authority.host().clone();
 
-        let connector_data = ctx.get::<TlsConnectorData>().cloned();
-
-        let (conn, negotiated_params) = self.handshake(connector_data, host, conn).await?;
+        let connector_data = self.connector_data(&mut ctx)?;
+        let (conn, negotiated_params) = handshake(connector_data, host, conn).await?;
         let conn = TlsStream::new(conn);
         ctx.insert(negotiated_params);
 
@@ -363,9 +344,8 @@ where
             }
         };
 
-        let connector_data = ctx.get::<TlsConnectorData>().cloned();
-
-        let (stream, negotiated_params) = self.handshake(connector_data, host, conn).await?;
+        let connector_data = self.connector_data(&mut ctx)?;
+        let (stream, negotiated_params) = handshake(connector_data, host, conn).await?;
         ctx.insert(negotiated_params);
 
         tracing::trace!("TlsConnector(tunnel): connection secured");
@@ -377,93 +357,105 @@ where
     }
 }
 
+impl<S, K> TlsConnector<S, K> {
+    fn connector_data<State: 'static>(
+        &self,
+        ctx: &mut Context<State>,
+    ) -> Result<Option<TlsConnectorData>, OpaqueError> {
+        match (
+            ctx.get_mut::<TlsConnectorDataBuilder>(),
+            self.connector_data.clone(),
+        ) {
+            (None, None) => Ok(None),
+            (None, Some(builder)) => Ok(Some(builder.build()?)),
+            (Some(builder), None) => Ok(Some(builder.build()?)),
+            (Some(ctx_builder), Some(base_builder)) => {
+                ctx_builder.prepend_base_config(base_builder);
+                Ok(Some(ctx_builder.build()?))
+            }
+        }
+    }
+}
+
 pub async fn tls_connect<T>(
     server_host: Host,
     stream: T,
-    connector_data: Option<&TlsConnectorData>,
+    connector_data: Option<TlsConnectorData>,
 ) -> Result<TlsStream<T>, OpaqueError>
 where
     T: Stream + Unpin,
 {
-    let client_config_data = match connector_data {
-        Some(connector_data) => connector_data.try_to_build_config()?,
-        None => TlsConnectorData::new()?.try_to_build_config()?,
+    let data = match connector_data {
+        Some(connector_data) => connector_data,
+        None => TlsConnectorDataBuilder::new().build()?,
     };
-    let server_host = client_config_data.server_name.unwrap_or(server_host);
-    let stream = rama_boring_tokio::connect(
-        client_config_data.config,
-        server_host.to_string().as_str(),
-        stream,
-    )
-    .await
-    .map_err(|err| match err.as_io_error() {
-        Some(err) => OpaqueError::from_display(err.to_string())
-            .context("boring ssl connector: connect")
-            .into_boxed(),
-        None => OpaqueError::from_display("boring ssl connector: connect").into_boxed(),
-    })?;
+    let server_host = data.server_name.unwrap_or(server_host);
+    let stream: SslStream<T> =
+        rama_boring_tokio::connect(data.config, server_host.to_string().as_str(), stream)
+            .await
+            .map_err(|err| match err.as_io_error() {
+                Some(err) => OpaqueError::from_display(err.to_string())
+                    .context("boring ssl connector: connect")
+                    .into_boxed(),
+                None => OpaqueError::from_display("boring ssl connector: connect").into_boxed(),
+            })?;
     Ok(TlsStream::new(stream))
 }
 
-impl<S, K> TlsConnector<S, K> {
-    async fn handshake<T>(
-        &self,
-        connector_data: Option<TlsConnectorData>,
-        server_host: Host,
-        stream: T,
-    ) -> Result<(SslStream<T>, NegotiatedTlsParameters), BoxError>
-    where
-        T: Stream + Unpin,
-    {
-        let connector_data = connector_data.as_ref().or(self.connector_data.as_ref());
+async fn handshake<T>(
+    connector_data: Option<TlsConnectorData>,
+    server_host: Host,
+    stream: T,
+) -> Result<(SslStream<T>, NegotiatedTlsParameters), BoxError>
+where
+    T: Stream + Unpin,
+{
+    let store_server_certificate_chain = connector_data
+        .as_ref()
+        .is_some_and(|data| data.store_server_certificate_chain);
 
-        let TlsStream { inner: stream } = tls_connect(server_host, stream, connector_data).await?;
+    let TlsStream { inner: stream } = tls_connect(server_host, stream, connector_data).await?;
 
-        let params = match stream.ssl().session() {
-            Some(ssl_session) => {
-                let protocol_version =
-                    ssl_session
-                        .protocol_version()
-                        .rama_try_into()
-                        .map_err(|v| {
-                            OpaqueError::from_display(format!("protocol version {v}"))
-                                .context("boring ssl connector: min proto version")
-                        })?;
-                let application_layer_protocol = stream
-                    .ssl()
-                    .selected_alpn_protocol()
-                    .map(ApplicationProtocol::from);
-                if let Some(ref proto) = application_layer_protocol {
-                    tracing::trace!(%proto, "boring client (connector) has selected ALPN");
-                }
-
-                let store_server_cert_chain = connector_data
-                    .is_some_and(|data| data.connect_config_input.store_server_certificate_chain);
-
-                let server_certificate_chain = match store_server_cert_chain
-                    .then(|| stream.ssl().peer_cert_chain())
-                    .flatten()
-                {
-                    Some(chain) => Some(chain.rama_try_into()?),
-                    None => None,
-                };
-
-                NegotiatedTlsParameters {
-                    protocol_version,
-                    application_layer_protocol,
-                    peer_certificate_chain: server_certificate_chain,
-                }
+    let params = match stream.ssl().session() {
+        Some(ssl_session) => {
+            let protocol_version = ssl_session
+                .protocol_version()
+                .rama_try_into()
+                .map_err(|v| {
+                    OpaqueError::from_display(format!("protocol version {v}"))
+                        .context("boring ssl connector: min proto version")
+                })?;
+            let application_layer_protocol = stream
+                .ssl()
+                .selected_alpn_protocol()
+                .map(ApplicationProtocol::from);
+            if let Some(ref proto) = application_layer_protocol {
+                tracing::trace!(%proto, "boring client (connector) has selected ALPN");
             }
-            None => {
-                return Err(OpaqueError::from_display(
-                    "boring ssl connector: failed to establish session...",
-                )
-                .into_boxed());
-            }
-        };
 
-        Ok((stream, params))
-    }
+            let server_certificate_chain = match store_server_certificate_chain
+                .then(|| stream.ssl().peer_cert_chain())
+                .flatten()
+            {
+                Some(chain) => Some(chain.rama_try_into()?),
+                None => None,
+            };
+
+            NegotiatedTlsParameters {
+                protocol_version,
+                application_layer_protocol,
+                peer_certificate_chain: server_certificate_chain,
+            }
+        }
+        None => {
+            return Err(OpaqueError::from_display(
+                "boring ssl connector: failed to establish session...",
+            )
+            .into_boxed());
+        }
+    };
+
+    Ok((stream, params))
 }
 
 mod private {
