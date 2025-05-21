@@ -528,6 +528,10 @@ required-features = ["socks5"]
 name = "socks5_and_http_proxy"
 required-features = ["dns", "socks5", "http-full"]
 
+[[example]]
+name = "haproxy_client_ip"
+required-features = ["haproxy", "http-full"]
+
 [profile.release]
 codegen-units = 1
 incremental = false

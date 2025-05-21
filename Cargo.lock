@@ -2485,6 +2485,7 @@ version = "0.3.0-alpha.1"
 dependencies = [
  "rama-core",
  "rama-net",
+ "rama-utils",
  "tokio",
  "tokio-test",
  "tracing",
