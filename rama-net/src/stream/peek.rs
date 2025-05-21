@@ -6,7 +6,6 @@ use std::{
 };
 
 use pin_project_lite::pin_project;
-use rama_core::bytes::BufMut;
 use tokio::io::{AsyncBufRead, AsyncRead, AsyncWrite, ReadBuf};
 
 pin_project! {
@@ -79,20 +78,18 @@ where
         let me = self.project();
 
         if !*me.done_peek {
-            let before = buf.filled().len();
+            let rem = buf.remaining();
             ready!(me.peek.poll_read(cx, buf))?;
-            let read = buf.filled().len() - before;
-
-            if read == 0 {
+            if buf.remaining() == rem {
                 *me.done_peek = true;
-            } else if !buf.has_remaining_mut() {
+            } else {
                 return Poll::Ready(Ok(()));
             }
         }
-
         me.inner.poll_read(cx, buf)
     }
 }
+
 impl<P, S> AsyncBufRead for PeekStream<P, S>
 where
     P: AsyncBufRead,
@@ -130,13 +127,11 @@ where
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         if !self.done_peek {
             let n = self.peek.read(buf)?;
-            return if n < buf.len() {
+            if n == 0 {
                 self.done_peek = true;
-                let m = self.inner.read(&mut buf[n..])?;
-                Ok(n + m)
             } else {
-                Ok(n)
-            };
+                return Ok(n);
+            }
         }
         self.inner.read(buf)
     }
@@ -278,7 +273,7 @@ mod tests {
         TestCase::<10> {
             peek_data: "hello",
             inner_data: " world",
-            expected_reads: &["hello worl", "d", ""],
+            expected_reads: &["hello", " world", ""],
         }
         .test_sync_and_async()
         .await;
@@ -286,7 +281,7 @@ mod tests {
         TestCase::<5> {
             peek_data: "hello world",
             inner_data: "next data",
-            expected_reads: &["hello", " worl", "dnext", " data", ""],
+            expected_reads: &["hello", " worl", "d", "next ", "data", ""],
         }
         .test_sync_and_async()
         .await;

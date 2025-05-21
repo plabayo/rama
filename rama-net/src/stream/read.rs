@@ -255,8 +255,9 @@ where
         let me = self.project();
 
         if !*me.done_first {
+            let rem = buf.remaining();
             ready!(me.first.poll_read(cx, buf))?;
-            if buf.remaining() > 0 {
+            if buf.remaining() == rem {
                 *me.done_first = true;
             } else {
                 return Poll::Ready(Ok(()));
@@ -274,13 +275,11 @@ where
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         if !self.done_first {
             let n = self.first.read(buf)?;
-            return if n < buf.len() {
+            if n == 0 {
                 self.done_first = true;
-                let m = self.second.read(&mut buf[n..])?;
-                Ok(n + m)
             } else {
-                Ok(n)
-            };
+                return Ok(n);
+            }
         }
         self.second.read(buf)
     }
@@ -448,7 +447,7 @@ mod test {
 
         TestCase::<5, _> {
             reader: ChainReader::new(Cursor::new("hello "), Cursor::new("world")),
-            expected_reads: &["hello", " worl", "d", ""],
+            expected_reads: &["hello", " ", "world", ""],
         }
         .test_sync_and_async()
         .await;
