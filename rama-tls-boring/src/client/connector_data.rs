@@ -839,3 +839,21 @@ fn self_signed_client_auth() -> Result<(Vec<X509>, PKey<Private>), OpaqueError> 
 
     Ok((vec![cert], privkey))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_chaining() {
+        let base_builder =
+            TlsConnectorDataBuilder::new_http_1().with_store_server_certificate_chain(true);
+
+        let builder =
+            TlsConnectorDataBuilder::new().with_base_config(base_builder.build_shared_builder());
+
+        assert_eq!(builder.store_server_certificate_chain(), Some(true));
+    }
+
+    // TODO test more advanced combinations
+}

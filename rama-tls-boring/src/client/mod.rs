@@ -22,4 +22,4 @@ mod emulate_ua;
 
 #[cfg(feature = "ua")]
 #[doc(inline)]
-pub use emulate_ua::{EmulateTlsLayer, EmulateTlsService};
+pub use emulate_ua::{EmulateTlsProfileLayer, EmulateTlsProfileService};

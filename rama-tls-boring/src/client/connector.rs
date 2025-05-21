@@ -1,4 +1,5 @@
 use crate::RamaTryInto;
+use crate::client::emulate_ua::TlsProfileBuilder;
 use private::{ConnectorKindAuto, ConnectorKindSecure, ConnectorKindTunnel};
 use rama_boring_tokio::SslStream;
 use rama_core::error::{BoxError, ErrorExt, OpaqueError};
@@ -362,18 +363,24 @@ impl<S, K> TlsConnector<S, K> {
         &self,
         ctx: &mut Context<State>,
     ) -> Result<Option<TlsConnectorData>, OpaqueError> {
-        match (
-            ctx.get_mut::<TlsConnectorDataBuilder>(),
-            self.connector_data.clone(),
-        ) {
-            (None, None) => Ok(None),
-            (None, Some(builder)) => Ok(Some(builder.build()?)),
-            (Some(builder), None) => Ok(Some(builder.build()?)),
-            (Some(ctx_builder), Some(base_builder)) => {
-                ctx_builder.prepend_base_config(base_builder);
-                Ok(Some(ctx_builder.build()?))
+        #[cfg(feature = "ua")]
+        let tls_profile_builder = ctx.get::<TlsProfileBuilder>().cloned();
+        let base_builder = self.connector_data.clone();
+
+        let builder = ctx.get_or_insert_default::<TlsConnectorDataBuilder>();
+
+        #[cfg(feature = "ua")]
+        {
+            if let Some(tls_builder) = tls_profile_builder {
+                builder.push_base_config(tls_builder.0);
             }
         }
+
+        if let Some(base_builder) = base_builder {
+            builder.push_base_config(base_builder);
+        }
+
+        Ok(Some(builder.build()?))
     }
 }
 

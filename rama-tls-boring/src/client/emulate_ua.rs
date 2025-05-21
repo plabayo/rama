@@ -1,18 +1,22 @@
 use super::TlsConnectorDataBuilder;
 use rama_core::{Layer, Service, error::BoxError};
 use rama_ua::profile::TlsProfile;
+use std::sync::Arc;
 
-pub struct EmulateTlsService<S> {
+pub struct EmulateTlsProfileService<S> {
     inner: S,
 }
 
-impl<S> EmulateTlsService<S> {
+impl<S> EmulateTlsProfileService<S> {
     pub fn new(inner: S) -> Self {
         Self { inner }
     }
 }
 
-impl<S, State, Request> Service<State, Request> for EmulateTlsService<S>
+#[derive(Clone, Debug)]
+pub(super) struct TlsProfileBuilder(pub(super) Arc<TlsConnectorDataBuilder>);
+
+impl<S, State, Request> Service<State, Request> for EmulateTlsProfileService<S>
 where
     State: Clone + Send + Sync + 'static,
     Request: Send + 'static,
@@ -29,16 +33,15 @@ where
     ) -> Result<Self::Response, Self::Error> {
         let tls_profile = ctx.get::<TlsProfile>().cloned();
 
+        // Right now this is very simple, but it will get a lot more complex, which is why it is separated from the connector itself
         if let Some(profile) = tls_profile {
-            let builder =
-                ctx.get_or_insert_with::<TlsConnectorDataBuilder>(TlsConnectorDataBuilder::new);
-
             // TODO dont always create this once we have moved away from ClientConfig
             // We can do that using something like `Arc::as_ptr` or adding something like a hash key to `TlsProfile`, or ...
-            let emulate_base = TlsConnectorDataBuilder::try_from(&profile.client_config)
-                .map_err(Into::<BoxError>::into)?;
+            let emulate_builder = TlsConnectorDataBuilder::try_from(&profile.client_config)
+                .map_err(Into::<BoxError>::into)?
+                .build_shared_builder();
 
-            builder.push_base_config(emulate_base.into());
+            ctx.insert(TlsProfileBuilder(emulate_builder));
         }
 
         self.inner.serve(ctx, req).await.map_err(Into::into)
@@ -47,18 +50,18 @@ where
 
 #[non_exhaustive]
 #[derive(Default, Clone)]
-pub struct EmulateTlsLayer;
+pub struct EmulateTlsProfileLayer;
 
-impl EmulateTlsLayer {
+impl EmulateTlsProfileLayer {
     pub fn new() -> Self {
         Self
     }
 }
 
-impl<S> Layer<S> for EmulateTlsLayer {
-    type Service = EmulateTlsService<S>;
+impl<S> Layer<S> for EmulateTlsProfileLayer {
+    type Service = EmulateTlsProfileService<S>;
 
     fn layer(&self, inner: S) -> Self::Service {
-        EmulateTlsService::new(inner)
+        EmulateTlsProfileService::new(inner)
     }
 }

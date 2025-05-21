@@ -9,14 +9,14 @@ use rama::net::client::EstablishedClientConnection;
 use rama::net::fingerprint::{Ja3, Ja4, Ja4H};
 use rama::net::stream::Socket;
 use rama::net::tls::ApplicationProtocol;
-use rama::net::tls::client::{ClientConfig, ServerVerifyMode};
-use rama::net::tls::client::{extract_client_config_from_ctx, parse_client_hello};
+use rama::net::tls::client::ServerVerifyMode;
+use rama::net::tls::client::parse_client_hello;
 use rama::net::tls::server::ServerAuth;
 use rama::net::tls::server::ServerConfig;
 use rama::rt::Executor;
 use rama::service::service_fn;
 use rama::tls::boring::client::TlsConnector;
-use rama::tls::boring::client::TlsConnectorDataBuilder;
+use rama::tls::boring::client::{EmulateTlsProfileLayer, TlsConnectorDataBuilder};
 use rama::tls::boring::server::TlsAcceptorLayer;
 use rama::ua::emulate::{
     UserAgentEmulateHttpConnectModifier, UserAgentEmulateHttpRequestModifier, UserAgentEmulateLayer,
@@ -293,33 +293,32 @@ async fn test_ua_emulation() {
             runtime: None,
         };
 
-        let client = UserAgentEmulateLayer::new(Arc::new(profile)).into_layer(service_fn(
-            async move |ctx: Context<State>, req: Request| {
-                let mut chain_ref = extract_client_config_from_ctx(&ctx).expect(description);
-                chain_ref.append(ClientConfig {
-                    server_verify_mode: Some(ServerVerifyMode::Disable),
-                    ..Default::default()
-                });
-                let tls_connector_data =
-                    TlsConnectorDataBuilder::try_from_multiple_client_configs(chain_ref.iter())
-                        .expect(description)
-                        .build_shared_builder();
-                let connector = HttpConnector::new(
-                    TlsConnector::secure(MockConnectorService::new(service_fn(server_svc_fn)))
-                        .with_connector_data(tls_connector_data),
-                )
-                .with_jit_req_inspector((
-                    HttpsAlpnModifier::default(),
-                    UserAgentEmulateHttpConnectModifier::default(),
-                ))
-                .with_svc_req_inspector(UserAgentEmulateHttpRequestModifier::default());
+        let client = (
+            UserAgentEmulateLayer::new(Arc::new(profile)),
+            EmulateTlsProfileLayer::new(),
+        )
+            .into_layer(service_fn(
+                async move |mut ctx: Context<State>, req: Request| {
+                    // We can edit our current builder
+                    let builder = ctx.get_or_insert_default::<TlsConnectorDataBuilder>();
+                    builder.set_server_verify_mode(ServerVerifyMode::Disable);
 
-                let EstablishedClientConnection { ctx, req, conn } =
-                    connector.serve(ctx, req).await.expect(description);
+                    // We dont need to set connector data on TlsConnector as it will get it from ctx
+                    let connector = HttpConnector::new(TlsConnector::secure(
+                        MockConnectorService::new(service_fn(server_svc_fn)),
+                    ))
+                    .with_jit_req_inspector((
+                        HttpsAlpnModifier::default(),
+                        UserAgentEmulateHttpConnectModifier::default(),
+                    ))
+                    .with_svc_req_inspector(UserAgentEmulateHttpRequestModifier::default());
 
-                Ok::<_, Infallible>(conn.serve(ctx, req).await.expect(description))
-            },
-        ));
+                    let EstablishedClientConnection { ctx, req, conn } =
+                        connector.serve(ctx, req).await.expect(description);
+
+                    Ok::<_, Infallible>(conn.serve(ctx, req).await.expect(description))
+                },
+            ));
 
         client
             .serve(
@@ -365,33 +364,32 @@ async fn test_ua_embedded_profiles_are_all_resulting_in_correct_traffic_flow() {
                 Ok(Response::new(Body::empty()))
             }
 
-            let client = UserAgentEmulateLayer::new(profile).into_layer(service_fn(
-                async move |ctx: Context<State>, req: Request| {
-                    let mut chain_ref = extract_client_config_from_ctx(&ctx).unwrap();
-                    chain_ref.append(ClientConfig {
-                        server_verify_mode: Some(ServerVerifyMode::Disable),
-                        ..Default::default()
-                    });
-                    let tls_connector_data =
-                        TlsConnectorDataBuilder::try_from_multiple_client_configs(chain_ref.iter())
-                            .unwrap()
-                            .build_shared_builder();
-                    let connector = HttpConnector::new(
-                        TlsConnector::secure(MockConnectorService::new(service_fn(server_svc_fn)))
-                            .with_connector_data(tls_connector_data),
-                    )
-                    .with_jit_req_inspector((
-                        HttpsAlpnModifier::default(),
-                        UserAgentEmulateHttpConnectModifier::default(),
-                    ))
-                    .with_svc_req_inspector(UserAgentEmulateHttpRequestModifier::default());
+            let client = (
+                UserAgentEmulateLayer::new(profile),
+                EmulateTlsProfileLayer::new(),
+            )
+                .into_layer(service_fn(
+                    async move |mut ctx: Context<State>, req: Request| {
+                        // We can edit our current builder
+                        let builder = ctx.get_or_insert_default::<TlsConnectorDataBuilder>();
+                        builder.set_server_verify_mode(ServerVerifyMode::Disable);
 
-                    let EstablishedClientConnection { ctx, req, conn } =
-                        connector.serve(ctx, req).await.unwrap();
+                        // We dont need to set connector data on TlsConnector as it will get it from ctx
+                        let connector = HttpConnector::new(TlsConnector::secure(
+                            MockConnectorService::new(service_fn(server_svc_fn)),
+                        ))
+                        .with_jit_req_inspector((
+                            HttpsAlpnModifier::default(),
+                            UserAgentEmulateHttpConnectModifier::default(),
+                        ))
+                        .with_svc_req_inspector(UserAgentEmulateHttpRequestModifier::default());
 
-                    Ok::<_, Infallible>(conn.serve(ctx, req).await.unwrap())
-                },
-            ));
+                        let EstablishedClientConnection { ctx, req, conn } =
+                            connector.serve(ctx, req).await.unwrap();
+
+                        Ok::<_, Infallible>(conn.serve(ctx, req).await.unwrap())
+                    },
+                ));
 
             let ctx = Context::with_state(State {
                 counter: counter.clone(),
