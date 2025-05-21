@@ -4,47 +4,47 @@
     <img src="./img/old_logo.png" alt="original (OG) rama logo">
     <div>
         <p>
-            Developing specialised proxies, in Rust, but certainly also in other languages,
-            falls currently in two categories:
+            When developing specialized proxies in Rust (or other languages),
+            developers typically face two main approaches:
         </p>
         <ol>
-            <li>use an "off-the-shelf" solution;</li>
-            <li>develop it yourself "from scratch".</li>
+            <li>Use an "off-the-shelf" solution;</li>
+            <li>Build it "from scratch".</li>
         </ol>
     </div>
 </div>
 
-(1) is usually in the form of using something like Nginx, Caddy or Envoy.
-In most cases that means being limited to using what they offer,
-and configure only using config files. Most of these technologies do
-allow you to add custom code to it, but you're limited in the whats and hows.
-On top of that you are still essentially stuck with the layers that they do offer
-and that you cannot do without.
+The first approach typically involves using established solutions like Nginx, Caddy, or Envoy.
+While these tools are powerful, they often limit you to their predefined features and configuration options.
+Although most of these technologies allow for custom code integration, you're constrained by their
+specific implementation details and architectural choices. Additionally, you're bound to their
+underlying layers, which you cannot modify or remove.
 
-(2) works, gives you the full freedom of a child's seemingly infinite creativity.
-However... having to do that once, twice, and more, becomes boring pretty quickly.
-Despite how specialised your proxy might be, it will be pretty similar to many other proxies
-out there, including the ones that you write yourself.
+The second approach offers complete freedom and flexibility, much like a blank canvas for an artist.
+However, this freedom comes at a cost: repeatedly building similar proxy components becomes tedious
+and time-consuming. Despite the unique requirements of your proxy, you'll find yourself implementing
+many common patterns that are similar to other proxies, including your own previous implementations.
 
-and this is where Rama comes in and hopes to be. It allows you to develop
-network proxies, specialised for your use case, while still allowing to expose and reuse use
-the parts of of the code not unique to that one little proxy idea.
+This is where Rama steps in. Rama enables you to develop network proxies tailored to your specific
+use case while providing reusable components for the common patterns. It allows you to focus on
+what makes your proxy unique while leveraging shared functionality.
 
 ## Alternatives
 
-While there are a handful of proxies written in Rust, there are only two other Rust frameworks
-specifically made for proxy purposes. All other proxy codebases are single purpose code bases,
-some even just for learning purposes. Or are actually generic http/web libraries/frameworks
-that facilitate proxy features as an extra.
+While there are several proxy implementations in Rust, only two other frameworks are specifically
+designed for proxy development. Most other Rust-based proxy codebases are single-purpose
+implementations, some created for educational purposes, or are general HTTP/web frameworks
+that include proxy capabilities as an additional feature.
 
-[Cloudflare] has been working on a proxy service framework, named [`pingora`], since a couple of years already,
-and on the 28th of February of 2024 they also open sourced it.
+[Cloudflare] has been developing [`pingora`], a proxy service framework, for several years
+and open-sourced it on February 28th, 2024.
 
-Rama is not for everyone, but we sure hope it is right for you.
-If not, consider giving [`pingora`] a try, it might very well be the next best thing for you.
+While Rama may not be the perfect solution for everyone, we believe it offers significant value
+for many use cases. If Rama doesn't meet your needs, we encourage you to explore [`pingora`],
+which might be a better fit for your requirements.
 
-Secondly, [ByteDance] has an open source proxy framework written in Rust to developer forward
-and reverse proxies alike, named [`g3proxy`].
+Additionally, [ByteDance] has open-sourced [`g3proxy`], a Rust-based framework for developing
+both forward and reverse proxies.
 
 [Cloudflare]: https://www.cloudflare.com/
 [`pingora`]: https://github.com/cloudflare/pingora
@@ -53,24 +53,22 @@ and reverse proxies alike, named [`g3proxy`].
 
 ## More than proxies
 
-The initial development of Rama quickly showed us that many of the advantages
-that developing on top of Rama also apply equally well to developing [web servers](./web_servers.md)
-and [http clients](./http_clients.md):
+During Rama's initial development, we discovered that its advantages extend beyond proxy development
+to [web servers](./web_servers.md) and [http clients](./http_clients.md):
 
-* Use Async Method Traits;
-* Reuse modular [Tower](https://github.com/tower-rs/tower)-like middleware using extensions as well as strongly typed state;
-* Have the ability to be in full control of your web stack from Transport Layer (Tcp, Udp), through Tls and Http;
-* Be able to trust that your incoming and outgoing Application Http data has not been modified (e.g. Http header casing and order is preserved);
+* Utilize Async Method Traits for efficient asynchronous operations;
+* Leverage modular [Tower](https://github.com/tower-rs/tower)-like middleware with extensions and strongly typed state;
+* Maintain full control over your web stack from the Transport Layer (TCP, UDP) through TLS and HTTP;
+* Ensure the integrity of your proxied data. E.g. for HTTP/1.1preserving header casing and order;
 
-Continue to read this book to learn more about using Rama for either of these purposes.
+Continue reading this book to learn more about using Rama for these various purposes.
 
 ## Tower Compatible
 
-Rama is tower-compatible. While it is not the goal to use tower
-for all your service needs in rama, we do want to allow
-to reuse existing tower layers and services where desired.
+Rama is designed to be tower-compatible. While we don't aim to use Tower for all service needs
+in Rama, we want to enable the reuse of existing Tower layers and services where appropriate.
 
-You can find an example on how to do this at
+You can find an example of Tower integration at
 <https://github.com/plabayo/rama/blob/main/examples/http_rama_tower.rs>.
 
 <div class="book-article-image-center">

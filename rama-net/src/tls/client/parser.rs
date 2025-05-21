@@ -132,6 +132,9 @@ fn parse_tls_client_hello_extension(i: &[u8]) -> IResult<&[u8], ClientHelloExten
             let (i, ech) = parse_ech_client_hello(ext_data)?;
             Ok((i, ClientHelloExtension::EncryptedClientHello(ech)))
         }
+        ExtensionId::APPLICATION_SETTINGS | ExtensionId::OLD_APPLICATION_SETTINGS => {
+            parse_tls_extension_application_settings_content(ext_data)
+        }
         _ => Ok((
             i,
             ClientHelloExtension::Opaque {
@@ -294,6 +297,19 @@ fn parse_protocol_name_list(mut i: &[u8]) -> IResult<&[u8], Vec<ApplicationProto
 fn parse_protocol_name(i: &[u8]) -> IResult<&[u8], ApplicationProtocol> {
     let alpn = ApplicationProtocol::from(i);
     Ok((&[], alpn))
+}
+
+fn parse_tls_extension_application_settings_content(
+    i: &[u8],
+) -> IResult<&[u8], ClientHelloExtension> {
+    map_parser(
+        length_data(be_u16),
+        map(
+            parse_protocol_name_list,
+            ClientHelloExtension::ApplicationSettings,
+        ),
+    )
+    .parse(i)
 }
 
 fn parse_u8_type<T: From<u8>>(i: &[u8]) -> IResult<&[u8], Vec<T>> {

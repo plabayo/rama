@@ -57,7 +57,12 @@ mod tls_boring_dynamic_certs;
 #[cfg(all(feature = "dns", feature = "socks5", feature = "http-full"))]
 mod socks5_connect_proxy;
 
-#[cfg(all(feature = "dns", feature = "socks5", feature = "http-full"))]
+#[cfg(all(
+    feature = "dns",
+    feature = "boring",
+    feature = "socks5",
+    feature = "http-full"
+))]
 mod socks5_connect_proxy_mitm_proxy;
 
 #[cfg(all(feature = "socks5", feature = "boring", feature = "http-full"))]
@@ -71,6 +76,9 @@ mod socks5_udp_associate;
 
 #[cfg(feature = "socks5")]
 mod socks5_udp_associate_framed;
+
+#[cfg(all(feature = "socks5", feature = "http-full"))]
+mod socks5_and_http_proxy;
 
 #[cfg(all(feature = "boring", feature = "http-full"))]
 mod tls_rustls_dynamic_certs;

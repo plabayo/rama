@@ -4,8 +4,11 @@ use rama_core::{
     error::{BoxError, ErrorContext, OpaqueError},
 };
 use rama_dns::{DnsOverwrite, DnsResolver, HickoryDns};
-use rama_net::address::{Authority, Domain, Host};
-use rama_net::mode::{ConnectIpMode, DnsResolveIpMode};
+use rama_net::{
+    address::{Authority, Domain, Host, SocketAddress},
+    mode::{ConnectIpMode, DnsResolveIpMode},
+    socket::SocketOptions,
+};
 use std::{
     net::{IpAddr, SocketAddr},
     ops::Deref,
@@ -19,6 +22,7 @@ use tokio::sync::{
     Semaphore,
     mpsc::{Sender, channel},
 };
+use tracing::Instrument;
 
 use crate::TcpStream;
 
@@ -55,6 +59,73 @@ impl<T: TcpStreamConnector> TcpStreamConnector for Arc<T> {
     ) -> impl Future<Output = Result<TcpStream, Self::Error>> + Send + '_ {
         (**self).connect(addr)
     }
+}
+
+impl TcpStreamConnector for Arc<SocketOptions> {
+    type Error = OpaqueError;
+
+    async fn connect(&self, addr: SocketAddr) -> Result<TcpStream, Self::Error> {
+        let opts = self.clone();
+        tokio::task::spawn_blocking(move || tcp_connect_with_socket_opts(&opts, addr))
+            .await
+            .context("wait for blocking tcp bind using custom socket opts")?
+    }
+}
+
+impl TcpStreamConnector for SocketAddress {
+    type Error = OpaqueError;
+
+    async fn connect(&self, addr: SocketAddr) -> Result<TcpStream, Self::Error> {
+        let bind_addr = *self;
+        tokio::task::spawn_blocking(move || {
+            tcp_connect_with_socket_opts(
+                &SocketOptions {
+                    address: Some(bind_addr),
+                    ..SocketOptions::default_tcp()
+                },
+                addr,
+            )
+        })
+        .await
+        .context("wait for blocking tcp bind using provided Socket Address")?
+    }
+}
+
+#[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+impl TcpStreamConnector for rama_net::socket::DeviceName {
+    type Error = OpaqueError;
+
+    async fn connect(&self, addr: SocketAddr) -> Result<TcpStream, Self::Error> {
+        let bind_interface = self.clone();
+        tokio::task::spawn_blocking(move || {
+            tcp_connect_with_socket_opts(
+                &SocketOptions {
+                    device: Some(bind_interface),
+                    ..SocketOptions::default_tcp()
+                },
+                addr,
+            )
+        })
+        .await
+        .context("wait for blocking tcp bind using provided Socket Address")?
+    }
+}
+
+fn tcp_connect_with_socket_opts(
+    opts: &SocketOptions,
+    addr: SocketAddr,
+) -> Result<TcpStream, OpaqueError> {
+    let socket = opts
+        .try_build_socket()
+        .context("try to build TCP socket's underlying OS socket")?;
+    socket
+        .connect(&addr.into())
+        .context("connect to the provided socket addr")?;
+    socket
+        .set_nonblocking(true)
+        .context("set socket non-blocking")?;
+    TcpStream::from_std(std::net::TcpStream::from(socket))
+        .context("create tokio tcp stream from created raw (tcp) socket")
 }
 
 impl<ConnectFn, ConnectFnFut, ConnectFnErr> TcpStreamConnector for ConnectFn
@@ -200,33 +271,39 @@ where
     let sem = Arc::new(Semaphore::new(3));
 
     if dns_mode.ipv4_supported() {
-        ctx.spawn(tcp_connect_inner_branch(
-            dns_mode,
-            dns.clone(),
-            connect_mode,
-            connector.clone(),
-            IpKind::Ipv4,
-            domain.clone(),
-            port,
-            tx.clone(),
-            connected.clone(),
-            sem.clone(),
-        ));
+        ctx.spawn(
+            tcp_connect_inner_branch(
+                dns_mode,
+                dns.clone(),
+                connect_mode,
+                connector.clone(),
+                IpKind::Ipv4,
+                domain.clone(),
+                port,
+                tx.clone(),
+                connected.clone(),
+                sem.clone(),
+            )
+            .instrument(tracing::trace_span!("Client::tcp::connect::dns_v4")),
+        );
     }
 
     if dns_mode.ipv6_supported() {
-        ctx.spawn(tcp_connect_inner_branch(
-            dns_mode,
-            dns.clone(),
-            connect_mode,
-            connector.clone(),
-            IpKind::Ipv6,
-            domain.clone(),
-            port,
-            tx.clone(),
-            connected.clone(),
-            sem.clone(),
-        ));
+        ctx.spawn(
+            tcp_connect_inner_branch(
+                dns_mode,
+                dns.clone(),
+                connect_mode,
+                connector.clone(),
+                IpKind::Ipv6,
+                domain.clone(),
+                port,
+                tx.clone(),
+                connected.clone(),
+                sem.clone(),
+            )
+            .instrument(tracing::trace_span!("Client::tcp::connect::dns_v6")),
+        );
     }
 
     drop(tx);

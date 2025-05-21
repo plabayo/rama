@@ -29,7 +29,7 @@ as topology wise they are the same.
 
 The key differences are:
 
-- SOCKS5 proxies do not operate on the application layer, and sit directly on the application layer;
+- SOCKS5 proxies do not operate on the application layer (layer 7), and sit directly on the session layer (layer 5);
   - This means they have no need to touch for example the http packets at all, unless they want to;
   - It is also one of the reasons that they are typically said to be faster, given the SOCKS protocol,
     is fairly trivial and cheaply to interpret;
