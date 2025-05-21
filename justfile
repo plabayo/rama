@@ -56,6 +56,7 @@ qa: qq test
 qa-full: qa hack test-ignored fuzz-60s check-links
 
 upgrades:
+    @just install-cargo-tool-if-needed cargo-upgrades
     cargo upgrades
 
 watch-docs:
