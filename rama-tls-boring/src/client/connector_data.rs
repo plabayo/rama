@@ -137,7 +137,6 @@ generate_tls_connector_data_builder!(
     grease_enabled: Option<bool>,
     ocsp_stapling_enabled: Option<bool>,
     signed_cert_timestamps_enabled: Option<bool>,
-
 );
 
 #[derive(Debug, Clone)]
@@ -405,7 +404,7 @@ impl TlsConnectorDataBuilder {
             .configure()
             .context("create ssl connector configuration")?;
 
-        if let Some(limit) = self.record_size_limit().to_owned() {
+        if let Some(limit) = self.record_size_limit() {
             trace!("boring connector: setting record size limit");
             cfg.set_record_size_limit(limit).unwrap();
         }
@@ -422,12 +421,18 @@ impl TlsConnectorDataBuilder {
 
         trace!(
             "boring connector: return SSL connector config for server: {:?}",
-            self.server_name
+            self.server_name()
+        );
+        println!(
+            "builder with: {}",
+            self.store_server_certificate_chain().unwrap_or_default()
         );
         Ok(TlsConnectorData {
             config: cfg,
-            store_server_certificate_chain: self.store_server_certificate_chain.unwrap_or_default(),
-            server_name: self.server_name.clone(),
+            store_server_certificate_chain: self
+                .store_server_certificate_chain()
+                .unwrap_or_default(),
+            server_name: self.server_name().cloned(),
         })
     }
 }
@@ -730,6 +735,7 @@ impl TlsConnectorDataBuilder {
             }
         };
 
+        println!("builder with servername: {:?}", server_name);
         Ok(TlsConnectorDataBuilder {
             base_builders: vec![],
             keylog_intent: keylog_intent.cloned(),

@@ -364,7 +364,10 @@ impl<S, K> TlsConnector<S, K> {
         ctx: &mut Context<State>,
     ) -> Result<Option<TlsConnectorData>, OpaqueError> {
         #[cfg(feature = "ua")]
-        let tls_profile_builder = ctx.get::<TlsProfileBuilder>().cloned();
+        let tls_profile_builder = ctx
+            .get::<TlsProfileBuilder>()
+            .map(|profile_builder| profile_builder.0.clone());
+
         let base_builder = self.connector_data.clone();
 
         let builder = ctx.get_or_insert_default::<TlsConnectorDataBuilder>();
@@ -372,7 +375,7 @@ impl<S, K> TlsConnector<S, K> {
         #[cfg(feature = "ua")]
         {
             if let Some(tls_builder) = tls_profile_builder {
-                builder.push_base_config(tls_builder.0);
+                builder.push_base_config(tls_builder);
             }
         }
 
@@ -396,6 +399,9 @@ where
         Some(connector_data) => connector_data,
         None => TlsConnectorDataBuilder::new().build()?,
     };
+
+    println!("using servername: {:?}", data.server_name);
+
     let server_host = data.server_name.unwrap_or(server_host);
     let stream: SslStream<T> =
         rama_boring_tokio::connect(data.config, server_host.to_string().as_str(), stream)
