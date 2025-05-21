@@ -4,7 +4,7 @@ use super::utils;
 
 use rama::{
     Context, Service,
-    http::{Body, BodyExtractExt, Request, Version, client::HttpConnector},
+    http::{Body, BodyExtractExt, Request, client::HttpConnector},
     net::client::{ConnectorService, EstablishedClientConnection},
     net::forwarded::{Forwarded, ForwardedElement},
     proxy::haproxy::client::HaProxyService,
@@ -38,7 +38,6 @@ async fn test_server_with_haproxy_v1() {
     let client = HttpConnector::new(HaProxyService::tcp(TcpConnector::new()).v1());
 
     let request = Request::builder()
-        .version(Version::HTTP_10)
         .uri("http://127.0.0.1:62025")
         .body(Body::empty())
         .expect("build simple GET request");
@@ -73,7 +72,6 @@ async fn test_server_with_haproxy_v2() {
     let client = HttpConnector::new(HaProxyService::tcp(TcpConnector::new()));
 
     let request = Request::builder()
-        .version(Version::HTTP_10)
         .uri("http://127.0.0.1:62025")
         .body(Body::empty())
         .expect("build simple GET request");

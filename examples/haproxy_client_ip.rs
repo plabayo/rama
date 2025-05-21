@@ -22,12 +22,16 @@
 //! you'll see the client IP Address advertised in there, otherwise you'll see
 //! the socket peer addr.
 
-use http::StatusCode;
 use rama::{
-    Context, Layer, error::ErrorContext, http::server::HttpServer, http::service::web::Router,
-    net::forwarded::Forwarded, net::stream::SocketInfo, proxy::haproxy::server::HaProxyLayer,
+    Context, Layer,
+    error::ErrorContext,
+    http::{StatusCode, server::HttpServer, service::web::Router},
+    net::{forwarded::Forwarded, stream::SocketInfo},
+    proxy::haproxy::server::HaProxyLayer,
+    rt::Executor,
     tcp::server::TcpListener,
 };
+use rama_http::layer::required_header::AddRequiredResponseHeaders;
 
 use std::time::Duration;
 use tracing::level_filters::LevelFilter;
@@ -47,18 +51,20 @@ async fn main() {
     let graceful = rama::graceful::Shutdown::default();
 
     graceful.spawn_task_fn(async |guard| {
-        let tcp_http_service = HttpServer::http1().service(Router::new().get(
-            "/",
-            async |ctx: Context<()>| -> Result<String, (StatusCode, String)> {
-                let client_ip = ctx
-                    .get::<Forwarded>()
-                    .and_then(|f| f.client_ip())
-                    .or_else(|| ctx.get::<SocketInfo>().map(|info| info.peer_addr().ip()))
-                    .context("failed to fetch client IP")
-                    .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
-                Ok(client_ip.to_string())
-            },
-        ));
+        let tcp_http_service = HttpServer::auto(Executor::graceful(guard.clone())).service(
+            AddRequiredResponseHeaders::new(Router::new().get(
+                "/",
+                async |ctx: Context<()>| -> Result<String, (StatusCode, String)> {
+                    let client_ip = ctx
+                        .get::<Forwarded>()
+                        .and_then(|f| f.client_ip())
+                        .or_else(|| ctx.get::<SocketInfo>().map(|info| info.peer_addr().ip()))
+                        .context("failed to fetch client IP")
+                        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+                    Ok(client_ip.to_string())
+                },
+            )),
+        );
 
         TcpListener::bind("127.0.0.1:62025")
             .await

@@ -30,8 +30,8 @@ impl HaProxyLayer {
         /// Doing so makes it possible to support traffic with or without the use of that data.
         /// This can be useful to run services locally (not behind a loadbalancer) as well as in the
         /// the cloud (production, behind a loadbalancer).
-        pub fn peek(mut self, value: impl Into<bool>) -> Self {
-            self.peek = value.into();
+        pub fn peek(mut self, value: bool) -> Self {
+            self.peek = value;
             self
         }
     );
@@ -69,8 +69,8 @@ impl<S> HaProxyService<S> {
         /// Doing so makes it possible to support traffic with or without the use of that data.
         /// This can be useful to run services locally (not behind a loadbalancer) as well as in the
         /// the cloud (production, behind a loadbalancer).
-        pub fn peek(mut self, value: impl Into<bool>) -> Self {
-            self.peek = value.into();
+        pub fn peek(mut self, value: bool) -> Self {
+            self.peek = value;
             self
         }
     );
@@ -247,5 +247,121 @@ where
 
         // read the rest of the data
         self.inner.serve(ctx, stream).await.map_err(Into::into)
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use rama_core::service::service_fn;
+
+    use super::*;
+
+    async fn echo(mut stream: impl Stream + Unpin) -> Result<Vec<u8>, BoxError> {
+        let mut v = Vec::default();
+        let _ = stream.read_to_end(&mut v).await?;
+        Ok(v)
+    }
+
+    #[tokio::test]
+    async fn test_haproxy_peek_direct() {
+        let proxy_svc = HaProxyService::new(service_fn(echo)).with_peek(true);
+
+        let response = proxy_svc
+            .serve(Context::default(), std::io::Cursor::new(b"foo".to_vec()))
+            .await
+            .unwrap();
+
+        assert_eq!("foo", String::from_utf8(response).unwrap());
+
+        let response = proxy_svc
+            .serve(
+                Context::default(),
+                std::io::Cursor::new(b"Hello, this is a test to check if it works.".to_vec()),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            "Hello, this is a test to check if it works.",
+            String::from_utf8(response).unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_haproxy_peek_with_haproxy_v1() {
+        let proxy_svc = HaProxyService::new(service_fn(echo));
+
+        let response = proxy_svc
+            .serve(
+                Context::default(),
+                std::io::Cursor::new(b"PROXY TCP4 192.0.2.1 198.51.100.1 12345 80\r\n".to_vec()),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!("", String::from_utf8(response).unwrap());
+
+        let response = proxy_svc
+            .serve(
+                Context::default(),
+                std::io::Cursor::new(b"PROXY TCP4 192.0.2.1 198.51.100.1 12345 80\r\nfoo".to_vec()),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!("foo", String::from_utf8(response).unwrap());
+
+        let proxy_svc = proxy_svc.with_peek(true);
+
+        let response = proxy_svc
+            .serve(
+                Context::default(),
+                std::io::Cursor::new(b"PROXY TCP4 192.0.2.1 198.51.100.1 12345 80\r\n".to_vec()),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!("", String::from_utf8(response).unwrap());
+
+        let response = proxy_svc
+            .serve(
+                Context::default(),
+                std::io::Cursor::new(b"PROXY TCP4 192.0.2.1 198.51.100.1 12345 80\r\nfoo".to_vec()),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!("foo", String::from_utf8(response).unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_haproxy_peek_with_haproxy_v2() {
+        const DATA: &[u8] = &[
+            0x0D, 0x0A, 0x0D, 0x0A, 0x00, 0x0D, 0x0A, 0x51, 0x55, 0x49, 0x54,
+            0x0A, // Signature
+            0x21, // Version (0x2) + Command (PROXY = 0x1)
+            0x11, // Family (IPv4 = 0x1) + Protocol (TCP = 0x1)
+            0x00, 0x0C, // Address length = 12 bytes
+            // Source IP: 192.0.2.1
+            0xC0, 0x00, 0x02, 0x01, // Dest IP: 198.51.100.1
+            0xC6, 0x33, 0x64, 0x01, // Source Port: 12345 (0x3039)
+            0x30, 0x39, // Dest Port: 443 (0x01BB)
+            0x01, 0xBB, // foo data
+            0x66, 0x6F, 0x6F,
+        ];
+
+        let proxy_svc = HaProxyService::new(service_fn(echo));
+        let response = proxy_svc
+            .serve(Context::default(), std::io::Cursor::new(DATA.to_vec()))
+            .await
+            .unwrap();
+        assert_eq!("foo", String::from_utf8(response).unwrap());
+
+        let proxy_svc = proxy_svc.with_peek(true);
+        let response = proxy_svc
+            .serve(Context::default(), std::io::Cursor::new(DATA.to_vec()))
+            .await
+            .unwrap();
+        assert_eq!("foo", String::from_utf8(response).unwrap());
     }
 }
