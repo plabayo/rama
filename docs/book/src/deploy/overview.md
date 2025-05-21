@@ -31,13 +31,14 @@ For more details, refer to external documentation on cross-platform building, CI
 
 ### Shuttle
 
-Shuttle (<https://www.shuttle.dev/>) allows you to build and deploy a backend without writing infrastructure files.
-The platform supports running non-integrated frameworks directly from a TCP socket,
-meaning frameworks like Rama can already be used today on Shuttle:
-<https://docs.shuttle.dev/migrations/frameworks/custom-service>.
+[![Crates.io](https://img.shields.io/crates/v/shuttle-rama.svg)](https://crates.io/crates/shuttle-rama)
+[![Docs.rs](https://img.shields.io/docsrs/shuttle-rama/latest)](https://docs.rs/shuttle-rama/latest/shuttle_rama/index.html)
 
-We are currently working on integrating Rama further to simplify the process,
-though the difference is minimal: <https://github.com/shuttle-hq/shuttle/pull/1943>.
+[Shuttle](https://www.shuttle.dev/) is a Rust-native cloud development platform that lets you deploy your app while also taking care of all of your infrastructure. Rama is one of a series of frameworks
+that is officially supported by Shuttle as part of their official SDK crates.
+
+Learn more about what shuttle is and how to deploy services built with Rama
+on [our Shuttle docs](./shuttle.md).
 
 ### WASM
 

@@ -306,6 +306,17 @@ async fn hello_world(ReadSignals(signals): ReadSignals<Signals>) -> impl IntoRes
 }
 ```
 
+### Shuttle
+
+[![Crates.io](https://img.shields.io/crates/v/shuttle-rama.svg)](https://crates.io/crates/shuttle-rama)
+[![Docs.rs](https://img.shields.io/docsrs/shuttle-rama/latest)](https://docs.rs/shuttle-rama/latest/shuttle_rama/index.html)
+
+[Shuttle](https://www.shuttle.dev/) is a Rust-native cloud development platform that lets you deploy your app while also taking care of all of your infrastructure. Rama is one of a series of frameworks
+that is officially supported by Shuttle as part of their official SDK crates.
+
+Learn more about what shuttle is and how to deploy services built with Rama
+on [our Shuttle docs](https://ramaproxy.org/book/deploy/shuttle.html).
+
 ## 🌐 | Web Service Examples
 
 Here are some low level web service examples without fancy features:

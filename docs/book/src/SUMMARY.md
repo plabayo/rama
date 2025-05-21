@@ -37,6 +37,7 @@
 # Deploy
 
 - [Overview of deploying options](./deploy/overview.md)
+- [🚀 Rama x Shuttle](./deploy/shuttle.md)
 - [⌨️ `rama` binary](./deploy/rama-cli.md)
 
 # Appendices
