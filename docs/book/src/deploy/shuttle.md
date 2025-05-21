@@ -75,10 +75,10 @@ What’s currently possible:
 Rama is all about empowerment. While a lot is possible with Rama, not everything translates directly to Shuttle deployments. Here are some key limitations:
 
 - Applications on Shuttle **always** run behind a load balancer.
-  - The load balancer terminates TLS traffic; you cannot manage TLS yourself (yet). As a result, [Rama's TLS capabilities](https://docs.rs/rama/0.2.0/rama/tls/index.html) cannot be used on Shuttle.
+  - The load balancer terminates TLS traffic; you cannot manage TLS yourself (yet). As a result, [Rama's TLS capabilities](https://docs.rs/rama/latest/rama/tls/index.html) cannot be used on Shuttle.
   - Traffic between the load balancer and your app must use HTTP/1.1. This does not impact the HTTP versions supported between clients and the load balancer.
   - Currently, Shuttle only supports HTTP (HTTP/1.1 and HTTP/2). For now, running TCP services on Shuttle has limited practical use. It's recommended to focus on HTTP applications when targeting Shuttle.
-- [UDP](https://docs.rs/rama/0.2.0/rama/udp/index.html) traffic is not yet supported on Shuttle.
+- [UDP](https://docs.rs/rama/latest/rama/udp/index.html) traffic is not yet supported on Shuttle.
 - [Raw sockets](https://docs.rs/rama/latest/rama/net/socket/struct.Socket.html) are not officially supported, though limited use is possible. No support is provided.
 - Incoming HTTP traffic is altered by Shuttle’s load balancer. Therefore, it is not the original client request. This prevents [fingerprinting techniques](https://ramaproxy.org/book/intro/user_agent.html#fingerprinting) from working (for now).
 
