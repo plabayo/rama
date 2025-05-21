@@ -260,28 +260,28 @@ impl TlsConnectorDataBuilder {
             });
         }
 
-        if let Some(order) = self.extension_order().as_deref() {
+        if let Some(order) = self.extension_order() {
             trace!("boring connector: set extension order: {order:?}");
             cfg_builder
                 .set_extension_order(order)
                 .context("build (boring) ssl connector: set extension order")?;
         }
 
-        if let Some(list) = self.cipher_list().as_deref() {
+        if let Some(list) = self.cipher_list() {
             trace!("boring connector: set raw cipher list: {list:?}");
             cfg_builder
                 .set_raw_cipher_list(list)
                 .context("build (boring) ssl connector: set cipher list")?;
         }
 
-        if let Some(b) = self.alpn_protos().as_deref() {
+        if let Some(b) = self.alpn_protos() {
             trace!("boring connector: set ALPN protos: {b:?}",);
             cfg_builder
                 .set_alpn_protos(b)
                 .context("build (boring) ssl connector: set alpn protos")?;
         }
 
-        if let Some(c) = self.curves().as_deref() {
+        if let Some(c) = self.curves() {
             trace!("boring connector: set {} SSL curve(s)", c.len());
             cfg_builder
                 .set_curves(c)
@@ -306,7 +306,7 @@ impl TlsConnectorDataBuilder {
             .set_max_proto_version(max_ssl_version)
             .context("build (boring) ssl connector: set max proto version")?;
 
-        if let Some(s) = self.verify_algorithm_prefs().as_deref() {
+        if let Some(s) = self.verify_algorithm_prefs() {
             cfg_builder.set_verify_algorithm_prefs(s).context(
                 "build (boring) ssl connector: set signature schemes (verify algorithm prefs)",
             )?;

@@ -46,6 +46,7 @@ where
 }
 
 #[non_exhaustive]
+#[derive(Default, Clone)]
 pub struct EmulateTlsLayer;
 
 impl EmulateTlsLayer {
