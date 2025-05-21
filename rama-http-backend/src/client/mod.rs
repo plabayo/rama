@@ -470,8 +470,7 @@ fn create_connector_data_boring<State>(
             }
             None => {
                 trace!("create tls connector using the 'new_http_auto' constructor");
-                BoringTlsConnectorDataBuilder::new_http_auto()
-                    .context("EasyHttpWebClient: create tls connector data for http (auto)")
+                Ok(BoringTlsConnectorDataBuilder::new_http_auto())
             }
         },
     }

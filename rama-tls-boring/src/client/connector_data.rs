@@ -151,16 +151,22 @@ impl TlsConnectorDataBuilder {
         Self::default()
     }
 
-    pub fn new_http_auto() -> Result<Self, OpaqueError> {
-        Self::new().with_alpn_protos(&[ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11])
+    pub fn new_http_auto() -> Self {
+        Self::new()
+            .with_alpn_protos(&[ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11])
+            .expect("with http 2 and http 1")
     }
 
-    pub fn new_http_1() -> Result<Self, OpaqueError> {
-        Self::new().with_alpn_protos(&[ApplicationProtocol::HTTP_11])
+    pub fn new_http_1() -> Self {
+        Self::new()
+            .with_alpn_protos(&[ApplicationProtocol::HTTP_11])
+            .expect("with http1")
     }
 
-    pub fn new_http_2() -> Result<Self, OpaqueError> {
-        Self::new().with_alpn_protos(&[ApplicationProtocol::HTTP_2])
+    pub fn new_http_2() -> Self {
+        Self::new()
+            .with_alpn_protos(&[ApplicationProtocol::HTTP_2])
+            .expect("with http 2")
     }
 
     /// Add [`ConfigBuilder`] to the end of base config builder
