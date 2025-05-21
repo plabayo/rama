@@ -10,6 +10,7 @@ use rama::{
     proxy::haproxy::client::HaProxyService,
     tcp::client::service::TcpConnector,
 };
+use rama_http::layer::required_header::AddRequiredRequestHeaders;
 
 #[tokio::test]
 #[ignore]
@@ -39,6 +40,8 @@ async fn test_server_with_haproxy_v1() {
 
     let request = Request::builder()
         .uri("http://127.0.0.1:62025")
+        .method("GET")
+        .header("Connection", "close")
         .body(Body::empty())
         .expect("build simple GET request");
 
@@ -57,7 +60,7 @@ async fn test_server_with_haproxy_v1() {
         .await
         .expect("establish a connection to the http server using haproxy v1");
 
-    let resp = http_service
+    let resp = AddRequiredRequestHeaders::new(http_service)
         .serve(ctx, req)
         .await
         .expect("make http request")
@@ -73,6 +76,8 @@ async fn test_server_with_haproxy_v2() {
 
     let request = Request::builder()
         .uri("http://127.0.0.1:62025")
+        .method("GET")
+        .header("Connection", "close")
         .body(Body::empty())
         .expect("build simple GET request");
 
@@ -89,9 +94,9 @@ async fn test_server_with_haproxy_v2() {
     } = client
         .connect(ctx, request)
         .await
-        .expect("establish a connection to the http server using haproxy v1");
+        .expect("establish a connection to the http server using haproxy v2");
 
-    let resp = http_service
+    let resp = AddRequiredRequestHeaders::new(http_service)
         .serve(ctx, req)
         .await
         .expect("make http request")
