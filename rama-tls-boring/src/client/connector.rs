@@ -402,8 +402,6 @@ where
         None => TlsConnectorDataBuilder::new().build()?,
     };
 
-    println!("using servername: {:?}", data.server_name);
-
     let server_host = data.server_name.unwrap_or(server_host);
     let stream: SslStream<T> =
         rama_boring_tokio::connect(data.config, server_host.to_string().as_str(), stream)

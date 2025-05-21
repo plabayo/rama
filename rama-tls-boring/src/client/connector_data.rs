@@ -423,10 +423,7 @@ impl TlsConnectorDataBuilder {
             "boring connector: return SSL connector config for server: {:?}",
             self.server_name()
         );
-        println!(
-            "builder with: {}",
-            self.store_server_certificate_chain().unwrap_or_default()
-        );
+
         Ok(TlsConnectorData {
             config: cfg,
             store_server_certificate_chain: self
@@ -735,7 +732,6 @@ impl TlsConnectorDataBuilder {
             }
         };
 
-        println!("builder with servername: {:?}", server_name);
         Ok(TlsConnectorDataBuilder {
             base_builders: vec![],
             keylog_intent: keylog_intent.cloned(),
