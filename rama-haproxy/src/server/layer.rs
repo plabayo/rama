@@ -124,7 +124,7 @@ where
                 );
 
                 let mut buf = [0; 512];
-                (&mut buf[..n]).copy_from_slice(&peek_buf[..n]);
+                buf[..n].copy_from_slice(&peek_buf[..n]);
                 (buf, n)
             } else if n > v1::PROTOCOL_PREFIX.len()
                 && &peek_buf[..v1::PROTOCOL_PREFIX.len()] == v1::PROTOCOL_PREFIX.as_bytes()
@@ -134,7 +134,7 @@ where
                 );
 
                 let mut buf = [0; 512];
-                (&mut buf[..n]).copy_from_slice(&peek_buf[..n]);
+                buf[..n].copy_from_slice(&peek_buf[..n]);
                 (buf, n)
             } else {
                 tracing::trace!(

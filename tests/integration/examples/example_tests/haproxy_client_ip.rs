@@ -36,11 +36,10 @@ async fn test_haproxy_client_ip() {
 
 async fn test_server_with_haproxy_v1() {
     let client = HttpConnector::new(HaProxyService::tcp(TcpConnector::new()).v1());
-    let uri = format!("http://127.0.0.1:62025");
 
     let request = Request::builder()
         .version(Version::HTTP_10)
-        .uri(uri.clone())
+        .uri("http://127.0.0.1:62025")
         .body(Body::empty())
         .expect("build simple GET request");
 
@@ -72,11 +71,10 @@ async fn test_server_with_haproxy_v1() {
 
 async fn test_server_with_haproxy_v2() {
     let client = HttpConnector::new(HaProxyService::tcp(TcpConnector::new()));
-    let uri = format!("http://127.0.0.1:62025");
 
     let request = Request::builder()
         .version(Version::HTTP_10)
-        .uri(uri.clone())
+        .uri("http://127.0.0.1:62025")
         .body(Body::empty())
         .expect("build simple GET request");
 

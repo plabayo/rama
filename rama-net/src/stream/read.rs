@@ -147,7 +147,7 @@ impl<const N: usize> Read for StackReader<N> {
             let to_copy = remaining.len().min(buf.len());
 
             if to_copy > 0 {
-                (&mut buf[..to_copy]).copy_from_slice(&remaining[..to_copy]);
+                buf[..to_copy].copy_from_slice(&remaining[..to_copy]);
                 self.offset += to_copy;
                 return Ok(to_copy);
             }
