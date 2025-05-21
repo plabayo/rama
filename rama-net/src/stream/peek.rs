@@ -6,6 +6,7 @@ use std::{
 };
 
 use pin_project_lite::pin_project;
+use rama_core::bytes::BufMut;
 use tokio::io::{AsyncBufRead, AsyncRead, AsyncWrite, ReadBuf};
 
 pin_project! {
@@ -78,13 +79,17 @@ where
         let me = self.project();
 
         if !*me.done_peek {
+            let before = buf.filled().len();
             ready!(me.peek.poll_read(cx, buf))?;
-            if buf.remaining() > 0 {
+            let read = buf.filled().len() - before;
+
+            if read == 0 {
                 *me.done_peek = true;
-            } else {
+            } else if !buf.has_remaining_mut() {
                 return Poll::Ready(Ok(()));
             }
         }
+
         me.inner.poll_read(cx, buf)
     }
 }

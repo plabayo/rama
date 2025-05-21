@@ -1,7 +1,7 @@
 use crate::protocol::{HeaderResult, PartialResult, v1, v2};
 use rama_core::{
     Context, Layer, Service,
-    error::{BoxError, ErrorContext, ErrorExt},
+    error::{BoxError, ErrorContext, ErrorExt, OpaqueError},
 };
 use rama_net::{
     forwarded::{Forwarded, ForwardedElement},
@@ -151,6 +151,13 @@ where
         };
 
         let header = loop {
+            if read >= buffer.len() {
+                return Err(
+                    OpaqueError::from_display("Buffer exhausted before parsing completed")
+                        .into_boxed(),
+                );
+            }
+
             let n = stream.read(&mut buffer[read..]).await?;
             read += n;
 
