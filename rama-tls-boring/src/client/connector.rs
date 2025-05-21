@@ -1,5 +1,4 @@
 use crate::RamaTryInto;
-use crate::client::emulate_ua::TlsProfileBuilder;
 use private::{ConnectorKindAuto, ConnectorKindSecure, ConnectorKindTunnel};
 use rama_boring_tokio::SslStream;
 use rama_core::error::{BoxError, ErrorExt, OpaqueError};
@@ -16,6 +15,9 @@ use std::sync::Arc;
 
 use super::{AutoTlsStream, TlsConnectorData, TlsConnectorDataBuilder, TlsStream};
 use crate::types::TlsTunnel;
+
+#[cfg(feature = "ua")]
+use crate::client::emulate_ua::TlsProfileBuilder;
 
 /// A [`Layer`] which wraps the given service with a [`TlsConnector`].
 ///
