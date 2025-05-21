@@ -8,13 +8,13 @@ sort:
 lint: fmt sort
 
 check:
-	cargo check --workspace --all-targets --all-features
+	RUSTFLAGS='-D warnings' cargo check --workspace --all-targets --all-features
 
 check-links:
     lychee .
 
 clippy:
-	cargo clippy --workspace --all-targets --all-features
+	RUSTFLAGS='-D warnings' cargo clippy --workspace --all-targets --all-features
 
 clippy-fix *ARGS:
 	cargo clippy --workspace --all-targets --all-features --fix {{ARGS}}
