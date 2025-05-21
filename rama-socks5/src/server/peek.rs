@@ -6,7 +6,7 @@ use rama_core::{
 use std::{fmt, io::IoSlice, pin::Pin, task::Poll};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, ReadBuf};
 
-use crate::proto::ProtocolVersion;
+use crate::proto::{ProtocolVersion, SocksMethod};
 
 /// A [`Service`] router that can be used to support
 /// socks5 traffic as well as non-socks5 traffic.
@@ -84,8 +84,11 @@ where
             .await
             .context("try to read socks5 prefix header")?;
 
-        let is_socks5 = n == SOCKS5_HEADER_PEEK_LEN
-            && ProtocolVersion::from(peek_buf[0]) == ProtocolVersion::Socks5;
+        let is_socks5 = n >= 2
+            && ProtocolVersion::from(peek_buf[0]) == ProtocolVersion::Socks5
+            && !(0..(peek_buf[1] as usize + 2).min(SOCKS5_HEADER_PEEK_LEN))
+                .any(|i| matches!(SocksMethod::from(peek_buf[i]), SocksMethod::Unknown(_)));
+
         tracing::trace!(%is_socks5, "socks5 prefix header read");
 
         let offset = SOCKS5_HEADER_PEEK_LEN - n;
@@ -116,7 +119,7 @@ where
     }
 }
 
-const SOCKS5_HEADER_PEEK_LEN: usize = 2;
+const SOCKS5_HEADER_PEEK_LEN: usize = 5;
 type Socks5PrefixHeader = [u8; SOCKS5_HEADER_PEEK_LEN];
 
 pub struct Socks5PeekStream<S> {
@@ -215,6 +218,24 @@ mod test {
         assert_eq!("socks5", response);
 
         let response = peek_socks5_svc
+            .serve(
+                Context::default(),
+                std::io::Cursor::new(b"\x05\x01\x00foobar".to_vec()),
+            )
+            .await
+            .unwrap();
+        assert_eq!("socks5", response);
+
+        let response = peek_socks5_svc
+            .serve(
+                Context::default(),
+                std::io::Cursor::new(b"\x05\x02\x01\x00".to_vec()),
+            )
+            .await
+            .unwrap();
+        assert_eq!("socks5", response);
+
+        let response = peek_socks5_svc
             .serve(Context::default(), std::io::Cursor::new(b"fo".to_vec()))
             .await
             .unwrap();
@@ -306,8 +327,8 @@ mod test {
 
     #[tokio::test]
     async fn test_peek_stream() -> std::io::Result<()> {
-        let prefix = b"\x05\x02";
-        let payload = b"\x01\x00";
+        let prefix = b"\x05\x02\x01\x00\x04";
+        let payload = b"\x02";
 
         let (mut client, server) = duplex(64);
 
@@ -320,7 +341,7 @@ mod test {
             client.shutdown().await.unwrap();
         });
 
-        let mut peek_buf = [0u8; 2];
+        let mut peek_buf = [0u8; SOCKS5_HEADER_PEEK_LEN];
         let mut sniff_stream = server;
         sniff_stream.read_exact(&mut peek_buf).await?;
         assert_eq!(&peek_buf, prefix);
