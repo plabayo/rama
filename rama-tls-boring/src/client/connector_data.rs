@@ -16,6 +16,7 @@ use rama_core::error::{ErrorContext, ErrorExt, OpaqueError};
 use rama_net::tls::CipherSuite;
 use rama_net::tls::{
     ApplicationProtocol, CertificateCompressionAlgorithm, ExtensionId, KeyLogIntent,
+    ProtocolVersion, SupportedGroup,
 };
 use rama_net::tls::{
     DataEncoding,
@@ -58,86 +59,77 @@ impl TlsConnectorData {
     }
 }
 
-/// Create [`TlsConnectorDataBuilder`] struct
+#[derive(Clone, Default, Debug)]
+/// Use [`TlsConnectorDataBuilder`] to build a [`TlsConnectorData`] in an ergonomic way
 ///
-/// This also adds a getter for each field. If this field
-/// is None it will try to get a value from `base_builder`
-/// if it exists.
-macro_rules! generate_tls_connector_data_builder {
-    (
-        $($name:ident: Option<$type:ty>),* $(,)?
-        =>
-        $($copy_name:ident: Option<$copy_type:ty>),* $(,)?
-    ) => {
-        #[derive(Clone, Default, Debug)]
-        /// Use [`TlsConnectorDataBuilder`] to build a [`TlsConnectorData`] in an ergonomic way
-        ///
-        /// This builder is very powerful and is capable of stacking other builders. Using it
-        /// this way gives each layer the option to modify what is needed in a very efficient way.
-        pub struct TlsConnectorDataBuilder {
-            base_builders: Vec<Arc<TlsConnectorDataBuilder>>,
-            $(
-                $name: Option<$type>,
-            )*
-            $(
-                $copy_name: Option<$copy_type>,
-            )*
-        }
-
-        impl TlsConnectorDataBuilder {
-            $(
-                pub fn $name(&self) -> Option<&$type> {
-                    if let Some(value) = &self.$name {
-                        return Some(value);
-                    }
-                    for builder in self.base_builders.iter().rev() {
-                        if let Some(value) = builder.$name() {
-                            return Some(value);
-                        }
-                    }
-                    None
-                }
-            )*
-
-            $(
-                pub fn $copy_name(&self) -> Option<$copy_type> {
-                    if let Some(value) = self.$copy_name {
-                        return Some(value);
-                    }
-                    for builder in self.base_builders.iter().rev() {
-                        if let Some(value) = builder.$copy_name() {
-                            return Some(value);
-                        }
-                    }
-                    None
-                }
-            )*
-        }
-    };
-}
-
-generate_tls_connector_data_builder!(
+/// This builder is very powerful and is capable of stacking other builders. Using it
+/// this way gives each layer the option to modify what is needed in a very efficient way.
+/// Builders can also be chained
+pub struct TlsConnectorDataBuilder {
+    base_builders: Vec<Arc<TlsConnectorDataBuilder>>,
+    server_verify_mode: Option<ServerVerifyMode>,
     keylog_intent: Option<KeyLogIntent>,
     cipher_list: Option<Vec<u16>>,
-    extension_order: Option<Vec<u16>>,
+    store_server_certificate_chain: Option<bool>,
     alpn_protos: Option<Vec<u8>>,
+    min_ssl_version: Option<SslVersion>,
+    max_ssl_version: Option<SslVersion>,
+    record_size_limit: Option<u16>,
+    encrypted_client_hello: Option<bool>,
+    grease_enabled: Option<bool>,
+    ocsp_stapling_enabled: Option<bool>,
+    signed_cert_timestamps_enabled: Option<bool>,
+    extension_order: Option<Vec<u16>>,
+
     curves: Option<Vec<SslCurve>>,
     verify_algorithm_prefs: Option<Vec<SslSignatureAlgorithm>>,
     client_auth: Option<ConnectorConfigClientAuth>,
     certificate_compression_algorithms: Option<Vec<CertificateCompressionAlgorithm>>,
     delegated_credential_schemes: Option<Vec<SslSignatureAlgorithm>>,
     server_name: Option<Host>,
-    => // These types implement copy
-    server_verify_mode: Option<ServerVerifyMode>,
-    min_ssl_version: Option<SslVersion>,
-    max_ssl_version: Option<SslVersion>,
-    record_size_limit: Option<u16>,
-    encrypted_client_hello: Option<bool>,
-    store_server_certificate_chain: Option<bool>,
-    grease_enabled: Option<bool>,
-    ocsp_stapling_enabled: Option<bool>,
-    signed_cert_timestamps_enabled: Option<bool>,
-);
+}
+
+macro_rules! implement_copy_getters {
+    ($($name:ident: Option<$type:ty>),* $(,)?) => {
+        $(
+            /// Get Copy of this field.
+            ///
+            /// Will return Some(value) if it is set on this builder.
+            /// If not set on this builder `base_builders` will be checked
+            /// starting from the end to see if one of them contains a value.
+            /// The first match is returned.
+            pub fn $name(&self) -> Option<$type> {
+                self.$name.or_else(|| {
+                    self.base_builders
+                        .iter()
+                        .rev()
+                        .find_map(|builder| builder.$name())
+                })
+            }
+        )*
+    };
+}
+
+macro_rules! implement_reference_getters {
+    ($($name:ident: Option<$type:ty>),* $(,)?) => {
+        $(
+            /// Get reference to this field.
+            ///
+            /// Will return Some(&value) if it is set on this builder.
+            /// If not set on this builder `base_builders` will be checked
+            /// starting from the end to see if one of them contains a value.
+            /// The first match is returned.
+            pub fn $name(&self) -> Option<&$type> {
+                self.$name.as_ref().or_else(|| {
+                    self.base_builders
+                        .iter()
+                        .rev()
+                        .find_map(|builder| builder.$name())
+                })
+            }
+        )*
+    };
+}
 
 #[derive(Debug, Clone)]
 pub struct ConnectorConfigClientAuth {
@@ -146,47 +138,83 @@ pub struct ConnectorConfigClientAuth {
 }
 
 impl TlsConnectorDataBuilder {
+    implement_copy_getters!(
+        server_verify_mode: Option<ServerVerifyMode>,
+        min_ssl_version: Option<SslVersion>,
+        max_ssl_version: Option<SslVersion>,
+        record_size_limit: Option<u16>,
+        encrypted_client_hello: Option<bool>,
+        store_server_certificate_chain: Option<bool>,
+        grease_enabled: Option<bool>,
+        ocsp_stapling_enabled: Option<bool>,
+        signed_cert_timestamps_enabled: Option<bool>,
+    );
+
+    implement_reference_getters!(
+        keylog_intent: Option<KeyLogIntent>,
+        cipher_list: Option<Vec<u16>>,
+        extension_order: Option<Vec<u16>>,
+        alpn_protos: Option<Vec<u8>>,
+        curves: Option<Vec<SslCurve>>,
+        verify_algorithm_prefs: Option<Vec<SslSignatureAlgorithm>>,
+        client_auth: Option<ConnectorConfigClientAuth>,
+        certificate_compression_algorithms: Option<Vec<CertificateCompressionAlgorithm>>,
+        delegated_credential_schemes: Option<Vec<SslSignatureAlgorithm>>,
+        server_name: Option<Host>,
+    );
+
     pub fn new() -> Self {
         Self::default()
     }
 
     pub fn new_http_auto() -> Self {
         Self::new()
-            .with_alpn_protos(&[ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11])
+            .with_rama_alpn_protos(&[ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11])
             .expect("with http 2 and http 1")
     }
 
     pub fn new_http_1() -> Self {
         Self::new()
-            .with_alpn_protos(&[ApplicationProtocol::HTTP_11])
+            .with_rama_alpn_protos(&[ApplicationProtocol::HTTP_11])
             .expect("with http1")
     }
 
     pub fn new_http_2() -> Self {
         Self::new()
-            .with_alpn_protos(&[ApplicationProtocol::HTTP_2])
+            .with_rama_alpn_protos(&[ApplicationProtocol::HTTP_2])
             .expect("with http 2")
     }
 
-    /// Add [`ConfigBuilder`] to the end of base config builder
+    /// Add [`ConfigBuilder`] to the end of our base builder
     ///
-    /// When evaluating builders we start from this builder and
+    /// When evaluating builders we start from this builder (the last one) and
     /// work our way back until we find a value.
     pub fn push_base_config(&mut self, config: Arc<TlsConnectorDataBuilder>) -> &mut Self {
         self.base_builders.push(config);
         self
     }
 
+    /// Add [`ConfigBuilder`] to the start of our base builders
+    ///
+    /// Builder in the start is evaluated as the the last one we iterating over builders
     pub fn prepend_base_config(&mut self, config: Arc<TlsConnectorDataBuilder>) -> &mut Self {
         self.base_builders.insert(0, config);
         self
     }
 
-    /// Will push base config to end
+    /// Same as [`TlsConnectorDataBuilder::push_base_config`] but consuming self
     pub fn with_base_config(mut self, config: Arc<TlsConnectorDataBuilder>) -> Self {
         self.push_base_config(config);
         self
     }
+
+    generate_set_and_with!(
+        /// Set the [`ServerVerifyMode`] that will be used by the tls client to verify the server
+        pub fn server_verify_mode(mut self, server_verify_mode: Option<ServerVerifyMode>) -> Self {
+            self.server_verify_mode = server_verify_mode;
+            self
+        }
+    );
 
     generate_set_and_with!(
         /// Set [`KeyLogIntent`] that will be used
@@ -197,15 +225,17 @@ impl TlsConnectorDataBuilder {
     );
 
     generate_set_and_with!(
-        /// TODO
-        pub fn cipher_list(mut self, cipher_suites: Option<&Vec<CipherSuite>>) -> Self {
-            self.cipher_list = cipher_suites.map(|v| v.iter().copied().map(Into::into).collect());
+        /// Set the cipher list for this config
+        pub fn cipher_list(mut self, list: Option<Vec<u16>>) -> Self {
+            self.cipher_list = list;
             self
         }
     );
 
     generate_set_and_with!(
-        /// TODO
+        /// Store server certificate chain if enabled in [`NegotiatedTlsParameters`] extension
+        ///
+        /// This will always clone the entire chain, so only enable this if needed.
         pub fn store_server_certificate_chain(
             mut self,
             store_server_certificate_chain: Option<bool>,
@@ -216,21 +246,29 @@ impl TlsConnectorDataBuilder {
     );
 
     generate_set_and_with!(
-        /// TODO
-        pub fn server_verify_mode(mut self, server_verify_mode: Option<ServerVerifyMode>) -> Self {
-            self.server_verify_mode = server_verify_mode;
+        /// Set alpn protos that this client will send to server
+        ///
+        /// Order of protocols here is important. When server supports
+        /// multiple protocols it will choose the first one it supports
+        /// from this list.
+        pub fn alpn_protos(mut self, protos: Option<Vec<u8>>) -> Self {
+            self.alpn_protos = protos;
             self
         }
     );
 
     generate_set_and_with!(
-        /// TODO
-        pub fn alpn_protos(
+        /// Set [`ApplicationProtocol`] that this client will send to server
+        ///
+        /// Order of protocols here is important. When server supports
+        /// multiple protocols it will choose the first one it supports
+        /// from this list.
+        pub fn rama_alpn_protos(
             mut self,
             protos: Option<&[ApplicationProtocol]>,
         ) -> Result<Self, OpaqueError> {
             self.alpn_protos = if let Some(protos) = protos {
-                let mut alpn_protos: Vec<u8> = vec![];
+                let mut alpn_protos: Vec<u8> = Vec::with_capacity(protos.len());
                 for alpn in protos {
                     alpn.encode_wire_format(&mut alpn_protos)
                         .context("build (boring) ssl connector: encode alpn")?;
@@ -244,7 +282,125 @@ impl TlsConnectorDataBuilder {
         }
     );
 
-    pub fn build_shared_builder(self) -> Arc<Self> {
+    generate_set_and_with!(
+        /// Set the minimum ssl version that this connector will accept
+        pub fn min_ssl_version(mut self, version: Option<SslVersion>) -> Self {
+            self.min_ssl_version = version;
+            self
+        }
+    );
+
+    generate_set_and_with!(
+        /// Set the maxium ssl version that this connector will accept
+        pub fn max_ssl_version(mut self, version: Option<SslVersion>) -> Self {
+            self.max_ssl_version = version;
+            self
+        }
+    );
+
+    generate_set_and_with!(
+        /// Set the record size limit that will be set on this connector
+        pub fn record_size_limit(mut self, limit: Option<u16>) -> Self {
+            self.record_size_limit = limit;
+            self
+        }
+    );
+
+    generate_set_and_with!(
+        /// Set if encrypted client hello should be enabled
+        pub fn encrypted_client_hello(mut self, value: Option<bool>) -> Self {
+            self.encrypted_client_hello = value;
+            self
+        }
+    );
+
+    generate_set_and_with!(
+        /// Set if grease should be enable
+        pub fn grease_enabled(mut self, value: Option<bool>) -> Self {
+            self.grease_enabled = value;
+            self
+        }
+    );
+
+    generate_set_and_with!(
+        /// Set if ocsp stapling should be needed
+        pub fn ocsp_stapling_enabled(mut self, value: Option<bool>) -> Self {
+            self.ocsp_stapling_enabled = value;
+            self
+        }
+    );
+
+    generate_set_and_with!(
+        /// Set if signed certificate timestamps should be enabled
+        pub fn signed_cert_timestamps_enabled(mut self, value: Option<bool>) -> Self {
+            self.signed_cert_timestamps_enabled = value;
+            self
+        }
+    );
+
+    generate_set_and_with!(
+        /// Set the order of client hello extensions
+        pub fn extension_order(mut self, order: Option<Vec<u16>>) -> Self {
+            self.extension_order = order;
+            self
+        }
+    );
+
+    generate_set_and_with!(
+        /// Set the eliptic curves supported by this client
+        pub fn curves(mut self, curves: Option<Vec<SslCurve>>) -> Self {
+            self.curves = curves;
+            self
+        }
+    );
+
+    generate_set_and_with!(
+        /// Set [`SslSignatureAlgorithm`]s for verifying
+        pub fn verify_algorithm_prefs(mut self, prefs: Option<Vec<SslSignatureAlgorithm>>) -> Self {
+            self.verify_algorithm_prefs = prefs;
+            self
+        }
+    );
+
+    generate_set_and_with!(
+        /// Set client auth that will be used by this connector
+        pub fn client_auth(mut self, auth: Option<ConnectorConfigClientAuth>) -> Self {
+            self.client_auth = auth;
+            self
+        }
+    );
+
+    generate_set_and_with!(
+        /// Set certificate compression algorithms
+        pub fn certificate_compression_algorithms(
+            mut self,
+            algorithms: Option<Vec<CertificateCompressionAlgorithm>>,
+        ) -> Self {
+            self.certificate_compression_algorithms = algorithms;
+            self
+        }
+    );
+
+    generate_set_and_with!(
+        /// Set delegated credential schemes
+        pub fn delegated_credential_schemes(
+            mut self,
+            schemes: Option<Vec<SslSignatureAlgorithm>>,
+        ) -> Self {
+            self.delegated_credential_schemes = schemes;
+            self
+        }
+    );
+
+    generate_set_and_with!(
+        /// Set server name used for SNI extension
+        pub fn server_name(mut self, name: Option<Host>) -> Self {
+            self.server_name = name;
+            self
+        }
+    );
+
+    pub fn into_shared_builder(self) -> Arc<Self> {
         Arc::new(self)
     }
 
@@ -435,7 +591,8 @@ impl TlsConnectorDataBuilder {
 }
 
 // TODO in the future ClientConfig will be removed and instead we will create
-// this builder from a client_hello directly, but until we do that we keep this indirection
+// this builder from a client_hello directly, but until we do that we also
+// support creating this builder from a ClientConfig chain.
 impl TlsConnectorDataBuilder {
     pub fn try_from_multiple_client_configs<'a>(
         cfg_it: impl Iterator<Item = &'a rama_net::tls::client::ClientConfig>,
@@ -852,7 +1009,7 @@ mod tests {
             TlsConnectorDataBuilder::new_http_1().with_store_server_certificate_chain(true);
 
         let builder =
-            TlsConnectorDataBuilder::new().with_base_config(base_builder.build_shared_builder());
+            TlsConnectorDataBuilder::new().with_base_config(base_builder.into_shared_builder());
 
         assert_eq!(builder.store_server_certificate_chain(), Some(true));
     }

@@ -69,7 +69,7 @@ async fn test_http_client_over_socks5_proxy_connect_with_mitm_cap(
     let tls_config = TlsConnectorDataBuilder::new_http_auto()
         .with_store_server_certificate_chain(true)
         .with_server_verify_mode(ServerVerifyMode::Disable)
-        .build_shared_builder();
+        .into_shared_builder();
 
     let client = HttpConnector::new(
         TlsConnector::auto(Socks5ProxyConnector::required(TcpConnector::new()))

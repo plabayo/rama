@@ -69,7 +69,7 @@ async fn main() {
 
     let tls_conn_data = TlsConnectorDataBuilder::new()
         .with_server_verify_mode(ServerVerifyMode::Disable)
-        .build_shared_builder();
+        .into_shared_builder();
 
     let client = HttpConnector::new(Socks5ProxyConnector::required(
         TlsConnector::secure(TcpConnector::new()).with_connector_data(tls_conn_data),

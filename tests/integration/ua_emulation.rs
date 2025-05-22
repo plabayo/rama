@@ -372,7 +372,7 @@ async fn test_ua_embedded_profiles_are_all_resulting_in_correct_traffic_flow() {
                     // the Context instead
                     let tls_config = TlsConnectorDataBuilder::new()
                         .with_server_verify_mode(ServerVerifyMode::Disable)
-                        .build_shared_builder();
+                        .into_shared_builder();
 
                     let connector = HttpConnector::new(
                         TlsConnector::secure(MockConnectorService::new(service_fn(server_svc_fn)))

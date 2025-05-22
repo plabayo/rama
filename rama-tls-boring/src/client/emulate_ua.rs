@@ -39,7 +39,7 @@ where
             // We can do that using something like `Arc::as_ptr` or adding something like a hash key to `TlsProfile`, or ...
             let emulate_builder = TlsConnectorDataBuilder::try_from(&profile.client_config)
                 .map_err(Into::<BoxError>::into)?
-                .build_shared_builder();
+                .into_shared_builder();
 
             ctx.insert(TlsProfileBuilder(emulate_builder));
         }

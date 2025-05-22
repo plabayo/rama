@@ -61,7 +61,7 @@ pub async fn run(cfg: CliCommandTls) -> Result<(), BoxError> {
     let tls_conn_data = TlsConnectorDataBuilder::new()
         .maybe_with_server_verify_mode(cfg.insecure.then_some(ServerVerifyMode::Disable))
         .with_store_server_certificate_chain(true)
-        .build_shared_builder();
+        .into_shared_builder();
 
     let tcp_connector = TcpConnector::new();
     let loggin_service = LoggingLayer.layer(tcp_connector);
