@@ -2578,7 +2578,6 @@ dependencies = [
  "futures-channel",
  "futures-core",
  "futures-sink",
- "futures-util",
  "hex",
  "httparse",
  "httpdate",

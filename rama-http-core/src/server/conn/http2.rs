@@ -5,9 +5,9 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
-use futures_util::ready;
 use pin_project_lite::pin_project;
 use rama_core::rt::Executor;
+use std::task::ready;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::body::Incoming as IncomingBody;

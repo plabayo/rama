@@ -1,9 +1,9 @@
 //! Http1 or Http2 connection.
 
-use futures_util::ready;
 use std::marker::PhantomPinned;
 use std::mem::MaybeUninit;
 use std::pin::Pin;
+use std::task::ready;
 use std::task::{Context, Poll};
 use std::{io, time::Duration};
 use tokio::io::AsyncRead;
