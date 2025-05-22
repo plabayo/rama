@@ -2,4 +2,4 @@ User-agent: *
 Allow: /
 
 # Sitemap
-Sitemap: https://ramaoroxy.org/sitemap.xml
+Sitemap: https://ramaproxy.org/sitemap.xml
