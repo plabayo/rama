@@ -1,4 +1,4 @@
-# 🔍 SNI Proxies
+# 🔓 SNI Proxies
 
 <div class="book-article-intro">
     <img src="../img/proxy_llama_tls.jpeg" alt="artistical representation of rama TLS Termination proxy as llama unlocking cargo to move it forward unprotected">
@@ -129,4 +129,4 @@ to override the DNS resolution for specific domain names
 to the IP of the (SNI) proxy. The proxy on its turn will establish a connection
 based on the Server Name as discussed previously and onwards it goes.
 
-A proxy without a proxy protocol. That is also what a SNI proxy can be. 
+A proxy without a proxy protocol. That is also what a SNI proxy can be.

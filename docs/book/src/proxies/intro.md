@@ -24,9 +24,10 @@ In specifically we'll discuss:
 - [🔓 TLS Termination proxies](./tls.md)
 - [🌐 HTTP(S) proxies](./http.md)
 - [🧦 SOCKS5 proxies](./socks5.md)
+- [🔓 SNI proxies](./sni.md)
 - [🔎 MITM proxies](./mitm.md)
 - [🕵️‍♀️ Distortion proxies](./distort.md)
-- [🧭 HaProxy](./haproxy.md)
+- [🧭 HaProxy (PROXY protocol)](./haproxy.md)
 
 <br>
 
