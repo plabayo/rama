@@ -10,8 +10,12 @@ categories = ["parser-implementations", "web-programming"]
 authors = { workspace = true }
 rust-version = { workspace = true }
 
-[lints]
-workspace = true
+[package.metadata.cargo-public-api-crates]
+allowed = []
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 default = []
@@ -34,9 +38,5 @@ tracing = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["macros"] }
 
-[package.metadata.cargo-public-api-crates]
-allowed = []
-
-[package.metadata.docs.rs]
-all-features = true
-rustdoc-args = ["--cfg", "docsrs"]
+[lints]
+workspace = true

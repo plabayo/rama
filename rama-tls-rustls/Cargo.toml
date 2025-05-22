@@ -10,8 +10,12 @@ categories = ["asynchronous", "network-programming", "cryptography", "web-progra
 authors = { workspace = true }
 rust-version = { workspace = true }
 
-[lints]
-workspace = true
+[package.metadata.cargo-public-api-crates]
+allowed = []
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 default = []
@@ -33,9 +37,5 @@ webpki-roots = { workspace = true }
 
 [dev-dependencies]
 
-[package.metadata.cargo-public-api-crates]
-allowed = []
-
-[package.metadata.docs.rs]
-all-features = true
-rustdoc-args = ["--cfg", "docsrs"]
+[lints]
+workspace = true

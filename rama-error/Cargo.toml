@@ -10,16 +10,16 @@ categories = ["rust-patterns"]
 authors = { workspace = true }
 rust-version = { workspace = true }
 
-[lints]
-workspace = true
-
-[dependencies]
-
-[dev-dependencies]
-
 [package.metadata.cargo-public-api-crates]
 allowed = []
 
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
+
+[dependencies]
+
+[dev-dependencies]
+
+[lints]
+workspace = true
