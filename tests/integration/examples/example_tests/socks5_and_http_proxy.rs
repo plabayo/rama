@@ -107,7 +107,7 @@ async fn test_http_client_over_socks5_proxy_connect(http_socket_addr: SocketAddr
 }
 
 async fn spawn_http_server() -> SocketAddress {
-    let tcp_service = TcpListener::bind(SocketAddress::default_ipv4(0))
+    let tcp_service = TcpListener::bind(SocketAddress::default_ipv4(63007))
         .await
         .expect("bind HTTP server on open port");
 

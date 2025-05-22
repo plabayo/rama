@@ -57,6 +57,12 @@ This directory contains example implementations demonstrating various features a
 - [`socks5_and_http_proxy.rs`](./socks5_and_http_proxy.rs) -
   combines `http_connect_proxy` and `socks5_connect_proxy` into a single server.
 
+### HaProxy
+
+- [`haproxy_client_ip.rs`](./haproxy_client_ip.rs) -
+  shows how to support, optionally, HaProxy (v1/v2) in a rama web service,
+  supporting load balancers that support the proagation of client IP address.
+
 ## TLS and Security
 ### Rustls
 - [`tls_rustls_termination.rs`](./tls_rustls_termination.rs) - TLS termination with Rustls

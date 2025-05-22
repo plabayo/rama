@@ -32,6 +32,7 @@
     - [🔎 SNI proxies](./proxies/sni.md)
     - [🔎 MITM proxies](./proxies/mitm.md)
     - [🕵️‍♀️ Distortion proxies](./proxies/distort.md)
+    - [🧭 HaProxy](./proxies/haproxy.md)
 - [Protocol Inspection](./proxies/protocol_inspection.md)
 
 # Deploy

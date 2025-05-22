@@ -23,7 +23,7 @@ use std::fmt;
 
 mod peek;
 #[doc(inline)]
-pub use peek::{NoSocks5RejectError, Socks5PeekRouter};
+pub use peek::{NoSocks5RejectError, Socks5PeekRouter, Socks5PeekStream};
 
 mod connect;
 pub use connect::{Connector, DefaultConnector, LazyConnector, Socks5Connector};
