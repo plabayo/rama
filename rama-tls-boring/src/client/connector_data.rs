@@ -13,10 +13,8 @@ use rama_boring::{
     },
 };
 use rama_core::error::{ErrorContext, ErrorExt, OpaqueError};
-use rama_net::tls::CipherSuite;
 use rama_net::tls::{
     ApplicationProtocol, CertificateCompressionAlgorithm, ExtensionId, KeyLogIntent,
-    ProtocolVersion, SupportedGroup,
 };
 use rama_net::tls::{
     DataEncoding,
@@ -32,7 +30,6 @@ use super::compress_certificate::{BrotliCertificateCompressor, ZlibCertificateCo
 
 use crate::keylog::new_key_log_file_handle;
 
-#[non_exhaustive]
 /// [`TlsConnectorData`] that will be used by the connector
 pub struct TlsConnectorData {
     pub config: ConnectConfiguration,
@@ -498,7 +495,7 @@ impl TlsConnectorDataBuilder {
                         .context("build (boring) ssl connector: add certificate compression algorithm: brotli")?;
                     }
                     CertificateCompressionAlgorithm::Zstd => {
-                        // TODO fork boring and implement zstd compression
+                        // TODO implement this, tracking issue: https://github.com/plabayo/rama/issues/563
                         debug!(
                             "boring connector: certificate compression algorithm: zstd: not (yet) supported: ignore"
                         );
