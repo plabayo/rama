@@ -26,6 +26,7 @@ In specifically we'll discuss:
 - [🧦 SOCKS5 proxies](./socks5.md)
 - [🔎 MITM proxies](./mitm.md)
 - [🕵️‍♀️ Distortion proxies](./distort.md)
+- [🧭 HaProxy](./haproxy.md)
 
 <br>
 
