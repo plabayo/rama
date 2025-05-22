@@ -362,22 +362,23 @@ async fn test_ua_embedded_profiles_are_all_resulting_in_correct_traffic_flow() {
                 Ok(Response::new(Body::empty()))
             }
 
+            // We create a base config that will overwrite TlsProfile setting so we don't
+            // need to apply it to each Context. See `test_ua_emulation`` for how to set it on
+            // the Context instead
+            let tls_config = TlsConnectorDataBuilder::new()
+                .with_server_verify_mode(ServerVerifyMode::Disable)
+                .into_shared_builder();
+
             let client = (
                 UserAgentEmulateLayer::new(profile),
-                EmulateTlsProfileLayer::new(),
+                EmulateTlsProfileLayer::new().with_builder_overwrites(tls_config),
             )
                 .into_layer(service_fn(async |ctx: Context<State>, req: Request| {
-                    // We create a base config that will overwrite TlsProfile setting so we don't
-                    // need to apply it to each Context. See `test_ua_emulation`` for how to set it on
-                    // the Context instead
-                    let tls_config = TlsConnectorDataBuilder::new()
-                        .with_server_verify_mode(ServerVerifyMode::Disable)
-                        .into_shared_builder();
-
-                    let connector = HttpConnector::new(
-                        TlsConnector::secure(MockConnectorService::new(service_fn(server_svc_fn)))
-                            .with_connector_data(tls_config),
-                    )
+                    // We dont set base emulator data here since we always use EmulateTlsProfileLayer, but we could
+                    // set a base config here in case EmulateTlsProfileLayer would not always set a config.
+                    let connector = HttpConnector::new(TlsConnector::secure(
+                        MockConnectorService::new(service_fn(server_svc_fn)),
+                    ))
                     .with_jit_req_inspector((
                         HttpsAlpnModifier::default(),
                         UserAgentEmulateHttpConnectModifier::default(),

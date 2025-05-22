@@ -67,12 +67,27 @@ where
 
 #[non_exhaustive]
 #[derive(Default, Clone)]
-pub struct EmulateTlsProfileLayer;
+pub struct EmulateTlsProfileLayer {
+    builder_overwrites: Option<Arc<TlsConnectorDataBuilder>>,
+}
 
 impl EmulateTlsProfileLayer {
     pub fn new() -> Self {
-        Self
+        Self {
+            builder_overwrites: None,
+        }
     }
+
+    generate_set_and_with!(
+        /// Set overwrites that will always be applied when a Tls Profile is applied
+        ///
+        /// It does this by setting this builder chain: Base -> TlsProfile -> Overwrites, instead
+        /// of just setting Base -> TlsProfile
+        pub fn builder_overwrites(mut self, builder: Option<Arc<TlsConnectorDataBuilder>>) -> Self {
+            self.builder_overwrites = builder;
+            self
+        }
+    );
 }
 
 impl<S> Layer<S> for EmulateTlsProfileLayer {
