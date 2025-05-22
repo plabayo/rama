@@ -414,7 +414,7 @@ required-features = ["http-full"]
 
 [[example]]
 name = "http_mitm_proxy_boring"
-required-features = ["http-full", "boring"]
+required-features = ["http-full", "boring", "ua"]
 
 [[example]]
 name = "http_mitm_proxy_rustls"

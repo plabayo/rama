@@ -1,20 +1,33 @@
 use super::TlsConnectorDataBuilder;
 use rama_core::{Layer, Service, error::BoxError};
 use rama_ua::profile::TlsProfile;
+use rama_utils::macros::generate_set_and_with;
 use std::sync::Arc;
 
 pub struct EmulateTlsProfileService<S> {
     inner: S,
+    builder_overwrites: Option<Arc<TlsConnectorDataBuilder>>,
 }
 
 impl<S> EmulateTlsProfileService<S> {
     pub fn new(inner: S) -> Self {
-        Self { inner }
+        Self {
+            inner,
+            builder_overwrites: None,
+        }
     }
-}
 
-#[derive(Clone, Debug)]
-pub(super) struct TlsProfileBuilder(pub(super) Arc<TlsConnectorDataBuilder>);
+    generate_set_and_with!(
+        /// Set overwrites that will always be applied when a Tls Profile is applied
+        ///
+        /// It does this by setting this builder chain: Base -> TlsProfile -> Overwrites, instead
+        /// of just setting Base -> TlsProfile
+        pub fn builder_overwrites(mut self, builder: Option<Arc<TlsConnectorDataBuilder>>) -> Self {
+            self.builder_overwrites = builder;
+            self
+        }
+    );
+}
 
 impl<S, State, Request> Service<State, Request> for EmulateTlsProfileService<S>
 where
@@ -41,7 +54,11 @@ where
                 .map_err(Into::<BoxError>::into)?
                 .into_shared_builder();
 
-            ctx.insert(TlsProfileBuilder(emulate_builder));
+            let builder = ctx.get_or_insert_default::<TlsConnectorDataBuilder>();
+            builder.push_base_config(emulate_builder);
+            if let Some(overwrites) = self.builder_overwrites.clone() {
+                builder.push_base_config(overwrites);
+            }
         }
 
         self.inner.serve(ctx, req).await.map_err(Into::into)

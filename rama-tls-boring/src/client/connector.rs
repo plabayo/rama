@@ -16,9 +16,6 @@ use std::sync::Arc;
 use super::{AutoTlsStream, TlsConnectorData, TlsConnectorDataBuilder, TlsStream};
 use crate::types::TlsTunnel;
 
-#[cfg(feature = "ua")]
-use crate::client::emulate_ua::TlsProfileBuilder;
-
 /// A [`Layer`] which wraps the given service with a [`TlsConnector`].
 ///
 /// See [`TlsConnector`] for more information.
@@ -365,21 +362,8 @@ impl<S, K> TlsConnector<S, K> {
         &self,
         ctx: &mut Context<State>,
     ) -> Result<Option<TlsConnectorData>, OpaqueError> {
-        #[cfg(feature = "ua")]
-        let tls_profile_builder = ctx
-            .get::<TlsProfileBuilder>()
-            .map(|profile_builder| profile_builder.0.clone());
-
         let base_builder = self.connector_data.clone();
-
         let builder = ctx.get_or_insert_default::<TlsConnectorDataBuilder>();
-
-        #[cfg(feature = "ua")]
-        {
-            if let Some(tls_builder) = tls_profile_builder {
-                builder.push_base_config(tls_builder);
-            }
-        }
 
         if let Some(base_builder) = base_builder {
             builder.push_base_config(base_builder);

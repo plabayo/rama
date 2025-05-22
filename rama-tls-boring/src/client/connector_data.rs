@@ -15,6 +15,7 @@ use rama_boring::{
 use rama_core::error::{ErrorContext, ErrorExt, OpaqueError};
 use rama_net::tls::{
     ApplicationProtocol, CertificateCompressionAlgorithm, ExtensionId, KeyLogIntent,
+    client::ClientHello,
 };
 use rama_net::tls::{
     DataEncoding,
@@ -924,6 +925,15 @@ impl TryFrom<&Arc<rama_net::tls::client::ClientConfig>> for TlsConnectorDataBuil
 
     fn try_from(value: &Arc<rama_net::tls::client::ClientConfig>) -> Result<Self, Self::Error> {
         TlsConnectorDataBuilder::try_from_multiple_client_configs(std::iter::once(value.as_ref()))
+    }
+}
+
+impl TryFrom<ClientHello> for TlsConnectorDataBuilder {
+    type Error = OpaqueError;
+
+    fn try_from(value: ClientHello) -> Result<Self, Self::Error> {
+        let client_config = rama_net::tls::client::ClientConfig::from(value);
+        Self::try_from(&client_config)
     }
 }
 
