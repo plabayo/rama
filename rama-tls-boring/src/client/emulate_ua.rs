@@ -94,6 +94,9 @@ impl<S> Layer<S> for EmulateTlsProfileLayer {
     type Service = EmulateTlsProfileService<S>;
 
     fn layer(&self, inner: S) -> Self::Service {
-        EmulateTlsProfileService::new(inner)
+        EmulateTlsProfileService {
+            builder_overwrites: self.builder_overwrites.clone(),
+            inner,
+        }
     }
 }

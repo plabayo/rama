@@ -57,7 +57,7 @@ impl TlsConnectorData {
     }
 }
 
-#[derive(Clone, Default, Debug)]
+#[derive(Clone, Default)]
 /// Use [`TlsConnectorDataBuilder`] to build a [`TlsConnectorData`] in an ergonomic way
 ///
 /// This builder is very powerful and is capable of stacking other builders. Using it
@@ -585,6 +585,76 @@ impl TlsConnectorDataBuilder {
                 .unwrap_or_default(),
             server_name: self.server_name().cloned(),
         })
+    }
+}
+
+impl std::fmt::Debug for TlsConnectorDataBuilder {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TlsConnectorDataBuilder")
+            .field("server_verify_mode", &self.server_verify_mode)
+            .field("server_verify_mode()", &self.server_verify_mode())
+            .field("keylog_intent", &self.keylog_intent)
+            .field("keylog_intent()", &self.keylog_intent())
+            .field("cipher_list", &self.cipher_list)
+            .field("cipher_list()", &self.cipher_list())
+            .field(
+                "store_server_certificate_chain",
+                &self.store_server_certificate_chain,
+            )
+            .field(
+                "store_server_certificate_chain()",
+                &self.store_server_certificate_chain(),
+            )
+            .field("alpn_protos", &self.alpn_protos)
+            .field("alpn_protos()", &self.alpn_protos())
+            .field("min_ssl_version", &self.min_ssl_version)
+            .field("min_ssl_version()", &self.min_ssl_version())
+            .field("max_ssl_version", &self.max_ssl_version)
+            .field("max_ssl_version()", &self.max_ssl_version())
+            .field("record_size_limit", &self.record_size_limit)
+            .field("record_size_limit()", &self.record_size_limit())
+            .field("encrypted_client_hello", &self.encrypted_client_hello)
+            .field("encrypted_client_hello()", &self.encrypted_client_hello())
+            .field("grease_enabled", &self.grease_enabled)
+            .field("grease_enabled()", &self.grease_enabled())
+            .field("ocsp_stapling_enabled", &self.ocsp_stapling_enabled)
+            .field("ocsp_stapling_enabled()", &self.ocsp_stapling_enabled())
+            .field(
+                "signed_cert_timestamps_enabled",
+                &self.signed_cert_timestamps_enabled,
+            )
+            .field(
+                "signed_cert_timestamps_enabled()",
+                &self.signed_cert_timestamps_enabled(),
+            )
+            .field("extension_order", &self.extension_order)
+            .field("extension_order()", &self.extension_order())
+            .field("curves", &self.curves)
+            .field("curves()", &self.curves())
+            .field("verify_algorithm_prefs", &self.verify_algorithm_prefs)
+            .field("verify_algorithm_prefs()", &self.verify_algorithm_prefs())
+            .field("client_auth", &self.client_auth)
+            .field("client_auth()", &self.client_auth())
+            .field(
+                "certificate_compression_algorithms",
+                &self.certificate_compression_algorithms,
+            )
+            .field(
+                "certificate_compression_algorithms()",
+                &self.certificate_compression_algorithms(),
+            )
+            .field(
+                "delegated_credential_schemes",
+                &self.delegated_credential_schemes,
+            )
+            .field(
+                "delegated_credential_schemes()",
+                &self.delegated_credential_schemes(),
+            )
+            .field("server_name", &self.server_name)
+            .field("server_name()", &self.server_name())
+            .field("base_builders", &self.base_builders)
+            .finish()
     }
 }
 
