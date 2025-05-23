@@ -50,6 +50,8 @@ mod mtls_tunnel_and_service;
 mod tcp_listener_hello;
 #[cfg(feature = "tcp")]
 mod tcp_listener_layers;
+#[cfg(all(feature = "http-full", feature = "boring"))]
+mod tls_sni_router;
 #[cfg(feature = "udp")]
 mod udp_codec;
 
