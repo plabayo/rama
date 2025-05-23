@@ -26,24 +26,24 @@ path = "fuzz_targets/h2_hpack.rs"
 test = false
 doc = false
 
+[dependencies.h2-support]
+path = "../rama-http-core/tests/h2-support"
+
 [[bin]]
 name = "h2_e2e"
 path = "fuzz_targets/h2_e2e.rs"
 test = false
 doc = false
 
+[dependencies.rama-http-core]
+path = "../rama-http-core"
+features = ["unstable"]
+
 [dependencies]
 futures = { workspace = true }
 libfuzzer-sys = { workspace = true, features = ["arbitrary-derive"] }
 rama = { path = "../", features = ["full"] }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
-
-[dependencies.h2-support]
-path = "../rama-http-core/tests/h2-support"
-
-[dependencies.rama-http-core]
-path = "../rama-http-core"
-features = ["unstable"]
 
 [dependencies.rama-ua]
 path = "../rama-ua"

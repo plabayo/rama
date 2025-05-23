@@ -380,7 +380,7 @@ impl<S, K> TlsConnector<S, K> {
             builder.push_base_config(base_builder);
         }
 
-        Ok(builder.build()?)
+        builder.build()
     }
 }
 
