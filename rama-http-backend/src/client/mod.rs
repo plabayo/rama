@@ -353,9 +353,7 @@ where
                 &self.proxy_tls_connector_config
             {
                 let data = create_proxy_connector_data_boring(&ctx, config)?;
-                EitherConn::A(
-                    BoringTlsConnector::tunnel(connector, None).with_connector_data(Arc::new(data)),
-                )
+                EitherConn::A(BoringTlsConnector::tunnel(connector, None).with_connector_data(data))
             } else {
                 EitherConn::B(connector)
             };
@@ -382,9 +380,7 @@ where
             let connector =
                 if let Some(TlsConnectorConfig::Boring(config)) = &self.tls_connector_config {
                     let data = create_connector_data_boring(&ctx, config)?;
-                    EitherConn::A(
-                        BoringTlsConnector::auto(connector).with_connector_data(Arc::new(data)),
-                    )
+                    EitherConn::A(BoringTlsConnector::auto(connector).with_connector_data(data))
                 } else {
                     EitherConn::B(connector)
                 };
@@ -448,8 +444,8 @@ where
 fn create_connector_data_boring<State>(
     ctx: &Context<State>,
     tls_config: &Option<ClientConfig>,
-) -> Result<BoringTlsConnectorDataBuilder, OpaqueError> {
-    match extract_client_config_from_ctx(ctx) {
+) -> Result<Arc<BoringTlsConnectorDataBuilder>, OpaqueError> {
+    let builder = match extract_client_config_from_ctx(ctx) {
         Some(mut chain_ref) => {
             trace!(
                 "create tls connector using rama tls client config(s) from context and/or the predefined one if defined"
@@ -473,14 +469,15 @@ fn create_connector_data_boring<State>(
                 Ok(BoringTlsConnectorDataBuilder::new_http_auto())
             }
         },
-    }
+    };
+    Ok(builder?.into_shared_builder())
 }
 
 #[cfg(feature = "boring")]
 fn create_proxy_connector_data_boring<State>(
     ctx: &Context<State>,
     tls_config: &Option<ClientConfig>,
-) -> Result<BoringTlsConnectorDataBuilder, OpaqueError> {
+) -> Result<Arc<BoringTlsConnectorDataBuilder>, OpaqueError> {
     let data = match (ctx.get::<ProxyClientConfig>(), tls_config) {
         (Some(proxy_tls_config), _) => {
             trace!("create proxy tls connector using rama tls client config from context");
@@ -503,7 +500,7 @@ fn create_proxy_connector_data_boring<State>(
             BoringTlsConnectorDataBuilder::new()
         }
     };
-    Ok(data)
+    Ok(data.into_shared_builder())
 }
 
 #[cfg(feature = "rustls")]

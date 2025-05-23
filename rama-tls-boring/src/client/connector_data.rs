@@ -32,6 +32,12 @@ use super::compress_certificate::{BrotliCertificateCompressor, ZlibCertificateCo
 use crate::keylog::new_key_log_file_handle;
 
 /// [`TlsConnectorData`] that will be used by the connector
+///
+/// In almost all circumstances you should never create this.
+/// Instead you should use [`TlsConnectorDataBuilder`] and pass
+/// that around, [`TlsConnector`] will then build the final config.
+///
+/// [`TlsConnector`]: super::TlsConnector
 pub struct TlsConnectorData {
     pub config: ConnectConfiguration,
     pub store_server_certificate_chain: bool,
@@ -62,7 +68,6 @@ impl TlsConnectorData {
 ///
 /// This builder is very powerful and is capable of stacking other builders. Using it
 /// this way gives each layer the option to modify what is needed in a very efficient way.
-/// Builders can also be chained
 pub struct TlsConnectorDataBuilder {
     base_builders: Vec<Arc<TlsConnectorDataBuilder>>,
     server_verify_mode: Option<ServerVerifyMode>,
@@ -265,17 +270,12 @@ impl TlsConnectorDataBuilder {
             mut self,
             protos: Option<&[ApplicationProtocol]>,
         ) -> Result<Self, OpaqueError> {
-            self.alpn_protos = if let Some(protos) = protos {
-                let mut alpn_protos: Vec<u8> = Vec::with_capacity(protos.len());
-                for alpn in protos {
-                    alpn.encode_wire_format(&mut alpn_protos)
-                        .context("build (boring) ssl connector: encode alpn")?;
-                }
-                Some(alpn_protos)
-            } else {
-                None
-            };
-
+            self.alpn_protos = protos
+                .map(|protos| {
+                    ApplicationProtocol::encode_alpns_to_vec(protos)
+                        .context("build (boring) ssl connector: encode alpns")
+                })
+                .transpose()?;
             Ok(self)
         }
     );
@@ -402,7 +402,16 @@ impl TlsConnectorDataBuilder {
         Arc::new(self)
     }
 
-    pub(super) fn build(&self) -> Result<TlsConnectorData, OpaqueError> {
+    /// Build the [`TlsConnectorData`] used by the [`TlsConnector`]
+    ///
+    /// NOTE: this method should in almost all circumstances never by called
+    /// directly. The [`TlsConnector`] will call build only when needed and
+    /// as late as possible. The only place where you manually need to build
+    /// the [`TlsConnectorData`] is if you use [`tls_connect`] directly.
+    ///
+    /// [`TlsConnector`]: super::TlsConnector
+    /// [`tls_connect`]: super::tls_connect
+    pub fn build(&self) -> Result<TlsConnectorData, OpaqueError> {
         let mut cfg_builder =
             rama_boring::ssl::SslConnector::builder(rama_boring::ssl::SslMethod::tls_client())
                 .context("create (boring) ssl connector builder")?;
@@ -659,7 +668,7 @@ impl std::fmt::Debug for TlsConnectorDataBuilder {
 }
 
 // TODO in the future ClientConfig will be removed and instead we will create
-// this builder from a client_hello directly, but until we do that we also
+// this builder from a client_hello (or something else) directly, but until we do that we also
 // support creating this builder from a ClientConfig chain.
 impl TlsConnectorDataBuilder {
     pub fn try_from_multiple_client_configs<'a>(

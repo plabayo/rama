@@ -45,6 +45,15 @@ impl<K: Clone> Clone for TlsConnectorLayer<K> {
 impl<K> TlsConnectorLayer<K> {
     generate_set_and_with!(
         /// Set base [`TlsConnectorDataBuilder`] that will be used for this connector
+        ///
+        /// This builder will be chained with the [`TlsConnectorDataBuilder`] found in
+        /// the context in this order: BaseBuilder -> CtxBuilder
+        ///
+        /// NOTE: for a smooth interaction with HTTP you most likely do want to
+        /// create tls connector data to at the very least define the ALPN's correctly.
+        ///
+        /// E.g. if you create an auto client, you want to make sure your ALPN can handle all.
+        /// It will be then also be the [`TlsConnector`] that sets the request http version correctly.
         pub fn connector_data(
             mut self,
             connector_data: Option<Arc<TlsConnectorDataBuilder>>,
@@ -159,8 +168,10 @@ impl<S, K> TlsConnector<S, K> {
     }
 
     generate_set_and_with!(
-        /// Attach [`TlsConnectorData`] to this [`TlsConnector`],
-        /// to be used instead of a globally shared [`TlsConnectorData::default`].
+        /// Set base [`TlsConnectorDataBuilder`] that will be used for this connector
+        ///
+        /// This builder will be chained with the [`TlsConnectorDataBuilder`] found in
+        /// the context in this order: BaseBuilder -> CtxBuilder
         ///
         /// NOTE: for a smooth interaction with HTTP you most likely do want to
         /// create tls connector data to at the very least define the ALPN's correctly.
@@ -361,7 +372,7 @@ impl<S, K> TlsConnector<S, K> {
     fn connector_data<State: 'static>(
         &self,
         ctx: &mut Context<State>,
-    ) -> Result<Option<TlsConnectorData>, OpaqueError> {
+    ) -> Result<TlsConnectorData, OpaqueError> {
         let base_builder = self.connector_data.clone();
         let builder = ctx.get_or_insert_default::<TlsConnectorDataBuilder>();
 
@@ -369,7 +380,7 @@ impl<S, K> TlsConnector<S, K> {
             builder.push_base_config(base_builder);
         }
 
-        Ok(Some(builder.build()?))
+        Ok(builder.build()?)
     }
 }
 
@@ -400,18 +411,16 @@ where
 }
 
 async fn handshake<T>(
-    connector_data: Option<TlsConnectorData>,
+    connector_data: TlsConnectorData,
     server_host: Host,
     stream: T,
 ) -> Result<(SslStream<T>, NegotiatedTlsParameters), BoxError>
 where
     T: Stream + Unpin,
 {
-    let store_server_certificate_chain = connector_data
-        .as_ref()
-        .is_some_and(|data| data.store_server_certificate_chain);
-
-    let TlsStream { inner: stream } = tls_connect(server_host, stream, connector_data).await?;
+    let store_server_certificate_chain = connector_data.store_server_certificate_chain;
+    let TlsStream { inner: stream } =
+        tls_connect(server_host, stream, Some(connector_data)).await?;
 
     let params = match stream.ssl().session() {
         Some(ssl_session) => {
