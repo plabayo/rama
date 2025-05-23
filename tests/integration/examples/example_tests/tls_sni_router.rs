@@ -1,9 +1,11 @@
-use std::net::IpAddr;
-
 use super::utils;
-use rama::{Context, http::BodyExtractExt};
-use rama_dns::{DnsOverwrite, InMemoryDns};
-use rama_net::address::Domain;
+use rama::{
+    Context,
+    dns::{DnsOverwrite, InMemoryDns},
+    http::BodyExtractExt,
+    net::address::Domain,
+};
+use std::net::IpAddr;
 
 #[tokio::test]
 #[ignore]
