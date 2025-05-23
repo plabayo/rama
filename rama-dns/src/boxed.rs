@@ -4,6 +4,7 @@ use std::{
     sync::Arc,
 };
 
+use rama_core::error::BoxError;
 use rama_net::address::Domain;
 
 use crate::DnsResolver;
@@ -46,11 +47,11 @@ impl<T: DnsResolver> DynDnsResolver for T {
 
 /// A boxed [`DnsResolver`], to resolve dns,
 /// for where you require dynamic dispatch.
-pub struct BoxDnsResolver<Error> {
-    inner: Arc<dyn DynDnsResolver<Error = Error> + Send + Sync + 'static>,
+pub struct BoxDnsResolver {
+    inner: Arc<dyn DynDnsResolver<Error = BoxError> + Send + Sync + 'static>,
 }
 
-impl<Error> Clone for BoxDnsResolver<Error> {
+impl Clone for BoxDnsResolver {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
@@ -58,27 +59,24 @@ impl<Error> Clone for BoxDnsResolver<Error> {
     }
 }
 
-impl<Error> BoxDnsResolver<Error> {
+impl BoxDnsResolver {
     /// Create a new [`BoxDnsResolver`] from the given dns resolver.
     #[inline]
-    pub fn new(resolver: impl DnsResolver<Error = Error>) -> Self {
+    pub fn new(resolver: impl DnsResolver) -> Self {
         Self {
-            inner: Arc::new(resolver),
+            inner: Arc::new(BoxedInnerDnsResolver(resolver)),
         }
     }
 }
 
-impl<Error> std::fmt::Debug for BoxDnsResolver<Error> {
+impl std::fmt::Debug for BoxDnsResolver {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("BoxDnsResolver").finish()
     }
 }
 
-impl<Error> DnsResolver for BoxDnsResolver<Error>
-where
-    Error: Send + 'static,
-{
-    type Error = Error;
+impl DnsResolver for BoxDnsResolver {
+    type Error = BoxError;
 
     #[inline]
     fn ipv4_lookup(
@@ -96,7 +94,32 @@ where
         self.inner.ipv6_lookup_box(domain)
     }
 
-    fn boxed(self) -> BoxDnsResolver<Self::Error> {
+    fn boxed(self) -> BoxDnsResolver {
         self
+    }
+}
+
+struct BoxedInnerDnsResolver<R>(R);
+
+impl<R> DnsResolver for BoxedInnerDnsResolver<R>
+where
+    R: DnsResolver,
+{
+    type Error = BoxError;
+
+    #[inline]
+    async fn ipv4_lookup(&self, domain: Domain) -> Result<Vec<Ipv4Addr>, Self::Error> {
+        self.0.ipv4_lookup(domain).await.map_err(Into::into)
+    }
+
+    #[inline]
+    async fn ipv6_lookup(&self, domain: Domain) -> Result<Vec<Ipv6Addr>, Self::Error> {
+        self.0.ipv6_lookup(domain).await.map_err(Into::into)
+    }
+
+    fn boxed(self) -> BoxDnsResolver {
+        BoxDnsResolver {
+            inner: Arc::new(self),
+        }
     }
 }

@@ -25,24 +25,14 @@ use ::{
     tokio::sync::mpsc,
 };
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 /// A [`Layer`] which wraps the given service with a [`Socks5ProxyConnector`].
 ///
 /// See [`Socks5ProxyConnector`] for more information.
 pub struct Socks5ProxyConnectorLayer {
     required: bool,
     #[cfg(feature = "dns")]
-    dns_resolver: Option<BoxDnsResolver<OpaqueError>>,
-}
-
-impl Default for Socks5ProxyConnectorLayer {
-    fn default() -> Self {
-        Self {
-            required: false,
-            #[cfg(feature = "dns")]
-            dns_resolver: Some(rama_dns::HickoryDns::default().boxed()),
-        }
-    }
+    dns_resolver: Option<BoxDnsResolver>,
 }
 
 impl Socks5ProxyConnectorLayer {
@@ -85,7 +75,7 @@ impl Socks5ProxyConnectorLayer {
     /// In case of an error with resolving the domain address the connector
     /// will anyway use the domain instead of the ip.
     pub fn with_default_dns_resolver(mut self) -> Self {
-        self.dns_resolver = Some(rama_dns::HickoryDns::default().boxed());
+        self.dns_resolver = None;
         self
     }
     /// Attach the [`Default`] [`DnsResolver`] to this [`Socks5ProxyConnectorLayer`].
@@ -96,7 +86,7 @@ impl Socks5ProxyConnectorLayer {
     /// In case of an error with resolving the domain address the connector
     /// will anyway use the domain instead of the ip.
     pub fn set_default_dns_resolver(&mut self) -> &mut Self {
-        self.dns_resolver = Some(rama_dns::HickoryDns::default().boxed());
+        self.dns_resolver = None;
         self
     }
 
@@ -154,7 +144,7 @@ pub struct Socks5ProxyConnector<S> {
     inner: S,
     required: bool,
     #[cfg(feature = "dns")]
-    dns_resolver: Option<BoxDnsResolver<OpaqueError>>,
+    dns_resolver: Option<BoxDnsResolver>,
 }
 
 impl<S: fmt::Debug> fmt::Debug for Socks5ProxyConnector<S> {
@@ -226,10 +216,7 @@ impl<S> Socks5ProxyConnector<S> {
     ///
     /// In case of an error with resolving the domain address the connector
     /// will anyway use the domain instead of the ip.
-    pub fn set_dns_resolver(
-        &mut self,
-        resolver: impl DnsResolver<Error = OpaqueError>,
-    ) -> &mut Self {
+    pub fn set_dns_resolver(&mut self, resolver: impl DnsResolver) -> &mut Self {
         self.dns_resolver = Some(resolver.boxed());
         self
     }
