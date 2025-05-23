@@ -9,7 +9,11 @@ pub mod service;
 
 mod read;
 #[doc(inline)]
-pub use read::{ChainReader, HeapReader};
+pub use read::{ChainReader, HeapReader, StackReader};
+
+mod peek;
+#[doc(inline)]
+pub use peek::PeekStream;
 
 /// A stream is a type that implements `AsyncRead`, `AsyncWrite` and `Send`.
 /// This is specific to Rama and is directly linked to the supertraits of `Tokio`.

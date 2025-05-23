@@ -4,7 +4,6 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use crate::h2::{Reason, RecvStream, SendStream};
-use futures_util::ready;
 use pin_project_lite::pin_project;
 use rama_core::bytes::{Buf, Bytes};
 use rama_core::error::BoxError;
@@ -13,6 +12,7 @@ use rama_http_types::header::{
 };
 use rama_http_types::proto::h1::headers::original::OriginalHttp1Headers;
 use rama_http_types::{HeaderMap, HeaderName};
+use std::task::ready;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tracing::{debug, trace};
 

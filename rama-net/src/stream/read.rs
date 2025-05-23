@@ -1,8 +1,8 @@
 use pin_project_lite::pin_project;
-use rama_core::bytes::Bytes;
+use rama_core::bytes::{Buf, Bytes};
 use std::{
     fmt,
-    io::Cursor,
+    io::{Cursor, Read},
     pin::Pin,
     task::{Context, Poll, ready},
 };
@@ -23,6 +23,16 @@ impl HeapReader {
         Self {
             inner: Cursor::new(data),
         }
+    }
+
+    /// How many bytes are there remaining
+    pub fn remaining(&self) -> usize {
+        self.inner.remaining()
+    }
+
+    /// Returns true if there are any more bytes to consume
+    pub fn has_remaining(&self) -> bool {
+        self.inner.has_remaining()
     }
 }
 
@@ -63,6 +73,88 @@ impl AsyncRead for HeapReader {
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
         self.project().inner.poll_read(cx, buf)
+    }
+}
+
+impl Read for HeapReader {
+    #[inline]
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.inner.read(buf)
+    }
+}
+
+/// Reader for reading from a stack buffer
+#[derive(Debug, Clone)]
+pub struct StackReader<const N: usize> {
+    data: [u8; N],
+    offset: usize,
+}
+
+impl<const N: usize> StackReader<N> {
+    /// Creates a new `StackReader` with the specified bytes data.
+    pub const fn new(data: [u8; N]) -> Self {
+        Self { data, offset: 0 }
+    }
+
+    /// Skip up to n bytes, less if n < m
+    pub fn skip(&mut self, n: usize) {
+        self.offset = (self.offset + n).min(N);
+    }
+
+    /// How many bytes are there remaining
+    pub fn remaining(&self) -> usize {
+        N - self.offset
+    }
+
+    /// Returns true if there are any more bytes to consume
+    pub fn has_remaining(&self) -> bool {
+        self.remaining() == 0
+    }
+}
+
+impl<const N: usize> From<[u8; N]> for StackReader<N> {
+    #[inline]
+    fn from(data: [u8; N]) -> Self {
+        Self::new(data)
+    }
+}
+
+impl<const N: usize> AsyncRead for StackReader<N> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        if self.offset < N {
+            let remaining = &self.data[self.offset..];
+            let to_copy = remaining.len().min(buf.remaining());
+
+            if to_copy > 0 {
+                buf.put_slice(&remaining[..to_copy]);
+                self.offset += to_copy;
+            }
+        }
+
+        // done
+        Poll::Ready(Ok(()))
+    }
+}
+
+impl<const N: usize> Read for StackReader<N> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.offset < N {
+            let remaining = &self.data[self.offset..];
+            let to_copy = remaining.len().min(buf.len());
+
+            if to_copy > 0 {
+                buf[..to_copy].copy_from_slice(&remaining[..to_copy]);
+                self.offset += to_copy;
+                return Ok(to_copy);
+            }
+        }
+
+        // done
+        Ok(0)
     }
 }
 
@@ -130,12 +222,26 @@ where
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ChainReader")
-            .field("t", &self.first)
-            .field("u", &self.second)
+            .field("done_first", &self.done_first)
+            .field("first", &self.first)
+            .field("second", &self.second)
             .finish()
     }
 }
 
+impl<T, U> Clone for ChainReader<T, U>
+where
+    T: Clone,
+    U: Clone,
+{
+    fn clone(&self) -> Self {
+        Self {
+            done_first: self.done_first,
+            first: self.first.clone(),
+            second: self.second.clone(),
+        }
+    }
+}
 impl<T, U> AsyncRead for ChainReader<T, U>
 where
     T: AsyncRead,
@@ -158,6 +264,24 @@ where
             }
         }
         me.second.poll_read(cx, buf)
+    }
+}
+
+impl<T, U> Read for ChainReader<T, U>
+where
+    T: Read,
+    U: Read,
+{
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if !self.done_first {
+            let n = self.first.read(buf)?;
+            if n == 0 {
+                self.done_first = true;
+            } else {
+                return Ok(n);
+            }
+        }
+        self.second.read(buf)
     }
 }
 
@@ -187,5 +311,152 @@ where
         } else {
             me.second.consume(amt)
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use tokio::io::AsyncReadExt;
+
+    async fn test_multi_read_async<const N: usize>(
+        mut stream: impl AsyncRead + Unpin,
+        cases: &[&str],
+    ) {
+        let mut buf = [0u8; N];
+
+        for (i, case) in cases.iter().enumerate() {
+            let n = stream.read(&mut buf).await.unwrap();
+            assert_eq!(
+                n,
+                case.len(),
+                "[{N}][async] step #{} for cases: {:?}",
+                i + 1,
+                cases
+            );
+            assert_eq!(
+                &buf[..n],
+                case.as_bytes(),
+                "[{N}][async] step #{} for cases: {:?}",
+                i + 1,
+                cases
+            );
+        }
+    }
+
+    fn test_multi_read_sync<const N: usize>(mut stream: impl Read, cases: &[&str]) {
+        let mut buf = [0u8; N];
+
+        for (i, case) in cases.iter().enumerate() {
+            let n = stream.read(&mut buf).unwrap();
+            assert_eq!(
+                n,
+                case.len(),
+                "[{N}][sync] step #{} for cases: {:?}",
+                i + 1,
+                cases
+            );
+            assert_eq!(
+                &buf[..n],
+                case.as_bytes(),
+                "[{N}][sync] step #{} for cases: {:?}",
+                i + 1,
+                cases
+            );
+        }
+    }
+
+    #[derive(Debug)]
+    struct TestCase<const N: usize, R> {
+        reader: R,
+        expected_reads: &'static [&'static str],
+    }
+
+    impl<const N: usize, R: AsyncRead + Clone + Unpin + Read> TestCase<N, R> {
+        async fn test_sync_and_async(&self) {
+            let new_stream = || self.reader.clone();
+
+            test_multi_read_async::<N>(&mut new_stream(), self.expected_reads).await;
+            test_multi_read_sync::<N>(&mut new_stream(), self.expected_reads);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_heap_reader() {
+        TestCase::<5, _> {
+            reader: HeapReader::from(""),
+            expected_reads: &[""],
+        }
+        .test_sync_and_async()
+        .await;
+
+        TestCase::<5, _> {
+            reader: HeapReader::from("hello world"),
+            expected_reads: &["hello", " worl", "d", ""],
+        }
+        .test_sync_and_async()
+        .await;
+
+        TestCase::<10, _> {
+            reader: HeapReader::from("hello world"),
+            expected_reads: &["hello worl", "d", ""],
+        }
+        .test_sync_and_async()
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_stack_reader() {
+        TestCase::<5, _> {
+            reader: StackReader::new(*b""),
+            expected_reads: &[""],
+        }
+        .test_sync_and_async()
+        .await;
+
+        TestCase::<5, _> {
+            reader: StackReader::new(*b"hello world"),
+            expected_reads: &["hello", " worl", "d", ""],
+        }
+        .test_sync_and_async()
+        .await;
+
+        TestCase::<10, _> {
+            reader: StackReader::from(*b"hello world"),
+            expected_reads: &["hello worl", "d", ""],
+        }
+        .test_sync_and_async()
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_chain_reader() {
+        TestCase::<5, _> {
+            reader: ChainReader::new(Cursor::new(""), Cursor::new("")),
+            expected_reads: &[""],
+        }
+        .test_sync_and_async()
+        .await;
+
+        TestCase::<5, _> {
+            reader: ChainReader::new(Cursor::new("hello world"), Cursor::new("")),
+            expected_reads: &["hello", " worl", "d", ""],
+        }
+        .test_sync_and_async()
+        .await;
+
+        TestCase::<5, _> {
+            reader: ChainReader::new(Cursor::new("hello "), Cursor::new("world")),
+            expected_reads: &["hello", " ", "world", ""],
+        }
+        .test_sync_and_async()
+        .await;
+
+        TestCase::<5, _> {
+            reader: ChainReader::new(Cursor::new(""), Cursor::new("hello world")),
+            expected_reads: &["hello", " worl", "d", ""],
+        }
+        .test_sync_and_async()
+        .await;
     }
 }

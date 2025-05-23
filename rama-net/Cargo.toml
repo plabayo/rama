@@ -10,8 +10,12 @@ categories = ["asynchronous", "network-programming", "web-programming"]
 authors = { workspace = true }
 rust-version = { workspace = true }
 
-[lints]
-workspace = true
+[package.metadata.cargo-public-api-crates]
+allowed = []
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 default = []
@@ -52,9 +56,5 @@ serde_json = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tokio-test = { workspace = true }
 
-[package.metadata.cargo-public-api-crates]
-allowed = []
-
-[package.metadata.docs.rs]
-all-features = true
-rustdoc-args = ["--cfg", "docsrs"]
+[lints]
+workspace = true

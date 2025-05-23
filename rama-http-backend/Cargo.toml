@@ -6,12 +6,21 @@ license = { workspace = true }
 edition = { workspace = true }
 repository = { workspace = true }
 keywords = ["io", "async", "non-blocking", "http", "rama"]
-categories = ["asynchronous", "network-programming", "web-programming::http-client", "web-programming::http-server"]
+categories = [
+    "asynchronous",
+    "network-programming",
+    "web-programming::http-client",
+    "web-programming::http-server",
+]
 authors = { workspace = true }
 rust-version = { workspace = true }
 
-[lints]
-workspace = true
+[package.metadata.cargo-public-api-crates]
+allowed = []
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 default = []
@@ -38,9 +47,5 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 
-[package.metadata.cargo-public-api-crates]
-allowed = []
-
-[package.metadata.docs.rs]
-all-features = true
-rustdoc-args = ["--cfg", "docsrs"]
+[lints]
+workspace = true

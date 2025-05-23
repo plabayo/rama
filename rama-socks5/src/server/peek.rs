@@ -1,10 +1,12 @@
+use std::fmt;
+
 use rama_core::{
     Context, Service,
     error::{BoxError, ErrorContext},
     service::RejectService,
 };
-use std::{fmt, io::IoSlice, pin::Pin, task::Poll};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, ReadBuf};
+use rama_net::stream::{PeekStream, StackReader};
+use tokio::io::AsyncReadExt;
 
 use crate::proto::{ProtocolVersion, SocksMethod};
 
@@ -102,11 +104,10 @@ where
             }
         }
 
-        let stream = Socks5PeekStream {
-            prefix: peek_buf,
-            offset,
-            inner: stream,
-        };
+        let mut peek = StackReader::new(peek_buf);
+        peek.skip(offset);
+
+        let stream = PeekStream::new(peek, stream);
 
         if is_socks5 {
             self.socks5_acceptor
@@ -120,76 +121,14 @@ where
 }
 
 const SOCKS5_HEADER_PEEK_LEN: usize = 5;
-type Socks5PrefixHeader = [u8; SOCKS5_HEADER_PEEK_LEN];
 
-pub struct Socks5PeekStream<S> {
-    prefix: Socks5PrefixHeader,
-    offset: usize,
-    inner: S,
-}
-
-impl<S: AsyncRead + Unpin> AsyncRead for Socks5PeekStream<S> {
-    fn poll_read(
-        mut self: Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        buf: &mut ReadBuf<'_>,
-    ) -> Poll<std::io::Result<()>> {
-        if self.offset < SOCKS5_HEADER_PEEK_LEN {
-            let remaining = &self.prefix[self.offset..];
-            let to_copy = remaining.len().min(buf.remaining());
-
-            if to_copy > 0 {
-                buf.put_slice(&remaining[..to_copy]);
-                self.offset += to_copy;
-                return Poll::Ready(Ok(()));
-            }
-        }
-
-        Pin::new(&mut self.inner).poll_read(cx, buf)
-    }
-}
-
-impl<S: AsyncWrite + Unpin> AsyncWrite for Socks5PeekStream<S> {
-    fn poll_write(
-        self: Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        buf: &[u8],
-    ) -> Poll<std::io::Result<usize>> {
-        Pin::new(&mut self.get_mut().inner).poll_write(cx, buf)
-    }
-
-    fn poll_flush(
-        self: Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> Poll<std::io::Result<()>> {
-        Pin::new(&mut self.get_mut().inner).poll_flush(cx)
-    }
-
-    fn poll_shutdown(
-        self: Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> Poll<std::io::Result<()>> {
-        Pin::new(&mut self.get_mut().inner).poll_shutdown(cx)
-    }
-
-    fn poll_write_vectored(
-        self: Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        bufs: &[IoSlice<'_>],
-    ) -> Poll<Result<usize, std::io::Error>> {
-        Pin::new(&mut self.get_mut().inner).poll_write_vectored(cx, bufs)
-    }
-
-    fn is_write_vectored(&self) -> bool {
-        self.inner.is_write_vectored()
-    }
-}
+/// [`PeekStream`] alias used by [`Socks5PeekRouter`].
+pub type Socks5PeekStream<S> = PeekStream<StackReader<SOCKS5_HEADER_PEEK_LEN>, S>;
 
 #[cfg(test)]
 mod test {
     use rama_core::service::{RejectError, service_fn};
     use std::convert::Infallible;
-    use tokio::io::{AsyncWriteExt, duplex};
 
     use rama_net::stream::Stream;
 
@@ -323,39 +262,5 @@ mod test {
 
             assert_eq!(content.as_bytes(), &response[..]);
         }
-    }
-
-    #[tokio::test]
-    async fn test_peek_stream() -> std::io::Result<()> {
-        let prefix = b"\x05\x02\x01\x00\x04";
-        let payload = b"\x02";
-
-        let (mut client, server) = duplex(64);
-
-        let mut input_data = prefix.to_vec();
-        input_data.extend_from_slice(payload);
-
-        let w_input_data = input_data.clone();
-        tokio::spawn(async move {
-            client.write_all(&w_input_data).await.unwrap();
-            client.shutdown().await.unwrap();
-        });
-
-        let mut peek_buf = [0u8; SOCKS5_HEADER_PEEK_LEN];
-        let mut sniff_stream = server;
-        sniff_stream.read_exact(&mut peek_buf).await?;
-        assert_eq!(&peek_buf, prefix);
-
-        let mut buffered = Socks5PeekStream {
-            prefix: peek_buf,
-            offset: 0,
-            inner: sniff_stream,
-        };
-
-        let mut all_data = Vec::new();
-        buffered.read_to_end(&mut all_data).await?;
-        assert_eq!(all_data, input_data);
-
-        Ok(())
     }
 }

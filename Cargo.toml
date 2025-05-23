@@ -1,3 +1,23 @@
+
+[package]
+name = "rama"
+readme = "README.md"
+documentation = "https://docs.rs/rama"
+description = "modular service framework"
+version = { workspace = true }
+license = { workspace = true }
+edition = { workspace = true }
+repository = { workspace = true }
+homepage = { workspace = true }
+keywords = { workspace = true }
+categories = { workspace = true }
+authors = { workspace = true }
+rust-version = { workspace = true }
+resolver = "3"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
 [workspace]
 members = [
     ".",
@@ -35,138 +55,94 @@ edition = "2024"
 repository = "https://github.com/plabayo/rama"
 homepage = "https://ramaproxy.org"
 keywords = ["io", "async", "non-blocking", "service", "rama"]
-categories = ["asynchronous", "network-programming", "web-programming", "web-programming::http-client", "web-programming::http-server"]
+categories = [
+    "asynchronous",
+    "network-programming",
+    "web-programming",
+    "web-programming::http-client",
+    "web-programming::http-server",
+]
 authors = ["Glen De Cauwsemaecker <glen@plabayo.tech>"]
 rust-version = "1.85.0"
 
 [workspace.dependencies]
+arc-swap = "1.7"
 async-compression = "0.4"
+atomic-waker = "1.1"
+aws-lc-sys = { version = "0.28", features = ["bindgen"] }
 base64 = "0.22"
 bitflags = "2.9"
-md5 = "0.7"
 brotli = "8"
+byteorder = "1.5"
 bytes = "1"
+chrono = "0.4"
 clap = { version = "4.5", features = ["derive"] }
+const_format = "0.2"
 crossterm = "0.29"
 csv = "1.3"
-flate2 = "1.1"
-futures-lite = "2.6"
-futures-core = "0.3"
-futures = "0.3"
-h2 = "0.4"
-matchit = "0.8"
-moka = "0.12"
-hex = "0.4"
-http = "1"
-http-body = "1"
-http-body-util = "0.1"
-http-range-header = "0.4"
 deadpool-postgres = "0.14"
-httpdate = "1.0"
-rama-boring = "0.3.0"
-rama-boring-tokio = "0.3.0"
-ipnet = "2.11"
-libfuzzer-sys = "0.4"
-honggfuzz = "0.5"
-sha1 = "0.10"
-itertools = "0.14"
-mime = "0.3.17"
-mime_guess = { version = "2", default-features = false }
-percent-encoding = "2.3"
-pin-project-lite = "0.2"
-rustls-pki-types = "^1"
-proc-macro2 = "1.0"
-psl = "2"
-socket2 = "0.5.9"
-opentelemetry = { version = "0.29", default-features = false, features = [
-    "trace",
-] }
-nom = "8.0.0"
-opentelemetry-otlp = { version = "0.29", features = ["tokio"] }
-opentelemetry_sdk = { version = "0.29", default-features = false, features = [
-    "trace",
-    "rt-tokio",
-] }
-opentelemetry-semantic-conventions = { version = "0.29", features = [
-    "semconv_experimental",
-] }
-quickcheck = "1.0"
-quote = "1.0"
-rcgen = { version = "0.13", default-features = false, features = ["pem", "aws_lc_rs"] }
-regex = "1.11"
-rustls = { version = "0.23", default-features = false, features = [
-    "logging",
-    "std",
-    "tls12",
-    "aws_lc_rs",
-] }
-aws-lc-sys = { version = "0.28", features = ["bindgen"] }
 derive_more = "2.0"
-rustls-native-certs = "0.8"
-rustls-pemfile = "2.2"
-rustversion = "1.0"
-serde = "1.0"
-serde_json = "1.0"
-serde_html_form = "0.2"
-syn = "2.0"
-sync_wrapper = "1.0"
-tempfile = "3.20"
-tokio = "1.45"
-spmc = "0.3"
-tokio-graceful = "0.2"
-tokio-rustls = { version = "0.26", default-features = false, features = [
-    "logging",
-    "tls12",
-    "aws_lc_rs",
-] }
-tokio-test = "0.4"
-tokio-util = "0.7"
-tracing = "0.1"
-tracing-subscriber = "0.3"
-tracing-tree = "0.4"
-trybuild = "1.0"
-uuid = "1.16"
-byteorder = "1.5"
-nanoid = "0.4"
-zstd = "0.13"
-venndb = "0.5"
-unicode-normalization = "0.1"
-iri-string = "0.7"
-escargot = "0.5"
 divan = "0.1"
-webpki-roots = "1.0"
-terminal-prompt = "0.2"
-parking_lot = "0.12"
-const_format = "0.2"
+env_logger = "0.11"
+escargot = "0.5"
+flate2 = "1.1"
+flume = "0.11"
+fnv = "1.0"
+futures = "0.3"
+futures-channel = "0.3"
+futures-core = "0.3"
+futures-lite = "2.6"
+futures-sink = "0.3"
+futures-util = "0.3"
+h2 = "0.4"
+hex = "0.4"
 hickory-resolver = { version = "0.25", default-features = false, features = [
     "tokio",
     "system-config",
 ] }
-arc-swap = "1.7"
-flume = "0.11"
-atomic-waker = "1.1"
-futures-sink = "0.3"
-fnv = "1.0"
-slab = "0.4"
-indexmap = "2"
-rand = "0.9"
-walkdir = "2.5"
-tokio-postgres = "0.7"
-env_logger = "0.11"
+honggfuzz = "0.5"
+http = "1"
+http-body = "1"
+http-body-util = "0.1"
+http-range-header = "0.4"
 httparse = "1.10"
-smallvec = { version = "1.15", features = ["const_generics", "const_new"] }
+httpdate = "1.0"
+indexmap = "2"
+ipnet = "2.11"
+iri-string = "0.7"
+itertools = "0.14"
 itoa = "1"
-want = "0.3"
-futures-util = "0.3"
-futures-channel = "0.3"
-sha2 = "0.10"
 jemallocator = { package = "tikv-jemallocator", version = "0.6" }
+libfuzzer-sys = "0.4"
+matchit = "0.8"
+md5 = "0.7"
 mimalloc = { version = "0.1", default-features = false }
-chrono = "0.4"
-smol_str = "0.3"
-tower-service = "0.3"
-tower-layer = "0.3"
+mime = "0.3.17"
+mime_guess = { version = "2", default-features = false }
+moka = "0.12"
+nanoid = "0.4"
+nom = "8.0.0"
+opentelemetry = { version = "0.29", default-features = false, features = [
+    "trace",
+] }
+opentelemetry-otlp = { version = "0.29", features = ["tokio"] }
+opentelemetry-semantic-conventions = { version = "0.29", features = [
+    "semconv_experimental",
+] }
+opentelemetry_sdk = { version = "0.29", default-features = false, features = [
+    "trace",
+    "rt-tokio",
+] }
+parking_lot = "0.12"
+percent-encoding = "2.3"
+pin-project-lite = "0.2"
+proc-macro2 = "1.0"
+psl = "2"
+quickcheck = "1.0"
+quote = "1.0"
 radix_trie = "0.2"
+rama-boring = "0.3.0"
+rama-boring-tokio = "0.3.0"
 rama-core = { version = "0.3.0-alpha.1", path = "./rama-core" }
 rama-dns = { version = "0.3.0-alpha.1", path = "./rama-dns" }
 rama-error = { version = "0.3.0-alpha.1", path = "./rama-error" }
@@ -174,8 +150,8 @@ rama-haproxy = { version = "0.3.0-alpha.1", path = "./rama-haproxy" }
 rama-http = { version = "0.3.0-alpha.1", path = "./rama-http" }
 rama-http-backend = { version = "0.3.0-alpha.1", path = "./rama-http-backend" }
 rama-http-core = { version = "0.3.0-alpha.1", path = "./rama-http-core" }
-rama-http-types = { version = "0.3.0-alpha.1", path = "./rama-http-types" }
 rama-http-headers = { version = "0.3.0-alpha.1", path = "./rama-http-headers" }
+rama-http-types = { version = "0.3.0-alpha.1", path = "./rama-http-types" }
 rama-macros = { version = "0.3.0-alpha.1", path = "./rama-macros" }
 rama-net = { version = "0.3.0-alpha.1", path = "./rama-net" }
 rama-proxy = { version = "0.3.0-alpha.1", path = "./rama-proxy" }
@@ -187,6 +163,56 @@ rama-tower = { version = "0.3.0-alpha.1", path = "./rama-tower" }
 rama-ua = { version = "0.3.0-alpha.1", path = "./rama-ua" }
 rama-udp = { version = "0.3.0-alpha.1", path = "./rama-udp" }
 rama-utils = { version = "0.3.0-alpha.1", path = "./rama-utils" }
+rand = "0.9"
+rcgen = { version = "0.13", default-features = false, features = ["pem", "aws_lc_rs"] }
+regex = "1.11"
+rustls = { version = "0.23", default-features = false, features = [
+    "logging",
+    "std",
+    "tls12",
+    "aws_lc_rs",
+] }
+rustls-native-certs = "0.8"
+rustls-pemfile = "2.2"
+rustls-pki-types = "^1"
+rustversion = "1.0"
+serde = "1.0"
+serde_html_form = "0.2"
+serde_json = "1.0"
+sha1 = "0.10"
+sha2 = "0.10"
+slab = "0.4"
+smallvec = { version = "1.15", features = ["const_generics", "const_new"] }
+smol_str = "0.3"
+socket2 = "0.5.9"
+spmc = "0.3"
+syn = "2.0"
+sync_wrapper = "1.0"
+tempfile = "3.20"
+terminal-prompt = "0.2"
+tokio = "1.45"
+tokio-graceful = "0.2"
+tokio-postgres = "0.7"
+tokio-rustls = { version = "0.26", default-features = false, features = [
+    "logging",
+    "tls12",
+    "aws_lc_rs",
+] }
+tokio-test = "0.4"
+tokio-util = "0.7"
+tower-layer = "0.3"
+tower-service = "0.3"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+tracing-tree = "0.4"
+trybuild = "1.0"
+unicode-normalization = "0.1"
+uuid = "1.16"
+venndb = "0.5"
+walkdir = "2.5"
+want = "0.3"
+webpki-roots = "1.0"
+zstd = "0.13"
 
 [workspace.lints.rust]
 unreachable_pub = "deny"
@@ -222,25 +248,6 @@ unnested_or_patterns = "warn"
 str_to_string = "warn"
 type_complexity = "allow"
 
-[package]
-name = "rama"
-readme = "README.md"
-documentation = "https://docs.rs/rama"
-description = "modular service framework"
-version = { workspace = true }
-license = { workspace = true }
-edition = { workspace = true }
-repository = { workspace = true }
-homepage = { workspace = true }
-keywords = { workspace = true }
-categories = { workspace = true }
-authors = { workspace = true }
-rust-version = { workspace = true }
-resolver = "3"
-
-[lints]
-workspace = true
-
 [features]
 default = []
 full = [
@@ -257,16 +264,48 @@ full = [
 ]
 telemetry = ["rama-core/telemetry", "rama-net?/telemetry", "rama-http?/telemetry"]
 compression = ["http", "rama-http?/compression", "rama-tls-boring?/compression"]
-tls = ["net", "rama-net?/tls", "rama-http?/tls", "rama-http-backend?/tls", "rama-ua?/tls"]
+tls = [
+    "net",
+    "rama-net?/tls",
+    "rama-http?/tls",
+    "rama-http-backend?/tls",
+    "rama-ua?/tls",
+]
 rustls = ["tls", "dep:rama-tls-rustls", "rama-http-backend?/rustls"]
 boring = ["tls", "dep:rama-tls-boring", "rama-http-backend?/boring"]
-cli = ["dep:base64", "dep:bytes", "dep:hex", "dep:serde", "dep:serde_json", "dep:serde_html_form", "dep:tracing", "dep:tokio", "http"]
+cli = [
+    "dep:base64",
+    "dep:bytes",
+    "dep:hex",
+    "dep:serde",
+    "dep:serde_json",
+    "dep:serde_html_form",
+    "dep:tracing",
+    "dep:tokio",
+    "http",
+]
 net = ["dep:rama-net"]
 dns = ["net", "dep:rama-dns", "rama-socks5?/dns"]
 tcp = ["dns", "dep:rama-tcp"]
 udp = ["net", "dep:rama-udp"]
-http = ["net", "dep:rama-http", "net", "ua", "rama-net?/http", "rama-tcp?/http", "rama-tower?/http", "rama-tls-boring?/ua"]
-http-full = ["http", "tcp", "dep:rama-http-backend", "dep:rama-http-core", "ua-embed-profiles", "compression"]
+http = [
+    "net",
+    "dep:rama-http",
+    "net",
+    "ua",
+    "rama-net?/http",
+    "rama-tcp?/http",
+    "rama-tower?/http",
+    "rama-tls-boring?/ua",
+]
+http-full = [
+    "http",
+    "tcp",
+    "dep:rama-http-backend",
+    "dep:rama-http-core",
+    "ua-embed-profiles",
+    "compression",
+]
 proxy = ["dep:rama-proxy"]
 haproxy = ["dep:rama-haproxy"]
 socks5 = ["dep:rama-socks5", "udp", "tcp", "rama-net/http", "rama-tcp/http"]
@@ -277,9 +316,6 @@ proxy-live-update = ["proxy", "rama-proxy?/live-update"]
 proxy-csv = ["proxy", "rama-proxy?/csv"]
 proxy-full = ["proxy-memory-db", "proxy-live-update", "proxy-csv", "haproxy", "socks5"]
 tower = ["dep:rama-tower"]
-
-[build-dependencies]
-rustversion = { workspace = true }
 
 [dependencies]
 base64 = { workspace = true, optional = true }
@@ -307,6 +343,9 @@ serde_json = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["macros", "io-std"], optional = true }
 tracing = { workspace = true, optional = true }
 
+[build-dependencies]
+rustversion = { workspace = true }
+
 [dev-dependencies]
 bytes = { workspace = true }
 derive_more = { workspace = true, features = ["as_ref"] }
@@ -331,16 +370,23 @@ tokio-test = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
-[profile.dev.package."*"]
-opt-level = 3
+[lints]
+workspace = true
 
 [profile.dev]
 debug = false
 opt-level = 1
 
-[package.metadata.docs.rs]
-all-features = true
-rustdoc-args = ["--cfg", "docsrs"]
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+codegen-units = 1
+incremental = false
+
+[profile.bench]
+codegen-units = 1
+incremental = false
 
 [[bench]]
 name = "ua_parse"
@@ -528,10 +574,6 @@ required-features = ["socks5"]
 name = "socks5_and_http_proxy"
 required-features = ["dns", "socks5", "http-full"]
 
-[profile.release]
-codegen-units = 1
-incremental = false
-
-[profile.bench]
-codegen-units = 1
-incremental = false
+[[example]]
+name = "haproxy_client_ip"
+required-features = ["haproxy", "http-full"]

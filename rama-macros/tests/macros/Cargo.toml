@@ -9,9 +9,9 @@ authors = [
 edition = "2024"
 publish = false
 
-[lints]
-workspace = true
-
 [lib]
 path = "lib.rs"
 proc-macro = true
+
+[lints]
+workspace = true

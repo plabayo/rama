@@ -10,8 +10,12 @@ categories = ["asynchronous", "network-programming", "web-programming"]
 authors = { workspace = true }
 rust-version = { workspace = true }
 
-[lints]
-workspace = true
+[package.metadata.cargo-public-api-crates]
+allowed = []
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 default = []
@@ -19,15 +23,12 @@ default = []
 [dependencies]
 rama-core = { workspace = true }
 rama-net = { workspace = true }
+rama-utils = { workspace = true }
 tokio = { workspace = true, features = ["macros", "io-std"] }
 tracing = { workspace = true }
 
 [dev-dependencies]
 tokio-test = { workspace = true }
 
-[package.metadata.cargo-public-api-crates]
-allowed = []
-
-[package.metadata.docs.rs]
-all-features = true
-rustdoc-args = ["--cfg", "docsrs"]
+[lints]
+workspace = true

@@ -28,8 +28,24 @@
 
 🦙 Rama (ラマ) is a modular service framework for the 🦀 Rust language to move and transform your network packets.
 
-> The motivations behind Rama's creation are detailed in [the "Why Rama" chapter](./why_rama.md).
->
+This framework is designed for developers who need fine-grained, programmable control over how packets are handled across
+the network stack. Whether you're intercepting traffic for security analysis, emulating clients with custom user agents,
+hijacking connections for advanced testing, or building high-performance proxies,
+Rama provides a clean and composable Rust-native foundation.
+
+With support for modular packet pipelines, deep protocol introspection, and advanced socket manipulation—including features
+like transparent proxying and HAProxy protocol support—Rama makes it easy to prototype, deploy,
+and scale complex network behavior with safety and speed.
+
+It's not just a toolkit—it's a mindset shift for how
+to design and operate dynamic, programmable network services.
+
+> 💡 The motivations behind Rama's creation are detailed in [the "Why Rama" chapter](./why_rama.md).
+
+Rama is async-first using [Tokio](https://tokio.rs/) as its _only_ Async Runtime.
+Please refer to [the examples found in the `/examples` dir](https://github.com/plabayo/rama/tree/main/examples)
+to get inspired on how you can use it for your purposes.
+
 > While powerful and flexible, Rama might not be the ideal framework for everyone. If you're building a
 > conventional web server or need a simple HTTP client, other crates might better suit your needs. Although
 > we at [Plabayo](https://plabayo.tech) use Rama extensively for our web infrastructure (clients, servers,
@@ -40,9 +56,11 @@
 > - [Axum](https://github.com/tokio-rs/axum) for building standard HTTP web servers. It offers extensive
 >   community support and ecosystem integrations. However, be aware that Axum's higher-level abstractions
 >   may limit your control over the web stack when you need to implement non-standard features.
+>   - 📚 Or read more about web servers using Rama in [this book's Web Server chapter](./web_servers.md)
 >
 > - [Reqwest](https://docs.rs/reqwest/latest/reqwest/) for basic HTTP client needs. It's ideal when you
 >   don't require fine-grained control over HTTP requests/responses or TLS configuration details.
+>   - 📚 Or read more about HTTP clients using Rama in [this book's Http Client chapter](./http_clients.md)
 >
 > If you're specifically building proxies and find Rama's approach doesn't align with your needs,
 > explore the alternatives listed in our [project README](https://github.com/plabayo/rama?tab=readme-ov-file#--alternatives).
@@ -61,10 +79,6 @@
 > We maintain the original code structure in these forks to facilitate upstream synchronization and
 > contribute patches back when possible.
 
-Rama is async-first using [Tokio](https://tokio.rs/) as its _only_ Async Runtime.
-Please refer to [the examples found in the `/examples` dir](https://github.com/plabayo/rama/tree/main/examples)
-to get inspired on how you can use it for your purposes.
-
 > 💡 If your organization relies on Rama (ラマ) for its operations,
 > we invite you to consider becoming a sponsor 💖. By supporting our project,
 > you'll help ensure its continued development and success.
@@ -72,7 +86,7 @@ to get inspired on how you can use it for your purposes.
 > [the "Sponsors" chapter in this book](./sponsor.md)
 > or contact us directly at [sponsor@ramaproxy.org](mailto:sponsor@ramaproxy.org).
 
-This framework comes with 🔋 batteries included, giving you the full freedome to build the middleware and services you want, without _having_ to repeat the "common":
+Rama comes with 🔋 batteries included, giving you the full freedome to build the middleware and services you want, without _having_ to repeat the "common":
 
 | category | support list |
 |-|-|
@@ -103,12 +117,14 @@ This framework comes with 🔋 batteries included, giving you the full freedome 
 
 The primary focus of Rama is to aid you in your development of proxies:
 
-- 🚦 [Reverse proxies](https://ramaproxy.org/book/proxies/reverse);
-- 🔓 [TLS Termination proxies](https://ramaproxy.org/book/proxies/tls);
-- 🌐 [HTTP(S) proxies](https://ramaproxy.org/book/proxies/http);
-- 🧦 [SOCKS5 proxies](https://ramaproxy.org/book/proxies/socks5);
-- 🔎 [MITM proxies](https://ramaproxy.org/book/proxies/mitm);
-- 🕵️‍♀️ [Distortion proxies](https://ramaproxy.org/book/proxies/distort).
+- 🚦 [Reverse proxies](./proxies/reverse.md);
+- 🔓 [TLS Termination proxies](./proxies/tls.md);
+- 🌐 [HTTP(S) proxies](./proxies/http.md);
+- 🧦 [SOCKS5 proxies](./proxies/socks5.md);
+- 🔓 [SNI proxies](./proxies/sni.md);
+- 🔎 [MITM proxies](./proxies/mitm.md);
+- 🕵️‍♀️ [Distortion proxies](./proxies/distord.md).
+- 🧭 [HaProxy (PROXY protocol)](./proxies/haproxy.md).
 
 The [Distortion proxies](https://ramaproxy.org/book/proxies/distort) support
 comes with [User Agent (UA)](./intro/user_agent.md) emulation capabilities. The emulations are made possible by patterns
@@ -151,7 +167,7 @@ to know how to use rama for your purposes.
 > 💡 You can find the edge docs of the rama framework code at <https://ramaproxy.org/docs/rama/index.html>,
 > which contains the documentation for the main branch of the project.
 
-🤝 Enterprise support, software customisations, integrations, professional support, consultancy and training are available upon request by sending an email to [glen@plabayo.tech](mailto:glen@plabayo.tech). Or get an entireprise subscription via [Gihub Sponsors](https://github.com/sponsors/plabayo/sponsorships?tier_id=300734).
+🤝 Enterprise support, software customisations, integrations, professional support, consultancy and training are available upon request by sending an email to [partner@ramaproxy.org](mailto:partner@ramaproxy.org). Or get an entireprise subscription via [Gihub Sponsors](https://github.com/sponsors/plabayo/sponsorships?tier_id=300734).
 
 💖 Please consider becoming [a sponsor][ghs-url] if you critically depend upon Rama (ラマ) or if you are a fan of the project.
 

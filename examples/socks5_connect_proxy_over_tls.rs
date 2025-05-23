@@ -120,7 +120,7 @@ async fn main() {
 }
 
 async fn spawn_socks5_over_tls_server() -> SocketAddress {
-    let tcp_service = TcpListener::bind(SocketAddress::default_ipv4(0))
+    let tcp_service = TcpListener::bind(SocketAddress::default_ipv4(63011))
         .await
         .expect("bind socks5-over-tls CONNECT proxy on open port");
 
@@ -144,7 +144,7 @@ async fn spawn_socks5_over_tls_server() -> SocketAddress {
 }
 
 async fn spawn_http_server() -> SocketAddress {
-    let tcp_service = TcpListener::bind(SocketAddress::default_ipv4(0))
+    let tcp_service = TcpListener::bind(SocketAddress::default_ipv4(63012))
         .await
         .expect("bind HTTP server on open port");
 

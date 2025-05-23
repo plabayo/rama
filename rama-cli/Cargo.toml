@@ -11,8 +11,9 @@ authors = { workspace = true }
 rust-version = { workspace = true }
 default-run = "rama"
 
-[lints]
-workspace = true
+[[bin]]
+name = "rama"
+path = "src/main.rs"
 
 [dependencies]
 base64 = { workspace = true }
@@ -46,6 +47,5 @@ jemallocator = { workspace = true }
 [target.'cfg(windows)'.dependencies]
 mimalloc = { workspace = true }
 
-[[bin]]
-name = "rama"
-path = "src/main.rs"
+[lints]
+workspace = true
