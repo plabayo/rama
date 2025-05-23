@@ -33,14 +33,14 @@ path = "../rama-http-core/tests/h2-support"
 path = "../rama-http-core"
 features = ["unstable"]
 
+[dependencies.rama-ua]
+path = "../rama-ua"
+
 [[bin]]
 name = "h2_e2e"
 path = "fuzz_targets/h2_e2e.rs"
 test = false
 doc = false
-
-[dependencies.rama-ua]
-path = "../rama-ua"
 
 [dependencies]
 futures = { workspace = true }
