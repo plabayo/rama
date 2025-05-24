@@ -46,7 +46,6 @@ mime_guess = { workspace = true }
 nanoid = { workspace = true }
 percent-encoding = { workspace = true }
 pin-project-lite = { workspace = true }
-radix_trie = { workspace = true }
 rama-core = { workspace = true }
 rama-http-headers = { workspace = true }
 rama-http-types = { workspace = true }

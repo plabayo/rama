@@ -1,43 +1,32 @@
 use crate::Request;
-use radix_trie::Trie;
 use rama_core::{Context, context::Extensions, matcher::Matcher};
-use rama_net::address::Host;
+use rama_net::address::{DomainTrie, Host};
 use rama_net::http::RequestContext;
 
 #[derive(Debug, Clone)]
+/// A matcher that matches subdomains.
+///
+/// Note that a domain is considered also a suddomain of itself.
 pub struct SubdomainTrieMatcher {
-    trie: Trie<String, ()>,
+    trie: DomainTrie<()>,
 }
 
 impl SubdomainTrieMatcher {
+    /// Create a new [`SubdomainTrieMatcher`].
     pub fn new<I, S>(domains: I) -> Self
     where
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        let mut trie = Trie::new();
-        for domain in domains {
-            let reversed = reverse_domain(domain.as_ref());
-            trie.insert(reversed, ());
-        }
+        let mut trie = DomainTrie::new();
+        trie.insert_domain_iter(domains, ());
         Self { trie }
     }
 
-    // Checks if the reversed domain has an ancestor in the trie.
-    //
-    // The domain is reversed to match the way Radix Tries store domains. `get_ancestor` is used
-    // to check if any prefix of the reversed domain exists in the trie, indicating a match.
+    // Returns true if a domain is a subdomain of any domain lineage in this [`SubdomainTrieMatcher`].
     pub fn is_match(&self, domain: impl AsRef<str>) -> bool {
-        let reversed = reverse_domain(domain.as_ref());
-        self.trie.get_ancestor(&reversed).is_some()
+        self.trie.is_match_parent(domain)
     }
-}
-
-fn reverse_domain(domain: &str) -> String {
-    let from = domain.strip_prefix('.').unwrap_or(domain);
-    let mut domain = from.split('.').rev().collect::<Vec<&str>>().join(".");
-    domain.push('.');
-    domain
 }
 
 impl<State, Body> Matcher<State, Request<Body>> for SubdomainTrieMatcher {
@@ -102,15 +91,6 @@ where
 #[cfg(test)]
 mod subdomain_trie_tests {
     use super::*;
-
-    #[test]
-    fn test_reverse_domain() {
-        assert_eq!(reverse_domain("example.com"), "com.example.");
-        assert_eq!(reverse_domain(".example.com"), "com.example.");
-        assert_eq!(reverse_domain("sub.example.com"), "com.example.sub.");
-        assert_eq!(reverse_domain("localhost"), "localhost.");
-        assert_eq!(reverse_domain(""), ".");
-    }
 
     #[test]
     fn test_trie_matching() {
