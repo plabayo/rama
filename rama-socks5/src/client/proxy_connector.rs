@@ -10,7 +10,7 @@ use rama_net::{
     transport::TryRefIntoTransportContext,
     user::ProxyCredential,
 };
-use rama_utils::macros::define_inner_service_accessors;
+use rama_utils::macros::{define_inner_service_accessors, generate_set_and_with};
 use std::fmt;
 
 #[cfg(feature = "dns")]
@@ -67,54 +67,32 @@ impl Socks5ProxyConnectorLayer {
 
 #[cfg(feature = "dns")]
 impl Socks5ProxyConnectorLayer {
-    /// Attach the [`Default`] [`DnsResolver`] to this [`Socks5ProxyConnectorLayer`].
-    ///
-    /// It will try to be used (best-effort) to resolve domain addresses
-    /// as IP addresses if the `socks5` protocol is used, but not for the `socks5h` protocol.
-    ///
-    /// In case of an error with resolving the domain address the connector
-    /// will anyway use the domain instead of the ip.
-    pub fn with_default_dns_resolver(mut self) -> Self {
-        self.dns_resolver = None;
-        self
-    }
-    /// Attach the [`Default`] [`DnsResolver`] to this [`Socks5ProxyConnectorLayer`].
-    ///
-    /// It will try to be used (best-effort) to resolve domain addresses
-    /// as IP addresses if the `socks5` protocol is used, but not for the `socks5h` protocol.
-    ///
-    /// In case of an error with resolving the domain address the connector
-    /// will anyway use the domain instead of the ip.
-    pub fn set_default_dns_resolver(&mut self) -> &mut Self {
-        self.dns_resolver = None;
-        self
+    generate_set_and_with! {
+        /// Attach the [`Default`] [`DnsResolver`] to this [`Socks5ProxyConnectorLayer`].
+        ///
+        /// It will try to be used (best-effort) to resolve domain addresses
+        /// as IP addresses if the `socks5` protocol is used, but not for the `socks5h` protocol.
+        ///
+        /// In case of an error with resolving the domain address the connector
+        /// will anyway use the domain instead of the ip.
+        pub fn default_dns_resolver(mut self) -> Self {
+            self.dns_resolver = None;
+            self
+        }
     }
 
-    /// Attach a [`DnsResolver`] to this [`Socks5ProxyConnectorLayer`].
-    ///
-    /// It will try to be used (best-effort) to resolve domain addresses
-    /// as IP addresses if the `socks5` protocol is used, but not for the `socks5h` protocol.
-    ///
-    /// In case of an error with resolving the domain address the connector
-    /// will anyway use the domain instead of the ip.
-    pub fn with_dns_resolver(mut self, resolver: impl DnsResolver<Error = OpaqueError>) -> Self {
-        self.dns_resolver = Some(resolver.boxed());
-        self
-    }
-
-    /// Attach a [`DnsResolver`] to this [`Socks5ProxyConnectorLayer`].
-    ///
-    /// It will try to be used (best-effort) to resolve domain addresses
-    /// as IP addresses if the `socks5` protocol is used, but not for the `socks5h` protocol.
-    ///
-    /// In case of an error with resolving the domain address the connector
-    /// will anyway use the domain instead of the ip.
-    pub fn set_dns_resolver(
-        &mut self,
-        resolver: impl DnsResolver<Error = OpaqueError>,
-    ) -> &mut Self {
-        self.dns_resolver = Some(resolver.boxed());
-        self
+    generate_set_and_with! {
+        /// Attach a [`DnsResolver`] to this [`Socks5ProxyConnectorLayer`].
+        ///
+        /// It will try to be used (best-effort) to resolve domain addresses
+        /// as IP addresses if the `socks5` protocol is used, but not for the `socks5h` protocol.
+        ///
+        /// In case of an error with resolving the domain address the connector
+        /// will anyway use the domain instead of the ip.
+        pub fn dns_resolver(mut self, resolver: impl DnsResolver) -> Self {
+            self.dns_resolver = Some(resolver.boxed());
+            self
+        }
     }
 }
 
@@ -197,28 +175,32 @@ impl<S> Socks5ProxyConnector<S> {
 
 #[cfg(feature = "dns")]
 impl<S> Socks5ProxyConnector<S> {
-    /// Attach a [`DnsResolver`] to this [`Socks5ProxyConnector`].
-    ///
-    /// It will try to be used (best-effort) to resolve domain addresses
-    /// as IP addresses if the `socks5` protocol is used, but not for the `socks5h` protocol.
-    ///
-    /// In case of an error with resolving the domain address the connector
-    /// will anyway use the domain instead of the ip.
-    pub fn with_dns_resolver(mut self, resolver: impl DnsResolver<Error = OpaqueError>) -> Self {
-        self.dns_resolver = Some(resolver.boxed());
-        self
+    generate_set_and_with! {
+        /// Attach the [`Default`] [`DnsResolver`] to this [`Socks5ProxyConnector`].
+        ///
+        /// It will try to be used (best-effort) to resolve domain addresses
+        /// as IP addresses if the `socks5` protocol is used, but not for the `socks5h` protocol.
+        ///
+        /// In case of an error with resolving the domain address the connector
+        /// will anyway use the domain instead of the ip.
+        pub fn default_dns_resolver(mut self) -> Self {
+            self.dns_resolver = None;
+            self
+        }
     }
 
-    /// Attach a [`DnsResolver`] to this [`Socks5ProxyConnector`].
-    ///
-    /// It will try to be used (best-effort) to resolve domain addresses
-    /// as IP addresses if the `socks5` protocol is used, but not for the `socks5h` protocol.
-    ///
-    /// In case of an error with resolving the domain address the connector
-    /// will anyway use the domain instead of the ip.
-    pub fn set_dns_resolver(&mut self, resolver: impl DnsResolver) -> &mut Self {
-        self.dns_resolver = Some(resolver.boxed());
-        self
+    generate_set_and_with! {
+        /// Attach a [`DnsResolver`] to this [`Socks5ProxyConnector`].
+        ///
+        /// It will try to be used (best-effort) to resolve domain addresses
+        /// as IP addresses if the `socks5` protocol is used, but not for the `socks5h` protocol.
+        ///
+        /// In case of an error with resolving the domain address the connector
+        /// will anyway use the domain instead of the ip.
+        pub fn dns_resolver(mut self, resolver: impl DnsResolver) -> Self {
+            self.dns_resolver = Some(resolver.boxed());
+            self
+        }
     }
 }
 
