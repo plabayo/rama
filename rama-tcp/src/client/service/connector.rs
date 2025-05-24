@@ -2,7 +2,7 @@ use rama_core::{
     Context, Service,
     error::{BoxError, ErrorContext, ErrorExt, OpaqueError},
 };
-use rama_dns::{DnsResolver, HickoryDns};
+use rama_dns::{DnsResolver, GlobalDnsResolver};
 use rama_net::{
     address::ProxyAddress,
     client::EstablishedClientConnection,
@@ -18,7 +18,7 @@ use super::{CreatedTcpStreamConnector, TcpStreamConnectorCloneFactory, TcpStream
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 /// A connector which can be used to establish a TCP connection to a server.
-pub struct TcpConnector<Dns = HickoryDns, ConnectorFactory = ()> {
+pub struct TcpConnector<Dns = GlobalDnsResolver, ConnectorFactory = ()> {
     dns: Dns,
     connector_factory: ConnectorFactory,
 }
@@ -32,7 +32,7 @@ impl TcpConnector {
     /// or add connection pools, retry logic and more.
     pub fn new() -> Self {
         Self {
-            dns: HickoryDns::default(),
+            dns: GlobalDnsResolver::new(),
             connector_factory: (),
         }
     }
@@ -42,7 +42,7 @@ impl<Dns, ConnectorFactory> TcpConnector<Dns, ConnectorFactory> {
     /// Consume `self` to attach the given `dns` (a [`DnsResolver`]) as a new [`TcpConnector`].
     pub fn with_dns<OtherDns>(self, dns: OtherDns) -> TcpConnector<OtherDns, ConnectorFactory>
     where
-        OtherDns: DnsResolver<Error: Into<BoxError>> + Clone,
+        OtherDns: DnsResolver + Clone,
     {
         TcpConnector {
             dns,
@@ -86,7 +86,7 @@ where
     State: Clone + Send + Sync + 'static,
     Request: TryRefIntoTransportContext<State> + Send + 'static,
     Request::Error: Into<BoxError> + Send + Sync + 'static,
-    Dns: DnsResolver<Error: Into<BoxError>> + Clone,
+    Dns: DnsResolver + Clone,
     ConnectorFactory: TcpStreamConnectorFactory<
             State,
             Connector: TcpStreamConnector<Error: Into<BoxError> + Send + 'static>,

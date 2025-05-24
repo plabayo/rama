@@ -8,7 +8,7 @@ use rama_net::address::SocketAddress;
 use rama_udp::UdpSocket;
 
 #[cfg(feature = "dns")]
-use ::{rama_core::error::OpaqueError, rama_dns::BoxDnsResolver};
+use ::rama_dns::BoxDnsResolver;
 
 #[allow(clippy::too_many_arguments)]
 pub(super) trait UdpPacketProxy<State>: Send + Sync + 'static {
@@ -20,7 +20,7 @@ pub(super) trait UdpPacketProxy<State>: Send + Sync + 'static {
         north_read_buf_size: usize,
         south: UdpSocket,
         south_read_buf_size: usize,
-        #[cfg(feature = "dns")] dns_resolver: Option<BoxDnsResolver<OpaqueError>>,
+        #[cfg(feature = "dns")] dns_resolver: Option<BoxDnsResolver>,
     ) -> impl Future<Output = Result<Context<State>, Error>> + Send;
 }
 
@@ -38,7 +38,7 @@ impl<State: Clone + Send + Sync + 'static> UdpPacketProxy<State> for DirectUdpRe
         north_read_buf_size: usize,
         south: UdpSocket,
         south_read_buf_size: usize,
-        #[cfg(feature = "dns")] dns_resolver: Option<BoxDnsResolver<OpaqueError>>,
+        #[cfg(feature = "dns")] dns_resolver: Option<BoxDnsResolver>,
     ) -> Result<Context<State>, Error> {
         let relay = UdpSocketRelay::new(
             client_address,
@@ -130,7 +130,7 @@ where
         north_read_buf_size: usize,
         south: UdpSocket,
         south_read_buf_size: usize,
-        #[cfg(feature = "dns")] dns_resolver: Option<BoxDnsResolver<OpaqueError>>,
+        #[cfg(feature = "dns")] dns_resolver: Option<BoxDnsResolver>,
     ) -> Result<Context<State>, Error> {
         let relay = UdpSocketRelay::new(
             client_address,
@@ -288,7 +288,7 @@ where
         north_read_buf_size: usize,
         south: UdpSocket,
         south_read_buf_size: usize,
-        #[cfg(feature = "dns")] dns_resolver: Option<BoxDnsResolver<OpaqueError>>,
+        #[cfg(feature = "dns")] dns_resolver: Option<BoxDnsResolver>,
     ) -> Result<Context<State>, Error> {
         let relay = UdpSocketRelay::new(
             client_address,

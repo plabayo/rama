@@ -10,7 +10,7 @@ use rama_net::{
     transport::TryRefIntoTransportContext,
     user::ProxyCredential,
 };
-use rama_utils::macros::define_inner_service_accessors;
+use rama_utils::macros::{define_inner_service_accessors, generate_set_and_with};
 use std::fmt;
 
 #[cfg(feature = "dns")]
@@ -25,24 +25,14 @@ use ::{
     tokio::sync::mpsc,
 };
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 /// A [`Layer`] which wraps the given service with a [`Socks5ProxyConnector`].
 ///
 /// See [`Socks5ProxyConnector`] for more information.
 pub struct Socks5ProxyConnectorLayer {
     required: bool,
     #[cfg(feature = "dns")]
-    dns_resolver: Option<BoxDnsResolver<OpaqueError>>,
-}
-
-impl Default for Socks5ProxyConnectorLayer {
-    fn default() -> Self {
-        Self {
-            required: false,
-            #[cfg(feature = "dns")]
-            dns_resolver: Some(rama_dns::HickoryDns::default().boxed()),
-        }
-    }
+    dns_resolver: Option<BoxDnsResolver>,
 }
 
 impl Socks5ProxyConnectorLayer {
@@ -77,72 +67,54 @@ impl Socks5ProxyConnectorLayer {
 
 #[cfg(feature = "dns")]
 impl Socks5ProxyConnectorLayer {
-    /// Attach the [`Default`] [`DnsResolver`] to this [`Socks5ProxyConnectorLayer`].
-    ///
-    /// It will try to be used (best-effort) to resolve domain addresses
-    /// as IP addresses if the `socks5` protocol is used, but not for the `socks5h` protocol.
-    ///
-    /// In case of an error with resolving the domain address the connector
-    /// will anyway use the domain instead of the ip.
-    pub fn with_default_dns_resolver(mut self) -> Self {
-        self.dns_resolver = Some(rama_dns::HickoryDns::default().boxed());
-        self
-    }
-    /// Attach the [`Default`] [`DnsResolver`] to this [`Socks5ProxyConnectorLayer`].
-    ///
-    /// It will try to be used (best-effort) to resolve domain addresses
-    /// as IP addresses if the `socks5` protocol is used, but not for the `socks5h` protocol.
-    ///
-    /// In case of an error with resolving the domain address the connector
-    /// will anyway use the domain instead of the ip.
-    pub fn set_default_dns_resolver(&mut self) -> &mut Self {
-        self.dns_resolver = Some(rama_dns::HickoryDns::default().boxed());
-        self
+    generate_set_and_with! {
+        /// Attach the [`Default`] [`DnsResolver`] to this [`Socks5ProxyConnectorLayer`].
+        ///
+        /// It will try to be used (best-effort) to resolve domain addresses
+        /// as IP addresses if the `socks5` protocol is used, but not for the `socks5h` protocol.
+        ///
+        /// In case of an error with resolving the domain address the connector
+        /// will anyway use the domain instead of the ip.
+        pub fn default_dns_resolver(mut self) -> Self {
+            self.dns_resolver = Some(rama_dns::global_dns_resolver());
+            self
+        }
     }
 
-    /// Attach a [`DnsResolver`] to this [`Socks5ProxyConnectorLayer`].
-    ///
-    /// It will try to be used (best-effort) to resolve domain addresses
-    /// as IP addresses if the `socks5` protocol is used, but not for the `socks5h` protocol.
-    ///
-    /// In case of an error with resolving the domain address the connector
-    /// will anyway use the domain instead of the ip.
-    pub fn with_dns_resolver(mut self, resolver: impl DnsResolver<Error = OpaqueError>) -> Self {
-        self.dns_resolver = Some(resolver.boxed());
-        self
-    }
-
-    /// Attach a [`DnsResolver`] to this [`Socks5ProxyConnectorLayer`].
-    ///
-    /// It will try to be used (best-effort) to resolve domain addresses
-    /// as IP addresses if the `socks5` protocol is used, but not for the `socks5h` protocol.
-    ///
-    /// In case of an error with resolving the domain address the connector
-    /// will anyway use the domain instead of the ip.
-    pub fn set_dns_resolver(
-        &mut self,
-        resolver: impl DnsResolver<Error = OpaqueError>,
-    ) -> &mut Self {
-        self.dns_resolver = Some(resolver.boxed());
-        self
+    generate_set_and_with! {
+        /// Attach a [`DnsResolver`] to this [`Socks5ProxyConnectorLayer`].
+        ///
+        /// It will try to be used (best-effort) to resolve domain addresses
+        /// as IP addresses if the `socks5` protocol is used, but not for the `socks5h` protocol.
+        ///
+        /// In case of an error with resolving the domain address the connector
+        /// will anyway use the domain instead of the ip.
+        pub fn dns_resolver(mut self, resolver: impl DnsResolver) -> Self {
+            self.dns_resolver = Some(resolver.boxed());
+            self
+        }
     }
 }
 
 impl<S> Layer<S> for Socks5ProxyConnectorLayer {
     type Service = Socks5ProxyConnector<S>;
 
-    #[cfg(feature = "dns")]
     fn layer(&self, inner: S) -> Self::Service {
-        let mut connector = Socks5ProxyConnector::new(inner, self.required);
-        if let Some(resolver) = self.dns_resolver.clone() {
-            connector.set_dns_resolver(resolver);
+        Socks5ProxyConnector {
+            inner,
+            required: self.required,
+            #[cfg(feature = "dns")]
+            dns_resolver: self.dns_resolver.clone(),
         }
-        connector
     }
 
-    #[cfg(not(feature = "dns"))]
-    fn layer(&self, inner: S) -> Self::Service {
-        Socks5ProxyConnector::new(inner, self.required)
+    fn into_layer(self, inner: S) -> Self::Service {
+        Socks5ProxyConnector {
+            inner,
+            required: self.required,
+            #[cfg(feature = "dns")]
+            dns_resolver: self.dns_resolver,
+        }
     }
 }
 
@@ -154,7 +126,7 @@ pub struct Socks5ProxyConnector<S> {
     inner: S,
     required: bool,
     #[cfg(feature = "dns")]
-    dns_resolver: Option<BoxDnsResolver<OpaqueError>>,
+    dns_resolver: Option<BoxDnsResolver>,
 }
 
 impl<S: fmt::Debug> fmt::Debug for Socks5ProxyConnector<S> {
@@ -207,31 +179,32 @@ impl<S> Socks5ProxyConnector<S> {
 
 #[cfg(feature = "dns")]
 impl<S> Socks5ProxyConnector<S> {
-    /// Attach a [`DnsResolver`] to this [`Socks5ProxyConnector`].
-    ///
-    /// It will try to be used (best-effort) to resolve domain addresses
-    /// as IP addresses if the `socks5` protocol is used, but not for the `socks5h` protocol.
-    ///
-    /// In case of an error with resolving the domain address the connector
-    /// will anyway use the domain instead of the ip.
-    pub fn with_dns_resolver(mut self, resolver: impl DnsResolver<Error = OpaqueError>) -> Self {
-        self.dns_resolver = Some(resolver.boxed());
-        self
+    generate_set_and_with! {
+        /// Attach the [`Default`] [`DnsResolver`] to this [`Socks5ProxyConnector`].
+        ///
+        /// It will try to be used (best-effort) to resolve domain addresses
+        /// as IP addresses if the `socks5` protocol is used, but not for the `socks5h` protocol.
+        ///
+        /// In case of an error with resolving the domain address the connector
+        /// will anyway use the domain instead of the ip.
+        pub fn default_dns_resolver(mut self) -> Self {
+            self.dns_resolver = Some(rama_dns::global_dns_resolver());
+            self
+        }
     }
 
-    /// Attach a [`DnsResolver`] to this [`Socks5ProxyConnector`].
-    ///
-    /// It will try to be used (best-effort) to resolve domain addresses
-    /// as IP addresses if the `socks5` protocol is used, but not for the `socks5h` protocol.
-    ///
-    /// In case of an error with resolving the domain address the connector
-    /// will anyway use the domain instead of the ip.
-    pub fn set_dns_resolver(
-        &mut self,
-        resolver: impl DnsResolver<Error = OpaqueError>,
-    ) -> &mut Self {
-        self.dns_resolver = Some(resolver.boxed());
-        self
+    generate_set_and_with! {
+        /// Attach a [`DnsResolver`] to this [`Socks5ProxyConnector`].
+        ///
+        /// It will try to be used (best-effort) to resolve domain addresses
+        /// as IP addresses if the `socks5` protocol is used, but not for the `socks5h` protocol.
+        ///
+        /// In case of an error with resolving the domain address the connector
+        /// will anyway use the domain instead of the ip.
+        pub fn dns_resolver(mut self, resolver: impl DnsResolver) -> Self {
+            self.dns_resolver = Some(resolver.boxed());
+            self
+        }
     }
 }
 

@@ -121,7 +121,7 @@ pub struct UdpRelay<B, I> {
     inspector: I,
 
     #[cfg(feature = "dns")]
-    dns_resolver: Option<BoxDnsResolver<OpaqueError>>,
+    dns_resolver: Option<BoxDnsResolver>,
 
     bind_north_interface: Interface,
     bind_south_interface: Interface,
@@ -347,7 +347,7 @@ impl<B, I> UdpRelay<B, I> {
     /// It will be used to best-effort resolve the domain name,
     /// in case a domain name is passed to forward to the target server.
     pub fn with_default_dns_resolver(mut self) -> Self {
-        self.dns_resolver = Some(rama_dns::HickoryDns::default().boxed());
+        self.dns_resolver = None;
         self
     }
 
@@ -356,7 +356,7 @@ impl<B, I> UdpRelay<B, I> {
     /// It will be used to best-effort resolve the domain name,
     /// in case a domain name is passed to forward to the target server.
     pub fn set_default_dns_resolver(&mut self) -> &mut Self {
-        self.dns_resolver = Some(rama_dns::HickoryDns::default().boxed());
+        self.dns_resolver = None;
         self
     }
 

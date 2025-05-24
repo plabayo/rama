@@ -11,7 +11,7 @@ use rama_core::error::{ErrorContext, OpaqueError};
 use rama_net::address::Domain;
 use std::{
     net::{Ipv4Addr, Ipv6Addr},
-    sync::{Arc, OnceLock},
+    sync::Arc,
 };
 
 pub use hickory_resolver::config;
@@ -21,12 +21,14 @@ pub use hickory_resolver::config;
 pub struct HickoryDns(Arc<TokioResolver>);
 
 impl Default for HickoryDns {
+    #[cfg(any(unix, target_os = "windows"))]
     fn default() -> Self {
-        // default hickory dns is global as to share the cache
-        static SHARED_HICKORY_DNS: OnceLock<HickoryDns> = OnceLock::new();
-        SHARED_HICKORY_DNS
-            .get_or_init(|| Self::builder().build())
-            .clone()
+        Self::try_new_system().unwrap_or_else(|_| Self::new_cloudflare())
+    }
+
+    #[cfg(not(any(unix, target_os = "windows")))]
+    fn default() -> Self {
+        Self::new_cloudflare()
     }
 }
 
@@ -56,6 +58,7 @@ impl HickoryDns {
     ///
     /// To use the system configuration see: [`Self::new_system`].
     pub fn new_google() -> Self {
+        tracing::trace!("create HickoryDns resolver using default google config");
         Self::builder()
             .with_config(ResolverConfig::google())
             .build()
@@ -70,6 +73,7 @@ impl HickoryDns {
     ///
     /// To use the system configuration see: [`Self::new_system`].
     pub fn new_cloudflare() -> Self {
+        tracing::trace!("create HickoryDns resolver using default cloudflare config");
         Self::builder()
             .with_config(ResolverConfig::cloudflare())
             .build()
@@ -85,6 +89,7 @@ impl HickoryDns {
     ///
     /// To use the system configuration see: [`Self::new_system`].
     pub fn new_quad9() -> Self {
+        tracing::trace!("create HickoryDns resolver using default quad9 config");
         Self::builder().with_config(ResolverConfig::quad9()).build()
     }
 
@@ -93,8 +98,10 @@ impl HickoryDns {
     ///
     /// This will use `/etc/resolv.conf` on Unix OSes and the registry on Windows.
     pub fn try_new_system() -> Result<Self, OpaqueError> {
+        tracing::trace!("try to create HickoryDns resolver using system config");
         Ok(TokioResolver::builder_tokio()
-            .context("build async dns resolver with system conf")?
+            .context("build async dns resolver with system conf")
+            .inspect_err(|err| tracing::debug!(%err, "failed to create HickoryDns resolver using system config"))?
             .build()
             .into())
     }

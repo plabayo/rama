@@ -27,6 +27,7 @@ rama-net = { workspace = true }
 rama-utils = { workspace = true }
 serde = { workspace = true }
 tokio = { workspace = true, features = ["macros", "net"] }
+tracing = { workspace = true }
 
 [dev-dependencies]
 serde_html_form = { workspace = true }
