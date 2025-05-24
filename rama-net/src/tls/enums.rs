@@ -705,6 +705,15 @@ impl ApplicationProtocol {
 
         Ok(buf.into())
     }
+
+    pub fn encode_alpns_to_vec(alpns: &[Self]) -> std::io::Result<Vec<u8>> {
+        let mut alpn_protos =
+            Vec::with_capacity(alpns.iter().map(|alpn| alpn.as_bytes().len() + 1).sum());
+        for alpn in alpns {
+            alpn.encode_wire_format(&mut alpn_protos)?;
+        }
+        Ok(alpn_protos)
+    }
 }
 
 enum_builder! {
