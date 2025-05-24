@@ -76,7 +76,7 @@ impl Socks5ProxyConnectorLayer {
         /// In case of an error with resolving the domain address the connector
         /// will anyway use the domain instead of the ip.
         pub fn default_dns_resolver(mut self) -> Self {
-            self.dns_resolver = None;
+            self.dns_resolver = Some(rama_dns::global_dns_resolver());
             self
         }
     }
@@ -99,18 +99,22 @@ impl Socks5ProxyConnectorLayer {
 impl<S> Layer<S> for Socks5ProxyConnectorLayer {
     type Service = Socks5ProxyConnector<S>;
 
-    #[cfg(feature = "dns")]
     fn layer(&self, inner: S) -> Self::Service {
-        let mut connector = Socks5ProxyConnector::new(inner, self.required);
-        if let Some(resolver) = self.dns_resolver.clone() {
-            connector.set_dns_resolver(resolver);
+        Socks5ProxyConnector {
+            inner,
+            required: self.required,
+            #[cfg(feature = "dns")]
+            dns_resolver: self.dns_resolver.clone(),
         }
-        connector
     }
 
-    #[cfg(not(feature = "dns"))]
-    fn layer(&self, inner: S) -> Self::Service {
-        Socks5ProxyConnector::new(inner, self.required)
+    fn into_layer(self, inner: S) -> Self::Service {
+        Socks5ProxyConnector {
+            inner,
+            required: self.required,
+            #[cfg(feature = "dns")]
+            dns_resolver: self.dns_resolver,
+        }
     }
 }
 
@@ -184,7 +188,7 @@ impl<S> Socks5ProxyConnector<S> {
         /// In case of an error with resolving the domain address the connector
         /// will anyway use the domain instead of the ip.
         pub fn default_dns_resolver(mut self) -> Self {
-            self.dns_resolver = None;
+            self.dns_resolver = Some(rama_dns::global_dns_resolver());
             self
         }
     }
