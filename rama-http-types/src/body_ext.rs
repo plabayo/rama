@@ -19,6 +19,26 @@ pub trait BodyExtractExt: private::Sealed {
     fn try_into_string(self) -> impl Future<Output = Result<String, OpaqueError>> + Send;
 
     /// Turn the (contained) body into a stream of data.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use bytes::Bytes;
+    /// # use futures_util::StreamExt;
+    /// # use rama_error::BoxError;
+    /// # use crate::dep::http_body_util::BodyExt;
+    /// async fn example<B>(body: B) -> Result<(), BoxError>
+    /// where
+    ///     B: Body + Send + 'static,
+    /// {
+    ///     let mut stream = body.into_data_stream();
+    ///     while let Some(chunk_result) = stream.next().await {
+    ///         let chunk: Bytes = chunk_result?;
+    ///         println!("got {} bytes", chunk.len());
+    ///     }
+    ///     Ok(())
+    /// }
+    /// ```
     fn into_data_stream(
         self,
     ) -> impl Stream<Item = Result<Self::StreamData, Self::StreamError>> + Send;
