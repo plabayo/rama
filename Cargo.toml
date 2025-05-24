@@ -514,6 +514,10 @@ name = "mtls_tunnel_and_service"
 required-features = ["http-full", "rustls"]
 
 [[example]]
+name = "tls_sni_router"
+required-features = ["http-full", "boring"]
+
+[[example]]
 name = "tcp_listener_hello"
 required-features = ["tcp"]
 

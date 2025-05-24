@@ -15,6 +15,12 @@ use std::{
 /// consumers such as [`TcpConnector`].
 pub struct DnsOverwrite(InMemoryDns);
 
+impl From<InMemoryDns> for DnsOverwrite {
+    fn from(value: InMemoryDns) -> Self {
+        Self(value)
+    }
+}
+
 impl_deref! {DnsOverwrite: InMemoryDns}
 
 impl<'de> Deserialize<'de> for DnsOverwrite {

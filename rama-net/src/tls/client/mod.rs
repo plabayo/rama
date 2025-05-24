@@ -13,7 +13,10 @@ mod hello;
 pub use hello::{ClientHello, ClientHelloExtension, ECHClientHello};
 
 mod parser;
-pub use parser::parse_client_hello;
+pub use parser::{
+    extract_sni_from_client_hello_handshake, extract_sni_from_client_hello_record,
+    parse_client_hello,
+};
 
 mod config;
 #[doc(inline)]

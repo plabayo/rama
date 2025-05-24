@@ -111,7 +111,6 @@ where
             let (conn, addr) = crate::client::tcp_connect(
                 &ctx,
                 proxy.authority.clone(),
-                true,
                 self.dns.clone(),
                 connector,
             )
@@ -152,10 +151,9 @@ where
         }
 
         let authority = transport_ctx.authority.clone();
-        let (conn, addr) =
-            crate::client::tcp_connect(&ctx, authority, false, self.dns.clone(), connector)
-                .await
-                .context("tcp connector: connect to server")?;
+        let (conn, addr) = crate::client::tcp_connect(&ctx, authority, self.dns.clone(), connector)
+            .await
+            .context("tcp connector: connect to server")?;
 
         ctx.insert(ClientSocketInfo(SocketInfo::new(
             conn.local_addr()

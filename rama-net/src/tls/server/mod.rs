@@ -10,3 +10,7 @@ pub use config::{
 mod peek;
 #[doc(inline)]
 pub use peek::{NoTlsRejectError, TlsPeekRouter, TlsPeekStream};
+
+mod sni;
+#[doc(inline)]
+pub use sni::{SniPeekStream, SniRequest, SniRouter};

@@ -183,14 +183,13 @@ pub async fn default_tcp_connect<State>(
 where
     State: Clone + Send + Sync + 'static,
 {
-    tcp_connect(ctx, authority, true, HickoryDns::default(), ()).await
+    tcp_connect(ctx, authority, HickoryDns::default(), ()).await
 }
 
 /// Establish a [`TcpStream`] connection for the given [`Authority`].
 pub async fn tcp_connect<State, Dns, Connector>(
     ctx: &Context<State>,
     authority: Authority,
-    allow_overwrites: bool,
     dns: Dns,
     connector: Connector,
 ) -> Result<(TcpStream, SocketAddr), OpaqueError>
@@ -228,21 +227,19 @@ where
         }
     };
 
-    if allow_overwrites {
-        if let Some(dns_overwrite) = ctx.get::<DnsOverwrite>() {
-            if let Ok(tuple) = tcp_connect_inner(
-                ctx,
-                domain.clone(),
-                port,
-                dns_mode,
-                dns_overwrite.deref().clone(), // Convert DnsOverwrite to a DnsResolver
-                connector.clone(),
-                ip_mode,
-            )
-            .await
-            {
-                return Ok(tuple);
-            }
+    if let Some(dns_overwrite) = ctx.get::<DnsOverwrite>() {
+        if let Ok(tuple) = tcp_connect_inner(
+            ctx,
+            domain.clone(),
+            port,
+            dns_mode,
+            dns_overwrite.deref().clone(), // Convert DnsOverwrite to a DnsResolver
+            connector.clone(),
+            ip_mode,
+        )
+        .await
+        {
+            return Ok(tuple);
         }
     }
 

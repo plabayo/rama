@@ -12,6 +12,9 @@
 
 - [/examples/sni_proxy.rs](https://github.com/plabayo/rama/tree/main/examples/sni_proxy.rs):
   Spawns a minimal SNI proxy which accepts TLS connections and routes them based on the SNI field.
+- [/examples/tls_sni_router.rs](https://github.com/plabayo/rama/tree/main/examples/tls_sni_router.rs):
+  (TLS) SNI Router, a proxy which fowards traffic to encrypted web servers based on the public SNI found
+  in the client hello handshake data sent by the UA as part of the connection establishment.
 
 ## Description
 
