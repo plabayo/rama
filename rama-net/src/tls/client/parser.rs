@@ -58,7 +58,7 @@ pub fn extract_sni_from_client_hello_handshake(i: &[u8]) -> Result<Host, OpaqueE
 /// Parse a [`ClientHello`] from the raw "wire" bytes to find the SNI Host value.
 ///
 /// This function is optimised to find the SNI value and nothing else.
-/// Use [`parse_client_hello`] in case you need other content in the clinet hello,
+/// Use [`parse_client_hello`] in case you need other content in the client hello,
 /// or the client hello as a whole.
 ///
 /// This function is not infallible, it can return an error if the input is not a valid

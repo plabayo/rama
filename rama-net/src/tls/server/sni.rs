@@ -25,7 +25,7 @@ use super::{NoTlsRejectError, TlsPeekStream};
 /// routing of tls traffic as well as non-tls traffic.
 ///
 /// The difference with [`TlsPeekRouter`] is that the [`SniRouter`]
-/// continuesd to parse after the initial couple of bytes,
+/// continues to parse after the initial couple of bytes,
 /// in order to learn more about underlying traffic. This allowing
 /// you to route based on the SNI from the client hello,
 /// among other capabilities.
@@ -46,7 +46,7 @@ impl<S> SniRouter<S> {
         }
     }
 
-    /// Attach a fallback [`Service`] tp this [`SniRouter`].
+    /// Attach a fallback [`Service`] to this [`SniRouter`].
     ///
     /// Used in case the traffic is not Tls traffic (defined by the first bytes).
     pub fn with_fallback<F>(self, fallback: F) -> SniRouter<S, F> {
@@ -142,7 +142,6 @@ where
         let sni = extract_sni_from_client_hello_handshake(&v)
             .context("parse client hello handshake bytes and extract SNI")?;
 
-        v.shrink_to(read_size);
         let mem_reader = HeapReader::from(v);
         let peek_stream = PeekStream::new(mem_reader, stream);
 
