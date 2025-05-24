@@ -120,7 +120,7 @@ impl<T> DomainTrie<T> {
         self.match_parent(domain).is_some()
     }
 
-    /// Returns the value for the first node found in the [`DomainTrie`]
+    /// Returns the value for the most specific node found in the [`DomainTrie`]
     /// which is the exact domain or parent domain for a domain in this trie.
     ///
     /// Use [`Self::match_exact`] (first) in case you prefer an exact match instead.
@@ -178,6 +178,26 @@ mod test {
         assert_eq!(reverse_domain("sub.example.com"), "com.example.sub.");
         assert_eq!(reverse_domain("localhost"), "localhost.");
         assert_eq!(reverse_domain(""), ".");
+    }
+
+    #[test]
+    fn test_trie_most_specific_matching_parent() {
+        let matcher = DomainTrie::new()
+            .with_insert_domain("bar.example.com", "bar")
+            .with_insert_domain("example.com", "root")
+            .with_insert_domain("foo.bar.example.com", "foo.bar");
+        assert_eq!(Some(&"root"), matcher.match_parent("example.com"));
+        assert_eq!(Some(&"bar"), matcher.match_parent("bar.example.com"));
+        assert_eq!(Some(&"bar"), matcher.match_parent("baz.bar.example.com"));
+        assert_eq!(
+            Some(&"foo.bar"),
+            matcher.match_parent("foo.bar.example.com")
+        );
+        assert_eq!(Some(&"bar"), matcher.match_parent("bazfoo.bar.example.com"));
+        assert_eq!(
+            Some(&"foo.bar"),
+            matcher.match_parent("baz.foo.bar.example.com")
+        );
     }
 
     #[test]
