@@ -24,14 +24,15 @@ pub trait BodyExtractExt: private::Sealed {
     ///
     /// ```rust
     /// # use bytes::Bytes;
-    /// # use futures_util::StreamExt;
+    /// # use futures_lite::StreamExt;
+    /// # use rama_http_types::{Request, BodyExtractExt};
     /// # use rama_error::BoxError;
-    /// # use crate::dep::http_body_util::BodyExt;
-    /// async fn example<B>(body: B) -> Result<(), BoxError>
+    /// # use rama_http_types::dep::{http_body::Body, http_body_util::BodyExt};
+    /// async fn example<B>(req: Request<B>) -> Result<(), BoxError>
     /// where
     ///     B: Body + Send + 'static,
     /// {
-    ///     let mut stream = body.into_data_stream();
+    ///     let mut stream = req.into_data_stream();
     ///     while let Some(chunk_result) = stream.next().await {
     ///         let chunk: Bytes = chunk_result?;
     ///         println!("got {} bytes", chunk.len());
