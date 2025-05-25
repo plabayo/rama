@@ -65,7 +65,6 @@ impl<T> DomainTrie<T> {
         T: Clone,
     {
         self.insert_domain_iter(domains, value);
-
         self
     }
 
@@ -140,7 +139,7 @@ impl<T> DomainTrie<T> {
 }
 
 fn reverse_domain(domain: &str) -> String {
-    let from = domain.strip_prefix('.').unwrap_or(domain);
+    let from = domain.trim_matches('.');
     let mut domain = from.split('.').rev().collect::<Vec<&str>>().join(".");
     domain.push('.');
     domain
@@ -164,8 +163,13 @@ mod test {
 
     #[test]
     fn test_reverse_domain() {
+        assert_eq!(reverse_domain("example.com."), "com.example.");
+        assert_eq!(reverse_domain("example.com.."), "com.example.");
         assert_eq!(reverse_domain("example.com"), "com.example.");
         assert_eq!(reverse_domain(".example.com"), "com.example.");
+        assert_eq!(reverse_domain("..example.com"), "com.example.");
+        assert_eq!(reverse_domain(".example.com."), "com.example.");
+        assert_eq!(reverse_domain("...example.com..."), "com.example.");
         assert_eq!(reverse_domain("sub.example.com"), "com.example.sub.");
         assert_eq!(reverse_domain("localhost"), "localhost.");
         assert_eq!(reverse_domain(""), ".");
