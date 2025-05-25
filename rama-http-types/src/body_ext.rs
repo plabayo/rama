@@ -1,6 +1,6 @@
 use crate::dep::http_body_util::BodyExt;
-use rama_core::bytes::Bytes;
 use futures_core::Stream;
+use rama_core::bytes::Bytes;
 use rama_error::{BoxError, ErrorContext, OpaqueError};
 
 /// An extension trait for [`Body`] that provides methods to extract data from it.
