@@ -1,5 +1,5 @@
 use crate::dep::http_body_util::BodyExt;
-use bytes::Bytes;
+use rama_core::bytes::Bytes;
 use futures_core::Stream;
 use rama_error::{BoxError, ErrorContext, OpaqueError};
 
@@ -25,7 +25,7 @@ pub trait BodyExtractExt: private::Sealed {
     /// ```rust
     /// # use rama_http_types::dep::http_body::Body;
     /// # use rama_http_types::{BodyExtractExt, Request};
-    /// # use bytes::Bytes;
+    /// # use rama_core::bytes::Bytes;
     /// # use futures_lite::StreamExt;
     /// # use rama_error::BoxError;
     /// async fn example<B>(req: Request<B>) -> Result<(), BoxError>
