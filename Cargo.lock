@@ -2756,6 +2756,7 @@ dependencies = [
  "rama-boring-tokio",
  "rama-core",
  "rama-net",
+ "rama-ua",
  "rama-utils",
  "tokio",
  "tracing",
