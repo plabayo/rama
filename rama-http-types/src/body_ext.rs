@@ -23,18 +23,18 @@ pub trait BodyExtractExt: private::Sealed {
     /// # Example
     ///
     /// ```rust
+    /// # use rama_http_types::dep::http_body::Body;
+    /// # use rama_http_types::{BodyExtractExt, Request};
     /// # use bytes::Bytes;
     /// # use futures_lite::StreamExt;
-    /// # use rama_http_types::{Request, BodyExtractExt};
     /// # use rama_error::BoxError;
-    /// # use rama_http_types::dep::{http_body::Body, http_body_util::BodyExt};
     /// async fn example<B>(req: Request<B>) -> Result<(), BoxError>
     /// where
-    ///     B: Body + Send + 'static,
+    ///     B: Unpin + Body<Data = Bytes, Error: Into<BoxError>> + Send + 'static,
     /// {
     ///     let mut stream = req.into_data_stream();
     ///     while let Some(chunk_result) = stream.next().await {
-    ///         let chunk: Bytes = chunk_result?;
+    ///         let chunk = chunk_result.map_err(Into::into)?;
     ///         println!("got {} bytes", chunk.len());
     ///     }
     ///     Ok(())
@@ -136,7 +136,7 @@ impl<B: Into<crate::Body> + Send + 'static> BodyExtractExt for B {
     fn into_data_stream(
         self,
     ) -> impl Stream<Item = Result<Self::StreamData, Self::StreamError>> + Send {
-        let body: crate::Body = self.into();
+        let body = self.into();
         body.into_data_stream()
     }
 }
