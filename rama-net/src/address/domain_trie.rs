@@ -64,16 +64,7 @@ impl<T> DomainTrie<T> {
         S: AsRef<str>,
         T: Clone,
     {
-        let mut iter = domains.into_iter();
-        if let Some(mut prev) = iter.next() {
-            for curr in iter {
-                let reversed = reverse_domain(prev.as_ref());
-                self.trie.insert(reversed, value.clone());
-                prev = curr;
-            }
-            let reversed = reverse_domain(prev.as_ref());
-            self.trie.insert(reversed, value);
-        }
+        self.insert_domain_iter(domains, value);
 
         self
     }
