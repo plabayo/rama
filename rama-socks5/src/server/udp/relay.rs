@@ -34,7 +34,7 @@ pub(super) struct UdpSocketRelay {
     #[cfg(feature = "dns")]
     dns_resolve_mode: DnsResolveIpMode,
     #[cfg(feature = "dns")]
-    dns_resolver: Option<BoxDnsResolver<OpaqueError>>,
+    dns_resolver: Option<BoxDnsResolver>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -394,7 +394,7 @@ impl UdpSocketRelay {
     pub(super) fn maybe_with_dns_resolver<State>(
         mut self,
         ctx: &Context<State>,
-        resolver: Option<BoxDnsResolver<OpaqueError>>,
+        resolver: Option<BoxDnsResolver>,
     ) -> Self {
         self.dns_resolver = resolver;
         if let Some(mode) = ctx.get().copied() {
@@ -420,6 +420,7 @@ impl UdpSocketRelay {
                         let ips = dns_resolver
                             .ipv4_lookup(domain.clone())
                             .await
+                            .map_err(OpaqueError::from_boxed)
                             .context("failed to lookup ipv4 addresses")?;
                         ips.into_iter()
                             .choose(&mut rand::rng())
@@ -430,6 +431,7 @@ impl UdpSocketRelay {
                         let ips = dns_resolver
                             .ipv6_lookup(domain.clone())
                             .await
+                            .map_err(OpaqueError::from_boxed)
                             .context("failed to lookup ipv6 addresses")?;
                         ips.into_iter()
                             .choose(&mut rand::rng())
