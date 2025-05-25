@@ -120,6 +120,22 @@ impl SocketAddress {
     }
 }
 
+impl From<SocketAddress> for crate::socket::core::SockAddr {
+    #[inline]
+    fn from(addr: SocketAddress) -> Self {
+        let std_addr: SocketAddr = addr.into();
+        std_addr.into()
+    }
+}
+
+impl From<&SocketAddress> for crate::socket::core::SockAddr {
+    #[inline]
+    fn from(addr: &SocketAddress) -> Self {
+        let std_addr: SocketAddr = (*addr).into();
+        std_addr.into()
+    }
+}
+
 impl From<SocketAddr> for SocketAddress {
     fn from(addr: SocketAddr) -> Self {
         SocketAddress {

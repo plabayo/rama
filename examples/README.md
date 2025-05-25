@@ -64,6 +64,7 @@ This directory contains example implementations demonstrating various features a
   supporting load balancers that support the proagation of client IP address.
 
 ## TLS and Security
+
 ### Rustls
 - [`tls_rustls_termination.rs`](./tls_rustls_termination.rs) - TLS termination with Rustls
 - [`tls_rustls_dynamic_certs.rs`](./tls_rustls_dynamic_certs.rs) - Dynamic certificate management with Rustls
@@ -72,6 +73,9 @@ This directory contains example implementations demonstrating various features a
 ### BoringSSL
 - [`tls_boring_termination.rs`](./tls_boring_termination.rs) - TLS termination with BoringSSL
 - [`tls_boring_dynamic_certs.rs`](./tls_boring_dynamic_certs.rs) - Dynamic certificate management with BoringSSL
+
+### SNI router
+- [`tls_sni_router.rs`](./tls_sni_router.rs)) - (TLS) SNI Router with BoringSSL
 
 ### Mutual TLS
 - [`mtls_tunnel_and_service.rs`](./mtls_tunnel_and_service.rs) - Mutual TLS tunnel and service implementation
