@@ -15,7 +15,7 @@ use rama::{
         client::{ConnectorService, EstablishedClientConnection},
         tls::{
             ApplicationProtocol,
-            client::{ClientConfig, ClientHelloExtension, ServerVerifyMode},
+            client::ServerVerifyMode,
             server::{SelfSignedData, ServerAuth, ServerConfig},
         },
         user::{Basic, ProxyCredential},
@@ -24,7 +24,7 @@ use rama::{
     rt::Executor,
     tcp::{client::service::TcpConnector, server::TcpListener},
     tls::boring::{
-        client::TlsConnector,
+        client::{TlsConnector, TlsConnectorDataBuilder},
         server::{TlsAcceptorData, TlsAcceptorService},
     },
 };
@@ -66,23 +66,14 @@ async fn test_http_client_over_socks5_proxy_connect_with_mitm_cap(
     // we can probably simplify this by using the interactive runner client
     // instead of having to do this manually...
 
+    let tls_config = TlsConnectorDataBuilder::new_http_auto()
+        .with_store_server_certificate_chain(true)
+        .with_server_verify_mode(ServerVerifyMode::Disable)
+        .into_shared_builder();
+
     let client = HttpConnector::new(
         TlsConnector::auto(Socks5ProxyConnector::required(TcpConnector::new()))
-            .with_connector_data(
-                ClientConfig {
-                    server_verify_mode: Some(ServerVerifyMode::Disable),
-                    store_server_certificate_chain: true,
-                    extensions: Some(vec![
-                        ClientHelloExtension::ApplicationLayerProtocolNegotiation(vec![
-                            ApplicationProtocol::HTTP_2,
-                            ApplicationProtocol::HTTP_11,
-                        ]),
-                    ]),
-                    ..Default::default()
-                }
-                .try_into()
-                .expect("create tls client config"),
-            ),
+            .with_connector_data(tls_config),
     );
 
     let mut ctx = Context::default();

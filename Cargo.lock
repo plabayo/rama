@@ -2466,6 +2466,7 @@ dependencies = [
  "serde",
  "serde_html_form",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -2756,6 +2757,7 @@ dependencies = [
  "rama-boring-tokio",
  "rama-core",
  "rama-net",
+ "rama-ua",
  "rama-utils",
  "tokio",
  "tracing",

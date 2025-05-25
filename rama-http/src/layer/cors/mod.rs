@@ -92,6 +92,7 @@ pub struct CorsLayer {
     expose_headers: ExposeHeaders,
     max_age: MaxAge,
     vary: Vary,
+    handle_options_request: bool,
 }
 
 #[allow(clippy::declare_interior_mutable_const)]
@@ -115,6 +116,7 @@ impl CorsLayer {
             expose_headers: Default::default(),
             max_age: Default::default(),
             vary: Default::default(),
+            handle_options_request: false,
         }
     }
 
@@ -440,6 +442,18 @@ impl CorsLayer {
         self.vary = headers.into();
         self
     }
+
+    /// Handle OPTIONS request with the inner service.
+    ///
+    /// By default it is not passed on to the inner service,
+    /// and instead just returned with a 200 OK (empty body).
+    ///
+    /// NOTE that this does not stop the response headers from being added,
+    /// it only defines who "creates" the response, the modification happens regardless.
+    pub fn handle_options_request(mut self) -> Self {
+        self.handle_options_request = true;
+        self
+    }
 }
 
 /// Represents a wildcard value (`*`) used with some CORS headers such as
@@ -687,10 +701,27 @@ where
             headers.extend(self.layer.allow_headers.to_header(&parts));
             headers.extend(self.layer.max_age.to_header(origin, &parts));
 
-            let mut response = Response::new(ResBody::default());
-            mem::swap(response.headers_mut(), &mut headers);
+            Ok(if self.layer.handle_options_request {
+                let req = Request::from_parts(parts, body);
 
-            Ok(response)
+                let mut response: Response<ResBody> = self.inner.serve(ctx, req).await?;
+                let response_headers = response.headers_mut();
+
+                // vary header can have multiple values, don't overwrite
+                // previously-set value(s).
+                if let Some(vary) = headers.remove(header::VARY) {
+                    response_headers.append(header::VARY, vary);
+                }
+                // extend will overwrite previous headers of remaining names
+                response_headers.extend(headers.drain());
+
+                response
+            } else {
+                let mut response = Response::new(ResBody::default());
+                mem::swap(response.headers_mut(), &mut headers);
+
+                response
+            })
         } else {
             // This header is applied only to non-preflight requests
             headers.extend(self.layer.expose_headers.to_header(&parts));

@@ -3,7 +3,7 @@ use rama_core::{
     combinators::Either,
     error::{BoxError, ErrorContext, OpaqueError},
 };
-use rama_dns::{DnsOverwrite, DnsResolver, HickoryDns};
+use rama_dns::{DnsOverwrite, DnsResolver, GlobalDnsResolver};
 use rama_net::{
     address::{Authority, Domain, Host, SocketAddress},
     mode::{ConnectIpMode, DnsResolveIpMode},
@@ -183,20 +183,19 @@ pub async fn default_tcp_connect<State>(
 where
     State: Clone + Send + Sync + 'static,
 {
-    tcp_connect(ctx, authority, true, HickoryDns::default(), ()).await
+    tcp_connect(ctx, authority, GlobalDnsResolver::default(), ()).await
 }
 
 /// Establish a [`TcpStream`] connection for the given [`Authority`].
 pub async fn tcp_connect<State, Dns, Connector>(
     ctx: &Context<State>,
     authority: Authority,
-    allow_overwrites: bool,
     dns: Dns,
     connector: Connector,
 ) -> Result<(TcpStream, SocketAddr), OpaqueError>
 where
     State: Clone + Send + Sync + 'static,
-    Dns: DnsResolver<Error: Into<BoxError>> + Clone,
+    Dns: DnsResolver + Clone,
     Connector: TcpStreamConnector<Error: Into<BoxError> + Send + 'static> + Clone,
 {
     let ip_mode = ctx.get().copied().unwrap_or_default();
@@ -228,21 +227,19 @@ where
         }
     };
 
-    if allow_overwrites {
-        if let Some(dns_overwrite) = ctx.get::<DnsOverwrite>() {
-            if let Ok(tuple) = tcp_connect_inner(
-                ctx,
-                domain.clone(),
-                port,
-                dns_mode,
-                dns_overwrite.deref().clone(), // Convert DnsOverwrite to a DnsResolver
-                connector.clone(),
-                ip_mode,
-            )
-            .await
-            {
-                return Ok(tuple);
-            }
+    if let Some(dns_overwrite) = ctx.get::<DnsOverwrite>() {
+        if let Ok(tuple) = tcp_connect_inner(
+            ctx,
+            domain.clone(),
+            port,
+            dns_mode,
+            dns_overwrite.deref().clone(), // Convert DnsOverwrite to a DnsResolver
+            connector.clone(),
+            ip_mode,
+        )
+        .await
+        {
+            return Ok(tuple);
         }
     }
 
@@ -263,7 +260,7 @@ async fn tcp_connect_inner<State, Dns, Connector>(
 ) -> Result<(TcpStream, SocketAddr), OpaqueError>
 where
     State: Clone + Send + Sync + 'static,
-    Dns: DnsResolver<Error: Into<BoxError>> + Clone,
+    Dns: DnsResolver + Clone,
     Connector: TcpStreamConnector<Error: Into<BoxError> + Send + 'static> + Clone,
 {
     let (tx, mut rx) = channel(1);
@@ -336,7 +333,7 @@ async fn tcp_connect_inner_branch<Dns, Connector>(
     connected: Arc<AtomicBool>,
     sem: Arc<Semaphore>,
 ) where
-    Dns: DnsResolver<Error: Into<BoxError>> + Clone,
+    Dns: DnsResolver + Clone,
     Connector: TcpStreamConnector<Error: Into<BoxError> + Send + 'static> + Clone,
 {
     let ip_it = match ip_kind {

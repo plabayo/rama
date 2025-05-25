@@ -70,6 +70,7 @@ use rama::{
     rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
+    tls::boring::client::EmulateTlsProfileLayer,
     tls::boring::server::{TlsAcceptorData, TlsAcceptorLayer},
     ua::{
         emulate::{
@@ -219,6 +220,7 @@ fn new_http_mitm_proxy(
         RemoveRequestHeaderLayer::hop_by_hop(),
         CompressAdaptLayer::default(),
         AddRequiredRequestHeadersLayer::new(),
+        EmulateTlsProfileLayer::new(),
     )
         .into_layer(service_fn(http_mitm_proxy))
 }

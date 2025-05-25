@@ -76,6 +76,16 @@ impl AsyncRead for HeapReader {
     }
 }
 
+impl AsyncBufRead for HeapReader {
+    fn poll_fill_buf(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<&[u8]>> {
+        self.project().inner.poll_fill_buf(cx)
+    }
+
+    fn consume(self: Pin<&mut Self>, amt: usize) {
+        self.project().inner.consume(amt);
+    }
+}
+
 impl Read for HeapReader {
     #[inline]
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
@@ -137,6 +147,21 @@ impl<const N: usize> AsyncRead for StackReader<N> {
 
         // done
         Poll::Ready(Ok(()))
+    }
+}
+
+impl<const N: usize> AsyncBufRead for StackReader<N> {
+    fn poll_fill_buf(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<&[u8]>> {
+        let me = self.get_mut();
+        Poll::Ready(Ok(if me.offset < N {
+            &me.data[me.offset..]
+        } else {
+            &[]
+        }))
+    }
+
+    fn consume(self: Pin<&mut Self>, amt: usize) {
+        self.get_mut().skip(amt)
     }
 }
 
@@ -242,6 +267,7 @@ where
         }
     }
 }
+
 impl<T, U> AsyncRead for ChainReader<T, U>
 where
     T: AsyncRead,

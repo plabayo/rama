@@ -2,7 +2,7 @@ fmt:
 	cargo fmt --all
 
 sort:
-	@just install-cargo-tool-if-needed cargo-sort
+	@cargo install cargo-sort
 	cargo sort --workspace --grouped
 
 lint: fmt sort
@@ -25,9 +25,6 @@ typos:
 extra-checks:
 	{{justfile_directory()}}/scripts/extra-checks.sh
 
-install-cargo-tool-if-needed tool:
-	@cargo install --list | grep -q "{{tool}}" || cargo install {{tool}}
-
 doc:
 	RUSTDOCFLAGS="-D rustdoc::broken-intra-doc-links" cargo doc --all-features --no-deps
 
@@ -35,7 +32,7 @@ doc-open:
 	RUSTDOCFLAGS="-D rustdoc::broken-intra-doc-links" cargo doc --all-features --no-deps --open
 
 hack:
-	@just install-cargo-tool-if-needed cargo-hack
+	@cargo install cargo-hack
 	cargo hack check --each-feature --no-dev-deps --workspace
 
 test:
@@ -56,7 +53,7 @@ qa: qq test
 qa-full: qa hack test-ignored fuzz-60s check-links
 
 upgrades:
-    @just install-cargo-tool-if-needed cargo-upgrades
+    @cargo install cargo-upgrades
     cargo upgrades
 
 watch-docs:
@@ -135,7 +132,7 @@ miri:
 	cargo +nightly miri test
 
 detect-unused-deps:
-	@just install-cargo-tool-if-needed cargo-machete
+	@cargo install cargo-machete
 	cargo machete --skip-target-dir
 
 detect-biggest-fn:
