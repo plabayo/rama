@@ -87,6 +87,24 @@ impl Body {
     pub fn into_data_stream(self) -> BodyDataStream {
         BodyDataStream { inner: self }
     }
+
+    /// Stream a chunk of the response body.
+    ///
+    /// When the response body has been exhausted, this will return `None`.
+    pub async fn chunk(&mut self) -> Result<Option<Bytes>, BoxError> {
+        // loop to ignore unrecognized frames
+        loop {
+            if let Some(res) = self.frame().await {
+                let frame = res?;
+                if let Ok(buf) = frame.into_data() {
+                    return Ok(Some(buf));
+                }
+                // else continue
+            } else {
+                return Ok(None);
+            }
+        }
+    }
 }
 
 impl Default for Body {
