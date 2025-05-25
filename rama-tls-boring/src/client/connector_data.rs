@@ -47,7 +47,6 @@ pub struct TlsConnectorData {
 impl std::fmt::Debug for TlsConnectorData {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TlsConnectorData")
-            .field("config", &"debug not implemented")
             .field(
                 "store_server_certificate_chain",
                 &self.store_server_certificate_chain,
@@ -67,7 +66,7 @@ impl TlsConnectorData {
 /// Use [`TlsConnectorDataBuilder`] to build a [`TlsConnectorData`] in an ergonomic way
 ///
 /// This builder is very powerful and is capable of stacking other builders. Using it
-/// this way gives each layer the option to modify what is needed in a very efficient way.
+/// this way gives each layer the option to modify what is needed in an efficient way.
 pub struct TlsConnectorDataBuilder {
     base_builders: Vec<Arc<TlsConnectorDataBuilder>>,
     server_verify_mode: Option<ServerVerifyMode>,
@@ -173,7 +172,7 @@ impl TlsConnectorDataBuilder {
     pub fn new_http_auto() -> Self {
         Self::new()
             .with_rama_alpn_protos(&[ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11])
-            .expect("with http 2 and http 1")
+            .expect("with http2 and http1")
     }
 
     pub fn new_http_1() -> Self {
@@ -599,6 +598,10 @@ impl TlsConnectorDataBuilder {
 
 impl std::fmt::Debug for TlsConnectorDataBuilder {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Debug implementation of this struct will print each field, but also the getter of
+        // each field. E.g server_verify_mode will show the value set on this exact builder and
+        // server_verify_mode() will print the output of the getter, this will also go over
+        // the entire chain of base_builders and will show the final value that will be used during build.
         f.debug_struct("TlsConnectorDataBuilder")
             .field("server_verify_mode", &self.server_verify_mode)
             .field("server_verify_mode()", &self.server_verify_mode())
@@ -1099,6 +1102,4 @@ mod tests {
 
         assert_eq!(builder.store_server_certificate_chain(), Some(true));
     }
-
-    // TODO test more advanced combinations
 }

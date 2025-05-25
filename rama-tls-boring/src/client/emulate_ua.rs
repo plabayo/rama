@@ -99,4 +99,11 @@ impl<S> Layer<S> for EmulateTlsProfileLayer {
             inner,
         }
     }
+
+    fn into_layer(self, inner: S) -> Self::Service {
+        EmulateTlsProfileService {
+            builder_overwrites: self.builder_overwrites,
+            inner,
+        }
+    }
 }
