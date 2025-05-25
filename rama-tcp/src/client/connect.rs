@@ -3,7 +3,7 @@ use rama_core::{
     combinators::Either,
     error::{BoxError, ErrorContext, OpaqueError},
 };
-use rama_dns::{DnsOverwrite, DnsResolver, HickoryDns};
+use rama_dns::{DnsOverwrite, DnsResolver, GlobalDnsResolver};
 use rama_net::{
     address::{Authority, Domain, Host, SocketAddress},
     mode::{ConnectIpMode, DnsResolveIpMode},
@@ -183,7 +183,7 @@ pub async fn default_tcp_connect<State>(
 where
     State: Clone + Send + Sync + 'static,
 {
-    tcp_connect(ctx, authority, true, HickoryDns::default(), ()).await
+    tcp_connect(ctx, authority, true, GlobalDnsResolver::default(), ()).await
 }
 
 /// Establish a [`TcpStream`] connection for the given [`Authority`].
@@ -196,7 +196,7 @@ pub async fn tcp_connect<State, Dns, Connector>(
 ) -> Result<(TcpStream, SocketAddr), OpaqueError>
 where
     State: Clone + Send + Sync + 'static,
-    Dns: DnsResolver<Error: Into<BoxError>> + Clone,
+    Dns: DnsResolver + Clone,
     Connector: TcpStreamConnector<Error: Into<BoxError> + Send + 'static> + Clone,
 {
     let ip_mode = ctx.get().copied().unwrap_or_default();
@@ -263,7 +263,7 @@ async fn tcp_connect_inner<State, Dns, Connector>(
 ) -> Result<(TcpStream, SocketAddr), OpaqueError>
 where
     State: Clone + Send + Sync + 'static,
-    Dns: DnsResolver<Error: Into<BoxError>> + Clone,
+    Dns: DnsResolver + Clone,
     Connector: TcpStreamConnector<Error: Into<BoxError> + Send + 'static> + Clone,
 {
     let (tx, mut rx) = channel(1);
@@ -336,7 +336,7 @@ async fn tcp_connect_inner_branch<Dns, Connector>(
     connected: Arc<AtomicBool>,
     sem: Arc<Semaphore>,
 ) where
-    Dns: DnsResolver<Error: Into<BoxError>> + Clone,
+    Dns: DnsResolver + Clone,
     Connector: TcpStreamConnector<Error: Into<BoxError> + Send + 'static> + Clone,
 {
     let ip_it = match ip_kind {
