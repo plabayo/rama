@@ -44,7 +44,7 @@ pub trait ConnectorService<State, Request>: Send + Sync + 'static {
     /// Connection returned by the [`ConnectorService`]
     type Connection;
     /// Error returned in case of connection / setup failure
-    type Error: Into<BoxError>;
+    type Error: Into<BoxError> + Sync;
 
     /// Establish a connection, which often involves some kind of handshake,
     /// or connection revival.

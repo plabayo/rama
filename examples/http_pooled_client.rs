@@ -19,7 +19,7 @@ use rama::{
     error::OpaqueError,
     http::{
         BodyExtractExt,
-        client::{EasyConnectorBuilder, EasyHttpWebClient},
+        client::EasyHttpWebClient,
         server::HttpServer,
         service::{client::HttpClientExt, web::WebService},
     },
@@ -55,11 +55,12 @@ async fn main() {
     ready_rx.await.unwrap();
 
     let pool = FiFoReuseLruDropPool::new(5, 10).unwrap();
-    let connector = EasyConnectorBuilder::default()
+
+    let client = EasyHttpWebClient::builder()
+        .with_proxy()
+        .with_tls_using_boringssl(None)
         .with_conn_pool_using_basic_id(pool)
         .build();
-
-    let client = EasyHttpWebClient::new(connector);
 
     let resp = client
         .get(format!("http://{ADDRESS}/"))
@@ -81,9 +82,7 @@ async fn main() {
 
     // If we dont use a connection pool now we should get an error from the server as we
     // will need to open a new connection
-    let connector = EasyConnectorBuilder::default();
-
-    let client = client.with_connector(connector);
+    let client = EasyHttpWebClient::default();
     let result = client
         .get(format!("http://{ADDRESS}/"))
         .send(Context::default())

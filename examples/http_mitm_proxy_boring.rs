@@ -37,7 +37,7 @@ use rama::{
     error::{BoxError, ErrorContext, OpaqueError},
     http::{
         Body, Request, Response, StatusCode,
-        client::{EasyConnectorBuilder, EasyHttpWebClient},
+        client::EasyHttpWebClient,
         layer::{
             compress_adapter::CompressAdaptLayer,
             map_response_body::MapResponseBodyLayer,
@@ -242,7 +242,7 @@ async fn http_mitm_proxy(ctx: Context, req: Request) -> Result<Response, Infalli
     };
     let base_tls_config = base_tls_config.with_server_verify_mode(ServerVerifyMode::Disable);
 
-    let connector = EasyConnectorBuilder::new()
+    let client = EasyHttpWebClient::builder()
         .with_proxy()
         .with_tls_using_boringssl(Some(Arc::new(base_tls_config)))
         .with_jit_req_inspector(UserAgentEmulateHttpConnectModifier::default())
@@ -259,9 +259,8 @@ async fn http_mitm_proxy(ctx: Context, req: Request) -> Result<Response, Infalli
                 Some(traffic_writer::WriterMode::Headers),
             ),
         ))
-        .build();
-
-    let client = EasyHttpWebClient::new(connector);
+        .build()
+        .boxed();
 
     match client.serve(ctx, req).await {
         Ok(resp) => Ok(resp),

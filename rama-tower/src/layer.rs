@@ -262,7 +262,7 @@ where
 
 impl<T, State, Request> rama_core::Service<State, Request> for LayerAdapterService<T>
 where
-    T: TowerService<Request, Response: Send + 'static, Error: Send + 'static, Future: Send>
+    T: TowerService<Request, Response: Send + 'static, Error: Send + Sync + 'static, Future: Send>
         + Clone
         + Send
         + Sync

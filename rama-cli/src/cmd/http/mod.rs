@@ -9,7 +9,7 @@ use rama::{
     http::{
         Request, Response,
         client::{
-            EasyConnectorBuilder, EasyHttpWebClient,
+            EasyHttpWebClient,
             proxy::layer::{HttpProxyAddressLayer, SetProxyAuthHttpHeaderLayer},
         },
         layer::{
@@ -349,7 +349,7 @@ where
         proxy_tls_config.set_server_verify_mode(ServerVerifyMode::Disable);
     }
 
-    let connector = EasyConnectorBuilder::new()
+    let inner_client = EasyHttpWebClient::builder()
         .with_tls_proxy_using_boringssl(Some(Arc::new(proxy_tls_config)), None)
         .with_tls_using_boringssl(Some(Arc::new(tls_config)))
         .with_jit_req_inspector(UserAgentEmulateHttpConnectModifier::default())
@@ -358,8 +358,6 @@ where
             request_writer,
         ))
         .build();
-
-    let inner_client = EasyHttpWebClient::new(connector);
 
     // TODO: need to insert TLS separate from http:
     // - first tls is needed

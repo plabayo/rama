@@ -25,7 +25,6 @@ use rama::{
     tls::boring::core::x509::X509,
     utils::{backoff::ExponentialBackoff, rng::HasherRng},
 };
-use rama_http_backend::client::EasyConnectorBuilder;
 use rama_tls_boring::client::TlsConnectorDataBuilder;
 use tokio_test::assert_err;
 
@@ -116,11 +115,10 @@ where
         .maybe_with_server_name(host)
         .with_store_server_certificate_chain(true)
         .into_shared_builder();
-    let connector = EasyConnectorBuilder::new()
+    let inner_client = EasyHttpWebClient::builder()
         .with_proxy()
         .with_tls_using_boringssl(Some(tls_config))
         .build();
-    let inner_client = EasyHttpWebClient::new(connector);
 
     (
         MapResultLayer::new(map_internal_client_error),

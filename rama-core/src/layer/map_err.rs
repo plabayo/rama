@@ -57,7 +57,7 @@ where
     F: FnOnce(S::Error) -> Error + Clone + Send + Sync + 'static,
     State: Clone + Send + Sync + 'static,
     Request: Send + 'static,
-    Error: Send + 'static,
+    Error: Send + Sync + 'static,
 {
     type Response = S::Response;
     type Error = Error;

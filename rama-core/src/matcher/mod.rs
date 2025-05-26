@@ -192,7 +192,7 @@ macro_rules! impl_matcher_service_tuple {
                     $T: Service<State, Request, Response = Response, Error = Error>,
                 )+
                 S: Service<State, Request, Response = Response, Error = Error>,
-                Error: Send + 'static,
+                Error: Send + Sync + 'static,
             {
                 type Response = Response;
                 type Error = Error;

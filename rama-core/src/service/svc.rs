@@ -14,7 +14,7 @@ pub trait Service<S, Request>: Sized + Send + Sync + 'static {
     type Response: Send + 'static;
 
     /// The type of error returned by the service.
-    type Error: Send + 'static;
+    type Error: Send + Sync + 'static;
 
     /// Serve a response or error for the given request,
     /// using the given context.
@@ -115,10 +115,18 @@ where
 
 /// A boxed [`Service`], to serve requests with,
 /// for where you require dynamic dispatch.
-#[derive(Clone)]
+// #[derive(Clone)]
 pub struct BoxService<S, Request, Response, Error> {
     inner:
         Arc<dyn DynService<S, Request, Response = Response, Error = Error> + Send + Sync + 'static>,
+}
+
+impl<S, Request, Response, Error> Clone for BoxService<S, Request, Response, Error> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+        }
+    }
 }
 
 impl<S, Request, Response, Error> BoxService<S, Request, Response, Error> {
@@ -145,7 +153,7 @@ where
     S: 'static,
     Request: 'static,
     Response: Send + 'static,
-    Error: Send + 'static,
+    Error: Send + Sync + 'static,
 {
     type Response = Response;
     type Error = Error;

@@ -47,10 +47,11 @@ use rama::{
     rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
-    tls::boring::server::{TlsAcceptorData, TlsAcceptorLayer},
+    tls::boring::{
+        client::TlsConnectorDataBuilder,
+        server::{TlsAcceptorData, TlsAcceptorLayer},
+    },
 };
-use rama_http_backend::client::EasyConnectorBuilder;
-use rama_tls_boring::client::TlsConnectorDataBuilder;
 
 use std::{convert::Infallible, sync::Arc, time::Duration};
 use tracing::level_filters::LevelFilter;
@@ -130,7 +131,7 @@ async fn http_mitm_proxy(ctx: Context, req: Request) -> Result<Response, Infalli
     };
     let base_tls_config = base_tls_config.with_server_verify_mode(ServerVerifyMode::Disable);
 
-    let connector = EasyConnectorBuilder::new()
+    let client = EasyHttpWebClient::builder()
         .with_proxy()
         .with_tls_using_boringssl(Some(Arc::new(base_tls_config)))
         .with_svc_req_inspector((
@@ -146,8 +147,6 @@ async fn http_mitm_proxy(ctx: Context, req: Request) -> Result<Response, Infalli
             ),
         ))
         .build();
-
-    let client = EasyHttpWebClient::new(connector);
 
     match client.serve(ctx, req).await {
         Ok(resp) => Ok(resp),

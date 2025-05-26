@@ -19,7 +19,6 @@ use rama::{
     service::BoxService,
     utils::{backoff::ExponentialBackoff, rng::HasherRng},
 };
-use rama_http_backend::client::EasyConnectorBuilder;
 use std::{
     process::{Child, ExitStatus},
     sync::{Arc, Once},
@@ -101,24 +100,24 @@ where
             .unwrap();
 
         #[cfg(all(not(feature = "rustls"), not(feature = "boring")))]
-        let connector = EasyConnectorBuilder::default().build();
+        let inner_client = EasyHttpWebClient::default();
 
         #[cfg(feature = "boring")]
-        let connector = {
+        let inner_client = {
             let tls_config = boring_client::TlsConnectorDataBuilder::new_http_auto()
                 .with_server_verify_mode(ServerVerifyMode::Disable)
                 .with_store_server_certificate_chain(true);
             let proxy_tls_config = boring_client::TlsConnectorDataBuilder::new()
                 .with_server_verify_mode(ServerVerifyMode::Disable);
 
-            EasyConnectorBuilder::new()
+            EasyHttpWebClient::builder()
                 .with_tls_proxy_using_boringssl(Some(Arc::new(proxy_tls_config)), None)
                 .with_tls_using_boringssl(Some(Arc::new(tls_config)))
                 .build()
         };
 
         #[cfg(all(feature = "rustls", not(feature = "boring")))]
-        let connector = {
+        let inner_client = {
             let tls_config = rustls_client::TlsConnectorDataBuilder::new()
                 .with_no_cert_verifier()
                 .with_alpn_protocols_http_auto()
@@ -132,13 +131,11 @@ where
                 .expect("connector with env keylogger")
                 .build();
 
-            EasyConnectorBuilder::new()
+            EasyHttpWebClient::builder()
                 .with_tls_proxy_using_rustls(Some(proxy_tls_config), None)
                 .with_tls_using_rustls(Some(tls_config))
                 .build()
         };
-
-        let inner_client = EasyHttpWebClient::new(connector);
 
         let client = (
             MapResultLayer::new(map_internal_client_error),
@@ -160,8 +157,8 @@ where
             AddRequiredRequestHeadersLayer::default(),
             SetProxyAuthHttpHeaderLayer::default(),
         )
-            .into_layer(inner_client)
-            .boxed();
+            .into_layer(inner_client);
+        let client = client.boxed();
 
         Self {
             server_process: child,

@@ -55,6 +55,7 @@ async fn main() {
     // use the high level API for this service stack.
     //
     // E.g. `::post(<uri>).header(k, v).form(<data>).send().await?`
+    let inner_client = EasyHttpWebClient::default();
     let client = (
         TraceLayer::new_for_http(),
         DecompressionLayer::new(),
@@ -78,7 +79,7 @@ async fn main() {
             ),
         ),
     )
-        .into_layer(EasyHttpWebClient::default());
+        .into_layer(inner_client);
 
     //--------------------------------------------------------------------------------
     // Low Level (Regular) http client (stack) service example.
