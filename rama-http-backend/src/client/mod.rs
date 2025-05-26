@@ -18,8 +18,6 @@ pub use svc::HttpClientService;
 mod conn;
 #[doc(inline)]
 pub use conn::{HttpConnector, HttpConnectorLayer};
-#[cfg(feature = "boring")]
-use rama_tls_boring::client as boring_client;
 use tracing::trace;
 
 pub mod http_inspector;
@@ -69,7 +67,7 @@ where
     #[cfg(feature = "boring")]
     fn default() -> Self {
         let tls_config =
-            boring_client::TlsConnectorDataBuilder::new_http_auto().into_shared_builder();
+            rama_tls_boring::client::TlsConnectorDataBuilder::new_http_auto().into_shared_builder();
 
         EasyHttpWebClientBuilder::new()
             .with_tls_proxy_using_boringssl(None, None)
@@ -79,7 +77,7 @@ where
 
     #[cfg(all(feature = "rustls", not(feature = "boring")))]
     fn default() -> Self {
-        let tls_config = rustls_client::TlsConnectorData::new_http_auto()
+        let tls_config = rama_tls_rustls::client::TlsConnectorData::new_http_auto()
             .expect("connector data with http auto");
 
         EasyHttpWebClientBuilder::new()
@@ -167,10 +165,12 @@ mod easy_connector {
         pool::{PooledConnector, http::BasicHttpConnIdentifier},
     };
     use rama_tcp::client::service::TcpConnector;
-    use std::{marker::PhantomData, sync::Arc};
+    use std::marker::PhantomData;
 
     #[cfg(feature = "boring")]
     use rama_tls_boring::client as boring_client;
+    #[cfg(feature = "boring")]
+    use std::sync::Arc;
 
     #[cfg(feature = "rustls")]
     use rama_tls_rustls::client as rustls_client;

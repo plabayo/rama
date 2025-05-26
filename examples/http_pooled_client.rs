@@ -57,8 +57,8 @@ async fn main() {
     let pool = FiFoReuseLruDropPool::new(5, 10).unwrap();
 
     let client = EasyHttpWebClient::builder()
-        .with_proxy()
-        .with_tls_using_boringssl(None)
+        .without_proxy()
+        .without_tls()
         .with_conn_pool_using_basic_id(pool)
         .build();
 

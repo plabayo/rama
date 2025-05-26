@@ -61,8 +61,9 @@ use rama::{
     tcp::server::TcpListener,
     tls::rustls::server::{TlsAcceptorData, TlsAcceptorDataBuilder, TlsAcceptorLayer},
 };
+use rama_tls_rustls::{client::TlsConnectorDataBuilder, verify::NoServerCertVerifier};
 
-use std::{convert::Infallible, time::Duration};
+use std::{convert::Infallible, sync::Arc, time::Duration};
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -204,7 +205,17 @@ async fn http_mitm_proxy(ctx: Context, req: Request) -> Result<Response, Infalli
 
     // NOTE: use a custom connector (layers) in case you wish to add custom features,
     // such as upstream proxies or other configurations
-    let client = EasyHttpWebClient::default();
+    let tls_config = TlsConnectorDataBuilder::new()
+        .with_alpn_protocols_http_auto()
+        .with_env_key_logger()
+        .unwrap()
+        .with_cert_verifier(Arc::new(NoServerCertVerifier::default()))
+        .build();
+
+    let client = EasyHttpWebClient::builder()
+        .with_proxy()
+        .with_tls_using_rustls(Some(tls_config))
+        .build();
 
     match client.serve(ctx, req).await {
         Ok(resp) => Ok(resp),

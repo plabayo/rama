@@ -21,7 +21,7 @@ use rama::{
 };
 use std::{
     process::{Child, ExitStatus},
-    sync::{Arc, Once},
+    sync::Once,
     time::Duration,
 };
 use tracing::level_filters::LevelFilter;
@@ -29,6 +29,9 @@ use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberI
 
 #[cfg(feature = "compression")]
 use rama::http::layer::decompression::DecompressionLayer;
+
+#[cfg(feature = "boring")]
+use std::sync::Arc;
 
 #[cfg(feature = "boring")]
 use rama::net::tls::client::ServerVerifyMode;
