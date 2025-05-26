@@ -1,9 +1,8 @@
 use super::utils;
 use rama::{
     Context, Layer,
-    http::{
-        BodyExtractExt, IntoResponse, Request, headers::Accept, response::Json, server::HttpServer,
-    },
+    http::service::web::response::{IntoResponse, Json},
+    http::{BodyExtractExt, Request, headers::Accept, server::HttpServer},
     net::address::ProxyAddress,
     rt::Executor,
     service::service_fn,

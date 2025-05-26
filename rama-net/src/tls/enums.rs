@@ -426,6 +426,7 @@ enum_builder! {
         TLS_ECDHE_PSK_WITH_AES_128_CCM_SHA256 => 0xd005,
         SSL_RSA_FIPS_WITH_DES_CBC_SHA => 0xfefe,
         SSL_RSA_FIPS_WITH_3DES_EDE_CBC_SHA => 0xfeff,
+        DRAFT_TLS_GOSTR341112_256_WITH_28147_CNT_IMIT => 0xff85,
     }
 }
 
@@ -545,6 +546,8 @@ enum_builder! {
         SEQUENCE_NUMBER_ENCRYPTION_ALGORITHMS => 60,
         RRC => 61,
         NEXT_PROTOCOL_NEGOTIATION => 13172,
+        OLD_APPLICATION_SETTINGS => 17513,
+        APPLICATION_SETTINGS => 17613,
         ECH_OUTER_EXTENSIONS => 64768,
         ENCRYPTED_CLIENT_HELLO => 65037,
         RENEGOTIATION_INFO => 65281,
@@ -701,6 +704,15 @@ impl ApplicationProtocol {
         r.read_exact(&mut buf[..])?;
 
         Ok(buf.into())
+    }
+
+    pub fn encode_alpns_to_vec(alpns: &[Self]) -> std::io::Result<Vec<u8>> {
+        let mut alpn_protos =
+            Vec::with_capacity(alpns.iter().map(|alpn| alpn.as_bytes().len() + 1).sum());
+        for alpn in alpns {
+            alpn.encode_wire_format(&mut alpn_protos)?;
+        }
+        Ok(alpn_protos)
     }
 }
 

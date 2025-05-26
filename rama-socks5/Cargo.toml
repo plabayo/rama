@@ -10,19 +10,34 @@ categories = ["asynchronous", "network-programming", "web-programming"]
 authors = { workspace = true }
 rust-version = { workspace = true }
 
-[lints]
-workspace = true
-
-[features]
-default = []
-
-[dependencies]
-
-[dev-dependencies]
-
 [package.metadata.cargo-public-api-crates]
 allowed = []
 
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
+
+[features]
+default = []
+dns = ["dep:rama-dns", "dep:rand"]
+
+[dependencies]
+byteorder = { workspace = true }
+futures-core = { workspace = true }
+futures-sink = { workspace = true }
+rama-core = { workspace = true }
+rama-dns = { workspace = true, optional = true }
+rama-net = { workspace = true, features = ["http"] }
+rama-tcp = { workspace = true, features = ["http"] }
+rama-udp = { workspace = true }
+rama-utils = { workspace = true }
+rand = { workspace = true, optional = true }
+smallvec = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio-test = { workspace = true }
+
+[lints]
+workspace = true

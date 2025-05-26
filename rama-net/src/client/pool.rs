@@ -3,12 +3,11 @@ use crate::stream::Socket;
 use parking_lot::Mutex;
 use rama_core::error::{BoxError, ErrorContext, OpaqueError};
 use rama_core::{Context, Layer, Service};
-use rama_utils::macros::generate_field_setters;
+use rama_utils::macros::generate_set_and_with;
 use std::collections::VecDeque;
 use std::fmt::Debug;
 use std::ops::{Deref, DerefMut};
 use std::pin::Pin;
-use std::sync::OnceLock;
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 use std::{future::Future, net::SocketAddr};
@@ -104,7 +103,7 @@ where
 pub struct LeasedConnection<C, ID> {
     pooled_conn: Option<PooledConnection<C, ID>>,
     active_slot: ActiveSlot,
-    returner: Weak<dyn Fn(PooledConnection<C, ID>) + Send + Sync>,
+    returner: ConnReturner<C, ID>,
 }
 
 impl<C, ID> LeasedConnection<C, ID> {
@@ -128,7 +127,27 @@ pub struct FiFoReuseLruDropPool<C, ID> {
     storage: Arc<Mutex<VecDeque<PooledConnection<C, ID>>>>,
     total_slots: Arc<Semaphore>,
     active_slots: Arc<Semaphore>,
-    returner: OnceLock<Arc<dyn Fn(PooledConnection<C, ID>) + Send + Sync>>,
+    returner: ConnReturner<C, ID>,
+}
+
+struct ConnReturner<C, ID> {
+    weak_storage: Weak<Mutex<VecDeque<PooledConnection<C, ID>>>>,
+}
+
+impl<C, ID> Clone for ConnReturner<C, ID> {
+    fn clone(&self) -> Self {
+        Self {
+            weak_storage: self.weak_storage.clone(),
+        }
+    }
+}
+
+impl<C, ID> ConnReturner<C, ID> {
+    fn return_conn(&self, conn: PooledConnection<C, ID>) {
+        if let Some(storage) = self.weak_storage.upgrade() {
+            storage.lock().push_front(conn)
+        }
+    }
 }
 
 impl<C, ID> Clone for FiFoReuseLruDropPool<C, ID> {
@@ -155,33 +174,13 @@ impl<C, ID> FiFoReuseLruDropPool<C, ID> {
             ));
         }
         let storage = Arc::new(Mutex::new(VecDeque::with_capacity(max_total)));
+        let weak_storage = Arc::downgrade(&storage);
         Ok(Self {
             storage,
-            returner: OnceLock::new(),
+            returner: ConnReturner { weak_storage },
             total_slots: Arc::new(Semaphore::const_new(max_total)),
             active_slots: Arc::new(Semaphore::const_new(max_active)),
         })
-    }
-}
-
-impl<C, ID> FiFoReuseLruDropPool<C, ID>
-where
-    C: Send + 'static,
-    ID: Send + 'static,
-{
-    /// Create returner here instead of in [`FiFoReuseLruDropPool::new`] so we dont have to enforce trait
-    /// bounds there, this makes working with a pool a lot more ergonomic
-    fn returner(&self) -> Weak<dyn Fn(PooledConnection<C, ID>) + Send + Sync> {
-        let returner = self.returner.get_or_init(|| {
-            let weak_storage = Arc::downgrade(&self.storage);
-            Arc::new(move |conn| {
-                if let Some(storage) = weak_storage.upgrade() {
-                    storage.lock().push_front(conn)
-                }
-            })
-        });
-
-        Arc::downgrade(returner)
     }
 }
 
@@ -217,7 +216,7 @@ where
             return Ok(ConnectionResult::Connection(LeasedConnection {
                 active_slot,
                 pooled_conn: Some(pooled_conn),
-                returner: self.returner(),
+                returner: self.returner.clone(),
             }));
         }
 
@@ -239,7 +238,7 @@ where
         let (active_slot, pool_slot) = permit;
         LeasedConnection {
             active_slot,
-            returner: self.returner(),
+            returner: self.returner.clone(),
             pooled_conn: Some(PooledConnection {
                 id,
                 conn,
@@ -321,10 +320,8 @@ impl<C, ID> AsMut<C> for LeasedConnection<C, ID> {
 
 impl<C, ID> Drop for LeasedConnection<C, ID> {
     fn drop(&mut self) {
-        if let Some(returner) = self.returner.upgrade() {
-            if let Some(pooled_conn) = self.pooled_conn.take() {
-                (returner)(pooled_conn);
-            }
+        if let Some(pooled_conn) = self.pooled_conn.take() {
+            self.returner.return_conn(pooled_conn);
         }
     }
 }
@@ -464,7 +461,16 @@ impl<S, P, R> PooledConnector<S, P, R> {
         }
     }
 
-    generate_field_setters!(wait_for_pool_timeout, Duration);
+    generate_set_and_with!(
+        /// Set timeout after which requesting a connection from the pool will timeout
+        ///
+        /// If no timeout is specified there will be no limit, this could be dangerous
+        /// depending on how many users are waiting for a connection
+        pub fn wait_for_pool_timeout(mut self, timeout: Option<Duration>) -> Self {
+            self.wait_for_pool_timeout = timeout;
+            self
+        }
+    );
 }
 
 impl<State, Request, S, P, R> Service<State, Request> for PooledConnector<S, P, R>
@@ -530,7 +536,16 @@ impl<P, R> PooledConnectorLayer<P, R> {
         }
     }
 
-    generate_field_setters!(wait_for_pool_timeout, Duration);
+    generate_set_and_with!(
+        /// Set timeout after which requesting a connection from the pool will timeout
+        ///
+        /// If no timeout is specified there will be no limit, this could be dangerous
+        /// depending on how many users are waiting for a connection
+        pub fn wait_for_pool_timeout(mut self, timeout: Option<Duration>) -> Self {
+            self.wait_for_pool_timeout = timeout;
+            self
+        }
+    );
 }
 
 impl<S, P: Clone, R: Clone> Layer<S> for PooledConnectorLayer<P, R> {

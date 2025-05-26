@@ -1,8 +1,11 @@
-use crate::{Body, IntoResponse, Request, Response, matcher::HttpMatcher};
+use crate::{Body, Request, Response, matcher::HttpMatcher};
 use rama_core::{Context, Layer, Service, layer::MapResponseLayer, service::BoxService};
 use std::{convert::Infallible, fmt};
 
 pub mod extract;
+pub mod response;
+
+use response::IntoResponse;
 
 pub(crate) struct Endpoint<State> {
     pub(crate) matcher: HttpMatcher<State, Body>,

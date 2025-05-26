@@ -2,8 +2,7 @@ use crate::{
     Body, Response,
     dep::{http_body, http_body_util::BodyExt},
 };
-use bytes::Bytes;
-use rama_core::error::BoxError;
+use rama_core::{bytes::Bytes, error::BoxError};
 use rama_http_types::proto::{
     h1::Http1HeaderMap,
     h2::{PseudoHeader, PseudoHeaderOrder},

@@ -1,4 +1,6 @@
-use crate::{Method, Request, Response, Uri, headers::HeaderExt};
+use std::borrow::Cow;
+
+use crate::{Method, Request, Response, Uri};
 use rama_core::{
     Context, Service,
     error::{BoxError, ErrorExt, OpaqueError},
@@ -451,19 +453,19 @@ where
     /// Enable HTTP basic authentication.
     pub fn basic_auth<U, P>(self, username: U, password: P) -> Self
     where
-        U: AsRef<str>,
-        P: AsRef<str>,
+        U: Into<Cow<'static, str>>,
+        P: Into<Cow<'static, str>>,
     {
-        let header = crate::headers::Authorization::basic(username.as_ref(), password.as_ref());
+        let header = crate::headers::Authorization::basic(username, password);
         self.typed_header(header)
     }
 
     /// Enable HTTP bearer authentication.
     pub fn bearer_auth<T>(mut self, token: T) -> Self
     where
-        T: AsRef<str>,
+        T: Into<Cow<'static, str>>,
     {
-        let header = match crate::headers::Authorization::bearer(token.as_ref()) {
+        let header = match crate::headers::Authorization::bearer(token) {
             Ok(header) => header,
             Err(err) => {
                 self.state = match self.state {
@@ -651,12 +653,12 @@ mod test {
 
     use super::*;
     use crate::{
-        IntoResponse,
         layer::{
             required_header::AddRequiredRequestHeadersLayer,
             retry::{ManagedPolicy, RetryLayer},
             trace::TraceLayer,
         },
+        service::web::response::IntoResponse,
     };
     use rama_core::{
         layer::{Layer, MapResultLayer},
@@ -689,7 +691,7 @@ mod test {
     ) -> Result<Response, rama_core::error::BoxError>
     where
         E: Into<rama_core::error::BoxError>,
-        Body: crate::dep::http_body::Body<Data = bytes::Bytes, Error: Into<BoxError>>
+        Body: crate::dep::http_body::Body<Data = rama_core::bytes::Bytes, Error: Into<BoxError>>
             + Send
             + Sync
             + 'static,

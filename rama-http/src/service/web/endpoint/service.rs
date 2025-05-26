@@ -1,5 +1,6 @@
+use super::IntoResponse;
 use super::extract::{FromRequest, FromRequestContextRefPair};
-use crate::{IntoResponse, Request, Response};
+use crate::{Request, Response};
 use rama_core::Context;
 use rama_utils::macros::all_the_tuples_no_last_special_case;
 

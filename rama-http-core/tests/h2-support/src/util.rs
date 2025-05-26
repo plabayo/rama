@@ -1,5 +1,5 @@
-use bytes::{BufMut, Bytes};
 use futures::ready;
+use rama_core::bytes::{BufMut, Bytes};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 

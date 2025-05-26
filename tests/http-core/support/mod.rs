@@ -6,13 +6,13 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-use bytes::Bytes;
-use http::StatusCode;
 use rama::Context;
+use rama::http::StatusCode;
 use rama::http::core::server;
 use rama::http::core::service::RamaHttpService;
 use rama::http::dep::http_body_util::{BodyExt, Full};
 use rama::rt::Executor;
+use rama_core::bytes::Bytes;
 use tokio::net::{TcpListener, TcpStream};
 
 use rama::http::{Request, Response, Version};

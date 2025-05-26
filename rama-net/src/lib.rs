@@ -22,6 +22,7 @@ pub mod client;
 pub mod conn;
 pub mod forwarded;
 pub mod mode;
+pub mod proxy;
 pub mod stream;
 pub mod test_utils;
 pub mod user;
@@ -42,5 +43,4 @@ pub mod tls;
 #[cfg(any(feature = "tls", feature = "http"))]
 pub mod fingerprint;
 
-#[cfg(any(windows, unix))]
-pub use ::socket2 as socket;
+pub mod socket;

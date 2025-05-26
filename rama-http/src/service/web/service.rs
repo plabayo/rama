@@ -1,8 +1,9 @@
 use super::{IntoEndpointService, endpoint::Endpoint};
 use crate::{
-    Body, IntoResponse, Request, Response, StatusCode, Uri,
+    Body, Request, Response, StatusCode, Uri,
     matcher::{HttpMatcher, UriParams},
     service::fs::ServeDir,
+    service::web::endpoint::response::IntoResponse,
 };
 use rama_core::{
     Context,

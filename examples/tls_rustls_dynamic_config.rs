@@ -52,7 +52,7 @@ use rama::{
     Context, Layer,
     error::{ErrorContext, OpaqueError},
     graceful::Shutdown,
-    http::{IntoResponse, Request, Response, server::HttpServer},
+    http::{Request, Response, server::HttpServer, service::web::response::IntoResponse},
     layer::ConsumeErrLayer,
     rt::Executor,
     service::service_fn,
@@ -118,8 +118,8 @@ struct DynamicConfig;
 impl DynamicConfigProvider for DynamicConfig {
     async fn get_config(
         &self,
-        client_hello: rama_tls_rustls::dep::rustls::server::ClientHello<'_>,
-    ) -> Result<Arc<rama_tls_rustls::dep::rustls::ServerConfig>, OpaqueError> {
+        client_hello: rama::tls::rustls::dep::rustls::server::ClientHello<'_>,
+    ) -> Result<Arc<rama::tls::rustls::dep::rustls::ServerConfig>, OpaqueError> {
         let (cert_chain, key_der) = match client_hello.server_name() {
             Some(name) => match name {
                 "example" => load_example_certificate().await,

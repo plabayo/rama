@@ -4,13 +4,13 @@ use std::time::Duration;
 
 use crate::h2::server::{Connection, Handshake, SendResponse};
 use crate::h2::{Reason, RecvStream};
-use bytes::Bytes;
 use pin_project_lite::pin_project;
+use rama_core::bytes::Bytes;
 use rama_core::error::BoxError;
 use rama_core::rt::Executor;
 use rama_http_types::{Method, Request, Response, header};
 use tokio::io::{AsyncRead, AsyncWrite};
-use tracing::{debug, trace, warn};
+use tracing::{Instrument, debug, trace, warn};
 
 use super::{PipeToSendStream, SendBuf, ping};
 use crate::body::{Body, Incoming as IncomingBody};
@@ -87,6 +87,9 @@ pin_project! {
     }
 }
 
+// TODO: revisit later to see if we really want this
+
+#[allow(clippy::large_enum_variant)]
 enum State<T> {
     Handshaking {
         ping_config: ping::Config,
@@ -284,7 +287,7 @@ where
                             self.date_header,
                         );
 
-                        exec.spawn_task(fut);
+                        exec.spawn_task(fut.instrument(tracing::trace_span!("Server::h2::stream")));
                     }
                     Some(Err(e)) => {
                         return Poll::Ready(Err(crate::Error::new_h2(e)));

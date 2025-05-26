@@ -7,7 +7,8 @@ use rama_core::{
     error::{BoxError, ErrorExt, OpaqueError},
 };
 use rama_http_core::upgrade;
-use rama_http_types::{Version, headers::ProxyAuthorization};
+use rama_http_headers::ProxyAuthorization;
+use rama_http_types::Version;
 use rama_net::{
     address::ProxyAddress,
     client::{ConnectorService, EstablishedClientConnection},
@@ -26,9 +27,9 @@ use rama_net::tls::TlsTunnel;
 /// This behaviour is optional and only triggered in case there
 /// is a [`ProxyAddress`] found in the [`Context`].
 pub struct HttpProxyConnector<S> {
-    version: Option<Version>,
     inner: S,
     required: bool,
+    version: Option<Version>,
 }
 
 impl<S: fmt::Debug> fmt::Debug for HttpProxyConnector<S> {
@@ -36,6 +37,7 @@ impl<S: fmt::Debug> fmt::Debug for HttpProxyConnector<S> {
         f.debug_struct("HttpProxyConnector")
             .field("inner", &self.inner)
             .field("required", &self.required)
+            .field("version", &self.version)
             .finish()
     }
 }
@@ -43,9 +45,9 @@ impl<S: fmt::Debug> fmt::Debug for HttpProxyConnector<S> {
 impl<S: Clone> Clone for HttpProxyConnector<S> {
     fn clone(&self) -> Self {
         Self {
-            version: self.version,
             inner: self.inner.clone(),
             required: self.required,
+            version: self.version,
         }
     }
 }
@@ -109,9 +111,8 @@ impl<S, State, Request> Service<State, Request> for HttpProxyConnector<S>
 where
     S: ConnectorService<State, Request, Connection: Stream + Unpin, Error: Into<BoxError>>,
     State: Clone + Send + Sync + 'static,
-    Request: TryRefIntoTransportContext<State, Error: Into<BoxError> + Send + Sync + 'static>
-        + Send
-        + 'static,
+    Request:
+        TryRefIntoTransportContext<State, Error: Into<BoxError> + Send + 'static> + Send + 'static,
 {
     type Response =
         EstablishedClientConnection<Either<S::Connection, upgrade::Upgraded>, State, Request>;
@@ -123,6 +124,17 @@ where
         req: Request,
     ) -> Result<Self::Response, Self::Error> {
         let address = ctx.get::<ProxyAddress>().cloned();
+        if !address
+            .as_ref()
+            .and_then(|addr| addr.protocol.as_ref())
+            .map(|p| p.is_http())
+            .unwrap_or(true)
+        {
+            return Err(OpaqueError::from_display(
+                "http proxy connector can only serve http protocol",
+            )
+            .into_boxed());
+        }
 
         let transport_ctx = ctx
             .get_or_try_insert_with_ctx(|ctx| req.try_ref_into_transport_ctx(ctx))
@@ -132,11 +144,11 @@ where
             })?
             .clone();
 
+        #[cfg(feature = "tls")]
         // in case the provider gave us a proxy info, we insert it into the context
         if let Some(address) = &address {
             ctx.insert(address.clone());
 
-            #[cfg(feature = "tls")]
             if address
                 .protocol
                 .as_ref()

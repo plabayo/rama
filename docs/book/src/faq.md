@@ -125,3 +125,22 @@ Please do [open an issue](https://github.com/plabayo/rama/issues) if you notice 
 Another option is to use [`Either`] on the internal policy/config items used by your layer.
 
 [`Either`]: https://ramaproxy.org/docs/rama/combinators/enum.Either.html
+
+## In the echo server, why are tls.ja3 and tls.ja4 profiles null?
+
+> Originally posted in <https://github.com/plabayo/rama/issues/543> by [@skilbjo](https://github.com/skilbjo).
+
+In <https://echo.ramaproxy.org/> we usually show the following information per fingerprint "algorithm" (e.g. ja3 and ja4):
+
+* the information for the actual incoming request/connection, often labeled as "verbose" or "hash"
+* if possible the values for the embedded profile matching the given user-agent (based on the user-agent http header)
+
+The latter is what the question is about. Rama only embeds profiles of the latest relevant User Agents used
+in the real world in the context of user agent emulation. These are for example the majority marketshare web
+browsers but can also be common network stacks used in native applications such as iOS or Android applications.
+
+You can find all user agent profiles embedded with rama at: <https://github.com/plabayo/rama/blob/main/rama-ua/src/profile/embed_profiles.json>
+
+It is not within the scope of rama to provide an exhaustive database (embedded or not) of all possible
+user-agents found in the while. You can however easily build this yourself by stacking the appropriate
+rama layer services in your own rama-based network stacks.

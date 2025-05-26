@@ -172,22 +172,8 @@ impl Protocol {
     /// Returns `true` if this protocol is socks5.
     pub fn is_socks5(&self) -> bool {
         match &self.0 {
-            ProtocolKind::Socks5 => true,
+            ProtocolKind::Socks5 | ProtocolKind::Socks5h => true,
             ProtocolKind::Http
-            | ProtocolKind::Https
-            | ProtocolKind::Ws
-            | ProtocolKind::Wss
-            | ProtocolKind::Socks5h
-            | ProtocolKind::Custom(_) => false,
-        }
-    }
-
-    /// Returns `true` if this protocol is socks5h).
-    pub fn is_socks5h(&self) -> bool {
-        match &self.0 {
-            ProtocolKind::Socks5h => true,
-            ProtocolKind::Socks5
-            | ProtocolKind::Http
             | ProtocolKind::Https
             | ProtocolKind::Ws
             | ProtocolKind::Wss

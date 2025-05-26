@@ -2,10 +2,10 @@ use super::{
     DirectoryServeMode, ServeVariant,
     headers::{IfModifiedSince, IfUnmodifiedSince, LastModified},
 };
+use crate::headers::{encoding::Encoding, specifier::QualityValue};
 use crate::{HeaderValue, Method, Request, Uri, header};
 use chrono::{DateTime, Local};
 use http_range_header::RangeUnsatisfiableError;
-use rama_http_types::headers::{encoding::Encoding, specifier::QualityValue};
 use std::{
     ffi::OsStr,
     fmt,

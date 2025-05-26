@@ -2,7 +2,7 @@
 
 use crate::h2::hpack::BytesStr;
 
-use bytes::Bytes;
+use rama_core::bytes::Bytes;
 use std::fmt;
 
 /// Represents the `:protocol` pseudo-header used by

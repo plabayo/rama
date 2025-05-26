@@ -229,9 +229,8 @@ impl<S, State, Request> Service<State, Request> for TlsConnector<S, ConnectorKin
 where
     S: ConnectorService<State, Request, Connection: Stream + Unpin, Error: Into<BoxError>>,
     State: Clone + Send + Sync + 'static,
-    Request: TryRefIntoTransportContext<State, Error: Into<BoxError> + Send + Sync + 'static>
-        + Send
-        + 'static,
+    Request:
+        TryRefIntoTransportContext<State, Error: Into<BoxError> + Send + 'static> + Send + 'static,
 {
     type Response = EstablishedClientConnection<AutoTlsStream<S::Connection>, State, Request>;
     type Error = BoxError;
@@ -303,9 +302,8 @@ impl<S, State, Request> Service<State, Request> for TlsConnector<S, ConnectorKin
 where
     S: ConnectorService<State, Request, Connection: Stream + Unpin, Error: Into<BoxError>>,
     State: Clone + Send + Sync + 'static,
-    Request: TryRefIntoTransportContext<State, Error: Into<BoxError> + Send + Sync + 'static>
-        + Send
-        + 'static,
+    Request:
+        TryRefIntoTransportContext<State, Error: Into<BoxError> + Send + 'static> + Send + 'static,
 {
     type Response = EstablishedClientConnection<TlsStream<S::Connection>, State, Request>;
     type Error = BoxError;

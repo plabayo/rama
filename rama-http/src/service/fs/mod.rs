@@ -1,8 +1,8 @@
 //! File system related services.
 
-use bytes::Bytes;
 use futures_lite::Stream;
 use pin_project_lite::pin_project;
+use rama_core::bytes::Bytes;
 use rama_http_types::dep::http_body::{Body, Frame};
 use std::{
     fmt, io,

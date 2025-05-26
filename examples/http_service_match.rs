@@ -26,9 +26,9 @@ use rama::{
         Request,
         layer::trace::TraceLayer,
         matcher::{HttpMatcher, PathMatcher},
-        response::{Html, Json, Redirect},
         server::HttpServer,
         service::web::match_service,
+        service::web::response::{Html, Json, Redirect},
     },
     rt::Executor,
 };

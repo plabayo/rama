@@ -10,13 +10,17 @@ categories = ["asynchronous", "network-programming", "web-programming"]
 authors = { workspace = true }
 rust-version = { workspace = true }
 
-[lints]
-workspace = true
+[package.metadata.cargo-public-api-crates]
+allowed = []
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
 parking_lot = { workspace = true }
 pin-project-lite = { workspace = true }
-rama-macros = { version = "0.2.0-alpha.14", path = "../rama-macros" }
+rama-macros = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 tokio = { workspace = true, features = ["time", "macros"] }
 
@@ -25,9 +29,5 @@ quickcheck = { workspace = true }
 serde_json = { workspace = true }
 tokio-test = { workspace = true }
 
-[package.metadata.cargo-public-api-crates]
-allowed = []
-
-[package.metadata.docs.rs]
-all-features = true
-rustdoc-args = ["--cfg", "docsrs"]
+[lints]
+workspace = true

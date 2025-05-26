@@ -8,7 +8,7 @@ use crate::h2::hpack;
 
 use futures_core::Stream;
 
-use bytes::{Buf, BytesMut};
+use rama_core::bytes::{Buf, BytesMut};
 
 use std::io;
 

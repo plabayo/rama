@@ -1,6 +1,6 @@
 use futures::StreamExt;
 use h2_support::prelude::*;
-use http::HeaderName;
+use rama_http::HeaderName;
 use rama_http::proto::h1::headers::original::OriginalHttp1Headers;
 
 #[tokio::test]

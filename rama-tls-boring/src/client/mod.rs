@@ -15,4 +15,11 @@ pub use connector::{BoringTunnelTlsConnector, TlsConnector, TlsConnectorLayer, t
 
 mod connector_data;
 #[doc(inline)]
-pub use connector_data::TlsConnectorData;
+pub use connector_data::{TlsConnectorData, TlsConnectorDataBuilder};
+
+#[cfg(feature = "ua")]
+mod emulate_ua;
+
+#[cfg(feature = "ua")]
+#[doc(inline)]
+pub use emulate_ua::{EmulateTlsProfileLayer, EmulateTlsProfileService};

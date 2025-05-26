@@ -36,7 +36,7 @@ use rama::{
     Layer, Service,
     error::{BoxError, ErrorContext, OpaqueError},
     http::{
-        Body, IntoResponse, Request, Response, StatusCode,
+        Body, Request, Response, StatusCode,
         client::{EasyHttpWebClient, TlsConnectorConfig},
         layer::{
             compress_adapter::CompressAdaptLayer,
@@ -50,10 +50,12 @@ use rama::{
         },
         matcher::MethodMatcher,
         server::HttpServer,
+        service::web::response::IntoResponse,
     },
     layer::ConsumeErrLayer,
     net::{
         http::RequestContext,
+        proxy::ProxyTarget,
         stream::layer::http::BodyLimitLayer,
         tls::{
             ApplicationProtocol, SecureTransport,
@@ -68,6 +70,7 @@ use rama::{
     rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
+    tls::boring::client::EmulateTlsProfileLayer,
     tls::boring::server::{TlsAcceptorData, TlsAcceptorLayer},
     ua::{
         emulate::{
@@ -158,12 +161,16 @@ async fn http_connect_accept(
     mut ctx: Context,
     req: Request,
 ) -> Result<(Response, Context, Request), Response> {
-    match ctx.get_or_try_insert_with_ctx::<RequestContext, _>(|ctx| (ctx, &req).try_into()) {
-        Ok(request_ctx) => {
-            tracing::info!("accept CONNECT to {}", request_ctx.authority);
+    match ctx
+        .get_or_try_insert_with_ctx::<RequestContext, _>(|ctx| (ctx, &req).try_into())
+        .map(|ctx| ctx.authority.clone())
+    {
+        Ok(authority) => {
+            tracing::info!(%authority, "accept CONNECT (lazy): insert proxy target into context");
+            ctx.insert(ProxyTarget(authority));
         }
         Err(err) => {
-            tracing::error!(err = %err, "error extracting authority");
+            tracing::error!(%err, "error extracting authority");
             return Err(StatusCode::BAD_REQUEST.into_response());
         }
     }
@@ -213,6 +220,7 @@ fn new_http_mitm_proxy(
         RemoveRequestHeaderLayer::hop_by_hop(),
         CompressAdaptLayer::default(),
         AddRequiredRequestHeadersLayer::new(),
+        EmulateTlsProfileLayer::new(),
     )
         .into_layer(service_fn(http_mitm_proxy))
 }

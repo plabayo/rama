@@ -148,7 +148,7 @@ impl Handle {
     }
 
     pub async fn send_bytes(&mut self, data: &[u8]) {
-        use bytes::Buf;
+        use rama_core::bytes::Buf;
         use std::io::Cursor;
 
         let buf: Vec<_> = data.into();

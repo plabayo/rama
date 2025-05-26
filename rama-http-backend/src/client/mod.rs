@@ -1,7 +1,7 @@
 //! Rama HTTP client module,
 //! which provides the [`EasyHttpWebClient`] type to serve HTTP requests.
 
-use std::fmt;
+use std::{fmt, sync::Arc};
 
 use proxy::layer::HttpProxyConnector;
 use rama_core::{
@@ -18,6 +18,7 @@ use rama_net::client::{
     },
 };
 use rama_tcp::client::service::TcpConnector;
+use rama_utils::macros::generate_set_and_with;
 
 pub mod builder;
 
@@ -26,7 +27,7 @@ use rama_net::tls::client::{ClientConfig, ProxyClientConfig, extract_client_conf
 
 #[cfg(feature = "boring")]
 use rama_tls_boring::client::{
-    TlsConnector as BoringTlsConnector, TlsConnectorData as BoringTlsConnectorData,
+    TlsConnector as BoringTlsConnector, TlsConnectorDataBuilder as BoringTlsConnectorDataBuilder,
 };
 
 #[cfg(feature = "rustls")]
@@ -167,75 +168,33 @@ impl EasyHttpWebClient {
 
 impl<I1, I2, P> EasyHttpWebClient<I1, I2, P> {
     #[cfg(any(feature = "rustls", feature = "boring"))]
-    /// Set the [`TlsConnectorLayer`] of this [`EasyHttpWebClient`].
-    pub fn set_tls_connector_config(&mut self, layer: TlsConnectorConfig) -> &mut Self {
-        self.tls_connector_config = Some(layer);
-        self
-    }
+    generate_set_and_with!(
+        /// Set the [`TlsConnectorConfig`] that this [`EasyHttpWebClient`] will use.
+        pub fn tls_connector_config(mut self, config: Option<TlsConnectorConfig>) -> Self {
+            self.tls_connector_config = config;
+            self
+        }
+    );
 
     #[cfg(any(feature = "rustls", feature = "boring"))]
-    /// Replace this [`EasyHttpWebClient`] with the [`TlsConnectorLayer`] set.
-    pub fn with_tls_connector_config(mut self, layer: TlsConnectorConfig) -> Self {
-        self.tls_connector_config = Some(layer);
-        self
-    }
+    generate_set_and_with!(
+        /// Set the [`TlsConnectorConfig`] for the https proxy tunnel if needed within this [`EasyHttpWebClient`].
+        pub fn proxy_tls_connector_config(mut self, config: Option<TlsConnectorConfig>) -> Self {
+            self.proxy_tls_connector_config = config;
+            self
+        }
+    );
 
-    #[cfg(any(feature = "rustls", feature = "boring"))]
-    /// Replace this [`EasyHttpWebClient`] with an option of [`TlsConfig`] set.
-    pub fn maybe_with_tls_connector_config(mut self, layer: Option<TlsConnectorConfig>) -> Self {
-        self.tls_connector_config = layer;
-        self
-    }
-
-    #[cfg(any(feature = "rustls", feature = "boring"))]
-    /// Set the [`TlsConfig`] for the https proxy tunnel if needed within this [`EasyHttpWebClient`].
-    pub fn set_proxy_tls_connector_config(&mut self, layer: TlsConnectorConfig) -> &mut Self {
-        self.proxy_tls_connector_config = Some(layer);
-        self
-    }
-
-    #[cfg(any(feature = "rustls", feature = "boring"))]
-    /// Replace this [`EasyHttpWebClient`] set for the https proxy tunnel if needed within this [`TlsConfig`].
-    pub fn with_proxy_tls_connector_config(mut self, layer: TlsConnectorConfig) -> Self {
-        self.proxy_tls_connector_config = Some(layer);
-        self
-    }
-
-    #[cfg(any(feature = "rustls", feature = "boring"))]
-    /// Replace this [`EasyHttpWebClient`] set for the https proxy tunnel if needed within this [`TlsConfig`].
-    pub fn maybe_proxy_with_tls_connector_config(
-        mut self,
-        layer: Option<TlsConnectorConfig>,
-    ) -> Self {
-        self.proxy_tls_connector_config = layer;
-        self
-    }
-
-    /// Set the HTTP version to use for the Http Proxy CONNECT request.
-    ///
-    /// By default this is set to HTTP/1.1.
-    pub fn with_proxy_http_connect_version(mut self, version: Version) -> Self {
-        self.proxy_http_connect_version = Some(version);
-        self
-    }
-
-    /// Set the HTTP version to use for the Http Proxy CONNECT request.
-    pub fn set_proxy_http_connect_version(&mut self, version: Version) -> &mut Self {
-        self.proxy_http_connect_version = Some(version);
-        self
-    }
-
-    /// Set the HTTP version to auto detect for the Http Proxy CONNECT request.
-    pub fn with_proxy_http_connect_auto_version(mut self) -> Self {
-        self.proxy_http_connect_version = None;
-        self
-    }
-
-    /// Set the HTTP version to auto detect for the Http Proxy CONNECT request.
-    pub fn set_proxy_http_connect_auto_version(&mut self) -> &mut Self {
-        self.proxy_http_connect_version = None;
-        self
-    }
+    generate_set_and_with!(
+        /// Set the HTTP version to use for the Http Proxy CONNECT request.
+        ///
+        /// By default this is set to HTTP/1.1.
+        /// If this is not set to None the version will be negotiated automatically
+        pub fn proxy_http_connect_version(mut self, version: Option<Version>) -> Self {
+            self.proxy_http_connect_version = version;
+            self
+        }
+    );
 
     #[cfg(any(feature = "rustls", feature = "boring"))]
     pub fn with_http_conn_req_inspector<T>(
@@ -487,8 +446,8 @@ where
 fn create_connector_data_boring<State>(
     ctx: &Context<State>,
     tls_config: &Option<ClientConfig>,
-) -> Result<BoringTlsConnectorData, OpaqueError> {
-    match extract_client_config_from_ctx(ctx) {
+) -> Result<Arc<BoringTlsConnectorDataBuilder>, OpaqueError> {
+    let builder = match extract_client_config_from_ctx(ctx) {
         Some(mut chain_ref) => {
             trace!(
                 "create tls connector using rama tls client config(s) from context and/or the predefined one if defined"
@@ -496,38 +455,37 @@ fn create_connector_data_boring<State>(
             if let Some(tls_config) = tls_config {
                 chain_ref.prepend(tls_config.clone());
             }
-            BoringTlsConnectorData::try_from_multiple_client_configs(chain_ref.iter()).context(
+            BoringTlsConnectorDataBuilder::try_from_multiple_client_configs(chain_ref.iter()).context(
                 "EasyHttpWebClient: create tls connector data from tls client config(s) from context and/or the predefined one if defined",
             )
         }
         None => match tls_config {
             Some(tls_config) => {
                 trace!("create tls connector using pre-defined rama tls client config");
-                tls_config.clone().try_into().context(
+                tls_config.try_into().context(
                     "EasyHttpWebClient: create tls connector data from pre-defined tls config",
                 )
             }
             None => {
                 trace!("create tls connector using the 'new_http_auto' constructor");
-                BoringTlsConnectorData::new_http_auto()
-                    .context("EasyHttpWebClient: create tls connector data for http (auto)")
+                Ok(BoringTlsConnectorDataBuilder::new_http_auto())
             }
         },
-    }
+    };
+    Ok(builder?.into_shared_builder())
 }
 
 #[cfg(feature = "boring")]
 fn create_proxy_connector_data_boring<State>(
     ctx: &Context<State>,
     tls_config: &Option<ClientConfig>,
-) -> Result<BoringTlsConnectorData, OpaqueError> {
+) -> Result<Arc<BoringTlsConnectorDataBuilder>, OpaqueError> {
     let data = match (ctx.get::<ProxyClientConfig>(), tls_config) {
         (Some(proxy_tls_config), _) => {
             trace!("create proxy tls connector using rama tls client config from context");
             proxy_tls_config
                 .0
                 .as_ref()
-                .clone()
                 .try_into()
                 .context(
                 "EasyHttpWebClient: create proxy tls connector data from tls config found in context",
@@ -536,18 +494,15 @@ fn create_proxy_connector_data_boring<State>(
         (None, Some(proxy_tls_config)) => {
             trace!("create proxy tls connector using pre-defined rama tls client config");
             proxy_tls_config
-                .clone()
                 .try_into()
                 .context("EasyHttpWebClient: create proxy tls connector data from tls config")?
         }
         (None, None) => {
             trace!("create proxy tls connector using the 'new_http_auto' constructor");
-            BoringTlsConnectorData::new().context(
-                "EasyHttpWebClient: create proxy tls connector data with no application presets",
-            )?
+            BoringTlsConnectorDataBuilder::new()
         }
     };
-    Ok(data)
+    Ok(data.into_shared_builder())
 }
 
 #[cfg(feature = "rustls")]

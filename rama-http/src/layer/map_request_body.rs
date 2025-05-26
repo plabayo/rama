@@ -5,7 +5,7 @@
 //! ```
 //! use rama_http::{Body, Request, Response};
 //! use rama_http::dep::http_body;
-//! use bytes::Bytes;
+//! use rama_core::bytes::Bytes;
 //! use std::convert::Infallible;
 //! use std::{pin::Pin, task::{ready, Context, Poll}};
 //! use rama_core::{Layer, Service, context};

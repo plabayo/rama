@@ -1,7 +1,7 @@
 use crate::h2::codec::SendError;
 use crate::h2::frame::{Reason, StreamId};
 
-use bytes::Bytes;
+use rama_core::bytes::Bytes;
 use std::fmt;
 use std::io;
 

@@ -5,7 +5,7 @@
 //! # Example
 //!
 //! ```
-//! use bytes::Bytes;
+//! use rama_core::bytes::Bytes;
 //!
 //! use rama_http::layer::validate_request::{ValidateRequest, ValidateRequestHeader, ValidateRequestHeaderLayer};
 //! use rama_http::{Body, Request, Response, StatusCode, header::AUTHORIZATION};

@@ -1,14 +1,15 @@
 use super::open_file::{FileOpened, FileRequestExtent, OpenFileOutput};
+use crate::headers::encoding::Encoding;
 use crate::{
     Body, HeaderValue, Request, Response, StatusCode,
     dep::http_body_util::BodyExt,
     header::{self, ALLOW},
     service::fs::AsyncReadBody,
+    service::web::response::{Html, IntoResponse},
 };
-use bytes::Bytes;
+use rama_core::bytes::Bytes;
 use rama_core::{Context, Service, error::BoxError};
-use rama_http_types::{IntoResponse, headers::encoding::Encoding};
-use rama_http_types::{dep::http_body, response::Html};
+use rama_http_types::dep::http_body;
 use std::{convert::Infallible, io};
 
 pub(super) async fn consume_open_file_result<State, ReqBody, ResBody, F>(
@@ -110,7 +111,7 @@ where
         .map(|body| {
             body.map_err(|err| match err.into().downcast::<io::Error>() {
                 Ok(err) => *err,
-                Err(err) => io::Error::new(io::ErrorKind::Other, err),
+                Err(err) => io::Error::other(err),
             })
             .boxed()
         })

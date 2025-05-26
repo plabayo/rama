@@ -4,6 +4,7 @@ use rama_core::{
     Context, Service,
     error::{BoxError, ErrorContext, OpaqueError},
 };
+use rama_http_headers::{ClientHint, all_client_hints};
 use rama_http_types::{
     HeaderMap, HeaderName, HeaderValue, Method, Request, Uri, Version,
     conn::{H2ClientContextParams, Http1ClientContextParams, StreamDependencyParams},
@@ -11,7 +12,6 @@ use rama_http_types::{
         ACCEPT, ACCEPT_LANGUAGE, AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, COOKIE, HOST, ORIGIN,
         REFERER, USER_AGENT,
     },
-    headers::{ClientHint, all_client_hints},
     proto::{
         h1::{
             Http1HeaderMap,
@@ -282,30 +282,15 @@ where
                     ua_kind = %profile.ua_kind,
                     ua_version = ?profile.ua_version,
                     platform = ?profile.platform,
-                    "user agent emulation: skip tls settings as http is instructed to be preserved"
+                    "user agent emulation: skip tls settings as tls is instructed to be preserved"
                 );
             } else {
-                // client_config's Arc is to be lazilly cloned by a tls connector
-                // only when a connection is to be made, as to play nicely
-                // with concepts such as connection pooling
-                let host = match ctx.get::<RequestContext>() {
-                    Some(request_ctx) => Some(request_ctx.authority.host().clone()),
-                    None => match req.uri().host() {
-                        Some(s) => Some(s.parse().context("parse req uri host as rama net Host")?),
-                        None => None,
-                    },
-                };
-                rama_net::tls::client::append_all_client_configs_to_ctx(
-                    &mut ctx,
-                    [
-                        profile.tls.client_config.clone(),
-                        std::sync::Arc::new(rama_net::tls::client::ClientConfig {
-                            extensions: Some(vec![
-                                rama_net::tls::client::ClientHelloExtension::ServerName(host),
-                            ]),
-                            ..Default::default()
-                        }),
-                    ],
+                ctx.insert(profile.tls.clone());
+                tracing::trace!(
+                    ua_kind = %profile.ua_kind,
+                    ua_version = ?profile.ua_version,
+                    platform = ?profile.platform,
+                    "user agent emulation: tls profile injected in ctx"
                 );
             }
         }

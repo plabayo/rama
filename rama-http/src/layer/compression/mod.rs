@@ -5,7 +5,7 @@
 //! Example showing how to respond with the compressed contents of a file.
 //!
 //! ```rust
-//! use bytes::Bytes;
+//! use rama_core::bytes::Bytes;
 //! use futures_lite::stream::StreamExt;
 //! use rama_core::error::BoxError;
 //! use rama_http::dep::http_body::Frame;

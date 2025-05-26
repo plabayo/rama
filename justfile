@@ -2,18 +2,19 @@ fmt:
 	cargo fmt --all
 
 sort:
+	@cargo install cargo-sort
 	cargo sort --workspace --grouped
 
 lint: fmt sort
 
 check:
-	cargo check --workspace --all-targets --all-features
+	RUSTFLAGS='-D warnings' cargo check --workspace --all-targets --all-features
 
 check-links:
     lychee .
 
 clippy:
-	cargo clippy --workspace --all-targets --all-features
+	RUSTFLAGS='-D warnings' cargo clippy --workspace --all-targets --all-features
 
 clippy-fix *ARGS:
 	cargo clippy --workspace --all-targets --all-features --fix {{ARGS}}
@@ -31,6 +32,7 @@ doc-open:
 	RUSTDOCFLAGS="-D rustdoc::broken-intra-doc-links" cargo doc --all-features --no-deps --open
 
 hack:
+	@cargo install cargo-hack
 	cargo hack check --each-feature --no-dev-deps --workspace
 
 test:
@@ -51,6 +53,7 @@ qa: qq test
 qa-full: qa hack test-ignored fuzz-60s check-links
 
 upgrades:
+    @cargo install cargo-upgrades
     cargo upgrades
 
 watch-docs:
@@ -129,6 +132,7 @@ miri:
 	cargo +nightly miri test
 
 detect-unused-deps:
+	@cargo install cargo-machete
 	cargo machete --skip-target-dir
 
 detect-biggest-fn:
@@ -147,15 +151,16 @@ publish:
     cargo publish -p rama-core
     cargo publish -p rama-http-types
     cargo publish -p rama-net
+    cargo publish -p rama-http-headers
     cargo publish -p rama-ua
     cargo publish -p rama-dns
     cargo publish -p rama-tcp
     cargo publish -p rama-udp
     cargo publish -p rama-tls-boring
     cargo publish -p rama-tls-rustls
+    cargo publish -p rama-http
     cargo publish -p rama-http-core
     cargo publish -p rama-http-backend
-    cargo publish -p rama-http
     cargo publish -p rama-haproxy
     cargo publish -p rama-proxy
     cargo publish -p rama-socks5

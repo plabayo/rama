@@ -1,7 +1,7 @@
 use super::table::{Index, Table};
 use super::{Header, huffman};
 
-use bytes::{BufMut, BytesMut};
+use rama_core::bytes::{BufMut, BytesMut};
 use rama_http_types::dep::http::header::{HeaderName, HeaderValue};
 
 #[derive(Debug)]

@@ -40,6 +40,7 @@ Here is a list of all `rama` crates:
 - [`rama-haproxy`](https://crates.io/crates/rama-haproxy): rama HaProxy support
 - [`rama-ua`](https://crates.io/crates/rama-ua): User-Agent (UA) support for `rama`
 - [`rama-http-types`](https://crates.io/crates/rama-http-types): http types and utilities
+- [`rama-http-headers`](https://crates.io/crates/rama-http-headers): types http headers
 - [`rama-http`](https://crates.io/crates/rama-http): rama http services, layers and utilities
 - [`rama-http-backend`](https://crates.io/crates/rama-http-backend): default http backend for `rama`
 - [`rama-http-core`](https://crates.io/crates/rama-http-core): http protocol implementation driving `rama-http-backend`
@@ -74,6 +75,7 @@ overhead. So `rama`'s performance is comparable to [`hyper`] and frameworks that
 Here's a list of external benchmarks:
 
 - http server benchmark @ <https://web-frameworks-benchmark.netlify.app/result>
+- http server + client benchmark @ <https://sharkbench.dev/web>
 
 Please [open an issue](https://github.com/plabayo/rama/issues) or Pull Request (PR) in case
 you are aware of any other benchmarks of interest in regards to http(s) servers,
@@ -89,17 +91,37 @@ We also make use of [`cargo vet`](https://github.com/mozilla/cargo-vet) to
 
 ## 🦀 | Compatibility
 
+### Tier 1 Platforms
+
 Rama (ラマ) is developed mostly on MacOS M-Series machines and run in production
-on a variety of Linux systems. There is no windows support, and neither do we test on that platform.
+on a variety of Linux systems. These are tier 1 platofrms.
 
 | platform | tested | test platform |
 |----------|--------|---------------|
 | MacOS    | ✅     | MacOS Apple Silicon (developer laptop) and macos-12 Intel ([GitHub Action](https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners/about-github-hosted-runners)) |
 | Linux    | ✅     | Ubuntu 22.04 ([GitHub Action](https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners/about-github-hosted-runners)) |
 
+### Tier 2 platforms
+
+These platforms we do not run ourselves but do have basic support, meaning:
+
+* the code compiles and checks;
+* unit tests pass
+
+As we do not use this platform ourselves and neither do we run integration tests on them,
+we can however not promise that there are no issues with these builds. Neither do
+we provide prebuild binaries for this platform.
+
+| platform | tested | test platform |
+|----------|--------|---------------|
+| Windows    | ✅     | Windows latest (x64) ([GitHub Action](https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners/about-github-hosted-runners)) |
+
+### Other Platforms
+
 Please [open a ticket](https://github.com/plabayo/rama/issues) in case you have compatibility issues for your setup/platform.
-Our goal is not to support all possible platformns in the world, but we do want to
-support as many as we reasonably can.
+Our goal is not to support all possible platforms in the world, but we do want to
+support as many as we reasonably can. Such platforms will only happen
+and continue to happen with community/ecosystem support.
 
 ### Minimum supported Rust version
 

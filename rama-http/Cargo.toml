@@ -10,8 +10,12 @@ categories = ["asynchronous", "network-programming", "web-programming"]
 authors = { workspace = true }
 rust-version = { workspace = true }
 
-[lints]
-workspace = true
+[package.metadata.cargo-public-api-crates]
+allowed = []
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 default = []
@@ -29,7 +33,6 @@ async-compression = { workspace = true, features = [
 ], optional = true }
 base64 = { workspace = true }
 bitflags = { workspace = true }
-bytes = { workspace = true }
 chrono = { workspace = true }
 const_format = { workspace = true }
 csv = { workspace = true }
@@ -43,13 +46,12 @@ mime_guess = { workspace = true }
 nanoid = { workspace = true }
 percent-encoding = { workspace = true }
 pin-project-lite = { workspace = true }
-radix_trie = { workspace = true }
-rama-core = { version = "0.2.0-alpha.14", path = "../rama-core" }
-rama-http-types = { version = "0.2.0-alpha.14", path = "../rama-http-types" }
-rama-macros = { version = "0.2.0-alpha.14", path = "../rama-macros" }
-rama-net = { version = "0.2.0-alpha.14", path = "../rama-net", features = ["http"] }
-rama-ua = { version = "0.2.0-alpha.14", path = "../rama-ua" }
-rama-utils = { version = "0.2.0-alpha.14", path = "../rama-utils" }
+rama-core = { workspace = true }
+rama-http-headers = { workspace = true }
+rama-http-types = { workspace = true }
+rama-net = { workspace = true, features = ["http"] }
+rama-ua = { workspace = true }
+rama-utils = { workspace = true }
 regex = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_html_form = { workspace = true }
@@ -65,17 +67,12 @@ brotli = { workspace = true }
 flate2 = { workspace = true }
 itertools = { workspace = true }
 parking_lot = { workspace = true }
-rama-http-backend = { version = "0.2.0-alpha.14", path = "../rama-http-backend" }
-rama-tcp = { version = "0.2.0-alpha.14", path = "../rama-tcp" }
+rama-tcp = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tokio-test = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 zstd = { workspace = true }
 
-[package.metadata.cargo-public-api-crates]
-allowed = []
-
-[package.metadata.docs.rs]
-all-features = true
-rustdoc-args = ["--cfg", "docsrs"]
+[lints]
+workspace = true

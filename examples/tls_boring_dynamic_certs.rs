@@ -57,6 +57,7 @@ use rama::{
     error::OpaqueError,
     graceful::Shutdown,
     http::server::HttpServer,
+    http::service::web::response::IntoResponse,
     http::{Request, Response},
     layer::ConsumeErrLayer,
     net::{
@@ -65,7 +66,7 @@ use rama::{
         tls::{
             DataEncoding,
             client::ClientHello,
-            server::{DynamicCertIssuer, ServerAuthData, ServerCertIssuerData},
+            server::{CacheKind, DynamicCertIssuer, ServerAuthData, ServerCertIssuerData},
         },
     },
     rt::Executor,
@@ -73,8 +74,6 @@ use rama::{
     tcp::server::TcpListener,
     tls::boring::server::{TlsAcceptorData, TlsAcceptorLayer},
 };
-use rama_http::IntoResponse;
-use rama_net::tls::server::CacheKind;
 
 // everything else is provided by the standard library, community crates or tokio
 use std::{convert::Infallible, time::Duration};
@@ -152,7 +151,7 @@ impl DynamicCertIssuer for DynamicIssuer {
     ) -> Result<ServerAuthData, OpaqueError> {
         match client_hello.ext_server_name() {
             Some(host) => match host {
-                rama_net::address::Host::Name(domain) => {
+                rama::net::address::Host::Name(domain) => {
                     if domain == &Domain::from_static("example") {
                         return Ok(self.example_data.clone());
                     } else if domain == &Domain::from_static("second.example") {
@@ -160,7 +159,7 @@ impl DynamicCertIssuer for DynamicIssuer {
                     }
                     Ok(self.example_data.clone())
                 }
-                rama_net::address::Host::Address(_ip_addr) => Ok(self.default_data.clone()),
+                rama::net::address::Host::Address(_ip_addr) => Ok(self.default_data.clone()),
             },
             None => Ok(self.example_data.clone()),
         }

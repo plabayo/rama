@@ -19,11 +19,11 @@
 //! You should see a response with `HTTP/1.1 200 OK` and a HTML body containing
 //! the peer address, the path of the request and the stats of the bytes read and written.
 
-use bytes::Bytes;
 use rama::{
     Context, Layer,
+    bytes::Bytes,
     http::{
-        IntoResponse, Request, header,
+        Request, header,
         layer::{
             compression::CompressionLayer,
             sensitive_headers::{
@@ -31,8 +31,8 @@ use rama::{
             },
             trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer},
         },
-        response::Html,
         server::HttpServer,
+        service::web::response::{Html, IntoResponse},
     },
     layer::{MapResponseLayer, TimeoutLayer, TraceErrLayer},
     net::stream::{
@@ -44,6 +44,7 @@ use rama::{
     tcp::server::TcpListener,
     utils::latency::LatencyUnit,
 };
+
 use std::{sync::Arc, time::Duration};
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};

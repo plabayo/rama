@@ -1,6 +1,6 @@
 use rama_core::Context;
 
-use crate::response::IntoResponse;
+use crate::service::web::endpoint::IntoResponse;
 use crate::{Request, dep::http::request::Parts};
 
 use super::{FromRequest, FromRequestContextRefPair};

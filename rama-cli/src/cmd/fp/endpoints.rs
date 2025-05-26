@@ -10,9 +10,9 @@ use crate::cmd::fp::data::TlsDisplayInfoExtensionData;
 use itertools::Itertools as _;
 use rama::{
     Context,
+    http::service::web::response::{self, IntoResponse, Json},
     http::{
-        Body, BodyExtractExt, IntoResponse, Request, Response, StatusCode, proto::h2,
-        response::Json, service::web::extract::Path,
+        Body, BodyExtractExt, Request, Response, StatusCode, proto::h2, service::web::extract::Path,
     },
     ua::profile::{JsProfileWebApis, UserAgentSourceInfo},
 };
@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::sync::Arc;
 
-type Html = rama::http::response::Html<String>;
+type Html = response::Html<String>;
 
 fn html<T: Into<String>>(inner: T) -> Html {
     inner.into().into()

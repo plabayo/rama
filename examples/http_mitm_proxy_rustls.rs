@@ -37,7 +37,7 @@ use rama::{
     error::{BoxError, ErrorContext, OpaqueError},
     http::layer::compress_adapter::CompressAdaptLayer,
     http::{
-        Body, IntoResponse, Request, Response, StatusCode,
+        Body, Request, Response, StatusCode,
         client::{EasyHttpWebClient, TlsConnectorConfig},
         layer::{
             map_response_body::MapResponseBodyLayer,
@@ -49,11 +49,12 @@ use rama::{
         },
         matcher::MethodMatcher,
         server::HttpServer,
+        service::web::response::IntoResponse,
     },
     layer::ConsumeErrLayer,
     net::{
-        http::RequestContext, stream::layer::http::BodyLimitLayer, tls::server::SelfSignedData,
-        user::Basic,
+        http::RequestContext, proxy::ProxyTarget, stream::layer::http::BodyLimitLayer,
+        tls::server::SelfSignedData, user::Basic,
     },
     rt::Executor,
     service::service_fn,
@@ -142,9 +143,13 @@ async fn http_connect_accept(
     mut ctx: Context,
     req: Request,
 ) -> Result<(Response, Context, Request), Response> {
-    match ctx.get_or_try_insert_with_ctx::<RequestContext, _>(|ctx| (ctx, &req).try_into()) {
-        Ok(request_ctx) => {
-            tracing::info!("accept CONNECT to {}", request_ctx.authority);
+    match ctx
+        .get_or_try_insert_with_ctx::<RequestContext, _>(|ctx| (ctx, &req).try_into())
+        .map(|ctx| ctx.authority.clone())
+    {
+        Ok(authority) => {
+            tracing::info!(%authority, "accept CONNECT (lazy): insert proxy target into context");
+            ctx.insert(ProxyTarget(authority));
         }
         Err(err) => {
             tracing::error!(err = %err, "error extracting authority");

@@ -109,7 +109,7 @@ pub trait PolicyExt {
     /// # Example
     ///
     /// ```
-    /// use bytes::Bytes;
+    /// use rama_core::bytes::Bytes;
     /// use rama_http::Body;
     /// use rama_http::layer::follow_redirect::policy::{self, clone_body_fn, Limited, PolicyExt};
     ///

@@ -19,7 +19,7 @@
 //!
 //! [`http-body-util`]: https://docs.rs/http-body-util
 
-pub use bytes::{Buf, Bytes};
+pub use rama_core::bytes::{Buf, Bytes};
 pub use rama_http_types::dep::http_body::{Body, Frame, SizeHint};
 
 pub use self::incoming::Incoming;

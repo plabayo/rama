@@ -190,7 +190,7 @@ pub trait ClassifyResponse: Send + Sync + 'static {
     /// };
     /// use rama_http::{Response, StatusCode};
     /// use rama_http::dep::http_body_util::Empty;
-    /// use bytes::Bytes;
+    /// use rama_core::bytes::Bytes;
     ///
     /// fn transform_failure_class(class: ServerErrorsFailureClass) -> NewFailureClass {
     ///     match class {
@@ -359,7 +359,7 @@ pub enum ServerErrorsFailureClass {
 }
 
 impl fmt::Display for ServerErrorsFailureClass {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::StatusCode(code) => write!(f, "Status code: {}", code),
             Self::Error(error) => write!(f, "Error: {}", error),

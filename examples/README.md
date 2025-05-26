@@ -27,12 +27,44 @@ This directory contains example implementations demonstrating various features a
 - [`http_pooled_client.rs`](./http_pooled_client.rs) - Connection pooling client
 
 ## Proxies
+
+### Http Proxies
+
 - [`http_connect_proxy.rs`](./http_connect_proxy.rs) - HTTP CONNECT proxy implementation
-- [`https_connect_proxy.rs`](./https_connect_proxy.rs) - HTTPS CONNECT proxy implementation
 - [`http_mitm_proxy_rustls.rs`](./http_mitm_proxy_rustls.rs) - MITM proxy using Rustls
 - [`http_mitm_proxy_boring.rs`](./http_mitm_proxy_boring.rs) - MITM proxy using BoringSSL
 
+### Http within TLS Proxies
+
+- [`https_connect_proxy.rs`](./https_connect_proxy.rs) - HTTPS CONNECT proxy implementation
+
+### Socks5 Proxies
+
+- [`socks5_connect_proxy.rs`](./socks5_connect_proxy.rs) - SOCKS5 CONNECT proxy implementation
+- [`socks5_connect_proxy_mitm_proxy.rs`](./socks5_connect_proxy_mitm_proxy.rs) -
+  SOCKS5 CONNECT proxy implementation with HTTP(S) MITM Capabilities
+- [`socks5_connect_proxy_over_tls.rs`](./socks5_connect_proxy_over_tls.rs) -
+  SOCKS5 CONNECT proxy implementation showing how to run it within a TLS tunnel w/ self-contained socks5 client
+- [`socks5_bind_proxy.rs`](./socks5_bind_proxy.rs) -
+  SOCKS5 BIND proxy implementation showing how to run it from both client and server
+- [`socks5_udp_associate.rs`](./socks5_udp_associate.rs) -
+  SOCKS5 UDP Associate client+server example w/ sync inspector added
+- [`socks5_udp_associate_framed.rs`](./socks5_udp_associate_framed.rs) -
+  Same as `socks5_udp_associate.rs` but demonstrating how to combine it with frames
+
+### Combo Proxies:
+
+- [`socks5_and_http_proxy.rs`](./socks5_and_http_proxy.rs) -
+  combines `http_connect_proxy` and `socks5_connect_proxy` into a single server.
+
+### HaProxy
+
+- [`haproxy_client_ip.rs`](./haproxy_client_ip.rs) -
+  shows how to support, optionally, HaProxy (v1/v2) in a rama web service,
+  supporting load balancers that support the proagation of client IP address.
+
 ## TLS and Security
+
 ### Rustls
 - [`tls_rustls_termination.rs`](./tls_rustls_termination.rs) - TLS termination with Rustls
 - [`tls_rustls_dynamic_certs.rs`](./tls_rustls_dynamic_certs.rs) - Dynamic certificate management with Rustls
@@ -41,6 +73,9 @@ This directory contains example implementations demonstrating various features a
 ### BoringSSL
 - [`tls_boring_termination.rs`](./tls_boring_termination.rs) - TLS termination with BoringSSL
 - [`tls_boring_dynamic_certs.rs`](./tls_boring_dynamic_certs.rs) - Dynamic certificate management with BoringSSL
+
+### SNI router
+- [`tls_sni_router.rs`](./tls_sni_router.rs)) - (TLS) SNI Router with BoringSSL
 
 ### Mutual TLS
 - [`mtls_tunnel_and_service.rs`](./mtls_tunnel_and_service.rs) - Mutual TLS tunnel and service implementation

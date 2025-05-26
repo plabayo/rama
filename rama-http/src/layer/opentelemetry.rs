@@ -2,7 +2,8 @@
 //!
 //! [`Layer`]: rama_core::Layer
 
-use crate::{IntoResponse, Request, Response};
+use crate::service::web::response::IntoResponse;
+use crate::{Request, Response};
 use rama_core::telemetry::opentelemetry::{
     AttributesFactory, InstrumentationScope, KeyValue, MeterOptions, ServiceInfo, global,
     metrics::{Counter, Histogram, Meter},

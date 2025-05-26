@@ -1,4 +1,5 @@
 use crate::forwarded::Forwarded;
+use crate::proxy::ProxyTarget;
 use crate::transport::{TransportContext, TransportProtocol, TryRefIntoTransportContext};
 use crate::{
     Protocol,
@@ -6,8 +7,8 @@ use crate::{
 };
 use rama_core::Context;
 use rama_core::error::OpaqueError;
-use rama_http_types::Method;
-use rama_http_types::{Request, Uri, Version, dep::http::request::Parts};
+use rama_http_types::{HttpRequestParts, Method};
+use rama_http_types::{Uri, Version};
 
 #[cfg(feature = "tls")]
 use crate::tls::SecureTransport;
@@ -59,10 +60,10 @@ impl RequestContext {
     }
 }
 
-impl<Body, State> TryFrom<(&Context<State>, &Request<Body>)> for RequestContext {
+impl<T: HttpRequestParts, State> TryFrom<(&Context<State>, &T)> for RequestContext {
     type Error = OpaqueError;
 
-    fn try_from((ctx, req): (&Context<State>, &Request<Body>)) -> Result<Self, Self::Error> {
+    fn try_from((ctx, req): (&Context<State>, &T)) -> Result<Self, Self::Error> {
         let uri = req.uri();
 
         let protocol = protocol_from_uri_or_context(ctx, uri, req.method());
@@ -76,12 +77,18 @@ impl<Body, State> TryFrom<(&Context<State>, &Request<Body>)> for RequestContext 
             .unwrap_or_else(|| protocol.default_port().unwrap_or(80));
         tracing::trace!(uri = %uri, "request context: detected default port: {default_port}");
 
-        let authority = match ctx.get().and_then(try_get_host_from_secure_transport) {
-            Some(h) => {
+        let proxy_authority_opt: Option<Authority> = ctx.get::<ProxyTarget>().map(|t| t.0.clone());
+        let sni_host_opt = ctx.get().and_then(try_get_host_from_secure_transport);
+        let authority = match (proxy_authority_opt, sni_host_opt) {
+            (Some(authority), _) => {
+                tracing::trace!(uri = %uri, %authority, "request context: use proxy target as authority");
+                authority
+            },
+            (None, Some(h)) => {
                 tracing::trace!(uri = %uri, host = %h, "request context: detected host from SNI");
                 (h, default_port).into()
             },
-            None => uri
+            (None, None) => uri
                 .host()
                 .and_then(|h| Host::try_from(h).ok().map(|h| {
                     tracing::trace!(uri = %uri, host = %h, "request context: detected host from (abs) uri");
@@ -128,90 +135,6 @@ impl<Body, State> TryFrom<(&Context<State>, &Request<Body>)> for RequestContext 
                 })
             })
             .unwrap_or_else(|| req.version());
-        tracing::trace!(uri = %uri, "request context: maybe detected http version: {http_version:?}");
-
-        Ok(RequestContext {
-            http_version,
-            protocol,
-            authority,
-        })
-    }
-}
-
-impl<State> TryFrom<(&Context<State>, &Parts)> for RequestContext {
-    type Error = OpaqueError;
-
-    fn try_from((ctx, parts): (&Context<State>, &Parts)) -> Result<Self, Self::Error> {
-        let uri = &parts.uri;
-
-        let protocol = protocol_from_uri_or_context(ctx, uri, &parts.method);
-        tracing::trace!(
-            uri = %uri, "request context: detected protocol: {protocol} (scheme: {:?})",
-            uri.scheme()
-        );
-
-        let default_port = uri
-            .port_u16()
-            .unwrap_or_else(|| protocol.default_port().unwrap_or(80));
-        tracing::trace!(uri = %uri, "request context: detected default port: {default_port}");
-
-        let authority = match ctx.get().and_then(try_get_host_from_secure_transport) {
-            Some(h) => {
-                tracing::trace!(uri = %uri, host = %h, "request context: detected host from SNI");
-                (h, default_port).into()
-            }
-            None => {
-                uri
-                    .host()
-                    .and_then(|h| Host::try_from(h).ok().map(|h| {
-                        tracing::trace!(uri = %uri, host = %h, "request context: detected host from (abs) uri");
-                        (h, default_port).into()
-                    }))
-                    .or_else(|| {
-                        ctx.get::<Forwarded>().and_then(|f| {
-                            f.client_host().map(|fauth| {
-                                let (host, port) = fauth.clone().into_parts();
-                                let port = port.unwrap_or(default_port);
-                                tracing::trace!(uri = %uri, host = %host, "request context: detected host from forwarded info");
-                                (host, port).into()
-                            })
-                        })
-                    })
-                    .or_else(|| {
-                        parts
-                            .headers
-                            .get(rama_http_types::header::HOST)
-                            .and_then(|host| {
-                                host.try_into() // try to consume as Authority, otherwise as Host
-                                    .or_else(|_| Host::try_from(host).map(|h| {
-                                        tracing::trace!(uri = %uri, host = %h, "request context: detected host from host header");
-                                        (h, default_port).into()
-                                    }))
-                                    .ok()
-                            })
-                    })
-                    .ok_or_else(|| {
-                        OpaqueError::from_display(
-                            "RequestContext: no authourity found in http::request::Parts",
-                        )
-                    })?
-            }
-        };
-
-        tracing::trace!(uri = %uri, "request context: detected authority: {authority}");
-
-        let http_version = ctx
-            .get::<Forwarded>()
-            .and_then(|f| {
-                f.client_version().map(|v| match v {
-                    crate::forwarded::ForwardedVersion::HTTP_09 => Version::HTTP_09,
-                    crate::forwarded::ForwardedVersion::HTTP_10 => Version::HTTP_10,
-                    crate::forwarded::ForwardedVersion::HTTP_11 => Version::HTTP_11,
-                    crate::forwarded::ForwardedVersion::HTTP_2 => Version::HTTP_2,
-                    crate::forwarded::ForwardedVersion::HTTP_3 => Version::HTTP_3,
-                })
-            })
-            .unwrap_or(parts.version);
         tracing::trace!(uri = %uri, "request context: maybe detected http version: {http_version:?}");
 
         Ok(RequestContext {
@@ -300,8 +223,7 @@ impl<State> TryRefIntoTransportContext<State> for rama_http_types::dep::http::re
 mod tests {
     use super::*;
     use crate::forwarded::{Forwarded, ForwardedElement, NodeId};
-    use rama_http_types::header::FORWARDED;
-    use rama_http_types::headers::HeaderMapExt;
+    use rama_http_types::{Request, header::FORWARDED};
 
     #[test]
     fn test_request_context_from_request() {
@@ -400,7 +322,7 @@ mod tests {
             let req = req_builder.body(()).unwrap();
             let mut ctx = Context::default();
 
-            let forwarded = req.headers().typed_get::<Forwarded>().unwrap();
+            let forwarded: Forwarded = req.headers().get(FORWARDED).unwrap().try_into().unwrap();
             ctx.insert(forwarded);
 
             let req_ctx = ctx

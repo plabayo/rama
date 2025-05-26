@@ -10,12 +10,17 @@ categories = ["asynchronous", "network-programming", "cryptography", "web-progra
 authors = { workspace = true }
 rust-version = { workspace = true }
 
-[lints]
-workspace = true
+[package.metadata.cargo-public-api-crates]
+allowed = []
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 default = []
 compression = ["dep:flate2", "dep:brotli"]
+ua = ["dep:rama-ua"]
 
 [dependencies]
 brotli = { workspace = true, optional = true }
@@ -27,17 +32,14 @@ parking_lot = { workspace = true }
 pin-project-lite = { workspace = true }
 rama-boring = { workspace = true }
 rama-boring-tokio = { workspace = true }
-rama-core = { version = "0.2.0-alpha.14", path = "../rama-core" }
-rama-net = { version = "0.2.0-alpha.14", path = "../rama-net", features = ["http", "tls"] }
-rama-utils = { version = "0.2.0-alpha.14", path = "../rama-utils" }
+rama-core = { workspace = true }
+rama-net = { workspace = true, features = ["http", "tls"] }
+rama-ua = { workspace = true, optional = true, features = ["tls"] }
+rama-utils = { workspace = true }
 tokio = { workspace = true, features = ["macros", "io-std"] }
 tracing = { workspace = true }
 
 [dev-dependencies]
 
-[package.metadata.cargo-public-api-crates]
-allowed = []
-
-[package.metadata.docs.rs]
-all-features = true
-rustdoc-args = ["--cfg", "docsrs"]
+[lints]
+workspace = true

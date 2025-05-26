@@ -54,17 +54,17 @@
 use rama::{
     Context, Layer,
     http::{
-        IntoResponse, Method, StatusCode,
+        Method, StatusCode,
         layer::{
             compression::CompressionLayer, trace::TraceLayer,
             validate_request::ValidateRequestHeaderLayer,
         },
         matcher::HttpMatcher,
-        response::Json,
         server::HttpServer,
         service::web::{
             IntoEndpointService, WebService,
             extract::{Bytes, Path},
+            response::{IntoResponse, Json},
         },
     },
     rt::Executor,

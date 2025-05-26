@@ -13,27 +13,27 @@ pub enum ForwardKind {
     Forwarded,
     /// [`X-Forwarded-For`] header.
     ///
-    /// [`X-Forwarded-For`]: crate::http::headers::XForwardedFor
+    /// [`X-Forwarded-For`]: crate::http::headers::forwarded::XForwardedFor
     XForwardedFor,
     /// [`X-Client-Ip`] header.
     ///
-    /// [`X-Client-Ip`]: crate::http::headers::XClientIp
+    /// [`X-Client-Ip`]: crate::http::headers::forwarded::XClientIp
     XClientIp,
     /// [`Client-Ip`] header.
     ///
-    /// [`Client-Ip`]: crate::http::headers::ClientIp
+    /// [`Client-Ip`]: crate::http::headers::forwarded::ClientIp
     ClientIp,
     /// [`X-Real-Ip`] header.
     ///
-    /// [`X-Real-Ip`]: crate::http::headers::XRealIp
+    /// [`X-Real-Ip`]: crate::http::headers::forwarded::XRealIp
     XRealIp,
     /// [`Cf-Connecting-Ip`] header.
     ///
-    /// [`Cf-Connecting-Ip`]: crate::http::headers::CFConnectingIp
+    /// [`Cf-Connecting-Ip`]: crate::http::headers::forwarded::CFConnectingIp
     CFConnectingIp,
     /// [`True-Client-Ip`] header.
     ///
-    /// [`True-Client-Ip`]: crate::http::headers::TrueClientIp
+    /// [`True-Client-Ip`]: crate::http::headers::forwarded::TrueClientIp
     TrueClientIp,
     /// [`HaProxy`] protocol (transport layer).
     ///

@@ -71,6 +71,8 @@ jobs:
           mkdir -p www/static
           cp -r ./static/* www/static
           cp index.html www/index.html
+          cp sitemap.xml www/sitemap.xml
+          cp robots.txt www/robots.txt
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:

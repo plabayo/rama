@@ -10,8 +10,12 @@ categories = ["asynchronous", "network-programming", "web-programming"]
 authors = { workspace = true }
 rust-version = { workspace = true }
 
-[lints]
-workspace = true
+[package.metadata.cargo-public-api-crates]
+allowed = []
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 default = []
@@ -21,9 +25,9 @@ csv = ["dep:tokio", "tokio/fs"]
 
 [dependencies]
 arc-swap = { workspace = true, optional = true }
-rama-core = { version = "0.2.0-alpha.14", path = "../rama-core" }
-rama-net = { version = "0.2.0-alpha.14", path = "../rama-net", features = ["http"] }
-rama-utils = { version = "0.2.0-alpha.14", path = "../rama-utils" }
+rama-core = { workspace = true }
+rama-net = { workspace = true, features = ["http"] }
+rama-utils = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 tokio = { workspace = true, optional = true }
 tracing = { workspace = true }
@@ -32,17 +36,13 @@ venndb = { workspace = true, optional = true }
 
 [dev-dependencies]
 itertools = { workspace = true }
-rama-http-types = { version = "0.2.0-alpha.14", path = "../rama-http-types" }
-rama-net = { version = "0.2.0-alpha.14", path = "../rama-net", features = ["http"] }
-rama-tcp = { version = "0.2.0-alpha.14", path = "../rama-tcp", features = ["http"] }
+rama-http-types = { workspace = true }
+rama-net = { workspace = true, features = ["http"] }
+rama-tcp = { workspace = true, features = ["http"] }
 serde_html_form = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["macros"] }
 tokio-test = { workspace = true }
 
-[package.metadata.cargo-public-api-crates]
-allowed = []
-
-[package.metadata.docs.rs]
-all-features = true
-rustdoc-args = ["--cfg", "docsrs"]
+[lints]
+workspace = true

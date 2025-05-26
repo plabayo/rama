@@ -26,16 +26,14 @@ pub use body_limit::BodyLimit;
 mod body_ext;
 pub use body_ext::BodyExtractExt;
 
-/// Type alias for [`http::Request`] whose body type
-/// defaults to [`Body`], the most common body type used with rama.
-pub type Request<T = Body> = http::Request<T>;
+mod request;
+pub use request::{HttpRequestParts, Request};
 
-pub mod response;
-pub use response::{IntoResponse, IntoResponseParts, Response};
+/// Type alias for [`http::Response`] whose body type defaults to [`Body`], the most common body
+/// type used with rama.
+pub type Response<T = Body> = http::Response<T>;
 
 pub mod proto;
-
-pub mod headers;
 
 pub mod conn;
 

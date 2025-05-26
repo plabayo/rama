@@ -10,25 +10,25 @@ categories = ["asynchronous", "network-programming", "web-programming"]
 authors = { workspace = true }
 rust-version = { workspace = true }
 
-[lints]
-workspace = true
-
-[features]
-default = []
-http = ["dep:rama-http-types"]
-
-[dependencies]
-rama-core = { version = "0.2.0-alpha.14", path = "../rama-core" }
-rama-http-types = { version = "0.2.0-alpha.14", path = "../rama-http-types", optional = true }
-tokio = { workspace = true }
-tower-layer = { workspace = true }
-tower-service = { workspace = true }
-
-[dev-dependencies]
-
 [package.metadata.cargo-public-api-crates]
 allowed = []
 
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
+
+[features]
+default = []
+http = ["dep:rama-http-types"]
+
+[dependencies]
+rama-core = { workspace = true }
+rama-http-types = { workspace = true, optional = true }
+tokio = { workspace = true }
+tower-layer = { workspace = true }
+tower-service = { workspace = true }
+
+[dev-dependencies]
+
+[lints]
+workspace = true

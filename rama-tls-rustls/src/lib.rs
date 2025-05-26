@@ -127,9 +127,16 @@ pub mod dep {
     }
 
     pub mod webpki_roots {
-        //! Re-export of the [`webpki-roots`] crate.
+        //! Re-export of the [`webpki-roots`] provides.
         //!
-        //! This crate provides a function to load the Mozilla root CA store.
+        //! This module provides a function to load the Mozilla root CA store.
+        //!
+        //! This module is inspired by <certifi.io> and uses the data provided by
+        //! [the Common CA Database (CCADB)](https://www.ccadb.org/). The underlying data is used via
+        //! [the CCADB Data Usage Terms](https://www.ccadb.org/rootstores/usage#ccadb-data-usage-terms).
+        //!
+        //! The data in this crate is a derived work of the CCADB data. See copy of LICENSE at
+        //! <https://github.com/plabayo/rama/blob/main/docs/thirdparty/licenses/rustls-webpki-roots>.
         //!
         //! [`webpki-roots`]: https://docs.rs/webpki-roots
         #[doc(inline)]

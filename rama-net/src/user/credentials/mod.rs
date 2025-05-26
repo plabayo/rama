@@ -1,10 +1,14 @@
+//! user credential utilities
+
 mod basic;
+
 #[doc(inline)]
-pub use basic::Basic;
+pub use basic::{BASIC_SCHEME, Basic};
 
 mod bearer;
+
 #[doc(inline)]
-pub use bearer::Bearer;
+pub use bearer::{BEARER_SCHEME, Bearer};
 
 mod proxy;
 #[doc(inline)]

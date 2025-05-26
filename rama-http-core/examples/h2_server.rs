@@ -33,7 +33,7 @@ use rama_http_core::h2::RecvStream;
 use rama_http_core::h2::server::{self, SendResponse};
 use rama_http_types::Request;
 
-use bytes::Bytes;
+use rama_core::bytes::Bytes;
 use tokio::net::{TcpListener, TcpStream};
 
 #[tokio::main]

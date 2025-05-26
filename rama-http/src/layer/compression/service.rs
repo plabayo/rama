@@ -3,11 +3,11 @@ use super::CompressionLevel;
 use super::body::BodyInner;
 use super::predicate::{DefaultPredicate, Predicate};
 use crate::dep::http_body::Body;
+use crate::headers::encoding::{AcceptEncoding, Encoding};
 use crate::layer::util::compression::WrapBody;
 use crate::{Request, Response, header};
 use rama_core::{Context, Service};
 use rama_http_types::HeaderValue;
-use rama_http_types::headers::encoding::{AcceptEncoding, Encoding};
 use rama_utils::macros::define_inner_service_accessors;
 
 /// Compress response bodies of the underlying service.

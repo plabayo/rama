@@ -6,7 +6,7 @@
 //! ```rust
 //! use std::{error::Error, io::Write};
 //!
-//! use bytes::{Bytes, BytesMut};
+//! use rama_core::bytes::{Bytes, BytesMut};
 //! use flate2::{write::GzEncoder, Compression};
 //!
 //! use rama_http::{Body, header, HeaderValue, Request, Response};
@@ -49,7 +49,7 @@
 //! ```rust
 //! use std::convert::Infallible;
 //!
-//! use bytes::{Bytes, BytesMut};
+//! use rama_core::bytes::{Bytes, BytesMut};
 //!
 //! use rama_http::{Body, Request, Response};
 //! use rama_core::service::service_fn;

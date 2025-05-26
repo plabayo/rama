@@ -29,9 +29,9 @@ use rama::{
     http::{
         layer::{compression::CompressionLayer, trace::TraceLayer},
         matcher::HttpMatcher,
-        response::{Html, Redirect},
         server::HttpServer,
         service::web::WebService,
+        service::web::response::{Html, Redirect},
     },
     net::stream::{SocketInfo, matcher::SocketMatcher},
     rt::Executor,

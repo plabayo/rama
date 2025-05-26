@@ -1,17 +1,17 @@
 //! Http1 or Http2 connection.
 
-use futures_util::ready;
 use std::marker::PhantomPinned;
 use std::mem::MaybeUninit;
 use std::pin::Pin;
+use std::task::ready;
 use std::task::{Context, Poll};
 use std::{io, time::Duration};
 use tokio::io::AsyncRead;
 use tokio::io::AsyncWrite;
 use tokio::io::ReadBuf;
 
-use bytes::Bytes;
 use pin_project_lite::pin_project;
+use rama_core::bytes::Bytes;
 
 use crate::body::Incoming;
 use crate::common::io::Rewind;

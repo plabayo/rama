@@ -34,9 +34,25 @@
 
 🦙 Rama (ラマ) is a modular service framework for the 🦀 Rust language to move and transform your network packets.
 
-> The reasons behind the creation of Rama can be read in [the "Why Rama" chapter](https://ramaproxy.org/book/why_rama).
->
-> However, this framework might not be for everyone. Particularly if you're building a typical simple web server
+This framework is designed for developers who need fine-grained, programmable control over how packets are handled across
+the network stack. Whether you're intercepting traffic for security analysis, emulating clients with custom user agents,
+hijacking connections for advanced testing, or building high-performance proxies,
+Rama provides a clean and composable Rust-native foundation.
+
+With support for modular packet pipelines, deep protocol introspection, and advanced socket manipulation—including features
+like transparent proxying and HAProxy protocol support—Rama makes it easy to prototype, deploy,
+and scale complex network behavior with safety and speed.
+
+It's not just a toolkit—it's a mindset shift for how
+to design and operate dynamic, programmable network services
+
+> 💡 The reasons behind the creation of Rama can be read in [the "Why Rama" chapter](https://ramaproxy.org/book/why_rama).
+
+Rama is async-first using [Tokio](https://tokio.rs/) as its _only_ Async Runtime.
+Please refer to [the examples found in the `/examples` dir](https://github.com/plabayo/rama/tree/main/examples)
+to get inspired on how you can use it for your purposes.
+
+> This framework might not be for everyone. Particularly if you're building a typical simple web server
 > or just need an HTTP client for making standard requests, you might be better served by other crates.
 > While we at [Plabayo](https://plabayo.tech) use Rama for most of our web needs (clients, servers, and proxies),
 > it is not the most straightforward framework to use and doesn't yet have the large community backing that other crates enjoy.
@@ -45,9 +61,11 @@
 >   It comes with many community crates to help with virtually anything you can think of. However, using
 >   Axum means giving up full control over your web stack, which could become limiting when you need something
 >   that isn't typical or standards-enforced.
+>   - 📚 Or read more about web servers using Rama at <https://ramaproxy.org/book/web_servers>
 > - Consider using [Reqwest](https://docs.rs/reqwest/latest/reqwest/) if you only need to make typical
 >   HTTP requests without fine-grained control over the requests sent or responses received,
 >   and where TLS is merely a detail indicated by the `https` protocol (where 's' stands for secure).
+>   - 📚 Or read more about HTTP clients using Rama at <https://ramaproxy.org/book/http_clients>
 >
 > If you're building proxies and feel that Rama isn't the right approach for you,
 > you might want to check out [the alternatives mentioned at the bottom of this README](#--alternatives).
@@ -62,13 +80,9 @@
 > When necessary, we've forked other crates due to incompatibilities in needs or scope.
 > While this creates additional work for us, we willingly do so when it aligns with our mission
 > of empowering Rama users, including ourselves. You can find more information about these forks
-> in the [FORK.md](./docs/fork/README.md) document.
+> in the [FORK.md](./docs/thirdparty/fork/README.md) document.
 > We strive to preserve the code layout of forked modules to maintain synchronization with upstream
 > and push patches upstream where possible.
-
-Rama is async-first using [Tokio](https://tokio.rs/) as its _only_ Async Runtime.
-Please refer to [the examples found in the `/examples` dir](https://github.com/plabayo/rama/tree/main/examples)
-to get inspired on how you can use it for your purposes.
 
 [![GitHub Sponsors][ghs-badge]][ghs-url]
 [![Buy Me A Coffee][bmac-badge]][bmac-url]
@@ -81,7 +95,7 @@ to get inspired on how you can use it for your purposes.
 > To learn more about sponsorship opportunities, please refer to [the "Sponsors" section below](#--sponsors)
 > or contact us directly at [sponsor@ramaproxy.org](mailto:sponsor@ramaproxy.org).
 
-This framework comes with 🔋 batteries included, giving you the full freedom to build the middleware and services you want, without _having_ to repeat the "common":
+Rama comes with 🔋 batteries included, giving you the full freedom to build the middleware and services you want, without _having_ to repeat the "common":
 
 | category | support list |
 |-|-|
@@ -91,23 +105,23 @@ This framework comes with 🔋 batteries included, giving you the full freedom t
 | ✅ http [client](https://ramaproxy.org/docs/rama/http/client/index.html) | ✅ [easy client](https://ramaproxy.org/docs/rama/http/client/struct.EasyHttpWebClient.html) ⸱ ✅ [high level API](https://ramaproxy.org/docs/rama/http/service/client/trait.HttpClientExt.html) ⸱ ✅ [Proxy Connect](https://ramaproxy.org/docs/rama/http/client/proxy/layer/struct.HttpProxyConnector.html) ⸱ ❌ [Chromium Http](https://github.com/plabayo/rama/issues/189) <sup>(3)</sup> |
 | ✅ [tls](https://ramaproxy.org/docs/rama/tls/index.html) | ✅ [Rustls](https://ramaproxy.org/docs/rama/tls/rustls/index.html) ⸱ ✅ [BoringSSL](https://ramaproxy.org/docs/rama/tls/boring/index.html) ⸱ ❌ NSS <sup>(3)</sup> |
 | ✅ [dns](https://ramaproxy.org/docs/rama/dns/index.html) | ✅ [DNS Resolver](https://ramaproxy.org/docs/rama/dns/trait.DnsResolver.html) |
-| ✅ [proxy protocols](https://ramaproxy.org/docs/rama/proxy/index.html) | ✅ [PROXY protocol](https://ramaproxy.org/docs/rama/proxy/haproxy/index.html) ⸱ ✅ [http proxy](https://github.com/plabayo/rama/blob/main/examples/http_connect_proxy.rs) ⸱ ✅ [https proxy](https://github.com/plabayo/rama/blob/main/examples/https_connect_proxy.rs) ⸱ 🏗️ SOCKS5 <sup>(1)</sup> ⸱ 🏗️ SOCKS5H <sup>(1)</sup> |
+| ✅ [proxy protocols](https://ramaproxy.org/docs/rama/proxy/index.html) | ✅ [PROXY protocol](https://ramaproxy.org/docs/rama/proxy/haproxy/index.html) ⸱ ✅ [http proxy](https://github.com/plabayo/rama/blob/main/examples/http_connect_proxy.rs) ⸱ ✅ [https proxy](https://github.com/plabayo/rama/blob/main/examples/https_connect_proxy.rs) ⸱ ✅ [socks5(h) proxy](https://github.com/plabayo/rama/blob/main/examples/socks5_connect_proxy.rs) |
 | 🏗️ web protocols | 🏗️ Web Sockets <sup>(1)</sup> ⸱ ❌ Web Transport <sup>(3)</sup> ⸱ ❌ gRPC <sup>(3)</sup> |
 | ✅ [async-method trait](https://blog.rust-lang.org/inside-rust/2023/05/03/stabilizing-async-fn-in-trait.html) services | ✅ [Service](https://ramaproxy.org/docs/rama/service/trait.Service.html) ⸱ ✅ [Layer](https://ramaproxy.org/docs/rama/layer/trait.Layer.html) ⸱ ✅ [context](https://ramaproxy.org/docs/rama/context/index.html) ⸱ ✅ [dyn dispatch](https://ramaproxy.org/docs/rama/service/struct.BoxService.html) ⸱ ✅ [middleware](https://ramaproxy.org/docs/rama/layer/index.html) |
 | ✅ [telemetry](https://ramaproxy.org/docs/rama/telemetry/index.html) | ✅ [tracing](https://tracing.rs/tracing/) ⸱ ✅ [opentelemetry](https://ramaproxy.org/docs/rama/telemetry/opentelemetry/index.html) ⸱ ✅ [http metrics](https://ramaproxy.org/docs/rama/http/layer/opentelemetry/index.html) ⸱ ✅ [transport metrics](https://ramaproxy.org/docs/rama/net/stream/layer/opentelemetry/index.html) |
 | ✅ upstream [proxies](https://ramaproxy.org/docs/rama/proxy/index.html) | ✅ [MemoryProxyDB](https://ramaproxy.org/docs/rama/proxy/struct.MemoryProxyDB.html) ⸱ ✅ [Username Config](https://ramaproxy.org/docs/rama/username/index.html) ⸱ ✅ [Proxy Filters](https://ramaproxy.org/docs/rama/proxy/struct.ProxyFilter.html) |
 | ✅ [User Agent (UA)](https://ramaproxy.org/book/intro/user_agent) | ✅ [Http Emulation](https://ramaproxy.org/docs/rama/ua/profile/struct.HttpProfile.html) ⸱ ✅ [Tls Emulation](https://ramaproxy.org/docs/rama/ua/profile/struct.TlsProfile.html) ⸱ ✅ [UA Parsing](https://ramaproxy.org/docs/rama/ua/struct.UserAgent.html) |
 | ✅ [Fingerprinting](https://ramaproxy.org/docs/rama/net/fingerprint/index.html) | ✅ [Ja3](https://ramaproxy.org/docs/rama/net/fingerprint/struct.Ja3.html) ⸱ ✅ [Ja4](https://ramaproxy.org/docs/rama/net/fingerprint/struct.Ja4.html) ⸱ ✅ [Ja4H](https://ramaproxy.org/docs/rama/net/fingerprint/struct.Ja4H.html) ⸱ 🏗️ [Akamai passive h2](https://github.com/plabayo/rama/issues/517) <sup>(1)</sup> ⸱ 🏗️ [Peetprint (tls)](https://github.com/plabayo/rama/issues/518) <sup>(1)</sup> |
-| ✅ utilities | ✅ [error handling](https://ramaproxy.org/docs/rama/error/index.html) ⸱ ✅ [graceful shutdown](https://ramaproxy.org/docs/rama/graceful/index.html) ⸱ ✅ [Connection Pooling](https://ramaproxy.org/docs/rama/net/client/pool/index.html) ⸱ ✅ [Tower Adapter](https://ramaproxy.org/docs/rama/utils/tower/index.html) ⸱ 🏗️ IP2Loc <sup>(2)</sup> |
-| 🏗️ Graphical Interface | 🏗️ traffic logger <sup>(2)</sup> ⸱ 🏗️ curl export <sup>(2)</sup> ⸱ 🏗️ [TUI implementation](https://ratatui.rs/) <sup>(2)</sup> ⸱ ❌ traffic intercept <sup>(3)</sup> ⸱ ❌ traffic replay <sup>(3)</sup> |
-| ✅ binary | ✅ [prebuilt binaries](https://ramaproxy.org/book/deploy/rama-cli) ⸱ 🏗️ proxy config <sup>(2)</sup> ⸱ ✅ http client ⸱ ❌ WASM Plugins <sup>(3)</sup> |
-| 🏗️ data scraping | 🏗️ Html Processor <sup>(2)</sup> ⸱ ❌ Json Processor <sup>(3)</sup> |
+| ✅ utilities | ✅ [error handling](https://ramaproxy.org/docs/rama/error/index.html) ⸱ ✅ [graceful shutdown](https://ramaproxy.org/docs/rama/graceful/index.html) ⸱ ✅ [Connection Pooling](https://ramaproxy.org/docs/rama/net/client/pool/index.html) ⸱ ✅ [Tower Adapter](https://ramaproxy.org/docs/rama/utils/tower/index.html) ⸱ 🏗️ IP2Loc <sup>(1)</sup> |
+| 🏗️ Graphical Interface | 🏗️ traffic logger <sup>(3)</sup> ⸱ 🏗️ curl export <sup>(2)</sup> ⸱ 🏗️ [TUI implementation](https://ratatui.rs/) <sup>(3)</sup> ⸱ ❌ traffic intercept <sup>(3)</sup> ⸱ ❌ traffic replay <sup>(3)</sup> |
+| ✅ binary | ✅ [prebuilt binaries](https://ramaproxy.org/book/deploy/rama-cli) ⸱ 🏗️ proxy config <sup>(3)</sup> ⸱ ✅ http client ⸱ ❌ WASM Plugins <sup>(3)</sup> |
+| 🏗️ data scraping | 🏗️ Html Processor <sup>(3)</sup> ⸱ ❌ Json Processor <sup>(3)</sup> |
 | ❌ browser | ❌ JS Engine <sup>(3)</sup> ⸱ ❌ [Web API](https://developer.mozilla.org/en-US/docs/Web/API) Emulation <sup>(3)</sup> |
 
 > 🗒️ _Footnotes_
 >
-> * <sup>(1)</sup> Part of [`v0.2.0` milestone (ETA: 2025 Q2)](https://github.com/plabayo/rama/milestone/1)
-> * <sup>(2)</sup> Part of [`v0.3.0` milestone (ETA: 2025 Q3)](https://github.com/plabayo/rama/milestone/2)
+> * <sup>(1)</sup> Part of [`v0.3.0` milestone (ETA: 2025 Q3)](https://github.com/plabayo/rama/milestone/2)
+> * <sup>(2)</sup> Part of [`v0.4.0` milestone (ETA: 2025 Q3)](https://github.com/plabayo/rama/milestone/3)
 > * <sup>(3)</sup> No immediate plans, but on our radar. Please [open an issue](https://github.com/plabayo/rama/issues) to request this feature if you have an immediate need for it. Please add sufficient motivation/reasoning and consider [becoming a sponsor](#--sponsors) to help accelerate its priority.
 
 The primary focus of Rama is to aid you in your development of [proxies](https://ramaproxy.org/book/proxies/intro.html):
@@ -115,9 +129,11 @@ The primary focus of Rama is to aid you in your development of [proxies](https:/
 - 🚦 [Reverse proxies](https://ramaproxy.org/book/proxies/reverse);
 - 🔓 [TLS Termination proxies](https://ramaproxy.org/book/proxies/tls);
 - 🌐 [HTTP(S) proxies](https://ramaproxy.org/book/proxies/http);
-- 🧦 [SOCKS5 proxies](https://ramaproxy.org/book/proxies/socks5) (will be implemented in `v0.3`);
+- 🧦 [SOCKS5 proxies](https://ramaproxy.org/book/proxies/socks5);
+- 🔓 [SNI proxies](https://ramaproxy.org/book/proxies/sni);
 - 🔎 [MITM proxies](https://ramaproxy.org/book/proxies/mitm);
 - 🕵️‍♀️ [Distortion proxies](https://ramaproxy.org/book/proxies/distort).
+- 🧭 [HaProxy (PROXY protocol)](https://ramaproxy.org/book/proxies/haproxy).
 
 > 💡 Check out [the "Intro to Proxies" chapters in the Rama book](https://ramaproxy.org/book/proxies/intro.html)
 > to learn more about the different kind of proxies. It might help in case you are new to developing proxies.
@@ -232,6 +248,7 @@ Here is a list of all `rama` crates:
 - [`rama-haproxy`](https://crates.io/crates/rama-haproxy): rama HaProxy support
 - [`rama-ua`](https://crates.io/crates/rama-ua): User-Agent (UA) support for `rama`
 - [`rama-http-types`](https://crates.io/crates/rama-http-types): http types and utilities
+- [`rama-http-headers`](https://crates.io/crates/rama-http-headers): types http headers
 - [`rama-http`](https://crates.io/crates/rama-http): rama http services, layers and utilities
 - [`rama-http-backend`](https://crates.io/crates/rama-http-backend): default http backend for `rama`
 - [`rama-http-core`](https://crates.io/crates/rama-http-core): http protocol implementation driving `rama-http-backend`
@@ -304,6 +321,17 @@ async fn hello_world(ReadSignals(signals): ReadSignals<Signals>) -> impl IntoRes
     })
 }
 ```
+
+### Shuttle
+
+[![Crates.io](https://img.shields.io/crates/v/shuttle-rama.svg)](https://crates.io/crates/shuttle-rama)
+[![Docs.rs](https://img.shields.io/docsrs/shuttle-rama/latest)](https://docs.rs/shuttle-rama/latest/shuttle_rama/index.html)
+
+[Shuttle](https://www.shuttle.dev/) is a Rust-native cloud development platform that lets you deploy your app while also taking care of all of your infrastructure. Rama is one of a series of frameworks
+that is officially supported by Shuttle as part of their official SDK crates.
+
+Learn more about what shuttle is and how to deploy services built with Rama
+on [our Shuttle docs](https://ramaproxy.org/book/deploy/shuttle.html).
 
 ## 🌐 | Web Service Examples
 
@@ -403,6 +431,7 @@ overhead. So `rama`'s performance is comparable to [`hyper`] and frameworks that
 Here's a list of external benchmarks:
 
 - http server benchmark @ <https://web-frameworks-benchmark.netlify.app/result>
+- http server + client benchmark @ <https://sharkbench.dev/web>
 
 Please [open an issue](https://github.com/plabayo/rama/issues) or Pull Request (PR) in case
 you are aware of any other benchmarks of interest in regards to http(s) servers,
@@ -417,17 +446,37 @@ We also make use of [`cargo vet`](https://github.com/mozilla/cargo-vet) to [audi
 
 ## 🦀 | Compatibility
 
+### Tier 1 Platforms
+
 Rama (ラマ) is developed mostly on MacOS M-Series machines and run in production
-on a variety of Linux systems. There is no windows support, and neither do we test on that platform.
+on a variety of Linux systems. These are tier 1 platofrms.
 
 | platform | tested | test platform |
 |----------|--------|---------------|
 | MacOS    | ✅     | MacOS Apple Silicon (developer laptop) and macos-12 Intel ([GitHub Action](https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners/about-github-hosted-runners)) |
 | Linux    | ✅     | Ubuntu 22.04 ([GitHub Action](https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners/about-github-hosted-runners)) |
 
+### Tier 2 platforms
+
+These platforms we do not run ourselves but do have basic support, meaning:
+
+* the code compiles and checks;
+* unit tests pass
+
+As we do not use this platform ourselves and neither do we run integration tests on them,
+we can however not promise that there are no issues with these builds. Neither do
+we provide binary builds for this platform.
+
+| platform | tested | test platform |
+|----------|--------|---------------|
+| Windows    | ✅     | Windows latest (x64) ([GitHub Action](https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners/about-github-hosted-runners)) |
+
+### Other Platforms
+
 Please [open a ticket](https://github.com/plabayo/rama/issues) in case you have compatibility issues for your setup/platform.
 Our goal is not to support all possible platforms in the world, but we do want to
-support as many as we reasonably can.
+support as many as we reasonably can. Such platforms will only happen
+and continue to happen with community/ecosystem support.
 
 ### Minimum supported Rust version
 
@@ -526,6 +575,11 @@ Finally, you can also support us by shopping Plabayo <3 `ラマ` merchandise �
 ### Rama Sponsors
 
 We would like to extend our thanks to the following sponsors for funding Rama (ラマ) development. If you are interested in becoming a sponsor, you can do so by becoming a [sponsor][ghs-url]. One time payments are accepted [at GitHub][ghs-url] as well as at ["Buy me a Coffee"][bmac-url]. One-time and monthly financial contributions are also possible via Paypal, should you feel more at ease with that at ["Paypal Donations"][paypal-url].
+
+Donations can also be paid in the following cryptocurrency:
+
+* Bitcoin: `bc1qk3383nfzcag9lymwv83m7empa6qu2vspqjkpw4`
+* Ethereum: `0xc0C5aCdB0E6c560132c93Df721E1Cd220f6fD4aa`
 
 If you wish to financially support us through other means you can best
 start a conversation with us by sending an email to [glen@plabayo.tech](mailto:glen@plabayo.tech).

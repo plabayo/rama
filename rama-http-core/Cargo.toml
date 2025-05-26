@@ -10,8 +10,12 @@ categories = ["asynchronous", "network-programming", "web-programming"]
 authors = { workspace = true }
 rust-version = { workspace = true }
 
-[lints]
-workspace = true
+[package.metadata.cargo-public-api-crates]
+allowed = []
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 default = []
@@ -24,20 +28,19 @@ unstable = []
 
 [dependencies]
 atomic-waker = { workspace = true }
-bytes = { workspace = true }
 fnv = { workspace = true }
 futures-channel = { workspace = true }
 futures-core = { workspace = true }
 futures-sink = { workspace = true }
-futures-util = { workspace = true }
 httparse = { workspace = true }
 httpdate = { workspace = true }
 indexmap = { workspace = true, features = ["std"] }
 itoa = { workspace = true }
 pin-project-lite = { workspace = true }
-rama-core = { version = "0.2.0-alpha.14", path = "../rama-core" }
-rama-http-types = { version = "0.2.0-alpha.14", path = "../rama-http-types" }
-rama-utils = { version = "0.2.0-alpha.14", path = "../rama-utils" }
+rama-core = { workspace = true }
+rama-http = { workspace = true }
+rama-http-types = { workspace = true }
+rama-utils = { workspace = true }
 slab = { workspace = true }
 smallvec = { workspace = true }
 tokio = { workspace = true, features = ["io-util"] }
@@ -64,9 +67,5 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "ne
 tokio-rustls = { workspace = true }
 webpki-roots = { workspace = true }
 
-[package.metadata.cargo-public-api-crates]
-allowed = []
-
-[package.metadata.docs.rs]
-all-features = true
-rustdoc-args = ["--cfg", "docsrs"]
+[lints]
+workspace = true

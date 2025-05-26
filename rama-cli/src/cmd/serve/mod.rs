@@ -5,12 +5,11 @@ use rama::{
     Service,
     cli::{ForwardKind, service::serve::ServeServiceBuilder},
     error::{BoxError, ErrorContext, OpaqueError},
-    http::{
-        IntoResponse, Request, Response, matcher::HttpMatcher, service::fs::DirectoryServeMode,
-    },
+    http::service::web::response::IntoResponse,
+    http::{Request, Response, matcher::HttpMatcher, service::fs::DirectoryServeMode},
     layer::HijackLayer,
     net::{
-        address::SocketAddress,
+        socket::Interface,
         tls::{
             ApplicationProtocol, DataEncoding,
             server::{SelfSignedData, ServerAuth, ServerAuthData, ServerConfig},
@@ -36,9 +35,9 @@ pub struct CliCommandServe {
     #[arg()]
     path: Option<PathBuf>,
 
-    /// the address to bind to
+    /// the interface to bind to
     #[arg(long, default_value = "127.0.0.1:8080")]
-    bind: SocketAddress,
+    bind: Interface,
 
     #[arg(short = 'c', long, default_value_t = 0)]
     /// the number of concurrent connections to allow
@@ -162,15 +161,26 @@ pub async fn run(cfg: CliCommandServe) -> Result<(), BoxError> {
         .map_err(OpaqueError::from_boxed)
         .context("build serve service")?;
 
-    tracing::info!("starting serve service on: {}", cfg.bind);
+    tracing::info!(
+        bind = %cfg.bind,
+        "starting serve service on",
+    );
     let tcp_listener = TcpListener::build()
-        .bind(cfg.bind)
+        .bind(cfg.bind.clone())
         .await
         .map_err(OpaqueError::from_boxed)
         .context("bind serve service")?;
 
+    let bind_address = tcp_listener
+        .local_addr()
+        .context("get local addr of tcp listener")?;
+
     graceful.spawn_task_fn(async move |guard| {
-        tracing::info!("serve service ready");
+        tracing::info!(
+            bind = %cfg.bind,
+            %bind_address,
+            "ready to serve",
+        );
         tcp_listener.serve_graceful(guard, tcp_service).await;
     });
 

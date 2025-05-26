@@ -29,7 +29,7 @@ pin_project! {
     /// # Example
     ///
     /// ```
-    /// use bytes::Bytes;
+    /// use rama_core::bytes::Bytes;
     /// use std::time::Duration;
     /// use rama_http::{Request, Response};
     /// use rama_http::dep::http_body_util::Full;
@@ -121,8 +121,8 @@ impl std::fmt::Display for TimeoutError {
 mod tests {
     use super::*;
 
-    use bytes::Bytes;
     use pin_project_lite::pin_project;
+    use rama_core::bytes::Bytes;
     use rama_http_types::dep::{http_body::Frame, http_body_util::BodyExt};
     use std::{error::Error, fmt::Display};
 

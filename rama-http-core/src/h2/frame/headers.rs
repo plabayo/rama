@@ -10,12 +10,12 @@ use rama_http_types::proto::h1::headers::original::OriginalHttp1Headers;
 use rama_http_types::proto::h2::{PseudoHeader, PseudoHeaderOrder, PseudoHeaderOrderIter};
 use rama_http_types::{HeaderMap, HeaderName, Method, Request, StatusCode, Uri, header};
 
-use bytes::{Buf, BufMut, Bytes, BytesMut};
+use rama_core::bytes::{Buf, BufMut, Bytes, BytesMut};
 
 use std::fmt;
 use std::io::Cursor;
 
-type EncodeBuf<'a> = bytes::buf::Limit<&'a mut BytesMut>;
+type EncodeBuf<'a> = rama_core::bytes::buf::Limit<&'a mut BytesMut>;
 
 /// Header frame
 ///

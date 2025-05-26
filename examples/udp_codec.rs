@@ -25,13 +25,13 @@
 // rama provides everything out of the box for your primitive UDP needs,
 // thanks to the underlying implementation from Tokio
 use rama::{
+    bytes::Bytes,
     error::BoxError,
     net::address::SocketAddress,
     udp::{UdpFramed, UdpSocket, codec::BytesCodec},
 };
 
 // everything else is provided by the standard library, community crates or tokio
-use bytes::Bytes;
 use futures::{FutureExt, SinkExt, StreamExt};
 use std::net::SocketAddr;
 use std::time::Duration;

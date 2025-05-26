@@ -80,11 +80,7 @@
 //! # }
 //! ```
 
-use crate::{
-    HeaderValue, Request, Response,
-    header::HeaderName,
-    headers::{Header, HeaderExt},
-};
+use crate::{HeaderValue, Request, Response, header::HeaderName, headers::Header};
 use rama_core::{Context, Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
