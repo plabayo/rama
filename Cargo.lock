@@ -2374,6 +2374,7 @@ dependencies = [
  "tokio-test",
  "tracing",
  "tracing-subscriber",
+ "zstd",
 ]
 
 [[package]]
@@ -2761,6 +2762,7 @@ dependencies = [
  "rama-utils",
  "tokio",
  "tracing",
+ "zstd",
 ]
 
 [[package]]

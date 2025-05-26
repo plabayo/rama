@@ -27,7 +27,9 @@ use std::{fmt, sync::Arc};
 use tracing::{debug, trace};
 
 #[cfg(feature = "compression")]
-use super::compress_certificate::{BrotliCertificateCompressor, ZlibCertificateCompressor};
+use super::compress_certificate::{
+    BrotliCertificateCompressor, ZlibCertificateCompressor, ZstdCertificateCompressor,
+};
 
 use crate::keylog::new_key_log_file_handle;
 
@@ -504,10 +506,10 @@ impl TlsConnectorDataBuilder {
                         .context("build (boring) ssl connector: add certificate compression algorithm: brotli")?;
                     }
                     CertificateCompressionAlgorithm::Zstd => {
-                        // TODO implement this, tracking issue: https://github.com/plabayo/rama/issues/563
-                        debug!(
-                            "boring connector: certificate compression algorithm: zstd: not (yet) supported: ignore"
-                        );
+                        cfg_builder.add_certificate_compression_algorithm(
+                            ZstdCertificateCompressor::default(),
+                        )
+                        .context("build (boring) ssl connector: add certificate compression algorithm: zstd")?;
                     }
                     CertificateCompressionAlgorithm::Unknown(_) => {
                         debug!(
