@@ -146,7 +146,7 @@ where
         let result = conn.serve(ctx, req).await;
 
         let resp = result
-            .map_err(|err| OpaqueError::from_boxed(err.into()))
+            .map_err(OpaqueError::from_boxed)
             .with_context(|| format!("http request failure for uri: {uri}"))?;
 
         trace!(uri = %uri, "response received from connector stack");
@@ -333,7 +333,7 @@ mod easy_connector {
             let connector = HttpConnector::new(self.connector);
 
             EasyHttpWebClientBuilder {
-                connector: connector,
+                connector,
                 _phantom: PhantomData,
             }
         }
