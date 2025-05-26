@@ -19,7 +19,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 default = []
-compression = ["dep:flate2", "dep:brotli"]
+compression = ["dep:flate2", "dep:brotli", "dep:zstd"]
 ua = ["dep:rama-ua"]
 
 [dependencies]
@@ -38,6 +38,7 @@ rama-ua = { workspace = true, optional = true, features = ["tls"] }
 rama-utils = { workspace = true }
 tokio = { workspace = true, features = ["macros", "io-std"] }
 tracing = { workspace = true }
+zstd = { workspace = true, optional = true }
 
 [dev-dependencies]
 

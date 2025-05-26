@@ -141,8 +141,8 @@ psl = "2"
 quickcheck = "1.0"
 quote = "1.0"
 radix_trie = "0.2"
-rama-boring = "0.3.0"
-rama-boring-tokio = "0.3.0"
+rama-boring = "0.3.1"
+rama-boring-tokio = "0.3.1"
 rama-core = { version = "0.3.0-alpha.1", path = "./rama-core" }
 rama-dns = { version = "0.3.0-alpha.1", path = "./rama-dns" }
 rama-error = { version = "0.3.0-alpha.1", path = "./rama-error" }
@@ -342,6 +342,7 @@ serde_html_form = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["macros", "io-std"], optional = true }
 tracing = { workspace = true, optional = true }
+zstd = { workspace = true }
 
 [build-dependencies]
 rustversion = { workspace = true }
