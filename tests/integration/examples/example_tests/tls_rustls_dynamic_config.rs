@@ -5,7 +5,7 @@ use rama::{
     error::BoxError,
     http::{
         Response,
-        client::{EasyHttpWebClient, TlsConnectorConfig},
+        client::EasyHttpWebClient,
         layer::{
             decompression::DecompressionLayer,
             follow_redirect::FollowRedirectLayer,
@@ -18,15 +18,15 @@ use rama::{
     net::{
         address::{Domain, Host},
         tls::{
-            ApplicationProtocol, DataEncoding,
-            client::{
-                ClientConfig, ClientHelloExtension, NegotiatedTlsParameters, ServerVerifyMode,
-            },
+            DataEncoding,
+            client::{NegotiatedTlsParameters, ServerVerifyMode},
         },
     },
     tls::boring::core::x509::X509,
     utils::{backoff::ExponentialBackoff, rng::HasherRng},
 };
+use rama_http_backend::client::EasyConnectorBuilder;
+use rama_tls_boring::client::TlsConnectorDataBuilder;
 use tokio_test::assert_err;
 
 use std::{str::FromStr, time::Duration};
@@ -111,20 +111,16 @@ where
     State: Clone + Send + Sync + 'static,
 {
     let host = host.map(|host| Host::Name(Domain::from_str(host).unwrap()));
-    let tls_config = ClientConfig {
-        server_verify_mode: Some(ServerVerifyMode::Disable),
-        extensions: Some(vec![
-            ClientHelloExtension::ServerName(host),
-            ClientHelloExtension::ApplicationLayerProtocolNegotiation(vec![
-                ApplicationProtocol::HTTP_2,
-                ApplicationProtocol::HTTP_11,
-            ]),
-        ]),
-        store_server_certificate_chain: true,
-        ..Default::default()
-    };
-    let mut inner_client = EasyHttpWebClient::new();
-    inner_client.set_tls_connector_config(TlsConnectorConfig::Boring(Some(tls_config)));
+    let tls_config = TlsConnectorDataBuilder::new_http_auto()
+        .with_server_verify_mode(ServerVerifyMode::Disable)
+        .maybe_with_server_name(host)
+        .with_store_server_certificate_chain(true)
+        .into_shared_builder();
+    let connector = EasyConnectorBuilder::new()
+        .with_proxy()
+        .with_tls_using_boringssl(Some(tls_config))
+        .build();
+    let inner_client = EasyHttpWebClient::new(connector);
 
     (
         MapResultLayer::new(map_internal_client_error),

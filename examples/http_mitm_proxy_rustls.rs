@@ -38,7 +38,7 @@ use rama::{
     http::layer::compress_adapter::CompressAdaptLayer,
     http::{
         Body, Request, Response, StatusCode,
-        client::{EasyHttpWebClient, TlsConnectorConfig},
+        client::EasyHttpWebClient,
         layer::{
             map_response_body::MapResponseBodyLayer,
             proxy_auth::ProxyAuthLayer,
@@ -59,10 +59,7 @@ use rama::{
     rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
-    tls::rustls::{
-        client::TlsConnectorDataBuilder,
-        server::{TlsAcceptorData, TlsAcceptorDataBuilder, TlsAcceptorLayer},
-    },
+    tls::rustls::server::{TlsAcceptorData, TlsAcceptorDataBuilder, TlsAcceptorLayer},
 };
 
 use std::{convert::Infallible, time::Duration};
@@ -207,16 +204,7 @@ async fn http_mitm_proxy(ctx: Context, req: Request) -> Result<Response, Infalli
 
     // NOTE: use a custom connector (layers) in case you wish to add custom features,
     // such as upstream proxies or other configurations
-    let mut client = EasyHttpWebClient::default();
-
-    let data = TlsConnectorDataBuilder::new()
-        .with_no_cert_verifier()
-        .with_alpn_protocols_http_auto()
-        .with_env_key_logger()
-        .expect("with env key logger")
-        .build();
-
-    client.set_tls_connector_config(TlsConnectorConfig::Rustls(Some(data)));
+    let client = EasyHttpWebClient::default();
 
     match client.serve(ctx, req).await {
         Ok(resp) => Ok(resp),

@@ -9,7 +9,7 @@ use rama::{
     http::{
         Request, Response,
         client::{
-            EasyHttpWebClient, TlsConnectorConfig,
+            EasyConnectorBuilder, EasyHttpWebClient,
             proxy::layer::{HttpProxyAddressLayer, SetProxyAuthHttpHeaderLayer},
         },
         layer::{
@@ -22,15 +22,9 @@ use rama::{
         },
     },
     layer::MapResultLayer,
-    net::{
-        address::ProxyAddress,
-        tls::{
-            ApplicationProtocol,
-            client::{ClientConfig, ClientHelloExtension, ServerVerifyMode},
-        },
-        user::ProxyCredential,
-    },
+    net::{address::ProxyAddress, tls::client::ServerVerifyMode, user::ProxyCredential},
     rt::Executor,
+    tls::boring::client::TlsConnectorDataBuilder,
     ua::{
         emulate::{
             UserAgentEmulateHttpConnectModifier, UserAgentEmulateHttpRequestModifier,
@@ -343,47 +337,33 @@ where
     )
     .await?;
 
-    let mut inner_client = EasyHttpWebClient::default()
-        .with_http_conn_req_inspector(UserAgentEmulateHttpConnectModifier::default())
-        .with_http_serve_req_inspector((
+    let mut tls_config = if cfg.emulate {
+        TlsConnectorDataBuilder::new()
+    } else {
+        TlsConnectorDataBuilder::new_http_auto()
+    };
+    let mut proxy_tls_config = TlsConnectorDataBuilder::new();
+
+    if cfg.insecure {
+        tls_config.set_server_verify_mode(ServerVerifyMode::Disable);
+        proxy_tls_config.set_server_verify_mode(ServerVerifyMode::Disable);
+    }
+
+    let connector = EasyConnectorBuilder::new()
+        .with_tls_proxy_using_boringssl(Some(Arc::new(proxy_tls_config)), None)
+        .with_tls_using_boringssl(Some(Arc::new(tls_config)))
+        .with_jit_req_inspector(UserAgentEmulateHttpConnectModifier::default())
+        .with_svc_req_inspector((
             UserAgentEmulateHttpRequestModifier::default(),
             request_writer,
-        ));
+        ))
+        .build();
 
-    let server_verify_mode = if cfg.insecure {
-        Some(ServerVerifyMode::Disable)
-    } else {
-        None
-    };
-
-    let extensions = if cfg.emulate {
-        None
-    } else {
-        Some(vec![
-            ClientHelloExtension::ApplicationLayerProtocolNegotiation(vec![
-                ApplicationProtocol::HTTP_2,
-                ApplicationProtocol::HTTP_11,
-            ]),
-        ])
-    };
-
-    let config = ClientConfig {
-        server_verify_mode,
-        extensions,
-        ..Default::default()
-    };
-    inner_client.set_tls_connector_config(TlsConnectorConfig::Boring(Some(config)));
+    let inner_client = EasyHttpWebClient::new(connector);
 
     // TODO: need to insert TLS separate from http:
     // - first tls is needed
     // - but http only is to be selected after handshake is done...
-
-    let proxy_config = ClientConfig {
-        server_verify_mode,
-        ..Default::default()
-    };
-
-    inner_client.set_proxy_tls_connector_config(TlsConnectorConfig::Boring(Some(proxy_config)));
 
     let client_builder = (
         MapResultLayer::new(map_internal_client_error),

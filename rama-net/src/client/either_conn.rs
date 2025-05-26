@@ -28,8 +28,6 @@ impl_either_conn!(impl_iterator_either);
 
 use crate::client::EstablishedClientConnection;
 
-use super::ConnectorService;
-
 macro_rules! impl_service_either_conn {
     ($id:ident, $($param:ident),+ $(,)?) => {
         rama_macros::paste! {
