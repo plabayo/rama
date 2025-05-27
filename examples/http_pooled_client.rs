@@ -27,7 +27,6 @@ use rama::{
         LimitLayer,
         limit::{Policy, PolicyOutput, policy::PolicyResult},
     },
-    net::client::pool::FiFoReuseLruDropPool,
     rt::Executor,
     tcp::server::TcpListener,
 };
@@ -54,12 +53,11 @@ async fn main() {
     tokio::spawn(run_server(ADDRESS, ready_tx));
     ready_rx.await.unwrap();
 
-    let pool = FiFoReuseLruDropPool::new(5, 10).unwrap();
-
     let client = EasyHttpWebClient::builder()
         .without_proxy()
         .without_tls()
-        .with_conn_pool_using_basic_id(pool)
+        .with_connection_pool(5, 10)
+        .expect("connection pool")
         .build();
 
     let resp = client

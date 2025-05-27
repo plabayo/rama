@@ -44,7 +44,7 @@ pub trait ConnectorService<State, Request>: Send + Sync + 'static {
     /// Connection returned by the [`ConnectorService`]
     type Connection;
     /// Error returned in case of connection / setup failure
-    type Error: Into<BoxError> + Sync;
+    type Error: Into<BoxError>;
 
     /// Establish a connection, which often involves some kind of handshake,
     /// or connection revival.
@@ -81,22 +81,3 @@ where
         self.serve(ctx, req)
     }
 }
-
-// impl<S, State, Request, Connection> Service<State, Request> for S
-// where
-//     S: ConnectorService<State, Request, Connection = Connection, Error: Into<BoxError>>,
-// {
-//     type Response = EstablishedClientConnection<S::Connection, State, Request>;
-//     type Error = S::Error;
-
-//     fn serve(
-//         &self,
-//         ctx: Context<State>,
-//         req: Request,
-//     ) -> impl Future<
-//         Output = Result<EstablishedClientConnection<Connection, State, Request>, Self::Error>,
-//     > + Send
-//     + '_ {
-//         self.connect(ctx, req)
-//     }
-// }

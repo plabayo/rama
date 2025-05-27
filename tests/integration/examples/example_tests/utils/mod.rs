@@ -31,13 +31,7 @@ use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberI
 use rama::http::layer::decompression::DecompressionLayer;
 
 #[cfg(feature = "boring")]
-use std::sync::Arc;
-
-#[cfg(feature = "boring")]
-use rama::net::tls::client::ServerVerifyMode;
-
-#[cfg(feature = "boring")]
-use rama::tls::boring::client as boring_client;
+use rama::{net::tls::client::ServerVerifyMode, tls::boring::client as boring_client};
 
 #[cfg(all(feature = "rustls", not(feature = "boring")))]
 use rama::tls::rustls::client as rustls_client;
@@ -109,13 +103,15 @@ where
         let inner_client = {
             let tls_config = boring_client::TlsConnectorDataBuilder::new_http_auto()
                 .with_server_verify_mode(ServerVerifyMode::Disable)
-                .with_store_server_certificate_chain(true);
+                .with_store_server_certificate_chain(true)
+                .into_shared_builder();
             let proxy_tls_config = boring_client::TlsConnectorDataBuilder::new()
-                .with_server_verify_mode(ServerVerifyMode::Disable);
+                .with_server_verify_mode(ServerVerifyMode::Disable)
+                .into_shared_builder();
 
             EasyHttpWebClient::builder()
-                .with_tls_proxy_using_boringssl(Some(Arc::new(proxy_tls_config)), None)
-                .with_tls_using_boringssl(Some(Arc::new(tls_config)))
+                .with_tls_proxy_using_boringssl(Some(proxy_tls_config), None)
+                .with_tls_using_boringssl(Some(tls_config))
                 .build()
         };
 
@@ -126,6 +122,7 @@ where
                 .with_alpn_protocols_http_auto()
                 .with_env_key_logger()
                 .expect("connector with env keylogger")
+                .with_store_server_certificate_chain(true)
                 .build();
 
             let proxy_tls_config = rustls_client::TlsConnectorDataBuilder::new()
@@ -160,8 +157,8 @@ where
             AddRequiredRequestHeadersLayer::default(),
             SetProxyAuthHttpHeaderLayer::default(),
         )
-            .into_layer(inner_client);
-        let client = client.boxed();
+            .into_layer(inner_client)
+            .boxed();
 
         Self {
             server_process: child,

@@ -10,7 +10,7 @@ use rama_net::{
     transport::TryRefIntoTransportContext,
     user::ProxyCredential,
 };
-use rama_utils::macros::{define_inner_service_accessors, generate_set_and_with};
+use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
 
 #[cfg(feature = "dns")]
@@ -21,6 +21,7 @@ use ::{
         address::{Authority, Host},
         mode::DnsResolveIpMode,
     },
+    rama_utils::macros::generate_set_and_with,
     std::net::IpAddr,
     tokio::sync::mpsc,
 };

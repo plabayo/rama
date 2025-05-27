@@ -3,8 +3,8 @@
 mod connector;
 #[doc(inline)]
 pub use connector::{
-    AutoTlsStream, ConnectorKindAuto, ConnectorKindSecure, ConnectorKindTunnel,
-    RustlsTunnelTlsConnector, TlsConnector, TlsConnectorLayer,
+    AutoTlsStream, ConnectorKindAuto, ConnectorKindSecure, ConnectorKindTunnel, TlsConnector,
+    TlsConnectorLayer,
 };
 
 mod connector_data;

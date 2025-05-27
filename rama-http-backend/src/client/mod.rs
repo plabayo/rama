@@ -137,7 +137,6 @@ where
         let uri = req.uri().clone();
 
         let EstablishedClientConnection { ctx, req, conn } = self.connector.serve(ctx, req).await?;
-
         // NOTE: stack might change request version based on connector data,
         trace!(uri = %uri, "send http req to connector stack");
 
@@ -157,20 +156,26 @@ where
 pub use easy_connector::EasyHttpWebClientBuilder;
 
 mod easy_connector {
-    use super::{HttpConnector, proxy::layer::HttpProxyConnector};
-    use rama_core::{Service, error::BoxError};
-    use rama_http::{Request, Version, dep::http_body};
+    use super::{
+        HttpConnector, http_inspector::HttpsAlpnModifier, proxy::layer::HttpProxyConnector,
+    };
+    use rama_core::{
+        Service,
+        error::{BoxError, OpaqueError},
+    };
+    use rama_http::{Request, dep::http_body};
     use rama_net::client::{
         EstablishedClientConnection,
-        pool::{PooledConnector, http::BasicHttpConnIdentifier},
+        pool::{
+            FiFoReuseLruDropPool, PooledConnector,
+            http::{BasicHttpConId, BasicHttpConnIdentifier},
+        },
     };
     use rama_tcp::client::service::TcpConnector;
     use std::marker::PhantomData;
 
     #[cfg(feature = "boring")]
-    use rama_tls_boring::client as boring_client;
-    #[cfg(feature = "boring")]
-    use std::sync::Arc;
+    use ::{rama_http::Version, rama_tls_boring::client as boring_client, std::sync::Arc};
 
     #[cfg(feature = "rustls")]
     use rama_tls_rustls::client as rustls_client;
@@ -343,9 +348,12 @@ mod easy_connector {
         pub fn with_jit_req_inspector<I>(
             self,
             http_req_inspector: I,
-        ) -> EasyHttpWebClientBuilder<HttpConnector<T, I, I2>, HttpStage> {
+        ) -> EasyHttpWebClientBuilder<HttpConnector<T, (HttpsAlpnModifier, I), I2>, HttpStage>
+        {
             EasyHttpWebClientBuilder {
-                connector: self.connector.with_jit_req_inspector(http_req_inspector),
+                connector: self
+                    .connector
+                    .with_jit_req_inspector((HttpsAlpnModifier::default(), http_req_inspector)),
                 _phantom: PhantomData,
             }
         }
@@ -362,21 +370,32 @@ mod easy_connector {
     }
 
     impl<T> EasyHttpWebClientBuilder<T, HttpStage> {
-        pub fn with_conn_pool_using_basic_id<P>(
+        pub fn with_connection_pool<C>(
             self,
-            pool: P,
-        ) -> EasyHttpWebClientBuilder<PooledConnector<T, P, BasicHttpConnIdentifier>, PoolStage>
-        {
+            max_active: usize,
+            max_total: usize,
+        ) -> Result<
+            EasyHttpWebClientBuilder<
+                PooledConnector<
+                    T,
+                    FiFoReuseLruDropPool<C, BasicHttpConId>,
+                    BasicHttpConnIdentifier,
+                >,
+                PoolStage,
+            >,
+            OpaqueError,
+        > {
+            let pool = FiFoReuseLruDropPool::new(max_active, max_total)?;
             let connector =
                 PooledConnector::new(self.connector, pool, BasicHttpConnIdentifier::default());
 
-            EasyHttpWebClientBuilder {
+            Ok(EasyHttpWebClientBuilder {
                 connector,
                 _phantom: PhantomData,
-            }
+            })
         }
 
-        pub fn with_conn_pool_using_custom_id<P, R>(
+        pub fn with_custom_connection_pool<P, R>(
             self,
             pool: P,
             req_to_conn_id: R,

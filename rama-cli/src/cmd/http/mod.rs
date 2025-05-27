@@ -22,9 +22,13 @@ use rama::{
         },
     },
     layer::MapResultLayer,
-    net::{address::ProxyAddress, tls::client::ServerVerifyMode, user::ProxyCredential},
+    net::{
+        address::ProxyAddress,
+        tls::{KeyLogIntent, client::ServerVerifyMode},
+        user::ProxyCredential,
+    },
     rt::Executor,
-    tls::boring::client::TlsConnectorDataBuilder,
+    tls::boring::client::{EmulateTlsProfileLayer, TlsConnectorDataBuilder},
     ua::{
         emulate::{
             UserAgentEmulateHttpConnectModifier, UserAgentEmulateHttpRequestModifier,
@@ -342,6 +346,8 @@ where
     } else {
         TlsConnectorDataBuilder::new_http_auto()
     };
+    tls_config.set_keylog_intent(KeyLogIntent::Environment);
+
     let mut proxy_tls_config = TlsConnectorDataBuilder::new();
 
     if cfg.insecure {
@@ -366,9 +372,12 @@ where
     let client_builder = (
         MapResultLayer::new(map_internal_client_error),
         cfg.emulate.then(|| {
-            UserAgentEmulateLayer::new(Arc::new(UserAgentDatabase::embedded()))
-                .try_auto_detect_user_agent(true)
-                .select_fallback(UserAgentSelectFallback::Random)
+            (
+                UserAgentEmulateLayer::new(Arc::new(UserAgentDatabase::embedded()))
+                    .try_auto_detect_user_agent(true)
+                    .select_fallback(UserAgentSelectFallback::Random),
+                EmulateTlsProfileLayer::new(),
+            )
         }),
         (TimeoutLayer::new(if cfg.timeout > 0 {
             Duration::from_secs(cfg.timeout)

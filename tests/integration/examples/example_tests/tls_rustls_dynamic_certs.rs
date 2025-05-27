@@ -22,10 +22,9 @@ use rama::{
             client::{NegotiatedTlsParameters, ServerVerifyMode},
         },
     },
-    tls::boring::core::x509::X509,
+    tls::boring::{client::TlsConnectorDataBuilder, core::x509::X509},
     utils::{backoff::ExponentialBackoff, rng::HasherRng},
 };
-use rama_tls_boring::client::TlsConnectorDataBuilder;
 
 use std::{str::FromStr, time::Duration};
 

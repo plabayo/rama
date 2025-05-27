@@ -67,7 +67,7 @@ use rama::{
     rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
-    tls::boring::client::EmulateTlsProfileLayer,
+    tls::boring::client::{EmulateTlsProfileLayer, TlsConnectorDataBuilder},
     tls::boring::server::{TlsAcceptorData, TlsAcceptorLayer},
     ua::{
         emulate::{
@@ -77,7 +77,6 @@ use rama::{
         profile::UserAgentDatabase,
     },
 };
-use rama_tls_boring::client::TlsConnectorDataBuilder;
 
 use std::{convert::Infallible, sync::Arc, time::Duration};
 use tracing::level_filters::LevelFilter;

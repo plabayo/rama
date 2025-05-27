@@ -203,7 +203,6 @@ where
     S: Clone + Send + Sync + 'static,
 {
     let client = EasyHttpWebClient::default();
-
     match client.serve(ctx, req).await {
         Ok(resp) => {
             match resp
