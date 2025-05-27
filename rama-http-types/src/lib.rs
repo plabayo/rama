@@ -18,13 +18,7 @@
 #![cfg_attr(not(test), warn(clippy::print_stdout, clippy::dbg_macro))]
 
 pub(crate) mod body;
-pub use body::{Body, BodyDataStream};
-
-mod body_limit;
-pub use body_limit::BodyLimit;
-
-mod body_ext;
-pub use body_ext::BodyExtractExt;
+pub use body::{Body, BodyDataStream, BodyExtractExt, BodyLimit, sse};
 
 mod request;
 pub use request::{HttpRequestParts, Request};

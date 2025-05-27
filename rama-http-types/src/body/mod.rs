@@ -13,6 +13,14 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use sync_wrapper::SyncWrapper;
 
+mod limit;
+pub use limit::BodyLimit;
+
+mod ext;
+pub use ext::BodyExtractExt;
+
+pub mod sse;
+
 type BoxBody = http_body_util::combinators::BoxBody<Bytes, BoxError>;
 
 fn boxed<B>(body: B) -> BoxBody
@@ -72,6 +80,16 @@ impl Body {
             stream: SyncWrapper::new(stream),
         })
     }
+
+    // TODO
+    // pub fn from_event_stream<S, E, T>(stream: S) -> Self
+    // where
+    //     S: Stream<Item = Result<sse::Event<T>, E>> + Send + 'static,
+    //     E: Into<BoxError>,
+    //     T: EventData,
+    // {
+    //     Self::new(SseBody::new(stream))
+    // }
 
     /// Create a new [`Body`] from a [`Stream`] with a maximum size limit.
     pub fn limited(self, limit: usize) -> Self {
@@ -238,6 +256,54 @@ where
         }
     }
 }
+
+// /// A stream of Server-Side Events (SSE).
+// ///
+// /// Created with [`Body::into_event_stream`].
+// #[derive(Debug)]
+// pub struct BodyEventStream {
+//     inner: Body,
+// }
+
+// impl Stream for BodyEventStream {
+//     type Item = Result<sse::Event, BoxError>;
+
+//     #[inline]
+//     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+//         loop {
+//             match futures_lite::ready!(Pin::new(&mut self.inner).poll_frame(cx)?) {
+//                 Some(frame) => match frame.into_data() {
+//                     Ok(data) => return Poll::Ready(Some(Ok(data))),
+//                     Err(_frame) => {}
+//                 },
+//                 None => return Poll::Ready(None),
+//             }
+//         }
+//     }
+// }
+
+// impl http_body::Body for BodyEventStream {
+//     type Data = Bytes;
+//     type Error = BoxError;
+
+//     #[inline]
+//     fn poll_frame(
+//         mut self: Pin<&mut Self>,
+//         cx: &mut Context<'_>,
+//     ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+//         Pin::new(&mut self.inner).poll_frame(cx).map_err(Into::into)
+//     }
+
+//     #[inline]
+//     fn is_end_stream(&self) -> bool {
+//         self.inner.is_end_stream()
+//     }
+
+//     #[inline]
+//     fn size_hint(&self) -> http_body::SizeHint {
+//         self.inner.size_hint()
+//     }
+// }
 
 #[test]
 fn test_try_downcast() {

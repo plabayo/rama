@@ -41,7 +41,6 @@ futures-util = { workspace = true }
 http-range-header = { workspace = true }
 httpdate = { workspace = true }
 iri-string = { workspace = true }
-itoa = { workspace = true }
 matchit = { workspace = true }
 mime = { workspace = true }
 mime_guess = { workspace = true }
@@ -50,7 +49,6 @@ percent-encoding = { workspace = true }
 pin-project-lite = { workspace = true }
 rama-core = { workspace = true }
 rama-http-headers = { workspace = true }
-memchr = { workspace = true }
 rama-http-types = { workspace = true }
 rama-net = { workspace = true, features = ["http"] }
 rama-ua = { workspace = true }
@@ -67,7 +65,6 @@ tracing = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
 
 [dev-dependencies]
-serde_json = { workspace = true, features = ["raw_value"] }
 brotli = { workspace = true }
 flate2 = { workspace = true }
 itertools = { workspace = true }
@@ -75,8 +72,8 @@ parking_lot = { workspace = true }
 rama-tcp = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
-tokio-test = { workspace = true }
 tokio-stream = { workspace = true }
+tokio-test = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 zstd = { workspace = true }
 
