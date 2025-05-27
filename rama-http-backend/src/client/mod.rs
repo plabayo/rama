@@ -156,9 +156,7 @@ where
 pub use easy_connector::EasyHttpWebClientBuilder;
 
 mod easy_connector {
-    use super::{
-        HttpConnector, http_inspector::HttpsAlpnModifier, proxy::layer::HttpProxyConnector,
-    };
+    use super::{HttpConnector, proxy::layer::HttpProxyConnector};
     use rama_core::{
         Service,
         error::{BoxError, OpaqueError},
@@ -175,10 +173,15 @@ mod easy_connector {
     use std::marker::PhantomData;
 
     #[cfg(feature = "boring")]
-    use ::{rama_http::Version, rama_tls_boring::client as boring_client, std::sync::Arc};
+    use ::{rama_tls_boring::client as boring_client, std::sync::Arc};
 
     #[cfg(feature = "rustls")]
     use rama_tls_rustls::client as rustls_client;
+
+    #[cfg(any(feature = "rustls", feature = "boring"))]
+    use super::http_inspector::HttpsAlpnModifier;
+    #[cfg(any(feature = "rustls", feature = "boring"))]
+    use rama_http::Version;
 
     /// Builder that is designed to easily create a connector for most basic use cases.
     ///
@@ -345,6 +348,7 @@ mod easy_connector {
     }
 
     impl<T, I1, I2> EasyHttpWebClientBuilder<HttpConnector<T, I1, I2>, HttpStage> {
+        #[cfg(any(feature = "rustls", feature = "boring"))]
         pub fn with_jit_req_inspector<I>(
             self,
             http_req_inspector: I,
@@ -354,6 +358,17 @@ mod easy_connector {
                 connector: self
                     .connector
                     .with_jit_req_inspector((HttpsAlpnModifier::default(), http_req_inspector)),
+                _phantom: PhantomData,
+            }
+        }
+
+        #[cfg(not(any(feature = "rustls", feature = "boring")))]
+        pub fn with_jit_req_inspector<I>(
+            self,
+            http_req_inspector: I,
+        ) -> EasyHttpWebClientBuilder<HttpConnector<T, I, I2>, HttpStage> {
+            EasyHttpWebClientBuilder {
+                connector: self.connector.with_jit_req_inspector(http_req_inspector),
                 _phantom: PhantomData,
             }
         }
