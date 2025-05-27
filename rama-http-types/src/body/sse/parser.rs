@@ -5,7 +5,8 @@
 //! - by Julian Popescu (hi@julian.dev); License: MIT or Apache 2.0
 
 use nom::branch::alt;
-use nom::bytes::streaming::{tag, take_while, take_while_m_n, take_while1};
+use nom::bytes::streaming::{take_while, take_while_m_n, take_while1};
+use nom::character::complete::char;
 use nom::combinator::opt;
 use nom::sequence::{preceded, terminated};
 use nom::{IResult, Parser};
@@ -29,7 +30,7 @@ use nom::{IResult, Parser};
 /// any-char      = %x0000-0009 / %x000B-000C / %x000E-10FFFF
 ///                 ; a scalar value other than U+000A LINE FEED (LF) or U+000D CARRIAGE RETURN (CR)
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub(super) enum RawEventLine<'a> {
     Comment(&'a str),
     Field(&'a str, Option<&'a str>),
@@ -38,12 +39,8 @@ pub(super) enum RawEventLine<'a> {
 
 #[inline]
 pub(super) fn is_lf(c: char) -> bool {
+    // TODO: replace
     c == '\u{000A}'
-}
-
-#[inline]
-pub(super) fn is_cr(c: char) -> bool {
-    c == '\u{000D}'
 }
 
 #[inline]
@@ -77,18 +74,12 @@ pub(super) fn is_any_char(c: char) -> bool {
 }
 
 #[inline]
-fn crlf(input: &str) -> IResult<&str, &str> {
-    tag("\u{000D}\u{000A}")(input)
-}
-
-#[inline]
-fn end_of_line(input: &str) -> IResult<&str, &str> {
-    alt((
-        crlf,
-        take_while_m_n(1, 1, is_cr),
-        take_while_m_n(1, 1, is_lf),
-    ))
-    .parse(input)
+fn end_of_line(input: &str) -> IResult<&str, ()> {
+    let (mut rem, c) = alt((char('\n'), char('\r'))).parse(input)?;
+    if c == '\r' {
+        rem = opt(char('\n')).parse(rem)?.0;
+    }
+    Ok((rem, ()))
 }
 
 #[inline]
@@ -98,7 +89,12 @@ fn comment(input: &str) -> IResult<&str, RawEventLine> {
         terminated(take_while(is_any_char), end_of_line),
     )
     .parse(input)
-    .map(|(input, comment)| (input, RawEventLine::Comment(comment)))
+    .map(|(input, comment)| {
+        (
+            input,
+            RawEventLine::Comment(comment.strip_prefix(' ').unwrap_or(comment)),
+        )
+    })
 }
 
 #[inline]
@@ -124,4 +120,27 @@ fn empty(input: &str) -> IResult<&str, RawEventLine> {
 
 pub(super) fn line(input: &str) -> IResult<&str, RawEventLine> {
     alt((comment, field, empty)).parse(input)
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_end_of_line() {
+        assert_eq!(Ok(("", ())), end_of_line("\u{000A}"));
+        assert_eq!(Ok(("", ())), end_of_line("\n"));
+        assert_eq!(Ok(("", ())), end_of_line("\r"));
+        assert_eq!(Ok(("", ())), end_of_line("\r\n"));
+        assert_eq!(Ok(("\n", ())), end_of_line("\n\n"));
+    }
+
+    #[test]
+    fn test_empty() {
+        assert_eq!(Ok(("", RawEventLine::Empty)), empty("\u{000A}"));
+        assert_eq!(Ok(("", RawEventLine::Empty)), empty("\n"));
+        assert_eq!(Ok(("", RawEventLine::Empty)), empty("\r"));
+        assert_eq!(Ok(("", RawEventLine::Empty)), empty("\r\n"));
+        assert_eq!(Ok(("\n", RawEventLine::Empty)), empty("\n\n"));
+    }
 }

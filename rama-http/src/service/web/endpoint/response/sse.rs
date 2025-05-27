@@ -103,7 +103,7 @@ mod tests {
                         serde_json::json!({ "foo": "bar" }),
                     ))),
                     Event::default()
-                        .try_with_static_id("three")
+                        .try_with_static_event("three")
                         .unwrap()
                         .with_retry(30_000)
                         .try_with_static_id("unique-id")
@@ -243,7 +243,7 @@ mod tests {
         let mut lines = payload.lines().peekable();
         while let Some(line) = lines.next() {
             if line.is_empty() {
-                assert!(lines.next().is_none());
+                assert_eq!(None, lines.next());
                 break;
             }
 

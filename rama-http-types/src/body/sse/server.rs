@@ -55,7 +55,7 @@ where
         let this = self.project();
 
         match ready!(this.event_stream.get_pin_mut().poll_next(cx)) {
-            Some(Ok(event)) => Poll::Ready(event.serialize()?.map(|b| Ok(Frame::data(b)))),
+            Some(Ok(event)) => Poll::Ready(Some(Ok(Frame::data(event.serialize()?)))),
             Some(Err(error)) => Poll::Ready(Some(Err(error.into()))),
             None => Poll::Ready(None),
         }

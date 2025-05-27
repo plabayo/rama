@@ -39,7 +39,7 @@ impl<T: Clone> Clone for Event<T> {
             event: self.event.clone(),
             id: self.id.clone(),
             data: self.data.clone(),
-            retry: self.retry.clone(),
+            retry: self.retry,
             comments: self.comments.clone(),
         }
     }
@@ -99,12 +99,7 @@ impl<T> Event<T> {
 }
 
 impl<T: EventDataWrite> Event<T> {
-    pub(super) fn serialize(&self) -> Result<Option<Bytes>, OpaqueError> {
-        let data = match &self.data {
-            Some(data) => data,
-            None => return Ok(None),
-        };
-
+    pub(super) fn serialize(&self) -> Result<Bytes, OpaqueError> {
         let mut buffer = BytesMut::new();
 
         let mut serialize = |name, value| {
@@ -126,19 +121,31 @@ impl<T: EventDataWrite> Event<T> {
             serialize(b"event", event.as_bytes());
         }
 
-        buffer.extend_from_slice(b"data");
-        buffer.put_u8(b':');
-        buffer.put_u8(b' ');
+        if let Some(retry) = self.retry {
+            let mut buf = itoa::Buffer::new();
+            serialize(b"retry", buf.format(retry.as_millis()).as_bytes());
+        }
 
-        let mut buf_write = buffer.writer();
-        data.write_data(&mut buf_write)?;
-        let mut buffer = buf_write.into_inner();
+        let mut buffer = match &self.data {
+            Some(data) => {
+                buffer.extend_from_slice(b"data");
+                buffer.put_u8(b':');
+                buffer.put_u8(b' ');
 
-        // TODO: verify
-        buffer.put_u8(b'\n');
-        buffer.put_u8(b'\n');
+                let mut buf_write = buffer.writer();
+                data.write_data(&mut buf_write)?;
+                let mut buffer = buf_write.into_inner();
+                buffer.put_u8(b'\n');
+                buffer
+            }
+            None => buffer,
+        };
 
-        Ok(Some(buffer.freeze()))
+        if !buffer.is_empty() {
+            buffer.put_u8(b'\n');
+        }
+
+        Ok(buffer.freeze())
     }
 }
 

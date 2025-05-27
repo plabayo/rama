@@ -58,6 +58,13 @@ impl<T: Clone> Clone for JsonEventData<T> {
     }
 }
 
+impl<T: PartialEq> PartialEq for JsonEventData<T> {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        self.0.eq(&other.0)
+    }
+}
+
 impl_deref!(JsonEventData);
 
 impl<T> From<T> for JsonEventData<T> {

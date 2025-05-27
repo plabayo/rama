@@ -28,24 +28,24 @@ itoa = { workspace = true }
 memchr = { workspace = true }
 mime = { workspace = true }
 mime_guess = { workspace = true }
+nom = { workspace = true }
 pin-project-lite = { workspace = true }
 rama-core = { workspace = true }
 rama-error = { workspace = true }
 rama-macros = { workspace = true }
 rama-utils = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
-smol_str = { workspace = true }
-nom = { workspace = true }
 serde_json = { workspace = true }
 smallvec = { workspace = true }
+smol_str = { workspace = true }
 sync_wrapper = { workspace = true }
 tokio = { workspace = true, features = ["macros", "io-std"] }
 tracing = { workspace = true }
 
 [dev-dependencies]
+futures = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tokio-test = { workspace = true }
-futures = { workspace = true }
 
 [lints]
 workspace = true

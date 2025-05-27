@@ -156,8 +156,8 @@ mod tests {
         .collect::<Vec<_>>()
         .await;
         assert_eq!(results.len(), 3);
-        assert_eq!(results[0].as_deref().unwrap(), "".to_string());
-        assert_eq!(results[1].as_deref().unwrap(), "👍".to_string());
+        assert_eq!(results[0].as_deref().unwrap(), "".to_owned());
+        assert_eq!(results[1].as_deref().unwrap(), "👍".to_owned());
         assert!(results[2].is_err());
     }
 }
