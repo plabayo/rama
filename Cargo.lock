@@ -2374,7 +2374,6 @@ dependencies = [
  "tokio-test",
  "tracing",
  "tracing-subscriber",
- "zstd",
 ]
 
 [[package]]
