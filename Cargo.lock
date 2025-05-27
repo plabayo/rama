@@ -2552,6 +2552,7 @@ dependencies = [
  "futures",
  "h2",
  "rama-core",
+ "rama-dns",
  "rama-http",
  "rama-http-core",
  "rama-http-headers",

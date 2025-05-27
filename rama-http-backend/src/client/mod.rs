@@ -161,6 +161,7 @@ mod easy_connector {
         Service,
         error::{BoxError, OpaqueError},
     };
+    use rama_dns::DnsResolver;
     use rama_http::{Request, dep::http_body};
     use rama_net::client::{
         EstablishedClientConnection,
@@ -209,32 +210,16 @@ mod easy_connector {
         }
     }
 
-    impl<T, S> EasyHttpWebClientBuilder<T, S> {
-        pub fn build<State, Body, ModifiedBody, ConnResponse>(
+    impl EasyHttpWebClientBuilder<TcpConnector, TransportStage> {
+        pub fn with_dns_resolver<T: DnsResolver + Clone>(
             self,
-        ) -> super::EasyHttpWebClient<State, Body, T::Response>
-        where
-            State: Send + Sync + 'static,
-            Body: http_body::Body<Data: Send + 'static, Error: Into<BoxError>>
-                + Unpin
-                + Send
-                + 'static,
-            ModifiedBody: http_body::Body<Data: Send + 'static, Error: Into<BoxError>>
-                + Unpin
-                + Send
-                + 'static,
-            T: Service<
-                    State,
-                    Request<Body>,
-                    Response = EstablishedClientConnection<
-                        ConnResponse,
-                        State,
-                        Request<ModifiedBody>,
-                    >,
-                    Error = BoxError,
-                >,
-        {
-            super::EasyHttpWebClient::new(self.connector.boxed())
+            resolver: T,
+        ) -> EasyHttpWebClientBuilder<TcpConnector<T>, TransportStage> {
+            let connector = self.connector.with_dns(resolver);
+            EasyHttpWebClientBuilder {
+                connector,
+                _phantom: PhantomData,
+            }
         }
     }
 
@@ -421,6 +406,35 @@ mod easy_connector {
                 connector,
                 _phantom: PhantomData,
             }
+        }
+    }
+
+    impl<T, S> EasyHttpWebClientBuilder<T, S> {
+        pub fn build<State, Body, ModifiedBody, ConnResponse>(
+            self,
+        ) -> super::EasyHttpWebClient<State, Body, T::Response>
+        where
+            State: Send + Sync + 'static,
+            Body: http_body::Body<Data: Send + 'static, Error: Into<BoxError>>
+                + Unpin
+                + Send
+                + 'static,
+            ModifiedBody: http_body::Body<Data: Send + 'static, Error: Into<BoxError>>
+                + Unpin
+                + Send
+                + 'static,
+            T: Service<
+                    State,
+                    Request<Body>,
+                    Response = EstablishedClientConnection<
+                        ConnResponse,
+                        State,
+                        Request<ModifiedBody>,
+                    >,
+                    Error = BoxError,
+                >,
+        {
+            super::EasyHttpWebClient::new(self.connector.boxed())
         }
     }
 }
