@@ -75,26 +75,7 @@ impl<T> From<T> for JsonEventData<T> {
 
 impl<T: serde::Serialize> EventDataWrite for JsonEventData<T> {
     fn write_data(&self, w: &mut impl std::io::Write) -> Result<(), OpaqueError> {
-        struct IgnoreNewLines<'a, W: std::io::Write>(&'a mut W);
-
-        impl<'a, W: std::io::Write> std::io::Write for IgnoreNewLines<'a, W> {
-            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-                let mut last_split = 0;
-                for delimiter in memchr::memchr2_iter(b'\n', b'\r', buf) {
-                    self.0.write_all(&buf[last_split..delimiter])?;
-                    last_split = delimiter + 1;
-                }
-                self.0.write_all(&buf[last_split..])?;
-                Ok(buf.len())
-            }
-
-            fn flush(&mut self) -> std::io::Result<()> {
-                self.0.flush()
-            }
-        }
-
-        let mut wrapper = IgnoreNewLines(w);
-        serde_json::to_writer(&mut wrapper, &self.0).context("serialize json data")?;
+        serde_json::to_writer(w, &self.0).context("serialize json data")?;
         Ok(())
     }
 }

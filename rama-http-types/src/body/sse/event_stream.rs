@@ -351,7 +351,7 @@ mod tests {
                 event!("example message".to_owned(),),
             ),
             (
-                "data: a\nb\nc\nd\ne\nf\n\n",
+                "data: a\ndata: b\ndata: c\ndata: d\ndata: e\ndata: f\n\n",
                 event!("a\nb\nc\nd\ne\nf".to_owned(),),
             ),
             (

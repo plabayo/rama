@@ -133,7 +133,7 @@ impl<T: EventDataWrite> Event<T> {
                 buffer.put_u8(b' ');
 
                 let mut buf_write = buffer.writer();
-                data.write_data(&mut buf_write)?;
+                data.write_data(&mut DataWriteSplitter(&mut buf_write))?;
                 let mut buffer = buf_write.into_inner();
                 buffer.put_u8(b'\n');
                 buffer
@@ -368,5 +368,24 @@ impl Event {
             self.data = Some(String::from_utf8(v).map_err(|_| OpaqueError::from_display("utf8 error"))?);
             Ok(self)
         }
+    }
+}
+
+struct DataWriteSplitter<'a, W: std::io::Write>(&'a mut W);
+
+impl<W: std::io::Write> std::io::Write for DataWriteSplitter<'_, W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let mut last_split = 0;
+        for delimiter in memchr::memchr2_iter(b'\n', b'\r', buf) {
+            self.0.write_all(&buf[last_split..=delimiter])?;
+            self.0.write_all(b"data: ")?;
+            last_split = delimiter + 1;
+        }
+        self.0.write_all(&buf[last_split..])?;
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.0.flush()
     }
 }
