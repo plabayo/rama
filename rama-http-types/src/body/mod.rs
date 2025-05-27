@@ -9,6 +9,7 @@ use futures_lite::stream::Stream;
 use pin_project_lite::pin_project;
 use rama_core::bytes::Bytes;
 use rama_error::{BoxError, OpaqueError};
+use sse::{EventDataRead, EventStream};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use sync_wrapper::SyncWrapper;
@@ -81,16 +82,6 @@ impl Body {
         })
     }
 
-    // TODO
-    // pub fn from_event_stream<S, E, T>(stream: S) -> Self
-    // where
-    //     S: Stream<Item = Result<sse::Event<T>, E>> + Send + 'static,
-    //     E: Into<BoxError>,
-    //     T: EventData,
-    // {
-    //     Self::new(SseBody::new(stream))
-    // }
-
     /// Create a new [`Body`] from a [`Stream`] with a maximum size limit.
     pub fn limited(self, limit: usize) -> Self {
         Self::new(crate::dep::http_body_util::Limited::new(self.0, limit))
@@ -104,6 +95,20 @@ impl Body {
     /// [`http_body_util::BodyStream`]: https://docs.rs/http-body-util/latest/http_body_util/struct.BodyStream.html
     pub fn into_data_stream(self) -> BodyDataStream {
         BodyDataStream { inner: self }
+    }
+
+    /// Convert the body into a [`Stream`] of [`sse::Event`]s.
+    ///
+    /// <https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events/Using_server-sent_events>.
+    pub fn into_event_stream<T: EventDataRead>(self) -> EventStream<BodyDataStream, T> {
+        EventStream::new(self.into_data_stream())
+    }
+
+    /// Convert the body into a [`Stream`] of [`sse::Event`]s with optional string data.
+    ///
+    /// <https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events/Using_server-sent_events>.
+    pub fn into_string_data_event_stream(self) -> EventStream<BodyDataStream> {
+        EventStream::new(self.into_data_stream())
     }
 
     /// Stream a chunk of the response body.
@@ -256,54 +261,6 @@ where
         }
     }
 }
-
-// /// A stream of Server-Side Events (SSE).
-// ///
-// /// Created with [`Body::into_event_stream`].
-// #[derive(Debug)]
-// pub struct BodyEventStream {
-//     inner: Body,
-// }
-
-// impl Stream for BodyEventStream {
-//     type Item = Result<sse::Event, BoxError>;
-
-//     #[inline]
-//     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-//         loop {
-//             match futures_lite::ready!(Pin::new(&mut self.inner).poll_frame(cx)?) {
-//                 Some(frame) => match frame.into_data() {
-//                     Ok(data) => return Poll::Ready(Some(Ok(data))),
-//                     Err(_frame) => {}
-//                 },
-//                 None => return Poll::Ready(None),
-//             }
-//         }
-//     }
-// }
-
-// impl http_body::Body for BodyEventStream {
-//     type Data = Bytes;
-//     type Error = BoxError;
-
-//     #[inline]
-//     fn poll_frame(
-//         mut self: Pin<&mut Self>,
-//         cx: &mut Context<'_>,
-//     ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
-//         Pin::new(&mut self.inner).poll_frame(cx).map_err(Into::into)
-//     }
-
-//     #[inline]
-//     fn is_end_stream(&self) -> bool {
-//         self.inner.is_end_stream()
-//     }
-
-//     #[inline]
-//     fn size_hint(&self) -> http_body::SizeHint {
-//         self.inner.size_hint()
-//     }
-// }
 
 #[test]
 fn test_try_downcast() {
