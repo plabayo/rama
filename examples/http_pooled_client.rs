@@ -56,7 +56,7 @@ async fn main() {
     let client = EasyHttpWebClient::builder()
         .without_proxy()
         .without_tls()
-        .with_connection_pool(5, 10)
+        .with_connection_pool(5, 10, None)
         .expect("connection pool")
         .build();
 

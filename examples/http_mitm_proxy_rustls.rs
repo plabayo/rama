@@ -59,9 +59,11 @@ use rama::{
     rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
-    tls::rustls::server::{TlsAcceptorData, TlsAcceptorDataBuilder, TlsAcceptorLayer},
+    tls::rustls::{
+        client::TlsConnectorDataBuilder,
+        server::{TlsAcceptorData, TlsAcceptorDataBuilder, TlsAcceptorLayer},
+    },
 };
-use rama_tls_rustls::client::TlsConnectorDataBuilder;
 
 use std::{convert::Infallible, time::Duration};
 use tracing::level_filters::LevelFilter;

@@ -591,13 +591,13 @@ pub mod http {
         }
     }
 
-    pub struct HttpPooledEasyConnectorBuilder {
+    pub struct HttpPooledConnectorBuilder {
         max_total: usize,
         max_active: usize,
         wait_for_pool_timeout: Option<Duration>,
     }
 
-    impl Default for HttpPooledEasyConnectorBuilder {
+    impl Default for HttpPooledConnectorBuilder {
         fn default() -> Self {
             Self {
                 max_total: 100,
@@ -607,7 +607,7 @@ pub mod http {
         }
     }
 
-    impl HttpPooledEasyConnectorBuilder {
+    impl HttpPooledConnectorBuilder {
         pub fn new() -> Self {
             Self::default()
         }

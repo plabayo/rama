@@ -53,7 +53,7 @@ use rama::{
     },
 };
 
-use std::{convert::Infallible, sync::Arc, time::Duration};
+use std::{convert::Infallible, time::Duration};
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -129,11 +129,13 @@ async fn http_mitm_proxy(ctx: Context, req: Request) -> Result<Response, Infalli
     } else {
         TlsConnectorDataBuilder::new_http_auto()
     };
-    let base_tls_config = base_tls_config.with_server_verify_mode(ServerVerifyMode::Disable);
+    let base_tls_config = base_tls_config
+        .with_server_verify_mode(ServerVerifyMode::Disable)
+        .into_shared_builder();
 
     let client = EasyHttpWebClient::builder()
         .with_proxy()
-        .with_tls_using_boringssl(Some(Arc::new(base_tls_config)))
+        .with_tls_using_boringssl(Some(base_tls_config))
         .with_svc_req_inspector((
             // these layers are for example purposes only,
             // best not to print requests like this in production...
