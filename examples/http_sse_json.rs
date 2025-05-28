@@ -287,6 +287,8 @@ const INDEX_CONTENT: &str = r##"<!DOCTYPE html>
   </table>
 
   <script>
+    let eventCount = 0;
+
     const tableBody = document.querySelector('#order-table tbody');
     const source = new EventSource('/api/events');
 
@@ -318,6 +320,11 @@ const INDEX_CONTENT: &str = r##"<!DOCTYPE html>
       row.appendChild(prepaidCell);
 
       tableBody.appendChild(row);
+
+      eventCount += 1;
+      if (eventCount >= 500) {
+        source.close();
+      }
     };
 
     source.onerror = function (err) {

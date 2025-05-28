@@ -209,6 +209,15 @@ impl<T> Event<T> {
         self.data.as_ref()
     }
 
+    /// Consume `self` and return the event's data data field(s) (`data: <content>`)
+    ///
+    /// This corresponds to [`MessageEvent`'s data field].
+    ///
+    /// [`MessageEvent`'s data field]: https://developer.mozilla.org/en-US/docs/Web/API/MessageEvent/data
+    pub fn into_data(self) -> Option<T> {
+        self.data
+    }
+
     generate_set_and_with! {
         /// Set the event's data data field(s) (`data: <content>`)
         ///

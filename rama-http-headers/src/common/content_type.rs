@@ -118,6 +118,16 @@ impl ContentType {
     pub fn octet_stream() -> ContentType {
         ContentType(mime::APPLICATION_OCTET_STREAM)
     }
+
+    /// Reference to the internal [`Mime`].
+    pub fn mime(&self) -> &Mime {
+        &self.0
+    }
+
+    /// Consume `self` into the inner [`Mime`].
+    pub fn into_mime(self) -> Mime {
+        self.0
+    }
 }
 
 impl Header for ContentType {

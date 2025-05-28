@@ -55,10 +55,7 @@ async fn api_events_endpoint(last_id: Option<TypedHeader<LastEventId>>) -> impl 
     let mut next_event = move || {
         let mut id_buffer = itoa::Buffer::new();
         let event = sse::Event::new()
-            .with_data(format!(
-                "[#{id}] {}",
-                EXAMPLE_EVENTS[(id as usize) % EXAMPLE_EVENTS.len()],
-            ))
+            .with_data(EXAMPLE_EVENTS[(id as usize) % EXAMPLE_EVENTS.len()].to_owned())
             .try_with_id(id_buffer.format(id))
             .context("set next event's id")?;
         id += 1;
@@ -183,6 +180,8 @@ const INDEX_CONTENT: &str = r##"<!DOCTYPE html>
   </table>
 
   <script>
+    let eventCount = 0;
+
     const tableBody = document.querySelector('#event-table tbody');
     const source = new EventSource('/api/events');
 
@@ -199,6 +198,11 @@ const INDEX_CONTENT: &str = r##"<!DOCTYPE html>
       row.appendChild(timeCell);
       row.appendChild(dataCell);
       tableBody.appendChild(row);
+
+      eventCount += 1;
+      if (eventCount >= 500) {
+        source.close();
+      }
     };
 
     source.onerror = function (err) {

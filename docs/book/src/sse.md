@@ -10,7 +10,10 @@
 
 ## Description
 
-SSE provides a lightweight and efficient alternative to more complex real-time communication mechanisms like WebSockets, especially when communication is strictly **server → client**. It relies on standard HTTP and text-based formatting, making it friendly for browsers and intermediaries like proxies or load balancers.
+SSE provides a lightweight and efficient alternative to more complex real-time
+communication mechanisms like WebSockets, especially when communication is
+strictly **server → client**. It relies on standard HTTP and text-based formatting,
+making it friendly for browsers and intermediaries like proxies or load balancers.
 
 Rama offers support for `SSE` both as a client and a server.
 As such you could even MITM proxy it.
@@ -25,13 +28,29 @@ digraph {
     server [label="Server"];
     client [label="Browser / HTTP client"];
 
-    server -> client [label="One-way stream of events over HTTP"];
+    client -> server [label="(1) HTTP GET call to /event-endpoint"];
+    server -> client [label="(2) One-way stream of events over HTTP"];
 }
 ```
 
 </div>
 
-The server keeps an HTTP connection open and streams events using a simple wire format. Each event can contain a `data` field, and optionally an `id`, `event` name, or `retry` hint.
+First, the client initiates an HTTP `GET` request—either secure (`https`) or not—to the server.
+In response, the server replies (step 2) with a `200 OK` status if content is available,
+or potentially something else, such as `204 No Content`.
+
+For a successful response, the `Content-Type` must be set to `text/event-stream`.
+The server then keeps the HTTP connection open and continuously streams events
+using a simple wire format. Each event may include a `data` field, and optionally an `id`, `event` name, or `retry` hint.
+
+When the connection is closed by the server, the client is responsible for retrying
+the request (returning to step 1) after waiting the number of milliseconds specified by
+the most recent `retry` hint—or falling back to a default such as 3000ms if no hint was provided.
+
+On reconnect, the client can include a `Last-Event-ID` header containing the ID of the last
+event it successfully received. This allows the server to resume the stream from where it left off.
+Alternatively, the server may respond with a `204 No Content`,
+signaling that the stream has no more events to offer and that the client should not continue attempting to reconnect.
 
 Example SSE frame:
 
@@ -44,6 +63,8 @@ data: {"status":"ok"}
 The browser parses these into `MessageEvent`s and exposes them via the [`EventSource`](https://developer.mozilla.org/en-US/docs/Web/API/EventSource) API. But browsers are not the only consumers of SSE...
 
 ## Rama Support
+
+> 📚 Rust Docs: <https://ramaproxy.org/docs/rama/http/sse/index.html>
 
 If you enable Rama’s `http` feature, **full SSE support is built-in** — for both server and client side, no additional libraries required.
 
