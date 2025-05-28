@@ -258,8 +258,7 @@ async fn http_mitm_proxy(ctx: Context, req: Request) -> Result<Response, Infalli
                 Some(traffic_writer::WriterMode::Headers),
             ),
         ))
-        .build()
-        .boxed();
+        .build();
 
     match client.serve(ctx, req).await {
         Ok(resp) => Ok(resp),
