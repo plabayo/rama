@@ -31,7 +31,6 @@ async fn test_http_echo_acme_data() {
     utils::init_tracing();
 
     let _guard = utils::RamaService::echo(63102, false, Some("hello,world".to_owned()));
-
     let lines = utils::RamaService::http(vec![
         "http://127.0.0.1:63102/.well-known/acme-challenge/hello",
     ])

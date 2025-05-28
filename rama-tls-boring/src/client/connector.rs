@@ -1,5 +1,4 @@
 use crate::RamaTryInto;
-use private::{ConnectorKindAuto, ConnectorKindSecure, ConnectorKindTunnel};
 use rama_boring_tokio::SslStream;
 use rama_core::error::{BoxError, ErrorExt, OpaqueError};
 use rama_core::{Context, Layer, Service};
@@ -464,36 +463,34 @@ where
     Ok((stream, params))
 }
 
-mod private {
-    use rama_net::address::Host;
+#[non_exhaustive]
+#[derive(Debug, Clone)]
+/// A connector which can be used to establish a connection to a server
+/// in function of the Request, meaning either it will be a seucre
+/// connector or it will be a plain connector.
+///
+/// This connector can be handy as it allows to have a single layer
+/// which will work both for plain and secure connections.
+pub struct ConnectorKindAuto;
 
-    #[derive(Debug, Clone)]
-    /// A connector which can be used to establish a connection to a server
-    /// in function of the Request, meaning either it will be a seucre
-    /// connector or it will be a plain connector.
-    ///
-    /// This connector can be handy as it allows to have a single layer
-    /// which will work both for plain and secure connections.
-    pub struct ConnectorKindAuto;
+#[non_exhaustive]
+#[derive(Debug, Clone)]
+/// A connector which can _only_ be used to establish a secure connection,
+/// regardless of the scheme of the request URI.
+pub struct ConnectorKindSecure;
 
-    #[derive(Debug, Clone)]
-    /// A connector which can _only_ be used to establish a secure connection,
-    /// regardless of the scheme of the request URI.
-    pub struct ConnectorKindSecure;
-
-    #[derive(Debug, Clone)]
-    /// A connector which can be used to use this connector to support
-    /// secure https tunnel connections.
-    ///
-    /// The connections will only be done if the [`TlsTunnel`]
-    /// is present in the context for optional versions,
-    /// and using the hardcoded host otherwise.
-    /// Context always overwrites though.
-    ///
-    /// [`TlsTunnel`]: crate::TlsTunnel
-    pub struct ConnectorKindTunnel {
-        pub host: Option<Host>,
-    }
+#[derive(Debug, Clone)]
+/// A connector which can be used to use this connector to support
+/// secure https tunnel connections.
+///
+/// The connections will only be done if the [`TlsTunnel`]
+/// is present in the context for optional versions,
+/// and using the hardcoded host otherwise.
+/// Context always overwrites though.
+///
+/// [`TlsTunnel`]: crate::TlsTunnel
+pub struct ConnectorKindTunnel {
+    host: Option<Host>,
 }
 
 #[cfg(test)]

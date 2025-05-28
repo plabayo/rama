@@ -51,6 +51,8 @@ impl<S> HttpConnector<S> {
 }
 
 impl<S, I1, I2> HttpConnector<S, I1, I2> {
+    /// Add a http request inspector that will run just after the inner http connector
+    /// has finished but before the http handshake
     pub fn with_jit_req_inspector<T>(self, http_req_inspector: T) -> HttpConnector<S, T, I2> {
         HttpConnector {
             inner: self.inner,
@@ -59,6 +61,7 @@ impl<S, I1, I2> HttpConnector<S, I1, I2> {
         }
     }
 
+    /// Add a http request inspector that will run just before doing the actual http request
     pub fn with_svc_req_inspector<T>(self, http_req_inspector: T) -> HttpConnector<S, I1, T> {
         HttpConnector {
             inner: self.inner,

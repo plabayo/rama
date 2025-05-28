@@ -4,7 +4,6 @@ use clap::Args;
 use rama::{
     Context, Layer, Service,
     error::{BoxError, ErrorContext, OpaqueError},
-    http::service::web::response::IntoResponse,
     http::{
         Body, Request, Response, StatusCode,
         client::EasyHttpWebClient,
@@ -15,6 +14,7 @@ use rama::{
         },
         matcher::MethodMatcher,
         server::HttpServer,
+        service::web::response::IntoResponse,
     },
     layer::{ConsumeErrLayer, LimitLayer, TimeoutLayer, limit::policy::ConcurrentPolicy},
     net::{

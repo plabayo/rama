@@ -591,13 +591,28 @@ pub mod http {
         }
     }
 
+    #[derive(Clone, Default)]
+    /// Builder to help create a config for the default http connection pool or to
+    /// build the connector directly
     pub struct HttpPooledConnectorBuilder {
-        max_total: usize,
-        max_active: usize,
-        wait_for_pool_timeout: Option<Duration>,
+        config: HttpPooledConnectorConfig,
     }
 
-    impl Default for HttpPooledConnectorBuilder {
+    #[derive(Clone)]
+    /// Config used to create the default http connection pool
+    pub struct HttpPooledConnectorConfig {
+        pub max_total: usize,
+        pub max_active: usize,
+        pub wait_for_pool_timeout: Option<Duration>,
+    }
+
+    impl From<HttpPooledConnectorConfig> for HttpPooledConnectorBuilder {
+        fn from(config: HttpPooledConnectorConfig) -> Self {
+            Self { config }
+        }
+    }
+
+    impl Default for HttpPooledConnectorConfig {
         fn default() -> Self {
             Self {
                 max_total: 100,
@@ -617,7 +632,7 @@ pub mod http {
         /// This is the sum of active connections and idle connections. When this limit
         /// is hit idle connections will be replaced with new ones.
         pub fn max_total(mut self, max: usize) -> Self {
-            self.max_total = max;
+            self.config.max_total = max;
             self
         }
 
@@ -626,19 +641,19 @@ pub mod http {
         /// Requesting a connection from the pool will block until the pool
         /// is below max capacity again.
         pub fn max_active(mut self, max: usize) -> Self {
-            self.max_active = max;
+            self.config.max_active = max;
             self
         }
 
         /// When a pool is operating at max active capacity wait for this duration
         /// before the connector raises a timeout error
         pub fn with_wait_for_pool_timeout(mut self, duration: Duration) -> Self {
-            self.wait_for_pool_timeout = Some(duration);
+            self.config.wait_for_pool_timeout = Some(duration);
             self
         }
 
         pub fn maybe_with_wait_for_pool_timeout(mut self, duration: Option<Duration>) -> Self {
-            self.wait_for_pool_timeout = duration;
+            self.config.wait_for_pool_timeout = duration;
             self
         }
 
@@ -649,9 +664,13 @@ pub mod http {
             PooledConnector<S, FiFoReuseLruDropPool<C, BasicHttpConId>, BasicHttpConnIdentifier>,
             OpaqueError,
         > {
-            let pool = FiFoReuseLruDropPool::new(self.max_active, self.max_total)?;
+            let pool = FiFoReuseLruDropPool::new(self.config.max_active, self.config.max_total)?;
             Ok(PooledConnector::new(inner, pool, BasicHttpConnIdentifier)
-                .maybe_with_wait_for_pool_timeout(self.wait_for_pool_timeout))
+                .maybe_with_wait_for_pool_timeout(self.config.wait_for_pool_timeout))
+        }
+
+        pub fn build_config(self) -> HttpPooledConnectorConfig {
+            self.config
         }
     }
 }
