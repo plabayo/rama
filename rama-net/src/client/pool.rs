@@ -606,6 +606,12 @@ pub mod http {
         pub wait_for_pool_timeout: Option<Duration>,
     }
 
+    impl From<HttpPooledConnectorConfig> for HttpPooledConnectorBuilder {
+        fn from(config: HttpPooledConnectorConfig) -> Self {
+            Self { config }
+        }
+    }
+
     impl Default for HttpPooledConnectorConfig {
         fn default() -> Self {
             Self {
