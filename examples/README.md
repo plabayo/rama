@@ -24,6 +24,7 @@ This directory contains example implementations demonstrating various features a
 
 ### Server-Sent Events (SSE)
 - [`http_sse`](./http_sse.rs) - simple example demonstrating how one can expose an SSE endpoint
+- [`http_sse_json`](./http_sse_json.rs) - same as `http_sse` but using structured _json_ data
 
 ## HTTP Clients
 - [`http_high_level_client.rs`](./http_high_level_client.rs) - High-level HTTP client implementation
