@@ -2380,9 +2380,9 @@ dependencies = [
 
 [[package]]
 name = "rama-boring"
-version = "0.3.0"
+version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "642f47434dbb6a574e585ac008ee7fef3149b2c97db578809409d7abfc4a4dba"
+checksum = "477c2786c6d332805856da39868fb26c9e9878a95914723aebb8e0c03b0a5e56"
 dependencies = [
  "bitflags",
  "foreign-types",
@@ -2393,9 +2393,9 @@ dependencies = [
 
 [[package]]
 name = "rama-boring-sys"
-version = "0.3.0"
+version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cad3f5684d3a43d706a2510cacf6a69deacc3187a78262e5c97b93dad42388af"
+checksum = "c1ef4ffb23eee3766621ba55c60e5299d4de98552509fca9ccf7bd6d57b1e6db"
 dependencies = [
  "autocfg",
  "bindgen 0.71.1",
@@ -2406,9 +2406,9 @@ dependencies = [
 
 [[package]]
 name = "rama-boring-tokio"
-version = "0.3.0"
+version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "803429a9e7cb01f0e6f715b7a3cd05999b8706babb90e76653f357b9c297abde"
+checksum = "bf9946ee3eecebeb9c2b3c4cf557dbd5a6aa185ef48362a013feb4fb8d962a75"
 dependencies = [
  "rama-boring",
  "rama-boring-sys",
@@ -2557,6 +2557,7 @@ dependencies = [
  "futures",
  "h2",
  "rama-core",
+ "rama-dns",
  "rama-http",
  "rama-http-core",
  "rama-http-headers",
@@ -2771,6 +2772,7 @@ dependencies = [
  "rama-utils",
  "tokio",
  "tracing",
+ "zstd",
 ]
 
 [[package]]

@@ -79,7 +79,8 @@ This directory contains example implementations demonstrating various features a
 - [`tls_boring_dynamic_certs.rs`](./tls_boring_dynamic_certs.rs) - Dynamic certificate management with BoringSSL
 
 ### SNI router
-- [`tls_sni_router.rs`](./tls_sni_router.rs)) - (TLS) SNI Router with BoringSSL
+
+- [`tls_sni_router.rs`](./tls_sni_router.rs) - (TLS) SNI Router with BoringSSL
 
 ### Mutual TLS
 - [`mtls_tunnel_and_service.rs`](./mtls_tunnel_and_service.rs) - Mutual TLS tunnel and service implementation

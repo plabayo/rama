@@ -123,7 +123,7 @@ where
     tracing::debug!(
         %sni,
         %fwd_interface,
-        "foward incoming connection"
+        "forward incoming connection"
     );
 
     Forwarder::new(fwd_interface)
@@ -134,7 +134,7 @@ where
 
 fn spawn_https_server(guard: ShutdownGuard, name: &'static str, interface: SocketAddress) {
     let tls_server_config = ServerConfig::new(ServerAuth::SelfSigned(SelfSignedData {
-        common_name: Some(format!("{name}.local").parse().expect("encode common nane")),
+        common_name: Some(format!("{name}.local").parse().expect("encode common name")),
         ..Default::default()
     }));
     let acceptor_data = TlsAcceptorData::try_from(tls_server_config).expect("create acceptor data");

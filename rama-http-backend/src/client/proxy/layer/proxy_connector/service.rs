@@ -147,8 +147,6 @@ where
         #[cfg(feature = "tls")]
         // in case the provider gave us a proxy info, we insert it into the context
         if let Some(address) = &address {
-            ctx.insert(address.clone());
-
             if address
                 .protocol
                 .as_ref()

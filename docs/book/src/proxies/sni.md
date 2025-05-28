@@ -10,8 +10,6 @@
 
 [Examples](https://github.com/plabayo/rama/tree/main/examples):
 
-- [/examples/sni_proxy.rs](https://github.com/plabayo/rama/tree/main/examples/sni_proxy.rs):
-  Spawns a minimal SNI proxy which accepts TLS connections and routes them based on the SNI field.
 - [/examples/tls_sni_router.rs](https://github.com/plabayo/rama/tree/main/examples/tls_sni_router.rs):
   (TLS) SNI Router, a proxy which fowards traffic to encrypted web servers based on the public SNI found
   in the client hello handshake data sent by the UA as part of the connection establishment.
@@ -43,30 +41,30 @@ SNI Transport Proxy
 ---------------------
 
 ┌────────┐       ┌────────────────┐       ┌────────────────────┐
-│ Client │──────▶│ SNI Proxy      │──────▶│ Target TLS Server  │
+│ Client ├──────▶│ SNI Proxy      ├──────▶│ Target TLS Server  │
 └────────┘       └────────────────┘       └────────────────────┘
      │                  │                        │
      │ 1. TCP connect to proxy (:443)            │
      |     (because firewall forwards this       │
      |       traffic or DNS record               │
-    |      has been "hijacked")                  │
-     │─────────────────▶│                        │
+     |      has been "hijacked")                 │
+     ├─────────────────▶│                        │
      │                  │                        │
      │ 2. Send TLS ClientHello                   │
      │    (includes SNI: example.com)            │
-     │─────────────────▶│                        │
+     ├─────────────────▶│                        │
      │                  │                        │
      │ 3. Proxy inspects SNI                     │
      │    and selects backend                    │
      │                  │                        │
      │ 4. Proxy connects to example.com:443      │
-     │                  │──────────────────────▶ │
+     │                  ├──────────────────────▶ │
      │                  │                        │
      │ 5. Proxy forwards full TLS handshake      │
-     │◀─────────────────▶│◀─────────────────────▶│
+     │◀────────────────▶│◀──────────────────────▶│
      │                  │                        │
      │ 6. Encrypted traffic flows transparently  │
-     │◀─────────────────▶│◀─────────────────────▶│
+     │◀────────────────▶│◀──────────────────────▶│
 ```
 
 ## SNI Proxy as TLS MITM
@@ -90,16 +88,16 @@ SNI Proxy MITM'ing HTTPS traffic (Rama-style)
 -----------------------------------------------
 
 ┌────────┐       ┌────────────────────┐       ┌────────────────────┐
-│ Client │──────▶│ SNI Proxy (MITM)   │──────▶│ Target Server (TLS)│
+│ Client ├──────▶│ SNI Proxy (MITM)   ├──────▶│ Target Server (TLS)│
 └────────┘       └────────────────────┘       └────────────────────┘
      │                    │                          │
      │ 1. TCP connect     │                          │
      │    to proxy (:443) │                          │
-     │───────────────────▶│                          │
+     ├───────────────────▶│                          │
      │                    │                          │
      │ 2. TLS handshake   │                          │
      │    begins with SNI │                          │
-     │───────────────────▶│                          │
+     ├───────────────────▶│                          │
      │                    │                          │
      │ 3. Proxy inspects  │                          │
      │    SNI, resolves   │                          │
@@ -107,12 +105,12 @@ SNI Proxy MITM'ing HTTPS traffic (Rama-style)
      │                    │                          │
      │ 4. TLS handshake   │                          │
      │    complete (client↔proxy)                    │
-     │ ◀───────────────── │                          │
+     │ ◀──────────────────┤                          │
      │                    │                          │
      │ 5. Proxy connects  │                          │
-     │    to target:443   │─────────────────────────▶│
+     │    to target:443   ├─────────────────────────▶│
      │ 6. Proxy performs  │                          │
-     │    TLS to server   │─────────────────────────▶│
+     │    TLS to server   ├─────────────────────────▶│
      │                    │                          │
      │                                               │
      │              7. Encrypted HTTPS               │

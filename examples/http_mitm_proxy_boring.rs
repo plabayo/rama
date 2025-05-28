@@ -37,7 +37,7 @@ use rama::{
     error::{BoxError, ErrorContext, OpaqueError},
     http::{
         Body, Request, Response, StatusCode,
-        client::{EasyHttpWebClient, TlsConnectorConfig},
+        client::EasyHttpWebClient,
         layer::{
             compress_adapter::CompressAdaptLayer,
             map_response_body::MapResponseBodyLayer,
@@ -59,10 +59,7 @@ use rama::{
         stream::layer::http::BodyLimitLayer,
         tls::{
             ApplicationProtocol, SecureTransport,
-            client::{
-                ClientConfig, ClientHelloExtension, ServerVerifyMode,
-                extract_client_config_from_ctx,
-            },
+            client::ServerVerifyMode,
             server::{SelfSignedData, ServerAuth, ServerConfig},
         },
         user::Basic,
@@ -70,7 +67,7 @@ use rama::{
     rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
-    tls::boring::client::EmulateTlsProfileLayer,
+    tls::boring::client::{EmulateTlsProfileLayer, TlsConnectorDataBuilder},
     tls::boring::server::{TlsAcceptorData, TlsAcceptorLayer},
     ua::{
         emulate::{
@@ -231,9 +228,25 @@ async fn http_mitm_proxy(ctx: Context, req: Request) -> Result<Response, Infalli
 
     // NOTE: use a custom connector (layers) in case you wish to add custom features,
     // such as upstream proxies or other configurations
-    let mut client = EasyHttpWebClient::default()
-        .with_http_conn_req_inspector(UserAgentEmulateHttpConnectModifier::default())
-        .with_http_conn_req_inspector((
+
+    let base_tls_config = if let Some(hello) = ctx
+        .get::<SecureTransport>()
+        .and_then(|st| st.client_hello())
+        .cloned()
+    {
+        // TODO once we fully support building this from client hello directly remove this unwrap
+        TlsConnectorDataBuilder::try_from(hello).unwrap()
+    } else {
+        TlsConnectorDataBuilder::new_http_auto()
+    };
+    let base_tls_config = base_tls_config.with_server_verify_mode(ServerVerifyMode::Disable);
+
+    let client = EasyHttpWebClient::builder()
+        .with_tls_proxy_support_using_boringssl()
+        .with_proxy_support()
+        .with_tls_support_using_boringssl(Some(Arc::new(base_tls_config)))
+        .with_jit_req_inspector(UserAgentEmulateHttpConnectModifier::default())
+        .with_svc_req_inspector((
             UserAgentEmulateHttpRequestModifier::default(),
             // these layers are for example purposes only,
             // best not to print requests like this in production...
@@ -245,38 +258,8 @@ async fn http_mitm_proxy(ctx: Context, req: Request) -> Result<Response, Infalli
                 ctx.executor(),
                 Some(traffic_writer::WriterMode::Headers),
             ),
-        ));
-
-    let mut base_tls_cfg = ctx
-        .get::<SecureTransport>()
-        .and_then(|st| st.client_hello())
-        .cloned()
-        .map(Into::into)
-        .unwrap_or_else(|| ClientConfig {
-            extensions: Some(vec![
-                ClientHelloExtension::ApplicationLayerProtocolNegotiation(vec![
-                    ApplicationProtocol::HTTP_2,
-                    ApplicationProtocol::HTTP_11,
-                ]),
-            ]),
-            ..Default::default()
-        });
-    base_tls_cfg.server_verify_mode = Some(ServerVerifyMode::Disable);
-
-    // TODO: this tls stack API needs to be easier and more performant; but especially less messy
-
-    let tls_client_config = match extract_client_config_from_ctx(&ctx) {
-        Some(chain) => {
-            let mut cfg = base_tls_cfg;
-            for other_cfg in chain.iter() {
-                cfg.merge(other_cfg.clone());
-            }
-            cfg
-        }
-        None => base_tls_cfg,
-    };
-
-    client.set_tls_connector_config(TlsConnectorConfig::Boring(Some(tls_client_config)));
+        ))
+        .build();
 
     match client.serve(ctx, req).await {
         Ok(resp) => Ok(resp),

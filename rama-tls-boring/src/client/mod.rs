@@ -11,7 +11,10 @@ pub use tls_stream::TlsStream;
 
 mod connector;
 #[doc(inline)]
-pub use connector::{TlsConnector, TlsConnectorLayer, tls_connect};
+pub use connector::{
+    ConnectorKindAuto, ConnectorKindSecure, ConnectorKindTunnel, TlsConnector, TlsConnectorLayer,
+    tls_connect,
+};
 
 mod connector_data;
 #[doc(inline)]

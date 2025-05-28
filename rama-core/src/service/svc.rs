@@ -115,10 +115,17 @@ where
 
 /// A boxed [`Service`], to serve requests with,
 /// for where you require dynamic dispatch.
-#[derive(Clone)]
 pub struct BoxService<S, Request, Response, Error> {
     inner:
         Arc<dyn DynService<S, Request, Response = Response, Error = Error> + Send + Sync + 'static>,
+}
+
+impl<S, Request, Response, Error> Clone for BoxService<S, Request, Response, Error> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+        }
+    }
 }
 
 impl<S, Request, Response, Error> BoxService<S, Request, Response, Error> {
