@@ -463,23 +463,6 @@ mod easy_connector {
     >;
 
     impl<T> EasyHttpWebClientBuilder<T, HttpStage> {
-        /// Use the default connection pool for this [`super::EasyHttpWebClient`] with the default config
-        ///
-        /// This will create a [`FiFoReuseLruDropPool`] using the default limits
-        /// and will use [`BasicHttpConnIdentifier`] to group connection on protocol
-        /// and authority, which should cover most common use cases
-        ///
-        /// If you need different limits you can use [`EasyHttpWebClientBuilder::with_connection_pool()`]
-        ///
-        /// If you need a different pool or custom way to group connection you can
-        /// use [`EasyHttpWebClientBuilder::with_custom_connection_pool()`] to provide
-        /// you own.
-        pub fn with_default_connection_pool<C>(
-            self,
-        ) -> Result<DefaultConnectionPoolBuilder<T, C>, OpaqueError> {
-            self.with_connection_pool(HttpPooledConnectorConfig::default())
-        }
-
         /// Use the default connection pool for this [`super::EasyHttpWebClient`]
         ///
         /// This will create a [`FiFoReuseLruDropPool`] using the provided limits
