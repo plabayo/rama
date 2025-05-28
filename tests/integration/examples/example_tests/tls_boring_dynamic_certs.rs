@@ -96,10 +96,10 @@ where
         .with_store_server_certificate_chain(true)
         .into_shared_builder();
     let inner_client = EasyHttpWebClient::builder()
-        .with_proxy()
-        .with_tls_using_boringssl(Some(tls_config))
-        .build()
-        .boxed();
+        .with_tls_proxy_support_using_boringssl()
+        .with_proxy_support()
+        .with_tls_support_using_boringssl(Some(tls_config))
+        .build();
 
     (
         MapResultLayer::new(map_internal_client_error),

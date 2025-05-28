@@ -215,8 +215,9 @@ async fn http_mitm_proxy(ctx: Context, req: Request) -> Result<Response, Infalli
         .build();
 
     let client = EasyHttpWebClient::builder()
-        .with_tls_proxy_using_rustls(None, None)
-        .with_tls_using_rustls(Some(tls_config))
+        .with_tls_proxy_support_using_rustls()
+        .with_proxy_support()
+        .with_tls_support_using_rustls(Some(tls_config))
         .build();
 
     match client.serve(ctx, req).await {

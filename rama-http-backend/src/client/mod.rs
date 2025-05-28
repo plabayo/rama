@@ -75,8 +75,9 @@ where
             rama_tls_boring::client::TlsConnectorDataBuilder::new_http_auto().into_shared_builder();
 
         EasyHttpWebClientBuilder::new()
-            .with_tls_proxy_using_boringssl(None, None)
-            .with_tls_using_boringssl(Some(tls_config))
+            .with_tls_proxy_support_using_boringssl()
+            .with_proxy_support()
+            .with_tls_support_using_boringssl(Some(tls_config))
             .build()
     }
 
@@ -86,16 +87,18 @@ where
             .expect("connector data with http auto");
 
         EasyHttpWebClientBuilder::new()
-            .with_tls_proxy_using_rustls(None, None)
-            .with_tls_using_rustls(Some(tls_config))
+            .with_tls_proxy_support_using_rustls()
+            .with_proxy_support()
+            .with_tls_support_using_rustls(Some(tls_config))
             .build()
     }
 
     #[cfg(not(any(feature = "rustls", feature = "boring")))]
     fn default() -> Self {
         EasyHttpWebClientBuilder::new()
-            .with_proxy()
-            .without_tls()
+            .without_tls_proxy_support()
+            .with_proxy_support()
+            .without_tls_support()
             .build()
     }
 }
@@ -170,7 +173,10 @@ mod easy_connector {
         EstablishedClientConnection,
         pool::{
             FiFoReuseLruDropPool, PooledConnector,
-            http::{BasicHttpConId, BasicHttpConnIdentifier, HttpPooledConnectorBuilder},
+            http::{
+                BasicHttpConId, BasicHttpConnIdentifier, HttpPooledConnectorBuilder,
+                HttpPooledConnectorConfig,
+            },
         },
     };
     use rama_tcp::client::service::TcpConnector;
@@ -184,8 +190,6 @@ mod easy_connector {
 
     #[cfg(any(feature = "rustls", feature = "boring"))]
     use super::http_inspector::HttpsAlpnModifier;
-    #[cfg(any(feature = "rustls", feature = "boring"))]
-    use rama_http::Version;
 
     /// Builder that is designed to easily create a [`super::EasyHttpWebClient`] from most basic use cases
     pub struct EasyHttpWebClientBuilder<C, S> {
@@ -194,6 +198,7 @@ mod easy_connector {
     }
 
     pub struct TransportStage;
+    pub struct ProxyTunnelStage;
     pub struct ProxyStage;
     pub struct HttpStage;
     pub struct PoolStage;
@@ -225,26 +230,58 @@ mod easy_connector {
 
     impl<T> EasyHttpWebClientBuilder<T, TransportStage> {
         #[cfg(feature = "boring")]
-        /// Add support for usage of a http(s) proxy to this client using boringssl for tls
+        /// Support a tls tunnel to the proxy itself using boringssl
         ///
-        /// Note that a https proxy is not needed to make a https connection
+        /// Note that a tls proxy is not needed to make a https connection
         /// to the final target. It only has an influence on the initial connection
         /// to the proxy itself
-        pub fn with_tls_proxy_using_boringssl(
+        pub fn with_tls_proxy_support_using_boringssl(
             self,
-            config: Option<Arc<boring_client::TlsConnectorDataBuilder>>,
-            http_connect_version: Option<Version>,
         ) -> EasyHttpWebClientBuilder<
-            HttpProxyConnector<boring_client::TlsConnector<T, boring_client::ConnectorKindTunnel>>,
-            ProxyStage,
+            boring_client::TlsConnector<T, boring_client::ConnectorKindTunnel>,
+            ProxyTunnelStage,
+        > {
+            let connector = boring_client::TlsConnector::tunnel(self.connector, None);
+            EasyHttpWebClientBuilder {
+                connector,
+                _phantom: PhantomData,
+            }
+        }
+
+        #[cfg(feature = "boring")]
+        /// Support a tls tunnel to the proxy itself using boringssl and the provided config
+        ///
+        /// Note that a tls proxy is not needed to make a https connection
+        /// to the final target. It only has an influence on the initial connection
+        /// to the proxy itself
+        pub fn with_tls_proxy_support_using_boringssl_config(
+            self,
+            config: Arc<boring_client::TlsConnectorDataBuilder>,
+        ) -> EasyHttpWebClientBuilder<
+            boring_client::TlsConnector<T, boring_client::ConnectorKindTunnel>,
+            ProxyTunnelStage,
         > {
             let connector = boring_client::TlsConnector::tunnel(self.connector, None)
-                .maybe_with_connector_data(config);
-            let mut connector = HttpProxyConnector::optional(connector);
-            match http_connect_version {
-                Some(version) => connector.set_version(version),
-                None => connector.set_auto_version(),
-            };
+                .with_connector_data(config);
+            EasyHttpWebClientBuilder {
+                connector,
+                _phantom: PhantomData,
+            }
+        }
+
+        #[cfg(feature = "rustls")]
+        /// Support a tls tunnel to the proxy itself using rustls
+        ///
+        /// Note that a tls proxy is not needed to make a https connection
+        /// to the final target. It only has an influence on the initial connection
+        /// to the proxy itself
+        pub fn with_tls_proxy_support_using_rustls(
+            self,
+        ) -> EasyHttpWebClientBuilder<
+            rustls_client::TlsConnector<T, rustls_client::ConnectorKindTunnel>,
+            ProxyTunnelStage,
+        > {
+            let connector = rustls_client::TlsConnector::tunnel(self.connector, None);
 
             EasyHttpWebClientBuilder {
                 connector,
@@ -253,27 +290,20 @@ mod easy_connector {
         }
 
         #[cfg(feature = "rustls")]
-        /// Add support for usage of a http(s) proxy to this client using rustls for tls
+        /// Support a tls tunnel to the proxy itself using rustls and the provided config
         ///
-        /// Note that a https proxy is not needed to make a https connection
+        /// Note that a tls proxy is not needed to make a https connection
         /// to the final target. It only has an influence on the initial connection
         /// to the proxy itself
-        pub fn with_tls_proxy_using_rustls(
+        pub fn with_tls_proxy_support_using_rustls_config(
             self,
-            config: Option<rustls_client::TlsConnectorData>,
-            http_connect_version: Option<Version>,
+            config: rustls_client::TlsConnectorData,
         ) -> EasyHttpWebClientBuilder<
-            HttpProxyConnector<rustls_client::TlsConnector<T, rustls_client::ConnectorKindTunnel>>,
-            ProxyStage,
+            rustls_client::TlsConnector<T, rustls_client::ConnectorKindTunnel>,
+            ProxyTunnelStage,
         > {
             let connector = rustls_client::TlsConnector::tunnel(self.connector, None)
-                .maybe_with_connector_data(config);
-
-            let mut connector = HttpProxyConnector::optional(connector);
-            match http_connect_version {
-                Some(version) => connector.set_version(version),
-                None => connector.set_auto_version(),
-            };
+                .with_connector_data(config);
 
             EasyHttpWebClientBuilder {
                 connector,
@@ -281,12 +311,31 @@ mod easy_connector {
             }
         }
 
-        /// Add support for usage of a http proxy to this client
+        /// Don't support a tls tunnel to the proxy itself
         ///
-        /// Note that a https proxy is not needed to make a https connection
+        /// Note that a tls proxy is not needed to make a https connection
         /// to the final target. It only has an influence on the initial connection
         /// to the proxy itself
-        pub fn with_proxy(self) -> EasyHttpWebClientBuilder<HttpProxyConnector<T>, ProxyStage> {
+        pub fn without_tls_proxy_support(self) -> EasyHttpWebClientBuilder<T, ProxyTunnelStage> {
+            EasyHttpWebClientBuilder {
+                connector: self.connector,
+                _phantom: PhantomData,
+            }
+        }
+    }
+
+    impl<T> EasyHttpWebClientBuilder<T, ProxyTunnelStage> {
+        /// Add support for usage of a http proxy to this client
+        ///
+        /// Note that a tls proxy is not needed to make a https connection
+        /// to the final target. It only has an influence on the initial connection
+        /// to the proxy itself
+        ///
+        /// TODO: Currently we only support http(s) proxies here, but socks proxy support will
+        /// be added in: https://github.com/plabayo/rama/issues/498
+        pub fn with_proxy_support(
+            self,
+        ) -> EasyHttpWebClientBuilder<HttpProxyConnector<T>, ProxyStage> {
             let connector = HttpProxyConnector::optional(self.connector);
             EasyHttpWebClientBuilder {
                 connector,
@@ -295,7 +344,7 @@ mod easy_connector {
         }
 
         /// Make a client without proxy support
-        pub fn without_proxy(self) -> EasyHttpWebClientBuilder<T, ProxyStage> {
+        pub fn without_proxy_support(self) -> EasyHttpWebClientBuilder<T, ProxyStage> {
             EasyHttpWebClientBuilder {
                 connector: self.connector,
                 _phantom: PhantomData,
@@ -309,7 +358,7 @@ mod easy_connector {
         ///
         /// This will also add the [`HttpsAlpnModifier`] request inspector as that one is
         /// crucial to make tls alpn work to properly negotiate the http version
-        pub fn with_tls_using_boringssl(
+        pub fn with_tls_support_using_boringssl(
             self,
             config: Option<Arc<boring_client::TlsConnectorDataBuilder>>,
         ) -> EasyHttpWebClientBuilder<
@@ -333,7 +382,7 @@ mod easy_connector {
         ///
         /// This will also add the [`HttpsAlpnModifier`] request inspector as that one is
         /// crucial to make tls alpn work to properly negotiate the http version
-        pub fn with_tls_using_rustls(
+        pub fn with_tls_support_using_rustls(
             self,
             config: Option<rustls_client::TlsConnectorData>,
         ) -> EasyHttpWebClientBuilder<
@@ -353,7 +402,7 @@ mod easy_connector {
         }
 
         /// Dont support https on this connector
-        pub fn without_tls(self) -> EasyHttpWebClientBuilder<HttpConnector<T>, HttpStage> {
+        pub fn without_tls_support(self) -> EasyHttpWebClientBuilder<HttpConnector<T>, HttpStage> {
             let connector = HttpConnector::new(self.connector);
 
             EasyHttpWebClientBuilder {
@@ -408,7 +457,29 @@ mod easy_connector {
         }
     }
 
+    type DefaultConnectionPoolBuilder<T, C> = EasyHttpWebClientBuilder<
+        PooledConnector<T, FiFoReuseLruDropPool<C, BasicHttpConId>, BasicHttpConnIdentifier>,
+        PoolStage,
+    >;
+
     impl<T> EasyHttpWebClientBuilder<T, HttpStage> {
+        /// Use the default connection pool for this [`super::EasyHttpWebClient`] with the default config
+        ///
+        /// This will create a [`FiFoReuseLruDropPool`] using the default limits
+        /// and will use [`BasicHttpConnIdentifier`] to group connection on protocol
+        /// and authority, which should cover most common use cases
+        ///
+        /// If you need different limits you can use [`EasyHttpWebClientBuilder::with_connection_pool()`]
+        ///
+        /// If you need a different pool or custom way to group connection you can
+        /// use [`EasyHttpWebClientBuilder::with_custom_connection_pool()`] to provide
+        /// you own.
+        pub fn with_default_connection_pool<C>(
+            self,
+        ) -> Result<DefaultConnectionPoolBuilder<T, C>, OpaqueError> {
+            self.with_connection_pool(HttpPooledConnectorConfig::default())
+        }
+
         /// Use the default connection pool for this [`super::EasyHttpWebClient`]
         ///
         /// This will create a [`FiFoReuseLruDropPool`] using the provided limits
@@ -422,24 +493,12 @@ mod easy_connector {
         /// you own.
         pub fn with_connection_pool<C>(
             self,
-            max_active: usize,
-            max_total: usize,
-            wait_for_pool_timeout: Option<Duration>,
-        ) -> Result<
-            EasyHttpWebClientBuilder<
-                PooledConnector<
-                    T,
-                    FiFoReuseLruDropPool<C, BasicHttpConId>,
-                    BasicHttpConnIdentifier,
-                >,
-                PoolStage,
-            >,
-            OpaqueError,
-        > {
+            config: HttpPooledConnectorConfig,
+        ) -> Result<DefaultConnectionPoolBuilder<T, C>, OpaqueError> {
             let connector = HttpPooledConnectorBuilder::new()
-                .max_active(max_active)
-                .max_total(max_total)
-                .maybe_with_wait_for_pool_timeout(wait_for_pool_timeout)
+                .max_active(config.max_active)
+                .max_total(config.max_total)
+                .maybe_with_wait_for_pool_timeout(config.wait_for_pool_timeout)
                 .build(self.connector)?;
 
             Ok(EasyHttpWebClientBuilder {

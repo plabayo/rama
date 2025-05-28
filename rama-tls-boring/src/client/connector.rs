@@ -479,7 +479,6 @@ pub struct ConnectorKindAuto;
 /// regardless of the scheme of the request URI.
 pub struct ConnectorKindSecure;
 
-#[non_exhaustive]
 #[derive(Debug, Clone)]
 /// A connector which can be used to use this connector to support
 /// secure https tunnel connections.
@@ -491,7 +490,7 @@ pub struct ConnectorKindSecure;
 ///
 /// [`TlsTunnel`]: crate::TlsTunnel
 pub struct ConnectorKindTunnel {
-    pub host: Option<Host>,
+    host: Option<Host>,
 }
 
 #[cfg(test)]

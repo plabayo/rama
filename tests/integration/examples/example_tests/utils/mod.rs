@@ -110,8 +110,9 @@ where
                 .into_shared_builder();
 
             EasyHttpWebClient::builder()
-                .with_tls_proxy_using_boringssl(Some(proxy_tls_config), None)
-                .with_tls_using_boringssl(Some(tls_config))
+                .with_tls_proxy_support_using_boringssl_config(proxy_tls_config)
+                .with_proxy_support()
+                .with_tls_support_using_boringssl(Some(tls_config))
                 .build()
         };
 
@@ -132,8 +133,9 @@ where
                 .build();
 
             EasyHttpWebClient::builder()
-                .with_tls_proxy_using_rustls(Some(proxy_tls_config), None)
-                .with_tls_using_rustls(Some(tls_config))
+                .with_tls_proxy_support_using_rustls_config(proxy_tls_config)
+                .with_proxy_support()
+                .with_tls_support_using_rustls(Some(tls_config))
                 .build()
         };
 

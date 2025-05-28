@@ -134,8 +134,9 @@ async fn http_mitm_proxy(ctx: Context, req: Request) -> Result<Response, Infalli
         .into_shared_builder();
 
     let client = EasyHttpWebClient::builder()
-        .with_proxy()
-        .with_tls_using_boringssl(Some(base_tls_config))
+        .with_tls_proxy_support_using_boringssl()
+        .with_proxy_support()
+        .with_tls_support_using_boringssl(Some(base_tls_config))
         .with_svc_req_inspector((
             // these layers are for example purposes only,
             // best not to print requests like this in production...
