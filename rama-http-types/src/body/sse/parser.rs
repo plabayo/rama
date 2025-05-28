@@ -39,7 +39,6 @@ pub(super) enum RawEventLine<'a> {
 
 #[inline]
 pub(super) fn is_lf(c: char) -> bool {
-    // TODO: replace
     c == '\u{000A}'
 }
 

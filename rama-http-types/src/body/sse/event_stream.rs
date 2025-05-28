@@ -73,7 +73,6 @@ impl<T: EventDataRead> EventBuilder<T> {
                 "id" => {
                     if let Some(val) = val {
                         if !val.contains('\u{0000}') {
-                            // TODO: verify if this is desired
                             self.event.try_set_id(val).unwrap();
                         }
                     }
