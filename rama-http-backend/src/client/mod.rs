@@ -1,8 +1,6 @@
 //! Rama HTTP client module,
 //! which provides the [`EasyHttpWebClient`] type to serve HTTP requests.
 
-use std::{fmt, sync::Arc};
-
 use proxy::layer::HttpProxyConnector;
 use rama_core::{
     Context, Service,
@@ -19,13 +17,16 @@ use rama_net::client::{
 };
 use rama_tcp::client::service::TcpConnector;
 use rama_utils::macros::generate_set_and_with;
+use std::fmt;
 
 #[cfg(feature = "boring")]
-use rama_net::tls::client::{ClientConfig, ProxyClientConfig, extract_client_config_from_ctx};
-
-#[cfg(feature = "boring")]
-use rama_tls_boring::client::{
-    TlsConnector as BoringTlsConnector, TlsConnectorDataBuilder as BoringTlsConnectorDataBuilder,
+use ::{
+    rama_net::tls::client::{ClientConfig, ProxyClientConfig, extract_client_config_from_ctx},
+    rama_tls_boring::client::{
+        TlsConnector as BoringTlsConnector,
+        TlsConnectorDataBuilder as BoringTlsConnectorDataBuilder,
+    },
+    std::sync::Arc,
 };
 
 #[cfg(feature = "rustls")]

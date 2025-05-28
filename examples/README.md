@@ -22,6 +22,9 @@ This directory contains example implementations demonstrating various features a
 - [`http_telemetry.rs`](./http_telemetry.rs) - Telemetry and monitoring
 - [`http_user_agent_classifier.rs`](./http_user_agent_classifier.rs) - User agent classification
 
+### Server-Sent Events (SSE)
+- [`http_sse`](./http_sse.rs) - simple example demonstrating how one can expose an SSE endpoint
+
 ## HTTP Clients
 - [`http_high_level_client.rs`](./http_high_level_client.rs) - High-level HTTP client implementation
 - [`http_pooled_client.rs`](./http_pooled_client.rs) - Connection pooling client

@@ -2333,6 +2333,7 @@ dependencies = [
 name = "rama"
 version = "0.3.0-alpha.1"
 dependencies = [
+ "async-stream",
  "base64",
  "bytes",
  "derive_more",
@@ -2345,6 +2346,7 @@ dependencies = [
  "hex",
  "http",
  "itertools 0.14.0",
+ "itoa",
  "opentelemetry-otlp",
  "opentelemetry_sdk",
  "pin-project-lite",

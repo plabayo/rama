@@ -68,6 +68,7 @@ rust-version = "1.85.0"
 [workspace.dependencies]
 arc-swap = "1.7"
 async-compression = "0.4"
+async-stream = { version = "0.3", default-features = false }
 atomic-waker = "1.1"
 aws-lc-sys = { version = "0.28", features = ["bindgen"] }
 base64 = "0.22"
@@ -349,6 +350,7 @@ tracing = { workspace = true, optional = true }
 rustversion = { workspace = true }
 
 [dev-dependencies]
+async-stream = { workspace = true }
 bytes = { workspace = true }
 derive_more = { workspace = true, features = ["as_ref"] }
 divan = { workspace = true }
@@ -359,6 +361,7 @@ futures-util = { workspace = true }
 h2-support = { path = "rama-http-core/tests/h2-support" }
 http = { workspace = true }
 itertools = { workspace = true }
+itoa = { workspace = true }
 opentelemetry-otlp = { workspace = true, features = ["grpc-tonic"] }
 opentelemetry_sdk = { workspace = true }
 pin-project-lite = { workspace = true }
@@ -506,6 +509,10 @@ required-features = ["http-full"]
 
 [[example]]
 name = "http_web_service_dir_and_api"
+required-features = ["http-full"]
+
+[[example]]
+name = "http_sse"
 required-features = ["http-full"]
 
 [[example]]

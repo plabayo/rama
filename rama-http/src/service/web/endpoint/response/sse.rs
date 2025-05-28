@@ -3,7 +3,7 @@
 use futures_lite::Stream;
 use futures_util::TryStream;
 use rama_core::error::BoxError;
-use rama_http_headers::{CacheControl, ContentType};
+use rama_http_headers::{CacheControl, Connection, ContentType};
 use rama_http_types::{
     Body, Response,
     sse::{
@@ -73,6 +73,8 @@ where
             Headers((
                 CacheControl::default().with_no_cache(),
                 ContentType::text_event_stream(),
+                // will be automatically filtered out for h2+
+                Connection::keep_alive(),
             )),
             Body::new(SseResponseBody::new(self.stream)),
         )

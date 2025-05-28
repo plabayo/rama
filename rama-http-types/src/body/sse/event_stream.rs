@@ -83,7 +83,13 @@ impl<T: EventDataRead> EventBuilder<T> {
                         self.event.set_retry(val);
                     }
                 }
-                _ => {}
+                _ => {
+                    tracing::debug!(
+                        %field,
+                        value = ?val,
+                        "ignore unknown SSE field",
+                    )
+                }
             },
             RawEventLine::Comment(comment) => {
                 self.event.try_set_comment(comment).unwrap();
