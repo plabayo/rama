@@ -12,6 +12,7 @@ use crate::{Request, Response};
 use rama_core::{Context, Service};
 use rama_utils::macros::define_inner_service_accessors;
 use std::{fmt, time::Instant};
+use tracing::Instrument;
 
 /// Middleware that adds high level [tracing] to a [`Service`].
 ///
@@ -339,12 +340,8 @@ where
 
         let classifier = self.make_classifier.make_classifier(&req);
 
-        let result = {
-            let _guard = span.enter();
-            self.on_request.on_request(&req, &span);
-            self.inner.serve(ctx, req)
-        }
-        .await;
+        span.in_scope(|| self.on_request.on_request(&req, &span));
+        let result = self.inner.serve(ctx, req).instrument(span.clone()).await;
         let latency = start.elapsed();
 
         match result {
