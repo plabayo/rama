@@ -180,6 +180,7 @@
 //!   context used by all other `rama` code, as well as some other _core_ utilities
 //! - [`rama-net`](https://crates.io/crates/rama-net): rama network types and utilities
 //! - [`rama-dns`](https://crates.io/crates/rama-dns): DNS support for rama
+//! - [`rama-unix`](https://crates.io/crates/rama-unix): Unix (domain) socket support for rama
 //! - [`rama-tcp`](https://crates.io/crates/rama-tcp): TCP support for rama
 //! - [`rama-udp`](https://crates.io/crates/rama-udp): UDP support for rama
 //! - [`rama-tls-boring`](https://crates.io/crates/rama-tls-boring): [Boring](https://github.com/plabayo/rama-boring) tls support for rama
@@ -365,6 +366,10 @@ pub use ::rama_core::{
     Context, Layer, Service, bytes, combinators, context, error, graceful, inspect, layer, matcher,
     rt, service, username,
 };
+
+#[cfg(all(unix, feature = "net"))]
+#[doc(inline)]
+pub use ::rama_unix as unix;
 
 #[cfg(feature = "tcp")]
 #[doc(inline)]

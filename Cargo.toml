@@ -45,6 +45,7 @@ members = [
     "rama-tower",
     "rama-ua",
     "rama-udp",
+    "rama-unix",
     "rama-utils",
 ]
 
@@ -162,6 +163,7 @@ rama-tls-rustls = { version = "0.3.0-alpha.1", path = "./rama-tls-rustls" }
 rama-tower = { version = "0.3.0-alpha.1", path = "./rama-tower" }
 rama-ua = { version = "0.3.0-alpha.1", path = "./rama-ua" }
 rama-udp = { version = "0.3.0-alpha.1", path = "./rama-udp" }
+rama-unix = { version = "0.3.0-alpha.1", path = "./rama-unix" }
 rama-utils = { version = "0.3.0-alpha.1", path = "./rama-utils" }
 rand = "0.9"
 rcgen = { version = "0.13", default-features = false, features = ["pem", "aws_lc_rs"] }
@@ -342,6 +344,9 @@ serde_html_form = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["macros", "io-std"], optional = true }
 tracing = { workspace = true, optional = true }
+
+[target.'cfg(unix)'.dependencies]
+rama-unix = { workspace = true }
 
 [build-dependencies]
 rustversion = { workspace = true }

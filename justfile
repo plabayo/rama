@@ -151,6 +151,7 @@ publish:
     cargo publish -p rama-core
     cargo publish -p rama-http-types
     cargo publish -p rama-net
+    cargo publish -p rama-unix
     cargo publish -p rama-http-headers
     cargo publish -p rama-ua
     cargo publish -p rama-dns

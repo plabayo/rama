@@ -2363,6 +2363,7 @@ dependencies = [
  "rama-tower",
  "rama-ua",
  "rama-udp",
+ "rama-unix",
  "rama-utils",
  "regex",
  "rustversion",
@@ -2561,6 +2562,7 @@ dependencies = [
  "rama-tcp",
  "rama-tls-boring",
  "rama-tls-rustls",
+ "rama-unix",
  "rama-utils",
  "tokio",
  "tracing",
@@ -2739,6 +2741,7 @@ dependencies = [
  "rama-dns",
  "rama-http-types",
  "rama-net",
+ "rama-utils",
  "tokio",
  "tracing",
 ]
@@ -2820,6 +2823,16 @@ dependencies = [
  "rama-net",
  "tokio",
  "tokio-util",
+]
+
+[[package]]
+name = "rama-unix"
+version = "0.3.0-alpha.1"
+dependencies = [
+ "rama-core",
+ "rama-net",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
