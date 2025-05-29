@@ -8,12 +8,14 @@ use std::collections::VecDeque;
 use std::fmt::Debug;
 use std::ops::{Deref, DerefMut};
 use std::pin::Pin;
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 use std::{future::Future, net::SocketAddr};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::time::timeout;
+use tracing::trace;
 
 /// [`PoolStorage`] implements the storage part of a connection pool. This storage
 /// also decides which connection it returns for a given ID or when the caller asks to
@@ -104,11 +106,17 @@ pub struct LeasedConnection<C, ID> {
     pooled_conn: Option<PooledConnection<C, ID>>,
     active_slot: ActiveSlot,
     returner: ConnReturner<C, ID>,
+    failed: AtomicBool,
 }
 
 impl<C, ID> LeasedConnection<C, ID> {
     pub fn into_connection(mut self) -> C {
         self.pooled_conn.take().expect("only None after drop").conn
+    }
+
+    pub fn mark_as_failed(&self) {
+        self.failed
+            .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -217,6 +225,7 @@ where
                 active_slot,
                 pooled_conn: Some(pooled_conn),
                 returner: self.returner.clone(),
+                failed: false.into(),
             }));
         }
 
@@ -239,6 +248,7 @@ where
         LeasedConnection {
             active_slot,
             returner: self.returner.clone(),
+            failed: false.into(),
             pooled_conn: Some(PooledConnection {
                 id,
                 conn,
@@ -321,7 +331,12 @@ impl<C, ID> AsMut<C> for LeasedConnection<C, ID> {
 impl<C, ID> Drop for LeasedConnection<C, ID> {
     fn drop(&mut self) {
         if let Some(pooled_conn) = self.pooled_conn.take() {
-            self.returner.return_conn(pooled_conn);
+            if self.failed.load(std::sync::atomic::Ordering::Relaxed) {
+                trace!("dropping pooled connection that was marked as failed");
+            } else {
+                trace!("returning pooled connection back to pool");
+                self.returner.return_conn(pooled_conn);
+            }
         }
     }
 }
@@ -401,16 +416,22 @@ impl<State, Request, C, ID> Service<State, Request> for LeasedConnection<C, ID>
 where
     ID: Send + Sync + 'static,
     C: Service<State, Request>,
+    Request: Send + 'static,
+    State: Send + Sync + 'static,
 {
     type Response = C::Response;
     type Error = C::Error;
 
-    fn serve(
+    async fn serve(
         &self,
         ctx: Context<State>,
         req: Request,
-    ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
-        self.as_ref().serve(ctx, req)
+    ) -> Result<Self::Response, Self::Error> {
+        let result = self.as_ref().serve(ctx, req).await;
+        if result.is_err() {
+            self.mark_as_failed();
+        }
+        result
     }
 }
 
@@ -684,7 +705,7 @@ mod tests {
         convert::Infallible,
         sync::atomic::{AtomicI16, Ordering},
     };
-    use tokio_test::assert_err;
+    use tokio_test::{assert_err, assert_ok};
 
     struct TestService {
         pub created_connection: AtomicI16,
@@ -830,5 +851,99 @@ mod tests {
             .connect(Context::default(), String::from("aaa"))
             .await
             .unwrap();
+    }
+
+    #[derive(Default)]
+    struct TestConnector {
+        pub created_connection: AtomicI16,
+    }
+
+    impl<State, Request> Service<State, Request> for TestConnector
+    where
+        State: Clone + Send + Sync + 'static,
+        Request: Send + 'static,
+    {
+        type Response = EstablishedClientConnection<InnerService, State, Request>;
+        type Error = Infallible;
+
+        async fn serve(
+            &self,
+            ctx: Context<State>,
+            req: Request,
+        ) -> Result<Self::Response, Self::Error> {
+            let conn = InnerService::default();
+            self.created_connection.fetch_add(1, Ordering::Relaxed);
+            Ok(EstablishedClientConnection { ctx, req, conn })
+        }
+    }
+
+    #[derive(Default, Debug)]
+    struct InnerService {
+        should_error: AtomicBool,
+    }
+
+    impl<State> Service<State, bool> for InnerService
+    where
+        State: Clone + Send + Sync + 'static,
+    {
+        type Response = ();
+        type Error = OpaqueError;
+
+        async fn serve(
+            &self,
+            _ctx: Context<State>,
+            should_error: bool,
+        ) -> Result<Self::Response, Self::Error> {
+            // Once this service is broken it will stay in this state, similar to a closed tcp connection
+            if should_error {
+                self.should_error.store(true, Ordering::Relaxed);
+            }
+
+            if self.should_error.load(Ordering::Relaxed) {
+                Err(OpaqueError::from_display("service is in broken state"))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_dont_return_broken_connections_to_pool() {
+        let pool = FiFoReuseLruDropPool::new(1, 1).unwrap();
+        let svc = PooledConnector::new(TestConnector::default(), pool, StringRequestLengthID {});
+
+        let conn = svc
+            .connect(Context::default(), String::from(""))
+            .await
+            .unwrap();
+
+        let result = conn.conn.serve(Context::default(), false).await;
+        assert_ok!(result);
+        let result = conn.conn.serve(Context::default(), true).await;
+        assert_err!(result);
+
+        // this dropped connection should not return to the pool, otherwise it will be permanently broken
+        drop(conn);
+
+        let conn = svc
+            .connect(Context::default(), String::from(""))
+            .await
+            .unwrap();
+
+        let result = conn.conn.serve(Context::default(), false).await;
+        assert_ok!(result);
+
+        // this connection is not broken so it should return to the pool
+        drop(conn);
+
+        let conn = svc
+            .connect(Context::default(), String::from(""))
+            .await
+            .unwrap();
+
+        let result = conn.conn.serve(Context::default(), false).await;
+        assert_ok!(result);
+
+        assert_eq!(svc.inner.created_connection.load(Ordering::Relaxed), 2);
     }
 }
