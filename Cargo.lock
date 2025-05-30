@@ -2829,9 +2829,12 @@ dependencies = [
 name = "rama-unix"
 version = "0.3.0-alpha.1"
 dependencies = [
+ "futures-core",
+ "futures-sink",
  "rama-core",
  "rama-net",
  "tokio",
+ "tokio-util",
  "tracing",
 ]
 

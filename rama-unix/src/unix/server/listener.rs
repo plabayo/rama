@@ -79,8 +79,11 @@ where
     ///
     /// The returned listener is ready for accepting connections.
     pub fn bind_path(self, path: impl AsRef<Path>) -> Result<UnixListener<S>, io::Error> {
+        let path = path.as_ref();
         let inner = TokioUnixListener::bind(path)?;
-        let cleanup = UnixSocketCleanup::maybe_from(&inner);
+        let cleanup = Some(UnixSocketCleanup {
+            path: path.to_owned(),
+        });
         Ok(UnixListener {
             inner,
             state: self.state,
@@ -98,11 +101,10 @@ where
         let std_listener: StdUnixListener = socket.into();
         std_listener.set_nonblocking(true)?;
         let inner = TokioUnixListener::from_std(std_listener)?;
-        let cleanup = UnixSocketCleanup::maybe_from(&inner);
         Ok(UnixListener {
             inner,
             state: self.state,
-            cleanup,
+            cleanup: None,
         })
     }
 
@@ -121,6 +123,12 @@ where
 
 /// A Unix (domain) socket server, listening for incoming connections once served
 /// using one of the `serve` methods such as [`UnixListener::serve`].
+///
+/// Note that the underlying socket (file) is only cleaned up
+/// by this listener's [`Drop`] implementation if the listener
+/// was created using the `bind_path` constructor. Otherwise
+/// it is assumed that the creator of this listener is in charge
+/// of that cleanup.
 pub struct UnixListener<S> {
     inner: TokioUnixListener,
     state: S,
@@ -135,6 +143,7 @@ where
         f.debug_struct("UnixListener")
             .field("inner", &self.inner)
             .field("state", &self.state)
+            .field("cleanup", &self.cleanup)
             .finish()
     }
 }
@@ -209,11 +218,10 @@ impl<S> UnixListener<S> {
 
 impl From<TokioUnixListener> for UnixListener<()> {
     fn from(value: TokioUnixListener) -> Self {
-        let cleanup = UnixSocketCleanup::maybe_from(&value);
         Self {
             inner: value,
             state: (),
-            cleanup,
+            cleanup: None,
         }
     }
 }
@@ -233,11 +241,10 @@ impl TryFrom<StdUnixListener> for UnixListener<()> {
     fn try_from(listener: StdUnixListener) -> Result<Self, Self::Error> {
         listener.set_nonblocking(true)?;
         let inner = TokioUnixListener::from_std(listener)?;
-        let cleanup = UnixSocketCleanup::maybe_from(&inner);
         Ok(Self {
             inner,
             state: (),
-            cleanup,
+            cleanup: None,
         })
     }
 }
@@ -371,23 +378,9 @@ async fn handle_accept_err(err: io::Error) {
     }
 }
 
+#[derive(Debug)]
 struct UnixSocketCleanup {
     path: PathBuf,
-}
-
-impl UnixSocketCleanup {
-    fn maybe_from(listener: &TokioUnixListener) -> Option<Self> {
-        if let Ok(addr) = listener.local_addr() {
-            if let Some(path) = addr.as_pathname() {
-                tracing::trace!(?path, "create unix socket cleanup util for later removal");
-                return Some(Self {
-                    path: path.to_owned(),
-                });
-            }
-        }
-        tracing::trace!("unix listener's file socket not removed: no cleanup utility created");
-        None
-    }
 }
 
 impl Drop for UnixSocketCleanup {

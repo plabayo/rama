@@ -1,3 +1,4 @@
+use crate::TokioSocketAddress;
 use std::path::Path;
 
 #[derive(Clone)]
@@ -46,13 +47,13 @@ impl From<UnixSocketAddress> for std::os::unix::net::SocketAddr {
     }
 }
 
-impl From<tokio::net::unix::SocketAddr> for UnixSocketAddress {
-    fn from(value: tokio::net::unix::SocketAddr) -> Self {
+impl From<TokioSocketAddress> for UnixSocketAddress {
+    fn from(value: TokioSocketAddress) -> Self {
         Self(value.into())
     }
 }
 
-impl From<UnixSocketAddress> for tokio::net::unix::SocketAddr {
+impl From<UnixSocketAddress> for TokioSocketAddress {
     fn from(value: UnixSocketAddress) -> Self {
         value.0.into()
     }

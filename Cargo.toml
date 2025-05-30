@@ -586,3 +586,7 @@ required-features = ["dns", "socks5", "http-full"]
 [[example]]
 name = "haproxy_client_ip"
 required-features = ["haproxy", "http-full"]
+
+[[example]]
+name = "unix_socket"
+required-features = ["net"]
