@@ -105,14 +105,14 @@ where
     }
 }
 
-impl<T> TryInto<Body> for Form<T>
+impl<T> TryFrom<Form<T>> for Body
 where
     T: Serialize,
 {
     type Error = OpaqueError;
 
-    fn try_into(self) -> Result<Body, Self::Error> {
-        match serde_html_form::to_string(&self.0) {
+    fn try_from(form: Form<T>) -> Result<Self, Self::Error> {
+        match serde_html_form::to_string(&form.0) {
             Ok(body) => Ok(body.into()),
             Err(err) => Err(OpaqueError::from_std(err)),
         }
