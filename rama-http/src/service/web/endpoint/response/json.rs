@@ -100,17 +100,17 @@ where
     }
 }
 
-impl<T> TryInto<Body> for Json<T>
+impl<T> TryFrom<Json<T>> for Body
 where
     T: Serialize,
 {
     type Error = OpaqueError;
 
-    fn try_into(self) -> Result<Body, Self::Error> {
+    fn try_from(json: Json<T>) -> Result<Self, Self::Error> {
         // Use a small initial capacity of 128 bytes like serde_json::to_vec
         // https://docs.rs/serde_json/1.0.82/src/serde_json/ser.rs.html#2189
         let mut buf = BytesMut::with_capacity(128).writer();
-        match serde_json::to_writer(&mut buf, &self.0) {
+        match serde_json::to_writer(&mut buf, &json.0) {
             Ok(()) => Ok(buf.into_inner().freeze().into()),
             Err(err) => Err(OpaqueError::from_std(err)),
         }
