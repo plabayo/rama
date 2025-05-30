@@ -953,8 +953,9 @@ mod tests {
 
     #[tokio::test]
     async fn drop_idle_connections() {
-        let mut pool = FiFoReuseLruDropPool::new(5, 10).unwrap();
-        pool.set_idle_timeout(Duration::from_micros(1));
+        let pool = FiFoReuseLruDropPool::new(5, 10)
+            .unwrap()
+            .with_idle_timeout(Duration::from_micros(1));
 
         let svc = PooledConnector::new(TestService::default(), pool, StringRequestLengthID {});
 
@@ -966,6 +967,10 @@ mod tests {
 
         assert_eq!(svc.inner.created_connection.load(Ordering::Relaxed), 1);
         drop(conn);
+        // Need for this to consistently work in ci, we only need this sleep here
+        // because we have a very very short idle timeout, this is never the problem
+        // if we use realistic values
+        tokio::time::sleep(Duration::from_millis(100)).await;
 
         let conn = svc
             .connect(Context::default(), String::from(""))
