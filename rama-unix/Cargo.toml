@@ -21,13 +21,13 @@ rustdoc-args = ["--cfg", "docsrs"]
 default = []
 
 [dependencies]
+futures-core = { workspace = true }
+futures-sink = { workspace = true }
 rama-core = { workspace = true }
 rama-net = { workspace = true }
 tokio = { workspace = true, features = ["macros", "net"] }
-tracing = { workspace = true }
 tokio-util = { workspace = true, features = ["net", "codec"] }
-futures-core = { workspace = true }
-futures-sink = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }

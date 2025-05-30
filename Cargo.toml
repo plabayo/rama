@@ -590,3 +590,7 @@ required-features = ["haproxy", "http-full"]
 [[example]]
 name = "unix_socket"
 required-features = ["net"]
+
+[[example]]
+name = "unix_datagram_codec"
+required-features = ["net"]
