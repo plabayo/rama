@@ -1,4 +1,11 @@
-//! This example leverages `BytesCodec` to create a unix (datagram) pair which speak a custom protocol.
+//! This example leverages `BytesCodec` to create a unix (datagram)
+//! pair which speak a custom protocol via bytes frames.
+//!
+//! Unix datagram sockets can be useful for all kind of local communications,
+//! such as Command and Control (C&C) of an otherwise public service,
+//! or for a local-first protocol that's not session bound.
+//!
+//! See the `unix_socket` example for a client-server stream demonstration.
 //!
 //! # Run the example
 //!
