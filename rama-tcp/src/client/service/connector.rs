@@ -15,12 +15,30 @@ use crate::client::connect::TcpStreamConnector;
 
 use super::{CreatedTcpStreamConnector, TcpStreamConnectorCloneFactory, TcpStreamConnectorFactory};
 
-#[derive(Debug, Clone)]
-#[non_exhaustive]
 /// A connector which can be used to establish a TCP connection to a server.
 pub struct TcpConnector<Dns = GlobalDnsResolver, ConnectorFactory = ()> {
     dns: Dns,
     connector_factory: ConnectorFactory,
+}
+
+impl<Dns: std::fmt::Debug, ConnectorFactory: std::fmt::Debug> std::fmt::Debug
+    for TcpConnector<Dns, ConnectorFactory>
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TcpConnector")
+            .field("dns", &self.dns)
+            .field("connector_factory", &self.connector_factory)
+            .finish()
+    }
+}
+
+impl<Dns: Clone, ConnectorFactory: Clone> Clone for TcpConnector<Dns, ConnectorFactory> {
+    fn clone(&self) -> Self {
+        Self {
+            dns: self.dns.clone(),
+            connector_factory: self.connector_factory.clone(),
+        }
+    }
 }
 
 impl<Dns, Connector> TcpConnector<Dns, Connector> {}

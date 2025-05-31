@@ -63,22 +63,15 @@ impl<S: Clone> Clone for TcpListenerBuilder<S> {
 }
 
 impl<S> TcpListenerBuilder<S> {
-    /// Sets the value for the `IP_TTL` option on this socket.
-    ///
-    /// This value sets the time-to-live field that is used in every packet sent
-    /// from this socket.
-    pub fn ttl(mut self, ttl: u32) -> Self {
-        self.ttl = Some(ttl);
-        self
-    }
-
-    /// Sets the value for the `IP_TTL` option on this socket.
-    ///
-    /// This value sets the time-to-live field that is used in every packet sent
-    /// from this socket.
-    pub fn set_ttl(&mut self, ttl: u32) -> &mut Self {
-        self.ttl = Some(ttl);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Sets the value for the `IP_TTL` option on this socket.
+        ///
+        /// This value sets the time-to-live field that is used in every packet sent
+        /// from this socket.
+        pub fn ttl(mut self, ttl: u32) -> Self {
+            self.ttl = Some(ttl);
+            self
+        }
     }
 }
 
