@@ -222,7 +222,6 @@ impl TcpListener<()> {
     /// to this listener. The port allocated can be queried via the `local_addr`
     /// method.
     pub async fn bind_address<A: TryInto<SocketAddress, Error: Into<BoxError>>>(
-        self,
         addr: A,
     ) -> Result<TcpListener<()>, BoxError> {
         TcpListenerBuilder::default().bind_address(addr).await
@@ -233,7 +232,6 @@ impl TcpListener<()> {
     ///
     /// The returned listener is ready for accepting connections.
     pub async fn bind_socket(
-        self,
         socket: rama_net::socket::core::Socket,
     ) -> Result<TcpListener<()>, BoxError> {
         TcpListenerBuilder::default().bind_socket(socket).await
@@ -244,7 +242,6 @@ impl TcpListener<()> {
     ///
     /// The returned listener is ready for accepting connections.
     pub async fn bind_device<N: TryInto<DeviceName, Error: Into<BoxError>> + Send + 'static>(
-        self,
         name: N,
     ) -> Result<TcpListener<()>, BoxError> {
         TcpListenerBuilder::default().bind_device(name).await

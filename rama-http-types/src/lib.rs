@@ -18,13 +18,7 @@
 #![cfg_attr(not(test), warn(clippy::print_stdout, clippy::dbg_macro))]
 
 pub(crate) mod body;
-pub use body::{Body, BodyDataStream};
-
-mod body_limit;
-pub use body_limit::BodyLimit;
-
-mod body_ext;
-pub use body_ext::BodyExtractExt;
+pub use body::{Body, BodyDataStream, BodyExtractExt, BodyLimit, sse};
 
 mod request;
 pub use request::{HttpRequestParts, Request};
@@ -120,7 +114,7 @@ pub mod header {
     static_header!["x-forwarded-host", "x-forwarded-for", "x-forwarded-proto",];
 
     // standard
-    static_header!["keep-alive", "proxy-connection"];
+    static_header!["keep-alive", "proxy-connection", "last-event-id"];
 
     // non-std client ip forward headers
     static_header![

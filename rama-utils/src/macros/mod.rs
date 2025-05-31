@@ -305,41 +305,53 @@ macro_rules! __generate_set_and_with {
         }
     ) => {
         $crate::macros::paste! {
-
             $(#[$outer_doc])*
-            $vis fn [<maybe_with_ $fn_name>](mut $self_token, $param_name: Option<$param_ty>) -> Result<Self, $error> {
+            $vis fn [<try_maybe_with_ $fn_name>](mut $self_token, $param_name: Option<$param_ty>) -> Result<Self, $error> {
                 $($body)*
             }
 
             $(#[$outer_doc])*
-            $vis fn [<maybe_set_ $fn_name>](&mut $self_token, $param_name: Option<$param_ty>) -> Result<&mut Self, $error> {
+            $vis fn [<try_maybe_set_ $fn_name>](&mut $self_token, $param_name: Option<$param_ty>) -> Result<&mut Self, $error> {
                 $($body)*
             }
 
             $(#[$outer_doc])*
-            $vis fn [<with_ $fn_name>](mut $self_token, $param_name: $param_ty) -> Result<Self, $error> {
+            $vis fn [<try_with_ $fn_name>](mut $self_token, $param_name: $param_ty) -> Result<Self, $error> {
                 let $param_name: Option<$param_ty> = Some($param_name);
                 $($body)*
             }
 
             $(#[$outer_doc])*
-            $vis fn [<set_ $fn_name>](&mut $self_token, $param_name: $param_ty) -> Result<&mut Self, $error> {
+            $vis fn [<try_set_ $fn_name>](&mut $self_token, $param_name: $param_ty) -> Result<&mut Self, $error> {
                 let $param_name: Option<$param_ty> = Some($param_name);
                 $($body)*
             }
 
             $(#[$outer_doc])*
-            $vis fn [<without_ $fn_name>](mut $self_token) -> Result<Self, $error> {
+            $vis fn [<try_without_ $fn_name>](mut $self_token) -> Result<Self, $error> {
                 let $param_name: Option<$param_ty> = None;
                 $($body)*
             }
 
             $(#[$outer_doc])*
-            $vis fn [<unset_ $fn_name>](&mut $self_token) -> Result<&mut Self, $error> {
+            $vis fn [<try_unset_ $fn_name>](&mut $self_token) -> Result<&mut Self, $error> {
                 let $param_name: Option<$param_ty> = None;
                 $($body)*
             }
 
+        }
+    };
+    (
+        $(#[$outer_doc:meta])*
+        $vis:vis const fn $fn_name:ident(mut $self_token:ident, $($param_name:ident: $param_ty:ty),+ $(,)?) -> Self {
+            $($body:tt)*
+        }
+    ) => {
+        $crate::macros::paste! {
+            $(#[$outer_doc])*
+            $vis const fn [<with_static_ $fn_name>](mut $self_token, $($param_name: $param_ty),+) -> Self {
+                $($body)*
+            }
         }
     };
     (
@@ -368,12 +380,12 @@ macro_rules! __generate_set_and_with {
     ) => {
         $crate::macros::paste! {
             $(#[$outer_doc])*
-            $vis fn [<with_ $fn_name>](mut $self_token, $($param_name: $param_ty),+) -> Result<Self, $error> {
+            $vis fn [<try_with_ $fn_name>](mut $self_token, $($param_name: $param_ty),+) -> Result<Self, $error> {
                 $($body)*
             }
 
             $(#[$outer_doc])*
-            $vis fn [<set_ $fn_name>](&mut $self_token, $($param_name: $param_ty),+) -> Result<&mut Self, $error> {
+            $vis fn [<try_set_ $fn_name>](&mut $self_token, $($param_name: $param_ty),+) -> Result<&mut Self, $error> {
                 $($body)*
             }
         }

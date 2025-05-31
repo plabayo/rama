@@ -34,6 +34,10 @@ mod http_service_fs;
 mod http_service_hello;
 #[cfg(feature = "http-full")]
 mod http_service_match;
+#[cfg(feature = "http-full")]
+mod http_sse;
+#[cfg(feature = "http-full")]
+mod http_sse_json;
 #[cfg(all(feature = "http-full", feature = "telemetry"))]
 mod http_telemetry;
 #[cfg(feature = "http-full")]
