@@ -212,7 +212,7 @@ impl<C, ID> FiFoReuseLruDropPool<C, ID> {
 impl<C, ID> Pool<C, ID> for FiFoReuseLruDropPool<C, ID>
 where
     C: Send + 'static,
-    ID: Clone + Send + Sync + PartialEq + 'static,
+    ID: Clone + Send + Sync + PartialEq + Debug + 'static,
 {
     type Connection = LeasedConnection<C, ID>;
     type CreatePermit = (ActiveSlot, PoolSlot);
@@ -235,6 +235,7 @@ where
         let pooled_conn = idx.and_then(|idx| storage.remove(idx));
 
         if let (Some(idx), Some(pooled_conn)) = (idx, pooled_conn) {
+            trace!(%idx, ?id, "fifo connection pool: connection found for given id");
             let mut timeout_triggered = false;
             if let Some(timeout) = self.idle_timeout {
                 if pooled_conn.last_used.elapsed() > timeout {
@@ -245,6 +246,7 @@ where
             // Since we always insert in the beginning we can assume if this connection has been idle for too long
             // all connections older then this one should also be evicted
             if timeout_triggered {
+                trace!(start_idx = ?idx, "fifo connection pool: idle timeout was triggered, dropping this connection and all older ones");
                 storage.drain(idx..);
             } else {
                 return Ok(ConnectionResult::Connection(LeasedConnection {
@@ -260,6 +262,10 @@ where
             Ok(permit) => PoolSlot(permit),
             Err(_) => {
                 // By poping from back when we have no new Poolslot available we implement LRU drop policy
+                trace!(
+                    ?id,
+                    "fifo connection pool: evicting lru connection to create a new one"
+                );
                 storage
                     .pop_back()
                     .context("get least recently used connection from storage")?
@@ -267,10 +273,15 @@ where
             }
         };
 
+        trace!(
+            ?id,
+            "fifo connection pool: no connection for given id found, returning create permit"
+        );
         Ok(ConnectionResult::CreatePermit((active_slot, pool_slot)))
     }
 
     async fn create(&self, id: ID, conn: C, permit: Self::CreatePermit) -> Self::Connection {
+        trace!(?id, "adding new connection to pool");
         let (active_slot, pool_slot) = permit;
         LeasedConnection {
             active_slot,
@@ -360,9 +371,11 @@ impl<C, ID> Drop for LeasedConnection<C, ID> {
     fn drop(&mut self) {
         if let Some(pooled_conn) = self.pooled_conn.take() {
             if self.failed.load(std::sync::atomic::Ordering::Relaxed) {
-                trace!("dropping pooled connection that was marked as failed");
+                trace!(
+                    "fifo connection pool: dropping pooled connection that was marked as failed"
+                );
             } else {
-                trace!("returning pooled connection back to pool");
+                trace!("fifo connection pool: returning pooled connection back to pool");
                 self.returner.return_conn(pooled_conn);
             }
         }
@@ -442,7 +455,7 @@ where
 
 impl<State, Request, C, ID> Service<State, Request> for LeasedConnection<C, ID>
 where
-    ID: Send + Sync + 'static,
+    ID: Send + Sync + Debug + 'static,
     C: Service<State, Request>,
     Request: Send + 'static,
     State: Send + Sync + 'static,
@@ -457,6 +470,11 @@ where
     ) -> Result<Self::Response, Self::Error> {
         let result = self.as_ref().serve(ctx, req).await;
         if result.is_err() {
+            let id = &self.pooled_conn.as_ref().expect("msg").id;
+            trace!(
+                ?id,
+                "fifo connection pool: detected error result, marking connection as failed"
+            );
             self.mark_as_failed();
         }
         result
@@ -476,7 +494,7 @@ impl<C, ID: Debug> Debug for FiFoReuseLruDropPool<C, ID> {
 /// which connections can be used for a specific Request in a way that is indepent of
 /// what a Request is.
 pub trait ReqToConnID<State, Request>: Sized + Clone + Send + Sync + 'static {
-    type ID: Send + Sync + PartialEq + Clone + 'static;
+    type ID: Send + Sync + PartialEq + Clone + Debug + 'static;
 
     fn id(&self, ctx: &Context<State>, request: &Request) -> Result<Self::ID, OpaqueError>;
 }
@@ -484,7 +502,7 @@ pub trait ReqToConnID<State, Request>: Sized + Clone + Send + Sync + 'static {
 impl<State, Request, ID, F> ReqToConnID<State, Request> for F
 where
     F: Fn(&Context<State>, &Request) -> Result<ID, OpaqueError> + Clone + Send + Sync + 'static,
-    ID: Send + Sync + PartialEq + Clone + 'static,
+    ID: Send + Sync + PartialEq + Clone + Debug + 'static,
 {
     type ID = ID;
 
@@ -543,27 +561,53 @@ where
         // Try to get connection from pool, if no connection is found, we will have to create a new
         // one using the returned create permit
         let create_permit = {
-            let pool = ctx.get::<P>().unwrap_or(&self.pool);
+            let pool = match ctx.get::<P>() {
+                Some(pool) => {
+                    trace!("pooled connector: using pool from ctx");
+                    pool
+                }
+                None => {
+                    trace!("pooled connector: using pool from connector");
+                    &self.pool
+                }
+            };
 
             let pool_result = if let Some(duration) = self.wait_for_pool_timeout {
                 timeout(duration, pool.get_conn(&conn_id))
                     .await
-                    .map_err(OpaqueError::from_std)?
+                    .map_err(|err|{
+                        trace!(?conn_id, "pooled connector: timeout triggered while waiting for a connection from pool");
+                        OpaqueError::from_std(err)
+                    })?
             } else {
                 pool.get_conn(&conn_id).await
             };
 
             match pool_result? {
                 ConnectionResult::Connection(c) => {
+                    trace!(
+                        ?conn_id,
+                        "pooled connector: got connection from pool, returning"
+                    );
                     return Ok(EstablishedClientConnection { ctx, conn: c, req });
                 }
-                ConnectionResult::CreatePermit(permit) => permit,
+                ConnectionResult::CreatePermit(permit) => {
+                    trace!(
+                        ?conn_id,
+                        "pooled connector: no connection found, received permit to create a new one"
+                    );
+                    permit
+                }
             }
         };
 
         let EstablishedClientConnection { ctx, req, conn } =
             self.inner.connect(ctx, req).await.map_err(Into::into)?;
 
+        trace!(
+            ?conn_id,
+            "pooled connector: returning new pooled connection"
+        );
         let pool = ctx.get::<P>().unwrap_or(&self.pool);
         let conn = pool.create(conn_id, conn, create_permit).await;
         Ok(EstablishedClientConnection { ctx, req, conn })
@@ -675,15 +719,6 @@ pub mod http {
     }
 
     impl HttpPooledConnectorConfig {
-        pub fn new() -> Self {
-            Self {
-                max_total: 50,
-                max_active: 20,
-                wait_for_pool_timeout: None,
-                idle_timeout: None,
-            }
-        }
-
         pub fn build_connector<C, S>(
             self,
             inner: S,
