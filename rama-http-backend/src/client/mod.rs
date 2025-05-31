@@ -173,10 +173,7 @@ mod easy_connector {
         EstablishedClientConnection,
         pool::{
             FiFoReuseLruDropPool, PooledConnector,
-            http::{
-                BasicHttpConId, BasicHttpConnIdentifier, HttpPooledConnectorBuilder,
-                HttpPooledConnectorConfig,
-            },
+            http::{BasicHttpConId, BasicHttpConnIdentifier, HttpPooledConnectorConfig},
         },
     };
     use rama_tcp::client::service::TcpConnector;
@@ -478,11 +475,7 @@ mod easy_connector {
             self,
             config: HttpPooledConnectorConfig,
         ) -> Result<DefaultConnectionPoolBuilder<T, C>, OpaqueError> {
-            let connector = HttpPooledConnectorBuilder::new()
-                .max_active(config.max_active)
-                .max_total(config.max_total)
-                .maybe_with_wait_for_pool_timeout(config.wait_for_pool_timeout)
-                .build(self.connector)?;
+            let connector = config.build_connector(self.connector)?;
 
             Ok(EasyHttpWebClientBuilder {
                 connector,
