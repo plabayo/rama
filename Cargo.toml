@@ -592,5 +592,9 @@ name = "unix_socket"
 required-features = ["net"]
 
 [[example]]
+name = "unix_socket_http"
+required-features = ["http-full"]
+
+[[example]]
 name = "unix_datagram_codec"
 required-features = ["net"]

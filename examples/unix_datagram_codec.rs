@@ -32,9 +32,8 @@
 mod unix_example {
     use rama::{
         bytes::Bytes,
-        unix::{UnixDatagram, UnixDatagramFramed, codec::BytesCodec},
+        unix::{UnixDatagram, UnixDatagramFramed, UnixSocketAddress, codec::BytesCodec},
     };
-    use rama_unix::UnixSocketAddress;
 
     use futures::{FutureExt, SinkExt, StreamExt};
     use std::{
