@@ -11,7 +11,7 @@
 //! # Expected output
 //!
 //! The server will start and listen on `/tmp/rama_example_unix_http.socket`.
-//! You can use `socat` to interact with the service:
+//! You can use `curl` to interact with the service:
 //!
 //! ```sh
 //! curl --unix-socket /tmp/rama_example_unix_http.socket http://localhost/ping

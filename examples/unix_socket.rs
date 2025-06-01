@@ -22,7 +22,8 @@
 #[cfg(unix)]
 mod unix_example {
     use rama::{
-        error::BoxError, net::stream::Stream, service::service_fn, unix::server::UnixListener,
+        Context, error::BoxError, graceful::ShutdownGuard, net::stream::Stream,
+        service::service_fn, unix::server::UnixListener,
     };
 
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -43,19 +44,48 @@ mod unix_example {
 
         const PATH: &str = "/tmp/rama_example_unix.socket";
 
-        let listener = UnixListener::bind_path(PATH).expect("bind Unix socket");
+        let listener = UnixListener::build_with_state(graceful.guard())
+            .bind_path(PATH)
+            .expect("bind Unix socket");
 
         graceful.spawn_task_fn(async |guard| {
-            async fn handle(mut stream: impl Stream + Unpin) -> Result<(), BoxError> {
-                let mut buf = Vec::new();
-                stream.read_to_end(&mut buf).await?;
-                tracing::debug!(
-                    data = %String::from_utf8_lossy(&buf).trim(),
-                    "reverse received data and exist",
-                );
-                buf.reverse();
-                stream.write_all(&buf).await?;
-                Ok(())
+            async fn handle(
+                ctx: Context<ShutdownGuard>,
+                mut stream: impl Stream + Unpin,
+            ) -> Result<(), BoxError> {
+                let mut buf = [0u8; 1024];
+                let guard = ctx.state();
+
+                loop {
+                    let n = tokio::select! {
+                        _ = guard.cancelled() => {
+                            tracing::info!("stop read loop, shutdown complete");
+                            return Ok(());
+                        }
+                        result = stream.read(&mut buf) => {
+                            result.expect("foo")
+                        }
+                    };
+
+                    if n == 0 {
+                        tracing::info!("stream read empty, exit!");
+                        return Ok(());
+                    }
+
+                    let read_buf = &mut buf[..n];
+                    read_buf.trim_ascii();
+                    if read_buf.is_empty() {
+                        tracing::info!("ignore space-only read");
+                        continue;
+                    }
+
+                    tracing::debug!(
+                        data = %String::from_utf8_lossy(read_buf).trim(),
+                        "reverse received data and exist",
+                    );
+                    read_buf.reverse();
+                    stream.write_all(read_buf).await?;
+                }
             }
 
             tracing::info!(%PATH, "ready to unix-serve");
