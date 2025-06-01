@@ -81,3 +81,11 @@ where
         self.serve(ctx, req)
     }
 }
+
+/// Trait which used to detect if a connection is broken
+///
+/// If it is impossbile to detect if a connection is broken
+/// the default implemention should be used
+pub trait ConnectionHealth: Sized {
+    fn is_broken(&mut self) -> bool;
+}

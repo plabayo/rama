@@ -10,8 +10,11 @@ use rama_http_types::{
     dep::{http::uri::PathAndQuery, http_body},
     header::{CONNECTION, HOST, KEEP_ALIVE, PROXY_CONNECTION, TRANSFER_ENCODING, UPGRADE},
 };
-use rama_net::{address::ProxyAddress, http::RequestContext};
-use std::fmt;
+use rama_net::{address::ProxyAddress, client::ConnectionHealth, http::RequestContext};
+use std::{
+    fmt,
+    sync::{Arc, atomic::AtomicBool},
+};
 use tokio::sync::Mutex;
 
 pub(super) enum SendRequest<Body> {
@@ -33,6 +36,13 @@ impl<Body: fmt::Debug> fmt::Debug for SendRequest<Body> {
 pub struct HttpClientService<Body, I = ()> {
     pub(super) sender: SendRequest<Body>,
     pub(super) http_req_inspector: I,
+    pub(super) is_broken: Arc<AtomicBool>,
+}
+
+impl<Body, I> ConnectionHealth for HttpClientService<Body, I> {
+    fn is_broken(&mut self) -> bool {
+        self.is_broken.load(std::sync::atomic::Ordering::Relaxed)
+    }
 }
 
 impl<State, BodyIn, BodyOut, I> Service<State, Request<BodyIn>> for HttpClientService<BodyOut, I>

@@ -1,4 +1,4 @@
-use super::conn::{ConnectorService, EstablishedClientConnection};
+use super::conn::{ConnectionHealth, ConnectorService, EstablishedClientConnection};
 use crate::stream::Socket;
 use parking_lot::Mutex;
 use rama_core::error::{BoxError, ErrorContext, OpaqueError};
@@ -211,7 +211,7 @@ impl<C, ID> FiFoReuseLruDropPool<C, ID> {
 
 impl<C, ID> Pool<C, ID> for FiFoReuseLruDropPool<C, ID>
 where
-    C: Send + 'static,
+    C: Send + ConnectionHealth + 'static,
     ID: Clone + Send + Sync + PartialEq + Debug + 'static,
 {
     type Connection = LeasedConnection<C, ID>;
@@ -231,30 +231,39 @@ where
 
         let mut storage = self.storage.lock();
 
-        let idx = storage.iter().position(|stored| &stored.id == id);
-        let pooled_conn = idx.and_then(|idx| storage.remove(idx));
+        loop {
+            let idx = storage.iter().position(|stored| &stored.id == id);
+            let pooled_conn = idx.and_then(|idx| storage.remove(idx));
 
-        if let (Some(idx), Some(pooled_conn)) = (idx, pooled_conn) {
-            trace!(%idx, ?id, "fifo connection pool: connection found for given id");
-            let mut timeout_triggered = false;
-            if let Some(timeout) = self.idle_timeout {
-                if pooled_conn.last_used.elapsed() > timeout {
-                    timeout_triggered = true;
+            if let (Some(idx), Some(mut pooled_conn)) = (idx, pooled_conn) {
+                trace!(%idx, ?id, "fifo connection pool: connection found for given id");
+                let mut timeout_triggered = false;
+                let is_broken = pooled_conn.conn.is_broken();
+
+                if let Some(timeout) = self.idle_timeout {
+                    if pooled_conn.last_used.elapsed() > timeout {
+                        timeout_triggered = true;
+                    }
                 }
-            }
 
-            // Since we always insert in the beginning we can assume if this connection has been idle for too long
-            // all connections older then this one should also be evicted
-            if timeout_triggered {
-                trace!(start_idx = ?idx, "fifo connection pool: idle timeout was triggered, dropping this connection and all older ones");
-                storage.drain(idx..);
+                // Since we always insert in the beginning we can assume if this connection has been idle for too long
+                // all connections older then this one should also be evicted
+                if timeout_triggered {
+                    trace!(start_idx = ?idx, "fifo connection pool: idle timeout was triggered, dropping this connection and all older ones");
+                    storage.drain(idx..);
+                    break;
+                } else if is_broken {
+                    continue;
+                } else {
+                    return Ok(ConnectionResult::Connection(LeasedConnection {
+                        active_slot,
+                        pooled_conn: Some(pooled_conn),
+                        returner: self.returner.clone(),
+                        failed: false.into(),
+                    }));
+                }
             } else {
-                return Ok(ConnectionResult::Connection(LeasedConnection {
-                    active_slot,
-                    pooled_conn: Some(pooled_conn),
-                    returner: self.returner.clone(),
-                    failed: false.into(),
-                }));
+                break;
             }
         }
 
@@ -758,6 +767,12 @@ mod tests {
         }
     }
 
+    impl ConnectionHealth for Vec<u32> {
+        fn is_broken(&mut self) -> bool {
+            false
+        }
+    }
+
     impl<State, Request> Service<State, Request> for TestService
     where
         State: Clone + Send + Sync + 'static,
@@ -892,6 +907,37 @@ mod tests {
             .unwrap();
     }
 
+    #[tokio::test]
+    async fn drop_idle_connections() {
+        let pool = FiFoReuseLruDropPool::new(5, 10)
+            .unwrap()
+            .with_idle_timeout(Duration::from_micros(1));
+
+        let svc = PooledConnector::new(TestService::default(), pool, StringRequestLengthID {});
+
+        let conn = svc
+            .connect(Context::default(), String::from(""))
+            .await
+            .unwrap()
+            .conn;
+
+        assert_eq!(svc.inner.created_connection.load(Ordering::Relaxed), 1);
+        drop(conn);
+        // Need for this to consistently work in ci, we only need this sleep here
+        // because we have a very very short idle timeout, this is never the problem
+        // if we use realistic values
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let conn = svc
+            .connect(Context::default(), String::from(""))
+            .await
+            .unwrap()
+            .conn;
+
+        assert_eq!(svc.inner.created_connection.load(Ordering::Relaxed), 2);
+        drop(conn);
+    }
+
     #[derive(Default)]
     struct TestConnector {
         pub created_connection: AtomicI16,
@@ -919,6 +965,13 @@ mod tests {
     #[derive(Default, Debug)]
     struct InnerService {
         should_error: AtomicBool,
+        is_broken: AtomicBool,
+    }
+
+    impl ConnectionHealth for InnerService {
+        fn is_broken(&mut self) -> bool {
+            self.is_broken.load(Ordering::Relaxed)
+        }
     }
 
     impl<State> Service<State, bool> for InnerService
@@ -987,33 +1040,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn drop_idle_connections() {
-        let pool = FiFoReuseLruDropPool::new(5, 10)
-            .unwrap()
-            .with_idle_timeout(Duration::from_micros(1));
 
-        let svc = PooledConnector::new(TestService::default(), pool, StringRequestLengthID {});
+    async fn test_detected_broken_connection_before_use() {
+        let pool = FiFoReuseLruDropPool::new(1, 1).unwrap();
+        let svc = PooledConnector::new(TestConnector::default(), pool, StringRequestLengthID {});
 
         let conn = svc
             .connect(Context::default(), String::from(""))
             .await
-            .unwrap()
-            .conn;
+            .unwrap();
 
-        assert_eq!(svc.inner.created_connection.load(Ordering::Relaxed), 1);
+        let result = conn.conn.serve(Context::default(), false).await;
+        assert_ok!(result);
+
+        conn.conn.is_broken.store(true, Ordering::Relaxed);
         drop(conn);
-        // Need for this to consistently work in ci, we only need this sleep here
-        // because we have a very very short idle timeout, this is never the problem
-        // if we use realistic values
-        tokio::time::sleep(Duration::from_millis(100)).await;
 
         let conn = svc
             .connect(Context::default(), String::from(""))
             .await
-            .unwrap()
-            .conn;
+            .unwrap();
+        let result = conn.conn.serve(Context::default(), false).await;
+        assert_ok!(result);
 
         assert_eq!(svc.inner.created_connection.load(Ordering::Relaxed), 2);
-        drop(conn);
     }
 }
