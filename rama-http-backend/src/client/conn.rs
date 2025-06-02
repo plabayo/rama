@@ -176,12 +176,14 @@ where
                     user_agent.original = %req.headers().get(USER_AGENT).and_then(|v| v.to_str().ok()).unwrap_or_default(),
                 );
 
-                let is_broken_cl = is_broken.clone();
+                let is_broken_weak = Arc::downgrade(&is_broken);
                 ctx.spawn(
                     async move {
                         if let Err(err) = conn.await {
                             tracing::debug!("connection failed: {:?}", err);
-                            is_broken_cl.store(true, std::sync::atomic::Ordering::Relaxed);
+                            if let Some(is_broken) = is_broken_weak.upgrade() {
+                                is_broken.store(true, std::sync::atomic::Ordering::Relaxed);
+                            }
                         }
                     }
                     .instrument(conn_span),
@@ -214,12 +216,14 @@ where
                     url.scheme = %req.uri().scheme_str().unwrap_or_default(),
                     user_agent.original = %req.headers().get(USER_AGENT).and_then(|v| v.to_str().ok()).unwrap_or_default(),
                 );
-                let is_broken_cl = is_broken.clone();
+                let is_broken_weak = Arc::downgrade(&is_broken);
                 ctx.spawn(
                     async move {
                         if let Err(err) = conn.await {
                             tracing::debug!("connection failed: {:?}", err);
-                            is_broken_cl.store(true, std::sync::atomic::Ordering::Relaxed);
+                            if let Some(is_broken) = is_broken_weak.upgrade() {
+                                is_broken.store(true, std::sync::atomic::Ordering::Relaxed);
+                            }
                         }
                     }
                     .instrument(conn_span),
