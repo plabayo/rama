@@ -157,7 +157,7 @@ mod tests {
                     .map(Ok::<_, Infallible>)
                     .throttle(DELAY);
 
-                Sse::new(stream).keep_alive(
+                Sse::new(stream).with_keep_alive(
                     KeepAlive::<&'static str>::new()
                         .with_interval(Duration::from_secs(1))
                         .try_with_text("keep-alive-text")
@@ -201,7 +201,7 @@ mod tests {
                     .throttle(DELAY)
                     .take(2);
 
-                Sse::new(stream).keep_alive(
+                Sse::new(stream).with_keep_alive(
                     KeepAlive::<&'static str>::new()
                         .with_interval(Duration::from_secs(1))
                         .try_with_text("keep-alive-text")
