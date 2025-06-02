@@ -138,19 +138,19 @@ where
     }
 }
 
-impl<T> TryInto<Body> for Csv<T>
+impl<T> TryFrom<Csv<T>> for Body
 where
     T: IntoIterator<Item: Serialize>,
 {
     type Error = OpaqueError;
 
-    fn try_into(self) -> Result<Body, Self::Error> {
+    fn try_from(csv: Csv<T>) -> Result<Self, Self::Error> {
         // Use a small initial capacity of 128 bytes like serde_json::to_vec
         // https://docs.rs/serde_json/1.0.82/src/serde_json/ser.rs.html#2189
         let mut buf = BytesMut::with_capacity(128).writer();
         {
             let mut wtr = csv::Writer::from_writer(&mut buf);
-            let res: Result<Vec<_>, _> = self.0.into_iter().map(|rec| wtr.serialize(rec)).collect();
+            let res: Result<Vec<_>, _> = csv.0.into_iter().map(|rec| wtr.serialize(rec)).collect();
             if let Err(err) = res {
                 return Err(OpaqueError::from_std(err));
             }

@@ -8,12 +8,14 @@ use std::collections::VecDeque;
 use std::fmt::Debug;
 use std::ops::{Deref, DerefMut};
 use std::pin::Pin;
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Weak};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::{future::Future, net::SocketAddr};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::time::timeout;
+use tracing::trace;
 
 /// [`PoolStorage`] implements the storage part of a connection pool. This storage
 /// also decides which connection it returns for a given ID or when the caller asks to
@@ -104,11 +106,17 @@ pub struct LeasedConnection<C, ID> {
     pooled_conn: Option<PooledConnection<C, ID>>,
     active_slot: ActiveSlot,
     returner: ConnReturner<C, ID>,
+    failed: AtomicBool,
 }
 
 impl<C, ID> LeasedConnection<C, ID> {
     pub fn into_connection(mut self) -> C {
         self.pooled_conn.take().expect("only None after drop").conn
+    }
+
+    pub fn mark_as_failed(&self) {
+        self.failed
+            .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -120,6 +128,7 @@ struct PooledConnection<C, ID> {
     conn: C,
     id: ID,
     pool_slot: PoolSlot,
+    last_used: Instant,
 }
 
 /// Connection pool that uses FiFo for reuse and LRU to evict connections
@@ -127,6 +136,7 @@ pub struct FiFoReuseLruDropPool<C, ID> {
     storage: Arc<Mutex<VecDeque<PooledConnection<C, ID>>>>,
     total_slots: Arc<Semaphore>,
     active_slots: Arc<Semaphore>,
+    idle_timeout: Option<Duration>,
     returner: ConnReturner<C, ID>,
 }
 
@@ -143,8 +153,9 @@ impl<C, ID> Clone for ConnReturner<C, ID> {
 }
 
 impl<C, ID> ConnReturner<C, ID> {
-    fn return_conn(&self, conn: PooledConnection<C, ID>) {
+    fn return_conn(&self, mut conn: PooledConnection<C, ID>) {
         if let Some(storage) = self.weak_storage.upgrade() {
+            conn.last_used = Instant::now();
             storage.lock().push_front(conn)
         }
     }
@@ -157,6 +168,7 @@ impl<C, ID> Clone for FiFoReuseLruDropPool<C, ID> {
             total_slots: self.total_slots.clone(),
             active_slots: self.active_slots.clone(),
             returner: self.returner.clone(),
+            idle_timeout: self.idle_timeout,
         }
     }
 }
@@ -180,14 +192,27 @@ impl<C, ID> FiFoReuseLruDropPool<C, ID> {
             returner: ConnReturner { weak_storage },
             total_slots: Arc::new(Semaphore::const_new(max_total)),
             active_slots: Arc::new(Semaphore::const_new(max_active)),
+            idle_timeout: None,
         })
+    }
+
+    generate_set_and_with! {
+        /// If connections have been idle for longer then the provided timeout they
+        /// will be dropped and removed from the pool
+        ///
+        /// Note: timeout is only checked when a connection is requested from the pool,
+        /// it is not something that is done periodically
+        pub fn idle_timeout(mut self, timeout: Option<Duration>) -> Self {
+            self.idle_timeout = timeout;
+            self
+        }
     }
 }
 
 impl<C, ID> Pool<C, ID> for FiFoReuseLruDropPool<C, ID>
 where
     C: Send + 'static,
-    ID: Clone + Send + Sync + PartialEq + 'static,
+    ID: Clone + Send + Sync + PartialEq + Debug + 'static,
 {
     type Connection = LeasedConnection<C, ID>;
     type CreatePermit = (ActiveSlot, PoolSlot);
@@ -205,25 +230,42 @@ where
         );
 
         let mut storage = self.storage.lock();
-        let pooled_conn = {
-            storage
-                .iter()
-                .position(|stored| &stored.id == id)
-                .and_then(|idx| storage.remove(idx))
-        };
 
-        if let Some(pooled_conn) = pooled_conn {
-            return Ok(ConnectionResult::Connection(LeasedConnection {
-                active_slot,
-                pooled_conn: Some(pooled_conn),
-                returner: self.returner.clone(),
-            }));
+        let idx = storage.iter().position(|stored| &stored.id == id);
+        let pooled_conn = idx.and_then(|idx| storage.remove(idx));
+
+        if let (Some(idx), Some(pooled_conn)) = (idx, pooled_conn) {
+            trace!(%idx, ?id, "fifo connection pool: connection found for given id");
+            let mut timeout_triggered = false;
+            if let Some(timeout) = self.idle_timeout {
+                if pooled_conn.last_used.elapsed() > timeout {
+                    timeout_triggered = true;
+                }
+            }
+
+            // Since we always insert in the beginning we can assume if this connection has been idle for too long
+            // all connections older then this one should also be evicted
+            if timeout_triggered {
+                trace!(start_idx = ?idx, "fifo connection pool: idle timeout was triggered, dropping this connection and all older ones");
+                storage.drain(idx..);
+            } else {
+                return Ok(ConnectionResult::Connection(LeasedConnection {
+                    active_slot,
+                    pooled_conn: Some(pooled_conn),
+                    returner: self.returner.clone(),
+                    failed: false.into(),
+                }));
+            }
         }
 
         let pool_slot = match self.total_slots.clone().try_acquire_owned() {
             Ok(permit) => PoolSlot(permit),
             Err(_) => {
                 // By poping from back when we have no new Poolslot available we implement LRU drop policy
+                trace!(
+                    ?id,
+                    "fifo connection pool: evicting lru connection to create a new one"
+                );
                 storage
                     .pop_back()
                     .context("get least recently used connection from storage")?
@@ -231,18 +273,25 @@ where
             }
         };
 
+        trace!(
+            ?id,
+            "fifo connection pool: no connection for given id found, returning create permit"
+        );
         Ok(ConnectionResult::CreatePermit((active_slot, pool_slot)))
     }
 
     async fn create(&self, id: ID, conn: C, permit: Self::CreatePermit) -> Self::Connection {
+        trace!(?id, "adding new connection to pool");
         let (active_slot, pool_slot) = permit;
         LeasedConnection {
             active_slot,
             returner: self.returner.clone(),
+            failed: false.into(),
             pooled_conn: Some(PooledConnection {
                 id,
                 conn,
                 pool_slot,
+                last_used: Instant::now(),
             }),
         }
     }
@@ -321,7 +370,14 @@ impl<C, ID> AsMut<C> for LeasedConnection<C, ID> {
 impl<C, ID> Drop for LeasedConnection<C, ID> {
     fn drop(&mut self) {
         if let Some(pooled_conn) = self.pooled_conn.take() {
-            self.returner.return_conn(pooled_conn);
+            if self.failed.load(std::sync::atomic::Ordering::Relaxed) {
+                trace!(
+                    "fifo connection pool: dropping pooled connection that was marked as failed"
+                );
+            } else {
+                trace!("fifo connection pool: returning pooled connection back to pool");
+                self.returner.return_conn(pooled_conn);
+            }
         }
     }
 }
@@ -399,18 +455,29 @@ where
 
 impl<State, Request, C, ID> Service<State, Request> for LeasedConnection<C, ID>
 where
-    ID: Send + Sync + 'static,
+    ID: Send + Sync + Debug + 'static,
     C: Service<State, Request>,
+    Request: Send + 'static,
+    State: Send + Sync + 'static,
 {
     type Response = C::Response;
     type Error = C::Error;
 
-    fn serve(
+    async fn serve(
         &self,
         ctx: Context<State>,
         req: Request,
-    ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
-        self.as_ref().serve(ctx, req)
+    ) -> Result<Self::Response, Self::Error> {
+        let result = self.as_ref().serve(ctx, req).await;
+        if result.is_err() {
+            let id = &self.pooled_conn.as_ref().expect("msg").id;
+            trace!(
+                ?id,
+                "fifo connection pool: detected error result, marking connection as failed"
+            );
+            self.mark_as_failed();
+        }
+        result
     }
 }
 
@@ -427,7 +494,7 @@ impl<C, ID: Debug> Debug for FiFoReuseLruDropPool<C, ID> {
 /// which connections can be used for a specific Request in a way that is indepent of
 /// what a Request is.
 pub trait ReqToConnID<State, Request>: Sized + Clone + Send + Sync + 'static {
-    type ID: Send + Sync + PartialEq + Clone + 'static;
+    type ID: Send + Sync + PartialEq + Clone + Debug + 'static;
 
     fn id(&self, ctx: &Context<State>, request: &Request) -> Result<Self::ID, OpaqueError>;
 }
@@ -435,7 +502,7 @@ pub trait ReqToConnID<State, Request>: Sized + Clone + Send + Sync + 'static {
 impl<State, Request, ID, F> ReqToConnID<State, Request> for F
 where
     F: Fn(&Context<State>, &Request) -> Result<ID, OpaqueError> + Clone + Send + Sync + 'static,
-    ID: Send + Sync + PartialEq + Clone + 'static,
+    ID: Send + Sync + PartialEq + Clone + Debug + 'static,
 {
     type ID = ID;
 
@@ -494,27 +561,53 @@ where
         // Try to get connection from pool, if no connection is found, we will have to create a new
         // one using the returned create permit
         let create_permit = {
-            let pool = ctx.get::<P>().unwrap_or(&self.pool);
+            let pool = match ctx.get::<P>() {
+                Some(pool) => {
+                    trace!("pooled connector: using pool from ctx");
+                    pool
+                }
+                None => {
+                    trace!("pooled connector: using pool from connector");
+                    &self.pool
+                }
+            };
 
             let pool_result = if let Some(duration) = self.wait_for_pool_timeout {
                 timeout(duration, pool.get_conn(&conn_id))
                     .await
-                    .map_err(OpaqueError::from_std)?
+                    .map_err(|err|{
+                        trace!(?conn_id, "pooled connector: timeout triggered while waiting for a connection from pool");
+                        OpaqueError::from_std(err)
+                    })?
             } else {
                 pool.get_conn(&conn_id).await
             };
 
             match pool_result? {
                 ConnectionResult::Connection(c) => {
+                    trace!(
+                        ?conn_id,
+                        "pooled connector: got connection from pool, returning"
+                    );
                     return Ok(EstablishedClientConnection { ctx, conn: c, req });
                 }
-                ConnectionResult::CreatePermit(permit) => permit,
+                ConnectionResult::CreatePermit(permit) => {
+                    trace!(
+                        ?conn_id,
+                        "pooled connector: no connection found, received permit to create a new one"
+                    );
+                    permit
+                }
             }
         };
 
         let EstablishedClientConnection { ctx, req, conn } =
             self.inner.connect(ctx, req).await.map_err(Into::into)?;
 
+        trace!(
+            ?conn_id,
+            "pooled connector: returning new pooled connection"
+        );
         let pool = ctx.get::<P>().unwrap_or(&self.pool);
         let conn = pool.create(conn_id, conn, create_permit).await;
         Ok(EstablishedClientConnection { ctx, req, conn })
@@ -564,12 +657,11 @@ impl<S, P: Clone, R: Clone> Layer<S> for PooledConnectorLayer<P, R> {
 
 #[cfg(feature = "http")]
 pub mod http {
-    use std::time::Duration;
-
     use super::{FiFoReuseLruDropPool, PooledConnector, ReqToConnID};
     use crate::{Protocol, address::Authority, client::pool::OpaqueError, http::RequestContext};
     use rama_core::Context;
     use rama_http_types::Request;
+    use std::time::Duration;
 
     #[derive(Clone, Debug, Default)]
     #[non_exhaustive]
@@ -591,86 +683,54 @@ pub mod http {
         }
     }
 
-    #[derive(Clone, Default)]
-    /// Builder to help create a config for the default http connection pool or to
-    /// build the connector directly
-    pub struct HttpPooledConnectorBuilder {
-        config: HttpPooledConnectorConfig,
-    }
-
     #[derive(Clone)]
     /// Config used to create the default http connection pool
     pub struct HttpPooledConnectorConfig {
+        /// Set the max amount of connections that this connection pool will contain
+        ///
+        /// This is the sum of active connections and idle connections. When this limit
+        /// is hit idle connections will be replaced with new ones.
         pub max_total: usize,
+        /// Set the max amount of connections that can actively be used
+        ///
+        /// Requesting a connection from the pool will block until the pool
+        /// is below max capacity again.
         pub max_active: usize,
+        /// If connections have been idle for longer then the provided timeout they
+        /// will be dropped and removed from the pool
+        ///
+        /// Note: timeout is only checked when a connection is requested from the pool,
+        /// it is not something that is done periodically
+        pub idle_timeout: Option<Duration>,
+        /// When a pool is operating at max active capacity wait for this duration
+        /// to get a connection from the pool before the connector raises a timeout error
         pub wait_for_pool_timeout: Option<Duration>,
-    }
-
-    impl From<HttpPooledConnectorConfig> for HttpPooledConnectorBuilder {
-        fn from(config: HttpPooledConnectorConfig) -> Self {
-            Self { config }
-        }
     }
 
     impl Default for HttpPooledConnectorConfig {
         fn default() -> Self {
             Self {
-                max_total: 100,
+                max_total: 50,
                 max_active: 20,
-                wait_for_pool_timeout: None,
+                wait_for_pool_timeout: Some(Duration::from_secs(120)),
+                idle_timeout: Some(Duration::from_secs(300)),
             }
         }
     }
 
-    impl HttpPooledConnectorBuilder {
-        pub fn new() -> Self {
-            Self::default()
-        }
-
-        /// Set the max amount of connections that this connection pool will contain
-        ///
-        /// This is the sum of active connections and idle connections. When this limit
-        /// is hit idle connections will be replaced with new ones.
-        pub fn max_total(mut self, max: usize) -> Self {
-            self.config.max_total = max;
-            self
-        }
-
-        /// Set the max amount of connections that can actively be used
-        ///
-        /// Requesting a connection from the pool will block until the pool
-        /// is below max capacity again.
-        pub fn max_active(mut self, max: usize) -> Self {
-            self.config.max_active = max;
-            self
-        }
-
-        /// When a pool is operating at max active capacity wait for this duration
-        /// before the connector raises a timeout error
-        pub fn with_wait_for_pool_timeout(mut self, duration: Duration) -> Self {
-            self.config.wait_for_pool_timeout = Some(duration);
-            self
-        }
-
-        pub fn maybe_with_wait_for_pool_timeout(mut self, duration: Option<Duration>) -> Self {
-            self.config.wait_for_pool_timeout = duration;
-            self
-        }
-
-        pub fn build<C, S>(
+    impl HttpPooledConnectorConfig {
+        pub fn build_connector<C, S>(
             self,
             inner: S,
         ) -> Result<
             PooledConnector<S, FiFoReuseLruDropPool<C, BasicHttpConId>, BasicHttpConnIdentifier>,
             OpaqueError,
         > {
-            let pool = FiFoReuseLruDropPool::new(self.config.max_active, self.config.max_total)?;
-            Ok(PooledConnector::new(inner, pool, BasicHttpConnIdentifier)
-                .maybe_with_wait_for_pool_timeout(self.config.wait_for_pool_timeout))
-        }
+            let pool = FiFoReuseLruDropPool::new(self.max_active, self.max_total)?
+                .maybe_with_idle_timeout(self.idle_timeout);
 
-        pub fn build_config(self) -> HttpPooledConnectorConfig {
-            self.config
+            Ok(PooledConnector::new(inner, pool, BasicHttpConnIdentifier)
+                .maybe_with_wait_for_pool_timeout(self.wait_for_pool_timeout))
         }
     }
 }
@@ -684,7 +744,7 @@ mod tests {
         convert::Infallible,
         sync::atomic::{AtomicI16, Ordering},
     };
-    use tokio_test::assert_err;
+    use tokio_test::{assert_err, assert_ok};
 
     struct TestService {
         pub created_connection: AtomicI16,
@@ -830,5 +890,130 @@ mod tests {
             .connect(Context::default(), String::from("aaa"))
             .await
             .unwrap();
+    }
+
+    #[derive(Default)]
+    struct TestConnector {
+        pub created_connection: AtomicI16,
+    }
+
+    impl<State, Request> Service<State, Request> for TestConnector
+    where
+        State: Clone + Send + Sync + 'static,
+        Request: Send + 'static,
+    {
+        type Response = EstablishedClientConnection<InnerService, State, Request>;
+        type Error = Infallible;
+
+        async fn serve(
+            &self,
+            ctx: Context<State>,
+            req: Request,
+        ) -> Result<Self::Response, Self::Error> {
+            let conn = InnerService::default();
+            self.created_connection.fetch_add(1, Ordering::Relaxed);
+            Ok(EstablishedClientConnection { ctx, req, conn })
+        }
+    }
+
+    #[derive(Default, Debug)]
+    struct InnerService {
+        should_error: AtomicBool,
+    }
+
+    impl<State> Service<State, bool> for InnerService
+    where
+        State: Clone + Send + Sync + 'static,
+    {
+        type Response = ();
+        type Error = OpaqueError;
+
+        async fn serve(
+            &self,
+            _ctx: Context<State>,
+            should_error: bool,
+        ) -> Result<Self::Response, Self::Error> {
+            // Once this service is broken it will stay in this state, similar to a closed tcp connection
+            if should_error {
+                self.should_error.store(true, Ordering::Relaxed);
+            }
+
+            if self.should_error.load(Ordering::Relaxed) {
+                Err(OpaqueError::from_display("service is in broken state"))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_dont_return_broken_connections_to_pool() {
+        let pool = FiFoReuseLruDropPool::new(1, 1).unwrap();
+        let svc = PooledConnector::new(TestConnector::default(), pool, StringRequestLengthID {});
+
+        let conn = svc
+            .connect(Context::default(), String::from(""))
+            .await
+            .unwrap();
+
+        let result = conn.conn.serve(Context::default(), false).await;
+        assert_ok!(result);
+        let result = conn.conn.serve(Context::default(), true).await;
+        assert_err!(result);
+
+        // this dropped connection should not return to the pool, otherwise it will be permanently broken
+        drop(conn);
+
+        let conn = svc
+            .connect(Context::default(), String::from(""))
+            .await
+            .unwrap();
+
+        let result = conn.conn.serve(Context::default(), false).await;
+        assert_ok!(result);
+
+        // this connection is not broken so it should return to the pool
+        drop(conn);
+
+        let conn = svc
+            .connect(Context::default(), String::from(""))
+            .await
+            .unwrap();
+
+        let result = conn.conn.serve(Context::default(), false).await;
+        assert_ok!(result);
+
+        assert_eq!(svc.inner.created_connection.load(Ordering::Relaxed), 2);
+    }
+
+    #[tokio::test]
+    async fn drop_idle_connections() {
+        let pool = FiFoReuseLruDropPool::new(5, 10)
+            .unwrap()
+            .with_idle_timeout(Duration::from_micros(1));
+
+        let svc = PooledConnector::new(TestService::default(), pool, StringRequestLengthID {});
+
+        let conn = svc
+            .connect(Context::default(), String::from(""))
+            .await
+            .unwrap()
+            .conn;
+
+        assert_eq!(svc.inner.created_connection.load(Ordering::Relaxed), 1);
+        drop(conn);
+        // Need for this to consistently work in ci, we only need this sleep here
+        // because we have a very very short idle timeout, this is never the problem
+        // if we use realistic values
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let conn = svc
+            .connect(Context::default(), String::from(""))
+            .await
+            .unwrap()
+            .conn;
+
+        assert_eq!(svc.inner.created_connection.load(Ordering::Relaxed), 2);
+        drop(conn);
     }
 }
