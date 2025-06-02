@@ -82,10 +82,11 @@ where
     }
 }
 
-/// Trait which used to detect if a connection is broken
-///
-/// If it is impossbile to detect if a connection is broken
-/// the default implemention should be used
-pub trait ConnectionHealth: Sized {
+/// Trait which used to chech the health of a connection
+pub trait ConnectionHealth {
+    /// Check if a connection is broken
+    ///
+    /// If a connection doesn't know if it is broken
+    /// it should return false.
     fn is_broken(&mut self) -> bool;
 }

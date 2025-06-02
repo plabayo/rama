@@ -238,7 +238,6 @@ where
             if let (Some(idx), Some(mut pooled_conn)) = (idx, pooled_conn) {
                 trace!(%idx, ?id, "fifo connection pool: connection found for given id");
                 let mut timeout_triggered = false;
-                let is_broken = pooled_conn.conn.is_broken();
 
                 if let Some(timeout) = self.idle_timeout {
                     if pooled_conn.last_used.elapsed() > timeout {
@@ -252,8 +251,8 @@ where
                     trace!(start_idx = ?idx, "fifo connection pool: idle timeout was triggered, dropping this connection and all older ones");
                     storage.drain(idx..);
                     break;
-                } else if is_broken {
-                    continue;
+                } else if pooled_conn.conn.is_broken() {
+                    trace!(start_idx = ?idx, "fifo connection pool: skipping and dropping broken connection");
                 } else {
                     return Ok(ConnectionResult::Connection(LeasedConnection {
                         active_slot,
