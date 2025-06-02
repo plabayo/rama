@@ -36,7 +36,7 @@ impl<S> Sse<S> {
     /// Configure the interval between keep-alive messages.
     ///
     /// Defaults to no keep-alive messages.
-    pub fn keep_alive<T, E>(self, keep_alive: KeepAlive<T>) -> Sse<KeepAliveStream<S, T>>
+    pub fn with_keep_alive<T, E>(self, keep_alive: KeepAlive<T>) -> Sse<KeepAliveStream<S, T>>
     where
         S: Stream<Item = Result<Event<T>, E>>,
         E: Into<BoxError>,

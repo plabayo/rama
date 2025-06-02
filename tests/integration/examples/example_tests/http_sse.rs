@@ -36,7 +36,7 @@ async fn test_http_sse() {
     let index_content = index_response.try_into_string().await.unwrap();
     assert!(index_content.contains("new EventSource('/api/events')"));
 
-    // test the atual stream content
+    // test the actual stream content
 
     let mut unique_events = HashSet::new();
     let mut event_count = 0;

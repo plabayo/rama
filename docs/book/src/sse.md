@@ -115,7 +115,7 @@ is also built on top of these foundations.
 With Rama you can:
 
 - Use `LastEventId` typed header on the server side to resume lost connections based on the last delivered ID;
-- Send data as Strings, structed Json or custom type implementations, all with automatic newline splitting;
+- Send data as Strings, structured Json or custom type implementations, all with automatic newline splitting;
 - Optionally implement your own **retry strategies** by extracting `retry` hints from events
 
 Since Rama’s stream model is async and composable, you can easily wrap event producers or consumers with middlewares that:

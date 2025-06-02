@@ -106,7 +106,7 @@ impl<T: EventDataWrite> KeepAlive<T> {
     generate_set_and_with! {
         /// Customize the event of the keep-alive message.
         ///
-        /// Default is an empty comment.
+        /// Default is an empty event.
         pub fn event(mut self, event: Event<T>) -> Self {
             self.event = event;
             self
