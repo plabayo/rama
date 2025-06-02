@@ -13,18 +13,19 @@ use tokio::time::{Sleep, sleep};
 pin_project! {
     /// Middleware that applies a timeout to request and response bodies.
     ///
-    /// Wrapper around a [`http_body::Body`] to time out if data is not ready within the specified duration.
+    /// Wrapper around a [`Body`][`http_body::Body`] to time out if data is not ready within the specified duration.
+    /// The timeout is enforced between consecutive [`Frame`][`http_body::Frame`] polls, and it
+    /// resets after each poll.
+    /// The total time to produce a [`Body`][`http_body::Body`] could exceed the timeout duration without
+    /// timing out, as long as no single interval between polls exceeds the timeout.
     ///
-    /// Bodies must produce data at most within the specified timeout.
-    /// If the body does not produce a requested data frame within the timeout period, it will return an error.
+    /// If the [`Body`][`http_body::Body`] does not produce a requested data frame within the timeout period, it will return a [`TimeoutError`].
     ///
     /// # Differences from [`Timeout`][crate::timeout::Timeout]
     ///
     /// [`Timeout`][crate::timeout::Timeout] applies a timeout to the request future, not body.
     /// That timeout is not reset when bytes are handled, whether the request is active or not.
     /// Bodies are handled asynchronously outside of the tower stack's future and thus needs an additional timeout.
-    ///
-    /// This middleware will return a [`TimeoutError`].
     ///
     /// # Example
     ///

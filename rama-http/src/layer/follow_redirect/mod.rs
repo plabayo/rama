@@ -104,6 +104,10 @@ pub mod policy;
 use crate::{Method, Request, Response, StatusCode, Uri, dep::http_body::Body, header::LOCATION};
 use iri_string::types::{UriAbsoluteString, UriReferenceStr};
 use rama_core::{Context, Layer, Service};
+use rama_http_types::{
+    HeaderMap,
+    header::{CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_TYPE, TRANSFER_ENCODING},
+};
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
 
@@ -238,7 +242,7 @@ where
         let mut method = req.method().clone();
         let mut uri = req.uri().clone();
         let version = req.version();
-        let headers = req.headers().clone();
+        let mut headers = req.headers().clone();
 
         let mut policy = self.policy.clone();
 
@@ -253,6 +257,17 @@ where
                 let mut res = service.serve(ctx.clone(), req).await?;
                 res.extensions_mut().insert(RequestUri(uri.clone()));
 
+                let drop_payload_headers = |headers: &mut HeaderMap| {
+                    for header in &[
+                        CONTENT_TYPE,
+                        CONTENT_LENGTH,
+                        CONTENT_ENCODING,
+                        TRANSFER_ENCODING,
+                    ] {
+                        headers.remove(header);
+                    }
+                };
+
                 match res.status() {
                     StatusCode::MOVED_PERMANENTLY | StatusCode::FOUND => {
                         // User agents MAY change the request method from POST to GET
@@ -260,6 +275,7 @@ where
                         if method == Method::POST {
                             method = Method::GET;
                             body = BodyRepr::Empty;
+                            drop_payload_headers(&mut headers);
                         }
                     }
                     StatusCode::SEE_OTHER => {
@@ -268,6 +284,7 @@ where
                             method = Method::GET;
                         }
                         body = BodyRepr::Empty;
+                        drop_payload_headers(&mut headers);
                     }
                     StatusCode::TEMPORARY_REDIRECT | StatusCode::PERMANENT_REDIRECT => {}
                     _ => return Ok(res),
