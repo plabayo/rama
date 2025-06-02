@@ -173,19 +173,19 @@ impl TlsConnectorDataBuilder {
 
     pub fn new_http_auto() -> Self {
         Self::new()
-            .with_rama_alpn_protos(&[ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11])
+            .try_with_rama_alpn_protos(&[ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11])
             .expect("with http2 and http1")
     }
 
     pub fn new_http_1() -> Self {
         Self::new()
-            .with_rama_alpn_protos(&[ApplicationProtocol::HTTP_11])
+            .try_with_rama_alpn_protos(&[ApplicationProtocol::HTTP_11])
             .expect("with http1")
     }
 
     pub fn new_http_2() -> Self {
         Self::new()
-            .with_rama_alpn_protos(&[ApplicationProtocol::HTTP_2])
+            .try_with_rama_alpn_protos(&[ApplicationProtocol::HTTP_2])
             .expect("with http 2")
     }
 

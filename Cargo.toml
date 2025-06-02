@@ -68,6 +68,7 @@ rust-version = "1.85.0"
 [workspace.dependencies]
 arc-swap = "1.7"
 async-compression = "0.4"
+async-stream = { version = "0.3", default-features = false }
 atomic-waker = "1.1"
 aws-lc-sys = { version = "0.28", features = ["bindgen"] }
 base64 = "0.22"
@@ -116,6 +117,7 @@ jemallocator = { package = "tikv-jemallocator", version = "0.6" }
 libfuzzer-sys = "0.4"
 matchit = "0.8"
 md5 = "0.7"
+memchr = "2.7"
 mimalloc = { version = "0.1", default-features = false }
 mime = "0.3.17"
 mime_guess = { version = "2", default-features = false }
@@ -198,6 +200,7 @@ tokio-rustls = { version = "0.26", default-features = false, features = [
     "tls12",
     "aws_lc_rs",
 ] }
+tokio-stream = "0.1"
 tokio-test = "0.4"
 tokio-util = "0.7"
 tower-layer = "0.3"
@@ -347,6 +350,7 @@ tracing = { workspace = true, optional = true }
 rustversion = { workspace = true }
 
 [dev-dependencies]
+async-stream = { workspace = true }
 bytes = { workspace = true }
 derive_more = { workspace = true, features = ["as_ref"] }
 divan = { workspace = true }
@@ -357,6 +361,7 @@ futures-util = { workspace = true }
 h2-support = { path = "rama-http-core/tests/h2-support" }
 http = { workspace = true }
 itertools = { workspace = true }
+itoa = { workspace = true }
 opentelemetry-otlp = { workspace = true, features = ["grpc-tonic"] }
 opentelemetry_sdk = { workspace = true }
 pin-project-lite = { workspace = true }
@@ -504,6 +509,14 @@ required-features = ["http-full"]
 
 [[example]]
 name = "http_web_service_dir_and_api"
+required-features = ["http-full"]
+
+[[example]]
+name = "http_sse"
+required-features = ["http-full"]
+
+[[example]]
+name = "http_sse_json"
 required-features = ["http-full"]
 
 [[example]]
