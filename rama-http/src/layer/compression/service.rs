@@ -205,7 +205,14 @@ where
 
         let (mut parts, body) = res.into_parts();
 
-        if should_compress {
+        if should_compress
+            && !parts.headers.get_all(header::VARY).iter().any(|value| {
+                contains_ignore_ascii_case(
+                    value.as_bytes(),
+                    header::ACCEPT_ENCODING.as_str().as_bytes(),
+                )
+            })
+        {
             parts
                 .headers
                 .append(header::VARY, header::ACCEPT_ENCODING.into());
@@ -265,4 +272,15 @@ where
         let res = Response::from_parts(parts, body);
         Ok(res)
     }
+}
+
+fn contains_ignore_ascii_case(mut haystack: &[u8], needle: &[u8]) -> bool {
+    while haystack.len() <= needle.len() {
+        if haystack[..needle.len()].eq_ignore_ascii_case(needle) {
+            return true;
+        }
+        haystack = &haystack[1..];
+    }
+
+    false
 }
