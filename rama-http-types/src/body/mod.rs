@@ -9,9 +9,18 @@ use futures_lite::stream::Stream;
 use pin_project_lite::pin_project;
 use rama_core::bytes::Bytes;
 use rama_error::{BoxError, OpaqueError};
+use sse::{EventDataRead, EventStream};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use sync_wrapper::SyncWrapper;
+
+mod limit;
+pub use limit::BodyLimit;
+
+mod ext;
+pub use ext::BodyExtractExt;
+
+pub mod sse;
 
 type BoxBody = http_body_util::combinators::BoxBody<Bytes, BoxError>;
 
@@ -86,6 +95,38 @@ impl Body {
     /// [`http_body_util::BodyStream`]: https://docs.rs/http-body-util/latest/http_body_util/struct.BodyStream.html
     pub fn into_data_stream(self) -> BodyDataStream {
         BodyDataStream { inner: self }
+    }
+
+    /// Convert the body into a [`Stream`] of [`sse::Event`]s.
+    ///
+    /// <https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events/Using_server-sent_events>.
+    pub fn into_event_stream<T: EventDataRead>(self) -> EventStream<BodyDataStream, T> {
+        EventStream::new(self.into_data_stream())
+    }
+
+    /// Convert the body into a [`Stream`] of [`sse::Event`]s with optional string data.
+    ///
+    /// <https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events/Using_server-sent_events>.
+    pub fn into_string_data_event_stream(self) -> EventStream<BodyDataStream> {
+        EventStream::new(self.into_data_stream())
+    }
+
+    /// Stream a chunk of the response body.
+    ///
+    /// When the response body has been exhausted, this will return `None`.
+    pub async fn chunk(&mut self) -> Result<Option<Bytes>, BoxError> {
+        // loop to ignore unrecognized frames
+        loop {
+            if let Some(res) = self.frame().await {
+                let frame = res?;
+                if let Ok(buf) = frame.into_data() {
+                    return Ok(Some(buf));
+                }
+                // else continue
+            } else {
+                return Ok(None);
+            }
+        }
     }
 }
 
