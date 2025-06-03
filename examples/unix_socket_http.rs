@@ -1,4 +1,4 @@
-//! TODO TODO TODO An example to show how to listen on a Unix (domain) socket,
+//! An example to show how to listen on a Unix (domain) socket,
 //! for incoming connections. This can be useful for "local" interactions
 //! with your public service or for a local-first service.
 //!
