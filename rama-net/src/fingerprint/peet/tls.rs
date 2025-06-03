@@ -7,7 +7,7 @@
 //! >   https://github.com/pagpeter/TrackMe
 //! >
 //! > Licensed under GPLv3.
-//! > See https://github.com/plabayo/rama/blob/peet-print/docs/thirdparty/licenses/pagpeter-trackme for license details.
+//! > See https://github.com/plabayo/rama/blob/main/docs/thirdparty/licenses/pagpeter-trackme for license details.
 
 use crate::fingerprint::ClientHelloProvider;
 use crate::tls::client::ClientHelloExtension;
@@ -123,23 +123,21 @@ impl PeetPrint {
         // Sorting integer IDs in lexicographical order
         sorted_extensions.sort_by_key(|&id| {
             if id.is_grease() {
-                return (1, Vec::<u8>::new());
+                return (1, [0xff; 5]);
             }
-            let n = u16::from(id);
-            let digits = {
-                let mut n = n;
-                let mut ds = Vec::new();
-
-                if n == 0 {
-                    ds.push(0);
-                }
+            let mut n = u16::from(id);
+            let mut digits = [0u8; 5];
+            let mut len = 0;
+            if n == 0 {
+                digits[0] = b'0';
+            } else {
                 while n > 0 {
-                    ds.push((n % 10) as u8);
+                    digits[len] = b'0' + (n % 10) as u8;
                     n /= 10;
+                    len += 1;
                 }
-                ds.reverse();
-                ds
-            };
+                digits[..len].reverse();
+            }
             (0, digits)
         });
 
@@ -199,7 +197,7 @@ impl PeetPrint {
         fn write_u16<W, T>(w: &mut W, items: &[T]) -> fmt::Result
         where
             W: fmt::Write,
-            T: Copy + Into<u16>,
+            T: Copy,
             u16: From<T>,
         {
             write_joined_with_cb(w, items, |w, t| write!(w, "{}", u16::from(*t)))
@@ -208,7 +206,7 @@ impl PeetPrint {
         fn write_u16_with_grease<W, T, F>(w: &mut W, items: &[T], is_grease: F) -> fmt::Result
         where
             W: fmt::Write,
-            T: Copy + Into<u16>,
+            T: Copy,
             F: Fn(&T) -> bool,
             u16: From<T>,
         {
@@ -239,6 +237,8 @@ impl PeetPrint {
 
         if let Some(mode) = self.psk_key_exchange_mode {
             write!(w, "{}|", mode)?;
+        } else {
+            write!(w, "|")?;
         }
 
         write_u16(w, &self.certificate_compression_algorithms)?;
