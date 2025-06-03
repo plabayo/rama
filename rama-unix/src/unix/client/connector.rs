@@ -62,7 +62,7 @@ impl<T> UnixConnector<(), T> {
         connector: Connector,
     ) -> UnixConnector<UnixStreamConnectorCloneFactory<Connector>, T>
 where {
-        UnixConnector::<UnixStreamConnectorCloneFactory<Connector>, T> {
+        UnixConnector {
             connector_factory: UnixStreamConnectorCloneFactory(connector),
             target: self.target,
         }
@@ -71,7 +71,7 @@ where {
     /// Consume `self` to attach the given `Factory` (a [`UnixStreamConnectorFactory`]) as a new [`UnixConnector`].
     pub fn with_connector_factory<Factory>(self, factory: Factory) -> UnixConnector<Factory, T>
 where {
-        UnixConnector::<Factory, T> {
+        UnixConnector {
             connector_factory: factory,
             target: self.target,
         }
@@ -126,7 +126,7 @@ where
 
 /// Trait used by the `UnixConnector`
 /// to actually establish the [`UnixStream`].
-pub trait UnixStreamConnector: Clone + Send + Sync + 'static {
+pub trait UnixStreamConnector: Send + Sync + 'static {
     /// Type of error that can occurr when establishing the connection failed.
     type Error;
 

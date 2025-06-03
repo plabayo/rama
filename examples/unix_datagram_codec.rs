@@ -95,7 +95,7 @@ mod unix_example {
     ) -> Result<(), io::Error> {
         socket.send((Bytes::from(&b"PING"[..]), b_addr)).await?;
 
-        for _ in 0..4usize {
+        for _ in 0..4 {
             let (bytes, addr) = socket.next().map(|e| e.unwrap()).await?;
 
             println!("[a] recv: {}", String::from_utf8_lossy(&bytes));

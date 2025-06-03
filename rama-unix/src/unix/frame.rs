@@ -148,7 +148,7 @@ where
 
         let n = ready!(match out_addr.as_ref().and_then(|a| a.as_pathname()) {
             Some(path) => socket.borrow().poll_send_to(cx, wr, path),
-            None => socket.borrow().poll_send(cx, wr,),
+            None => socket.borrow().poll_send(cx, wr),
         })?;
 
         let wrote_all = n == self.wr.len();
