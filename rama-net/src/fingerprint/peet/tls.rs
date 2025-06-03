@@ -150,7 +150,7 @@ impl PeetPrint {
 
 struct Md5Writer<'a>(&'a mut md5::Context);
 
-impl<'a> fmt::Write for Md5Writer<'a> {
+impl fmt::Write for Md5Writer<'_> {
     fn write_str(&mut self, s: &str) -> fmt::Result {
         self.0.consume(s.as_bytes());
         Ok(())
@@ -461,18 +461,18 @@ mod tests {
                 parse_client_hello(&test_case.client_hello).expect(test_case.pcap),
             ));
 
-            let ja4 = PeetPrint::compute(&ext).expect(test_case.pcap);
+            let peet = PeetPrint::compute(&ext).expect(test_case.pcap);
 
             assert_eq!(
                 test_case.expected_peet_str,
-                format!("{ja4:?}"),
+                format!("{peet:?}"),
                 "pcap: {}",
                 test_case.pcap,
             );
 
             assert_eq!(
                 test_case.expected_peet_hash,
-                format!("{ja4}"),
+                format!("{peet}"),
                 "pcap: {}",
                 test_case.pcap,
             );
