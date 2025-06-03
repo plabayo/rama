@@ -48,7 +48,7 @@
 //!
 //! | category | support list |
 //! |-|-|
-//! | ✅ [transports](crate::net::stream) | ✅ [tcp] ⸱ ✅ [udp] ⸱ ✅ [middleware](crate::net::stream::layer) |
+//! | ✅ [transports](crate::net::stream) | ✅ [tcp] ⸱ ✅ [udp] ⸱ ✅ [Unix (UDS)][unix] ⸱ ✅ [middleware](crate::net::stream::layer) |
 //! | ✅ [http] | ✅ [auto](crate::http::server::service::HttpServer::auto) ⸱ ✅ [http/1.1](crate::http::server::service::HttpServer::http1) ⸱ ✅ [h2](crate::http::server::service::HttpServer::h2) ⸱ 🏗️ h3 <sup>(2)</sup> ⸱ ✅ [middleware](crate::http::layer) |
 //! | ✅ web server | ✅ [fs](crate::http::service::fs) ⸱ ✅ [redirect](crate::http::service::redirect::Redirect) ⸱ ✅ [router](crate::http::service::web::Router) ⸱ ✅ [dyn router](crate::http::service::web::WebService) ⸱ ✅ [static router](crate::http::service::web::match_service) ⸱ ✅ [handler extractors](crate::http::service::web::extract) ⸱ ✅ [k8s healthcheck](crate::http::service::web::k8s) |
 //! | ✅ [http client](crate::http::client) | ✅ [easy client](crate::http::client::EasyHttpWebClient) ⸱ ✅ [high level API](crate::http::service::client::HttpClientExt) ⸱ ✅ [Proxy Connect](crate::http::client::proxy::layer::HttpProxyConnector) ⸱ ❌ [Chromium Http](https://github.com/plabayo/rama/issues/189) <sup>(3)</sup> |
@@ -180,6 +180,7 @@
 //!   context used by all other `rama` code, as well as some other _core_ utilities
 //! - [`rama-net`](https://crates.io/crates/rama-net): rama network types and utilities
 //! - [`rama-dns`](https://crates.io/crates/rama-dns): DNS support for rama
+//! - [`rama-unix`](https://crates.io/crates/rama-unix): Unix (domain) socket support for rama
 //! - [`rama-tcp`](https://crates.io/crates/rama-tcp): TCP support for rama
 //! - [`rama-udp`](https://crates.io/crates/rama-udp): UDP support for rama
 //! - [`rama-tls-boring`](https://crates.io/crates/rama-tls-boring): [Boring](https://github.com/plabayo/rama-boring) tls support for rama
@@ -365,6 +366,10 @@ pub use ::rama_core::{
     Context, Layer, Service, bytes, combinators, context, error, graceful, inspect, layer, matcher,
     rt, service, username,
 };
+
+#[cfg(all(unix, feature = "net"))]
+#[doc(inline)]
+pub use ::rama_unix as unix;
 
 #[cfg(feature = "tcp")]
 #[doc(inline)]

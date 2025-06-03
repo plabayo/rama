@@ -59,6 +59,13 @@ mod tls_sni_router;
 #[cfg(feature = "udp")]
 mod udp_codec;
 
+#[cfg(all(feature = "net", unix))]
+mod unix_datagram_codec;
+#[cfg(all(feature = "net", unix))]
+mod unix_socket;
+#[cfg(all(feature = "net", feature = "http-full", unix))]
+mod unix_socket_http;
+
 #[cfg(all(feature = "boring", feature = "http-full"))]
 mod tls_boring_dynamic_certs;
 
