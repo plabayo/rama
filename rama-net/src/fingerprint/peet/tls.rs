@@ -196,6 +196,15 @@ impl PeetPrint {
             write_joined_with_cb(w, items, |w, t| write!(w, "{}", t))
         }
 
+        fn write_u16<W, T>(w: &mut W, items: &[T]) -> fmt::Result
+        where
+            W: fmt::Write,
+            T: Copy + Into<u16>,
+            u16: From<T>,
+        {
+            write_joined_with_cb(w, items, |w, t| write!(w, "{}", u16::from(*t)))
+        }
+
         fn write_u16_with_grease<W, T, F>(w: &mut W, items: &[T], is_grease: F) -> fmt::Result
         where
             W: fmt::Write,
@@ -232,11 +241,7 @@ impl PeetPrint {
             write!(w, "{}|", mode)?;
         }
 
-        write_u16_with_grease(
-            w,
-            &self.certificate_compression_algorithms,
-            CertificateCompressionAlgorithm::is_grease,
-        )?;
+        write_u16(w, &self.certificate_compression_algorithms)?;
         write!(w, "|")?;
 
         write_u16_with_grease(w, &self.cipher_suites, CipherSuite::is_grease)?;
