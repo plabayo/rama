@@ -77,17 +77,19 @@ impl TcpStreamConnector for SocketAddress {
 
     async fn connect(&self, addr: SocketAddr) -> Result<TcpStream, Self::Error> {
         let bind_addr = *self;
-        tokio::task::spawn_blocking(move || {
-            tcp_connect_with_socket_opts(
-                &SocketOptions {
-                    address: Some(bind_addr),
-                    ..SocketOptions::default_tcp()
-                },
-                addr,
-            )
-        })
-        .await
-        .context("wait for blocking tcp bind using provided Socket Address")?
+        let opts = match bind_addr.ip_addr() {
+            IpAddr::V4(_ip) => SocketOptions {
+                address: Some(bind_addr),
+                ..SocketOptions::default_tcp()
+            },
+            IpAddr::V6(_ip) => SocketOptions {
+                address: Some(bind_addr),
+                ..SocketOptions::default_tcp_v6()
+            },
+        };
+        tokio::task::spawn_blocking(move || tcp_connect_with_socket_opts(&opts, addr))
+            .await
+            .context("wait for blocking tcp bind using provided Socket Address")?
     }
 }
 
