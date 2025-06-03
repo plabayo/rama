@@ -94,16 +94,6 @@ macro_rules! __enum_builder {
             ,Unknown(u16)
         }
 
-        impl $enum_name {
-            /// returns true if this id is a grease object
-            $enum_vis fn is_grease(&self) -> bool {
-                match self {
-                    $enum_name::Unknown(x) if x & 0x0f0f == 0x0a0a => true,
-                    _ => false,
-                }
-            }
-        }
-
         impl From<u16> for $enum_name {
             fn from(x: u16) -> Self {
                 match x {
