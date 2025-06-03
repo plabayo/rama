@@ -4,6 +4,20 @@
 use rama_core::error::OpaqueError;
 use rama_utils::macros::enums::enum_builder;
 
+macro_rules! impl_u16_is_grease {
+    ($enum_name:ident) => {
+        impl $enum_name {
+            /// returns true if this id is a (tls) grease object
+            pub fn is_grease(&self) -> bool {
+                match self {
+                    $enum_name::Unknown(x) if x & 0x0f0f == 0x0a0a => true,
+                    _ => false,
+                }
+            }
+        }
+    };
+}
+
 enum_builder! {
     /// The `ProtocolVersion` TLS protocol enum.  Values in this enum are taken
     /// from the various RFCs covering TLS, and are listed by IANA.
@@ -21,6 +35,8 @@ enum_builder! {
         DTLSv1_3 => 0xFEFC,
     }
 }
+
+impl_u16_is_grease!(ProtocolVersion);
 
 enum_builder! {
     /// The `CipherSuite` TLS protocol enum.  Values in this enum are taken
@@ -430,6 +446,8 @@ enum_builder! {
     }
 }
 
+impl_u16_is_grease!(CipherSuite);
+
 enum_builder! {
     /// The `SignatureScheme` TLS protocol enum.  Values in this enum are taken
     /// from the various RFCs covering TLS, and are listed by IANA.
@@ -479,6 +497,8 @@ enum_builder! {
         RSA_PKCS1_MD5_SHA1 => 0xff01,
     }
 }
+
+impl_u16_is_grease!(SignatureScheme);
 
 enum_builder! {
     /// The `ExtensionId` enum.  Values in this enum are taken
@@ -553,6 +573,8 @@ enum_builder! {
         RENEGOTIATION_INFO => 65281,
     }
 }
+
+impl_u16_is_grease!(ExtensionId);
 
 enum_builder! {
     /// The `CompressionAlgorithm` TLS protocol enum.  Values in this enum are taken
@@ -635,6 +657,8 @@ enum_builder! {
         ARBITRARY_EXPLICIT_CHAR2_CURVES => 0xff02,
     }
 }
+
+impl_u16_is_grease!(SupportedGroup);
 
 enum_builder! {
     /// The Application Layer Negotiation Protocol (ALPN) identifiers
