@@ -305,7 +305,7 @@ impl fmt::Display for PeetComputeError {
             PeetComputeError::MissingClientHello => write!(f, "PeetPrint: missing client hello"),
             PeetComputeError::EmptyCipherSuites => write!(f, "PeetPrint: no cipher suites found"),
             PeetComputeError::InvalidTlsVersion => {
-                write!(f, "Ja4 Compute Error: invalid tls version")
+                write!(f, "Peet Compute Error: invalid tls version")
             }
         }
     }
