@@ -89,6 +89,9 @@ This directory contains example implementations demonstrating various features a
 - [`tcp_listener_hello.rs`](./tcp_listener_hello.rs) - Basic TCP listener example
 - [`tcp_listener_layers.rs`](./tcp_listener_layers.rs) - TCP listener with layers
 - [`udp_codec.rs`](./udp_codec.rs) - UDP codec implementation
+- [`unix_socket.rs`](./unix_socket.rs) - Unix socket server (listener) demonstration of accepting and handling incoming streams
+- [`unix_socket_http.rs`](./unix_socket_http.rs) - Serving HTTP over a unix socket, which is a fast and easy local-first solution
+- [`unix_datagram_codec.rs`](./unix_datagram_codec.rs) - Unix datagram, frame demonstration via bytes codec
 
 ## Tower
 - [`http_rama_tower.rs`](./http_rama_tower.rs) - How to integrate tower into your rama HTTP stack
