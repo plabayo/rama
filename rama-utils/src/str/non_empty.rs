@@ -1,5 +1,3 @@
-//! String utility types.
-
 use std::{borrow::Cow, fmt};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
