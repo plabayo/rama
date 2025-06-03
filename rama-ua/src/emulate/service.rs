@@ -25,9 +25,10 @@ use rama_net::{
     address::{Authority, Host},
     http::RequestContext,
 };
+use rama_utils::str::{starts_with_ignore_ascii_case, submatch_ignore_ascii_case};
 
-use crate::{HttpAgent, UserAgent, contains_ignore_ascii_case, starts_with_ignore_ascii_case};
 use crate::{
+    HttpAgent, UserAgent,
     emulate::SelectedUserAgentProfile,
     profile::{
         CUSTOM_HEADER_MARKER, HttpHeadersProfile, HttpProfile, PreserveHeaderUserAgent,
@@ -615,7 +616,7 @@ fn headers_contains_partial_value(headers: &HeaderMap, name: &HeaderName, value:
     headers
         .get(name)
         .and_then(|value| value.to_str().ok())
-        .map(|s| contains_ignore_ascii_case(s, value).is_some())
+        .map(|s| submatch_ignore_ascii_case(s, value))
         .unwrap_or_default()
 }
 
