@@ -409,10 +409,10 @@ mod easy_connector {
             L: Layer<T>,
         {
             let connector = connector_layer.into_layer(self.connector);
-            
+
             let connector =
                 HttpConnector::new(connector).with_jit_req_inspector(HttpsAlpnModifier::default());
-            
+
             EasyHttpWebClientBuilder {
                 connector,
                 _phantom: PhantomData,
