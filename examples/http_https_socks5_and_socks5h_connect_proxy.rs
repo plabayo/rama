@@ -8,17 +8,17 @@
 //!
 //! # Expected output
 //!
-//! The server will start and listen on `:62023`. You can use `curl` to interact with the service:
+//! The server will start and listen on `:62029`. You can use `curl` to interact with the service:
 //!
 //! ```sh
-//! curl -v -x http://127.0.0.1:62023 --proxy-user 'tom:clancy' http://api64.ipify.org/
-//! curl -v -x http://127.0.0.1:62023 --proxy-user 'tom:clancy' https://api64.ipify.org/
-//! curl --proxy-insecure -v -x https://127.0.0.1:62023 --proxy-user 'tom:clancy' http://api64.ipify.org/
-//! curl --proxy-insecure -v -x https://127.0.0.1:62023 --proxy-user 'tom:clancy' https://api64.ipify.org/
-//! curl -v -x socks5://127.0.0.1:62023 --proxy-user 'john:secret' http://api64.ipify.org/
-//! curl -v -x socks5h://127.0.0.1:62023 --proxy-user 'john:secret' https://api64.ipify.org/
-//! curl -v -x socks5://127.0.0.1:62023 --proxy-user 'john:secret' http://api64.ipify.org/
-//! curl -v -x socks5h://127.0.0.1:62023 --proxy-user 'john:secret' https://api64.ipify.org/
+//! curl -v -x http://127.0.0.1:62029 --proxy-user 'tom:clancy' http://api64.ipify.org/
+//! curl -v -x http://127.0.0.1:62029 --proxy-user 'tom:clancy' https://api64.ipify.org/
+//! curl --proxy-insecure -v -x https://127.0.0.1:62029 --proxy-user 'tom:clancy' http://api64.ipify.org/
+//! curl --proxy-insecure -v -x https://127.0.0.1:62029 --proxy-user 'tom:clancy' https://api64.ipify.org/
+//! curl -v -x socks5://127.0.0.1:62029 --proxy-user 'john:secret' http://api64.ipify.org/
+//! curl -v -x socks5h://127.0.0.1:62029 --proxy-user 'john:secret' https://api64.ipify.org/
+//! curl -v -x socks5://127.0.0.1:62029 --proxy-user 'john:secret' http://api64.ipify.org/
+//! curl -v -x socks5h://127.0.0.1:62029 --proxy-user 'john:secret' https://api64.ipify.org/
 //! ```
 //!
 //! You should see in all the above examples the responses from the server.
@@ -113,9 +113,9 @@ async fn main() {
         .build()
     };
 
-    let tcp_service = TcpListener::bind("127.0.0.1:62023")
+    let tcp_service = TcpListener::bind("127.0.0.1:62029")
         .await
-        .expect("bind http+https+socks5+socks5h proxy to 127.0.0.1:62023");
+        .expect("bind http+https+socks5+socks5h proxy to 127.0.0.1:62029");
 
     let socks5_acceptor =
         Socks5Acceptor::default().with_auth(Socks5Auth::username_password("john", "secret"));
