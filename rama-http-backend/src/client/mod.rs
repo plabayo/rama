@@ -167,7 +167,7 @@ pub use easy_connector::EasyHttpWebClientBuilder;
 mod easy_connector {
     use super::{HttpConnector, proxy::layer::HttpProxyConnector};
     use rama_core::{
-        Service,
+        Layer, Service,
         error::{BoxError, OpaqueError},
     };
     use rama_dns::DnsResolver;
@@ -245,20 +245,22 @@ mod easy_connector {
         }
     }
 
-    impl<C> EasyHttpWebClientBuilder<C, TransportStage> {
+    impl<T> EasyHttpWebClientBuilder<T, TransportStage> {
         /// Add a custom proxy tls connector that will be used to setup a tls connection to the proxy
-        pub fn with_custom_tls_proxy_connector(
+        pub fn with_custom_tls_proxy_connector<L>(
             self,
-            connector: C,
-        ) -> EasyHttpWebClientBuilder<C, ProxyTunnelStage> {
+            connector_layer: L,
+        ) -> EasyHttpWebClientBuilder<L::Service, ProxyTunnelStage>
+        where
+            L: Layer<T>,
+        {
+            let connector = connector_layer.into_layer(self.connector);
             EasyHttpWebClientBuilder {
                 connector,
                 _phantom: PhantomData,
             }
         }
-    }
 
-    impl<T> EasyHttpWebClientBuilder<T, TransportStage> {
         #[cfg(feature = "boring")]
         /// Support a tls tunnel to the proxy itself using boringssl
         ///
@@ -354,20 +356,21 @@ mod easy_connector {
         }
     }
 
-    impl<C> EasyHttpWebClientBuilder<C, ProxyTunnelStage> {
+    impl<T> EasyHttpWebClientBuilder<T, ProxyTunnelStage> {
         /// Add a custom proxy connector that will be used by this client
-        pub fn with_custom_proxy_connector(
+        pub fn with_custom_proxy_connector<L>(
             self,
-            connector: C,
-        ) -> EasyHttpWebClientBuilder<C, ProxyStage> {
+            connector: L,
+        ) -> EasyHttpWebClientBuilder<L, ProxyStage>
+        where
+            L: Layer<T>,
+        {
             EasyHttpWebClientBuilder {
                 connector,
                 _phantom: PhantomData,
             }
         }
-    }
 
-    impl<T> EasyHttpWebClientBuilder<T, ProxyTunnelStage> {
         /// Add support for usage of a http proxy to this client
         ///
         /// Note that a tls proxy is not needed to make a https connection
@@ -395,20 +398,21 @@ mod easy_connector {
         }
     }
 
-    impl<C> EasyHttpWebClientBuilder<C, ProxyStage> {
+    impl<T> EasyHttpWebClientBuilder<T, ProxyStage> {
         /// Add a custom tls connector that will be used by the client
-        pub fn with_custom_tls_connector(
+        pub fn with_custom_tls_connector<L>(
             self,
-            connector: C,
-        ) -> EasyHttpWebClientBuilder<C, HttpStage> {
+            connector: L,
+        ) -> EasyHttpWebClientBuilder<L, HttpStage>
+        where
+            L: Layer<T>,
+        {
             EasyHttpWebClientBuilder {
                 connector,
                 _phantom: PhantomData,
             }
         }
-    }
 
-    impl<T> EasyHttpWebClientBuilder<T, ProxyStage> {
         #[cfg(feature = "boring")]
         /// Support https connections by using boringssl for tls
         ///
