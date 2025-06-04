@@ -246,6 +246,7 @@ mod easy_connector {
     }
 
     impl<T> EasyHttpWebClientBuilder<T, TransportStage> {
+        #[cfg(any(feature = "rustls", feature = "boring"))]
         /// Add a custom proxy tls connector that will be used to setup a tls connection to the proxy
         pub fn with_custom_tls_proxy_connector<L>(
             self,
@@ -400,6 +401,7 @@ mod easy_connector {
     }
 
     impl<T> EasyHttpWebClientBuilder<T, ProxyStage> {
+        #[cfg(any(feature = "rustls", feature = "boring"))]
         /// Add a custom tls connector that will be used by the client
         pub fn with_custom_tls_connector<L>(
             self,
