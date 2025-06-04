@@ -404,7 +404,7 @@ mod easy_connector {
         pub fn with_custom_tls_connector<L>(
             self,
             connector_layer: L,
-        ) -> EasyHttpWebClientBuilder<L::Service, HttpStage>
+        ) -> EasyHttpWebClientBuilder<HttpConnector<L::Service, HttpsAlpnModifier>, HttpStage>
         where
             L: Layer<T>,
         {
