@@ -319,25 +319,24 @@ pub(super) async fn post_api_fetch_number(
         .await
         .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()).into_response())?;
 
-    if ctx.contains::<crate::fp::StorageAuthorized>() {
-        if let Some(storage) = ctx.state().storage.as_ref() {
-            if let Some(js_web_apis) = request.js_web_apis.clone() {
-                storage
-                    .store_js_web_apis(user_agent.clone(), js_web_apis)
-                    .await
-                    .map_err(|err| {
-                        (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response()
-                    })?;
-            }
+    if let Some(storage) = ctx.state().storage.as_ref() {
+        let auth = ctx.contains::<crate::fp::StorageAuthorized>();
+        if let Some(js_web_apis) = request.js_web_apis.clone() {
+            storage
+                .store_js_web_apis(user_agent.clone(), auth, js_web_apis)
+                .await
+                .map_err(|err| {
+                    (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response()
+                })?;
+        }
 
-            if let Some(source_info) = request.source_info.clone() {
-                storage
-                    .store_source_info(user_agent.clone(), source_info)
-                    .await
-                    .map_err(|err| {
-                        (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response()
-                    })?;
-            }
+        if let Some(source_info) = request.source_info.clone() {
+            storage
+                .store_source_info(user_agent.clone(), auth, source_info)
+                .await
+                .map_err(|err| {
+                    (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response()
+                })?;
         }
     }
 
