@@ -360,11 +360,12 @@ mod easy_connector {
         /// Add a custom proxy connector that will be used by this client
         pub fn with_custom_proxy_connector<L>(
             self,
-            connector: L,
+            connector_layer: L,
         ) -> EasyHttpWebClientBuilder<L::Service, ProxyStage>
         where
-            L: Layer<T, Service = L>,
+            L: Layer<T>,
         {
+            let connector = connector_layer.into_layer(self.connector);
             EasyHttpWebClientBuilder {
                 connector,
                 _phantom: PhantomData,
@@ -402,11 +403,12 @@ mod easy_connector {
         /// Add a custom tls connector that will be used by the client
         pub fn with_custom_tls_connector<L>(
             self,
-            connector: L,
+            connector_layer: L,
         ) -> EasyHttpWebClientBuilder<L::Service, HttpStage>
         where
-            L: Layer<T, Service = L>,
+            L: Layer<T>,
         {
+            let connector = connector_layer.into_layer(self.connector);
             EasyHttpWebClientBuilder {
                 connector,
                 _phantom: PhantomData,
