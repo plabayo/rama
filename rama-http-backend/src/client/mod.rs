@@ -361,7 +361,7 @@ mod easy_connector {
         pub fn with_custom_proxy_connector<L>(
             self,
             connector: L,
-        ) -> EasyHttpWebClientBuilder<L, ProxyStage>
+        ) -> EasyHttpWebClientBuilder<L::Service, ProxyStage>
         where
             L: Layer<T>,
         {
@@ -403,7 +403,7 @@ mod easy_connector {
         pub fn with_custom_tls_connector<L>(
             self,
             connector: L,
-        ) -> EasyHttpWebClientBuilder<L, HttpStage>
+        ) -> EasyHttpWebClientBuilder<L::Service, HttpStage>
         where
             L: Layer<T>,
         {
