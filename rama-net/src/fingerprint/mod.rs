@@ -10,6 +10,12 @@ pub use ja4::{Ja4H, Ja4HComputeError};
 pub use ja4::{Ja4, Ja4ComputeError};
 
 #[cfg(feature = "tls")]
+mod peet;
+
+#[cfg(feature = "tls")]
+pub use peet::{PeetComputeError, PeetPrint};
+
+#[cfg(feature = "tls")]
 mod ja3;
 
 #[cfg(feature = "tls")]

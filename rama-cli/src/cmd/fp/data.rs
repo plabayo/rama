@@ -13,7 +13,7 @@ use rama::{
         },
     },
     net::{
-        fingerprint::{Ja3, Ja4, Ja4H},
+        fingerprint::{Ja3, Ja4, Ja4H, PeetPrint},
         http::RequestContext,
         stream::SocketInfo,
         tls::{
@@ -357,6 +357,7 @@ pub(super) async fn get_and_store_http_info(
 pub(super) struct TlsDisplayInfo {
     pub(super) ja4: Ja4DisplayInfo,
     pub(super) ja3: Ja3DisplayInfo,
+    pub(super) peet: PeetDisplayInfo,
     pub(super) protocol_version: String,
     pub(super) cipher_suites: Vec<String>,
     pub(super) compression_algorithms: Vec<String>,
@@ -371,6 +372,12 @@ pub(super) struct Ja4DisplayInfo {
 
 #[derive(Debug, Clone, Serialize)]
 pub(super) struct Ja3DisplayInfo {
+    pub(super) full: String,
+    pub(super) hash: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(super) struct PeetDisplayInfo {
     pub(super) full: String,
     pub(super) hash: String,
 }
@@ -410,6 +417,7 @@ pub(super) async fn get_tls_display_info_and_store(
 
     let ja4 = Ja4::compute(ctx.extensions()).context("ja4 compute")?;
     let ja3 = Ja3::compute(ctx.extensions()).context("ja3 compute")?;
+    let peet = PeetPrint::compute(ctx.extensions()).context("peet print compute")?;
 
     Ok(Some(TlsDisplayInfo {
         ja4: Ja4DisplayInfo {
@@ -419,6 +427,10 @@ pub(super) async fn get_tls_display_info_and_store(
         ja3: Ja3DisplayInfo {
             full: format!("{ja3}"),
             hash: format!("{ja3:x}"),
+        },
+        peet: PeetDisplayInfo {
+            full: format!("{peet:?}"),
+            hash: format!("{peet}"),
         },
         protocol_version: hello.protocol_version().to_string(),
         cipher_suites: hello
