@@ -3,7 +3,7 @@
 //! # Run the example
 //!
 //! ```sh
-//! cargo run --example http_https_socks5_and_socks5h_connect_proxy --features=dns,socks5,http-full,borinng
+//! cargo run --example http_https_socks5_and_socks5h_connect_proxy --features=dns,socks5,http-full,boring
 //! ```
 //!
 //! # Expected output
@@ -54,13 +54,15 @@ use rama::{
     rt::Executor,
     service::service_fn,
     tcp::{client::service::Forwarder, server::TcpListener},
-    tls::boring::server::TlsAcceptorService,
 };
 
 #[cfg(feature = "boring")]
-use rama::net::tls::{
-    ApplicationProtocol,
-    server::{ServerAuth, ServerConfig},
+use rama::{
+    net::tls::{
+        ApplicationProtocol,
+        server::{ServerAuth, ServerConfig},
+    },
+    tls::boring::server::TlsAcceptorService,
 };
 
 #[cfg(all(feature = "rustls", not(feature = "boring")))]
@@ -76,7 +78,7 @@ async fn main() {
         .with(fmt::layer())
         .with(
             EnvFilter::builder()
-                .with_default_directive(LevelFilter::TRACE.into())
+                .with_default_directive(LevelFilter::DEBUG.into())
                 .from_env_lossy(),
         )
         .init();
