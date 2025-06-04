@@ -110,6 +110,7 @@ where
                 .into_shared_builder();
 
             EasyHttpWebClient::builder()
+                .with_default_transport_connector()
                 .with_tls_proxy_support_using_boringssl_config(proxy_tls_config)
                 .with_proxy_support()
                 .with_tls_support_using_boringssl(Some(tls_config))
@@ -133,6 +134,7 @@ where
                 .build();
 
             EasyHttpWebClient::builder()
+                .with_default_transport_connector()
                 .with_tls_proxy_support_using_rustls_config(proxy_tls_config)
                 .with_proxy_support()
                 .with_tls_support_using_rustls(Some(tls_config))

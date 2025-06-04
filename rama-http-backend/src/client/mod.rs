@@ -54,7 +54,7 @@ impl<State, BodyIn, ConnResponse> Clone for EasyHttpWebClient<State, BodyIn, Con
 
 impl EasyHttpWebClient<(), (), ()> {
     /// Create a [`EasyHttpWebClientBuilder`] to easily create a [`EasyHttpWebClient`]
-    pub fn builder() -> easy_connector::NewBuilder {
+    pub fn builder() -> EasyHttpWebClientBuilder {
         EasyHttpWebClientBuilder::new()
     }
 }
@@ -75,6 +75,7 @@ where
             rama_tls_boring::client::TlsConnectorDataBuilder::new_http_auto().into_shared_builder();
 
         EasyHttpWebClientBuilder::new()
+            .with_default_transport_connector()
             .with_tls_proxy_support_using_boringssl()
             .with_proxy_support()
             .with_tls_support_using_boringssl(Some(tls_config))
@@ -87,6 +88,7 @@ where
             .expect("connector data with http auto");
 
         EasyHttpWebClientBuilder::new()
+            .with_default_transport_connector()
             .with_tls_proxy_support_using_rustls()
             .with_proxy_support()
             .with_tls_support_using_rustls(Some(tls_config))
@@ -96,6 +98,7 @@ where
     #[cfg(not(any(feature = "rustls", feature = "boring")))]
     fn default() -> Self {
         EasyHttpWebClientBuilder::new()
+            .with_default_transport_connector()
             .without_tls_proxy_support()
             .with_proxy_support()
             .without_tls_support()
@@ -164,7 +167,7 @@ pub use easy_connector::EasyHttpWebClientBuilder;
 mod easy_connector {
     use super::{HttpConnector, proxy::layer::HttpProxyConnector};
     use rama_core::{
-        Service,
+        Layer, Service,
         error::{BoxError, OpaqueError},
     };
     use rama_dns::DnsResolver;
@@ -189,7 +192,8 @@ mod easy_connector {
     use super::http_inspector::HttpsAlpnModifier;
 
     /// Builder that is designed to easily create a [`super::EasyHttpWebClient`] from most basic use cases
-    pub struct EasyHttpWebClientBuilder<C, S> {
+    #[derive(Default)]
+    pub struct EasyHttpWebClientBuilder<C = (), S = ()> {
         connector: C,
         _phantom: PhantomData<S>,
     }
@@ -200,12 +204,28 @@ mod easy_connector {
     pub struct HttpStage;
     pub struct PoolStage;
 
-    pub(super) type NewBuilder = EasyHttpWebClientBuilder<TcpConnector, TransportStage>;
+    impl EasyHttpWebClientBuilder {
+        pub fn new() -> Self {
+            EasyHttpWebClientBuilder::default()
+        }
 
-    impl EasyHttpWebClientBuilder<(), ()> {
-        pub fn new() -> NewBuilder {
+        pub fn with_default_transport_connector(
+            self,
+        ) -> EasyHttpWebClientBuilder<TcpConnector, TransportStage> {
+            let connector = TcpConnector::default();
             EasyHttpWebClientBuilder {
-                connector: TcpConnector::new(),
+                connector,
+                _phantom: PhantomData,
+            }
+        }
+
+        /// Add a custom transport connector that will be used by this client for the transport layer
+        pub fn with_custom_transport_connector<C>(
+            self,
+            connector: C,
+        ) -> EasyHttpWebClientBuilder<C, TransportStage> {
+            EasyHttpWebClientBuilder {
+                connector,
                 _phantom: PhantomData,
             }
         }
@@ -226,6 +246,22 @@ mod easy_connector {
     }
 
     impl<T> EasyHttpWebClientBuilder<T, TransportStage> {
+        #[cfg(any(feature = "rustls", feature = "boring"))]
+        /// Add a custom proxy tls connector that will be used to setup a tls connection to the proxy
+        pub fn with_custom_tls_proxy_connector<L>(
+            self,
+            connector_layer: L,
+        ) -> EasyHttpWebClientBuilder<L::Service, ProxyTunnelStage>
+        where
+            L: Layer<T>,
+        {
+            let connector = connector_layer.into_layer(self.connector);
+            EasyHttpWebClientBuilder {
+                connector,
+                _phantom: PhantomData,
+            }
+        }
+
         #[cfg(feature = "boring")]
         /// Support a tls tunnel to the proxy itself using boringssl
         ///
@@ -322,6 +358,21 @@ mod easy_connector {
     }
 
     impl<T> EasyHttpWebClientBuilder<T, ProxyTunnelStage> {
+        /// Add a custom proxy connector that will be used by this client
+        pub fn with_custom_proxy_connector<L>(
+            self,
+            connector_layer: L,
+        ) -> EasyHttpWebClientBuilder<L::Service, ProxyStage>
+        where
+            L: Layer<T>,
+        {
+            let connector = connector_layer.into_layer(self.connector);
+            EasyHttpWebClientBuilder {
+                connector,
+                _phantom: PhantomData,
+            }
+        }
+
         /// Add support for usage of a http proxy to this client
         ///
         /// Note that a tls proxy is not needed to make a https connection
@@ -350,6 +401,26 @@ mod easy_connector {
     }
 
     impl<T> EasyHttpWebClientBuilder<T, ProxyStage> {
+        #[cfg(any(feature = "rustls", feature = "boring"))]
+        /// Add a custom tls connector that will be used by the client
+        pub fn with_custom_tls_connector<L>(
+            self,
+            connector_layer: L,
+        ) -> EasyHttpWebClientBuilder<HttpConnector<L::Service, HttpsAlpnModifier>, HttpStage>
+        where
+            L: Layer<T>,
+        {
+            let connector = connector_layer.into_layer(self.connector);
+
+            let connector =
+                HttpConnector::new(connector).with_jit_req_inspector(HttpsAlpnModifier::default());
+
+            EasyHttpWebClientBuilder {
+                connector,
+                _phantom: PhantomData,
+            }
+        }
+
         #[cfg(feature = "boring")]
         /// Support https connections by using boringssl for tls
         ///

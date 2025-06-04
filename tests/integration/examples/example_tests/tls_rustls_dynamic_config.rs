@@ -115,6 +115,7 @@ where
         .with_store_server_certificate_chain(true)
         .into_shared_builder();
     let inner_client = EasyHttpWebClient::builder()
+        .with_default_transport_connector()
         .with_tls_proxy_support_using_boringssl()
         .with_proxy_support()
         .with_tls_support_using_boringssl(Some(tls_config))

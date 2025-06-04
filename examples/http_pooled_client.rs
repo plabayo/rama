@@ -54,6 +54,7 @@ async fn main() {
     ready_rx.await.unwrap();
 
     let client = EasyHttpWebClient::builder()
+        .with_default_transport_connector()
         .without_tls_proxy_support()
         .with_proxy_support()
         .without_tls_support()
