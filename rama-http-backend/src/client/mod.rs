@@ -54,7 +54,7 @@ impl<State, BodyIn, ConnResponse> Clone for EasyHttpWebClient<State, BodyIn, Con
 
 impl EasyHttpWebClient<(), (), ()> {
     /// Create a [`EasyHttpWebClientBuilder`] to easily create a [`EasyHttpWebClient`]
-    pub fn builder() -> easy_connector::NewBuilder {
+    pub fn builder() -> EasyHttpWebClientBuilder {
         EasyHttpWebClientBuilder::new()
     }
 }
@@ -170,7 +170,7 @@ mod easy_connector {
         Service,
         error::{BoxError, OpaqueError},
     };
-    use rama_dns::{DnsResolver, GlobalDnsResolver};
+    use rama_dns::DnsResolver;
     use rama_http::{Request, dep::http_body};
     use rama_net::client::{
         EstablishedClientConnection,
@@ -179,10 +179,7 @@ mod easy_connector {
             http::{BasicHttpConId, BasicHttpConnIdentifier, HttpPooledConnectorConfig},
         },
     };
-    use rama_tcp::client::{
-        TcpStreamConnector,
-        service::{TcpConnector, TcpStreamConnectorCloneFactory},
-    };
+    use rama_tcp::client::service::TcpConnector;
     use std::{marker::PhantomData, time::Duration};
 
     #[cfg(feature = "boring")]
@@ -195,7 +192,8 @@ mod easy_connector {
     use super::http_inspector::HttpsAlpnModifier;
 
     /// Builder that is designed to easily create a [`super::EasyHttpWebClient`] from most basic use cases
-    pub struct EasyHttpWebClientBuilder<C, S> {
+    #[derive(Default)]
+    pub struct EasyHttpWebClientBuilder<C = (), S = ()> {
         connector: C,
         _phantom: PhantomData<S>,
     }
@@ -206,35 +204,19 @@ mod easy_connector {
     pub struct HttpStage;
     pub struct PoolStage;
 
-    pub(super) type DefaultBuilder = EasyHttpWebClientBuilder<(), ()>;
-    pub(super) type NewBuilder = EasyHttpWebClientBuilder<TcpConnector, TransportStage>;
-
-    impl Default for DefaultBuilder {
-        fn default() -> Self {
-            EasyHttpWebClientBuilder {
-                connector: (),
-                _phantom: PhantomData,
-            }
+    impl EasyHttpWebClientBuilder {
+        pub fn new() -> Self {
+            EasyHttpWebClientBuilder::default()
         }
-    }
 
-    impl Default for NewBuilder {
-        fn default() -> Self {
+        pub fn with_default_transport_connector(
+            self,
+        ) -> EasyHttpWebClientBuilder<TcpConnector, TransportStage> {
             let connector = TcpConnector::default();
             EasyHttpWebClientBuilder {
                 connector,
                 _phantom: PhantomData,
             }
-        }
-    }
-
-    impl EasyHttpWebClientBuilder<(), ()> {
-        pub fn new() -> Self {
-            EasyHttpWebClientBuilder::default()
-        }
-
-        pub fn with_default_transport_connector(self) -> NewBuilder {
-            EasyHttpWebClientBuilder::default()
         }
 
         /// Add a custom transport connector that will be used by this client for the transport layer
@@ -242,43 +224,6 @@ mod easy_connector {
             self,
             connector: C,
         ) -> EasyHttpWebClientBuilder<C, TransportStage> {
-            EasyHttpWebClientBuilder {
-                connector,
-                _phantom: PhantomData,
-            }
-        }
-
-        /// Add a custom [`DnsResolver`] that will be used by this client
-        pub fn with_custom_dns_resolver<T>(
-            self,
-            resolver: T,
-        ) -> EasyHttpWebClientBuilder<TcpConnector<T>, TransportStage>
-        where
-            T: DnsResolver + Clone,
-        {
-            let connector = TcpConnector::new().with_dns(resolver);
-            EasyHttpWebClientBuilder {
-                connector,
-                _phantom: PhantomData,
-            }
-        }
-
-        /// Add a custom [`TcpConnector`] and [`DnsResolver`] that will be used by this client
-        pub fn with_custom_transport_connector_and_dns_resolver<C, T>(
-            self,
-            connector: C,
-            resolver: T,
-        ) -> EasyHttpWebClientBuilder<
-            TcpConnector<T, TcpStreamConnectorCloneFactory<C>>,
-            TransportStage,
-        >
-        where
-            C: TcpStreamConnector + Clone,
-            T: DnsResolver + Clone,
-        {
-            let connector = TcpConnector::new()
-                .with_dns(resolver)
-                .with_connector(connector);
             EasyHttpWebClientBuilder {
                 connector,
                 _phantom: PhantomData,
@@ -300,7 +245,7 @@ mod easy_connector {
         }
     }
 
-    impl<T> EasyHttpWebClientBuilder<T, TransportStage> {
+    impl<C> EasyHttpWebClientBuilder<C, TransportStage> {
         /// Add a custom proxy tls connector that will be used to setup a tls connection to the proxy
         pub fn with_custom_tls_proxy_connector(
             self,
@@ -409,12 +354,12 @@ mod easy_connector {
         }
     }
 
-    impl<T> EasyHttpWebClientBuilder<T, ProxyTunnelStage> {
+    impl<C> EasyHttpWebClientBuilder<C, ProxyTunnelStage> {
         /// Add a custom proxy connector that will be used by this client
         pub fn with_custom_proxy_connector(
             self,
-            connector: HttpProxyConnector<T>,
-        ) -> EasyHttpWebClientBuilder<HttpProxyConnector<T>, ProxyStage> {
+            connector: C,
+        ) -> EasyHttpWebClientBuilder<C, ProxyStage> {
             EasyHttpWebClientBuilder {
                 connector,
                 _phantom: PhantomData,
@@ -450,35 +395,12 @@ mod easy_connector {
         }
     }
 
-    impl<T> EasyHttpWebClientBuilder<T, ProxyStage> {
-        #[cfg(feature = "boring")]
+    impl<C> EasyHttpWebClientBuilder<C, ProxyStage> {
         /// Add a custom tls connector that will be used by the client
-        pub fn with_custom_tls_connector_using_boringssl(
+        pub fn with_custom_tls_connector(
             self,
-            connector: boring_client::TlsConnector<T>,
-        ) -> EasyHttpWebClientBuilder<
-            HttpConnector<boring_client::TlsConnector<T>, HttpsAlpnModifier>,
-            HttpStage,
-        > {
-            let connector =
-                HttpConnector::new(connector).with_jit_req_inspector(HttpsAlpnModifier::default());
-            EasyHttpWebClientBuilder {
-                connector,
-                _phantom: PhantomData,
-            }
-        }
-
-        #[cfg(feature = "rustls")]
-        /// Add a custom [`rustls_client::TlsConnector`] that will be used by the client
-        pub fn with_custom_tls_connector_using_rustls(
-            self,
-            connector: rustls_client::TlsConnector<T>,
-        ) -> EasyHttpWebClientBuilder<
-            HttpConnector<rustls_client::TlsConnector<T>, HttpsAlpnModifier>,
-            HttpStage,
-        > {
-            let connector =
-                HttpConnector::new(connector).with_jit_req_inspector(HttpsAlpnModifier::default());
+            connector: C,
+        ) -> EasyHttpWebClientBuilder<C, HttpStage> {
             EasyHttpWebClientBuilder {
                 connector,
                 _phantom: PhantomData,
