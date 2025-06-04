@@ -16,9 +16,11 @@ use std::{
     path::{Path, PathBuf},
     time::SystemTime,
 };
+use include_dir::Dir;
 use tokio::{fs::File, io::AsyncSeekExt};
 
 pub(super) enum OpenFileOutput {
+    FileEmbedded(FileEmbedded),
     FileOpened(Box<FileOpened>),
     Redirect { location: HeaderValue },
     Html(String),
@@ -38,9 +40,71 @@ pub(super) struct FileOpened {
     pub(super) last_modified: Option<LastModified>,
 }
 
+pub(super) struct FileEmbedded {
+    pub(super) chunk_size: usize,
+    pub(super) mime_header_value: HeaderValue,
+    pub(super) maybe_range: Option<Result<Vec<RangeInclusive<u64>>, RangeUnsatisfiableError>>,
+    pub(super) last_modified: Option<LastModified>,
+}
+
 pub(super) enum FileRequestExtent {
     Full(File, Metadata),
     Head(Metadata),
+}
+
+pub(super) fn open_file_embedded(
+    base: &Dir,
+    path_to_file: PathBuf,
+    req: Request,
+    range_header: Option<String>,
+    buf_chunk_size: usize) -> io::Result<OpenFileOutput> {
+
+    let mime = mime_guess::from_path(&path_to_file)
+        .first_raw()
+        .map(HeaderValue::from_static)
+        .unwrap_or_else(|| {
+            HeaderValue::from_str(mime::APPLICATION_OCTET_STREAM.as_ref()).unwrap()
+        });
+
+    let file = base.get_file(path_to_file).unwrap();
+
+    let last_modified=  match file.metadata() {
+        Some(metadata) => {
+            Some(LastModified::from(metadata.modified()))
+        }
+        None => {
+            None
+        }
+    };
+
+    let if_unmodified_since = req
+        .headers()
+        .get(header::IF_UNMODIFIED_SINCE)
+        .and_then(IfUnmodifiedSince::from_header_value);
+
+    let if_modified_since = req
+        .headers()
+        .get(header::IF_MODIFIED_SINCE)
+        .and_then(IfModifiedSince::from_header_value);
+
+    if let Some(output) = check_modified_headers(
+        last_modified.as_ref(),
+        if_unmodified_since,
+        if_modified_since,
+    ) {
+        return Ok(output);
+    }
+
+    let maybe_range = try_parse_range(range_header.as_deref(), file.contents().len() as u64);
+
+    let output = FileEmbedded{
+        chunk_size: buf_chunk_size,
+        mime_header_value: mime,
+        maybe_range,
+        last_modified,
+    };
+
+    Ok(OpenFileOutput::FileEmbedded(output))
 }
 
 pub(super) async fn open_file(

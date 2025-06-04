@@ -25,6 +25,10 @@ where
     match open_file_result {
         Ok(OpenFileOutput::FileOpened(file_output)) => Ok(build_response(*file_output)),
 
+        Ok(OpenFileOutput::FileEmbedded(file_embedded)) => {
+            // handle response here
+            unimplemented!()
+        },
         Ok(OpenFileOutput::Redirect { location }) => {
             let mut res = response_with_status(StatusCode::TEMPORARY_REDIRECT);
             res.headers_mut()
