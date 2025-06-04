@@ -60,6 +60,8 @@ This directory contains example implementations demonstrating various features a
 
 - [`socks5_and_http_proxy.rs`](./socks5_and_http_proxy.rs) -
   combines `http_connect_proxy` and `socks5_connect_proxy` into a single server.
+- [`http_https_socks5_and_socks5h_connect_proxy.rs`](./http_https_socks5_and_socks5h_connect_proxy.rs) -
+  combines `http_connect_proxy`, `https_connect_proxy` and `socks5_connect_proxy` into a single server.
 
 ### HaProxy
 

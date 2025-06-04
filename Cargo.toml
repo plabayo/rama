@@ -597,6 +597,10 @@ name = "socks5_and_http_proxy"
 required-features = ["dns", "socks5", "http-full"]
 
 [[example]]
+name = "http_https_socks5_and_socks5h_connect_proxy"
+required-features = ["dns", "socks5", "http-full", "boring"]
+
+[[example]]
 name = "haproxy_client_ip"
 required-features = ["haproxy", "http-full"]
 
