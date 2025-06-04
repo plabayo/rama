@@ -12,6 +12,13 @@ mod http_form;
 mod http_health_check;
 #[cfg(feature = "http-full")]
 mod http_high_level_client;
+#[cfg(all(
+    feature = "dns",
+    feature = "socks5",
+    feature = "http-full",
+    feature = "boring",
+))]
+mod http_https_socks5_and_socks5h_connect_proxy;
 #[cfg(feature = "http-full")]
 mod http_k8s_health;
 #[cfg(feature = "http-full")]
