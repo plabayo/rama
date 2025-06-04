@@ -410,7 +410,7 @@ mod easy_connector {
     }
 
     impl<T> EasyHttpWebClientBuilder<T, ProxyTunnelStage> {
-        /// Add a custom [`HttpProxyConnector`] that will be used by this client
+        /// Add a custom proxy connector that will be used by this client
         pub fn with_custom_proxy_connector(
             self,
             connector: HttpProxyConnector<T>,
