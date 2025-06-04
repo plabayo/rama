@@ -128,6 +128,8 @@ This pattern allows for flexible protocol handling while maintaining clean separ
 
 [`socks5_and_http_proxy.rs`](https://github.com/plabayo/rama/tree/main/examples/socks5_and_http_proxy.rs) is another example of such protocol inspection. This code is used to be able to support a socks5 proxy that can also be something else next to it(e.g. an http proxy).
 
+[`http_https_socks5_and_socks5h_connect_proxy.rs`](https://github.com/plabayo/rama/tree/main/examples/http_https_socks5_and_socks5h_connect_proxy.rs) is another advanced demonstration of Rama's protocol inspection and routing capabilities. This example showcases how to build a **single, unified proxy server** that intelligently handles HTTP, HTTPS (via CONNECT), SOCKS5, and SOCKS5H traffic all within the same listener, leveraging various `PeekRouter` and service composition patterns for robust multi-protocol support.
+
 ## Best Practices
 
 1. **Efficient Detection**:
