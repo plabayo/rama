@@ -242,6 +242,7 @@ async fn http_mitm_proxy(ctx: Context, req: Request) -> Result<Response, Infalli
     let base_tls_config = base_tls_config.with_server_verify_mode(ServerVerifyMode::Disable);
 
     let client = EasyHttpWebClient::builder()
+        .with_default_transport_connector()
         .with_tls_proxy_support_using_boringssl()
         .with_proxy_support()
         .with_tls_support_using_boringssl(Some(Arc::new(base_tls_config)))

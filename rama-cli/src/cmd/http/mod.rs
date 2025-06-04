@@ -356,6 +356,7 @@ where
     }
 
     let inner_client = EasyHttpWebClient::builder()
+        .with_default_transport_connector()
         .with_tls_proxy_support_using_boringssl_config(proxy_tls_config.into_shared_builder())
         .with_proxy_support()
         .with_tls_support_using_boringssl(Some(tls_config.into_shared_builder()))
