@@ -452,7 +452,7 @@ mod easy_connector {
 
     impl<T> EasyHttpWebClientBuilder<T, ProxyStage> {
         #[cfg(feature = "boring")]
-        /// Add a custom [`boring_client::TlsConnector`] that will be used by the client
+        /// Add a custom tls connector that will be used by the client
         pub fn with_custom_tls_connector_using_boringssl(
             self,
             connector: boring_client::TlsConnector<T>,
