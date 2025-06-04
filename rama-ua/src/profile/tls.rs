@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use rama_net::fingerprint::{PeetComputeError, PeetPrint};
 use rama_net::{
     fingerprint::{Ja3, Ja3ComputeError, Ja4, Ja4ComputeError},
     tls::{
@@ -50,6 +51,17 @@ impl TlsProfile {
         negotiated_tls_version: Option<ProtocolVersion>,
     ) -> Result<Ja4, Ja4ComputeError> {
         Ja4::compute_from_client_hello(self.client_config.as_ref(), negotiated_tls_version)
+    }
+
+    /// Compute the [`PeetPrint`] (hash) on this [`TlsProfile`].
+    ///
+    /// This can be useful in case you want to compare profiles
+    /// loaded into memory of your service with the profile
+    /// of an incoming request.
+    ///
+    /// As specified by <https://github.com/pagpeter/TrackMe?tab=readme-ov-file#custom-fingerpint-peetprint>
+    pub fn compute_peet(&self) -> Result<PeetPrint, PeetComputeError> {
+        PeetPrint::compute_from_client_hello(self.client_config.as_ref())
     }
 }
 
