@@ -692,6 +692,13 @@ impl From<TlsDisplayInfo> for Vec<Table> {
             ],
         });
         vec.push(Table {
+            title: "🆔 Peetprint".to_owned(),
+            rows: vec![
+                ("hash".to_owned(), info.peet.hash),
+                ("full".to_owned(), info.peet.full),
+            ],
+        });
+        vec.push(Table {
             title: "🆔 Ja3".to_owned(),
             rows: vec![
                 ("hash".to_owned(), info.ja3.hash),
