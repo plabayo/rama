@@ -237,7 +237,7 @@ mod easy_connector {
             EasyHttpWebClientBuilder::default()
         }
 
-        /// Add a custom [`TcpConnector`] that will be used by this client
+        /// Add a custom transport connector that will be used by this client for the transport layer
         pub fn with_custom_transport_connector<C>(
             self,
             connector: C,
