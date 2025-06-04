@@ -38,24 +38,23 @@ use crate::{
 };
 #[cfg(any(feature = "rustls", feature = "boring"))]
 use crate::{
-    net::fingerprint::{Ja3, Ja4},
+    net::fingerprint::{Ja3, Ja4, PeetPrint},
     net::tls::{
         SecureTransport,
         client::ClientHelloExtension,
         client::{ECHClientHello, NegotiatedTlsParameters},
     },
 };
-use rama_http::service::web::{extract::Json, response::IntoResponse};
-use serde::Serialize;
-use serde_json::json;
-use std::{convert::Infallible, time::Duration};
-use tokio::net::TcpStream;
-
 #[cfg(feature = "boring")]
 use crate::{
     net::tls::server::ServerConfig,
     tls::boring::server::{TlsAcceptorData, TlsAcceptorLayer},
 };
+use rama_http::service::web::{extract::Json, response::IntoResponse};
+use serde::Serialize;
+use serde_json::json;
+use std::{convert::Infallible, time::Duration};
+use tokio::net::TcpStream;
 
 #[cfg(all(feature = "rustls", not(feature = "boring")))]
 use crate::tls::rustls::server::{TlsAcceptorData, TlsAcceptorLayer};
@@ -571,6 +570,43 @@ impl Service<(), Request> for EchoService {
                     })
                 });
 
+                let peet = PeetPrint::compute(ctx.extensions())
+                    .inspect_err(|err| tracing::trace!(?err, "peet computation"))
+                    .ok();
+
+                let mut profile_peet: Option<FingerprintProfileData> = None;
+
+                if let Some(uadb) = self.uadb.as_deref() {
+                    if let Some(profile) =
+                        ua_str.as_deref().and_then(|s| uadb.get_exact_header_str(s))
+                    {
+                        let matched_peet = profile
+                            .tls
+                            .compute_peet()
+                            .inspect_err(|err| {
+                                tracing::trace!(?err, "peetprint computation of matched profile")
+                            })
+                            .ok();
+                        if let (Some(src), Some(tgt)) = (peet.as_ref(), matched_peet) {
+                            let hash = format!("{tgt}");
+                            let matched = format!("{src}") == hash;
+                            profile_peet = Some(FingerprintProfileData {
+                                hash,
+                                verbose: format!("{tgt:?}"),
+                                matched,
+                            });
+                        }
+                    }
+                }
+
+                let peet = peet.map(|peet| {
+                    json!({
+                        "hash": format!("{peet}"),
+                        "verbose": format!("{peet:?}"),
+                        "profile": profile_peet,
+                    })
+                });
+
                 json!({
                     "header": {
                         "version": hello.protocol_version().to_string(),
@@ -655,6 +691,7 @@ impl Service<(), Request> for EchoService {
                     }).collect::<Vec<_>>(),
                     "ja3": ja3,
                     "ja4": ja4,
+                    "peet": peet
                 })
             });
 
