@@ -363,7 +363,7 @@ mod easy_connector {
             connector: L,
         ) -> EasyHttpWebClientBuilder<L::Service, ProxyStage>
         where
-            L: Layer<T>,
+            L: Layer<T, Service = L>,
         {
             EasyHttpWebClientBuilder {
                 connector,
@@ -405,7 +405,7 @@ mod easy_connector {
             connector: L,
         ) -> EasyHttpWebClientBuilder<L::Service, HttpStage>
         where
-            L: Layer<T>,
+            L: Layer<T, Service = L>,
         {
             EasyHttpWebClientBuilder {
                 connector,
