@@ -241,14 +241,7 @@ mod easy_connector {
         pub fn with_custom_transport_connector<C>(
             self,
             connector: C,
-        ) -> EasyHttpWebClientBuilder<
-            TcpConnector<GlobalDnsResolver, TcpStreamConnectorCloneFactory<C>>,
-            TransportStage,
-        >
-        where
-            C: TcpStreamConnector + Clone,
-        {
-            let connector = TcpConnector::new().with_connector(connector);
+        ) -> EasyHttpWebClientBuilder<C, TransportStage> {
             EasyHttpWebClientBuilder {
                 connector,
                 _phantom: PhantomData,
