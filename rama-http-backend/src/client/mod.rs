@@ -55,7 +55,7 @@ impl<State, BodyIn, ConnResponse> Clone for EasyHttpWebClient<State, BodyIn, Con
 impl EasyHttpWebClient<(), (), ()> {
     /// Create a [`EasyHttpWebClientBuilder`] to easily create a [`EasyHttpWebClient`]
     pub fn builder() -> easy_connector::NewBuilder {
-        EasyHttpWebClientBuilder::new().with_default_transport_connector()
+        EasyHttpWebClientBuilder::new()
     }
 }
 
