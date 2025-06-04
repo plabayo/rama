@@ -301,30 +301,11 @@ mod easy_connector {
     }
 
     impl<T> EasyHttpWebClientBuilder<T, TransportStage> {
-        #[cfg(feature = "boring")]
-        /// Add a custom [`boring_client::TlsConnector`] that will be used by this client
-        pub fn with_custom_tls_proxy_connector_using_boringssl(
+        /// Add a custom proxy tls connector that will be used to setup a tls connection to the proxy
+        pub fn with_custom_tls_proxy_connector(
             self,
-            connector: boring_client::TlsConnector<T, boring_client::ConnectorKindTunnel>,
-        ) -> EasyHttpWebClientBuilder<
-            boring_client::TlsConnector<T, boring_client::ConnectorKindTunnel>,
-            ProxyTunnelStage,
-        > {
-            EasyHttpWebClientBuilder {
-                connector,
-                _phantom: PhantomData,
-            }
-        }
-
-        #[cfg(feature = "rustls")]
-        /// Add a custom [`rustls_client::TlsConnector`] that will be used by this client
-        pub fn with_custom_tls_proxy_connector_using_rustls(
-            self,
-            connector: rustls_client::TlsConnector<T, rustls_client::ConnectorKindTunnel>,
-        ) -> EasyHttpWebClientBuilder<
-            rustls_client::TlsConnector<T, rustls_client::ConnectorKindTunnel>,
-            ProxyTunnelStage,
-        > {
+            connector: C,
+        ) -> EasyHttpWebClientBuilder<C, ProxyTunnelStage> {
             EasyHttpWebClientBuilder {
                 connector,
                 _phantom: PhantomData,
