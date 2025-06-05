@@ -77,7 +77,10 @@ impl<T: HttpRequestParts, State> TryFrom<(&Context<State>, &T)> for RequestConte
             .unwrap_or_else(|| protocol.default_port().unwrap_or(80));
         tracing::trace!(uri = %uri, "request context: detected default port: {default_port}");
 
-        let proxy_authority_opt: Option<Authority> = ctx.get::<ProxyTarget>().map(|t| t.0.clone());
+        let proxy_authority_opt: Option<Authority> = ctx
+            .get::<ProxyTarget>()
+            .and_then(|t| t.0.host().is_domain().then(|| t.0.clone()));
+
         let sni_host_opt = ctx.get().and_then(try_get_host_from_secure_transport);
         let authority = match (proxy_authority_opt, sni_host_opt) {
             (Some(authority), _) => {

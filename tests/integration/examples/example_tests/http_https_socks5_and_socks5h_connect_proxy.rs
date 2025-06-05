@@ -126,7 +126,7 @@ async fn test_http_client_over_socks5_proxy_connect(
     for uri in test_uris {
         tracing::info!(
             %uri,
-            "try to establish proxied connection over SOCKS5 within a TLS Tunnel",
+            "try to establish proxied connection over SOCKS5",
         );
 
         let request = Request::builder()
@@ -159,7 +159,6 @@ async fn test_http_client_over_socks5_proxy_connect(
         assert_eq!("pong", resp);
         tracing::info!("socks5 ping-pong succeeded")
     }
-    println!("bye now!");
     tracing::info!("bye now!");
 }
 

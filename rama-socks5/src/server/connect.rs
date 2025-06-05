@@ -2,7 +2,7 @@ use rama_core::{Context, Service, error::BoxError};
 use rama_net::{
     address::Authority,
     client::EstablishedClientConnection,
-    proxy::{ProxyRequest, StreamForwardService},
+    proxy::{ProxyRequest, ProxyTarget, StreamForwardService},
     stream::{Socket, Stream},
 };
 use rama_tcp::client::{
@@ -389,7 +389,7 @@ where
 {
     async fn accept_connect(
         &self,
-        ctx: Context<State>,
+        mut ctx: Context<State>,
         mut stream: S,
         destination: Authority,
     ) -> Result<(), Error> {
@@ -407,6 +407,8 @@ where
             %destination,
             "socks5 server: lazy connect: reply sent, delegate to inner stream service",
         );
+
+        ctx.insert(ProxyTarget(destination));
 
         self.service
             .serve(ctx, stream)

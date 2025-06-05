@@ -62,6 +62,9 @@ This directory contains example implementations demonstrating various features a
   combines `http_connect_proxy` and `socks5_connect_proxy` into a single server.
 - [`http_https_socks5_and_socks5h_connect_proxy.rs`](./http_https_socks5_and_socks5h_connect_proxy.rs) -
   combines `http_connect_proxy`, `https_connect_proxy` and `socks5_connect_proxy` into a single server.
+- [`proxy_connectivity_check.rs`](./proxy_connectivity_check.rs) -
+  combines an http and socks5 proxy, but mostly is about how you can add a connectivity check,
+  used by humans as a sanity check for whether or not they are connected (via) "the" proxy.
 
 ### HaProxy
 
