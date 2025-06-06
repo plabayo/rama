@@ -71,7 +71,7 @@ arc-swap = "1.7"
 async-compression = "0.4"
 async-stream = { version = "0.3", default-features = false }
 atomic-waker = "1.1"
-aws-lc-sys = { version = "0.28", features = ["bindgen"] }
+aws-lc-sys = { version = "0.29", features = ["bindgen"] }
 base64 = "0.22"
 bitflags = "2.9"
 brotli = "8"
