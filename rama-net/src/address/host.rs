@@ -19,6 +19,28 @@ pub enum Host {
 }
 
 impl Host {
+    /// Returns `true` if [`host`] is a [`Domain`].
+    pub fn is_domain(&self) -> bool {
+        matches!(self, Host::Name(_))
+    }
+
+    /// Returns `true` if [`host`] is a [`IpAddr`].
+    pub fn is_ip(&self) -> bool {
+        matches!(self, Host::Address(_))
+    }
+
+    /// Returns `true` if [`host`] is a [`IpAddr::V4`].
+    pub fn is_ipv4(&self) -> bool {
+        matches!(self, Host::Address(IpAddr::V4(_)))
+    }
+
+    /// Returns `true` if [`host`] is a [`IpAddr::V6`].
+    pub fn is_ipv6(&self) -> bool {
+        matches!(self, Host::Address(IpAddr::V4(_)))
+    }
+}
+
+impl Host {
     /// Local loopback address (IPv4)
     pub const LOCALHOST_IPV4: Self = Self::Address(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)));
 

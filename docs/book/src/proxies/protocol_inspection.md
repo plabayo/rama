@@ -126,9 +126,18 @@ This pattern allows for flexible protocol handling while maintaining clean separ
 - Handle protocol-specific processing
 - Integrate with MITM capabilities when needed
 
-[`socks5_and_http_proxy.rs`](https://github.com/plabayo/rama/tree/main/examples/socks5_and_http_proxy.rs) is another example of such protocol inspection. This code is used to be able to support a socks5 proxy that can also be something else next to it(e.g. an http proxy).
-
-[`http_https_socks5_and_socks5h_connect_proxy.rs`](https://github.com/plabayo/rama/tree/main/examples/http_https_socks5_and_socks5h_connect_proxy.rs) is another advanced demonstration of Rama's protocol inspection and routing capabilities. This example showcases how to build a **single, unified proxy server** that intelligently handles HTTP, HTTPS (via CONNECT), SOCKS5, and SOCKS5H traffic all within the same listener, leveraging various `PeekRouter` and service composition patterns for robust multi-protocol support.
+Some rama examples that built on top of protocol inspection:
+- [`socks5_and_http_proxy.rs`](https://github.com/plabayo/rama/tree/main/examples/socks5_and_http_proxy.rs)
+  is an example of such protocol inspection.This code is used to be able to support
+  a socks5 proxy that can also be something else next to it (e.g. an http proxy).
+- [`http_https_socks5_and_socks5h_connect_proxy.rs`](https://github.com/plabayo/rama/tree/main/examples/http_https_socks5_and_socks5h_connect_proxy.rs)
+  is another advanced demonstration of Rama's protocol inspection and routing capabilities.
+  This example showcases how to build a **single, unified proxy server** that intelligently handles
+  HTTP, HTTPS (HTTP within TLS) and SOCKS5 traffic all within the same listener,
+  leveraging various `PeekRouter` and service composition patterns for robust multi-protocol support.
+- [`proxy_connectivity_check.rs`](https://github.com/plabayo/rama/tree/main/examples/proxy_connectivity_check.rs)
+  is not about protocool inspection but does leverage socks5 and http protocol inspections for various purposes,
+  including to hijack very specific http data without forcing all socks5 proxy traffic to be http.
 
 ## Best Practices
 
