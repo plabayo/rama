@@ -25,7 +25,7 @@ and its documemtation can be consumed at <https://ramaproxy.org/docs/rama/contex
 
 This is a clear distinction from a `Tower` service which only takes a `Request`.
 If that `Request` is an `http Request` it does allow one to add extra optional data using
-the `Extensions` type/data also available in an `http Request`. Hower it provides no means
+the `Extensions` type/data also available in an `http Request`. However it provides no means
 of typesafe `State`, executors, spawning etc. On top of that it would make it more awkward to
 also freely pass all this data between services, especially those operating
 across different layers of the network.

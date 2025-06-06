@@ -38,7 +38,7 @@
     - [🔎 MITM proxies](./proxies/mitm.md)
     - [🕵️‍♀️ Distortion proxies](./proxies/distort.md)
     - [🧭 HaProxy (PROXY protocol)](./proxies/haproxy.md)
-- [Protocol Inspection](./proxies/protocol_inspection.md)
+- [🔍 Protocol Inspection](./proxies/protocol_inspection.md)
 
 # Deploy
 

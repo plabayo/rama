@@ -86,7 +86,7 @@ to get inspired on how you can use it for your purposes.
 > [the "Sponsors" chapter in this book](./sponsor.md)
 > or contact us directly at [sponsor@ramaproxy.org](mailto:sponsor@ramaproxy.org).
 
-Rama comes with 🔋 batteries included, giving you the full freedome to build the middleware and services you want, without _having_ to repeat the "common":
+Rama comes with 🔋 batteries included, giving you the full freedom to build the middleware and services you want, without _having_ to repeat the "common":
 
 | category | support list |
 |-|-|

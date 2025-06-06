@@ -41,7 +41,7 @@ The above is a visualisation of the concept in action where `Service A` would be
 Examples of routers:
 
 - static dispatch: [/examples/http_service_match.rs](https://github.com/plabayo/rama/blob/main/examples/http_service_match.rs)
-- dynamic disaptch: [/examples/http_web_service_dir_and_api.rs](https://github.com/plabayo/rama/blob/main/examples/http_web_service_dir_and_api.rs)
+- dynamic dispatch: [/examples/http_web_service_dir_and_api.rs](https://github.com/plabayo/rama/blob/main/examples/http_web_service_dir_and_api.rs)
 
 ### Use your imagination
 
