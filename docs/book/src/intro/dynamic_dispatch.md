@@ -9,7 +9,7 @@ Generics are Rust's approach to provide static dispatch. it is called static bec
 at compile time disjoint code is generated prior to compilation and as such it is static in nature,
 and in fact no dispatch at all is happening at runtime.
 
-There are however scenarios where dynamic disaptch shines:
+There are however scenarios where dynamic dispatch shines:
 
 - allowing to inject / select logic based on external runtime input;
 - managing collections of different kind of data structures (e.g. different kinds of end point services in a single router).

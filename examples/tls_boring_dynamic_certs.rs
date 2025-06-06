@@ -1,4 +1,4 @@
-//! This example demonstrates how to dynamically choose certificates for incomming requests
+//! This example demonstrates how to dynamically choose certificates for incoming requests
 //!
 //! # Run the example
 //!

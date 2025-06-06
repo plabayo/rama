@@ -57,7 +57,7 @@ can be found here: <https://ramaproxy.org/docs/rama/proxy/socks5/proto/index.htm
 
 Proxies that operate on the TCP/UDP layers are also referred to as "transport proxies".
 Socks5 proxies are an example of this. An [http proxy](./http.md) can also be a transport proxy,
-and in fact most commcercial proxies out in the wild are just that. The key difference
+and in fact most commercial proxies out in the wild are just that. The key difference
 with socks5 proxies is however that for plain text requests it is still
 the (http) proxy that will see the http request to be proxied, while even for plain text
 requests (read: not encrypted with TLS) socks5 proxies do not _have_ to see the requests.

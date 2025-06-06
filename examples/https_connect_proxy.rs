@@ -1,7 +1,7 @@
 //! This example demonstrates how to create an https proxy.
 //!
 //! This proxy example does not perform any TLS termination on the actual proxied traffic.
-//! It is an adoptation of the `http_connect_proxy` example with tls termination for the incoming connections.
+//! It is an adaptation of the `http_connect_proxy` example with tls termination for the incoming connections.
 //!
 //! # Run the example
 //!

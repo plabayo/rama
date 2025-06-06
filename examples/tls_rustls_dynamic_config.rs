@@ -1,4 +1,4 @@
-//! This example demonstrates how to dynamically choose a rustls config depending on the incomming client hello
+//! This example demonstrates how to dynamically choose a rustls config depending on the incoming client hello
 //!
 //! # Run the example
 //!
