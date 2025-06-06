@@ -243,7 +243,7 @@ jobs:
         with:
           env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN_MSRV}}"
       - name: Run tests
-        run: cargo test --features=cli,telemetry,compression,rustls --workspace -- --ignored
+        run: cargo test --features=cli,compression,rustls --workspace -- --ignored
 
   test-ignored-beta:
     needs: [check, check-msrv, check-all-features]
@@ -257,7 +257,7 @@ jobs:
         with:
           env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN_BETA}}"
       - name: Run tests
-        run: cargo test --features=cli,telemetry,compression,rustls --workspace -- --ignored
+        run: cargo test --features=cli,compression,rustls --workspace -- --ignored
 
   test-ignored:
     needs: [check, check-msrv, check-all-features]
@@ -271,7 +271,7 @@ jobs:
         with:
           env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
       - name: Run tests
-        run: cargo test --features=cli,telemetry,compression,rustls --workspace -- --ignored
+        run: cargo test --features=cli,compression,rustls --workspace -- --ignored
 
   test-ignored-macos-msrv:
     needs: [check, check-msrv, check-all-features]
@@ -285,7 +285,7 @@ jobs:
         with:
           env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN_MSRV}}"
       - name: Run tests
-        run: cargo test --features=cli,telemetry,compression,rustls --workspace -- --ignored
+        run: cargo test --features=cli,compression,rustls --workspace -- --ignored
 
   test-ignored-macos-beta:
     needs: [check, check-msrv, check-all-features]
@@ -299,7 +299,7 @@ jobs:
         with:
           env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN_MSRV}}"
       - name: Run tests
-        run: cargo test --features=cli,telemetry,compression,rustls --workspace -- --ignored
+        run: cargo test --features=cli,compression,rustls --workspace -- --ignored
 
   test-ignored-macos:
     needs: [check, check-msrv, check-all-features]
@@ -313,7 +313,7 @@ jobs:
         with:
           env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
       - name: Run tests
-        run: cargo test --features=cli,telemetry,compression,rustls --workspace -- --ignored
+        run: cargo test --features=cli,compression,rustls --workspace -- --ignored
 
   test-docs:
     needs: [check, check-msrv, check-all-features]

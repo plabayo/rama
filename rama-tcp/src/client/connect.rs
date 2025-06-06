@@ -22,7 +22,7 @@ use tokio::sync::{
     Semaphore,
     mpsc::{Sender, channel},
 };
-use tracing::Instrument;
+use tracing::{Instrument, trace_span};
 
 use crate::TcpStream;
 
@@ -283,7 +283,11 @@ where
                 connected.clone(),
                 sem.clone(),
             )
-            .instrument(tracing::trace_span!("Client::tcp::connect::dns_v4")),
+            .instrument(tracing::trace_span!(
+                "tcp::connect::dns_v4",
+                otel.kind = "client",
+                network.protocol.name = "tcp",
+            )),
         );
     }
 
@@ -301,7 +305,11 @@ where
                 connected.clone(),
                 sem.clone(),
             )
-            .instrument(tracing::trace_span!("Client::tcp::connect::dns_v6")),
+            .instrument(tracing::trace_span!(
+                "tcp::connect::dns_v6",
+                otel.kind = "client",
+                network.protocol.name = "tcp",
+            )),
         );
     }
 
@@ -423,6 +431,12 @@ async fn tcp_connect_inner_branch<Dns, Connector>(
                     tracing::trace!(err = %err, "[{ip_kind:?}] #{index}: tcp connector failed to connect");
                 }
             };
-        });
+        }.instrument(trace_span!(
+            "tcp::connect",
+            otel.kind = "client",
+            network.protocol.name = "tcp",
+            network.peer.address = %ip,
+            %index,
+        )));
     }
 }

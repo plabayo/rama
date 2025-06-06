@@ -296,7 +296,7 @@ impl Http1Transaction for Server {
 
     fn encode(mut msg: Encode<'_, Self::Outgoing>, dst: &mut Vec<u8>) -> crate::Result<Encoder> {
         trace!(
-            "Server::encode status={:?}, body={:?}, req_method={:?}",
+            "encode status={:?}, body={:?}, req_method={:?}",
             msg.head.subject, msg.body, msg.req_method
         );
 
@@ -965,7 +965,7 @@ impl Http1Transaction for Client {
 
     fn encode(mut msg: Encode<'_, Self::Outgoing>, dst: &mut Vec<u8>) -> crate::Result<Encoder> {
         trace!(
-            "Client::encode method={:?}, body={:?}",
+            "encode method={:?}, body={:?}",
             msg.head.subject.0, msg.body
         );
 
@@ -1053,7 +1053,7 @@ impl Client {
             }
             Some(_) => {}
             None => {
-                trace!("Client::decoder is missing the Method");
+                trace!("decoder is missing the Method");
             }
         }
 

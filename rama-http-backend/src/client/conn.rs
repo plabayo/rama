@@ -3,8 +3,9 @@ use rama_core::{
     Context, Layer, Service,
     error::{BoxError, OpaqueError},
     inspect::RequestInspector,
+    telemetry::opentelemetry::{self, trace::get_active_span, tracing::OpenTelemetrySpanExt},
 };
-use rama_http::header::USER_AGENT;
+use rama_http::{header::USER_AGENT, opentelemetry::version_as_protocol_version};
 use rama_http_core::h2::frame::Priority;
 use rama_http_types::{
     Request, Version,
@@ -165,12 +166,20 @@ where
                 let (sender, conn) = builder.handshake(io).await?;
 
                 let conn_span = tracing::trace_span!(
-                    "Client::h2::conn::serve",
+                    "h2::conn::serve",
+                    otel.kind = "client",
                     http.request.method = %req.method().as_str(),
                     uri.full = %req.uri(),
-                    url.scheme = %req.uri().scheme_str().unwrap_or_default(),
+                    url.path = %req.uri().path(),
+                    url.query = req.uri().query().unwrap_or_default(),
+                    url.scheme = %req.uri().scheme().map(|s| s.as_str()).unwrap_or_default(),
+                    network.protocol.name = "http",
+                    network.protocol.version = version_as_protocol_version(req.version()),
                     user_agent.original = %req.headers().get(USER_AGENT).and_then(|v| v.to_str().ok()).unwrap_or_default(),
                 );
+                conn_span.set_parent(opentelemetry::Context::new());
+                conn_span.add_link(get_active_span(|span| span.span_context().clone()));
+
                 ctx.spawn(
                     async move {
                         if let Err(err) = conn.await {
@@ -200,12 +209,20 @@ where
                 let (sender, conn) = builder.handshake(io).await?;
 
                 let conn_span = tracing::trace_span!(
-                    "Client::h1::conn::serve",
+                    "h1::conn::serve",
+                    otel.kind = "client",
                     http.request.method = %req.method().as_str(),
                     uri.full = %req.uri(),
-                    url.scheme = %req.uri().scheme_str().unwrap_or_default(),
+                    url.path = %req.uri().path(),
+                    url.query = req.uri().query().unwrap_or_default(),
+                    url.scheme = %req.uri().scheme().map(|s| s.as_str()).unwrap_or_default(),
+                    network.protocol.name = "http",
+                    network.protocol.version = version_as_protocol_version(req.version()),
                     user_agent.original = %req.headers().get(USER_AGENT).and_then(|v| v.to_str().ok()).unwrap_or_default(),
                 );
+                conn_span.set_parent(opentelemetry::Context::new());
+                conn_span.add_link(get_active_span(|span| span.span_context().clone()));
+
                 ctx.spawn(
                     async move {
                         if let Err(err) = conn.await {

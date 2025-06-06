@@ -9,7 +9,6 @@ use rama::{
     cli::ForwardKind,
     combinators::Either7,
     error::{BoxError, ErrorContext, OpaqueError},
-    http::service::web::response::{IntoResponse, Redirect},
     http::{
         HeaderName, HeaderValue, Request,
         header::COOKIE,
@@ -24,7 +23,10 @@ use rama::{
         },
         matcher::HttpMatcher,
         server::HttpServer,
-        service::web::match_service,
+        service::web::{
+            match_service,
+            response::{IntoResponse, Redirect},
+        },
     },
     layer::{
         ConsumeErrLayer, HijackLayer, Layer, LimitLayer, TimeoutLayer,
@@ -314,9 +316,6 @@ pub async fn run(cfg: CliCommandFingerprint) -> Result<(), BoxError> {
                 TlsAcceptorLayer::new(data).with_store_client_hello(true)
             })
         );
-
-
-
 
         match cfg.http_version {
             HttpVersion::Auto => {

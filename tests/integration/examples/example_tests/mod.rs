@@ -45,7 +45,7 @@ mod http_service_match;
 mod http_sse;
 #[cfg(feature = "http-full")]
 mod http_sse_json;
-#[cfg(all(feature = "http-full", feature = "telemetry"))]
+#[cfg(feature = "http-full")]
 mod http_telemetry;
 #[cfg(feature = "http-full")]
 mod http_user_agent_classifier;

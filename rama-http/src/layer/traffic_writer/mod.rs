@@ -6,7 +6,10 @@ use crate::{
     Request, Response,
     io::{write_http_request, write_http_response},
 };
-use rama_core::rt::Executor;
+use rama_core::{
+    rt::Executor,
+    telemetry::opentelemetry::{self, trace::get_active_span, tracing::OpenTelemetrySpanExt},
+};
 use tokio::{
     io::{AsyncWrite, AsyncWriteExt},
     sync::mpsc::{Sender, UnboundedSender, channel, unbounded_channel},
@@ -166,6 +169,13 @@ impl BidirectionalWriter<Sender<BidirectionalMessage>> {
             None => (false, false),
         };
 
+        let span = tracing::trace_span!(
+            "TrafficWriter::bidirectional::bounded",
+            otel.kind = "consumer",
+        );
+        span.set_parent(opentelemetry::Context::new());
+        span.add_link(get_active_span(|span| span.span_context().clone()));
+
         executor.spawn_task(async move {
             while let Some(msg) = rx.recv().await {
                 match msg {
@@ -198,7 +208,7 @@ impl BidirectionalWriter<Sender<BidirectionalMessage>> {
                     tracing::error!(err = %err, "failed to write separator to writer")
                 }
             }
-        }.instrument(tracing::trace_span!("TrafficWriter::bidirectional::bounded")));
+        }.instrument(span));
 
         Self { sender: tx }
     }
@@ -227,6 +237,11 @@ impl BidirectionalWriter<Sender<BidirectionalMessage>> {
             Some(WriterMode::Body) => (false, true),
             None => (false, false),
         };
+
+        let span =
+            tracing::trace_span!("TrafficWriter::bidirectional::last", otel.kind = "consumer");
+        span.set_parent(opentelemetry::Context::new());
+        span.add_link(get_active_span(|span| span.span_context().clone()));
 
         executor.spawn_task(
             async move {
@@ -272,7 +287,7 @@ impl BidirectionalWriter<Sender<BidirectionalMessage>> {
                     }
                 }
             }
-            .instrument(tracing::trace_span!("TrafficWriter::bidirectional::last")),
+            .instrument(span),
         );
 
         Self { sender: tx }

@@ -20,7 +20,7 @@
 #[doc(inline)]
 pub use ::rama_http_types::{
     Body, BodyDataStream, BodyExtractExt, BodyLimit, HeaderMap, HeaderName, HeaderValue, Method,
-    Request, Response, Scheme, StatusCode, Uri, Version, conn, header, proto, sse,
+    Request, Response, Scheme, StatusCode, Uri, Version, conn, header, opentelemetry, proto, sse,
 };
 
 pub use ::rama_http_headers as headers;

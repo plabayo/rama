@@ -9,6 +9,7 @@ use rama_net::{
 };
 use rama_tcp::{TcpStream, server::TcpListener};
 use rama_utils::macros::generate_field_setters;
+use tracing::{Instrument, trace_span};
 
 use super::Error;
 use crate::proto::{ReplyKind, server::Reply};
@@ -239,7 +240,8 @@ where
     async fn accept(self) -> Result<(Self::Stream, SocketAddress), Error> {
         let (stream, addr) = TcpListener::accept(&self).await.map_err(Error::io)?;
         tracing::trace!(
-            peer_addr = %addr,
+            network.peer.port = %addr.port(),
+            network.peer.address = %addr.ip_addr(),
             "accepted incoming TCP connection"
         );
         Ok((stream, addr))
@@ -433,6 +435,7 @@ where
                     target,
                 },
             )
+            .instrument(trace_span!("socks5::bind::serve"))
             .await
             .map_err(|err| Error::service(err).with_context("serve bind pipe"))
     }

@@ -29,6 +29,8 @@ pub type Response<T = Body> = http::Response<T>;
 
 pub mod proto;
 
+pub mod opentelemetry;
+
 pub mod conn;
 
 pub mod dep {

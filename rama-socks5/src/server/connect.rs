@@ -11,6 +11,7 @@ use rama_tcp::client::{
 };
 use rama_utils::macros::generate_field_setters;
 use std::{fmt, time::Duration};
+use tracing::{Instrument, trace_span};
 
 use super::Error;
 use crate::proto::{ReplyKind, server::Reply};
@@ -325,6 +326,7 @@ where
                     target,
                 },
             )
+            .instrument(trace_span!("socks5::connect::proxy::serve"))
             .await
             .map_err(|err| Error::service(err).with_context("serve connect pipe"))
     }
@@ -412,6 +414,7 @@ where
 
         self.service
             .serve(ctx, stream)
+            .instrument(trace_span!("socks5::connect::lazy::serve"))
             .await
             .map_err(|err| Error::service(err).with_context("inner stream (proxy) service"))
     }

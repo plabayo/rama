@@ -20,7 +20,6 @@ rustdoc-args = ["--cfg", "docsrs"]
 [features]
 default = []
 compression = ["dep:async-compression"]
-telemetry = ["rama-core/telemetry"]
 tls = ["rama-net/tls"]
 
 [dependencies]

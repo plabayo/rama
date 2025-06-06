@@ -10,11 +10,12 @@ use futures_channel::mpsc::{Receiver, Sender};
 use futures_channel::{mpsc, oneshot};
 use futures_core::{FusedFuture, FusedStream, Stream};
 use pin_project_lite::pin_project;
-use rama_core::error::BoxError;
-use rama_core::rt::Executor;
-use rama_core::{bytes::Bytes, combinators::Either};
+use rama_core::{bytes::Bytes, combinators::Either, telemetry::opentelemetry};
+use rama_core::{error::BoxError, telemetry::opentelemetry::trace::get_active_span};
+use rama_core::{rt::Executor, telemetry::opentelemetry::tracing::OpenTelemetrySpanExt};
 use rama_http_types::{
-    Method, Request, Response, StatusCode, dep::http_body, proto::h2::frame::SettingOrder,
+    Method, Request, Response, StatusCode, Version, dep::http_body,
+    opentelemetry::version_as_protocol_version, proto::h2::frame::SettingOrder,
 };
 use std::task::ready;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -210,11 +211,20 @@ where
         is_terminated: false,
     };
 
+    let task_span = tracing::trace_span!(
+        "h2::task",
+        otel.kind = "client",
+        network.protocol.name = "http",
+        network.protocol.version = version_as_protocol_version(Version::HTTP_2),
+    );
+    task_span.set_parent(opentelemetry::Context::new());
+    task_span.add_link(get_active_span(|span| span.span_context().clone()));
+
     exec.spawn_task(
         H2ClientFuture::Task {
             task: ConnTask::new(conn, conn_drop_rx, cancel_tx),
         }
-        .instrument(tracing::trace_span!("Client::h2::task")),
+        .instrument(task_span),
     );
 
     Ok(ClientTask {
@@ -566,10 +576,19 @@ where
                             conn_drop_ref: Some(conn_drop_ref),
                             ping: Some(ping),
                         };
+
+                        let pipe_span = tracing::trace_span!(
+                            "h2::pipe",
+                            otel.kind = "client",
+                            network.protocol.name = "http",
+                            network.protocol.version = version_as_protocol_version(Version::HTTP_2),
+                        );
+                        pipe_span.set_parent(opentelemetry::Context::new());
+                        pipe_span.add_link(get_active_span(|span| span.span_context().clone()));
+
                         // Clear send task
                         let fut: H2ClientFuture<_, T> = H2ClientFuture::Pipe { pipe };
-                        self.executor
-                            .spawn_task(fut.instrument(tracing::trace_span!("Client::h2::pipe")));
+                        self.executor.spawn_task(fut.instrument(pipe_span));
                     }
                 }
             }
@@ -578,6 +597,15 @@ where
         } else {
             Some(f.body_tx)
         };
+
+        let send_span = tracing::trace_span!(
+            "h2::send",
+            otel.kind = "client",
+            network.protocol.name = "http",
+            network.protocol.version = version_as_protocol_version(Version::HTTP_2),
+        );
+        send_span.set_parent(opentelemetry::Context::new());
+        send_span.add_link(get_active_span(|span| span.span_context().clone()));
 
         let fut: H2ClientFuture<_, T> = H2ClientFuture::Send {
             send_when: SendWhen {
@@ -589,8 +617,7 @@ where
                 call_back: Some(f.cb),
             },
         };
-        self.executor
-            .spawn_task(fut.instrument(tracing::trace_span!("Client::h2::send")));
+        self.executor.spawn_task(fut.instrument(send_span));
     }
 }
 
@@ -785,7 +812,7 @@ where
                 }
 
                 Poll::Ready(None) => {
-                    trace!("client::dispatch::Sender dropped");
+                    trace!("dispatch::Sender dropped");
                     return Poll::Ready(Ok(Dispatched::Shutdown));
                 }
 

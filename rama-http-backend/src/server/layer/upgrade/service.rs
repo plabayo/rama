@@ -3,7 +3,14 @@
 //! See [`UpgradeService`] for more details.
 
 use super::Upgraded;
-use rama_core::{Context, Service, context::Extensions, matcher::Matcher, service::BoxService};
+use rama_core::{
+    Context, Service,
+    context::Extensions,
+    matcher::Matcher,
+    service::BoxService,
+    telemetry::opentelemetry::{self, trace::get_active_span, tracing::OpenTelemetrySpanExt},
+};
+use rama_http::opentelemetry::version_as_protocol_version;
 use rama_http_types::Request;
 use rama_utils::macros::define_inner_service_accessors;
 use std::{convert::Infallible, fmt, sync::Arc};
@@ -100,13 +107,21 @@ where
             return match handler.responder.serve(ctx, req).await {
                 Ok((resp, ctx, mut req)) => {
                     let handler = handler.handler.clone();
+
                     let span = tracing::trace_span!(
-                        "Server::upgrade::serve",
+                        "upgrade::serve",
+                        otel.kind = "server",
                         http.request.method = %req.method().as_str(),
+                        url.full = %req.uri(),
                         url.path = %req.uri().path(),
                         url.query = req.uri().query().unwrap_or_default(),
                         url.scheme = %req.uri().scheme().map(|s| s.as_str()).unwrap_or_default(),
+                        network.protocol.name = "http",
+                        network.protocol.version = version_as_protocol_version(req.version()),
                     );
+                    span.set_parent(opentelemetry::Context::new());
+                    span.add_link(get_active_span(|span| span.span_context().clone()));
+
                     exec.spawn_task(
                         async move {
                             match rama_http_core::upgrade::on(&mut req).await {
