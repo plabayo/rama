@@ -10,36 +10,90 @@ pub trait EventDataWrite {
 /// Trait that can be implemented for a custom data type that is to be read (by a client).
 pub trait EventDataRead: Sized {
     fn read_data(raw_data: String) -> Result<Self, OpaqueError>;
+
+    fn read_data_borrowed(raw_data: &str) -> Result<Self, OpaqueError> {
+        Self::read_data(raw_data.to_owned())
+    }
+}
+
+macro_rules! write_str_data {
+    () => {
+        fn write_data(&self, w: &mut impl std::io::Write) -> Result<(), OpaqueError> {
+            w.write_all(self.as_bytes())
+                .context("write string event data")
+        }
+    };
 }
 
 impl EventDataWrite for &str {
-    #[inline]
-    fn write_data(&self, w: &mut impl std::io::Write) -> Result<(), OpaqueError> {
-        w.write_all(self.as_bytes())
-            .context("write String event data")
-    }
+    write_str_data!();
 }
 
 impl EventDataWrite for Arc<str> {
-    #[inline]
-    fn write_data(&self, w: &mut impl std::io::Write) -> Result<(), OpaqueError> {
-        w.write_all(self.as_bytes())
-            .context("write String event data")
-    }
+    write_str_data!();
 }
 
 impl EventDataWrite for String {
-    #[inline]
-    fn write_data(&self, w: &mut impl std::io::Write) -> Result<(), OpaqueError> {
-        w.write_all(self.as_bytes())
-            .context("write String event data")
-    }
+    write_str_data!();
 }
 
 impl EventDataRead for String {
     #[inline]
     fn read_data(raw_data: String) -> Result<Self, OpaqueError> {
         Ok(raw_data)
+    }
+}
+
+macro_rules! write_multiline_data {
+    () => {
+        fn write_data(&self, w: &mut impl std::io::Write) -> Result<(), OpaqueError> {
+            let mut iter = self.iter();
+            if let Some(mut next) = iter.next() {
+                for element in iter {
+                    next.write_data(w)?;
+                    next = element;
+                    write!(w, "\n").context("write newline")?;
+                }
+                next.write_data(w)?;
+            }
+            Ok(())
+        }
+    };
+}
+
+impl<const N: usize, T: EventDataWrite> EventDataWrite for [T; N] {
+    write_multiline_data!();
+}
+
+impl<T: EventDataWrite> EventDataWrite for [T] {
+    write_multiline_data!();
+}
+
+impl<T: EventDataWrite> EventDataWrite for Vec<T> {
+    write_multiline_data!();
+}
+
+impl<T: EventDataRead> EventDataRead for Vec<T> {
+    fn read_data(raw_data: String) -> Result<Self, OpaqueError> {
+        let n = raw_data.chars().filter(|&c| c == '\n' || c == '\r').count();
+        if n == 0 {
+            return Ok(vec![T::read_data(raw_data)?]);
+        }
+
+        let mut v = Vec::with_capacity(n);
+        for line in raw_data.split(['\n', '\r']) {
+            v.push(T::read_data_borrowed(line)?);
+        }
+        Ok(v)
+    }
+
+    fn read_data_borrowed(raw_data: &str) -> Result<Self, OpaqueError> {
+        let n = raw_data.chars().filter(|&c| c == '\n' || c == '\r').count();
+        let mut v = Vec::with_capacity(n);
+        for line in raw_data.split(['\n', '\r']) {
+            v.push(T::read_data_borrowed(line)?);
+        }
+        Ok(v)
     }
 }
 
@@ -81,9 +135,14 @@ impl<T: serde::Serialize> EventDataWrite for JsonEventData<T> {
 }
 
 impl<T: serde::de::DeserializeOwned> EventDataRead for JsonEventData<T> {
+    #[inline]
     fn read_data(raw_data: String) -> Result<Self, OpaqueError> {
+        Self::read_data_borrowed(&raw_data)
+    }
+
+    fn read_data_borrowed(raw_data: &str) -> Result<Self, OpaqueError> {
         Ok(Self(
-            serde_json::from_str(&raw_data).context("read json event data")?,
+            serde_json::from_str(raw_data).context("read json event data")?,
         ))
     }
 }

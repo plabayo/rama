@@ -542,6 +542,78 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_multiline_event_serialize() {
+        for (expected, event) in [
+            ("data: \n\n", event!(Vec::<String>::default(),)),
+            ("data: a\n\n", event!(vec!["a".to_owned()],)),
+            (
+                "data: a\ndata: b\n\n",
+                event!(vec!["a".to_owned(), "b".to_owned()],),
+            ),
+        ] {
+            let buffer = event.serialize().unwrap().try_into_string().await.unwrap();
+            assert_eq!(expected, buffer);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_multiline_event_deserialize() {
+        for (input, expected) in [
+            ("", None),
+            ("data: \n\n", Some(event!(vec![String::default()],))),
+            ("data: a\n\n", Some(event!(vec!["a".to_owned()],))),
+            (
+                "data: a\ndata: b\n\n",
+                Some(event!(vec!["a".to_owned(), "b".to_owned()],)),
+            ),
+        ] {
+            let mut buffer = input.to_owned();
+            let mut builder = EventBuilder::default();
+            let event_out: Option<Event<Vec<String>>> =
+                parse_event(&mut buffer, &mut builder).unwrap();
+            assert!(
+                buffer.is_empty(),
+                "input: '{input}'; buffer: '{buffer}'; builder: '{builder:?}'"
+            );
+            assert!(
+                !builder.is_complete,
+                "input: '{input}'; builder: '{builder:?}'"
+            );
+            assert_eq!(
+                Event::<Vec<String>>::default(),
+                builder.event,
+                "input: '{input}'"
+            );
+            assert_eq!(expected, event_out, "input: '{input}'");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_multiline_event_serialize_deserialize() {
+        type MultilineEvent = Event<Vec<String>>;
+
+        for event in [
+            event!(vec!["foo".to_owned(), "bar".to_owned()], event = "message",),
+            event!(
+                vec!["foo".to_owned()],
+                event = "final",
+                id = "L3",
+                comment = "this is",
+                comment = " a log",
+            ),
+        ] {
+            let mut buffer = event.serialize().unwrap().try_into_string().await.unwrap();
+            let mut builder = EventBuilder::default();
+            let event_out: MultilineEvent =
+                parse_event(&mut buffer, &mut builder).unwrap().unwrap();
+            assert!(buffer.is_empty());
+            assert!(!builder.is_complete);
+            assert_eq!(MultilineEvent::default(), builder.event);
+            assert_eq!(event, event_out);
+        }
+    }
+
+    #[tokio::test]
     async fn valid_data_fields() {
         for (input, expected) in [
             (
