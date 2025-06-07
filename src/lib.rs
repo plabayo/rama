@@ -379,7 +379,6 @@ pub use ::rama_tcp as tcp;
 #[doc(inline)]
 pub use ::rama_udp as udp;
 
-#[cfg(feature = "telemetry")]
 #[doc(inline)]
 pub use ::rama_core::telemetry;
 

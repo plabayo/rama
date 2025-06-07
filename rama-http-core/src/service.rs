@@ -1,8 +1,13 @@
 use rama_core::bytes::Bytes;
+use rama_core::telemetry::opentelemetry;
+use rama_core::telemetry::opentelemetry::trace::get_active_span;
+use rama_core::telemetry::opentelemetry::tracing::OpenTelemetrySpanExt;
 use rama_core::{Context, Service, error::BoxError};
+use rama_http::opentelemetry::version_as_protocol_version;
 use rama_http::service::web::response::IntoResponse;
 use rama_http_types::{Request, Response};
 use std::{convert::Infallible, fmt};
+use tracing::Instrument;
 
 pub trait HttpService<ReqBody>: sealed::Sealed<ReqBody> {
     #[doc(hidden)]
@@ -66,7 +71,22 @@ where
         let RamaHttpService { svc, ctx } = self.clone();
         async move {
             let req = req.map(rama_http_types::Body::new);
-            Ok(svc.serve(ctx, req).await?.into_response())
+
+            let span = tracing::trace_span!(
+                "http::serve",
+                otel.kind = "server",
+                http.request.method = %req.method().as_str(),
+                url.full = %req.uri(),
+                url.path = %req.uri().path(),
+                url.query = req.uri().query().unwrap_or_default(),
+                url.scheme = %req.uri().scheme().map(|s| s.as_str()).unwrap_or_default(),
+                network.protocol.name = "http",
+                network.protocol.version = version_as_protocol_version(req.version()),
+            );
+            span.set_parent(opentelemetry::Context::new());
+            span.add_link(get_active_span(|span| span.span_context().clone()));
+
+            Ok(svc.serve(ctx, req).instrument(span).await?.into_response())
         }
     }
 }

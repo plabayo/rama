@@ -211,13 +211,15 @@ where
                 .and_then(|ext| ext.get::<ClientSocketInfo>())
             {
                 Some(client_socket_info) => tracing::info!(
-                    status = %resp.status(),
-                    local_addr = ?client_socket_info.local_addr(),
-                    server_addr = %client_socket_info.peer_addr(),
+                    http.response.status_code = %resp.status(),
+                    network.local.port = client_socket_info.local_addr().map(|addr| addr.port().to_string()).unwrap_or_default(),
+                    network.local.address = client_socket_info.local_addr().map(|addr| addr.ip().to_string()).unwrap_or_default(),
+                    network.peer.port = %client_socket_info.peer_addr().port(),
+                    network.peer.address = %client_socket_info.peer_addr().ip(),
                     "http plain text proxy received response",
                 ),
                 None => tracing::info!(
-                    status = %resp.status(),
+                    http.response.status_code = %resp.status(),
                     "http plain text proxy received response, IP info unknown",
                 ),
             };

@@ -261,60 +261,68 @@ impl<S> Socks5ProxyConnector<S> {
                             }
                         }
                         DnsResolveIpMode::Dual | DnsResolveIpMode::DualPreferIpV4 => {
+                            use tracing::{Instrument, trace_span};
+
                             let (tx, mut rx) = mpsc::unbounded_channel();
 
-                            tokio::spawn({
-                                let tx = tx.clone();
-                                let domain = domain.clone();
-                                let dns_resolver = dns_resolver.clone();
-                                async move {
-                                    match dns_resolver.ipv4_lookup(domain).await {
-                                        Ok(ips) => {
-                                            if let Some(ip) =
-                                                ips.into_iter().choose(&mut rand::rng())
-                                            {
-                                                if let Err(err) = tx.send(IpAddr::V4(ip)) {
-                                                    tracing::trace!(
-                                                        ?err,
-                                                        %ip,
-                                                        "failed to send ipv4 lookup result"
-                                                    )
+                            tokio::spawn(
+                                {
+                                    let tx = tx.clone();
+                                    let domain = domain.clone();
+                                    let dns_resolver = dns_resolver.clone();
+                                    async move {
+                                        match dns_resolver.ipv4_lookup(domain).await {
+                                            Ok(ips) => {
+                                                if let Some(ip) =
+                                                    ips.into_iter().choose(&mut rand::rng())
+                                                {
+                                                    if let Err(err) = tx.send(IpAddr::V4(ip)) {
+                                                        tracing::trace!(
+                                                            ?err,
+                                                            %ip,
+                                                            "failed to send ipv4 lookup result"
+                                                        )
+                                                    }
                                                 }
                                             }
+                                            Err(err) => tracing::debug!(
+                                                ?err,
+                                                "failed to lookup ipv4 addresses for domain"
+                                            ),
                                         }
-                                        Err(err) => tracing::debug!(
-                                            ?err,
-                                            "failed to lookup ipv4 addresses for domain"
-                                        ),
                                     }
                                 }
-                            });
+                                .instrument(trace_span!("dns::ipv4_lookup")),
+                            );
 
-                            tokio::spawn({
-                                let domain = domain.clone();
-                                let dns_resolver = dns_resolver.clone();
-                                async move {
-                                    match dns_resolver.ipv6_lookup(domain).await {
-                                        Ok(ips) => {
-                                            if let Some(ip) =
-                                                ips.into_iter().choose(&mut rand::rng())
-                                            {
-                                                if let Err(err) = tx.send(IpAddr::V6(ip)) {
-                                                    tracing::trace!(
-                                                        ?err,
-                                                        %ip,
-                                                        "failed to send ipv6 lookup result"
-                                                    )
+                            tokio::spawn(
+                                {
+                                    let domain = domain.clone();
+                                    let dns_resolver = dns_resolver.clone();
+                                    async move {
+                                        match dns_resolver.ipv6_lookup(domain).await {
+                                            Ok(ips) => {
+                                                if let Some(ip) =
+                                                    ips.into_iter().choose(&mut rand::rng())
+                                                {
+                                                    if let Err(err) = tx.send(IpAddr::V6(ip)) {
+                                                        tracing::trace!(
+                                                            ?err,
+                                                            %ip,
+                                                            "failed to send ipv6 lookup result"
+                                                        )
+                                                    }
                                                 }
                                             }
+                                            Err(err) => tracing::debug!(
+                                                ?err,
+                                                "failed to lookup ipv6 addresses for domain"
+                                            ),
                                         }
-                                        Err(err) => tracing::debug!(
-                                            ?err,
-                                            "failed to lookup ipv6 addresses for domain"
-                                        ),
                                     }
                                 }
-                            });
+                                .instrument(trace_span!("dns::ipv6_lookup")),
+                            );
 
                             rx.recv()
                                 .await

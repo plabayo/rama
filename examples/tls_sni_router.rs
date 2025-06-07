@@ -44,8 +44,7 @@ use rama::{
     net::{
         address::{Domain, Host, SocketAddress},
         stream::Stream,
-        tls::server::{SelfSignedData, ServerAuth, ServerConfig},
-        tls::server::{SniRequest, SniRouter},
+        tls::server::{SelfSignedData, ServerAuth, ServerConfig, SniRequest, SniRouter},
     },
     rt::Executor,
     service::service_fn,
@@ -157,8 +156,9 @@ fn spawn_https_server(guard: ShutdownGuard, name: &'static str, interface: Socke
                 ),
             )
             .instrument(tracing::debug_span!(
-                "https::serve",
-                service.name = %name,
+                "tcp::serve(https)",
+                server.service.name = %name,
+                otel.kind = "server",
             ))
             .await;
     });

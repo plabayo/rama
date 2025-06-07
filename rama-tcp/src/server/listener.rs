@@ -4,6 +4,9 @@ use rama_core::error::BoxError;
 use rama_core::error::ErrorContext;
 use rama_core::graceful::ShutdownGuard;
 use rama_core::rt::Executor;
+use rama_core::telemetry::opentelemetry;
+use rama_core::telemetry::opentelemetry::trace::get_active_span;
+use rama_core::telemetry::opentelemetry::tracing::OpenTelemetrySpanExt;
 use rama_net::address::SocketAddress;
 use rama_net::socket::Interface;
 use rama_net::stream::SocketInfo;
@@ -374,12 +377,31 @@ where
             let service = service.clone();
             let mut ctx = ctx.clone();
 
-            tokio::spawn(async move {
-                let local_addr = socket.local_addr().ok();
-                ctx.insert(SocketInfo::new(local_addr, peer_addr));
+            let local_addr = socket.local_addr().ok();
+            let trace_local_addr = local_addr
+                .map(Into::into)
+                .unwrap_or_else(|| SocketAddress::default_ipv4(0));
 
-                let _ = service.serve(ctx, socket).await;
-            });
+            let span = tracing::trace_span!(
+                "tcp::serve",
+                otel.kind = "server",
+                network.local.port = %trace_local_addr.port(),
+                network.local.address = %trace_local_addr.ip_addr(),
+                network.peer.port = %peer_addr.port(),
+                network.peer.address = %peer_addr.ip(),
+                network.protocol.name = "tcp",
+            );
+            span.set_parent(opentelemetry::Context::new());
+            span.add_link(get_active_span(|span| span.span_context().clone()));
+
+            tokio::spawn(
+                async move {
+                    ctx.insert(SocketInfo::new(local_addr, peer_addr));
+
+                    let _ = service.serve(ctx, socket).await;
+                }
+                .instrument(span),
+            );
         }
     }
 
@@ -407,17 +429,28 @@ where
                         Ok((socket, peer_addr)) => {
                             let service = service.clone();
                             let mut ctx = ctx.clone();
+
                             let local_addr = socket.local_addr().ok();
+                            let trace_local_addr = local_addr
+                                .map(Into::into)
+                                .unwrap_or_else(|| SocketAddress::default_ipv4(0));
+
+                            let span = tracing::trace_span!(
+                                "tcp::serve_graceful",
+                                otel.kind = "server",
+                                network.local.port = %trace_local_addr.port(),
+                                network.local.address = %trace_local_addr.ip_addr(),
+                                network.peer.port = %peer_addr.port(),
+                                network.peer.address = %peer_addr.ip(),
+                                network.protocol.name = "tcp",
+                            );
+                            span.set_parent(opentelemetry::Context::new());
+                            span.add_link(get_active_span(|span| span.span_context().clone()));
 
                             guard.spawn_task(async move {
                                 ctx.insert(SocketInfo::new(local_addr, peer_addr));
-
                                 let _ = service.serve(ctx, socket).await;
-                            }.instrument(tracing::trace_span!(
-                                "Server::tcp::serve",
-                                local_addr = %local_addr.map(Into::into).unwrap_or_else(|| SocketAddress::default_ipv4(0)),
-                                %peer_addr,
-                            )));
+                            }.instrument(span));
                         }
                         Err(err) => {
                             handle_accept_err(err).await;

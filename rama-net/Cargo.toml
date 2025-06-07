@@ -21,7 +21,6 @@ rustdoc-args = ["--cfg", "docsrs"]
 default = []
 http = ["dep:rama-http-types", "dep:sha2", "dep:itertools", "dep:hex"]
 tls = ["dep:hex", "dep:md5", "dep:sha2", "dep:itertools"]
-telemetry = ["rama-core/telemetry"]
 
 [dependencies]
 base64 = { workspace = true }

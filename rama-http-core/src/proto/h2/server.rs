@@ -8,6 +8,10 @@ use pin_project_lite::pin_project;
 use rama_core::bytes::Bytes;
 use rama_core::error::BoxError;
 use rama_core::rt::Executor;
+use rama_core::telemetry::opentelemetry;
+use rama_core::telemetry::opentelemetry::trace::get_active_span;
+use rama_core::telemetry::opentelemetry::tracing::OpenTelemetrySpanExt;
+use rama_http::opentelemetry::version_as_protocol_version;
 use rama_http_types::{Method, Request, Response, header};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tracing::{Instrument, debug, trace, warn};
@@ -280,6 +284,20 @@ where
                             req.extensions_mut().insert(Protocol::from_inner(protocol));
                         }
 
+                        let serve_span = tracing::trace_span!(
+                            "h2::stream",
+                            otel.kind = "server",
+                            http.request.method = %req.method().as_str(),
+                            url.full = %req.uri(),
+                            url.path = %req.uri().path(),
+                            url.query = req.uri().query().unwrap_or_default(),
+                            url.scheme = %req.uri().scheme().map(|s| s.as_str()).unwrap_or_default(),
+                            network.protocol.name = "http",
+                            network.protocol.version = version_as_protocol_version(req.version()),
+                        );
+                        serve_span.set_parent(opentelemetry::Context::new());
+                        serve_span.add_link(get_active_span(|span| span.span_context().clone()));
+
                         let fut = H2Stream::new(
                             service.serve_http(req),
                             connect_parts,
@@ -287,7 +305,7 @@ where
                             self.date_header,
                         );
 
-                        exec.spawn_task(fut.instrument(tracing::trace_span!("Server::h2::stream")));
+                        exec.spawn_task(fut.instrument(serve_span));
                     }
                     Some(Err(e)) => {
                         return Poll::Ready(Err(crate::Error::new_h2(e)));

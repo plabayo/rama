@@ -1,5 +1,4 @@
 use crate::graceful::ShutdownGuard;
-use tracing::instrument::Instrument;
 
 /// Future executor that utilises `tokio` threads.
 #[derive(Default, Debug, Clone)]
@@ -28,8 +27,8 @@ impl Executor {
         F: Future<Output: Send + 'static> + Send + 'static,
     {
         match &self.guard {
-            Some(guard) => guard.spawn_task(future.in_current_span()),
-            None => tokio::spawn(future.in_current_span()),
+            Some(guard) => guard.spawn_task(future),
+            None => tokio::spawn(future),
         }
     }
 

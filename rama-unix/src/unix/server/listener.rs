@@ -2,6 +2,9 @@ use rama_core::Context;
 use rama_core::Service;
 use rama_core::graceful::ShutdownGuard;
 use rama_core::rt::Executor;
+use rama_core::telemetry::opentelemetry;
+use rama_core::telemetry::opentelemetry::trace::get_active_span;
+use rama_core::telemetry::opentelemetry::tracing::OpenTelemetrySpanExt;
 use std::fmt;
 use std::io;
 use std::os::fd::AsFd;
@@ -310,10 +313,26 @@ where
             let service = service.clone();
             let mut ctx = ctx.clone();
 
-            tokio::spawn(async move {
-                ctx.insert(UnixSocketInfo::new(socket.local_addr().ok(), peer_addr));
-                let _ = service.serve(ctx, socket).await;
-            });
+            let peer_addr: UnixSocketAddress = peer_addr.into();
+            let local_addr: Option<UnixSocketAddress> = socket.local_addr().ok().map(Into::into);
+
+            let serve_span = tracing::trace_span!(
+                "unix::serve",
+                otel.kind = "server",
+                network.local.address = ?local_addr,
+                network.peer.address = ?peer_addr,
+                network.protocol.name = "uds",
+            );
+            serve_span.set_parent(opentelemetry::Context::new());
+            serve_span.add_link(get_active_span(|span| span.span_context().clone()));
+
+            tokio::spawn(
+                async move {
+                    ctx.insert(UnixSocketInfo::new(socket.local_addr().ok(), peer_addr));
+                    let _ = service.serve(ctx, socket).await;
+                }
+                .instrument(serve_span),
+            );
         }
     }
 
@@ -346,10 +365,14 @@ where
                             let local_addr: Option<UnixSocketAddress> = socket.local_addr().ok().map(Into::into);
 
                             let serve_span = tracing::trace_span!(
-                                "Server::unix::serve",
-                                local_addr = ?local_addr,
-                                ?peer_addr,
+                                "unix::serve_graceful",
+                                otel.kind = "server",
+                                network.local.address = ?local_addr,
+                                network.peer.address = ?peer_addr,
+                                network.protocol.name = "uds",
                             );
+                            serve_span.set_parent(opentelemetry::Context::new());
+                            serve_span.add_link(get_active_span(|span| span.span_context().clone()));
 
                             guard.spawn_task(async move {
                                 ctx.insert(UnixSocketInfo::new(local_addr, peer_addr));

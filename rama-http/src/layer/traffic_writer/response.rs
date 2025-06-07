@@ -6,11 +6,15 @@ use crate::{Body, Request, Response};
 use rama_core::bytes::Bytes;
 use rama_core::error::{BoxError, ErrorContext, OpaqueError};
 use rama_core::rt::Executor;
+use rama_core::telemetry::opentelemetry;
+use rama_core::telemetry::opentelemetry::trace::get_active_span;
+use rama_core::telemetry::opentelemetry::tracing::OpenTelemetrySpanExt;
 use rama_core::{Context, Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt::Debug;
 use tokio::io::{AsyncWrite, stderr, stdout};
 use tokio::sync::mpsc::{Sender, UnboundedSender, channel, unbounded_channel};
+use tracing::Instrument;
 
 /// Layer that applies [`ResponseWriterService`] which prints the http response in std format.
 pub struct ResponseWriterLayer<W> {
@@ -72,15 +76,25 @@ impl ResponseWriterLayer<UnboundedSender<Response>> {
             Some(WriterMode::Body) => (false, true),
             None => (false, false),
         };
-        executor.spawn_task(async move {
-            while let Some(res) = rx.recv().await {
-                if let Err(err) =
-                    write_http_response(&mut writer, res, write_headers, write_body).await
-                {
-                    tracing::error!(err = %err, "failed to write http response to writer")
+
+        let span =
+            tracing::trace_span!("TrafficWriter::response::unbounded", otel.kind = "consumer");
+        span.set_parent(opentelemetry::Context::new());
+        span.add_link(get_active_span(|span| span.span_context().clone()));
+
+        executor.spawn_task(
+            async move {
+                while let Some(res) = rx.recv().await {
+                    if let Err(err) =
+                        write_http_response(&mut writer, res, write_headers, write_body).await
+                    {
+                        tracing::error!(err = %err, "failed to write http response to writer")
+                    }
                 }
             }
-        });
+            .instrument(span),
+        );
+
         Self { writer: tx }
     }
 
@@ -116,15 +130,23 @@ impl ResponseWriterLayer<Sender<Response>> {
             Some(WriterMode::Body) => (false, true),
             None => (false, false),
         };
-        executor.spawn_task(async move {
-            while let Some(res) = rx.recv().await {
-                if let Err(err) =
-                    write_http_response(&mut writer, res, write_headers, write_body).await
-                {
-                    tracing::error!(err = %err, "failed to write http response to writer")
+
+        let span = tracing::trace_span!("TrafficWriter::response::bounded", otel.kind = "consumer");
+        span.set_parent(opentelemetry::Context::new());
+        span.add_link(get_active_span(|span| span.span_context().clone()));
+
+        executor.spawn_task(
+            async move {
+                while let Some(res) = rx.recv().await {
+                    if let Err(err) =
+                        write_http_response(&mut writer, res, write_headers, write_body).await
+                    {
+                        tracing::error!(err = %err, "failed to write http response to writer")
+                    }
                 }
             }
-        });
+            .instrument(span),
+        );
         Self { writer: tx }
     }
 

@@ -24,7 +24,6 @@ hex = { workspace = true }
 itertools = { workspace = true }
 mimalloc = { workspace = true, optional = true }
 rama = { version = "0.3.0-alpha.1", path = "..", features = [
-    "telemetry",
     "compression",
     "boring",
     "cli",

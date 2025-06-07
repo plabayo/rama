@@ -19,18 +19,13 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 default = []
-telemetry = [
-    "dep:opentelemetry",
-    "dep:opentelemetry_sdk",
-    "dep:opentelemetry-semantic-conventions",
-]
 
 [dependencies]
 bytes = { workspace = true }
 futures-lite = { workspace = true }
-opentelemetry = { workspace = true, optional = true }
-opentelemetry-semantic-conventions = { workspace = true, optional = true }
-opentelemetry_sdk = { workspace = true, optional = true }
+opentelemetry = { workspace = true }
+opentelemetry-semantic-conventions = { workspace = true }
+opentelemetry_sdk = { workspace = true }
 parking_lot = { workspace = true }
 rama-error = { workspace = true }
 rama-macros = { workspace = true }
@@ -38,6 +33,7 @@ rama-utils = { workspace = true }
 tokio = { workspace = true, features = ["macros", "fs", "io-std"] }
 tokio-graceful = { workspace = true }
 tracing = { workspace = true }
+tracing-opentelemetry = { workspace = true }
 
 [dev-dependencies]
 quickcheck = { workspace = true }
