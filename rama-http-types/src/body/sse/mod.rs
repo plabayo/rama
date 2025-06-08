@@ -41,7 +41,10 @@ mod utf8_stream;
 #[doc(inline)]
 pub use {
     event::{Event, EventBuildError},
-    event_data::{EventDataRead, EventDataWrite, JsonEventData},
+    event_data::{
+        EventDataJsonReader, EventDataLineReader, EventDataMultiLineReader, EventDataRead,
+        EventDataStringReader, EventDataWrite, JsonEventData,
+    },
     event_stream::EventStream,
 };
 

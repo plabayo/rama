@@ -1,6 +1,8 @@
 use rama_error::{ErrorContext, OpaqueError};
 use rama_utils::macros::impl_deref;
-use std::{fmt, sync::Arc};
+use std::{fmt, marker::PhantomData, sync::Arc};
+
+use crate::sse::parser::is_lf;
 
 /// Trait that can be implemented for a custom data type that is to be written (by a server).
 pub trait EventDataWrite {
@@ -9,11 +11,17 @@ pub trait EventDataWrite {
 
 /// Trait that can be implemented for a custom data type that is to be read (by a client).
 pub trait EventDataRead: Sized {
-    fn read_data(raw_data: String) -> Result<Self, OpaqueError>;
+    type Reader: EventDataLineReader<Data = Self>;
 
-    fn read_data_borrowed(raw_data: &str) -> Result<Self, OpaqueError> {
-        Self::read_data(raw_data.to_owned())
-    }
+    fn line_reader() -> Self::Reader;
+}
+
+pub trait EventDataLineReader {
+    type Data: EventDataRead;
+
+    fn read_line(&mut self, line: &str) -> Result<(), OpaqueError>;
+
+    fn data(&mut self) -> Result<Option<Self::Data>, OpaqueError>;
 }
 
 macro_rules! write_str_data {
@@ -37,10 +45,42 @@ impl EventDataWrite for String {
     write_str_data!();
 }
 
+#[derive(Debug)]
+/// [`EventDataLineReader`] for the [`EventDataRead`] implementation of [`String`].
+pub struct EventDataStringReader {
+    buf: Option<String>,
+}
+
+impl EventDataLineReader for EventDataStringReader {
+    type Data = String;
+
+    fn read_line(&mut self, line: &str) -> Result<(), OpaqueError> {
+        let buf = self.buf.get_or_insert_default();
+        buf.push_str(line);
+        buf.push('\u{000A}');
+        Ok(())
+    }
+
+    fn data(&mut self) -> Result<Option<Self::Data>, OpaqueError> {
+        let mut data = match self.buf.take() {
+            Some(data) => data,
+            None => return Ok(None),
+        };
+
+        if data.chars().next_back().map(is_lf).unwrap_or_default() {
+            data.pop();
+        }
+        Ok(Some(data))
+    }
+}
+
 impl EventDataRead for String {
-    #[inline]
-    fn read_data(raw_data: String) -> Result<Self, OpaqueError> {
-        Ok(raw_data)
+    type Reader = EventDataStringReader;
+
+    fn line_reader() -> Self::Reader {
+        EventDataStringReader {
+            buf: Default::default(),
+        }
     }
 }
 
@@ -73,27 +113,48 @@ impl<T: EventDataWrite> EventDataWrite for Vec<T> {
     write_multiline_data!();
 }
 
-impl<T: EventDataRead> EventDataRead for Vec<T> {
-    fn read_data(raw_data: String) -> Result<Self, OpaqueError> {
-        let n = raw_data.chars().filter(|&c| c == '\n' || c == '\r').count();
-        if n == 0 {
-            return Ok(vec![T::read_data(raw_data)?]);
-        }
+/// [`EventDataLineReader`] for the [`EventDataRead`] implementation of [`Vec`].
+pub struct EventDataMultiLineReader<T> {
+    lines: Vec<T>,
+}
 
-        let mut v = Vec::with_capacity(n);
-        for line in raw_data.split(['\n', '\r']) {
-            v.push(T::read_data_borrowed(line)?);
+impl<T: fmt::Debug> fmt::Debug for EventDataMultiLineReader<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("EventDataMultiLineReader")
+            .field("lines", &self.lines)
+            .finish()
+    }
+}
+
+impl<T: EventDataRead> EventDataLineReader for EventDataMultiLineReader<T> {
+    type Data = Vec<T>;
+
+    fn read_line(&mut self, line: &str) -> Result<(), OpaqueError> {
+        let mut reader = T::line_reader();
+        reader.read_line(line)?;
+        if let Some(data) = reader.data()? {
+            self.lines.push(data);
         }
-        Ok(v)
+        Ok(())
     }
 
-    fn read_data_borrowed(raw_data: &str) -> Result<Self, OpaqueError> {
-        let n = raw_data.chars().filter(|&c| c == '\n' || c == '\r').count();
-        let mut v = Vec::with_capacity(n);
-        for line in raw_data.split(['\n', '\r']) {
-            v.push(T::read_data_borrowed(line)?);
+    fn data(&mut self) -> Result<Option<Self::Data>, OpaqueError> {
+        if self.lines.is_empty() {
+            return Ok(None);
         }
-        Ok(v)
+
+        let lines = std::mem::take(&mut self.lines);
+        Ok(Some(lines))
+    }
+}
+
+impl<T: EventDataRead> EventDataRead for Vec<T> {
+    type Reader = EventDataMultiLineReader<T>;
+
+    fn line_reader() -> Self::Reader {
+        EventDataMultiLineReader {
+            lines: Default::default(),
+        }
     }
 }
 
@@ -134,16 +195,51 @@ impl<T: serde::Serialize> EventDataWrite for JsonEventData<T> {
     }
 }
 
-impl<T: serde::de::DeserializeOwned> EventDataRead for JsonEventData<T> {
-    #[inline]
-    fn read_data(raw_data: String) -> Result<Self, OpaqueError> {
-        Self::read_data_borrowed(&raw_data)
+/// [`EventDataLineReader`] for the [`EventDataRead`] implementation of any
+/// json-compatible [`DeserializeOwned`].
+///
+/// [`DeserializeOwned`]: serde::de::DeserializeOwned
+pub struct EventDataJsonReader<T> {
+    buf: String,
+    _phantom: PhantomData<fn() -> T>,
+}
+
+impl<T> fmt::Debug for EventDataJsonReader<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("EventDataJsonReader")
+            .field("buf", &self.buf)
+            .field(
+                "_phantom",
+                &format_args!("{}", std::any::type_name::<fn() -> T>()),
+            )
+            .finish()
+    }
+}
+
+impl<T: serde::de::DeserializeOwned> EventDataLineReader for EventDataJsonReader<T> {
+    type Data = JsonEventData<T>;
+
+    fn read_line(&mut self, line: &str) -> Result<(), OpaqueError> {
+        self.buf.push_str(line);
+        self.buf.push('\u{000A}');
+        Ok(())
     }
 
-    fn read_data_borrowed(raw_data: &str) -> Result<Self, OpaqueError> {
-        Ok(Self(
-            serde_json::from_str(raw_data).context("read json event data")?,
-        ))
+    fn data(&mut self) -> Result<Option<Self::Data>, OpaqueError> {
+        let data: T = serde_json::from_str(&self.buf).context("read json event data")?;
+        self.buf.clear();
+        Ok(Some(JsonEventData(data)))
+    }
+}
+
+impl<T: serde::de::DeserializeOwned> EventDataRead for JsonEventData<T> {
+    type Reader = EventDataJsonReader<T>;
+
+    fn line_reader() -> Self::Reader {
+        EventDataJsonReader {
+            buf: Default::default(),
+            _phantom: PhantomData,
+        }
     }
 }
 

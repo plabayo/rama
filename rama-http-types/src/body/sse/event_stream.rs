@@ -1,4 +1,6 @@
-use super::parser::{RawEventLine, is_bom, is_lf, line};
+use crate::sse::event_data::EventDataLineReader;
+
+use super::parser::{RawEventLine, is_bom, line};
 use super::utf8_stream::Utf8Stream;
 use super::{Event, EventBuildError, EventDataRead};
 use futures_core::stream::Stream;
@@ -10,26 +12,30 @@ use std::fmt;
 use std::marker::PhantomData;
 use std::pin::Pin;
 
-struct EventBuilder<T> {
-    raw_data: Option<String>,
+struct EventBuilder<T: EventDataRead> {
+    reader: T::Reader,
     event: Event<T>,
     is_complete: bool,
 }
 
-impl<T: fmt::Debug> fmt::Debug for EventBuilder<T> {
+impl<T> fmt::Debug for EventBuilder<T>
+where
+    T: EventDataRead + fmt::Debug,
+    T::Reader: fmt::Debug,
+{
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("EventBuilder")
-            .field("raw_data", &self.raw_data)
+            .field("reader", &self.reader)
             .field("event", &self.event)
             .field("is_complete", &self.is_complete)
             .finish()
     }
 }
 
-impl<T> Default for EventBuilder<T> {
+impl<T: EventDataRead> Default for EventBuilder<T> {
     fn default() -> Self {
         Self {
-            raw_data: Default::default(),
+            reader: T::line_reader(),
             event: Default::default(),
             is_complete: false,
         }
@@ -57,7 +63,7 @@ impl<T: EventDataRead> EventBuilder<T> {
     ///
     /// -> Otherwise
     ///    The field is ignored.
-    fn add(&mut self, line: RawEventLine) {
+    fn add(&mut self, line: RawEventLine) -> Result<(), OpaqueError> {
         match line {
             RawEventLine::Field(field, val) => match field {
                 "event" => {
@@ -66,9 +72,7 @@ impl<T: EventDataRead> EventBuilder<T> {
                     }
                 }
                 "data" => {
-                    let raw_data = self.raw_data.get_or_insert_default();
-                    raw_data.push_str(val.unwrap_or(""));
-                    raw_data.push('\u{000A}');
+                    self.reader.read_line(val.unwrap_or(""))?;
                 }
                 "id" => {
                     if let Some(val) = val {
@@ -95,6 +99,7 @@ impl<T: EventDataRead> EventBuilder<T> {
             }
             RawEventLine::Empty => self.is_complete = true,
         }
+        Ok(())
     }
 
     /// From the HTML spec
@@ -120,11 +125,8 @@ impl<T: EventDataRead> EventBuilder<T> {
     fn try_dispatch(&mut self) -> Result<Event<T>, OpaqueError> {
         self.is_complete = false;
         let mut event = std::mem::take(&mut self.event);
-        if let Some(mut raw_data) = self.raw_data.take() {
-            if raw_data.chars().next_back().map(is_lf).unwrap_or_default() {
-                raw_data.pop();
-            }
-            event.set_data(T::read_data(raw_data)?);
+        if let Some(data) = self.reader.data()? {
+            event.set_data(data);
         }
         Ok(event)
     }
@@ -148,7 +150,7 @@ impl EventStreamState {
 
 pin_project! {
     /// A Stream of SSE's used by the client.
-    pub struct EventStream<S, T = String> {
+    pub struct EventStream<S, T: EventDataRead = String> {
         #[pin]
         stream: Utf8Stream<S>,
         buffer: String,
@@ -159,7 +161,7 @@ pin_project! {
     }
 }
 
-impl<S, T> EventStream<S, T> {
+impl<S, T: EventDataRead> EventStream<S, T> {
     /// Initialize the EventStream with a Stream
     pub fn new(stream: S) -> Self {
         Self {
@@ -201,7 +203,7 @@ fn parse_event<T: EventDataRead>(
     loop {
         match line(buffer.as_ref()) {
             Ok((rem, next_line)) => {
-                builder.add(next_line);
+                builder.add(next_line)?;
                 let consumed = buffer.len() - rem.len();
                 let rem = buffer.split_off(consumed);
                 *buffer = rem;
