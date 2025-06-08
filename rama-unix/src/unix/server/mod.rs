@@ -12,6 +12,7 @@
 //! #[tokio::main]
 //! async fn main() {
 //!     UnixListener::bind_path("/tmp/example.socket")
+//!         .await
 //!         .expect("bind Unix Listener")
 //!         .serve(service_fn(async |mut stream: UnixStream| {
 //!             stream
