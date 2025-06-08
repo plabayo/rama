@@ -76,6 +76,7 @@ impl MergeFragments {
 }
 
 impl EventDataWrite for MergeFragments {
+    #[allow(clippy::write_with_newline)]
     fn write_data(&self, w: &mut impl std::io::Write) -> Result<(), OpaqueError> {
         if let Some(selector) = &self.selector {
             write!(w, "selector {}\n", selector).context("MergeFragments: write selector")?;

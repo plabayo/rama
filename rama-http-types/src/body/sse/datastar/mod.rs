@@ -125,9 +125,7 @@ impl EventDataLineReader for EventDataReader {
                         .read_line(&line)
                         .context("EventData: MergeFragments: read line")?;
                 }
-                reader
-                    .data(event)
-                    .map(|v| v.map(|v| EventData::MergeFragments(v)))
+                reader.data(event).map(|v| v.map(EventData::MergeFragments))
             }
             EventType::MergeSignals => {
                 let mut reader = MergeSignals::<String>::line_reader();
@@ -136,9 +134,7 @@ impl EventDataLineReader for EventDataReader {
                         .read_line(&line)
                         .context("EventData: MergeSignals: read line")?;
                 }
-                reader
-                    .data(event)
-                    .map(|v| v.map(|v| EventData::MergeSignals(v)))
+                reader.data(event).map(|v| v.map(EventData::MergeSignals))
             }
             EventType::RemoveFragments => {
                 let mut reader = RemoveFragments::line_reader();
@@ -149,7 +145,7 @@ impl EventDataLineReader for EventDataReader {
                 }
                 reader
                     .data(event)
-                    .map(|v| v.map(|v| EventData::RemoveFragments(v)))
+                    .map(|v| v.map(EventData::RemoveFragments))
             }
             EventType::RemoveSignals => {
                 let mut reader = RemoveSignals::line_reader();
@@ -158,9 +154,7 @@ impl EventDataLineReader for EventDataReader {
                         .read_line(&line)
                         .context("EventData: RemoveSignals: read line")?;
                 }
-                reader
-                    .data(event)
-                    .map(|v| v.map(|v| EventData::RemoveSignals(v)))
+                reader.data(event).map(|v| v.map(EventData::RemoveSignals))
             }
             EventType::ExecuteScript => {
                 let mut reader = ExecuteScript::line_reader();
@@ -169,9 +163,7 @@ impl EventDataLineReader for EventDataReader {
                         .read_line(&line)
                         .context("EventData: ExecuteScript: read line")?;
                 }
-                reader
-                    .data(event)
-                    .map(|v| v.map(|v| EventData::ExecuteScript(v)))
+                reader.data(event).map(|v| v.map(EventData::ExecuteScript))
             }
             EventType::Unknown(event_type) => {
                 tracing::trace!(%event_type, "ignore datastar event with unknown event type");

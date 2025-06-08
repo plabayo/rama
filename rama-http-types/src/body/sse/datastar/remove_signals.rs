@@ -40,6 +40,7 @@ impl RemoveSignals {
 }
 
 impl EventDataWrite for RemoveSignals {
+    #[allow(clippy::write_with_newline)]
     fn write_data(&self, w: &mut impl std::io::Write) -> Result<(), OpaqueError> {
         let mut paths = self.paths.iter();
         let mut next_path = paths

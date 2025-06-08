@@ -3,7 +3,6 @@ use crate::sse::{
 };
 use mime::Mime;
 use rama_error::{ErrorContext, OpaqueError};
-use smallvec::{SmallVec, smallvec};
 use smol_str::SmolStr;
 use std::{borrow::Cow, str::FromStr};
 
@@ -24,7 +23,7 @@ pub struct ExecuteScript {
     ///
     /// Each item in the array ***must*** be a string in the format `key value`,
     /// boolean value used in cased of boolean attributes.
-    pub attributes: Option<SmallVec<[ScriptAttribute; 4]>>,
+    pub attributes: Option<Vec<ScriptAttribute>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -124,7 +123,7 @@ impl ExecuteScript {
         ///
         /// This overwrites any previously added script attribute.
         pub fn attribute(mut self, attribute: ScriptAttribute) -> Self {
-            self.attributes = Some(smallvec![attribute]);
+            self.attributes = Some(vec![attribute]);
             self
         }
     }
@@ -157,6 +156,7 @@ impl ExecuteScript {
 }
 
 impl EventDataWrite for ExecuteScript {
+    #[allow(clippy::write_with_newline)]
     fn write_data(&self, w: &mut impl std::io::Write) -> Result<(), OpaqueError> {
         let mut script_lines = self.script.lines();
         let mut next_script_line = script_lines
