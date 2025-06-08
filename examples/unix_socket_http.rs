@@ -41,7 +41,9 @@ mod unix_example {
 
         const PATH: &str = "/tmp/rama_example_unix_http.socket";
 
-        let listener = UnixListener::bind_path(PATH).expect("bind Unix socket");
+        let listener = UnixListener::bind_path(PATH)
+            .await
+            .expect("bind Unix socket");
 
         graceful.spawn_task_fn(async |guard| {
             tracing::info!(%PATH, "ready to unix-serve");

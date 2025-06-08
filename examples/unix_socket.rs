@@ -46,6 +46,7 @@ mod unix_example {
 
         let listener = UnixListener::build_with_state(graceful.guard())
             .bind_path(PATH)
+            .await
             .expect("bind Unix socket");
 
         graceful.spawn_task_fn(async |guard| {

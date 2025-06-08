@@ -81,12 +81,22 @@ where
     /// Creates a new [`UnixListener`], which will be bound to the specified path.
     ///
     /// The returned listener is ready for accepting connections.
-    pub fn bind_path(self, path: impl AsRef<Path>) -> Result<UnixListener<S>, io::Error> {
+    pub async fn bind_path(self, path: impl AsRef<Path>) -> Result<UnixListener<S>, io::Error> {
         let path = path.as_ref();
+
+        if tokio::fs::try_exists(path).await.unwrap_or_default() {
+            tracing::trace!(?path, "try delete existing UNIX socket path");
+            // some errors might lead to false positives (e.g. no permissions),
+            // this is ok as this is a best-effort cleanup to anyway only be of use
+            // if we have permission to do so
+            tokio::fs::remove_file(path).await?;
+        }
+
         let inner = TokioUnixListener::bind(path)?;
         let cleanup = Some(UnixSocketCleanup {
             path: path.to_owned(),
         });
+
         Ok(UnixListener {
             inner,
             state: self.state,
@@ -173,8 +183,8 @@ impl UnixListener<()> {
     /// Creates a new [`UnixListener`], which will be bound to the specified path.
     ///
     /// The returned listener is ready for accepting connections.
-    pub fn bind_path(path: impl AsRef<Path>) -> Result<UnixListener<()>, io::Error> {
-        UnixListenerBuilder::default().bind_path(path)
+    pub async fn bind_path(path: impl AsRef<Path>) -> Result<UnixListener<()>, io::Error> {
+        UnixListenerBuilder::default().bind_path(path).await
     }
 
     #[inline]

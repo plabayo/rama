@@ -191,7 +191,7 @@ where
         Response: IntoResponse + Send + 'static,
         P: AsRef<Path>,
     {
-        let unix = UnixListener::bind_path(path)?;
+        let unix = UnixListener::bind_path(path).await?;
         let service = HttpService::new(self.builder, service);
         match self.guard {
             Some(guard) => unix.serve_graceful(guard, service).await,
@@ -246,7 +246,9 @@ where
         Response: IntoResponse + Send + 'static,
         P: AsRef<Path>,
     {
-        let unix = UnixListener::build_with_state(state).bind_path(path)?;
+        let unix = UnixListener::build_with_state(state)
+            .bind_path(path)
+            .await?;
         let service = HttpService::new(self.builder, service);
         match self.guard {
             Some(guard) => unix.serve_graceful(guard, service).await,
