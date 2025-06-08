@@ -2,7 +2,6 @@ use crate::dep::http_body::{self, Body as HttpBody};
 use crate::headers::encoding::{SupportedEncodings, parse_accept_encoding_headers};
 use crate::layer::set_status::SetStatus;
 use crate::{Body, HeaderValue, Method, Request, Response, StatusCode, header};
-use bytes::Bytes;
 use include_dir::Dir;
 use percent_encoding::percent_decode;
 use rama_core::bytes::Bytes;
@@ -48,7 +47,7 @@ const DEFAULT_CAPACITY: usize = 65536;
 /// - We don't have necessary permissions to read the file
 #[derive(Clone, Debug)]
 pub struct ServeDir<F = DefaultServeDirFallback> {
-    base: PathBuf,
+    base: DirSource,
     buf_chunk_size: usize,
     precompressed_variants: Option<PrecompressedVariants>,
     // This is used to specialise implementation for
@@ -72,7 +71,7 @@ impl ServeDir<DefaultServeDirFallback> {
             buf_chunk_size: DEFAULT_CAPACITY,
             precompressed_variants: None,
             variant: ServeVariant::Directory {
-                append_index_html_on_directories: true,
+                serve_mode: Default::default(),
             },
             fallback: None,
             call_fallback_on_method_not_allowed: false,
@@ -428,6 +427,7 @@ impl<F> ServeDir<F> {
                     path,
                     path_to_file,
                     req,
+                    negotiated_encodings,
                     range_header,
                     buf_chunk_size,
                 )

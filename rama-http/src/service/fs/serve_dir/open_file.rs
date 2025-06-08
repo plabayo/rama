@@ -1,3 +1,4 @@
+use tokio::io::AsyncReadExt;
 use super::{
     DirectoryServeMode, ServeVariant,
     headers::{IfModifiedSince, IfUnmodifiedSince, LastModified},
@@ -16,11 +17,12 @@ use std::{
     path::{Path, PathBuf},
     time::SystemTime,
 };
-use include_dir::Dir;
 use tokio::{fs::File, io::AsyncSeekExt};
+use tokio::io::AsyncRead;
+use std::io::Cursor;
+use include_dir::Dir;
 
 pub(super) enum OpenFileOutput {
-    FileEmbedded(FileEmbedded),
     FileOpened(Box<FileOpened>),
     Redirect { location: HeaderValue },
     Html(String),
@@ -40,22 +42,42 @@ pub(super) struct FileOpened {
     pub(super) last_modified: Option<LastModified>,
 }
 
-pub(super) struct FileEmbedded {
-    pub(super) chunk_size: usize,
-    pub(super) mime_header_value: HeaderValue,
-    pub(super) maybe_range: Option<Result<Vec<RangeInclusive<u64>>, RangeUnsatisfiableError>>,
-    pub(super) last_modified: Option<LastModified>,
-}
-
 pub(super) enum FileRequestExtent {
     Full(File, Metadata),
     Head(Metadata),
+    Embedded(Vec<u8>),
+}
+
+impl FileRequestExtent {
+    pub(super) fn reader(self) -> Option<Box<dyn AsyncRead + Send + Sync + Unpin>> {
+        match self {
+            Self::Head(_) => None,
+            Self::Full(file, _) => Some(Box::new(file)),
+            Self::Embedded(content) => Some(Box::new(Cursor::new(content))),
+        }
+    }
+
+    pub(super) fn range_reader(self, range_size: u64) -> Option<Box<dyn AsyncRead + Send + Sync + Unpin>> {
+        match self {
+            Self::Head(_) => None,
+            Self::Full(file, _) => Some(Box::new(file.take(range_size))),
+            Self::Embedded(content) => Some(Box::new(Cursor::new(content).take(range_size))),
+        }
+    }
+
+    pub(super) fn get_size(&self) -> u64 {
+        match self {
+            FileRequestExtent::Head(meta) | FileRequestExtent::Full(_, meta) => meta.len(),
+            FileRequestExtent::Embedded(content) => content.len() as u64,
+        }
+    }
 }
 
 pub(super) fn open_file_embedded(
     base: &Dir,
-    path_to_file: PathBuf,
+    mut path_to_file: PathBuf,
     req: Request,
+    negotiated_encodings: Vec<QualityValue<Encoding>>,
     range_header: Option<String>,
     buf_chunk_size: usize) -> io::Result<OpenFileOutput> {
 
@@ -65,6 +87,8 @@ pub(super) fn open_file_embedded(
         .unwrap_or_else(|| {
             HeaderValue::from_str(mime::APPLICATION_OCTET_STREAM.as_ref()).unwrap()
         });
+
+    let maybe_encoding = preferred_encoding(&mut path_to_file, &negotiated_encodings);
 
     let file = base.get_file(path_to_file).unwrap();
 
@@ -96,15 +120,14 @@ pub(super) fn open_file_embedded(
     }
 
     let maybe_range = try_parse_range(range_header.as_deref(), file.contents().len() as u64);
-
-    let output = FileEmbedded{
+    Ok(OpenFileOutput::FileOpened(Box::new(FileOpened {
+        extent: FileRequestExtent::Embedded(file.contents().to_vec()),
         chunk_size: buf_chunk_size,
         mime_header_value: mime,
+        maybe_encoding,
         maybe_range,
         last_modified,
-    };
-
-    Ok(OpenFileOutput::FileEmbedded(output))
+    })))
 }
 
 pub(super) async fn open_file(

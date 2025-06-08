@@ -231,7 +231,7 @@ want = "0.3"
 webpki-roots = "1.0"
 x509-parser = { version = "0.17.0" }
 zstd = "0.13"
-include_dir = "0.7"
+include_dir = { version = "0.7", features = ["metadata"] }
 
 [workspace.lints.rust]
 unreachable_pub = "deny"

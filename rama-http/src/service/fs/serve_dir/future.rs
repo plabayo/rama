@@ -1,4 +1,4 @@
-use super::open_file::{FileOpened, FileRequestExtent, OpenFileOutput};
+use super::open_file::{FileOpened, OpenFileOutput};
 use crate::headers::encoding::Encoding;
 use crate::{
     Body, HeaderValue, Request, Response, StatusCode,
@@ -13,9 +13,9 @@ use rama_http_types::dep::http_body;
 use std::{convert::Infallible, io};
 
 pub(super) async fn consume_open_file_result<State, ReqBody, ResBody, F>(
-    open_file_result: Result<OpenFileOutput, std::io::Error>,
+    open_file_result: Result<OpenFileOutput, io::Error>,
     fallback_and_request: Option<(&F, Context<State>, Request<ReqBody>)>,
-) -> Result<Response, std::io::Error>
+) -> Result<Response, io::Error>
 where
     State: Clone + Send + Sync + 'static,
     F: Service<State, Request<ReqBody>, Response = Response<ResBody>, Error = Infallible> + Clone,
@@ -24,15 +24,10 @@ where
 {
     match open_file_result {
         Ok(OpenFileOutput::FileOpened(file_output)) => Ok(build_response(*file_output)),
-
-        Ok(OpenFileOutput::FileEmbedded(file_embedded)) => {
-            // handle response here
-            unimplemented!()
-        },
         Ok(OpenFileOutput::Redirect { location }) => {
             let mut res = response_with_status(StatusCode::TEMPORARY_REDIRECT);
             res.headers_mut()
-                .insert(rama_http_types::header::LOCATION, location);
+                .insert(header::LOCATION, location);
             Ok(res)
         }
 
@@ -105,7 +100,7 @@ pub(super) async fn serve_fallback<F, State, B, FResBody>(
     fallback: &F,
     ctx: Context<State>,
     req: Request<B>,
-) -> Result<Response, std::io::Error>
+) -> Result<Response, io::Error>
 where
     F: Service<State, Request<B>, Response = Response<FResBody>, Error = Infallible>,
     FResBody: http_body::Body<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
@@ -123,10 +118,7 @@ where
 }
 
 fn build_response(output: FileOpened) -> Response {
-    let (maybe_file, size) = match output.extent {
-        FileRequestExtent::Full(file, meta) => (Some(file), meta.len()),
-        FileRequestExtent::Head(meta) => (None, meta.len()),
-    };
+    let size = output.extent.get_size();
 
     let mut builder = Response::builder()
         .header(header::CONTENT_TYPE, output.mime_header_value)
@@ -155,15 +147,11 @@ fn build_response(output: FileOpened) -> Response {
                         )))
                         .unwrap()
                 } else {
-                    let body = if let Some(file) = maybe_file {
-                        let range_size = range.end() - range.start() + 1;
+                    let range_size = range.end() - range.start() + 1;
+
+                    let body = if let Some(reader) = output.extent.range_reader(range_size) {
                         Body::new(
-                            AsyncReadBody::with_capacity_limited(
-                                file,
-                                output.chunk_size,
-                                range_size,
-                            )
-                            .boxed(),
+                            AsyncReadBody::with_capacity(reader, output.chunk_size).boxed()
                         )
                     } else {
                         empty_body()
@@ -204,8 +192,8 @@ fn build_response(output: FileOpened) -> Response {
 
         // Not a range request
         None => {
-            let body = if let Some(file) = maybe_file {
-                Body::new(AsyncReadBody::with_capacity(file, output.chunk_size).boxed())
+            let body = if let Some(reader) = output.extent.reader() {
+                Body::new(AsyncReadBody::with_capacity(reader, output.chunk_size).boxed())
             } else {
                 empty_body()
             };
