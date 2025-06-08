@@ -21,7 +21,7 @@ pub trait EventDataLineReader {
 
     fn read_line(&mut self, line: &str) -> Result<(), OpaqueError>;
 
-    fn data(&mut self) -> Result<Option<Self::Data>, OpaqueError>;
+    fn data(&mut self, event: Option<&str>) -> Result<Option<Self::Data>, OpaqueError>;
 }
 
 macro_rules! write_str_data {
@@ -61,7 +61,7 @@ impl EventDataLineReader for EventDataStringReader {
         Ok(())
     }
 
-    fn data(&mut self) -> Result<Option<Self::Data>, OpaqueError> {
+    fn data(&mut self, _event: Option<&str>) -> Result<Option<Self::Data>, OpaqueError> {
         let mut data = match self.buf.take() {
             Some(data) => data,
             None => return Ok(None),
@@ -132,13 +132,13 @@ impl<T: EventDataRead> EventDataLineReader for EventDataMultiLineReader<T> {
     fn read_line(&mut self, line: &str) -> Result<(), OpaqueError> {
         let mut reader = T::line_reader();
         reader.read_line(line)?;
-        if let Some(data) = reader.data()? {
+        if let Some(data) = reader.data(None)? {
             self.lines.push(data);
         }
         Ok(())
     }
 
-    fn data(&mut self) -> Result<Option<Self::Data>, OpaqueError> {
+    fn data(&mut self, _event: Option<&str>) -> Result<Option<Self::Data>, OpaqueError> {
         if self.lines.is_empty() {
             return Ok(None);
         }
@@ -225,7 +225,7 @@ impl<T: serde::de::DeserializeOwned> EventDataLineReader for EventDataJsonReader
         Ok(())
     }
 
-    fn data(&mut self) -> Result<Option<Self::Data>, OpaqueError> {
+    fn data(&mut self, _event: Option<&str>) -> Result<Option<Self::Data>, OpaqueError> {
         let data: T = serde_json::from_str(&self.buf).context("read json event data")?;
         self.buf.clear();
         Ok(Some(JsonEventData(data)))

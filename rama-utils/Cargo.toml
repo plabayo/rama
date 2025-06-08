@@ -23,6 +23,7 @@ pin-project-lite = { workspace = true }
 rama-macros = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 tokio = { workspace = true, features = ["time", "macros"] }
+smol_str = { workspace = true }
 
 [dev-dependencies]
 quickcheck = { workspace = true }

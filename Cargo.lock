@@ -2843,6 +2843,7 @@ dependencies = [
  "rama-macros",
  "serde",
  "serde_json",
+ "smol_str",
  "tokio",
  "tokio-test",
 ]

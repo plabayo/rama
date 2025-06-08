@@ -11,7 +11,7 @@
 //!
 //! # Expected output
 //!
-//! The server will start and listen on `:62027`. You can use `curl` to interact with the service:
+//! The server will start and listen on `:62027`. You open the url in your browser to easily interact:
 //!
 //! ```sh
 //! open http://127.0.0.1:62027

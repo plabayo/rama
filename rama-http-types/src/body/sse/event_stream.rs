@@ -125,7 +125,7 @@ impl<T: EventDataRead> EventBuilder<T> {
     fn try_dispatch(&mut self) -> Result<Event<T>, OpaqueError> {
         self.is_complete = false;
         let mut event = std::mem::take(&mut self.event);
-        if let Some(data) = self.reader.data()? {
+        if let Some(data) = self.reader.data(event.event.as_deref())? {
             event.set_data(data);
         }
         Ok(event)

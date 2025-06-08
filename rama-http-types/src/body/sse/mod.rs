@@ -49,3 +49,5 @@ pub use {
 };
 
 pub mod server;
+
+pub mod datastar;

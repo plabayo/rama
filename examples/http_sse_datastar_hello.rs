@@ -1,31 +1,28 @@
-//! SSE Example, showcasing how to support a SSE API endpoint
-//! in a Rama webstack using Json data.
+//! SSE Example, showcasing a very simple datastar example,
+//! which is supported by rama both on the client as well as the server side.
 //!
-//! You can also pre-serialize json data and sent is as a regular String,
-//! similar to `http_sse` example, but making use of the `JsonEventData`
-//! wrapper type means you do not need to allocate more than you want.
+//! Datastar helps you build reactive web applications with the simplicity
+//! of server-side rendering and the power of a full-stack SPA framework.
 //!
-//! You can also implement your own `EventData` types for any custom data,
-//! and the internal logic of the used `EventStream` will
-//! automatically split your serialized bytes' newlines as multiple sequential
-//! "data" fields.
+//! It's the combination of a small js library which makes use of SSE among other utilities,
+//! this module implements the event data types used from the server-side to send to the client,
+//! which makes use of this JS library.
 //!
 //! # Run the example
 //!
 //! ```sh
-//! cargo run --example http_sse_json --features=http-full
+//! cargo run --example http_sse_datastar_hello --features=http-full
 //! ```
 //!
 //! # Expected output
 //!
-//! The server will start and listen on `:62028`. You open the url in your browser to easily interact:
+//! The server will start and listen on `:62031`. You open the url in your browser to easily interact:
 //!
 //! ```sh
-//! open http://127.0.0.1:62028
+//! open http://127.0.0.1:62031
 //! ```
 //!
-//! This will open a web page which should populate a table with
-//! rich data events as they are being received from (this) server.
+//! This will open a web page which will be a simple hello world data app.
 
 use rama::{
     Layer,
