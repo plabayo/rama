@@ -1,4 +1,4 @@
-use crate::sse::{EventDataLineReader, EventDataRead, EventDataWrite, datastar::EventType};
+use crate::sse::{Event, EventDataLineReader, EventDataRead, EventDataWrite, datastar::EventType};
 use rama_error::{ErrorContext, OpaqueError};
 
 /// [`MergeSignals`] sends one or more signals to the browser
@@ -27,6 +27,14 @@ impl<T> MergeSignals<T> {
             signals,
             only_if_missing: false,
         }
+    }
+
+    /// Consume `self` as an [`Event`].
+    pub fn into_sse_event(self) -> Event<MergeSignals<T>> {
+        Event::new()
+            .try_with_event(EventType::MergeSignals.as_str())
+            .unwrap()
+            .with_data(self)
     }
 
     rama_utils::macros::generate_set_and_with! {

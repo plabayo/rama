@@ -22,8 +22,8 @@ parking_lot = { workspace = true }
 pin-project-lite = { workspace = true }
 rama-macros = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
-tokio = { workspace = true, features = ["time", "macros"] }
 smol_str = { workspace = true }
+tokio = { workspace = true, features = ["time", "macros"] }
 
 [dev-dependencies]
 quickcheck = { workspace = true }

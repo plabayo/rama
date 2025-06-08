@@ -1,5 +1,5 @@
 use crate::sse::{
-    EventDataLineReader, EventDataRead, EventDataWrite, datastar::EventType, parser::is_lf,
+    Event, EventDataLineReader, EventDataRead, EventDataWrite, datastar::EventType, parser::is_lf,
 };
 use mime::Mime;
 use rama_error::{ErrorContext, OpaqueError};
@@ -101,6 +101,14 @@ impl ExecuteScript {
             auto_remove: None,
             attributes: None,
         }
+    }
+
+    /// Consume `self` as an [`Event`].
+    pub fn into_sse_event(self) -> Event<ExecuteScript> {
+        Event::new()
+            .try_with_event(EventType::ExecuteScript.as_str())
+            .unwrap()
+            .with_data(self)
     }
 
     rama_utils::macros::generate_set_and_with! {

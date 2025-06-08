@@ -1,4 +1,4 @@
-use crate::sse::{EventDataLineReader, EventDataRead, EventDataWrite, datastar::EventType};
+use crate::sse::{Event, EventDataLineReader, EventDataRead, EventDataWrite, datastar::EventType};
 use rama_error::{ErrorContext, OpaqueError};
 use smol_str::SmolStr;
 
@@ -25,6 +25,14 @@ impl RemoveFragments {
             selector: selector.into(),
             use_view_transition: false,
         }
+    }
+
+    /// Consume `self` as an [`Event`].
+    pub fn into_sse_event(self) -> Event<RemoveFragments> {
+        Event::new()
+            .try_with_event(EventType::RemoveFragments.as_str())
+            .unwrap()
+            .with_data(self)
     }
 
     rama_utils::macros::generate_set_and_with! {

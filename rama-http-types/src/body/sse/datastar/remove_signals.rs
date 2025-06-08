@@ -1,4 +1,4 @@
-use crate::sse::{EventDataLineReader, EventDataRead, EventDataWrite, datastar::EventType};
+use crate::sse::{Event, EventDataLineReader, EventDataRead, EventDataWrite, datastar::EventType};
 use rama_error::{ErrorContext, OpaqueError};
 use smallvec::{SmallVec, smallvec};
 use smol_str::SmolStr;
@@ -21,6 +21,14 @@ impl RemoveSignals {
         Self {
             paths: smallvec![path.into()],
         }
+    }
+
+    /// Consume `self` as an [`Event`].
+    pub fn into_sse_event(self) -> Event<RemoveSignals> {
+        Event::new()
+            .try_with_event(EventType::RemoveSignals.as_str())
+            .unwrap()
+            .with_data(self)
     }
 
     /// Create a new [`RemoveSignals`] data blob.

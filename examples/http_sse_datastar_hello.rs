@@ -26,20 +26,15 @@
 
 use rama::{
     Layer,
-    error::{ErrorContext, OpaqueError},
+    error::OpaqueError,
     http::{
-        headers::LastEventId,
         layer::trace::TraceLayer,
         server::HttpServer,
         service::web::{
             Router,
-            extract::TypedHeader,
             response::{Html, IntoResponse, Sse},
         },
-        sse::{
-            self, JsonEventData,
-            server::{KeepAlive, KeepAliveStream},
-        },
+        sse::server::{KeepAlive, KeepAliveStream},
     },
     net::address::SocketAddress,
     rt::Executor,
@@ -47,42 +42,11 @@ use rama::{
 };
 
 use async_stream::stream;
-use serde::Serialize;
+use rama_http::{service::web::extract::datastar::ReadSignals, sse::datastar::MergeFragments};
+use serde::Deserialize;
 use std::{sync::Arc, time::Duration};
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
-
-async fn api_events_endpoint(last_id: Option<TypedHeader<LastEventId>>) -> impl IntoResponse {
-    let mut id: u64 = last_id
-        .and_then(|id| id.as_str().parse().ok())
-        .unwrap_or_default();
-
-    let mut next_event = move || {
-        let mut id_buffer = itoa::Buffer::new();
-        let event = sse::Event::new()
-            .with_data(JsonEventData(
-                SAMPLE_ORDERS[(id as usize) % SAMPLE_ORDERS.len()].clone(),
-            ))
-            .try_with_id(id_buffer.format(id))
-            .context("set next event's id")?;
-        id += 1;
-        Ok::<_, OpaqueError>(event)
-    };
-
-    Sse::new(KeepAliveStream::new(
-        KeepAlive::new(),
-        stream! {
-            for i in 0..42 {
-                // emulate random delays :P
-                tokio::time::sleep(Duration::from_millis((i % 7) * 5)).await;
-
-                // NOTE that in a realistic service this data most likely
-                // comes from an async service or channel.
-                yield next_event();
-            }
-        },
-    ))
-}
 
 #[tokio::main]
 async fn main() {
@@ -97,7 +61,7 @@ async fn main() {
 
     let graceful = rama::graceful::Shutdown::default();
 
-    let listener = TcpListener::bind(SocketAddress::default_ipv4(62028))
+    let listener = TcpListener::bind(SocketAddress::default_ipv4(62031))
         .await
         .expect("tcp port to be bound");
     let bind_address = listener.local_addr().expect("retrieve bind address");
@@ -112,8 +76,8 @@ async fn main() {
         let exec = Executor::graceful(guard.clone());
         let app = (TraceLayer::new_for_http()).into_layer(Arc::new(
             Router::new()
-                .get("/", Html(INDEX_CONTENT))
-                .get("/api/events", api_events_endpoint),
+                .get("/", index)
+                .get("/hello-world", hello_world),
         ));
         listener
             .serve_graceful(guard, HttpServer::auto(exec).service(app))
@@ -126,209 +90,59 @@ async fn main() {
         .expect("graceful shutdown");
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub struct OrderEvent {
-    pub item: &'static str,
-    pub quantity: u32,
-    pub prepaid: bool,
-}
-
-pub const SAMPLE_ORDERS: [OrderEvent; 21] = [
-    OrderEvent {
-        item: "Apple Watch Series 9",
-        quantity: 2,
-        prepaid: true,
-    },
-    OrderEvent {
-        item: "Gaming Mousepad XL",
-        quantity: 1,
-        prepaid: false,
-    },
-    OrderEvent {
-        item: "Noise Cancelling Headphones",
-        quantity: 3,
-        prepaid: true,
-    },
-    OrderEvent {
-        item: "Ergonomic Chair",
-        quantity: 1,
-        prepaid: true,
-    },
-    OrderEvent {
-        item: "LED Monitor 27\"",
-        quantity: 4,
-        prepaid: false,
-    },
-    OrderEvent {
-        item: "Smartphone Stand",
-        quantity: 6,
-        prepaid: false,
-    },
-    OrderEvent {
-        item: "Mechanical Keyboard",
-        quantity: 2,
-        prepaid: true,
-    },
-    OrderEvent {
-        item: "Laptop Sleeve 15.6\"",
-        quantity: 3,
-        prepaid: false,
-    },
-    OrderEvent {
-        item: "USB-C Docking Station",
-        quantity: 1,
-        prepaid: true,
-    },
-    OrderEvent {
-        item: "Wireless Presenter",
-        quantity: 1,
-        prepaid: false,
-    },
-    OrderEvent {
-        item: "Foldable Desk Lamp",
-        quantity: 5,
-        prepaid: true,
-    },
-    OrderEvent {
-        item: "Portable SSD 1TB",
-        quantity: 2,
-        prepaid: true,
-    },
-    OrderEvent {
-        item: "Webcam Cover Slide",
-        quantity: 10,
-        prepaid: false,
-    },
-    OrderEvent {
-        item: "Bluetooth Speaker",
-        quantity: 2,
-        prepaid: false,
-    },
-    OrderEvent {
-        item: "Fitness Tracker Band",
-        quantity: 4,
-        prepaid: true,
-    },
-    OrderEvent {
-        item: "Laser Pointer",
-        quantity: 1,
-        prepaid: false,
-    },
-    OrderEvent {
-        item: "Conference Mic",
-        quantity: 2,
-        prepaid: true,
-    },
-    OrderEvent {
-        item: "Noise-Absorbing Panels",
-        quantity: 12,
-        prepaid: false,
-    },
-    OrderEvent {
-        item: "Desk Organizer Set",
-        quantity: 1,
-        prepaid: true,
-    },
-    OrderEvent {
-        item: "Whiteboard Eraser Pack",
-        quantity: 6,
-        prepaid: false,
-    },
-    OrderEvent {
-        item: "Travel Power Adapter",
-        quantity: 2,
-        prepaid: true,
-    },
-];
-
-const INDEX_CONTENT: &str = r##"<!DOCTYPE html>
+async fn index() -> Html<&'static str> {
+    Html(
+        r##"<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <title>Rama SSE — Incoming Orders</title>
-  <style>
-    body {
-      font-family: sans-serif;
-      padding: 20px;
-    }
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      margin-top: 1rem;
-    }
-    th, td {
-      padding: 0.5rem;
-      border: 1px solid #ccc;
-      text-align: left;
-    }
-    th {
-      background: #f2f2f2;
-    }
-  </style>
+    <title>Datastar SDK Demo</title>
+    <script src="https://unpkg.com/@tailwindcss/browser@4"></script>
+    <script type="module" src="https://cdn.jsdelivr.net/gh/starfederation/datastar@v1.0.0-beta.11/bundles/datastar.js"></script>
 </head>
-<body>
-
-  <h1>Incoming Orders</h1>
-  <table id="order-table">
-    <thead>
-      <tr>
-        <th>Received At</th>
-        <th>Item</th>
-        <th>Quantity</th>
-        <th>Prepaid</th>
-      </tr>
-    </thead>
-    <tbody>
-      <!-- Orders will be appended here -->
-    </tbody>
-  </table>
-
-  <script>
-    let eventCount = 0;
-
-    const tableBody = document.querySelector('#order-table tbody');
-    const source = new EventSource('/api/events');
-
-    source.onmessage = function (event) {
-      let order;
-      try {
-        order = JSON.parse(event.data);
-      } catch (e) {
-        console.error('Invalid JSON:', event.data);
-        return;
-      }
-
-      const row = document.createElement('tr');
-
-      const timestamp = new Date().toLocaleTimeString();
-      const timeCell = document.createElement('td');
-      const itemCell = document.createElement('td');
-      const qtyCell = document.createElement('td');
-      const prepaidCell = document.createElement('td');
-
-      timeCell.textContent = timestamp;
-      itemCell.textContent = order.item;
-      qtyCell.textContent = order.quantity;
-      prepaidCell.textContent = order.prepaid ? "Yes" : "No";
-
-      row.appendChild(timeCell);
-      row.appendChild(itemCell);
-      row.appendChild(qtyCell);
-      row.appendChild(prepaidCell);
-
-      tableBody.appendChild(row);
-
-      eventCount += 1;
-      if (eventCount >= 500) {
-        source.close();
-      }
-    };
-
-    source.onerror = function (err) {
-      console.error('EventSource error:', err);
-    };
-  </script>
-
+<body class="bg-white dark:bg-gray-900 text-lg max-w-xl mx-auto my-16">
+    <div data-signals-delay="400" class="bg-white dark:bg-gray-800 text-gray-500 dark:text-gray-400 rounded-lg px-6 py-8 ring shadow-xl ring-gray-900/5 space-y-2">
+        <div class="flex justify-between items-center">
+            <h1 class="text-gray-900 dark:text-white text-3xl font-semibold">
+                Datastar SDK Demo
+            </h1>
+            <img src="https://data-star.dev/static/images/rocket.png" alt="Rocket" width="64" height="64"/>
+        </div>
+        <p class="mt-2">
+            SSE events will be streamed from the backend to the frontend.
+        </p>
+        <div class="space-x-2">
+            <label for="delay">
+                Delay in milliseconds
+            </label>
+            <input data-bind-delay id="delay" type="number" step="100" min="0" class="w-36 rounded-md border border-gray-300 px-3 py-2 placeholder-gray-400 shadow-sm focus:border-sky-500 focus:outline focus:outline-sky-500 dark:disabled:border-gray-700 dark:disabled:bg-gray-800/20" />
+        </div>
+        <button data-on-click="@get(&#39;/hello-world&#39;)" class="rounded-md bg-sky-500 px-5 py-2.5 leading-5 font-semibold text-white hover:bg-sky-700 hover:text-gray-100 cursor-pointer">
+            Start
+        </button>
+    </div>
+    <div class="my-16 text-8xl font-bold text-transparent" style="background: linear-gradient(to right in oklch, red, orange, yellow, green, blue, blue, violet); background-clip: text">
+        <div id="message">Hello, world!</div>
+    </div>
 </body>
-</html>
-"##;
+</html>"##,
+    )
+}
+
+#[derive(Deserialize)]
+pub struct Signals {
+    pub delay: u64,
+}
+
+const MESSAGE: &str = "Hello, world!";
+
+async fn hello_world(ReadSignals(signals): ReadSignals<Signals>) -> impl IntoResponse {
+    Sse::new(KeepAliveStream::new(
+        KeepAlive::new(),
+        stream! {
+            for i in 0..MESSAGE.len() {
+                yield Ok::<_, OpaqueError>(MergeFragments::new(format!("<div id='message'>{}</div>", &MESSAGE[0..i + 1])).into_sse_event());
+                tokio::time::sleep(Duration::from_millis(signals.delay)).await;
+            }
+        },
+    ))
+}
