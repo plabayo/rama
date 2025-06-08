@@ -39,6 +39,7 @@ futures-lite = { workspace = true }
 futures-util = { workspace = true }
 http-range-header = { workspace = true }
 httpdate = { workspace = true }
+include_dir = { workspace = true }
 iri-string = { workspace = true }
 matchit = { workspace = true }
 mime = { workspace = true }
@@ -61,7 +62,6 @@ tokio = { workspace = true, features = ["macros", "fs", "io-std"] }
 tokio-util = { workspace = true, features = ["io"] }
 tracing = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
-include_dir = {workspace = true}
 
 [dev-dependencies]
 brotli = { workspace = true }

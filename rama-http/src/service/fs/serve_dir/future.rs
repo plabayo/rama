@@ -26,8 +26,7 @@ where
         Ok(OpenFileOutput::FileOpened(file_output)) => Ok(build_response(*file_output)),
         Ok(OpenFileOutput::Redirect { location }) => {
             let mut res = response_with_status(StatusCode::TEMPORARY_REDIRECT);
-            res.headers_mut()
-                .insert(header::LOCATION, location);
+            res.headers_mut().insert(header::LOCATION, location);
             Ok(res)
         }
 
@@ -150,9 +149,7 @@ fn build_response(output: FileOpened) -> Response {
                     let range_size = range.end() - range.start() + 1;
 
                     let body = if let Some(reader) = output.extent.range_reader(range_size) {
-                        Body::new(
-                            AsyncReadBody::with_capacity(reader, output.chunk_size).boxed()
-                        )
+                        Body::new(AsyncReadBody::with_capacity(reader, output.chunk_size).boxed())
                     } else {
                         empty_body()
                     };
