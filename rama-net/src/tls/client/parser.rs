@@ -292,7 +292,11 @@ fn parse_tls_extension_sni_hostname(i: &[u8]) -> IResult<&[u8], Host> {
         .map_err(|_| nom::Err::Error(nom::error::Error::new(i, ErrorKind::Not)))?
         .parse()
         .map_err(|_| nom::Err::Error(nom::error::Error::new(i, ErrorKind::Not)))?;
-    Ok((i, host))
+
+    match host {
+        Host::Address(_) => Err(nom::Err::Error(nom::error::Error::new(i, ErrorKind::Not))),
+        Host::Name(_) => Ok((i, host)),
+    }
 }
 
 // defined in rfc8422
@@ -466,7 +470,6 @@ fn parse_ech_client_hello(input: &[u8]) -> IResult<&[u8], ECHClientHello> {
 
 #[cfg(test)]
 mod tests {
-    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
     use super::*;
     use crate::address::Domain;
@@ -490,16 +493,8 @@ mod tests {
             ),
             ("\x00\x00\x11fp.ramaproxy.org", None),
             ("\x01\x00\x10fp.ramaproxy.org", None),
-            (
-                "\x00\x00\x09127.0.0.1",
-                Some(Host::Address(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)))),
-            ),
-            (
-                "\x00\x00\x276670:2e72:616d:6170:726f:7879:2e6f:7267",
-                Some(Host::Address(IpAddr::V6(Ipv6Addr::new(
-                    0x6670, 0x2e72, 0x616d, 0x6170, 0x726f, 0x7879, 0x2e6f, 0x7267,
-                )))),
-            ),
+            ("\x00\x00\x09127.0.0.1", None),
+            ("\x00\x00\x276670:2e72:616d:6170:726f:7879:2e6f:7267", None),
         ];
         for (input, expected_output) in test_cases {
             let result = parse_tls_extension_sni_hostname(input.as_bytes());
