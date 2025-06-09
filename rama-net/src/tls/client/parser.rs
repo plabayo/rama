@@ -45,7 +45,7 @@ pub fn parse_client_hello(i: &[u8]) -> Result<ClientHello, OpaqueError> {
 ///
 /// Same as [`extract_sni_from_client_hello`] but handles the full handshake bytes, meaning
 /// the client hello record itself and the handshake header bytes in front of it.
-pub fn extract_sni_from_client_hello_handshake(i: &[u8]) -> Result<Domain, OpaqueError> {
+pub fn extract_sni_from_client_hello_handshake(i: &[u8]) -> Result<Option<Domain>, OpaqueError> {
     parse_client_hello_handshake_sni_inner(i)
         .map(|(_, domain)| domain)
         .map_err(|err| {
@@ -63,7 +63,8 @@ pub fn extract_sni_from_client_hello_handshake(i: &[u8]) -> Result<Domain, Opaqu
 ///
 /// This function is not infallible, it can return an error if the input is not a valid
 /// TLS ClientHello message or if there is unexpected trailing data.
-pub fn extract_sni_from_client_hello_record(i: &[u8]) -> Result<Domain, OpaqueError> {
+/// It will return None on a value ClientHello without a SNI Host value.
+pub fn extract_sni_from_client_hello_record(i: &[u8]) -> Result<Option<Domain>, OpaqueError> {
     parse_client_hello_record_sni_inner(i)
         .map(|(_, domain)| domain)
         .map_err(|err| {
@@ -73,7 +74,7 @@ pub fn extract_sni_from_client_hello_record(i: &[u8]) -> Result<Domain, OpaqueEr
         })
 }
 
-fn parse_client_hello_handshake_sni_inner(i: &[u8]) -> IResult<&[u8], Domain> {
+fn parse_client_hello_handshake_sni_inner(i: &[u8]) -> IResult<&[u8], Option<Domain>> {
     // verify content type and tls version
     let (i, _) = verify(take(3usize), |s: &[u8]| {
         matches!(s, [0x16, 0x03, 0x00..=0x04])
@@ -90,7 +91,7 @@ fn parse_client_hello_handshake_sni_inner(i: &[u8]) -> IResult<&[u8], Domain> {
     parse_client_hello_record_sni_inner(i)
 }
 
-fn parse_client_hello_record_sni_inner(i: &[u8]) -> IResult<&[u8], Domain> {
+fn parse_client_hello_record_sni_inner(i: &[u8]) -> IResult<&[u8], Option<Domain>> {
     // skip version and random
     let (i, _) = take(34usize)(i)?;
 
@@ -107,19 +108,19 @@ fn parse_client_hello_record_sni_inner(i: &[u8]) -> IResult<&[u8], Domain> {
     let (i, _) = take(comp_len)(i)?;
 
     // start the actual search for the SNI... the one to rule them all
-    let (i, opt_ext) = opt(complete(length_data(be_u16))).parse(i)?;
+    let (_, opt_ext) = opt(complete(length_data(be_u16))).parse(i)?;
     if let Some(mut i) = opt_ext {
         while !i.is_empty() {
             let (new_i, domain) = parse_tls_client_hello_extension_sni_host_or_skip(i)?;
             if let Some(domain) = domain {
-                return Ok((new_i, domain));
+                return Ok((new_i, Some(domain)));
             }
             i = new_i;
         }
     }
 
     // no SNI found...
-    Err(nom::Err::Error(make_error(i, ErrorKind::Eof)))
+    Ok((&[], None))
 }
 
 fn parse_client_hello_inner(i: &[u8]) -> IResult<&[u8], ClientHello> {
@@ -856,7 +857,7 @@ mod tests {
             Domain::from_static("one.one.one.one"),
         )] {
             let domain = extract_sni_from_client_hello_handshake(content).unwrap();
-            assert_eq!(expected_sni, domain);
+            assert_eq!(Some(expected_sni), domain);
         }
     }
 
@@ -906,7 +907,7 @@ mod tests {
             Domain::from_static("init.itunes.apple.com"),
         )] {
             let domain = extract_sni_from_client_hello_record(content).unwrap();
-            assert_eq!(expected_sni, domain);
+            assert_eq!(Some(expected_sni), domain);
         }
     }
 }

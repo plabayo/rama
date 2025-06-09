@@ -26,13 +26,19 @@
 //! ```sh
 //! curl -k https://127.0.0.1:63805  # outputs bar
 //! ```
+//! The no SNI server will start and listen on `:63806`. You can use `curl` to interact with the service:
 //!
-//! Both services are available in a single interface (exposed by this example as `:62026`),
-//! routed to the correct backend service based on its TLS SNI value:
+//! ```sh
+//! curl -k https://127.0.0.1:63806  # outputs baz
+//! ```
+//!
+//! Those services are available in a single interface (exposed by this example as `:62026`),
+//! routed to the correct backend service based on its TLS SNI value or lack of:
 //!
 //! ```sh
 //! curl -k --resolve foo.local:62026:127.0.0.1 https://foo.local:62026  # outputs foo
 //! curl -k --resolve bar.local:62026:127.0.0.1 https://bar.local:62026  # outputs bar
+//! curl -k https://127.0.0.1:62026  # outputs baz
 //! ```
 
 // rama provides everything out of the box to build a TLS termination proxy
@@ -73,6 +79,7 @@ async fn main() {
 
     spawn_https_server(shutdown.guard(), NAME_FOO, INTERFACE_FOO);
     spawn_https_server(shutdown.guard(), NAME_BAR, INTERFACE_BAR);
+    spawn_https_server(shutdown.guard(), NAME_BAZ, INTERFACE_BAZ);
 
     shutdown.spawn_task_fn(async move |guard| {
         let interface = SocketAddress::default_ipv4(62026);
@@ -101,6 +108,9 @@ const NAME_BAR: &str = "bar";
 const HOST_BAR: Domain = Domain::from_static("bar.local");
 const INTERFACE_BAR: SocketAddress = SocketAddress::local_ipv4(63805);
 
+const NAME_BAZ: &str = "baz";
+const INTERFACE_BAZ: SocketAddress = SocketAddress::local_ipv4(63806);
+
 async fn sni_router<S>(
     ctx: Context<()>,
     SniRequest { stream, sni }: SniRequest<S>,
@@ -110,17 +120,22 @@ where
 {
     // NOTE: for production settings you probably want to use a tri-like structure,
     // rama provided or bring your own
-    let fwd_interface = if sni == HOST_FOO {
-        INTERFACE_FOO
-    } else if sni == HOST_BAR {
-        INTERFACE_BAR
-    } else {
-        tracing::debug!(%sni, "block connection for unknown destination");
-        return Err(OpaqueError::from_display("unknown destination"));
+    let fwd_interface = match sni {
+        None => INTERFACE_BAZ,
+        Some(ref sni) => {
+            if *sni == HOST_FOO {
+                INTERFACE_FOO
+            } else if *sni == HOST_BAR {
+                INTERFACE_BAR
+            } else {
+                tracing::debug!(%sni, "block connection for unknown destination");
+                return Err(OpaqueError::from_display("unknown destination"));
+            }
+        }
     };
 
     tracing::debug!(
-        %sni,
+        ?sni,
         %fwd_interface,
         "forward incoming connection"
     );
