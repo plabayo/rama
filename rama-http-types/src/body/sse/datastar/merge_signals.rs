@@ -32,7 +32,7 @@ impl<T> MergeSignals<T> {
     /// Consume `self` as an [`Event`].
     pub fn into_sse_event(self) -> Event<MergeSignals<T>> {
         Event::new()
-            .try_with_event(EventType::MergeSignals.as_str())
+            .try_with_event(EventType::MergeSignals.as_smol_str())
             .unwrap()
             .with_data(self)
     }

@@ -45,7 +45,7 @@ impl MergeFragments {
     /// Consume `self` as an [`Event`].
     pub fn into_sse_event(self) -> Event<MergeFragments> {
         Event::new()
-            .try_with_event(EventType::MergeFragments.as_str())
+            .try_with_event(EventType::MergeFragments.as_smol_str())
             .unwrap()
             .with_data(self)
     }

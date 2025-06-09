@@ -61,9 +61,9 @@ pub struct EventBuildError {
 }
 
 impl EventBuildError {
-    pub(super) fn invalid_characters(chars: impl AsRef<str>) -> Self {
+    pub(super) fn invalid_characters(chars: SmolStr) -> Self {
         Self {
-            kind: EventBuildErrorKind::InvalidCharacter(SmolStr::new(chars)),
+            kind: EventBuildErrorKind::InvalidCharacter(chars),
         }
     }
 }
@@ -171,31 +171,12 @@ impl<T> Event<T> {
         /// Previously set value will be overwritten.
         ///
         /// [`MessageEvent`'s `lastEventId` field]: https://developer.mozilla.org/en-US/docs/Web/API/MessageEvent/lastEventId
-        pub fn static_id(mut self, id: &'static str) -> Result<Self, EventBuildError> {
+        pub fn id(mut self, id: impl Into<SmolStr>) -> Result<Self, EventBuildError> {
+            let id = id.into();
             if id.contains(['\n', '\r', '\0']) {
                 return Err(EventBuildError::invalid_characters(id));
             }
-            self.id = Some(SmolStr::new_static(id));
-            Ok(self)
-        }
-    }
-
-    generate_set_and_with! {
-        /// Set the event's identifier field (`id:<identifier>`).
-        ///
-        /// This corresponds to [`MessageEvent`'s `lastEventId` field]. If no ID is in the event itself,
-        /// the browser will set that field to the last known message ID, starting with the empty
-        /// string.
-        ///
-        /// Previously set value will be overwritten.
-        ///
-        /// [`MessageEvent`'s `lastEventId` field]: https://developer.mozilla.org/en-US/docs/Web/API/MessageEvent/lastEventId
-        pub fn id(mut self, id: impl AsRef<str>) -> Result<Self, EventBuildError> {
-            let id = id.as_ref();
-            if id.contains(['\n', '\r', '\0']) {
-                return Err(EventBuildError::invalid_characters(id));
-            }
-            self.id = Some(SmolStr::new(id));
+            self.id = Some(id);
             Ok(self)
         }
     }
@@ -260,33 +241,12 @@ impl<T> Event<T> {
         ///
         /// [`EventSource`]: https://developer.mozilla.org/en-US/docs/Web/API/EventSource
         /// [`message` event]: https://developer.mozilla.org/en-US/docs/Web/API/EventSource/message_event
-        pub fn static_event(mut self, event: &'static str) -> Result<Self, EventBuildError> {
+        pub fn event(mut self, event: impl Into<SmolStr>) -> Result<Self, EventBuildError> {
+            let event = event.into();
             if event.contains(['\n', '\r']) {
                 return Err(EventBuildError::invalid_characters(event));
             }
-            self.event = Some(SmolStr::new_static(event));
-            Ok(self)
-        }
-    }
-
-    generate_set_and_with! {
-        /// Set the event's name field (`event:<event-name>`).
-        ///
-        /// Previously set event will be overwritten.
-        ///
-        /// This corresponds to the `type` parameter given when calling `addEventListener` on an
-        /// [`EventSource`]. For example, `.event("update")` should correspond to
-        /// `.addEventListener("update", ...)`. If no event type is given, browsers will fire a
-        /// [`message` event] instead.
-        ///
-        /// [`EventSource`]: https://developer.mozilla.org/en-US/docs/Web/API/EventSource
-        /// [`message` event]: https://developer.mozilla.org/en-US/docs/Web/API/EventSource/message_event
-        pub fn event(mut self, event: impl AsRef<str>) -> Result<Self, EventBuildError> {
-            let event = event.as_ref();
-            if event.contains(['\n', '\r']) {
-                return Err(EventBuildError::invalid_characters(event));
-            }
-            self.event = Some(SmolStr::new(event));
+            self.event = Some(event);
             Ok(self)
         }
     }
@@ -340,28 +300,12 @@ impl<T> Event<T> {
         ///
         /// You can add as many comments as you want by calling this function as many as you wish,
         /// unlike other setters this one does not overwrite.
-        pub fn static_comment(mut self, comment: &'static str) -> Result<Self, EventBuildError> {
+        pub fn comment(mut self, comment: impl Into<SmolStr>) -> Result<Self, EventBuildError> {
+            let comment = comment.into();
             if comment.contains(['\n', '\r']) {
                 return Err(EventBuildError::invalid_characters(comment));
             }
-            self.comments.get_or_insert_default().push(SmolStr::new_static(comment));
-            Ok(self)
-        }
-    }
-
-    generate_set_and_with! {
-        /// Set the event's comment field (`:<comment-text>`).
-        ///
-        /// This field will be ignored by most SSE clients.
-        ///
-        /// You can add as many comments as you want by calling this function as many as you wish,
-        /// unlike other setters this one does not overwrite.
-        pub fn comment(mut self, comment: impl AsRef<str>) -> Result<Self, EventBuildError> {
-            let comment = comment.as_ref();
-            if comment.contains(['\n', '\r']) {
-                return Err(EventBuildError::invalid_characters(comment));
-            }
-            self.comments.get_or_insert_default().push(SmolStr::new(comment));
+            self.comments.get_or_insert_default().push(comment);
             Ok(self)
         }
     }

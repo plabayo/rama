@@ -24,17 +24,23 @@
 //!
 //! This will open a web page which will be a simple hello world data app.
 
+use http::StatusCode;
 use rama::{
-    Layer,
+    Context, Layer,
     error::OpaqueError,
     http::{
         layer::trace::TraceLayer,
         server::HttpServer,
         service::web::{
             Router,
+            extract::datastar::ReadSignals,
             response::{Html, IntoResponse, Sse},
         },
-        sse::server::{KeepAlive, KeepAliveStream},
+        sse::{
+            JsonEventData,
+            datastar::{EventData, MergeFragments, MergeSignals},
+            server::{KeepAlive, KeepAliveStream},
+        },
     },
     net::address::SocketAddress,
     rt::Executor,
@@ -42,9 +48,16 @@ use rama::{
 };
 
 use async_stream::stream;
-use rama_http::{service::web::extract::datastar::ReadSignals, sse::datastar::MergeFragments};
 use serde::Deserialize;
-use std::{sync::Arc, time::Duration};
+use serde_json::json;
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicU64, AtomicUsize, Ordering},
+    },
+    time::Duration,
+};
+use tokio::sync::{broadcast, mpsc};
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -72,14 +85,93 @@ async fn main() {
         bind_address
     );
 
-    graceful.spawn_task_fn(async |guard| {
+    let delay = Arc::new(AtomicU64::new(400));
+    let msg_index = Arc::new(AtomicUsize::new(MESSAGE.len()));
+    let (data_tx, _data_rx) = broadcast::channel(MESSAGE.len());
+    let (reset_tx, mut reset_rx) = mpsc::channel(128);
+
+    let delay_tx = delay.clone();
+    let msg_index_tx = msg_index.clone();
+    let main_data_tx = data_tx.clone();
+    graceful.spawn_task_fn(async move |guard| {
+        let mut cancelled = std::pin::pin!(guard.downgrade().into_cancelled());
+        loop {
+            tokio::select! {
+                Some(delay) = reset_rx.recv() => {
+                    tracing::info!(%delay, "reset received, continue main once again");
+                    delay_tx.store(delay, Ordering::Release);
+                    if let Err(err) = main_data_tx.send(Data::Signal(delay)) {
+                        tracing::error!(%err, "failed to broadcast signal: exit background task");
+                        return;
+                    }
+                }
+                _ = &mut cancelled => {
+                    tracing::info!("graceful shutdown: exit background task");
+                    return;
+                }
+            }
+            let mut i = 0;
+            while i < MESSAGE.len() {
+                i += 1;
+                msg_index_tx.store(i, Ordering::Release);
+                tracing::debug!(%i, "enter message loop iteration");
+
+                tokio::select! {
+                    Some(delay) = reset_rx.recv() => {
+                        tracing::debug!(%delay, "reset received during msg broadcast, continue main once again");
+                        delay_tx.store(delay, Ordering::Release);
+                        i = 0;
+                        if let Err(err) = main_data_tx.send(Data::Signal(delay)) {
+                            tracing::error!(%err, "failed to broadcast signal: exit background task");
+                            return;
+                        }
+                    }
+                    _ = &mut cancelled => {
+                        tracing::info!("graceful shutdown: exit background task");
+                        return;
+                    }
+                    _ = std::future::ready(()) => {
+                        tracing::debug!(%i, "send next message");
+                        tokio::select! {
+                            Some(delay) = reset_rx.recv() => {
+                                tracing::debug!(%delay, "reset received during delay, continue main once again");
+                                delay_tx.store(delay, Ordering::Release);
+                                i = 0;
+                                if let Err(err) = main_data_tx.send(Data::Signal(delay)) {
+                                    tracing::error!(%err, "failed to broadcast signal: exit background task");
+                                    return;
+                                }
+                                continue;
+                            }
+                            _ = tokio::time::sleep(Duration::from_millis(delay_tx.load(Ordering::Acquire))) => ()
+                        }
+                        if let Err(err) = main_data_tx.send(Data::Fragment(&MESSAGE[..i])) {
+                            tracing::error!(%err, "failed to broadcast fragment: exit background task");
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+    });
+
+    let state = State {
+        delay,
+        msg_index,
+        reset_tx,
+        data_tx,
+    };
+
+    graceful.spawn_task_fn(async move |guard| {
         let exec = Executor::graceful(guard.clone());
         let app = (TraceLayer::new_for_http()).into_layer(Arc::new(
             Router::new()
                 .get("/", index)
+                .get("/reset", reset)
                 .get("/hello-world", hello_world),
         ));
         listener
+            .with_state(state)
             .serve_graceful(guard, HttpServer::auto(exec).service(app))
             .await;
     });
@@ -90,8 +182,22 @@ async fn main() {
         .expect("graceful shutdown");
 }
 
-async fn index() -> Html<&'static str> {
-    Html(
+#[derive(Debug, Clone)]
+enum Data {
+    Fragment(&'static str),
+    Signal(u64),
+}
+
+#[derive(Debug, Clone)]
+pub struct State {
+    delay: Arc<AtomicU64>,
+    msg_index: Arc<AtomicUsize>,
+    reset_tx: mpsc::Sender<u64>,
+    data_tx: broadcast::Sender<Data>,
+}
+
+async fn index(ctx: Context<State>) -> Html<String> {
+    Html(format!(
         r##"<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -100,13 +206,15 @@ async fn index() -> Html<&'static str> {
     <script type="module" src="https://cdn.jsdelivr.net/gh/starfederation/datastar@v1.0.0-beta.11/bundles/datastar.js"></script>
 </head>
 <body class="bg-white dark:bg-gray-900 text-lg max-w-xl mx-auto my-16">
-    <div data-signals-delay="400" class="bg-white dark:bg-gray-800 text-gray-500 dark:text-gray-400 rounded-lg px-6 py-8 ring shadow-xl ring-gray-900/5 space-y-2">
+    <div data-signals-delay="{}"
+            class="bg-white dark:bg-gray-800 text-gray-500 dark:text-gray-400 rounded-lg px-6 py-8 ring shadow-xl ring-gray-900/5 space-y-2">
         <div class="flex justify-between items-center">
             <h1 class="text-gray-900 dark:text-white text-3xl font-semibold">
                 Datastar SDK Demo
             </h1>
             <img src="https://data-star.dev/static/images/rocket.png" alt="Rocket" width="64" height="64"/>
         </div>
+
         <p class="mt-2">
             SSE events will be streamed from the backend to the frontend.
         </p>
@@ -116,16 +224,25 @@ async fn index() -> Html<&'static str> {
             </label>
             <input data-bind-delay id="delay" type="number" step="100" min="0" class="w-36 rounded-md border border-gray-300 px-3 py-2 placeholder-gray-400 shadow-sm focus:border-sky-500 focus:outline focus:outline-sky-500 dark:disabled:border-gray-700 dark:disabled:bg-gray-800/20" />
         </div>
-        <button data-on-click="@get(&#39;/hello-world&#39;)" class="rounded-md bg-sky-500 px-5 py-2.5 leading-5 font-semibold text-white hover:bg-sky-700 hover:text-gray-100 cursor-pointer">
-            Start
+        <button data-on-click="@get(&#39;/reset&#39;)" class="rounded-md bg-sky-500 px-5 py-2.5 leading-5 font-semibold text-white hover:bg-sky-700 hover:text-gray-100 cursor-pointer">
+            Reset
         </button>
     </div>
     <div class="my-16 text-8xl font-bold text-transparent" style="background: linear-gradient(to right in oklch, red, orange, yellow, green, blue, blue, violet); background-clip: text">
-        <div id="message">Hello, world!</div>
+        <div
+            data-on-load__delay="@get('/hello-world')"
+            id="message">
+            {}
+        </div>
+    </div>
+    <div class="text-gray-900 dark:text-white text-3xl font-semibold">
+        <pre data-text="ctx.signals.JSON()">Signals</pre>
     </div>
 </body>
 </html>"##,
-    )
+        ctx.state().delay.load(Ordering::Acquire),
+        &MESSAGE[0..ctx.state().msg_index.load(Ordering::Acquire)],
+    ))
 }
 
 #[derive(Deserialize)]
@@ -135,13 +252,40 @@ pub struct Signals {
 
 const MESSAGE: &str = "Hello, world!";
 
-async fn hello_world(ReadSignals(signals): ReadSignals<Signals>) -> impl IntoResponse {
+async fn reset(
+    ctx: Context<State>,
+    ReadSignals(signals): ReadSignals<Signals>,
+) -> impl IntoResponse {
+    match tokio::time::timeout(
+        Duration::from_secs(5),
+        ctx.state().reset_tx.send(signals.delay),
+    )
+    .await
+    {
+        Ok(_) => StatusCode::OK,
+        Err(err) => {
+            tracing::error!(%err, "reset animation with new delay");
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
+    }
+}
+
+async fn hello_world(
+    ctx: Context<State>,
+    ReadSignals(_): ReadSignals<Signals>,
+) -> impl IntoResponse {
+    let mut data_rx = ctx.state().data_tx.subscribe();
     Sse::new(KeepAliveStream::new(
         KeepAlive::new(),
         stream! {
-            for i in 0..MESSAGE.len() {
-                yield Ok::<_, OpaqueError>(MergeFragments::new(format!("<div id='message'>{}</div>", &MESSAGE[0..i + 1])).into_sse_event());
-                tokio::time::sleep(Duration::from_millis(signals.delay)).await;
+            while let Ok(value) = data_rx.recv().await {
+                let data: EventData<_> = match value {
+                    Data::Fragment(msg) => MergeFragments::new(format!("<div id='message'>{}</div>", msg)).into(),
+                    Data::Signal(delay) => MergeSignals::new(JsonEventData(json!({
+                        "delay": delay,
+                    }))).into(),
+                };
+                yield Ok::<_, OpaqueError>(data.into_sse_event());
             }
         },
     ))

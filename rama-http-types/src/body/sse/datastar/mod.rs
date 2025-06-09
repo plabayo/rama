@@ -17,6 +17,8 @@
 //! [🚀 data-\*]: https://data-star.dev/
 
 mod enums;
+use std::marker::PhantomData;
+
 pub use enums::{EventType, FragmentMergeMode};
 
 mod merge_fragments;
@@ -38,17 +40,17 @@ pub use execute_script::{
     ScriptType,
 };
 
-use crate::sse::{EventDataLineReader, EventDataMultiLineReader, EventDataRead};
+use crate::sse::{Event, EventDataLineReader, EventDataMultiLineReader, EventDataRead};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum EventData {
+pub enum EventData<T = String> {
     /// [`MergeFragments`] merges one or more fragments into the DOM.
     MergeFragments(MergeFragments),
     /// [`RemoveFragments`] sends a selector to the browser to remove HTML fragments from the DOM.
     RemoveFragments(RemoveFragments),
     /// [`MergeSignals`] sends one or more signals to the browser
     /// to be merged into the signals.
-    MergeSignals(MergeSignals),
+    MergeSignals(MergeSignals<T>),
     /// [`RemoveSignals`] sends signals to the browser to be removed from the signals.
     RemoveSignals(RemoveSignals),
     /// [`ExecuteScript`] executes JavaScript in the browser
@@ -58,7 +60,7 @@ pub enum EventData {
 macro_rules! into_event_data {
     ($($t:ident),+ $(,)?) => {
         $(
-            impl From<$t> for EventData {
+            impl<T> From<$t> for EventData<T> {
                 fn from(value: $t) -> Self {
                     EventData::$t(value)
                 }
@@ -70,12 +72,34 @@ macro_rules! into_event_data {
 into_event_data! {
     MergeFragments,
     RemoveFragments,
-    MergeSignals,
     RemoveSignals,
     ExecuteScript,
 }
 
-impl crate::sse::EventDataWrite for EventData {
+impl<T> From<MergeSignals<T>> for EventData<T> {
+    fn from(value: MergeSignals<T>) -> Self {
+        EventData::MergeSignals(value)
+    }
+}
+
+impl<T> EventData<T> {
+    /// Consume `self` as an [`Event`].
+    pub fn into_sse_event(self) -> Event<EventData<T>> {
+        let event_type = match self {
+            EventData::MergeFragments(_) => EventType::MergeFragments,
+            EventData::RemoveFragments(_) => EventType::RemoveFragments,
+            EventData::MergeSignals(_) => EventType::MergeSignals,
+            EventData::RemoveSignals(_) => EventType::RemoveSignals,
+            EventData::ExecuteScript(_) => EventType::ExecuteScript,
+        };
+        Event::new()
+            .try_with_event(event_type.as_smol_str())
+            .unwrap()
+            .with_data(self)
+    }
+}
+
+impl<T: crate::sse::EventDataWrite> crate::sse::EventDataWrite for EventData<T> {
     fn write_data(&self, w: &mut impl std::io::Write) -> Result<(), OpaqueError> {
         match self {
             EventData::MergeFragments(merge_fragments) => merge_fragments.write_data(w),
@@ -89,25 +113,31 @@ impl crate::sse::EventDataWrite for EventData {
 
 /// [`EventDataLineReader`] for the [`EventDataRead`] implementation of [`RemoveSignals`].
 #[derive(Debug)]
-pub struct EventDataReader(EventDataMultiLineReader<String>);
+pub struct EventDataReader<T = String> {
+    reader: EventDataMultiLineReader<String>,
+    _phantom: PhantomData<fn() -> T>,
+}
 
-impl EventDataRead for EventData {
-    type Reader = EventDataReader;
+impl<T: EventDataRead> EventDataRead for EventData<T> {
+    type Reader = EventDataReader<T>;
 
     fn line_reader() -> Self::Reader {
-        EventDataReader(Vec::<String>::line_reader())
+        EventDataReader {
+            reader: Vec::<String>::line_reader(),
+            _phantom: PhantomData,
+        }
     }
 }
 
-impl EventDataLineReader for EventDataReader {
-    type Data = EventData;
+impl<T: EventDataRead> EventDataLineReader for EventDataReader<T> {
+    type Data = EventData<T>;
 
     fn read_line(&mut self, line: &str) -> Result<(), OpaqueError> {
-        self.0.read_line(line)
+        self.reader.read_line(line)
     }
 
     fn data(&mut self, event: Option<&str>) -> Result<Option<Self::Data>, OpaqueError> {
-        let lines = match self.0.data(None)? {
+        let lines = match self.reader.data(None)? {
             Some(data) => data,
             None => return Ok(None),
         };
@@ -128,7 +158,7 @@ impl EventDataLineReader for EventDataReader {
                 reader.data(event).map(|v| v.map(EventData::MergeFragments))
             }
             EventType::MergeSignals => {
-                let mut reader = MergeSignals::<String>::line_reader();
+                let mut reader = MergeSignals::<T>::line_reader();
                 for line in lines {
                     reader
                         .read_line(&line)

@@ -26,7 +26,7 @@ impl RemoveSignals {
     /// Consume `self` as an [`Event`].
     pub fn into_sse_event(self) -> Event<RemoveSignals> {
         Event::new()
-            .try_with_event(EventType::RemoveSignals.as_str())
+            .try_with_event(EventType::RemoveSignals.as_smol_str())
             .unwrap()
             .with_data(self)
     }

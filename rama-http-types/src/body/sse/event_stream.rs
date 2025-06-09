@@ -176,14 +176,14 @@ impl<S, T: EventDataRead> EventStream<S, T> {
 
     /// Set the last event ID of the stream. Useful for initializing the stream with a previous
     /// last event ID
-    pub fn try_set_last_event_id(&mut self, id: impl AsRef<str>) -> Result<(), OpaqueError> {
-        let id = id.as_ref();
+    pub fn try_set_last_event_id(&mut self, id: impl Into<SmolStr>) -> Result<(), OpaqueError> {
+        let id = id.into();
         if id.contains(['\n', '\r', '\0']) {
             return Err(OpaqueError::from_std(EventBuildError::invalid_characters(
                 id,
             )));
         }
-        self.last_event_id = Some(SmolStr::new(id));
+        self.last_event_id = Some(id);
         Ok(())
     }
 

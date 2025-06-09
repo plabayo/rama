@@ -105,7 +105,7 @@ impl ExecuteScript {
     /// Consume `self` as an [`Event`].
     pub fn into_sse_event(self) -> Event<ExecuteScript> {
         Event::new()
-            .try_with_event(EventType::ExecuteScript.as_str())
+            .try_with_event(EventType::ExecuteScript.as_smol_str())
             .unwrap()
             .with_data(self)
     }
