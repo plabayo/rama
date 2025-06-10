@@ -6,11 +6,11 @@
 //! The core algorithms use bit manipulation for optimal performance, avoiding
 //! unnecessary memory allocations and expensive arithmetic operations.
 use {
-    cidr::{Ipv4Cidr, Ipv6Cidr},
     rama_core::{
         context::Extensions,
         username::{UsernameLabelParser, UsernameLabelState},
     },
+    rama_net::dep::cidr::{Ipv4Cidr, Ipv6Cidr},
     rand::random,
     std::{
         convert::Infallible,
@@ -44,7 +44,7 @@ use {
 ///
 /// # Examples
 /// ```
-/// use cidr::Ipv4Cidr;
+/// use rama_net::dep::cidr::Ipv4Cidr;
 /// use rama_tcp::client::rand_ipv4;
 ///
 /// let cidr = "192.168.1.0/24".parse::<Ipv4Cidr>().unwrap();
@@ -54,39 +54,18 @@ use {
 #[inline]
 pub fn rand_ipv4(cidr: &Ipv4Cidr) -> Ipv4Addr {
     let prefix_len = cidr.network_length();
-
-    // Early return optimization for /32 networks (single host)
-    // Avoids unnecessary computation when only one address is possible
     if prefix_len == 32 {
         return cidr.first_address();
     }
-
-    // Calculate number of bits available for host randomization
     let host_bits = 32 - prefix_len;
-
-    // Performance optimization: avoid overflow for large host_bits
     if host_bits >= 32 {
         return Ipv4Addr::from(random::<u32>());
     }
-
-    // Convert base IP to u32 for efficient bitwise operations
     let base_ip_u32 = u32::from(cidr.first_address());
-
-    // Generate cryptographically secure random value for host portion
     let rand_val: u32 = random();
-
-    // Create mask to isolate host bits: (2^host_bits - 1)
-    // This mask has 1s in host positions and 0s in network positions
     let host_mask = (1u32 << host_bits) - 1;
-
-    // Extract only the random bits that belong to the host portion
     let host_part = rand_val & host_mask;
-
-    // Preserve network portion by masking out host bits from base IP
-    // The network mask is the bitwise NOT of the host mask
     let net_part = base_ip_u32 & !host_mask;
-
-    // Combine network and random host portions using bitwise OR
     Ipv4Addr::from(net_part | host_part)
 }
 
@@ -115,7 +94,7 @@ pub fn rand_ipv4(cidr: &Ipv4Cidr) -> Ipv4Addr {
 ///
 /// # Examples
 /// ```
-/// use cidr::Ipv6Cidr;
+/// use rama_net::dep::cidr::Ipv6Cidr;
 /// use rama_tcp::client::rand_ipv6;
 ///
 /// let cidr = "2001:db8::/32".parse::<Ipv6Cidr>().unwrap();
@@ -125,39 +104,18 @@ pub fn rand_ipv4(cidr: &Ipv4Cidr) -> Ipv4Addr {
 #[inline]
 pub fn rand_ipv6(cidr: &Ipv6Cidr) -> Ipv6Addr {
     let prefix_len = cidr.network_length();
-
-    // Early return optimization for /128 networks (single host)
-    // Avoids unnecessary computation when only one address is possible
     if prefix_len == 128 {
         return cidr.first_address();
     }
-
-    // Calculate number of bits available for host randomization
     let host_bits = 128 - prefix_len;
-
-    // Performance optimization: avoid overflow for large host_bits
     if host_bits >= 128 {
         return Ipv6Addr::from(random::<u128>());
     }
-
-    // Convert base IPv6 to u128 for efficient bitwise operations
     let base_ip_u128 = u128::from(cidr.first_address());
-
-    // Generate cryptographically secure random value for host portion
     let rand_val: u128 = random();
-
-    // Create mask to isolate host bits: (2^host_bits - 1)
-    // This mask has 1s in host positions and 0s in network positions
     let host_mask = (1u128 << host_bits) - 1;
-
-    // Extract only the random bits that belong to the host portion
     let host_part = rand_val & host_mask;
-
-    // Preserve network portion by masking out host bits from base IP
-    // The network mask is the bitwise NOT of the host mask
     let net_part = base_ip_u128 & !host_mask;
-
-    // Combine network and random host portions using bitwise OR
     Ipv6Addr::from(net_part | host_part)
 }
 
@@ -190,7 +148,7 @@ pub fn rand_ipv6(cidr: &Ipv6Cidr) -> Ipv6Addr {
 ///
 /// # Examples
 /// ```
-/// use cidr::Ipv4Cidr;
+/// use rama_net::dep::cidr::Ipv4Cidr;
 /// use rama_tcp::client::ipv4_with_range;
 ///
 /// let cidr = "192.168.0.0/16".parse::<Ipv4Cidr>().unwrap();
@@ -200,48 +158,25 @@ pub fn rand_ipv6(cidr: &Ipv6Cidr) -> Ipv6Addr {
 #[inline]
 pub fn ipv4_with_range(cidr: &Ipv4Cidr, range_len: u8, combined: u32) -> Ipv4Addr {
     let prefix_len = cidr.network_length();
-
-    // Early return optimization: if range_len doesn't extend beyond prefix,
-    // delegate to simpler random function for better performance
     if range_len <= prefix_len {
         return rand_ipv4(cidr);
     }
-
-    // Convert base IP to u32 for efficient bitwise operations
     let base_ip_u32 = u32::from(cidr.first_address());
-
-    // Calculate bit lengths for each portion of the address
-    let fixed_bits_len = range_len - prefix_len; // Intermediate deterministic bits
-    let host_bits = 32 - range_len; // Remaining random bits
-
-    // Performance optimization: avoid potential overflow in bit shift operations
+    let fixed_bits_len = range_len - prefix_len;
+    let host_bits = 32 - range_len;
     if fixed_bits_len >= 32 || host_bits >= 32 {
         return rand_ipv4(cidr);
     }
-
-    // Create bit masks for isolating different portions
-    // Fixed mask: isolates the intermediate deterministic bits
     let fixed_mask = (1u32 << fixed_bits_len) - 1;
-    // Host mask: isolates the final random bits
     let host_mask = if host_bits == 0 {
         0
     } else {
         (1u32 << host_bits) - 1
     };
-
-    // Extract and position the deterministic portion from combined value
-    // Shift left by host_bits to place it in the correct bit position
     let fixed_part = (combined & fixed_mask) << host_bits;
-
-    // Create network mask to preserve the original CIDR network bits
-    // This mask has 1s in network positions and 0s elsewhere
     let network_mask = !((1u32 << (32 - prefix_len)) - 1);
     let network_part = base_ip_u32 & network_mask;
-
-    // Generate random value for the host portion
     let host_part = random::<u32>() & host_mask;
-
-    // Combine all three portions: network | intermediate | host
     Ipv4Addr::from(network_part | fixed_part | host_part)
 }
 
@@ -274,7 +209,7 @@ pub fn ipv4_with_range(cidr: &Ipv4Cidr, range_len: u8, combined: u32) -> Ipv4Add
 ///
 /// # Examples
 /// ```
-/// use cidr::Ipv6Cidr;
+/// use rama_net::dep::cidr::Ipv6Cidr;
 /// use rama_tcp::client::ipv6_with_range;
 ///
 /// let cidr = "2001:db8::/32".parse::<Ipv6Cidr>().unwrap();
@@ -284,39 +219,18 @@ pub fn ipv4_with_range(cidr: &Ipv4Cidr, range_len: u8, combined: u32) -> Ipv4Add
 #[inline]
 pub fn ipv6_with_range(cidr: &Ipv6Cidr, range_len: u8, combined: u128) -> Ipv6Addr {
     let prefix_len = cidr.network_length();
-
-    // Early return optimization: if range_len doesn't extend beyond prefix,
-    // delegate to simpler random function for better performance
     if range_len <= prefix_len {
         return rand_ipv6(cidr);
     }
-
-    // Convert base IPv6 to u128 for efficient bitwise operations
     let base_ip_u128 = u128::from(cidr.first_address());
-
-    // Calculate bit lengths for each portion of the address
-    let fixed_bits_len = range_len - prefix_len; // Intermediate deterministic bits
-    let host_bits = 128 - range_len; // Remaining random bits
-
-    // Create bit masks for isolating different portions
-    // Fixed mask: isolates the intermediate deterministic bits
+    let fixed_bits_len = range_len - prefix_len;
+    let host_bits = 128 - range_len;
     let fixed_mask = (1u128 << fixed_bits_len) - 1;
-    // Host mask: isolates the final random bits
     let host_mask = (1u128 << host_bits) - 1;
-
-    // Extract and position the deterministic portion from combined value
-    // Shift left by host_bits to place it in the correct bit position
     let fixed_part = (combined & fixed_mask) << host_bits;
-
-    // Create network mask to preserve the original CIDR network bits
-    // This mask has 1s in network positions and 0s elsewhere
     let network_mask = !((1u128 << (128 - prefix_len)) - 1);
     let network_part = base_ip_u128 & network_mask;
-
-    // Generate random value for the host portion
     let host_part = random::<u128>() & host_mask;
-
-    // Combine all three portions: network | intermediate | host
     Ipv6Addr::from(network_part | fixed_part | host_part)
 }
 
@@ -349,7 +263,7 @@ pub fn ipv6_with_range(cidr: &Ipv6Cidr, range_len: u8, combined: u128) -> Ipv6Ad
 ///
 /// # Examples
 /// ```
-/// use cidr::Ipv4Cidr;
+/// use rama_net::dep::cidr::Ipv4Cidr;
 /// use rama_tcp::client::IpCidrConExt;
 /// use rama_tcp::client::ipv4_from_extension;
 ///
@@ -375,7 +289,6 @@ pub fn ipv4_from_extension(
                 // Creates mask with 1s in network bits, 0s in host bits
                 let subnet_mask = !((1u32 << (32 - prefix_len)) - 1);
 
-                // Extract and preserve the base network address
                 let base_ip_bits = u32::from(cidr.first_address()) & subnet_mask;
 
                 // Calculate available host addresses (subtract 1 to avoid overflow)
@@ -392,7 +305,6 @@ pub fn ipv4_from_extension(
                 // This ensures consistent address generation for the same input
                 let host_portion = u32::try_from(combined).unwrap_or(u32::MAX) % capacity;
 
-                // Combine network and deterministic host portions
                 let ip_num = base_ip_bits | host_portion;
                 return Ipv4Addr::from(ip_num);
             }
@@ -407,7 +319,6 @@ pub fn ipv4_from_extension(
                     );
                 }
             }
-            // Explicit handling of None case for completeness
             Some(IpCidrConExt::None) | None => {}
         }
     }
@@ -445,7 +356,7 @@ pub fn ipv4_from_extension(
 ///
 /// # Examples
 /// ```
-/// use cidr::Ipv6Cidr;
+/// use rama_net::dep::cidr::Ipv6Cidr;
 /// use rama_tcp::client::IpCidrConExt;
 /// use rama_tcp::client::ipv6_from_extension;
 ///
@@ -471,7 +382,6 @@ pub fn ipv6_from_extension(
                 // Creates mask with 1s in network bits, 0s in host bits
                 let subnet_mask = !((1u128 << (128 - network_length)) - 1);
 
-                // Extract and preserve the base network address
                 let base_ip_bits = u128::from(cidr.first_address()) & subnet_mask;
 
                 // Calculate available host addresses (subtract 1 to avoid overflow)
@@ -488,7 +398,6 @@ pub fn ipv6_from_extension(
                 // This ensures consistent address generation for the same input
                 let host_portion = u128::from(combined) % capacity;
 
-                // Combine network and deterministic host portions
                 let ip_num = base_ip_bits | host_portion;
                 return Ipv6Addr::from(ip_num);
             }
@@ -499,7 +408,6 @@ pub fn ipv6_from_extension(
                     return ipv6_with_range(cidr, range, u128::from(combined));
                 }
             }
-            // Explicit handling of None case for completeness
             Some(IpCidrConExt::None) | None => {}
         }
     }
@@ -551,11 +459,9 @@ pub const fn extract_value_from_ipcidr_connector_extension(
     extension: Option<IpCidrConExt>,
 ) -> Option<u64> {
     match extension {
-        // Extract value from Range/Session/TTL variants
         Some(
             IpCidrConExt::Range(value) | IpCidrConExt::Session(value) | IpCidrConExt::Ttl(value),
         ) => Some(value),
-        // None variant contains no extractable value
         Some(IpCidrConExt::None) | None => None,
     }
 }
@@ -671,13 +577,10 @@ impl UsernameLabelParser for IpCidrConExtUsernameLabelParser {
     /// Uses efficient string operations and avoids unnecessary allocations.
     /// Pattern matching provides O(1) lookup for known extension types.
     fn parse_label(&mut self, label: &str) -> UsernameLabelState {
-        // Normalize input: trim whitespace and convert to lowercase for consistent matching
         let label = label.trim().to_ascii_lowercase();
 
         match self.extension {
             Some(ref mut ext) => {
-                // Second phase: parse the numeric value for the already-identified extension
-                // Using 'ref mut ext' for direct in-place modification without cloning
                 match ext {
                     IpCidrConExt::Ttl(ttl) => {
                         // Parse TTL value and normalize to timestamp boundary
@@ -738,8 +641,6 @@ impl UsernameLabelParser for IpCidrConExtUsernameLabelParser {
                 }
             }
         }
-
-        // Label was successfully processed
         UsernameLabelState::Used
     }
 
