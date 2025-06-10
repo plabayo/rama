@@ -187,7 +187,7 @@ pub mod controller {
     use super::*;
 
     use futures::Stream;
-    use rama::http::sse::datastar::FragmentMergeMode;
+    use rama::http::sse::datastar::{FragmentMergeMode, RemoveFragments};
     use serde::{Deserialize, Serialize};
     use std::pin::Pin;
 
@@ -293,6 +293,7 @@ pub mod controller {
             Box::pin(stream! {
                 tracing::debug!("subscriber: fresh connect: send current signal/dom state");
                 yield sse_status_fragment_message(0f64);
+                yield remove_server_warning();
                 yield data_animation_fragment_message(text, progress);
                 yield update_signal_fragment_message(UpdateSignals { delay: Some(delay) });
 
@@ -552,7 +553,7 @@ pub mod controller {
 
                         let exit_events = [
                             critical_error_banner(
-                                "Server was shutdown. Please refresh page to try again later.",
+                                "Server was shutdown. Please wait a bit or refresh page to retry immediately.",
                             ),
                             Message::Exit,
                         ];
@@ -617,6 +618,10 @@ pub mod controller {
         }
     }
 
+    fn remove_server_warning() -> Message {
+        Message::Event(RemoveFragments::new("#server-warning").into())
+    }
+
     fn data_animation_fragment_message(text: &str, progress: f64) -> Message {
         Message::Event(
             MergeFragments::new(format!(
@@ -664,7 +669,7 @@ pub mod controller {
                   width: 100%;
                   z-index: 9999;
                   box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-                ">
+                " data-on-load="@get('/hello-world')">
                   ⚠️ {msg}.
                 </div>
             "##
