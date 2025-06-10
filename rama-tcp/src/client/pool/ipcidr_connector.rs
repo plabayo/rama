@@ -36,8 +36,13 @@ use {
 /// # Examples
 ///
 /// ```rust
+/// use std::sync::Arc;
+/// use std::sync::atomic::AtomicUsize;
+/// use std::net::IpAddr;
 /// use std::net::Ipv4Addr;
 /// use cidr::Ipv4Cidr;
+/// use rama_tcp::client::IpCidrConnector;
+/// use rama_tcp::client::PoolMode;
 ///
 /// // Create a connector for a /24 IPv4 subnet with random selection
 /// let connector = IpCidrConnector::new_ipv4(
@@ -47,7 +52,7 @@ use {
 /// // Configure with round-robin selection and fallback
 /// let connector = connector
 ///     .with_mode(PoolMode::RoundRobin(Arc::new(AtomicUsize::new(0))))
-///     .with_fallback(Some(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))))
+///     .with_fallback("192.168.2.0/24".parse().ok())
 ///     .with_excluded(Some(vec![IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))]));
 /// ```
 #[derive(Debug, Clone)]
@@ -151,6 +156,8 @@ impl IpCidrConnector {
     /// # Examples
     ///
     /// ```rust
+    /// use rama_tcp::client::IpCidrConnector;
+    ///
     /// let cidr = "10.0.0.0/16".parse().unwrap();
     /// let connector = IpCidrConnector::new_ipv4(cidr);
     /// ```
@@ -183,6 +190,8 @@ impl IpCidrConnector {
     /// # Examples
     ///
     /// ```rust
+    /// use rama_tcp::client::IpCidrConnector;
+    ///
     /// let cidr = "2001:db8::/64".parse().unwrap();
     /// let connector = IpCidrConnector::new_ipv6(cidr);
     /// ```
@@ -239,6 +248,9 @@ impl IpCidrConnector {
     /// # Examples
     ///
     /// ```rust
+    /// use rama_tcp::client::IpCidrConnector;
+    ///
+    /// let cidr = "10.0.0.0/16".parse().unwrap();
     /// let connector = IpCidrConnector::new_ipv4(cidr)
     ///     .with_cidr_range(Some(28)); // Further restrict to /28
     /// ```
