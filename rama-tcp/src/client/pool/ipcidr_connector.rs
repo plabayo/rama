@@ -417,8 +417,8 @@ impl IpCidrConnector {
             }
             (PoolMode::RoundRobin(index), IpCidr::V6(cidr)) => {
                 let current_idx = index.fetch_add(1, Ordering::Relaxed);
-                let session_id = u64::try_from(current_idx as u128 % self.capacity)
-                    .expect("Failed to convert u128 to u64");
+                let session_id =
+                    u64::try_from(current_idx as u128 % self.capacity).unwrap_or(u64::MAX);
                 let ipv6_addr =
                     ipv6_from_extension(cidr, None, Some(IpCidrConExt::Session(session_id)));
                 IpAddr::V6(ipv6_addr)
