@@ -1,12 +1,14 @@
 use {
     super::{
-        PoolMode, TcpStream,
+        PoolMode,
         utils::{IpCidrConExt, ipv4_from_extension, ipv6_from_extension},
     },
-    crate::client::TcpStreamConnector,
-    cidr::{IpCidr, Ipv4Cidr, Ipv6Cidr},
+    crate::{TcpStream, client::TcpStreamConnector},
     rama_core::error::OpaqueError,
-    rama_net::address::SocketAddress,
+    rama_net::{
+        address::SocketAddress,
+        dep::cidr::{IpCidr, Ipv4Cidr, Ipv6Cidr},
+    },
     std::{
         collections::HashSet,
         net::{IpAddr, Ipv4Addr, SocketAddr},
@@ -40,7 +42,7 @@ use {
 /// use std::sync::atomic::AtomicUsize;
 /// use std::net::IpAddr;
 /// use std::net::Ipv4Addr;
-/// use cidr::Ipv4Cidr;
+/// use rama_net::dep::cidr::Ipv4Cidr;
 /// use rama_tcp::client::IpCidrConnector;
 /// use rama_tcp::client::PoolMode;
 ///
@@ -347,20 +349,15 @@ impl IpCidrConnector {
 
         for _ in 0..MAX_RETRIES {
             let ip_addr = self.generate_ip_address();
-
-            // Fast path: no exclusions
             if self.excluded.is_none() {
                 return self.create_socket_addresses(ip_addr);
             }
-
-            // Check exclusions with O(1) HashSet lookup
             if let Some(ref excluded) = self.excluded {
                 if !excluded.contains(&ip_addr) {
                     return self.create_socket_addresses(ip_addr);
                 }
             }
         }
-
         // Fallback to any address if we've exhausted retries
         // This prevents infinite loops in extreme edge cases
         let ip_addr = self.generate_ip_address();
@@ -565,7 +562,7 @@ impl TcpStreamConnector for IpCidrConnector {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cidr::{Ipv4Cidr, Ipv6Cidr};
+    use rama_net::dep::cidr::{Ipv4Cidr, Ipv6Cidr};
     use std::{
         str::FromStr,
         sync::{Arc, atomic::AtomicUsize},
