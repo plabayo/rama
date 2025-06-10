@@ -3,7 +3,6 @@
 //! This module provides a high-performance connection pool for TCP stream connectors with
 //! support for multiple load balancing strategies. The pool is designed to be thread-safe
 //! and efficient for high-throughput applications.
-
 use {
     crate::{TcpStream, client::TcpStreamConnector},
     rand::{
@@ -13,15 +12,14 @@ use {
     std::{
         fmt::Debug,
         net::SocketAddr,
+        slice::{Iter, IterMut},
         sync::{
             Arc,
             atomic::{AtomicUsize, Ordering},
         },
+        vec::IntoIter,
     },
 };
-
-pub(super) mod ipcidr_connector;
-pub(super) mod utils;
 
 /// Defines the load balancing strategy for selecting connectors from the pool.
 ///
@@ -105,8 +103,6 @@ pub struct TcpStreamConnectorPool<C> {
     mode: PoolMode,
     /// Vector of available connectors. Stored as a Vec for cache-friendly access patterns
     connectors: Vec<C>,
-    /// Cached length to avoid repeated `Vec::len()` calls in hot paths
-    connector_count: usize,
 }
 
 impl<C> Default for TcpStreamConnectorPool<C> {
@@ -118,8 +114,110 @@ impl<C> Default for TcpStreamConnectorPool<C> {
         Self {
             mode: PoolMode::default(),
             connectors: Vec::new(),
-            connector_count: 0,
         }
+    }
+}
+
+impl<C> IntoIterator for TcpStreamConnectorPool<C> {
+    type Item = C;
+    type IntoIter = IntoIter<C>;
+
+    /// Returns an owned iterator over the connectors in the pool.
+    ///
+    /// This method provides owned access to all connectors in the pool,
+    /// which can be useful for inspection, validation, or health checking.
+    ///
+    /// # Returns
+    ///
+    /// An owned iterator over the connectors in the pool.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// use rama_tcp::client::TcpStreamConnectorPool;
+    /// use rama_net::address::SocketAddress;
+    /// use std::str::FromStr as _;
+    /// let connectors = vec![
+    ///     SocketAddress::from_str("127.0.0.1:8080").unwrap(),
+    ///     SocketAddress::from_str("127.0.0.1:8081").unwrap(),
+    ///     SocketAddress::from_str("127.0.0.1:8082").unwrap(),
+    /// ];
+    /// let pool = TcpStreamConnectorPool::new_random(connectors);
+    /// for connector in pool.into_iter() {
+    ///     // Inspect or validate connector
+    /// }
+    /// ```
+    fn into_iter(self) -> Self::IntoIter {
+        self.connectors.into_iter()
+    }
+}
+
+impl<'a, C> IntoIterator for &'a TcpStreamConnectorPool<C> {
+    type Item = &'a C;
+    type IntoIter = Iter<'a, C>;
+
+    /// Returns an iterator over the connectors in the pool.
+    ///
+    /// This method provides read-only access to all connectors in the pool,
+    /// which can be useful for inspection, validation, or health checking.
+    ///
+    /// # Returns
+    ///
+    /// An iterator over references to the connectors in the pool.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// use rama_tcp::client::TcpStreamConnectorPool;
+    /// use rama_net::address::SocketAddress;
+    /// use std::str::FromStr as _;
+    /// let connectors = vec![
+    ///     SocketAddress::from_str("127.0.0.1:8080").unwrap(),
+    ///     SocketAddress::from_str("127.0.0.1:8081").unwrap(),
+    ///     SocketAddress::from_str("127.0.0.1:8082").unwrap(),
+    /// ];
+    /// let pool = TcpStreamConnectorPool::new_random(connectors);
+    /// for connector in &pool {
+    ///     // Inspect or validate connector
+    /// }
+    /// ```
+    fn into_iter(self) -> Self::IntoIter {
+        self.connectors.iter()
+    }
+}
+
+impl<'a, C> IntoIterator for &'a mut TcpStreamConnectorPool<C> {
+    type Item = &'a mut C;
+    type IntoIter = IterMut<'a, C>;
+
+    /// Returns a mutable iterator over the connectors in the pool.
+    ///
+    /// This method provides mutable access to all connectors in the pool,
+    /// which can be useful for updating connector configurations, modifying
+    /// connection parameters, or performing in-place updates.
+    ///
+    /// # Returns
+    ///
+    /// A mutable iterator over references to the connectors in the pool.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// use rama_tcp::client::TcpStreamConnectorPool;
+    /// use rama_net::address::SocketAddress;
+    /// use std::str::FromStr as _;
+    /// let connectors = vec![
+    ///     SocketAddress::from_str("127.0.0.1:8080").unwrap(),
+    ///     SocketAddress::from_str("127.0.0.1:8081").unwrap(),
+    ///     SocketAddress::from_str("127.0.0.1:8082").unwrap(),
+    /// ];
+    /// let mut pool = TcpStreamConnectorPool::new_random(connectors);
+    /// for connector in &mut pool {
+    ///     // Modify connector configuration
+    /// }
+    /// ```
+    fn into_iter(self) -> Self::IntoIter {
+        self.connectors.iter_mut()
     }
 }
 
@@ -134,19 +232,13 @@ impl<C: TcpStreamConnector + Clone> TcpStreamConnectorPool<C> {
     /// * `mode` - The load balancing strategy to use
     /// * `connectors` - Vector of connectors to manage
     fn new(mode: PoolMode, connectors: Vec<C>) -> Self {
-        let connector_count = connectors.len();
-        Self {
-            mode,
-            connectors,
-            connector_count,
-        }
+        Self { mode, connectors }
     }
 
     /// Creates a new connector pool using random selection strategy.
     ///
-    /// The provided connectors are shuffled during initialization to ensure
-    /// good initial distribution. This method is optimized for scenarios where
-    /// you want good load distribution with minimal runtime overhead.
+    /// This method is optimized for scenarios whereyou want good
+    /// load distribution with minimal runtime overhead.
     ///
     /// # Arguments
     ///
@@ -158,7 +250,7 @@ impl<C: TcpStreamConnector + Clone> TcpStreamConnectorPool<C> {
     ///
     /// # Performance Notes
     ///
-    /// - Shuffling occurs once during initialization: O(n)
+    /// - Initialization: O(1)
     /// - Subsequent connector selection: O(1) with minimal overhead
     /// - No synchronization overhead in multi-threaded usage
     ///
@@ -176,17 +268,17 @@ impl<C: TcpStreamConnector + Clone> TcpStreamConnectorPool<C> {
     /// ];
     /// let pool = TcpStreamConnectorPool::new_random(connectors);
     /// ```
-    pub fn new_random(mut connectors: Vec<C>) -> Self {
-        // Shuffle once during initialization for better initial distribution
-        connectors.shuffle(&mut rng());
+    pub fn new_random(connectors: Vec<C>) -> Self {
         Self::new(PoolMode::Random, connectors)
     }
 
     /// Creates a new connector pool using round-robin selection strategy.
     ///
-    /// This method creates a pool that cycles through connectors in order,
-    /// ensuring perfectly even distribution of connections. The internal counter
-    /// is initialized to 0 and will wrap around using modulo arithmetic.
+    /// The provided connectors are shuffled during initialization to ensure
+    /// good initial distribution. This method creates a pool that cycles through
+    /// connectors in order,ensuring perfectly even distribution of connections.
+    /// The internal counteris initialized to 0 and will wrap around using modulo
+    /// arithmetic.
     ///
     /// # Arguments
     ///
@@ -198,7 +290,7 @@ impl<C: TcpStreamConnector + Clone> TcpStreamConnectorPool<C> {
     ///
     /// # Performance Notes
     ///
-    /// - Initialization: O(1)
+    /// - Shuffling occurs once during initialization: O(n)
     /// - Connector selection: O(1) with single atomic increment
     /// - Thread-safe with minimal contention using relaxed ordering
     ///
@@ -223,8 +315,9 @@ impl<C: TcpStreamConnector + Clone> TcpStreamConnectorPool<C> {
     /// let pool = TcpStreamConnectorPool::new_round_robin(connectors);
     /// // First call returns connector1, second returns connector2, etc.
     /// ```
-    pub fn new_round_robin(connectors: Vec<C>) -> Self {
+    pub fn new_round_robin(mut connectors: Vec<C>) -> Self {
         let index = Arc::new(AtomicUsize::new(0));
+        connectors.shuffle(&mut rng());
         Self::new(PoolMode::RoundRobin(index), connectors)
     }
 
@@ -286,34 +379,17 @@ impl<C: TcpStreamConnector + Clone> TcpStreamConnectorPool<C> {
     /// ```
     #[inline] // Inline for hot path optimization
     pub fn get_connector(&self) -> Option<C> {
-        // Early return for empty pool - most common edge case
-        if self.connector_count == 0 {
+        if self.is_empty() {
             return None;
         }
-
         let connector = match &self.mode {
-            PoolMode::Random => {
-                // Use thread-local RNG for better performance in multi-threaded scenarios
-                // IndexedRandom::choose provides uniform distribution
-                self.connectors.choose(&mut rng())
-            }
+            PoolMode::Random => self.connectors.choose(&mut rng()),
             PoolMode::RoundRobin(counter) => {
-                // Atomic increment with relaxed ordering for minimal overhead
-                // fetch_add returns the previous value, ensuring we get unique indices
                 let current_index = counter.fetch_add(1, Ordering::Relaxed);
-
-                // Modulo arithmetic handles counter overflow gracefully
-                // Using cached connector_count avoids repeated Vec::len() calls
-                let index = current_index % self.connector_count;
-
-                // Direct indexing is safe because we know index < connector_count
-                // Using get() instead of direct indexing for safety in debug builds
+                let index = current_index % self.len();
                 self.connectors.get(index)
             }
         };
-
-        // Clone the connector for ownership transfer
-        // This allows the pool to be used from multiple contexts simultaneously
         connector.cloned()
     }
 
@@ -341,7 +417,7 @@ impl<C: TcpStreamConnector + Clone> TcpStreamConnectorPool<C> {
     /// ```
     #[inline]
     pub fn len(&self) -> usize {
-        self.connector_count
+        self.connectors.len()
     }
 
     /// Returns `true` if the pool contains no connectors.
@@ -362,13 +438,14 @@ impl<C: TcpStreamConnector + Clone> TcpStreamConnectorPool<C> {
     /// ```
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.connector_count == 0
+        self.connectors.is_empty()
     }
 
     /// Returns an iterator over the connectors in the pool.
     ///
-    /// This method provides read-only access to all connectors in the pool,
-    /// which can be useful for inspection, validation, or health checking.
+    /// This method provides a convenient way to access an iterator without
+    /// consuming the pool or requiring a reference. It's equivalent to calling
+    /// `pool.connectors.iter()` but provides a cleaner API.
     ///
     /// # Returns
     ///
@@ -390,9 +467,41 @@ impl<C: TcpStreamConnector + Clone> TcpStreamConnectorPool<C> {
     ///     // Inspect or validate connector
     /// }
     /// ```
-    #[allow(clippy::iter_without_into_iter)]
-    pub fn iter(&self) -> std::slice::Iter<'_, C> {
+    #[inline]
+    pub fn iter(&self) -> Iter<'_, C> {
         self.connectors.iter()
+    }
+
+    /// Returns a mutable iterator over the connectors in the pool.
+    ///
+    /// This method provides a convenient way to access a mutable iterator
+    /// without requiring an explicit mutable reference to the pool. It's
+    /// equivalent to calling `pool.connectors.iter_mut()` but provides
+    /// a cleaner API.
+    ///
+    /// # Returns
+    ///
+    /// A mutable iterator over references to the connectors in the pool.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore
+    /// use rama_tcp::client::TcpStreamConnectorPool;
+    /// use rama_net::address::SocketAddress;
+    /// use std::str::FromStr as _;
+    /// let connectors = vec![
+    ///     SocketAddress::from_str("127.0.0.1:8080").unwrap(),
+    ///     SocketAddress::from_str("127.0.0.1:8081").unwrap(),
+    ///     SocketAddress::from_str("127.0.0.1:8082").unwrap(),
+    /// ];
+    /// let mut pool = TcpStreamConnectorPool::new_random(connectors);
+    /// for connector in pool.iter_mut() {
+    ///     // Modify connector configuration
+    /// }
+    /// ```
+    #[inline]
+    pub fn iter_mut(&mut self) -> IterMut<'_, C> {
+        self.connectors.iter_mut()
     }
 }
 
@@ -493,8 +602,10 @@ mod tests {
     //! behavior of load balancing algorithms and connector selection patterns.
     use super::*;
     use crate::client::{IpCidrConExt, IpCidrConnector, ipv4_from_extension};
-    use cidr::{Ipv4Cidr, Ipv6Cidr};
-    use rama_net::address::SocketAddress;
+    use rama_net::{
+        address::SocketAddress,
+        dep::cidr::{Ipv4Cidr, Ipv6Cidr},
+    };
     use std::str::FromStr as _;
 
     /// Initializes comprehensive tracing infrastructure for test execution and debugging.
@@ -1078,7 +1189,7 @@ mod tests {
 
         // Create a small, manageable set of distinct connectors for precise validation
         // Three connectors provide sufficient complexity while remaining easily trackable
-        let connectors = vec![
+        let mut connectors = vec![
             SocketAddress::from_str("127.0.0.1:8001").unwrap(), // First backend service
             SocketAddress::from_str("127.0.0.1:8002").unwrap(), // Second backend service
             SocketAddress::from_str("127.0.0.1:8003").unwrap(), // Third backend service
@@ -1086,6 +1197,9 @@ mod tests {
 
         // Initialize RoundRobin pool with deterministic ordering
         let pool = TcpStreamConnectorPool::new_round_robin(connectors.clone());
+
+        // update the shuffled connectors into original connectors vector for validation in the test.
+        connectors = pool.connectors.clone();
 
         tracing::info!(
             "Starting RoundRobin distribution test with {} connectors across {} cycles",
