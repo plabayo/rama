@@ -5,6 +5,7 @@
 //! and efficient for high-throughput applications.
 use {
     crate::{TcpStream, client::TcpStreamConnector},
+    rama_core::error::OpaqueError,
     rand::{
         rng,
         seq::{IndexedRandom as _, SliceRandom as _},
@@ -345,8 +346,11 @@ impl<C: TcpStreamConnector + Clone> TcpStreamConnectorPool<C> {
     }
 }
 
-impl<C: TcpStreamConnector + Clone + Debug> TcpStreamConnector for TcpStreamConnectorPool<C> {
-    /// The error type returned by the underlying connectors.
+impl<C: TcpStreamConnector + Clone + Debug> TcpStreamConnector for TcpStreamConnectorPool<C>
+where
+    <C as TcpStreamConnector>::Error: From<OpaqueError>,
+{
+    /// The error type returned by the underlying connectors or pool errors.
     ///
     /// This type alias ensures that the pool's error type matches the error type
     /// of the connectors it manages, providing transparent error propagation.
@@ -365,13 +369,13 @@ impl<C: TcpStreamConnector + Clone + Debug> TcpStreamConnector for TcpStreamConn
     /// # Returns
     ///
     /// * `Ok(TcpStream)` - A successfully established TCP connection
-    /// * `Err(Self::Error)` - An error from the underlying connector
+    /// * `Err(Self::Error)` - An error from the underlying connector or if the pool is empty
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if the pool is empty (no connectors available). In production code,
-    /// consider checking `is_empty()` before calling this method if there's a
-    /// possibility of an empty pool.
+    /// Returns an error if:
+    /// - The pool is empty (no connectors available)
+    /// - The underlying connector fails to establish a connection
     ///
     /// # Performance Notes
     ///
@@ -399,9 +403,12 @@ impl<C: TcpStreamConnector + Clone + Debug> TcpStreamConnector for TcpStreamConn
     /// ```
     async fn connect(&self, addr: SocketAddr) -> Result<TcpStream, Self::Error> {
         // Select a connector using the pool's load balancing strategy
-        let connector = self
-            .get_connector()
-            .expect("TcpStreamConnectorPool is empty - no connectors available for connection");
+        let Some(connector) = self.get_connector() else {
+            return Err(OpaqueError::from_display(
+                "TcpStreamConnectorPool is empty - no connectors available for connection",
+            )
+            .into());
+        };
 
         // Log the selected connector for debugging and monitoring
         // Using structured logging for better observability in production
