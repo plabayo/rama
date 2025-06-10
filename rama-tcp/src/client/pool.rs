@@ -165,7 +165,15 @@ impl<C: TcpStreamConnector + Clone> TcpStreamConnectorPool<C> {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// let connectors = vec![connector1, connector2, connector3];
+    /// use rama_tcp::client::TcpStreamConnectorPool;
+    /// use rama_net::address::SocketAddress;
+    /// use std::str::FromStr as _;
+    ///
+    /// let connectors = vec![
+    ///     SocketAddress::from_str("127.0.0.1:8080").unwrap(),
+    ///     SocketAddress::from_str("127.0.0.1:8081").unwrap(),
+    ///     SocketAddress::from_str("127.0.0.1:8082").unwrap(),
+    /// ];
     /// let pool = TcpStreamConnectorPool::new_random(connectors);
     /// ```
     pub fn new_random(mut connectors: Vec<C>) -> Self {
@@ -203,7 +211,15 @@ impl<C: TcpStreamConnector + Clone> TcpStreamConnectorPool<C> {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// let connectors = vec![connector1, connector2, connector3];
+    /// use rama_tcp::client::TcpStreamConnectorPool;
+    /// use rama_net::address::SocketAddress;
+    /// use std::str::FromStr as _;
+    ///
+    /// let connectors = vec![
+    ///     SocketAddress::from_str("127.0.0.1:8080").unwrap(),
+    ///     SocketAddress::from_str("127.0.0.1:8081").unwrap(),
+    ///     SocketAddress::from_str("127.0.0.1:8082").unwrap(),
+    /// ];
     /// let pool = TcpStreamConnectorPool::new_round_robin(connectors);
     /// // First call returns connector1, second returns connector2, etc.
     /// ```
@@ -248,11 +264,24 @@ impl<C: TcpStreamConnector + Clone> TcpStreamConnectorPool<C> {
     /// # Examples
     ///
     /// ```rust,ignore
+    /// use rama_tcp::client::TcpStreamConnectorPool;
+    /// use rama_net::address::SocketAddress;
+    /// use std::net::SocketAddr;
+    /// use std::str::FromStr as _;
+    /// use rama_tcp::client::TcpStreamConnector as _;
+    ///
+    /// let connectors = vec![
+    ///     SocketAddress::from_str("127.0.0.1:8080").unwrap(),
+    ///     SocketAddress::from_str("127.0.0.1:8081").unwrap(),
+    ///     SocketAddress::from_str("127.0.0.1:8082").unwrap(),
+    /// ];
     /// let pool = TcpStreamConnectorPool::new_random(connectors);
     ///
     /// // Get a connector for establishing a connection
+    ///
     /// if let Some(connector) = pool.get_connector() {
-    ///     let stream = connector.connect(addr).await?;
+    ///     let addr = SocketAddr::from_str("127.0.0.1:8080").unwrap();
+    ///     let stream = async {connector.connect(addr).await.unwrap()};
     /// }
     /// ```
     #[inline] // Inline for hot path optimization
@@ -299,7 +328,15 @@ impl<C: TcpStreamConnector + Clone> TcpStreamConnectorPool<C> {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// let pool = TcpStreamConnectorPool::new_random(vec![conn1, conn2, conn3]);
+    /// use rama_tcp::client::TcpStreamConnectorPool;
+    /// use rama_net::address::SocketAddress;
+    /// use std::str::FromStr as _;
+    /// let connectors = vec![
+    ///     SocketAddress::from_str("127.0.0.1:8080").unwrap(),
+    ///     SocketAddress::from_str("127.0.0.1:8081").unwrap(),
+    ///     SocketAddress::from_str("127.0.0.1:8082").unwrap(),
+    /// ];
+    /// let pool = TcpStreamConnectorPool::new_random(connectors);
     /// assert_eq!(pool.len(), 3);
     /// ```
     #[inline]
@@ -318,7 +355,9 @@ impl<C: TcpStreamConnector + Clone> TcpStreamConnectorPool<C> {
     /// # Examples
     ///
     /// ```rust,ignore
-    /// let empty_pool = TcpStreamConnectorPool::<SomeConnector>::default();
+    /// use rama_tcp::client::TcpStreamConnectorPool;
+    /// use rama_net::address::SocketAddress;
+    /// let empty_pool = TcpStreamConnectorPool::<SocketAddress>::default();
     /// assert!(empty_pool.is_empty());
     /// ```
     #[inline]
@@ -338,6 +377,14 @@ impl<C: TcpStreamConnector + Clone> TcpStreamConnectorPool<C> {
     /// # Examples
     ///
     /// ```rust,ignore
+    /// use rama_tcp::client::TcpStreamConnectorPool;
+    /// use rama_net::address::SocketAddress;
+    /// use std::str::FromStr as _;
+    /// let connectors = vec![
+    ///     SocketAddress::from_str("127.0.0.1:8080").unwrap(),
+    ///     SocketAddress::from_str("127.0.0.1:8081").unwrap(),
+    ///     SocketAddress::from_str("127.0.0.1:8082").unwrap(),
+    /// ];
     /// let pool = TcpStreamConnectorPool::new_random(connectors);
     /// for connector in pool.iter() {
     ///     // Inspect or validate connector
@@ -386,8 +433,20 @@ impl<C: TcpStreamConnector + Clone + Debug> TcpStreamConnector for TcpStreamConn
     /// # Examples
     ///
     /// ```rust,ignore
+    /// use rama_tcp::client::TcpStreamConnectorPool;
+    /// use rama_net::address::SocketAddress;
+    /// use std::net::SocketAddr;
+    /// use std::str::FromStr as _;
+    /// use rama_tcp::client::TcpStreamConnector as _;
+    ///
+    /// let connectors = vec![
+    ///     SocketAddress::from_str("127.0.0.1:8080").unwrap(),
+    ///     SocketAddress::from_str("127.0.0.1:8081").unwrap(),
+    ///     SocketAddress::from_str("127.0.0.1:8082").unwrap(),
+    /// ];
     /// let pool = TcpStreamConnectorPool::new_random(connectors);
-    /// let stream = pool.connect("127.0.0.1:8080".parse()?).await?;
+    /// let addr = SocketAddr::from_str("127.0.0.1:8080").unwrap();
+    /// let stream = async {pool.connect(addr).await.unwrap()};
     /// ```
     async fn connect(&self, addr: SocketAddr) -> Result<TcpStream, Self::Error> {
         // Select a connector using the pool's load balancing strategy
