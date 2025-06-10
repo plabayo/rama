@@ -123,30 +123,6 @@ impl<C> IntoIterator for TcpStreamConnectorPool<C> {
     type IntoIter = IntoIter<C>;
 
     /// Returns an owned iterator over the connectors in the pool.
-    ///
-    /// This method provides owned access to all connectors in the pool,
-    /// which can be useful for inspection, validation, or health checking.
-    ///
-    /// # Returns
-    ///
-    /// An owned iterator over the connectors in the pool.
-    ///
-    /// # Examples
-    ///
-    /// ```rust,ignore
-    /// use rama_tcp::client::TcpStreamConnectorPool;
-    /// use rama_net::address::SocketAddress;
-    /// use std::str::FromStr as _;
-    /// let connectors = vec![
-    ///     SocketAddress::from_str("127.0.0.1:8080").unwrap(),
-    ///     SocketAddress::from_str("127.0.0.1:8081").unwrap(),
-    ///     SocketAddress::from_str("127.0.0.1:8082").unwrap(),
-    /// ];
-    /// let pool = TcpStreamConnectorPool::new_random(connectors);
-    /// for connector in pool.into_iter() {
-    ///     // Inspect or validate connector
-    /// }
-    /// ```
     fn into_iter(self) -> Self::IntoIter {
         self.connectors.into_iter()
     }
@@ -157,30 +133,6 @@ impl<'a, C> IntoIterator for &'a TcpStreamConnectorPool<C> {
     type IntoIter = Iter<'a, C>;
 
     /// Returns an iterator over the connectors in the pool.
-    ///
-    /// This method provides read-only access to all connectors in the pool,
-    /// which can be useful for inspection, validation, or health checking.
-    ///
-    /// # Returns
-    ///
-    /// An iterator over references to the connectors in the pool.
-    ///
-    /// # Examples
-    ///
-    /// ```rust,ignore
-    /// use rama_tcp::client::TcpStreamConnectorPool;
-    /// use rama_net::address::SocketAddress;
-    /// use std::str::FromStr as _;
-    /// let connectors = vec![
-    ///     SocketAddress::from_str("127.0.0.1:8080").unwrap(),
-    ///     SocketAddress::from_str("127.0.0.1:8081").unwrap(),
-    ///     SocketAddress::from_str("127.0.0.1:8082").unwrap(),
-    /// ];
-    /// let pool = TcpStreamConnectorPool::new_random(connectors);
-    /// for connector in &pool {
-    ///     // Inspect or validate connector
-    /// }
-    /// ```
     fn into_iter(self) -> Self::IntoIter {
         self.connectors.iter()
     }
@@ -191,31 +143,6 @@ impl<'a, C> IntoIterator for &'a mut TcpStreamConnectorPool<C> {
     type IntoIter = IterMut<'a, C>;
 
     /// Returns a mutable iterator over the connectors in the pool.
-    ///
-    /// This method provides mutable access to all connectors in the pool,
-    /// which can be useful for updating connector configurations, modifying
-    /// connection parameters, or performing in-place updates.
-    ///
-    /// # Returns
-    ///
-    /// A mutable iterator over references to the connectors in the pool.
-    ///
-    /// # Examples
-    ///
-    /// ```rust,ignore
-    /// use rama_tcp::client::TcpStreamConnectorPool;
-    /// use rama_net::address::SocketAddress;
-    /// use std::str::FromStr as _;
-    /// let connectors = vec![
-    ///     SocketAddress::from_str("127.0.0.1:8080").unwrap(),
-    ///     SocketAddress::from_str("127.0.0.1:8081").unwrap(),
-    ///     SocketAddress::from_str("127.0.0.1:8082").unwrap(),
-    /// ];
-    /// let mut pool = TcpStreamConnectorPool::new_random(connectors);
-    /// for connector in &mut pool {
-    ///     // Modify connector configuration
-    /// }
-    /// ```
     fn into_iter(self) -> Self::IntoIter {
         self.connectors.iter_mut()
     }
@@ -394,111 +321,24 @@ impl<C: TcpStreamConnector + Clone> TcpStreamConnectorPool<C> {
     }
 
     /// Returns the number of connectors in the pool.
-    ///
-    /// This is a constant-time operation that returns the cached connector count.
-    ///
-    /// # Returns
-    ///
-    /// The total number of connectors managed by this pool.
-    ///
-    /// # Examples
-    ///
-    /// ```rust,ignore
-    /// use rama_tcp::client::TcpStreamConnectorPool;
-    /// use rama_net::address::SocketAddress;
-    /// use std::str::FromStr as _;
-    /// let connectors = vec![
-    ///     SocketAddress::from_str("127.0.0.1:8080").unwrap(),
-    ///     SocketAddress::from_str("127.0.0.1:8081").unwrap(),
-    ///     SocketAddress::from_str("127.0.0.1:8082").unwrap(),
-    /// ];
-    /// let pool = TcpStreamConnectorPool::new_random(connectors);
-    /// assert_eq!(pool.len(), 3);
-    /// ```
     #[inline]
     pub fn len(&self) -> usize {
         self.connectors.len()
     }
 
     /// Returns `true` if the pool contains no connectors.
-    ///
-    /// An empty pool will always return `None` from `get_connector()`.
-    ///
-    /// # Returns
-    ///
-    /// `true` if the pool is empty, `false` otherwise.
-    ///
-    /// # Examples
-    ///
-    /// ```rust,ignore
-    /// use rama_tcp::client::TcpStreamConnectorPool;
-    /// use rama_net::address::SocketAddress;
-    /// let empty_pool = TcpStreamConnectorPool::<SocketAddress>::default();
-    /// assert!(empty_pool.is_empty());
-    /// ```
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.connectors.is_empty()
     }
 
     /// Returns an iterator over the connectors in the pool.
-    ///
-    /// This method provides a convenient way to access an iterator without
-    /// consuming the pool or requiring a reference. It's equivalent to calling
-    /// `pool.connectors.iter()` but provides a cleaner API.
-    ///
-    /// # Returns
-    ///
-    /// An iterator over references to the connectors in the pool.
-    ///
-    /// # Examples
-    ///
-    /// ```rust,ignore
-    /// use rama_tcp::client::TcpStreamConnectorPool;
-    /// use rama_net::address::SocketAddress;
-    /// use std::str::FromStr as _;
-    /// let connectors = vec![
-    ///     SocketAddress::from_str("127.0.0.1:8080").unwrap(),
-    ///     SocketAddress::from_str("127.0.0.1:8081").unwrap(),
-    ///     SocketAddress::from_str("127.0.0.1:8082").unwrap(),
-    /// ];
-    /// let pool = TcpStreamConnectorPool::new_random(connectors);
-    /// for connector in pool.iter() {
-    ///     // Inspect or validate connector
-    /// }
-    /// ```
     #[inline]
     pub fn iter(&self) -> Iter<'_, C> {
         self.connectors.iter()
     }
 
     /// Returns a mutable iterator over the connectors in the pool.
-    ///
-    /// This method provides a convenient way to access a mutable iterator
-    /// without requiring an explicit mutable reference to the pool. It's
-    /// equivalent to calling `pool.connectors.iter_mut()` but provides
-    /// a cleaner API.
-    ///
-    /// # Returns
-    ///
-    /// A mutable iterator over references to the connectors in the pool.
-    ///
-    /// # Examples
-    ///
-    /// ```rust,ignore
-    /// use rama_tcp::client::TcpStreamConnectorPool;
-    /// use rama_net::address::SocketAddress;
-    /// use std::str::FromStr as _;
-    /// let connectors = vec![
-    ///     SocketAddress::from_str("127.0.0.1:8080").unwrap(),
-    ///     SocketAddress::from_str("127.0.0.1:8081").unwrap(),
-    ///     SocketAddress::from_str("127.0.0.1:8082").unwrap(),
-    /// ];
-    /// let mut pool = TcpStreamConnectorPool::new_random(connectors);
-    /// for connector in pool.iter_mut() {
-    ///     // Modify connector configuration
-    /// }
-    /// ```
     #[inline]
     pub fn iter_mut(&mut self) -> IterMut<'_, C> {
         self.connectors.iter_mut()

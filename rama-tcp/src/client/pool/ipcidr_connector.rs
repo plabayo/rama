@@ -445,8 +445,6 @@ impl IpCidrConnector {
     }
 
     /// Creates socket addresses for the primary and fallback connections.
-    ///
-    /// Port 0 is used to allow the system to auto-assign available ports.
     #[inline]
     fn create_socket_addresses(&self, ip_addr: IpAddr) -> (SocketAddress, Option<SocketAddress>) {
         let primary = SocketAddress::new(ip_addr, 0);
