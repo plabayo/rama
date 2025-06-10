@@ -897,7 +897,7 @@ mod tests {
             // Primary: IPv4 (192.168.1.15) -> Fallback: IPv6 (2001:470:e953::ffff)
             // This represents a Hurricane Electric IPv6 tunnel endpoint commonly used in production
             connector.fallback = IpAddr::from_str("2001:470:e953::ffff").ok().map(|addr| {
-                let addr = IpCidr::from(addr).into();
+                let addr = IpCidr::from(addr);
                 tracing::info!(
                     "Cross-protocol fallback configured: IPv4 primary -> IPv6 fallback ({})",
                     addr

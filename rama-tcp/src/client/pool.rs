@@ -86,7 +86,7 @@ impl Debug for PoolMode {
 /// # Type Parameters
 ///
 /// * `C` - The connector type that implements `TcpStreamConnector`. Must be `Clone`
-/// to support efficient connector retrieval.
+///   to support efficient connector retrieval.
 ///
 /// # Thread Safety
 ///
