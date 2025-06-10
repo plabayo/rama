@@ -91,13 +91,13 @@ impl Debug for PoolMode {
 /// # Thread Safety
 ///
 /// This struct is thread-safe and can be shared across multiple threads. The
-/// internal state is protected by atomic operations (for RoundRobin mode) or
+/// internal state is protected by atomic operations (for `RoundRobin` mode) or
 /// uses thread-local randomization (for Random mode).
 ///
 /// # Performance Characteristics
 ///
-/// - **Random Mode**: O(1) selection with minimal synchronization overhead
-/// - **RoundRobin Mode**: O(1) selection with single atomic operation per selection
+/// - **`Random` Mode**: O(1) selection with minimal synchronization overhead
+/// - **`RoundRobin` Mode**: O(1) selection with single atomic operation per selection
 /// - **Memory**: O(n) where n is the number of connectors in the pool
 #[derive(Debug, Clone)]
 pub struct TcpStreamConnectorPool<C> {
@@ -105,7 +105,7 @@ pub struct TcpStreamConnectorPool<C> {
     mode: PoolMode,
     /// Vector of available connectors. Stored as a Vec for cache-friendly access patterns
     connectors: Vec<C>,
-    /// Cached length to avoid repeated Vec::len() calls in hot paths
+    /// Cached length to avoid repeated `Vec::len()` calls in hot paths
     connector_count: usize,
 }
 
@@ -224,18 +224,18 @@ impl<C: TcpStreamConnector + Clone> TcpStreamConnectorPool<C> {
     ///
     /// # Performance Characteristics
     ///
-    /// - **Random Mode**: O(1) with thread-local RNG, no synchronization
-    /// - **RoundRobin Mode**: O(1) with single atomic operation
+    /// - **`Random` Mode**: O(1) with thread-local RNG, no synchronization
+    /// - **`RoundRobin` Mode**: O(1) with single atomic operation
     /// - **Memory**: Creates a clone of the selected connector
     ///
     /// # Algorithm Details
     ///
-    /// ## Random Mode
+    /// ## `Random` Mode
     /// Uses `thread_rng()` for thread-local randomization, avoiding global RNG
     /// contention. The `choose()` method provides uniform distribution across
     /// all available connectors.
     ///
-    /// ## RoundRobin Mode
+    /// ## `RoundRobin` Mode
     /// 1. Atomically increments the counter using `fetch_add(1, Ordering::Relaxed)`
     /// 2. Uses modulo arithmetic to wrap around: `index % connector_count`
     /// 3. Relaxed ordering is sufficient as we only need monotonic increment
@@ -343,6 +343,7 @@ impl<C: TcpStreamConnector + Clone> TcpStreamConnectorPool<C> {
     ///     // Inspect or validate connector
     /// }
     /// ```
+    #[allow(clippy::iter_without_into_iter)]
     pub fn iter(&self) -> std::slice::Iter<'_, C> {
         self.connectors.iter()
     }
@@ -436,10 +437,6 @@ mod tests {
     use cidr::{Ipv4Cidr, Ipv6Cidr};
     use rama_net::address::SocketAddress;
     use std::str::FromStr as _;
-    use tracing::level_filters::LevelFilter;
-    use tracing_subscriber::{
-        EnvFilter, fmt, layer::SubscriberExt as _, util::SubscriberInitExt as _,
-    };
 
     /// Initializes comprehensive tracing infrastructure for test execution and debugging.
     ///
@@ -468,14 +465,10 @@ mod tests {
     /// acceptable for comprehensive testing scenarios where observability is crucial
     /// for validating correct behavior and debugging issues.
     fn init_tracing() {
-        tracing_subscriber::registry()
-            .with(fmt::layer())
-            .with(
-                EnvFilter::builder()
-                    .with_default_directive(LevelFilter::TRACE.into())
-                    .from_env_lossy(),
-            )
-            .init();
+        let subscriber = tracing_subscriber::fmt::Subscriber::builder()
+            .with_max_level(tracing::Level::TRACE)
+            .finish();
+        let _ = tracing::subscriber::set_global_default(subscriber);
     }
 
     /// Validates fundamental connector pool functionality with realistic socket address connectors.
@@ -487,13 +480,13 @@ mod tests {
     ///
     /// # Test Scenarios Covered
     ///
-    /// ## Random Mode Testing
+    /// ## `Random` Mode Testing
     /// - Validates that random connector selection works consistently
     /// - Ensures all connectors in the pool are potentially selectable
     /// - Tests that randomization doesn't favor any particular connector
     /// - Verifies that the pool maintains correct size and state information
     ///
-    /// ## RoundRobin Mode Testing
+    /// ## `RoundRobin` Mode Testing
     /// - Confirms deterministic cycling through all available connectors
     /// - Validates atomic counter behavior under single-threaded conditions
     /// - Tests wrapping behavior when cycling through the connector list
