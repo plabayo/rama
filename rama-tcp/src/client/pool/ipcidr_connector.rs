@@ -127,7 +127,6 @@ impl IpCidrConnector {
     ///
     /// Capacity is pre-computed during construction to avoid runtime calculations.
     /// For very large IPv6 ranges, capacity may be clamped to prevent overflow.
-    #[must_use]
     pub fn new(ip_cidr: IpCidr) -> Self {
         let capacity = Self::calculate_capacity(&ip_cidr);
         Self {
@@ -152,7 +151,6 @@ impl IpCidrConnector {
     /// let cidr = "10.0.0.0/16".parse().unwrap();
     /// let connector = IpCidrConnector::new_ipv4(cidr);
     /// ```
-    #[must_use]
     pub fn new_ipv4(ip_cidr: Ipv4Cidr) -> Self {
         let network_len = ip_cidr.network_length();
         let capacity = if network_len == 0 {
@@ -185,7 +183,6 @@ impl IpCidrConnector {
     /// let cidr = "2001:db8::/64".parse().unwrap();
     /// let connector = IpCidrConnector::new_ipv6(cidr);
     /// ```
-    #[must_use]
     pub fn new_ipv6(ip_cidr: Ipv6Cidr) -> Self {
         let network_len = ip_cidr.network_length();
         let capacity = if network_len == 0 {
@@ -217,7 +214,6 @@ impl IpCidrConnector {
     /// # Performance Notes
     ///
     /// Round-robin mode uses atomic operations for thread-safety with minimal overhead.
-    #[must_use]
     pub fn with_mode(mut self, mode: PoolMode) -> Self {
         self.mode = mode;
         self
@@ -243,7 +239,6 @@ impl IpCidrConnector {
     /// let connector = IpCidrConnector::new_ipv4(cidr)
     ///     .with_cidr_range(Some(28)); // Further restrict to /28
     /// ```
-    #[must_use]
     pub fn with_cidr_range(mut self, cidr_range: Option<u8>) -> Self {
         if let Some(range) = cidr_range {
             match self.ip_cidr {
@@ -277,7 +272,6 @@ impl IpCidrConnector {
     /// - Providing a stable backup address when dynamic addresses fail
     /// - Ensuring connectivity through a known-good interface
     /// - Implementing graceful degradation in network configurations
-    #[must_use]
     pub fn with_fallback(mut self, fallback: Option<IpCidr>) -> Self {
         self.fallback = fallback;
         self
@@ -296,7 +290,6 @@ impl IpCidrConnector {
     ///
     /// The exclusion list is converted to a HashSet for optimal lookup performance.
     /// For large exclusion lists, this provides significant performance benefits.
-    #[must_use]
     pub fn with_excluded(mut self, excluded: Option<Vec<IpAddr>>) -> Self {
         self.excluded = excluded.map(|vec| vec.into_iter().collect());
         self
@@ -310,7 +303,6 @@ impl IpCidrConnector {
     /// # Arguments
     ///
     /// * `extension` - Optional extension configuration
-    #[must_use]
     pub fn with_extension(mut self, extension: Option<IpCidrConExt>) -> Self {
         self.extension = extension;
         self
@@ -338,7 +330,6 @@ impl IpCidrConnector {
     ///
     /// This method is thread-safe and can be called concurrently from multiple threads.
     /// Round-robin indexing uses atomic operations to ensure proper distribution.
-    #[must_use]
     pub fn get_connector(&self) -> (SocketAddress, Option<SocketAddress>) {
         // Use a bounded retry mechanism to prevent infinite loops in pathological cases
         const MAX_RETRIES: usize = 1000;

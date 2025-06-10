@@ -168,7 +168,6 @@ impl<C: TcpStreamConnector + Clone> TcpStreamConnectorPool<C> {
     /// let connectors = vec![connector1, connector2, connector3];
     /// let pool = TcpStreamConnectorPool::new_random(connectors);
     /// ```
-    #[must_use]
     pub fn new_random(mut connectors: Vec<C>) -> Self {
         // Shuffle once during initialization for better initial distribution
         connectors.shuffle(&mut rng());
@@ -208,7 +207,6 @@ impl<C: TcpStreamConnector + Clone> TcpStreamConnectorPool<C> {
     /// let pool = TcpStreamConnectorPool::new_round_robin(connectors);
     /// // First call returns connector1, second returns connector2, etc.
     /// ```
-    #[must_use]
     pub fn new_round_robin(connectors: Vec<C>) -> Self {
         let index = Arc::new(AtomicUsize::new(0));
         Self::new(PoolMode::RoundRobin(index), connectors)
@@ -257,7 +255,6 @@ impl<C: TcpStreamConnector + Clone> TcpStreamConnectorPool<C> {
     ///     let stream = connector.connect(addr).await?;
     /// }
     /// ```
-    #[must_use]
     #[inline] // Inline for hot path optimization
     pub fn get_connector(&self) -> Option<C> {
         // Early return for empty pool - most common edge case
@@ -305,7 +302,6 @@ impl<C: TcpStreamConnector + Clone> TcpStreamConnectorPool<C> {
     /// let pool = TcpStreamConnectorPool::new_random(vec![conn1, conn2, conn3]);
     /// assert_eq!(pool.len(), 3);
     /// ```
-    #[must_use]
     #[inline]
     pub fn len(&self) -> usize {
         self.connector_count
@@ -325,7 +321,6 @@ impl<C: TcpStreamConnector + Clone> TcpStreamConnectorPool<C> {
     /// let empty_pool = TcpStreamConnectorPool::<SomeConnector>::default();
     /// assert!(empty_pool.is_empty());
     /// ```
-    #[must_use]
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.connector_count == 0
@@ -348,7 +343,6 @@ impl<C: TcpStreamConnector + Clone> TcpStreamConnectorPool<C> {
     ///     // Inspect or validate connector
     /// }
     /// ```
-    #[must_use]
     pub fn iter(&self) -> std::slice::Iter<'_, C> {
         self.connectors.iter()
     }
