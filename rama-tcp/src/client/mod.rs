@@ -13,7 +13,8 @@ pub use pool::{
     PoolMode, TcpStreamConnectorPool,
     ipcidr_connector::IpCidrConnector,
     utils::{
-        IpCidrConExt, IpCidrConExtUsernameLabelParser, ipv4_from_extension, ipv4_with_range,
+        IpCidrConExt, IpCidrConExtUsernameLabelParser,
+        extract_value_from_ipcidr_connector_extension, ipv4_from_extension, ipv4_with_range,
         ipv6_from_extension, ipv6_with_range, rand_ipv4, rand_ipv6,
     },
 };

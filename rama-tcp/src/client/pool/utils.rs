@@ -530,7 +530,7 @@ pub fn ipv6_from_extension(
 /// assert_eq!(extract_value_from_ipcidr_connector_extension(ext), None);
 /// ```
 #[inline]
-const fn extract_value_from_ipcidr_connector_extension(
+pub const fn extract_value_from_ipcidr_connector_extension(
     extension: Option<IpCidrConExt>,
 ) -> Option<u64> {
     match extension {
