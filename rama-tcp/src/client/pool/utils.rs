@@ -28,7 +28,7 @@ use {
 /// # Algorithm Details
 /// 1. Extract the network prefix length from the CIDR
 /// 2. Handle edge case of /32 networks (single host) with early return
-/// 3. Calculate host bits available for randomization (32 - prefix_len)
+/// 3. Calculate host bits available for randomization (32 - `prefix_len`)
 /// 4. Generate host mask to isolate randomizable bits
 /// 5. Apply bitwise operations to combine network and random host portions
 ///
@@ -97,7 +97,7 @@ pub fn rand_ipv4(cidr: &Ipv4Cidr) -> Ipv4Addr {
 /// # Algorithm Details
 /// 1. Extract the network prefix length from the CIDR
 /// 2. Handle edge case of /128 networks (single host) with early return
-/// 3. Calculate host bits available for randomization (128 - prefix_len)
+/// 3. Calculate host bits available for randomization (128 - `prefix_len`)
 /// 4. Generate 128-bit host mask to isolate randomizable bits
 /// 5. Apply bitwise operations to combine network and random host portions
 ///
@@ -165,7 +165,7 @@ pub fn rand_ipv6(cidr: &Ipv6Cidr) -> Ipv6Addr {
 /// 3. Random host portion for the remaining bits
 ///
 /// # Algorithm Details
-/// 1. Validate range_len against CIDR prefix length
+/// 1. Validate `range_len` against CIDR prefix length
 /// 2. Calculate bit allocations for network, intermediate, and host portions
 /// 3. Generate masks for each portion using bit manipulation
 /// 4. Combine all portions using bitwise operations
@@ -247,7 +247,7 @@ pub fn ipv4_with_range(cidr: &Ipv4Cidr, range_len: u8, combined: u32) -> Ipv4Add
 /// 3. Random host portion for the remaining bits
 ///
 /// # Algorithm Details
-/// 1. Validate range_len against CIDR prefix length
+/// 1. Validate `range_len` against CIDR prefix length
 /// 2. Calculate bit allocations for network, intermediate, and host portions
 /// 3. Generate 128-bit masks for each portion using bit manipulation
 /// 4. Combine all portions using bitwise operations
@@ -379,7 +379,7 @@ pub fn ipv4_from_extension(
 
                 // Generate deterministic host portion using modulo operation
                 // This ensures consistent address generation for the same input
-                let host_portion = (combined as u32) % capacity;
+                let host_portion = u32::try_from(combined).unwrap_or(u32::MAX) % capacity;
 
                 // Combine network and deterministic host portions
                 let ip_num = base_ip_bits | host_portion;
@@ -389,7 +389,11 @@ pub fn ipv4_from_extension(
             Some(IpCidrConExt::Range(_)) => {
                 // If a CIDR range is provided, use specialized range generation
                 if let Some(range) = cidr_range {
-                    return ipv4_with_range(cidr, range, combined as u32);
+                    return ipv4_with_range(
+                        cidr,
+                        range,
+                        u32::try_from(combined).unwrap_or(u32::MAX),
+                    );
                 }
             }
             // Explicit handling of None case for completeness
@@ -468,7 +472,7 @@ pub fn ipv6_from_extension(
 
                 // Generate deterministic host portion using modulo operation
                 // This ensures consistent address generation for the same input
-                let host_portion = (combined as u128) % capacity;
+                let host_portion = u128::from(combined) % capacity;
 
                 // Combine network and deterministic host portions
                 let ip_num = base_ip_bits | host_portion;
@@ -478,7 +482,7 @@ pub fn ipv6_from_extension(
             Some(IpCidrConExt::Range(_)) => {
                 // If a CIDR range is provided, use specialized range generation
                 if let Some(range) = cidr_range {
-                    return ipv6_with_range(cidr, range, combined as u128);
+                    return ipv6_with_range(cidr, range, u128::from(combined));
                 }
             }
             // Explicit handling of None case for completeness
@@ -530,12 +534,10 @@ const fn extract_value_from_ipcidr_connector_extension(
     extension: Option<IpCidrConExt>,
 ) -> Option<u64> {
     match extension {
-        // Extract value from Range variant
-        Some(IpCidrConExt::Range(value)) => Some(value),
-        // Extract value from Session variant
-        Some(IpCidrConExt::Session(value)) => Some(value),
-        // Extract TTL value from TTL variant
-        Some(IpCidrConExt::Ttl(ttl)) => Some(ttl),
+        // Extract value from Range/Session/TTL variants
+        Some(
+            IpCidrConExt::Range(value) | IpCidrConExt::Session(value) | IpCidrConExt::Ttl(value),
+        ) => Some(value),
         // None variant contains no extractable value
         Some(IpCidrConExt::None) | None => None,
     }
@@ -756,10 +758,6 @@ mod tests {
     //! and efficient memory usage patterns without unnecessary allocations.
     use super::*;
     use rama_core::username::{UsernameOpaqueLabelParser, parse_username};
-    use tracing::level_filters::LevelFilter;
-    use tracing_subscriber::{
-        EnvFilter, fmt, layer::SubscriberExt as _, util::SubscriberInitExt as _,
-    };
 
     /// Initializes the tracing subscriber for comprehensive test logging.
     ///
@@ -782,14 +780,10 @@ mod tests {
     /// This function is designed for test environments and includes comprehensive
     /// logging that may impact performance. It should not be used in production code.
     fn init_tracing() {
-        tracing_subscriber::registry()
-            .with(fmt::layer())
-            .with(
-                EnvFilter::builder()
-                    .with_default_directive(LevelFilter::TRACE.into())
-                    .from_env_lossy(),
-            )
-            .init();
+        let subscriber = tracing_subscriber::fmt::Subscriber::builder()
+            .with_max_level(tracing::Level::TRACE)
+            .finish();
+        let _ = tracing::subscriber::set_global_default(subscriber);
     }
 
     /// Comprehensive test for username label parsing functionality.
