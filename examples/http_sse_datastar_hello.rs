@@ -552,6 +552,7 @@ pub mod controller {
                         tracing::debug!("exit command received: exit controller");
 
                         let exit_events = [
+                            sse_status_failure_fragment_message(),
                             critical_error_banner(
                                 "Server was shutdown. Please wait a bit or refresh page to retry immediately.",
                             ),
@@ -628,6 +629,17 @@ pub mod controller {
                 r##"
                 <div id='message'>{text}</div>
                 <div id="progress-bar" style="width: {progress}%"></div>
+            "##,
+            ))
+            .into(),
+        )
+    }
+
+    fn sse_status_failure_fragment_message() -> Message {
+        Message::Event(
+            MergeFragments::new(format!(
+                r##"
+                <div id="sse-status">🔴</div>
             "##,
             ))
             .into(),
