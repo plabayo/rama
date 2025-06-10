@@ -29,6 +29,8 @@ rama-net = { workspace = true }
 rama-utils = { workspace = true }
 tokio = { workspace = true, features = ["macros", "net"] }
 tracing = { workspace = true }
+rand = { workspace = true }
+cidr = { workspace = true }
 
 [dev-dependencies]
 

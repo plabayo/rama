@@ -413,6 +413,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "cidr"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bd1b64030216239a2e7c364b13cd96a2097ebf0dfe5025f2dedee14a23f2ab60"
+
+[[package]]
 name = "clang-sys"
 version = "1.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2732,11 +2738,13 @@ dependencies = [
 name = "rama-tcp"
 version = "0.3.0-alpha.1"
 dependencies = [
+ "cidr",
  "rama-core",
  "rama-dns",
  "rama-http-types",
  "rama-net",
  "rama-utils",
+ "rand 0.9.1",
  "tokio",
  "tracing",
 ]
