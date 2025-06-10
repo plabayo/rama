@@ -531,7 +531,6 @@ mod tests {
     /// availability) and negative cases (ensuring robustness).
     #[test]
     fn test_connectors_pool() {
-        // Initialize comprehensive tracing for detailed test execution visibility
         init_tracing();
 
         // Create a realistic set of socket addresses representing different backend services
@@ -656,7 +655,6 @@ mod tests {
     /// - Complex network topologies require sophisticated connector management
     #[test]
     fn test_ip_cidr_connectors_pool() {
-        // Initialize comprehensive tracing for CIDR connector behavior analysis
         init_tracing();
 
         // Create sophisticated connectors representing different network segments
@@ -791,7 +789,6 @@ mod tests {
     /// - Proper handling of arithmetic overflow in modulo operations
     #[test]
     fn test_cidr_cycle() {
-        // Initialize tracing to capture detailed address generation patterns
         init_tracing();
 
         // Select a /20 CIDR block for comprehensive address cycling testing
@@ -895,7 +892,6 @@ mod tests {
     /// that the generic implementation works correctly across different connector types.
     #[test]
     fn test_pool_edge_cases() {
-        // Initialize tracing for comprehensive edge case behavior analysis
         init_tracing();
 
         // === EMPTY POOL EDGE CASE ===
@@ -1031,7 +1027,6 @@ mod tests {
     /// - Consistent behavior under repeated access patterns
     #[test]
     fn test_round_robin_distribution() {
-        // Initialize comprehensive tracing for distribution pattern analysis
         init_tracing();
 
         // Create a small, manageable set of distinct connectors for precise validation
