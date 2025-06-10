@@ -754,9 +754,8 @@ mod tests {
     //!
     //! All tests are designed to validate O(1) time complexity for IP generation
     //! and efficient memory usage patterns without unnecessary allocations.
-
     use super::*;
-    use rama::username::{UsernameOpaqueLabelParser, parse_username};
+    use rama_core::username::{UsernameOpaqueLabelParser, parse_username};
     use tracing::level_filters::LevelFilter;
     use tracing_subscriber::{
         EnvFilter, fmt, layer::SubscriberExt as _, util::SubscriberInitExt as _,

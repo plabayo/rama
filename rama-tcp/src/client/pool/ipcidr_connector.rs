@@ -561,13 +561,12 @@ impl TcpStreamConnector for IpCidrConnector {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use cidr::{Ipv4Cidr, Ipv6Cidr};
     use std::{
         str::FromStr,
         sync::{Arc, atomic::AtomicUsize},
     };
-
-    use super::*;
-    use cidr::{Ipv4Cidr, Ipv6Cidr};
     use tracing::level_filters::LevelFilter;
     use tracing_subscriber::{
         EnvFilter, fmt, layer::SubscriberExt as _, util::SubscriberInitExt as _,

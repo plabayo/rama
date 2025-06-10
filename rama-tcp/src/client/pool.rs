@@ -437,17 +437,11 @@ mod tests {
     //! All tests use structured logging via `tracing` for comprehensive observability
     //! and debugging capabilities. The logging output helps understand the internal
     //! behavior of load balancing algorithms and connector selection patterns.
-
-    use crate::{
-        ip_cidr_connector::IpCidrConnector,
-        utils::{IpCidrConExt, ipv4_from_extension},
-    };
-
     use super::*;
+    use crate::client::{IpCidrConExt, IpCidrConnector, ipv4_from_extension};
     use cidr::{Ipv4Cidr, Ipv6Cidr};
-    // use cidr::IpCidr;
-    use rama::net::address::SocketAddress;
-    use std::str::FromStr;
+    use rama_net::address::SocketAddress;
+    use std::str::FromStr as _;
     use tracing::level_filters::LevelFilter;
     use tracing_subscriber::{
         EnvFilter, fmt, layer::SubscriberExt as _, util::SubscriberInitExt as _,
