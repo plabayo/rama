@@ -2665,6 +2665,7 @@ name = "rama-net"
 version = "0.3.0-alpha.1"
 dependencies = [
  "base64",
+ "cidr",
  "const_format",
  "flume",
  "futures-lite",
@@ -2738,7 +2739,6 @@ dependencies = [
 name = "rama-tcp"
 version = "0.3.0-alpha.1"
 dependencies = [
- "cidr",
  "rama-core",
  "rama-dns",
  "rama-http-types",

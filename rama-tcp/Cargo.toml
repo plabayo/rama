@@ -22,7 +22,6 @@ default = []
 http = ["dep:rama-http-types", "rama-net/http"]
 
 [dependencies]
-cidr = { workspace = true }
 rama-core = { workspace = true }
 rama-dns = { workspace = true }
 rama-http-types = { workspace = true, optional = true }

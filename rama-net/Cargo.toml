@@ -24,6 +24,7 @@ tls = ["dep:hex", "dep:md5", "dep:sha2", "dep:itertools"]
 
 [dependencies]
 base64 = { workspace = true }
+cidr = { workspace = true }
 const_format = { workspace = true }
 flume = { workspace = true, features = ["async"] }
 futures-lite = { workspace = true }
