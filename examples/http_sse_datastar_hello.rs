@@ -637,11 +637,11 @@ pub mod controller {
 
     fn sse_status_failure_fragment_message() -> Message {
         Message::Event(
-            MergeFragments::new(format!(
+            MergeFragments::new(
                 r##"
                 <div id="sse-status">🔴</div>
             "##,
-            ))
+            )
             .into(),
         )
     }
