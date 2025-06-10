@@ -45,6 +45,8 @@ use {
 /// # Examples
 /// ```
 /// use cidr::Ipv4Cidr;
+/// use rama_tcp::client::rand_ipv4;
+///
 /// let cidr = "192.168.1.0/24".parse::<Ipv4Cidr>().unwrap();
 /// let random_ip = rand_ipv4(&cidr);
 /// // random_ip will be in range 192.168.1.0 - 192.168.1.255
@@ -114,6 +116,8 @@ pub fn rand_ipv4(cidr: &Ipv4Cidr) -> Ipv4Addr {
 /// # Examples
 /// ```
 /// use cidr::Ipv6Cidr;
+/// use rama_tcp::client::rand_ipv6;
+///
 /// let cidr = "2001:db8::/32".parse::<Ipv6Cidr>().unwrap();
 /// let random_ip = rand_ipv6(&cidr);
 /// // random_ip will be in range 2001:db8:: - 2001:db8:ffff:ffff:ffff:ffff:ffff:ffff
@@ -187,6 +191,8 @@ pub fn rand_ipv6(cidr: &Ipv6Cidr) -> Ipv6Addr {
 /// # Examples
 /// ```
 /// use cidr::Ipv4Cidr;
+/// use rama_tcp::client::ipv4_with_range;
+///
 /// let cidr = "192.168.0.0/16".parse::<Ipv4Cidr>().unwrap();
 /// let ip = ipv4_with_range(&cidr, 24, 42);
 /// // ip will have 192.168.x.y where x is influenced by combined value 42
@@ -269,6 +275,8 @@ pub fn ipv4_with_range(cidr: &Ipv4Cidr, range_len: u8, combined: u32) -> Ipv4Add
 /// # Examples
 /// ```
 /// use cidr::Ipv6Cidr;
+/// use rama_tcp::client::ipv6_with_range;
+///
 /// let cidr = "2001:db8::/32".parse::<Ipv6Cidr>().unwrap();
 /// let ip = ipv6_with_range(&cidr, 48, 12345);
 /// // ip will have 2001:db8:xxxx:: where xxxx is influenced by combined value 12345
@@ -342,9 +350,12 @@ pub fn ipv6_with_range(cidr: &Ipv6Cidr, range_len: u8, combined: u128) -> Ipv6Ad
 /// # Examples
 /// ```
 /// use cidr::Ipv4Cidr;
+/// use rama_tcp::client::IpCidrConExt;
+/// use rama_tcp::client::ipv4_from_extension;
+///
 /// let cidr = "192.168.1.0/24".parse::<Ipv4Cidr>().unwrap();
 /// let ext = IpCidrConExt::Session(12345);
-/// let ip = ipv4_from_extension(&cidr, None, ext);
+/// let ip = ipv4_from_extension(&cidr, None, Some(ext));
 /// // Generates deterministic IP based on session ID 12345
 /// ```
 #[inline]
@@ -435,9 +446,12 @@ pub fn ipv4_from_extension(
 /// # Examples
 /// ```
 /// use cidr::Ipv6Cidr;
+/// use rama_tcp::client::IpCidrConExt;
+/// use rama_tcp::client::ipv6_from_extension;
+///
 /// let cidr = "2001:db8::/32".parse::<Ipv6Cidr>().unwrap();
 /// let ext = IpCidrConExt::Session(67890);
-/// let ip = ipv6_from_extension(&cidr, None, ext);
+/// let ip = ipv6_from_extension(&cidr, None, Some(ext));
 /// // Generates deterministic IP based on session ID 67890
 /// ```
 #[inline]
@@ -517,17 +531,20 @@ pub fn ipv6_from_extension(
 ///
 /// # Examples
 /// ```
+/// use rama_tcp::client::IpCidrConExt;
+/// use rama_tcp::client::extract_value_from_ipcidr_connector_extension;
+///
 /// let ext = IpCidrConExt::Range(42);
-/// assert_eq!(extract_value_from_ipcidr_connector_extension(ext), Some(42));
+/// assert_eq!(extract_value_from_ipcidr_connector_extension(Some(ext)), Some(42));
 ///
 /// let ext = IpCidrConExt::Session(1234);
-/// assert_eq!(extract_value_from_ipcidr_connector_extension(ext), Some(1234));
+/// assert_eq!(extract_value_from_ipcidr_connector_extension(Some(ext)), Some(1234));
 ///
 /// let ext = IpCidrConExt::Ttl(5);
-/// assert_eq!(extract_value_from_ipcidr_connector_extension(ext), Some(5));
+/// assert_eq!(extract_value_from_ipcidr_connector_extension(Some(ext)), Some(5));
 ///
 /// let ext = IpCidrConExt::None;
-/// assert_eq!(extract_value_from_ipcidr_connector_extension(ext), None);
+/// assert_eq!(extract_value_from_ipcidr_connector_extension(Some(ext)), None);
 /// ```
 #[inline]
 pub const fn extract_value_from_ipcidr_connector_extension(
@@ -562,6 +579,8 @@ pub const fn extract_value_from_ipcidr_connector_extension(
 ///
 /// # Examples
 /// ```
+/// use rama_tcp::client::IpCidrConExt;
+///
 /// let ext = IpCidrConExt::default(); // Creates IpCidrConExt::None
 /// let session_ext = IpCidrConExt::Session(1234);
 /// let range_ext = IpCidrConExt::Range(8);
@@ -600,6 +619,8 @@ pub enum IpCidrConExt {
 ///
 /// # Examples
 /// ```
+/// use rama_tcp::client::IpCidrConExtUsernameLabelParser;
+///
 /// let parser = IpCidrConExtUsernameLabelParser::default();
 /// // Parses usernames like: "user-session-1234" or "user-ttl-300" or "user-range-24"
 /// ```
