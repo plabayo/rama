@@ -59,7 +59,7 @@ use rama::{
     http::service::web::response::IntoResponse,
     http::{Request, Response, server::HttpServer},
     layer::ConsumeErrLayer,
-    net::{address::Domain, tls::client::ClientHello},
+    net::tls::client::ClientHello,
     rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
@@ -174,9 +174,9 @@ impl ResolvesServerCert for DynamicIssuer {
 
         let key = match client_hello.ext_server_name() {
             Some(domain) => {
-                if domain == &Domain::from_static("example") {
+                if domain == "example" {
                     self.example_data.clone()
-                } else if domain == &Domain::from_static("second.example") {
+                } else if domain == "second.example" {
                     self.second_example_data.clone()
                 } else {
                     self.example_data.clone()
