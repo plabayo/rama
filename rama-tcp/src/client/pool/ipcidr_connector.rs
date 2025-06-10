@@ -52,7 +52,7 @@ use {
 /// ```
 #[derive(Debug, Clone)]
 pub struct IpCidrConnector {
-    /// The IP address selection strategy (Random or RoundRobin)
+    /// The IP address selection strategy (`Random` or `RoundRobin`)
     mode: PoolMode,
 
     /// The CIDR block from which IP addresses will be selected
@@ -79,7 +79,7 @@ pub struct IpCidrConnector {
 
     /// Set of IP addresses to exclude from selection
     ///
-    /// Uses HashSet for O(1) lookup performance when checking exclusions.
+    /// Uses `HashSet` for O(1) lookup performance when checking exclusions.
     /// Commonly used to avoid problematic or reserved addresses within the CIDR range.
     excluded: Option<HashSet<IpAddr>>,
 
@@ -103,12 +103,15 @@ impl Default for IpCidrConnector {
     fn default() -> Self {
         Self {
             mode: PoolMode::Random,
-            ip_cidr: IpCidr::V4(Ipv4Cidr::new(Ipv4Addr::UNSPECIFIED, 0).unwrap()),
+            ip_cidr: IpCidr::V4(
+                Ipv4Cidr::new(Ipv4Addr::UNSPECIFIED, 0)
+                    .expect("Failed to parse unspecified IPv4 address"),
+            ),
             cidr_range: None,
             fallback: None,
             excluded: None,
             extension: None,
-            capacity: u32::MAX as u128,
+            capacity: u128::from(u32::MAX),
         }
     }
 }
@@ -154,11 +157,11 @@ impl IpCidrConnector {
     pub fn new_ipv4(ip_cidr: Ipv4Cidr) -> Self {
         let network_len = ip_cidr.network_length();
         let capacity = if network_len == 0 {
-            u32::MAX as u128
+            u128::from(u32::MAX)
         } else if network_len >= 32 {
             1
         } else {
-            ((1u64 << (32 - network_len)) - 1) as u128
+            u128::from((1u64 << (32 - network_len)) - 1)
         };
 
         Self {
@@ -175,7 +178,7 @@ impl IpCidrConnector {
     ///
     /// # Arguments
     ///
-    /// * `ip_cidr` - IPv6 CIDR block (e.g., 2001:db8::/32)
+    /// * `ip_cidr` - IPv6 CIDR block (e.g., `2001:db8::/32`)
     ///
     /// # Examples
     ///
@@ -204,8 +207,8 @@ impl IpCidrConnector {
     ///
     /// # Selection Modes
     ///
-    /// - **Random**: Provides unpredictable address selection, useful for load distribution
-    /// - **RoundRobin**: Ensures even distribution across all available addresses
+    /// - **`Random`*: Provides unpredictable address selection, useful for load distribution
+    /// - **`RoundRobin`**: Ensures even distribution across all available addresses
     ///
     /// # Arguments
     ///
@@ -243,14 +246,10 @@ impl IpCidrConnector {
         if let Some(range) = cidr_range {
             match self.ip_cidr {
                 IpCidr::V4(_) => {
-                    if range > 32 {
-                        panic!("IPv4 CIDR range cannot exceed 32 bits");
-                    }
+                    assert!((range <= 32), "IPv4 CIDR range cannot exceed 32 bits");
                 }
                 IpCidr::V6(_) => {
-                    if range > 128 {
-                        panic!("IPv6 CIDR range cannot exceed 128 bits");
-                    }
+                    assert!((range <= 128), "IPv6 CIDR range cannot exceed 128 bits");
                 }
             }
         }
@@ -265,7 +264,7 @@ impl IpCidrConnector {
     ///
     /// # Arguments
     ///
-    /// * `fallback` - Optional fallback IPv4/IPv6 CIDR blocks (e.g., 192.168.1.0/24 or2001:db8::/32)
+    /// * `fallback` - Optional fallback IPv4/IPv6 CIDR blocks (e.g., `192.168.1.0/24` or `2001:db8::/32`)
     ///
     /// # Use Cases
     ///
@@ -279,7 +278,7 @@ impl IpCidrConnector {
 
     /// Specifies IP addresses to exclude from selection.
     ///
-    /// Uses a HashSet internally for O(1) exclusion checking performance.
+    /// Uses a `HashSet` internally for O(1) exclusion checking performance.
     /// Common exclusions include network/broadcast addresses, gateways, or reserved IPs.
     ///
     /// # Arguments
@@ -288,7 +287,7 @@ impl IpCidrConnector {
     ///
     /// # Performance Notes
     ///
-    /// The exclusion list is converted to a HashSet for optimal lookup performance.
+    /// The exclusion list is converted to a `HashSet` for optimal lookup performance.
     /// For large exclusion lists, this provides significant performance benefits.
     pub fn with_excluded(mut self, excluded: Option<Vec<IpAddr>>) -> Self {
         self.excluded = excluded.map(|vec| vec.into_iter().collect());
@@ -366,11 +365,11 @@ impl IpCidrConnector {
         match ip_cidr {
             IpCidr::V4(_) => {
                 if network_len == 0 {
-                    u32::MAX as u128
+                    u128::from(u32::MAX)
                 } else if network_len >= 32 {
                     1
                 } else {
-                    ((1u64 << (32 - network_len)) - 1) as u128
+                    u128::from((1u64 << (32 - network_len)) - 1)
                 }
             }
             IpCidr::V6(_) => {
@@ -409,7 +408,8 @@ impl IpCidrConnector {
             }
             (PoolMode::RoundRobin(index), IpCidr::V6(cidr)) => {
                 let current_idx = index.fetch_add(1, Ordering::Relaxed);
-                let session_id = (current_idx as u128 % self.capacity) as u64;
+                let session_id = u64::try_from(current_idx as u128 % self.capacity)
+                    .expect("Failed to convert u128 to u64");
                 let ipv6_addr =
                     ipv6_from_extension(cidr, None, Some(IpCidrConExt::Session(session_id)));
                 IpAddr::V6(ipv6_addr)
@@ -558,10 +558,6 @@ mod tests {
         str::FromStr,
         sync::{Arc, atomic::AtomicUsize},
     };
-    use tracing::level_filters::LevelFilter;
-    use tracing_subscriber::{
-        EnvFilter, fmt, layer::SubscriberExt as _, util::SubscriberInitExt as _,
-    };
 
     /// Initializes comprehensive tracing infrastructure for test diagnostics and debugging.
     ///
@@ -591,14 +587,10 @@ mod tests {
     /// invaluable insights into system behavior. In production, log levels should be
     /// adjusted appropriately to balance performance with observability needs.
     fn init_tracing() {
-        tracing_subscriber::registry()
-            .with(fmt::layer())
-            .with(
-                EnvFilter::builder()
-                    .with_default_directive(LevelFilter::TRACE.into())
-                    .from_env_lossy(),
-            )
-            .init();
+        let subscriber = tracing_subscriber::fmt::Subscriber::builder()
+            .with_max_level(tracing::Level::TRACE)
+            .finish();
+        let _ = tracing::subscriber::set_global_default(subscriber);
     }
 
     /// Comprehensive integration test validating IP CIDR connector functionality across multiple scenarios.
