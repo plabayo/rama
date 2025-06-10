@@ -6,7 +6,7 @@ use crate::{Context, Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
 use std::{fmt, marker::PhantomData};
 
-/// [`Layer`] for adding some shareable value to incoming [Context].
+/// [`Layer`] for retrieving some shareable value from incoming [Context].
 ///
 /// [Context]: https://docs.rs/rama/latest/rama/context/struct.Context.html
 pub struct GetExtensionLayer<T, Fut, F> {
@@ -75,7 +75,7 @@ where
     }
 }
 
-/// Middleware for adding some shareable value to incoming [Context].
+/// Middleware for retrieving some shareable value from incoming [Context].
 ///
 /// [Context]: https://docs.rs/rama/latest/rama/context/struct.Context.html
 pub struct GetExtension<S, T, Fut, F> {
