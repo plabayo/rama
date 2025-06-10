@@ -14,7 +14,7 @@ use rama_http_types::{Uri, Version};
 use crate::tls::SecureTransport;
 
 #[cfg(feature = "tls")]
-fn try_get_host_from_secure_transport(t: &SecureTransport) -> Option<Domain> {
+fn try_get_sni_from_secure_transport(t: &SecureTransport) -> Option<Domain> {
     use crate::tls::client::ClientHelloExtension;
 
     t.client_hello().and_then(|h| {
@@ -31,7 +31,7 @@ fn try_get_host_from_secure_transport(t: &SecureTransport) -> Option<Domain> {
 struct SecureTransport;
 
 #[cfg(not(feature = "tls"))]
-fn try_get_host_from_secure_transport(_: &SecureTransport) -> Option<Domain> {
+fn try_get_sni_from_secure_transport(_: &SecureTransport) -> Option<Domain> {
     None
 }
 
@@ -81,7 +81,7 @@ impl<T: HttpRequestParts, State> TryFrom<(&Context<State>, &T)> for RequestConte
             .get::<ProxyTarget>()
             .and_then(|t| t.0.host().is_domain().then(|| t.0.clone()));
 
-        let sni_host_opt = ctx.get().and_then(try_get_host_from_secure_transport);
+        let sni_host_opt = ctx.get().and_then(try_get_sni_from_secure_transport);
         let authority = match (proxy_authority_opt, sni_host_opt) {
             (Some(authority), _) => {
                 tracing::trace!(uri = %uri, %authority, "request context: use proxy target as authority");

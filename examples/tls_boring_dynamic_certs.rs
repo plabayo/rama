@@ -61,7 +61,7 @@ use rama::{
     http::{Request, Response},
     layer::ConsumeErrLayer,
     net::{
-        address::{Domain, Host},
+        address::Host,
         tls::server::{ServerAuth, ServerConfig},
         tls::{
             DataEncoding,
@@ -149,9 +149,9 @@ impl DynamicCertIssuer for DynamicIssuer {
     ) -> Result<ServerAuthData, OpaqueError> {
         match client_hello.ext_server_name() {
             Some(domain) => {
-                if domain == &Domain::from_static("example") {
+                if domain == "example" {
                     return Ok(self.example_data.clone());
-                } else if domain == &Domain::from_static("second.example") {
+                } else if domain == "second.example" {
                     return Ok(self.second_example_data.clone());
                 }
                 Ok(self.example_data.clone())

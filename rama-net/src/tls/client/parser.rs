@@ -188,7 +188,7 @@ fn parse_tls_client_hello_extension_sni_host_or_skip(i: &[u8]) -> IResult<&[u8],
     let (i, ext_data) = length_data(be_u16).parse(i)?;
 
     if id == ExtensionId::SERVER_NAME {
-        parse_tls_extension_sni_host(ext_data)
+        parse_tls_extension_sni(ext_data)
     } else {
         Ok((i, None))
     }
@@ -244,14 +244,14 @@ fn parse_tls_client_hello_extension(i: &[u8]) -> IResult<&[u8], ClientHelloExten
 //     ServerName server_name_list<1..2^16-1>
 // } ServerNameList;
 fn parse_tls_extension_sni_content(i: &[u8]) -> IResult<&[u8], ClientHelloExtension> {
-    let (i, domain) = parse_tls_extension_sni_host(i)?;
+    let (i, domain) = parse_tls_extension_sni(i)?;
     Ok((i, ClientHelloExtension::ServerName(domain)))
 }
 
 // struct {
 //     ServerName server_name_list<1..2^16-1>
 // } ServerNameList;
-fn parse_tls_extension_sni_host(i: &[u8]) -> IResult<&[u8], Option<Domain>> {
+fn parse_tls_extension_sni(i: &[u8]) -> IResult<&[u8], Option<Domain>> {
     if i.is_empty() {
         // special case: SNI extension in server can be empty
         return Ok((i, None));
