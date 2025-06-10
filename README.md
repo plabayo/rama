@@ -305,23 +305,21 @@ Examples of the kind of web services you might build with rama in function of yo
 
 ### Datastar
 
-[![Crates.io](https://img.shields.io/crates/v/datastar.svg)](https://crates.io/crates/datastar)
-[![Docs.rs](https://img.shields.io/docsrs/datastar/latest)](https://docs.rs/datastar/latest/datastar/index.html)
+> Datastar helps you build reactive web applications with the simplicity of server-side rendering and the power of a full-stack SPA framework.
+>
+> — <https://data-star.dev/>
 
-Rama is also supported in the official Rust SDK of [🚀 data-\*](https://data-star.dev).
-Learn more about it at <https://ramaproxy.org/book/web_servers.html#datastar> or see it in
-action at [datastar > examples > rust > rama](https://github.com/starfederation/datastar/blob/develop/examples/rust/rama/hello-world/src/main.rs):
+Rama has built-in support for [🚀 data-\*](https://data-star.dev).
+You can see it in action in [Examples](https://github.com/plabayo/rama/tree/main/examples):
 
-```rust
-async fn hello_world(ReadSignals(signals): ReadSignals<Signals>) -> impl IntoResponse {
-    Sse(stream! {
-        for i in 0..MESSAGE.len() {
-            yield MergeFragments::new(format!("<div id='message'>{}</div>", &MESSAGE[0..i + 1])).into();
-            tokio::time::sleep(Duration::from_millis(signals.delay)).await;
-        }
-    })
-}
-```
+- [/examples/http_sse_datastar_hello.rs](https://github.com/plabayo/rama/tree/main/examples/http_sse_datastar_hello.rs):
+  SSE Example, showcasing a very simple datastar example,
+  which is supported by rama both on the client as well as the server side.
+
+Rama rust docs:
+
+- SSE support: <https://ramaproxy.org/docs/rama/http/sse/datastar/index.html>
+- Extractor support (`ReadSignals`): <https://ramaproxy.org/docs/rama/http/service/web/extract/datastar/index.html>
 
 ### Shuttle
 

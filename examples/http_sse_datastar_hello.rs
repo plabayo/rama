@@ -8,6 +8,15 @@
 //! this module implements the event data types used from the server-side to send to the client,
 //! which makes use of this JS library.
 //!
+//! This hello world example works with a global state, as such you should be able to open this
+//! same page in multiple different user agents / browsers at once and see your interaction
+//! and animation be in sync across all clients at all times. Try it. For most production applications however
+//! you probably have scoped / specific states unique to the user (group) / target.
+//!
+//! Learn more at <https://ramaproxy.org/book/web_servers.html#datastar>.
+//!
+//! This example tried to apply the CQRS paradigm to the best of our knowledge, pull requests and feedback welcome as always.
+//!
 //! # Run the example
 //!
 //! ```sh
@@ -24,11 +33,12 @@
 //!
 //! This will open a web page which will be a simple hello world data app.
 
-use http::StatusCode;
 use rama::{
-    Context, Layer,
+    Context, Layer, Service,
     error::OpaqueError,
+    graceful::ShutdownGuard,
     http::{
+        Request, Response, StatusCode,
         layer::trace::TraceLayer,
         server::HttpServer,
         service::web::{
@@ -48,17 +58,16 @@ use rama::{
 };
 
 use async_stream::stream;
-use serde::Deserialize;
-use serde_json::json;
 use std::{
+    convert::Infallible,
     sync::{
         Arc,
-        atomic::{AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
     time::Duration,
 };
 use tokio::sync::{broadcast, mpsc};
-use tracing::level_filters::LevelFilter;
+use tracing::{Instrument, level_filters::LevelFilter};
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
@@ -85,93 +94,22 @@ async fn main() {
         bind_address
     );
 
-    let delay = Arc::new(AtomicU64::new(400));
-    let msg_index = Arc::new(AtomicUsize::new(MESSAGE.len()));
-    let (data_tx, _data_rx) = broadcast::channel(MESSAGE.len());
-    let (reset_tx, mut reset_rx) = mpsc::channel(128);
-
-    let delay_tx = delay.clone();
-    let msg_index_tx = msg_index.clone();
-    let main_data_tx = data_tx.clone();
-    graceful.spawn_task_fn(async move |guard| {
-        let mut cancelled = std::pin::pin!(guard.downgrade().into_cancelled());
-        loop {
-            tokio::select! {
-                Some(delay) = reset_rx.recv() => {
-                    tracing::info!(%delay, "reset received, continue main once again");
-                    delay_tx.store(delay, Ordering::Release);
-                    if let Err(err) = main_data_tx.send(Data::Signal(delay)) {
-                        tracing::error!(%err, "failed to broadcast signal: exit background task");
-                        return;
-                    }
-                }
-                _ = &mut cancelled => {
-                    tracing::info!("graceful shutdown: exit background task");
-                    return;
-                }
-            }
-            let mut i = 0;
-            while i < MESSAGE.len() {
-                i += 1;
-                msg_index_tx.store(i, Ordering::Release);
-                tracing::debug!(%i, "enter message loop iteration");
-
-                tokio::select! {
-                    Some(delay) = reset_rx.recv() => {
-                        tracing::debug!(%delay, "reset received during msg broadcast, continue main once again");
-                        delay_tx.store(delay, Ordering::Release);
-                        i = 0;
-                        if let Err(err) = main_data_tx.send(Data::Signal(delay)) {
-                            tracing::error!(%err, "failed to broadcast signal: exit background task");
-                            return;
-                        }
-                    }
-                    _ = &mut cancelled => {
-                        tracing::info!("graceful shutdown: exit background task");
-                        return;
-                    }
-                    _ = std::future::ready(()) => {
-                        tracing::debug!(%i, "send next message");
-                        tokio::select! {
-                            Some(delay) = reset_rx.recv() => {
-                                tracing::debug!(%delay, "reset received during delay, continue main once again");
-                                delay_tx.store(delay, Ordering::Release);
-                                i = 0;
-                                if let Err(err) = main_data_tx.send(Data::Signal(delay)) {
-                                    tracing::error!(%err, "failed to broadcast signal: exit background task");
-                                    return;
-                                }
-                                continue;
-                            }
-                            _ = tokio::time::sleep(Duration::from_millis(delay_tx.load(Ordering::Acquire))) => ()
-                        }
-                        if let Err(err) = main_data_tx.send(Data::Fragment(&MESSAGE[..i])) {
-                            tracing::error!(%err, "failed to broadcast fragment: exit background task");
-                            return;
-                        }
-                    }
-                }
-            }
-        }
-    });
-
-    let state = State {
-        delay,
-        msg_index,
-        reset_tx,
-        data_tx,
-    };
+    let controller = Controller::new(graceful.guard());
 
     graceful.spawn_task_fn(async move |guard| {
         let exec = Executor::graceful(guard.clone());
-        let app = (TraceLayer::new_for_http()).into_layer(Arc::new(
+
+        let router = Arc::new(
             Router::new()
-                .get("/", index)
-                .get("/reset", reset)
-                .get("/hello-world", hello_world),
-        ));
+                .get("/", handlers::index)
+                .get("/start", handlers::start)
+                .get("/hello-world", handlers::hello_world),
+        );
+        let graceful_router = GracefulRouter(router);
+
+        let app = (TraceLayer::new_for_http()).into_layer(graceful_router);
         listener
-            .with_state(state)
+            .with_state(controller)
             .serve_graceful(guard, HttpServer::auto(exec).service(app))
             .await;
     });
@@ -183,110 +121,293 @@ async fn main() {
 }
 
 #[derive(Debug, Clone)]
-enum Data {
-    Fragment(&'static str),
-    Signal(u64),
-}
+struct GracefulRouter(Arc<Router<Controller>>);
 
-#[derive(Debug, Clone)]
-pub struct State {
-    delay: Arc<AtomicU64>,
-    msg_index: Arc<AtomicUsize>,
-    reset_tx: mpsc::Sender<u64>,
-    data_tx: broadcast::Sender<Data>,
-}
+impl Service<Controller, Request> for GracefulRouter {
+    type Response = Response;
+    type Error = Infallible;
 
-async fn index(ctx: Context<State>) -> Html<String> {
-    Html(format!(
-        r##"<!DOCTYPE html>
-<html lang="en">
-<head>
-    <title>Datastar SDK Demo</title>
-    <script src="https://unpkg.com/@tailwindcss/browser@4"></script>
-    <script type="module" src="https://cdn.jsdelivr.net/gh/starfederation/datastar@v1.0.0-beta.11/bundles/datastar.js"></script>
-</head>
-<body class="bg-white dark:bg-gray-900 text-lg max-w-xl mx-auto my-16">
-    <div data-signals-delay="{}"
-            class="bg-white dark:bg-gray-800 text-gray-500 dark:text-gray-400 rounded-lg px-6 py-8 ring shadow-xl ring-gray-900/5 space-y-2">
-        <div class="flex justify-between items-center">
-            <h1 class="text-gray-900 dark:text-white text-3xl font-semibold">
-                Datastar SDK Demo
-            </h1>
-            <img src="https://data-star.dev/static/images/rocket.png" alt="Rocket" width="64" height="64"/>
-        </div>
-
-        <p class="mt-2">
-            SSE events will be streamed from the backend to the frontend.
-        </p>
-        <div class="space-x-2">
-            <label for="delay">
-                Delay in milliseconds
-            </label>
-            <input data-bind-delay id="delay" type="number" step="100" min="0" class="w-36 rounded-md border border-gray-300 px-3 py-2 placeholder-gray-400 shadow-sm focus:border-sky-500 focus:outline focus:outline-sky-500 dark:disabled:border-gray-700 dark:disabled:bg-gray-800/20" />
-        </div>
-        <button data-on-click="@get(&#39;/reset&#39;)" class="rounded-md bg-sky-500 px-5 py-2.5 leading-5 font-semibold text-white hover:bg-sky-700 hover:text-gray-100 cursor-pointer">
-            Reset
-        </button>
-    </div>
-    <div class="my-16 text-8xl font-bold text-transparent" style="background: linear-gradient(to right in oklch, red, orange, yellow, green, blue, blue, violet); background-clip: text">
-        <div
-            data-on-load__delay="@get('/hello-world')"
-            id="message">
-            {}
-        </div>
-    </div>
-    <div class="text-gray-900 dark:text-white text-3xl font-semibold">
-        <pre data-text="ctx.signals.JSON()">Signals</pre>
-    </div>
-</body>
-</html>"##,
-        ctx.state().delay.load(Ordering::Acquire),
-        &MESSAGE[0..ctx.state().msg_index.load(Ordering::Acquire)],
-    ))
-}
-
-#[derive(Deserialize)]
-pub struct Signals {
-    pub delay: u64,
-}
-
-const MESSAGE: &str = "Hello, world!";
-
-async fn reset(
-    ctx: Context<State>,
-    ReadSignals(signals): ReadSignals<Signals>,
-) -> impl IntoResponse {
-    match tokio::time::timeout(
-        Duration::from_secs(5),
-        ctx.state().reset_tx.send(signals.delay),
-    )
-    .await
-    {
-        Ok(_) => StatusCode::OK,
-        Err(err) => {
-            tracing::error!(%err, "reset animation with new delay");
-            StatusCode::INTERNAL_SERVER_ERROR
+    async fn serve(
+        &self,
+        ctx: Context<Controller>,
+        req: Request,
+    ) -> Result<Self::Response, Self::Error> {
+        if ctx.state().is_closed() {
+            tracing::debug!("router received request while shutting down: returning 401");
+            return Ok(StatusCode::GONE.into_response());
         }
+        self.0.serve(ctx, req).await
     }
 }
 
-async fn hello_world(
-    ctx: Context<State>,
-    ReadSignals(_): ReadSignals<Signals>,
-) -> impl IntoResponse {
-    let mut data_rx = ctx.state().data_tx.subscribe();
-    Sse::new(KeepAliveStream::new(
-        KeepAlive::new(),
-        stream! {
-            while let Ok(value) = data_rx.recv().await {
-                let data: EventData<_> = match value {
-                    Data::Fragment(msg) => MergeFragments::new(format!("<div id='message'>{}</div>", msg)).into(),
-                    Data::Signal(delay) => MergeSignals::new(JsonEventData(json!({
-                        "delay": delay,
-                    }))).into(),
-                };
-                yield Ok::<_, OpaqueError>(data.into_sse_event());
-            }
-        },
-    ))
+pub mod handlers {
+    use super::*;
+
+    pub async fn index(ctx: Context<Controller>) -> Html<String> {
+        let content = ctx.state().render_index();
+        Html(content)
+    }
+
+    pub async fn start(
+        ctx: Context<Controller>,
+        ReadSignals(Signals { delay }): ReadSignals<Signals>,
+    ) -> impl IntoResponse {
+        ctx.state().reset(delay).await;
+        StatusCode::OK
+    }
+
+    pub async fn hello_world(ctx: Context<Controller>) -> impl IntoResponse {
+        let mut rx = ctx.state().subscribe();
+        Sse::new(KeepAliveStream::new(
+            KeepAlive::new(),
+            stream! {
+                while let Ok(msg) = rx.recv().await {
+                    let data: EventData<_> = match msg {
+                        Message::DataMergeFragment (data) => data.into(),
+                        Message::DataMergeSignal(signals) => MergeSignals::new(JsonEventData(signals)).into(),
+                        Message::Exit => {
+                            tracing::debug!("exit message received, bye now!");
+                            break;
+                        }
+                    };
+                    tracing::trace!("send next event data");
+                    yield Ok::<_, OpaqueError>(data.into_sse_event());
+                }
+                tracing::debug!("exit hello world stream loop, bye!");
+            },
+        ))
+    }
 }
+
+pub mod controller {
+    use super::*;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Deserialize)]
+    pub struct Signals {
+        pub delay: u64,
+    }
+
+    #[derive(Debug, Clone, Default, Serialize)]
+    pub struct UpdateSignals {
+        pub delay: Option<u64>,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub enum Command {
+        Reset(u64),
+        Exit,
+    }
+
+    #[derive(Debug, Clone)]
+    pub enum Message {
+        Exit,
+        DataMergeFragment(MergeFragments),
+        DataMergeSignal(UpdateSignals),
+    }
+
+    #[derive(Debug, Clone)]
+    pub struct Controller {
+        is_closed: Arc<AtomicBool>,
+
+        delay: Arc<AtomicU64>,
+        anim_index: Arc<AtomicUsize>,
+
+        cmd_tx: mpsc::Sender<Command>,
+        msg_tx: broadcast::Sender<Message>,
+    }
+
+    impl Controller {
+        const MESSAGE: &str = "Hello, datastar!";
+
+        pub fn new(guard: ShutdownGuard) -> Self {
+            let (cmd_tx, cmd_rx) = mpsc::channel(1024);
+            let (msg_tx, msg_rx) = broadcast::channel(1024);
+
+            let exit_cmd_tx = cmd_tx.clone();
+            let weak_guard = guard.clone_weak();
+            tokio::spawn(
+                async move {
+                    tracing::debug!("exit worker up and running awaiting cancellation");
+                    weak_guard.into_cancelled().await;
+                    tracing::trace!("shutdown initiated, send exit command to controller runtime");
+                    if let Err(err) = exit_cmd_tx.send(Command::Exit).await {
+                        tracing::error!(%err, "failed to send exit cmd")
+                    }
+                }
+                .instrument(tracing::trace_span!("exit worker")),
+            );
+
+            let delay = Arc::new(AtomicU64::new(400));
+            let anim_index = Arc::new(AtomicUsize::new(Self::MESSAGE.len()));
+
+            let controller = Controller {
+                is_closed: Arc::new(AtomicBool::new(false)),
+
+                delay,
+                anim_index,
+
+                cmd_tx,
+
+                msg_tx,
+            };
+
+            guard.into_spawn_task(
+                controller
+                    .clone()
+                    .into_runtime(msg_rx, cmd_rx)
+                    .instrument(tracing::trace_span!("runtime worker")),
+            );
+
+            controller
+        }
+
+        pub fn is_closed(&self) -> bool {
+            self.is_closed.load(Ordering::Acquire)
+        }
+
+        pub async fn reset(&self, delay: u64) {
+            if let Err(err) = self.cmd_tx.send(Command::Reset(delay)).await {
+                tracing::warn!(%err, "failed to send reset command");
+            }
+        }
+
+        pub fn subscribe(&self) -> broadcast::Receiver<Message> {
+            self.msg_tx.subscribe()
+        }
+
+        pub fn render_index(&self) -> String {
+            format!(
+                r##"<!DOCTYPE html>
+        <html lang="en">
+        <head>
+            <title>Datastar SDK Demo</title>
+            <script src="https://unpkg.com/@tailwindcss/browser@4"></script>
+            <script type="module" src="https://cdn.jsdelivr.net/gh/starfederation/datastar@v1.0.0-beta.11/bundles/datastar.js"></script>
+        </head>
+        <body class="bg-white dark:bg-gray-900 text-lg max-w-xl mx-auto my-16">
+            <div data-signals-delay="{}"
+                    class="bg-white dark:bg-gray-800 text-gray-500 dark:text-gray-400 rounded-lg px-6 py-8 ring shadow-xl ring-gray-900/5 space-y-2">
+                <div class="flex justify-between items-center">
+                    <h1 class="text-gray-900 dark:text-white text-3xl font-semibold">
+                        Datastar SDK Demo
+                    </h1>
+                    <img src="https://data-star.dev/static/images/rocket.png" alt="Rocket" width="64" height="64"/>
+                </div>
+
+                <p class="mt-2">
+                    SSE events will be streamed from the backend to the frontend.
+                </p>
+                <div class="space-x-2">
+                    <label for="delay">
+                        Delay in milliseconds
+                    </label>
+                    <input data-bind-delay id="delay" type="number" step="100" min="0" class="w-36 rounded-md border border-gray-300 px-3 py-2 placeholder-gray-400 shadow-sm focus:border-sky-500 focus:outline focus:outline-sky-500 dark:disabled:border-gray-700 dark:disabled:bg-gray-800/20" />
+                </div>
+                <button data-on-click="@get(&#39;/start&#39;)" class="rounded-md bg-sky-500 px-5 py-2.5 leading-5 font-semibold text-white hover:bg-sky-700 hover:text-gray-100 cursor-pointer">
+                Start
+                </button>
+            </div>
+            <div class="my-16 text-8xl font-bold text-transparent" style="background: linear-gradient(to right in oklch, red, orange, yellow, green, blue, blue, violet); background-clip: text">
+                <div
+                    data-on-load="@get('/hello-world')"
+                    id="message">
+                    {}
+                </div>
+            </div>
+            <div class="text-gray-900 dark:text-white">
+                <pre data-text="ctx.signals.JSON()">Signals</pre>
+            </div>
+        </body>
+        </html>"##,
+                self.delay.load(Ordering::Acquire),
+                &Self::MESSAGE[..self.anim_index.load(Ordering::Acquire)],
+            )
+        }
+
+        async fn into_runtime(
+            self,
+            _msg_rx: broadcast::Receiver<Message>,
+            mut cmd_rx: mpsc::Receiver<Command>,
+        ) {
+            #[derive(Debug, Clone, Copy)]
+            enum State {
+                Play,
+                Stop,
+            }
+            let mut state = State::Stop;
+
+            let mut recv_cmd = async || {
+                // Assumption: channel can never close as `Controller` owns one sender
+                let cmd = cmd_rx.recv().await.unwrap();
+                match cmd {
+                    Command::Reset(delay) => {
+                        self.delay.store(delay, Ordering::Release);
+                        if let Err(err) =
+                            self.msg_tx.send(Message::DataMergeSignal(UpdateSignals {
+                                delay: Some(delay),
+                            }))
+                        {
+                            tracing::error!(%err, "failed to update delay signal via broadcast");
+                        }
+                    }
+                    Command::Exit => {
+                        self.is_closed.store(true, Ordering::Release);
+                        tracing::debug!("exit command received: exit controller");
+                        if let Err(err) = self.msg_tx.send(Message::Exit) {
+                            tracing::error!(%err, "failed to send exit message to subscribers");
+                        }
+                    }
+                }
+                cmd
+            };
+
+            loop {
+                match state {
+                    State::Play => {
+                        tokio::select! {
+                            biased;
+
+                            cmd = recv_cmd() => {
+                                match cmd {
+                                    Command::Reset(_) => {
+                                        state = State::Play;
+                                        self.anim_index.store(0, Ordering::Release);
+                                    },
+                                    Command::Exit => return,
+                                }
+                            }
+                            _ = std::future::ready(()) => {}
+                        }
+
+                        let index = self.anim_index.fetch_add(1, Ordering::AcqRel) + 1;
+                        let delay = Duration::from_millis(self.delay.load(Ordering::Acquire));
+                        tracing::debug!(?delay, %index, "animation: play frame");
+                        let msg = &Self::MESSAGE[..index];
+                        let fragment =
+                            MergeFragments::new(format!("<div id='message'>{}</div>", msg));
+                        match self.msg_tx.send(Message::DataMergeFragment(fragment)) {
+                            Err(err) => {
+                                tracing::error!(%err, "failed to merge fragment via broadcast")
+                            }
+                            Ok(_) => tokio::time::sleep(delay).await,
+                        }
+
+                        if index >= Self::MESSAGE.len() {
+                            tracing::debug!("stop animation: end reached: stop");
+                            state = State::Stop;
+                        }
+                    }
+                    State::Stop => match recv_cmd().await {
+                        Command::Reset(_) => {
+                            state = State::Play;
+                            self.anim_index.store(0, Ordering::Release);
+                        }
+                        Command::Exit => return,
+                    },
+                }
+            }
+        }
+    }
+}
+use controller::{Controller, Message, Signals};

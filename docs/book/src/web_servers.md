@@ -50,22 +50,17 @@ The choice between them often comes down to your priorities:
 >
 > — <https://data-star.dev/>
 
-[![Crates.io](https://img.shields.io/crates/v/datastar.svg)](https://crates.io/crates/datastar)
-[![Docs.rs](https://img.shields.io/docsrs/datastar/latest)](https://docs.rs/datastar/latest/datastar/index.html)
+Rama has built-in support for [🚀 data-\*](https://data-star.dev).
+You can see it in action in [Examples](https://github.com/plabayo/rama/tree/main/examples):
 
-Rama is also supported in the official Rust SDK of [🚀 data-\*](https://data-star.dev).
-You can see it in action at [datastar > examples > rust > rama](https://github.com/starfederation/datastar/blob/develop/examples/rust/rama/hello-world/src/main.rs):
+- [/examples/http_sse_datastar_hello.rs](https://github.com/plabayo/rama/tree/main/examples/http_sse_datastar_hello.rs):
+  SSE Example, showcasing a very simple datastar example,
+  which is supported by rama both on the client as well as the server side.
 
-```rust
-async fn hello_world(ReadSignals(signals): ReadSignals<Signals>) -> impl IntoResponse {
-    Sse(stream! {
-        for i in 0..MESSAGE.len() {
-            yield MergeFragments::new(format!("<div id='message'>{}</div>", &MESSAGE[0..i + 1])).into();
-            tokio::time::sleep(Duration::from_millis(signals.delay)).await;
-        }
-    })
-}
-```
+Rama rust docs:
+
+- SSE support: <https://ramaproxy.org/docs/rama/http/sse/datastar/index.html>
+- Extractor support (`ReadSignals`): <https://ramaproxy.org/docs/rama/http/service/web/extract/datastar/index.html>
 
 <div class="book-article-image-center">
 <img style="width: 50%" src="img/rama_datastar.jpg" alt="llama cruising through space empowered by the powerfull rama/datastar combo">
@@ -77,13 +72,15 @@ for any datastar specific help.
 
 Combining [🚀 data-\*](https://data-star.dev) with 🦙 Rama (ラマ) provides a powerful foundation for your web application—one that **empowers you to build and scale without limitations**.
 
-> If you, your company, or your organization relies on **Rama**,
-> consider supporting its continued development by becoming a sponsor, either through an appropriate tier
-> on [GitHub Sponsors](https://github.com/sponsors/plabayo/sponsorships?tier_id=300734),
-> or by reaching out directly at [sponsor@ramaproxy.org](mailto:sponsor@ramaproxy.org).
->
-> As a sponsor, you'll benefit from development support,
-> maintenance assistance, and tailored guidance to meet your specific needs.
+The core concept of datastar is to keep one long lived connection per user (agent) session open,
+through which you stream your data(star) events (SSE). While your client interacts with the server
+via regular HTTP calls. This paradigm is often referred to as ommand Query Responsibility Segregation (CQRS).
+Covering CQRS properly is out of scope of this doc as well as the knowledge of the author.
+You can however start your journey in that rabbit hole by reading these resources:
+
+- [Ubiquitous language](https://martinfowler.com/bliki/UbiquitousLanguage.html)
+- [The Blue Book](https://www.amazon.com/Domain-Driven-Design-Tackling-Complexity-Software-ebook/dp/B00794TAUG) e original text on DDD by Eric Evans
+- [The Red Book](https://www.amazon.com/Implementing-Domain-Driven-Design-Vaughn-Vernon-ebook/dp/B00BCLEBN8) - a book refined from years of experience with DDD
 
 ## Examples
 
