@@ -16,6 +16,8 @@ pub struct RemoveSignals {
 }
 
 impl RemoveSignals {
+    pub const TYPE: EventType = EventType::RemoveSignals;
+
     /// Create a new [`RemoveSignals`] data blob.
     pub fn new(path: impl Into<SmolStr>) -> Self {
         Self {
@@ -26,9 +28,19 @@ impl RemoveSignals {
     /// Consume `self` as an [`Event`].
     pub fn into_sse_event(self) -> Event<RemoveSignals> {
         Event::new()
-            .try_with_event(EventType::RemoveSignals.as_smol_str())
+            .try_with_event(Self::TYPE.as_smol_str())
             .unwrap()
+            .with_retry(super::consts::DEFAULT_DATASTAR_DURATION)
             .with_data(self)
+    }
+
+    /// Consume `self` as a [`super::DatastarEvent`].
+    pub fn into_datastar_event<T>(self) -> super::DatastarEvent<T> {
+        Event::new()
+            .try_with_event(Self::TYPE.as_smol_str())
+            .unwrap()
+            .with_retry(super::consts::DEFAULT_DATASTAR_DURATION)
+            .with_data(super::EventData::RemoveSignals(self))
     }
 
     /// Create a new [`RemoveSignals`] data blob.
@@ -36,6 +48,18 @@ impl RemoveSignals {
         Self {
             paths: paths.into_iter().map(Into::into).collect(),
         }
+    }
+}
+
+impl From<RemoveSignals> for Event<RemoveSignals> {
+    fn from(value: RemoveSignals) -> Self {
+        value.into_sse_event()
+    }
+}
+
+impl<T> From<RemoveSignals> for super::DatastarEvent<T> {
+    fn from(value: RemoveSignals) -> Self {
+        value.into_datastar_event()
     }
 }
 

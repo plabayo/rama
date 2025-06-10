@@ -32,6 +32,8 @@ pub struct MergeFragments {
 }
 
 impl MergeFragments {
+    pub const TYPE: EventType = EventType::MergeFragments;
+
     /// Create a new [`MergeFragments`] data blob.
     pub fn new(fragments: impl Into<Cow<'static, str>>) -> Self {
         Self {
@@ -45,9 +47,19 @@ impl MergeFragments {
     /// Consume `self` as an [`Event`].
     pub fn into_sse_event(self) -> Event<MergeFragments> {
         Event::new()
-            .try_with_event(EventType::MergeFragments.as_smol_str())
+            .try_with_event(Self::TYPE.as_smol_str())
             .unwrap()
+            .with_retry(super::consts::DEFAULT_DATASTAR_DURATION)
             .with_data(self)
+    }
+
+    /// Consume `self` as a [`super::DatastarEvent`].
+    pub fn into_datastar_event<T>(self) -> super::DatastarEvent<T> {
+        Event::new()
+            .try_with_event(Self::TYPE.as_smol_str())
+            .unwrap()
+            .with_retry(super::consts::DEFAULT_DATASTAR_DURATION)
+            .with_data(super::EventData::MergeFragments(self))
     }
 
     rama_utils::macros::generate_set_and_with! {
@@ -72,6 +84,18 @@ impl MergeFragments {
             self.use_view_transition = use_view_transition;
             self
         }
+    }
+}
+
+impl From<MergeFragments> for Event<MergeFragments> {
+    fn from(value: MergeFragments) -> Self {
+        value.into_sse_event()
+    }
+}
+
+impl<T> From<MergeFragments> for super::DatastarEvent<T> {
+    fn from(value: MergeFragments) -> Self {
+        value.into_datastar_event()
     }
 }
 

@@ -40,7 +40,11 @@ pub use execute_script::{
     ScriptType,
 };
 
+mod consts;
+
 use crate::sse::{Event, EventDataLineReader, EventDataMultiLineReader, EventDataRead};
+
+pub type DatastarEvent<T = String> = Event<EventData<T>>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum EventData<T = String> {
@@ -95,6 +99,7 @@ impl<T> EventData<T> {
         Event::new()
             .try_with_event(event_type.as_smol_str())
             .unwrap()
+            .with_retry(consts::DEFAULT_DATASTAR_DURATION)
             .with_data(self)
     }
 }

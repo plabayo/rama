@@ -48,7 +48,7 @@ use rama::{
         },
         sse::{
             JsonEventData,
-            datastar::{EventData, MergeFragments, MergeSignals},
+            datastar::{MergeFragments, MergeSignals},
             server::{KeepAlive, KeepAliveStream},
         },
     },
@@ -102,7 +102,7 @@ async fn main() {
         let router = Arc::new(
             Router::new()
                 .get("/", handlers::index)
-                .get("/start", handlers::start)
+                .post("/start", handlers::start)
                 .get("/hello-world", handlers::hello_world)
                 .get("/assets/datastar.js", DatastarScript::default()),
         );
@@ -142,6 +142,8 @@ impl Service<Controller, Request> for GracefulRouter {
 }
 
 pub mod handlers {
+    use futures::StreamExt;
+
     use super::*;
 
     pub async fn index(ctx: Context<Controller>) -> Html<String> {
@@ -158,23 +160,22 @@ pub mod handlers {
     }
 
     pub async fn hello_world(ctx: Context<Controller>) -> impl IntoResponse {
-        let mut rx = ctx.state().subscribe();
+        let mut stream = ctx.state().subscribe();
+
         Sse::new(KeepAliveStream::new(
             KeepAlive::new(),
             stream! {
-                yield Ok(EventData::from(MergeFragments::new(r##"<div id="sse-status">🟢</div>"##)).into_sse_event());
-
-                while let Ok(msg) = rx.recv().await {
-                    let data: EventData<_> = match msg {
-                        Message::DataMergeFragments (data) => data.into(),
-                        Message::DataMergeSignals(signals) => MergeSignals::new(JsonEventData(signals)).into(),
+                while let Some(msg) = stream.next().await {
+                    match msg {
+                        Message::Event(event) => {
+                            tracing::trace!("send next event data");
+                            yield Ok::<_, OpaqueError>(event);
+                        }
                         Message::Exit => {
                             tracing::debug!("exit message received, bye now!");
                             break;
                         }
                     };
-                    tracing::trace!("send next event data");
-                    yield Ok::<_, OpaqueError>(data.into_sse_event());
                 }
                 tracing::debug!("exit hello world stream loop, bye!");
             },
@@ -184,7 +185,14 @@ pub mod handlers {
 
 pub mod controller {
     use super::*;
+
+    use futures::Stream;
+    use rama::http::sse::datastar::FragmentMergeMode;
     use serde::{Deserialize, Serialize};
+    use std::pin::Pin;
+
+    pub type DatastarEvent =
+        rama::http::sse::datastar::DatastarEvent<rama::http::sse::JsonEventData<UpdateSignals>>;
 
     #[derive(Debug, Deserialize)]
     pub struct Signals {
@@ -205,8 +213,7 @@ pub mod controller {
     #[derive(Debug, Clone)]
     pub enum Message {
         Exit,
-        DataMergeFragments(MergeFragments),
-        DataMergeSignals(UpdateSignals),
+        Event(DatastarEvent),
     }
 
     #[derive(Debug, Clone)]
@@ -275,16 +282,51 @@ pub mod controller {
             }
         }
 
-        pub fn subscribe(&self) -> broadcast::Receiver<Message> {
-            self.msg_tx.subscribe()
+        pub fn subscribe(&self) -> Pin<Box<impl Stream<Item = Message> + use<>>> {
+            let mut subscriber = self.msg_tx.subscribe();
+
+            let delay = self.delay.load(Ordering::Acquire);
+            let anim_index = self.anim_index.load(Ordering::Acquire);
+            let progress = (anim_index as f64) / (Self::MESSAGE.len() as f64) * 100f64;
+            let text = &Self::MESSAGE[..anim_index];
+
+            Box::pin(stream! {
+                tracing::debug!("subscriber: fresh connect: send current signal/dom state");
+                yield sse_status_fragment_message(0f64);
+                yield data_animation_fragment_message(text, progress);
+                yield update_signal_fragment_message(UpdateSignals { delay: Some(delay) });
+
+                tracing::debug!("subscriber: enter inner subscriber loop");
+
+                let mut sse_status_interval = tokio::time::interval(Duration::from_millis(3000));
+
+                loop {
+                    yield tokio::select! {
+                        biased;
+
+                        instant = sse_status_interval.tick() => {
+                            tracing::debug!(?instant, "subscriber: SSE status interval tick");
+                            sse_status_fragment_message(instant.elapsed().as_secs_f64())
+                        }
+
+                        result = subscriber.recv() => {
+                            match result {
+                                Ok(msg) => msg,
+                                Err(err) => {
+                                    tracing::debug!(%err, "subscriber: exit");
+                                    return;
+                                },
+                            }
+                        }
+                    };
+                }
+            })
         }
 
         pub fn render_index(&self) -> String {
             let delay = self.delay.load(Ordering::Acquire);
             let anim_index = self.anim_index.load(Ordering::Acquire);
-
             let progress = (anim_index as f64) / (Self::MESSAGE.len() as f64) * 100f64;
-
             let text = &Self::MESSAGE[..anim_index];
 
             tracing::debug!(
@@ -459,7 +501,7 @@ pub mod controller {
             <input data-bind-delay id="delay" type="number" step="100" min="0" />
         </div>
 
-        <button data-on-click="@get('/start')">Start</button>
+        <button data-on-click="@post('/start')">Start</button>
     </div>
 
     <div id="progress-bar-container">
@@ -496,9 +538,10 @@ pub mod controller {
                     Command::Reset(delay) => {
                         self.delay.store(delay, Ordering::Release);
                         if let Err(err) =
-                            self.msg_tx.send(Message::DataMergeSignals(UpdateSignals {
-                                delay: Some(delay),
-                            }))
+                            self.msg_tx
+                                .send(update_signal_fragment_message(UpdateSignals {
+                                    delay: Some(delay),
+                                }))
                         {
                             tracing::error!(%err, "failed to update delay signal via broadcast");
                         }
@@ -506,8 +549,17 @@ pub mod controller {
                     Command::Exit => {
                         self.is_closed.store(true, Ordering::Release);
                         tracing::debug!("exit command received: exit controller");
-                        if let Err(err) = self.msg_tx.send(Message::Exit) {
-                            tracing::error!(%err, "failed to send exit message to subscribers");
+
+                        let exit_events = [
+                            critical_error_banner(
+                                "Server was shutdown. Please refresh page to try again later.",
+                            ),
+                            Message::Exit,
+                        ];
+                        for event in exit_events {
+                            if let Err(err) = self.msg_tx.send(event) {
+                                tracing::error!(%err, "failed to send exit message to subscribers");
+                            }
                         }
                     }
                 }
@@ -538,13 +590,10 @@ pub mod controller {
                         let progress = (anim_index as f64) / (Self::MESSAGE.len() as f64) * 100f64;
                         tracing::debug!(?delay, %anim_index, %progress, %text, "animation: play frame");
 
-                        let fragment = MergeFragments::new(format!(
-                            r##"
-                                <div id='message'>{text}</div>
-                                <div id="progress-bar" style="width: {progress}%"></div>
-                            "##,
-                        ));
-                        match self.msg_tx.send(Message::DataMergeFragments(fragment)) {
+                        match self
+                            .msg_tx
+                            .send(data_animation_fragment_message(text, progress))
+                        {
                             Err(err) => {
                                 tracing::error!(%err, "failed to merge fragment via broadcast")
                             }
@@ -566,6 +615,68 @@ pub mod controller {
                 }
             }
         }
+    }
+
+    fn data_animation_fragment_message(text: &str, progress: f64) -> Message {
+        Message::Event(
+            MergeFragments::new(format!(
+                r##"
+                <div id='message'>{text}</div>
+                <div id="progress-bar" style="width: {progress}%"></div>
+            "##,
+            ))
+            .into(),
+        )
+    }
+
+    fn sse_status_fragment_message(elapsed: f64) -> Message {
+        Message::Event(
+            MergeFragments::new(format!(
+                r##"
+                <div id="sse-status">
+                        <span
+                            class="status-ack"
+                            data-elapsed="{elapsed}"
+                            data-on-load__delay.10s="if (el.dataset.elapsed == {elapsed}) {{ el.textContent = '🔴' }}"
+                        >🟢</span>
+                    </span>
+                </div>
+            "##,
+            ))
+            .into(),
+        )
+    }
+
+    fn critical_error_banner(msg: &'static str) -> Message {
+        Message::Event(
+            MergeFragments::new(format!(
+                r##"
+                <div id="server-warning" style="
+                  background-color: #ff4d4f;
+                  color: white;
+                  font-weight: bold;
+                  text-align: center;
+                  padding: 12px;
+                  font-family: sans-serif;
+                  position: fixed;
+                  left: 0;
+                  top: 0;
+                  width: 100%;
+                  z-index: 9999;
+                  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                ">
+                  ⚠️ {msg}.
+                </div>
+            "##
+            ))
+            .with_selector("body")
+            .with_merge_mode(FragmentMergeMode::Prepend)
+            .into(),
+        )
+    }
+
+    fn update_signal_fragment_message(update: UpdateSignals) -> Message {
+        Message::Event(MergeSignals::new(JsonEventData(update)).into())
     }
 }
 use controller::{Controller, Message, Signals};

@@ -93,6 +93,8 @@ rama_utils::macros::enums::enum_builder! {
 }
 
 impl ExecuteScript {
+    pub const TYPE: EventType = EventType::ExecuteScript;
+
     /// Create a new [`ExecuteScript`] data blob.
     pub fn new(script: impl Into<Cow<'static, str>>) -> Self {
         Self {
@@ -105,9 +107,19 @@ impl ExecuteScript {
     /// Consume `self` as an [`Event`].
     pub fn into_sse_event(self) -> Event<ExecuteScript> {
         Event::new()
-            .try_with_event(EventType::ExecuteScript.as_smol_str())
+            .try_with_event(Self::TYPE.as_smol_str())
             .unwrap()
+            .with_retry(super::consts::DEFAULT_DATASTAR_DURATION)
             .with_data(self)
+    }
+
+    /// Consume `self` as a [`super::DatastarEvent`].
+    pub fn into_datastar_event<T>(self) -> super::DatastarEvent<T> {
+        Event::new()
+            .try_with_event(Self::TYPE.as_smol_str())
+            .unwrap()
+            .with_retry(super::consts::DEFAULT_DATASTAR_DURATION)
+            .with_data(super::EventData::ExecuteScript(self))
     }
 
     rama_utils::macros::generate_set_and_with! {
@@ -152,6 +164,18 @@ impl ExecuteScript {
             this.extend(attributes);
             self
         }
+    }
+}
+
+impl From<ExecuteScript> for Event<ExecuteScript> {
+    fn from(value: ExecuteScript) -> Self {
+        value.into_sse_event()
+    }
+}
+
+impl<T> From<ExecuteScript> for super::DatastarEvent<T> {
+    fn from(value: ExecuteScript) -> Self {
+        value.into_datastar_event()
     }
 }
 

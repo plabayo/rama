@@ -21,6 +21,8 @@ pub struct MergeSignals<T = String> {
 }
 
 impl<T> MergeSignals<T> {
+    pub const TYPE: EventType = EventType::MergeSignals;
+
     /// Create a new [`MergeSignals`] data blob.
     pub fn new(signals: T) -> Self {
         Self {
@@ -32,9 +34,19 @@ impl<T> MergeSignals<T> {
     /// Consume `self` as an [`Event`].
     pub fn into_sse_event(self) -> Event<MergeSignals<T>> {
         Event::new()
-            .try_with_event(EventType::MergeSignals.as_smol_str())
+            .try_with_event(Self::TYPE.as_smol_str())
             .unwrap()
+            .with_retry(super::consts::DEFAULT_DATASTAR_DURATION)
             .with_data(self)
+    }
+
+    /// Consume `self` as a [`super::DatastarEvent`].
+    pub fn into_datastar_event(self) -> super::DatastarEvent<T> {
+        Event::new()
+            .try_with_event(Self::TYPE.as_smol_str())
+            .unwrap()
+            .with_retry(super::consts::DEFAULT_DATASTAR_DURATION)
+            .with_data(super::EventData::MergeSignals(self))
     }
 
     rama_utils::macros::generate_set_and_with! {
@@ -43,6 +55,18 @@ impl<T> MergeSignals<T> {
             self.only_if_missing = only_if_missing;
             self
         }
+    }
+}
+
+impl<T> From<MergeSignals<T>> for Event<MergeSignals<T>> {
+    fn from(value: MergeSignals<T>) -> Self {
+        value.into_sse_event()
+    }
+}
+
+impl<T> From<MergeSignals<T>> for super::DatastarEvent<T> {
+    fn from(value: MergeSignals<T>) -> Self {
+        value.into_datastar_event()
     }
 }
 
