@@ -58,6 +58,7 @@ use rama::{
 };
 
 use async_stream::stream;
+use rama_http::service::web::response::DatastarScript;
 use std::{
     convert::Infallible,
     sync::{
@@ -103,7 +104,8 @@ async fn main() {
             Router::new()
                 .get("/", handlers::index)
                 .get("/start", handlers::start)
-                .get("/hello-world", handlers::hello_world),
+                .get("/hello-world", handlers::hello_world)
+                .get("/assets/datastar.js", DatastarScript::default()),
         );
         let graceful_router = GracefulRouter(router);
 
@@ -161,10 +163,12 @@ pub mod handlers {
         Sse::new(KeepAliveStream::new(
             KeepAlive::new(),
             stream! {
+                yield Ok(EventData::from(MergeFragments::new(r##"<div id="sse-status">🟢</div>"##)).into_sse_event());
+
                 while let Ok(msg) = rx.recv().await {
                     let data: EventData<_> = match msg {
-                        Message::DataMergeFragment (data) => data.into(),
-                        Message::DataMergeSignal(signals) => MergeSignals::new(JsonEventData(signals)).into(),
+                        Message::DataMergeFragments (data) => data.into(),
+                        Message::DataMergeSignals(signals) => MergeSignals::new(JsonEventData(signals)).into(),
                         Message::Exit => {
                             tracing::debug!("exit message received, bye now!");
                             break;
@@ -202,8 +206,8 @@ pub mod controller {
     #[derive(Debug, Clone)]
     pub enum Message {
         Exit,
-        DataMergeFragment(MergeFragments),
-        DataMergeSignal(UpdateSignals),
+        DataMergeFragments(MergeFragments),
+        DataMergeSignals(UpdateSignals),
     }
 
     #[derive(Debug, Clone)]
@@ -277,51 +281,200 @@ pub mod controller {
         }
 
         pub fn render_index(&self) -> String {
+            let delay = self.delay.load(Ordering::Acquire);
+            let anim_index = self.anim_index.load(Ordering::Acquire);
+
+            let progress = (anim_index as f64) / (Self::MESSAGE.len() as f64) * 100f64;
+
+            let text = &Self::MESSAGE[..anim_index];
+
+            tracing::debug!(
+                %delay,
+                %anim_index,
+                %progress,
+                %text,
+                "render index"
+            );
+
             format!(
                 r##"<!DOCTYPE html>
-        <html lang="en">
-        <head>
-            <title>Datastar SDK Demo</title>
-            <script src="https://unpkg.com/@tailwindcss/browser@4"></script>
-            <script type="module" src="https://cdn.jsdelivr.net/gh/starfederation/datastar@v1.0.0-beta.11/bundles/datastar.js"></script>
-        </head>
-        <body class="bg-white dark:bg-gray-900 text-lg max-w-xl mx-auto my-16">
-            <div data-signals-delay="{}"
-                    class="bg-white dark:bg-gray-800 text-gray-500 dark:text-gray-400 rounded-lg px-6 py-8 ring shadow-xl ring-gray-900/5 space-y-2">
-                <div class="flex justify-between items-center">
-                    <h1 class="text-gray-900 dark:text-white text-3xl font-semibold">
-                        Datastar SDK Demo
-                    </h1>
-                    <img src="https://data-star.dev/static/images/rocket.png" alt="Rocket" width="64" height="64"/>
-                </div>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <title>Datastar Rama Demo</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%2210 0 100 100%22><text y=%22.90em%22 font-size=%2290%22>🦙</text></svg>">
+    <script type="module" src="/assets/datastar.js"></script>
+    <style>
+        :root {{
+            color-scheme: light dark;
+            --bg-light: #ffffff;
+            --bg-dark: #1f2937;
+            --text-light: #6b7280;
+            --text-dark: #9ca3af;
+            --card-bg-light: #ffffff;
+            --card-bg-dark: #374151;
+            --text-heading-light: #111827;
+            --text-heading-dark: #ffffff;
+            --ring-color: rgba(17, 24, 39, 0.05);
+            --input-border: #d1d5db;
+            --input-placeholder: #9ca3af;
+            --btn-bg: #0ea5e9;
+            --btn-bg-hover: #0369a1;
+        }}
 
-                <p class="mt-2">
-                    SSE events will be streamed from the backend to the frontend.
-                </p>
-                <div class="space-x-2">
-                    <label for="delay">
-                        Delay in milliseconds
-                    </label>
-                    <input data-bind-delay id="delay" type="number" step="100" min="0" class="w-36 rounded-md border border-gray-300 px-3 py-2 placeholder-gray-400 shadow-sm focus:border-sky-500 focus:outline focus:outline-sky-500 dark:disabled:border-gray-700 dark:disabled:bg-gray-800/20" />
-                </div>
-                <button data-on-click="@get(&#39;/start&#39;)" class="rounded-md bg-sky-500 px-5 py-2.5 leading-5 font-semibold text-white hover:bg-sky-700 hover:text-gray-100 cursor-pointer">
-                Start
-                </button>
-            </div>
-            <div class="my-16 text-8xl font-bold text-transparent" style="background: linear-gradient(to right in oklch, red, orange, yellow, green, blue, blue, violet); background-clip: text">
-                <div
-                    data-on-load="@get('/hello-world')"
-                    id="message">
-                    {}
-                </div>
-            </div>
-            <div class="text-gray-900 dark:text-white">
-                <pre data-text="ctx.signals.JSON()">Signals</pre>
-            </div>
-        </body>
-        </html>"##,
-                self.delay.load(Ordering::Acquire),
-                &Self::MESSAGE[..self.anim_index.load(Ordering::Acquire)],
+        body {{
+            margin: 0;
+            padding: 0;
+            font-size: 1.125rem;
+            font-family: sans-serif;
+            background-color: var(--bg-light);
+            color: var(--text-light);
+            max-width: 48rem;
+            margin: 4rem auto;
+        }}
+
+        @media (prefers-color-scheme: dark) {{
+            body {{
+                background-color: var(--bg-dark);
+                color: var(--text-dark);
+            }}
+        }}
+
+        .card {{
+            background-color: var(--card-bg-light);
+            color: var(--text-light);
+            border-radius: 0.5rem;
+            padding: 2rem 1.5rem;
+            box-shadow: 0 10px 15px -3px var(--ring-color),
+                        0 4px 6px -4px var(--ring-color);
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+        }}
+
+        @media (prefers-color-scheme: dark) {{
+            .card {{
+                background-color: var(--card-bg-dark);
+                color: var(--text-dark);
+            }}
+        }}
+
+        .card-header {{
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }}
+
+        .card-header h1 {{
+            font-size: 1.875rem;
+            font-weight: 600;
+            color: var(--text-heading-light);
+        }}
+
+        @media (prefers-color-scheme: dark) {{
+            .card-header h1 {{
+                color: var(--text-heading-dark);
+            }}
+        }}
+
+        .input-group {{
+            margin-top: 1rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }}
+
+        input[type="number"] {{
+            width: 9rem;
+            border-radius: 0.375rem;
+            border: 1px solid var(--input-border);
+            padding: 0.5rem 0.75rem;
+            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+        }}
+
+        input::placeholder {{
+            color: var(--input-placeholder);
+        }}
+
+        input:focus {{
+            border-color: var(--btn-bg);
+            outline: 2px solid var(--btn-bg);
+        }}
+
+        button {{
+            margin-top: 1rem;
+            background-color: var(--btn-bg);
+            color: white;
+            font-weight: 600;
+            padding: 0.625rem 1.25rem;
+            border: none;
+            border-radius: 0.375rem;
+            cursor: pointer;
+        }}
+
+        button:hover {{
+            background-color: var(--btn-bg-hover);
+            color: #f3f4f6;
+        }}
+
+        .gradient-text {{
+            margin-top: 4rem;
+            font-size: 6rem;
+            font-weight: bold;
+            background: linear-gradient(to right in oklch, red, orange, yellow, green, blue, blue, violet);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }}
+
+        #progress-bar-container {{
+          height: 8px;
+          background-color: #e5e7eb; /* light gray */
+          border-radius: 4px;
+          overflow: hidden;
+          margin-top: 1rem;
+        }}
+
+        #progress-bar {{
+          height: 100%;
+          width: 100%;
+          background: linear-gradient(90deg, #3b82f6, #06b6d4); /* blue -> cyan */
+        }}
+    </style>
+</head>
+<body data-on-load="@get('/hello-world')">
+    <div data-signals-delay="{delay}" class="card">
+        <div class="card-header">
+            <h1>🦙💬 "hello 🚀 data-*"</h1>
+            <div id="sse-status">🔴</div>
+        </div>
+
+        <p>
+            <a href="https://ramaproxy.org/book/sse.html">SSE events</a> will be streamed from the backend to the frontend.
+        </p>
+        <p>
+            Learn more <a href="https://ramaproxy.org/book/web_servers.html#datastar">in the rama book</a>.
+        </p>
+
+        <div class="input-group">
+            <label for="delay">Delay in milliseconds</label>
+            <input data-bind-delay id="delay" type="number" step="100" min="0" />
+        </div>
+
+        <button data-on-click="@get('/start')">Start</button>
+    </div>
+
+    <div id="progress-bar-container">
+      <div id="progress-bar" style="width: {progress}%"></div>
+    </div>
+
+    <div class="gradient-text">
+        <div id="message">
+            {text}
+        </div>
+    </div>
+</body>
+</html>
+"##,
             )
         }
 
@@ -344,7 +497,7 @@ pub mod controller {
                     Command::Reset(delay) => {
                         self.delay.store(delay, Ordering::Release);
                         if let Err(err) =
-                            self.msg_tx.send(Message::DataMergeSignal(UpdateSignals {
+                            self.msg_tx.send(Message::DataMergeSignals(UpdateSignals {
                                 delay: Some(delay),
                             }))
                         {
@@ -380,20 +533,26 @@ pub mod controller {
                             _ = std::future::ready(()) => {}
                         }
 
-                        let index = self.anim_index.fetch_add(1, Ordering::AcqRel) + 1;
+                        let anim_index = self.anim_index.fetch_add(1, Ordering::AcqRel) + 1;
                         let delay = Duration::from_millis(self.delay.load(Ordering::Acquire));
-                        tracing::debug!(?delay, %index, "animation: play frame");
-                        let msg = &Self::MESSAGE[..index];
-                        let fragment =
-                            MergeFragments::new(format!("<div id='message'>{}</div>", msg));
-                        match self.msg_tx.send(Message::DataMergeFragment(fragment)) {
+                        let text = &Self::MESSAGE[..anim_index];
+                        let progress = (anim_index as f64) / (Self::MESSAGE.len() as f64) * 100f64;
+                        tracing::debug!(?delay, %anim_index, %progress, %text, "animation: play frame");
+
+                        let fragment = MergeFragments::new(format!(
+                            r##"
+                                <div id='message'>{text}</div>
+                                <div id="progress-bar" style="width: {progress}%"></div>
+                            "##,
+                        ));
+                        match self.msg_tx.send(Message::DataMergeFragments(fragment)) {
                             Err(err) => {
                                 tracing::error!(%err, "failed to merge fragment via broadcast")
                             }
                             Ok(_) => tokio::time::sleep(delay).await,
                         }
 
-                        if index >= Self::MESSAGE.len() {
+                        if anim_index >= Self::MESSAGE.len() {
                             tracing::debug!("stop animation: end reached: stop");
                             state = State::Stop;
                         }
