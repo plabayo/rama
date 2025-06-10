@@ -44,7 +44,7 @@ use rama::{
         service::web::{
             Router,
             extract::datastar::ReadSignals,
-            response::{Html, IntoResponse, Sse},
+            response::{DatastarScript, Html, IntoResponse, Sse},
         },
         sse::{
             JsonEventData,
@@ -58,7 +58,6 @@ use rama::{
 };
 
 use async_stream::stream;
-use rama_http::service::web::response::DatastarScript;
 use std::{
     convert::Infallible,
     sync::{
