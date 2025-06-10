@@ -14,7 +14,7 @@ use rama_core::{
 use tokio::io::{AsyncBufRead, AsyncRead, AsyncReadExt, AsyncWrite, ReadBuf};
 
 use crate::{
-    address::Host,
+    address::Domain,
     stream::{HeapReader, PeekStream, StackReader},
     tls::client::extract_sni_from_client_hello_handshake,
 };
@@ -169,7 +169,7 @@ pin_project! {
     pub struct SniRequest<S> {
         #[pin]
         pub stream: SniPeekStream<S>,
-        pub sni: Host,
+        pub sni: Domain,
     }
 }
 

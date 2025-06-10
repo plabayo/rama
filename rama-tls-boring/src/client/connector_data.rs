@@ -21,7 +21,10 @@ use rama_net::tls::{
     DataEncoding,
     client::{ClientAuth, ClientHelloExtension},
 };
-use rama_net::{address::Host, tls::client::ServerVerifyMode};
+use rama_net::{
+    address::{Domain, Host},
+    tls::client::ServerVerifyMode,
+};
 use rama_utils::macros::generate_set_and_with;
 use std::{fmt, sync::Arc};
 use tracing::{debug, trace};
@@ -393,8 +396,8 @@ impl TlsConnectorDataBuilder {
 
     generate_set_and_with!(
         /// Set server name used for SNI extension
-        pub fn server_name(mut self, name: Option<Host>) -> Self {
-            self.server_name = name;
+        pub fn server_name(mut self, name: Option<Domain>) -> Self {
+            self.server_name = name.map(Host::Name);
             self
         }
     );
@@ -725,21 +728,14 @@ impl TlsConnectorDataBuilder {
             // use the extensions that we can use for the builder
             for extension in cfg.extensions.iter().flatten() {
                 match extension {
-                    ClientHelloExtension::ServerName(maybe_host) => {
-                        server_name = match maybe_host {
-                            Some(Host::Name(_)) => {
+                    ClientHelloExtension::ServerName(maybe_domain) => {
+                        server_name = match maybe_domain {
+                            Some(_) => {
                                 trace!(
                                     "TlsConnectorData: builder: from std client config: set server (domain) name from host: {:?}",
-                                    maybe_host
+                                    maybe_domain
                                 );
-                                maybe_host.clone()
-                            }
-                            Some(Host::Address(_)) => {
-                                trace!(
-                                    "TlsConnectorData: builder: from std client config: set server (ip) name from host: {:?}",
-                                    maybe_host
-                                );
-                                maybe_host.clone()
+                                maybe_domain.clone()
                             }
                             None => {
                                 trace!(
@@ -991,7 +987,7 @@ impl TlsConnectorDataBuilder {
             delegated_credential_schemes,
             record_size_limit,
             encrypted_client_hello,
-            server_name,
+            server_name: server_name.map(Host::Name),
         })
     }
 }

@@ -129,7 +129,6 @@ async fn main() {
 struct DynamicIssuer {
     example_data: ServerAuthData,
     second_example_data: ServerAuthData,
-    default_data: ServerAuthData,
 }
 
 impl DynamicIssuer {
@@ -138,7 +137,6 @@ impl DynamicIssuer {
             example_data: example_self_signed_auth().expect("load example data"),
             second_example_data: second_example_self_signed_auth()
                 .expect("load second example data"),
-            default_data: example_self_signed_auth().expect("load default data"),
         }
     }
 }
@@ -150,17 +148,14 @@ impl DynamicCertIssuer for DynamicIssuer {
         _server_name: Option<Host>,
     ) -> Result<ServerAuthData, OpaqueError> {
         match client_hello.ext_server_name() {
-            Some(host) => match host {
-                rama::net::address::Host::Name(domain) => {
-                    if domain == &Domain::from_static("example") {
-                        return Ok(self.example_data.clone());
-                    } else if domain == &Domain::from_static("second.example") {
-                        return Ok(self.second_example_data.clone());
-                    }
-                    Ok(self.example_data.clone())
+            Some(domain) => {
+                if domain == &Domain::from_static("example") {
+                    return Ok(self.example_data.clone());
+                } else if domain == &Domain::from_static("second.example") {
+                    return Ok(self.second_example_data.clone());
                 }
-                rama::net::address::Host::Address(_ip_addr) => Ok(self.default_data.clone()),
-            },
+                Ok(self.example_data.clone())
+            }
             None => Ok(self.example_data.clone()),
         }
     }

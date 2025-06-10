@@ -3,7 +3,7 @@ use crate::proxy::ProxyTarget;
 use crate::transport::{TransportContext, TransportProtocol, TryRefIntoTransportContext};
 use crate::{
     Protocol,
-    address::{Authority, Host},
+    address::{Authority, Domain, Host},
 };
 use rama_core::Context;
 use rama_core::error::OpaqueError;
@@ -14,12 +14,12 @@ use rama_http_types::{Uri, Version};
 use crate::tls::SecureTransport;
 
 #[cfg(feature = "tls")]
-fn try_get_host_from_secure_transport(t: &SecureTransport) -> Option<Host> {
+fn try_get_host_from_secure_transport(t: &SecureTransport) -> Option<Domain> {
     use crate::tls::client::ClientHelloExtension;
 
     t.client_hello().and_then(|h| {
         h.extensions().iter().find_map(|e| match e {
-            ClientHelloExtension::ServerName(maybe_host) => maybe_host.clone(),
+            ClientHelloExtension::ServerName(maybe_domain) => maybe_domain.clone(),
             _ => None,
         })
     })
@@ -31,7 +31,7 @@ fn try_get_host_from_secure_transport(t: &SecureTransport) -> Option<Host> {
 struct SecureTransport;
 
 #[cfg(not(feature = "tls"))]
-fn try_get_host_from_secure_transport(_: &SecureTransport) -> Option<Host> {
+fn try_get_host_from_secure_transport(_: &SecureTransport) -> Option<Domain> {
     None
 }
 

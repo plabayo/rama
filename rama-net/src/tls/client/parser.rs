@@ -5,7 +5,7 @@
 
 use super::hello::{ECHClientHello, ECHClientHelloOuter, HpkeSymmetricCipherSuite};
 use super::{ClientHello, ClientHelloExtension};
-use crate::address::Host;
+use crate::address::{Domain, Host};
 use crate::tls::{
     ApplicationProtocol, CipherSuite, ExtensionId, ProtocolVersion, enums::CompressionAlgorithm,
 };
@@ -45,9 +45,9 @@ pub fn parse_client_hello(i: &[u8]) -> Result<ClientHello, OpaqueError> {
 ///
 /// Same as [`extract_sni_from_client_hello`] but handles the full handshake bytes, meaning
 /// the client hello record itself and the handshake header bytes in front of it.
-pub fn extract_sni_from_client_hello_handshake(i: &[u8]) -> Result<Host, OpaqueError> {
+pub fn extract_sni_from_client_hello_handshake(i: &[u8]) -> Result<Domain, OpaqueError> {
     parse_client_hello_handshake_sni_inner(i)
-        .map(|(_, host)| host)
+        .map(|(_, domain)| domain)
         .map_err(|err| {
             OpaqueError::from_display(format!(
                 "parse client hello handshake message to find SNI: {err:?}"
@@ -63,9 +63,9 @@ pub fn extract_sni_from_client_hello_handshake(i: &[u8]) -> Result<Host, OpaqueE
 ///
 /// This function is not infallible, it can return an error if the input is not a valid
 /// TLS ClientHello message or if there is unexpected trailing data.
-pub fn extract_sni_from_client_hello_record(i: &[u8]) -> Result<Host, OpaqueError> {
+pub fn extract_sni_from_client_hello_record(i: &[u8]) -> Result<Domain, OpaqueError> {
     parse_client_hello_record_sni_inner(i)
-        .map(|(_, host)| host)
+        .map(|(_, domain)| domain)
         .map_err(|err| {
             OpaqueError::from_display(format!(
                 "parse client hello record message to find SNI: {err:?}"
@@ -73,7 +73,7 @@ pub fn extract_sni_from_client_hello_record(i: &[u8]) -> Result<Host, OpaqueErro
         })
 }
 
-fn parse_client_hello_handshake_sni_inner(i: &[u8]) -> IResult<&[u8], Host> {
+fn parse_client_hello_handshake_sni_inner(i: &[u8]) -> IResult<&[u8], Domain> {
     // verify content type and tls version
     let (i, _) = verify(take(3usize), |s: &[u8]| {
         matches!(s, [0x16, 0x03, 0x00..=0x04])
@@ -90,7 +90,7 @@ fn parse_client_hello_handshake_sni_inner(i: &[u8]) -> IResult<&[u8], Host> {
     parse_client_hello_record_sni_inner(i)
 }
 
-fn parse_client_hello_record_sni_inner(i: &[u8]) -> IResult<&[u8], Host> {
+fn parse_client_hello_record_sni_inner(i: &[u8]) -> IResult<&[u8], Domain> {
     // skip version and random
     let (i, _) = take(34usize)(i)?;
 
@@ -110,9 +110,9 @@ fn parse_client_hello_record_sni_inner(i: &[u8]) -> IResult<&[u8], Host> {
     let (i, opt_ext) = opt(complete(length_data(be_u16))).parse(i)?;
     if let Some(mut i) = opt_ext {
         while !i.is_empty() {
-            let (new_i, host) = parse_tls_client_hello_extension_sni_host_or_skip(i)?;
-            if let Some(host) = host {
-                return Ok((new_i, host));
+            let (new_i, domain) = parse_tls_client_hello_extension_sni_host_or_skip(i)?;
+            if let Some(domain) = domain {
+                return Ok((new_i, domain));
             }
             i = new_i;
         }
@@ -181,7 +181,7 @@ fn parse_compressions_algs(i: &[u8], len: usize) -> IResult<&[u8], Vec<Compressi
     Ok((&i[len..], v))
 }
 
-fn parse_tls_client_hello_extension_sni_host_or_skip(i: &[u8]) -> IResult<&[u8], Option<Host>> {
+fn parse_tls_client_hello_extension_sni_host_or_skip(i: &[u8]) -> IResult<&[u8], Option<Domain>> {
     let (i, ext_type) = be_u16(i)?;
     let id = ExtensionId::from(ext_type);
     let (i, ext_data) = length_data(be_u16).parse(i)?;
@@ -243,14 +243,14 @@ fn parse_tls_client_hello_extension(i: &[u8]) -> IResult<&[u8], ClientHelloExten
 //     ServerName server_name_list<1..2^16-1>
 // } ServerNameList;
 fn parse_tls_extension_sni_content(i: &[u8]) -> IResult<&[u8], ClientHelloExtension> {
-    let (i, host) = parse_tls_extension_sni_host(i)?;
-    Ok((i, ClientHelloExtension::ServerName(host)))
+    let (i, domain) = parse_tls_extension_sni_host(i)?;
+    Ok((i, ClientHelloExtension::ServerName(domain)))
 }
 
 // struct {
 //     ServerName server_name_list<1..2^16-1>
 // } ServerNameList;
-fn parse_tls_extension_sni_host(i: &[u8]) -> IResult<&[u8], Option<Host>> {
+fn parse_tls_extension_sni_host(i: &[u8]) -> IResult<&[u8], Option<Domain>> {
     if i.is_empty() {
         // special case: SNI extension in server can be empty
         return Ok((i, None));
@@ -282,7 +282,7 @@ fn parse_tls_extension_sni_host(i: &[u8]) -> IResult<&[u8], Option<Host>> {
 // } NameType;
 //
 // opaque HostName<1..2^16-1>;
-fn parse_tls_extension_sni_hostname(i: &[u8]) -> IResult<&[u8], Host> {
+fn parse_tls_extension_sni_hostname(i: &[u8]) -> IResult<&[u8], Domain> {
     let (i, nt) = be_u8(i)?;
     if nt != 0 {
         return Err(nom::Err::Error(nom::error::Error::new(i, ErrorKind::IsNot)));
@@ -295,7 +295,7 @@ fn parse_tls_extension_sni_hostname(i: &[u8]) -> IResult<&[u8], Host> {
 
     match host {
         Host::Address(_) => Err(nom::Err::Error(nom::error::Error::new(i, ErrorKind::Not))),
-        Host::Name(_) => Ok((i, host)),
+        Host::Name(domain) => Ok((i, domain)),
     }
 }
 
@@ -483,13 +483,10 @@ mod tests {
         let test_cases = [
             ("", None),
             ("\x00", None),
-            (
-                "\x00\x00\x05x.com",
-                Some(Host::Name(Domain::from_static("x.com"))),
-            ),
+            ("\x00\x00\x05x.com", Some(Domain::from_static("x.com"))),
             (
                 "\x00\x00\x10fp.ramaproxy.org",
-                Some(Host::Name(Domain::from_static("fp.ramaproxy.org"))),
+                Some(Domain::from_static("fp.ramaproxy.org")),
             ),
             ("\x00\x00\x11fp.ramaproxy.org", None),
             ("\x01\x00\x10fp.ramaproxy.org", None),
@@ -499,7 +496,7 @@ mod tests {
         for (input, expected_output) in test_cases {
             let result = parse_tls_extension_sni_hostname(input.as_bytes());
             match expected_output {
-                Some(host) => assert_eq!(host, result.unwrap().1),
+                Some(domain) => assert_eq!(domain, result.unwrap().1),
                 None => assert!(result.is_err()),
             }
         }
@@ -587,7 +584,7 @@ mod tests {
         );
         assert_eq_server_name_extension(
             &client_hello.extensions()[1],
-            Some(&Host::Name(Domain::from_static("init.itunes.apple.com"))),
+            Some(&Domain::from_static("init.itunes.apple.com")),
         );
         assert_eq_opaque_extension(
             &client_hello.extensions()[2],
@@ -715,10 +712,13 @@ mod tests {
         }
     }
 
-    fn assert_eq_server_name_extension(ext: &ClientHelloExtension, expected_host: Option<&Host>) {
+    fn assert_eq_server_name_extension(
+        ext: &ClientHelloExtension,
+        expected_domain: Option<&Domain>,
+    ) {
         match ext {
             ClientHelloExtension::ServerName(domain) => {
-                assert_eq!(domain.as_ref(), expected_host);
+                assert_eq!(domain.as_ref(), expected_domain);
             }
             other => {
                 panic!("unexpected extension: {other:?}");
@@ -853,10 +853,10 @@ mod tests {
                 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
                 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
             ],
-            Host::Name(Domain::from_static("one.one.one.one")),
+            Domain::from_static("one.one.one.one"),
         )] {
-            let host = extract_sni_from_client_hello_handshake(content).unwrap();
-            assert_eq!(expected_sni, host);
+            let domain = extract_sni_from_client_hello_handshake(content).unwrap();
+            assert_eq!(expected_sni, domain);
         }
     }
 
@@ -903,10 +903,10 @@ mod tests {
                 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
                 0x00, 0x00, 0x00, 0x00,
             ],
-            Host::Name(Domain::from_static("init.itunes.apple.com")),
+            Domain::from_static("init.itunes.apple.com"),
         )] {
-            let host = extract_sni_from_client_hello_record(content).unwrap();
-            assert_eq!(expected_sni, host);
+            let domain = extract_sni_from_client_hello_record(content).unwrap();
+            assert_eq!(expected_sni, domain);
         }
     }
 }

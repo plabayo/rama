@@ -42,7 +42,7 @@ use rama::{
     graceful::{Shutdown, ShutdownGuard},
     http::{server::HttpServer, service::web::Router},
     net::{
-        address::{Domain, Host, SocketAddress},
+        address::{Domain, SocketAddress},
         stream::Stream,
         tls::server::{SelfSignedData, ServerAuth, ServerConfig, SniRequest, SniRouter},
     },
@@ -94,11 +94,11 @@ async fn main() {
 }
 
 const NAME_FOO: &str = "foo";
-const HOST_FOO: Host = Host::Name(Domain::from_static("foo.local"));
+const HOST_FOO: Domain = Domain::from_static("foo.local");
 const INTERFACE_FOO: SocketAddress = SocketAddress::local_ipv4(63804);
 
 const NAME_BAR: &str = "bar";
-const HOST_BAR: Host = Host::Name(Domain::from_static("bar.local"));
+const HOST_BAR: Domain = Domain::from_static("bar.local");
 const INTERFACE_BAR: SocketAddress = SocketAddress::local_ipv4(63805);
 
 async fn sni_router<S>(

@@ -137,7 +137,6 @@ async fn main() {
 struct DynamicIssuer {
     example_data: Arc<CertifiedKey>,
     second_example_data: Arc<CertifiedKey>,
-    default_data: Arc<CertifiedKey>,
 }
 
 impl DynamicIssuer {
@@ -161,8 +160,6 @@ impl DynamicIssuer {
         Self {
             example_data: example_data.clone(),
             second_example_data,
-            // We reuse example_data as default data also to keep this simple, but in a more realistic setup you probably will never do this
-            default_data: example_data,
         }
     }
 }
@@ -176,18 +173,15 @@ impl ResolvesServerCert for DynamicIssuer {
         let client_hello = ClientHello::rama_from(client_hello);
 
         let key = match client_hello.ext_server_name() {
-            Some(host) => match host {
-                rama::net::address::Host::Name(domain) => {
-                    if domain == &Domain::from_static("example") {
-                        self.example_data.clone()
-                    } else if domain == &Domain::from_static("second.example") {
-                        self.second_example_data.clone()
-                    } else {
-                        self.example_data.clone()
-                    }
+            Some(domain) => {
+                if domain == &Domain::from_static("example") {
+                    self.example_data.clone()
+                } else if domain == &Domain::from_static("second.example") {
+                    self.second_example_data.clone()
+                } else {
+                    self.example_data.clone()
                 }
-                rama::net::address::Host::Address(_ip_addr) => self.default_data.clone(),
-            },
+            }
             None => self.example_data.clone(),
         };
         Some(key)
