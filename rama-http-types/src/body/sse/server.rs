@@ -6,6 +6,7 @@ use pin_project_lite::pin_project;
 use rama_core::bytes::Bytes;
 use rama_error::{BoxError, ErrorContext, OpaqueError};
 use rama_utils::macros::generate_set_and_with;
+use smol_str::SmolStr;
 use std::{
     pin::Pin,
     task::{Context, Poll, ready},
@@ -96,7 +97,7 @@ impl<T: EventDataWrite> KeepAlive<T> {
         /// Customize the text of the keep-alive message.
         ///
         /// Default is an empty comment.
-        pub fn text(mut self, text: impl AsRef<str>) -> Result<Self, OpaqueError>
+        pub fn text(mut self, text: impl Into<SmolStr>) -> Result<Self, OpaqueError>
         {
             self.event = Event::default().try_with_comment(text).context("build default event with comment")?;
             Ok(self)

@@ -12,7 +12,7 @@
 //! use rama_core::service::service_fn;
 //! use rama_http::layer::map_response_body::MapResponseBodyLayer;
 //! use rama_core::error::BoxError;
-//! use futures_lite::ready;
+//! use rama_core::futures::ready;
 //!
 //! // A wrapper for a `http_body::Body` that prints the size of data chunks
 //! pin_project_lite::pin_project! {

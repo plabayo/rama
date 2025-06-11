@@ -87,7 +87,7 @@
 //! ```
 
 use crate::{Body, HeaderValue, Request, Response, StatusCode};
-use futures_lite::future::FutureExt;
+use rama_core::futures::FutureExt;
 use rama_core::{Context, Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;

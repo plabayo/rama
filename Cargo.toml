@@ -69,7 +69,7 @@ rust-version = "1.85.0"
 [workspace.dependencies]
 arc-swap = "1.7"
 async-compression = "0.4"
-async-stream = { version = "0.3", default-features = false }
+async-stream = { version = "0.3" }
 atomic-waker = "1.1"
 aws-lc-sys = { version = "0.29", features = ["bindgen"] }
 base64 = "0.22"
@@ -93,9 +93,7 @@ fnv = "1.0"
 futures = "0.3"
 futures-channel = "0.3"
 futures-core = "0.3"
-futures-lite = "2.6"
 futures-sink = "0.3"
-futures-util = "0.3"
 h2 = "0.4"
 hex = "0.4"
 hickory-resolver = { version = "0.25", default-features = false, features = [
@@ -354,14 +352,12 @@ rama-unix = { workspace = true }
 rustversion = { workspace = true }
 
 [dev-dependencies]
-async-stream = { workspace = true }
 bytes = { workspace = true }
 derive_more = { workspace = true, features = ["as_ref"] }
 divan = { workspace = true }
 escargot = { workspace = true }
 futures = { workspace = true }
 futures-channel = { workspace = true }
-futures-util = { workspace = true }
 h2-support = { path = "rama-http-core/tests/h2-support" }
 http = { workspace = true }
 itertools = { workspace = true }
@@ -521,6 +517,10 @@ required-features = ["http-full"]
 
 [[example]]
 name = "http_sse_json"
+required-features = ["http-full"]
+
+[[example]]
+name = "http_sse_datastar_hello"
 required-features = ["http-full"]
 
 [[example]]

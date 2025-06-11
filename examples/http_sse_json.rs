@@ -18,7 +18,7 @@
 //!
 //! # Expected output
 //!
-//! The server will start and listen on `:62028`. You can use `curl` to interact with the service:
+//! The server will start and listen on `:62028`. You open the url in your browser to easily interact:
 //!
 //! ```sh
 //! open http://127.0.0.1:62028
@@ -30,6 +30,7 @@
 use rama::{
     Layer,
     error::{ErrorContext, OpaqueError},
+    futures::async_stream::stream,
     http::{
         headers::LastEventId,
         layer::trace::TraceLayer,
@@ -49,7 +50,6 @@ use rama::{
     tcp::server::TcpListener,
 };
 
-use async_stream::stream;
 use serde::Serialize;
 use std::{sync::Arc, time::Duration};
 use tracing::level_filters::LevelFilter;

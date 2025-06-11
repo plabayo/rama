@@ -1,5 +1,5 @@
-use futures::ready;
 use rama_core::bytes::{BufMut, Bytes};
+use rama_core::futures::ready;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
@@ -19,7 +19,7 @@ pub async fn concat(
 
 pub async fn yield_once() {
     let mut yielded = false;
-    futures::future::poll_fn(move |cx| {
+    rama_core::futures::future::poll_fn(move |cx| {
         if yielded {
             Poll::Ready(())
         } else {

@@ -31,6 +31,8 @@ pub mod body;
 #[doc(inline)]
 pub use body::{Body, Bytes, Csv, Form, Json, Text};
 
+pub mod datastar;
+
 mod option;
 #[doc(inline)]
 pub use option::{OptionalFromRequest, OptionalFromRequestContextRefPair};

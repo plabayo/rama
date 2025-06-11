@@ -21,6 +21,18 @@ mod html;
 #[doc(inline)]
 pub use html::Html;
 
+mod script;
+#[doc(inline)]
+pub use script::Script;
+
+mod datastar;
+#[doc(inline)]
+pub use datastar::DatastarScript;
+
+mod css;
+#[doc(inline)]
+pub use css::Css;
+
 mod json;
 #[doc(inline)]
 pub use json::Json;

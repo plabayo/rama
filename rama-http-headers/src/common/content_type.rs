@@ -78,6 +78,18 @@ impl ContentType {
         ContentType(mime::TEXT_HTML_UTF_8)
     }
 
+    /// A constructor to easily create a `Content-Type: text/css` header.
+    #[inline]
+    pub fn css() -> ContentType {
+        ContentType(mime::TEXT_CSS)
+    }
+
+    /// A constructor to easily create a `text/css; charset=utf-8` header.
+    #[inline]
+    pub fn css_utf8() -> ContentType {
+        ContentType(mime::TEXT_CSS_UTF_8)
+    }
+
     /// A constructor to easily create a `Content-Type: text/xml` header.
     #[inline]
     pub fn xml() -> ContentType {
@@ -117,6 +129,18 @@ impl ContentType {
     #[inline]
     pub fn octet_stream() -> ContentType {
         ContentType(mime::APPLICATION_OCTET_STREAM)
+    }
+
+    /// A constructor to easily create a `Content-Type: application/javascript` header.
+    #[inline]
+    pub fn javascript() -> ContentType {
+        ContentType(mime::APPLICATION_JAVASCRIPT)
+    }
+
+    /// A constructor to easily create a `Content-Type: application/javascript; charset=utf-8` header.
+    #[inline]
+    pub fn javascript_utf8() -> ContentType {
+        ContentType(mime::APPLICATION_JAVASCRIPT_UTF_8)
     }
 
     /// Reference to the internal [`Mime`].

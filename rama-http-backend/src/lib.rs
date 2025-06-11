@@ -21,7 +21,7 @@ pub mod server;
 #[cfg(test)]
 mod tests {
     use super::{client::HttpConnector, server::HttpServer};
-    use futures::future::join;
+    use rama_core::futures::future::join;
     use rama_core::{Context, Service, rt::Executor, service::service_fn};
     use rama_http_types::{Body, Request, Response, Version};
     use rama_net::test_utils::client::MockConnectorService;

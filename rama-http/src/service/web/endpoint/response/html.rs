@@ -21,6 +21,8 @@ impl<T: Clone> Clone for Html<T> {
     }
 }
 
+impl<T: Copy> Copy for Html<T> {}
+
 impl_deref!(Html);
 
 impl<T> IntoResponse for Html<T>

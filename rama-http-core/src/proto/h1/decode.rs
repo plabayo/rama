@@ -739,7 +739,7 @@ mod tests {
     use std::io::Write;
     use super::Decoder;
     use super::ChunkedState;
-    use futures::{Async, Poll};
+    use ama_core::futures::{Async, Poll};
     use rama_core::bytes::{BytesMut, Bytes};
     use crate::mock::AsyncIo;
     */

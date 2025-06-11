@@ -75,7 +75,7 @@ mod tests {
     use std::convert::Infallible;
 
     use super::*;
-    use futures::prelude::*;
+    use rama_core::futures::prelude::*;
 
     #[tokio::test]
     async fn valid_streams() {

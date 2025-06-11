@@ -32,10 +32,10 @@
 mod unix_example {
     use rama::{
         bytes::Bytes,
+        futures::{FutureExt, SinkExt, StreamExt},
         unix::{UnixDatagram, UnixDatagramFramed, UnixSocketAddress, codec::BytesCodec},
     };
 
-    use futures::{FutureExt, SinkExt, StreamExt};
     use std::{
         io, process,
         time::{Duration, SystemTime, UNIX_EPOCH},

@@ -4,8 +4,8 @@ use rama_http_core::h2::SendError;
 use rama_http_core::h2::frame::{self, Frame};
 use rama_http_core::h2::proto::Error;
 
-use futures::future::poll_fn;
-use futures::{Stream, StreamExt, ready};
+use rama_core::futures::future::poll_fn;
+use rama_core::futures::{Stream, StreamExt, ready};
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 
@@ -328,7 +328,7 @@ impl AsyncWrite for Handle {
 impl Drop for Handle {
     fn drop(&mut self) {
         // Shutdown *shouldn't* need a real Waker...
-        let waker = futures::task::noop_waker();
+        let waker = rama_core::futures::task::noop_waker();
         let mut cx = Context::from_waker(&waker);
         assert!(self.codec.shutdown(&mut cx).is_ready());
 

@@ -6,6 +6,7 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
+use futures::FutureExt;
 use rama::Context;
 use rama::http::StatusCode;
 use rama::http::core::server;
@@ -18,10 +19,6 @@ use tokio::net::{TcpListener, TcpStream};
 use rama::http::{Request, Response, Version};
 use rama::service::service_fn;
 
-#[allow(unused_imports)]
-pub(crate) use futures_util::{
-    FutureExt as _, StreamExt as _, TryFutureExt as _, TryStreamExt as _, future,
-};
 pub(crate) use rama::http::HeaderMap;
 pub(crate) use std::net::SocketAddr;
 
@@ -491,10 +488,10 @@ async fn async_test(cfg: __TestConfig) {
         for (creq, cres) in cfg.client_msgs {
             client_futures.push(make_request(creq, cres));
         }
-        Box::pin(future::join_all(client_futures).map(|_| ()))
+        Box::pin(rama::futures::future::join_all(client_futures).map(|_| ()))
     } else {
         let mut client_futures: Pin<Box<dyn Future<Output = ()> + Send>> =
-            Box::pin(future::ready(()));
+            Box::pin(std::future::ready(()));
         for (creq, cres) in cfg.client_msgs {
             let mk_request = make_request.clone();
             client_futures = Box::pin(client_futures.then(move |_| mk_request(creq, cres)));

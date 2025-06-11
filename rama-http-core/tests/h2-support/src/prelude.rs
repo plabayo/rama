@@ -32,7 +32,7 @@ pub use tokio_test::io as mock_io;
 pub use {futures, http, rama_core::bytes, tokio::io as tokio_io, tracing, tracing_subscriber};
 
 // Re-export primary future types
-pub use futures::{Future, Sink, Stream};
+pub use rama_core::futures::{Future, Sink, Stream};
 
 // And our Future extensions
 pub use super::future_ext::{TestFuture, join, join_all, join3, join4, select, try_join};
@@ -56,9 +56,9 @@ pub static MAGIC_PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 // ===== Everything under here shouldn't be used =====
 // TODO: work on deleting this code
 
-use futures::future;
-use futures::future::Either::*;
-pub use futures::future::poll_fn;
+use rama_core::futures::future;
+use rama_core::futures::future::Either::*;
+pub use rama_core::futures::future::poll_fn;
 use std::pin::Pin;
 
 pub trait MockH2 {

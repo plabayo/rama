@@ -11,8 +11,8 @@ use rama_core::{
 };
 
 use async_compression::tokio::bufread::{BrotliEncoder, GzipEncoder, ZlibEncoder, ZstdEncoder};
-use futures_lite::ready;
 use pin_project_lite::pin_project;
+use rama_core::futures::ready;
 use std::{
     io,
     marker::PhantomData,

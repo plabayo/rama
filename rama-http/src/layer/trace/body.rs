@@ -1,8 +1,8 @@
 use super::{DefaultOnBodyChunk, DefaultOnEos, DefaultOnFailure, OnBodyChunk, OnEos, OnFailure};
 use crate::dep::http_body::{Body, Frame};
 use crate::layer::classify::ClassifyEos;
-use futures_lite::ready;
 use pin_project_lite::pin_project;
+use rama_core::futures::ready;
 use std::{
     fmt,
     pin::Pin,

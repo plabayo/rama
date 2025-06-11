@@ -18,8 +18,8 @@ use rama::http::{Method, Request, StatusCode, Uri, Version};
 use super::support;
 
 use futures_channel::oneshot;
-use futures_util::future::{self, FutureExt, TryFuture, TryFutureExt};
-use rama_core::bytes::Bytes;
+use rama::bytes::Bytes;
+use rama::futures::future::{self, FutureExt, TryFuture, TryFutureExt};
 use tokio::net::TcpStream;
 
 fn s(buf: &[u8]) -> &str {
@@ -424,7 +424,7 @@ macro_rules! __client_req_prop {
     }};
 
     ($req_builder:ident, $body:ident, $addr:ident, body_stream: $body_e:expr) => {{
-        $body = BodyExt::boxed(StreamBody::new(futures_util::TryStreamExt::map_ok(
+        $body = BodyExt::boxed(StreamBody::new(rama::futures::TryStreamExt::map_ok(
             $body_e,
             Frame::data,
         )));
@@ -434,7 +434,7 @@ macro_rules! __client_req_prop {
         use support::trailers::StreamBodyWithTrailers;
         let (body, trailers) = $body_e;
         $body = BodyExt::boxed(StreamBodyWithTrailers::with_trailers(
-            futures_util::TryStreamExt::map_ok(body, Frame::data),
+            rama::futures::TryStreamExt::map_ok(body, Frame::data),
             trailers,
         ));
     }};
@@ -687,7 +687,7 @@ test! {
                 "trailer" => "chunky-trailer",
             },
             body_stream_with_trailers: (
-                (futures_util::stream::once(async { Ok::<_, Infallible>(Bytes::from("hello"))})),
+                (rama::futures::stream::once(async { Ok::<_, Infallible>(Bytes::from("hello"))})),
                 HeaderMap::from_iter(vec![(
                     HeaderName::from_static("chunky-trailer"),
                     HeaderValue::from_static("header data")
@@ -809,7 +809,7 @@ test! {
             },
             // use a "stream" (where Body doesn't know length) with a
             // content-length header
-            body_stream: (futures_util::stream::once(async {
+            body_stream: (rama::futures::stream::once(async {
                 Ok::<_, Infallible>(Bytes::from("hello"))
             })),
         },
@@ -839,7 +839,7 @@ test! {
             //
             // But since the headers cannot tell us, and the method typically
             // doesn't have a body, the body must be ignored.
-            body_stream: (futures_util::stream::once(async {
+            body_stream: (rama::futures::stream::once(async {
                 Ok::<_, Infallible>(Bytes::from("hello"))
             })),
         },
@@ -872,7 +872,7 @@ test! {
             // but we're wrapping a non-empty stream.
             //
             // But since the headers cannot tell us, the body must be ignored.
-            body_stream: (futures_util::stream::once(async {
+            body_stream: (rama::futures::stream::once(async {
                 Ok::<_, Infallible>(Bytes::from("hello"))
             })),
         },
@@ -960,7 +960,7 @@ test! {
             method: POST,
             url: "http://{addr}/chunks",
             // use a stream to "hide" that the full amount is known
-            body_stream: (futures_util::stream::once(async {
+            body_stream: (rama::futures::stream::once(async {
                 Ok::<_, Infallible>(Bytes::from("foo bar baz"))
             })),
         },
@@ -1489,8 +1489,8 @@ mod conn {
     use std::time::Duration;
 
     use futures_channel::{mpsc, oneshot};
-    use futures_util::future::{self, FutureExt, TryFutureExt, poll_fn};
-    use rama_core::bytes::{Buf, Bytes};
+    use rama::bytes::{Buf, Bytes};
+    use rama::futures::future::{self, FutureExt, TryFutureExt, poll_fn};
     use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _, ReadBuf};
     use tokio::net::{TcpListener as TkTcpListener, TcpStream};
 
@@ -2216,7 +2216,7 @@ mod conn {
 
     #[tokio::test]
     async fn http2_detect_conn_eof() {
-        use futures_util::future;
+        use rama::futures::future;
 
         let (listener, addr) = setup_tk_test_server().await;
 
@@ -2300,7 +2300,7 @@ mod conn {
     async fn http2_connect_detect_close() {
         // Regression test for failure to fully close connections when using HTTP2 CONNECT
         // We send 2 requests and then drop them. We should see the connection gracefully close.
-        use futures_util::future;
+        use rama::futures::future;
         let (listener, addr) = setup_tk_test_server().await;
         let (tx, rxx) = oneshot::channel::<()>();
 

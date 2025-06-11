@@ -5,9 +5,9 @@ use crate::dep::{
     http_body_util::{self, BodyExt},
 };
 use futures_core::TryStream;
-use futures_lite::stream::Stream;
 use pin_project_lite::pin_project;
 use rama_core::bytes::Bytes;
+use rama_core::futures::stream::Stream;
 use rama_error::{BoxError, OpaqueError};
 use sse::{EventDataRead, EventStream};
 use std::pin::Pin;
@@ -201,7 +201,7 @@ impl Stream for BodyDataStream {
     #[inline]
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         loop {
-            match futures_lite::ready!(Pin::new(&mut self.inner).poll_frame(cx)?) {
+            match rama_core::futures::ready!(Pin::new(&mut self.inner).poll_frame(cx)?) {
                 Some(frame) => match frame.into_data() {
                     Ok(data) => return Poll::Ready(Some(Ok(data))),
                     Err(_frame) => {}
@@ -254,7 +254,7 @@ where
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
         let stream = self.project().stream.get_pin_mut();
-        match futures_lite::ready!(stream.try_poll_next(cx)) {
+        match rama_core::futures::ready!(stream.try_poll_next(cx)) {
             Some(Ok(chunk)) => Poll::Ready(Some(Ok(Frame::data(chunk.into())))),
             Some(Err(err)) => Poll::Ready(Some(Err(err.into()))),
             None => Poll::Ready(None),

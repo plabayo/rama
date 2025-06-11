@@ -14,8 +14,8 @@ use std::thread;
 use std::time::Duration;
 
 use futures_channel::oneshot;
-use futures_util::future::{self, Either, FutureExt};
 use rama::error::{BoxError, OpaqueError};
+use rama::futures::future::{self, Either, FutureExt};
 use rama::http::core::h2::client::SendRequest;
 use rama::http::core::h2::{RecvStream, SendStream};
 use rama::http::core::service::RamaHttpService;
@@ -110,7 +110,7 @@ mod response_body_lengths {
                 b
             }
             Bd::Unknown(b) => {
-                let body = futures_util::stream::once(async move { Ok(b.into()) });
+                let body = rama::futures::stream::once(async move { Ok(b.into()) });
                 reply.body_stream(body);
                 b
             }
@@ -2033,8 +2033,8 @@ async fn h2_connect() {
 
 #[tokio::test]
 async fn h2_connect_multiplex() {
-    use futures_util::StreamExt;
-    use futures_util::stream::FuturesUnordered;
+    use rama::futures::StreamExt;
+    use rama::futures::stream::FuturesUnordered;
 
     let (listener, addr) = setup_tcp_listener();
     let conn = connect_async(addr).await;
@@ -2409,14 +2409,14 @@ async fn graceful_shutdown_before_first_request_no_block() {
 
 #[test]
 fn streaming_body() {
-    use futures_util::StreamExt;
+    use rama::futures::StreamExt;
 
     // disable keep-alive so we can use read_to_end
     let server = serve_opts().keep_alive(false).serve();
 
     static S: &[&[u8]] = &[&[b'x'; 1_000] as &[u8]; 100] as _;
-    let b =
-        futures_util::stream::iter(S.iter()).map(|&s| Ok::<_, BoxError>(Bytes::copy_from_slice(s)));
+    let b = rama::futures::stream::iter(S.iter())
+        .map(|&s| Ok::<_, BoxError>(Bytes::copy_from_slice(s)));
     server.reply().body_stream(b);
 
     let mut tcp = connect(server.addr());
@@ -2504,7 +2504,7 @@ fn http2_body_user_error_sends_reset_reason() {
     let server = serve_opts().http2().serve();
     let addr_str = format!("http://{}", server.addr());
 
-    let b = futures_util::stream::once(future::err::<Bytes, BoxError>(Box::new(
+    let b = rama::futures::stream::once(future::err::<Bytes, BoxError>(Box::new(
         rama::http::core::h2::Error::from(rama::http::core::h2::Reason::INADEQUATE_SECURITY),
     )));
     server.reply().body_stream(b);
@@ -2818,7 +2818,7 @@ async fn http2_keep_alive_count_server_pings() {
 
 #[test]
 fn http1_trailer_send_fields() {
-    let body = futures_util::stream::once(async move { Ok("hello".into()) });
+    let body = rama::futures::stream::once(async move { Ok("hello".into()) });
     let mut headers = HeaderMap::new();
     headers.insert("chunky-trailer", "header data".parse().unwrap());
     // Invalid trailer field that should not be sent
@@ -2863,7 +2863,7 @@ fn http1_trailer_send_fields() {
 
 #[test]
 fn http1_trailer_fields_not_allowed() {
-    let body = futures_util::stream::once(async move { Ok("hello".into()) });
+    let body = rama::futures::stream::once(async move { Ok("hello".into()) });
     let mut headers = HeaderMap::new();
     headers.insert("chunky-trailer", "header data".parse().unwrap());
 
@@ -3034,9 +3034,9 @@ impl ReplyBuilder<'_> {
 
     fn body_stream<S>(self, stream: S)
     where
-        S: futures_util::Stream<Item = Result<Bytes, BoxError>> + Send + Sync + 'static,
+        S: rama::futures::Stream<Item = Result<Bytes, BoxError>> + Send + Sync + 'static,
     {
-        use futures_util::TryStreamExt;
+        use rama::futures::TryStreamExt;
         use rama::http::core::body::Frame;
         let body = BodyExt::boxed(StreamBody::new(stream.map_ok(Frame::data)));
         self.tx.lock().unwrap().send(Reply::Body(body)).unwrap();
@@ -3044,9 +3044,9 @@ impl ReplyBuilder<'_> {
 
     fn body_stream_with_trailers<S>(self, stream: S, trailers: HeaderMap)
     where
-        S: futures_util::Stream<Item = Result<Bytes, BoxError>> + Send + Sync + 'static,
+        S: rama::futures::Stream<Item = Result<Bytes, BoxError>> + Send + Sync + 'static,
     {
-        use futures_util::TryStreamExt;
+        use rama::futures::TryStreamExt;
         use rama::http::core::body::Frame;
         use support::trailers::StreamBodyWithTrailers;
         let mut stream_body = StreamBodyWithTrailers::new(stream.map_ok(Frame::data));

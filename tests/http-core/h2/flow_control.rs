@@ -1,6 +1,6 @@
-use futures::{StreamExt, TryStreamExt};
 use h2_support::prelude::*;
 use h2_support::util::yield_once;
+use rama_core::futures::{StreamExt, TryStreamExt};
 
 // In this case, the stream & connection both have capacity, but capacity is not
 // explicitly requested.
@@ -845,7 +845,7 @@ async fn recv_settings_keeps_assigned_capacity() {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
 
-    let (sent_settings, sent_settings_rx) = futures::channel::oneshot::channel();
+    let (sent_settings, sent_settings_rx) = rama_core::futures::channel::oneshot::channel();
 
     let srv = async move {
         let settings = srv.assert_client_handshake().await;
@@ -940,7 +940,7 @@ async fn recv_no_init_window_then_receive_some_init_window() {
 
 #[tokio::test]
 async fn settings_lowered_capacity_returns_capacity_to_connection() {
-    use futures::channel::oneshot;
+    use rama_core::futures::channel::oneshot;
 
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
@@ -1901,7 +1901,7 @@ async fn window_size_does_not_underflow() {
 
 #[tokio::test]
 async fn reclaim_reserved_capacity() {
-    use futures::channel::oneshot;
+    use rama_core::futures::channel::oneshot;
 
     h2_support::trace_init!();
 

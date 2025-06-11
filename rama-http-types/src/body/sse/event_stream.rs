@@ -125,7 +125,7 @@ impl<T: EventDataRead> EventBuilder<T> {
     fn try_dispatch(&mut self) -> Result<Event<T>, OpaqueError> {
         self.is_complete = false;
         let mut event = std::mem::take(&mut self.event);
-        if let Some(data) = self.reader.data()? {
+        if let Some(data) = self.reader.data(event.event.as_deref())? {
             event.set_data(data);
         }
         Ok(event)
@@ -176,14 +176,14 @@ impl<S, T: EventDataRead> EventStream<S, T> {
 
     /// Set the last event ID of the stream. Useful for initializing the stream with a previous
     /// last event ID
-    pub fn try_set_last_event_id(&mut self, id: impl AsRef<str>) -> Result<(), OpaqueError> {
-        let id = id.as_ref();
+    pub fn try_set_last_event_id(&mut self, id: impl Into<SmolStr>) -> Result<(), OpaqueError> {
+        let id = id.into();
         if id.contains(['\n', '\r', '\0']) {
             return Err(OpaqueError::from_std(EventBuildError::invalid_characters(
                 id,
             )));
         }
-        self.last_event_id = Some(SmolStr::new(id));
+        self.last_event_id = Some(id);
         Ok(())
     }
 
@@ -292,7 +292,7 @@ mod tests {
     use crate::{BodyExtractExt, sse::JsonEventData};
 
     use super::*;
-    use futures::prelude::*;
+    use rama_core::futures::prelude::*;
     use serde::{Deserialize, Serialize};
     use serde_json::json;
     use std::convert::Infallible;
