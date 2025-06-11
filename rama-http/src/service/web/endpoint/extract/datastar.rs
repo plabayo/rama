@@ -1,4 +1,4 @@
-//! [🚀 data-\*] support extractor for rama.
+//! [🚀 data-\*](https://data-star.dev/) support extractor for rama.
 
 use rama_http_types::{BodyExtractExt, Method, Request, Response, StatusCode};
 use serde::{Deserialize, de::DeserializeOwned};
