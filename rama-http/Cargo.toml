@@ -37,6 +37,7 @@ const_format = { workspace = true }
 csv = { workspace = true }
 http-range-header = { workspace = true }
 httpdate = { workspace = true }
+include_dir = { workspace = true }
 iri-string = { workspace = true }
 matchit = { workspace = true }
 mime = { workspace = true }

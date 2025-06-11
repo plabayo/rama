@@ -216,6 +216,7 @@ walkdir = "2.5"
 want = "0.3"
 webpki-roots = "1.0"
 zstd = "0.13"
+include_dir = { version = "0.7", features = ["metadata"] }
 
 [workspace.lints.rust]
 unreachable_pub = "deny"

@@ -6,6 +6,8 @@ use crate::headers::{encoding::Encoding, specifier::QualityValue};
 use crate::{HeaderValue, Method, Request, Uri, header};
 use chrono::{DateTime, Local};
 use http_range_header::RangeUnsatisfiableError;
+use include_dir::Dir;
+use std::io::Cursor;
 use std::{
     ffi::OsStr,
     fmt,
@@ -15,6 +17,8 @@ use std::{
     path::{Path, PathBuf},
     time::SystemTime,
 };
+use tokio::io::AsyncRead;
+use tokio::io::AsyncReadExt;
 use tokio::{fs::File, io::AsyncSeekExt};
 
 pub(super) enum OpenFileOutput {
@@ -39,6 +43,85 @@ pub(super) struct FileOpened {
 pub(super) enum FileRequestExtent {
     Full(File, Metadata),
     Head(Metadata),
+    Embedded(Vec<u8>),
+}
+
+impl FileRequestExtent {
+    pub(super) fn reader(self) -> Option<Box<dyn AsyncRead + Send + Sync + Unpin>> {
+        match self {
+            Self::Head(_) => None,
+            Self::Full(file, _) => Some(Box::new(file)),
+            Self::Embedded(content) => Some(Box::new(Cursor::new(content))),
+        }
+    }
+
+    pub(super) fn range_reader(
+        self,
+        range_size: u64,
+    ) -> Option<Box<dyn AsyncRead + Send + Sync + Unpin>> {
+        match self {
+            Self::Head(_) => None,
+            Self::Full(file, _) => Some(Box::new(file.take(range_size))),
+            Self::Embedded(content) => Some(Box::new(Cursor::new(content).take(range_size))),
+        }
+    }
+
+    pub(super) fn get_size(&self) -> u64 {
+        match self {
+            FileRequestExtent::Head(meta) | FileRequestExtent::Full(_, meta) => meta.len(),
+            FileRequestExtent::Embedded(content) => content.len() as u64,
+        }
+    }
+}
+
+pub(super) fn open_file_embedded(
+    base: &Dir,
+    mut path_to_file: PathBuf,
+    req: Request,
+    negotiated_encodings: Vec<QualityValue<Encoding>>,
+    range_header: Option<String>,
+    buf_chunk_size: usize,
+) -> io::Result<OpenFileOutput> {
+    let mime = mime_guess::from_path(&path_to_file)
+        .first_raw()
+        .map(HeaderValue::from_static)
+        .unwrap_or_else(|| HeaderValue::from_str(mime::APPLICATION_OCTET_STREAM.as_ref()).unwrap());
+
+    let maybe_encoding = preferred_encoding(&mut path_to_file, &negotiated_encodings);
+
+    let file = base.get_file(path_to_file).unwrap();
+
+    let last_modified = file
+        .metadata()
+        .map(|metadata| LastModified::from(metadata.modified()));
+
+    let if_unmodified_since = req
+        .headers()
+        .get(header::IF_UNMODIFIED_SINCE)
+        .and_then(IfUnmodifiedSince::from_header_value);
+
+    let if_modified_since = req
+        .headers()
+        .get(header::IF_MODIFIED_SINCE)
+        .and_then(IfModifiedSince::from_header_value);
+
+    if let Some(output) = check_modified_headers(
+        last_modified.as_ref(),
+        if_unmodified_since,
+        if_modified_since,
+    ) {
+        return Ok(output);
+    }
+
+    let maybe_range = try_parse_range(range_header.as_deref(), file.contents().len() as u64);
+    Ok(OpenFileOutput::FileOpened(Box::new(FileOpened {
+        extent: FileRequestExtent::Embedded(file.contents().to_vec()),
+        chunk_size: buf_chunk_size,
+        mime_header_value: mime,
+        maybe_encoding,
+        maybe_range,
+        last_modified,
+    })))
 }
 
 pub(super) async fn open_file(
