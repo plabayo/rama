@@ -44,23 +44,3 @@ pub mod tls;
 pub mod fingerprint;
 
 pub mod socket;
-
-pub mod dep {
-    //! Dependencies for rama stream modules.
-    //!
-    //! Exported for your convenience.
-
-    pub mod cidr {
-        //! Re-export of the [`cidr`] crate.
-        //!
-        //! This library provides types to represent an IP network ([`Cidr`]) or
-        //! an IP host withing a network ([`Inet`])
-        //!
-        //! [`cidr`]: https://docs.rs/cidr
-        //! [`Cidr`]: https://docs.rs/cidr/latest/cidr/trait.Cidr.html
-        //! [`Inet`]: https://docs.rs/cidr/latest/cidr/trait.Inet.html
-
-        #[doc(inline)]
-        pub use cidr::*;
-    }
-}
