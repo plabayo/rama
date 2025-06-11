@@ -109,10 +109,15 @@ impl<R: EventDataLineReader> EventDataLineReader for MergeSignalsReader<R> {
     type Data = MergeSignals<R::Data>;
 
     fn read_line(&mut self, line: &str) -> Result<(), OpaqueError> {
+        let line = line.trim();
+        if line.is_empty() {
+            return Ok(());
+        };
+
         let (keyword, value) = line
-            .trim()
             .split_once(' ')
-            .context("invalid merge signals line: missing keyword separator")?;
+            // in case of empty value
+            .unwrap_or((line, ""));
 
         if keyword.eq_ignore_ascii_case("signals") {
             self.signals.read_line(value)?;
@@ -137,7 +142,7 @@ impl<R: EventDataLineReader> EventDataLineReader for MergeSignalsReader<R> {
             None => return Ok(None),
         };
 
-        if event
+        if !event
             .and_then(|e| {
                 e.parse::<EventType>()
                     .ok()

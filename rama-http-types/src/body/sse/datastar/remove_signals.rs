@@ -99,13 +99,22 @@ impl EventDataLineReader for RemoveSignalsReader {
     type Data = RemoveSignals;
 
     fn read_line(&mut self, line: &str) -> Result<(), OpaqueError> {
+        let line = line.trim();
+        if line.is_empty() {
+            return Ok(());
+        };
+
         let (keyword, value) = line
-            .trim()
             .split_once(' ')
-            .context("invalid remove signals line: missing keyword separator")?;
+            // in case of empty value
+            .unwrap_or((line, ""));
 
         if keyword.eq_ignore_ascii_case("paths") {
-            self.0.paths.push(value.into())
+            if value.is_empty() {
+                tracing::trace!("ignore paths property with empty value");
+            } else {
+                self.0.paths.push(value.into())
+            }
         } else {
             tracing::debug!(
                 %keyword,
@@ -129,7 +138,7 @@ impl EventDataLineReader for RemoveSignalsReader {
             },
         );
 
-        if event
+        if !event
             .and_then(|e| {
                 e.parse::<EventType>()
                     .ok()

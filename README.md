@@ -320,6 +320,7 @@ Rama rust docs:
 
 - SSE support: <https://ramaproxy.org/docs/rama/http/sse/datastar/index.html>
 - Extractor support (`ReadSignals`): <https://ramaproxy.org/docs/rama/http/service/web/extract/datastar/index.html>
+- Embedded JS Script: <https://ramaproxy.org/docs/rama/http/service/web/response/struct.DatastarScript.html>
 
 ### Shuttle
 

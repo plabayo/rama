@@ -97,17 +97,26 @@ impl EventDataLineReader for RemoveFragmentsReader {
     type Data = RemoveFragments;
 
     fn read_line(&mut self, line: &str) -> Result<(), OpaqueError> {
+        let line = line.trim();
+        if line.is_empty() {
+            return Ok(());
+        };
+
         let remove_fragments = self
             .0
             .get_or_insert_with(|| RemoveFragments::new(SmolStr::default()));
 
         let (keyword, value) = line
-            .trim()
             .split_once(' ')
-            .context("invalid remove fragment line: missing keyword separator")?;
+            // in case of empty value
+            .unwrap_or((line, ""));
 
         if keyword.eq_ignore_ascii_case("selector") {
-            remove_fragments.selector = value.into();
+            if value.is_empty() {
+                tracing::trace!("ignore selector property with empty value");
+            } else {
+                remove_fragments.selector = value.into();
+            }
         } else if keyword.eq_ignore_ascii_case("useViewTransition") {
             remove_fragments.use_view_transition = value
                 .parse()
@@ -129,7 +138,7 @@ impl EventDataLineReader for RemoveFragmentsReader {
             None => return Ok(None),
         };
 
-        if event
+        if !event
             .and_then(|e| {
                 e.parse::<EventType>()
                     .ok()

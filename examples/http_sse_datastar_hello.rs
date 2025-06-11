@@ -228,7 +228,7 @@ pub mod controller {
     }
 
     impl Controller {
-        const MESSAGE: &str = "Hello, datastar!";
+        const MESSAGE: &str = "Hello, Datastar!";
 
         pub fn new(guard: ShutdownGuard) -> Self {
             let (cmd_tx, cmd_rx) = mpsc::channel(1024);
@@ -627,9 +627,9 @@ pub mod controller {
         Message::Event(
             MergeFragments::new(format!(
                 r##"
-                <div id='message'>{text}</div>
-                <div id="progress-bar" style="width: {progress}%"></div>
-            "##,
+<div id='message'>{text}</div>
+<div id="progress-bar" style="width: {progress}%"></div>
+"##,
             ))
             .into(),
         )
@@ -639,8 +639,8 @@ pub mod controller {
         Message::Event(
             MergeFragments::new(
                 r##"
-                <div id="sse-status">🔴</div>
-            "##,
+<div id="sse-status">🔴</div>
+"##,
             )
             .into(),
         )
@@ -650,15 +650,14 @@ pub mod controller {
         Message::Event(
             MergeFragments::new(format!(
                 r##"
-                <div id="sse-status">
-                        <span
-                            class="status-ack"
-                            data-elapsed="{elapsed}"
-                            data-on-load__delay.10s="if (el.dataset.elapsed == {elapsed}) {{ el.textContent = '🔴' }}"
-                        >🟢</span>
-                    </span>
-                </div>
-            "##,
+<div id="sse-status">
+    <span
+        class="status-ack"
+        data-elapsed="{elapsed}"
+        data-on-load__delay.10s="if (el.dataset.elapsed == {elapsed}) {{ el.textContent = '🔴' }}"
+    >🟢</span>
+</div>
+"##,
             ))
             .into(),
         )
@@ -668,23 +667,23 @@ pub mod controller {
         Message::Event(
             MergeFragments::new(format!(
                 r##"
-                <div id="server-warning" style="
-                  background-color: #ff4d4f;
-                  color: white;
-                  font-weight: bold;
-                  text-align: center;
-                  padding: 12px;
-                  font-family: sans-serif;
-                  position: fixed;
-                  left: 0;
-                  top: 0;
-                  width: 100%;
-                  z-index: 9999;
-                  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-                " data-on-load__delay.3s="@get('/hello-world')">
-                  ⚠️ {msg}.
-                </div>
-            "##
+<div id="server-warning" style="
+    background-color: #ff4d4f;
+    color: white;
+    font-weight: bold;
+    text-align: center;
+    padding: 12px;
+    font-family: sans-serif;
+    position: fixed;
+    left: 0;
+    top: 0;
+    width: 100%;
+    z-index: 9999;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+" data-on-load__delay.3s="@get('/hello-world')">
+    ⚠️ {msg}.
+</div>
+"##
             ))
             .with_selector("body")
             .with_merge_mode(FragmentMergeMode::Prepend)

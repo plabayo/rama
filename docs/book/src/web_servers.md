@@ -61,6 +61,7 @@ Rama rust docs:
 
 - SSE support: <https://ramaproxy.org/docs/rama/http/sse/datastar/index.html>
 - Extractor support (`ReadSignals`): <https://ramaproxy.org/docs/rama/http/service/web/extract/datastar/index.html>
+- Embedded JS Script: <https://ramaproxy.org/docs/rama/http/service/web/response/struct.DatastarScript.html>
 
 <div class="book-article-image-center">
 <img style="width: 50%" src="img/rama_datastar.jpg" alt="llama cruising through space empowered by the powerfull rama/datastar combo">

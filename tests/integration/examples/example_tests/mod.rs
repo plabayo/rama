@@ -44,6 +44,8 @@ mod http_service_match;
 #[cfg(feature = "http-full")]
 mod http_sse;
 #[cfg(feature = "http-full")]
+mod http_sse_datastar_hello;
+#[cfg(feature = "http-full")]
 mod http_sse_json;
 #[cfg(feature = "http-full")]
 mod http_telemetry;

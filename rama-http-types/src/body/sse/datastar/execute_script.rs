@@ -266,14 +266,19 @@ impl EventDataLineReader for ExecuteScriptReader {
     type Data = ExecuteScript;
 
     fn read_line(&mut self, line: &str) -> Result<(), OpaqueError> {
+        let line = line.trim();
+        if line.is_empty() {
+            return Ok(());
+        };
+
         let execute_script = self
             .0
             .get_or_insert_with(|| ExecuteScript::new(Cow::Owned(Default::default())));
 
         let (keyword, value) = line
-            .trim()
             .split_once(' ')
-            .context("invalid execute script line: missing keyword separator")?;
+            // in case of empty value
+            .unwrap_or((line, ""));
 
         if keyword.eq_ignore_ascii_case("script") {
             let script = execute_script.script.to_mut();
@@ -387,7 +392,7 @@ impl EventDataLineReader for ExecuteScriptReader {
             None => return Ok(None),
         };
 
-        if event
+        if !event
             .and_then(|e| {
                 e.parse::<EventType>()
                     .ok()

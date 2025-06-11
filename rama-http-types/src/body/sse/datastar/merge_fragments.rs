@@ -147,19 +147,32 @@ impl EventDataLineReader for MergeFragmentsReader {
     type Data = MergeFragments;
 
     fn read_line(&mut self, line: &str) -> Result<(), OpaqueError> {
+        let line = line.trim();
+        if line.is_empty() {
+            return Ok(());
+        };
+
         let merge_fragments = self
             .0
             .get_or_insert_with(|| MergeFragments::new(Cow::Owned(Default::default())));
 
         let (keyword, value) = line
-            .trim()
             .split_once(' ')
-            .context("invalid merge fragment line: missing keyword separator")?;
+            // in case of empty value
+            .unwrap_or((line, ""));
 
         if keyword.eq_ignore_ascii_case("selector") {
-            merge_fragments.selector = Some(value.into());
+            if value.is_empty() {
+                tracing::trace!("ignore selector property with empty value");
+            } else {
+                merge_fragments.selector = Some(value.into());
+            }
         } else if keyword.eq_ignore_ascii_case("mergeMode") {
-            merge_fragments.merge_mode = value.into();
+            if value.is_empty() {
+                tracing::trace!("ignore mergeMode property with empty value");
+            } else {
+                merge_fragments.merge_mode = value.into();
+            }
         } else if keyword.eq_ignore_ascii_case("useViewTransition") {
             merge_fragments.use_view_transition = value
                 .parse()
@@ -185,7 +198,7 @@ impl EventDataLineReader for MergeFragmentsReader {
             None => return Ok(None),
         };
 
-        if event
+        if !event
             .and_then(|e| {
                 e.parse::<EventType>()
                     .ok()

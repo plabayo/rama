@@ -55,6 +55,8 @@ impl<T: PartialEq> PartialEq for Event<T> {
     }
 }
 
+impl<T: Eq> Eq for Event<T> {}
+
 #[derive(Debug)]
 pub struct EventBuildError {
     kind: EventBuildErrorKind,

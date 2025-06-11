@@ -25,6 +25,25 @@
 //!
 //! These examples make use of Rama's typed header support, such as [`LastEventId`](https://github.com/plabayo/rama/blob/main/rama-http-headers/src/common/last_event_id.rs), which allows easy extraction of reconnect state to resume streams reliably.
 //!
+//! ## Datastar
+//!
+//! > Datastar helps you build reactive web applications with the simplicity of server-side rendering and the power of a full-stack SPA framework.
+//! >
+//! > — <https://data-star.dev/>
+//!
+//! Rama has built-in support for [🚀 data-\*](https://data-star.dev).
+//! You can see it in action in [Examples](https://github.com/plabayo/rama/tree/main/examples):
+//!
+//! - [/examples/http_sse_datastar_hello.rs](https://github.com/plabayo/rama/tree/main/examples/http_sse_datastar_hello.rs):
+//!   SSE Example, showcasing a very simple datastar example,
+//!   which is supported by rama both on the client as well as the server side.
+//!
+//! Rama rust docs:
+//!
+//! - SSE support: [datastar]
+//! - Extractor support (`ReadSignals`): <https://ramaproxy.org/docs/rama/http/service/web/extract/datastar/index.html>
+//! - Embedded JS Script: <https://ramaproxy.org/docs/rama/http/service/web/response/struct.DatastarScript.html>
+//!
 //! ## Code Origins
 //!
 //! Some code in this repo is adapted from third party sources:

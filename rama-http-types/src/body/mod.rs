@@ -107,7 +107,7 @@ impl Body {
     /// Convert the body into a [`Stream`] of [`sse::Event`]s with optional string data.
     ///
     /// <https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events/Using_server-sent_events>.
-    pub fn into_string_data_event_stream(self) -> EventStream<BodyDataStream> {
+    pub fn into_string_data_event_stream<T: EventDataRead>(self) -> EventStream<BodyDataStream, T> {
         EventStream::new(self.into_data_stream())
     }
 

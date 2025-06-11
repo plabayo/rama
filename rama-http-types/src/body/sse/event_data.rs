@@ -180,6 +180,8 @@ impl<T: PartialEq> PartialEq for JsonEventData<T> {
     }
 }
 
+impl<T: Eq> Eq for JsonEventData<T> {}
+
 impl_deref!(JsonEventData);
 
 impl<T> From<T> for JsonEventData<T> {

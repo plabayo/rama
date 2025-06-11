@@ -87,6 +87,71 @@ impl<T> From<MergeSignals<T>> for EventData<T> {
 }
 
 impl<T> EventData<T> {
+    /// Consume `self` as [`MergeFragments`],
+    ///
+    /// returning itself as an error if it is of a different type.
+    pub fn into_merge_fragments(self) -> Result<MergeFragments, Self> {
+        match self {
+            EventData::MergeFragments(data) => Ok(data),
+            EventData::RemoveFragments(_) => Err(self),
+            EventData::MergeSignals(_) => Err(self),
+            EventData::RemoveSignals(_) => Err(self),
+            EventData::ExecuteScript(_) => Err(self),
+        }
+    }
+
+    /// Consume `self` as [`RemoveFragments`].
+    ///
+    /// returning itself as an error if it is of a different type.
+    pub fn into_remove_fragments(self) -> Result<RemoveFragments, Self> {
+        match self {
+            EventData::MergeFragments(_) => Err(self),
+            EventData::RemoveFragments(data) => Ok(data),
+            EventData::MergeSignals(_) => Err(self),
+            EventData::RemoveSignals(_) => Err(self),
+            EventData::ExecuteScript(_) => Err(self),
+        }
+    }
+
+    /// Consume `self` as [`MergeSignals`].
+    ///
+    /// returning itself as an error if it is of a different type.
+    pub fn into_merge_signals(self) -> Result<MergeSignals<T>, Self> {
+        match self {
+            EventData::MergeFragments(_) => Err(self),
+            EventData::RemoveFragments(_) => Err(self),
+            EventData::MergeSignals(data) => Ok(data),
+            EventData::RemoveSignals(_) => Err(self),
+            EventData::ExecuteScript(_) => Err(self),
+        }
+    }
+
+    /// Consume `self` as [`RemoveSignals`].
+    ///
+    /// returning itself as an error if it is of a different type.
+    pub fn into_remove_signals(self) -> Result<RemoveSignals, Self> {
+        match self {
+            EventData::MergeFragments(_) => Err(self),
+            EventData::RemoveFragments(_) => Err(self),
+            EventData::MergeSignals(_) => Err(self),
+            EventData::RemoveSignals(data) => Ok(data),
+            EventData::ExecuteScript(_) => Err(self),
+        }
+    }
+
+    /// Consume `self` as [`ExecuteScript`].
+    ///
+    /// returning itself as an error if it is of a different type.
+    pub fn into_execute_script(self) -> Result<ExecuteScript, Self> {
+        match self {
+            EventData::MergeFragments(_) => Err(self),
+            EventData::RemoveFragments(_) => Err(self),
+            EventData::MergeSignals(_) => Err(self),
+            EventData::RemoveSignals(_) => Err(self),
+            EventData::ExecuteScript(data) => Ok(data),
+        }
+    }
+
     /// Consume `self` as an [`Event`].
     pub fn into_sse_event(self) -> Event<EventData<T>> {
         let event_type = match self {
