@@ -7,7 +7,7 @@ use {
     rama_core::error::OpaqueError,
     rama_net::{
         address::SocketAddress,
-        dep::cidr::{IpCidr, Ipv4Cidr, Ipv6Cidr},
+        stream::dep::ipnet::{IpNet, Ipv4Net, Ipv6Net},
     },
     std::{
         collections::HashSet,
@@ -42,13 +42,13 @@ use {
 /// use std::sync::atomic::AtomicUsize;
 /// use std::net::IpAddr;
 /// use std::net::Ipv4Addr;
-/// use rama_net::dep::cidr::Ipv4Cidr;
+/// use rama_net::stream::dep::ipnet::Ipv4Net;
 /// use rama_tcp::client::IpCidrConnector;
 /// use rama_tcp::client::PoolMode;
 ///
 /// // Create a connector for a /24 IPv4 subnet with random selection
 /// let connector = IpCidrConnector::new_ipv4(
-///     Ipv4Cidr::new(Ipv4Addr::new(192, 168, 1, 0), 24).unwrap()
+///     Ipv4Net::new(Ipv4Addr::new(192, 168, 1, 0), 24).unwrap()
 /// );
 ///
 /// // Configure with round-robin selection and fallback
@@ -66,7 +66,7 @@ pub struct IpCidrConnector {
     ///
     /// This defines the network range for source IP address selection.
     /// Must be a valid IPv4 or IPv6 CIDR notation.
-    ip_cidr: IpCidr,
+    ip_cidr: IpNet,
 
     /// Optional subnet mask override for further restricting the address range
     ///
@@ -82,7 +82,7 @@ pub struct IpCidrConnector {
     ///
     /// Provides high availability by offering an alternative source address
     /// when connections from the primary CIDR range fail.
-    fallback: Option<IpCidr>,
+    fallback: Option<IpNet>,
 
     /// Set of IP addresses to exclude from selection
     ///
@@ -110,8 +110,8 @@ impl Default for IpCidrConnector {
     fn default() -> Self {
         Self {
             mode: PoolMode::Random,
-            ip_cidr: IpCidr::V4(
-                Ipv4Cidr::new(Ipv4Addr::UNSPECIFIED, 0)
+            ip_cidr: IpNet::V4(
+                Ipv4Net::new(Ipv4Addr::UNSPECIFIED, 0)
                     .expect("Failed to parse unspecified IPv4 address"),
             ),
             cidr_range: None,
@@ -137,7 +137,7 @@ impl IpCidrConnector {
     ///
     /// Capacity is pre-computed during construction to avoid runtime calculations.
     /// For very large IPv6 ranges, capacity may be clamped to prevent overflow.
-    pub fn new(ip_cidr: IpCidr) -> Self {
+    pub fn new(ip_cidr: IpNet) -> Self {
         let capacity = Self::calculate_capacity(&ip_cidr);
         Self {
             ip_cidr,
@@ -159,22 +159,15 @@ impl IpCidrConnector {
     ///
     /// ```rust
     /// use rama_tcp::client::IpCidrConnector;
+    /// use rama_net::stream::dep::ipnet::Ipv4Net;
     ///
-    /// let cidr = "10.0.0.0/16".parse().unwrap();
+    /// let cidr = "10.0.0.0/16".parse::<Ipv4Net>().unwrap();
     /// let connector = IpCidrConnector::new_ipv4(cidr);
     /// ```
-    pub fn new_ipv4(ip_cidr: Ipv4Cidr) -> Self {
-        let network_len = ip_cidr.network_length();
-        let capacity = if network_len == 0 {
-            u128::from(u32::MAX)
-        } else if network_len >= 32 {
-            1
-        } else {
-            u128::from((1u64 << (32 - network_len)) - 1)
-        };
-
+    pub fn new_ipv4(ip_cidr: Ipv4Net) -> Self {
+        let capacity = Self::calculate_capacity(&IpNet::V4(ip_cidr));
         Self {
-            ip_cidr: IpCidr::V4(ip_cidr),
+            ip_cidr: IpNet::V4(ip_cidr),
             capacity,
             ..Default::default()
         }
@@ -193,22 +186,15 @@ impl IpCidrConnector {
     ///
     /// ```rust
     /// use rama_tcp::client::IpCidrConnector;
+    /// use rama_net::stream::dep::ipnet::Ipv6Net;
     ///
-    /// let cidr = "2001:db8::/64".parse().unwrap();
+    /// let cidr = "2001:db8::/64".parse::<Ipv6Net>().unwrap();
     /// let connector = IpCidrConnector::new_ipv6(cidr);
     /// ```
-    pub fn new_ipv6(ip_cidr: Ipv6Cidr) -> Self {
-        let network_len = ip_cidr.network_length();
-        let capacity = if network_len == 0 {
-            u128::MAX
-        } else if network_len >= 128 {
-            1
-        } else {
-            (1u128 << (128 - network_len)).saturating_sub(1)
-        };
-
+    pub fn new_ipv6(ip_cidr: Ipv6Net) -> Self {
+        let capacity = Self::calculate_capacity(&IpNet::V6(ip_cidr));
         Self {
-            ip_cidr: IpCidr::V6(ip_cidr),
+            ip_cidr: IpNet::V6(ip_cidr),
             capacity,
             ..Default::default()
         }
@@ -251,18 +237,19 @@ impl IpCidrConnector {
     ///
     /// ```rust
     /// use rama_tcp::client::IpCidrConnector;
+    /// use rama_net::stream::dep::ipnet::Ipv4Net;
     ///
-    /// let cidr = "10.0.0.0/16".parse().unwrap();
+    /// let cidr = "10.0.0.0/16".parse::<Ipv4Net>().unwrap();
     /// let connector = IpCidrConnector::new_ipv4(cidr)
     ///     .with_cidr_range(Some(28)); // Further restrict to /28
     /// ```
     pub fn with_cidr_range(mut self, cidr_range: Option<u8>) -> Self {
         if let Some(range) = cidr_range {
             match self.ip_cidr {
-                IpCidr::V4(_) => {
+                IpNet::V4(_) => {
                     assert!((range <= 32), "IPv4 CIDR range cannot exceed 32 bits");
                 }
-                IpCidr::V6(_) => {
+                IpNet::V6(_) => {
                     assert!((range <= 128), "IPv6 CIDR range cannot exceed 128 bits");
                 }
             }
@@ -285,7 +272,7 @@ impl IpCidrConnector {
     /// - Providing a stable backup address when dynamic addresses fail
     /// - Ensuring connectivity through a known-good interface
     /// - Implementing graceful degradation in network configurations
-    pub fn with_fallback(mut self, fallback: Option<IpCidr>) -> Self {
+    pub fn with_fallback(mut self, fallback: Option<IpNet>) -> Self {
         self.fallback = fallback;
         self
     }
@@ -369,25 +356,23 @@ impl IpCidrConnector {
     /// This is a performance optimization that pre-computes capacity to avoid
     /// repeated calculations during address selection.
     #[inline]
-    fn calculate_capacity(ip_cidr: &IpCidr) -> u128 {
-        let network_len = ip_cidr.network_length();
+    fn calculate_capacity(ip_cidr: &IpNet) -> u128 {
+        if ip_cidr.prefix_len() >= ip_cidr.max_prefix_len() {
+            return 1;
+        }
         match ip_cidr {
-            IpCidr::V4(_) => {
-                if network_len == 0 {
+            IpNet::V4(_) => {
+                if ip_cidr.prefix_len() == 0 {
                     u128::from(u32::MAX)
-                } else if network_len >= 32 {
-                    1
                 } else {
-                    u128::from((1u64 << (32 - network_len)) - 1)
+                    u128::from((1u64 << (32 - ip_cidr.prefix_len())) - 1)
                 }
             }
-            IpCidr::V6(_) => {
-                if network_len == 0 {
+            IpNet::V6(_) => {
+                if ip_cidr.prefix_len() == 0 {
                     u128::MAX
-                } else if network_len >= 128 {
-                    1
                 } else {
-                    (1u128 << (128 - network_len)).saturating_sub(1)
+                    (1u128 << (128 - ip_cidr.prefix_len())).saturating_sub(1)
                 }
             }
         }
@@ -400,13 +385,13 @@ impl IpCidrConnector {
     #[inline]
     fn generate_ip_address(&self) -> IpAddr {
         match (&self.mode, &self.ip_cidr) {
-            (PoolMode::Random, IpCidr::V4(cidr)) => {
+            (PoolMode::Random, IpNet::V4(cidr)) => {
                 IpAddr::V4(ipv4_from_extension(cidr, self.cidr_range, self.extension))
             }
-            (PoolMode::Random, IpCidr::V6(cidr)) => {
+            (PoolMode::Random, IpNet::V6(cidr)) => {
                 IpAddr::V6(ipv6_from_extension(cidr, self.cidr_range, self.extension))
             }
-            (PoolMode::RoundRobin(index), IpCidr::V4(cidr)) => {
+            (PoolMode::RoundRobin(index), IpNet::V4(cidr)) => {
                 let current_idx = index.fetch_add(1, Ordering::Relaxed);
                 tracing::debug!("Round-robin index: {}", current_idx);
                 tracing::debug!("Round-robin capacity: {}", self.capacity);
@@ -415,7 +400,7 @@ impl IpCidrConnector {
                     ipv4_from_extension(cidr, None, Some(IpCidrConExt::Session(session_id)));
                 IpAddr::V4(ipv4_addr)
             }
-            (PoolMode::RoundRobin(index), IpCidr::V6(cidr)) => {
+            (PoolMode::RoundRobin(index), IpNet::V6(cidr)) => {
                 let current_idx = index.fetch_add(1, Ordering::Relaxed);
                 let session_id =
                     u64::try_from(current_idx as u128 % self.capacity).unwrap_or(u64::MAX);
@@ -430,12 +415,12 @@ impl IpCidrConnector {
     #[inline]
     fn generate_fallback_ip_address(&self) -> Option<IpAddr> {
         match &self.fallback {
-            Some(IpCidr::V4(cidr)) => Some(IpAddr::V4(ipv4_from_extension(
+            Some(IpNet::V4(cidr)) => Some(IpAddr::V4(ipv4_from_extension(
                 cidr,
                 self.cidr_range,
                 self.extension,
             ))),
-            Some(IpCidr::V6(cidr)) => Some(IpAddr::V6(ipv6_from_extension(
+            Some(IpNet::V6(cidr)) => Some(IpAddr::V6(ipv6_from_extension(
                 cidr,
                 self.cidr_range,
                 self.extension,
@@ -560,7 +545,6 @@ impl TcpStreamConnector for IpCidrConnector {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rama_net::dep::cidr::{Ipv4Cidr, Ipv6Cidr};
     use std::{
         str::FromStr,
         sync::{Arc, atomic::AtomicUsize},
@@ -663,7 +647,7 @@ mod tests {
                 "IPv4 /24 network", // Standard private network configuration
                 IpCidrConnector::new_ipv4(
                     "192.168.1.0/24"
-                        .parse::<Ipv4Cidr>()
+                        .parse::<Ipv4Net>()
                         .expect("Failed to parse IPv4 CIDR"),
                 ),
             ),
@@ -671,7 +655,7 @@ mod tests {
                 "IPv6 /48 network", // Large IPv6 address space for scalability testing
                 IpCidrConnector::new_ipv6(
                     "2001:470:e953::/48"
-                        .parse::<Ipv6Cidr>()
+                        .parse::<Ipv6Net>()
                         .expect("Failed to parse IPv6 CIDR"),
                 ),
             ),
@@ -705,10 +689,10 @@ mod tests {
             connector.mode = PoolMode::RoundRobin(Arc::new(AtomicUsize::new(0)));
 
             // Set fallback to the last address in the CIDR range for high availability
-            connector.fallback = "2001:470:e953:f179::/64".parse::<IpCidr>().ok();
+            connector.fallback = "2001:470:e953:f179::/64".parse::<IpNet>().ok();
 
             // Configure exclusion list to avoid problematic addresses (network address)
-            let excluded_addrs = vec![connector.ip_cidr.first_address()];
+            let excluded_addrs = vec![connector.ip_cidr.addr()];
             connector.excluded = Some(excluded_addrs.into_iter().collect());
 
             // Test round-robin selection with exclusions over multiple iterations
@@ -727,7 +711,7 @@ mod tests {
                 // Critical validation: ensure excluded addresses are never selected
                 // This tests the O(1) HashSet exclusion lookup performance
                 let selected_ip = round_robin_connector.ip_addr();
-                assert_ne!(selected_ip, connector.ip_cidr.first_address());
+                assert_ne!(selected_ip, connector.ip_cidr.addr());
             }
         }
     }
@@ -807,7 +791,7 @@ mod tests {
             "IPv4 /32 single-host network", // Most constrained possible IPv4 configuration
             IpCidrConnector::new_ipv4(
                 "192.168.1.15/32" // Private network single host - common in container environments
-                    .parse::<Ipv4Cidr>()
+                    .parse::<Ipv4Net>()
                     .expect("Failed to parse IPv4 /32 CIDR - this indicates a fundamental parsing error"),
             ),
         )];
@@ -896,7 +880,7 @@ mod tests {
             // Primary: IPv4 (192.168.1.15) -> Fallback: IPv6 (2001:470:e953::ffff)
             // This represents a Hurricane Electric IPv6 tunnel endpoint commonly used in production
             connector.fallback = IpAddr::from_str("2001:470:e953::ffff").ok().map(|addr| {
-                let addr = IpCidr::from(addr);
+                let addr = IpNet::from(addr);
                 tracing::info!(
                     "Cross-protocol fallback configured: IPv4 primary -> IPv6 fallback ({})",
                     addr

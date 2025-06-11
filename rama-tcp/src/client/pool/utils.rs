@@ -10,7 +10,7 @@ use {
         context::Extensions,
         username::{UsernameLabelParser, UsernameLabelState},
     },
-    rama_net::dep::cidr::{Ipv4Cidr, Ipv6Cidr},
+    rama_net::stream::dep::ipnet::{Ipv4Net, Ipv6Net},
     rand::random,
     std::{
         convert::Infallible,
@@ -43,25 +43,25 @@ use {
 /// unnecessary allocations or complex arithmetic operations. Time complexity: O(1).
 ///
 /// # Examples
-/// ```
-/// use rama_net::dep::cidr::Ipv4Cidr;
+/// ```rust
+/// use rama_net::stream::dep::ipnet::Ipv4Net;
 /// use rama_tcp::client::rand_ipv4;
 ///
-/// let cidr = "192.168.1.0/24".parse::<Ipv4Cidr>().unwrap();
+/// let cidr = "192.168.1.0/24".parse::<Ipv4Net>().unwrap();
 /// let random_ip = rand_ipv4(&cidr);
 /// // random_ip will be in range 192.168.1.0 - 192.168.1.255
 /// ```
 #[inline]
-pub fn rand_ipv4(cidr: &Ipv4Cidr) -> Ipv4Addr {
-    let prefix_len = cidr.network_length();
+pub fn rand_ipv4(cidr: &Ipv4Net) -> Ipv4Addr {
+    let prefix_len = cidr.prefix_len();
     if prefix_len == 32 {
-        return cidr.first_address();
+        return cidr.addr();
     }
     let host_bits = 32 - prefix_len;
     if host_bits >= 32 {
         return Ipv4Addr::from(random::<u32>());
     }
-    let base_ip_u32 = u32::from(cidr.first_address());
+    let base_ip_u32 = u32::from(cidr.addr());
     let rand_val: u32 = random();
     let host_mask = (1u32 << host_bits) - 1;
     let host_part = rand_val & host_mask;
@@ -93,25 +93,25 @@ pub fn rand_ipv4(cidr: &Ipv4Cidr) -> Ipv4Addr {
 /// avoiding unnecessary allocations or complex arithmetic operations. Time complexity: O(1).
 ///
 /// # Examples
-/// ```
-/// use rama_net::dep::cidr::Ipv6Cidr;
+/// ```rust
+/// use rama_net::stream::dep::ipnet::Ipv6Net;
 /// use rama_tcp::client::rand_ipv6;
 ///
-/// let cidr = "2001:db8::/32".parse::<Ipv6Cidr>().unwrap();
+/// let cidr = "2001:db8::/32".parse::<Ipv6Net>().unwrap();
 /// let random_ip = rand_ipv6(&cidr);
 /// // random_ip will be in range 2001:db8:: - 2001:db8:ffff:ffff:ffff:ffff:ffff:ffff
 /// ```
 #[inline]
-pub fn rand_ipv6(cidr: &Ipv6Cidr) -> Ipv6Addr {
-    let prefix_len = cidr.network_length();
+pub fn rand_ipv6(cidr: &Ipv6Net) -> Ipv6Addr {
+    let prefix_len = cidr.prefix_len();
     if prefix_len == 128 {
-        return cidr.first_address();
+        return cidr.addr();
     }
     let host_bits = 128 - prefix_len;
     if host_bits >= 128 {
         return Ipv6Addr::from(random::<u128>());
     }
-    let base_ip_u128 = u128::from(cidr.first_address());
+    let base_ip_u128 = u128::from(cidr.addr());
     let rand_val: u128 = random();
     let host_mask = (1u128 << host_bits) - 1;
     let host_part = rand_val & host_mask;
@@ -147,21 +147,21 @@ pub fn rand_ipv6(cidr: &Ipv6Cidr) -> Ipv6Addr {
 /// Time complexity: O(1).
 ///
 /// # Examples
-/// ```
-/// use rama_net::dep::cidr::Ipv4Cidr;
+/// ```rust
+/// use rama_net::stream::dep::ipnet::Ipv4Net;
 /// use rama_tcp::client::ipv4_with_range;
 ///
-/// let cidr = "192.168.0.0/16".parse::<Ipv4Cidr>().unwrap();
+/// let cidr = "192.168.0.0/16".parse::<Ipv4Net>().unwrap();
 /// let ip = ipv4_with_range(&cidr, 24, 42);
 /// // ip will have 192.168.x.y where x is influenced by combined value 42
 /// ```
 #[inline]
-pub fn ipv4_with_range(cidr: &Ipv4Cidr, range_len: u8, combined: u32) -> Ipv4Addr {
-    let prefix_len = cidr.network_length();
+pub fn ipv4_with_range(cidr: &Ipv4Net, range_len: u8, combined: u32) -> Ipv4Addr {
+    let prefix_len = cidr.prefix_len();
     if range_len <= prefix_len {
         return rand_ipv4(cidr);
     }
-    let base_ip_u32 = u32::from(cidr.first_address());
+    let base_ip_u32 = u32::from(cidr.addr());
     let fixed_bits_len = range_len - prefix_len;
     let host_bits = 32 - range_len;
     if fixed_bits_len >= 32 || host_bits >= 32 {
@@ -208,21 +208,21 @@ pub fn ipv4_with_range(cidr: &Ipv4Cidr, range_len: u8, combined: u32) -> Ipv4Add
 /// Time complexity: O(1).
 ///
 /// # Examples
-/// ```
-/// use rama_net::dep::cidr::Ipv6Cidr;
+/// ```rust
+/// use rama_net::stream::dep::ipnet::Ipv6Net;
 /// use rama_tcp::client::ipv6_with_range;
 ///
-/// let cidr = "2001:db8::/32".parse::<Ipv6Cidr>().unwrap();
+/// let cidr = "2001:db8::/32".parse::<Ipv6Net>().unwrap();
 /// let ip = ipv6_with_range(&cidr, 48, 12345);
 /// // ip will have 2001:db8:xxxx:: where xxxx is influenced by combined value 12345
 /// ```
 #[inline]
-pub fn ipv6_with_range(cidr: &Ipv6Cidr, range_len: u8, combined: u128) -> Ipv6Addr {
-    let prefix_len = cidr.network_length();
+pub fn ipv6_with_range(cidr: &Ipv6Net, range_len: u8, combined: u128) -> Ipv6Addr {
+    let prefix_len = cidr.prefix_len();
     if range_len <= prefix_len {
         return rand_ipv6(cidr);
     }
-    let base_ip_u128 = u128::from(cidr.first_address());
+    let base_ip_u128 = u128::from(cidr.addr());
     let fixed_bits_len = range_len - prefix_len;
     let host_bits = 128 - range_len;
     let fixed_mask = (1u128 << fixed_bits_len) - 1;
@@ -262,19 +262,19 @@ pub fn ipv6_with_range(cidr: &Ipv6Cidr, range_len: u8, combined: u128) -> Ipv6Ad
 /// Delegates to specialized functions for optimal performance per use case.
 ///
 /// # Examples
-/// ```
-/// use rama_net::dep::cidr::Ipv4Cidr;
+/// ```rust
+/// use rama_net::stream::dep::ipnet::Ipv4Net;
 /// use rama_tcp::client::IpCidrConExt;
 /// use rama_tcp::client::ipv4_from_extension;
 ///
-/// let cidr = "192.168.1.0/24".parse::<Ipv4Cidr>().unwrap();
+/// let cidr = "192.168.1.0/24".parse::<Ipv4Net>().unwrap();
 /// let ext = IpCidrConExt::Session(12345);
 /// let ip = ipv4_from_extension(&cidr, None, Some(ext));
 /// // Generates deterministic IP based on session ID 12345
 /// ```
 #[inline]
 pub fn ipv4_from_extension(
-    cidr: &Ipv4Cidr,
+    cidr: &Ipv4Net,
     cidr_range: Option<u8>,
     extension: Option<IpCidrConExt>,
 ) -> Ipv4Addr {
@@ -283,13 +283,13 @@ pub fn ipv4_from_extension(
         match extension {
             // Deterministic address generation for TTL and Session extensions
             Some(IpCidrConExt::Ttl(_) | IpCidrConExt::Session(_)) => {
-                let prefix_len = cidr.network_length();
+                let prefix_len = cidr.prefix_len();
 
                 // Calculate subnet mask to preserve network portion
                 // Creates mask with 1s in network bits, 0s in host bits
                 let subnet_mask = !((1u32 << (32 - prefix_len)) - 1);
 
-                let base_ip_bits = u32::from(cidr.first_address()) & subnet_mask;
+                let base_ip_bits = u32::from(cidr.addr()) & subnet_mask;
 
                 // Calculate available host addresses (subtract 1 to avoid overflow)
                 // This ensures the generated address stays within the CIDR block
@@ -355,19 +355,19 @@ pub fn ipv4_from_extension(
 /// Delegates to specialized functions for optimal performance per use case.
 ///
 /// # Examples
-/// ```
-/// use rama_net::dep::cidr::Ipv6Cidr;
+/// ```rust
+/// use rama_net::stream::dep::ipnet::Ipv6Net;
 /// use rama_tcp::client::IpCidrConExt;
 /// use rama_tcp::client::ipv6_from_extension;
 ///
-/// let cidr = "2001:db8::/32".parse::<Ipv6Cidr>().unwrap();
+/// let cidr = "2001:db8::/32".parse::<Ipv6Net>().unwrap();
 /// let ext = IpCidrConExt::Session(67890);
 /// let ip = ipv6_from_extension(&cidr, None, Some(ext));
 /// // Generates deterministic IP based on session ID 67890
 /// ```
 #[inline]
 pub fn ipv6_from_extension(
-    cidr: &Ipv6Cidr,
+    cidr: &Ipv6Net,
     cidr_range: Option<u8>,
     extension: Option<IpCidrConExt>,
 ) -> Ipv6Addr {
@@ -376,13 +376,13 @@ pub fn ipv6_from_extension(
         match extension {
             // Deterministic address generation for TTL and Session extensions
             Some(IpCidrConExt::Ttl(_) | IpCidrConExt::Session(_)) => {
-                let network_length = cidr.network_length();
+                let network_length = cidr.prefix_len();
 
                 // Calculate subnet mask to preserve network portion
                 // Creates mask with 1s in network bits, 0s in host bits
                 let subnet_mask = !((1u128 << (128 - network_length)) - 1);
 
-                let base_ip_bits = u128::from(cidr.first_address()) & subnet_mask;
+                let base_ip_bits = u128::from(cidr.addr()) & subnet_mask;
 
                 // Calculate available host addresses (subtract 1 to avoid overflow)
                 // This ensures the generated address stays within the CIDR block
@@ -438,7 +438,7 @@ pub fn ipv6_from_extension(
 /// No heap allocations or expensive operations are performed.
 ///
 /// # Examples
-/// ```
+/// ```rust
 /// use rama_tcp::client::IpCidrConExt;
 /// use rama_tcp::client::extract_value_from_ipcidr_connector_extension;
 ///
@@ -484,7 +484,7 @@ pub const fn extract_value_from_ipcidr_connector_extension(
 /// - `Default` provides the `None` variant as the default state
 ///
 /// # Examples
-/// ```
+/// ```rust
 /// use rama_tcp::client::IpCidrConExt;
 ///
 /// let ext = IpCidrConExt::default(); // Creates IpCidrConExt::None
@@ -524,7 +524,7 @@ pub enum IpCidrConExt {
 /// - `range`: Range-based subnet-aware IP assignment
 ///
 /// # Examples
-/// ```
+/// ```rust
 /// use rama_tcp::client::IpCidrConExtUsernameLabelParser;
 ///
 /// let parser = IpCidrConExtUsernameLabelParser::default();
@@ -633,7 +633,7 @@ impl UsernameLabelParser for IpCidrConExtUsernameLabelParser {
                         self.extension = Some(IpCidrConExt::Range(0));
                     }
                     _ => {
-                        // Unrecognized extension type - abort parsing
+                        // Unrecognized extension type - ignore parsing
                         self.extension = Some(IpCidrConExt::None);
                         tracing::trace!("invalid extension username label value: {label}");
                         return UsernameLabelState::Ignored;
@@ -851,7 +851,7 @@ mod tests {
         // Parse the IPv4 CIDR block that defines our available address space
         // /20 means 20 bits for network, 12 bits for host (4,096 addresses)
         let cidr = "101.30.16.0/20"
-            .parse::<Ipv4Cidr>()
+            .parse::<Ipv4Net>()
             .expect("Unable to parse IPv4 CIDR - check format");
 
         // Initialize extension context and composite parser
@@ -879,8 +879,8 @@ mod tests {
                 "Iteration {}: Generated IPv4 Address: {} (Network: {}, Host bits: {})",
                 iteration,
                 ipv4_address,
-                cidr.first_address(),
-                32 - cidr.network_length()
+                cidr.addr(),
+                32 - cidr.prefix_len()
             );
 
             // Implicit validation: address should fall within CIDR range
@@ -918,7 +918,7 @@ mod tests {
         // Parse the IPv6 CIDR block that defines our available address space
         // /48 means 48 bits for network, 80 bits for host (massive address space)
         let cidr = "2001:470:e953::/48"
-            .parse::<Ipv6Cidr>()
+            .parse::<Ipv6Net>()
             .expect("Unable to parse IPv6 CIDR - check format");
 
         // Initialize extension context and composite parser
@@ -946,8 +946,8 @@ mod tests {
                 "Iteration {}: Generated IPv6 Address: {} (Network: {}, Host bits: {})",
                 iteration,
                 ipv6_address,
-                cidr.first_address(),
-                128 - cidr.network_length()
+                cidr.addr(),
+                128 - cidr.prefix_len()
             );
 
             // Implicit validation: address should fall within CIDR range
@@ -990,7 +990,7 @@ mod tests {
 
         // Parse base CIDR that defines the network foundation
         let cidr = "101.30.16.0/20"
-            .parse::<Ipv4Cidr>()
+            .parse::<Ipv4Net>()
             .expect("Unable to parse IPv4 CIDR - check format");
 
         // Define range length that extends beyond base CIDR for intermediate bits
@@ -1070,7 +1070,7 @@ mod tests {
 
         // Parse base IPv6 CIDR that defines the network foundation
         let cidr = "2001:470:e953::/48"
-            .parse::<Ipv6Cidr>()
+            .parse::<Ipv6Net>()
             .expect("Unable to parse IPv6 CIDR - check format");
 
         // Define range length that extends beyond base CIDR for intermediate bits
@@ -1155,7 +1155,7 @@ mod tests {
 
         // Parse the IPv4 CIDR block for session-based assignment
         let cidr = "101.30.16.0/20"
-            .parse::<Ipv4Cidr>()
+            .parse::<Ipv4Net>()
             .expect("Unable to parse IPv4 CIDR - check format");
 
         // Initialize session counter with offset to test various numeric ranges
@@ -1182,7 +1182,7 @@ mod tests {
             tracing::info!(
                 "  IPv4 Address 1: {} (Host portion: {})",
                 ipv4_address1,
-                combined % ((1u64 << (32 - cidr.network_length())) - 1)
+                combined % ((1u64 << (32 - cidr.prefix_len())) - 1)
             );
             tracing::info!("  IPv4 Address 2: {} (Should be identical)", ipv4_address2);
 
@@ -1231,7 +1231,7 @@ mod tests {
 
         // Parse the IPv6 CIDR block for session-based assignment
         let cidr = "2001:470:e953::/48"
-            .parse::<Ipv6Cidr>()
+            .parse::<Ipv6Net>()
             .expect("Unable to parse IPv6 CIDR - check format");
 
         // Initialize session counter with hex offset to test bit patterns
@@ -1308,7 +1308,7 @@ mod tests {
 
         // Parse the IPv4 CIDR block for TTL-based assignment
         let cidr = "101.30.16.0/20"
-            .parse::<Ipv4Cidr>()
+            .parse::<Ipv4Net>()
             .expect("Unable to parse IPv4 CIDR - check format");
 
         // Initialize extension context and parser for TTL parsing
@@ -1418,7 +1418,7 @@ mod tests {
         // 2001:470:e953::/48 provides 2^80 host addresses - more than enough for any practical application
         // The /48 prefix is commonly used for site-level IPv6 allocations
         let cidr = "2001:470:e953::/48"
-            .parse::<Ipv6Cidr>()
+            .parse::<Ipv6Net>()
             .expect("Failed to parse IPv6 CIDR block - check format validity");
 
         // Initialize extension context and composite parser for comprehensive username processing
@@ -1466,7 +1466,7 @@ mod tests {
                 "Iteration {}: TTL-based IPv6 Address: {} (Network: {})",
                 iteration,
                 ipv6_address,
-                cidr.first_address()
+                cidr.addr()
             );
 
             tracing::debug!(
@@ -1510,8 +1510,8 @@ mod tests {
 
             // Validate that generated address falls within the specified CIDR range
             // This is guaranteed mathematically but provides explicit validation
-            let network_addr = cidr.first_address();
-            let broadcast_addr = cidr.last_address();
+            let network_addr = cidr.addr();
+            let broadcast_addr = cidr.broadcast();
             assert!(
                 u128::from(ipv6_address) >= u128::from(network_addr)
                     && u128::from(ipv6_address) <= u128::from(broadcast_addr),
@@ -1524,7 +1524,7 @@ mod tests {
             // Validate that network prefix is preserved exactly
             let addr_u128 = u128::from(ipv6_address);
             let network_u128 = u128::from(network_addr);
-            let prefix_mask = !((1u128 << (128 - cidr.network_length())) - 1);
+            let prefix_mask = !((1u128 << (128 - cidr.prefix_len())) - 1);
             assert_eq!(
                 addr_u128 & prefix_mask,
                 network_u128 & prefix_mask,

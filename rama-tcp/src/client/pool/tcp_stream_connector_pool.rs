@@ -184,7 +184,7 @@ impl<C: TcpStreamConnector + Clone> TcpStreamConnectorPool<C> {
     ///
     /// # Examples
     ///
-    /// ```rust,ignore
+    /// ```rust
     /// use rama_tcp::client::TcpStreamConnectorPool;
     /// use rama_net::address::SocketAddress;
     /// use std::str::FromStr as _;
@@ -230,7 +230,7 @@ impl<C: TcpStreamConnector + Clone> TcpStreamConnectorPool<C> {
     ///
     /// # Examples
     ///
-    /// ```rust,ignore
+    /// ```rust
     /// use rama_tcp::client::TcpStreamConnectorPool;
     /// use rama_net::address::SocketAddress;
     /// use std::str::FromStr as _;
@@ -284,7 +284,7 @@ impl<C: TcpStreamConnector + Clone> TcpStreamConnectorPool<C> {
     ///
     /// # Examples
     ///
-    /// ```rust,ignore
+    /// ```rust
     /// use rama_tcp::client::TcpStreamConnectorPool;
     /// use rama_net::address::SocketAddress;
     /// use std::net::SocketAddr;
@@ -385,7 +385,7 @@ where
     ///
     /// # Examples
     ///
-    /// ```rust,ignore
+    /// ```rust
     /// use rama_tcp::client::TcpStreamConnectorPool;
     /// use rama_net::address::SocketAddress;
     /// use std::net::SocketAddr;
@@ -451,7 +451,7 @@ mod tests {
     use crate::client::{IpCidrConExt, IpCidrConnector, ipv4_from_extension};
     use rama_net::{
         address::SocketAddress,
-        dep::cidr::{Ipv4Cidr, Ipv6Cidr},
+        stream::dep::ipnet::{Ipv4Net, Ipv6Net},
     };
     use std::str::FromStr as _;
 
@@ -664,14 +664,14 @@ mod tests {
             // The /24 network provides 254 usable addresses (192.168.1.1 - 192.168.1.254)
             IpCidrConnector::new_ipv4(
                 "192.168.1.0/24"
-                    .parse::<Ipv4Cidr>()
+                    .parse::<Ipv4Net>()
                     .expect("Failed to parse IPv4 CIDR - invalid test configuration"),
             ),
             // IPv6 CIDR connector for modern network infrastructure
             // The /48 network provides an enormous address space for future scalability
             IpCidrConnector::new_ipv6(
                 "2001:470:e953::/48"
-                    .parse::<Ipv6Cidr>()
+                    .parse::<Ipv6Net>()
                     .expect("Failed to parse IPv6 CIDR - invalid test configuration"),
             ),
         ];
@@ -794,20 +794,20 @@ mod tests {
         // Select a /20 CIDR block for comprehensive address cycling testing
         // This network size provides a good balance between thorough testing and execution time
         let cidr = "101.30.16.0/20"
-            .parse::<Ipv4Cidr>()
+            .parse::<Ipv4Net>()
             .expect("Failed to parse test CIDR - invalid network specification");
 
         // Calculate the theoretical capacity of usable addresses in the CIDR block
         // This mathematical calculation is fundamental to understanding address space limits
-        let capacity = (1u32 << (32 - cidr.network_length())) - 1;
+        let capacity = (1u32 << (32 - cidr.prefix_len())) - 1;
 
         // Log the test parameters for debugging and validation
         tracing::info!(
             "Testing CIDR {} with capacity {} addresses (network length: {} bits, host bits: {} bits)",
             cidr,
             capacity,
-            cidr.network_length(),
-            32 - cidr.network_length()
+            cidr.prefix_len(),
+            32 - cidr.prefix_len()
         );
 
         // Execute comprehensive address cycling test with more iterations than capacity
