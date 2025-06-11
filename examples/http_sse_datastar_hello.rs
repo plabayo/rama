@@ -36,6 +36,7 @@
 use rama::{
     Context, Layer, Service,
     error::OpaqueError,
+    futures::async_stream::stream,
     graceful::ShutdownGuard,
     http::{
         Request, Response, StatusCode,
@@ -57,7 +58,6 @@ use rama::{
     tcp::server::TcpListener,
 };
 
-use async_stream::stream;
 use std::{
     convert::Infallible,
     sync::{
@@ -142,7 +142,7 @@ impl Service<Controller, Request> for GracefulRouter {
 }
 
 pub mod handlers {
-    use futures::StreamExt;
+    use rama::futures::StreamExt;
 
     use super::*;
 
@@ -186,7 +186,7 @@ pub mod handlers {
 pub mod controller {
     use super::*;
 
-    use futures::Stream;
+    use rama::futures::Stream;
     use rama::http::sse::datastar::{FragmentMergeMode, RemoveFragments};
     use serde::{Deserialize, Serialize};
     use std::pin::Pin;

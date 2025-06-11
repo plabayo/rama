@@ -1,8 +1,8 @@
 #[cfg(not(windows))]
 mod test {
-    use futures::Stream;
-    use futures::future;
-    use futures::stream::FuturesUnordered;
+    use rama_core::futures::Stream;
+    use rama_core::futures::future;
+    use rama_core::futures::stream::FuturesUnordered;
     use rama_http_types::{Method, Request};
     use std::io;
     use std::pin::Pin;

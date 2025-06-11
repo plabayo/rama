@@ -35,8 +35,6 @@ bitflags = { workspace = true }
 chrono = { workspace = true }
 const_format = { workspace = true }
 csv = { workspace = true }
-futures-lite = { workspace = true }
-futures-util = { workspace = true }
 http-range-header = { workspace = true }
 httpdate = { workspace = true }
 iri-string = { workspace = true }

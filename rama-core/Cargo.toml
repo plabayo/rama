@@ -21,12 +21,14 @@ rustdoc-args = ["--cfg", "docsrs"]
 default = []
 
 [dependencies]
+async-stream = { workspace = true }
 bytes = { workspace = true }
-futures-lite = { workspace = true }
+futures = { workspace = true }
 opentelemetry = { workspace = true }
 opentelemetry-semantic-conventions = { workspace = true }
 opentelemetry_sdk = { workspace = true }
 parking_lot = { workspace = true }
+pin-project-lite = { workspace = true }
 rama-error = { workspace = true }
 rama-macros = { workspace = true }
 rama-utils = { workspace = true }

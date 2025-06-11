@@ -15,6 +15,7 @@
 use rama::{
     Context,
     bytes::Bytes,
+    futures::{FutureExt, SinkExt, StreamExt},
     net::address::SocketAddress,
     proxy::socks5::{Socks5Acceptor, Socks5Auth},
     proxy::socks5::{
@@ -29,7 +30,6 @@ use rama::{
     udp::{UdpSocket, codec::BytesCodec},
 };
 
-use futures::{FutureExt, SinkExt, StreamExt};
 use std::convert::Infallible;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};

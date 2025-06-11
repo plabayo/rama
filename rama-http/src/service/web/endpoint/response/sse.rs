@@ -1,8 +1,8 @@
 //! Server-Sent Events (SSE) response.
 
-use futures_lite::Stream;
-use futures_util::TryStream;
 use rama_core::error::BoxError;
+use rama_core::futures::Stream;
+use rama_core::futures::TryStream;
 use rama_http_headers::{CacheControl, Connection, ContentType};
 use rama_http_types::{
     Body, Response,
@@ -86,7 +86,7 @@ where
 mod tests {
     use super::*;
     use crate::service::{client::HttpClientExt as _, web::Router};
-    use futures_util::stream;
+    use rama_core::futures::stream;
     use rama_core::{Service as _, combinators::Either};
     use rama_http_types::sse::JsonEventData;
     use smol_str::SmolStr;

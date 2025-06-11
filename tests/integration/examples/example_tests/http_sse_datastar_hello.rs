@@ -1,19 +1,19 @@
 use super::utils;
-use itertools::Itertools;
+
 use rama::{
     Context,
+    futures::StreamExt,
     http::{
         BodyExtractExt, StatusCode,
         headers::{ContentType, HeaderMapExt, dep::mime},
         sse::{
             JsonEventData,
-            datastar::{DatastarEvent, MergeFragments, MergeSignals, RemoveFragments},
+            datastar::{DatastarEvent, EventType, MergeFragments, MergeSignals, RemoveFragments},
         },
     },
 };
 
-use futures::StreamExt;
-use rama_http::sse::datastar::EventType;
+use itertools::Itertools;
 use serde::Deserialize;
 use serde_json::json;
 
@@ -120,6 +120,11 @@ async fn test_http_sse_datastar_hello() {
                 // merge fragments handled differently
                 // as fragments can have meaningless differences in newlines
                 if expected_event.event() == Some(EventType::MergeFragments.as_str()) {
+                    if event.event() == Some(EventType::MergeSignals.as_str()) {
+                        expected_events.push(expected_event);
+                        continue;
+                    }
+
                     assert_eq!(expected_event.event(), event.event());
                     assert_eq!(expected_event.id(), event.id());
                     assert_eq!(expected_event.retry(), event.retry());

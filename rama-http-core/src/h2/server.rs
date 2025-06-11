@@ -22,7 +22,7 @@
 //! # Inbound streams
 //!
 //! The [`Connection`] instance is used to accept inbound HTTP/2 streams. It
-//! does this by implementing [`futures::Stream`]. When a new stream is
+//! does this by implementing [`rama_core::futures::Stream`]. When a new stream is
 //! received, a call to [`Connection::accept`] will return `(request, response)`.
 //! The `request` handle (of type [`http::Request<RecvStream>`]) contains the
 //! HTTP request head as well as provides a way to receive the inbound data
@@ -109,7 +109,7 @@
 //! [`Connection`]: struct.Connection.html
 //! [`Connection::poll`]: struct.Connection.html#method.poll
 //! [`Connection::poll_close`]: struct.Connection.html#method.poll_close
-//! [`futures::Stream`]: https://docs.rs/futures/0.1/futures/stream/trait.Stream.html
+//! [`rama_core::futures::Stream`]: https://docs.rs/rama-core/latest/rama_core/futures/stream/trait.Stream.html
 //! [`http::Request<RecvStream>`]: ../struct.RecvStream.html
 //! [`RecvStream`]: ../struct.RecvStream.html
 //! [`SendStream`]: ../struct.SendStream.html

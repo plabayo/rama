@@ -292,7 +292,7 @@ mod tests {
     use crate::{BodyExtractExt, sse::JsonEventData};
 
     use super::*;
-    use futures::prelude::*;
+    use rama_core::futures::prelude::*;
     use serde::{Deserialize, Serialize};
     use serde_json::json;
     use std::convert::Infallible;

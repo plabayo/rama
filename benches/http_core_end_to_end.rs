@@ -5,8 +5,7 @@
 use std::convert::Infallible;
 use std::net::SocketAddr;
 
-use futures_util::future::join_all;
-
+use rama::futures::future::join_all;
 use rama::http::dep::http_body_util::BodyExt;
 use rama::http::{Method, Request, Response};
 use rama::rt::Executor;
@@ -342,7 +341,7 @@ impl Opts {
                     .request_body
                     .expect("request_chunks means request_body");
                 exec.spawn(async move {
-                    use futures_util::SinkExt;
+                    use rama::futures::SinkExt;
                     use rama::http::core::body::Frame;
                     for _ in 0..chunk_cnt {
                         tx.send(Ok(Frame::data(bytes::Bytes::from(chunk))))

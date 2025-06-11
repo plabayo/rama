@@ -1,16 +1,17 @@
-use std::collections::HashSet;
-
 use super::utils;
-use futures::StreamExt;
+
 use rama::{
     Context,
+    futures::StreamExt,
     http::{
         BodyExtractExt, StatusCode,
         headers::{ContentType, HeaderMapExt, dep::mime},
         sse::JsonEventData,
     },
 };
+
 use serde::Deserialize;
+use std::collections::HashSet;
 
 #[tokio::test]
 #[ignore]
