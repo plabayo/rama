@@ -73,7 +73,7 @@ pub fn merge_client_hello_lists(
 
 #[cfg(test)]
 mod tests {
-    use crate::address::{Domain, Host};
+    use crate::address::Domain;
 
     use super::*;
 
@@ -118,9 +118,7 @@ mod tests {
                 ClientHelloExtension::SupportedVersions(vec![]),
             ],
             &[
-                ClientHelloExtension::ServerName(Some(Host::Name(Domain::from_static(
-                    "example.com",
-                )))),
+                ClientHelloExtension::ServerName(Some(Domain::from_static("example.com"))),
                 ClientHelloExtension::ApplicationLayerProtocolNegotiation(vec![]),
             ],
         );

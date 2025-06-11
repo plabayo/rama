@@ -14,6 +14,7 @@ use rama_core::{
     error::{BoxError, ErrorContext, ErrorExt, OpaqueError},
 };
 use rama_net::{
+    address::Host,
     http::RequestContext,
     stream::Stream,
     tls::{ApplicationProtocol, DataEncoding, client::NegotiatedTlsParameters},
@@ -90,15 +91,18 @@ where
             .set_default_verify_paths()
             .context("build boring ssl acceptor: set default verify paths")?;
 
-        let server_host = ctx
+        let server_domain = ctx
             .get::<SecureTransport>()
             .and_then(|t| t.client_hello())
-            .and_then(|c| c.ext_server_name())
+            .and_then(|c| c.ext_server_name().map(|domain| Host::Name(domain.clone())))
             .or_else(|| {
                 ctx.get::<TransportContext>()
-                    .map(|ctx| ctx.authority.host())
+                    .map(|ctx| ctx.authority.host().clone())
             })
-            .or_else(|| ctx.get::<RequestContext>().map(|ctx| ctx.authority.host()));
+            .or_else(|| {
+                ctx.get::<RequestContext>()
+                    .map(|ctx| ctx.authority.host().clone())
+            });
 
         // We use arc mutex instead of oneshot channel since it is possible that certificate callbacks
         // are called multiples times (fn closures type). But in testing it seems fnOnce should also
@@ -111,7 +115,7 @@ where
         let mut acceptor_builder = tls_config
             .cert_source
             .clone()
-            .issue_certs(acceptor_builder, server_host.cloned(), &maybe_client_hello)
+            .issue_certs(acceptor_builder, server_domain, &maybe_client_hello)
             .await?;
 
         if let Some(min_ver) = tls_config.protocol_versions.iter().flatten().min() {
