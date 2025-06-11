@@ -35,7 +35,6 @@ bitflags = { workspace = true }
 chrono = { workspace = true }
 const_format = { workspace = true }
 csv = { workspace = true }
-rand = { workspace = true }
 http-range-header = { workspace = true }
 httpdate = { workspace = true }
 iri-string = { workspace = true }
@@ -50,6 +49,7 @@ rama-http-types = { workspace = true }
 rama-net = { workspace = true, features = ["http"] }
 rama-ua = { workspace = true }
 rama-utils = { workspace = true }
+rand = { workspace = true }
 regex = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_html_form = { workspace = true }
