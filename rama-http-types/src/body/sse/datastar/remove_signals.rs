@@ -154,3 +154,39 @@ impl EventDataLineReader for RemoveSignalsReader {
         Ok(Some(signals))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn read_remove_signals(input: &str) -> RemoveSignals {
+        let mut reader = RemoveSignals::line_reader();
+        for line in input.lines() {
+            reader.read_line(line).unwrap();
+        }
+        reader
+            .data(Some("datastar-remove-signals"))
+            .unwrap()
+            .unwrap()
+    }
+
+    #[test]
+    fn test_deserialize_minimal() {
+        let data = read_remove_signals(r##"paths baz"##);
+        assert_eq!(1, data.paths.len());
+        assert_eq!(data.paths[0], "baz");
+    }
+
+    #[test]
+    fn test_serialize_deserialize_reflect() {
+        let expected_data = RemoveSignals::new_multi(["foo.bar", "baz"]);
+
+        let mut buf = Vec::new();
+        expected_data.write_data(&mut buf).unwrap();
+
+        let input = String::from_utf8(buf).unwrap();
+        let data = read_remove_signals(&input);
+
+        assert_eq!(expected_data, data);
+    }
+}

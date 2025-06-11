@@ -162,3 +162,40 @@ impl<R: EventDataLineReader> EventDataLineReader for MergeSignalsReader<R> {
         }))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn read_merge_signals<T: EventDataRead>(input: &str) -> MergeSignals<T> {
+        let mut reader = MergeSignals::<T>::line_reader();
+        for line in input.lines() {
+            reader.read_line(line).unwrap();
+        }
+        reader
+            .data(Some("datastar-merge-signals"))
+            .unwrap()
+            .unwrap()
+    }
+
+    #[test]
+    fn test_deserialize_minimal() {
+        let data: MergeSignals<String> = read_merge_signals(r##"signals {answer: 42}"##);
+        assert_eq!(data.signals, r##"{answer: 42}"##);
+        assert!(!data.only_if_missing);
+    }
+
+    #[test]
+    fn test_serialize_deserialize_reflect() {
+        let expected_data =
+            MergeSignals::new(r##"{a:1,b:{"c":2}}"##.to_owned()).with_only_if_missing(true);
+
+        let mut buf = Vec::new();
+        expected_data.write_data(&mut buf).unwrap();
+
+        let input = String::from_utf8(buf).unwrap();
+        let data = read_merge_signals(&input);
+
+        assert_eq!(expected_data, data);
+    }
+}

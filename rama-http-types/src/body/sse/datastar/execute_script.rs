@@ -194,8 +194,8 @@ impl EventDataWrite for ExecuteScript {
         write!(w, "script {}", next_script_line)
             .context("ExecuteScript: write last script line")?;
 
-        if !self.auto_remove.unwrap_or(true) {
-            write!(w, "\nautoRemove false").context("ExecuteScript: write autoRemove")?;
+        if let Some(auto_remove) = self.auto_remove {
+            write!(w, "\nautoRemove {auto_remove}").context("ExecuteScript: write autoRemove")?;
         }
 
         if let Some(ref attributes) = self.attributes {
@@ -421,5 +421,66 @@ impl EventDataLineReader for ExecuteScriptReader {
         }
 
         Ok(Some(execute_script))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn read_execute_script(input: &str) -> ExecuteScript {
+        let mut reader = ExecuteScript::line_reader();
+        for line in input.lines() {
+            reader.read_line(line).unwrap();
+        }
+        reader
+            .data(Some("datastar-execute-script"))
+            .unwrap()
+            .unwrap()
+    }
+
+    #[test]
+    fn test_deserialize_minimal() {
+        let data = read_execute_script(r##"script console.log('Hello, world!')"##);
+        assert_eq!(data.script, r##"console.log('Hello, world!')"##);
+        assert_eq!(data.auto_remove, None);
+        assert_eq!(data.attributes, None);
+    }
+
+    #[test]
+    fn test_serialize_deserialize_reflect() {
+        let expected_data = ExecuteScript::new(
+            r##"console.log('Hello, world!')\nconsole.log('A second greeting')"##,
+        )
+        .with_auto_remove(false)
+        .with_attributes([
+            ScriptAttribute::Type(ScriptType::Module),
+            ScriptAttribute::Defer,
+        ]);
+
+        let mut buf = Vec::new();
+        expected_data.write_data(&mut buf).unwrap();
+
+        let input = String::from_utf8(buf).unwrap();
+        let data = read_execute_script(&input);
+
+        assert_eq!(expected_data, data);
+    }
+
+    #[test]
+    fn test_serialize_deserialize_reflect_with_auto_remove() {
+        let expected_data = ExecuteScript::new(
+            r##"console.log('Hello, world!')\nconsole.log('A second greeting')"##,
+        )
+        .with_auto_remove(true)
+        .with_attribute(ScriptAttribute::Async);
+
+        let mut buf = Vec::new();
+        expected_data.write_data(&mut buf).unwrap();
+
+        let input = String::from_utf8(buf).unwrap();
+        let data = read_execute_script(&input);
+
+        assert_eq!(expected_data, data);
     }
 }

@@ -229,3 +229,43 @@ impl EventDataLineReader for MergeFragmentsReader {
         Ok(Some(merge_fragments))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn read_merge_fragments(input: &str) -> MergeFragments {
+        let mut reader = MergeFragments::line_reader();
+        for line in input.lines() {
+            reader.read_line(line).unwrap();
+        }
+        reader
+            .data(Some("datastar-merge-fragments"))
+            .unwrap()
+            .unwrap()
+    }
+
+    #[test]
+    fn test_deserialize_minimal() {
+        let data = read_merge_fragments(r##"fragments <div id="foo">Hello, world!</div>"##);
+        assert_eq!(data.fragments, r##"<div id="foo">Hello, world!</div>"##);
+        assert_eq!(data.merge_mode, FragmentMergeMode::Morph);
+        assert_eq!(data.selector, None);
+    }
+
+    #[test]
+    fn test_serialize_deserialize_reflect() {
+        let expected_data = MergeFragments::new("<div>\nHello, world!\n</div>")
+            .with_selector("#foo")
+            .with_merge_mode(FragmentMergeMode::Append)
+            .with_use_view_transition(true);
+
+        let mut buf = Vec::new();
+        expected_data.write_data(&mut buf).unwrap();
+
+        let input = String::from_utf8(buf).unwrap();
+        let data = read_merge_fragments(&input);
+
+        assert_eq!(expected_data, data);
+    }
+}

@@ -160,3 +160,40 @@ impl EventDataLineReader for RemoveFragmentsReader {
         Ok(Some(remove_fragments))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn read_remove_fragments(input: &str) -> RemoveFragments {
+        let mut reader = RemoveFragments::line_reader();
+        for line in input.lines() {
+            reader.read_line(line).unwrap();
+        }
+        reader
+            .data(Some("datastar-remove-fragments"))
+            .unwrap()
+            .unwrap()
+    }
+
+    #[test]
+    fn test_deserialize_minimal() {
+        let data = read_remove_fragments(r##"selector #foo"##);
+        assert_eq!(data.selector, r##"#foo"##);
+        assert!(!data.use_view_transition);
+    }
+
+    #[test]
+    fn test_serialize_deserialize_reflect() {
+        let expected_data = RemoveFragments::new("body > main > header > .foo#bar::first")
+            .with_use_view_transition(true);
+
+        let mut buf = Vec::new();
+        expected_data.write_data(&mut buf).unwrap();
+
+        let input = String::from_utf8(buf).unwrap();
+        let data = read_remove_fragments(&input);
+
+        assert_eq!(expected_data, data);
+    }
+}

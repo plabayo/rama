@@ -152,15 +152,20 @@ impl<T> EventData<T> {
         }
     }
 
-    /// Consume `self` as an [`Event`].
-    pub fn into_sse_event(self) -> Event<EventData<T>> {
-        let event_type = match self {
+    /// Return the [`EventType`] for the current data
+    pub fn event_type(&self) -> EventType {
+        match self {
             EventData::MergeFragments(_) => EventType::MergeFragments,
             EventData::RemoveFragments(_) => EventType::RemoveFragments,
             EventData::MergeSignals(_) => EventType::MergeSignals,
             EventData::RemoveSignals(_) => EventType::RemoveSignals,
             EventData::ExecuteScript(_) => EventType::ExecuteScript,
-        };
+        }
+    }
+
+    /// Consume `self` as an [`Event`].
+    pub fn into_sse_event(self) -> Event<EventData<T>> {
+        let event_type = self.event_type();
         Event::new()
             .try_with_event(event_type.as_smol_str())
             .unwrap()
@@ -269,6 +274,64 @@ impl<T: EventDataRead> EventDataLineReader for EventDataReader<T> {
                 tracing::trace!(%event_type, "ignore datastar event with unknown event type");
                 Ok(None)
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::sse::EventDataWrite;
+
+    use super::*;
+
+    fn read_datastar_event_data(event: &str, input: &str) -> EventData {
+        let mut reader = EventData::line_reader();
+        for line in input.lines() {
+            reader.read_line(line).unwrap();
+        }
+        reader.data(Some(event)).unwrap().unwrap()
+    }
+
+    #[test]
+    fn test_serialize_deserialize_reflect() {
+        let test_cases: Vec<EventData> = vec![
+            ExecuteScript::new(
+                r##"console.log('Hello, world!')\nconsole.log('A second greeting')"##,
+            )
+            .with_auto_remove(false)
+            .with_attributes([
+                ScriptAttribute::Type(ScriptType::Module),
+                ScriptAttribute::Defer,
+            ])
+            .into(),
+            ExecuteScript::new(
+                r##"console.log('Hello, world!')\nconsole.log('A second greeting')"##,
+            )
+            .with_auto_remove(true)
+            .with_attribute(ScriptAttribute::Async)
+            .into(),
+            MergeFragments::new("<div>\nHello, world!\n</div>")
+                .with_selector("#foo")
+                .with_merge_mode(FragmentMergeMode::Append)
+                .with_use_view_transition(true)
+                .into(),
+            MergeSignals::new(r##"{a:1,b:{"c":2}}"##.to_owned())
+                .with_only_if_missing(true)
+                .into(),
+            RemoveFragments::new("body > main > header > .foo#bar::first")
+                .with_use_view_transition(true)
+                .into(),
+            RemoveSignals::new_multi(["foo.bar", "baz"]).into(),
+        ];
+
+        for test_case in test_cases {
+            let mut buf = Vec::new();
+            test_case.write_data(&mut buf).unwrap();
+
+            let input = String::from_utf8(buf).unwrap();
+            let data = read_datastar_event_data(test_case.event_type().as_str(), &input);
+
+            assert_eq!(test_case, data);
         }
     }
 }
