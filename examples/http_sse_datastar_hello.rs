@@ -681,7 +681,7 @@ pub mod controller {
                   width: 100%;
                   z-index: 9999;
                   box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-                " data-on-load="@get('/hello-world')">
+                " data-on-load__delay.3s="@get('/hello-world')">
                   ⚠️ {msg}.
                 </div>
             "##
