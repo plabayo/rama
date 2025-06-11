@@ -35,13 +35,13 @@ bitflags = { workspace = true }
 chrono = { workspace = true }
 const_format = { workspace = true }
 csv = { workspace = true }
+rand = { workspace = true }
 http-range-header = { workspace = true }
 httpdate = { workspace = true }
 iri-string = { workspace = true }
 matchit = { workspace = true }
 mime = { workspace = true }
 mime_guess = { workspace = true }
-nanoid = { workspace = true }
 percent-encoding = { workspace = true }
 pin-project-lite = { workspace = true }
 rama-core = { workspace = true }

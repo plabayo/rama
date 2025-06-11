@@ -121,7 +121,6 @@ mimalloc = { version = "0.1", default-features = false }
 mime = "0.3.17"
 mime_guess = { version = "2", default-features = false }
 moka = "0.12"
-nanoid = "0.4"
 nom = "8.0.0"
 opentelemetry = { version = "0.30", default-features = false, features = [
     "trace",
