@@ -16,7 +16,7 @@ use rama::{
     },
     layer::{MapResultLayer, layer_fn},
     net::{
-        address::{Domain, Host},
+        address::Domain,
         tls::{
             DataEncoding,
             client::{NegotiatedTlsParameters, ServerVerifyMode},
@@ -108,7 +108,7 @@ fn http_client<State>(host: &Option<&str>) -> ClientService<State>
 where
     State: Clone + Send + Sync + 'static,
 {
-    let host = host.map(|host| Host::Name(Domain::from_str(host).unwrap()));
+    let host = host.map(|host| Domain::from_str(host).unwrap());
     let tls_config = TlsConnectorDataBuilder::new_http_auto()
         .with_server_verify_mode(ServerVerifyMode::Disable)
         .maybe_with_server_name(host)

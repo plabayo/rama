@@ -396,7 +396,7 @@ where
         None => TlsConnectorDataBuilder::new().build()?,
     };
 
-    let server_host = data.server_name.unwrap_or(server_host);
+    let server_host = data.server_name.map(Host::Name).unwrap_or(server_host);
     let stream: SslStream<T> =
         rama_boring_tokio::connect(data.config, server_host.to_string().as_str(), stream)
             .await

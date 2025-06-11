@@ -21,7 +21,7 @@ use rama_net::tls::{
     DataEncoding,
     client::{ClientAuth, ClientHelloExtension},
 };
-use rama_net::{address::Host, tls::client::ServerVerifyMode};
+use rama_net::{address::Domain, tls::client::ServerVerifyMode};
 use rama_utils::macros::generate_set_and_with;
 use std::{fmt, sync::Arc};
 use tracing::{debug, trace};
@@ -43,7 +43,7 @@ use crate::keylog::new_key_log_file_handle;
 pub struct TlsConnectorData {
     pub config: ConnectConfiguration,
     pub store_server_certificate_chain: bool,
-    pub server_name: Option<Host>,
+    pub server_name: Option<Domain>,
 }
 
 impl std::fmt::Debug for TlsConnectorData {
@@ -90,7 +90,7 @@ pub struct TlsConnectorDataBuilder {
     client_auth: Option<ConnectorConfigClientAuth>,
     certificate_compression_algorithms: Option<Vec<CertificateCompressionAlgorithm>>,
     delegated_credential_schemes: Option<Vec<SslSignatureAlgorithm>>,
-    server_name: Option<Host>,
+    server_name: Option<Domain>,
 }
 
 macro_rules! implement_copy_getters {
@@ -164,7 +164,7 @@ impl TlsConnectorDataBuilder {
         client_auth: Option<ConnectorConfigClientAuth>,
         certificate_compression_algorithms: Option<Vec<CertificateCompressionAlgorithm>>,
         delegated_credential_schemes: Option<Vec<SslSignatureAlgorithm>>,
-        server_name: Option<Host>,
+        server_name: Option<Domain>,
     );
 
     pub fn new() -> Self {
@@ -393,7 +393,7 @@ impl TlsConnectorDataBuilder {
 
     generate_set_and_with!(
         /// Set server name used for SNI extension
-        pub fn server_name(mut self, name: Option<Host>) -> Self {
+        pub fn server_name(mut self, name: Option<Domain>) -> Self {
             self.server_name = name;
             self
         }
@@ -725,21 +725,14 @@ impl TlsConnectorDataBuilder {
             // use the extensions that we can use for the builder
             for extension in cfg.extensions.iter().flatten() {
                 match extension {
-                    ClientHelloExtension::ServerName(maybe_host) => {
-                        server_name = match maybe_host {
-                            Some(Host::Name(_)) => {
+                    ClientHelloExtension::ServerName(maybe_domain) => {
+                        server_name = match maybe_domain {
+                            Some(_) => {
                                 trace!(
                                     "TlsConnectorData: builder: from std client config: set server (domain) name from host: {:?}",
-                                    maybe_host
+                                    maybe_domain
                                 );
-                                maybe_host.clone()
-                            }
-                            Some(Host::Address(_)) => {
-                                trace!(
-                                    "TlsConnectorData: builder: from std client config: set server (ip) name from host: {:?}",
-                                    maybe_host
-                                );
-                                maybe_host.clone()
+                                maybe_domain.clone()
                             }
                             None => {
                                 trace!(

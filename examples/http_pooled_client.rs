@@ -120,7 +120,7 @@ async fn run_server(addr: &str, ready: Sender<()>) {
 }
 
 #[derive(Clone)]
-/// Polify for limit layer that will only allow the first connection to succeed
+/// Policy for limit layer that will only allow the first connection to succeed
 struct FirstConnOnly(Arc<AtomicBool>);
 
 impl FirstConnOnly {
