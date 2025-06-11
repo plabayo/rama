@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use super::utils;
 
 use rama::{
@@ -8,7 +10,7 @@ use rama::{
         headers::{ContentType, HeaderMapExt, dep::mime},
         sse::{
             JsonEventData,
-            datastar::{DatastarEvent, EventType, MergeFragments, MergeSignals, RemoveFragments},
+            datastar::{DatastarEvent, EventType, MergeFragments, RemoveFragments},
         },
     },
 };
@@ -59,18 +61,11 @@ async fn test_http_sse_datastar_hello() {
     let script_content = script_rsponse.try_into_string().await.unwrap();
     assert!(script_content.contains(r##"// Datastar v1"##));
 
+    let start_ts = Instant::now();
+
     // test the actual stream content
 
-    let mut stream = runner
-        .get("http://127.0.0.1:62031/hello-world")
-        .send(Context::default())
-        .await
-        .unwrap()
-        .into_body()
-        .into_string_data_event_stream();
-
     let mut expected_events: Vec<TestEvent> = vec![
-        MergeFragments::new(r##"sse-status"##).into(),
         RemoveFragments::new("#server-warning").into(),
         MergeFragments::new(
             r##"
@@ -79,13 +74,10 @@ async fn test_http_sse_datastar_hello() {
 "##,
         )
         .into(),
-        MergeSignals::new(JsonEventData(UpdateSignals { delay: Some(400) })).into(),
-        // instant ack (interval == instant at 0)
-        MergeFragments::new(r##"sse-status"##).into(),
     ];
+
     // add all messages (as we expect it come as animated frames due to call of `/start` endpoint)
     // this also includes an update of the signals first, as server is source of truth
-    expected_events.push(MergeSignals::new(JsonEventData(UpdateSignals { delay: Some(1) })).into());
     const MESSAGE: &str = "Hello, Datastar!";
     for i in 1..=MESSAGE.len() {
         let text = &MESSAGE[..i];
@@ -102,7 +94,18 @@ async fn test_http_sse_datastar_hello() {
     }
     expected_events.reverse();
 
-    // start animation so we get it streamed later
+    let mut sse_status_counter = 0;
+    let mut signal_counter = 0;
+
+    let mut stream = runner
+        .get("http://127.0.0.1:62031/hello-world")
+        .send(Context::default())
+        .await
+        .unwrap()
+        .into_body()
+        .into_event_stream();
+
+    // start animation so we get it streamed in next response
     let response = runner
         .post("http://127.0.0.1:62031/start?datastar=")
         .json(&json!({
@@ -113,24 +116,60 @@ async fn test_http_sse_datastar_hello() {
         .unwrap();
     assert_eq!(StatusCode::OK, response.status());
 
+    let mut index = 0;
     while let Some(result) = stream.next().await {
         let event: TestEvent = result.unwrap();
+        index += 1;
+        println!("#{index}> >>RECVD: {event:?}");
+
+        if event.event() == Some(EventType::MergeSignals.as_str()) {
+            // check separately for out of order stuff that's not important to this test
+
+            let data = event.into_data().unwrap().into_merge_signals().unwrap();
+            assert!(!data.only_if_missing);
+
+            if signal_counter == 0 {
+                // depending on how it was executed can already be 1 or still 400.
+                assert!([400, 1].contains(&data.signals.delay.unwrap()));
+            } else {
+                assert_eq!(1, data.signals.delay.unwrap());
+            }
+
+            signal_counter += 1;
+            continue;
+        }
+
+        if event
+            .data()
+            .cloned()
+            .and_then(|d| d.into_merge_fragments().ok())
+            .map(|d| d.fragments.contains("sse-status"))
+            .unwrap_or_default()
+        {
+            sse_status_counter += 1;
+            continue;
+        }
+
         match expected_events.pop() {
             Some(expected_event) => {
                 // merge fragments handled differently
                 // as fragments can have meaningless differences in newlines
                 if expected_event.event() == Some(EventType::MergeFragments.as_str()) {
-                    if event.event() == Some(EventType::MergeSignals.as_str()) {
-                        expected_events.push(expected_event);
-                        continue;
-                    }
-
-                    assert_eq!(expected_event.event(), event.event());
-                    assert_eq!(expected_event.id(), event.id());
-                    assert_eq!(expected_event.retry(), event.retry());
+                    assert_eq!(
+                        expected_event.event(),
+                        event.event(),
+                        "event #{index}: {event:?}"
+                    );
+                    assert_eq!(expected_event.id(), event.id(), "event #{index}: {event:?}");
+                    assert_eq!(
+                        expected_event.retry(),
+                        event.retry(),
+                        "event #{index}: {event:?}"
+                    );
                     assert_eq!(
                         expected_event.comment().collect_vec(),
-                        event.comment().collect_vec()
+                        event.comment().collect_vec(),
+                        "event #{index}: {event:?}"
                     );
 
                     let expected_data = expected_event
@@ -147,7 +186,10 @@ async fn test_http_sse_datastar_hello() {
                     if expected_data.fragments.contains("sse-status") {
                         // only check if data also contains, as there
                         // is some data in the fragment that is based on timing
-                        assert!(data.fragments.contains("sse-status"));
+                        assert!(
+                            data.fragments.contains("sse-status"),
+                            "event #{index}: data = {data:?}"
+                        );
                     } else {
                         let mut expected_fragments = expected_data.fragments.to_string();
                         expected_fragments.retain(|c| !c.is_whitespace());
@@ -155,7 +197,7 @@ async fn test_http_sse_datastar_hello() {
                         let mut fragments = data.fragments.to_string();
                         fragments.retain(|c| !c.is_whitespace());
 
-                        assert_eq!(expected_fragments, fragments);
+                        assert_eq!(expected_fragments, fragments, "event #{index}");
                     }
                 } else {
                     assert_eq!(expected_event, event);
@@ -163,6 +205,7 @@ async fn test_http_sse_datastar_hello() {
             }
             None => panic!("unexpected stream event: {:?} (epxected EOF)", event),
         }
+
         if expected_events.is_empty() {
             break;
         }
@@ -172,6 +215,12 @@ async fn test_http_sse_datastar_hello() {
     // stream should unexpected EOF now, as we do not gracefully shutdown
 
     stream.next().await.unwrap().unwrap_err();
+
+    assert_eq!(2, signal_counter);
+
+    let expected_sse_status_counter = 2 + (start_ts.elapsed().as_secs() / 3);
+    let diff = expected_sse_status_counter.saturating_sub(sse_status_counter);
+    assert!(diff <= 1 || sse_status_counter.saturating_sub(expected_sse_status_counter) <= 1);
 }
 
 type TestEvent = DatastarEvent<JsonEventData<UpdateSignals>>;

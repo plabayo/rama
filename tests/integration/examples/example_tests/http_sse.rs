@@ -49,7 +49,7 @@ async fn test_http_sse() {
         .into_string_data_event_stream();
     while let Some(result) = stream.next().await {
         let event = result.unwrap();
-        let message: String = event.into_data().unwrap();
+        let message = event.into_data().unwrap();
         assert!(!message.is_empty());
         unique_events.insert(message);
         event_count += 1;

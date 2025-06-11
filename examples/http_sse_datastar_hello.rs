@@ -231,8 +231,8 @@ pub mod controller {
         const MESSAGE: &str = "Hello, Datastar!";
 
         pub fn new(guard: ShutdownGuard) -> Self {
-            let (cmd_tx, cmd_rx) = mpsc::channel(1024);
-            let (msg_tx, msg_rx) = broadcast::channel(1024);
+            let (cmd_tx, cmd_rx) = mpsc::channel(8);
+            let (msg_tx, msg_rx) = broadcast::channel(8);
 
             let exit_cmd_tx = cmd_tx.clone();
             let weak_guard = guard.clone_weak();
