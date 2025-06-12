@@ -4,7 +4,10 @@ use rama_core::{
     error::{BoxError, OpaqueError},
     inspect::RequestInspector,
 };
-use rama_http::{header::USER_AGENT, opentelemetry::version_as_protocol_version};
+use rama_http::{
+    header::{HOST, USER_AGENT},
+    opentelemetry::version_as_protocol_version,
+};
 use rama_http_core::h2::frame::Priority;
 use rama_http_types::{
     Request, Version,
@@ -14,6 +17,7 @@ use rama_http_types::{
 };
 use rama_net::{
     client::{ConnectorService, EstablishedClientConnection},
+    http::RequestContext,
     stream::Stream,
 };
 use tokio::sync::Mutex;
@@ -126,6 +130,18 @@ where
             .await
             .map_err(Into::into)?;
 
+        let server_address = ctx
+            .get::<RequestContext>()
+            .map(|ctx| ctx.authority.host().to_str())
+            .or_else(|| req.uri().host().map(Into::into))
+            .or_else(|| {
+                req.headers()
+                    .get(HOST)
+                    .and_then(|v| v.to_str().ok())
+                    .map(Into::into)
+            })
+            .unwrap_or_default();
+
         let io = Box::pin(conn);
 
         match req.version() {
@@ -175,6 +191,8 @@ where
                     network.protocol.name = "http",
                     network.protocol.version = version_as_protocol_version(req.version()),
                     user_agent.original = %req.headers().get(USER_AGENT).and_then(|v| v.to_str().ok()).unwrap_or_default(),
+                    server.address = %server_address,
+                    server.service.name = %server_address,
                 );
 
                 ctx.spawn(
@@ -216,6 +234,8 @@ where
                     network.protocol.name = "http",
                     network.protocol.version = version_as_protocol_version(req.version()),
                     user_agent.original = %req.headers().get(USER_AGENT).and_then(|v| v.to_str().ok()).unwrap_or_default(),
+                    server.address = %server_address,
+                    server.service.name = %server_address,
                 );
 
                 ctx.spawn(

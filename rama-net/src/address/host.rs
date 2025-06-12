@@ -38,6 +38,14 @@ impl Host {
     pub fn is_ipv6(&self) -> bool {
         matches!(self, Host::Address(IpAddr::V4(_)))
     }
+
+    /// Returns [`Host`] as a string, only allocated if we need to render it.
+    pub fn to_str(&self) -> std::borrow::Cow<'_, str> {
+        match self {
+            Host::Name(domain) => domain.as_str().into(),
+            Host::Address(ip_addr) => ip_addr.to_string().into(),
+        }
+    }
 }
 
 impl Host {

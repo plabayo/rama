@@ -16,35 +16,21 @@ macro_rules! __root_span {
     };
     (target: $target:expr, $lvl:expr, $name:expr, $($fields:tt)*) => {
         {
-            use $crate::telemetry::tracing::__macro_support::Callsite as _;
             use $crate::telemetry::tracing::OpenTelemetrySpanExt as _;
-            use $crate::telemetry::opentelemetry::trace::get_active_span;
 
-            static __CALLSITE: $crate::telemetry::tracing::__macro_support::MacroCallsite = $crate::telemetry::tracing::callsite2! {
-                name: $name,
-                kind: $crate::telemetry::tracing::metadata::Kind::SPAN,
+            let src_span = $crate::telemetry::tracing::Span::current();
+
+            let span = $crate::telemetry::tracing::span!(
                 target: $target,
-                level: $lvl,
-                fields: $($fields)*
-            };
+                parent: None,
+                $lvl,
+                $name,
+                $($fields)*
+            );
 
-            let mut interest = $crate::telemetry::tracing::subscriber::Interest::never();
-            let span = if $crate::telemetry::tracing::level_enabled!($lvl)
-                && { interest = __CALLSITE.interest(); !interest.is_never() }
-                && $crate::telemetry::tracing::__macro_support::__is_enabled(__CALLSITE.metadata(), interest)
-            {
-                let meta = __CALLSITE.metadata();
-                $crate::telemetry::tracing::Span::new_root(
-                    meta,
-                    &$crate::telemetry::tracing::valueset!(meta.fields(), $($fields)*))
-            } else {
-                let span = $crate::telemetry::tracing::__macro_support::__disabled_span(__CALLSITE.metadata());
-                $crate::telemetry::tracing::if_log_enabled! { $lvl, {
-                    span.record_all(&$crate::valueset!(__CALLSITE.metadata().fields(), $($fields)*));
-                }};
-                span
-            };
-            span.add_link(get_active_span(|span| span.span_context().clone()));
+            span.set_parent(src_span.context());
+            span.follows_from(src_span);
+
             span
         }
     };
