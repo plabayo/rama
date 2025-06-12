@@ -16,8 +16,6 @@ macro_rules! __root_span {
     };
     (target: $target:expr, $lvl:expr, $name:expr, $($fields:tt)*) => {
         {
-            use $crate::telemetry::tracing::OpenTelemetrySpanExt as _;
-
             let src_span = $crate::telemetry::tracing::Span::current();
 
             let span = $crate::telemetry::tracing::span!(
@@ -28,9 +26,7 @@ macro_rules! __root_span {
                 $($fields)*
             );
 
-            span.set_parent(src_span.context());
             span.follows_from(src_span);
-
             span
         }
     };
