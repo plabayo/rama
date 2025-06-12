@@ -23,8 +23,6 @@ dns = ["dep:rama-dns", "dep:rand"]
 
 [dependencies]
 byteorder = { workspace = true }
-futures-core = { workspace = true }
-futures-sink = { workspace = true }
 rama-core = { workspace = true }
 rama-dns = { workspace = true, optional = true }
 rama-net = { workspace = true, features = ["http"] }

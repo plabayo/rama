@@ -1592,7 +1592,7 @@ impl PushPromises {
     }
 }
 
-impl futures_core::Stream for PushPromises {
+impl rama_core::futures::Stream for PushPromises {
     type Item = Result<PushPromise, crate::h2::Error>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {

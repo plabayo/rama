@@ -30,8 +30,6 @@ unstable = []
 atomic-waker = { workspace = true }
 fnv = { workspace = true }
 futures-channel = { workspace = true }
-futures-core = { workspace = true }
-futures-sink = { workspace = true }
 httparse = { workspace = true }
 httpdate = { workspace = true }
 indexmap = { workspace = true, features = ["std"] }

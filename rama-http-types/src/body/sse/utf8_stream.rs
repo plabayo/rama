@@ -1,8 +1,8 @@
-use futures_core::stream::Stream;
-use futures_core::task::{Context, Poll};
 use pin_project_lite::pin_project;
+use rama_core::futures::stream::Stream;
 use rama_error::{BoxError, ErrorContext, ErrorExt, OpaqueError};
 use std::pin::Pin;
+use std::task::{Context, Poll};
 
 pin_project! {
 pub(super) struct Utf8Stream<S> {

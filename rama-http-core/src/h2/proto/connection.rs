@@ -4,8 +4,8 @@ use crate::h2::frame::{Priority, Reason, StreamDependency, StreamId};
 use crate::h2::proto::*;
 use crate::h2::{client, server};
 
-use futures_core::Stream;
 use rama_core::bytes::Bytes;
+use rama_core::futures::Stream;
 use rama_core::telemetry::tracing;
 use rama_http_types::proto::h2::PseudoHeaderOrder;
 use std::borrow::Cow;

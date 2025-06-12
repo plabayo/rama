@@ -1,9 +1,9 @@
 //! SSE types for servers.
 
 use crate::dep::http_body::{Body, Frame};
-use futures_core::Stream;
 use pin_project_lite::pin_project;
 use rama_core::bytes::Bytes;
+use rama_core::futures::Stream;
 use rama_error::{BoxError, ErrorContext, OpaqueError};
 use rama_utils::macros::generate_set_and_with;
 use smol_str::SmolStr;
@@ -27,7 +27,7 @@ pin_project! {
 impl<S> SseResponseBody<S> {
     /// Create a new `SseBody` from a [`Stream`].
     ///
-    /// [`Stream`]: https://docs.rs/futures-core/latest/futures_core/stream/trait.Stream.html
+    /// [`Stream`]: https://docs.rs/futures/latest/futures/stream/trait.Stream.html
     pub fn new<T, E>(stream: S) -> Self
     where
         S: Stream<Item = Result<Event<T>, E>>,

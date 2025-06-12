@@ -3,8 +3,8 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use futures_channel::{mpsc, oneshot};
-use futures_core::{Stream, stream::FusedStream}; // for mpsc::Receiver
 use rama_core::bytes::Bytes;
+use rama_core::futures::{Stream, stream::FusedStream}; // for mpsc::Receiver
 use rama_http_types::HeaderMap;
 use rama_http_types::dep::http_body::{Body, Frame, SizeHint};
 use std::task::ready;

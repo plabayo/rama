@@ -472,7 +472,7 @@ impl RecvStream {
     }
 }
 
-impl futures_core::Stream for RecvStream {
+impl rama_core::futures::Stream for RecvStream {
     type Item = Result<Bytes, crate::h2::Error>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {

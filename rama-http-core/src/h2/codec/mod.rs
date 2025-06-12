@@ -10,9 +10,9 @@ use self::framed_write::FramedWrite;
 use crate::h2::frame::{self, Data, Frame};
 use crate::h2::proto::Error;
 
-use futures_core::Stream;
-use futures_sink::Sink;
 use rama_core::bytes::Buf;
+use rama_core::futures::Sink;
+use rama_core::futures::Stream;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncWrite};

@@ -4,9 +4,9 @@ use crate::dep::{
     http_body::{self, Body as _, Frame},
     http_body_util::{self, BodyExt},
 };
-use futures_core::TryStream;
 use pin_project_lite::pin_project;
 use rama_core::bytes::Bytes;
+use rama_core::futures::TryStream;
 use rama_core::futures::stream::Stream;
 use rama_error::{BoxError, OpaqueError};
 use sse::{EventDataRead, EventStream};
@@ -72,7 +72,7 @@ impl Body {
 
     /// Create a new `Body` from a [`Stream`].
     ///
-    /// [`Stream`]: https://docs.rs/futures-core/latest/futures_core/stream/trait.Stream.html
+    /// [`Stream`]: https://docs.rs/futures/latest/futures/stream/trait.Stream.html
     pub fn from_stream<S>(stream: S) -> Self
     where
         S: TryStream<Ok: Into<Bytes>, Error: Into<BoxError>> + Send + 'static,

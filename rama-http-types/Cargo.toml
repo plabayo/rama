@@ -19,7 +19,6 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
 const_format = { workspace = true }
-futures-core = { workspace = true }
 http = { workspace = true }
 http-body = { workspace = true }
 http-body-util = { workspace = true }

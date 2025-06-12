@@ -598,7 +598,7 @@ where
     }
 }
 
-impl<T, B> futures_core::Stream for Connection<T, B>
+impl<T, B> rama_core::futures::Stream for Connection<T, B>
 where
     T: AsyncRead + AsyncWrite + Unpin,
     B: Buf,

@@ -4,9 +4,9 @@ use super::parser::{RawEventLine, is_bom, line};
 use super::utf8_stream::Utf8Stream;
 use super::{Event, EventBuildError, EventDataRead};
 
-use futures_core::stream::Stream;
-use futures_core::task::{Context, Poll};
 use pin_project_lite::pin_project;
+use rama_core::futures::stream::Stream;
+use rama_core::futures::task::{Context, Poll};
 use rama_core::telemetry::tracing;
 use rama_error::{BoxError, OpaqueError};
 use smol_str::SmolStr;

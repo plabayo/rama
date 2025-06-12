@@ -1,7 +1,7 @@
-use futures_core::Stream;
-use futures_sink::Sink;
 use rama_core::bytes::{BufMut, BytesMut};
 use rama_core::error::{BoxError, OpaqueError};
+use rama_core::futures::Sink;
+use rama_core::futures::Stream;
 use rama_core::telemetry::tracing;
 use rama_net::{address::SocketAddress, socket::Interface};
 use rama_udp::UdpSocket;
