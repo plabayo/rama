@@ -1100,7 +1100,6 @@ dependencies = [
  "rama-http-core",
  "rama-http-types",
  "tokio",
- "tracing",
  "tracing-subscriber",
 ]
 
@@ -1115,7 +1114,6 @@ dependencies = [
  "rama-http-types",
  "tokio",
  "tokio-test",
- "tracing",
  "tracing-subscriber",
  "tracing-tree",
 ]
@@ -2330,7 +2328,6 @@ dependencies = [
  "spmc",
  "tokio",
  "tokio-test",
- "tracing",
  "tracing-subscriber",
 ]
 
@@ -2389,7 +2386,6 @@ dependencies = [
  "tikv-jemallocator",
  "tokio",
  "tokio-postgres",
- "tracing",
  "tracing-subscriber",
 ]
 
@@ -2427,7 +2423,6 @@ dependencies = [
  "serde",
  "serde_html_form",
  "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -2455,7 +2450,6 @@ dependencies = [
  "rama-utils",
  "tokio",
  "tokio-test",
- "tracing",
 ]
 
 [[package]]
@@ -2498,7 +2492,6 @@ dependencies = [
  "tokio-stream",
  "tokio-test",
  "tokio-util",
- "tracing",
  "tracing-subscriber",
  "uuid",
  "zstd",
@@ -2524,7 +2517,6 @@ dependencies = [
  "rama-unix",
  "rama-utils",
  "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -2557,7 +2549,6 @@ dependencies = [
  "tokio-rustls",
  "tokio-test",
  "tokio-util",
- "tracing",
  "walkdir",
  "want",
  "webpki-roots",
@@ -2580,7 +2571,6 @@ dependencies = [
  "sha1",
  "tokio",
  "tokio-test",
- "tracing",
 ]
 
 [[package]]
@@ -2610,7 +2600,6 @@ dependencies = [
  "sync_wrapper",
  "tokio",
  "tokio-test",
- "tracing",
 ]
 
 [[package]]
@@ -2650,7 +2639,6 @@ dependencies = [
  "socket2",
  "tokio",
  "tokio-test",
- "tracing",
  "venndb",
 ]
 
@@ -2670,7 +2658,6 @@ dependencies = [
  "serde_json",
  "tokio",
  "tokio-test",
- "tracing",
  "unicode-normalization",
  "venndb",
 ]
@@ -2692,7 +2679,6 @@ dependencies = [
  "smallvec",
  "tokio",
  "tokio-test",
- "tracing",
 ]
 
 [[package]]
@@ -2705,7 +2691,6 @@ dependencies = [
  "rama-net",
  "rama-utils",
  "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -2726,7 +2711,6 @@ dependencies = [
  "rama-ua",
  "rama-utils",
  "tokio",
- "tracing",
  "zstd",
 ]
 
@@ -2745,7 +2729,6 @@ dependencies = [
  "rustls-pki-types",
  "tokio",
  "tokio-rustls",
- "tracing",
  "webpki-roots",
 ]
 
@@ -2774,7 +2757,6 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
- "tracing",
 ]
 
 [[package]]
@@ -2797,7 +2779,6 @@ dependencies = [
  "rama-net",
  "tokio",
  "tokio-util",
- "tracing",
 ]
 
 [[package]]

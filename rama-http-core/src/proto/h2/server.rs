@@ -8,13 +8,10 @@ use pin_project_lite::pin_project;
 use rama_core::bytes::Bytes;
 use rama_core::error::BoxError;
 use rama_core::rt::Executor;
-use rama_core::telemetry::opentelemetry;
-use rama_core::telemetry::opentelemetry::trace::get_active_span;
-use rama_core::telemetry::opentelemetry::tracing::OpenTelemetrySpanExt;
+use rama_core::telemetry::tracing::{Instrument, debug, trace, trace_root_span, warn};
 use rama_http::opentelemetry::version_as_protocol_version;
 use rama_http_types::{Method, Request, Response, header};
 use tokio::io::{AsyncRead, AsyncWrite};
-use tracing::{Instrument, debug, trace, warn};
 
 use super::{PipeToSendStream, SendBuf, ping};
 use crate::body::{Body, Incoming as IncomingBody};
@@ -284,7 +281,7 @@ where
                             req.extensions_mut().insert(Protocol::from_inner(protocol));
                         }
 
-                        let serve_span = tracing::trace_span!(
+                        let serve_span = trace_root_span!(
                             "h2::stream",
                             otel.kind = "server",
                             http.request.method = %req.method().as_str(),
@@ -295,8 +292,6 @@ where
                             network.protocol.name = "http",
                             network.protocol.version = version_as_protocol_version(req.version()),
                         );
-                        serve_span.set_parent(opentelemetry::Context::new());
-                        serve_span.add_link(get_active_span(|span| span.span_context().clone()));
 
                         let fut = H2Stream::new(
                             service.serve_http(req),

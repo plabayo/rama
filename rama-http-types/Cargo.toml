@@ -39,7 +39,6 @@ smallvec = { workspace = true }
 smol_str = { workspace = true }
 sync_wrapper = { workspace = true }
 tokio = { workspace = true, features = ["macros", "io-std"] }
-tracing = { workspace = true }
 
 [dev-dependencies]
 futures = { workspace = true }

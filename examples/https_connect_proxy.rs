@@ -45,6 +45,7 @@ use rama::{
     rt::Executor,
     service::service_fn,
     tcp::{client::service::Forwarder, server::TcpListener},
+    telemetry::tracing::{self, level_filters::LevelFilter},
 };
 
 #[cfg(feature = "boring")]
@@ -61,7 +62,6 @@ use rama::tls::rustls::server::{TlsAcceptorDataBuilder, TlsAcceptorLayer};
 
 use std::convert::Infallible;
 use std::time::Duration;
-use tracing::metadata::LevelFilter;
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 #[tokio::main]

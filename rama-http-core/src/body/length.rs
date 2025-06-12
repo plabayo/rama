@@ -1,6 +1,5 @@
+use rama_core::telemetry::tracing::warn;
 use std::fmt;
-
-use tracing::warn;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) struct DecodedLength(u64);

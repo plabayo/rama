@@ -7,6 +7,7 @@ use crate::h2::{Reason, RecvStream, SendStream};
 use pin_project_lite::pin_project;
 use rama_core::bytes::{Buf, Bytes};
 use rama_core::error::BoxError;
+use rama_core::telemetry::tracing::{debug, trace};
 use rama_http_types::header::{
     CONNECTION, KEEP_ALIVE, PROXY_CONNECTION, TE, TRANSFER_ENCODING, UPGRADE,
 };
@@ -14,7 +15,6 @@ use rama_http_types::proto::h1::headers::original::OriginalHttp1Headers;
 use rama_http_types::{HeaderMap, HeaderName};
 use std::task::ready;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
-use tracing::{debug, trace};
 
 use crate::body::Body;
 use crate::proto::h2::ping::Recorder;

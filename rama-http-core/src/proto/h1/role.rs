@@ -4,13 +4,13 @@ use std::fmt::{self, Write as _};
 
 use rama_core::bytes::Bytes;
 use rama_core::bytes::BytesMut;
+use rama_core::telemetry::tracing::{debug, error, trace, trace_span, warn};
 use rama_http_types::dep::http;
 use rama_http_types::header::Entry;
 use rama_http_types::header::{self, HeaderMap, HeaderValue};
 use rama_http_types::proto::h1::{Http1HeaderMap, Http1HeaderName};
 use rama_http_types::{Method, StatusCode, Version};
 use smallvec::{SmallVec, smallvec, smallvec_inline};
-use tracing::{debug, error, trace, trace_span, warn};
 
 use crate::body::DecodedLength;
 use crate::common::date;
@@ -199,7 +199,7 @@ impl Http1Transaction for Server {
             let header = unsafe { header.assume_init_ref() };
             let name = Http1HeaderName::try_copy_from_slice(&slice[header.name.0..header.name.1])
                 .inspect_err(|err| {
-                    tracing::debug!("invalid http1 header: {err:?}");
+                    debug!("invalid http1 header: {err:?}");
                 })
                 .map_err(|_| crate::error::Parse::Internal)?;
             let value = header_value!(slice.slice(header.value.0..header.value.1));
@@ -901,7 +901,7 @@ impl Http1Transaction for Client {
                 let name =
                     Http1HeaderName::try_copy_from_slice(&slice[header.name.0..header.name.1])
                         .inspect_err(|err| {
-                            tracing::debug!("invalid http1 header: {err:?}");
+                            debug!("invalid http1 header: {err:?}");
                         })
                         .map_err(|_| crate::error::Parse::Internal)?;
                 let value = header_value!(slice.slice(header.value.0..header.value.1));

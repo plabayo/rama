@@ -11,6 +11,7 @@ use rama::{
     },
     proxy::socks5::Socks5ProxyConnector,
     tcp::client::service::TcpConnector,
+    telemetry::tracing,
 };
 
 #[tokio::test]

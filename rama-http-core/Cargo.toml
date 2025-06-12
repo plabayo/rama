@@ -46,7 +46,6 @@ smallvec = { workspace = true }
 tokio = { workspace = true, features = ["io-util"] }
 tokio-test = { workspace = true }
 tokio-util = { workspace = true, features = ["codec", "io"] }
-tracing = { workspace = true, features = ["std"] }
 want = { workspace = true }
 
 [dev-dependencies]

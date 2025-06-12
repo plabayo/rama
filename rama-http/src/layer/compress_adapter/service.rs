@@ -4,6 +4,7 @@ use crate::layer::{
     decompression::{self, DecompressionBody},
     util::compression::WrapBody,
 };
+use rama_core::telemetry::tracing;
 use rama_core::{Context, Service, error::BoxError};
 use rama_http_types::{
     HeaderValue, Request, Response,

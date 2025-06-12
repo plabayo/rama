@@ -2,6 +2,7 @@ use crate::h2::Reason;
 
 use super::*;
 
+use rama_core::telemetry::tracing;
 use std::fmt;
 use std::task::{Context, Waker};
 use std::time::Instant;

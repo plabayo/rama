@@ -3,6 +3,7 @@
 use rama_core::{
     Context, Service,
     error::{BoxError, ErrorContext},
+    telemetry::tracing,
 };
 use rama_net::client::EstablishedClientConnection;
 

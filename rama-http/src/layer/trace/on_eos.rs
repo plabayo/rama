@@ -1,9 +1,9 @@
 use super::{DEFAULT_MESSAGE_LEVEL, Latency};
 use crate::header::HeaderMap;
 use crate::layer::classify::grpc_errors_as_failures::ParsedGrpcStatus;
+use rama_core::telemetry::tracing::{Level, Span};
 use rama_utils::latency::LatencyUnit;
 use std::time::Duration;
-use tracing::{Level, Span};
 
 /// Trait used to tell [`Trace`] what to do when a stream closes.
 ///

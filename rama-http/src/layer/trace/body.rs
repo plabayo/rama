@@ -3,13 +3,13 @@ use crate::dep::http_body::{Body, Frame};
 use crate::layer::classify::ClassifyEos;
 use pin_project_lite::pin_project;
 use rama_core::futures::ready;
+use rama_core::telemetry::tracing::Span;
 use std::{
     fmt,
     pin::Pin,
     task::{Context, Poll},
     time::Instant,
 };
-use tracing::Span;
 
 pin_project! {
     /// Response body for [`Trace`].

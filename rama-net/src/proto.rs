@@ -9,7 +9,7 @@ use rama_utils::macros::str::eq_ignore_ascii_case;
 use rama_http_types::{Method, Scheme};
 
 #[cfg(feature = "http")]
-use tracing::{trace, warn};
+use rama_core::telemetry::tracing::{trace, warn};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 /// Web protocols that are relevant to Rama.

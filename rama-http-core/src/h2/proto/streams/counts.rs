@@ -1,4 +1,5 @@
 use super::*;
+use rama_core::telemetry::tracing;
 
 #[derive(Debug)]
 pub(super) struct Counts {

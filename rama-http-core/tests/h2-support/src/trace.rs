@@ -1,4 +1,4 @@
-pub use tracing;
+pub use rama_core::telemetry::tracing;
 pub use tracing_subscriber;
 
 use std::io::{self, IsTerminal};

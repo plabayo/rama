@@ -6,10 +6,10 @@ use std::{
 
 use rama_core::bytes::{Buf, Bytes};
 use rama_core::error::BoxError;
+use rama_core::telemetry::tracing::{debug, error, trace};
 use rama_http_types::{Request, Response, StatusCode};
 use std::task::ready;
 use tokio::io::{AsyncRead, AsyncWrite};
-use tracing::{debug, error, trace};
 
 use super::{Http1Transaction, Wants};
 use crate::body::{Body, DecodedLength, Incoming as IncomingBody};

@@ -1,21 +1,23 @@
+use super::utils;
+
 use std::sync::Arc;
 
-use super::utils;
-use rama::http::client::HttpConnector;
-use rama::http::{Body, service::web::Router};
-use rama::net::{
-    Protocol,
-    address::SocketAddress,
-    client::{ConnectorService, EstablishedClientConnection},
-    user::{Basic, ProxyCredential},
-};
-use rama::proxy::socks5::Socks5ProxyConnector;
-use rama::tcp::{client::service::TcpConnector, server::TcpListener};
 use rama::{
     Context, Service,
-    http::{BodyExtractExt, Request, server::HttpServer},
-    net::address::ProxyAddress,
+    http::{
+        Body, BodyExtractExt, Request, client::HttpConnector, server::HttpServer,
+        service::web::Router,
+    },
+    net::{
+        Protocol,
+        address::{ProxyAddress, SocketAddress},
+        client::{ConnectorService, EstablishedClientConnection},
+        user::{Basic, ProxyCredential},
+    },
+    proxy::socks5::Socks5ProxyConnector,
     rt::Executor,
+    tcp::{client::service::TcpConnector, server::TcpListener},
+    telemetry::tracing,
 };
 
 #[tokio::test]

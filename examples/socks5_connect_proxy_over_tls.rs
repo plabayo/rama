@@ -37,6 +37,7 @@ use rama::{
     proxy::socks5::{Socks5Acceptor, Socks5Auth, Socks5ProxyConnector},
     rt::Executor,
     tcp::{client::service::TcpConnector, server::TcpListener},
+    telemetry::tracing::{self, level_filters::LevelFilter},
     tls::boring::{
         client::{TlsConnector, TlsConnectorDataBuilder},
         server::{TlsAcceptorData, TlsAcceptorService},
@@ -44,7 +45,6 @@ use rama::{
 };
 
 use std::sync::Arc;
-use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]

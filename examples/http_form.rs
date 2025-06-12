@@ -41,10 +41,10 @@ use rama::http::layer::trace::TraceLayer;
 use rama::http::matcher::HttpMatcher;
 use rama::http::service::web::response::{Html, IntoResponse};
 use rama::http::service::web::{WebService, extract::Form};
+use rama::telemetry::tracing::{self, level_filters::LevelFilter};
 use rama::{http::server::HttpServer, rt::Executor};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
-use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Serialize, Deserialize, Debug)]

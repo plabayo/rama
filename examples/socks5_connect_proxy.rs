@@ -33,10 +33,10 @@
 use rama::{
     proxy::socks5::{Socks5Acceptor, Socks5Auth},
     tcp::server::TcpListener,
+    telemetry::tracing::level_filters::LevelFilter,
 };
 
 use std::time::Duration;
-use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]

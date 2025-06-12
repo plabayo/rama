@@ -6,6 +6,7 @@ use std::{
 };
 
 use pin_project_lite::pin_project;
+use rama_core::telemetry::tracing;
 use rama_core::{
     Context, Service,
     error::{BoxError, ErrorContext, OpaqueError},

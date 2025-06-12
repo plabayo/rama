@@ -9,6 +9,7 @@ use crate::{
     types::SecureTransport,
 };
 use parking_lot::Mutex;
+use rama_core::telemetry::tracing::{debug, trace};
 use rama_core::{
     Context, Service,
     error::{BoxError, ErrorContext, ErrorExt, OpaqueError},
@@ -22,7 +23,6 @@ use rama_net::{
 };
 use rama_utils::macros::define_inner_service_accessors;
 use std::{io::ErrorKind, sync::Arc};
-use tracing::{debug, trace};
 
 /// A [`Service`] which accepts TLS connections and delegates the underlying transport
 /// stream to the given service.

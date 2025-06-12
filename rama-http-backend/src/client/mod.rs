@@ -7,6 +7,7 @@ use rama_core::{
     Context, Service,
     error::{BoxError, ErrorContext, OpaqueError},
     service::BoxService,
+    telemetry::tracing,
 };
 use rama_http_types::{Request, Response, dep::http_body};
 use rama_net::client::EstablishedClientConnection;
@@ -18,7 +19,6 @@ pub use svc::HttpClientService;
 mod conn;
 #[doc(inline)]
 pub use conn::{HttpConnector, HttpConnectorLayer};
-use tracing::trace;
 
 pub mod http_inspector;
 pub mod proxy;
@@ -147,7 +147,7 @@ where
 
         let EstablishedClientConnection { ctx, req, conn } = self.connector.serve(ctx, req).await?;
         // NOTE: stack might change request version based on connector data,
-        trace!(uri = %uri, "send http req to connector stack");
+        tracing::trace!(uri = %uri, "send http req to connector stack");
 
         let result = conn.serve(ctx, req).await;
 
@@ -155,7 +155,7 @@ where
             .map_err(OpaqueError::from_boxed)
             .with_context(|| format!("http request failure for uri: {uri}"))?;
 
-        trace!(uri = %uri, "response received from connector stack");
+        tracing::trace!(uri = %uri, "response received from connector stack");
 
         Ok(resp)
     }

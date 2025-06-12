@@ -4,11 +4,10 @@ use std::io;
 use std::task::{Context, Poll};
 
 use rama_core::bytes::{BufMut, Bytes, BytesMut};
+use rama_core::telemetry::tracing::{debug, trace};
 use rama_http_types::dep::http_body::Frame;
 use rama_http_types::{HeaderMap, HeaderName, HeaderValue};
 use std::task::ready;
-use tracing::debug;
-use tracing::trace;
 
 use super::DecodedLength;
 use super::io::MemRead;

@@ -1,5 +1,6 @@
 use std::ops::{Deref, DerefMut};
 
+use rama_core::telemetry::tracing;
 use rama_http_types::{HeaderName, HeaderValue, header::FORWARDED};
 use rama_net::forwarded::ForwardedElement;
 

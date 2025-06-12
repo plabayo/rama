@@ -56,6 +56,7 @@ use rama::{
     net::address::SocketAddress,
     rt::Executor,
     tcp::server::TcpListener,
+    telemetry::tracing::{self, Instrument, level_filters::LevelFilter},
 };
 
 use std::{
@@ -67,7 +68,6 @@ use std::{
     time::Duration,
 };
 use tokio::sync::{broadcast, mpsc};
-use tracing::{Instrument, level_filters::LevelFilter};
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]

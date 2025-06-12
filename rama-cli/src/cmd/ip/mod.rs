@@ -8,9 +8,9 @@ use rama::{
     net::socket::Interface,
     rt::Executor,
     tcp::server::TcpListener,
+    telemetry::tracing::{self, level_filters::LevelFilter},
 };
 use std::time::Duration;
-use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Debug, Args)]

@@ -1,3 +1,4 @@
+use rama_core::telemetry::tracing;
 use rama_core::{
     Context, Service,
     error::{ErrorExt, OpaqueError},

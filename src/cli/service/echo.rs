@@ -34,6 +34,7 @@ use crate::{
     net::stream::{SocketInfo, layer::http::BodyLimitLayer},
     proxy::haproxy::server::HaProxyLayer,
     rt::Executor,
+    telemetry::tracing,
     ua::profile::UserAgentDatabase,
 };
 #[cfg(any(feature = "rustls", feature = "boring"))]

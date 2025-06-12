@@ -1,4 +1,5 @@
 use crate::{Socks5Client, client::proxy_error::Socks5ProxyError};
+use rama_core::telemetry::tracing;
 use rama_core::{
     Context, Layer, Service,
     error::{BoxError, ErrorExt, OpaqueError},

@@ -33,6 +33,7 @@ mod unix_example {
     use rama::{
         bytes::Bytes,
         futures::{FutureExt, SinkExt, StreamExt},
+        telemetry::tracing::{self, level_filters::LevelFilter},
         unix::{UnixDatagram, UnixDatagramFramed, UnixSocketAddress, codec::BytesCodec},
     };
 
@@ -41,7 +42,6 @@ mod unix_example {
         time::{Duration, SystemTime, UNIX_EPOCH},
     };
     use tokio::time;
-    use tracing::level_filters::LevelFilter;
     use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
     pub(super) async fn run() {

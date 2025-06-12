@@ -2,6 +2,7 @@ use super::{Header, header::BytesStr, huffman};
 use crate::h2::frame;
 
 use rama_core::bytes::{Buf, Bytes, BytesMut};
+use rama_core::telemetry::tracing;
 use rama_http_types::dep::http::{
     header,
     method::{self, Method},

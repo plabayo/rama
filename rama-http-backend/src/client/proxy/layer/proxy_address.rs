@@ -1,6 +1,7 @@
 use rama_core::{
     Context, Layer, Service,
     error::{ErrorContext, OpaqueError},
+    telemetry::tracing,
 };
 use rama_net::address::ProxyAddress;
 use std::fmt;

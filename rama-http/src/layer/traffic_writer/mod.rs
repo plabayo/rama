@@ -8,7 +8,7 @@ use crate::{
 };
 use rama_core::{
     rt::Executor,
-    telemetry::opentelemetry::{self, trace::get_active_span, tracing::OpenTelemetrySpanExt},
+    telemetry::tracing::{self, Instrument},
 };
 use tokio::{
     io::{AsyncWrite, AsyncWriteExt},
@@ -24,7 +24,6 @@ mod response;
 pub use response::{
     DoNotWriteResponse, ResponseWriter, ResponseWriterLayer, ResponseWriterService,
 };
-use tracing::Instrument;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 /// Http writer mode.
@@ -169,12 +168,10 @@ impl BidirectionalWriter<Sender<BidirectionalMessage>> {
             None => (false, false),
         };
 
-        let span = tracing::trace_span!(
+        let span = tracing::trace_root_span!(
             "TrafficWriter::bidirectional::bounded",
             otel.kind = "consumer",
         );
-        span.set_parent(opentelemetry::Context::new());
-        span.add_link(get_active_span(|span| span.span_context().clone()));
 
         executor.spawn_task(async move {
             while let Some(msg) = rx.recv().await {
@@ -238,10 +235,10 @@ impl BidirectionalWriter<Sender<BidirectionalMessage>> {
             None => (false, false),
         };
 
-        let span =
-            tracing::trace_span!("TrafficWriter::bidirectional::last", otel.kind = "consumer");
-        span.set_parent(opentelemetry::Context::new());
-        span.add_link(get_active_span(|span| span.span_context().clone()));
+        let span = tracing::trace_root_span!(
+            "TrafficWriter::bidirectional::last",
+            otel.kind = "consumer",
+        );
 
         executor.spawn_task(
             async move {

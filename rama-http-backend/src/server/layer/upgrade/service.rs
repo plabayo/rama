@@ -3,18 +3,12 @@
 //! See [`UpgradeService`] for more details.
 
 use super::Upgraded;
-use rama_core::{
-    Context, Service,
-    context::Extensions,
-    matcher::Matcher,
-    service::BoxService,
-    telemetry::opentelemetry::{self, trace::get_active_span, tracing::OpenTelemetrySpanExt},
-};
+use rama_core::telemetry::tracing::{self, Instrument};
+use rama_core::{Context, Service, context::Extensions, matcher::Matcher, service::BoxService};
 use rama_http::opentelemetry::version_as_protocol_version;
 use rama_http_types::Request;
 use rama_utils::macros::define_inner_service_accessors;
 use std::{convert::Infallible, fmt, sync::Arc};
-use tracing::Instrument;
 
 /// Upgrade service can be used to handle the possibility of upgrading a request,
 /// after which it will pass down the transport RW to the attached upgrade service.
@@ -108,7 +102,7 @@ where
                 Ok((resp, ctx, mut req)) => {
                     let handler = handler.handler.clone();
 
-                    let span = tracing::trace_span!(
+                    let span = tracing::trace_root_span!(
                         "upgrade::serve",
                         otel.kind = "server",
                         http.request.method = %req.method().as_str(),
@@ -119,8 +113,6 @@ where
                         network.protocol.name = "http",
                         network.protocol.version = version_as_protocol_version(req.version()),
                     );
-                    span.set_parent(opentelemetry::Context::new());
-                    span.add_link(get_active_span(|span| span.span_context().clone()));
 
                     exec.spawn_task(
                         async move {

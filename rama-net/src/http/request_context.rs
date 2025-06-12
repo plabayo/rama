@@ -7,6 +7,7 @@ use crate::{
 };
 use rama_core::Context;
 use rama_core::error::OpaqueError;
+use rama_core::telemetry::tracing;
 use rama_http_types::{HttpRequestParts, Method};
 use rama_http_types::{Uri, Version};
 

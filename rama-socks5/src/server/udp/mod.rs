@@ -1,5 +1,6 @@
 use std::{fmt, time::Duration};
 
+use rama_core::telemetry::tracing;
 use rama_core::{
     Context, Service, combinators::Either, error::BoxError, layer::timeout::DefaultTimeout,
 };

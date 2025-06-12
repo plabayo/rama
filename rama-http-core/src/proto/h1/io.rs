@@ -5,12 +5,11 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use rama_core::bytes::{Buf, BufMut, Bytes, BytesMut};
+use rama_core::telemetry::tracing::{debug, trace};
 use std::task::ready;
 use tokio::io::AsyncRead;
 use tokio::io::AsyncWrite;
 use tokio::io::ReadBuf;
-use tracing::debug;
-use tracing::trace;
 
 use super::{Http1Transaction, ParseContext, ParsedMessage};
 use crate::common::buf::BufList;

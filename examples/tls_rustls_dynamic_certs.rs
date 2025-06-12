@@ -63,6 +63,7 @@ use rama::{
     rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
+    telemetry::tracing::level_filters::LevelFilter,
     tls::rustls::{
         RamaFrom,
         dep::{
@@ -78,7 +79,6 @@ use rama::{
 
 // everything else is provided by the standard library, community crates or tokio
 use std::{convert::Infallible, io::BufReader, sync::Arc, time::Duration};
-use tracing::metadata::LevelFilter;
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 #[tokio::main]

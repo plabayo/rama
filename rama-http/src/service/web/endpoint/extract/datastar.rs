@@ -1,12 +1,12 @@
 //! [🚀 data-\*](https://data-star.dev/) support extractor for rama.
 
-use rama_http_types::{BodyExtractExt, Method, Request, Response, StatusCode};
-use serde::{Deserialize, de::DeserializeOwned};
-
 use crate::service::web::{
     extract::{FromRequest, OptionalFromRequest, Query},
     response::IntoResponse,
 };
+use rama_core::telemetry::tracing;
+use rama_http_types::{BodyExtractExt, Method, Request, Response, StatusCode};
+use serde::{Deserialize, de::DeserializeOwned};
 
 /// [`ReadSignals`] is a request extractor that reads datastar signals from the request.
 #[derive(Debug)]

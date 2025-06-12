@@ -9,6 +9,7 @@ use crate::h2::hpack;
 use futures_core::Stream;
 
 use rama_core::bytes::{Buf, BytesMut};
+use rama_core::telemetry::tracing;
 
 use std::io;
 

@@ -6,6 +6,7 @@ use rama_core::bytes::{
     buf::{Chain, Take},
     {Buf, Bytes},
 };
+use rama_core::telemetry::tracing::{debug, trace};
 use rama_http_types::{
     HeaderMap, HeaderName, HeaderValue,
     header::{
@@ -13,7 +14,6 @@ use rama_http_types::{
         CONTENT_TYPE, HOST, MAX_FORWARDS, SET_COOKIE, TE, TRAILER, TRANSFER_ENCODING,
     },
 };
-use tracing::{debug, trace};
 
 use super::io::WriteBuf;
 use super::role::{write_headers, write_headers_title_case};

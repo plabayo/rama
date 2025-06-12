@@ -6,14 +6,11 @@ use crate::{Body, Request};
 use rama_core::bytes::Bytes;
 use rama_core::error::{BoxError, ErrorExt, OpaqueError};
 use rama_core::rt::Executor;
-use rama_core::telemetry::opentelemetry;
-use rama_core::telemetry::opentelemetry::trace::get_active_span;
-use rama_core::telemetry::opentelemetry::tracing::OpenTelemetrySpanExt;
+use rama_core::telemetry::tracing::{self, Instrument};
 use rama_core::{Context, Service};
 use std::fmt::Debug;
 use tokio::io::{AsyncWrite, AsyncWriteExt, stderr, stdout};
 use tokio::sync::mpsc::{Sender, UnboundedSender, channel, unbounded_channel};
-use tracing::Instrument;
 
 /// A trait for writing http requests.
 pub trait RequestWriter: Send + Sync + 'static {
@@ -79,9 +76,7 @@ impl RequestWriterInspector<UnboundedSender<Request>> {
         };
 
         let span =
-            tracing::trace_span!("TrafficWriter::request::unbounded", otel.kind = "consumer");
-        span.set_parent(opentelemetry::Context::new());
-        span.add_link(get_active_span(|span| span.span_context().clone()));
+            tracing::trace_root_span!("TrafficWriter::request::unbounded", otel.kind = "consumer");
 
         executor.spawn_task(
             async move {
@@ -134,9 +129,8 @@ impl RequestWriterInspector<Sender<Request>> {
             None => (false, false),
         };
 
-        let span = tracing::trace_span!("TrafficWriter::request::bounded", otel.kind = "consumer");
-        span.set_parent(opentelemetry::Context::new());
-        span.add_link(get_active_span(|span| span.span_context().clone()));
+        let span =
+            tracing::trace_root_span!("TrafficWriter::request::bounded", otel.kind = "consumer");
 
         executor.spawn_task(
             async move {

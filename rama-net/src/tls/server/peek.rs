@@ -1,5 +1,6 @@
 use std::fmt;
 
+use rama_core::telemetry::tracing;
 use rama_core::{
     Context, Service,
     error::{BoxError, ErrorContext},

@@ -11,6 +11,7 @@ use super::{
     common::{authority_length, read_authority, write_authority_to_buf},
 };
 use rama_core::bytes::{BufMut, BytesMut};
+use rama_core::telemetry::tracing;
 use rama_net::address::Authority;
 use smallvec::{SmallVec, smallvec};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};

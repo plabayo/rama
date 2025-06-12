@@ -5,6 +5,7 @@ use rama_core::{
     Context, Service,
     combinators::Either,
     error::{BoxError, ErrorExt, OpaqueError},
+    telemetry::tracing,
 };
 use rama_http_core::upgrade;
 use rama_http_headers::ProxyAuthorization;

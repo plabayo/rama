@@ -17,13 +17,13 @@ use rama::{
     },
     rt::Executor,
     tcp::server::TcpListener,
+    telemetry::tracing::{self, level_filters::LevelFilter},
 };
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as ENGINE;
 
 use std::{convert::Infallible, path::PathBuf, time::Duration};
-use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Debug, Args)]

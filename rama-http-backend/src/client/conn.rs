@@ -3,7 +3,6 @@ use rama_core::{
     Context, Layer, Service,
     error::{BoxError, OpaqueError},
     inspect::RequestInspector,
-    telemetry::opentelemetry::{self, trace::get_active_span, tracing::OpenTelemetrySpanExt},
 };
 use rama_http::{header::USER_AGENT, opentelemetry::version_as_protocol_version};
 use rama_http_core::h2::frame::Priority;
@@ -19,9 +18,9 @@ use rama_net::{
 };
 use tokio::sync::Mutex;
 
+use rama_core::telemetry::tracing::{self, Instrument};
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
-use tracing::{Instrument, trace};
 
 /// A [`Service`] which establishes an HTTP Connection.
 pub struct HttpConnector<S, I1 = (), I2 = ()> {
@@ -131,7 +130,7 @@ where
 
         match req.version() {
             Version::HTTP_2 => {
-                trace!(uri = %req.uri(), "create h2 client executor");
+                tracing::trace!(uri = %req.uri(), "create h2 client executor");
 
                 let executor = ctx.executor().clone();
                 let mut builder = rama_http_core::client::conn::http2::Builder::new(executor);
@@ -165,7 +164,7 @@ where
 
                 let (sender, conn) = builder.handshake(io).await?;
 
-                let conn_span = tracing::trace_span!(
+                let conn_span = tracing::trace_root_span!(
                     "h2::conn::serve",
                     otel.kind = "client",
                     http.request.method = %req.method().as_str(),
@@ -177,8 +176,6 @@ where
                     network.protocol.version = version_as_protocol_version(req.version()),
                     user_agent.original = %req.headers().get(USER_AGENT).and_then(|v| v.to_str().ok()).unwrap_or_default(),
                 );
-                conn_span.set_parent(opentelemetry::Context::new());
-                conn_span.add_link(get_active_span(|span| span.span_context().clone()));
 
                 ctx.spawn(
                     async move {
@@ -201,14 +198,14 @@ where
                 })
             }
             Version::HTTP_11 | Version::HTTP_10 | Version::HTTP_09 => {
-                trace!(uri = %req.uri(), "create ~h1 client executor");
+                tracing::trace!(uri = %req.uri(), "create ~h1 client executor");
                 let mut builder = rama_http_core::client::conn::http1::Builder::new();
                 if let Some(params) = ctx.get::<Http1ClientContextParams>() {
                     builder.title_case_headers(params.title_header_case);
                 }
                 let (sender, conn) = builder.handshake(io).await?;
 
-                let conn_span = tracing::trace_span!(
+                let conn_span = tracing::trace_root_span!(
                     "h1::conn::serve",
                     otel.kind = "client",
                     http.request.method = %req.method().as_str(),
@@ -220,8 +217,6 @@ where
                     network.protocol.version = version_as_protocol_version(req.version()),
                     user_agent.original = %req.headers().get(USER_AGENT).and_then(|v| v.to_str().ok()).unwrap_or_default(),
                 );
-                conn_span.set_parent(opentelemetry::Context::new());
-                conn_span.add_link(get_active_span(|span| span.span_context().clone()));
 
                 ctx.spawn(
                     async move {

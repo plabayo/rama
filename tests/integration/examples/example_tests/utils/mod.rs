@@ -17,6 +17,7 @@ use rama::{
     },
     layer::MapResultLayer,
     service::BoxService,
+    telemetry::tracing::level_filters::LevelFilter,
     utils::{backoff::ExponentialBackoff, rng::HasherRng},
 };
 use std::{
@@ -24,7 +25,6 @@ use std::{
     sync::Once,
     time::Duration,
 };
-use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[cfg(feature = "compression")]

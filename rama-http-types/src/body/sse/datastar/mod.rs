@@ -43,6 +43,7 @@ pub use execute_script::{
 mod consts;
 
 use crate::sse::{Event, EventDataLineReader, EventDataMultiLineReader, EventDataRead};
+use rama_core::telemetry::tracing;
 
 pub type DatastarEvent<T = String> = Event<EventData<T>>;
 

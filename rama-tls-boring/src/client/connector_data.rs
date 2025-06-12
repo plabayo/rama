@@ -13,6 +13,7 @@ use rama_boring::{
     },
 };
 use rama_core::error::{ErrorContext, ErrorExt, OpaqueError};
+use rama_core::telemetry::tracing::{debug, trace};
 use rama_net::tls::{
     ApplicationProtocol, CertificateCompressionAlgorithm, ExtensionId, KeyLogIntent,
     client::ClientHello,
@@ -24,7 +25,6 @@ use rama_net::tls::{
 use rama_net::{address::Domain, tls::client::ServerVerifyMode};
 use rama_utils::macros::generate_set_and_with;
 use std::{fmt, sync::Arc};
-use tracing::{debug, trace};
 
 #[cfg(feature = "compression")]
 use super::compress_certificate::{

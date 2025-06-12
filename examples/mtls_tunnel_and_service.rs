@@ -42,6 +42,7 @@ use rama::{
         client::service::{Forwarder, TcpConnector},
         server::TcpListener,
     },
+    telemetry::tracing::{self, level_filters::LevelFilter},
     tls::rustls::{
         client::{TlsConnectorDataBuilder, TlsConnectorLayer, self_signed_client_auth},
         dep::rustls::{
@@ -58,7 +59,6 @@ use std::{
     net::{IpAddr, Ipv4Addr},
     sync::Arc,
 };
-use tracing::metadata::LevelFilter;
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 const LOCALHOST: Host = Host::Address(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)));

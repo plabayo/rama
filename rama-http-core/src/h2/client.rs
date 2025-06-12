@@ -141,6 +141,7 @@ use crate::h2::proto::{self, Error};
 use crate::h2::{FlowControl, PingPong, RecvStream, SendStream};
 
 use rama_core::bytes::{Buf, Bytes};
+use rama_core::telemetry::tracing::{self, Instrument};
 use rama_http_types::dep::http::{request, uri};
 use rama_http_types::proto::h1::headers::original::OriginalHttp1Headers;
 use rama_http_types::proto::h2::PseudoHeaderOrder;
@@ -152,7 +153,6 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
-use tracing::Instrument;
 
 use super::frame::{Priority, StreamDependency};
 

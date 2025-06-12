@@ -44,11 +44,11 @@ use rama::{
     rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
+    telemetry::tracing::{self, level_filters::LevelFilter},
     tls::boring::server::TlsAcceptorLayer,
     utils::backoff::ExponentialBackoff,
 };
 use std::{convert::Infallible, str::FromStr, sync::Arc, time::Duration};
-use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 mod data;

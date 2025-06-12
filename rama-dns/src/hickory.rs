@@ -8,6 +8,7 @@ use hickory_resolver::{
     proto::rr::rdata::{A, AAAA},
 };
 use rama_core::error::{ErrorContext, OpaqueError};
+use rama_core::telemetry::tracing;
 use rama_net::address::Domain;
 use std::{
     net::{Ipv4Addr, Ipv6Addr},

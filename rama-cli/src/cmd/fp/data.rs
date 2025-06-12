@@ -21,6 +21,7 @@ use rama::{
             client::{ClientHello, ClientHelloExtension, ECHClientHello},
         },
     },
+    telemetry::tracing,
     ua::{
         UserAgent,
         profile::{Http1Settings, Http2Settings},

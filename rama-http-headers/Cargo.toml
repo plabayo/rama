@@ -29,7 +29,6 @@ rama-net = { workspace = true, features = ["http"] }
 rama-utils = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 sha1 = { workspace = true }
-tracing = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }

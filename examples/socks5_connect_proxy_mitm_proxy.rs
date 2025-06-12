@@ -47,6 +47,7 @@ use rama::{
     rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
+    telemetry::tracing::{self, level_filters::LevelFilter},
     tls::boring::{
         client::TlsConnectorDataBuilder,
         server::{TlsAcceptorData, TlsAcceptorLayer},
@@ -54,7 +55,6 @@ use rama::{
 };
 
 use std::{convert::Infallible, time::Duration};
-use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 type State = ();

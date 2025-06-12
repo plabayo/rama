@@ -35,13 +35,13 @@ use rama::{
     },
     net::stream::{SocketInfo, matcher::SocketMatcher},
     rt::Executor,
+    telemetry::tracing::{self, level_filters::LevelFilter},
 };
 
 use std::sync::Arc;
 /// Everything else we need is provided by the standard library, community crates or tokio.
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
-use tracing::level_filters::LevelFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, fmt};

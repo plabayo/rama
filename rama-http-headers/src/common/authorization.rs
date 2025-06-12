@@ -3,6 +3,7 @@
 use std::borrow::Cow;
 
 use rama_core::context::Extensions;
+use rama_core::telemetry::tracing;
 use rama_core::username::{UsernameLabelParser, parse_username};
 use rama_http_types::{HeaderName, HeaderValue};
 use rama_net::user::credentials::{BASIC_SCHEME, BEARER_SCHEME};

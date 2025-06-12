@@ -1,5 +1,6 @@
 use super::store::Resolve;
 use super::*;
+use rama_core::telemetry::tracing;
 
 use crate::h2::frame::Reason;
 

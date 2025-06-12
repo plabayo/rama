@@ -32,7 +32,6 @@ rustls-pemfile = { workspace = true }
 rustls-pki-types = { workspace = true }
 tokio = { workspace = true, features = ["macros", "io-std"] }
 tokio-rustls = { workspace = true }
-tracing = { workspace = true }
 webpki-roots = { workspace = true }
 
 [dev-dependencies]

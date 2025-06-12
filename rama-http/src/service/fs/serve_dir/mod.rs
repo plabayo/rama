@@ -5,6 +5,7 @@ use crate::{Body, HeaderValue, Method, Request, Response, StatusCode, header};
 use percent_encoding::percent_decode;
 use rama_core::bytes::Bytes;
 use rama_core::error::{BoxError, OpaqueError};
+use rama_core::telemetry::tracing;
 use rama_core::{Context, Service};
 use std::fmt;
 use std::str::FromStr;

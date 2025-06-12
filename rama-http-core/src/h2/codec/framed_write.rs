@@ -3,6 +3,7 @@ use crate::h2::frame::{self, Frame, FrameSize};
 use crate::h2::hpack;
 
 use rama_core::bytes::{Buf, BufMut, BytesMut};
+use rama_core::telemetry::tracing;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};

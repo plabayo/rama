@@ -1,3 +1,4 @@
+use rama_core::telemetry::tracing;
 use std::io;
 
 use crate::h2::codec::UserError;

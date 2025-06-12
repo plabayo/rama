@@ -3,12 +3,12 @@ mod test {
     use rama_core::futures::Stream;
     use rama_core::futures::future;
     use rama_core::futures::stream::FuturesUnordered;
+    use rama_core::telemetry::tracing::level_filters::LevelFilter;
     use rama_http_types::{Method, Request};
     use std::io;
     use std::pin::Pin;
     use std::task::{Context, Poll};
     use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
-    use tracing::level_filters::LevelFilter;
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
     use tracing_subscriber::{EnvFilter, fmt};

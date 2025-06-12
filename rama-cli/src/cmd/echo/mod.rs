@@ -16,7 +16,7 @@ use rama::{
     },
     rt::Executor,
     tcp::server::TcpListener,
-    telemetry::opentelemetry::{self, trace::get_active_span, tracing::OpenTelemetrySpanExt},
+    telemetry::tracing::{self, Instrument, level_filters::LevelFilter},
     ua::profile::UserAgentDatabase,
 };
 
@@ -24,7 +24,6 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD as ENGINE;
 
 use std::{convert::Infallible, sync::Arc, time::Duration};
-use tracing::{Instrument, level_filters::LevelFilter};
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Debug, Args)]
@@ -159,9 +158,8 @@ pub async fn run(cfg: CliCommandEcho) -> Result<(), BoxError> {
         .local_addr()
         .context("get local addr of tcp listener")?;
 
-    let span = tracing::trace_span!("echo", otel.kind = "server", network.protocol.name = "http");
-    span.set_parent(opentelemetry::Context::new());
-    span.add_link(get_active_span(|span| span.span_context().clone()));
+    let span =
+        tracing::trace_root_span!("echo", otel.kind = "server", network.protocol.name = "http");
 
     graceful.spawn_task_fn(async move |guard| {
         tracing::info!(

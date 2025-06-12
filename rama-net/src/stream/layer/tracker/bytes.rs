@@ -9,6 +9,8 @@
 //! [`AsyncRead`]: crate::stream::AsyncRead
 //! [`AsyncWrite`]: crate::stream::AsyncWrite
 
+use pin_project_lite::pin_project;
+use rama_core::telemetry::tracing;
 use std::{
     fmt, io,
     pin::Pin,
@@ -18,8 +20,6 @@ use std::{
     },
     task::{Context, Poll},
 };
-
-use pin_project_lite::pin_project;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 pin_project! {

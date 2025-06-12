@@ -6,6 +6,7 @@ use rama::{
     net::address::ProxyAddress,
     rt::Executor,
     service::service_fn,
+    telemetry::tracing,
 };
 use serde_json::{Value, json};
 

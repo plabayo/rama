@@ -68,12 +68,12 @@ use rama::{
         },
     },
     rt::Executor,
+    telemetry::tracing::{self, level_filters::LevelFilter},
 };
 use serde::Deserialize;
 use serde_json::json;
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::RwLock;
-use tracing::level_filters::LevelFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, fmt};

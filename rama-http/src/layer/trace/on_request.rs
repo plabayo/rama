@@ -1,7 +1,6 @@
 use super::DEFAULT_MESSAGE_LEVEL;
 use crate::Request;
-use tracing::Level;
-use tracing::Span;
+use rama_core::telemetry::tracing::{Level, Span};
 
 /// Trait used to tell [`Trace`] what to do when a request is received.
 ///

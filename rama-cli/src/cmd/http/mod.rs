@@ -28,6 +28,7 @@ use rama::{
         user::ProxyCredential,
     },
     rt::Executor,
+    telemetry::tracing::level_filters::LevelFilter,
     tls::boring::client::{EmulateTlsProfileLayer, TlsConnectorDataBuilder},
     ua::{
         emulate::{
@@ -40,7 +41,6 @@ use rama::{
 use std::{io::IsTerminal, sync::Arc, time::Duration};
 use terminal_prompt::Terminal;
 use tokio::sync::oneshot;
-use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 use crate::error::ErrorWithExitCode;

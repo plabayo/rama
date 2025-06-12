@@ -1,4 +1,5 @@
 use crate::sse::{Event, EventDataLineReader, EventDataRead, EventDataWrite, datastar::EventType};
+use rama_core::telemetry::tracing;
 use rama_error::{ErrorContext, OpaqueError};
 
 /// [`MergeSignals`] sends one or more signals to the browser

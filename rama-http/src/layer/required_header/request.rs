@@ -11,6 +11,7 @@ use crate::{
 use rama_core::{
     Context, Layer, Service,
     error::{BoxError, ErrorContext},
+    telemetry::tracing,
 };
 use rama_http_headers::Host;
 use rama_net::http::RequestContext;

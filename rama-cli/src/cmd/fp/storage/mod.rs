@@ -3,6 +3,7 @@ use rama::{
     error::{ErrorContext, OpaqueError},
     http::proto::h1::Http1HeaderMap,
     net::tls::client::ClientHello,
+    telemetry::tracing,
     ua::profile::{Http1Settings, Http2Settings, JsProfileWebApis, UserAgentSourceInfo},
 };
 

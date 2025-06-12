@@ -22,12 +22,16 @@
 #[cfg(unix)]
 mod unix_example {
     use rama::{
-        Context, error::BoxError, graceful::ShutdownGuard, net::stream::Stream,
-        service::service_fn, unix::server::UnixListener,
+        Context,
+        error::BoxError,
+        graceful::ShutdownGuard,
+        net::stream::Stream,
+        service::service_fn,
+        telemetry::tracing::{self, level_filters::LevelFilter},
+        unix::server::UnixListener,
     };
 
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tracing::level_filters::LevelFilter;
     use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
     pub(super) async fn run() {

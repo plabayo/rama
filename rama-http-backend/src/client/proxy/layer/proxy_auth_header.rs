@@ -1,3 +1,4 @@
+use rama_core::telemetry::tracing;
 use rama_core::{Context, Layer, Service};
 use rama_http_headers::{HeaderMapExt, ProxyAuthorization};
 use rama_http_types::Request;

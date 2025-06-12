@@ -12,9 +12,6 @@ pub use ::opentelemetry_semantic_conventions as semantic_conventions;
 #[doc(inline)]
 pub use ::opentelemetry_sdk as sdk;
 
-#[doc(inline)]
-pub use ::tracing_opentelemetry as tracing;
-
 mod attributes;
 #[doc(inline)]
 pub use attributes::AttributesFactory;

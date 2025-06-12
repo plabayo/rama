@@ -6,15 +6,12 @@ use crate::{Body, Request, Response};
 use rama_core::bytes::Bytes;
 use rama_core::error::{BoxError, ErrorContext, OpaqueError};
 use rama_core::rt::Executor;
-use rama_core::telemetry::opentelemetry;
-use rama_core::telemetry::opentelemetry::trace::get_active_span;
-use rama_core::telemetry::opentelemetry::tracing::OpenTelemetrySpanExt;
+use rama_core::telemetry::tracing::{self, Instrument};
 use rama_core::{Context, Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt::Debug;
 use tokio::io::{AsyncWrite, stderr, stdout};
 use tokio::sync::mpsc::{Sender, UnboundedSender, channel, unbounded_channel};
-use tracing::Instrument;
 
 /// Layer that applies [`ResponseWriterService`] which prints the http response in std format.
 pub struct ResponseWriterLayer<W> {
@@ -78,9 +75,7 @@ impl ResponseWriterLayer<UnboundedSender<Response>> {
         };
 
         let span =
-            tracing::trace_span!("TrafficWriter::response::unbounded", otel.kind = "consumer");
-        span.set_parent(opentelemetry::Context::new());
-        span.add_link(get_active_span(|span| span.span_context().clone()));
+            tracing::trace_root_span!("TrafficWriter::response::unbounded", otel.kind = "consumer");
 
         executor.spawn_task(
             async move {
@@ -131,9 +126,8 @@ impl ResponseWriterLayer<Sender<Response>> {
             None => (false, false),
         };
 
-        let span = tracing::trace_span!("TrafficWriter::response::bounded", otel.kind = "consumer");
-        span.set_parent(opentelemetry::Context::new());
-        span.add_link(get_active_span(|span| span.span_context().clone()));
+        let span =
+            tracing::trace_root_span!("TrafficWriter::response::bounded", otel.kind = "consumer");
 
         executor.spawn_task(
             async move {

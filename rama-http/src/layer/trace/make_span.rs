@@ -1,7 +1,7 @@
 use crate::Request;
 use crate::header::USER_AGENT;
 use crate::opentelemetry::version_as_protocol_version;
-use tracing::{Level, Span};
+use rama_core::telemetry::tracing::{self, Level, Span};
 
 use super::DEFAULT_MESSAGE_LEVEL;
 

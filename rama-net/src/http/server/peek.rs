@@ -1,12 +1,12 @@
 //! types and logic for [`HttpPeekRouter`]
 
-use std::fmt;
-
+use rama_core::telemetry::tracing;
 use rama_core::{
     Context, Service,
     error::{BoxError, ErrorContext},
     service::RejectService,
 };
+use std::fmt;
 use tokio::io::AsyncReadExt;
 
 use crate::stream::{PeekStream, StackReader};

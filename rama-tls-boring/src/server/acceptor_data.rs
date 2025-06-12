@@ -19,6 +19,7 @@ use rama_boring::{
 };
 use rama_boring_tokio::{AsyncSelectCertError, BoxSelectCertFinish};
 use rama_core::error::{ErrorContext, OpaqueError};
+use rama_core::telemetry::tracing;
 use rama_net::{
     address::{Domain, Host},
     tls::{

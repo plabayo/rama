@@ -20,10 +20,10 @@ use rama::{
     },
     tcp::client::default_tcp_connect,
     tcp::server::TcpListener,
+    telemetry::tracing::{self, level_filters::LevelFilter},
 };
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]

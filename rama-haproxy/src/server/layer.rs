@@ -2,6 +2,7 @@ use crate::protocol::{HeaderResult, PartialResult, v1, v2};
 use rama_core::{
     Context, Layer, Service,
     error::{BoxError, ErrorContext, ErrorExt, OpaqueError},
+    telemetry::tracing,
 };
 use rama_net::{
     forwarded::{Forwarded, ForwardedElement},

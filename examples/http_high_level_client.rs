@@ -32,6 +32,7 @@ use rama::{
     },
     net::user::Basic,
     rt::Executor,
+    telemetry::tracing::{self, level_filters::LevelFilter},
     utils::{backoff::ExponentialBackoff, rng::HasherRng},
 };
 
@@ -39,7 +40,6 @@ use rama::{
 
 use serde_json::json;
 use std::time::Duration;
-use tracing::level_filters::LevelFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, fmt};

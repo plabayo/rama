@@ -1,10 +1,10 @@
+use rama_core::telemetry::tracing::trace;
 use rama_core::{
     Context, Service,
     error::{BoxError, OpaqueError},
 };
 use rama_http_types::Request;
 use rama_net::tls::{ApplicationProtocol, client::NegotiatedTlsParameters};
-use tracing::trace;
 
 #[derive(Debug, Clone, Copy, Default)]
 #[non_exhaustive]

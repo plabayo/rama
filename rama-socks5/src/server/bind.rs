@@ -1,5 +1,6 @@
 use std::{fmt, io, time::Duration};
 
+use rama_core::telemetry::tracing::{self, Instrument};
 use rama_core::{Context, Service, error::BoxError, layer::timeout::DefaultTimeout};
 use rama_net::{
     address::{Authority, Host, SocketAddress},
@@ -9,7 +10,6 @@ use rama_net::{
 };
 use rama_tcp::{TcpStream, server::TcpListener};
 use rama_utils::macros::generate_field_setters;
-use tracing::{Instrument, trace_span};
 
 use super::Error;
 use crate::proto::{ReplyKind, server::Reply};
@@ -435,7 +435,7 @@ where
                     target,
                 },
             )
-            .instrument(trace_span!("socks5::bind::serve"))
+            .instrument(tracing::trace_span!("socks5::bind::serve"))
             .await
             .map_err(|err| Error::service(err).with_context("serve bind pipe"))
     }

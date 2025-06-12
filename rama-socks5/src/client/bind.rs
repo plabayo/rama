@@ -6,6 +6,7 @@
 
 use super::core::HandshakeError;
 use crate::proto::{ReplyKind, server};
+use rama_core::telemetry::tracing;
 use rama_net::{
     address::{Authority, SocketAddress},
     stream::Stream,

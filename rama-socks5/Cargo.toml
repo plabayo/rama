@@ -34,7 +34,6 @@ rama-utils = { workspace = true }
 rand = { workspace = true, optional = true }
 smallvec = { workspace = true }
 tokio = { workspace = true }
-tracing = { workspace = true }
 
 [dev-dependencies]
 tokio-test = { workspace = true }

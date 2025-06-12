@@ -6,6 +6,7 @@
 //! use rama_core::{
 //!     service::service_fn,
 //!     Context, Service, Layer,
+//!     telemetry::tracing,
 //! };
 //! use rama_http::{
 //!     service::client::HttpClientExt,

@@ -46,6 +46,7 @@ use rama::{
     Context, Layer, Service,
     error::OpaqueError,
     graceful::{Shutdown, ShutdownGuard},
+    http::layer::trace::TraceLayer,
     http::{server::HttpServer, service::web::Router},
     net::{
         address::{Domain, SocketAddress},
@@ -55,13 +56,12 @@ use rama::{
     rt::Executor,
     service::service_fn,
     tcp::{client::service::Forwarder, server::TcpListener},
+    telemetry::tracing::{self, Instrument, level_filters::LevelFilter},
     tls::boring::server::{TlsAcceptorData, TlsAcceptorLayer},
 };
-use rama_http::layer::trace::TraceLayer;
 
 // everything else is provided by the standard library, community crates or tokio
 use std::time::Duration;
-use tracing::{Instrument, metadata::LevelFilter};
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 #[tokio::main]

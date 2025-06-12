@@ -29,6 +29,7 @@ use rama::{
     },
     rt::Executor,
     tcp::server::TcpListener,
+    telemetry::tracing::{self, level_filters::LevelFilter},
 };
 
 // Everything else we need is provided by the standard library, community crates or tokio.
@@ -39,7 +40,6 @@ use std::sync::{
 };
 use tokio::{sync::oneshot::Sender, sync::oneshot::channel};
 use tokio_test::assert_err;
-use tracing::level_filters::LevelFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, fmt};

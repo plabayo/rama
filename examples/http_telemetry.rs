@@ -60,9 +60,10 @@ use rama::{
             resource::{HOST_ARCH, OS_NAME},
         },
     },
+    telemetry::tracing::level_filters::LevelFilter,
 };
+
 use std::{sync::Arc, time::Duration};
-use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Debug)]

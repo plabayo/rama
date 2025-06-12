@@ -1,3 +1,4 @@
+use rama_core::telemetry::tracing::{self, Instrument, trace_span};
 use rama_core::{Context, Service, error::BoxError};
 use rama_net::{
     address::Authority,
@@ -11,7 +12,6 @@ use rama_tcp::client::{
 };
 use rama_utils::macros::generate_field_setters;
 use std::{fmt, time::Duration};
-use tracing::{Instrument, trace_span};
 
 use super::Error;
 use crate::proto::{ReplyKind, server::Reply};

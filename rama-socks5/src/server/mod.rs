@@ -16,7 +16,7 @@ use crate::{
         server::{Header, Reply, UsernamePasswordResponse},
     },
 };
-use rama_core::{Context, Service, error::BoxError};
+use rama_core::{Context, Service, error::BoxError, telemetry::tracing};
 use rama_net::{socket::Interface, stream::Stream};
 use rama_tcp::{TcpStream, server::TcpListener};
 use std::fmt;

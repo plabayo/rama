@@ -13,13 +13,13 @@ use rama::{
         },
     },
     tcp::client::{Request, service::TcpConnector},
+    telemetry::tracing::{self, level_filters::LevelFilter},
     tls::boring::{
         client::{TlsConnectorDataBuilder, TlsConnectorLayer},
         core::x509::X509,
     },
 };
 use tokio::net::TcpStream;
-use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Args, Debug, Clone)]

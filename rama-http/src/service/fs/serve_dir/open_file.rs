@@ -6,6 +6,7 @@ use crate::headers::{encoding::Encoding, specifier::QualityValue};
 use crate::{HeaderValue, Method, Request, Uri, header};
 use chrono::{DateTime, Local};
 use http_range_header::RangeUnsatisfiableError;
+use rama_core::telemetry::tracing;
 use std::{
     ffi::OsStr,
     fmt,

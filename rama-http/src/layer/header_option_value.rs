@@ -7,6 +7,7 @@ use crate::{HeaderName, Request, utils::HeaderValueGetter};
 use rama_core::{
     Context, Layer, Service,
     error::{BoxError, ErrorExt, OpaqueError},
+    telemetry::tracing,
 };
 use rama_utils::macros::define_inner_service_accessors;
 use std::{fmt, marker::PhantomData};

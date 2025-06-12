@@ -23,6 +23,7 @@ use rama::{
     proxy::socks5::Socks5ProxyConnector,
     rt::Executor,
     tcp::{client::service::TcpConnector, server::TcpListener},
+    telemetry::tracing,
     tls::boring::{
         client::{TlsConnector, TlsConnectorDataBuilder},
         server::{TlsAcceptorData, TlsAcceptorService},

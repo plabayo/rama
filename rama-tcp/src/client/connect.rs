@@ -1,3 +1,4 @@
+use rama_core::telemetry::tracing::{self, Instrument, trace_span};
 use rama_core::{
     Context,
     combinators::Either,
@@ -22,7 +23,6 @@ use tokio::sync::{
     Semaphore,
     mpsc::{Sender, channel},
 };
-use tracing::{Instrument, trace_span};
 
 use crate::TcpStream;
 

@@ -1,5 +1,6 @@
 use crate::h2::frame::Reason;
 use crate::h2::proto::{MAX_WINDOW_SIZE, WindowSize};
+use rama_core::telemetry::tracing;
 
 use std::fmt;
 

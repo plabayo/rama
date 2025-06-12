@@ -2,6 +2,7 @@ use super::ProxyFilter;
 use rama_core::{
     context::Extensions,
     error::{OpaqueError, error},
+    telemetry::tracing,
     username::{UsernameLabelParser, UsernameLabelState, UsernameLabelWriter},
 };
 use rama_utils::macros::match_ignore_ascii_case_str;

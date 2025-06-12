@@ -88,6 +88,7 @@ use rama::{
     service::service_fn,
     tcp::client::service::Forwarder,
     tcp::server::TcpListener,
+    telemetry::tracing::{self, level_filters::LevelFilter},
     username::{
         UsernameLabelParser, UsernameLabelState, UsernameLabels, UsernameOpaqueLabelParser,
     },
@@ -96,7 +97,6 @@ use rama::{
 use serde::Deserialize;
 use serde_json::json;
 use std::{convert::Infallible, sync::Arc, time::Duration};
-use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]

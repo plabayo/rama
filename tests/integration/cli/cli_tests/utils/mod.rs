@@ -9,7 +9,7 @@ use std::{
 };
 
 use base64::Engine;
-use tracing::level_filters::LevelFilter;
+use rama::telemetry::tracing::level_filters::LevelFilter;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Debug)]

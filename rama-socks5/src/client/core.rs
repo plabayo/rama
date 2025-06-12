@@ -9,6 +9,7 @@ use crate::{
     },
 };
 use rama_core::error::BoxError;
+use rama_core::telemetry::tracing;
 use rama_net::{
     address::{Authority, Host, SocketAddress},
     stream::Stream,

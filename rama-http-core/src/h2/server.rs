@@ -121,6 +121,10 @@ use crate::h2::proto::{self, Config, Error, Prioritized};
 use crate::h2::{FlowControl, PingPong, RecvStream, SendStream};
 
 use rama_core::bytes::{Buf, Bytes};
+use rama_core::telemetry::tracing::{
+    self,
+    instrument::{Instrument, Instrumented},
+};
 use rama_http_types::proto::h1::headers::original::OriginalHttp1Headers;
 use rama_http_types::proto::h2::PseudoHeaderOrder;
 use rama_http_types::{HeaderMap, Method, Request, Response};
@@ -129,7 +133,6 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 use std::{fmt, io};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
-use tracing::instrument::{Instrument, Instrumented};
 
 /// In progress HTTP/2 connection handshake future.
 ///

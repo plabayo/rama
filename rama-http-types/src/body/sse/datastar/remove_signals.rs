@@ -1,4 +1,5 @@
 use crate::sse::{Event, EventDataLineReader, EventDataRead, EventDataWrite, datastar::EventType};
+use rama_core::telemetry::tracing;
 use rama_error::{ErrorContext, OpaqueError};
 use smallvec::{SmallVec, smallvec};
 use smol_str::SmolStr;

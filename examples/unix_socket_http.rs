@@ -22,9 +22,13 @@
 
 #[cfg(unix)]
 mod unix_example {
-    use rama::{http::server::HttpServer, http::service::web::Router, unix::server::UnixListener};
+    use rama::{
+        http::server::HttpServer,
+        http::service::web::Router,
+        telemetry::tracing::{self, level_filters::LevelFilter},
+        unix::server::UnixListener,
+    };
 
-    use tracing::level_filters::LevelFilter;
     use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
     pub(super) async fn run() {

@@ -3,6 +3,7 @@ use rama_core::username::{UsernameLabelParser, UsernameLabelState};
 use rama_core::{
     context::Extensions,
     error::{ErrorContext, OpaqueError, error},
+    telemetry::tracing,
 };
 use rama_utils::macros::str::eq_ignore_ascii_case;
 

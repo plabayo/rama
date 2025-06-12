@@ -3,6 +3,7 @@ use rama_core::{
     context::{self, RequestContextExt},
     error::{BoxError, ErrorContext, OpaqueError},
     inspect::RequestInspector,
+    telemetry::tracing,
 };
 use rama_http_headers::{HeaderMapExt, Host};
 use rama_http_types::{

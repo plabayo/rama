@@ -14,6 +14,7 @@ use rama::{
     http::{
         Body, BodyExtractExt, Request, Response, StatusCode, proto::h2, service::web::extract::Path,
     },
+    telemetry::tracing,
     ua::profile::{JsProfileWebApis, UserAgentSourceInfo},
 };
 use serde::{Deserialize, Serialize};

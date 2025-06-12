@@ -48,9 +48,9 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 
 use rama_core::bytes::Bytes;
+use rama_core::telemetry::tracing::trace;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::sync::oneshot;
-use tracing::trace;
 
 use crate::common::io::Rewind;
 

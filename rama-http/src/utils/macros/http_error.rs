@@ -6,9 +6,9 @@ macro_rules! __log_http_rejection {
         body_text = $body_text:expr,
         status = $status:expr,
     ) => {
-        tracing::event!(
+        ::rama_core::telemetry::tracing::event!(
             target: "rama_core::servicerejection",
-            tracing::Level::TRACE,
+            ::rama_core::telemetry::tracing::Level::TRACE,
             status = $status.as_u16(),
             body = $body_text,
             rejection_type = std::any::type_name::<$ty>(),

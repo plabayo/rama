@@ -4,6 +4,7 @@ use rama_core::{
     Context, Service,
     error::{BoxError, ErrorContext},
     service::RejectService,
+    telemetry::tracing,
 };
 use rama_net::stream::{PeekStream, StackReader};
 use tokio::io::AsyncReadExt;

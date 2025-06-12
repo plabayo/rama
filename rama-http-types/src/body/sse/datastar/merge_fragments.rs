@@ -2,6 +2,7 @@ use super::FragmentMergeMode;
 use crate::sse::{
     Event, EventDataLineReader, EventDataRead, EventDataWrite, datastar::EventType, parser::is_lf,
 };
+use rama_core::telemetry::tracing;
 use rama_error::{ErrorContext, OpaqueError};
 use smol_str::SmolStr;
 use std::borrow::Cow;

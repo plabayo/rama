@@ -7,9 +7,9 @@ use std::task::{Context, Poll, ready};
 use httparse::ParserConfig;
 use rama_core::bytes::Bytes;
 use rama_core::error::BoxError;
+use rama_core::telemetry::tracing::{debug, trace};
 use rama_http_types::{Request, Response};
 use tokio::io::{AsyncRead, AsyncWrite};
-use tracing::{debug, trace};
 
 use super::super::dispatch::{self, TrySendError};
 use crate::body::{Body, Incoming as IncomingBody};

@@ -14,6 +14,7 @@ use rama::http::core::service::RamaHttpService;
 use rama::http::dep::http_body_util::{BodyExt, Full};
 use rama::rt::Executor;
 use rama_core::bytes::Bytes;
+use rama_core::telemetry::tracing;
 use tokio::net::{TcpListener, TcpStream};
 
 use rama::http::{Request, Response, Version};

@@ -6,6 +6,7 @@
 
 use parking_lot::RwLock;
 use rama_core::error::{ErrorContext, OpaqueError};
+use rama_core::telemetry::tracing;
 use std::{
     collections::{HashMap, hash_map::Entry},
     fs::OpenOptions,

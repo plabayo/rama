@@ -11,6 +11,7 @@ use rama_http_types::proto::h2::{PseudoHeader, PseudoHeaderOrder, PseudoHeaderOr
 use rama_http_types::{HeaderMap, HeaderName, Method, Request, StatusCode, Uri, header};
 
 use rama_core::bytes::{Buf, BufMut, Bytes, BytesMut};
+use rama_core::telemetry::tracing;
 
 use std::fmt;
 use std::io::Cursor;

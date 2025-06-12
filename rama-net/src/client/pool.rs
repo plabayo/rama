@@ -2,6 +2,7 @@ use super::conn::{ConnectorService, EstablishedClientConnection};
 use crate::stream::Socket;
 use parking_lot::Mutex;
 use rama_core::error::{BoxError, ErrorContext, OpaqueError};
+use rama_core::telemetry::tracing::trace;
 use rama_core::{Context, Layer, Service};
 use rama_utils::macros::generate_set_and_with;
 use std::collections::VecDeque;
@@ -15,7 +16,6 @@ use std::{future::Future, net::SocketAddr};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::time::timeout;
-use tracing::trace;
 
 /// [`PoolStorage`] implements the storage part of a connection pool. This storage
 /// also decides which connection it returns for a given ID or when the caller asks to
@@ -97,7 +97,7 @@ where
 }
 
 /// [`LeasedConnection`] is a connection that is temporarily leased from a pool
-///  
+///
 /// It will be returned to the pool once dropped if the user didn't
 /// take ownership of the connection `C` with [`LeasedConnection::into_connection()`].
 /// [`LeasedConnection`]s are considered active pool connections until dropped or
