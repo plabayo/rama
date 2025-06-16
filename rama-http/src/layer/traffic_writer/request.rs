@@ -3,9 +3,10 @@ use crate::dep::http_body;
 use crate::dep::http_body_util::BodyExt;
 use crate::io::write_http_request;
 use crate::{Body, Request};
-use bytes::Bytes;
+use rama_core::bytes::Bytes;
 use rama_core::error::{BoxError, ErrorExt, OpaqueError};
 use rama_core::rt::Executor;
+use rama_core::telemetry::tracing::{self, Instrument};
 use rama_core::{Context, Service};
 use std::fmt::Debug;
 use tokio::io::{AsyncWrite, AsyncWriteExt, stderr, stdout};
@@ -73,18 +74,25 @@ impl RequestWriterInspector<UnboundedSender<Request>> {
             Some(WriterMode::Body) => (false, true),
             None => (false, false),
         };
-        executor.spawn_task(async move {
-            while let Some(req) = rx.recv().await {
-                if let Err(err) =
-                    write_http_request(&mut writer, req, write_headers, write_body).await
-                {
-                    tracing::error!(err = %err, "failed to write http request to writer")
-                }
-                if let Err(err) = writer.write_all(b"\r\n").await {
-                    tracing::error!(err = %err, "failed to write separator to writer")
+
+        let span =
+            tracing::trace_root_span!("TrafficWriter::request::unbounded", otel.kind = "consumer");
+
+        executor.spawn_task(
+            async move {
+                while let Some(req) = rx.recv().await {
+                    if let Err(err) =
+                        write_http_request(&mut writer, req, write_headers, write_body).await
+                    {
+                        tracing::error!(err = %err, "failed to write http request to writer")
+                    }
+                    if let Err(err) = writer.write_all(b"\r\n").await {
+                        tracing::error!(err = %err, "failed to write separator to writer")
+                    }
                 }
             }
-        });
+            .instrument(span),
+        );
         Self { writer: tx }
     }
 
@@ -120,18 +128,25 @@ impl RequestWriterInspector<Sender<Request>> {
             Some(WriterMode::Body) => (false, true),
             None => (false, false),
         };
-        executor.spawn_task(async move {
-            while let Some(req) = rx.recv().await {
-                if let Err(err) =
-                    write_http_request(&mut writer, req, write_headers, write_body).await
-                {
-                    tracing::error!(err = %err, "failed to write http request to writer")
-                }
-                if let Err(err) = writer.write_all(b"\r\n").await {
-                    tracing::error!(err = %err, "failed to write separator to writer")
+
+        let span =
+            tracing::trace_root_span!("TrafficWriter::request::bounded", otel.kind = "consumer");
+
+        executor.spawn_task(
+            async move {
+                while let Some(req) = rx.recv().await {
+                    if let Err(err) =
+                        write_http_request(&mut writer, req, write_headers, write_body).await
+                    {
+                        tracing::error!(err = %err, "failed to write http request to writer")
+                    }
+                    if let Err(err) = writer.write_all(b"\r\n").await {
+                        tracing::error!(err = %err, "failed to write separator to writer")
+                    }
                 }
             }
-        });
+            .instrument(span),
+        );
         Self { writer: tx }
     }
 

@@ -6,10 +6,11 @@ license = "MIT"
 edition = "2024"
 
 [dependencies]
-futures = { workspace = true }
-honggfuzz = { workspace = true }
-rama-http-core = { path = "../../../rama-http-core" }
-rama-http-types = { path = "../../../rama-http-types" }
+rama-core = { workspace = true }
+rama-http-core = { workspace = true }
+rama-http-types = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
-tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
+
+[target.'cfg(not(windows))'.dependencies]
+honggfuzz = { workspace = true }

@@ -1,8 +1,11 @@
-use crate::{Body, IntoResponse, Request, Response, matcher::HttpMatcher};
+use crate::{Body, Request, Response, matcher::HttpMatcher};
 use rama_core::{Context, Layer, Service, layer::MapResponseLayer, service::BoxService};
 use std::{convert::Infallible, fmt};
 
 pub mod extract;
+pub mod response;
+
+use response::IntoResponse;
 
 pub(crate) struct Endpoint<State> {
     pub(crate) matcher: HttpMatcher<State, Body>,
@@ -42,7 +45,18 @@ where
     }
 }
 
-struct StaticService<R>(R);
+/// A static [`Service`] that serves a pre-defined response.
+pub struct StaticService<R>(R);
+
+impl<R> StaticService<R>
+where
+    R: IntoResponse + Clone + Send + Sync + 'static,
+{
+    /// Create a new [`StaticService`] with the given response.
+    pub fn new(response: R) -> Self {
+        Self(response)
+    }
+}
 
 impl<T> fmt::Debug for StaticService<T>
 where

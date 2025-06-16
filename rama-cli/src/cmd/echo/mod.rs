@@ -4,15 +4,19 @@ use clap::Args;
 use rama::{
     Service,
     cli::{ForwardKind, service::echo::EchoServiceBuilder},
-    error::BoxError,
-    http::{IntoResponse, Request, Response, matcher::HttpMatcher},
+    error::{BoxError, ErrorContext, OpaqueError},
+    http::{Request, Response, matcher::HttpMatcher, service::web::response::IntoResponse},
     layer::HijackLayer,
-    net::tls::{
-        ApplicationProtocol, DataEncoding,
-        server::{SelfSignedData, ServerAuth, ServerAuthData, ServerConfig},
+    net::{
+        socket::Interface,
+        tls::{
+            ApplicationProtocol, DataEncoding,
+            server::{SelfSignedData, ServerAuth, ServerAuthData, ServerConfig},
+        },
     },
     rt::Executor,
     tcp::server::TcpListener,
+    telemetry::tracing::{self, Instrument, level_filters::LevelFilter},
     ua::profile::UserAgentDatabase,
 };
 
@@ -20,19 +24,14 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD as ENGINE;
 
 use std::{convert::Infallible, sync::Arc, time::Duration};
-use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Debug, Args)]
 /// rama echo service (echos the http request and tls client config)
 pub struct CliCommandEcho {
-    #[arg(short = 'p', long, default_value_t = 8080)]
-    /// the port to listen on
-    port: u16,
-
-    #[arg(short = 'i', long, default_value = "127.0.0.1")]
-    /// the interface to listen on
-    interface: String,
+    /// the interface to bind to
+    #[arg(long, default_value = "127.0.0.1:8080")]
+    bind: Interface,
 
     #[arg(short = 'c', long, default_value_t = 0)]
     /// the number of concurrent connections to allow
@@ -142,19 +141,37 @@ pub async fn run(cfg: CliCommandEcho) -> Result<(), BoxError> {
         .http_layer(maybe_acme_service)
         .with_user_agent_database(Arc::new(UserAgentDatabase::embedded()))
         .build(Executor::graceful(graceful.guard()))
-        .expect("build echo service");
+        .map_err(OpaqueError::from_boxed)
+        .context("build echo service")?;
 
-    let address = format!("{}:{}", cfg.interface, cfg.port);
-    tracing::info!("starting echo service on: {}", address);
+    tracing::info!(
+        bind = %cfg.bind,
+        "starting echo service",
+    );
+    let tcp_listener = TcpListener::build()
+        .bind(cfg.bind.clone())
+        .await
+        .map_err(OpaqueError::from_boxed)
+        .context("bind echo service")?;
+
+    let bind_address = tcp_listener
+        .local_addr()
+        .context("get local addr of tcp listener")?;
+
+    let span =
+        tracing::trace_root_span!("echo", otel.kind = "server", network.protocol.name = "http");
 
     graceful.spawn_task_fn(async move |guard| {
-        let tcp_listener = TcpListener::build()
-            .bind(address)
-            .await
-            .expect("bind echo service");
+        tracing::info!(
+            bind = %cfg.bind,
+            %bind_address,
+            "echo service ready",
+        );
 
-        tracing::info!("echo service ready");
-        tcp_listener.serve_graceful(guard, tcp_service).await;
+        tcp_listener
+            .serve_graceful(guard, tcp_service)
+            .instrument(span)
+            .await;
     });
 
     graceful

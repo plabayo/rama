@@ -1,10 +1,12 @@
 use crate::DnsResolver;
-use rama_net::address::Domain;
-use rama_utils::macros::{error::static_str_error, impl_deref};
+use rama_net::address::{Domain, DomainTrie};
+use rama_utils::macros::error::static_str_error;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
+    ops::Deref,
+    sync::Arc,
 };
 
 #[derive(Debug, Clone)]
@@ -13,9 +15,7 @@ use std::{
 ///
 /// This is supported by the official `rama`
 /// consumers such as [`TcpConnector`].
-pub struct DnsOverwrite(InMemoryDns);
-
-impl_deref! {DnsOverwrite: InMemoryDns}
+pub struct DnsOverwrite(Arc<InMemoryDns>);
 
 impl<'de> Deserialize<'de> for DnsOverwrite {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
@@ -23,9 +23,9 @@ impl<'de> Deserialize<'de> for DnsOverwrite {
         D: serde::Deserializer<'de>,
     {
         let map = HashMap::<Domain, Vec<IpAddr>>::deserialize(deserializer)?;
-        Ok(DnsOverwrite(InMemoryDns {
-            map: (!map.is_empty()).then_some(map),
-        }))
+        Ok(DnsOverwrite(Arc::new(InMemoryDns {
+            trie: map.into_iter().collect(),
+        })))
     }
 }
 
@@ -34,10 +34,31 @@ impl Serialize for DnsOverwrite {
     where
         S: serde::Serializer,
     {
-        match self.0.map.as_ref() {
-            Some(map) => map.serialize(serializer),
-            None => HashMap::<Domain, Vec<IpAddr>>::default().serialize(serializer),
+        let mut map = HashMap::new();
+        for (domain, value) in self.trie.iter() {
+            map.insert(domain, value);
         }
+        map.serialize(serializer)
+    }
+}
+
+impl From<InMemoryDns> for DnsOverwrite {
+    fn from(value: InMemoryDns) -> Self {
+        Self(Arc::new(value))
+    }
+}
+
+impl AsRef<InMemoryDns> for DnsOverwrite {
+    fn as_ref(&self) -> &InMemoryDns {
+        self.0.as_ref()
+    }
+}
+
+impl Deref for DnsOverwrite {
+    type Target = InMemoryDns;
+
+    fn deref(&self) -> &Self::Target {
+        self.0.as_ref()
     }
 }
 
@@ -45,7 +66,7 @@ impl Serialize for DnsOverwrite {
 /// in-memory Dns that can be used as a simplistic cache,
 /// or wrapped in [`DnsOverwrite`] to indicate dns overwrites.
 pub struct InMemoryDns {
-    map: Option<HashMap<Domain, Vec<IpAddr>>>,
+    trie: DomainTrie<Vec<IpAddr>>,
 }
 
 impl InMemoryDns {
@@ -58,9 +79,7 @@ impl InMemoryDns {
     ///
     /// Existing mappings will be overwritten.
     pub fn insert(&mut self, name: Domain, addresses: Vec<IpAddr>) -> &mut Self {
-        self.map
-            .get_or_insert_with(HashMap::new)
-            .insert(name, addresses);
+        self.trie.insert_domain(name.as_str(), addresses);
         self
     }
 
@@ -91,7 +110,7 @@ impl InMemoryDns {
         &mut self,
         overwrites: impl IntoIterator<Item = (Domain, Vec<IpAddr>)>,
     ) -> &mut Self {
-        self.map.get_or_insert_with(HashMap::new).extend(overwrites);
+        self.trie.extend(overwrites);
         self
     }
 }
@@ -105,9 +124,8 @@ impl DnsResolver for InMemoryDns {
     type Error = DomainNotMappedErr;
 
     async fn ipv4_lookup(&self, domain: Domain) -> Result<Vec<Ipv4Addr>, Self::Error> {
-        self.map
-            .as_ref()
-            .and_then(|m| m.get(&domain))
+        self.trie
+            .match_exact(domain.as_str())
             .and_then(|ips| {
                 let ips: Vec<_> = ips
                     .iter()
@@ -122,9 +140,8 @@ impl DnsResolver for InMemoryDns {
     }
 
     async fn ipv6_lookup(&self, domain: Domain) -> Result<Vec<Ipv6Addr>, Self::Error> {
-        self.map
-            .as_ref()
-            .and_then(|m| m.get(&domain))
+        self.trie
+            .match_exact(domain.as_str())
             .and_then(|ips| {
                 let ips: Vec<_> = ips
                     .iter()

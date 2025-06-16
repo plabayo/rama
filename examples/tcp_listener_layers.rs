@@ -24,10 +24,10 @@ use rama::{
     net::stream::{matcher::SocketMatcher, service::EchoService},
     service::service_fn,
     tcp::server::TcpListener,
+    telemetry::tracing::{self, level_filters::LevelFilter},
 };
 use std::{convert::Infallible, time::Duration};
 use tokio::net::TcpStream;
-use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
@@ -54,7 +54,9 @@ async fn main() {
                         SocketMatcher::loopback().negate(),
                         service_fn(async |stream: TcpStream| {
                             match stream.peer_addr() {
-                                Ok(addr) => tracing::warn!("blocked incoming connection: {}", addr),
+                                Ok(addr) => {
+                                    tracing::debug!("blocked incoming connection: {}", addr)
+                                }
                                 Err(err) => tracing::error!(
                                     error = %err,
                                     "blocked incoming connection with unknown peer address",

@@ -1,4 +1,4 @@
-//! An example to showcase how one can build an unauthenticated http proxy server.
+//! An example to showcase how one can build an authenticated http proxy server.
 //!
 //! This example also demonstrates how one can define their own username label parser,
 //! next to the built-in username label parsers.
@@ -60,35 +60,43 @@ use rama::{
     Context, Layer, Service,
     context::{Extensions, RequestContextExt},
     http::{
-        Body, IntoResponse, Request, Response, StatusCode,
+        Body, Request, Response, StatusCode,
         client::EasyHttpWebClient,
         layer::{
             proxy_auth::ProxyAuthLayer,
             remove_header::{RemoveRequestHeaderLayer, RemoveResponseHeaderLayer},
             trace::TraceLayer,
-            upgrade::{UpgradeLayer, Upgraded},
+            upgrade::UpgradeLayer,
         },
         matcher::{DomainMatcher, HttpMatcher, MethodMatcher},
-        response::Json,
         server::HttpServer,
-        service::web::{extract::Path, match_service},
+        service::web::{
+            extract::Path,
+            match_service,
+            response::{IntoResponse, Json},
+        },
     },
-    layer::HijackLayer,
+    layer::{ConsumeErrLayer, HijackLayer},
     net::{
-        address::Domain, conn::is_connection_error, http::RequestContext, stream::ClientSocketInfo,
-        stream::layer::http::BodyLimitLayer, user::Basic,
+        address::Domain,
+        http::RequestContext,
+        proxy::ProxyTarget,
+        stream::{ClientSocketInfo, layer::http::BodyLimitLayer},
+        user::Basic,
     },
     rt::Executor,
     service::service_fn,
-    tcp::{client::default_tcp_connect, server::TcpListener},
+    tcp::client::service::Forwarder,
+    tcp::server::TcpListener,
+    telemetry::tracing::{self, level_filters::LevelFilter},
     username::{
         UsernameLabelParser, UsernameLabelState, UsernameLabels, UsernameOpaqueLabelParser,
     },
 };
+
 use serde::Deserialize;
 use serde_json::json;
 use std::{convert::Infallible, sync::Arc, time::Duration};
-use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
@@ -147,7 +155,7 @@ async fn main() {
                     UpgradeLayer::new(
                         MethodMatcher::CONNECT,
                         service_fn(http_connect_accept),
-                        service_fn(http_connect_proxy),
+                        ConsumeErrLayer::default().into_layer(Forwarder::ctx()),
                     ),
                     RemoveResponseHeaderLayer::hop_by_hop(),
                     RemoveRequestHeaderLayer::hop_by_hop(),
@@ -173,8 +181,14 @@ async fn http_connect_accept<S>(
 where
     S: Clone + Send + Sync + 'static,
 {
-    match ctx.get_or_try_insert_with_ctx::<RequestContext, _>(|ctx| (ctx, &req).try_into()) {
-        Ok(request_ctx) => tracing::info!("accept CONNECT to {}", request_ctx.authority),
+    match ctx
+        .get_or_try_insert_with_ctx::<RequestContext, _>(|ctx| (ctx, &req).try_into())
+        .map(|ctx| ctx.authority.clone())
+    {
+        Ok(authority) => {
+            tracing::info!(%authority, "accept CONNECT (lazy): insert proxy target into context");
+            ctx.insert(ProxyTarget(authority));
+        }
         Err(err) => {
             tracing::error!(err = %err, "error extracting authority");
             return Err(StatusCode::BAD_REQUEST.into_response());
@@ -182,31 +196,6 @@ where
     }
 
     Ok((StatusCode::OK.into_response(), ctx, req))
-}
-
-async fn http_connect_proxy<S>(ctx: Context<S>, mut upgraded: Upgraded) -> Result<(), Infallible>
-where
-    S: Clone + Send + Sync + 'static,
-{
-    let authority = ctx // assumption validated by `http_connect_accept`
-        .get::<RequestContext>()
-        .unwrap()
-        .authority
-        .clone();
-    tracing::info!("CONNECT to {authority}");
-    let (mut stream, _) = match default_tcp_connect(&ctx, authority).await {
-        Ok(stream) => stream,
-        Err(err) => {
-            tracing::error!(error = %err, "error connecting to host");
-            return Ok(());
-        }
-    };
-    if let Err(err) = tokio::io::copy_bidirectional(&mut upgraded, &mut stream).await {
-        if !is_connection_error(&err) {
-            tracing::error!(error = %err, "error copying data");
-        }
-    }
-    Ok(())
 }
 
 async fn http_plain_proxy<S>(ctx: Context<S>, req: Request) -> Result<Response, Infallible>
@@ -222,13 +211,15 @@ where
                 .and_then(|ext| ext.get::<ClientSocketInfo>())
             {
                 Some(client_socket_info) => tracing::info!(
-                    status = %resp.status(),
-                    local_addr = ?client_socket_info.local_addr(),
-                    server_addr = %client_socket_info.peer_addr(),
+                    http.response.status_code = %resp.status(),
+                    network.local.port = client_socket_info.local_addr().map(|addr| addr.port().to_string()).unwrap_or_default(),
+                    network.local.address = client_socket_info.local_addr().map(|addr| addr.ip().to_string()).unwrap_or_default(),
+                    network.peer.port = %client_socket_info.peer_addr().port(),
+                    network.peer.address = %client_socket_info.peer_addr().ip(),
                     "http plain text proxy received response",
                 ),
                 None => tracing::info!(
-                    status = %resp.status(),
+                    http.response.status_code = %resp.status(),
                     "http plain text proxy received response, IP info unknown",
                 ),
             };

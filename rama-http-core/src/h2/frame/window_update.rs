@@ -1,6 +1,7 @@
 use crate::h2::frame::{self, Error, Head, Kind, StreamId};
 
-use bytes::BufMut;
+use rama_core::bytes::BufMut;
+use rama_core::telemetry::tracing;
 use rama_utils::octets::unpack_octets_as_u32;
 
 const SIZE_INCREMENT_MASK: u32 = 1 << 31;

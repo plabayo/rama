@@ -48,7 +48,7 @@
 //! use rama_http::{Body, Request, Response, HeaderMap, StatusCode};
 //! use rama_core::service::service_fn;
 //! use rama_core::{Context, Service, Layer};
-//! use tracing::Level;
+//! use rama_core::telemetry::tracing::Level;
 //! use rama_http::layer::trace::{
 //!     TraceLayer, DefaultMakeSpan, DefaultOnRequest, DefaultOnResponse,
 //! };
@@ -92,11 +92,11 @@
 //! use rama_http::{Body, Request, Response, HeaderMap, StatusCode};
 //! use rama_core::service::service_fn;
 //! use rama_core::{Context, Service, Layer};
+//! use rama_core::telemetry::tracing::{self, Span};
 //! use rama_http::layer::{classify::ServerErrorsFailureClass, trace::TraceLayer};
 //! use std::time::Duration;
-//! use tracing::Span;
 //! use std::convert::Infallible;
-//! use bytes::Bytes;
+//! use rama_core::bytes::Bytes;
 //!
 //! # async fn handle(request: Request) -> Result<Response, Infallible> {
 //! #     Ok(Response::new(Body::from("foo")))
@@ -142,9 +142,9 @@
 //! use rama_http::{Body, Request, Response, StatusCode};
 //! use rama_core::service::service_fn;
 //! use rama_core::{Context, Service, Layer};
+//! use rama_core::telemetry::tracing::{self, Span};
 //! use rama_http::layer::{classify::ServerErrorsFailureClass, trace::TraceLayer};
 //! use std::time::Duration;
-//! use tracing::Span;
 //! # use std::convert::Infallible;
 //!
 //! # async fn handle(request: Request) -> Result<Response, Infallible> {
@@ -226,7 +226,7 @@
 //! use rama_core::service::service_fn;
 //! use rama_core::Layer;
 //! use rama_http::layer::trace::TraceLayer;
-//! use tracing::Span;
+//! use rama_core::telemetry::tracing::{self, Span};
 //! use std::time::Duration;
 //! use std::convert::Infallible;
 //!
@@ -354,9 +354,8 @@
 //! [`Span`]: tracing::Span
 //! [`ServerErrorsAsFailures`]: crate::layer::classify::ServerErrorsAsFailures
 
+use rama_core::telemetry::tracing::Level;
 use std::{fmt, time::Duration};
-
-use tracing::Level;
 
 #[doc(inline)]
 pub use self::{
@@ -382,46 +381,49 @@ pub type GrpcMakeClassifier = SharedClassifier<GrpcErrorsAsFailures>;
 
 macro_rules! event_dynamic_lvl {
     ( $(target: $target:expr,)? $(parent: $parent:expr,)? $lvl:expr, $($tt:tt)* ) => {
-        match $lvl {
-            tracing::Level::ERROR => {
-                tracing::event!(
-                    $(target: $target,)?
-                    $(parent: $parent,)?
-                    tracing::Level::ERROR,
-                    $($tt)*
-                );
-            }
-            tracing::Level::WARN => {
-                tracing::event!(
-                    $(target: $target,)?
-                    $(parent: $parent,)?
-                    tracing::Level::WARN,
-                    $($tt)*
-                );
-            }
-            tracing::Level::INFO => {
-                tracing::event!(
-                    $(target: $target,)?
-                    $(parent: $parent,)?
-                    tracing::Level::INFO,
-                    $($tt)*
-                );
-            }
-            tracing::Level::DEBUG => {
-                tracing::event!(
-                    $(target: $target,)?
-                    $(parent: $parent,)?
-                    tracing::Level::DEBUG,
-                    $($tt)*
-                );
-            }
-            tracing::Level::TRACE => {
-                tracing::event!(
-                    $(target: $target,)?
-                    $(parent: $parent,)?
-                    tracing::Level::TRACE,
-                    $($tt)*
-                );
+        {
+            use ::rama_core::telemetry::tracing;
+            match $lvl {
+                tracing::Level::ERROR => {
+                    tracing::event!(
+                        $(target: $target,)?
+                        $(parent: $parent,)?
+                        tracing::Level::ERROR,
+                        $($tt)*
+                    );
+                }
+                tracing::Level::WARN => {
+                    tracing::event!(
+                        $(target: $target,)?
+                        $(parent: $parent,)?
+                        tracing::Level::WARN,
+                        $($tt)*
+                    );
+                }
+                tracing::Level::INFO => {
+                    tracing::event!(
+                        $(target: $target,)?
+                        $(parent: $parent,)?
+                        tracing::Level::INFO,
+                        $($tt)*
+                    );
+                }
+                tracing::Level::DEBUG => {
+                    tracing::event!(
+                        $(target: $target,)?
+                        $(parent: $parent,)?
+                        tracing::Level::DEBUG,
+                        $($tt)*
+                    );
+                }
+                tracing::Level::TRACE => {
+                    tracing::event!(
+                        $(target: $target,)?
+                        $(parent: $parent,)?
+                        tracing::Level::TRACE,
+                        $($tt)*
+                    );
+                }
             }
         }
     };
@@ -463,16 +465,16 @@ mod tests {
     use crate::dep::http_body_util::BodyExt as _;
     use crate::layer::classify::ServerErrorsFailureClass;
     use crate::{Body, HeaderMap, Request, Response};
-    use bytes::Bytes;
+    use rama_core::bytes::Bytes;
     use rama_core::error::BoxError;
     use rama_core::service::service_fn;
+    use rama_core::telemetry::tracing::{self, Span};
     use rama_core::{Context, Layer, Service};
     use std::sync::OnceLock;
     use std::{
         sync::atomic::{AtomicU32, Ordering},
         time::Duration,
     };
-    use tracing::Span;
 
     macro_rules! lazy_atomic_u32 {
         ($($name:ident),+) => {
@@ -611,7 +613,7 @@ mod tests {
     }
 
     async fn streaming_body(_req: Request) -> Result<Response, BoxError> {
-        use futures_lite::stream::iter;
+        use rama_core::futures::stream::iter;
 
         let stream = iter(vec![
             Ok::<_, BoxError>(Bytes::from("one")),

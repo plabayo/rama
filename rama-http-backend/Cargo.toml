@@ -6,34 +6,14 @@ license = { workspace = true }
 edition = { workspace = true }
 repository = { workspace = true }
 keywords = ["io", "async", "non-blocking", "http", "rama"]
-categories = ["asynchronous", "network-programming", "web-programming::http-client", "web-programming::http-server"]
+categories = [
+    "asynchronous",
+    "network-programming",
+    "web-programming::http-client",
+    "web-programming::http-server",
+]
 authors = { workspace = true }
 rust-version = { workspace = true }
-
-[lints]
-workspace = true
-
-[features]
-default = []
-tls = ["dep:rama-tls", "rama-net/tls"]
-rustls = ["tls", "rama-net/rustls", "rama-tls/rustls"]
-boring = ["tls", "rama-net/boring", "rama-tls/boring"]
-
-[dependencies]
-const_format = { workspace = true }
-futures = { workspace = true }
-h2 = { workspace = true }
-rama-core = { version = "0.2.0-alpha.8", path = "../rama-core" }
-rama-http-core = { version = "0.2.0-alpha.8", path = "../rama-http-core" }
-rama-http-types = { version = "0.2.0-alpha.8", path = "../rama-http-types" }
-rama-net = { version = "0.2.0-alpha.8", path = "../rama-net", features = ["http"] }
-rama-tcp = { version = "0.2.0-alpha.8", path = "../rama-tcp", features = ["http"] }
-rama-tls = { version = "0.2.0-alpha.8", path = "../rama-tls", optional = true }
-rama-utils = { version = "0.2.0-alpha.8", path = "../rama-utils" }
-tokio = { workspace = true, features = ["macros"] }
-tracing = { workspace = true }
-
-[dev-dependencies]
 
 [package.metadata.cargo-public-api-crates]
 allowed = []
@@ -41,3 +21,34 @@ allowed = []
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
+
+[features]
+default = []
+tls = ["rama-net/tls"]
+rustls = ["tls", "rama-tls-rustls"]
+boring = ["tls", "rama-tls-boring"]
+
+[dependencies]
+const_format = { workspace = true }
+futures = { workspace = true }
+h2 = { workspace = true }
+rama-core = { workspace = true }
+rama-dns = { workspace = true }
+rama-http = { workspace = true }
+rama-http-core = { workspace = true }
+rama-http-headers = { workspace = true }
+rama-http-types = { workspace = true }
+rama-net = { workspace = true, features = ["http"] }
+rama-tcp = { workspace = true, features = ["http"] }
+rama-tls-boring = { workspace = true, optional = true }
+rama-tls-rustls = { workspace = true, optional = true }
+rama-utils = { workspace = true }
+tokio = { workspace = true, features = ["macros"] }
+
+[target.'cfg(unix)'.dependencies]
+rama-unix = { workspace = true }
+
+[dev-dependencies]
+
+[lints]
+workspace = true

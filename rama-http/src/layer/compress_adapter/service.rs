@@ -1,14 +1,15 @@
+use crate::headers::encoding::{Encoding, parse_accept_encoding_headers};
 use crate::layer::{
     compression::{self, CompressionBody, CompressionLevel},
     decompression::{self, DecompressionBody},
     util::compression::WrapBody,
 };
+use rama_core::telemetry::tracing;
 use rama_core::{Context, Service, error::BoxError};
 use rama_http_types::{
     HeaderValue, Request, Response,
     dep::http_body::Body,
     header::{CONTENT_ENCODING, CONTENT_LENGTH},
-    headers::encoding::{Encoding, parse_accept_encoding_headers},
 };
 use rama_utils::macros::define_inner_service_accessors;
 

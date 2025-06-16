@@ -1,4 +1,4 @@
-//! This example demonstrates how to dynamically choose certificates for incomming requests
+//! This example demonstrates how to dynamically choose certificates for incoming requests
 //!
 //! # Run the example
 //!
@@ -51,38 +51,33 @@
 //! *  SSL certificate verify result: self signed certificate (18), continuing anyway.
 //! ```
 
-// these dependencies are re-exported by rama for your convenience,
-// as to make it easy to use them and ensure that the versions remain compatible
-// (given most do not have a stable release yet)
-
 // rama provides everything out of the box to build a TLS termination proxy
 use rama::{
     Context, Layer,
     error::OpaqueError,
     graceful::Shutdown,
     http::server::HttpServer,
+    http::service::web::response::IntoResponse,
     http::{Request, Response},
     layer::ConsumeErrLayer,
     net::{
-        address::{Domain, Host},
+        address::Host,
         tls::server::{ServerAuth, ServerConfig},
         tls::{
             DataEncoding,
             client::ClientHello,
-            server::{DynamicCertIssuer, ServerAuthData, ServerCertIssuerData},
+            server::{CacheKind, DynamicCertIssuer, ServerAuthData, ServerCertIssuerData},
         },
     },
     rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
+    telemetry::tracing::level_filters::LevelFilter,
     tls::boring::server::{TlsAcceptorData, TlsAcceptorLayer},
 };
-use rama_http::IntoResponse;
-use rama_net::tls::server::CacheKind;
 
 // everything else is provided by the standard library, community crates or tokio
 use std::{convert::Infallible, time::Duration};
-use tracing::metadata::LevelFilter;
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 #[tokio::main]
@@ -134,7 +129,6 @@ async fn main() {
 struct DynamicIssuer {
     example_data: ServerAuthData,
     second_example_data: ServerAuthData,
-    default_data: ServerAuthData,
 }
 
 impl DynamicIssuer {
@@ -143,7 +137,6 @@ impl DynamicIssuer {
             example_data: example_self_signed_auth().expect("load example data"),
             second_example_data: second_example_self_signed_auth()
                 .expect("load second example data"),
-            default_data: example_self_signed_auth().expect("load default data"),
         }
     }
 }
@@ -155,17 +148,14 @@ impl DynamicCertIssuer for DynamicIssuer {
         _server_name: Option<Host>,
     ) -> Result<ServerAuthData, OpaqueError> {
         match client_hello.ext_server_name() {
-            Some(host) => match host {
-                rama_net::address::Host::Name(domain) => {
-                    if domain == &Domain::from_static("example") {
-                        return Ok(self.example_data.clone());
-                    } else if domain == &Domain::from_static("second.example") {
-                        return Ok(self.second_example_data.clone());
-                    }
-                    Ok(self.example_data.clone())
+            Some(domain) => {
+                if domain == "example" {
+                    return Ok(self.example_data.clone());
+                } else if domain == "second.example" {
+                    return Ok(self.second_example_data.clone());
                 }
-                rama_net::address::Host::Address(_ip_addr) => Ok(self.default_data.clone()),
-            },
+                Ok(self.example_data.clone())
+            }
             None => Ok(self.example_data.clone()),
         }
     }

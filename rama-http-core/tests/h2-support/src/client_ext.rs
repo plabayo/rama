@@ -1,4 +1,4 @@
-use bytes::Buf;
+use rama_core::bytes::Buf;
 use rama_http_core::h2::client::{ResponseFuture, SendRequest};
 use rama_http_types::Request;
 

@@ -4,13 +4,12 @@ use std::io::{self, IoSlice};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use bytes::{Buf, BufMut, Bytes, BytesMut};
+use rama_core::bytes::{Buf, BufMut, Bytes, BytesMut};
+use rama_core::telemetry::tracing::{debug, trace};
 use std::task::ready;
 use tokio::io::AsyncRead;
 use tokio::io::AsyncWrite;
 use tokio::io::ReadBuf;
-use tracing::debug;
-use tracing::trace;
 
 use super::{Http1Transaction, ParseContext, ParsedMessage};
 use crate::common::buf::BufList;
@@ -654,7 +653,7 @@ mod tests {
         // // First, let's just check that the Mock would normally return an
         // // error on an unexpected write, even if the buffer is empty...
         // let mut mock = Mock::new().build();
-        // futures_util::future::poll_fn(|cx| {
+        // std::future::poll_fn(|cx| {
         //     Pin::new(&mut mock).poll_write_buf(cx, &mut Cursor::new(&[]))
         // })
         // .await

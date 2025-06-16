@@ -18,24 +18,18 @@
 #![cfg_attr(not(test), warn(clippy::print_stdout, clippy::dbg_macro))]
 
 pub(crate) mod body;
-pub use body::{Body, BodyDataStream};
+pub use body::{Body, BodyDataStream, BodyExtractExt, BodyLimit, sse};
 
-mod body_limit;
-pub use body_limit::BodyLimit;
+mod request;
+pub use request::{HttpRequestParts, Request};
 
-mod body_ext;
-pub use body_ext::BodyExtractExt;
-
-/// Type alias for [`http::Request`] whose body type
-/// defaults to [`Body`], the most common body type used with rama.
-pub type Request<T = Body> = http::Request<T>;
-
-pub mod response;
-pub use response::{IntoResponse, IntoResponseParts, Response};
+/// Type alias for [`http::Response`] whose body type defaults to [`Body`], the most common body
+/// type used with rama.
+pub type Response<T = Body> = http::Response<T>;
 
 pub mod proto;
 
-pub mod headers;
+pub mod opentelemetry;
 
 pub mod conn;
 
@@ -122,7 +116,7 @@ pub mod header {
     static_header!["x-forwarded-host", "x-forwarded-for", "x-forwarded-proto",];
 
     // standard
-    static_header!["keep-alive", "proxy-connection"];
+    static_header!["keep-alive", "proxy-connection", "last-event-id"];
 
     // non-std client ip forward headers
     static_header![

@@ -1,11 +1,12 @@
 use super::store::Resolve;
 use super::*;
+use rama_core::telemetry::tracing;
 
 use crate::h2::frame::Reason;
 
 use crate::h2::codec::UserError;
 
-use bytes::buf::Take;
+use rama_core::bytes::buf::Take;
 use std::{
     cmp::{self, Ordering},
     fmt, io, mem,

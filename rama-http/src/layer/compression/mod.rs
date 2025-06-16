@@ -5,8 +5,8 @@
 //! Example showing how to respond with the compressed contents of a file.
 //!
 //! ```rust
-//! use bytes::Bytes;
-//! use futures_lite::stream::StreamExt;
+//! use rama_core::bytes::Bytes;
+//! use rama_core::futures::stream::StreamExt;
 //! use rama_core::error::BoxError;
 //! use rama_http::dep::http_body::Frame;
 //! use rama_http::dep::http_body_util::{BodyExt , StreamBody};
@@ -413,7 +413,7 @@ mod tests {
         let compressed_with_level = {
             use async_compression::tokio::bufread::BrotliEncoder;
 
-            let stream = Box::pin(futures_lite::stream::once({
+            let stream = Box::pin(rama_core::futures::stream::once(async {
                 Ok::<_, std::io::Error>(DATA.as_bytes())
             }));
             let reader = StreamReader::new(stream);

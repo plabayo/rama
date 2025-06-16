@@ -5,13 +5,14 @@ use crate::dep::http_body::{Body, Frame};
 use crate::layer::util::compression::{
     AsyncReadBody, BodyIntoStream, CompressionLevel, DecorateAsyncRead, WrapBody,
 };
-use rama_core::error::BoxError;
+use rama_core::{
+    bytes::{Buf, Bytes},
+    error::BoxError,
+};
 
 use async_compression::tokio::bufread::{BrotliEncoder, GzipEncoder, ZlibEncoder, ZstdEncoder};
-
-use bytes::{Buf, Bytes};
-use futures_lite::ready;
 use pin_project_lite::pin_project;
+use rama_core::futures::ready;
 use std::{
     io,
     marker::PhantomData,

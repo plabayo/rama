@@ -197,7 +197,7 @@ async fn read_continuation_frames() {
 #[tokio::test]
 #[ignore]
 async fn update_max_frame_len_at_rest() {
-    use futures::StreamExt;
+    use rama_core::futures::StreamExt;
     use tokio::io::AsyncReadExt;
 
     h2_support::trace_init!();

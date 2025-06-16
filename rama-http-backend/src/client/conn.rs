@@ -4,6 +4,10 @@ use rama_core::{
     error::{BoxError, OpaqueError},
     inspect::RequestInspector,
 };
+use rama_http::{
+    header::{HOST, USER_AGENT},
+    opentelemetry::version_as_protocol_version,
+};
 use rama_http_core::h2::frame::Priority;
 use rama_http_types::{
     Request, Version,
@@ -13,13 +17,14 @@ use rama_http_types::{
 };
 use rama_net::{
     client::{ConnectorService, EstablishedClientConnection},
+    http::RequestContext,
     stream::Stream,
 };
 use tokio::sync::Mutex;
 
+use rama_core::telemetry::tracing::{self, Instrument};
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
-use tracing::trace;
 
 /// A [`Service`] which establishes an HTTP Connection.
 pub struct HttpConnector<S, I1 = (), I2 = ()> {
@@ -50,6 +55,8 @@ impl<S> HttpConnector<S> {
 }
 
 impl<S, I1, I2> HttpConnector<S, I1, I2> {
+    /// Add a http request inspector that will run just after the inner http connector
+    /// has finished but before the http handshake
     pub fn with_jit_req_inspector<T>(self, http_req_inspector: T) -> HttpConnector<S, T, I2> {
         HttpConnector {
             inner: self.inner,
@@ -58,6 +65,7 @@ impl<S, I1, I2> HttpConnector<S, I1, I2> {
         }
     }
 
+    /// Add a http request inspector that will run just before doing the actual http request
     pub fn with_svc_req_inspector<T>(self, http_req_inspector: T) -> HttpConnector<S, I1, T> {
         HttpConnector {
             inner: self.inner,
@@ -122,11 +130,23 @@ where
             .await
             .map_err(Into::into)?;
 
+        let server_address = ctx
+            .get::<RequestContext>()
+            .map(|ctx| ctx.authority.host().to_str())
+            .or_else(|| req.uri().host().map(Into::into))
+            .or_else(|| {
+                req.headers()
+                    .get(HOST)
+                    .and_then(|v| v.to_str().ok())
+                    .map(Into::into)
+            })
+            .unwrap_or_default();
+
         let io = Box::pin(conn);
 
         match req.version() {
             Version::HTTP_2 => {
-                trace!(uri = %req.uri(), "create h2 client executor");
+                tracing::trace!(uri = %req.uri(), "create h2 client executor");
 
                 let executor = ctx.executor().clone();
                 let mut builder = rama_http_core::client::conn::http2::Builder::new(executor);
@@ -160,11 +180,29 @@ where
 
                 let (sender, conn) = builder.handshake(io).await?;
 
-                ctx.spawn(async move {
-                    if let Err(err) = conn.await {
-                        tracing::debug!("connection failed: {:?}", err);
+                let conn_span = tracing::trace_root_span!(
+                    "h2::conn::serve",
+                    otel.kind = "client",
+                    http.request.method = %req.method().as_str(),
+                    url.full = %req.uri(),
+                    url.path = %req.uri().path(),
+                    url.query = req.uri().query().unwrap_or_default(),
+                    url.scheme = %req.uri().scheme().map(|s| s.as_str()).unwrap_or_default(),
+                    network.protocol.name = "http",
+                    network.protocol.version = version_as_protocol_version(req.version()),
+                    user_agent.original = %req.headers().get(USER_AGENT).and_then(|v| v.to_str().ok()).unwrap_or_default(),
+                    server.address = %server_address,
+                    server.service.name = %server_address,
+                );
+
+                ctx.spawn(
+                    async move {
+                        if let Err(err) = conn.await {
+                            tracing::debug!("connection failed: {:?}", err);
+                        }
                     }
-                });
+                    .instrument(conn_span),
+                );
 
                 let svc = HttpClientService {
                     sender: SendRequest::Http2(sender),
@@ -178,18 +216,36 @@ where
                 })
             }
             Version::HTTP_11 | Version::HTTP_10 | Version::HTTP_09 => {
-                trace!(uri = %req.uri(), "create ~h1 client executor");
+                tracing::trace!(uri = %req.uri(), "create ~h1 client executor");
                 let mut builder = rama_http_core::client::conn::http1::Builder::new();
                 if let Some(params) = ctx.get::<Http1ClientContextParams>() {
                     builder.title_case_headers(params.title_header_case);
                 }
                 let (sender, conn) = builder.handshake(io).await?;
 
-                ctx.spawn(async move {
-                    if let Err(err) = conn.await {
-                        tracing::debug!("connection failed: {:?}", err);
+                let conn_span = tracing::trace_root_span!(
+                    "h1::conn::serve",
+                    otel.kind = "client",
+                    http.request.method = %req.method().as_str(),
+                    url.full = %req.uri(),
+                    url.path = %req.uri().path(),
+                    url.query = req.uri().query().unwrap_or_default(),
+                    url.scheme = %req.uri().scheme().map(|s| s.as_str()).unwrap_or_default(),
+                    network.protocol.name = "http",
+                    network.protocol.version = version_as_protocol_version(req.version()),
+                    user_agent.original = %req.headers().get(USER_AGENT).and_then(|v| v.to_str().ok()).unwrap_or_default(),
+                    server.address = %server_address,
+                    server.service.name = %server_address,
+                );
+
+                ctx.spawn(
+                    async move {
+                        if let Err(err) = conn.await {
+                            tracing::debug!("connection failed: {:?}", err);
+                        }
                     }
-                });
+                    .instrument(conn_span),
+                );
 
                 let svc = HttpClientService {
                     sender: SendRequest::Http1(Mutex::new(sender)),

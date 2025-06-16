@@ -7,6 +7,7 @@ This animal is used as a our mascot and spiritual inspiration of this framework.
 It was chosen to honor our connection with Peru, the homeland of this magnificent animal,
 and translated into Japanese because we gratefully have built _rama_
 upon the broad shoulders of [Tokio and its community](https://tokio.rs/).
+The name reminds us to the city of Tokyo.
 
 ## On which platform can I run rama?
 
@@ -41,26 +42,13 @@ in attitude here and would allow you to start a conversation about it.
 
 ## Can Tower be used?
 
-Initially Rama was designed fully around the idea of Tower. The initial design of Rama took many
-iterations and was R&D'd over a timespan of about a year, in between other work and parenting.
-We switched between [`tower`](https://crates.io/crates/tower), [`tower-async`](https://crates.io/crates/tower-async) (our own public fork of tower) and back to [`tower`](https://crates.io/crates/tower) again...
+Yes. While it is not recommended to do so you can use the `rama-tower` crate to achieve this.
 
-It became clear however that the version of [`tower`](https://crates.io/crates/tower) at the time was incompatible with the ideas
-which we wanted it to have:
+You can find an example on how to do this at
+<https://github.com/plabayo/rama/blob/main/examples/http_rama_tower.rs>.
 
-- We are not interested in the `poll_ready` code of tower,
-  and in fact it would be harmful if something is used which makes use of it
-  (Axum warns for it, but strictly it is possible...);
-  - This idea is also further elaborated in the FAQ of our tower-async fork:
-    <https://github.com/plabayo/tower-async?tab=readme-ov-file#faq>
-- We want to start to prepare for an `async`-ready future as soon as we can...
-
-All in all, it was clear after several iterations that usage of tower did more
-harm then it did good. What was supposed to be a stack to help us implement our vision,
-became a hurdle instead.
-
-This is not the fault of tower, but more a sign that it did not age well,
-or perhaps... it is actually a very different beast altogether.
+Please make sure to read the lib docs at <https://ramaproxy.org/docs/rama/utils/tower/index.html>
+if you're planning to make use of it.
 
 ## Can I build Web Services with Rama?
 
@@ -72,6 +60,10 @@ Yes you can, there are even some examples:
   a web service example showcasing how one might do a key value store web service using `Rama`;
 - [http_web_service_dir_and_api.rs](https://github.com/plabayo/rama/tree/main/examples/http_web_service_dir_and_api.rs):
   a web service example showcasing how one can make a web service to serve a website which includes an XHR API;
+- [/examples/http_web_router.rs](https://github.com/plabayo/rama/tree/main/examples/http_web_router.rs):
+  a web service example showcasing demonstrating how to create a web router,
+  which is excellent for the typical path-centric routing,
+  and an approach you'll recognise from most other web frameworks out there.
 
 Given Rama's prime focus is to aid in the development of proxy services it is
 even more natural to write web services that run as part of a proxy service, e.g.:
@@ -133,3 +125,22 @@ Please do [open an issue](https://github.com/plabayo/rama/issues) if you notice 
 Another option is to use [`Either`] on the internal policy/config items used by your layer.
 
 [`Either`]: https://ramaproxy.org/docs/rama/combinators/enum.Either.html
+
+## In the echo server, why are tls.ja3 and tls.ja4 profiles null?
+
+> Originally posted in <https://github.com/plabayo/rama/issues/543> by [@skilbjo](https://github.com/skilbjo).
+
+In <https://echo.ramaproxy.org/> we usually show the following information per fingerprint "algorithm" (e.g. ja3 and ja4):
+
+* the information for the actual incoming request/connection, often labeled as "verbose" or "hash"
+* if possible the values for the embedded profile matching the given user-agent (based on the user-agent http header)
+
+The latter is what the question is about. Rama only embeds profiles of the latest relevant User Agents used
+in the real world in the context of user agent emulation. These are for example the majority marketshare web
+browsers but can also be common network stacks used in native applications such as iOS or Android applications.
+
+You can find all user agent profiles embedded with rama at: <https://github.com/plabayo/rama/blob/main/rama-ua/src/profile/embed_profiles.json>
+
+It is not within the scope of rama to provide an exhaustive database (embedded or not) of all possible
+user-agents found in the while. You can however easily build this yourself by stacking the appropriate
+rama layer services in your own rama-based network stacks.

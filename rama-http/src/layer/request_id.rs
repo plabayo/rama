@@ -57,15 +57,15 @@
 //! # }
 //! ```
 
-use std::fmt;
-
 use crate::{
     Request, Response,
     header::{HeaderName, HeaderValue},
 };
-use nanoid::nanoid;
 use rama_core::{Context, Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
+
+use rand::Rng;
+use std::fmt;
 use uuid::Uuid;
 
 /// cfr: <https://www.rfc-editor.org/rfc/rfc6648>
@@ -421,8 +421,41 @@ pub struct MakeRequestNanoid;
 
 impl MakeRequestId for MakeRequestNanoid {
     fn make_request_id<B>(&self, _request: &Request<B>) -> Option<RequestId> {
-        let request_id = nanoid!().parse().unwrap();
+        let request_id = make_nano_id();
         Some(RequestId::new(request_id))
+    }
+}
+
+fn make_nano_id() -> HeaderValue {
+    const ALPHABET_LEN: usize = 64;
+    const ALPHABET: [u8; ALPHABET_LEN] = [
+        b'_', b'-', b'0', b'1', b'2', b'3', b'4', b'5', b'6', b'7', b'8', b'9', b'a', b'b', b'c',
+        b'd', b'e', b'f', b'g', b'h', b'i', b'j', b'k', b'l', b'm', b'n', b'o', b'p', b'q', b'r',
+        b's', b't', b'u', b'v', b'w', b'x', b'y', b'z', b'A', b'B', b'C', b'D', b'E', b'F', b'G',
+        b'H', b'I', b'J', b'K', b'L', b'M', b'N', b'O', b'P', b'Q', b'R', b'S', b'T', b'U', b'V',
+        b'W', b'X', b'Y', b'Z',
+    ];
+    const ID_LEN: usize = 21;
+    const STEP: usize = 8 * ID_LEN / 5;
+    const MASK: usize = (ALPHABET_LEN * 2) - 1;
+
+    let mut id = [0u8; ID_LEN];
+
+    let input: [u8; STEP] = rand::rng().random();
+
+    let mut index = 0;
+    loop {
+        for byte in input {
+            let byte = byte as usize & MASK;
+
+            if ALPHABET_LEN > byte {
+                id[index] = ALPHABET[byte];
+                index += 1;
+                if index == ID_LEN {
+                    return unsafe { HeaderValue::from_maybe_shared_unchecked(id) };
+                }
+            }
+        }
     }
 }
 

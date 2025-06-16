@@ -35,3 +35,16 @@ digraph {
 </div>
 
 In rama it is truly `Service`s all the way down.
+
+## Transport Layer Service Examples
+
+All rama [examples can be found in the `/examples` dir](https://github.com/plabayo/rama/tree/main/examples).
+
+Here are some examples that demonstrate working with transport layer services:
+
+- [/examples/tcp_listener_layers.rs](https://github.com/plabayo/rama/tree/main/examples/tcp_listener_layers.rs):
+  an example showing how to create a TCP listener with multiple layers of middleware;
+- [/examples/tcp_listener_hello.rs](https://github.com/plabayo/rama/tree/main/examples/tcp_listener_hello.rs):
+  a minimal example demonstrating a TCP listener that responds with a hello message;
+- [/examples/udp_codec.rs](https://github.com/plabayo/rama/tree/main/examples/udp_codec.rs):
+  an example showing how to work with UDP using codecs for message framing;

@@ -10,17 +10,18 @@ use crate::cmd::fp::data::TlsDisplayInfoExtensionData;
 use itertools::Itertools as _;
 use rama::{
     Context,
+    http::service::web::response::{self, IntoResponse, Json},
     http::{
-        Body, BodyExtractExt, IntoResponse, Request, Response, StatusCode, proto::h2,
-        response::Json, service::web::extract::Path,
+        Body, BodyExtractExt, Request, Response, StatusCode, proto::h2, service::web::extract::Path,
     },
+    telemetry::tracing,
     ua::profile::{JsProfileWebApis, UserAgentSourceInfo},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::sync::Arc;
 
-type Html = rama::http::response::Html<String>;
+type Html = response::Html<String>;
 
 fn html<T: Into<String>>(inner: T) -> Html {
     inner.into().into()
@@ -319,25 +320,24 @@ pub(super) async fn post_api_fetch_number(
         .await
         .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()).into_response())?;
 
-    if ctx.contains::<crate::fp::StorageAuthorized>() {
-        if let Some(storage) = ctx.state().storage.as_ref() {
-            if let Some(js_web_apis) = request.js_web_apis.clone() {
-                storage
-                    .store_js_web_apis(user_agent.clone(), js_web_apis)
-                    .await
-                    .map_err(|err| {
-                        (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response()
-                    })?;
-            }
+    if let Some(storage) = ctx.state().storage.as_ref() {
+        let auth = ctx.contains::<crate::fp::StorageAuthorized>();
+        if let Some(js_web_apis) = request.js_web_apis.clone() {
+            storage
+                .store_js_web_apis(user_agent.clone(), auth, js_web_apis)
+                .await
+                .map_err(|err| {
+                    (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response()
+                })?;
+        }
 
-            if let Some(source_info) = request.source_info.clone() {
-                storage
-                    .store_source_info(user_agent.clone(), source_info)
-                    .await
-                    .map_err(|err| {
-                        (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response()
-                    })?;
-            }
+        if let Some(source_info) = request.source_info.clone() {
+            storage
+                .store_source_info(user_agent.clone(), auth, source_info)
+                .await
+                .map_err(|err| {
+                    (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response()
+                })?;
         }
     }
 
@@ -689,6 +689,13 @@ impl From<TlsDisplayInfo> for Vec<Table> {
             rows: vec![
                 ("TLS Client Fingerprint".to_owned(), info.ja4.hash),
                 ("Raw (Debug) String".to_owned(), info.ja4.full),
+            ],
+        });
+        vec.push(Table {
+            title: "🆔 Peetprint".to_owned(),
+            rows: vec![
+                ("hash".to_owned(), info.peet.hash),
+                ("full".to_owned(), info.peet.full),
             ],
         });
         vec.push(Table {

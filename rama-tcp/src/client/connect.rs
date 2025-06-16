@@ -1,11 +1,15 @@
+use rama_core::telemetry::tracing::{self, Instrument, trace_span};
 use rama_core::{
     Context,
     combinators::Either,
     error::{BoxError, ErrorContext, OpaqueError},
 };
-use rama_dns::{DnsOverwrite, DnsResolver, HickoryDns};
-use rama_net::address::{Authority, Domain, Host};
-use rama_net::mode::{ConnectIpMode, DnsResolveIpMode};
+use rama_dns::{DnsOverwrite, DnsResolver, GlobalDnsResolver};
+use rama_net::{
+    address::{Authority, Domain, Host, SocketAddress},
+    mode::{ConnectIpMode, DnsResolveIpMode},
+    socket::SocketOptions,
+};
 use std::{
     net::{IpAddr, SocketAddr},
     ops::Deref,
@@ -55,6 +59,75 @@ impl<T: TcpStreamConnector> TcpStreamConnector for Arc<T> {
     ) -> impl Future<Output = Result<TcpStream, Self::Error>> + Send + '_ {
         (**self).connect(addr)
     }
+}
+
+impl TcpStreamConnector for Arc<SocketOptions> {
+    type Error = OpaqueError;
+
+    async fn connect(&self, addr: SocketAddr) -> Result<TcpStream, Self::Error> {
+        let opts = self.clone();
+        tokio::task::spawn_blocking(move || tcp_connect_with_socket_opts(&opts, addr))
+            .await
+            .context("wait for blocking tcp bind using custom socket opts")?
+    }
+}
+
+impl TcpStreamConnector for SocketAddress {
+    type Error = OpaqueError;
+
+    async fn connect(&self, addr: SocketAddr) -> Result<TcpStream, Self::Error> {
+        let bind_addr = *self;
+        let opts = match bind_addr.ip_addr() {
+            IpAddr::V4(_ip) => SocketOptions {
+                address: Some(bind_addr),
+                ..SocketOptions::default_tcp()
+            },
+            IpAddr::V6(_ip) => SocketOptions {
+                address: Some(bind_addr),
+                ..SocketOptions::default_tcp_v6()
+            },
+        };
+        tokio::task::spawn_blocking(move || tcp_connect_with_socket_opts(&opts, addr))
+            .await
+            .context("wait for blocking tcp bind using provided Socket Address")?
+    }
+}
+
+#[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+impl TcpStreamConnector for rama_net::socket::DeviceName {
+    type Error = OpaqueError;
+
+    async fn connect(&self, addr: SocketAddr) -> Result<TcpStream, Self::Error> {
+        let bind_interface = self.clone();
+        tokio::task::spawn_blocking(move || {
+            tcp_connect_with_socket_opts(
+                &SocketOptions {
+                    device: Some(bind_interface),
+                    ..SocketOptions::default_tcp()
+                },
+                addr,
+            )
+        })
+        .await
+        .context("wait for blocking tcp bind using provided Socket Address")?
+    }
+}
+
+fn tcp_connect_with_socket_opts(
+    opts: &SocketOptions,
+    addr: SocketAddr,
+) -> Result<TcpStream, OpaqueError> {
+    let socket = opts
+        .try_build_socket()
+        .context("try to build TCP socket's underlying OS socket")?;
+    socket
+        .connect(&addr.into())
+        .context("connect to the provided socket addr")?;
+    socket
+        .set_nonblocking(true)
+        .context("set socket non-blocking")?;
+    TcpStream::from_std(std::net::TcpStream::from(socket))
+        .context("create tokio tcp stream from created raw (tcp) socket")
 }
 
 impl<ConnectFn, ConnectFnFut, ConnectFnErr> TcpStreamConnector for ConnectFn
@@ -112,20 +185,19 @@ pub async fn default_tcp_connect<State>(
 where
     State: Clone + Send + Sync + 'static,
 {
-    tcp_connect(ctx, authority, true, HickoryDns::default(), ()).await
+    tcp_connect(ctx, authority, GlobalDnsResolver::default(), ()).await
 }
 
 /// Establish a [`TcpStream`] connection for the given [`Authority`].
 pub async fn tcp_connect<State, Dns, Connector>(
     ctx: &Context<State>,
     authority: Authority,
-    allow_overwrites: bool,
     dns: Dns,
     connector: Connector,
 ) -> Result<(TcpStream, SocketAddr), OpaqueError>
 where
     State: Clone + Send + Sync + 'static,
-    Dns: DnsResolver<Error: Into<BoxError>> + Clone,
+    Dns: DnsResolver + Clone,
     Connector: TcpStreamConnector<Error: Into<BoxError> + Send + 'static> + Clone,
 {
     let ip_mode = ctx.get().copied().unwrap_or_default();
@@ -157,21 +229,19 @@ where
         }
     };
 
-    if allow_overwrites {
-        if let Some(dns_overwrite) = ctx.get::<DnsOverwrite>() {
-            if let Ok(tuple) = tcp_connect_inner(
-                ctx,
-                domain.clone(),
-                port,
-                dns_mode,
-                dns_overwrite.deref().clone(), // Convert DnsOverwrite to a DnsResolver
-                connector.clone(),
-                ip_mode,
-            )
-            .await
-            {
-                return Ok(tuple);
-            }
+    if let Some(dns_overwrite) = ctx.get::<DnsOverwrite>() {
+        if let Ok(tuple) = tcp_connect_inner(
+            ctx,
+            domain.clone(),
+            port,
+            dns_mode,
+            dns_overwrite.deref().clone(), // Convert DnsOverwrite to a DnsResolver
+            connector.clone(),
+            ip_mode,
+        )
+        .await
+        {
+            return Ok(tuple);
         }
     }
 
@@ -192,7 +262,7 @@ async fn tcp_connect_inner<State, Dns, Connector>(
 ) -> Result<(TcpStream, SocketAddr), OpaqueError>
 where
     State: Clone + Send + Sync + 'static,
-    Dns: DnsResolver<Error: Into<BoxError>> + Clone,
+    Dns: DnsResolver + Clone,
     Connector: TcpStreamConnector<Error: Into<BoxError> + Send + 'static> + Clone,
 {
     let (tx, mut rx) = channel(1);
@@ -200,35 +270,50 @@ where
     let sem = Arc::new(Semaphore::new(3));
 
     if dns_mode.ipv4_supported() {
-        ctx.spawn(tcp_connect_inner_branch(
-            dns_mode,
-            dns.clone(),
-            connect_mode,
-            connector.clone(),
-            IpKind::Ipv4,
-            domain.clone(),
-            port,
-            tx.clone(),
-            connected.clone(),
-            sem.clone(),
-        ));
+        ctx.spawn(
+            tcp_connect_inner_branch(
+                dns_mode,
+                dns.clone(),
+                connect_mode,
+                connector.clone(),
+                IpKind::Ipv4,
+                domain.clone(),
+                port,
+                tx.clone(),
+                connected.clone(),
+                sem.clone(),
+            )
+            .instrument(tracing::trace_span!(
+                "tcp::connect::dns_v4",
+                otel.kind = "client",
+                network.protocol.name = "tcp",
+            )),
+        );
     }
 
     if dns_mode.ipv6_supported() {
-        ctx.spawn(tcp_connect_inner_branch(
-            dns_mode,
-            dns.clone(),
-            connect_mode,
-            connector.clone(),
-            IpKind::Ipv6,
-            domain.clone(),
-            port,
-            tx.clone(),
-            connected.clone(),
-            sem.clone(),
-        ));
+        ctx.spawn(
+            tcp_connect_inner_branch(
+                dns_mode,
+                dns.clone(),
+                connect_mode,
+                connector.clone(),
+                IpKind::Ipv6,
+                domain.clone(),
+                port,
+                tx.clone(),
+                connected.clone(),
+                sem.clone(),
+            )
+            .instrument(tracing::trace_span!(
+                "tcp::connect::dns_v6",
+                otel.kind = "client",
+                network.protocol.name = "tcp",
+            )),
+        );
     }
 
+    drop(tx);
     if let Some((stream, addr)) = rx.recv().await {
         connected.store(true, Ordering::Release);
         return Ok((stream, addr));
@@ -258,7 +343,7 @@ async fn tcp_connect_inner_branch<Dns, Connector>(
     connected: Arc<AtomicBool>,
     sem: Arc<Semaphore>,
 ) where
-    Dns: DnsResolver<Error: Into<BoxError>> + Clone,
+    Dns: DnsResolver + Clone,
     Connector: TcpStreamConnector<Error: Into<BoxError> + Send + 'static> + Clone,
 {
     let ip_it = match ip_kind {
@@ -346,6 +431,12 @@ async fn tcp_connect_inner_branch<Dns, Connector>(
                     tracing::trace!(err = %err, "[{ip_kind:?}] #{index}: tcp connector failed to connect");
                 }
             };
-        });
+        }.instrument(trace_span!(
+            "tcp::connect",
+            otel.kind = "client",
+            network.protocol.name = "tcp",
+            network.peer.address = %ip,
+            %index,
+        )));
     }
 }

@@ -1,8 +1,9 @@
 use rama_core::{
     Context, Service,
     error::{BoxError, ErrorContext, ErrorExt, OpaqueError},
+    telemetry::tracing,
 };
-use rama_dns::{DnsResolver, HickoryDns};
+use rama_dns::{DnsResolver, GlobalDnsResolver};
 use rama_net::{
     address::ProxyAddress,
     client::EstablishedClientConnection,
@@ -15,12 +16,30 @@ use crate::client::connect::TcpStreamConnector;
 
 use super::{CreatedTcpStreamConnector, TcpStreamConnectorCloneFactory, TcpStreamConnectorFactory};
 
-#[derive(Debug, Clone)]
-#[non_exhaustive]
 /// A connector which can be used to establish a TCP connection to a server.
-pub struct TcpConnector<Dns = HickoryDns, ConnectorFactory = ()> {
+pub struct TcpConnector<Dns = GlobalDnsResolver, ConnectorFactory = ()> {
     dns: Dns,
     connector_factory: ConnectorFactory,
+}
+
+impl<Dns: std::fmt::Debug, ConnectorFactory: std::fmt::Debug> std::fmt::Debug
+    for TcpConnector<Dns, ConnectorFactory>
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TcpConnector")
+            .field("dns", &self.dns)
+            .field("connector_factory", &self.connector_factory)
+            .finish()
+    }
+}
+
+impl<Dns: Clone, ConnectorFactory: Clone> Clone for TcpConnector<Dns, ConnectorFactory> {
+    fn clone(&self) -> Self {
+        Self {
+            dns: self.dns.clone(),
+            connector_factory: self.connector_factory.clone(),
+        }
+    }
 }
 
 impl<Dns, Connector> TcpConnector<Dns, Connector> {}
@@ -32,7 +51,7 @@ impl TcpConnector {
     /// or add connection pools, retry logic and more.
     pub fn new() -> Self {
         Self {
-            dns: HickoryDns::default(),
+            dns: GlobalDnsResolver::new(),
             connector_factory: (),
         }
     }
@@ -42,7 +61,7 @@ impl<Dns, ConnectorFactory> TcpConnector<Dns, ConnectorFactory> {
     /// Consume `self` to attach the given `dns` (a [`DnsResolver`]) as a new [`TcpConnector`].
     pub fn with_dns<OtherDns>(self, dns: OtherDns) -> TcpConnector<OtherDns, ConnectorFactory>
     where
-        OtherDns: DnsResolver<Error: Into<BoxError>> + Clone,
+        OtherDns: DnsResolver + Clone,
     {
         TcpConnector {
             dns,
@@ -86,7 +105,7 @@ where
     State: Clone + Send + Sync + 'static,
     Request: TryRefIntoTransportContext<State> + Send + 'static,
     Request::Error: Into<BoxError> + Send + Sync + 'static,
-    Dns: DnsResolver<Error: Into<BoxError>> + Clone,
+    Dns: DnsResolver + Clone,
     ConnectorFactory: TcpStreamConnectorFactory<
             State,
             Connector: TcpStreamConnector<Error: Into<BoxError> + Send + 'static>,
@@ -111,7 +130,6 @@ where
             let (conn, addr) = crate::client::tcp_connect(
                 &ctx,
                 proxy.authority.clone(),
-                true,
                 self.dns.clone(),
                 connector,
             )
@@ -152,10 +170,9 @@ where
         }
 
         let authority = transport_ctx.authority.clone();
-        let (conn, addr) =
-            crate::client::tcp_connect(&ctx, authority, false, self.dns.clone(), connector)
-                .await
-                .context("tcp connector: connect to server")?;
+        let (conn, addr) = crate::client::tcp_connect(&ctx, authority, self.dns.clone(), connector)
+            .await
+            .context("tcp connector: connect to server")?;
 
         ctx.insert(ClientSocketInfo(SocketInfo::new(
             conn.local_addr()

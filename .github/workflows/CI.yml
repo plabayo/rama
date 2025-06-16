@@ -59,6 +59,9 @@ jobs:
       - name: rustfmt
         run: |
           cargo fmt --all --check
+      - name: extra-checks
+        run: |
+          ./scripts/extra-checks.sh
 
   check-all-features:
     runs-on: ubuntu-latest
@@ -183,6 +186,51 @@ jobs:
       - name: Run tests
         run: cargo test --all-features --workspace
 
+  test-windows-msrv:
+    needs: [check, check-msrv, check-all-features]
+    runs-on: windows-latest
+    steps:
+      - uses: ilammy/setup-nasm@v1
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{env.RUST_TOOLCHAIN_MSRV}}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN_MSRV}}"
+      - name: Run tests
+        run: cargo test --all-features --workspace
+
+  test-windows-beta:
+    needs: [check, check-msrv, check-all-features]
+    runs-on: windows-latest
+    steps:
+      - uses: ilammy/setup-nasm@v1
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{env.RUST_TOOLCHAIN_MSRV}}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN_MSRV}}"
+      - name: Run tests
+        run: cargo test --all-features --workspace
+
+  test-windows:
+    needs: [check, check-msrv, check-all-features]
+    runs-on: windows-latest
+    steps:
+      - uses: ilammy/setup-nasm@v1
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{env.RUST_TOOLCHAIN}}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
+      - name: Run tests
+        run: cargo test --all-features --workspace
+
   test-ignored-msrv:
     needs: [check, check-msrv, check-all-features]
     runs-on: ubuntu-latest
@@ -195,7 +243,7 @@ jobs:
         with:
           env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN_MSRV}}"
       - name: Run tests
-        run: cargo test --features=cli,telemetry,compression,rustls --workspace -- --ignored
+        run: cargo test --features=cli,compression,rustls --workspace -- --ignored
 
   test-ignored-beta:
     needs: [check, check-msrv, check-all-features]
@@ -209,7 +257,7 @@ jobs:
         with:
           env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN_BETA}}"
       - name: Run tests
-        run: cargo test --features=cli,telemetry,compression,rustls --workspace -- --ignored
+        run: cargo test --features=cli,compression,rustls --workspace -- --ignored
 
   test-ignored:
     needs: [check, check-msrv, check-all-features]
@@ -223,7 +271,7 @@ jobs:
         with:
           env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
       - name: Run tests
-        run: cargo test --features=cli,telemetry,compression,rustls --workspace -- --ignored
+        run: cargo test --features=cli,compression,rustls --workspace -- --ignored
 
   test-ignored-macos-msrv:
     needs: [check, check-msrv, check-all-features]
@@ -237,7 +285,7 @@ jobs:
         with:
           env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN_MSRV}}"
       - name: Run tests
-        run: cargo test --features=cli,telemetry,compression,rustls --workspace -- --ignored
+        run: cargo test --features=cli,compression,rustls --workspace -- --ignored
 
   test-ignored-macos-beta:
     needs: [check, check-msrv, check-all-features]
@@ -251,7 +299,7 @@ jobs:
         with:
           env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN_MSRV}}"
       - name: Run tests
-        run: cargo test --features=cli,telemetry,compression,rustls --workspace -- --ignored
+        run: cargo test --features=cli,compression,rustls --workspace -- --ignored
 
   test-ignored-macos:
     needs: [check, check-msrv, check-all-features]
@@ -265,7 +313,7 @@ jobs:
         with:
           env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
       - name: Run tests
-        run: cargo test --features=cli,telemetry,compression,rustls --workspace -- --ignored
+        run: cargo test --features=cli,compression,rustls --workspace -- --ignored
 
   test-docs:
     needs: [check, check-msrv, check-all-features]

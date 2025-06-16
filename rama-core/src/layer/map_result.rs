@@ -101,7 +101,7 @@ where
     State: Clone + Send + Sync + 'static,
     Request: Send + 'static,
     Response: Send + 'static,
-    Error: Send + Sync + 'static,
+    Error: Send + 'static,
 {
     type Response = Response;
     type Error = Error;

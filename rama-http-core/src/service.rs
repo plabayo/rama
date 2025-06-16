@@ -1,5 +1,8 @@
-use bytes::Bytes;
+use rama_core::bytes::Bytes;
+use rama_core::telemetry::tracing::{Instrument, trace_root_span};
 use rama_core::{Context, Service, error::BoxError};
+use rama_http::opentelemetry::version_as_protocol_version;
+use rama_http::service::web::response::IntoResponse;
 use rama_http_types::{Request, Response};
 use std::{convert::Infallible, fmt};
 
@@ -56,7 +59,7 @@ where
         + Send
         + Sync
         + 'static,
-    R: rama_http_types::IntoResponse + Send + 'static,
+    R: IntoResponse + Send + 'static,
 {
     fn serve_http(
         &self,
@@ -65,7 +68,20 @@ where
         let RamaHttpService { svc, ctx } = self.clone();
         async move {
             let req = req.map(rama_http_types::Body::new);
-            Ok(svc.serve(ctx, req).await?.into_response())
+
+            let span = trace_root_span!(
+                "http::serve",
+                otel.kind = "server",
+                http.request.method = %req.method().as_str(),
+                url.full = %req.uri(),
+                url.path = %req.uri().path(),
+                url.query = req.uri().query().unwrap_or_default(),
+                url.scheme = %req.uri().scheme().map(|s| s.as_str()).unwrap_or_default(),
+                network.protocol.name = "http",
+                network.protocol.version = version_as_protocol_version(req.version()),
+            );
+
+            Ok(svc.serve(ctx, req).instrument(span).await?.into_response())
         }
     }
 }
@@ -103,7 +119,7 @@ mod sealed {
             + Send
             + Sync
             + 'static,
-        R: rama_http_types::IntoResponse + Send + 'static,
+        R: IntoResponse + Send + 'static,
     {
     }
 

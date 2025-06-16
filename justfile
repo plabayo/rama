@@ -2,21 +2,28 @@ fmt:
 	cargo fmt --all
 
 sort:
+	@cargo install cargo-sort
 	cargo sort --workspace --grouped
 
 lint: fmt sort
 
 check:
-	cargo check --workspace --all-targets --all-features
+	RUSTFLAGS='-D warnings' cargo check --workspace --all-targets --all-features
+
+check-links:
+    lychee .
 
 clippy:
-	cargo clippy --workspace --all-targets --all-features
+	RUSTFLAGS='-D warnings' cargo clippy --workspace --all-targets --all-features
 
 clippy-fix *ARGS:
 	cargo clippy --workspace --all-targets --all-features --fix {{ARGS}}
 
 typos:
 	typos -w
+
+extra-checks:
+	{{justfile_directory()}}/scripts/extra-checks.sh
 
 doc:
 	RUSTDOCFLAGS="-D rustdoc::broken-intra-doc-links" cargo doc --all-features --no-deps
@@ -25,6 +32,7 @@ doc-open:
 	RUSTDOCFLAGS="-D rustdoc::broken-intra-doc-links" cargo doc --all-features --no-deps --open
 
 hack:
+	@cargo install cargo-hack
 	cargo hack check --each-feature --no-dev-deps --workspace
 
 test:
@@ -36,13 +44,16 @@ test-spec-h2 *ARGS:
 test-spec: test-spec-h2
 
 test-ignored:
-	cargo test --features=cli,telemetry,compression,http-full,proxy-full,tcp,rustls --workspace -- --ignored
+	cargo test --features=cli,compression,http-full,proxy-full,tcp,rustls --workspace -- --ignored
 
-qa: lint check clippy doc test
+qq: lint check clippy doc extra-checks
 
-qa-full: lint check clippy doc hack test test-ignored fuzz-60s
+qa: qq test
+
+qa-full: qa hack test-ignored fuzz-60s check-links
 
 upgrades:
+    @cargo install cargo-upgrades
     cargo upgrades
 
 watch-docs:
@@ -121,6 +132,7 @@ miri:
 	cargo +nightly miri test
 
 detect-unused-deps:
+	@cargo install cargo-machete
 	cargo machete --skip-target-dir
 
 detect-biggest-fn:
@@ -132,9 +144,6 @@ detect-biggest-crates:
 mdbook-serve:
 	cd docs/book && mdbook serve
 
-rama-cli-build:
-	rama-cli/scripts/build.sh
-
 publish:
     cargo publish -p rama-error
     cargo publish -p rama-macros
@@ -142,16 +151,25 @@ publish:
     cargo publish -p rama-core
     cargo publish -p rama-http-types
     cargo publish -p rama-net
+    cargo publish -p rama-unix
+    cargo publish -p rama-http-headers
     cargo publish -p rama-ua
     cargo publish -p rama-dns
     cargo publish -p rama-tcp
-    cargo publish -p rama-tls
+    cargo publish -p rama-udp
+    cargo publish -p rama-tls-boring
+    cargo publish -p rama-tls-rustls
+    cargo publish -p rama-http
     cargo publish -p rama-http-core
     cargo publish -p rama-http-backend
-    cargo publish -p rama-http
     cargo publish -p rama-haproxy
     cargo publish -p rama-proxy
-    cargo publish -p rama-udp
     cargo publish -p rama-socks5
+    cargo publish -p rama-tower
     cargo publish -p rama
     cargo publish -p rama-cli
+
+update-deps:
+    cargo upgrade
+    cargo upgrades
+    cargo update

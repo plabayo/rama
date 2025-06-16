@@ -26,17 +26,17 @@ use rama::{
         Request,
         layer::trace::TraceLayer,
         matcher::{HttpMatcher, PathMatcher},
-        response::{Html, Json, Redirect},
         server::HttpServer,
         service::web::match_service,
+        service::web::response::{Html, Json, Redirect},
     },
     rt::Executor,
+    telemetry::tracing::{self, level_filters::LevelFilter},
 };
 
 /// Everything else we need is provided by the standard library, community crates or tokio.
 use serde_json::json;
 use std::time::Duration;
-use tracing::level_filters::LevelFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, fmt};

@@ -1,10 +1,13 @@
+use rama_core::bytes::Bytes;
+use rama_http_types::{HeaderMap, header};
+
 use super::BytesRejection;
 use crate::Request;
 use crate::dep::http_body_util::BodyExt;
-use crate::service::web::extract::FromRequest;
+use crate::service::web::extract::{FromRequest, OptionalFromRequest};
 use crate::utils::macros::{composite_http_rejection, define_http_rejection};
 
-pub use crate::response::Json;
+pub use crate::service::web::endpoint::response::Json;
 
 define_http_rejection! {
     #[status = UNSUPPORTED_MEDIA_TYPE]
@@ -42,25 +45,53 @@ where
     type Rejection = JsonRejection;
 
     async fn from_request(req: Request) -> Result<Self, Self::Rejection> {
-        if !crate::service::web::extract::has_any_content_type(
-            req.headers(),
-            &[&mime::APPLICATION_JSON],
-        ) {
-            return Err(InvalidJsonContentType.into());
+        // Extracted into separate fn so it's only compiled once for all T.
+        async fn extract_json_bytes(req: Request) -> Result<Bytes, JsonRejection> {
+            if !json_content_type(req.headers()) {
+                return Err(InvalidJsonContentType.into());
+            }
+
+            let body = req.into_body();
+
+            match body.collect().await {
+                Ok(c) => Ok(c.to_bytes()),
+                Err(err) => Err(BytesRejection::from_err(err).into()),
+            }
         }
 
-        let body = req.into_body();
-        match body.collect().await {
-            Ok(c) => {
-                let b = c.to_bytes();
-                match serde_json::from_slice(&b) {
-                    Ok(s) => Ok(Self(s)),
-                    Err(err) => Err(FailedToDeserializeJson::from_err(err).into()),
-                }
-            }
-            Err(err) => Err(BytesRejection::from_err(err).into()),
+        let b = extract_json_bytes(req).await?;
+        match serde_json::from_slice(&b) {
+            Ok(s) => Ok(Self(s)),
+            Err(err) => Err(FailedToDeserializeJson::from_err(err).into()),
         }
     }
+}
+
+impl<T> OptionalFromRequest for Json<T>
+where
+    T: serde::de::DeserializeOwned + Send + Sync + 'static,
+{
+    type Rejection = JsonRejection;
+
+    async fn from_request(req: Request) -> Result<Option<Self>, Self::Rejection> {
+        if req.headers().get(header::CONTENT_TYPE).is_some() {
+            let v = <Self as FromRequest>::from_request(req).await?;
+            Ok(Some(v))
+        } else {
+            Ok(None)
+        }
+    }
+}
+
+fn json_content_type(headers: &HeaderMap) -> bool {
+    headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|content_type| content_type.to_str().ok())
+        .and_then(|content_type| content_type.parse::<mime::Mime>().ok())
+        .is_some_and(|mime| {
+            mime.type_() == "application"
+                && (mime.subtype() == "json" || mime.suffix().is_some_and(|name| name == "json"))
+        })
 }
 
 #[cfg(test)]

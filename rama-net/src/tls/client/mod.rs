@@ -12,11 +12,11 @@ mod hello;
 #[doc(inline)]
 pub use hello::{ClientHello, ClientHelloExtension, ECHClientHello};
 
-#[cfg(any(test, feature = "boring"))]
 mod parser;
-
-#[cfg(any(test, feature = "boring"))]
-pub use parser::parse_client_hello;
+pub use parser::{
+    extract_sni_from_client_hello_handshake, extract_sni_from_client_hello_record,
+    parse_client_hello,
+};
 
 mod config;
 #[doc(inline)]
@@ -73,7 +73,7 @@ pub fn merge_client_hello_lists(
 
 #[cfg(test)]
 mod tests {
-    use crate::address::{Domain, Host};
+    use crate::address::Domain;
 
     use super::*;
 
@@ -118,9 +118,7 @@ mod tests {
                 ClientHelloExtension::SupportedVersions(vec![]),
             ],
             &[
-                ClientHelloExtension::ServerName(Some(Host::Name(Domain::from_static(
-                    "example.com",
-                )))),
+                ClientHelloExtension::ServerName(Some(Domain::from_static("example.com"))),
                 ClientHelloExtension::ApplicationLayerProtocolNegotiation(vec![]),
             ],
         );

@@ -2,6 +2,11 @@
 
 use std::sync::Arc;
 
+use rama_utils::str::{
+    contains_any_ignore_ascii_case, contains_ignore_ascii_case, submatch_any_ignore_ascii_case,
+    submatch_ignore_ascii_case,
+};
+
 use super::{
     DeviceKind, PlatformKind, UserAgent, UserAgentKind,
     info::{PlatformLike, UserAgentData, UserAgentInfo},
@@ -75,41 +80,37 @@ pub(crate) fn parse_http_user_agent_header(header: impl Into<Arc<str>>) -> UserA
     let (maybe_platform, maybe_device) = match maybe_platform {
         Some(platform) => (Some(platform), None),
         None => {
-            if contains_ignore_ascii_case(ua, "Windows").is_some() {
-                if contains_ignore_ascii_case(ua, "X11").is_some() {
+            if submatch_ignore_ascii_case(ua, "Windows") {
+                if submatch_ignore_ascii_case(ua, "X11") {
                     (None, Some(DeviceKind::Mobile))
                 } else {
                     (Some(PlatformKind::Windows), None)
                 }
-            } else if contains_ignore_ascii_case(ua, "Android").is_some() {
-                if contains_ignore_ascii_case(ua, "iOS").is_some() {
+            } else if submatch_ignore_ascii_case(ua, "Android") {
+                if submatch_ignore_ascii_case(ua, "iOS") {
                     (Some(PlatformKind::IOS), None)
                 } else {
                     (Some(PlatformKind::Android), None)
                 }
-            } else if contains_ignore_ascii_case(ua, "Linux").is_some() {
-                if contains_any_ignore_ascii_case(ua, &["Mobile", "UCW"]).is_some() {
+            } else if submatch_ignore_ascii_case(ua, "Linux") {
+                if submatch_any_ignore_ascii_case(ua, &["Mobile", "UCW"]) {
                     (Some(PlatformKind::Android), None)
                 } else {
                     (Some(PlatformKind::Linux), None)
                 }
-            } else if contains_any_ignore_ascii_case(ua, &["iOS", "iPad", "iPod", "iPhone"])
-                .is_some()
-            {
+            } else if submatch_any_ignore_ascii_case(ua, &["iOS", "iPad", "iPod", "iPhone"]) {
                 (Some(PlatformKind::IOS), None)
-            } else if contains_ignore_ascii_case(ua, "Mac").is_some() {
+            } else if submatch_ignore_ascii_case(ua, "Mac") {
                 (Some(PlatformKind::MacOS), None)
-            } else if contains_ignore_ascii_case(ua, "Darwin").is_some() {
-                if contains_ignore_ascii_case(ua, "86").is_some() {
+            } else if submatch_ignore_ascii_case(ua, "Darwin") {
+                if submatch_ignore_ascii_case(ua, "86") {
                     (Some(PlatformKind::MacOS), None)
                 } else {
                     (Some(PlatformKind::IOS), None)
                 }
-            } else if contains_any_ignore_ascii_case(ua, &["Mobile", "Phone", "Tablet", "Zune"])
-                .is_some()
-            {
+            } else if submatch_any_ignore_ascii_case(ua, &["Mobile", "Phone", "Tablet", "Zune"]) {
                 (None, Some(DeviceKind::Mobile))
-            } else if contains_ignore_ascii_case(ua, "Desktop").is_some() {
+            } else if submatch_ignore_ascii_case(ua, "Desktop") {
                 (None, Some(DeviceKind::Desktop))
             } else {
                 (None, None)
@@ -176,221 +177,8 @@ fn parse_ua_version_safari(ua: &str) -> Option<usize> {
     })
 }
 
-pub(crate) fn contains_ignore_ascii_case(s: &str, sub: &str) -> Option<usize> {
-    let n = sub.len();
-    if n > s.len() {
-        return None;
-    }
-
-    (0..=(s.len() - n)).find(|&i| {
-        s.get(i..i + n)
-            .map(|s| s.eq_ignore_ascii_case(sub))
-            .unwrap_or_default()
-    })
-}
-
-pub(crate) fn starts_with_ignore_ascii_case(s: &str, sub: &str) -> bool {
-    let n = sub.len();
-    if n > s.len() {
-        return false;
-    }
-
-    s.get(..n)
-        .map(|s| s.eq_ignore_ascii_case(sub))
-        .unwrap_or_default()
-}
-
-fn contains_any_ignore_ascii_case(s: &str, subs: &[&str]) -> Option<usize> {
-    let max = s.len();
-    let smallest_length = subs.iter().map(|s| s.len()).min().unwrap_or(0);
-    if smallest_length == 0 {
-        return Some(0);
-    } else if smallest_length > max {
-        return None;
-    }
-
-    for i in 0..=(s.len() - smallest_length) {
-        for sub in subs.iter() {
-            let n = sub.len();
-            if i + n > max {
-                continue;
-            }
-            if s.get(i..i + n)
-                .map(|s| s.eq_ignore_ascii_case(sub))
-                .unwrap_or_default()
-            {
-                return Some(i);
-            }
-        }
-    }
-
-    None
-}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
-
-    #[test]
-    fn test_starts_with_ignore_ascii_case() {
-        assert!(starts_with_ignore_ascii_case("user-agent", "user"));
-        assert!(!starts_with_ignore_ascii_case("user-agent", "agent"));
-    }
-
-    #[test]
-    fn test_contains_ignore_ascii_case_empty_sub() {
-        assert_eq!(super::contains_ignore_ascii_case("foo", ""), Some(0));
-        assert_eq!(super::contains_ignore_ascii_case("", ""), Some(0));
-    }
-
-    #[test]
-    fn test_contains_ignore_ascii_case_common_failures() {
-        for (s, sub) in [
-            ("", "foo"),
-            ("a", "ab"),
-            ("pit", "pot"),
-            ("speculaas", "loos"),
-        ] {
-            assert!(
-                super::contains_ignore_ascii_case(s, sub).is_none(),
-                "'{}' in '{}'",
-                sub,
-                s
-            );
-        }
-    }
-
-    #[test]
-    fn test_contains_ignore_ascii_case_success_start_middle_end() {
-        for (s, sub, index) in [
-            ("balloon", "b", 0),
-            ("balloon", "ba", 0),
-            ("balloon", "llo", 2),
-            ("balloon", "on", 5),
-            ("balloon", "n", 6),
-        ] {
-            assert_eq!(
-                super::contains_ignore_ascii_case(s, sub),
-                Some(index),
-                "'{}' in '{}'",
-                sub,
-                s
-            );
-        }
-    }
-
-    #[test]
-    fn test_contains_ignore_ascii_case_success_case_insensitive() {
-        for (s, sub, index) in [
-            ("balloon", "B", 0),
-            ("balloon", "BA", 0),
-            ("balloon", "LLO", 2),
-            ("balloon", "lLoO", 2),
-            ("balloon", "ON", 5),
-            ("balloon", "On", 5),
-            ("balloon", "oN", 5),
-            ("balloon", "N", 6),
-        ] {
-            assert_eq!(
-                super::contains_ignore_ascii_case(s, sub),
-                Some(index),
-                "'{}' in '{}'",
-                sub,
-                s
-            );
-        }
-    }
-
-    #[test]
-    fn test_contains_ignore_ascii_case_success_first_match() {
-        for (s, sub, index) in [
-            ("Ho-HaHa-Hi", "ho", 0),
-            ("Ho-HaHa-Hi", "ha", 3),
-            ("Ho-HaHa-Hi", "ha-", 5),
-            ("Ho-HaHa-Hi", "hi", 8),
-        ] {
-            assert_eq!(
-                super::contains_ignore_ascii_case(s, sub),
-                Some(index),
-                "'{}' in '{}'",
-                sub,
-                s
-            );
-        }
-    }
-
-    // test contains_any_ignore_ascii_case#[test]
-
-    #[test]
-    fn test_contains_any_ignore_ascii_case_common_failures() {
-        for (s, sub) in [
-            ("", "foo"),
-            ("a", "ab"),
-            ("pit", "pot"),
-            ("speculaas", "loos"),
-        ] {
-            assert!(
-                super::contains_any_ignore_ascii_case(s, &[sub]).is_none(),
-                "'{}' in '{}'",
-                sub,
-                s
-            );
-        }
-    }
-
-    #[test]
-    fn test_contains_any_ignore_ascii_case_empty_subs() {
-        assert_eq!(super::contains_any_ignore_ascii_case("foo", &[]), Some(0));
-        assert_eq!(super::contains_any_ignore_ascii_case("", &[]), Some(0));
-    }
-
-    #[test]
-    fn test_contains_any_ignore_ascii_case_start_middle_end() {
-        for (s, subs, index) in [
-            ("balloon", vec!["b"], 0),
-            ("balloon", vec!["b", "@"], 0),
-            ("balloon", vec!["@", "b"], 0),
-            ("balloon", vec!["ba"], 0),
-            ("balloon", vec!["ba", "@"], 0),
-            ("balloon", vec!["@", "ba"], 0),
-            ("balloon", vec!["llo"], 2),
-            ("balloon", vec!["llo", "@"], 2),
-            ("balloon", vec!["@", "llo"], 2),
-            ("balloon", vec!["on"], 5),
-            ("balloon", vec!["on", "@"], 5),
-            ("balloon", vec!["@", "on"], 5),
-            ("balloon", vec!["n"], 6),
-            ("balloon", vec!["n", "@"], 6),
-            ("balloon", vec!["@", "n"], 6),
-        ] {
-            assert_eq!(
-                super::contains_any_ignore_ascii_case(s, &subs[..]),
-                Some(index),
-                "any_of({:?}) in '{}'",
-                subs,
-                s
-            );
-        }
-    }
-
-    #[test]
-    fn test_contains_any_ignore_ascii_case_success_first_match() {
-        for (s, sub, index) in [
-            ("Ho-HaHa-Hi", "ho", 0),
-            ("Ho-HaHa-Hi", "ha", 3),
-            ("Ho-HaHa-Hi", "ha-", 5),
-            ("Ho-HaHa-Hi", "hi", 8),
-        ] {
-            assert_eq!(
-                super::contains_any_ignore_ascii_case(s, &[sub]),
-                Some(index),
-                "'{}' in '{}'",
-                sub,
-                s
-            );
-        }
-    }
-
     #[test]
     fn test_parse_ua_version_safari() {
         for (test_case, expected_version) in [

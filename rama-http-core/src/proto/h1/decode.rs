@@ -3,12 +3,11 @@ use std::fmt;
 use std::io;
 use std::task::{Context, Poll};
 
-use bytes::{BufMut, Bytes, BytesMut};
+use rama_core::bytes::{BufMut, Bytes, BytesMut};
+use rama_core::telemetry::tracing::{debug, trace};
 use rama_http_types::dep::http_body::Frame;
 use rama_http_types::{HeaderMap, HeaderName, HeaderValue};
 use std::task::ready;
-use tracing::debug;
-use tracing::trace;
 
 use super::DecodedLength;
 use super::io::MemRead;
@@ -739,8 +738,8 @@ mod tests {
     use std::io::Write;
     use super::Decoder;
     use super::ChunkedState;
-    use futures::{Async, Poll};
-    use bytes::{BytesMut, Bytes};
+    use ama_core::futures::{Async, Poll};
+    use rama_core::bytes::{BytesMut, Bytes};
     use crate::mock::AsyncIo;
     */
 

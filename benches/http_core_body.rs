@@ -1,8 +1,8 @@
 #![deny(warnings)]
 
-use bytes::Buf;
-use futures_util::StreamExt;
-use futures_util::stream;
+use rama::bytes::Buf;
+use rama::futures::StreamExt;
+use rama::futures::stream;
 use rama::http::dep::http_body::Frame;
 use rama::http::dep::http_body_util::{BodyExt, StreamBody};
 

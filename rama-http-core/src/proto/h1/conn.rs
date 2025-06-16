@@ -5,14 +5,14 @@ use std::pin::Pin;
 use std::task::{Context, Poll, ready};
 use std::time::Duration;
 
-use bytes::{Buf, Bytes};
 use httparse::ParserConfig;
+use rama_core::bytes::{Buf, Bytes};
+use rama_core::telemetry::tracing::{debug, error, trace, warn};
 use rama_http_types::dep::http_body::Frame;
 use rama_http_types::header::{CONNECTION, TE};
 use rama_http_types::{HeaderMap, HeaderValue, Method, Version};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::time::{Instant, Sleep};
-use tracing::{debug, error, trace, warn};
 
 use super::io::Buffered;
 use super::{Decoder, Encode, EncodedBuf, Encoder, Http1Transaction, ParseContext, Wants};

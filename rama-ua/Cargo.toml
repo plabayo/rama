@@ -10,8 +10,12 @@ categories = ["parser-implementations", "web-programming"]
 authors = { workspace = true }
 rust-version = { workspace = true }
 
-[lints]
-workspace = true
+[package.metadata.cargo-public-api-crates]
+allowed = []
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 default = []
@@ -20,22 +24,18 @@ tls = ["rama-net/tls"]
 
 [dependencies]
 itertools = { workspace = true }
-rama-core = { version = "0.2.0-alpha.8", path = "../rama-core" }
-rama-http-types = { version = "0.2.0-alpha.8", path = "../rama-http-types" }
-rama-net = { version = "0.2.0-alpha.8", path = "../rama-net", features = ["http"] }
-rama-utils = { version = "0.2.0-alpha.8", path = "../rama-utils" }
+rama-core = { workspace = true }
+rama-http-headers = { workspace = true }
+rama-http-types = { workspace = true }
+rama-net = { workspace = true, features = ["http"] }
+rama-utils = { workspace = true }
 rand = { workspace = true }
 serde = { workspace = true, features = ["derive", "rc"] }
 serde_json = { workspace = true, optional = true }
-tracing = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["macros"] }
 
-[package.metadata.cargo-public-api-crates]
-allowed = []
-
-[package.metadata.docs.rs]
-all-features = true
-rustdoc-args = ["--cfg", "docsrs"]
+[lints]
+workspace = true

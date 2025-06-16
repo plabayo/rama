@@ -24,13 +24,12 @@ use rama::{
     layer::MapResultLayer,
     net::{
         address::ProxyAddress,
-        tls::{
-            ApplicationProtocol,
-            client::{ClientConfig, ClientHelloExtension, ServerVerifyMode},
-        },
+        tls::{KeyLogIntent, client::ServerVerifyMode},
         user::ProxyCredential,
     },
     rt::Executor,
+    telemetry::tracing::level_filters::LevelFilter,
+    tls::boring::client::{EmulateTlsProfileLayer, TlsConnectorDataBuilder},
     ua::{
         emulate::{
             UserAgentEmulateHttpConnectModifier, UserAgentEmulateHttpRequestModifier,
@@ -42,7 +41,6 @@ use rama::{
 use std::{io::IsTerminal, sync::Arc, time::Duration};
 use terminal_prompt::Terminal;
 use tokio::sync::oneshot;
-use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 use crate::error::ErrorWithExitCode;
@@ -343,51 +341,45 @@ where
     )
     .await?;
 
-    let mut inner_client = EasyHttpWebClient::default()
-        .with_http_conn_req_inspector(UserAgentEmulateHttpConnectModifier::default())
-        .with_http_serve_req_inspector((
+    let mut tls_config = if cfg.emulate {
+        TlsConnectorDataBuilder::new()
+    } else {
+        TlsConnectorDataBuilder::new_http_auto()
+    };
+    tls_config.set_keylog_intent(KeyLogIntent::Environment);
+
+    let mut proxy_tls_config = TlsConnectorDataBuilder::new();
+
+    if cfg.insecure {
+        tls_config.set_server_verify_mode(ServerVerifyMode::Disable);
+        proxy_tls_config.set_server_verify_mode(ServerVerifyMode::Disable);
+    }
+
+    let inner_client = EasyHttpWebClient::builder()
+        .with_default_transport_connector()
+        .with_tls_proxy_support_using_boringssl_config(proxy_tls_config.into_shared_builder())
+        .with_proxy_support()
+        .with_tls_support_using_boringssl(Some(tls_config.into_shared_builder()))
+        .with_jit_req_inspector(UserAgentEmulateHttpConnectModifier::default())
+        .with_svc_req_inspector((
             UserAgentEmulateHttpRequestModifier::default(),
             request_writer,
-        ));
-
-    let server_verify_mode = if cfg.insecure {
-        Some(ServerVerifyMode::Disable)
-    } else {
-        None
-    };
-
-    let extensions = if cfg.emulate {
-        None
-    } else {
-        Some(vec![
-            ClientHelloExtension::ApplicationLayerProtocolNegotiation(vec![
-                ApplicationProtocol::HTTP_2,
-                ApplicationProtocol::HTTP_11,
-            ]),
-        ])
-    };
-
-    inner_client.set_tls_config(ClientConfig {
-        server_verify_mode,
-        extensions,
-        ..Default::default()
-    });
+        ))
+        .build();
 
     // TODO: need to insert TLS separate from http:
     // - first tls is needed
     // - but http only is to be selected after handshake is done...
 
-    inner_client.set_proxy_tls_config(ClientConfig {
-        server_verify_mode,
-        ..Default::default()
-    });
-
     let client_builder = (
         MapResultLayer::new(map_internal_client_error),
         cfg.emulate.then(|| {
-            UserAgentEmulateLayer::new(Arc::new(UserAgentDatabase::embedded()))
-                .try_auto_detect_user_agent(true)
-                .select_fallback(UserAgentSelectFallback::Random)
+            (
+                UserAgentEmulateLayer::new(Arc::new(UserAgentDatabase::embedded()))
+                    .try_auto_detect_user_agent(true)
+                    .select_fallback(UserAgentSelectFallback::Random),
+                EmulateTlsProfileLayer::new(),
+            )
         }),
         (TimeoutLayer::new(if cfg.timeout > 0 {
             Duration::from_secs(cfg.timeout)
@@ -496,7 +488,7 @@ fn map_internal_client_error<E, Body>(
 ) -> Result<Response, BoxError>
 where
     E: Into<BoxError>,
-    Body: rama::http::dep::http_body::Body<Data = bytes::Bytes, Error: Into<BoxError>>
+    Body: rama::http::dep::http_body::Body<Data = rama::bytes::Bytes, Error: Into<BoxError>>
         + Send
         + Sync
         + 'static,

@@ -1,5 +1,5 @@
-use futures::{StreamExt, TryStreamExt};
 use h2_support::prelude::*;
+use rama_core::futures::{StreamExt, TryStreamExt};
 
 #[tokio::test]
 #[ignore]

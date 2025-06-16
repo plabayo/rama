@@ -1,8 +1,8 @@
-use bytes::Buf;
-use futures_util::stream::Stream;
 use pin_project_lite::pin_project;
+use rama::futures::stream::Stream;
 use rama::http::dep::http_body::{Body, Frame};
 use rama::http::header::HeaderMap;
+use rama_core::bytes::Buf;
 use std::{
     pin::Pin,
     task::{Context, Poll},

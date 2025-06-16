@@ -11,7 +11,9 @@ use crate::{
 use rama_core::{
     Context, Layer, Service,
     error::{BoxError, ErrorContext},
+    telemetry::tracing,
 };
+use rama_http_headers::Host;
 use rama_net::http::RequestContext;
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
@@ -193,12 +195,21 @@ where
                 .context(
                     "AddRequiredRequestHeaders: get/compute RequestContext to set authority",
                 )?;
-            let host = crate::dep::http::uri::Authority::from_maybe_shared(
-                request_ctx.authority.to_string(),
-            )
-            .map(crate::headers::Host::from)
-            .context("AddRequiredRequestHeaders: set authority")?;
-            req.headers_mut().typed_insert(host);
+            if request_ctx.authority_has_default_port() {
+                let host = request_ctx.authority.host().clone();
+                tracing::trace!(
+                    %host,
+                    "add missing host from authority as host header"
+                );
+                req.headers_mut().typed_insert(Host::from(host));
+            } else {
+                let authority = request_ctx.authority.clone();
+                tracing::trace!(
+                    %authority,
+                    "add missing authority as host header"
+                );
+                req.headers_mut().typed_insert(Host::from(authority));
+            }
         }
 
         if self.overwrite {
@@ -278,7 +289,7 @@ mod test {
         let svc = AddRequiredRequestHeadersLayer::new()
             .overwrite(true)
             .into_layer(service_fn(async |_ctx: Context<()>, req: Request| {
-                assert_eq!(req.headers().get(HOST).unwrap(), "127.0.0.1:80");
+                assert_eq!(req.headers().get(HOST).unwrap(), "127.0.0.1");
                 assert_eq!(
                     req.headers().get(USER_AGENT).unwrap(),
                     RAMA_ID_HEADER_VALUE.to_str().unwrap()
@@ -305,7 +316,7 @@ mod test {
             .overwrite(true)
             .user_agent_header_value(HeaderValue::from_static("foo"))
             .into_layer(service_fn(async |_ctx: Context<()>, req: Request| {
-                assert_eq!(req.headers().get(HOST).unwrap(), "127.0.0.1:80");
+                assert_eq!(req.headers().get(HOST).unwrap(), "127.0.0.1");
                 assert_eq!(
                     req.headers().get(USER_AGENT).and_then(|v| v.to_str().ok()),
                     Some("foo")

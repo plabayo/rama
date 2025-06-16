@@ -1,7 +1,7 @@
 //! This example demonstrates how to create a TLS termination proxy, forwarding the
 //! plain transport stream to another service.
 //!
-//! This example is an alternative version of the [tls_termination](./tls_termination.rs) example,
+//! This example is an alternative version of the [tls_rustls_termination](./tls_rustls_termination.rs) example,
 //! but using boring instead of rustls.
 //!
 //! # Run the example
@@ -28,10 +28,6 @@
 //!
 //! You should see a response with `HTTP/1.0 200 ok` and the body `Hello world!`.
 
-// these dependencies are re-exported by rama for your convenience,
-// as to make it easy to use them and ensure that the versions remain compatible
-// (given most do not have a stable release yet)
-
 // rama provides everything out of the box to build a TLS termination proxy
 use rama::{
     Context, Layer,
@@ -41,7 +37,10 @@ use rama::{
     net::{
         forwarded::Forwarded,
         stream::SocketInfo,
-        tls::server::{SelfSignedData, ServerAuth, ServerConfig},
+        tls::{
+            SecureTransport,
+            server::{SelfSignedData, ServerAuth, ServerConfig},
+        },
     },
     proxy::haproxy::{
         client::HaProxyLayer as HaProxyClientLayer, server::HaProxyLayer as HaProxyServerLayer,
@@ -52,15 +51,12 @@ use rama::{
         client::service::{Forwarder, TcpConnector},
         server::TcpListener,
     },
-    tls::{
-        boring::server::{TlsAcceptorData, TlsAcceptorLayer},
-        types::SecureTransport,
-    },
+    telemetry::tracing::{self, level_filters::LevelFilter},
+    tls::boring::server::{TlsAcceptorData, TlsAcceptorLayer},
 };
 
 // everything else is provided by the standard library, community crates or tokio
 use std::{convert::Infallible, time::Duration};
-use tracing::metadata::LevelFilter;
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 #[tokio::main]

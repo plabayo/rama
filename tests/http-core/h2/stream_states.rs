@@ -1,9 +1,9 @@
 #![deny(warnings)]
 
-use futures::future::lazy;
-use futures::{FutureExt, StreamExt, TryStreamExt};
 use h2_support::prelude::*;
 use h2_support::util::yield_once;
+use rama_core::futures::future::lazy;
+use rama_core::futures::{FutureExt, StreamExt, TryStreamExt};
 use rama_http::proto::h1::headers::original::OriginalHttp1Headers;
 use std::task::Poll;
 use tokio::sync::oneshot;

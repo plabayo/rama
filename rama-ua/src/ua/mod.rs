@@ -7,7 +7,6 @@ pub use info::{
 
 mod parse;
 use parse::parse_http_user_agent_header;
-pub(crate) use parse::{contains_ignore_ascii_case, starts_with_ignore_ascii_case};
 
 /// Information that can be used to overwrite the [`UserAgent`] of an http request.
 ///

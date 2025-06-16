@@ -33,8 +33,8 @@ jobs:
   build:
     runs-on: ubuntu-latest
     env:
-      MDBOOK_VERSION: 0.4.37
-      MDBOOK_GRAPHVIZ_VERSION: 0.1.7
+      MDBOOK_VERSION: 0.4.48
+      MDBOOK_GRAPHVIZ_VERSION: 0.2.1
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -68,7 +68,11 @@ jobs:
           cp -r book/book/* www/book
           mkdir -p www/docs
           cp -r ../target/doc/* www/docs
+          mkdir -p www/static
+          cp -r ./static/* www/static
           cp index.html www/index.html
+          cp sitemap.xml www/sitemap.xml
+          cp robots.txt www/robots.txt
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:

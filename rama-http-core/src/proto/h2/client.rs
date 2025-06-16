@@ -6,20 +6,20 @@ use std::{
     time::Duration,
 };
 
-use bytes::Bytes;
 use futures_channel::mpsc::{Receiver, Sender};
 use futures_channel::{mpsc, oneshot};
-use futures_util::future::{Either, FusedFuture, FutureExt as _};
-use futures_util::ready;
-use futures_util::stream::{StreamExt as _, StreamFuture};
 use pin_project_lite::pin_project;
-use rama_core::error::BoxError;
+use rama_core::futures::{Stream, stream::FusedStream};
 use rama_core::rt::Executor;
+use rama_core::telemetry::tracing::{Instrument, debug, trace, trace_root_span, warn};
+use rama_core::{bytes::Bytes, combinators::Either};
+use rama_core::{error::BoxError, futures::future::FusedFuture};
 use rama_http_types::{
-    Method, Request, Response, StatusCode, dep::http_body, proto::h2::frame::SettingOrder,
+    Method, Request, Response, StatusCode, Version, dep::http_body,
+    opentelemetry::version_as_protocol_version, proto::h2::frame::SettingOrder,
 };
+use std::task::ready;
 use tokio::io::{AsyncRead, AsyncWrite};
-use tracing::{debug, trace, warn};
 
 use super::ping::{Ponger, Recorder};
 use super::{H2Upgraded, PipeToSendStream, SendBuf, ping};
@@ -192,10 +192,8 @@ where
     // 'Client' has been dropped. This is to get around a bug
     // in h2 where dropping all SendRequests won't notify a
     // parked Connection.
-    let (conn_drop_ref, rx) = mpsc::channel(1);
+    let (conn_drop_ref, conn_drop_rx) = mpsc::channel(1);
     let (cancel_tx, conn_eof) = oneshot::channel();
-
-    let conn_drop_rx = rx.into_future();
 
     let ping_config = new_ping_config(config);
 
@@ -204,18 +202,28 @@ where
         let (recorder, ponger) = ping::channel(pp, ping_config);
 
         let conn: Conn<_, B> = Conn::new(ponger, conn);
-        (Either::Left(conn), recorder)
+        (Either::A(conn), recorder)
     } else {
-        (Either::Right(conn), ping::disabled())
+        (Either::B(conn), ping::disabled())
     };
     let conn: ConnMapErr<T, B> = ConnMapErr {
         conn,
         is_terminated: false,
     };
 
-    exec.spawn_task(H2ClientFuture::Task {
-        task: ConnTask::new(conn, conn_drop_rx, cancel_tx),
-    });
+    let task_span = trace_root_span!(
+        "h2::task",
+        otel.kind = "client",
+        network.protocol.name = "http",
+        network.protocol.version = version_as_protocol_version(Version::HTTP_2),
+    );
+
+    exec.spawn_task(
+        H2ClientFuture::Task {
+            task: ConnTask::new(conn, conn_drop_rx, cancel_tx),
+        }
+        .instrument(task_span),
+    );
 
     Ok(ClientTask {
         ping,
@@ -355,7 +363,7 @@ pin_project! {
         T: 'static,
     {
         #[pin]
-        drop_rx: StreamFuture<Receiver<Infallible>>,
+        drop_rx: Receiver<Infallible>,
         #[pin]
         cancel_tx: Option<oneshot::Sender<Infallible>>,
         #[pin]
@@ -370,7 +378,7 @@ where
 {
     fn new(
         conn: ConnMapErr<T, B>,
-        drop_rx: StreamFuture<Receiver<Infallible>>,
+        drop_rx: Receiver<Infallible>,
         cancel_tx: oneshot::Sender<Infallible>,
     ) -> Self {
         Self {
@@ -391,12 +399,12 @@ where
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut this = self.project();
 
-        if !this.conn.is_terminated() && this.conn.poll_unpin(cx).is_ready() {
+        if !this.conn.is_terminated() && Pin::new(&mut this.conn).poll(cx).is_ready() {
             // ok or err, the `conn` has finished.
             return Poll::Ready(());
         }
 
-        if !this.drop_rx.is_terminated() && this.drop_rx.poll_unpin(cx).is_ready() {
+        if !this.drop_rx.is_terminated() && Pin::new(&mut this.drop_rx).poll_next(cx).is_ready() {
             // mpsc has been dropped, hopefully polling
             // the connection some more should start shutdown
             // and then close.
@@ -523,7 +531,7 @@ where
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> std::task::Poll<Self::Output> {
         let mut this = self.project();
 
-        match this.pipe.poll_unpin(cx) {
+        match Pin::new(&mut this.pipe).poll(cx) {
             Poll::Ready(result) => {
                 if let Err(_e) = result {
                     debug!("client request body error: {}", _e);
@@ -566,9 +574,17 @@ where
                             conn_drop_ref: Some(conn_drop_ref),
                             ping: Some(ping),
                         };
+
+                        let pipe_span = trace_root_span!(
+                            "h2::pipe",
+                            otel.kind = "client",
+                            network.protocol.name = "http",
+                            network.protocol.version = version_as_protocol_version(Version::HTTP_2),
+                        );
+
                         // Clear send task
                         let fut: H2ClientFuture<_, T> = H2ClientFuture::Pipe { pipe };
-                        self.executor.spawn_task(fut);
+                        self.executor.spawn_task(fut.instrument(pipe_span));
                     }
                 }
             }
@@ -577,6 +593,13 @@ where
         } else {
             Some(f.body_tx)
         };
+
+        let send_span = trace_root_span!(
+            "h2::send",
+            otel.kind = "client",
+            network.protocol.name = "http",
+            network.protocol.version = version_as_protocol_version(Version::HTTP_2),
+        );
 
         let fut: H2ClientFuture<_, T> = H2ClientFuture::Send {
             send_when: SendWhen {
@@ -588,7 +611,7 @@ where
                 call_back: Some(f.cb),
             },
         };
-        self.executor.spawn_task(fut);
+        self.executor.spawn_task(fut.instrument(send_span));
     }
 }
 
@@ -783,7 +806,7 @@ where
                 }
 
                 Poll::Ready(None) => {
-                    trace!("client::dispatch::Sender dropped");
+                    trace!("dispatch::Sender dropped");
                     return Poll::Ready(Ok(Dispatched::Shutdown));
                 }
 

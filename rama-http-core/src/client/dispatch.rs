@@ -4,10 +4,10 @@ use std::task::{Context, Poll};
 
 use pin_project_lite::pin_project;
 use rama_core::error::BoxError;
+use rama_core::telemetry::tracing::trace;
 use rama_http_types::dep::http_body::Body;
 use rama_http_types::{Request, Response};
 use tokio::sync::{mpsc, oneshot};
-use tracing::trace;
 
 use crate::{body::Incoming, proto::h2::client::ResponseFutMap};
 
@@ -178,8 +178,7 @@ impl<T, U> Receiver<T, U> {
     }
 
     pub(crate) fn try_recv(&mut self) -> Option<(T, Callback<T, U>)> {
-        use futures_util::FutureExt;
-        match self.inner.recv().now_or_never() {
+        match rama_core::rt::future::now_or_never(self.inner.recv()) {
             Some(Some(mut env)) => env.0.take(),
             _ => None,
         }

@@ -1,22 +1,27 @@
 use super::{
-    ServeVariant,
+    DirectoryServeMode, ServeVariant,
     headers::{IfModifiedSince, IfUnmodifiedSince, LastModified},
 };
+use crate::headers::{encoding::Encoding, specifier::QualityValue};
 use crate::{HeaderValue, Method, Request, Uri, header};
+use chrono::{DateTime, Local};
 use http_range_header::RangeUnsatisfiableError;
-use rama_http_types::headers::{encoding::Encoding, specifier::QualityValue};
+use rama_core::telemetry::tracing;
 use std::{
     ffi::OsStr,
+    fmt,
     fs::Metadata,
     io::{self, SeekFrom},
     ops::RangeInclusive,
     path::{Path, PathBuf},
+    time::SystemTime,
 };
 use tokio::{fs::File, io::AsyncSeekExt};
 
 pub(super) enum OpenFileOutput {
     FileOpened(Box<FileOpened>),
     Redirect { location: HeaderValue },
+    Html(String),
     FileNotFound,
     PreconditionFailed,
     NotModified,
@@ -56,18 +61,12 @@ pub(super) async fn open_file(
         .and_then(IfModifiedSince::from_header_value);
 
     let mime = match variant {
-        ServeVariant::Directory {
-            append_index_html_on_directories,
-        } => {
+        ServeVariant::Directory { serve_mode } => {
             // Might already at this point know a redirect or not found result should be
             // returned which corresponds to a Some(output). Otherwise the path might be
             // modified and proceed to the open file/metadata future.
-            if let Some(output) = maybe_redirect_or_append_path(
-                &mut path_to_file,
-                req.uri(),
-                append_index_html_on_directories,
-            )
-            .await
+            if let Some(output) =
+                maybe_serve_directory(&mut path_to_file, req.uri(), serve_mode).await?
             {
                 return Ok(output);
             }
@@ -246,29 +245,191 @@ async fn file_metadata_with_fallback(
     Ok((file, encoding))
 }
 
-async fn maybe_redirect_or_append_path(
+async fn maybe_serve_directory(
     path_to_file: &mut PathBuf,
     uri: &Uri,
-    append_index_html_on_directories: bool,
-) -> Option<OpenFileOutput> {
+    mode: DirectoryServeMode,
+) -> Result<Option<OpenFileOutput>, std::io::Error> {
     if !is_dir(path_to_file).await {
-        return None;
+        return Ok(None);
     }
 
-    if !append_index_html_on_directories {
-        return Some(OpenFileOutput::FileNotFound);
+    match mode {
+        DirectoryServeMode::AppendIndexHtml => {
+            if uri.path().ends_with('/') {
+                path_to_file.push("index.html");
+                Ok(None)
+            } else {
+                let uri = match append_slash_on_path(uri.clone()) {
+                    Ok(uri) => uri,
+                    Err(err) => return Ok(Some(err)),
+                };
+                let location = HeaderValue::from_str(&uri.to_string()).unwrap();
+                Ok(Some(OpenFileOutput::Redirect { location }))
+            }
+        }
+        DirectoryServeMode::NotFound => Ok(Some(OpenFileOutput::FileNotFound)),
+        DirectoryServeMode::HtmlFileList => {
+            let mut rows = vec![];
+
+            let mut dir = tokio::fs::read_dir(&path_to_file).await?;
+            while let Some(entry) = dir.next_entry().await? {
+                let file_name = entry.file_name();
+                let file_name_str = file_name.to_string_lossy();
+
+                let metadata = entry.metadata().await?;
+                let is_dir = metadata.is_dir();
+                let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+                let datetime: DateTime<Local> = modified.into();
+                let modified_str = datetime.format("%Y-%m-%d %H:%M:%S %:z").to_string();
+
+                let mime = if is_dir {
+                    None
+                } else {
+                    mime_guess::from_path(file_name_str.as_ref()).first()
+                };
+                let emoji = emoji_for_mime(mime, is_dir);
+
+                let hs = if metadata.is_dir() {
+                    HumanSize::None
+                } else {
+                    format_size(metadata.len())
+                };
+
+                rows.push(format!(
+                    "<tr><td>{5} <a href=\"{1}{2}{0}\">{0}</a></td><td>{3}</td><td>{4}</td></tr>",
+                    file_name_str,
+                    uri.path().trim_end_matches('/'),
+                    if uri.path().trim_start_matches('/').is_empty() {
+                        ""
+                    } else {
+                        "/"
+                    },
+                    modified_str,
+                    hs,
+                    emoji,
+                ));
+            }
+
+            let table = format!(
+                r#"<table style="width:100%; border-collapse:collapse;">
+            <thead>
+            <tr><th align="left">Name</th><th align="left">Last Modified</th><th align="left">Size</th></tr>
+            </thead>
+            <tbody>
+            {0}
+            </tbody>
+            </table>"#,
+                rows.join("\n")
+            );
+
+            let mut nav_parts = vec![];
+            let mut current_path = String::new();
+            for part in uri.path().trim_start_matches('/').split('/') {
+                if !part.is_empty() {
+                    current_path.push('/');
+                    current_path.push_str(part);
+                    nav_parts.push(format!("<a href=\"{0}\">{1}</a>", current_path, part));
+                }
+            }
+            let breadcrumb = if nav_parts.is_empty() {
+                "<a href=\"/\">/</a>".to_owned()
+            } else {
+                format!(
+                    "<a href=\"/\">/</a> &raquo; {}",
+                    nav_parts.join(" &raquo; ")
+                )
+            };
+
+            let html = format!(
+                r#"<!DOCTYPE HTML>
+            <html lang="en">
+            <head>
+            <meta charset="utf-8">
+            <title>Directory listing for .{0}</title>
+            </head>
+            <body>
+            <h1>Directory listing for .{0}</h1>
+            <div>{2}</div>
+            <hr>
+            <ul>
+            {1}
+            </ul>
+            <hr>
+            </body>
+            </html>"#,
+                uri.path(),
+                table,
+                breadcrumb,
+            );
+
+            Ok(Some(OpenFileOutput::Html(html)))
+        }
+    }
+}
+
+enum HumanSize {
+    None,
+    Bytes(u64),
+    KiloBytes(f64),
+    MegaBytes(f64),
+    GigaBytes(f64),
+    TeraBytes(f64),
+}
+
+impl fmt::Display for HumanSize {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            HumanSize::None => write!(f, "--"),
+            HumanSize::Bytes(n) => write!(f, "{n}B"),
+            HumanSize::KiloBytes(d) => write!(f, "{d:.1}KB"),
+            HumanSize::MegaBytes(d) => write!(f, "{d:.1}MB"),
+            HumanSize::GigaBytes(d) => write!(f, "{d:.1}GB"),
+            HumanSize::TeraBytes(d) => write!(f, "{d:.1}TB"),
+        }
+    }
+}
+
+fn format_size(bytes: u64) -> HumanSize {
+    const MAX_UNITS: usize = 5;
+
+    let mut size = bytes as f64;
+    let mut unit = 0;
+
+    while size >= 1024.0 && unit < MAX_UNITS - 1 {
+        size /= 1024.0;
+        unit += 1;
+    }
+    match unit {
+        0 => HumanSize::Bytes(size as u64),
+        1 => HumanSize::KiloBytes(size),
+        2 => HumanSize::MegaBytes(size),
+        3 => HumanSize::GigaBytes(size),
+        _ => HumanSize::TeraBytes(size),
+    }
+}
+
+fn emoji_for_mime(mime: Option<mime::Mime>, is_dir: bool) -> &'static str {
+    if is_dir {
+        return "📁";
     }
 
-    if uri.path().ends_with('/') {
-        path_to_file.push("index.html");
-        None
-    } else {
-        let uri = match append_slash_on_path(uri.clone()) {
-            Ok(uri) => uri,
-            Err(err) => return Some(err),
-        };
-        let location = HeaderValue::from_str(&uri.to_string()).unwrap();
-        Some(OpenFileOutput::Redirect { location })
+    match mime
+        .as_ref()
+        .map(|m| (m.type_().as_str(), m.subtype().as_str()))
+    {
+        Some(("text", "css")) => "🎨",
+        Some(("text", _)) => "📄",
+        Some(("image", _)) => "🖼️",
+        Some(("audio", _)) => "🎵",
+        Some(("video", _)) => "🎬",
+        Some(("application", "pdf")) => "📕",
+        Some(("application", "zip" | "x-tar")) => "🗜️",
+        Some(("application", "json" | "xml")) => "🔧",
+        Some(("application", "msword")) => "📃",
+        Some(("application", "vnd.ms-excel")) => "📊",
+        Some(("application", "javascript")) => "🧩",
+        _ => "📄",
     }
 }
 
@@ -320,4 +481,113 @@ fn append_slash_on_path(uri: Uri) -> Result<Uri, OpenFileOutput> {
         tracing::error!(?err, "redirect uri failed to build");
         OpenFileOutput::InvalidRedirectUri
     })
+}
+
+#[cfg(test)]
+mod test {
+    use std::str::FromStr;
+
+    use super::*;
+    use mime::Mime;
+
+    #[test]
+    fn test_emoji_for_mime() {
+        struct Case {
+            mime: Option<Mime>,
+            is_dir: bool,
+            expected: &'static str,
+        }
+
+        let cases = [
+            Case {
+                mime: None,
+                is_dir: true,
+                expected: "📁",
+            },
+            Case {
+                mime: Some(Mime::from_str("text/plain").unwrap()),
+                is_dir: false,
+                expected: "📄",
+            },
+            Case {
+                mime: Some(Mime::from_str("image/png").unwrap()),
+                is_dir: false,
+                expected: "🖼️",
+            },
+            Case {
+                mime: Some(Mime::from_str("audio/mpeg").unwrap()),
+                is_dir: false,
+                expected: "🎵",
+            },
+            Case {
+                mime: Some(Mime::from_str("application/pdf").unwrap()),
+                is_dir: false,
+                expected: "📕",
+            },
+            Case {
+                mime: Some(Mime::from_str("application/zip").unwrap()),
+                is_dir: false,
+                expected: "🗜️",
+            },
+            Case {
+                mime: Some(Mime::from_str("application/json").unwrap()),
+                is_dir: false,
+                expected: "🔧",
+            },
+            Case {
+                mime: Some(Mime::from_str("application/octet-stream").unwrap()),
+                is_dir: false,
+                expected: "📄",
+            },
+        ];
+
+        for case in cases {
+            let actual = emoji_for_mime(case.mime.clone(), case.is_dir);
+            assert_eq!(actual, case.expected, "Failed on case: {:?}", case.mime);
+        }
+    }
+
+    #[test]
+    fn test_format_size() {
+        struct Case {
+            input: u64,
+            expected: &'static str,
+        }
+
+        let cases = [
+            Case {
+                input: 0,
+                expected: "0B",
+            },
+            Case {
+                input: 512,
+                expected: "512B",
+            },
+            Case {
+                input: 1023,
+                expected: "1023B",
+            },
+            Case {
+                input: 1024,
+                expected: "1.0KB",
+            },
+            Case {
+                input: 1048576,
+                expected: "1.0MB",
+            },
+            Case {
+                input: 1073741824,
+                expected: "1.0GB",
+            },
+            Case {
+                input: 1099511627776,
+                expected: "1.0TB",
+            },
+        ];
+
+        for case in cases {
+            let actual = format_size(case.input).to_string();
+            assert_eq!(actual, case.expected, "Failed on input: {}", case.input);
+        }
+    }
 }

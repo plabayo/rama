@@ -1,6 +1,7 @@
 use std::fmt;
 
-use bytes::{BufMut, Bytes};
+use rama_core::bytes::{BufMut, Bytes};
+use rama_core::telemetry::tracing;
 use rama_utils::octets::unpack_octets_as_u32;
 
 use crate::h2::frame::{self, Error, Head, Kind, Reason, StreamId};

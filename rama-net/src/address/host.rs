@@ -19,6 +19,36 @@ pub enum Host {
 }
 
 impl Host {
+    /// Returns `true` if [`host`] is a [`Domain`].
+    pub fn is_domain(&self) -> bool {
+        matches!(self, Host::Name(_))
+    }
+
+    /// Returns `true` if [`host`] is a [`IpAddr`].
+    pub fn is_ip(&self) -> bool {
+        matches!(self, Host::Address(_))
+    }
+
+    /// Returns `true` if [`host`] is a [`IpAddr::V4`].
+    pub fn is_ipv4(&self) -> bool {
+        matches!(self, Host::Address(IpAddr::V4(_)))
+    }
+
+    /// Returns `true` if [`host`] is a [`IpAddr::V6`].
+    pub fn is_ipv6(&self) -> bool {
+        matches!(self, Host::Address(IpAddr::V4(_)))
+    }
+
+    /// Returns [`Host`] as a string, only allocated if we need to render it.
+    pub fn to_str(&self) -> std::borrow::Cow<'_, str> {
+        match self {
+            Host::Name(domain) => domain.as_str().into(),
+            Host::Address(ip_addr) => ip_addr.to_string().into(),
+        }
+    }
+}
+
+impl Host {
     /// Local loopback address (IPv4)
     pub const LOCALHOST_IPV4: Self = Self::Address(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)));
 
@@ -210,70 +240,6 @@ impl TryFrom<&HeaderValue> for Host {
 
     fn try_from(header: &HeaderValue) -> Result<Self, Self::Error> {
         header.to_str().context("convert header to str")?.try_into()
-    }
-}
-
-#[cfg(feature = "rustls")]
-impl<'a> TryFrom<rustls::pki_types::ServerName<'a>> for Host {
-    type Error = OpaqueError;
-
-    fn try_from(value: rustls::pki_types::ServerName<'a>) -> Result<Self, Self::Error> {
-        match value {
-            rustls::pki_types::ServerName::DnsName(name) => {
-                Ok(Domain::try_from(name.as_ref().to_owned())?.into())
-            }
-            rustls::pki_types::ServerName::IpAddress(ip) => Ok(Host::from(IpAddr::from(ip))),
-            _ => Err(OpaqueError::from_display(format!(
-                "urecognised rustls (PKI) server name: {value:?}",
-            ))),
-        }
-    }
-}
-
-#[cfg(feature = "rustls")]
-impl TryFrom<Host> for rustls::pki_types::ServerName<'_> {
-    type Error = OpaqueError;
-
-    fn try_from(value: Host) -> Result<Self, Self::Error> {
-        match value {
-            Host::Name(name) => Ok(rustls::pki_types::ServerName::DnsName(
-                rustls::pki_types::DnsName::try_from(name.as_str().to_owned())
-                    .context("convert domain to rustls (PKI) ServerName")?,
-            )),
-            Host::Address(ip) => Ok(rustls::pki_types::ServerName::IpAddress(ip.into())),
-        }
-    }
-}
-
-#[cfg(feature = "rustls")]
-impl<'a> TryFrom<&rustls::pki_types::ServerName<'a>> for Host {
-    type Error = OpaqueError;
-
-    fn try_from(value: &rustls::pki_types::ServerName<'a>) -> Result<Self, Self::Error> {
-        match value {
-            rustls::pki_types::ServerName::DnsName(name) => {
-                Ok(Domain::try_from(name.as_ref().to_owned())?.into())
-            }
-            rustls::pki_types::ServerName::IpAddress(ip) => Ok(Host::from(IpAddr::from(*ip))),
-            _ => Err(OpaqueError::from_display(format!(
-                "urecognised rustls (PKI) server name: {value:?}",
-            ))),
-        }
-    }
-}
-
-#[cfg(feature = "rustls")]
-impl<'a> TryFrom<&'a Host> for rustls::pki_types::ServerName<'a> {
-    type Error = OpaqueError;
-
-    fn try_from(value: &'a Host) -> Result<Self, Self::Error> {
-        match value {
-            Host::Name(name) => Ok(rustls::pki_types::ServerName::DnsName(
-                rustls::pki_types::DnsName::try_from(name.as_str())
-                    .context("convert domain to rustls (PKI) ServerName")?,
-            )),
-            Host::Address(ip) => Ok(rustls::pki_types::ServerName::IpAddress((*ip).into())),
-        }
     }
 }
 

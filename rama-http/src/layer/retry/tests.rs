@@ -1,5 +1,6 @@
 use super::*;
-use crate::{BodyExtractExt, response::IntoResponse};
+use crate::BodyExtractExt;
+use crate::service::web::response::IntoResponse;
 use crate::{Request, Response};
 use parking_lot::Mutex;
 use rama_core::error::{OpaqueError, error};

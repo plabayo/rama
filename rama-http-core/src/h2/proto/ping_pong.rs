@@ -3,7 +3,8 @@ use crate::h2::frame::Ping;
 use crate::h2::proto::{self, PingPayload};
 
 use atomic_waker::AtomicWaker;
-use bytes::Buf;
+use rama_core::bytes::Buf;
+use rama_core::telemetry::tracing;
 use std::io;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};

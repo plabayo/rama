@@ -2,7 +2,8 @@ use crate::h2::codec::UserError;
 use crate::h2::frame::{self, Frame, FrameSize};
 use crate::h2::hpack;
 
-use bytes::{Buf, BufMut, BytesMut};
+use rama_core::bytes::{Buf, BufMut, BytesMut};
+use rama_core::telemetry::tracing;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
@@ -170,7 +171,33 @@ where
             ready!(self.flush(cx))?;
             self.final_flush_done = true;
         }
-        Pin::new(&mut self.inner).poll_shutdown(cx)
+
+        #[cfg(not(any(
+            target_os = "macos",
+            target_os = "freebsd",
+            target_os = "openbsd",
+            target_os = "netbsd",
+            target_os = "dragonfly"
+        )))]
+        return Pin::new(&mut self.inner).poll_shutdown(cx);
+
+        // Mac OS and BSD variants can throw this error if shutdown was already called (eg by tcp reset).
+        // This is not a problem on linux since this error will be ignored inside the kernel.
+        // Catching this here will prevent this (harmless) error from blowing up.
+        // TODO: remove this once the root causes of this issue are fixed
+        // - <https://github.com/tokio-rs/tokio/issues/4665>
+        // - <https://github.com/hyperium/h2/issues/843>
+        #[cfg(any(
+            target_os = "macos",
+            target_os = "freebsd",
+            target_os = "openbsd",
+            target_os = "netbsd",
+            target_os = "dragonfly"
+        ))]
+        match ready!(Pin::new(&mut self.inner).poll_shutdown(cx)) {
+            Err(err) if err.kind() == std::io::ErrorKind::NotConnected => Poll::Ready(Ok(())),
+            result => Poll::Ready(result),
+        }
     }
 }
 

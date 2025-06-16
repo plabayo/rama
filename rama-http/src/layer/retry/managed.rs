@@ -7,6 +7,7 @@
 use super::{Policy, PolicyResult, RetryBody};
 use crate::{Request, Response};
 use rama_core::Context;
+use rama_core::telemetry::tracing;
 use rama_utils::backoff::Backoff;
 
 #[derive(Debug, Clone, Default)]
@@ -38,7 +39,7 @@ where
     R: RetryRule<State, Response, Error>,
     State: Clone + Send + Sync + 'static,
     Response: Send + 'static,
-    Error: Send + Sync + 'static,
+    Error: Send + 'static,
 {
     async fn retry(
         &self,
@@ -305,7 +306,7 @@ mod private {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{IntoResponse, StatusCode};
+    use crate::{StatusCode, service::web::response::IntoResponse};
     use rama_utils::{backoff::ExponentialBackoff, rng::HasherRng};
     use std::time::Duration;
 

@@ -18,7 +18,7 @@ a crate such as Rama.
 <https://rust-lang.guide/> is a FOSS guide created by Plabayo, the maintainers behind Rama, and
 serves as a guide to get you from an absolute Rust Beginner to a true _Rustacean_ with a solid
 understanding and deep appreciation for the language. Because Rust is truly one of those languages
-that makes programming all fun and no sweat. It's the playfullnes that we love at Plabayo.
+that makes programming all fun and no sweat. It's the playfulness that we love at Plabayo.
 
 ## Learning Rust
 

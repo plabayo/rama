@@ -1,7 +1,8 @@
 use std::fmt;
 
 use crate::h2::frame::{Error, Frame, FrameSize, Head, Kind, StreamId, util};
-use bytes::BytesMut;
+use rama_core::bytes::BytesMut;
+use rama_core::telemetry::tracing;
 
 use rama_http_types::proto::h2::frame::SettingOrder;
 pub use rama_http_types::proto::h2::frame::{Setting, SettingId, SettingsConfig};

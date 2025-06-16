@@ -1,4 +1,4 @@
-use bytes::Bytes;
+use rama_core::bytes::Bytes;
 use rama_http_types::dep::http_body;
 
 #[derive(Debug, Clone)]

@@ -3,7 +3,9 @@ use std::{borrow::Cow, fmt};
 use rama_core::{
     Context, Service,
     error::{BoxError, ErrorContext, OpaqueError},
+    telemetry::tracing,
 };
+use rama_http_headers::{ClientHint, all_client_hints};
 use rama_http_types::{
     HeaderMap, HeaderName, HeaderValue, Method, Request, Uri, Version,
     conn::{H2ClientContextParams, Http1ClientContextParams, StreamDependencyParams},
@@ -11,7 +13,6 @@ use rama_http_types::{
         ACCEPT, ACCEPT_LANGUAGE, AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, COOKIE, HOST, ORIGIN,
         REFERER, USER_AGENT,
     },
-    headers::{ClientHint, all_client_hints},
     proto::{
         h1::{
             Http1HeaderMap,
@@ -25,9 +26,10 @@ use rama_net::{
     address::{Authority, Host},
     http::RequestContext,
 };
+use rama_utils::str::{starts_with_ignore_ascii_case, submatch_ignore_ascii_case};
 
-use crate::{HttpAgent, UserAgent, contains_ignore_ascii_case, starts_with_ignore_ascii_case};
 use crate::{
+    HttpAgent, UserAgent,
     emulate::SelectedUserAgentProfile,
     profile::{
         CUSTOM_HEADER_MARKER, HttpHeadersProfile, HttpProfile, PreserveHeaderUserAgent,
@@ -282,30 +284,15 @@ where
                     ua_kind = %profile.ua_kind,
                     ua_version = ?profile.ua_version,
                     platform = ?profile.platform,
-                    "user agent emulation: skip tls settings as http is instructed to be preserved"
+                    "user agent emulation: skip tls settings as tls is instructed to be preserved"
                 );
             } else {
-                // client_config's Arc is to be lazilly cloned by a tls connector
-                // only when a connection is to be made, as to play nicely
-                // with concepts such as connection pooling
-                let host = match ctx.get::<RequestContext>() {
-                    Some(request_ctx) => Some(request_ctx.authority.host().clone()),
-                    None => match req.uri().host() {
-                        Some(s) => Some(s.parse().context("parse req uri host as rama net Host")?),
-                        None => None,
-                    },
-                };
-                rama_net::tls::client::append_all_client_configs_to_ctx(
-                    &mut ctx,
-                    [
-                        profile.tls.client_config.clone(),
-                        std::sync::Arc::new(rama_net::tls::client::ClientConfig {
-                            extensions: Some(vec![
-                                rama_net::tls::client::ClientHelloExtension::ServerName(host),
-                            ]),
-                            ..Default::default()
-                        }),
-                    ],
+                ctx.insert(profile.tls.clone());
+                tracing::trace!(
+                    ua_kind = %profile.ua_kind,
+                    ua_version = ?profile.ua_version,
+                    platform = ?profile.platform,
+                    "user agent emulation: tls profile injected in ctx"
                 );
             }
         }
@@ -630,7 +617,7 @@ fn headers_contains_partial_value(headers: &HeaderMap, name: &HeaderName, value:
     headers
         .get(name)
         .and_then(|value| value.to_str().ok())
-        .map(|s| contains_ignore_ascii_case(s, value).is_some())
+        .map(|s| submatch_ignore_ascii_case(s, value))
         .unwrap_or_default()
 }
 
@@ -791,7 +778,7 @@ fn compute_sec_fetch_site_value(
 
                     let default_port = uri
                         .port_u16()
-                        .or_else(|| referer_protocol.as_ref().map(|p| p.default_port()));
+                        .or_else(|| referer_protocol.as_ref().and_then(|p| p.default_port()));
 
                     let maybe_authority = uri
                         .host()
@@ -903,7 +890,7 @@ mod tests {
                 preserve_ua_header: false,
                 request_authority: Authority::new(
                     Host::EXAMPLE_NAME,
-                    Protocol::HTTP.default_port(),
+                    Protocol::HTTP.default_port().unwrap(),
                 ),
                 protocol: Protocol::HTTP,
                 requested_client_hints: None,
@@ -920,7 +907,7 @@ mod tests {
                 preserve_ua_header: false,
                 request_authority: Authority::new(
                     Host::EXAMPLE_NAME,
-                    Protocol::HTTP.default_port(),
+                    Protocol::HTTP.default_port().unwrap(),
                 ),
                 protocol: Protocol::HTTP,
                 requested_client_hints: None,
@@ -937,7 +924,7 @@ mod tests {
                 preserve_ua_header: false,
                 request_authority: Authority::new(
                     Host::EXAMPLE_NAME,
-                    Protocol::HTTP.default_port(),
+                    Protocol::HTTP.default_port().unwrap(),
                 ),
                 protocol: Protocol::HTTP,
                 requested_client_hints: None,
@@ -951,7 +938,7 @@ mod tests {
                 preserve_ua_header: false,
                 request_authority: Authority::new(
                     Host::EXAMPLE_NAME,
-                    Protocol::HTTP.default_port(),
+                    Protocol::HTTP.default_port().unwrap(),
                 ),
                 protocol: Protocol::HTTP,
                 requested_client_hints: None,
@@ -965,7 +952,7 @@ mod tests {
                 preserve_ua_header: false,
                 request_authority: Authority::new(
                     Host::EXAMPLE_NAME,
-                    Protocol::HTTP.default_port(),
+                    Protocol::HTTP.default_port().unwrap(),
                 ),
                 protocol: Protocol::HTTP,
                 requested_client_hints: None,
@@ -990,7 +977,7 @@ mod tests {
                 preserve_ua_header: false,
                 request_authority: Authority::new(
                     Host::EXAMPLE_NAME,
-                    Protocol::HTTP.default_port(),
+                    Protocol::HTTP.default_port().unwrap(),
                 ),
                 protocol: Protocol::HTTP,
                 requested_client_hints: None,
@@ -1015,7 +1002,7 @@ mod tests {
                 preserve_ua_header: true,
                 request_authority: Authority::new(
                     Host::EXAMPLE_NAME,
-                    Protocol::HTTP.default_port(),
+                    Protocol::HTTP.default_port().unwrap(),
                 ),
                 protocol: Protocol::HTTP,
                 requested_client_hints: None,
@@ -1041,7 +1028,7 @@ mod tests {
                 preserve_ua_header: false,
                 request_authority: Authority::new(
                     Host::EXAMPLE_NAME,
-                    Protocol::HTTP.default_port(),
+                    Protocol::HTTP.default_port().unwrap(),
                 ),
                 protocol: Protocol::HTTP,
                 requested_client_hints: None,
@@ -1074,7 +1061,7 @@ mod tests {
                 preserve_ua_header: false,
                 request_authority: Authority::new(
                     Host::from_str("ramaproxy.org").unwrap(),
-                    Protocol::HTTPS.default_port(),
+                    Protocol::HTTPS.default_port().unwrap(),
                 ),
                 protocol: Protocol::HTTPS,
                 requested_client_hints: None,
@@ -1111,7 +1098,7 @@ mod tests {
                 preserve_ua_header: false,
                 request_authority: Authority::new(
                     Host::EXAMPLE_NAME,
-                    Protocol::HTTPS.default_port(),
+                    Protocol::HTTPS.default_port().unwrap(),
                 ),
                 protocol: Protocol::HTTPS,
                 requested_client_hints: None,
@@ -1150,7 +1137,7 @@ mod tests {
                 preserve_ua_header: false,
                 request_authority: Authority::new(
                     Host::from_str("ramaproxy.org").unwrap(),
-                    Protocol::HTTPS.default_port(),
+                    Protocol::HTTPS.default_port().unwrap(),
                 ),
                 protocol: Protocol::HTTPS,
                 requested_client_hints: None,
@@ -1207,7 +1194,7 @@ mod tests {
                 preserve_ua_header: false,
                 request_authority: Authority::new(
                     Host::from_str("www.google.com").unwrap(),
-                    Protocol::HTTP.default_port(),
+                    Protocol::HTTP.default_port().unwrap(),
                 ),
                 protocol: Protocol::HTTP,
                 requested_client_hints: None,
@@ -1277,7 +1264,7 @@ mod tests {
                 preserve_ua_header: false,
                 request_authority: Authority::new(
                     Host::from_str("www.google.com").unwrap(),
-                    Protocol::HTTPS.default_port(),
+                    Protocol::HTTPS.default_port().unwrap(),
                 ),
                 protocol: Protocol::HTTPS,
                 requested_client_hints: None,
@@ -1327,7 +1314,7 @@ mod tests {
                 preserve_ua_header: false,
                 request_authority: Authority::new(
                     Host::from_str("www.google.com").unwrap(),
-                    Protocol::HTTPS.default_port(),
+                    Protocol::HTTPS.default_port().unwrap(),
                 ),
                 protocol: Protocol::HTTPS,
                 requested_client_hints: None,
@@ -1400,7 +1387,7 @@ mod tests {
                 preserve_ua_header: false,
                 request_authority: Authority::new(
                     Host::from_str("www.google.com").unwrap(),
-                    Protocol::HTTPS.default_port(),
+                    Protocol::HTTPS.default_port().unwrap(),
                 ),
                 protocol: Protocol::HTTPS,
                 requested_client_hints: Some(vec![

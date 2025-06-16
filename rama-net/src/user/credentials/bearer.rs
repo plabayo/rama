@@ -2,7 +2,7 @@ use rama_core::error::{ErrorContext, OpaqueError};
 use std::borrow::Cow;
 
 #[cfg(feature = "http")]
-use rama_http_types::{HeaderValue, headers::authorization};
+use rama_http_types::HeaderValue;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Bearer credentials.
@@ -74,20 +74,8 @@ impl Bearer {
     }
 }
 
-const BEARER_SCHEME: &str = "Bearer";
-
-#[cfg(feature = "http")]
-impl authorization::Credentials for Bearer {
-    const SCHEME: &'static str = BEARER_SCHEME;
-
-    fn decode(value: &HeaderValue) -> Option<Self> {
-        Self::try_from_header_str(value.to_str().ok()?).ok()
-    }
-
-    fn encode(&self) -> HeaderValue {
-        self.as_header_value()
-    }
-}
+/// Http Credentail scheme for basic credentails
+pub const BEARER_SCHEME: &str = "Bearer";
 
 #[cfg(test)]
 mod tests {
@@ -117,41 +105,5 @@ mod tests {
         let auth = Bearer::try_from_clear_str("foobar".to_owned()).unwrap();
         assert_eq!(auth.token(), "foobar");
         assert_eq!("foobar", auth.as_clear_string());
-    }
-}
-
-#[cfg(feature = "http")]
-#[cfg(test)]
-mod http_tests {
-    use super::*;
-    use authorization::Credentials;
-
-    #[test]
-    fn bearer_encode() {
-        let auth = Bearer::try_from_clear_str("foobar").unwrap();
-        let value = auth.encode();
-
-        assert_eq!(value, "Bearer foobar",);
-    }
-
-    #[test]
-    fn bearer_decode() {
-        let auth = Bearer::decode(&HeaderValue::from_static("Bearer foobar")).unwrap();
-        assert_eq!(auth.token(), "foobar");
-    }
-
-    #[test]
-    fn bearer_decode_case_insensitive() {
-        let auth = Bearer::decode(&HeaderValue::from_static("bearer foobar")).unwrap();
-        assert_eq!(auth.token(), "foobar");
-    }
-
-    #[test]
-    fn bearer_decode_extra_whitespaces() {
-        let auth = Bearer::decode(&HeaderValue::from_static(
-            "Bearer  QWxhZGRpbjpvcGVuIHNlc2FtZQ==",
-        ))
-        .unwrap();
-        assert_eq!(auth.token(), "QWxhZGRpbjpvcGVuIHNlc2FtZQ==");
     }
 }

@@ -1,14 +1,15 @@
 use super::open_file::{FileOpened, FileRequestExtent, OpenFileOutput};
+use crate::headers::encoding::Encoding;
 use crate::{
     Body, HeaderValue, Request, Response, StatusCode,
     dep::http_body_util::BodyExt,
     header::{self, ALLOW},
     service::fs::AsyncReadBody,
+    service::web::response::{Html, IntoResponse},
 };
-use bytes::Bytes;
+use rama_core::bytes::Bytes;
 use rama_core::{Context, Service, error::BoxError};
 use rama_http_types::dep::http_body;
-use rama_http_types::headers::encoding::Encoding;
 use std::{convert::Infallible, io};
 
 pub(super) async fn consume_open_file_result<State, ReqBody, ResBody, F>(
@@ -30,6 +31,8 @@ where
                 .insert(rama_http_types::header::LOCATION, location);
             Ok(res)
         }
+
+        Ok(OpenFileOutput::Html(payload)) => Ok(Html(payload).into_response()),
 
         Ok(OpenFileOutput::FileNotFound) => {
             if let Some((fallback, ctx, request)) = fallback_and_request {
@@ -108,7 +111,7 @@ where
         .map(|body| {
             body.map_err(|err| match err.into().downcast::<io::Error>() {
                 Ok(err) => *err,
-                Err(err) => io::Error::new(io::ErrorKind::Other, err),
+                Err(err) => io::Error::other(err),
             })
             .boxed()
         })
@@ -162,12 +165,18 @@ fn build_response(output: FileOpened) -> Response {
                         empty_body()
                     };
 
+                    let content_length = if size == 0 {
+                        0
+                    } else {
+                        range.end() - range.start() + 1
+                    };
+
                     builder
                         .header(
                             header::CONTENT_RANGE,
                             format!("bytes {}-{}/{}", range.start(), range.end(), size),
                         )
-                        .header(header::CONTENT_LENGTH, range.end() - range.start() + 1)
+                        .header(header::CONTENT_LENGTH, content_length)
                         .status(StatusCode::PARTIAL_CONTENT)
                         .body(body)
                         .unwrap()

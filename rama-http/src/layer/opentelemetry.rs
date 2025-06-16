@@ -2,10 +2,8 @@
 //!
 //! [`Layer`]: rama_core::Layer
 
-use crate::{
-    IntoResponse, Request, Response,
-    headers::{HeaderMapExt, UserAgent},
-};
+use crate::service::web::response::IntoResponse;
+use crate::{Request, Response};
 use rama_core::telemetry::opentelemetry::{
     AttributesFactory, InstrumentationScope, KeyValue, MeterOptions, ServiceInfo, global,
     metrics::{Counter, Histogram, Meter},
@@ -24,7 +22,7 @@ use std::{borrow::Cow, fmt, sync::Arc, time::SystemTime};
 
 use semantic_conventions::attribute::{
     HTTP_REQUEST_METHOD, HTTP_RESPONSE_STATUS_CODE, NETWORK_PROTOCOL_VERSION, SERVER_PORT,
-    URL_SCHEME, USER_AGENT_ORIGINAL,
+    URL_SCHEME,
 };
 
 const HTTP_SERVER_DURATION: &str = "http.requests.duration";
@@ -251,7 +249,7 @@ impl<S, F> RequestMetricsService<S, F> {
     {
         let mut attributes = self
             .attributes_factory
-            .attributes(6 + self.base_attributes.len(), ctx);
+            .attributes(5 + self.base_attributes.len(), ctx);
         attributes.extend(self.base_attributes.iter().cloned());
 
         // server info
@@ -271,9 +269,6 @@ impl<S, F> RequestMetricsService<S, F> {
             attributes.push(KeyValue::new(URL_SCHEME, protocol.to_string()));
         }
 
-        // Common attrs (Request Info)
-        // <https://github.com/open-telemetry/semantic-conventions/blob/v1.21.0/docs/http/http-spans.md#common-attributes>
-
         attributes.push(KeyValue::new(HTTP_REQUEST_METHOD, req.method().to_string()));
         if let Some(http_version) = request_ctx.as_ref().and_then(|rc| match rc.http_version {
             rama_http_types::Version::HTTP_09 => Some("0.9"),
@@ -284,10 +279,6 @@ impl<S, F> RequestMetricsService<S, F> {
             _ => None,
         }) {
             attributes.push(KeyValue::new(NETWORK_PROTOCOL_VERSION, http_version));
-        }
-
-        if let Some(ua) = req.headers().typed_get::<UserAgent>() {
-            attributes.push(KeyValue::new(USER_AGENT_ORIGINAL, ua.to_string()));
         }
 
         attributes

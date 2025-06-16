@@ -3,12 +3,13 @@ use rama_core::{
     context::{self, RequestContextExt},
     error::{BoxError, ErrorContext, OpaqueError},
     inspect::RequestInspector,
+    telemetry::tracing,
 };
+use rama_http_headers::{HeaderMapExt, Host};
 use rama_http_types::{
     Method, Request, Response, Version,
     dep::{http::uri::PathAndQuery, http_body},
     header::{CONNECTION, HOST, KEEP_ALIVE, PROXY_CONNECTION, TRANSFER_ENCODING, UPGRADE},
-    headers::HeaderMapExt,
 };
 use rama_net::{address::ProxyAddress, http::RequestContext};
 use std::fmt;
@@ -154,22 +155,24 @@ fn sanitize_client_req_header<S, B>(
         return Err(OpaqueError::from_display("missing host in CONNECT request").into());
     }
 
+    let is_request_proxied = ctx.contains::<ProxyAddress>();
+    let request_ctx = ctx
+        .get_or_try_insert_with_ctx::<RequestContext, _>(|ctx| (ctx, &req).try_into())
+        .context("fetch request context")?;
+
     // logic specific to http versions
     Ok(match req.version() {
         Version::HTTP_09 | Version::HTTP_10 | Version::HTTP_11 => {
             // remove authority and scheme for non-connect requests
             // cfr: <https://datatracker.ietf.org/doc/html/rfc2616#section-5.1.2>
-            if !ctx.contains::<ProxyAddress>() && req.uri().host().is_some() {
+            if !is_request_proxied && req.uri().host().is_some() {
                 tracing::trace!(
                     "remove authority and scheme from non-connect direct http(~1) request"
                 );
                 let (mut parts, body) = req.into_parts();
                 let mut uri_parts = parts.uri.into_parts();
                 uri_parts.scheme = None;
-                let authority = uri_parts
-                    .authority
-                    .take()
-                    .expect("to exist due to our host existence test");
+                uri_parts.authority = None;
 
                 // NOTE: in case the requested resource was the root ("/") it is possible
                 // that the path is now empty. Hyper (currently used) has h1 built-in and
@@ -187,27 +190,46 @@ fn sanitize_client_req_header<S, B>(
 
                 // add required host header if not defined
                 if !parts.headers.contains_key(HOST) {
-                    parts
-                        .headers
-                        .typed_insert(rama_http_types::headers::Host::from(authority));
+                    if request_ctx.authority_has_default_port() {
+                        let host = request_ctx.authority.host().clone();
+                        tracing::trace!(
+                            %host,
+                            "add missing host from authority as host header"
+                        );
+                        parts.headers.typed_insert(Host::from(host));
+                    } else {
+                        let authority = request_ctx.authority.clone();
+                        tracing::trace!(
+                            %authority,
+                            "add missing authority as host header"
+                        );
+                        parts.headers.typed_insert(Host::from(authority));
+                    }
                 }
 
                 parts.uri = rama_http_types::Uri::from_parts(uri_parts)?;
                 Request::from_parts(parts, body)
             } else if !req.headers().contains_key(HOST) {
-                tracing::trace!(uri = %req.uri(), "add authority as HOST header to req (was missing it)");
-                let authority = req
-                    .uri()
-                    .authority()
-                    .ok_or_else(|| {
-                        OpaqueError::from_display(
-                            "[http1] missing authority in uri and missing host",
-                        )
-                    })?
-                    .clone();
                 let mut req = req;
-                req.headers_mut()
-                    .typed_insert(rama_http_types::headers::Host::from(authority));
+
+                if request_ctx.authority_has_default_port() {
+                    let authority = request_ctx.authority.clone();
+                    tracing::trace!(
+                        uri = %req.uri(),
+                        %authority,
+                        "add host from authority as HOST header to req (was missing it)",
+                    );
+                    req.headers_mut().typed_insert(Host::from(authority));
+                } else {
+                    let host = request_ctx.authority.host().clone();
+                    tracing::trace!(
+                        uri = %req.uri(),
+                        %host,
+                        "add authority as HOST header to req (was missing it)",
+                    );
+                    req.headers_mut().typed_insert(Host::from(host));
+                }
+
                 req
             } else {
                 req
@@ -239,10 +261,17 @@ fn sanitize_client_req_header<S, B>(
                 // NOTE: in a green future we might not need to stringify
                 // this entire thing first... maybe something someone at some
                 // point can take a look at this mess
+
+                // Default port is stripped in browsers. It's important that we also do this
+                // as some reverse proxies such as nginx respond 404 if authority is not an exact match
+                let authority = if request_ctx.authority_has_default_port() {
+                    request_ctx.authority.host().to_string()
+                } else {
+                    request_ctx.authority.to_string()
+                };
+
                 uri_parts.authority = Some(
-                    request_ctx
-                        .authority
-                        .to_string()
+                    authority
                         .try_into()
                         .context("use RequestContext.authority as http authority")?,
                 );
@@ -272,14 +301,14 @@ fn sanitize_client_req_header<S, B>(
             req
         }
         Version::HTTP_3 => {
-            tracing::warn!(
+            tracing::debug!(
                 uri = %req.uri(),
                 "h3 request detected, but sanitize_client_req_header does not yet support this",
             );
             req
         }
         _ => {
-            tracing::warn!(
+            tracing::debug!(
                 uri = %req.uri(),
                 method = ?req.method(),
                 "request with unknown version detected, sanitize_client_req_header cannot support this",

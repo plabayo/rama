@@ -9,7 +9,7 @@ use crate::layer::classify::{
     ServerErrorsAsFailures, SharedClassifier,
 };
 use crate::{Request, Response};
-use rama_core::{Context, Service};
+use rama_core::{Context, Service, telemetry::tracing::Instrument};
 use rama_utils::macros::define_inner_service_accessors;
 use std::{fmt, time::Instant};
 
@@ -339,12 +339,8 @@ where
 
         let classifier = self.make_classifier.make_classifier(&req);
 
-        let result = {
-            let _guard = span.enter();
-            self.on_request.on_request(&req, &span);
-            self.inner.serve(ctx, req)
-        }
-        .await;
+        span.in_scope(|| self.on_request.on_request(&req, &span));
+        let result = self.inner.serve(ctx, req).instrument(span.clone()).await;
         let latency = start.elapsed();
 
         match result {

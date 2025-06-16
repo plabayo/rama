@@ -2,8 +2,11 @@ use std::collections::HashMap;
 use std::fmt;
 use std::io::IoSlice;
 
-use bytes::buf::{Chain, Take};
-use bytes::{Buf, Bytes};
+use rama_core::bytes::{
+    buf::{Chain, Take},
+    {Buf, Bytes},
+};
+use rama_core::telemetry::tracing::{debug, trace};
 use rama_http_types::{
     HeaderMap, HeaderName, HeaderValue,
     header::{
@@ -11,7 +14,6 @@ use rama_http_types::{
         CONTENT_TYPE, HOST, MAX_FORWARDS, SET_COOKIE, TE, TRAILER, TRANSFER_ENCODING,
     },
 };
-use tracing::{debug, trace};
 
 use super::io::WriteBuf;
 use super::role::{write_headers, write_headers_title_case};
@@ -436,7 +438,7 @@ impl std::error::Error for NotEof {}
 
 #[cfg(test)]
 mod tests {
-    use bytes::BufMut;
+    use rama_core::bytes::BufMut;
     use rama_http_types::{
         HeaderMap, HeaderName, HeaderValue,
         header::{

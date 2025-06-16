@@ -47,7 +47,6 @@ pub mod traffic_writer;
 pub mod ua;
 pub mod validate_request;
 
-#[cfg(feature = "telemetry")]
 pub mod opentelemetry;
 
 pub(crate) mod util;

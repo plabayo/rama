@@ -1,10 +1,12 @@
+use rama_core::bytes::Bytes;
+
 use super::BytesRejection;
 use crate::dep::http_body_util::BodyExt;
 use crate::service::web::extract::FromRequest;
 use crate::utils::macros::{composite_http_rejection, define_http_rejection};
 use crate::{Method, Request};
 
-pub use crate::response::Form;
+pub use crate::service::web::endpoint::response::Form;
 
 define_http_rejection! {
     #[status = UNSUPPORTED_MEDIA_TYPE]
@@ -42,14 +44,8 @@ where
     type Rejection = FormRejection;
 
     async fn from_request(req: Request) -> Result<Self, Self::Rejection> {
-        if req.method() == Method::GET {
-            let query = req.uri().query().unwrap_or_default();
-            let value = match serde_html_form::from_bytes(query.as_bytes()) {
-                Ok(value) => value,
-                Err(err) => return Err(FailedToDeserializeForm::from_err(err).into()),
-            };
-            Ok(Form(value))
-        } else {
+        // Extracted into separate fn so it's only compiled once for all T.
+        async fn extract_form_body_bytes(req: Request) -> Result<Bytes, FormRejection> {
             if !crate::service::web::extract::has_any_content_type(
                 req.headers(),
                 &[&mime::APPLICATION_WWW_FORM_URLENCODED],
@@ -58,16 +54,24 @@ where
             }
 
             let body = req.into_body();
-            match body.collect().await {
-                Ok(c) => {
-                    let value = match serde_html_form::from_bytes(&c.to_bytes()) {
-                        Ok(value) => value,
-                        Err(err) => return Err(FailedToDeserializeForm::from_err(err).into()),
-                    };
-                    Ok(Form(value))
-                }
-                Err(err) => Err(BytesRejection::from_err(err).into()),
-            }
+            let bytes = body.collect().await.map_err(BytesRejection::from_err)?;
+
+            Ok(bytes.to_bytes())
+        }
+
+        if req.method() == Method::GET {
+            let query = req.uri().query().unwrap_or_default();
+            let value = match serde_html_form::from_bytes(query.as_bytes()) {
+                Ok(value) => value,
+                Err(err) => return Err(FailedToDeserializeForm::from_err(err).into()),
+            };
+            Ok(Form(value))
+        } else {
+            let b = extract_form_body_bytes(req).await?;
+            Ok(Form(match serde_html_form::from_bytes(&b) {
+                Ok(value) => value,
+                Err(err) => return Err(FailedToDeserializeForm::from_err(err).into()),
+            }))
         }
     }
 }

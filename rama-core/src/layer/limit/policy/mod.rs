@@ -92,7 +92,7 @@ pub trait Policy<State, Request>: Send + Sync + 'static {
     /// and should be aborted.
     ///
     /// See [`PolicyOutput::Abort`].
-    type Error: Send + Sync + 'static;
+    type Error: Send + 'static;
 
     /// Check whether the request is allowed to proceed.
     ///

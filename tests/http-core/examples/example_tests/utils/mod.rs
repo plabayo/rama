@@ -1,10 +1,10 @@
 #![allow(dead_code)]
 
+use rama::telemetry::tracing::level_filters::LevelFilter;
 use std::{
     process::{Child, ExitStatus},
     sync::Once,
 };
-use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 /// Runner for examples.
@@ -52,6 +52,10 @@ impl ExampleRunner {
             .run()
             .unwrap()
             .command()
+            .env(
+                "RUST_LOG",
+                std::env::var("RUST_LOG").unwrap_or("info".into()),
+            )
             .env("SSLKEYLOGFILE", "./target/test_ssl_key_log.txt")
             .spawn()
             .unwrap();
@@ -80,6 +84,10 @@ impl ExampleRunner {
             .run()
             .unwrap()
             .command()
+            .env(
+                "RUST_LOG",
+                std::env::var("RUST_LOG").unwrap_or("info".into()),
+            )
             .status()
             .unwrap()
     }

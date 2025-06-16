@@ -1,7 +1,7 @@
 use crate::h2::hpack::{Decoder, Encoder, Header};
 
-use bytes::BytesMut;
 use hex::FromHex;
+use rama_core::bytes::BytesMut;
 use serde_json::Value;
 
 use std::io::Cursor;

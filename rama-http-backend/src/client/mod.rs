@@ -2,35 +2,15 @@
 //! which provides the [`EasyHttpWebClient`] type to serve HTTP requests.
 
 use std::fmt;
-#[cfg(any(feature = "rustls", feature = "boring"))]
-use std::sync::Arc;
 
-use proxy::layer::HttpProxyConnector;
 use rama_core::{
     Context, Service,
-    error::{BoxError, ErrorContext, ErrorExt, OpaqueError},
-    inspect::RequestInspector,
+    error::{BoxError, ErrorContext, OpaqueError},
+    service::BoxService,
+    telemetry::tracing,
 };
-use rama_http_types::{Request, Response, Version, dep::http_body};
-use rama_net::{
-    Protocol,
-    address::Authority,
-    client::{
-        ConnectorService, EstablishedClientConnection, LeasedConnection, Pool, PoolStorage,
-        PooledConnector, ReqToConnID,
-    },
-    http::RequestContext,
-};
-use rama_tcp::client::service::TcpConnector;
-
-#[cfg(any(feature = "rustls", feature = "boring"))]
-use rama_tls::std::client::{TlsConnector, TlsConnectorData};
-
-#[cfg(any(feature = "rustls", feature = "boring"))]
-use rama_net::tls::client::{ClientConfig, ProxyClientConfig, extract_client_config_from_ctx};
-
-#[cfg(any(feature = "rustls", feature = "boring"))]
-use http_inspector::HttpsAlpnModifier;
+use rama_http_types::{Request, Response, dep::http_body};
+use rama_net::client::EstablishedClientConnection;
 
 mod svc;
 #[doc(inline)]
@@ -39,515 +19,590 @@ pub use svc::HttpClientService;
 mod conn;
 #[doc(inline)]
 pub use conn::{HttpConnector, HttpConnectorLayer};
-use tracing::trace;
 
 pub mod http_inspector;
 pub mod proxy;
 
 /// An opiniated http client that can be used to serve HTTP requests.
 ///
+/// Use [`EasyHttpWebClient::builder()`] to easily create a client with
+/// a common Http connector setup (tcp + proxy + tls + http) or bring your
+/// own http connector.
+///
 /// You can fork this http client in case you have use cases not possible with this service example.
 /// E.g. perhaps you wish to have middleware in into outbound requests, after they
 /// passed through your "connector" setup. All this and more is possible by defining your own
 /// http client. Rama is here to empower you, the building blocks are there, go crazy
 /// with your own service fork and use the full power of Rust at your fingertips ;)
-pub struct EasyHttpWebClient<I1 = (), I2 = (), P = ()> {
-    #[cfg(any(feature = "rustls", feature = "boring"))]
-    tls_config: Option<Arc<ClientConfig>>,
-    #[cfg(any(feature = "rustls", feature = "boring"))]
-    proxy_tls_config: Option<Arc<ClientConfig>>,
-    connection_pool: P,
-    proxy_http_connect_version: Option<Version>,
-    http_req_inspector_jit: I1,
-    http_req_inspector_svc: I2,
+pub struct EasyHttpWebClient<State, BodyIn, ConnResponse> {
+    connector: BoxService<State, Request<BodyIn>, ConnResponse, BoxError>,
 }
 
-#[cfg(any(feature = "rustls", feature = "boring"))]
-impl<I1: fmt::Debug, I2: fmt::Debug, P: fmt::Debug> fmt::Debug for EasyHttpWebClient<I1, I2, P> {
+impl<State, BodyIn, ConnResponse> fmt::Debug for EasyHttpWebClient<State, BodyIn, ConnResponse> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("EasyHttpWebClient")
-            .field("tls_config", &self.tls_config)
-            .field("proxy_tls_config", &self.proxy_tls_config)
-            .field("connection_pool", &self.connection_pool)
-            .field(
-                "proxy_http_connect_version",
-                &self.proxy_http_connect_version,
-            )
-            .field("http_req_inspector_jit", &self.http_req_inspector_jit)
-            .field("http_req_inspector_svc", &self.http_req_inspector_svc)
-            .finish()
+        f.debug_struct("EasyHttpWebClient").finish()
     }
 }
 
-#[cfg(not(any(feature = "rustls", feature = "boring")))]
-impl<I1: fmt::Debug, I2: fmt::Debug, P: fmt::Debug> fmt::Debug for EasyHttpWebClient<I1, I2, P> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("EasyHttpWebClient")
-            .field("connection_pool", &self.connection_pool)
-            .field(
-                "proxy_http_connect_version",
-                &self.proxy_http_connect_version,
-            )
-            .field("http_req_inspector_jit", &self.http_req_inspector_jit)
-            .field("http_req_inspector_svc", &self.http_req_inspector_svc)
-            .finish()
-    }
-}
-
-#[cfg(any(feature = "rustls", feature = "boring"))]
-impl<I1: Clone, I2: Clone, P: Clone> Clone for EasyHttpWebClient<I1, I2, P> {
+impl<State, BodyIn, ConnResponse> Clone for EasyHttpWebClient<State, BodyIn, ConnResponse> {
     fn clone(&self) -> Self {
         Self {
-            tls_config: self.tls_config.clone(),
-            proxy_tls_config: self.proxy_tls_config.clone(),
-            connection_pool: self.connection_pool.clone(),
-            proxy_http_connect_version: self.proxy_http_connect_version,
-            http_req_inspector_jit: self.http_req_inspector_jit.clone(),
-            http_req_inspector_svc: self.http_req_inspector_svc.clone(),
+            connector: self.connector.clone(),
         }
     }
 }
 
-#[cfg(not(any(feature = "rustls", feature = "boring")))]
-impl<I1: Clone, I2: Clone, P: Clone> Clone for EasyHttpWebClient<I1, I2, P> {
-    fn clone(&self) -> Self {
-        Self {
-            connection_pool: self.connection_pool.clone(),
-            proxy_http_connect_version: self.proxy_http_connect_version,
-            http_req_inspector_jit: self.http_req_inspector_jit.clone(),
-            http_req_inspector_svc: self.http_req_inspector_svc.clone(),
-        }
+impl EasyHttpWebClient<(), (), ()> {
+    /// Create a [`EasyHttpWebClientBuilder`] to easily create a [`EasyHttpWebClient`]
+    pub fn builder() -> EasyHttpWebClientBuilder {
+        EasyHttpWebClientBuilder::new()
     }
 }
 
-impl Default for EasyHttpWebClient {
-    fn default() -> Self {
-        Self {
-            #[cfg(any(feature = "rustls", feature = "boring"))]
-            tls_config: None,
-            #[cfg(any(feature = "rustls", feature = "boring"))]
-            proxy_tls_config: None,
-            connection_pool: (),
-            proxy_http_connect_version: Some(Version::HTTP_11),
-            http_req_inspector_jit: (),
-            http_req_inspector_svc: (),
-        }
-    }
-}
-
-impl EasyHttpWebClient {
-    /// Create a new [`EasyHttpWebClient`].
-    pub fn new() -> Self {
-        Self::default()
-    }
-}
-
-impl<I1, I2, P> EasyHttpWebClient<I1, I2, P> {
-    #[cfg(any(feature = "rustls", feature = "boring"))]
-    /// Set the [`ClientConfig`] of this [`EasyHttpWebClient`].
-    pub fn set_tls_config(&mut self, cfg: impl Into<Arc<ClientConfig>>) -> &mut Self {
-        self.tls_config = Some(cfg.into());
-        self
-    }
-
-    #[cfg(any(feature = "rustls", feature = "boring"))]
-    /// Replace this [`EasyHttpWebClient`] with the [`ClientConfig`] set.
-    pub fn with_tls_config(mut self, cfg: impl Into<Arc<ClientConfig>>) -> Self {
-        self.tls_config = Some(cfg.into());
-        self
-    }
-
-    #[cfg(any(feature = "rustls", feature = "boring"))]
-    /// Replace this [`EasyHttpWebClient`] with an option of [`ClientConfig`] set.
-    pub fn maybe_with_tls_config(mut self, cfg: Option<impl Into<Arc<ClientConfig>>>) -> Self {
-        self.tls_config = cfg.map(Into::into);
-        self
-    }
-
-    #[cfg(any(feature = "rustls", feature = "boring"))]
-    /// Set the [`ClientConfig`] for the https proxy tunnel if needed within this [`EasyHttpWebClient`].
-    pub fn set_proxy_tls_config(&mut self, cfg: impl Into<Arc<ClientConfig>>) -> &mut Self {
-        self.proxy_tls_config = Some(cfg.into());
-        self
-    }
-
-    #[cfg(any(feature = "rustls", feature = "boring"))]
-    /// Replace this [`EasyHttpWebClient`] set for the https proxy tunnel if needed within this [`ClientConfig`].
-    pub fn with_proxy_tls_config(mut self, cfg: impl Into<Arc<ClientConfig>>) -> Self {
-        self.proxy_tls_config = Some(cfg.into());
-        self
-    }
-
-    #[cfg(any(feature = "rustls", feature = "boring"))]
-    /// Replace this [`EasyHttpWebClient`] set for the https proxy tunnel if needed within this [`ClientConfig`].
-    pub fn maybe_proxy_with_tls_config(
-        mut self,
-        cfg: Option<impl Into<Arc<ClientConfig>>>,
-    ) -> Self {
-        self.proxy_tls_config = cfg.map(Into::into);
-        self
-    }
-
-    /// Set the HTTP version to use for the Http Proxy CONNECT request.
-    ///
-    /// By default this is set to HTTP/1.1.
-    pub fn with_proxy_http_connect_version(mut self, version: Version) -> Self {
-        self.proxy_http_connect_version = Some(version);
-        self
-    }
-
-    /// Set the HTTP version to use for the Http Proxy CONNECT request.
-    pub fn set_proxy_http_connect_version(&mut self, version: Version) -> &mut Self {
-        self.proxy_http_connect_version = Some(version);
-        self
-    }
-
-    /// Set the HTTP version to auto detect for the Http Proxy CONNECT request.
-    pub fn with_proxy_http_connect_auto_version(mut self) -> Self {
-        self.proxy_http_connect_version = None;
-        self
-    }
-
-    /// Set the HTTP version to auto detect for the Http Proxy CONNECT request.
-    pub fn set_proxy_http_connect_auto_version(&mut self) -> &mut Self {
-        self.proxy_http_connect_version = None;
-        self
-    }
-
-    #[cfg(any(feature = "rustls", feature = "boring"))]
-    pub fn with_http_conn_req_inspector<T>(
-        self,
-        http_req_inspector: T,
-    ) -> EasyHttpWebClient<T, I2, P> {
-        EasyHttpWebClient {
-            tls_config: self.tls_config,
-            proxy_tls_config: self.proxy_tls_config,
-            proxy_http_connect_version: self.proxy_http_connect_version,
-            http_req_inspector_jit: http_req_inspector,
-            http_req_inspector_svc: self.http_req_inspector_svc,
-            connection_pool: self.connection_pool,
-        }
-    }
-
-    #[cfg(not(any(feature = "rustls", feature = "boring")))]
-    pub fn with_http_conn_req_inspector<T>(
-        self,
-        http_req_inspector: T,
-    ) -> EasyHttpWebClient<T, I2, P> {
-        EasyHttpWebClient {
-            proxy_http_connect_version: self.proxy_http_connect_version,
-            http_req_inspector_jit: http_req_inspector,
-            http_req_inspector_svc: self.http_req_inspector_svc,
-            connection_pool: self.connection_pool,
-        }
-    }
-
-    #[cfg(any(feature = "rustls", feature = "boring"))]
-    pub fn with_http_serve_req_inspector<T>(
-        self,
-        http_req_inspector: T,
-    ) -> EasyHttpWebClient<I1, T, P> {
-        EasyHttpWebClient {
-            tls_config: self.tls_config,
-            proxy_tls_config: self.proxy_tls_config,
-            proxy_http_connect_version: self.proxy_http_connect_version,
-            http_req_inspector_jit: self.http_req_inspector_jit,
-            http_req_inspector_svc: http_req_inspector,
-            connection_pool: self.connection_pool,
-        }
-    }
-
-    #[cfg(not(any(feature = "rustls", feature = "boring")))]
-    pub fn with_http_serve_req_inspector<T>(
-        self,
-        http_req_inspector: T,
-    ) -> EasyHttpWebClient<I1, T, P> {
-        EasyHttpWebClient {
-            proxy_http_connect_version: self.proxy_http_connect_version,
-            http_req_inspector_jit: self.http_req_inspector_jit,
-            http_req_inspector_svc: http_req_inspector,
-            connection_pool: self.connection_pool,
-        }
-    }
-
-    #[cfg(any(feature = "rustls", feature = "boring"))]
-    pub fn with_connection_pool<S>(self, pool: Pool<S>) -> EasyHttpWebClient<I1, I2, Pool<S>> {
-        EasyHttpWebClient {
-            tls_config: self.tls_config,
-            proxy_tls_config: self.proxy_tls_config,
-            proxy_http_connect_version: self.proxy_http_connect_version,
-            http_req_inspector_jit: self.http_req_inspector_jit,
-            http_req_inspector_svc: self.http_req_inspector_svc,
-            connection_pool: pool,
-        }
-    }
-
-    #[cfg(any(feature = "rustls", feature = "boring"))]
-    pub fn without_connection_pool(self) -> EasyHttpWebClient<I1, I2, ()> {
-        EasyHttpWebClient {
-            tls_config: self.tls_config,
-            proxy_tls_config: self.proxy_tls_config,
-            proxy_http_connect_version: self.proxy_http_connect_version,
-            http_req_inspector_jit: self.http_req_inspector_jit,
-            http_req_inspector_svc: self.http_req_inspector_svc,
-            connection_pool: (),
-        }
-    }
-
-    #[cfg(not(any(feature = "rustls", feature = "boring")))]
-    pub fn with_connection_pool<S>(self, pool: Pool<S>) -> EasyHttpWebClient<I1, I2, Pool<S>> {
-        EasyHttpWebClient {
-            proxy_http_connect_version: self.proxy_http_connect_version,
-            http_req_inspector_jit: self.http_req_inspector_jit,
-            http_req_inspector_svc: self.http_req_inspector_svc,
-            connection_pool: pool,
-        }
-    }
-
-    #[cfg(not(any(feature = "rustls", feature = "boring")))]
-    pub fn without_connection_pool(self) -> EasyHttpWebClient<I1, I2, ()> {
-        EasyHttpWebClient {
-            proxy_http_connect_version: self.proxy_http_connect_version,
-            http_req_inspector_jit: self.http_req_inspector_jit,
-            http_req_inspector_svc: self.http_req_inspector_svc,
-            connection_pool: (),
-        }
-    }
-}
-
-/// Map http request to unique connection id so we can use a connection pool
-#[derive(Debug)]
-#[non_exhaustive]
-struct BasicHttpConnId;
-type BasicConnID = (Protocol, Authority);
-
-impl<State, Body> ReqToConnID<State, Request<Body>> for BasicHttpConnId {
-    type ConnID = BasicConnID;
-
-    fn id(&self, ctx: &Context<State>, req: &Request<Body>) -> Result<Self::ConnID, OpaqueError> {
-        let req_ctx = match ctx.get::<RequestContext>() {
-            Some(ctx) => ctx,
-            None => &RequestContext::try_from((ctx, req))?,
-        };
-
-        Ok((req_ctx.protocol.clone(), req_ctx.authority.clone()))
-    }
-}
-
-enum Connection<C, State, Body> {
-    Direct(EstablishedClientConnection<C, State, Request<Body>>),
-    Pooled(EstablishedClientConnection<LeasedConnection<C, BasicConnID>, State, Request<Body>>),
-}
-
-trait MaybePooledConnector<C, State, Body>: Send + Sync + 'static {
-    fn connect<T>(
-        &self,
-        connector: T,
-        ctx: Context<State>,
-        req: Request<Body>,
-    ) -> impl Future<Output = Result<Connection<C, State, Body>, OpaqueError>> + Send
-    where
-        T: ConnectorService<State, Request<Body>, Connection = C>,
-        T::Error: Send + 'static;
-}
-
-impl<C, State, Body, I1, I2> MaybePooledConnector<C, State, Body> for EasyHttpWebClient<I1, I2, ()>
+impl<State, Body> Default
+    for EasyHttpWebClient<
+        State,
+        Body,
+        EstablishedClientConnection<HttpClientService<Body>, State, Request<Body>>,
+    >
 where
-    I1: Send + Sync + 'static,
-    I2: Send + Sync + 'static,
-    State: Send,
-    Body: Send,
-{
-    async fn connect<T>(
-        &self,
-        connector: T,
-        ctx: Context<State>,
-        req: Request<Body>,
-    ) -> Result<Connection<C, State, Body>, OpaqueError>
-    where
-        T: ConnectorService<State, Request<Body>, Connection = C>,
-        T::Error: Send + Into<BoxError> + 'static,
-    {
-        let result = connector
-            .connect(ctx, req)
-            .await
-            .map_err(|err| OpaqueError::from_boxed(err.into()).context("connector failed"))?;
-        Ok(Connection::Direct(result))
-    }
-}
-
-impl<C, State, Body, S, I1, I2> MaybePooledConnector<C, State, Body>
-    for EasyHttpWebClient<I1, I2, Pool<S>>
-where
-    C: Send,
-    S: PoolStorage<ConnID = BasicConnID, Connection = C>,
-    State: Send + Sync + Clone + 'static,
-    Body: Send + 'static,
-    I1: Send + Sync + 'static,
-    I2: Send + Sync + 'static,
-{
-    async fn connect<T>(
-        &self,
-        connector: T,
-        ctx: Context<State>,
-        req: Request<Body>,
-    ) -> Result<Connection<C, State, Body>, OpaqueError>
-    where
-        T: ConnectorService<State, Request<Body>, Connection = C>,
-        T::Error: Send + 'static,
-    {
-        let pool = self.connection_pool.clone();
-        let connector = PooledConnector::new(connector, pool, BasicHttpConnId);
-        let result = connector
-            .connect(ctx, req)
-            .await
-            .map_err(|err| OpaqueError::from_boxed(err).context("pooled connector failed"))?;
-        Ok(Connection::Pooled(result))
-    }
-}
-
-impl<State, BodyIn, BodyOut, P, I1, I2> Service<State, Request<BodyIn>>
-    for EasyHttpWebClient<I1, I2, P>
-where
-    EasyHttpWebClient<I1, I2, P>:
-        MaybePooledConnector<HttpClientService<BodyOut, I2>, State, BodyIn>,
     State: Clone + Send + Sync + 'static,
-    BodyIn: http_body::Body<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
-    BodyOut: http_body::Body<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
-    I1: RequestInspector<
-            State,
-            Request<BodyIn>,
-            Error: Into<BoxError>,
-            StateOut = State,
-            RequestOut = Request<BodyIn>,
-        > + Clone,
-    I2: RequestInspector<
-            State,
-            Request<BodyIn>,
-            Error: Into<BoxError>,
-            RequestOut = Request<BodyOut>,
-        > + Clone,
+    Body: http_body::Body<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
+{
+    #[cfg(feature = "boring")]
+    fn default() -> Self {
+        let tls_config =
+            rama_tls_boring::client::TlsConnectorDataBuilder::new_http_auto().into_shared_builder();
+
+        EasyHttpWebClientBuilder::new()
+            .with_default_transport_connector()
+            .with_tls_proxy_support_using_boringssl()
+            .with_proxy_support()
+            .with_tls_support_using_boringssl(Some(tls_config))
+            .build()
+    }
+
+    #[cfg(all(feature = "rustls", not(feature = "boring")))]
+    fn default() -> Self {
+        let tls_config = rama_tls_rustls::client::TlsConnectorData::new_http_auto()
+            .expect("connector data with http auto");
+
+        EasyHttpWebClientBuilder::new()
+            .with_default_transport_connector()
+            .with_tls_proxy_support_using_rustls()
+            .with_proxy_support()
+            .with_tls_support_using_rustls(Some(tls_config))
+            .build()
+    }
+
+    #[cfg(not(any(feature = "rustls", feature = "boring")))]
+    fn default() -> Self {
+        EasyHttpWebClientBuilder::new()
+            .with_default_transport_connector()
+            .without_tls_proxy_support()
+            .with_proxy_support()
+            .without_tls_support()
+            .build()
+    }
+}
+
+impl<State, BodyIn, ConnResponse> EasyHttpWebClient<State, BodyIn, ConnResponse> {
+    /// Create a new [`EasyHttpWebClient`] using the provided connector
+    pub fn new(connector: BoxService<State, Request<BodyIn>, ConnResponse, BoxError>) -> Self {
+        Self { connector }
+    }
+
+    /// Set the [`Connector`] that this [`EasyHttpWebClient`] will use
+    pub fn with_connector<BodyInNew, ConnResponseNew>(
+        self,
+        connector: BoxService<State, Request<BodyInNew>, ConnResponseNew, BoxError>,
+    ) -> EasyHttpWebClient<State, BodyInNew, ConnResponseNew> {
+        EasyHttpWebClient { connector }
+    }
+}
+
+impl<State, Body, ModifiedBody, ConnResponse> Service<State, Request<Body>>
+    for EasyHttpWebClient<
+        State,
+        Body,
+        EstablishedClientConnection<ConnResponse, State, Request<ModifiedBody>>,
+    >
+where
+    State: Send + Sync + 'static,
+    Body: http_body::Body<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
+    ModifiedBody:
+        http_body::Body<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
+    ConnResponse: Service<State, Request<ModifiedBody>, Response = Response, Error = BoxError>,
 {
     type Response = Response;
+
     type Error = OpaqueError;
 
     async fn serve(
         &self,
         ctx: Context<State>,
-        req: Request<BodyIn>,
+        req: Request<Body>,
     ) -> Result<Self::Response, Self::Error> {
         let uri = req.uri().clone();
 
-        let tcp_connector = TcpConnector::new();
-
-        #[cfg(any(feature = "rustls", feature = "boring"))]
-        let connector = {
-            let proxy_tls_connector_data = match (
-                ctx.get::<ProxyClientConfig>(),
-                &self.proxy_tls_config,
-            ) {
-                (Some(proxy_tls_config), _) => {
-                    trace!("create proxy tls connector using rama tls client config from ontext");
-                    proxy_tls_config
-                        .0
-                        .as_ref()
-                        .clone()
-                        .try_into()
-                        .context(
-                        "EasyHttpWebClient: create proxy tls connector data from tls config found in context",
-                    )?
-                }
-                (None, Some(proxy_tls_config)) => {
-                    trace!("create proxy tls connector using pre-defined rama tls client config");
-                    proxy_tls_config.as_ref().clone().try_into().context(
-                        "EasyHttpWebClient: create proxy tls connector data from tls config",
-                    )?
-                }
-                (None, None) => {
-                    trace!("create proxy tls connector using the 'new_http_auto' constructor");
-                    TlsConnectorData::new().context(
-                        "EasyHttpWebClient: create proxy tls connector data with no application presets",
-                    )?
-                }
-            };
-
-            let mut transport_connector = HttpProxyConnector::optional(
-                TlsConnector::tunnel(tcp_connector, None)
-                    .with_connector_data(proxy_tls_connector_data),
-            );
-            match self.proxy_http_connect_version {
-                Some(version) => transport_connector.set_version(version),
-                None => transport_connector.set_auto_version(),
-            };
-
-            let tls_connector_data = match extract_client_config_from_ctx(&ctx) {
-                Some(mut chain_ref) => {
-                    trace!(
-                        "create tls connector using rama tls client config(s) from context and/or the predefined one if defined"
-                    );
-                    if let Some(tls_config) = self.tls_config.clone() {
-                        chain_ref.prepend(tls_config);
-                    }
-                    TlsConnectorData::try_from_multiple_client_configs(chain_ref.iter()).context(
-                        "EasyHttpWebClient: create tls connector data from tls client config(s) from context and/or the predefined one if defined",
-                    )?
-                }
-                None => match self.tls_config.as_deref() {
-                    Some(tls_config) => {
-                        trace!("create tls connector using pre-defined rama tls client config");
-                        tls_config.clone().try_into().context(
-                            "EasyHttpWebClient: create tls connector data from pre-defined tls config",
-                        )?
-                    }
-                    None => {
-                        trace!("create tls connector using the 'new_http_auto' constructor");
-                        TlsConnectorData::new_http_auto().context(
-                            "EasyHttpWebClient: create tls connector data for http (auto)",
-                        )?
-                    }
-                },
-            };
-            HttpConnector::new(
-                TlsConnector::auto(transport_connector).with_connector_data(tls_connector_data),
-            )
-            .with_jit_req_inspector((
-                HttpsAlpnModifier::default(),
-                self.http_req_inspector_jit.clone(),
-            ))
-        };
-        #[cfg(not(any(feature = "rustls", feature = "boring")))]
-        let connector = {
-            let mut proxy_connector = HttpProxyConnector::optional(tcp_connector);
-            match self.proxy_http_connect_version {
-                Some(version) => proxy_connector.set_version(version),
-                None => proxy_connector.set_auto_version(),
-            };
-            HttpConnector::new(proxy_connector)
-                .with_jit_req_inspector(self.http_req_inspector_jit.clone())
-        };
-
-        // set the runtime http req inspector
-        let connector = connector.with_svc_req_inspector(self.http_req_inspector_svc.clone());
-
+        let EstablishedClientConnection { ctx, req, conn } = self.connector.serve(ctx, req).await?;
         // NOTE: stack might change request version based on connector data,
-        let connection = self.connect(connector, ctx, req).await?;
-        trace!(uri = %uri, "send http req to connector stack");
+        tracing::trace!(uri = %uri, "send http req to connector stack");
 
-        let result = match connection {
-            Connection::Direct(EstablishedClientConnection { ctx, req, conn }) => {
-                conn.serve(ctx, req).await
-            }
-            Connection::Pooled(EstablishedClientConnection { ctx, req, conn }) => {
-                conn.serve(ctx, req).await
-            }
-        };
+        let result = conn.serve(ctx, req).await;
 
         let resp = result
             .map_err(OpaqueError::from_boxed)
             .with_context(|| format!("http request failure for uri: {uri}"))?;
 
-        trace!(uri = %uri, "response received from connector stack");
+        tracing::trace!(uri = %uri, "response received from connector stack");
 
         Ok(resp)
+    }
+}
+
+#[doc(inline)]
+pub use easy_connector::EasyHttpWebClientBuilder;
+
+mod easy_connector {
+    use super::{HttpConnector, proxy::layer::HttpProxyConnector};
+    use rama_core::{
+        Layer, Service,
+        error::{BoxError, OpaqueError},
+    };
+    use rama_dns::DnsResolver;
+    use rama_http::{Request, dep::http_body};
+    use rama_net::client::{
+        EstablishedClientConnection,
+        pool::{
+            FiFoReuseLruDropPool, PooledConnector,
+            http::{BasicHttpConId, BasicHttpConnIdentifier, HttpPooledConnectorConfig},
+        },
+    };
+    use rama_tcp::client::service::TcpConnector;
+    use std::{marker::PhantomData, time::Duration};
+
+    #[cfg(feature = "boring")]
+    use ::{rama_tls_boring::client as boring_client, std::sync::Arc};
+
+    #[cfg(feature = "rustls")]
+    use rama_tls_rustls::client as rustls_client;
+
+    #[cfg(any(feature = "rustls", feature = "boring"))]
+    use super::http_inspector::HttpsAlpnModifier;
+
+    /// Builder that is designed to easily create a [`super::EasyHttpWebClient`] from most basic use cases
+    #[derive(Default)]
+    pub struct EasyHttpWebClientBuilder<C = (), S = ()> {
+        connector: C,
+        _phantom: PhantomData<S>,
+    }
+
+    pub struct TransportStage;
+    pub struct ProxyTunnelStage;
+    pub struct ProxyStage;
+    pub struct HttpStage;
+    pub struct PoolStage;
+
+    impl EasyHttpWebClientBuilder {
+        pub fn new() -> Self {
+            EasyHttpWebClientBuilder::default()
+        }
+
+        pub fn with_default_transport_connector(
+            self,
+        ) -> EasyHttpWebClientBuilder<TcpConnector, TransportStage> {
+            let connector = TcpConnector::default();
+            EasyHttpWebClientBuilder {
+                connector,
+                _phantom: PhantomData,
+            }
+        }
+
+        /// Add a custom transport connector that will be used by this client for the transport layer
+        pub fn with_custom_transport_connector<C>(
+            self,
+            connector: C,
+        ) -> EasyHttpWebClientBuilder<C, TransportStage> {
+            EasyHttpWebClientBuilder {
+                connector,
+                _phantom: PhantomData,
+            }
+        }
+    }
+
+    impl EasyHttpWebClientBuilder<TcpConnector, TransportStage> {
+        /// Add a custom [`DnsResolver`] that will be used by this client
+        pub fn with_dns_resolver<T: DnsResolver + Clone>(
+            self,
+            resolver: T,
+        ) -> EasyHttpWebClientBuilder<TcpConnector<T>, TransportStage> {
+            let connector = self.connector.with_dns(resolver);
+            EasyHttpWebClientBuilder {
+                connector,
+                _phantom: PhantomData,
+            }
+        }
+    }
+
+    impl<T> EasyHttpWebClientBuilder<T, TransportStage> {
+        #[cfg(any(feature = "rustls", feature = "boring"))]
+        /// Add a custom proxy tls connector that will be used to setup a tls connection to the proxy
+        pub fn with_custom_tls_proxy_connector<L>(
+            self,
+            connector_layer: L,
+        ) -> EasyHttpWebClientBuilder<L::Service, ProxyTunnelStage>
+        where
+            L: Layer<T>,
+        {
+            let connector = connector_layer.into_layer(self.connector);
+            EasyHttpWebClientBuilder {
+                connector,
+                _phantom: PhantomData,
+            }
+        }
+
+        #[cfg(feature = "boring")]
+        /// Support a tls tunnel to the proxy itself using boringssl
+        ///
+        /// Note that a tls proxy is not needed to make a https connection
+        /// to the final target. It only has an influence on the initial connection
+        /// to the proxy itself
+        pub fn with_tls_proxy_support_using_boringssl(
+            self,
+        ) -> EasyHttpWebClientBuilder<
+            boring_client::TlsConnector<T, boring_client::ConnectorKindTunnel>,
+            ProxyTunnelStage,
+        > {
+            let connector = boring_client::TlsConnector::tunnel(self.connector, None);
+            EasyHttpWebClientBuilder {
+                connector,
+                _phantom: PhantomData,
+            }
+        }
+
+        #[cfg(feature = "boring")]
+        /// Support a tls tunnel to the proxy itself using boringssl and the provided config
+        ///
+        /// Note that a tls proxy is not needed to make a https connection
+        /// to the final target. It only has an influence on the initial connection
+        /// to the proxy itself
+        pub fn with_tls_proxy_support_using_boringssl_config(
+            self,
+            config: Arc<boring_client::TlsConnectorDataBuilder>,
+        ) -> EasyHttpWebClientBuilder<
+            boring_client::TlsConnector<T, boring_client::ConnectorKindTunnel>,
+            ProxyTunnelStage,
+        > {
+            let connector = boring_client::TlsConnector::tunnel(self.connector, None)
+                .with_connector_data(config);
+            EasyHttpWebClientBuilder {
+                connector,
+                _phantom: PhantomData,
+            }
+        }
+
+        #[cfg(feature = "rustls")]
+        /// Support a tls tunnel to the proxy itself using rustls
+        ///
+        /// Note that a tls proxy is not needed to make a https connection
+        /// to the final target. It only has an influence on the initial connection
+        /// to the proxy itself
+        pub fn with_tls_proxy_support_using_rustls(
+            self,
+        ) -> EasyHttpWebClientBuilder<
+            rustls_client::TlsConnector<T, rustls_client::ConnectorKindTunnel>,
+            ProxyTunnelStage,
+        > {
+            let connector = rustls_client::TlsConnector::tunnel(self.connector, None);
+
+            EasyHttpWebClientBuilder {
+                connector,
+                _phantom: PhantomData,
+            }
+        }
+
+        #[cfg(feature = "rustls")]
+        /// Support a tls tunnel to the proxy itself using rustls and the provided config
+        ///
+        /// Note that a tls proxy is not needed to make a https connection
+        /// to the final target. It only has an influence on the initial connection
+        /// to the proxy itself
+        pub fn with_tls_proxy_support_using_rustls_config(
+            self,
+            config: rustls_client::TlsConnectorData,
+        ) -> EasyHttpWebClientBuilder<
+            rustls_client::TlsConnector<T, rustls_client::ConnectorKindTunnel>,
+            ProxyTunnelStage,
+        > {
+            let connector = rustls_client::TlsConnector::tunnel(self.connector, None)
+                .with_connector_data(config);
+
+            EasyHttpWebClientBuilder {
+                connector,
+                _phantom: PhantomData,
+            }
+        }
+
+        /// Don't support a tls tunnel to the proxy itself
+        ///
+        /// Note that a tls proxy is not needed to make a https connection
+        /// to the final target. It only has an influence on the initial connection
+        /// to the proxy itself
+        pub fn without_tls_proxy_support(self) -> EasyHttpWebClientBuilder<T, ProxyTunnelStage> {
+            EasyHttpWebClientBuilder {
+                connector: self.connector,
+                _phantom: PhantomData,
+            }
+        }
+    }
+
+    impl<T> EasyHttpWebClientBuilder<T, ProxyTunnelStage> {
+        /// Add a custom proxy connector that will be used by this client
+        pub fn with_custom_proxy_connector<L>(
+            self,
+            connector_layer: L,
+        ) -> EasyHttpWebClientBuilder<L::Service, ProxyStage>
+        where
+            L: Layer<T>,
+        {
+            let connector = connector_layer.into_layer(self.connector);
+            EasyHttpWebClientBuilder {
+                connector,
+                _phantom: PhantomData,
+            }
+        }
+
+        /// Add support for usage of a http proxy to this client
+        ///
+        /// Note that a tls proxy is not needed to make a https connection
+        /// to the final target. It only has an influence on the initial connection
+        /// to the proxy itself
+        ///
+        /// TODO: Currently we only support http(s) proxies here, but socks proxy support will
+        /// be added in: https://github.com/plabayo/rama/issues/498
+        pub fn with_proxy_support(
+            self,
+        ) -> EasyHttpWebClientBuilder<HttpProxyConnector<T>, ProxyStage> {
+            let connector = HttpProxyConnector::optional(self.connector);
+            EasyHttpWebClientBuilder {
+                connector,
+                _phantom: PhantomData,
+            }
+        }
+
+        /// Make a client without proxy support
+        pub fn without_proxy_support(self) -> EasyHttpWebClientBuilder<T, ProxyStage> {
+            EasyHttpWebClientBuilder {
+                connector: self.connector,
+                _phantom: PhantomData,
+            }
+        }
+    }
+
+    impl<T> EasyHttpWebClientBuilder<T, ProxyStage> {
+        #[cfg(any(feature = "rustls", feature = "boring"))]
+        /// Add a custom tls connector that will be used by the client
+        pub fn with_custom_tls_connector<L>(
+            self,
+            connector_layer: L,
+        ) -> EasyHttpWebClientBuilder<HttpConnector<L::Service, HttpsAlpnModifier>, HttpStage>
+        where
+            L: Layer<T>,
+        {
+            let connector = connector_layer.into_layer(self.connector);
+
+            let connector =
+                HttpConnector::new(connector).with_jit_req_inspector(HttpsAlpnModifier::default());
+
+            EasyHttpWebClientBuilder {
+                connector,
+                _phantom: PhantomData,
+            }
+        }
+
+        #[cfg(feature = "boring")]
+        /// Support https connections by using boringssl for tls
+        ///
+        /// This will also add the [`HttpsAlpnModifier`] request inspector as that one is
+        /// crucial to make tls alpn work to properly negotiate the http version
+        pub fn with_tls_support_using_boringssl(
+            self,
+            config: Option<Arc<boring_client::TlsConnectorDataBuilder>>,
+        ) -> EasyHttpWebClientBuilder<
+            HttpConnector<boring_client::TlsConnector<T>, HttpsAlpnModifier>,
+            HttpStage,
+        > {
+            let connector =
+                boring_client::TlsConnector::auto(self.connector).maybe_with_connector_data(config);
+
+            let connector =
+                HttpConnector::new(connector).with_jit_req_inspector(HttpsAlpnModifier::default());
+
+            EasyHttpWebClientBuilder {
+                connector,
+                _phantom: PhantomData,
+            }
+        }
+
+        #[cfg(feature = "rustls")]
+        /// Support https connections by using ruslts for tls
+        ///
+        /// This will also add the [`HttpsAlpnModifier`] request inspector as that one is
+        /// crucial to make tls alpn work to properly negotiate the http version
+        pub fn with_tls_support_using_rustls(
+            self,
+            config: Option<rustls_client::TlsConnectorData>,
+        ) -> EasyHttpWebClientBuilder<
+            HttpConnector<rustls_client::TlsConnector<T>, HttpsAlpnModifier>,
+            HttpStage,
+        > {
+            let connector =
+                rustls_client::TlsConnector::auto(self.connector).maybe_with_connector_data(config);
+
+            let connector =
+                HttpConnector::new(connector).with_jit_req_inspector(HttpsAlpnModifier::default());
+
+            EasyHttpWebClientBuilder {
+                connector,
+                _phantom: PhantomData,
+            }
+        }
+
+        /// Dont support https on this connector
+        pub fn without_tls_support(self) -> EasyHttpWebClientBuilder<HttpConnector<T>, HttpStage> {
+            let connector = HttpConnector::new(self.connector);
+
+            EasyHttpWebClientBuilder {
+                connector,
+                _phantom: PhantomData,
+            }
+        }
+    }
+
+    impl<T, I1, I2> EasyHttpWebClientBuilder<HttpConnector<T, I1, I2>, HttpStage> {
+        #[cfg(any(feature = "rustls", feature = "boring"))]
+        /// Add a http request inspector that will run just after the inner http connector
+        /// has connected but before the http handshake happens
+        ///
+        /// This will also add the [`HttpsAlpnModifier`] request inspector as that one is
+        /// crucial to make tls alpn work to properly negotiate the http version
+        pub fn with_jit_req_inspector<I>(
+            self,
+            http_req_inspector: I,
+        ) -> EasyHttpWebClientBuilder<HttpConnector<T, (HttpsAlpnModifier, I), I2>, HttpStage>
+        {
+            EasyHttpWebClientBuilder {
+                connector: self
+                    .connector
+                    .with_jit_req_inspector((HttpsAlpnModifier::default(), http_req_inspector)),
+                _phantom: PhantomData,
+            }
+        }
+
+        #[cfg(not(any(feature = "rustls", feature = "boring")))]
+        /// Add a http request inspector that will run just after the inner http connector
+        /// has finished but before the http handshake
+        pub fn with_jit_req_inspector<I>(
+            self,
+            http_req_inspector: I,
+        ) -> EasyHttpWebClientBuilder<HttpConnector<T, I, I2>, HttpStage> {
+            EasyHttpWebClientBuilder {
+                connector: self.connector.with_jit_req_inspector(http_req_inspector),
+                _phantom: PhantomData,
+            }
+        }
+
+        /// Add a http request inspector that will run just before doing the actual http request
+        pub fn with_svc_req_inspector<I>(
+            self,
+            http_req_inspector: I,
+        ) -> EasyHttpWebClientBuilder<HttpConnector<T, I1, I>, HttpStage> {
+            EasyHttpWebClientBuilder {
+                connector: self.connector.with_svc_req_inspector(http_req_inspector),
+                _phantom: PhantomData,
+            }
+        }
+    }
+
+    type DefaultConnectionPoolBuilder<T, C> = EasyHttpWebClientBuilder<
+        PooledConnector<T, FiFoReuseLruDropPool<C, BasicHttpConId>, BasicHttpConnIdentifier>,
+        PoolStage,
+    >;
+
+    impl<T> EasyHttpWebClientBuilder<T, HttpStage> {
+        /// Use the default connection pool for this [`super::EasyHttpWebClient`]
+        ///
+        /// This will create a [`FiFoReuseLruDropPool`] using the provided limits
+        /// and will use [`BasicHttpConnIdentifier`] to group connection on protocol
+        /// and authority, which should cover most common use cases
+        ///
+        /// Use `wait_for_pool_timeout` to limit how long we wait for the pool to give us a connection
+        ///
+        /// If you need a different pool or custom way to group connection you can
+        /// use [`EasyHttpWebClientBuilder::with_custom_connection_pool()`] to provide
+        /// you own.
+        pub fn with_connection_pool<C>(
+            self,
+            config: HttpPooledConnectorConfig,
+        ) -> Result<DefaultConnectionPoolBuilder<T, C>, OpaqueError> {
+            let connector = config.build_connector(self.connector)?;
+
+            Ok(EasyHttpWebClientBuilder {
+                connector,
+                _phantom: PhantomData,
+            })
+        }
+
+        /// Configure this client to use the provided [`Pool`] and [`ReqToConnId`]
+        ///
+        /// Use `wait_for_pool_timeout` to limit how long we wait for the pool to give us a connection
+        ///
+        /// [`Pool`]: rama_net::client::pool::Pool
+        /// [`ReqToConnId`]: rama_net::client::pool::ReqToConnID
+        pub fn with_custom_connection_pool<P, R>(
+            self,
+            pool: P,
+            req_to_conn_id: R,
+            wait_for_pool_timeout: Option<Duration>,
+        ) -> EasyHttpWebClientBuilder<PooledConnector<T, P, R>, PoolStage> {
+            let connector = PooledConnector::new(self.connector, pool, req_to_conn_id)
+                .maybe_with_wait_for_pool_timeout(wait_for_pool_timeout);
+
+            EasyHttpWebClientBuilder {
+                connector,
+                _phantom: PhantomData,
+            }
+        }
+    }
+
+    impl<T, S> EasyHttpWebClientBuilder<T, S> {
+        /// Build a [`super::EasyHttpWebClient`] using the provided config
+        pub fn build<State, Body, ModifiedBody, ConnResponse>(
+            self,
+        ) -> super::EasyHttpWebClient<State, Body, T::Response>
+        where
+            State: Send + Sync + 'static,
+            Body: http_body::Body<Data: Send + 'static, Error: Into<BoxError>>
+                + Unpin
+                + Send
+                + 'static,
+            ModifiedBody: http_body::Body<Data: Send + 'static, Error: Into<BoxError>>
+                + Unpin
+                + Send
+                + 'static,
+            T: Service<
+                    State,
+                    Request<Body>,
+                    Response = EstablishedClientConnection<
+                        ConnResponse,
+                        State,
+                        Request<ModifiedBody>,
+                    >,
+                    Error = BoxError,
+                >,
+        {
+            super::EasyHttpWebClient::new(self.connector.boxed())
+        }
     }
 }

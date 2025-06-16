@@ -4,24 +4,21 @@ use clap::Args;
 use rama::{
     cli::{ForwardKind, service::ip::IpServiceBuilder},
     combinators::Either,
-    error::BoxError,
+    error::{BoxError, ErrorContext, OpaqueError},
+    net::socket::Interface,
     rt::Executor,
     tcp::server::TcpListener,
+    telemetry::tracing::{self, level_filters::LevelFilter},
 };
 use std::time::Duration;
-use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Debug, Args)]
 /// rama ip service (returns the ip address of the client)
 pub struct CliCommandIp {
-    #[arg(long, short = 'p', default_value_t = 8080)]
-    /// the port to listen on
-    port: u16,
-
-    #[arg(long, short = 'i', default_value = "127.0.0.1")]
-    /// the interface to listen on
-    interface: String,
+    /// the interface to bind to
+    #[arg(long, default_value = "127.0.0.1:8080")]
+    bind: Interface,
 
     #[arg(long, short = 'c', default_value_t = 0)]
     /// the number of concurrent connections to allow
@@ -91,16 +88,27 @@ pub async fn run(cfg: CliCommandIp) -> Result<(), BoxError> {
         )
     };
 
-    let address = format!("{}:{}", cfg.interface, cfg.port);
-    tracing::info!("starting ip service on: {}", address);
+    tracing::info!(
+        bind = %cfg.bind,
+        "starting ip service",
+    );
+    let tcp_listener = TcpListener::build()
+        .bind(cfg.bind.clone())
+        .await
+        .map_err(OpaqueError::from_boxed)
+        .context("bind ip service")?;
+
+    let bind_address = tcp_listener
+        .local_addr()
+        .context("get local addr of tcp listener")?;
 
     graceful.spawn_task_fn(async move |guard| {
-        let tcp_listener = TcpListener::build()
-            .bind(address)
-            .await
-            .expect("bind ip service");
+        tracing::info!(
+            bind = %cfg.bind,
+            %bind_address,
+            "ip service ready",
+        );
 
-        tracing::info!("ip service ready");
         tcp_listener.serve_graceful(guard, tcp_service).await;
     });
 

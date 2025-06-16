@@ -9,17 +9,17 @@ use rama::{
         client::{ConnectorService, EstablishedClientConnection},
         tls::{
             DataEncoding,
-            client::{ClientConfig, NegotiatedTlsParameters, ServerVerifyMode},
+            client::{NegotiatedTlsParameters, ServerVerifyMode},
         },
     },
     tcp::client::{Request, service::TcpConnector},
-    tls::{
-        rustls::client::{TlsConnectorData, TlsConnectorLayer},
-        std::dep::boring::x509::X509,
+    telemetry::tracing::{self, level_filters::LevelFilter},
+    tls::boring::{
+        client::{TlsConnectorDataBuilder, TlsConnectorLayer},
+        core::x509::X509,
     },
 };
 use tokio::net::TcpStream;
-use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Args, Debug, Clone)]
@@ -58,18 +58,16 @@ pub async fn run(cfg: CliCommandTls) -> Result<(), BoxError> {
 
     tracing::info!("Connecting to: {}", authority);
 
-    let tls_client_data = TlsConnectorData::try_from(ClientConfig {
-        store_server_certificate_chain: true,
-        server_verify_mode: cfg.insecure.then_some(ServerVerifyMode::Disable),
-        ..Default::default()
-    })
-    .expect("create tls connector data for client");
+    let tls_conn_data = TlsConnectorDataBuilder::new()
+        .maybe_with_server_verify_mode(cfg.insecure.then_some(ServerVerifyMode::Disable))
+        .with_store_server_certificate_chain(true)
+        .into_shared_builder();
 
     let tcp_connector = TcpConnector::new();
     let loggin_service = LoggingLayer.layer(tcp_connector);
 
     let tls_connector = TlsConnectorLayer::secure()
-        .with_connector_data(tls_client_data)
+        .with_connector_data(tls_conn_data)
         .layer(loggin_service);
 
     let EstablishedClientConnection { ctx, .. } = tls_connector
@@ -117,7 +115,7 @@ struct LoggingService<S> {
 impl<S, State, Req> Service<State, Req> for LoggingService<S>
 where
     S: Service<State, Req, Response = EstablishedClientConnection<TcpStream, State, Req>>,
-    S::Error: Send + Sync + 'static,
+    S::Error: Send + 'static,
     State: Send + Sync + 'static,
     Req: Send + 'static,
 {

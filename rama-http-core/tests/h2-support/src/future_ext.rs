@@ -1,4 +1,4 @@
-use futures::{FutureExt, TryFuture};
+use rama_core::futures::{FutureExt, TryFuture};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -31,46 +31,46 @@ pub trait TestFuture: Future {
     }
 }
 
-/// Wraps futures::future::join to ensure that the futures are only polled if they are woken.
+/// Wraps rama_core::futures::future::join to ensure that the futures are only polled if they are woken.
 pub fn join<Fut1, Fut2>(
     future1: Fut1,
     future2: Fut2,
-) -> futures::future::Join<Wakened<Fut1>, Wakened<Fut2>>
+) -> rama_core::futures::future::Join<Wakened<Fut1>, Wakened<Fut2>>
 where
     Fut1: Future,
     Fut2: Future,
 {
-    futures::future::join(future1.wakened(), future2.wakened())
+    rama_core::futures::future::join(future1.wakened(), future2.wakened())
 }
 
-/// Wraps futures::future::join3 to ensure that the futures are only polled if they are woken.
+/// Wraps rama_core::futures::future::join3 to ensure that the futures are only polled if they are woken.
 pub fn join3<Fut1, Fut2, Fut3>(
     future1: Fut1,
     future2: Fut2,
     future3: Fut3,
-) -> futures::future::Join3<Wakened<Fut1>, Wakened<Fut2>, Wakened<Fut3>>
+) -> rama_core::futures::future::Join3<Wakened<Fut1>, Wakened<Fut2>, Wakened<Fut3>>
 where
     Fut1: Future,
     Fut2: Future,
     Fut3: Future,
 {
-    futures::future::join3(future1.wakened(), future2.wakened(), future3.wakened())
+    rama_core::futures::future::join3(future1.wakened(), future2.wakened(), future3.wakened())
 }
 
-/// Wraps futures::future::join4 to ensure that the futures are only polled if they are woken.
+/// Wraps rama_core::futures::future::join4 to ensure that the futures are only polled if they are woken.
 pub fn join4<Fut1, Fut2, Fut3, Fut4>(
     future1: Fut1,
     future2: Fut2,
     future3: Fut3,
     future4: Fut4,
-) -> futures::future::Join4<Wakened<Fut1>, Wakened<Fut2>, Wakened<Fut3>, Wakened<Fut4>>
+) -> rama_core::futures::future::Join4<Wakened<Fut1>, Wakened<Fut2>, Wakened<Fut3>, Wakened<Fut4>>
 where
     Fut1: Future,
     Fut2: Future,
     Fut3: Future,
     Fut4: Future,
 {
-    futures::future::join4(
+    rama_core::futures::future::join4(
         future1.wakened(),
         future2.wakened(),
         future3.wakened(),
@@ -78,36 +78,40 @@ where
     )
 }
 
-/// Wraps futures::future::try_join to ensure that the futures are only polled if they are woken.
+/// Wraps rama_core::futures::future::try_join to ensure that the futures are only polled if they are woken.
 pub fn try_join<Fut1, Fut2>(
     future1: Fut1,
     future2: Fut2,
-) -> futures::future::TryJoin<Wakened<Fut1>, Wakened<Fut2>>
+) -> rama_core::futures::future::TryJoin<Wakened<Fut1>, Wakened<Fut2>>
 where
-    Fut1: futures::future::TryFuture + Future,
+    Fut1: rama_core::futures::future::TryFuture + Future,
     Fut2: Future,
-    Wakened<Fut1>: futures::future::TryFuture,
-    Wakened<Fut2>: futures::future::TryFuture<Error = <Wakened<Fut1> as TryFuture>::Error>,
+    Wakened<Fut1>: rama_core::futures::future::TryFuture,
+    Wakened<Fut2>:
+        rama_core::futures::future::TryFuture<Error = <Wakened<Fut1> as TryFuture>::Error>,
 {
-    futures::future::try_join(future1.wakened(), future2.wakened())
+    rama_core::futures::future::try_join(future1.wakened(), future2.wakened())
 }
 
-/// Wraps futures::future::select to ensure that the futures are only polled if they are woken.
-pub fn select<A, B>(future1: A, future2: B) -> futures::future::Select<Wakened<A>, Wakened<B>>
+/// Wraps rama_core::futures::future::select to ensure that the futures are only polled if they are woken.
+pub fn select<A, B>(
+    future1: A,
+    future2: B,
+) -> rama_core::futures::future::Select<Wakened<A>, Wakened<B>>
 where
     A: Future + Unpin,
     B: Future + Unpin,
 {
-    futures::future::select(future1.wakened(), future2.wakened())
+    rama_core::futures::future::select(future1.wakened(), future2.wakened())
 }
 
-/// Wraps futures::future::join_all to ensure that the futures are only polled if they are woken.
-pub fn join_all<I>(iter: I) -> futures::future::JoinAll<Wakened<I::Item>>
+/// Wraps rama_core::futures::future::join_all to ensure that the futures are only polled if they are woken.
+pub fn join_all<I>(iter: I) -> rama_core::futures::future::JoinAll<Wakened<I::Item>>
 where
     I: IntoIterator,
     I::Item: Future,
 {
-    futures::future::join_all(iter.into_iter().map(|f| f.wakened()))
+    rama_core::futures::future::join_all(iter.into_iter().map(|f| f.wakened()))
 }
 
 /// A future that only polls the inner future if it has been woken (after the initial poll).

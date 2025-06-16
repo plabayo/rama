@@ -2,7 +2,7 @@ use std::fmt;
 
 pub(super) trait ErrorIntoResponse<Error>: Send + Sync + 'static {
     type Response: Send + 'static;
-    type Error: Send + Sync + 'static;
+    type Error: Send + 'static;
 
     fn error_into_response(&self, error: Error) -> Result<Self::Response, Self::Error>;
 }

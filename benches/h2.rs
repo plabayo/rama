@@ -4,9 +4,9 @@ use rama::http::core::h2::{
     server::{self, SendResponse},
 };
 
-use bytes::Bytes;
+use rama_core::bytes::Bytes;
+use rama_core::telemetry::tracing::level_filters::LevelFilter;
 use tokio::net::{TcpListener, TcpStream};
-use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 use std::{

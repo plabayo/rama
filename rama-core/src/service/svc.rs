@@ -2,7 +2,10 @@
 
 use crate::Context;
 use crate::error::BoxError;
+use std::fmt;
+use std::marker::PhantomData;
 use std::pin::Pin;
+use std::sync::Arc;
 
 /// A [`Service`] that produces rama services,
 /// to serve requests with, be it transport layer requests or application layer requests.
@@ -11,7 +14,7 @@ pub trait Service<S, Request>: Sized + Send + Sync + 'static {
     type Response: Send + 'static;
 
     /// The type of error returned by the service.
-    type Error: Send + Sync + 'static;
+    type Error: Send + 'static;
 
     /// Serve a response or error for the given request,
     /// using the given context.
@@ -23,9 +26,7 @@ pub trait Service<S, Request>: Sized + Send + Sync + 'static {
 
     /// Box this service to allow for dynamic dispatch.
     fn boxed(self) -> BoxService<S, Request, Self::Response, Self::Error> {
-        BoxService {
-            inner: Box::new(self),
-        }
+        BoxService::new(self)
     }
 }
 
@@ -116,17 +117,26 @@ where
 /// for where you require dynamic dispatch.
 pub struct BoxService<S, Request, Response, Error> {
     inner:
-        Box<dyn DynService<S, Request, Response = Response, Error = Error> + Send + Sync + 'static>,
+        Arc<dyn DynService<S, Request, Response = Response, Error = Error> + Send + Sync + 'static>,
+}
+
+impl<S, Request, Response, Error> Clone for BoxService<S, Request, Response, Error> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+        }
+    }
 }
 
 impl<S, Request, Response, Error> BoxService<S, Request, Response, Error> {
     /// Create a new [`BoxService`] from the given service.
+    #[inline]
     pub fn new<T>(service: T) -> Self
     where
         T: Service<S, Request, Response = Response, Error = Error>,
     {
         Self {
-            inner: Box::new(service),
+            inner: Arc::new(service),
         }
     }
 }
@@ -142,17 +152,23 @@ where
     S: 'static,
     Request: 'static,
     Response: Send + 'static,
-    Error: Send + Sync + 'static,
+    Error: Send + 'static,
 {
     type Response = Response;
     type Error = Error;
 
+    #[inline]
     fn serve(
         &self,
         ctx: Context<S>,
         req: Request,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
         self.inner.serve_box(ctx, req)
+    }
+
+    #[inline]
+    fn boxed(self) -> BoxService<S, Request, Response, Error> {
+        self
     }
 }
 
@@ -182,6 +198,78 @@ macro_rules! impl_service_either {
 }
 
 crate::combinators::impl_either!(impl_service_either);
+
+rama_utils::macros::error::static_str_error! {
+    #[doc = "request rejected"]
+    pub struct RejectError;
+}
+
+/// A [`Service`]] which always rejects with an error.
+pub struct RejectService<R = (), E = RejectError> {
+    error: E,
+    _phantom: PhantomData<fn() -> R>,
+}
+
+impl Default for RejectService {
+    fn default() -> Self {
+        RejectService {
+            error: RejectError,
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<R, E: Clone + Send + Sync + 'static> RejectService<R, E> {
+    /// Create a new [`RejectService`].
+    pub fn new(error: E) -> Self {
+        Self {
+            error,
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<R, E: Clone> Clone for RejectService<R, E> {
+    fn clone(&self) -> Self {
+        Self {
+            error: self.error.clone(),
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<R, E: fmt::Debug> fmt::Debug for RejectService<R, E> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RejectService")
+            .field("error", &self.error)
+            .field(
+                "_phantom",
+                &format_args!("{}", std::any::type_name::<fn() -> R>()),
+            )
+            .finish()
+    }
+}
+
+impl<S, Request, Response, Error> Service<S, Request> for RejectService<Response, Error>
+where
+    S: 'static,
+    Request: 'static,
+    Response: Send + 'static,
+    Error: Clone + Send + Sync + 'static,
+{
+    type Response = Response;
+    type Error = Error;
+
+    #[inline]
+    fn serve(
+        &self,
+        _ctx: Context<S>,
+        _req: Request,
+    ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
+        let error = self.error.clone();
+        std::future::ready(Err(error))
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -227,6 +315,7 @@ mod tests {
         assert_send::<AddSvc>();
         assert_send::<MulSvc>();
         assert_send::<BoxService<(), (), (), ()>>();
+        assert_send::<RejectService>();
     }
 
     #[test]
@@ -236,6 +325,7 @@ mod tests {
         assert_sync::<AddSvc>();
         assert_sync::<MulSvc>();
         assert_sync::<BoxService<(), (), (), ()>>();
+        assert_sync::<RejectService>();
     }
 
     #[tokio::test]
@@ -300,5 +390,15 @@ mod tests {
 
         let response = svc.serve(ctx, 1).await.unwrap();
         assert_eq!(response, 2);
+    }
+
+    #[tokio::test]
+    async fn reject_svc() {
+        let svc = RejectService::default();
+
+        let ctx = Context::default();
+
+        let err = svc.serve(ctx, 1).await.unwrap_err();
+        assert_eq!(err.to_string(), RejectError::new().to_string());
     }
 }

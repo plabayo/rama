@@ -6,22 +6,22 @@ use rama::{
         self, HeaderMap, HeaderName, Request,
         conn::LastPeerPriorityParams,
         dep::http::{Extensions, request::Parts},
-        headers::Forwarded,
+        headers::forwarded::Forwarded,
         proto::{
             h1::Http1HeaderMap,
             h2::{PseudoHeaderOrder, frame::InitialPeerSettings},
         },
     },
     net::{
-        fingerprint::{Ja3, Ja4, Ja4H},
+        fingerprint::{Ja3, Ja4, Ja4H, PeetPrint},
         http::RequestContext,
         stream::SocketInfo,
-        tls::client::ECHClientHello,
+        tls::{
+            SecureTransport,
+            client::{ClientHello, ClientHelloExtension, ECHClientHello},
+        },
     },
-    tls::types::{
-        SecureTransport,
-        client::{ClientHello, ClientHelloExtension},
-    },
+    telemetry::tracing,
     ua::{
         UserAgent,
         profile::{Http1Settings, Http2Settings},
@@ -241,98 +241,99 @@ pub(super) async fn get_and_store_http_info(
         _ => None,
     };
 
-    if ctx.contains::<StorageAuthorized>() {
-        if let Some(storage) = ctx.state().storage.as_ref() {
-            match http_version {
-                http::Version::HTTP_09 | http::Version::HTTP_10 | http::Version::HTTP_11 => {
-                    match initiator {
-                        Initiator::Navigator => {
-                            storage
-                                .store_h1_headers_navigate(ua, original_headers.clone())
-                                .await
-                                .context("store h1 headers navigate")?;
-                        }
-                        Initiator::Fetch => {
-                            storage
-                                .store_h1_headers_fetch(ua, original_headers.clone())
-                                .await
-                                .context("store h1 headers fetch")?;
-                        }
-                        Initiator::XMLHttpRequest => {
-                            if let Some(header_name) = original_headers.get_original_name(
-                                &HeaderName::from_static("x-rama-custom-header-marker"),
-                            ) {
-                                // Check if the header name is title-cased or not
-                                let header_str = header_name.as_str();
-                                let title_case_headers = header_str.split('-').all(|part| {
-                                    part.chars().next().is_none_or(|c| c.is_ascii_uppercase())
-                                        && part.chars().skip(1).all(|c| c.is_ascii_lowercase())
-                                });
+    if let Some(storage) = ctx.state().storage.as_ref() {
+        let auth = ctx.contains::<StorageAuthorized>();
 
-                                tracing::debug!(
-                                    "Custom header marker found: {}, title-cased: {}",
-                                    header_str,
-                                    title_case_headers
-                                );
-
-                                storage
-                                    .store_h1_settings(
-                                        ua.clone(),
-                                        Http1Settings { title_case_headers },
-                                    )
-                                    .await
-                                    .context("store h1 settings")?;
-                            }
-
-                            storage
-                                .store_h1_headers_xhr(ua, original_headers.clone())
-                                .await
-                                .context("store h1 headers xhr")?;
-                        }
-                        Initiator::Form => {
-                            storage
-                                .store_h1_headers_form(ua, original_headers.clone())
-                                .await
-                                .context("store h1 headers form")?;
-                        }
-                    }
-                }
-                http::Version::HTTP_2 => {
-                    if let Some(settings) = h2_settings.clone() {
+        match http_version {
+            http::Version::HTTP_09 | http::Version::HTTP_10 | http::Version::HTTP_11 => {
+                match initiator {
+                    Initiator::Navigator => {
                         storage
-                            .store_h2_settings(ua.clone(), settings)
+                            .store_h1_headers_navigate(ua, auth, original_headers.clone())
                             .await
-                            .context("store h2 settings")?;
+                            .context("store h1 headers navigate")?;
                     }
-                    match initiator {
-                        Initiator::Navigator => {
+                    Initiator::Fetch => {
+                        storage
+                            .store_h1_headers_fetch(ua, auth, original_headers.clone())
+                            .await
+                            .context("store h1 headers fetch")?;
+                    }
+                    Initiator::XMLHttpRequest => {
+                        if let Some(header_name) = original_headers.get_original_name(
+                            &HeaderName::from_static("x-rama-custom-header-marker"),
+                        ) {
+                            // Check if the header name is title-cased or not
+                            let header_str = header_name.as_str();
+                            let title_case_headers = header_str.split('-').all(|part| {
+                                part.chars().next().is_none_or(|c| c.is_ascii_uppercase())
+                                    && part.chars().skip(1).all(|c| c.is_ascii_lowercase())
+                            });
+
+                            tracing::debug!(
+                                "Custom header marker found: {}, title-cased: {}",
+                                header_str,
+                                title_case_headers
+                            );
+
                             storage
-                                .store_h2_headers_navigate(ua, original_headers.clone())
+                                .store_h1_settings(
+                                    ua.clone(),
+                                    auth,
+                                    Http1Settings { title_case_headers },
+                                )
                                 .await
-                                .context("store h2 headers navigate")?;
+                                .context("store h1 settings")?;
                         }
-                        Initiator::Fetch => {
-                            storage
-                                .store_h2_headers_fetch(ua, original_headers.clone())
-                                .await
-                                .context("store h2 headers fetch")?;
-                        }
-                        Initiator::XMLHttpRequest => {
-                            storage
-                                .store_h2_headers_xhr(ua, original_headers.clone())
-                                .await
-                                .context("store h2 headers xhr")?;
-                        }
-                        Initiator::Form => {
-                            storage
-                                .store_h2_headers_form(ua, original_headers.clone())
-                                .await
-                                .context("store h2 headers form")?;
-                        }
+
+                        storage
+                            .store_h1_headers_xhr(ua, auth, original_headers.clone())
+                            .await
+                            .context("store h1 headers xhr")?;
+                    }
+                    Initiator::Form => {
+                        storage
+                            .store_h1_headers_form(ua, auth, original_headers.clone())
+                            .await
+                            .context("store h1 headers form")?;
                     }
                 }
-                _ => (),
             }
+            http::Version::HTTP_2 => {
+                if let Some(settings) = h2_settings.clone() {
+                    storage
+                        .store_h2_settings(ua.clone(), auth, settings)
+                        .await
+                        .context("store h2 settings")?;
+                }
+                match initiator {
+                    Initiator::Navigator => {
+                        storage
+                            .store_h2_headers_navigate(ua, auth, original_headers.clone())
+                            .await
+                            .context("store h2 headers navigate")?;
+                    }
+                    Initiator::Fetch => {
+                        storage
+                            .store_h2_headers_fetch(ua, auth, original_headers.clone())
+                            .await
+                            .context("store h2 headers fetch")?;
+                    }
+                    Initiator::XMLHttpRequest => {
+                        storage
+                            .store_h2_headers_xhr(ua, auth, original_headers.clone())
+                            .await
+                            .context("store h2 headers xhr")?;
+                    }
+                    Initiator::Form => {
+                        storage
+                            .store_h2_headers_form(ua, auth, original_headers.clone())
+                            .await
+                            .context("store h2 headers form")?;
+                    }
+                }
+            }
+            _ => (),
         }
     }
 
@@ -358,6 +359,7 @@ pub(super) async fn get_and_store_http_info(
 pub(super) struct TlsDisplayInfo {
     pub(super) ja4: Ja4DisplayInfo,
     pub(super) ja3: Ja3DisplayInfo,
+    pub(super) peet: PeetDisplayInfo,
     pub(super) protocol_version: String,
     pub(super) cipher_suites: Vec<String>,
     pub(super) compression_algorithms: Vec<String>,
@@ -372,6 +374,12 @@ pub(super) struct Ja4DisplayInfo {
 
 #[derive(Debug, Clone, Serialize)]
 pub(super) struct Ja3DisplayInfo {
+    pub(super) full: String,
+    pub(super) hash: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(super) struct PeetDisplayInfo {
     pub(super) full: String,
     pub(super) hash: String,
 }
@@ -400,17 +408,17 @@ pub(super) async fn get_tls_display_info_and_store(
         None => return Ok(None),
     };
 
-    if ctx.contains::<StorageAuthorized>() {
-        if let Some(storage) = ctx.state().storage.as_ref() {
-            storage
-                .store_tls_client_hello(ua, hello.clone())
-                .await
-                .context("store tls client hello")?;
-        }
+    if let Some(storage) = ctx.state().storage.as_ref() {
+        let auth = ctx.contains::<StorageAuthorized>();
+        storage
+            .store_tls_client_hello(ua, auth, hello.clone())
+            .await
+            .context("store tls client hello")?;
     }
 
     let ja4 = Ja4::compute(ctx.extensions()).context("ja4 compute")?;
     let ja3 = Ja3::compute(ctx.extensions()).context("ja3 compute")?;
+    let peet = PeetPrint::compute(ctx.extensions()).context("peet print compute")?;
 
     Ok(Some(TlsDisplayInfo {
         ja4: Ja4DisplayInfo {
@@ -420,6 +428,10 @@ pub(super) async fn get_tls_display_info_and_store(
         ja3: Ja3DisplayInfo {
             full: format!("{ja3}"),
             hash: format!("{ja3:x}"),
+        },
+        peet: PeetDisplayInfo {
+            full: format!("{peet:?}"),
+            hash: format!("{peet}"),
         },
         protocol_version: hello.protocol_version().to_string(),
         cipher_suites: hello
@@ -462,6 +474,12 @@ pub(super) async fn get_tls_display_info_and_store(
                         )),
                     }
                 }
+                ClientHelloExtension::ApplicationSettings(v) => TlsDisplayInfoExtension {
+                    id: extension.id().to_string(),
+                    data: Some(TlsDisplayInfoExtensionData::Multi(
+                        v.iter().map(|s| s.to_string()).collect(),
+                    )),
+                },
                 ClientHelloExtension::SupportedGroups(v) => TlsDisplayInfoExtension {
                     id: extension.id().to_string(),
                     data: Some(TlsDisplayInfoExtensionData::Multi(

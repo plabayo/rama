@@ -1,5 +1,7 @@
 use crate::Request;
-use tracing::{Level, Span};
+use crate::header::USER_AGENT;
+use crate::opentelemetry::version_as_protocol_version;
+use rama_core::telemetry::tracing::{self, Level, Span};
 
 use super::DEFAULT_MESSAGE_LEVEL;
 
@@ -105,18 +107,28 @@ impl<B> MakeSpan<B> for DefaultMakeSpan {
                     tracing::span!(
                         $level,
                         "request",
-                        method = %request.method(),
-                        uri = %request.uri(),
-                        version = ?request.version(),
+                        http.request.method = %request.method(),
+                        url.full = %request.uri(),
+                        url.path = %request.uri().path(),
+                        url.query = request.uri().query().unwrap_or_default(),
+                        url.scheme = %request.uri().scheme().map(|s| s.as_str()).unwrap_or_default(),
+                        network.protocol.name = "http",
+                        network.protocol.version = version_as_protocol_version(request.version()),
+                        user_agent.original = %request.headers().get(USER_AGENT).and_then(|v| v.to_str().ok()).unwrap_or_default(),
                         headers = ?request.headers(),
                     )
                 } else {
                     tracing::span!(
                         $level,
                         "request",
-                        method = %request.method(),
-                        uri = %request.uri(),
-                        version = ?request.version(),
+                        http.request.method = %request.method(),
+                        url.full = %request.uri(),
+                        url.path = %request.uri().path(),
+                        url.query = request.uri().query().unwrap_or_default(),
+                        url.scheme = %request.uri().scheme().map(|s| s.as_str()).unwrap_or_default(),
+                        network.protocol.name = "http",
+                        network.protocol.version = version_as_protocol_version(request.version()),
+                        user_agent.original = %request.headers().get(USER_AGENT).and_then(|v| v.to_str().ok()).unwrap_or_default(),
                     )
                 }
             }

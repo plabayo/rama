@@ -3,6 +3,8 @@ use super::utils;
 #[tokio::test]
 #[ignore]
 async fn test_http_echo() {
+    utils::init_tracing();
+
     let _guard = utils::RamaService::echo(63101, false, None);
 
     let lines = utils::RamaService::http(vec!["http://127.0.0.1:63101"]).unwrap();
@@ -26,8 +28,9 @@ async fn test_http_echo() {
 #[tokio::test]
 #[ignore]
 async fn test_http_echo_acme_data() {
-    let _guard = utils::RamaService::echo(63102, false, Some("hello,world".to_owned()));
+    utils::init_tracing();
 
+    let _guard = utils::RamaService::echo(63102, false, Some("hello,world".to_owned()));
     let lines = utils::RamaService::http(vec![
         "http://127.0.0.1:63102/.well-known/acme-challenge/hello",
     ])
@@ -40,6 +43,8 @@ async fn test_http_echo_acme_data() {
 #[tokio::test]
 #[ignore]
 async fn test_http_echo_secure() {
+    utils::init_tracing();
+
     let _guard = utils::RamaService::echo(63103, true, None);
 
     let lines = utils::RamaService::http(vec!["https://127.0.0.1:63103", "foo:bar", "a=4", "q==1"])

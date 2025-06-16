@@ -101,7 +101,8 @@
 //! use rama_core::{service::service_fn, Context, Service};
 //! use rama_http::{
 //!     layer::set_header::{response::BoxMakeHeaderValueFn, SetResponseHeader},
-//!     Body, HeaderName, HeaderValue, IntoResponse, Request, Response,
+//!     Body, HeaderName, HeaderValue, Request, Response,
+//!     service::web::response::IntoResponse,
 //! };
 //! use std::convert::Infallible;
 //!
@@ -149,11 +150,7 @@
 //! }
 //! ```
 
-use crate::{
-    HeaderValue, Request, Response,
-    header::HeaderName,
-    headers::{Header, HeaderExt},
-};
+use crate::{HeaderValue, Request, Response, header::HeaderName, headers::Header};
 use rama_core::{Context, Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;

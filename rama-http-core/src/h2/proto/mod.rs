@@ -21,7 +21,7 @@ use self::settings::Settings;
 
 use crate::h2::frame::{self, Frame};
 
-use bytes::Buf;
+use rama_core::bytes::Buf;
 
 use tokio::io::AsyncWrite;
 

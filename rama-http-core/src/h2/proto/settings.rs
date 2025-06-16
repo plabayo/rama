@@ -1,6 +1,7 @@
 use crate::h2::codec::UserError;
 use crate::h2::error::Reason;
 use crate::h2::proto::*;
+use rama_core::telemetry::tracing;
 use std::task::{Context, Poll};
 
 #[derive(Debug)]

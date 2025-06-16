@@ -10,43 +10,40 @@ categories = ["asynchronous", "network-programming", "web-programming"]
 authors = { workspace = true }
 rust-version = { workspace = true }
 
-[lints]
-workspace = true
+[package.metadata.cargo-public-api-crates]
+allowed = []
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 default = []
 http = ["dep:rama-http-types", "dep:sha2", "dep:itertools", "dep:hex"]
 tls = ["dep:hex", "dep:md5", "dep:sha2", "dep:itertools"]
-rustls = ["tls", "dep:rustls"]
-boring = ["tls", "dep:rama-boring", "dep:nom"]
-telemetry = ["rama-core/telemetry"]
 
 [dependencies]
 base64 = { workspace = true }
-bytes = { workspace = true }
 const_format = { workspace = true }
-futures-lite = { workspace = true }
-headers = { workspace = true }
+flume = { workspace = true, features = ["async"] }
 hex = { workspace = true, optional = true }
 ipnet = { workspace = true }
 itertools = { workspace = true, optional = true }
 md5 = { workspace = true, optional = true }
-nom = { workspace = true, optional = true }
+nom = { workspace = true }
 parking_lot = { workspace = true }
 pin-project-lite = { workspace = true }
 psl = { workspace = true }
-rama-boring = { workspace = true, optional = true }
-rama-core = { version = "0.2.0-alpha.8", path = "../rama-core" }
-rama-http-types = { version = "0.2.0-alpha.8", path = "../rama-http-types", optional = true }
-rama-macros = { version = "0.2.0-alpha.8", path = "../rama-macros" }
-rama-utils = { version = "0.2.0-alpha.8", path = "../rama-utils" }
-rustls = { workspace = true, optional = true }
+radix_trie = { workspace = true }
+rama-core = { workspace = true }
+rama-http-types = { workspace = true, optional = true }
+rama-macros = { workspace = true }
+rama-utils = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 sha2 = { workspace = true, optional = true }
 smol_str = { workspace = true }
-socket2 = { workspace = true }
+socket2 = { workspace = true, features = ["all"] }
 tokio = { workspace = true, features = ["macros", "fs", "io-std", "io-util", "net"] }
-tracing = { workspace = true }
 venndb = { workspace = true, optional = true }
 
 [dev-dependencies]
@@ -57,9 +54,5 @@ serde_json = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tokio-test = { workspace = true }
 
-[package.metadata.cargo-public-api-crates]
-allowed = []
-
-[package.metadata.docs.rs]
-all-features = true
-rustdoc-args = ["--cfg", "docsrs"]
+[lints]
+workspace = true

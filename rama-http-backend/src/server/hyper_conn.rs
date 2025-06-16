@@ -68,11 +68,13 @@ fn map_http_core_err_to_result(err: rama_http_core::Error) -> HttpServeResult {
 mod private {
     use crate::server::HttpServeResult;
     use crate::server::hyper_conn::{map_boxed_http_core_result, map_http_core_result};
+    use futures::FutureExt;
+    use rama_core::telemetry::tracing;
     use rama_core::{Context, Service};
+    use rama_http::service::web::response::IntoResponse;
     use rama_http_core::service::RamaHttpService;
-    use rama_http_types::{IntoResponse, Request};
+    use rama_http_types::Request;
     use rama_net::stream::Stream;
-    use rama_utils::future::Fuse;
     use std::convert::Infallible;
     use std::pin::pin;
     use tokio::select;
@@ -113,7 +115,7 @@ mod private {
             let mut conn = pin!(self.serve_connection(stream, service).with_upgrades());
 
             if let Some(guard) = guard {
-                let mut cancelled_fut = pin!(Fuse::new(guard.cancelled()));
+                let mut cancelled_fut = pin!(guard.cancelled().fuse());
 
                 select! {
                     _ = cancelled_fut.as_mut() => {
@@ -156,7 +158,7 @@ mod private {
             let mut conn = pin!(self.serve_connection(stream, service));
 
             if let Some(guard) = guard {
-                let mut cancelled_fut = pin!(Fuse::new(guard.cancelled()));
+                let mut cancelled_fut = pin!(guard.cancelled().fuse());
 
                 select! {
                     _ = cancelled_fut.as_mut() => {
@@ -199,7 +201,7 @@ mod private {
             let mut conn = pin!(self.serve_connection_with_upgrades(stream, service));
 
             if let Some(guard) = guard {
-                let mut cancelled_fut = pin!(Fuse::new(guard.cancelled()));
+                let mut cancelled_fut = pin!(guard.cancelled().fuse());
 
                 select! {
                     _ = cancelled_fut.as_mut() => {

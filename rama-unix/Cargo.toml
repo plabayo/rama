@@ -1,0 +1,33 @@
+[package]
+name = "rama-unix"
+description = "Unix (Domain) socket support for rama"
+version = { workspace = true }
+license = { workspace = true }
+edition = { workspace = true }
+repository = { workspace = true }
+keywords = ["io", "async", "unix", "network", "rama"]
+categories = ["asynchronous", "network-programming", "web-programming"]
+authors = { workspace = true }
+rust-version = { workspace = true }
+
+[package.metadata.cargo-public-api-crates]
+allowed = []
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[features]
+default = []
+
+[dependencies]
+rama-core = { workspace = true }
+rama-net = { workspace = true }
+tokio = { workspace = true, features = ["macros", "net"] }
+tokio-util = { workspace = true, features = ["net", "codec"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full"] }
+
+[lints]
+workspace = true

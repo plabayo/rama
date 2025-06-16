@@ -15,9 +15,9 @@
 use rama::{
     Context, Layer, Service,
     http::{
-        Body, BodyExtractExt, IntoResponse, Request, Response, StatusCode,
+        Body, BodyExtractExt, Request, Response, StatusCode,
         client::EasyHttpWebClient,
-        headers::{Accept, Authorization, HeaderMapExt, authorization::Basic},
+        headers::{Accept, Authorization, HeaderMapExt},
         layer::{
             auth::{AddAuthorizationLayer, AsyncRequireAuthorizationLayer},
             compression::CompressionLayer,
@@ -25,12 +25,14 @@ use rama::{
             retry::{ManagedPolicy, RetryLayer},
             trace::TraceLayer,
         },
-        response::Json,
         server::HttpServer,
         service::client::HttpClientExt,
         service::web::WebService,
+        service::web::response::{IntoResponse, Json},
     },
+    net::user::Basic,
     rt::Executor,
+    telemetry::tracing::{self, level_filters::LevelFilter},
     utils::{backoff::ExponentialBackoff, rng::HasherRng},
 };
 
@@ -38,7 +40,6 @@ use rama::{
 
 use serde_json::json;
 use std::time::Duration;
-use tracing::level_filters::LevelFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, fmt};

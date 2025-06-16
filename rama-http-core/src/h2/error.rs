@@ -2,7 +2,7 @@ use crate::h2::codec::{SendError, UserError};
 use crate::h2::frame::StreamId;
 use crate::h2::proto::{self, Initiator};
 
-use bytes::Bytes;
+use rama_core::bytes::Bytes;
 use std::{error, fmt, io};
 
 pub use crate::h2::frame::Reason;

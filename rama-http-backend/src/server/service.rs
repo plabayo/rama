@@ -6,18 +6,22 @@ use rama_core::error::BoxError;
 use rama_core::graceful::ShutdownGuard;
 use rama_core::rt::Executor;
 use rama_core::{Context, Service};
+use rama_http::service::web::response::IntoResponse;
 use rama_http_core::server::conn::auto::Builder as AutoConnBuilder;
 use rama_http_core::server::conn::auto::Http1Builder as InnerAutoHttp1Builder;
 use rama_http_core::server::conn::auto::Http2Builder as InnerAutoHttp2Builder;
 use rama_http_core::server::conn::http1::Builder as Http1ConnBuilder;
 use rama_http_core::server::conn::http2::Builder as H2ConnBuilder;
-use rama_http_types::{IntoResponse, Request};
-use rama_net::address::SocketAddress;
+use rama_http_types::Request;
+use rama_net::socket::Interface;
 use rama_net::stream::Stream;
 use rama_tcp::server::TcpListener;
 use std::convert::Infallible;
 use std::fmt;
 use std::sync::Arc;
+
+#[cfg(unix)]
+use ::{rama_unix::server::UnixListener, std::path::Path};
 
 /// A builder for configuring and listening over HTTP using a [`Service`].
 ///
@@ -159,16 +163,16 @@ where
             .await
     }
 
-    /// Listen for connections on the given address, serving HTTP connections.
+    /// Listen for connections on the given [`Interface`], serving HTTP connections.
     ///
     /// It's a shortcut in case you don't need to operate on the transport layer directly.
-    pub async fn listen<S, Response, A>(self, addr: A, service: S) -> HttpServeResult
+    pub async fn listen<S, Response, I>(self, interface: I, service: S) -> HttpServeResult
     where
         S: Service<(), Request, Response = Response, Error = Infallible>,
         Response: IntoResponse + Send + 'static,
-        A: TryInto<SocketAddress, Error: Into<BoxError>>,
+        I: TryInto<Interface, Error: Into<BoxError>>,
     {
-        let tcp = TcpListener::bind(addr).await?;
+        let tcp = TcpListener::bind(interface).await?;
         let service = HttpService::new(self.builder, service);
         match self.guard {
             Some(guard) => tcp.serve_graceful(guard, service).await,
@@ -177,29 +181,78 @@ where
         Ok(())
     }
 
-    /// Listen for connections on the given address, serving HTTP connections.
+    #[cfg(unix)]
+    /// Listen for connections on the given [`Path`], using a unix (domain) socket, serving HTTP connections.
+    ///
+    /// It's a shortcut in case you don't need to operate on the unix transport layer directly.
+    pub async fn listen_unix<S, Response, P>(self, path: P, service: S) -> HttpServeResult
+    where
+        S: Service<(), Request, Response = Response, Error = Infallible>,
+        Response: IntoResponse + Send + 'static,
+        P: AsRef<Path>,
+    {
+        let unix = UnixListener::bind_path(path).await?;
+        let service = HttpService::new(self.builder, service);
+        match self.guard {
+            Some(guard) => unix.serve_graceful(guard, service).await,
+            None => unix.serve(service).await,
+        };
+        Ok(())
+    }
+
+    /// Listen for connections on the given [`Interface`], serving HTTP connections.
     ///
     /// Same as [`Self::listen`], but including the given state in the [`Service`]'s [`Context`].
     ///
     /// [`Service`]: rama_core::Service
     /// [`Context`]: rama_core::Context
-    pub async fn listen_with_state<State, S, Response, A>(
+    pub async fn listen_with_state<State, S, Response, I>(
         self,
         state: State,
-        addr: A,
+        interface: I,
         service: S,
     ) -> HttpServeResult
     where
         State: Clone + Send + Sync + 'static,
         S: Service<State, Request, Response = Response, Error = Infallible>,
         Response: IntoResponse + Send + 'static,
-        A: TryInto<SocketAddress, Error: Into<BoxError>>,
+        I: TryInto<Interface, Error: Into<BoxError>>,
     {
-        let tcp = TcpListener::build_with_state(state).bind(addr).await?;
+        let tcp = TcpListener::build_with_state(state).bind(interface).await?;
         let service = HttpService::new(self.builder, service);
         match self.guard {
             Some(guard) => tcp.serve_graceful(guard, service).await,
             None => tcp.serve(service).await,
+        };
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    /// Listen for connections on the given [`Path`], using a unix (domain) socket, serving HTTP connections.
+    ///
+    /// Same as [`Self::listen`], but including the given state in the [`Service`]'s [`Context`].
+    ///
+    /// [`Service`]: rama_core::Service
+    /// [`Context`]: rama_core::Context
+    pub async fn listen_unix_with_state<State, S, Response, P>(
+        self,
+        state: State,
+        path: P,
+        service: S,
+    ) -> HttpServeResult
+    where
+        State: Clone + Send + Sync + 'static,
+        S: Service<State, Request, Response = Response, Error = Infallible>,
+        Response: IntoResponse + Send + 'static,
+        P: AsRef<Path>,
+    {
+        let unix = UnixListener::build_with_state(state)
+            .bind_path(path)
+            .await?;
+        let service = HttpService::new(self.builder, service);
+        match self.guard {
+            Some(guard) => unix.serve_graceful(guard, service).await,
+            None => unix.serve(service).await,
         };
         Ok(())
     }

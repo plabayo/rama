@@ -7,7 +7,8 @@ use crate::h2::frame::{self, Frame, Priority, Reason, StreamDependency};
 use crate::h2::proto::{Error, Initiator, Open, Peer, WindowSize, peer};
 use crate::h2::{client, proto, server};
 
-use bytes::{Buf, Bytes};
+use rama_core::bytes::{Buf, Bytes};
+use rama_core::telemetry::tracing;
 use rama_http_types::conn::{LastPeerPriorityParams, PriorityParams};
 use rama_http_types::dep::http::Extensions;
 use rama_http_types::proto::h1::headers::original::OriginalHttp1Headers;

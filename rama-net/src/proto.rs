@@ -9,7 +9,7 @@ use rama_utils::macros::str::eq_ignore_ascii_case;
 use rama_http_types::{Method, Scheme};
 
 #[cfg(feature = "http")]
-use tracing::{trace, warn};
+use rama_core::telemetry::tracing::{trace, warn};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 /// Web protocols that are relevant to Rama.
@@ -172,22 +172,8 @@ impl Protocol {
     /// Returns `true` if this protocol is socks5.
     pub fn is_socks5(&self) -> bool {
         match &self.0 {
-            ProtocolKind::Socks5 => true,
+            ProtocolKind::Socks5 | ProtocolKind::Socks5h => true,
             ProtocolKind::Http
-            | ProtocolKind::Https
-            | ProtocolKind::Ws
-            | ProtocolKind::Wss
-            | ProtocolKind::Socks5h
-            | ProtocolKind::Custom(_) => false,
-        }
-    }
-
-    /// Returns `true` if this protocol is socks5h).
-    pub fn is_socks5h(&self) -> bool {
-        match &self.0 {
-            ProtocolKind::Socks5h => true,
-            ProtocolKind::Socks5
-            | ProtocolKind::Http
             | ProtocolKind::Https
             | ProtocolKind::Ws
             | ProtocolKind::Wss
@@ -207,14 +193,13 @@ impl Protocol {
         }
     }
 
-    /// Return a port that can be used as default in case no port is defined.
-    ///
-    /// NOTE that this is not going to be valid for non-http ports.
-    pub fn default_port(&self) -> u16 {
+    /// Returns the default port for this [`Protocol`]
+    pub fn default_port(&self) -> Option<u16> {
         match &self.0 {
-            ProtocolKind::Https | ProtocolKind::Wss => 443,
-            ProtocolKind::Http | ProtocolKind::Ws => 80,
-            ProtocolKind::Socks5 | ProtocolKind::Socks5h | ProtocolKind::Custom(_) => 80, // \_(ツ)_/¯
+            ProtocolKind::Https | ProtocolKind::Wss => Some(443),
+            ProtocolKind::Http | ProtocolKind::Ws => Some(80),
+            ProtocolKind::Socks5 | ProtocolKind::Socks5h => Some(1080),
+            ProtocolKind::Custom(_) => None,
         }
     }
 

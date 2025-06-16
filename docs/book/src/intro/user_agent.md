@@ -69,8 +69,9 @@ Rama implements user-agent emulation through a profile-based system:
 
 These profiles can be applied to outgoing requests using middleware services:
 
-- [`UserAgentEmulateService`](https://ramaproxy.org/docs/rama/ua/emulate/struct.UserAgentEmulateService.html) - A service that applies the emulation profile to requests
-- [`UserAgentEmulateHttpRequestModifier`](https://ramaproxy.org/docs/rama/ua/emulate/struct.UserAgentEmulateHttpRequestModifier.html) - Modifies HTTP requests based on the profile
+- [`UserAgentEmulateService`](https://ramaproxy.org/docs/rama/ua/emulate/struct.UserAgentEmulateService.html) - A service that applies the emulation profile to requests;
+- [`UserAgentEmulateHttpConnectModifier`](https://ramaproxy.org/docs/rama/ua/emulate/struct.UserAgentEmulateHttpConnectModifier.html) - Provides connector the the Http(s) connector with required emulation context (e.g. tls profile, h2 settings, ...);
+- [`UserAgentEmulateHttpRequestModifier`](https://ramaproxy.org/docs/rama/ua/emulate/struct.UserAgentEmulateHttpRequestModifier.html) - Modifies HTTP requests based on the profile, context and established connection.
 
 Rama includes a database of pre-configured profiles for common browsers and platforms, making it easy to emulate specific user-agents without manual configuration. These profiles are generated from real browser fingerprints collected through Rama's fingerprinting service.
 
@@ -94,3 +95,13 @@ These embedded profiles correspond directly to the profile structure described a
 Using the `embed-profiles` feature allows applications to immediately start with realistic browser emulation without any additional setup, making it ideal for applications that need to maintain a low profile or operate in environments where external files might be difficult to manage.
 
 To enable this feature, simply include the `embed-profiles` feature when adding Rama to your project.
+
+> 💡 At [Plabayo](https://plabayo.tech), we support the principle that
+> [information wants to be free](https://en.wikipedia.org/wiki/Information_wants_to_be_free),
+> provided it is pursued ethically and within the bounds of applicable law.
+>
+> We do not endorse or support any malicious use of our technology.
+> We advocate for the programmatic retrieval of publicly available data
+> only when conducted responsibly — in a manner that is respectful,
+> does not impose an undue burden on servers, and avoids causing
+> disruption, harm, or degradation to third-party services.

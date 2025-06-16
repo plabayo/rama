@@ -11,13 +11,13 @@ use crate::{
     combinators::{Either3, Either7},
     error::{BoxError, OpaqueError},
     http::{
-        IntoResponse, Request, Response, Version,
+        Request, Response, Version,
         conn::LastPeerPriorityParams,
         dep::http_body_util::BodyExt,
         header::USER_AGENT,
-        headers::{CFConnectingIp, ClientIp, TrueClientIp, XClientIp, XRealIp},
+        headers::forwarded::{CFConnectingIp, ClientIp, TrueClientIp, XClientIp, XRealIp},
         layer::{
-            forwarded::GetForwardedHeadersLayer,
+            forwarded::GetForwardedHeaderLayer,
             required_header::AddRequiredResponseHeadersLayer,
             trace::TraceLayer,
             ua::{UserAgent, UserAgentClassifierLayer},
@@ -25,7 +25,6 @@ use crate::{
         proto::h1::Http1HeaderMap,
         proto::h2::PseudoHeaderOrder,
         proto::h2::frame::InitialPeerSettings,
-        response::Json,
         server::HttpServer,
     },
     layer::{ConsumeErrLayer, LimitLayer, TimeoutLayer, limit::policy::ConcurrentPolicy},
@@ -33,23 +32,39 @@ use crate::{
     net::forwarded::Forwarded,
     net::http::RequestContext,
     net::stream::{SocketInfo, layer::http::BodyLimitLayer},
-    net::tls::client::{ECHClientHello, NegotiatedTlsParameters},
     proxy::haproxy::server::HaProxyLayer,
     rt::Executor,
+    telemetry::tracing,
     ua::profile::UserAgentDatabase,
 };
+#[cfg(any(feature = "rustls", feature = "boring"))]
+use crate::{
+    net::fingerprint::{Ja3, Ja4, PeetPrint},
+    net::tls::{
+        SecureTransport,
+        client::ClientHelloExtension,
+        client::{ECHClientHello, NegotiatedTlsParameters},
+    },
+};
+#[cfg(feature = "boring")]
+use crate::{
+    net::tls::server::ServerConfig,
+    tls::boring::server::{TlsAcceptorData, TlsAcceptorLayer},
+};
+use rama_http::service::web::{extract::Json, response::IntoResponse};
 use serde::Serialize;
 use serde_json::json;
 use std::{convert::Infallible, time::Duration};
 use tokio::net::TcpStream;
 
-#[cfg(any(feature = "rustls", feature = "boring"))]
-use crate::{
-    net::fingerprint::{Ja3, Ja4},
-    net::tls::server::ServerConfig,
-    tls::std::server::TlsAcceptorLayer,
-    tls::types::{SecureTransport, client::ClientHelloExtension},
-};
+#[cfg(all(feature = "rustls", not(feature = "boring")))]
+use crate::tls::rustls::server::{TlsAcceptorData, TlsAcceptorLayer};
+
+#[cfg(feature = "boring")]
+type TlsConfig = ServerConfig;
+
+#[cfg(all(feature = "rustls", not(feature = "boring")))]
+type TlsConfig = TlsAcceptorData;
 
 #[derive(Debug, Clone)]
 /// Builder that can be used to run your own echo [`Service`],
@@ -61,7 +76,7 @@ pub struct EchoServiceBuilder<H> {
     forward: Option<ForwardKind>,
 
     #[cfg(any(feature = "rustls", feature = "boring"))]
-    tls_server_config: Option<ServerConfig>,
+    tls_server_config: Option<TlsConfig>,
 
     http_version: Option<Version>,
 
@@ -176,7 +191,7 @@ impl<H> EchoServiceBuilder<H> {
     #[cfg(any(feature = "rustls", feature = "boring"))]
     /// define a tls server cert config to be used for tls terminaton
     /// by the echo service.
-    pub fn tls_server_config(mut self, cfg: ServerConfig) -> Self {
+    pub fn tls_server_config(mut self, cfg: TlsConfig) -> Self {
         self.tls_server_config = Some(cfg);
         self
     }
@@ -184,15 +199,15 @@ impl<H> EchoServiceBuilder<H> {
     #[cfg(any(feature = "rustls", feature = "boring"))]
     /// define a tls server cert config to be used for tls terminaton
     /// by the echo service.
-    pub fn set_tls_server_config(&mut self, cfg: ServerConfig) -> &mut Self {
+    pub fn set_tls_server_config(&mut self, cfg: TlsConfig) -> &mut Self {
         self.tls_server_config = Some(cfg);
         self
     }
 
     #[cfg(any(feature = "rustls", feature = "boring"))]
-    /// maybe define a tls server cert config to be used for tls terminaton
+    /// define a tls server cert config to be used for tls terminaton
     /// by the echo service.
-    pub fn maybe_tls_server_config(mut self, cfg: Option<ServerConfig>) -> Self {
+    pub fn maybe_tls_server_config(mut self, cfg: Option<TlsConfig>) -> Self {
         self.tls_server_config = cfg;
         self
     }
@@ -269,43 +284,20 @@ where
         mut self,
         executor: Executor,
     ) -> Result<impl Service<(), TcpStream, Response = (), Error = Infallible>, BoxError> {
-        let (tcp_forwarded_layer, http_forwarded_layer) = match &self.forward {
-            None => (None, None),
-            Some(ForwardKind::Forwarded) => (
-                None,
-                Some(Either7::A(GetForwardedHeadersLayer::forwarded())),
-            ),
-            Some(ForwardKind::XForwardedFor) => (
-                None,
-                Some(Either7::B(GetForwardedHeadersLayer::x_forwarded_for())),
-            ),
-            Some(ForwardKind::XClientIp) => (
-                None,
-                Some(Either7::C(GetForwardedHeadersLayer::<XClientIp>::new())),
-            ),
-            Some(ForwardKind::ClientIp) => (
-                None,
-                Some(Either7::D(GetForwardedHeadersLayer::<ClientIp>::new())),
-            ),
-            Some(ForwardKind::XRealIp) => (
-                None,
-                Some(Either7::E(GetForwardedHeadersLayer::<XRealIp>::new())),
-            ),
-            Some(ForwardKind::CFConnectingIp) => (
-                None,
-                Some(Either7::F(GetForwardedHeadersLayer::<CFConnectingIp>::new())),
-            ),
-            Some(ForwardKind::TrueClientIp) => (
-                None,
-                Some(Either7::G(GetForwardedHeadersLayer::<TrueClientIp>::new())),
-            ),
-            Some(ForwardKind::HaProxy) => (Some(HaProxyLayer::default()), None),
+        let tcp_forwarded_layer = match &self.forward {
+            Some(ForwardKind::HaProxy) => Some(HaProxyLayer::default()),
+            _ => None,
         };
 
-        #[cfg(any(feature = "rustls", feature = "boring"))]
-        let tls_acceptor_data = match self.tls_server_config {
-            None => None,
+        let http_service = self.build_http();
+
+        #[cfg(all(feature = "rustls", not(feature = "boring")))]
+        let tls_cfg = self.tls_server_config;
+
+        #[cfg(feature = "boring")]
+        let tls_cfg: Option<TlsAcceptorData> = match self.tls_server_config {
             Some(cfg) => Some(cfg.try_into()?),
+            None => None,
         };
 
         let tcp_service_builder = (
@@ -316,20 +308,13 @@ where
             tcp_forwarded_layer,
             BodyLimitLayer::request_only(self.body_limit),
             #[cfg(any(feature = "rustls", feature = "boring"))]
-            tls_acceptor_data.map(|data| TlsAcceptorLayer::new(data).with_store_client_hello(true)),
+            tls_cfg.map(|cfg| {
+                #[cfg(feature = "boring")]
+                return TlsAcceptorLayer::new(cfg).with_store_client_hello(true);
+                #[cfg(all(feature = "rustls", not(feature = "boring")))]
+                TlsAcceptorLayer::new(cfg).with_store_client_hello(true)
+            }),
         );
-
-        let http_service = (
-            TraceLayer::new_for_http(),
-            AddRequiredResponseHeadersLayer::default(),
-            UserAgentClassifierLayer::new(),
-            ConsumeErrLayer::default(),
-            http_forwarded_layer,
-        )
-            .into_layer(
-                self.http_service_builder
-                    .into_layer(EchoService { uadb: self.uadb }),
-            );
 
         let http_transport_service = match self.http_version {
             Some(Version::HTTP_2) => Either3::A(HttpServer::h2(executor).service(http_service)),
@@ -343,6 +328,45 @@ where
         };
 
         Ok(tcp_service_builder.into_layer(http_transport_service))
+    }
+
+    /// build an http service ready to echo http traffic back
+    pub fn build_http(
+        &self,
+    ) -> impl Service<(), Request, Response: IntoResponse, Error = Infallible> + use<H> {
+        let http_forwarded_layer = match &self.forward {
+            None | Some(ForwardKind::HaProxy) => None,
+            Some(ForwardKind::Forwarded) => Some(Either7::A(GetForwardedHeaderLayer::forwarded())),
+            Some(ForwardKind::XForwardedFor) => {
+                Some(Either7::B(GetForwardedHeaderLayer::x_forwarded_for()))
+            }
+            Some(ForwardKind::XClientIp) => {
+                Some(Either7::C(GetForwardedHeaderLayer::<XClientIp>::new()))
+            }
+            Some(ForwardKind::ClientIp) => {
+                Some(Either7::D(GetForwardedHeaderLayer::<ClientIp>::new()))
+            }
+            Some(ForwardKind::XRealIp) => {
+                Some(Either7::E(GetForwardedHeaderLayer::<XRealIp>::new()))
+            }
+            Some(ForwardKind::CFConnectingIp) => {
+                Some(Either7::F(GetForwardedHeaderLayer::<CFConnectingIp>::new()))
+            }
+            Some(ForwardKind::TrueClientIp) => {
+                Some(Either7::G(GetForwardedHeaderLayer::<TrueClientIp>::new()))
+            }
+        };
+
+        (
+            TraceLayer::new_for_http(),
+            AddRequiredResponseHeadersLayer::default(),
+            UserAgentClassifierLayer::new(),
+            ConsumeErrLayer::default(),
+            http_forwarded_layer,
+        )
+            .into_layer(self.http_service_builder.layer(EchoService {
+                uadb: self.uadb.clone(),
+            }))
     }
 }
 
@@ -547,6 +571,43 @@ impl Service<(), Request> for EchoService {
                     })
                 });
 
+                let peet = PeetPrint::compute(ctx.extensions())
+                    .inspect_err(|err| tracing::trace!(?err, "peet computation"))
+                    .ok();
+
+                let mut profile_peet: Option<FingerprintProfileData> = None;
+
+                if let Some(uadb) = self.uadb.as_deref() {
+                    if let Some(profile) =
+                        ua_str.as_deref().and_then(|s| uadb.get_exact_header_str(s))
+                    {
+                        let matched_peet = profile
+                            .tls
+                            .compute_peet()
+                            .inspect_err(|err| {
+                                tracing::trace!(?err, "peetprint computation of matched profile")
+                            })
+                            .ok();
+                        if let (Some(src), Some(tgt)) = (peet.as_ref(), matched_peet) {
+                            let hash = format!("{tgt}");
+                            let matched = format!("{src}") == hash;
+                            profile_peet = Some(FingerprintProfileData {
+                                hash,
+                                verbose: format!("{tgt:?}"),
+                                matched,
+                            });
+                        }
+                    }
+                }
+
+                let peet = peet.map(|peet| {
+                    json!({
+                        "hash": format!("{peet}"),
+                        "verbose": format!("{peet:?}"),
+                        "profile": profile_peet,
+                    })
+                });
+
                 json!({
                     "header": {
                         "version": hello.protocol_version().to_string(),
@@ -569,6 +630,10 @@ impl Service<(), Request> for EchoService {
                             "data": v.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
                         }),
                         ClientHelloExtension::ApplicationLayerProtocolNegotiation(v) => json!({
+                            "id": extension.id().to_string(),
+                            "data": v.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+                        }),
+                        ClientHelloExtension::ApplicationSettings(v) => json!({
                             "id": extension.id().to_string(),
                             "data": v.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
                         }),
@@ -627,6 +692,7 @@ impl Service<(), Request> for EchoService {
                     }).collect::<Vec<_>>(),
                     "ja3": ja3,
                     "ja4": ja4,
+                    "peet": peet
                 })
             });
 

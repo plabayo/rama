@@ -1,8 +1,8 @@
 use super::predicate::DefaultPredicate;
 use super::{Compression, Predicate};
+use crate::headers::encoding::AcceptEncoding;
 use crate::layer::util::compression::CompressionLevel;
 use rama_core::Layer;
-use rama_http_types::headers::encoding::AcceptEncoding;
 
 /// Compress response bodies of the underlying service.
 ///

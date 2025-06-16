@@ -3,12 +3,12 @@
 /// A macro which defines an enum type.
 macro_rules! __enum_builder {
     (
-        $(#[$comment:meta])*
+        $(#[$m:meta])*
         @U8
         $enum_vis:vis enum $enum_name:ident
         { $( $(#[$enum_meta:meta])* $enum_var: ident => $enum_val: expr ),* $(,)? }
     ) => {
-        $(#[$comment])*
+        $(#[$m])*
         #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy)]
         $enum_vis enum $enum_name {
             $(
@@ -57,21 +57,21 @@ macro_rules! __enum_builder {
             }
         }
 
-        impl ::serde::Serialize for $enum_name {
+        impl $crate::macros::enums::__SerdeSerialize for $enum_name {
             #[inline]
             fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
             where
-                S: ::serde::Serializer,
+                S: $crate::macros::enums::__SerdeSerializer,
             {
                 u8::from(*self).serialize(serializer)
             }
         }
 
-        impl<'de> ::serde::Deserialize<'de> for $enum_name {
+        impl<'de> $crate::macros::enums::__SerdeDeserialize<'de> for $enum_name {
             #[inline]
             fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
             where
-                D: ::serde::Deserializer<'de>,
+                D: $crate::macros::enums::__SerdeDeserializer<'de>,
             {
                 let n = u8::deserialize(deserializer)?;
                 Ok(n.into())
@@ -79,12 +79,12 @@ macro_rules! __enum_builder {
         }
     };
     (
-        $(#[$comment:meta])*
+        $(#[$m:meta])*
         @U16
         $enum_vis:vis enum $enum_name:ident
         { $( $(#[$enum_meta:meta])* $enum_var: ident => $enum_val: expr ),* $(,)? }
     ) => {
-        $(#[$comment])*
+        $(#[$m])*
         #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy)]
         $enum_vis enum $enum_name {
             $(
@@ -92,16 +92,6 @@ macro_rules! __enum_builder {
                 $enum_var
             ),*
             ,Unknown(u16)
-        }
-
-        impl $enum_name {
-            /// returns true if this id is a grease object
-            $enum_vis fn is_grease(&self) -> bool {
-                match self {
-                    $enum_name::Unknown(x) if x & 0x0f0f == 0x0a0a => true,
-                    _ => false,
-                }
-            }
         }
 
         impl From<u16> for $enum_name {
@@ -147,21 +137,21 @@ macro_rules! __enum_builder {
             }
         }
 
-        impl ::serde::Serialize for $enum_name {
+        impl $crate::macros::enums::__SerdeSerialize for $enum_name {
             #[inline]
             fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
             where
-                S: ::serde::Serializer,
+                S: $crate::macros::enums::__SerdeSerializer,
             {
                 u16::from(*self).serialize(serializer)
             }
         }
 
-        impl<'de> ::serde::Deserialize<'de> for $enum_name {
+        impl<'de> $crate::macros::enums::__SerdeDeserialize<'de> for $enum_name {
             #[inline]
             fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
             where
-                D: ::serde::Deserializer<'de>,
+                D: $crate::macros::enums::__SerdeDeserializer<'de>,
             {
                 let n = u16::deserialize(deserializer)?;
                 Ok(n.into())
@@ -169,15 +159,18 @@ macro_rules! __enum_builder {
         }
     };
     (
-        $(#[$comment:meta])*
+        $(#[$m:meta])*
         @Bytes
         $enum_vis:vis enum $enum_name:ident
-        { $( $enum_var: ident => $enum_val: expr ),* $(,)? }
+        { $( $(#[$enum_meta:meta])* $enum_var: ident => $enum_val: expr ),* $(,)? }
     ) => {
-        $(#[$comment])*
+        $(#[$m])*
         #[derive(Debug, PartialEq, Eq, Clone, Hash)]
         $enum_vis enum $enum_name {
-            $( $enum_var),*
+            $(
+                $(#[$enum_meta])*
+                $enum_var
+            ),*
             ,Unknown(Vec<u8>)
         }
 
@@ -290,11 +283,11 @@ macro_rules! __enum_builder {
             }
         }
 
-        impl ::serde::Serialize for $enum_name {
+        impl $crate::macros::enums::__SerdeSerialize for $enum_name {
             #[inline]
             fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
             where
-                S: ::serde::Serializer,
+                S: $crate::macros::enums::__SerdeSerializer,
             {
                 match self {
                     $( $enum_name::$enum_var => {
@@ -307,14 +300,113 @@ macro_rules! __enum_builder {
             }
         }
 
-        impl<'de> ::serde::Deserialize<'de> for $enum_name {
+        impl<'de> $crate::macros::enums::__SerdeDeserialize<'de> for $enum_name {
             #[inline]
             fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
             where
-                D: ::serde::Deserializer<'de>,
+                D: $crate::macros::enums::__SerdeDeserializer<'de>,
             {
                 let b = <::std::borrow::Cow<'de, [u8]>>::deserialize(deserializer)?;
                 Ok(b.as_ref().into())
+            }
+        }
+    };
+    (
+        $(#[$m:meta])*
+        @String
+        $enum_vis:vis enum $enum_name:ident
+        { $( $(#[$enum_meta:meta])* $enum_var: ident => $enum_val: expr ),* $(,)? }
+    ) => {
+        $(#[$m])*
+        #[derive(Debug, PartialEq, Eq, Clone, Hash)]
+        $enum_vis enum $enum_name {
+            $(
+                $(#[$enum_meta])*
+                $enum_var
+            ),*
+            ,Unknown(String)
+        }
+
+        impl $enum_name {
+            // NOTE(allow) generated irrespective if there are callers
+            #[allow(dead_code)]
+            $enum_vis fn as_str(&self) -> &str {
+                match self {
+                    $( $enum_name::$enum_var => $enum_val),*
+                    ,$enum_name::Unknown(v) => &v,
+                }
+            }
+
+            // NOTE(allow) generated irrespective if there are callers
+            #[allow(dead_code)]
+            $enum_vis fn as_smol_str(&self) -> $crate::macros::enums::__SmolStr {
+                match self {
+                    $( $enum_name::$enum_var => $crate::macros::enums::__SmolStr::new_static($enum_val)),*
+                    ,$enum_name::Unknown(v) => $crate::macros::enums::__SmolStr::new(&v),
+                }
+            }
+        }
+
+        impl<'a> From<&'a str> for $enum_name {
+            fn from(s: &'a str) -> Self {
+                $crate::macros::match_ignore_ascii_case_str!(match(s) {
+                    $($enum_val => $enum_name::$enum_var),*
+                    , _ => $enum_name::Unknown(s.to_owned()),
+                })
+            }
+        }
+
+        impl ::std::str::FromStr for $enum_name {
+            type Err = ::std::convert::Infallible;
+
+            fn from_str(s: &str) -> Result<Self, Self::Err> {
+                Ok(s.into())
+            }
+        }
+
+        impl From<String> for $enum_name {
+            fn from(s: String) -> Self {
+                match s.as_str() {
+                    $($enum_val => $enum_name::$enum_var),*
+                    , _ => $enum_name::Unknown(s),
+                }
+            }
+        }
+
+        impl ::std::fmt::Display for $enum_name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                match self {
+                    $( $enum_name::$enum_var => write!(f, "{}", $enum_val)),*
+                    ,$enum_name::Unknown(x) => write!(f, "{x}"),
+                }
+            }
+        }
+
+        impl $crate::macros::enums::__SerdeSerialize for $enum_name {
+            #[inline]
+            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: $crate::macros::enums::__SerdeSerializer,
+            {
+                match self {
+                    $( $enum_name::$enum_var => {
+                        $enum_val.serialize(serializer)
+                    }),*
+                    ,$enum_name::Unknown(x) => {
+                        x.serialize(serializer)
+                    }
+                }
+            }
+        }
+
+        impl<'de> $crate::macros::enums::__SerdeDeserialize<'de> for $enum_name {
+            #[inline]
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: $crate::macros::enums::__SerdeDeserializer<'de>,
+            {
+                let s = <::std::borrow::Cow<'de, str>>::deserialize(deserializer)?;
+                Ok(s.as_ref().into())
             }
         }
     };
@@ -322,3 +414,71 @@ macro_rules! __enum_builder {
 
 #[doc(inline)]
 pub use crate::__enum_builder as enum_builder;
+
+#[doc(hidden)]
+pub use serde::{
+    Deserialize as __SerdeDeserialize, Deserializer as __SerdeDeserializer,
+    Serialize as __SerdeSerialize, Serializer as __SerdeSerializer,
+};
+
+#[doc(hidden)]
+pub use ::smol_str::SmolStr as __SmolStr;
+
+#[macro_export]
+/// Rama alternative for [`From`],[`Into`],[`TryFrom`] to workaround the orphan rule
+///
+/// Orphan rule happens because we neither own the type or the trait where we want
+/// to define their actual implementation.
+///
+/// By adding these traits to crates where we have this problem
+/// we can workaround that. This will become the standard approach
+/// where the normal from/into doesn't work. Main use case right now for
+/// this trait is to support defining conversions from rama tls types (rama-net)
+/// to external types (eg rustls) in tls crates (eg rama-tls-rustls). This macro
+/// should be called from the root module.
+macro_rules! __rama_from_into_traits {
+    () => {
+        pub trait RamaFrom<T> {
+            fn rama_from(value: T) -> Self;
+        }
+
+        pub trait RamaInto<T>: Sized {
+            fn rama_into(self) -> T;
+        }
+
+        impl<T, U> RamaInto<U> for T
+        where
+            U: RamaFrom<T>,
+        {
+            #[inline]
+            fn rama_into(self) -> U {
+                U::rama_from(self)
+            }
+        }
+
+        pub trait RamaTryFrom<T>: Sized {
+            type Error;
+            fn rama_try_from(value: T) -> Result<Self, Self::Error>;
+        }
+
+        pub trait RamaTryInto<T>: Sized {
+            type Error;
+            fn rama_try_into(self) -> Result<T, Self::Error>;
+        }
+
+        impl<T, U> RamaTryInto<U> for T
+        where
+            U: RamaTryFrom<T>,
+        {
+            type Error = U::Error;
+
+            #[inline]
+            fn rama_try_into(self) -> Result<U, U::Error> {
+                U::rama_try_from(self)
+            }
+        }
+    };
+}
+
+#[doc(inline)]
+pub use crate::__rama_from_into_traits as rama_from_into_traits;

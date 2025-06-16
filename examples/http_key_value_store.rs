@@ -54,26 +54,26 @@
 use rama::{
     Context, Layer,
     http::{
-        IntoResponse, Method, StatusCode,
+        Method, StatusCode,
         layer::{
             compression::CompressionLayer, trace::TraceLayer,
             validate_request::ValidateRequestHeaderLayer,
         },
         matcher::HttpMatcher,
-        response::Json,
         server::HttpServer,
         service::web::{
             IntoEndpointService, WebService,
             extract::{Bytes, Path},
+            response::{IntoResponse, Json},
         },
     },
     rt::Executor,
+    telemetry::tracing::{self, level_filters::LevelFilter},
 };
 use serde::Deserialize;
 use serde_json::json;
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::RwLock;
-use tracing::level_filters::LevelFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, fmt};

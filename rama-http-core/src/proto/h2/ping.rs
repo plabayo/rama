@@ -25,7 +25,7 @@ use std::task::{self, Poll};
 use std::time::Duration;
 use tokio::time::Instant;
 
-use tracing::{debug, trace};
+use rama_core::telemetry::tracing::{debug, trace};
 
 use crate::h2::{Ping, PingPong};
 

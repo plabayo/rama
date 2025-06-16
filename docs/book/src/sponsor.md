@@ -26,11 +26,16 @@ Financial contributors help in compensate for the many unpaid developer hours we
 
 You can become a regular financial contributor to Rama by paying for a monthly subscription at [Github Sponsors][ghs-url]. One time contributions are possible as well.
 
-> 💡 Business subscriptions are available via [Gihub Sponsors](https://github.com/sponsors/plabayo/sponsorships?tier_id=300734) for businesses, enterprises and individuals who can afford it 🙏. These subscriptions keep the development of Rama and other projects sustainable and unlocks support for you and your team in the integration and usage of Rama.
+> 💡 Business subscriptions are available via [Github Sponsors](https://github.com/sponsors/plabayo/sponsorships?tier_id=300734) for businesses, enterprises and individuals who can afford it 🙏. These subscriptions keep the development of Rama and other projects sustainable and unlocks support for you and your team in the integration and usage of Rama.
 >
 > 👉 For even more custom integrations or features you can always get in touch by sending an email to [glen@plabayo.tech](mailto:glen@plabayo.tech).
 
 Alternatively you can also become a (monthly subscriber) sponsor or pay a one-time donation via [Github Sponsors][ghs-url]. For one-time donations you are also free to use ["Buy me a Coffee"][bmac-url] or ["Paypal Donations"][paypal-url] in case you are more at ease with any of these.
+
+Donations can also be paid in the following cryptocurrency:
+
+* Bitcoin: `bc1qk3383nfzcag9lymwv83m7empa6qu2vspqjkpw4`
+* Ethereum: `0xc0C5aCdB0E6c560132c93Df721E1Cd220f6fD4aa`
 
 Sponsors help us continue to maintain and improve `rama`, as well as other
 Free and Open Source (FOSS) technology. It also helps us to create
@@ -57,11 +62,11 @@ start a conversation with us by sending an email to [glen@plabayo.tech](mailto:g
 
 Rama (ラマ) is bundled with Http/Tls emulation data, gathered for all major platforms and browsers using real devices by [BrowserStack](https://browserstack.com). It does this automatically every day by using [our public Fingerprinting service](https://fp.ramaproxy.org) which is hosted together with a database on [fly.io](https://fly.io).
 
-We are grateful to both sponsors for sponsering us these valuable cloud resources. Thank you!
+We are grateful to both sponsors for sponsoring us these valuable cloud resources. Thank you!
 
 ## Professional Services
 
-🤝 Enterprise support, software customisations, integrations, professional support, consultancy and training are available upon request by sending an email to [glen@plabayo.tech](mailto:glen@plabayo.tech). Or get an entireprise subscription via [Gihub Sponsors](https://github.com/sponsors/plabayo/sponsorships?tier_id=300734).
+🤝 Enterprise support, software customizations, integrations, professional support, consultancy and training are available upon request by sending an email to [glen@plabayo.tech](mailto:glen@plabayo.tech). Or get an entireprise subscription via [Github Sponsors](https://github.com/sponsors/plabayo/sponsorships?tier_id=300734).
 
 These type of contracts are another way for you to be able to support the project and
 at the same time get serviced for your own needs and purposes.

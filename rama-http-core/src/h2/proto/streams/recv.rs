@@ -2,6 +2,7 @@ use super::*;
 use crate::h2::codec::UserError;
 use crate::h2::frame::{DEFAULT_INITIAL_WINDOW_SIZE, PushPromiseHeaderError, Reason};
 use crate::h2::proto;
+use rama_core::telemetry::tracing;
 
 use rama_http_types::proto::h1::headers::original::OriginalHttp1Headers;
 use rama_http_types::{HeaderMap, Request, Response};
@@ -150,9 +151,12 @@ impl Recv {
         Ok(Some(id))
     }
 
+    // TODO: revisit to see if we can avoid large result here
+
     /// Transition the stream state based on receiving headers
     ///
     /// The caller ensures that the frame represents headers and not trailers.
+    #[allow(clippy::result_large_err)]
     pub(super) fn recv_headers(
         &mut self,
         frame: frame::Headers,
@@ -578,7 +582,7 @@ impl Recv {
 
     #[allow(clippy::unused_self)]
     pub(super) fn is_end_stream(&self, stream: &store::Ptr) -> bool {
-        if !stream.state.is_recv_closed() {
+        if !stream.state.is_recv_end_stream() {
             return false;
         }
 

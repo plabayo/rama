@@ -2,15 +2,15 @@ use std::mem::MaybeUninit;
 
 use std::fmt::{self, Write as _};
 
-use bytes::Bytes;
-use bytes::BytesMut;
+use rama_core::bytes::Bytes;
+use rama_core::bytes::BytesMut;
+use rama_core::telemetry::tracing::{debug, error, trace, trace_span, warn};
 use rama_http_types::dep::http;
 use rama_http_types::header::Entry;
 use rama_http_types::header::{self, HeaderMap, HeaderValue};
 use rama_http_types::proto::h1::{Http1HeaderMap, Http1HeaderName};
 use rama_http_types::{Method, StatusCode, Version};
 use smallvec::{SmallVec, smallvec, smallvec_inline};
-use tracing::{debug, error, trace, trace_span, warn};
 
 use crate::body::DecodedLength;
 use crate::common::date;
@@ -59,7 +59,7 @@ where
 /// Used when there was a partial read, to skip full parsing on a
 /// a slow connection.
 fn is_complete_fast(bytes: &[u8], prev_len: usize) -> bool {
-    let start = if prev_len < 3 { 0 } else { prev_len - 3 };
+    let start = prev_len.saturating_sub(3);
     let bytes = &bytes[start..];
 
     for (i, b) in bytes.iter().copied().enumerate() {
@@ -199,7 +199,7 @@ impl Http1Transaction for Server {
             let header = unsafe { header.assume_init_ref() };
             let name = Http1HeaderName::try_copy_from_slice(&slice[header.name.0..header.name.1])
                 .inspect_err(|err| {
-                    tracing::debug!("invalid http1 header: {err:?}");
+                    debug!("invalid http1 header: {err:?}");
                 })
                 .map_err(|_| crate::error::Parse::Internal)?;
             let value = header_value!(slice.slice(header.value.0..header.value.1));
@@ -296,7 +296,7 @@ impl Http1Transaction for Server {
 
     fn encode(mut msg: Encode<'_, Self::Outgoing>, dst: &mut Vec<u8>) -> crate::Result<Encoder> {
         trace!(
-            "Server::encode status={:?}, body={:?}, req_method={:?}",
+            "encode status={:?}, body={:?}, req_method={:?}",
             msg.head.subject, msg.body, msg.req_method
         );
 
@@ -901,7 +901,7 @@ impl Http1Transaction for Client {
                 let name =
                     Http1HeaderName::try_copy_from_slice(&slice[header.name.0..header.name.1])
                         .inspect_err(|err| {
-                            tracing::debug!("invalid http1 header: {err:?}");
+                            debug!("invalid http1 header: {err:?}");
                         })
                         .map_err(|_| crate::error::Parse::Internal)?;
                 let value = header_value!(slice.slice(header.value.0..header.value.1));
@@ -965,7 +965,7 @@ impl Http1Transaction for Client {
 
     fn encode(mut msg: Encode<'_, Self::Outgoing>, dst: &mut Vec<u8>) -> crate::Result<Encoder> {
         trace!(
-            "Client::encode method={:?}, body={:?}",
+            "encode method={:?}, body={:?}",
             msg.head.subject.0, msg.body
         );
 
@@ -1053,7 +1053,7 @@ impl Client {
             }
             Some(_) => {}
             None => {
-                trace!("Client::decoder is missing the Method");
+                trace!("decoder is missing the Method");
             }
         }
 
@@ -1412,7 +1412,7 @@ fn extend(dst: &mut Vec<u8>, data: &[u8]) {
 
 #[cfg(test)]
 mod tests {
-    use bytes::BytesMut;
+    use rama_core::bytes::BytesMut;
     use rama_http_types::proto::h1::headers::original::OriginalHttp1Headers;
 
     use super::*;

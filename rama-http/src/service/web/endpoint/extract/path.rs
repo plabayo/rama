@@ -1,3 +1,5 @@
+//! Module in function of the [`Path`] extractor.
+
 use super::FromRequestContextRefPair;
 use crate::dep::http::request::Parts;
 use crate::matcher::{UriParams, UriParamsDeserializeError};

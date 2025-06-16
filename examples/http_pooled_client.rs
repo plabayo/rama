@@ -27,9 +27,9 @@ use rama::{
         LimitLayer,
         limit::{Policy, PolicyOutput, policy::PolicyResult},
     },
-    net::client::Pool,
     rt::Executor,
     tcp::server::TcpListener,
+    telemetry::tracing::{self, level_filters::LevelFilter},
 };
 
 // Everything else we need is provided by the standard library, community crates or tokio.
@@ -40,7 +40,6 @@ use std::sync::{
 };
 use tokio::{sync::oneshot::Sender, sync::oneshot::channel};
 use tokio_test::assert_err;
-use tracing::level_filters::LevelFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, fmt};
@@ -54,7 +53,14 @@ async fn main() {
     tokio::spawn(run_server(ADDRESS, ready_tx));
     ready_rx.await.unwrap();
 
-    let client = EasyHttpWebClient::default().with_connection_pool(Pool::default());
+    let client = EasyHttpWebClient::builder()
+        .with_default_transport_connector()
+        .without_tls_proxy_support()
+        .with_proxy_support()
+        .without_tls_support()
+        .with_connection_pool(Default::default())
+        .expect("connection pool")
+        .build();
 
     let resp = client
         .get(format!("http://{ADDRESS}/"))
@@ -76,7 +82,7 @@ async fn main() {
 
     // If we dont use a connection pool now we should get an error from the server as we
     // will need to open a new connection
-    let client = client.without_connection_pool();
+    let client = EasyHttpWebClient::default();
     let result = client
         .get(format!("http://{ADDRESS}/"))
         .send(Context::default())
@@ -114,7 +120,7 @@ async fn run_server(addr: &str, ready: Sender<()>) {
 }
 
 #[derive(Clone)]
-/// Polify for limit layer that will only allow the first connection to succeed
+/// Policy for limit layer that will only allow the first connection to succeed
 struct FirstConnOnly(Arc<AtomicBool>);
 
 impl FirstConnOnly {

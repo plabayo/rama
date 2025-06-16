@@ -30,7 +30,7 @@
 //! > Where required we had to fork other crates due to an incompatibility in needs or scope.
 //! > While this is unfortunate as it leads to more work for us, we gladly do so in cases
 //! > where it fits our mission of empowering rama users, including ourselves.
-//! > You can find more information about these forks at <https://github.com/plabayo/rama/blob/main/FORK.md>.
+//! > You can find more information about these forks at <https://github.com/plabayo/rama/blob/main/docs/thirdparty/fork/README.md>.
 //! > As much as possible we preserve the code layout of forked code modules to be able
 //! > to keep in sync with upstream and push patches upstream where applicable.
 //!
@@ -48,31 +48,31 @@
 //!
 //! | category | support list |
 //! |-|-|
-//! | ✅ [transports](crate::net::stream) | ✅ [tcp] ⸱ 🏗️ udp <sup>(1)</sup> ⸱ ✅ [middleware](crate::net::stream::layer) |
-//! | ✅ [http] | ✅ [auto](crate::http::server::service::HttpServer::auto) ⸱ ✅ [http/1.1](crate::http::server::service::HttpServer::http1) ⸱ ✅ [h2](crate::http::server::service::HttpServer::h2) ⸱ 🏗️ h3 <sup>(1)</sup> ⸱ ✅ [middleware](crate::http::layer) |
-//! | ✅ web server | ✅ [fs](crate::http::service::fs) ⸱ ✅ [redirect](crate::http::service::redirect::Redirect) ⸱ ✅ [dyn router](crate::http::service::web::WebService) ⸱ ✅ [static router](crate::http::service::web::match_service) ⸱ ✅ [handler extractors](crate::http::service::web::extract) ⸱ ✅ [k8s healthcheck](crate::http::service::web::k8s) |
-//! | ✅ [http client](crate::http::client) | ✅ [easy client](crate::http::client::EasyHttpWebClient) ⸱ ✅ [high level API](crate::http::service::client::HttpClientExt) ⸱ ✅ [Proxy Connect](crate::http::client::proxy::layer::HttpProxyConnector) ⸱ ❌ [Chromium Http](https://github.com/plabayo/rama/issues/189) <sup>(3)</sup> |
+//! | ✅ [transports](crate::net::stream) | ✅ [tcp] ⸱ ✅ [udp] ⸱ ✅ [Unix (UDS)][unix] ⸱ ✅ [middleware](crate::net::stream::layer) |
+//! | ✅ [http] | ✅ [auto](crate::http::server::service::HttpServer::auto) ⸱ ✅ [http/1.1](crate::http::server::service::HttpServer::http1) ⸱ ✅ [h2](crate::http::server::service::HttpServer::h2) ⸱ 🏗️ h3 <sup>(2)</sup> ⸱ ✅ [middleware](crate::http::layer) |
+//! | ✅ web server | ✅ [fs](crate::http::service::fs) ⸱ ✅ [redirect](crate::http::service::redirect::Redirect) ⸱ ✅ [router](crate::http::service::web::Router) ⸱ ✅ [dyn router](crate::http::service::web::WebService) ⸱ ✅ [static router](crate::http::service::web::match_service) ⸱ ✅ [handler extractors](crate::http::service::web::extract) ⸱ ✅ [k8s healthcheck](crate::http::service::web::k8s) |
+//! | ✅ [http client](crate::http::client) | ✅ [easy client](crate::http::client::EasyHttpWebClient) ⸱ ✅ [high level API](crate::http::service::client::HttpClientExt) ⸱ ✅ [BoringSSL Connect](crate::tls::boring::client::TlsConnectorLayer) ⸱ ✅ [Rustls Connect](crate::tls::rustls::client::TlsConnectorLayer) ⸱ ✅ [HTTP Proxy Connect](crate::http::client::proxy::layer::HttpProxyConnector) ⸱ ✅ [Socks5 Proxy Connect](crate::proxy::socks5::Socks5ProxyConnectorLayer) ⸱ ❌ [Chromium Http](https://github.com/plabayo/rama/issues/189) <sup>(3)</sup> |
 //! | ✅ [tls] | ✅ [Rustls](crate::tls::rustls) ⸱ ✅ [BoringSSL](crate::tls::boring) ⸱ ❌ NSS <sup>(3)</sup> |
 //! | ✅ [dns] | ✅ [DNS Resolver][crate::dns::DnsResolver] |
-//! | ✅ [proxy] protocols | ✅ [PROXY protocol](crate::proxy::haproxy) ⸱ ✅ [http proxy](https://github.com/plabayo/rama/blob/main/examples/http_connect_proxy.rs) ⸱ ✅ [https proxy](https://github.com/plabayo/rama/blob/main/examples/https_connect_proxy.rs) ⸱ 🏗️ SOCKS5 <sup>(2)</sup> ⸱ 🏗️ SOCKS5H <sup>(2)</sup> |
-//! | 🏗️ web protocols | 🏗️ Web Sockets (WS) <sup>(2)</sup> ⸱ 🏗️ WSS <sup>(2)</sup> ⸱ ❌ Web Transport <sup>(3)</sup> ⸱ ❌ gRPC <sup>(3)</sup> |
+//! | ✅ [proxy] protocols | ✅ [PROXY protocol](crate::proxy::haproxy) ⸱ ✅ [http proxy](https://github.com/plabayo/rama/blob/main/examples/http_connect_proxy.rs) ⸱ ✅ [https proxy](https://github.com/plabayo/rama/blob/main/examples/https_connect_proxy.rs) ⸱ ✅ [socks5(h) proxy](https://github.com/plabayo/rama/blob/main/examples/socks5_connect_proxy.rs) |
+//! | 🏗️ web protocols | ✅ [SSE](https://ramaproxy.org/docs/rama/http/sse/index.html) ⸱ 🏗️ Web Sockets <sup>(1)</sup> ⸱ ❌ Web Transport <sup>(3)</sup> ⸱ ❌ gRPC <sup>(2)</sup> |
 //! | ✅ [async-method trait](https://blog.rust-lang.org/inside-rust/2023/05/03/stabilizing-async-fn-in-trait.html) services | ✅ [Service] ⸱ ✅ [Layer] ⸱ ✅ [context] ⸱ ✅ [dyn dispatch](crate::service::BoxService) ⸱ ✅ [middleware](crate::layer) |
 //! | ✅ [telemetry] | ✅ [tracing](https://tracing.rs/tracing/) ⸱ ✅ [opentelemetry][telemetry::opentelemetry] ⸱ ✅ [http metrics](crate::http::layer::opentelemetry) ⸱ ✅ [transport metrics](crate::net::stream::layer::opentelemetry) |
-//! | ✅ upstream [proxies](proxy) | ✅ [MemoryProxyDB](crate::proxy::MemoryProxyDB) ⸱ ✅ [L4 Username Config] ⸱ ✅ [Proxy Filters](crate::proxy::ProxyFilter) |
+//! | ✅ upstream [proxies](proxy) | ✅ [MemoryProxyDB](crate::proxy::MemoryProxyDB) ⸱ ✅ [Username Config] ⸱ ✅ [Proxy Filters](crate::proxy::ProxyFilter) |
 //! | ✅ [User Agent (UA)](https://ramaproxy.org/book/intro/user_agent) | ✅ [Http Emulation](crate::ua::profile::HttpProfile) ⸱ ✅ [Tls Emulation](crate::ua::profile::TlsProfile) ⸱ ✅ [UA Parsing](crate::ua::UserAgent) |
-//! | ✅ [Fingerprinting](crate::net::fingerprint) | ✅ [Ja3](crate::net::fingerprint::Ja3) ⸱ ✅ [Ja4](crate::net::fingerprint::Ja4) ⸱ ✅ [Ja4H](crate::net::fingerprint::Ja4H) |
-//! | ✅ utilities | ✅ [error handling](crate::error) ⸱ ✅ [graceful shutdown](crate::graceful) ⸱ 🏗️ Connection Pool <sup>(1)</sup> ⸱ 🏗️ IP2Loc <sup>(2)</sup> |
-//! | 🏗️ Graphical Interface | 🏗️ traffic logger <sup>(2)</sup> ⸱ 🏗️ curl export <sup>(2)</sup> ⸱ 🏗️ [TUI implementation](https://ratatui.rs/) <sup>(2)</sup> ⸱ ❌ traffic intercept <sup>(3)</sup> ⸱ ❌ traffic replay <sup>(3)</sup> |
-//! | ✅ binary | ✅ [prebuilt binaries](https://ramaproxy.org/book/deploy/rama-cli) ⸱ 🏗️ proxy config <sup>(2)</sup> ⸱ ✅ http client <sup>(1)</sup> ⸱ ❌ WASM Plugins <sup>(3)</sup> |
+//! | ✅ [Fingerprinting](crate::net::fingerprint) | ✅ [Ja3](crate::net::fingerprint::Ja3) ⸱ ✅ [Ja4](crate::net::fingerprint::Ja4) ⸱ ✅ [Ja4H](crate::net::fingerprint::Ja4H) ⸱ 🏗️ [Akamai passive h2](https://github.com/plabayo/rama/issues/517) <sup>(1)</sup> ⸱ ✅ [Peetprint (tls)](crate::net::fingerprint::PeetPrint) |
+//! | ✅ utilities | ✅ [error handling](crate::error) ⸱ ✅ [graceful shutdown](crate::graceful) ⸱ ✅ [Connection Pool Trait](crate::net::client::pool::Pool) ✅ [Connection Pooling](crate::net::client::pool) ⸱ ✅ [Tower Adapter](crate::utils::tower)  ⸱ 🏗️ IP2Loc <sup>(1)</sup> |
+//! | 🏗️ Graphical Interface | 🏗️ traffic logger <sup>(2)</sup> ⸱ 🏗️ curl export <sup>(1)</sup> ⸱ 🏗️ [TUI implementation](https://ratatui.rs/) <sup>(2)</sup> ⸱ ❌ traffic intercept <sup>(3)</sup> ⸱ ❌ traffic replay <sup>(3)</sup> |
+//! | ✅ binary | ✅ [prebuilt binaries](https://ramaproxy.org/book/deploy/rama-cli) ⸱ 🏗️ proxy config <sup>(2)</sup> ⸱ ✅ http client ⸱ ❌ WASM Plugins <sup>(3)</sup> |
 //! | 🏗️ data scraping | 🏗️ Html Processor <sup>(2)</sup> ⸱ ❌ Json Processor <sup>(3)</sup> |
 //! | ❌ browser | ❌ JS Engine <sup>(3)</sup> ⸱ ❌ [Web API](https://developer.mozilla.org/en-US/docs/Web/API) Emulation <sup>(3)</sup> |
 //!
-//! [L4 Username Config]: https://docs.rs/rama-core/latest/rama_core/username/index.html
+//! [Username Config]: https://docs.rs/rama-core/latest/rama_core/username/index.html
 //!
 //! > 🗒️ _Footnotes_
 //! >
-//! > * <sup>(1)</sup> Part of [`v0.2.0` milestone (ETA: 2025 Q2)](https://github.com/plabayo/rama/milestone/1)
-//! > * <sup>(2)</sup> Part of [`v0.3.0` milestone (ETA: 2025 Q3)](https://github.com/plabayo/rama/milestone/2)
+//! > * <sup>(1)</sup> Part of [`v0.3.0` milestone (ETA: 2025 Q2)](https://github.com/plabayo/rama/milestone/2)
+//! > * <sup>(2)</sup> Part of [`v0.4.0` milestone (ETA: 2025 Q3)](https://github.com/plabayo/rama/milestone/3)
 //! > * <sup>(3)</sup> No immediate plans, but on our radar. Please [open an issue](https://github.com/plabayo/rama/issues) to request this feature if you have an immediate need for it. Please add sufficient motivation/reasoning and consider [becoming a sponsor](https://ramaproxy.org/book/sponsor.html) to help accelerate its priority.
 //!
 //! The primary focus of Rama is to aid you in your development of [proxies](https://ramaproxy.org/book/proxies/intro.html):
@@ -80,7 +80,7 @@
 //! - 🚦 [Reverse proxies](https://ramaproxy.org/book/proxies/reverse);
 //! - 🔓 [TLS Termination proxies](https://ramaproxy.org/book/proxies/tls);
 //! - 🌐 [HTTP(S) proxies](https://ramaproxy.org/book/proxies/http);
-//! - 🧦 [SOCKS5 proxies](https://ramaproxy.org/book/proxies/socks5) (will be implemented in `v0.3`);
+//! - 🧦 [SOCKS5 proxies](https://ramaproxy.org/book/proxies/socks5);
 //! - 🔎 [MITM proxies](https://ramaproxy.org/book/proxies/mitm);
 //! - 🕵️‍♀️ [Distortion proxies](https://ramaproxy.org/book/proxies/distort).
 //!
@@ -180,9 +180,11 @@
 //!   context used by all other `rama` code, as well as some other _core_ utilities
 //! - [`rama-net`](https://crates.io/crates/rama-net): rama network types and utilities
 //! - [`rama-dns`](https://crates.io/crates/rama-dns): DNS support for rama
+//! - [`rama-unix`](https://crates.io/crates/rama-unix): Unix (domain) socket support for rama
 //! - [`rama-tcp`](https://crates.io/crates/rama-tcp): TCP support for rama
 //! - [`rama-udp`](https://crates.io/crates/rama-udp): UDP support for rama
-//! - [`rama-tls`](https://crates.io/crates/rama-tls): TLS support for rama (types, `rustls` and `boring`)
+//! - [`rama-tls-boring`](https://crates.io/crates/rama-tls-boring): [Boring](https://github.com/plabayo/rama-boring) tls support for rama
+//! - [`rama-tls-rustls`](https://crates.io/crates/rama-tls-rustls): [Rustls](https://github.com/rustls/rustls) support for rama
 //! - [`rama-proxy`](https://crates.io/crates/rama-proxy): proxy types and utilities for rama
 //! - [`rama-socks5`](https://crates.io/crates/rama-socks5): SOCKS5 support for rama
 //! - [`rama-haproxy`](https://crates.io/crates/rama-haproxy): rama HaProxy support
@@ -191,6 +193,7 @@
 //! - [`rama-http`](https://crates.io/crates/rama-http): rama http services, layers and utilities
 //! - [`rama-http-backend`](https://crates.io/crates/rama-http-backend): default http backend for `rama`
 //! - [`rama-http-core`](https://crates.io/crates/rama-http-core): http protocol implementation driving `rama-http-backend`
+//! - [`rama-tower`](https://crates.io/crates/rama-tower): provide [tower](https://github.com/tower-rs/tower) compatibility for `rama`
 //!
 //! `rama` crates that live in <https://github.com/plabayo/rama-boring> (forks of `cloudflare/boring`):
 //!
@@ -207,11 +210,11 @@
 //!
 //! ## 🏢 | Proxy Examples
 //!
-//! - [/examples/tls_termination.rs](https://github.com/plabayo/rama/tree/main/examples/tls_termination.rs):
-//!   Spawns a mini handmade http server, as well as a TLS termination proxy, forwarding the
+//! - [/examples/tls_rustls_termination.rs](https://github.com/plabayo/rama/tree/main/examples/tls_rustls_termination.rs):
+//!   Spawns a mini handmade http server, as well as a TLS termination proxy (using rustls), forwarding the
 //!   plain text stream to the first.
-//! - [/examples/tls_termination.rs](https://github.com/plabayo/rama/tree/main/examples/tls_termination.rs):
-//!   Spawns a mini handmade http server, as well as a TLS termination proxy, forwarding the
+//! - [/examples/tls_rustls_termination.rs](https://github.com/plabayo/rama/tree/main/examples/tls_boring_termination.rs):
+//!   Spawns a mini handmade http server, as well as a TLS termination proxy (using boring), forwarding the
 //!   plain text stream to the first.
 //! - [/examples/mtls_tunnel_and_service.rs](https://github.com/plabayo/rama/blob/main/examples/mtls_tunnel_and_service.rs):
 //!   Example of how to do mTls (manual Tls, where the client also needs a certificate) using rama,
@@ -265,6 +268,9 @@
 //!   a web service example showcasing how one might do a key value store web service using `Rama`;
 //! - [/examples/http_web_service_dir_and_api.rs](https://github.com/plabayo/rama/tree/main/examples/http_web_service_dir_and_api.rs):
 //!   a web service example showcasing how one can make a web service to serve a website which includes an XHR API;
+//! - [/examples/http_web_router.rs](https://github.com/plabayo/rama/tree/main/examples/http_web_router.rs):
+//!   a web service example showcasing demonstrating how to create a web router, which is excellent for the typical path-centric routing,
+//!   and an approach you'll recognise from most other web frameworks out there.
 //!
 //! For a production-like example of a web service you can also read the [`rama-fp` source code](https://github.com/plabayo/rama/tree/main/rama-fp/src).
 //! This is the webservice behind the Rama fingerprinting service, which is used by the maintainers of 🦙 Rama (ラマ) to generate
@@ -273,7 +279,26 @@
 //!
 //! > 💡 This example showcases how you can make use of the [`match_service`](https://docs.rs/rama-http/latest/rama_http/service/web/macro.match_service.html)
 //! > macro to create a `Box`-free service router. Another example of this approach can be seen in the
-//! > [http_service_match.rs](https://github.com/plabayo/rama/tree/main/examples/http_service_match.rs) example.
+//! > [/examples/http_service_match.rs](https://github.com/plabayo/rama/tree/main/examples/http_service_match.rs) example.
+//!
+//! ### Datastar
+//!
+//! > Datastar helps you build reactive web applications with the simplicity of server-side rendering and the power of a full-stack SPA framework.
+//! >
+//! > — <https://data-star.dev/>
+//!
+//! Rama has built-in support for [🚀 data-\*](https://data-star.dev).
+//! You can see it in action in [Examples](https://github.com/plabayo/rama/tree/main/examples):
+//!
+//! - [/examples/http_sse_datastar_hello.rs](https://github.com/plabayo/rama/tree/main/examples/http_sse_datastar_hello.rs):
+//!   SSE Example, showcasing a very simple datastar example,
+//!   which is supported by rama both on the client as well as the server side.
+//!
+//! Rama rust docs:
+//!
+//! - SSE support: <https://ramaproxy.org/docs/rama/http/sse/datastar/index.html>
+//! - Extractor support (`ReadSignals`): <https://ramaproxy.org/docs/rama/http/service/web/extract/datastar/index.html>
+//! - Embedded JS Script: <https://ramaproxy.org/docs/rama/http/service/web/response/struct.DatastarScript.html>
 //!
 //! ## 🧑‍💻 | Http Clients
 //!
@@ -337,9 +362,13 @@
 
 #[doc(inline)]
 pub use ::rama_core::{
-    Context, Layer, Service, combinators, context, error, graceful, inspect, layer, matcher, rt,
-    service, username,
+    Context, Layer, Service, bytes, combinators, context, error, futures, graceful, inspect, layer,
+    matcher, rt, service, username,
 };
+
+#[cfg(all(unix, feature = "net"))]
+#[doc(inline)]
+pub use ::rama_unix as unix;
 
 #[cfg(feature = "tcp")]
 #[doc(inline)]
@@ -349,13 +378,19 @@ pub use ::rama_tcp as tcp;
 #[doc(inline)]
 pub use ::rama_udp as udp;
 
-#[cfg(feature = "telemetry")]
 #[doc(inline)]
 pub use ::rama_core::telemetry;
 
-#[cfg(feature = "tls")]
-#[doc(inline)]
-pub use ::rama_tls as tls;
+#[cfg(any(feature = "rustls", feature = "boring"))]
+pub mod tls {
+    #[cfg(feature = "boring")]
+    #[doc(inline)]
+    pub use ::rama_tls_boring as boring;
+
+    #[cfg(feature = "rustls")]
+    #[doc(inline)]
+    pub use ::rama_tls_rustls as rustls;
+}
 
 #[cfg(feature = "dns")]
 #[doc(inline)]
@@ -368,7 +403,7 @@ pub use ::rama_net as net;
 #[cfg(feature = "http")]
 pub mod http;
 
-#[cfg(any(feature = "proxy", feature = "haproxy"))]
+#[cfg(any(feature = "proxy", feature = "haproxy", feature = "socks5"))]
 pub mod proxy {
     //! rama proxy support
 
@@ -379,6 +414,10 @@ pub mod proxy {
     #[cfg(feature = "haproxy")]
     #[doc(inline)]
     pub use ::rama_haproxy as haproxy;
+
+    #[cfg(feature = "socks5")]
+    #[doc(inline)]
+    pub use ::rama_socks5 as socks5;
 }
 
 #[cfg(feature = "ua")]
@@ -388,5 +427,13 @@ pub use ::rama_ua as ua;
 #[cfg(feature = "cli")]
 pub mod cli;
 
-#[doc(inline)]
-pub use ::rama_utils as utils;
+pub mod utils {
+    //! utilities for rama
+
+    #[doc(inline)]
+    pub use ::rama_utils::*;
+
+    #[cfg(feature = "tower")]
+    #[doc(inline)]
+    pub use ::rama_tower as tower;
+}

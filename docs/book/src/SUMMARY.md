@@ -1,11 +1,16 @@
 [Preface](./preface.md)
-[Why Rama](./why_rama.md)
-[Built with Rust](./rust.md)
-[Do It Yourself](./diy.md)
-[Web Servers](./web_servers.md)
-[Http Clients](./http_clients.md)
 
 # Introduction
+
+- [Why Rama](./why_rama.md)
+- [Built with Rust](./rust.md)
+- [Do It Yourself](./diy.md)
+- [Web Servers](./web_servers.md)
+- [Http Clients](./http_clients.md)
+- [Transport Protocols](./transport.md)
+- [Server-Sent Events (SSE)](./sse.md)
+
+# Rama 101
 
 - [📦 `rama` crate](./crate.md)
 - [Intro to `rama`](./intro.md)
@@ -29,12 +34,16 @@
     - [🔓 TLS Termination proxies](./proxies/tls.md)
     - [🌐 HTTP(S) proxies](./proxies/http.md)
     - [🧦 SOCKS5 proxies](./proxies/socks5.md)
+    - [🔓 SNI proxies](./proxies/sni.md)
     - [🔎 MITM proxies](./proxies/mitm.md)
     - [🕵️‍♀️ Distortion proxies](./proxies/distort.md)
+    - [🧭 HaProxy (PROXY protocol)](./proxies/haproxy.md)
+- [🔍 Protocol Inspection](./proxies/protocol_inspection.md)
 
 # Deploy
 
 - [Overview of deploying options](./deploy/overview.md)
+- [🚀 Rama x Shuttle](./deploy/shuttle.md)
 - [⌨️ `rama` binary](./deploy/rama-cli.md)
 
 # Appendices

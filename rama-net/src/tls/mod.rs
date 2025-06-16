@@ -4,14 +4,13 @@
 use rama_utils::str::NonEmptyString;
 
 mod enums;
-#[cfg(feature = "boring")]
-pub use enums::openssl_cipher_list_str_from_cipher_list;
 pub use enums::{
     ApplicationProtocol, CertificateCompressionAlgorithm, CipherSuite, CompressionAlgorithm,
     ECPointFormat, ExtensionId, ProtocolVersion, SignatureScheme, SupportedGroup,
 };
 
 pub mod client;
+pub mod keylog;
 pub mod server;
 
 #[derive(Debug, Clone)]
@@ -94,59 +93,4 @@ pub enum DataEncoding {
     DerStack(Vec<Vec<u8>>),
     /// Privacy Enhanced Mail (PEM) (plain text)
     Pem(NonEmptyString),
-}
-
-#[cfg(feature = "boring")]
-mod boring {
-    use super::*;
-    use ::rama_boring::stack::StackRef;
-    use ::rama_boring::x509::X509;
-    use rama_core::error::{ErrorContext, OpaqueError};
-
-    impl TryFrom<&X509> for DataEncoding {
-        type Error = OpaqueError;
-
-        fn try_from(value: &X509) -> Result<Self, Self::Error> {
-            let der = value.to_der().context("boring X509 to Der DataEncoding")?;
-            Ok(DataEncoding::Der(der))
-        }
-    }
-
-    impl TryFrom<&StackRef<X509>> for DataEncoding {
-        type Error = OpaqueError;
-
-        fn try_from(value: &StackRef<X509>) -> Result<Self, Self::Error> {
-            let der = value
-                .into_iter()
-                .map(|cert| {
-                    cert.to_der()
-                        .context("boring X509 stackref to DerStack DataEncoding")
-                })
-                .collect::<Result<Vec<Vec<u8>>, _>>()?;
-            Ok(DataEncoding::DerStack(der))
-        }
-    }
-}
-
-#[cfg(feature = "rustls")]
-mod rustls {
-    use super::*;
-    use ::rustls::pki_types::CertificateDer;
-
-    impl From<&CertificateDer<'static>> for DataEncoding {
-        fn from(value: &CertificateDer<'static>) -> Self {
-            DataEncoding::Der(value.as_ref().into())
-        }
-    }
-
-    impl From<&[CertificateDer<'static>]> for DataEncoding {
-        fn from(value: &[CertificateDer<'static>]) -> Self {
-            DataEncoding::DerStack(
-                value
-                    .iter()
-                    .map(|cert| Into::<Vec<u8>>::into(cert.as_ref()))
-                    .collect(),
-            )
-        }
-    }
 }

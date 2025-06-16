@@ -1,3 +1,5 @@
+//! Module in function of the [`Authority`] extractor.
+
 use super::FromRequestContextRefPair;
 use crate::utils::macros::define_http_rejection;
 use rama_core::Context;
@@ -47,7 +49,7 @@ mod tests {
     use crate::StatusCode;
     use crate::dep::http_body_util::BodyExt as _;
     use crate::header::X_FORWARDED_HOST;
-    use crate::layer::forwarded::GetForwardedHeadersService;
+    use crate::layer::forwarded::GetForwardedHeaderService;
     use crate::service::web::WebService;
     use crate::{Body, HeaderName, Request};
     use rama_core::Service;
@@ -57,7 +59,7 @@ mod tests {
         authority: &str,
         headers: Vec<(&HeaderName, &str)>,
     ) {
-        let svc = GetForwardedHeadersService::x_forwarded_host(
+        let svc = GetForwardedHeaderService::x_forwarded_host(
             WebService::default().get("/", async |Authority(authority): Authority| {
                 authority.to_string()
             }),

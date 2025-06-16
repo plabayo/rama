@@ -10,26 +10,26 @@ categories = ["asynchronous", "network-programming", "web-programming"]
 authors = { workspace = true }
 rust-version = { workspace = true }
 
-[lints]
-workspace = true
-
-[features]
-default = []
-
-[dependencies]
-hickory-resolver = { workspace = true }
-rama-core = { version = "0.2.0-alpha.8", path = "../rama-core" }
-rama-net = { version = "0.2.0-alpha.8", path = "../rama-net" }
-rama-utils = { version = "0.2.0-alpha.8", path = "../rama-utils" }
-serde = { workspace = true }
-tokio = { workspace = true, features = ["macros", "net"] }
-
-[dev-dependencies]
-serde_html_form = { workspace = true }
-
 [package.metadata.cargo-public-api-crates]
 allowed = []
 
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
+
+[features]
+default = []
+
+[dependencies]
+hickory-resolver = { workspace = true }
+rama-core = { workspace = true }
+rama-net = { workspace = true }
+rama-utils = { workspace = true }
+serde = { workspace = true }
+tokio = { workspace = true, features = ["macros", "net"] }
+
+[dev-dependencies]
+serde_html_form = { workspace = true }
+
+[lints]
+workspace = true

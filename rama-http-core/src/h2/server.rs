@@ -22,7 +22,7 @@
 //! # Inbound streams
 //!
 //! The [`Connection`] instance is used to accept inbound HTTP/2 streams. It
-//! does this by implementing [`futures::Stream`]. When a new stream is
+//! does this by implementing [`rama_core::futures::Stream`]. When a new stream is
 //! received, a call to [`Connection::accept`] will return `(request, response)`.
 //! The `request` handle (of type [`http::Request<RecvStream>`]) contains the
 //! HTTP request head as well as provides a way to receive the inbound data
@@ -109,7 +109,7 @@
 //! [`Connection`]: struct.Connection.html
 //! [`Connection::poll`]: struct.Connection.html#method.poll
 //! [`Connection::poll_close`]: struct.Connection.html#method.poll_close
-//! [`futures::Stream`]: https://docs.rs/futures/0.1/futures/stream/trait.Stream.html
+//! [`rama_core::futures::Stream`]: https://docs.rs/rama-core/latest/rama_core/futures/stream/trait.Stream.html
 //! [`http::Request<RecvStream>`]: ../struct.RecvStream.html
 //! [`RecvStream`]: ../struct.RecvStream.html
 //! [`SendStream`]: ../struct.SendStream.html
@@ -120,7 +120,11 @@ use crate::h2::frame::{self, Pseudo, PushPromiseHeaderError, Reason, Settings, S
 use crate::h2::proto::{self, Config, Error, Prioritized};
 use crate::h2::{FlowControl, PingPong, RecvStream, SendStream};
 
-use bytes::{Buf, Bytes};
+use rama_core::bytes::{Buf, Bytes};
+use rama_core::telemetry::tracing::{
+    self,
+    instrument::{Instrument, Instrumented},
+};
 use rama_http_types::proto::h1::headers::original::OriginalHttp1Headers;
 use rama_http_types::proto::h2::PseudoHeaderOrder;
 use rama_http_types::{HeaderMap, Method, Request, Response};
@@ -129,7 +133,6 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 use std::{fmt, io};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
-use tracing::instrument::{Instrument, Instrumented};
 
 /// In progress HTTP/2 connection handshake future.
 ///
@@ -554,6 +557,11 @@ where
         self.connection.take_user_pings().map(PingPong::new)
     }
 
+    /// Checks if there are any streams
+    pub fn has_streams(&self) -> bool {
+        self.connection.has_streams()
+    }
+
     /// Returns the maximum number of concurrent streams that may be initiated
     /// by the server on this connection.
     ///
@@ -590,7 +598,7 @@ where
     }
 }
 
-impl<T, B> futures_core::Stream for Connection<T, B>
+impl<T, B> rama_core::futures::Stream for Connection<T, B>
 where
     T: AsyncRead + AsyncWrite + Unpin,
     B: Buf,

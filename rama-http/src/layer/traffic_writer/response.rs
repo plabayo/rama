@@ -3,9 +3,10 @@ use crate::dep::http_body;
 use crate::dep::http_body_util::BodyExt;
 use crate::io::write_http_response;
 use crate::{Body, Request, Response};
-use bytes::Bytes;
+use rama_core::bytes::Bytes;
 use rama_core::error::{BoxError, ErrorContext, OpaqueError};
 use rama_core::rt::Executor;
+use rama_core::telemetry::tracing::{self, Instrument};
 use rama_core::{Context, Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt::Debug;
@@ -72,15 +73,23 @@ impl ResponseWriterLayer<UnboundedSender<Response>> {
             Some(WriterMode::Body) => (false, true),
             None => (false, false),
         };
-        executor.spawn_task(async move {
-            while let Some(res) = rx.recv().await {
-                if let Err(err) =
-                    write_http_response(&mut writer, res, write_headers, write_body).await
-                {
-                    tracing::error!(err = %err, "failed to write http response to writer")
+
+        let span =
+            tracing::trace_root_span!("TrafficWriter::response::unbounded", otel.kind = "consumer");
+
+        executor.spawn_task(
+            async move {
+                while let Some(res) = rx.recv().await {
+                    if let Err(err) =
+                        write_http_response(&mut writer, res, write_headers, write_body).await
+                    {
+                        tracing::error!(err = %err, "failed to write http response to writer")
+                    }
                 }
             }
-        });
+            .instrument(span),
+        );
+
         Self { writer: tx }
     }
 
@@ -116,15 +125,22 @@ impl ResponseWriterLayer<Sender<Response>> {
             Some(WriterMode::Body) => (false, true),
             None => (false, false),
         };
-        executor.spawn_task(async move {
-            while let Some(res) = rx.recv().await {
-                if let Err(err) =
-                    write_http_response(&mut writer, res, write_headers, write_body).await
-                {
-                    tracing::error!(err = %err, "failed to write http response to writer")
+
+        let span =
+            tracing::trace_root_span!("TrafficWriter::response::bounded", otel.kind = "consumer");
+
+        executor.spawn_task(
+            async move {
+                while let Some(res) = rx.recv().await {
+                    if let Err(err) =
+                        write_http_response(&mut writer, res, write_headers, write_body).await
+                    {
+                        tracing::error!(err = %err, "failed to write http response to writer")
+                    }
                 }
             }
-        });
+            .instrument(span),
+        );
         Self { writer: tx }
     }
 

@@ -3,9 +3,9 @@ use crate::Request;
 use crate::dep::http_body_util::BodyExt;
 use crate::service::web::extract::FromRequest;
 use crate::utils::macros::{composite_http_rejection, define_http_rejection};
-use bytes::Buf;
+use rama_core::bytes::{Buf, Bytes};
 
-pub use crate::response::Csv;
+pub use crate::service::web::endpoint::response::Csv;
 
 define_http_rejection! {
     #[status = UNSUPPORTED_MEDIA_TYPE]
@@ -43,30 +43,35 @@ where
     type Rejection = CsvRejection;
 
     async fn from_request(req: Request) -> Result<Self, Self::Rejection> {
-        if !crate::service::web::extract::has_any_content_type(req.headers(), &[&mime::TEXT_CSV]) {
-            return Err(InvalidCsvContentType.into());
+        // Extracted into separate fn so it's only compiled once for all T.
+        async fn req_to_csv_bytes(req: Request) -> Result<Bytes, CsvRejection> {
+            if !crate::service::web::extract::has_any_content_type(
+                req.headers(),
+                &[&mime::TEXT_CSV],
+            ) {
+                return Err(InvalidCsvContentType.into());
+            }
+
+            let body = req.into_body();
+            let bytes = body.collect().await.map_err(BytesRejection::from_err)?;
+
+            Ok(bytes.to_bytes())
         }
 
-        let body = req.into_body();
-        match body.collect().await {
-            Ok(c) => {
-                let b = c.to_bytes();
-                let mut rdr = csv::Reader::from_reader(b.clone().reader());
+        let b = req_to_csv_bytes(req).await?;
+        let mut rdr = csv::Reader::from_reader(b.reader());
 
-                let out: Result<Vec<T>, _> = rdr
-                    .deserialize()
-                    .map(|rec| {
-                        let record: Result<T, _> = rec;
-                        record
-                    })
-                    .collect();
+        let out: Result<Vec<T>, _> = rdr
+            .deserialize()
+            .map(|rec| {
+                let record: Result<T, _> = rec;
+                record
+            })
+            .collect();
 
-                match out {
-                    Ok(s) => Ok(Self(s)),
-                    Err(err) => Err(FailedToDeserializeCsv::from_err(err).into()),
-                }
-            }
-            Err(err) => Err(BytesRejection::from_err(err).into()),
+        match out {
+            Ok(s) => Ok(Self(s)),
+            Err(err) => Err(FailedToDeserializeCsv::from_err(err).into()),
         }
     }
 }

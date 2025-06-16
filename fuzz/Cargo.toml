@@ -4,27 +4,8 @@ version = "0.0.0"
 publish = false
 edition = "2024"
 
-[lints]
-workspace = true
-
 [package.metadata]
 cargo-fuzz = true
-
-[dependencies]
-futures = { workspace = true }
-libfuzzer-sys = { workspace = true, features = ["arbitrary-derive"] }
-rama = { path = "../", features = ["full"] }
-tokio = { workspace = true, features = ["rt-multi-thread"] }
-
-[dependencies.h2-support]
-path = "../rama-http-core/tests/h2-support"
-
-[dependencies.rama-http-core]
-path = "../rama-http-core"
-features = ["unstable"]
-
-[dependencies.rama-ua]
-path = "../rama-ua"
 
 [[bin]]
 name = "ua_parse"
@@ -50,3 +31,21 @@ name = "h2_e2e"
 path = "fuzz_targets/h2_e2e.rs"
 test = false
 doc = false
+
+[dependencies]
+libfuzzer-sys = { workspace = true, features = ["arbitrary-derive"] }
+rama = { path = "../", features = ["full"] }
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+
+[dependencies.h2-support]
+path = "../rama-http-core/tests/h2-support"
+
+[dependencies.rama-http-core]
+path = "../rama-http-core"
+features = ["unstable"]
+
+[dependencies.rama-ua]
+path = "../rama-ua"
+
+[lints]
+workspace = true

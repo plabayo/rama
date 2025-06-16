@@ -1,4 +1,5 @@
-use bytes::{BufMut as _, BytesMut};
+use rama_core::bytes::{BufMut as _, BytesMut};
+use rama_core::telemetry::tracing;
 use rama_utils::macros::enums::enum_builder;
 use rama_utils::octets::{unpack_octets_as_u16, unpack_octets_as_u32};
 use serde::{Deserialize, Serialize};

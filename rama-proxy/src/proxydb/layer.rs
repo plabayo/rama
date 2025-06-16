@@ -180,9 +180,8 @@ where
     P: ProxyQueryPredicate,
     F: UsernameFormatter<State>,
     State: Clone + Send + Sync + 'static,
-    Request: TryRefIntoTransportContext<State, Error: Into<BoxError> + Send + Sync + 'static>
-        + Send
-        + 'static,
+    Request:
+        TryRefIntoTransportContext<State, Error: Into<BoxError> + Send + 'static> + Send + 'static,
 {
     type Response = S::Response;
     type Error = BoxError;

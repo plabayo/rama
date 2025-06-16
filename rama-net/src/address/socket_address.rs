@@ -105,12 +105,7 @@ impl SocketAddress {
     }
 
     /// Gets the [`IpAddr`] reference.
-    pub fn ip_addr(&self) -> &IpAddr {
-        &self.ip_addr
-    }
-
-    /// Consumes the [`SocketAddress`] and returns the [`IpAddr`].
-    pub fn into_ip_addr(self) -> IpAddr {
+    pub fn ip_addr(&self) -> IpAddr {
         self.ip_addr
     }
 
@@ -122,6 +117,22 @@ impl SocketAddress {
     /// Consume self into its parts: `(ip_addr, port)`
     pub fn into_parts(self) -> (IpAddr, u16) {
         (self.ip_addr, self.port)
+    }
+}
+
+impl From<SocketAddress> for crate::socket::core::SockAddr {
+    #[inline]
+    fn from(addr: SocketAddress) -> Self {
+        let std_addr: SocketAddr = addr.into();
+        std_addr.into()
+    }
+}
+
+impl From<&SocketAddress> for crate::socket::core::SockAddr {
+    #[inline]
+    fn from(addr: &SocketAddress) -> Self {
+        let std_addr: SocketAddr = (*addr).into();
+        std_addr.into()
     }
 }
 

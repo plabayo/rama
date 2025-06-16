@@ -7,11 +7,7 @@ use std::net::IpAddr;
 use std::{fmt, net::SocketAddr};
 
 #[cfg(feature = "http")]
-use rama_http_types::{
-    HeaderName, HeaderValue,
-    header::FORWARDED,
-    headers::{self, Header},
-};
+use rama_http_types::HeaderValue;
 
 mod obfuscated;
 #[doc(inline)]
@@ -220,51 +216,6 @@ impl TryFrom<&[u8]> for Forwarded {
     fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
         let (first, others) = element::parse_one_plus_forwarded_elements(bytes)?;
         Ok(Forwarded { first, others })
-    }
-}
-
-#[cfg(feature = "http")]
-impl Header for Forwarded {
-    fn name() -> &'static HeaderName {
-        &FORWARDED
-    }
-
-    fn decode<'i, I>(values: &mut I) -> Result<Self, headers::Error>
-    where
-        Self: Sized,
-        I: Iterator<Item = &'i HeaderValue>,
-    {
-        let first_header = values.next().ok_or_else(headers::Error::invalid)?;
-
-        let mut forwarded: Forwarded = match first_header.as_bytes().try_into() {
-            Ok(f) => f,
-            Err(err) => {
-                tracing::trace!(err = %err, "failed to turn header into Forwarded extension");
-                return Err(headers::Error::invalid());
-            }
-        };
-
-        for header in values {
-            let other: Forwarded = match header.as_bytes().try_into() {
-                Ok(f) => f,
-                Err(err) => {
-                    tracing::trace!(err = %err, "failed to turn header into Forwarded extension");
-                    return Err(headers::Error::invalid());
-                }
-            };
-            forwarded.extend(other);
-        }
-
-        Ok(forwarded)
-    }
-
-    fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
-        let s = self.to_string();
-
-        let value = HeaderValue::from_str(&s)
-            .expect("Forwarded extension should always result in a valid header value");
-
-        values.extend(std::iter::once(value));
     }
 }
 

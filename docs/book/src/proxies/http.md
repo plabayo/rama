@@ -45,6 +45,40 @@ The most common use case of an http(s) proxy is to
 conceal the MAC (~L3) and IP address (~L4) of the client, and have the request
 originate instead from the http(s) proxy.
 
+```
+
+HTTP Proxy relaying HTTPS requests
+------------------------------------
+
+┌────────┐       ┌──────────────┐       ┌────────────────────┐
+│ Client │──────▶│ HTTP Proxy   │──────▶│ Target Server (TLS)│
+└────────┘       └──────────────┘       └────────────────────┘
+     │                 │                        │
+     │   1. TCP connect to proxy (e.g., :3128)  │
+     │────────────────▶│                        │
+     │                 │                        │
+     │   2. Send HTTP CONNECT request           │
+     │      e.g.,                               │
+     │      CONNECT example.com:443 HTTP/1.1    │
+     │      Host: example.com:443               │
+     │────────────────▶│                        │
+     │                 │                        │
+     │   3. Proxy establishes TCP to server     │
+     │                 │───────────────────────▶│
+     │                 │                        │
+     │   4. Proxy replies with 200 OK           │
+     │◀────────────────│                        │
+     │                 │                        │
+     │ 5. TLS handshake begins (client ↔ server)│
+     │◀────────────────────────────────────────▶│
+     │                 │                        │
+     │   6. Encrypted HTTP(S) traffic relayed   │
+     │◀────────────────────────────────────────▶│
+
+```
+
+> Flow of a regular "HTTP CONNECT" proxy.
+
 In case the client request is encrypted (TLS) it will typically make a
 plaintext (http/1.1) request with the "CONNECT" method to the proxy,
 whom on the behalve of the client will establish an encrypted tunnel
@@ -62,42 +96,89 @@ given it will not match the expected target (server) TLS certificate. Depending 
 client's network policies this might be handled automatically due to the use
 of a non-public [root certificate](https://en.wikipedia.org/wiki/Root_certificate).
 
+```plaintext
+
+HTTP Proxy relaying HTTP requests
+-----------------------------------
+
+┌────────┐       ┌────────────────┐       ┌────────────────────┐
+│ Client │──────▶│ HTTP Proxy     │──────▶│ Target HTTP Server │
+└────────┘       └────────────────┘       └────────────────────┘
+     │                  │                        │
+     │ 1. TCP connect to proxy (:3128)           │
+     │─────────────────▶│                        │
+     │                  │                        │
+     │ 2. Send full HTTP request via proxy       │
+     │    e.g.,                                  │
+     │    GET http://example.com HTTP/1.1        │
+     │    Host: example.com                      │
+     │─────────────────▶│                        │
+     │                  │                        │
+     │ 3. Proxy parses and forwards request      │
+     │                  │──────────────────────▶ │
+     │                  │                        │
+     │ 4. Target server replies with HTTP        │
+     │                  │◀────────────────────── │
+     │                  │                        │
+     │ 5. Proxy may log, modify, or inject       │
+     │                  │                        │
+     │ 6. Proxy sends HTTP response to client    │
+     │◀─────────────────│                        │
+     │                  │                        │
+     │ 7. Subsequent requests/responses relayed  │
+     │◀─────────────────▶│◀─────────────────────▶│
+
+```
+
 Plain text (http) requests are typically immediately made with the Host/Authorization
 headers being equal to the desired target server. Which once again looks a lot more
 like logic that a [reverse proxy](./reverse.md) would also do among one of its many tasks.
+As such HTTP traffic can always be logged, modified or injected by any intermediate party,
+including your HTTP proxy.
 
 See the official RFCs for more information regarding HTTP semantics and
 protocol specifications.
 
-## SNI Proxies
 
-In case an http proxy Man-In-The-Middle's (MITM) TLS encrypted traffic (e.g. https),
-it becomes essentially a SNI proxy, where SNI stands for "Server Name Indication".
+```plaintext
 
-It is a proxy which terminates incoming tls connections and makes use of that connection's
-Client Hello "Server Name" extension to establish the connection on the other side. In case
-that host is a domain it will also have to resolve (using DNS) it into an IPv4/IPv6 address.
+HTTP Proxy MITM'ing HTTPS requests
+------------------------------------
 
-Within Rama we usually refers to SNI Proxies as MITM proxies, given we usually
-focus on the web. It is however important to note that a SNI Proxy is just a specific
-example of a MITM proxy and not 1-to-1 connected.
+┌────────┐       ┌────────────────────┐       ┌────────────────────┐
+│ Client │──────▶│ HTTP Proxy (MITM)  │──────▶│ Target Server (TLS)│
+└────────┘       └────────────────────┘       └────────────────────┘
+     │                    │                          │
+     │ 1. TCP connect     │                          │
+     │    to proxy (:3128)│                          │
+     │───────────────────▶│                          │
+     │                    │                          │
+     │ 2. Send CONNECT    │                          │
+     │    example.com:443 │                          │
+     │───────────────────▶│                          │
+     │                    │                          │
+     │                    │    3. Proxy replies      │
+     │ ◀───────────────── │       with 200 OK        │
+     │                    │                          │
+     │                    │       4. TLS handshake   │
+     │◀─────────────────▶ │          with proxy      │
+     │                    │          (fake cert)     │
+     │                    │                          │
+     │ 5. Proxy connects  │                          │
+     │    to target:443   │─────────────────────────▶│
+     │ 6. Proxy performs  │                          │
+     │    TLS to server   │─────────────────────────▶│
+     │                    │                          │
+     │                                               │
+     │              7. Encrypted HTTPS               │
+     │                 relayed via MITM              │
+     │                                               │
+     │◀──────────────────▶│◀────────────────────────▶│
 
-These DNS Queries can also be cached in the (SNI) proxy as to make sure
-"hot" targets are not overly queried.
+```
 
-In case you want to intercept both https and http traffic, you'll want your
-http proxy to act as a SNI proxy, which you do by terminating the TLS Connection
-right after you processed the http CONNECT request.
-
-### SNI Proxies as invisible proxies
-
-A SNI Proxy can be send tls-encrypted traffic without it first going
-via a CONNECT request. This is great for environments that might not
-support proxies.
-
-This can work by allowing your firewall, ip table, router or some other "box" in the middle,
-to override the DNS resolution for specific domain names
-to the IP of the (SNI) proxy. The proxy on its turn will establish a connection
-based on the Server Name as discussed previously and onwards it goes.
-
-A proxy without a proxy protocol. That is also what a SNI proxy can be.
+> Flow a MITM proxy handling HTTPS traffic
+>
+> step (4) to (6) can be done before step (3).
+> However rrama by default does these `proxy ↔ server` steps
+> lazilly only when the first actual http(s) request is received.

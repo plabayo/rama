@@ -48,6 +48,7 @@ use crate::{
     Request,
     utils::{HeaderValueErr, HeaderValueGetter},
 };
+use rama_core::telemetry::tracing;
 use rama_core::{Context, Layer, Service, error::BoxError};
 use rama_utils::macros::define_inner_service_accessors;
 use serde::de::DeserializeOwned;

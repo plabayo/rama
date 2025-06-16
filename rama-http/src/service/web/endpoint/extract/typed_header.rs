@@ -1,7 +1,10 @@
+//! module in function of [`TypedHeader`]
+
+use super::IntoResponse;
 use super::{FromRequestContextRefPair, OptionalFromRequestContextRefPair};
 use crate::dep::http::request::Parts;
 use crate::headers::{self, Header};
-use crate::{HeaderName, IntoResponse, Response};
+use crate::{HeaderName, Response};
 use rama_core::Context;
 use std::ops::Deref;
 

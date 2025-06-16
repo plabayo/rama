@@ -6,12 +6,14 @@
 //! use rama_core::{
 //!     service::service_fn,
 //!     Context, Service, Layer,
+//!     telemetry::tracing,
 //! };
 //! use rama_http::{
 //!     service::client::HttpClientExt,
 //!     layer::{error_handling::ErrorHandlerLayer, timeout::TimeoutLayer},
 //!     service::web::WebService,
-//!     Body, IntoResponse, Request, Response, StatusCode,
+//!     service::web::response::IntoResponse,
+//!     Body, Request, Response, StatusCode,
 //! };
 //! use std::time::Duration;
 //!
@@ -44,7 +46,8 @@
 //! # }
 //! ```
 
-use crate::{IntoResponse, Request, Response};
+use crate::service::web::response::IntoResponse;
+use crate::{Request, Response};
 use rama_core::{Context, Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
 use std::{convert::Infallible, fmt};

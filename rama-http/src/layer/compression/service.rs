@@ -3,12 +3,13 @@ use super::CompressionLevel;
 use super::body::BodyInner;
 use super::predicate::{DefaultPredicate, Predicate};
 use crate::dep::http_body::Body;
+use crate::headers::encoding::{AcceptEncoding, Encoding};
 use crate::layer::util::compression::WrapBody;
 use crate::{Request, Response, header};
 use rama_core::{Context, Service};
 use rama_http_types::HeaderValue;
-use rama_http_types::headers::encoding::{AcceptEncoding, Encoding};
 use rama_utils::macros::define_inner_service_accessors;
+use rama_utils::str::submatch_ignore_ascii_case;
 
 /// Compress response bodies of the underlying service.
 ///
@@ -205,7 +206,14 @@ where
 
         let (mut parts, body) = res.into_parts();
 
-        if should_compress {
+        if should_compress
+            && !parts.headers.get_all(header::VARY).iter().any(|value| {
+                submatch_ignore_ascii_case(
+                    value.as_bytes(),
+                    header::ACCEPT_ENCODING.as_str().as_bytes(),
+                )
+            })
+        {
             parts
                 .headers
                 .append(header::VARY, header::ACCEPT_ENCODING.into());

@@ -46,3 +46,8 @@ let info: Info = client
     .await
     .unwrap();
 ```
+
+More client examples:
+
+- [/examples/http_pooled_client.rs](https://github.com/plabayo/rama/tree/main/examples/http_pooled_client.rs):
+  an example demonstrating how to create a pooled HTTP client that can be used to make concurrent requests to the same host;

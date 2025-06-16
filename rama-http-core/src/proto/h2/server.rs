@@ -4,13 +4,14 @@ use std::time::Duration;
 
 use crate::h2::server::{Connection, Handshake, SendResponse};
 use crate::h2::{Reason, RecvStream};
-use bytes::Bytes;
 use pin_project_lite::pin_project;
+use rama_core::bytes::Bytes;
 use rama_core::error::BoxError;
 use rama_core::rt::Executor;
+use rama_core::telemetry::tracing::{Instrument, debug, trace, trace_root_span, warn};
+use rama_http::opentelemetry::version_as_protocol_version;
 use rama_http_types::{Method, Request, Response, header};
 use tokio::io::{AsyncRead, AsyncWrite};
-use tracing::{debug, trace, warn};
 
 use super::{PipeToSendStream, SendBuf, ping};
 use crate::body::{Body, Incoming as IncomingBody};
@@ -87,6 +88,9 @@ pin_project! {
     }
 }
 
+// TODO: revisit later to see if we really want this
+
+#[allow(clippy::large_enum_variant)]
 enum State<T> {
     Handshaking {
         ping_config: ping::Config,
@@ -277,6 +281,18 @@ where
                             req.extensions_mut().insert(Protocol::from_inner(protocol));
                         }
 
+                        let serve_span = trace_root_span!(
+                            "h2::stream",
+                            otel.kind = "server",
+                            http.request.method = %req.method().as_str(),
+                            url.full = %req.uri(),
+                            url.path = %req.uri().path(),
+                            url.query = req.uri().query().unwrap_or_default(),
+                            url.scheme = %req.uri().scheme().map(|s| s.as_str()).unwrap_or_default(),
+                            network.protocol.name = "http",
+                            network.protocol.version = version_as_protocol_version(req.version()),
+                        );
+
                         let fut = H2Stream::new(
                             service.serve_http(req),
                             connect_parts,
@@ -284,7 +300,7 @@ where
                             self.date_header,
                         );
 
-                        exec.spawn_task(fut);
+                        exec.spawn_task(fut.instrument(serve_span));
                     }
                     Some(Err(e)) => {
                         return Poll::Ready(Err(crate::Error::new_h2(e)));

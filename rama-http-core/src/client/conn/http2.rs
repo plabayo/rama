@@ -7,14 +7,13 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
-use futures_util::ready;
 use rama_core::error::BoxError;
 use rama_core::rt::Executor;
+use rama_core::telemetry::tracing::{debug, trace};
 use rama_http_types::proto::h2::PseudoHeaderOrder;
 use rama_http_types::proto::h2::frame::{SettingOrder, SettingsConfig};
 use rama_http_types::{Request, Response};
 use tokio::io::{AsyncRead, AsyncWrite};
-use tracing::{debug, trace};
 
 use super::super::dispatch::{self, TrySendError};
 use crate::body::{Body, Incoming as IncomingBody};
@@ -97,7 +96,7 @@ impl<B> SendRequest<B> {
     ///
     /// If the associated connection is closed, this returns an Error.
     pub async fn ready(&mut self) -> crate::Result<()> {
-        futures_util::future::poll_fn(|cx| self.poll_ready(cx)).await
+        std::future::poll_fn(|cx| self.poll_ready(cx)).await
     }
 
     /// Checks if the connection is currently ready to send a request.
@@ -230,7 +229,7 @@ where
     type Output = crate::Result<()>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        match ready!(Pin::new(&mut self.inner.1).poll(cx))? {
+        match std::task::ready!(Pin::new(&mut self.inner.1).poll(cx))? {
             proto::Dispatched::Shutdown => Poll::Ready(Ok(())),
             proto::Dispatched::Upgrade(_pending) => unreachable!("http2 cannot upgrade"),
         }
@@ -568,7 +567,7 @@ mod tests {
         async fn run(io: impl AsyncRead + AsyncWrite + Send + Unpin + 'static) {
             let (_sender, conn) = crate::client::conn::http2::handshake::<
                 _,
-                http_body_util::Empty<bytes::Bytes>,
+                http_body_util::Empty<rama_core::bytes::Bytes>,
             >(Executor::default(), io)
             .await
             .unwrap();

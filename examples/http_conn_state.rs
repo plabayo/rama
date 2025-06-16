@@ -27,7 +27,8 @@
 
 use rama::{
     Context, Layer,
-    http::{Request, response::Html, server::HttpServer},
+    http::service::web::response::Html,
+    http::{Request, server::HttpServer},
     layer::MapStateLayer,
     rt::Executor,
     service::service_fn,

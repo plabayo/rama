@@ -1,6 +1,7 @@
 use super::*;
 
 use indexmap::{self, IndexMap};
+use rama_core::telemetry::tracing;
 
 use std::convert::Infallible;
 use std::fmt;
