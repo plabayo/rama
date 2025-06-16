@@ -27,7 +27,6 @@ use rama::{
     telemetry::tracing::{self, level_filters::LevelFilter},
 };
 use std::{convert::Infallible, time::Duration};
-use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Debug, Args)]
 /// rama proxy server
@@ -47,14 +46,7 @@ pub struct CliCommandProxy {
 
 /// run the rama proxy service
 pub async fn run(cfg: CliCommandProxy) -> Result<(), BoxError> {
-    tracing_subscriber::registry()
-        .with(fmt::layer())
-        .with(
-            EnvFilter::builder()
-                .with_default_directive(LevelFilter::INFO.into())
-                .from_env_lossy(),
-        )
-        .init();
+    crate::trace::init_tracing(LevelFilter::INFO);
 
     let graceful = rama::graceful::Shutdown::default();
 

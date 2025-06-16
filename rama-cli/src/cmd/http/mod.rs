@@ -38,10 +38,10 @@ use rama::{
         profile::UserAgentDatabase,
     },
 };
+
 use std::{io::IsTerminal, sync::Arc, time::Duration};
 use terminal_prompt::Terminal;
 use tokio::sync::oneshot;
-use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 use crate::error::ErrorWithExitCode;
 
@@ -203,25 +203,15 @@ pub struct CliCommandHttp {
 
 /// Run the HTTP client command.
 pub async fn run(cfg: CliCommandHttp) -> Result<(), BoxError> {
-    tracing_subscriber::registry()
-        .with(fmt::layer())
-        .with(
-            EnvFilter::builder()
-                .with_default_directive(
-                    if cfg.debug {
-                        if cfg.verbose {
-                            LevelFilter::TRACE
-                        } else {
-                            LevelFilter::DEBUG
-                        }
-                    } else {
-                        LevelFilter::ERROR
-                    }
-                    .into(),
-                )
-                .from_env_lossy(),
-        )
-        .init();
+    crate::trace::init_tracing(if cfg.debug {
+        if cfg.verbose {
+            LevelFilter::TRACE
+        } else {
+            LevelFilter::DEBUG
+        }
+    } else {
+        LevelFilter::ERROR
+    });
 
     let (tx, rx) = oneshot::channel();
     let (tx_final, rx_final) = oneshot::channel();

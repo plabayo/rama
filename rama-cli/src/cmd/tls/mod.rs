@@ -20,7 +20,6 @@ use rama::{
     },
 };
 use tokio::net::TcpStream;
-use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Args, Debug, Clone)]
 /// rama tls support
@@ -37,14 +36,7 @@ pub struct CliCommandTls {
 
 /// Run the tls command
 pub async fn run(cfg: CliCommandTls) -> Result<(), BoxError> {
-    tracing_subscriber::registry()
-        .with(fmt::layer())
-        .with(
-            EnvFilter::builder()
-                .with_default_directive(LevelFilter::INFO.into())
-                .from_env_lossy(),
-        )
-        .init();
+    crate::trace::init_tracing(LevelFilter::INFO);
 
     let address = cfg.address.trim();
     let authority = if cfg.address.contains(':') {

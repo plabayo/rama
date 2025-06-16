@@ -23,6 +23,7 @@ deadpool-postgres = { workspace = true }
 hex = { workspace = true }
 itertools = { workspace = true }
 mimalloc = { workspace = true, optional = true }
+opentelemetry-otlp = { workspace = true }
 rama = { version = "0.3.0-alpha.1", path = "..", features = [
     "compression",
     "boring",
@@ -37,7 +38,7 @@ serde_json = { workspace = true }
 terminal-prompt = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 tokio-postgres = { workspace = true, features = ["with-serde_json-1", "with-chrono-0_4"] }
-tracing-subscriber = { workspace = true, features = ["env-filter"] }
+tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
 
 [target.'cfg(unix)'.dependencies]
 jemallocator = { workspace = true }

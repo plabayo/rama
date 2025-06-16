@@ -49,7 +49,6 @@ use rama::{
     utils::backoff::ExponentialBackoff,
 };
 use std::{convert::Infallible, str::FromStr, sync::Arc, time::Duration};
-use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 mod data;
 mod endpoints;
@@ -112,14 +111,7 @@ pub struct CliCommandFingerprint {
 
 /// run the rama FP service
 pub async fn run(cfg: CliCommandFingerprint) -> Result<(), BoxError> {
-    tracing_subscriber::registry()
-        .with(fmt::layer())
-        .with(
-            EnvFilter::builder()
-                .with_default_directive(LevelFilter::INFO.into())
-                .from_env_lossy(),
-        )
-        .init();
+    crate::trace::init_tracing(LevelFilter::INFO);
 
     let graceful = rama::graceful::Shutdown::default();
 

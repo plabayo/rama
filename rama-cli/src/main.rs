@@ -12,6 +12,8 @@ use cmd::{echo, fp, http, ip, proxy, serve, tls};
 
 pub mod error;
 
+pub mod trace;
+
 #[cfg(unix)]
 #[global_allocator]
 static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;

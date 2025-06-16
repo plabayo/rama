@@ -11,7 +11,6 @@ use rama::{
     telemetry::tracing::{self, level_filters::LevelFilter},
 };
 use std::time::Duration;
-use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Debug, Args)]
 /// rama ip service (returns the ip address of the client)
@@ -57,14 +56,7 @@ pub struct CliCommandIp {
 
 /// run the rama ip service
 pub async fn run(cfg: CliCommandIp) -> Result<(), BoxError> {
-    tracing_subscriber::registry()
-        .with(fmt::layer())
-        .with(
-            EnvFilter::builder()
-                .with_default_directive(LevelFilter::INFO.into())
-                .from_env_lossy(),
-        )
-        .init();
+    crate::trace::init_tracing(LevelFilter::INFO);
 
     let graceful = rama::graceful::Shutdown::default();
 
