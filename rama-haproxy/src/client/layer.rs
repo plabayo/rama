@@ -3,6 +3,7 @@ use std::{fmt, marker::PhantomData, net::IpAddr};
 use crate::protocol::{v1, v2};
 use rama_core::{
     Context, Layer, Service,
+    bytes::Bytes,
     error::{BoxError, ErrorContext, OpaqueError},
 };
 use rama_net::{
@@ -69,24 +70,16 @@ impl HaProxyLayer<protocol::Udp> {
 }
 
 impl<P> HaProxyLayer<P> {
-    /// Attach a custom bytes payload to the PROXY header.
-    ///
-    /// NOTE this is only possible in Version two of the PROXY Protocol.
-    /// In case you downgrade this [`HaProxyLayer`] to version one later
-    /// using [`Self::v1`] this payload will be dropped.
-    pub fn payload(mut self, payload: Vec<u8>) -> Self {
-        self.version.payload = Some(payload);
-        self
-    }
-
-    /// Attach a custom bytes payload to the PROXY header.
-    ///
-    /// NOTE this is only possible in Version two of the PROXY Protocol.
-    /// In case you downgrade this [`HaProxyLayer`] to version one later
-    /// using [`Self::v1`] this payload will be dropped.
-    pub fn set_payload(&mut self, payload: Vec<u8>) -> &mut Self {
-        self.version.payload = Some(payload);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Attach a custom bytes payload to the PROXY header.
+        ///
+        /// NOTE this is only possible in Version two of the PROXY Protocol.
+        /// In case you downgrade this [`HaProxyLayer`] to version one later
+        /// using [`Self::v1`] this payload will be dropped.
+        pub fn payload(mut self, payload: impl Into<Bytes>) -> Self {
+            self.version.payload = Some(payload.into());
+            self
+        }
     }
 }
 
@@ -170,24 +163,16 @@ impl<S> HaProxyService<S, protocol::Udp> {
 }
 
 impl<S, P> HaProxyService<S, P> {
-    /// Attach a custom bytes payload to the PROXY header.
-    ///
-    /// NOTE this is only possible in Version two of the PROXY Protocol.
-    /// In case you downgrade this [`HaProxyLayer`] to version one later
-    /// using [`Self::v1`] this payload will be dropped.
-    pub fn payload(mut self, payload: Vec<u8>) -> Self {
-        self.version.payload = Some(payload);
-        self
-    }
-
-    /// Attach a custom bytes payload to the PROXY header.
-    ///
-    /// NOTE this is only possible in Version two of the PROXY Protocol.
-    /// In case you downgrade this [`HaProxyLayer`] to version one later
-    /// using [`Self::v1`] this payload will be dropped.
-    pub fn set_payload(&mut self, payload: Vec<u8>) -> &mut Self {
-        self.version.payload = Some(payload);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Attach a custom bytes payload to the PROXY header.
+        ///
+        /// NOTE this is only possible in Version two of the PROXY Protocol.
+        /// In case you downgrade this [`HaProxyLayer`] to version one later
+        /// using [`Self::v1`] this payload will be dropped.
+        pub fn payload(mut self, payload: impl Into<Bytes>) -> Self {
+            self.version.payload = Some(payload.into());
+            self
+        }
     }
 }
 
@@ -338,6 +323,8 @@ where
 pub mod version {
     //! Marker traits for the HaProxy (PROXY) version to be used by client layer (service).
 
+    use super::*;
+
     #[derive(Debug, Clone, Default)]
     /// Use version 1 of the PROXY protocol.
     ///
@@ -350,7 +337,7 @@ pub mod version {
     ///
     /// See [`crate::protocol`] for more information.
     pub struct Two {
-        pub(crate) payload: Option<Vec<u8>>,
+        pub(crate) payload: Option<Bytes>,
     }
 }
 
@@ -634,25 +621,24 @@ mod tests {
                 ctx
             },
         ] {
-            let svc =
-                HaProxyLayer::tcp()
-                    .payload(vec![42])
-                    .layer(service_fn(async move |ctx, req| {
-                        Ok::<_, Infallible>(EstablishedClientConnection {
-                            ctx,
-                            req,
-                            conn: SocketConnection {
-                                socket: "192.168.1.1:443".parse().unwrap(),
-                                conn: Builder::new()
-                                    .write(&[
-                                        b'\r', b'\n', b'\r', b'\n', b'\0', b'\r', b'\n', b'Q',
-                                        b'U', b'I', b'T', b'\n', 0x21, 0x11, 0, 13, 127, 0, 0, 1,
-                                        192, 168, 1, 1, 0, 80, 1, 187, 42,
-                                    ])
-                                    .build(),
-                            },
-                        })
-                    }));
+            let svc = HaProxyLayer::tcp().with_payload(vec![42]).layer(service_fn(
+                async move |ctx, req| {
+                    Ok::<_, Infallible>(EstablishedClientConnection {
+                        ctx,
+                        req,
+                        conn: SocketConnection {
+                            socket: "192.168.1.1:443".parse().unwrap(),
+                            conn: Builder::new()
+                                .write(&[
+                                    b'\r', b'\n', b'\r', b'\n', b'\0', b'\r', b'\n', b'Q', b'U',
+                                    b'I', b'T', b'\n', 0x21, 0x11, 0, 13, 127, 0, 0, 1, 192, 168,
+                                    1, 1, 0, 80, 1, 187, 42,
+                                ])
+                                .build(),
+                        },
+                    })
+                },
+            ));
             svc.serve(input_ctx, ()).await.unwrap();
         }
     }
@@ -679,25 +665,24 @@ mod tests {
                 ctx
             },
         ] {
-            let svc =
-                HaProxyLayer::udp()
-                    .payload(vec![42])
-                    .layer(service_fn(async move |ctx, req| {
-                        Ok::<_, Infallible>(EstablishedClientConnection {
-                            ctx,
-                            req,
-                            conn: SocketConnection {
-                                socket: "192.168.1.1:443".parse().unwrap(),
-                                conn: Builder::new()
-                                    .write(&[
-                                        b'\r', b'\n', b'\r', b'\n', b'\0', b'\r', b'\n', b'Q',
-                                        b'U', b'I', b'T', b'\n', 0x21, 0x12, 0, 13, 127, 0, 0, 1,
-                                        192, 168, 1, 1, 0, 80, 1, 187, 42,
-                                    ])
-                                    .build(),
-                            },
-                        })
-                    }));
+            let svc = HaProxyLayer::udp().with_payload(vec![42]).layer(service_fn(
+                async move |ctx, req| {
+                    Ok::<_, Infallible>(EstablishedClientConnection {
+                        ctx,
+                        req,
+                        conn: SocketConnection {
+                            socket: "192.168.1.1:443".parse().unwrap(),
+                            conn: Builder::new()
+                                .write(&[
+                                    b'\r', b'\n', b'\r', b'\n', b'\0', b'\r', b'\n', b'Q', b'U',
+                                    b'I', b'T', b'\n', 0x21, 0x12, 0, 13, 127, 0, 0, 1, 192, 168,
+                                    1, 1, 0, 80, 1, 187, 42,
+                                ])
+                                .build(),
+                        },
+                    })
+                },
+            ));
             svc.serve(input_ctx, ()).await.unwrap();
         }
     }
@@ -724,30 +709,29 @@ mod tests {
                 ctx
             },
         ] {
-            let svc =
-                HaProxyLayer::tcp()
-                    .payload(vec![42])
-                    .layer(service_fn(async move |ctx, req| {
-                        Ok::<_, Infallible>(EstablishedClientConnection {
-                            ctx,
-                            req,
-                            conn: SocketConnection {
-                                socket: "[4321:8765:ba09:fedc:cdef:90ab:5678:1234]:443"
-                                    .parse()
-                                    .unwrap(),
-                                conn: Builder::new()
-                                    .write(&[
-                                        b'\r', b'\n', b'\r', b'\n', b'\0', b'\r', b'\n', b'Q',
-                                        b'U', b'I', b'T', b'\n', 0x21, 0x21, 0, 37, 0x12, 0x34,
-                                        0x56, 0x78, 0x90, 0xab, 0xcd, 0xef, 0xfe, 0xdc, 0xba, 0x09,
-                                        0x87, 0x65, 0x43, 0x21, 0x43, 0x21, 0x87, 0x65, 0xba, 0x09,
-                                        0xfe, 0xdc, 0xcd, 0xef, 0x90, 0xab, 0x56, 0x78, 0x12, 0x34,
-                                        0, 80, 1, 187, 42,
-                                    ])
-                                    .build(),
-                            },
-                        })
-                    }));
+            let svc = HaProxyLayer::tcp().with_payload(vec![42]).layer(service_fn(
+                async move |ctx, req| {
+                    Ok::<_, Infallible>(EstablishedClientConnection {
+                        ctx,
+                        req,
+                        conn: SocketConnection {
+                            socket: "[4321:8765:ba09:fedc:cdef:90ab:5678:1234]:443"
+                                .parse()
+                                .unwrap(),
+                            conn: Builder::new()
+                                .write(&[
+                                    b'\r', b'\n', b'\r', b'\n', b'\0', b'\r', b'\n', b'Q', b'U',
+                                    b'I', b'T', b'\n', 0x21, 0x21, 0, 37, 0x12, 0x34, 0x56, 0x78,
+                                    0x90, 0xab, 0xcd, 0xef, 0xfe, 0xdc, 0xba, 0x09, 0x87, 0x65,
+                                    0x43, 0x21, 0x43, 0x21, 0x87, 0x65, 0xba, 0x09, 0xfe, 0xdc,
+                                    0xcd, 0xef, 0x90, 0xab, 0x56, 0x78, 0x12, 0x34, 0, 80, 1, 187,
+                                    42,
+                                ])
+                                .build(),
+                        },
+                    })
+                },
+            ));
             svc.serve(input_ctx, ()).await.unwrap();
         }
     }
@@ -774,30 +758,29 @@ mod tests {
                 ctx
             },
         ] {
-            let svc =
-                HaProxyLayer::udp()
-                    .payload(vec![42])
-                    .layer(service_fn(async move |ctx, req| {
-                        Ok::<_, Infallible>(EstablishedClientConnection {
-                            ctx,
-                            req,
-                            conn: SocketConnection {
-                                socket: "[4321:8765:ba09:fedc:cdef:90ab:5678:1234]:443"
-                                    .parse()
-                                    .unwrap(),
-                                conn: Builder::new()
-                                    .write(&[
-                                        b'\r', b'\n', b'\r', b'\n', b'\0', b'\r', b'\n', b'Q',
-                                        b'U', b'I', b'T', b'\n', 0x21, 0x22, 0, 37, 0x12, 0x34,
-                                        0x56, 0x78, 0x90, 0xab, 0xcd, 0xef, 0xfe, 0xdc, 0xba, 0x09,
-                                        0x87, 0x65, 0x43, 0x21, 0x43, 0x21, 0x87, 0x65, 0xba, 0x09,
-                                        0xfe, 0xdc, 0xcd, 0xef, 0x90, 0xab, 0x56, 0x78, 0x12, 0x34,
-                                        0, 80, 1, 187, 42,
-                                    ])
-                                    .build(),
-                            },
-                        })
-                    }));
+            let svc = HaProxyLayer::udp().with_payload(vec![42]).layer(service_fn(
+                async move |ctx, req| {
+                    Ok::<_, Infallible>(EstablishedClientConnection {
+                        ctx,
+                        req,
+                        conn: SocketConnection {
+                            socket: "[4321:8765:ba09:fedc:cdef:90ab:5678:1234]:443"
+                                .parse()
+                                .unwrap(),
+                            conn: Builder::new()
+                                .write(&[
+                                    b'\r', b'\n', b'\r', b'\n', b'\0', b'\r', b'\n', b'Q', b'U',
+                                    b'I', b'T', b'\n', 0x21, 0x22, 0, 37, 0x12, 0x34, 0x56, 0x78,
+                                    0x90, 0xab, 0xcd, 0xef, 0xfe, 0xdc, 0xba, 0x09, 0x87, 0x65,
+                                    0x43, 0x21, 0x43, 0x21, 0x87, 0x65, 0xba, 0x09, 0xfe, 0xdc,
+                                    0xcd, 0xef, 0x90, 0xab, 0x56, 0x78, 0x12, 0x34, 0, 80, 1, 187,
+                                    42,
+                                ])
+                                .build(),
+                        },
+                    })
+                },
+            ));
             svc.serve(input_ctx, ()).await.unwrap();
         }
     }

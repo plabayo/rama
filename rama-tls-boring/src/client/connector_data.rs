@@ -12,8 +12,11 @@ use rama_boring::{
         extension::{BasicConstraints, KeyUsage, SubjectKeyIdentifier},
     },
 };
-use rama_core::error::{ErrorContext, ErrorExt, OpaqueError};
 use rama_core::telemetry::tracing::{debug, trace};
+use rama_core::{
+    bytes::Bytes,
+    error::{ErrorContext, ErrorExt, OpaqueError},
+};
 use rama_net::tls::{
     ApplicationProtocol, CertificateCompressionAlgorithm, ExtensionId, KeyLogIntent,
     client::ClientHello,
@@ -75,7 +78,7 @@ pub struct TlsConnectorDataBuilder {
     keylog_intent: Option<KeyLogIntent>,
     cipher_list: Option<Vec<u16>>,
     store_server_certificate_chain: Option<bool>,
-    alpn_protos: Option<Vec<u8>>,
+    alpn_protos: Option<Bytes>,
     min_ssl_version: Option<SslVersion>,
     max_ssl_version: Option<SslVersion>,
     record_size_limit: Option<u16>,
@@ -158,7 +161,7 @@ impl TlsConnectorDataBuilder {
         keylog_intent: Option<KeyLogIntent>,
         cipher_list: Option<Vec<u16>>,
         extension_order: Option<Vec<u16>>,
-        alpn_protos: Option<Vec<u8>>,
+        alpn_protos: Option<Bytes>,
         curves: Option<Vec<SslCurve>>,
         verify_algorithm_prefs: Option<Vec<SslSignatureAlgorithm>>,
         client_auth: Option<ConnectorConfigClientAuth>,
@@ -255,7 +258,7 @@ impl TlsConnectorDataBuilder {
         /// Order of protocols here is important. When server supports
         /// multiple protocols it will choose the first one it supports
         /// from this list.
-        pub fn alpn_protos(mut self, protos: Option<Vec<u8>>) -> Self {
+        pub fn alpn_protos(mut self, protos: Option<Bytes>) -> Self {
             self.alpn_protos = protos;
             self
         }
@@ -273,7 +276,7 @@ impl TlsConnectorDataBuilder {
         ) -> Result<Self, OpaqueError> {
             self.alpn_protos = protos
                 .map(|protos| {
-                    ApplicationProtocol::encode_alpns_to_vec(protos)
+                    ApplicationProtocol::encode_alpns(protos)
                         .context("build (boring) ssl connector: encode alpns")
                 })
                 .transpose()?;
@@ -747,12 +750,9 @@ impl TlsConnectorDataBuilder {
                             "TlsConnectorData: builder: from std client config: alpn: {:?}",
                             alpn_list
                         );
-                        let mut buf = vec![];
-                        for alpn in alpn_list {
-                            alpn.encode_wire_format(&mut buf)
-                                .context("build (boring) ssl connector: encode alpn")?;
-                        }
-                        alpn_protos = Some(buf);
+                        let alpns = ApplicationProtocol::encode_alpns(alpn_list)
+                            .context("build (boring) ssl connector: encode alpns")?;
+                        alpn_protos = Some(alpns);
                     }
                     ClientHelloExtension::SupportedGroups(groups) => {
                         trace!(

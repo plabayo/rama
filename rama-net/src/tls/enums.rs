@@ -1,7 +1,10 @@
 #![allow(missing_docs)]
 #![allow(non_camel_case_types)]
 
-use rama_core::error::OpaqueError;
+use rama_core::{
+    bytes::{BufMut, Bytes, BytesMut},
+    error::OpaqueError,
+};
 use rama_utils::macros::enums::enum_builder;
 
 macro_rules! impl_u16_is_grease {
@@ -730,13 +733,14 @@ impl ApplicationProtocol {
         Ok(buf.into())
     }
 
-    pub fn encode_alpns_to_vec(alpns: &[Self]) -> std::io::Result<Vec<u8>> {
-        let mut alpn_protos =
-            Vec::with_capacity(alpns.iter().map(|alpn| alpn.as_bytes().len() + 1).sum());
+    pub fn encode_alpns(alpns: &[Self]) -> std::io::Result<Bytes> {
+        let alpn_protos =
+            BytesMut::with_capacity(alpns.iter().map(|alpn| alpn.as_bytes().len() + 1).sum());
+        let mut writer = alpn_protos.writer();
         for alpn in alpns {
-            alpn.encode_wire_format(&mut alpn_protos)?;
+            alpn.encode_wire_format(&mut writer)?;
         }
-        Ok(alpn_protos)
+        Ok(writer.into_inner().freeze())
     }
 }
 
