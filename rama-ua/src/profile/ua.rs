@@ -72,7 +72,7 @@ impl UserAgentProfile {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 /// Runtime (meta) info about the UA profile.
 ///
 /// This information is not taken into account for UA Emulation on the network layer,

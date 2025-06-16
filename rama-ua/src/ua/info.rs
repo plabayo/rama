@@ -279,6 +279,39 @@ impl DeviceKind {
     }
 }
 
+impl FromStr for DeviceKind {
+    type Err = OpaqueError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match_ignore_ascii_case_str! {
+            match (s) {
+                "desktop" => Ok(DeviceKind::Desktop),
+                "mobile" => Ok(DeviceKind::Mobile),
+                _ => Err(OpaqueError::from_display(format!("invalid device: {}", s))),
+            }
+        }
+    }
+}
+
+impl Serialize for DeviceKind {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::ser::Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for DeviceKind {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = <std::borrow::Cow<'de, str>>::deserialize(deserializer)?;
+        s.parse::<DeviceKind>().map_err(serde::de::Error::custom)
+    }
+}
+
 impl fmt::Display for DeviceKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.as_str())
