@@ -25,7 +25,7 @@ rama-http-types = { version = "0.2.0-alpha.8", path = "../rama-http-types" }
 rama-net = { version = "0.2.0-alpha.8", path = "../rama-net", features = ["http"] }
 rama-utils = { version = "0.2.0-alpha.8", path = "../rama-utils" }
 rand = { workspace = true }
-serde = { workspace = true, features = ["derive"] }
+serde = { workspace = true, features = ["derive", "rc"] }
 serde_json = { workspace = true, optional = true }
 tracing = { workspace = true }
 
