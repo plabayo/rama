@@ -1,7 +1,6 @@
-use std::sync::Arc;
-use serde::{Deserialize, Serialize, Serializer};
-use serde::ser::SerializeStruct;
 use rama_core::Context;
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 use crate::{
     PlatformKind, UserAgentKind,

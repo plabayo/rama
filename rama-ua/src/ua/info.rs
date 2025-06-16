@@ -318,7 +318,6 @@ impl fmt::Display for DeviceKind {
     }
 }
 
-
 /// Platform within the [`UserAgent`] operates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PlatformKind {
