@@ -43,7 +43,7 @@ macro_rules! __span {
                 $lvl,
                 $name,
                 $($fields)*
-            );
+            )
         }
     };
 }
@@ -60,7 +60,7 @@ macro_rules! __span {
     };
     (target: $target:expr, $lvl:expr, $name:expr, $($fields:tt)*) => {
         {
-            use $crate::telemetry::tracing::{OpenTelemetrySpanExt as _, Span, field};
+            use $crate::telemetry::tracing::{OpenTelemetrySpanExt as _, field};
             use $crate::telemetry::opentelemetry::trace::TraceContextExt as _;
             use $crate::telemetry::opentelemetry::{SpanId, TraceId};
 

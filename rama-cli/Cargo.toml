@@ -32,6 +32,7 @@ rama = { version = "0.3.0-alpha.1", path = "..", features = [
     "udp",
     "http-full",
     "proxy-full",
+    "opentelemetry",
 ] }
 serde = { workspace = true }
 serde_json = { workspace = true }

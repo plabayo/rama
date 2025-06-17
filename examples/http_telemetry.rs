@@ -21,7 +21,7 @@
 //! # Run the example
 //!
 //! ```sh
-//! cargo run --example http_telemetry --features=http-full,telemetry
+//! cargo run --example http_telemetry --features=http-full,opentelemetry
 //! ```
 //!
 //! # Expected output
