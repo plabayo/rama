@@ -1,18 +1,54 @@
 //! Tracing core rexport and utilities, for your conveneince
 
 #[doc(inline)]
-pub use ::tracing::*;
+pub use tracing::*;
+
+#[cfg(feature = "opentelemetry")]
 #[doc(inline)]
-pub use ::tracing_opentelemetry::*;
+pub use tracing_opentelemetry::*;
 
 // NOTE: once <https://github.com/tokio-rs/tracing/issues/3310>
 // is resolved (if ever) we should be able to remove these utility macros again
 
 #[doc(hidden)]
 pub mod __private {
-    pub use ::tracing::span as __og_span;
+    pub use tracing::span as __og_span;
 }
 
+#[cfg(not(feature = "opentelemetry"))]
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __span {
+    ($lvl:expr, $name:expr) => {
+        $crate::telemetry::tracing::span!(target: module_path!(), $lvl, $name, )
+    };
+    ($lvl:expr, $name:expr, $($fields:tt)*) => {
+        $crate::telemetry::tracing::span!(target: module_path!(), $lvl, $name, $($fields)*)
+    };
+    (target: $target:expr, $lvl:expr, $name:expr, $($fields:tt)*) => {
+        {
+            $crate::telemetry::tracing::__private::__og_span!(
+                target: $target,
+                $lvl,
+                $name,
+                $($fields)*
+            )
+        }
+    };
+    (target: $target:expr, parent: $parent:expr, $lvl:expr, $name:expr, $($fields:tt)*) => {
+        {
+            $crate::telemetry::tracing::__private::__og_span!(
+                target: $target,
+                parent: $parent,
+                $lvl,
+                $name,
+                $($fields)*
+            );
+        }
+    };
+}
+
+#[cfg(feature = "opentelemetry")]
 #[macro_export]
 #[doc(hidden)]
 macro_rules! __span {
@@ -27,8 +63,6 @@ macro_rules! __span {
             use $crate::telemetry::tracing::{OpenTelemetrySpanExt as _, Span, field};
             use $crate::telemetry::opentelemetry::trace::TraceContextExt as _;
             use $crate::telemetry::opentelemetry::{SpanId, TraceId};
-
-            let src_span = $crate::telemetry::tracing::Span::current();
 
             let span = $crate::telemetry::tracing::__private::__og_span!(
                 target: $target,
@@ -147,6 +181,36 @@ macro_rules! __info_span {
 #[doc(inline)]
 pub use crate::__info_span as info_span;
 
+#[cfg(not(feature = "opentelemetry"))]
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __root_span {
+    ($lvl:expr, $name:expr) => {
+        $crate::telemetry::tracing::root_span!(target: module_path!(), $lvl, $name,)
+    };
+    ($lvl:expr, $name:expr, $($fields:tt)*) => {
+        $crate::telemetry::tracing::root_span!(target: module_path!(), $lvl, $name, $($fields)*)
+    };
+    (target: $target:expr, $lvl:expr, $name:expr, $($fields:tt)*) => {
+        {
+            let src_span = $crate::telemetry::tracing::Span::current();
+
+            let span = $crate::telemetry::tracing::span!(
+                target: $target,
+                parent: None,
+                $lvl,
+                $name,
+                $($fields)*
+            );
+
+            span.follows_from(src_span);
+
+            span
+        }
+    };
+}
+
+#[cfg(feature = "opentelemetry")]
 #[macro_export]
 #[doc(hidden)]
 macro_rules! __root_span {

@@ -12,4 +12,5 @@ pub use tracker::{
 #[cfg(feature = "http")]
 pub mod http;
 
+#[cfg(feature = "opentelemetry")]
 pub mod opentelemetry;

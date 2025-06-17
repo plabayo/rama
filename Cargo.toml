@@ -261,6 +261,7 @@ full = [
     "http-full",
     "proxy-full",
     "tower",
+    "opentelemetry",
 ]
 compression = ["http", "rama-http?/compression", "rama-tls-boring?/compression"]
 tls = [
@@ -314,6 +315,11 @@ proxy-live-update = ["proxy", "rama-proxy?/live-update"]
 proxy-csv = ["proxy", "rama-proxy?/csv"]
 proxy-full = ["proxy-memory-db", "proxy-live-update", "proxy-csv", "haproxy", "socks5"]
 tower = ["dep:rama-tower"]
+opentelemetry = [
+    "rama-core/opentelemetry",
+    "rama-http?/opentelemetry",
+    "rama-net?/opentelemetry",
+]
 
 [dependencies]
 base64 = { workspace = true, optional = true }
@@ -487,7 +493,7 @@ required-features = ["http-full"]
 
 [[example]]
 name = "http_telemetry"
-required-features = ["http-full"]
+required-features = ["http-full", "opentelemetry"]
 
 [[example]]
 name = "http_user_agent_classifier"

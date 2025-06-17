@@ -47,7 +47,7 @@ mod http_sse;
 mod http_sse_datastar_hello;
 #[cfg(feature = "http-full")]
 mod http_sse_json;
-#[cfg(feature = "http-full")]
+#[cfg(all(feature = "http-full", feature = "opentelemetry"))]
 mod http_telemetry;
 #[cfg(feature = "http-full")]
 mod http_user_agent_classifier;
