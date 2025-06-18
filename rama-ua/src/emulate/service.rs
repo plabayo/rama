@@ -8,17 +8,14 @@ use rama_core::{
 use rama_http_headers::{ClientHint, all_client_hints};
 use rama_http_types::{
     HeaderMap, HeaderName, HeaderValue, Method, Request, Uri, Version,
-    conn::{H2ClientContextParams, Http1ClientContextParams, StreamDependencyParams},
+    conn::{H2ClientContextParams, Http1ClientContextParams},
     header::{
         ACCEPT, ACCEPT_LANGUAGE, AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, COOKIE, HOST, ORIGIN,
         REFERER, USER_AGENT,
     },
-    proto::{
-        h1::{
-            Http1HeaderMap,
-            headers::{HeaderMapValueRemover, original::OriginalHttp1Headers},
-        },
-        h2::frame::StreamId,
+    proto::h1::{
+        Http1HeaderMap,
+        headers::{HeaderMapValueRemover, original::OriginalHttp1Headers},
     },
 };
 use rama_net::{
@@ -366,58 +363,17 @@ fn emulate_http_connect_settings<Body, State>(
         }
         Version::HTTP_2 => {
             let pseudo_headers = profile.h2.settings.http_pseudo_headers.clone();
-            let initial_config = profile.h2.settings.initial_config.clone();
+            let early_frames = profile.h2.settings.early_frames.clone();
 
-            let headers_priority = match (
-                profile.h2.settings.priority_header.clone(),
-                ctx.get::<SelectedUserAgentProfile>().map(|p| p.ua_kind),
-            ) {
-                (Some(priority), _) => Some(priority),
-                (None, Some(crate::UserAgentKind::Chromium)) => {
-                    tracing::trace!(
-                        "no priority h2 settings found, using hardcoded value from chromium instead"
-                    );
-                    Some(StreamDependencyParams {
-                        dependency_id: StreamId::from(0),
-                        weight: 255,
-                        is_exclusive: true,
-                    })
-                }
-                (None, Some(crate::UserAgentKind::Firefox)) => {
-                    tracing::trace!(
-                        "no priority h2 settings found, using hardcoded value from firefox instead"
-                    );
-                    Some(StreamDependencyParams {
-                        dependency_id: StreamId::from(0),
-                        weight: 41,
-                        is_exclusive: true,
-                    })
-                }
-                (None, Some(crate::UserAgentKind::Safari)) => {
-                    tracing::trace!(
-                        "no priority h2 settings found, using hardcoded value from safari instead"
-                    );
-                    Some(StreamDependencyParams {
-                        dependency_id: StreamId::from(0),
-                        weight: 255,
-                        is_exclusive: false,
-                    })
-                }
-                (None, None) => None,
-            };
-
-            if pseudo_headers.is_some() || initial_config.is_some() {
+            if pseudo_headers.is_some() || early_frames.is_some() {
                 tracing::trace!(
                     ?pseudo_headers,
-                    ?initial_config,
-                    ?headers_priority,
+                    ?early_frames,
                     "user agent emulation: insert h2 settings into extensions"
                 );
                 req.extensions_mut().insert(H2ClientContextParams {
                     headers_pseudo_order: pseudo_headers,
-                    setting_config: initial_config,
-                    headers_priority,
-                    priority: None, // TODO: do we need to care about priority?
+                    early_frames,
                 });
             }
         }

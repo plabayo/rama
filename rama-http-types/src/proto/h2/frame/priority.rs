@@ -1,4 +1,3 @@
-use crate::conn::{PriorityParams, StreamDependencyParams};
 use rama_core::bytes::BufMut;
 use serde::{Deserialize, Serialize};
 
@@ -8,24 +7,6 @@ use super::*;
 pub struct Priority {
     stream_id: StreamId,
     dependency: StreamDependency,
-}
-
-impl From<PriorityParams> for Priority {
-    fn from(value: PriorityParams) -> Self {
-        Self {
-            stream_id: value.stream_id,
-            dependency: value.dependency.into(),
-        }
-    }
-}
-
-impl From<Priority> for PriorityParams {
-    fn from(value: Priority) -> Self {
-        Self {
-            stream_id: value.stream_id,
-            dependency: value.dependency.into(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
@@ -40,26 +21,6 @@ pub struct StreamDependency {
 
     /// True if the stream dependency is exclusive.
     is_exclusive: bool,
-}
-
-impl From<StreamDependencyParams> for StreamDependency {
-    fn from(value: StreamDependencyParams) -> Self {
-        Self {
-            dependency_id: value.dependency_id,
-            weight: value.weight,
-            is_exclusive: value.is_exclusive,
-        }
-    }
-}
-
-impl From<StreamDependency> for StreamDependencyParams {
-    fn from(value: StreamDependency) -> Self {
-        Self {
-            dependency_id: value.dependency_id,
-            weight: value.weight,
-            is_exclusive: value.is_exclusive,
-        }
-    }
 }
 
 impl Priority {

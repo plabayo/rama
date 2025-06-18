@@ -4,7 +4,6 @@ use rama_utils::macros::enums::enum_builder;
 use rama_utils::octets::{unpack_octets_as_u16, unpack_octets_as_u32};
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
-use std::sync::Arc;
 
 /// A struct representing the combination of a [`SettingId`] with its u32 value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -285,10 +284,6 @@ impl<'de> Deserialize<'de> for SettingOrder {
         Ok(v.into_iter().collect())
     }
 }
-
-#[derive(Debug, Clone)]
-/// Injected into h2 requests for those who are interested in this.
-pub struct InitialPeerSettings(pub Arc<SettingsConfig>);
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SettingsConfig {

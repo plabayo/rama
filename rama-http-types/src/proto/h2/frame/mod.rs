@@ -28,7 +28,7 @@ pub use self::ping::Ping;
 pub use self::priority::{Priority, StreamDependency};
 pub use self::reason::Reason;
 pub use self::reset::Reset;
-pub use self::setting::{InitialPeerSettings, Setting, SettingId, SettingOrder, SettingsConfig};
+pub use self::setting::{Setting, SettingId, SettingOrder, SettingsConfig};
 pub use self::settings::Settings;
 pub use self::stream_id::{StreamId, StreamIdOverflow};
 pub use self::window_update::WindowUpdate;

@@ -117,6 +117,10 @@ impl Settings {
         self.config.unknown_setting_9 = size;
     }
 
+    pub fn unknown_setting_9(&self) -> Option<u32> {
+        self.config.unknown_setting_9
+    }
+
     pub fn set_setting_order(&mut self, order: Option<SettingOrder>) {
         self.config.setting_order = order;
     }
