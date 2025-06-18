@@ -129,6 +129,7 @@ impl From<proto::Error> for Error {
                 proto::Error::Io(kind, inner) => {
                     Kind::Io(inner.map_or_else(|| kind.into(), |inner| io::Error::new(kind, inner)))
                 }
+                proto::Error::User(err) => Kind::User(err),
             },
         }
     }

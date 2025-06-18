@@ -2,12 +2,13 @@ use super::{Error, Frame, Head, Kind, StreamId};
 
 use rama_core::bytes::BufMut;
 use rama_core::telemetry::tracing;
+use serde::{Deserialize, Serialize};
 
 const ACK_FLAG: u8 = 0x1;
 
 type Payload = [u8; 8];
 
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Ping {
     ack: bool,
     payload: Payload,

@@ -7,15 +7,13 @@ use crate::h2::{client, proto, server};
 
 use rama_core::bytes::{Buf, Bytes};
 use rama_core::telemetry::tracing;
-use rama_http_types::conn::{LastPeerPriorityParams, PriorityParams};
+use rama_http::proto::h2::frame::EarlyFrameStreamContext;
 use rama_http_types::dep::http::Extensions;
 use rama_http_types::proto::h1::headers::original::OriginalHttp1Headers;
 use rama_http_types::proto::h2::PseudoHeaderOrder;
 use rama_http_types::proto::h2::ext::Protocol;
-use rama_http_types::proto::h2::frame::{self, Frame, Priority, Reason, StreamDependency};
-use rama_http_types::proto::h2::frame::{InitialPeerSettings, SettingsConfig};
+use rama_http_types::proto::h2::frame::{self, Frame, Reason, Settings};
 use rama_http_types::{HeaderMap, Request, Response};
-use std::borrow::Cow;
 use std::task::{Context, Poll, Waker};
 use tokio::io::AsyncWrite;
 
@@ -86,21 +84,11 @@ struct Inner {
     /// The number of stream refs to this shared state.
     refs: usize,
 
-    /// The peer's initial h2 settings
-    peer_initial_settings: Option<Arc<SettingsConfig>>,
-
-    /// TODO: perhaps actually use these for something...
-    first_priority_params: Option<PriorityParams>,
-    last_priority_params: Option<PriorityParams>,
-
     /// Pseudo order of the headers stream
     headers_pseudo_order: Option<PseudoHeaderOrder>,
 
-    /// Priority of the headers stream
-    headers_priority: Option<StreamDependency>,
-
-    /// Priority stream list
-    priority: Option<Cow<'static, [Priority]>>,
+    /// early frame ctx
+    early_frame_ctx: EarlyFrameStreamContext,
 }
 
 #[derive(Debug)]
@@ -194,17 +182,52 @@ where
         })
     }
 
-    pub(crate) fn send_pending_refusal<T>(
+    pub(crate) fn send_pending<T>(
         &mut self,
         cx: &mut Context,
         dst: &mut Codec<T, Prioritized<B>>,
-    ) -> Poll<io::Result<()>>
+    ) -> Poll<Result<Option<Settings>, Error>>
     where
         T: AsyncWrite + Unpin,
     {
         let mut me = self.inner.lock().unwrap();
         let me = &mut *me;
-        me.actions.recv.send_pending_refusal(cx, dst)
+
+        if let Err(err) = ready!(me.actions.recv.send_pending_refusal(cx, dst)) {
+            return Poll::Ready(Err(err.into()));
+        }
+
+        match me.early_frame_ctx.replay_next_frame() {
+            Some(early_frame) => {
+                let frame: Frame<Prioritized<B>> = match early_frame {
+                    frame::EarlyFrame::Priority(mut priority) => {
+                        let stream_id = match me.actions.send.open() {
+                            Ok(id) => id,
+                            Err(err) => return Poll::Ready(Err(err.into())),
+                        };
+                        let _ = priority.replace_stream_id(stream_id);
+                        priority.into()
+                    }
+                    frame::EarlyFrame::Settings(settings) => {
+                        // TODO: do we need apply these settings somehow
+                        return Poll::Ready(Ok((!settings.is_ack()).then_some(settings)));
+                    }
+                    frame::EarlyFrame::WindowUpdate(mut window_update) => {
+                        let stream_id = match me.actions.send.open() {
+                            Ok(id) => id,
+                            Err(err) => return Poll::Ready(Err(err.into())),
+                        };
+                        let _ = window_update.replace_stream_id(stream_id);
+                        window_update.into()
+                    }
+                };
+                Poll::Ready(match dst.buffer(frame) {
+                    Ok(_) => Ok(None),
+                    Err(err) => Err(err.into()),
+                })
+            }
+            None => Poll::Ready(Ok(None)),
+        }
     }
 
     pub(crate) fn clear_expired_reset_streams(&mut self) {
@@ -248,29 +271,23 @@ where
             &mut me.actions.task,
         )?;
 
-        if is_initial {
-            me.peer_initial_settings = Some(Arc::new(frame.config.clone()));
-        }
-
         Ok(())
     }
 
-    pub(crate) fn apply_priority(&mut self, frame: frame::Priority) -> Result<(), Error> {
+    pub(crate) fn record_remote_settings(&mut self, frame: &frame::Settings) {
         let mut me = self.inner.lock().unwrap();
-        let me = &mut *me;
-
-        let params: PriorityParams = frame.into();
-
-        if me.first_priority_params.is_none() {
-            me.first_priority_params = Some(params.clone());
-        }
-        me.last_priority_params = Some(params);
-
-        Ok(())
+        me.early_frame_ctx.record_settings_frame(frame);
     }
 
-    pub(crate) fn apply_local_settings(&mut self, frame: &frame::Settings) -> Result<(), Error> {
+    pub(crate) fn apply_local_settings(
+        &mut self,
+        frame: &frame::Settings,
+        ack: frame::Settings,
+    ) -> Result<(), Error> {
         let mut me = self.inner.lock().unwrap();
+
+        me.early_frame_ctx.record_settings_frame(&ack);
+
         let me = &mut *me;
 
         me.actions.recv.apply_local_settings(frame, &mut me.store)
@@ -334,20 +351,18 @@ where
         }
 
         // Convert the message
-        let (priority, headers) = client::Peer::convert_send_message(
+        let headers = client::Peer::convert_send_message(
             stream_id,
             request,
             protocol,
             end_of_stream,
             me.headers_pseudo_order.clone(),
-            me.headers_priority.clone(),
-            me.priority.clone(),
+            None,
         )?;
 
         let mut stream = me.store.insert(stream.id, stream);
 
-        let sent = me.actions.send.send_priority_and_headers(
-            priority,
+        let sent = me.actions.send.send_headers(
             headers,
             send_buffer,
             &mut stream,
@@ -412,7 +427,6 @@ impl<B> DynStreams<'_, B> {
 
     pub(crate) fn recv_headers(&mut self, frame: frame::Headers) -> Result<(), Error> {
         let mut me = self.inner.lock().unwrap();
-
         me.recv_headers(self.peer, self.send_buffer, frame)
     }
 
@@ -444,7 +458,14 @@ impl<B> DynStreams<'_, B> {
 
     pub(crate) fn recv_window_update(&mut self, frame: frame::WindowUpdate) -> Result<(), Error> {
         let mut me = self.inner.lock().unwrap();
+        me.early_frame_ctx.record_windows_update_frame(&frame);
         me.recv_window_update(self.send_buffer, frame)
+    }
+
+    pub(crate) fn recv_priority(&mut self, frame: frame::Priority) -> Result<(), Error> {
+        let mut me = self.inner.lock().unwrap();
+        me.early_frame_ctx.record_priority_frame(&frame);
+        Ok(())
     }
 
     pub(crate) fn recv_push_promise(&mut self, frame: frame::PushPromise) -> Result<(), Error> {
@@ -480,12 +501,8 @@ impl Inner {
             },
             store: Store::new(),
             refs: 1,
-            peer_initial_settings: None,
-            first_priority_params: None,
-            last_priority_params: None,
-            headers_priority: config.headers_priority,
             headers_pseudo_order: config.headers_pseudo_order,
-            priority: config.priority,
+            early_frame_ctx: config.early_frame_ctx,
         }))
     }
 
@@ -1295,15 +1312,8 @@ impl<B> StreamRef<B> {
 
         let mut stream = me.store.resolve(self.opaque.key);
         let mut request = me.actions.recv.take_request(&mut stream);
-        if let Some(settings) = me.peer_initial_settings.clone() {
-            request
-                .extensions_mut()
-                .insert(InitialPeerSettings(settings));
-        }
-        if let Some(params) = me.last_priority_params.clone() {
-            request
-                .extensions_mut()
-                .insert(LastPeerPriorityParams(params));
+        if let Some(capture) = me.early_frame_ctx.freeze_recorder() {
+            request.extensions_mut().insert(capture);
         }
         request
     }

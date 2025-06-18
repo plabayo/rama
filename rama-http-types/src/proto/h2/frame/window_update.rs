@@ -3,10 +3,11 @@ use super::{Error, Frame, Head, Kind, StreamId};
 use rama_core::bytes::BufMut;
 use rama_core::telemetry::tracing;
 use rama_utils::octets::unpack_octets_as_u32;
+use serde::{Deserialize, Serialize};
 
 const SIZE_INCREMENT_MASK: u32 = 1 << 31;
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct WindowUpdate {
     stream_id: StreamId,
     size_increment: u32,
@@ -22,6 +23,10 @@ impl WindowUpdate {
 
     pub fn stream_id(&self) -> StreamId {
         self.stream_id
+    }
+
+    pub fn replace_stream_id(&mut self, stream_id: StreamId) -> StreamId {
+        std::mem::replace(&mut self.stream_id, stream_id)
     }
 
     pub fn size_increment(&self) -> u32 {

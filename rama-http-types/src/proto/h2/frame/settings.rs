@@ -7,14 +7,15 @@ use super::{
 
 use rama_core::bytes::BytesMut;
 use rama_core::telemetry::tracing;
+use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Default, Eq, PartialEq)]
+#[derive(Clone, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Settings {
     pub flags: SettingsFlags,
     pub config: SettingsConfig,
 }
 
-#[derive(Copy, Clone, Eq, PartialEq, Default)]
+#[derive(Copy, Clone, Eq, PartialEq, Default, Serialize, Deserialize)]
 pub struct SettingsFlags(u8);
 
 const ACK: u8 = 0x1;

@@ -124,6 +124,7 @@ use rama_core::telemetry::tracing::{
     self,
     instrument::{Instrument, Instrumented},
 };
+use rama_http::proto::h2::frame::EarlyFrameStreamContext;
 use rama_http_types::proto::h1::headers::original::OriginalHttp1Headers;
 use rama_http_types::proto::h2::frame::{
     self, Pseudo, PushPromiseHeaderError, Reason, Settings, StreamId,
@@ -1395,9 +1396,8 @@ where
                                 .builder
                                 .local_max_error_reset_streams,
                             settings: self.builder.settings.clone(),
-                            headers_priority: None,
                             headers_pseudo_order: None,
-                            priority: None,
+                            early_frame_ctx: EarlyFrameStreamContext::new_recorder(),
                         },
                     );
 

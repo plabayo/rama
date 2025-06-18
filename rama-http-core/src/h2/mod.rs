@@ -103,6 +103,8 @@ macro_rules! ready {
 mod codec;
 mod error;
 
+pub use codec::UserError;
+
 #[cfg(not(feature = "unstable"))]
 mod proto;
 
@@ -126,7 +128,7 @@ pub use crate::h2::error::{Error, Reason};
 pub use crate::h2::share::{FlowControl, Ping, PingPong, Pong, RecvStream, SendStream};
 
 #[cfg(feature = "unstable")]
-pub use codec::{Codec, SendError, UserError};
+pub use codec::{Codec, SendError};
 
 use std::pin::Pin;
 use std::task::{Context, Poll};

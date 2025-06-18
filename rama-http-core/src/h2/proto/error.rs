@@ -1,3 +1,4 @@
+use crate::h2::UserError;
 use crate::h2::codec::SendError;
 
 use rama_core::bytes::Bytes;
@@ -11,6 +12,7 @@ pub enum Error {
     Reset(StreamId, Reason, Initiator),
     GoAway(Bytes, Reason, Initiator),
     Io(io::ErrorKind, Option<String>),
+    User(UserError),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -24,7 +26,7 @@ impl Error {
     pub(crate) fn is_local(&self) -> bool {
         match *self {
             Self::Reset(_, _, initiator) | Self::GoAway(_, _, initiator) => initiator.is_local(),
-            Self::Io(..) => true,
+            Self::Io(..) | Self::User(_) => true,
         }
     }
 
@@ -68,6 +70,7 @@ impl fmt::Display for Error {
             Self::Reset(_, reason, _) | Self::GoAway(_, reason, _) => reason.fmt(fmt),
             Self::Io(_, Some(ref inner)) => inner.fmt(fmt),
             Self::Io(kind, None) => io::Error::from(kind).fmt(fmt),
+            Self::User(ref err) => err.fmt(fmt),
         }
     }
 }
@@ -75,6 +78,12 @@ impl fmt::Display for Error {
 impl From<io::ErrorKind> for Error {
     fn from(src: io::ErrorKind) -> Self {
         Error::Io(src, None)
+    }
+}
+
+impl From<UserError> for Error {
+    fn from(value: UserError) -> Self {
+        Error::User(value)
     }
 }
 

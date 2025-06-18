@@ -8,7 +8,6 @@ use rama_http::{
     header::{HOST, USER_AGENT},
     opentelemetry::version_as_protocol_version,
 };
-use rama_http_core::h2::frame::Priority;
 use rama_http_types::{
     Request, Version,
     conn::{H2ClientContextParams, Http1ClientContextParams},
@@ -161,17 +160,18 @@ where
                     if let Some(order) = params.headers_pseudo_order.clone() {
                         builder.headers_pseudo_order(order);
                     }
-                    if let Some(priority) = params.headers_priority.clone() {
-                        builder.headers_priority(priority.into());
-                    }
-                    if let Some(ref priority) = params.priority {
-                        builder.priority(
-                            priority
-                                .iter()
-                                .map(|p| Priority::from(p.clone()))
-                                .collect::<Vec<_>>(),
-                        );
-                    }
+                    // TODO: handle early frames :)
+                    // if let Some(priority) = params.headers_priority.clone() {
+                    //     builder.headers_priority(priority.into());
+                    // }
+                    // if let Some(ref priority) = params.priority {
+                    //     builder.priority(
+                    //         priority
+                    //             .iter()
+                    //             .map(|p| Priority::from(p.clone()))
+                    //             .collect::<Vec<_>>(),
+                    //     );
+                    // }
                 } else if let Some(pseudo_order) =
                     req.extensions().get::<PseudoHeaderOrder>().cloned()
                 {

@@ -11,7 +11,7 @@ pub enum SendError {
 }
 
 /// Errors caused by users of the library
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum UserError {
     /// The stream ID is no longer accepting frames.
     InactiveStreamId,

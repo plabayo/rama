@@ -1,9 +1,10 @@
 use crate::conn::{PriorityParams, StreamDependencyParams};
 use rama_core::bytes::BufMut;
+use serde::{Deserialize, Serialize};
 
 use super::*;
 
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Priority {
     stream_id: StreamId,
     dependency: StreamDependency,
@@ -27,7 +28,7 @@ impl From<Priority> for PriorityParams {
     }
 }
 
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct StreamDependency {
     /// The ID of the stream dependency target
     dependency_id: StreamId,
@@ -96,6 +97,10 @@ impl Priority {
 
     pub fn stream_id(&self) -> StreamId {
         self.stream_id
+    }
+
+    pub fn replace_stream_id(&mut self, stream_id: StreamId) -> StreamId {
+        std::mem::replace(&mut self.stream_id, stream_id)
     }
 
     pub fn dependency(&self) -> &StreamDependency {

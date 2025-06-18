@@ -1,7 +1,9 @@
+use crate::proto::h2::hpack::DecoderError;
 use rama_core::bytes::Bytes;
 use std::fmt;
 
 mod data;
+mod early_frame;
 mod go_away;
 mod head;
 mod headers;
@@ -15,9 +17,8 @@ mod stream_id;
 mod util;
 mod window_update;
 
-use crate::proto::h2::hpack::DecoderError;
-
 pub use self::data::Data;
+pub use self::early_frame::{EarlyFrame, EarlyFrameCapture, EarlyFrameStreamContext};
 pub use self::go_away::GoAway;
 pub use self::head::{Head, Kind};
 pub use self::headers::{
@@ -56,31 +57,7 @@ pub enum Frame<T = Bytes> {
     Reset(Reset),
 }
 
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub enum MetaFrame {
-    Priority(Priority),
-    Settings(Settings),
-    Ping(Ping),
-    GoAway(GoAway),
-    WindowUpdate(WindowUpdate),
-    Reset(Reset),
-}
-
 impl<T> Frame<T> {
-    pub fn clone_as_meta(&self) -> Option<MetaFrame> {
-        match self {
-            Frame::Data(_) => None,
-            Frame::Headers(_) => None,
-            Frame::Priority(priority) => Some(MetaFrame::Priority(priority.clone())),
-            Frame::PushPromise(_) => None,
-            Frame::Settings(settings) => Some(MetaFrame::Settings(settings.clone())),
-            Frame::Ping(ping) => Some(MetaFrame::Ping(ping.clone())),
-            Frame::GoAway(go_away) => Some(MetaFrame::GoAway(go_away.clone())),
-            Frame::WindowUpdate(window_update) => Some(MetaFrame::WindowUpdate(*window_update)),
-            Frame::Reset(reset) => Some(MetaFrame::Reset(*reset)),
-        }
-    }
-
     pub fn map<F, U>(self, f: F) -> Frame<U>
     where
         F: FnOnce(T) -> U,
