@@ -25,11 +25,11 @@ use self::state::State;
 use self::store::Store;
 use self::stream::Stream;
 
-use crate::h2::frame::{Priority, StreamDependency, StreamId, StreamIdOverflow};
 use crate::h2::proto::*;
 
 use rama_core::bytes::Bytes;
 use rama_http_types::proto::h2::PseudoHeaderOrder;
+use rama_http_types::proto::h2::frame::{Priority, StreamDependency, StreamId, StreamIdOverflow};
 use std::borrow::Cow;
 use std::time::Duration;
 

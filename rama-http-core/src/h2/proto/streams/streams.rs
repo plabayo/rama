@@ -2,8 +2,6 @@ use super::recv::RecvHeaderBlockError;
 use super::store::{self, Entry, Resolve, Store};
 use super::{Buffer, Config, Counts, Prioritized, Recv, Send, Stream, StreamId};
 use crate::h2::codec::{Codec, SendError, UserError};
-use crate::h2::ext::Protocol;
-use crate::h2::frame::{self, Frame, Priority, Reason, StreamDependency};
 use crate::h2::proto::{Error, Initiator, Open, Peer, WindowSize, peer};
 use crate::h2::{client, proto, server};
 
@@ -13,6 +11,8 @@ use rama_http_types::conn::{LastPeerPriorityParams, PriorityParams};
 use rama_http_types::dep::http::Extensions;
 use rama_http_types::proto::h1::headers::original::OriginalHttp1Headers;
 use rama_http_types::proto::h2::PseudoHeaderOrder;
+use rama_http_types::proto::h2::ext::Protocol;
+use rama_http_types::proto::h2::frame::{self, Frame, Priority, Reason, StreamDependency};
 use rama_http_types::proto::h2::frame::{InitialPeerSettings, SettingsConfig};
 use rama_http_types::{HeaderMap, Request, Response};
 use std::borrow::Cow;

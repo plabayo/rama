@@ -1,10 +1,12 @@
 use super::*;
 use crate::h2::codec::UserError;
-use crate::h2::frame::{DEFAULT_INITIAL_WINDOW_SIZE, PushPromiseHeaderError, Reason};
 use crate::h2::proto;
 use rama_core::telemetry::tracing;
 
 use rama_http_types::proto::h1::headers::original::OriginalHttp1Headers;
+use rama_http_types::proto::h2::frame::{
+    DEFAULT_INITIAL_WINDOW_SIZE, PushPromiseHeaderError, Reason,
+};
 use rama_http_types::{HeaderMap, Request, Response};
 
 use std::cmp::Ordering;

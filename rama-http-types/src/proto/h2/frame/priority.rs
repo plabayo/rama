@@ -1,7 +1,7 @@
+use crate::conn::{PriorityParams, StreamDependencyParams};
 use rama_core::bytes::BufMut;
-use rama_http_types::conn::{PriorityParams, StreamDependencyParams};
 
-use crate::h2::frame::*;
+use super::*;
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct Priority {
@@ -174,7 +174,7 @@ impl StreamDependency {
 mod tests {
     #[test]
     fn test_priority_frame() {
-        use crate::h2::frame::{self, Priority, StreamDependency, StreamId};
+        use crate::proto::h2::frame::{self, Priority, StreamDependency, StreamId};
 
         let mut dependency_buf = Vec::new();
         let dependency = StreamDependency::new(StreamId::zero(), 201, false);

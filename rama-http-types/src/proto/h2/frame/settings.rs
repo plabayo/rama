@@ -1,16 +1,17 @@
 use std::fmt;
 
-use crate::h2::frame::{Error, Frame, FrameSize, Head, Kind, StreamId, util};
+use super::{
+    Error, Frame, FrameSize, Head, Kind, Setting, SettingId, SettingOrder, SettingsConfig,
+    StreamId, util,
+};
+
 use rama_core::bytes::BytesMut;
 use rama_core::telemetry::tracing;
 
-use rama_http_types::proto::h2::frame::SettingOrder;
-pub use rama_http_types::proto::h2::frame::{Setting, SettingId, SettingsConfig};
-
 #[derive(Clone, Default, Eq, PartialEq)]
 pub struct Settings {
-    flags: SettingsFlags,
-    pub(crate) config: SettingsConfig,
+    pub flags: SettingsFlags,
+    pub config: SettingsConfig,
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Default)]
@@ -120,7 +121,7 @@ impl Settings {
     }
 
     pub fn load(head: Head, payload: &[u8]) -> Result<Settings, Error> {
-        debug_assert_eq!(head.kind(), crate::h2::frame::Kind::Settings);
+        debug_assert_eq!(head.kind(), super::Kind::Settings);
 
         if !head.stream_id().is_zero() {
             return Err(Error::InvalidStreamId);

@@ -1,6 +1,7 @@
 use crate::h2::codec::UserError;
-use crate::h2::frame::{self, Frame, FrameSize};
-use crate::h2::hpack;
+
+use rama_http_types::proto::h2::frame::{self, Frame, FrameSize};
+use rama_http_types::proto::h2::hpack;
 
 use rama_core::bytes::{Buf, BufMut, BytesMut};
 use rama_core::telemetry::tracing;

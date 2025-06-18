@@ -1,6 +1,6 @@
-use crate::h2::hpack::{Decoder, Encoder, Header};
+use crate::proto::h2::hpack::{Decoder, Encoder, Header};
 
-use rama_http_types::{HeaderName, HeaderValue};
+use crate::{HeaderName, HeaderValue};
 
 use quickcheck::{Arbitrary, Gen, QuickCheck, TestResult};
 use rama_core::bytes::BytesMut;
@@ -14,7 +14,6 @@ const MAX_CHUNK: usize = 2 * 1024;
 
 #[test]
 fn hpack_fuzz() {
-    let _ = env_logger::try_init();
     fn prop(fuzz: FuzzHpack) -> TestResult {
         fuzz.run();
         TestResult::from_bool(true)
@@ -185,7 +184,7 @@ impl Arbitrary for FuzzHpack {
 }
 
 fn gen_header(g: &mut StdRng) -> Header<Option<HeaderName>> {
-    use rama_http_types::{Method, StatusCode};
+    use crate::{Method, StatusCode};
 
     if g.random_ratio(1, 10) {
         match g.random_range(0u32..5) {
@@ -255,7 +254,7 @@ fn gen_header(g: &mut StdRng) -> Header<Option<HeaderName>> {
 }
 
 fn gen_header_name(g: &mut StdRng) -> HeaderName {
-    use rama_http_types::header;
+    use crate::header;
 
     if g.random_ratio(1, 2) {
         g.sample(
@@ -360,6 +359,6 @@ fn gen_string(g: &mut StdRng, min: usize, max: usize) -> String {
     String::from_utf8(bytes).unwrap()
 }
 
-fn to_shared(src: String) -> crate::h2::hpack::BytesStr {
-    crate::h2::hpack::BytesStr::from(src.as_str())
+fn to_shared(src: String) -> crate::proto::h2::hpack::BytesStr {
+    crate::proto::h2::hpack::BytesStr::from(src.as_str())
 }

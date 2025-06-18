@@ -1,4 +1,5 @@
-use crate::h2::{frame::StreamIdOverflow, proto::Error};
+use crate::h2::proto::Error;
+use rama_http_types::proto::h2::frame::StreamIdOverflow;
 
 use std::{error, fmt, io};
 

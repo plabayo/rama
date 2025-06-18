@@ -1,4 +1,4 @@
-use crate::h2::frame::{self, Error, Head, Kind, StreamId};
+use super::{Error, Frame, Head, Kind, StreamId};
 
 use rama_core::bytes::BufMut;
 use rama_core::telemetry::tracing;
@@ -30,7 +30,7 @@ impl WindowUpdate {
 
     /// Builds a `WindowUpdate` frame from a raw frame.
     pub fn load(head: Head, payload: &[u8]) -> Result<WindowUpdate, Error> {
-        debug_assert_eq!(head.kind(), crate::h2::frame::Kind::WindowUpdate);
+        debug_assert_eq!(head.kind(), Kind::WindowUpdate);
         if payload.len() != 4 {
             return Err(Error::BadFrameSize);
         }
@@ -57,8 +57,8 @@ impl WindowUpdate {
     }
 }
 
-impl<B> From<WindowUpdate> for frame::Frame<B> {
+impl<B> From<WindowUpdate> for Frame<B> {
     fn from(src: WindowUpdate) -> Self {
-        frame::Frame::WindowUpdate(src)
+        Frame::WindowUpdate(src)
     }
 }

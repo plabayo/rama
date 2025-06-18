@@ -1,4 +1,4 @@
-use crate::h2::hpack::{Decoder, Encoder, Header};
+use crate::proto::h2::hpack::{Decoder, Encoder, Header};
 
 use hex::FromHex;
 use rama_core::bytes::BytesMut;

@@ -11,13 +11,13 @@ use rama_core::error::BoxError;
 use rama_core::rt::Executor;
 use rama_core::telemetry::tracing::{debug, trace};
 use rama_http_types::proto::h2::PseudoHeaderOrder;
+use rama_http_types::proto::h2::frame::{Priority, StreamDependency};
 use rama_http_types::proto::h2::frame::{SettingOrder, SettingsConfig};
 use rama_http_types::{Request, Response};
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use super::super::dispatch::{self, TrySendError};
 use crate::body::{Body, Incoming as IncomingBody};
-use crate::h2::frame::{Priority, StreamDependency};
 use crate::proto;
 
 /// The sender side of an established connection.

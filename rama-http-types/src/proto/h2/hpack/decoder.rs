@@ -1,28 +1,18 @@
 use super::{Header, header::BytesStr, huffman};
-use crate::h2::frame;
-
-use rama_core::bytes::{Buf, Bytes, BytesMut};
-use rama_core::telemetry::tracing;
-use rama_http_types::dep::http::{
+use crate::dep::http::{
     header,
     method::{self, Method},
     status::{self, StatusCode},
 };
+use crate::proto::h2::frame;
+
+use rama_core::bytes::{Buf, Bytes, BytesMut};
+use rama_core::telemetry::tracing;
 
 use std::cmp;
 use std::collections::VecDeque;
 use std::io::Cursor;
 use std::str::Utf8Error;
-
-/// Decodes headers using HPACK
-#[derive(Debug)]
-pub struct Decoder {
-    // Protocol indicated that the max table size will update
-    max_size_update: Option<usize>,
-    last_max_update: usize,
-    table: Table,
-    buffer: BytesMut,
-}
 
 /// Represents all errors that can be encountered while performing the decoding
 /// of an HPACK header set.
@@ -45,6 +35,16 @@ pub enum NeedMore {
     UnexpectedEndOfStream,
     IntegerUnderflow,
     StringUnderflow,
+}
+
+/// Decodes headers using HPACK
+#[derive(Debug)]
+pub struct Decoder {
+    // Protocol indicated that the max table size will update
+    max_size_update: Option<usize>,
+    last_max_update: usize,
+    table: Table,
+    buffer: BytesMut,
 }
 
 enum Representation {
@@ -618,7 +618,7 @@ impl From<DecoderError> for frame::Error {
 
 /// Get an entry from the static table
 fn get_static(idx: usize) -> Header {
-    use rama_http_types::dep::http::header::HeaderValue;
+    use crate::dep::http::header::HeaderValue;
 
     match idx {
         1 => Header::Authority(BytesStr::from_static("")),

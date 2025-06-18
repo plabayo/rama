@@ -2577,7 +2577,9 @@ name = "rama-http-types"
 version = "0.3.0-alpha.1"
 dependencies = [
  "const_format",
+ "fnv",
  "futures",
+ "hex",
  "http",
  "http-body",
  "http-body-util",
@@ -2587,10 +2589,12 @@ dependencies = [
  "mime_guess",
  "nom 8.0.0",
  "pin-project-lite",
+ "quickcheck",
  "rama-core",
  "rama-error",
  "rama-macros",
  "rama-utils",
+ "rand 0.9.1",
  "serde",
  "serde_json",
  "smallvec",

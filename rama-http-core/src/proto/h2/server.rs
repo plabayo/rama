@@ -10,6 +10,7 @@ use rama_core::error::BoxError;
 use rama_core::rt::Executor;
 use rama_core::telemetry::tracing::{Instrument, debug, trace, trace_root_span, warn};
 use rama_http::opentelemetry::version_as_protocol_version;
+use rama_http_types::proto::h2::ext;
 use rama_http_types::{Method, Request, Response, header};
 use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -275,9 +276,7 @@ where
                             )
                         };
 
-                        if let Some(protocol) =
-                            req.extensions_mut().remove::<crate::h2::ext::Protocol>()
-                        {
+                        if let Some(protocol) = req.extensions_mut().remove::<ext::Protocol>() {
                             req.extensions_mut().insert(Protocol::from_inner(protocol));
                         }
 

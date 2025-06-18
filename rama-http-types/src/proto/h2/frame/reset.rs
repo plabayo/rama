@@ -1,4 +1,4 @@
-use crate::h2::frame::{self, Error, Head, Kind, Reason, StreamId};
+use super::{Error, Frame, Head, Kind, Reason, StreamId};
 
 use rama_core::bytes::BufMut;
 use rama_core::telemetry::tracing;
@@ -51,8 +51,8 @@ impl Reset {
     }
 }
 
-impl<B> From<Reset> for frame::Frame<B> {
+impl<B> From<Reset> for Frame<B> {
     fn from(src: Reset) -> Self {
-        frame::Frame::Reset(src)
+        Frame::Reset(src)
     }
 }

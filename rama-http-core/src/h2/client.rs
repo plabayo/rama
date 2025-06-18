@@ -135,8 +135,6 @@
 //! [`Error`]: ../struct.Error.html
 
 use crate::h2::codec::{Codec, SendError, UserError};
-use crate::h2::ext::Protocol;
-use crate::h2::frame::{Headers, Pseudo, Reason, Settings, StreamId};
 use crate::h2::proto::{self, Error};
 use crate::h2::{FlowControl, PingPong, RecvStream, SendStream};
 
@@ -145,6 +143,9 @@ use rama_core::telemetry::tracing::{self, Instrument};
 use rama_http_types::dep::http::{request, uri};
 use rama_http_types::proto::h1::headers::original::OriginalHttp1Headers;
 use rama_http_types::proto::h2::PseudoHeaderOrder;
+use rama_http_types::proto::h2::ext::Protocol;
+use rama_http_types::proto::h2::frame::{Headers, Pseudo, Reason, Settings, StreamId};
+use rama_http_types::proto::h2::frame::{Priority, StreamDependency};
 use rama_http_types::proto::h2::frame::{SettingOrder, SettingsConfig};
 use rama_http_types::{HeaderMap, Method, Request, Response, Version};
 use std::borrow::Cow;
@@ -153,8 +154,6 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
-
-use super::frame::{Priority, StreamDependency};
 
 /// Initializes new HTTP/2 streams on a connection by sending a request.
 ///
@@ -1542,8 +1541,8 @@ impl ResponseFuture {
     /// # Panics
     ///
     /// If the lock on the stream store has been poisoned.
-    pub fn stream_id(&self) -> crate::h2::StreamId {
-        crate::h2::StreamId::from_internal(self.inner.stream_id())
+    pub fn stream_id(&self) -> StreamId {
+        self.inner.stream_id()
     }
     /// Returns a stream of PushPromises
     ///
@@ -1636,7 +1635,7 @@ impl PushedResponseFuture {
     /// # Panics
     ///
     /// If the lock on the stream store has been poisoned.
-    pub fn stream_id(&self) -> crate::h2::StreamId {
+    pub fn stream_id(&self) -> StreamId {
         self.inner.stream_id()
     }
 }

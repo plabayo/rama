@@ -4,7 +4,7 @@ use rama_core::bytes::{BufMut, Bytes};
 use rama_core::telemetry::tracing;
 use rama_utils::octets::unpack_octets_as_u32;
 
-use crate::h2::frame::{self, Error, Head, Kind, Reason, StreamId};
+use super::{Error, Frame, Head, Kind, Reason, StreamId};
 
 #[derive(Clone, Eq, PartialEq)]
 pub struct GoAway {
@@ -68,9 +68,9 @@ impl GoAway {
     }
 }
 
-impl<B> From<GoAway> for frame::Frame<B> {
+impl<B> From<GoAway> for Frame<B> {
     fn from(src: GoAway) -> Self {
-        frame::Frame::GoAway(src)
+        Frame::GoAway(src)
     }
 }
 

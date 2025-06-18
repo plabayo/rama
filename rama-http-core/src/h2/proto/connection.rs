@@ -1,6 +1,4 @@
 use crate::h2::codec::UserError;
-use crate::h2::frame::DEFAULT_INITIAL_WINDOW_SIZE;
-use crate::h2::frame::{Priority, Reason, StreamDependency, StreamId};
 use crate::h2::proto::*;
 use crate::h2::{client, server};
 
@@ -8,6 +6,8 @@ use rama_core::bytes::Bytes;
 use rama_core::futures::Stream;
 use rama_core::telemetry::tracing;
 use rama_http_types::proto::h2::PseudoHeaderOrder;
+use rama_http_types::proto::h2::frame::DEFAULT_INITIAL_WINDOW_SIZE;
+use rama_http_types::proto::h2::frame::{Priority, Reason, StreamDependency, StreamId};
 use std::borrow::Cow;
 use std::io;
 use std::marker::PhantomData;
