@@ -40,8 +40,15 @@ def main():
                         for i, col_name in enumerate(column_names):
                             if col_name == "updated_at":
                                 if row[i]:
-                                    profile[col_name] = row[i].strftime("%Y-%m-%d %H:%M:%S")
+                                    updated_at = row[i].strftime("%Y-%m-%d %H:%M:%S")
+                                    if row[i].timestamp() * 1000 > 1750312800000:
+                                        profile[col_name] = updated_at
+                                    else:
+                                        print(f"skip profile #{i}: updated_at to far in the past: {updated_at}")
+                                        profile = None
+                                        break
                                 else:
+                                    print(f"skip profile #{i}: missing updated_at")
                                     profile = None
                                     break
                             else:
