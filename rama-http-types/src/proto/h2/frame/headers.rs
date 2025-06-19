@@ -242,7 +242,7 @@ impl Headers {
             }
             let stream_dep = StreamDependency::load(&src[..5])?;
 
-            if stream_dep.dependency_id() == head.stream_id() {
+            if stream_dep.dependency_id == head.stream_id() {
                 return Err(Error::InvalidDependencyId);
             }
 

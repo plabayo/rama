@@ -201,23 +201,26 @@ where
             Some(early_frame) => {
                 let frame: Frame<Prioritized<B>> = match early_frame {
                     frame::EarlyFrame::Priority(mut priority) => {
-                        let stream_id = match me.actions.send.open() {
-                            Ok(id) => id,
-                            Err(err) => return Poll::Ready(Err(err.into())),
-                        };
-                        let _ = priority.replace_stream_id(stream_id);
+                        if let Some(id) =
+                            me.actions.send.set_next_stream_id_from(priority.stream_id)
+                        {
+                            priority.dependency.dependency_id = StreamId::ZERO;
+                            priority.stream_id = id;
+                        }
                         priority.into()
                     }
                     frame::EarlyFrame::Settings(settings) => {
-                        // TODO: do we need apply these settings somehow
+                        // NOTE: if ever issues, we might need to do something locally with settings as well
                         return Poll::Ready(Ok((!settings.is_ack()).then_some(settings)));
                     }
                     frame::EarlyFrame::WindowUpdate(mut window_update) => {
-                        let stream_id = match me.actions.send.open() {
-                            Ok(id) => id,
-                            Err(err) => return Poll::Ready(Err(err.into())),
-                        };
-                        let _ = window_update.replace_stream_id(stream_id);
+                        if let Some(id) = me
+                            .actions
+                            .send
+                            .set_next_stream_id_from(window_update.stream_id)
+                        {
+                            window_update.stream_id = id;
+                        }
                         window_update.into()
                     }
                 };
@@ -737,7 +740,7 @@ impl Inner {
         send_buffer: &SendBuffer<B>,
         frame: frame::WindowUpdate,
     ) -> Result<(), Error> {
-        let id = frame.stream_id();
+        let id = frame.stream_id;
 
         let mut send_buffer = send_buffer.inner.lock().unwrap();
         let send_buffer = &mut *send_buffer;
@@ -755,7 +758,7 @@ impl Inner {
                 // is an error. The stream is reset by the function on error and
                 // the error is informational.
                 let _ = self.actions.send.recv_stream_window_update(
-                    frame.size_increment(),
+                    frame.size_increment,
                     send_buffer,
                     &mut stream,
                     &mut self.counts,

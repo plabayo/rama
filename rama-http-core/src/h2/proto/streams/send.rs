@@ -365,7 +365,7 @@ impl Send {
         counts: &mut Counts,
     ) -> Result<(), Reason> {
         self.prioritize
-            .recv_connection_window_update(frame.size_increment(), store, counts)
+            .recv_connection_window_update(frame.size_increment, store, counts)
     }
 
     pub(super) fn recv_stream_window_update<B>(
@@ -564,6 +564,17 @@ impl Send {
         // if next_stream_id is overflowed, that's ok.
 
         Ok(())
+    }
+
+    pub(super) fn set_next_stream_id_from(&mut self, stream_id: StreamId) -> Option<StreamId> {
+        if let Ok(cur_id) = self.next_stream_id {
+            if cur_id > stream_id {
+                self.next_stream_id = cur_id.next_id();
+                return Some(cur_id);
+            }
+        }
+        self.next_stream_id = stream_id.next_id();
+        None
     }
 
     pub(super) fn ensure_next_stream_id(&self) -> Result<StreamId, UserError> {

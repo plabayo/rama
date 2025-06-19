@@ -9,8 +9,8 @@ const SIZE_INCREMENT_MASK: u32 = 1 << 31;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct WindowUpdate {
-    stream_id: StreamId,
-    size_increment: u32,
+    pub stream_id: StreamId,
+    pub size_increment: u32,
 }
 
 impl WindowUpdate {
@@ -19,18 +19,6 @@ impl WindowUpdate {
             stream_id,
             size_increment,
         }
-    }
-
-    pub fn stream_id(&self) -> StreamId {
-        self.stream_id
-    }
-
-    pub fn replace_stream_id(&mut self, stream_id: StreamId) -> StreamId {
-        std::mem::replace(&mut self.stream_id, stream_id)
-    }
-
-    pub fn size_increment(&self) -> u32 {
-        self.size_increment
     }
 
     /// Builds a `WindowUpdate` frame from a raw frame.
