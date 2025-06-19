@@ -117,12 +117,12 @@ impl Settings {
         self.config.header_table_size = size;
     }
 
-    pub fn set_unknown_setting_9(&mut self, size: Option<u32>) {
-        self.config.unknown_setting_9 = size;
+    pub fn set_no_rfc7540_priorities(&mut self, size: Option<u32>) {
+        self.config.no_rfc7540_priorities = size;
     }
 
-    pub fn unknown_setting_9(&self) -> Option<u32> {
-        self.config.unknown_setting_9
+    pub fn no_rfc7540_priorities(&self) -> Option<u32> {
+        self.config.no_rfc7540_priorities
     }
 
     pub fn set_setting_order(&mut self, order: Option<SettingOrder>) {
@@ -203,8 +203,8 @@ impl Settings {
                         return Err(Error::InvalidSettingValue);
                     }
                 },
-                SettingId::Unknown(0x09) => {
-                    settings.config.unknown_setting_9 = Some(setting.value);
+                SettingId::NoRfc7540Priorities => {
+                    settings.config.no_rfc7540_priorities = Some(setting.value);
                 }
                 SettingId::Unknown(id) => {
                     tracing::trace!(
@@ -286,8 +286,8 @@ impl Settings {
                         f(Setting { id, value });
                     }
                 }
-                SettingId::Unknown(0x09) => {
-                    if let Some(value) = self.config.unknown_setting_9 {
+                SettingId::NoRfc7540Priorities => {
+                    if let Some(value) = self.config.no_rfc7540_priorities {
                         f(Setting { id, value });
                     }
                 }
@@ -336,8 +336,8 @@ impl fmt::Debug for Settings {
             SettingId::EnableConnectProtocol => {
                 builder.field("enable_connect_protocol", &setting.value);
             }
-            SettingId::Unknown(0x09) => {
-                builder.field("unknown_setting9", &setting.value);
+            SettingId::NoRfc7540Priorities => {
+                builder.field("no_rfc7540_priorities", &setting.value);
             }
             SettingId::Unknown(id) => {
                 builder.field(&format!("unknown_unknown_setting_{id}"), &setting.value);

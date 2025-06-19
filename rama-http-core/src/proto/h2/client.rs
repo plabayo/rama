@@ -80,7 +80,7 @@ pub(crate) struct Config {
     pub(crate) max_concurrent_streams: Option<u32>,
     pub(crate) enable_push: bool,
     pub(crate) enable_connect_protocol: Option<u32>,
-    pub(crate) unknown_setting_9: Option<u32>,
+    pub(crate) no_rfc7540_priorities: Option<u32>,
     pub(crate) setting_order: Option<SettingOrder>,
 }
 
@@ -103,7 +103,7 @@ impl Default for Config {
             max_concurrent_streams: None,
             enable_push: false,
             enable_connect_protocol: None,
-            unknown_setting_9: None,
+            no_rfc7540_priorities: None,
             setting_order: None,
         }
     }
@@ -136,8 +136,8 @@ pub(crate) fn new_builder(config: &Config) -> Builder {
     if let Some(connect_protocol) = config.enable_connect_protocol {
         builder.enable_connect_protocol(connect_protocol);
     }
-    if let Some(unknown_setting_9) = config.unknown_setting_9 {
-        builder.unknown_setting_9(unknown_setting_9);
+    if let Some(no_rfc7540_priorities) = config.no_rfc7540_priorities {
+        builder.set_no_rfc7540_priorities(no_rfc7540_priorities);
     }
     if let Some(setting_order) = config.setting_order.clone() {
         builder.setting_order(setting_order);

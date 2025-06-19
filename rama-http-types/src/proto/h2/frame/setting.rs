@@ -104,6 +104,10 @@ enum_builder! {
         ///
         /// [RFC 8441]: https://datatracker.ietf.org/doc/html/rfc8441
         EnableConnectProtocol => 0x0008,
+        /// Disable RFC 7540 Stream Priorities.
+        ///
+        /// [RFC 9218]: https://datatracker.ietf.org/doc/html/rfc9218
+        NoRfc7540Priorities => 0x0009,
     }
 }
 
@@ -195,7 +199,7 @@ impl SettingOrder {
             SettingId::MaxFrameSize,
             SettingId::MaxHeaderListSize,
             SettingId::EnableConnectProtocol,
-            SettingId::Unknown(0x09),
+            SettingId::NoRfc7540Priorities,
         ]
         .into_iter()
         .collect()
@@ -301,9 +305,8 @@ pub struct SettingsConfig {
     pub max_header_list_size: Option<u32>,
     /// See [`SettingId::EnableConnectProtocol`] for more info.
     pub enable_connect_protocol: Option<u32>,
-    /// A setting observed in user-agents such as Safari
-    /// for Unknown setting id `9`.
-    pub unknown_setting_9: Option<u32>,
+    /// See [`SettingId::NoRfc7540Priorities`] for more info.
+    pub no_rfc7540_priorities: Option<u32>,
     /// Order in which settings appeared.
     pub setting_order: Option<SettingOrder>,
 }
@@ -328,7 +331,7 @@ impl SettingsConfig {
             max_frame_size,
             max_header_list_size,
             enable_connect_protocol,
-            unknown_setting_9,
+            no_rfc7540_priorities,
             setting_order,
         );
     }
@@ -343,7 +346,7 @@ impl PartialEq for SettingsConfig {
             && self.max_frame_size == other.max_frame_size
             && self.max_header_list_size == other.max_header_list_size
             && self.enable_connect_protocol == other.enable_connect_protocol
-            && self.unknown_setting_9 == other.unknown_setting_9
+            && self.no_rfc7540_priorities == other.no_rfc7540_priorities
     }
 }
 

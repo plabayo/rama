@@ -250,10 +250,10 @@ fn extend_tables_with_h2_settings(h2_settings: Http2Settings, tables: &mut Vec<T
                                         ));
                                     }
                                 }
-                                h2::frame::SettingId::Unknown(0x09) => {
-                                    if let Some(value) = settings.unknown_setting_9() {
+                                h2::frame::SettingId::NoRfc7540Priorities => {
+                                    if let Some(value) = settings.no_rfc7540_priorities() {
                                         rows.push((
-                                            "Unknown Setting with known id 9".to_owned(),
+                                            "No RFC 7540 Priorities".to_owned(),
                                             value.to_string(),
                                         ));
                                     }

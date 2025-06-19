@@ -266,8 +266,8 @@ impl Builder {
             self.enable_connect_protocol(value);
         }
 
-        if let Some(value) = config.unknown_setting_9 {
-            self.unknown_setting_9(value);
+        if let Some(value) = config.no_rfc7540_priorities {
+            self.no_rfc7540_priorities(value);
         }
 
         if let Some(order) = config.setting_order.clone() {
@@ -474,8 +474,8 @@ impl Builder {
         self
     }
 
-    pub fn unknown_setting_9(&mut self, value: u32) -> &mut Self {
-        self.h2_builder.unknown_setting_9 = Some(value);
+    pub fn no_rfc7540_priorities(&mut self, value: u32) -> &mut Self {
+        self.h2_builder.no_rfc7540_priorities = Some(value);
         self
     }
 
