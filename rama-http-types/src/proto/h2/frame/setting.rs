@@ -105,6 +105,7 @@ enum_builder! {
         /// [RFC 8441]: https://datatracker.ietf.org/doc/html/rfc8441
         EnableConnectProtocol => 0x0008,
         /// Disable RFC 7540 Stream Priorities.
+        ///
         /// [RFC 9218]: https://datatracker.ietf.org/doc/html/rfc9218
         NoRfc7540Priorities => 0x0009,
     }
