@@ -1151,8 +1151,8 @@ impl Builder {
         self
     }
 
-    pub fn unknown_setting_9(&mut self, value: u32) -> &mut Self {
-        self.settings.set_unknown_setting_9(Some(value));
+    pub fn no_rfc7540_priorities(&mut self, value: u32) -> &mut Self {
+        self.settings.set_no_rfc7540_priorities(Some(value));
         self
     }
 
