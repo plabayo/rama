@@ -331,7 +331,7 @@ impl SettingsConfig {
             max_frame_size,
             max_header_list_size,
             enable_connect_protocol,
-            unknown_setting_9,
+            no_rfc7540_priorities,
             setting_order,
         );
     }

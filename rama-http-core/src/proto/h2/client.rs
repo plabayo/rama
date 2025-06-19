@@ -137,7 +137,7 @@ pub(crate) fn new_builder(config: &Config) -> Builder {
         builder.enable_connect_protocol(connect_protocol);
     }
     if let Some(no_rfc7540_priorities) = config.no_rfc7540_priorities {
-        builder.no_rfc7540_priorities(no_rfc7540_priorities);
+        builder.set_no_rfc7540_priorities(no_rfc7540_priorities);
     }
     if let Some(setting_order) = config.setting_order.clone() {
         builder.setting_order(setting_order);
