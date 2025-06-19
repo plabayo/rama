@@ -12,7 +12,6 @@ use crate::{
     error::{BoxError, OpaqueError},
     http::{
         Request, Response, Version,
-        conn::LastPeerPriorityParams,
         dep::http_body_util::BodyExt,
         header::USER_AGENT,
         headers::forwarded::{CFConnectingIp, ClientIp, TrueClientIp, XClientIp, XRealIp},
@@ -24,7 +23,6 @@ use crate::{
         },
         proto::h1::Http1HeaderMap,
         proto::h2::PseudoHeaderOrder,
-        proto::h2::frame::InitialPeerSettings,
         server::HttpServer,
     },
     layer::{ConsumeErrLayer, LimitLayer, TimeoutLayer, limit::policy::ConcurrentPolicy},
@@ -52,6 +50,7 @@ use crate::{
     tls::boring::server::{TlsAcceptorData, TlsAcceptorLayer},
 };
 use rama_http::service::web::{extract::Json, response::IntoResponse};
+use rama_http_core::h2::frame::EarlyFrameCapture;
 use serde::Serialize;
 use serde_json::json;
 use std::{convert::Infallible, time::Duration};
@@ -701,22 +700,12 @@ impl Service<(), Request> for EchoService {
 
         let mut h2 = None;
         if parts.version == Version::HTTP_2 {
-            let initial_peer_settings = parts
-                .extensions
-                .get::<InitialPeerSettings>()
-                .map(|p| p.0.as_ref());
-
+            let early_frames = parts.extensions.get::<EarlyFrameCapture>();
             let pseudo_headers = parts.extensions.get::<PseudoHeaderOrder>();
 
-            let last_priority_params = parts
-                .extensions
-                .get::<LastPeerPriorityParams>()
-                .map(|p| p.0.dependency.clone());
-
             h2 = Some(json!({
-                "settings": initial_peer_settings,
+                "early_frames": early_frames,
                 "pseudo_headers": pseudo_headers,
-                "last_priority_params": last_priority_params,
             }));
         }
 

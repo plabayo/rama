@@ -1,6 +1,7 @@
 use crate::h2::codec::UserError;
 use crate::h2::error::Reason;
 use crate::h2::proto::*;
+
 use rama_core::telemetry::tracing;
 use std::task::{Context, Poll};
 
@@ -12,8 +13,6 @@ pub(crate) struct Settings {
     /// the socket first then the settings applied **before** receiving any
     /// further frames.
     remote: Option<frame::Settings>,
-    /// Last Received PRIORITY
-    last_priority: Option<frame::Priority>,
     /// Whether the connection has received the initial SETTINGS frame from the
     /// remote peer.
     has_received_remote_initial_settings: bool,
@@ -37,7 +36,6 @@ impl Settings {
             // the handshake process.
             local: Local::WaitingAck(local),
             remote: None,
-            last_priority: None,
             has_received_remote_initial_settings: false,
         }
     }
@@ -71,7 +69,7 @@ impl Settings {
                         codec.set_recv_header_table_size(val as usize);
                     }
 
-                    streams.apply_local_settings(local)?;
+                    streams.apply_local_settings(local, frame)?;
                     self.local = Local::Synced;
                     Ok(())
                 }
@@ -86,25 +84,10 @@ impl Settings {
             // We always ACK before reading more frames, so `remote` should
             // always be none!
             assert!(self.remote.is_none());
+            streams.record_remote_settings(&frame);
             self.remote = Some(frame);
             Ok(())
         }
-    }
-
-    pub(crate) fn recv_priority<T, B, C, P>(
-        &mut self,
-        frame: frame::Priority,
-        _codec: &mut Codec<T, B>,
-        _streams: &mut Streams<C, P>,
-    ) -> Result<(), Error>
-    where
-        T: AsyncWrite + Unpin,
-        B: Buf,
-        C: Buf,
-        P: Peer,
-    {
-        self.last_priority = Some(frame);
-        Ok(())
     }
 
     pub(crate) fn send_settings(&mut self, frame: frame::Settings) -> Result<(), UserError> {
@@ -140,10 +123,6 @@ impl Settings {
         C: Buf,
         P: Peer,
     {
-        if let Some(priority) = self.last_priority.take() {
-            streams.apply_priority(priority)?;
-        }
-
         if let Some(settings) = self.remote.clone() {
             if !dst.poll_ready(cx)?.is_ready() {
                 return Poll::Pending;

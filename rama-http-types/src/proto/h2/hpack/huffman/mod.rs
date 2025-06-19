@@ -1,7 +1,7 @@
 mod table;
 
 use self::table::{DECODE_TABLE, ENCODE_TABLE};
-use crate::h2::hpack::DecoderError;
+use crate::proto::h2::hpack::DecoderError;
 
 use rama_core::bytes::{BufMut, BytesMut};
 

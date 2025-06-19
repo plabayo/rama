@@ -1,9 +1,10 @@
-use rama_core::telemetry::tracing;
 use std::io;
 
 use crate::h2::codec::UserError;
-use crate::h2::frame::{self, Reason, StreamId};
 use crate::h2::proto::{self, Error, Initiator, PollReset};
+
+use rama_core::telemetry::tracing;
+use rama_http_types::proto::h2::frame::{self, Reason, StreamId};
 
 /// Represents the state of an H2 stream
 ///

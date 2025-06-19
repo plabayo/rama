@@ -1,5 +1,6 @@
 //! HTTP extensions.
 
+use rama_http_types::proto::h2::ext;
 use std::fmt;
 
 mod h1_reason_phrase;
@@ -16,14 +17,14 @@ pub use informational::on_informational;
 /// [Extended CONNECT Protocol]: https://datatracker.ietf.org/doc/html/rfc8441#section-4
 #[derive(Clone, Eq, PartialEq)]
 pub struct Protocol {
-    inner: crate::h2::ext::Protocol,
+    inner: ext::Protocol,
 }
 
 impl Protocol {
     /// Converts a static string to a protocol name.
     pub const fn from_static(value: &'static str) -> Self {
         Self {
-            inner: crate::h2::ext::Protocol::from_static(value),
+            inner: ext::Protocol::from_static(value),
         }
     }
 
@@ -32,11 +33,11 @@ impl Protocol {
         self.inner.as_str()
     }
 
-    pub(crate) fn from_inner(inner: crate::h2::ext::Protocol) -> Self {
+    pub(crate) fn from_inner(inner: ext::Protocol) -> Self {
         Self { inner }
     }
 
-    pub(crate) fn into_inner(self) -> crate::h2::ext::Protocol {
+    pub(crate) fn into_inner(self) -> ext::Protocol {
         self.inner
     }
 }
@@ -44,7 +45,7 @@ impl Protocol {
 impl<'a> From<&'a str> for Protocol {
     fn from(value: &'a str) -> Self {
         Self {
-            inner: crate::h2::ext::Protocol::from(value),
+            inner: ext::Protocol::from(value),
         }
     }
 }

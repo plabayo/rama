@@ -1,64 +1,26 @@
 use rama_core::bytes::BufMut;
-use rama_http_types::conn::{PriorityParams, StreamDependencyParams};
+use serde::{Deserialize, Serialize};
 
-use crate::h2::frame::*;
+use super::*;
 
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Priority {
-    stream_id: StreamId,
-    dependency: StreamDependency,
+    pub stream_id: StreamId,
+    pub dependency: StreamDependency,
 }
 
-impl From<PriorityParams> for Priority {
-    fn from(value: PriorityParams) -> Self {
-        Self {
-            stream_id: value.stream_id,
-            dependency: value.dependency.into(),
-        }
-    }
-}
-
-impl From<Priority> for PriorityParams {
-    fn from(value: Priority) -> Self {
-        Self {
-            stream_id: value.stream_id,
-            dependency: value.dependency.into(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct StreamDependency {
     /// The ID of the stream dependency target
-    dependency_id: StreamId,
+    pub dependency_id: StreamId,
 
     /// The weight for the stream. The value exposed (and set) here is always in
     /// the range [0, 255], instead of [1, 256] (as defined in section 5.3.2.)
     /// so that the value fits into a `u8`.
-    weight: u8,
+    pub weight: u8,
 
     /// True if the stream dependency is exclusive.
-    is_exclusive: bool,
-}
-
-impl From<StreamDependencyParams> for StreamDependency {
-    fn from(value: StreamDependencyParams) -> Self {
-        Self {
-            dependency_id: value.dependency_id,
-            weight: value.weight,
-            is_exclusive: value.is_exclusive,
-        }
-    }
-}
-
-impl From<StreamDependency> for StreamDependencyParams {
-    fn from(value: StreamDependency) -> Self {
-        Self {
-            dependency_id: value.dependency_id,
-            weight: value.weight,
-            is_exclusive: value.is_exclusive,
-        }
-    }
+    pub is_exclusive: bool,
 }
 
 impl Priority {
@@ -80,7 +42,7 @@ impl Priority {
     pub fn load(head: Head, payload: &[u8]) -> Result<Self, Error> {
         let dependency = StreamDependency::load(payload)?;
 
-        if dependency.dependency_id() == head.stream_id() {
+        if dependency.dependency_id == head.stream_id() {
             return Err(Error::InvalidDependencyId);
         }
 
@@ -92,14 +54,6 @@ impl Priority {
 
     pub fn head(&self) -> Head {
         Head::new(Kind::Priority, 0, self.stream_id)
-    }
-
-    pub fn stream_id(&self) -> StreamId {
-        self.stream_id
-    }
-
-    pub fn dependency(&self) -> &StreamDependency {
-        &self.dependency
     }
 
     pub fn encode<B: BufMut>(&self, dst: &mut B) {
@@ -148,21 +102,9 @@ impl StreamDependency {
         Ok(StreamDependency::new(dependency_id, weight, is_exclusive))
     }
 
-    pub fn dependency_id(&self) -> StreamId {
-        self.dependency_id
-    }
-
-    pub fn weight(&self) -> u8 {
-        self.weight
-    }
-
-    pub fn is_exclusive(&self) -> bool {
-        self.is_exclusive
-    }
-
     pub fn encode<T: BufMut>(&self, dst: &mut T) {
         const STREAM_ID_MASK: u32 = 1 << 31;
-        let mut dependency_id = self.dependency_id().into();
+        let mut dependency_id = self.dependency_id.into();
         if self.is_exclusive {
             dependency_id |= STREAM_ID_MASK;
         }
@@ -174,23 +116,23 @@ impl StreamDependency {
 mod tests {
     #[test]
     fn test_priority_frame() {
-        use crate::h2::frame::{self, Priority, StreamDependency, StreamId};
+        use crate::proto::h2::frame::{self, Priority, StreamDependency, StreamId};
 
         let mut dependency_buf = Vec::new();
         let dependency = StreamDependency::new(StreamId::zero(), 201, false);
         dependency.encode(&mut dependency_buf);
         let dependency = StreamDependency::load(&dependency_buf).unwrap();
-        assert_eq!(dependency.dependency_id(), StreamId::zero());
-        assert_eq!(dependency.weight(), 201);
-        assert!(!dependency.is_exclusive());
+        assert_eq!(dependency.dependency_id, StreamId::zero());
+        assert_eq!(dependency.weight, 201);
+        assert!(!dependency.is_exclusive);
 
         let priority = Priority::new(StreamId::from(3), dependency);
         let mut priority_buf = Vec::new();
         priority.encode(&mut priority_buf);
         let priority = Priority::load(priority.head(), &priority_buf[frame::HEADER_LEN..]).unwrap();
-        assert_eq!(priority.stream_id(), StreamId::from(3));
-        assert_eq!(priority.dependency.dependency_id(), StreamId::zero());
-        assert_eq!(priority.dependency.weight(), 201);
-        assert!(!priority.dependency.is_exclusive());
+        assert_eq!(priority.stream_id, StreamId::from(3));
+        assert_eq!(priority.dependency.dependency_id, StreamId::zero());
+        assert_eq!(priority.dependency.weight, 201);
+        assert!(!priority.dependency.is_exclusive);
     }
 }

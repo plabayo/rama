@@ -1,10 +1,11 @@
 use rama_core::bytes::{BufMut, Bytes};
 use rama_core::futures::ready;
+
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-pub fn byte_str(s: &str) -> rama_http_core::h2::frame::BytesStr {
-    rama_http_core::h2::frame::BytesStr::try_from(Bytes::copy_from_slice(s.as_bytes())).unwrap()
+pub fn byte_str(s: &str) -> rama_http_core::h2::hpack::BytesStr {
+    rama_http_core::h2::hpack::BytesStr::try_from(Bytes::copy_from_slice(s.as_bytes())).unwrap()
 }
 
 pub async fn concat(

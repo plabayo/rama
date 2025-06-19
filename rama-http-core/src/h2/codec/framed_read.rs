@@ -1,10 +1,10 @@
-use crate::h2::frame::{self, Frame, Kind, Reason};
-use crate::h2::frame::{
-    DEFAULT_MAX_FRAME_SIZE, DEFAULT_SETTINGS_HEADER_TABLE_SIZE, MAX_MAX_FRAME_SIZE,
-};
 use crate::h2::proto::Error;
 
-use crate::h2::hpack;
+use rama_http_types::proto::h2::frame::{self, Frame, Kind, Reason};
+use rama_http_types::proto::h2::frame::{
+    DEFAULT_MAX_FRAME_SIZE, DEFAULT_SETTINGS_HEADER_TABLE_SIZE, MAX_MAX_FRAME_SIZE,
+};
+use rama_http_types::proto::h2::hpack;
 
 use rama_core::futures::Stream;
 

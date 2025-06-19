@@ -102,7 +102,8 @@ macro_rules! ready {
 #[cfg_attr(feature = "unstable", allow(missing_docs))]
 mod codec;
 mod error;
-mod hpack;
+
+pub use codec::UserError;
 
 #[cfg(not(feature = "unstable"))]
 mod proto;
@@ -111,24 +112,23 @@ mod proto;
 #[allow(missing_docs)]
 pub mod proto;
 
-#[doc(hidden)]
-#[allow(missing_docs)]
-pub mod frame;
-
 pub mod client;
-pub mod ext;
 pub mod server;
 mod share;
+
+pub use rama_http_types::proto::h2::ext;
+pub use rama_http_types::proto::h2::frame;
+pub use rama_http_types::proto::h2::hpack;
 
 #[cfg(fuzzing)]
 #[cfg_attr(feature = "unstable", allow(missing_docs))]
 pub mod fuzz_bridge;
 
 pub use crate::h2::error::{Error, Reason};
-pub use crate::h2::share::{FlowControl, Ping, PingPong, Pong, RecvStream, SendStream, StreamId};
+pub use crate::h2::share::{FlowControl, Ping, PingPong, Pong, RecvStream, SendStream};
 
 #[cfg(feature = "unstable")]
-pub use codec::{Codec, SendError, UserError};
+pub use codec::{Codec, SendError};
 
 use std::pin::Pin;
 use std::task::{Context, Poll};

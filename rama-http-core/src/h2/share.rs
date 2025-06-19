@@ -1,10 +1,11 @@
 use crate::h2::codec::UserError;
-use crate::h2::frame::Reason;
 use crate::h2::proto::{self, WindowSize};
 
 use rama_core::bytes::{Buf, Bytes};
+use rama_http::proto::h2::frame::StreamId;
 use rama_http_types::HeaderMap;
 use rama_http_types::proto::h1::headers::original::OriginalHttp1Headers;
+use rama_http_types::proto::h2::frame::Reason;
 
 use std::fmt;
 use std::pin::Pin;
@@ -96,25 +97,6 @@ use std::task::{Context, Poll};
 #[derive(Debug)]
 pub struct SendStream<B> {
     inner: proto::StreamRef<B>,
-}
-
-/// A stream identifier, as described in [Section 5.1.1] of RFC 7540.
-///
-/// Streams are identified with an unsigned 31-bit integer. Streams
-/// initiated by a client MUST use odd-numbered stream identifiers; those
-/// initiated by the server MUST use even-numbered stream identifiers.  A
-/// stream identifier of zero (0x0) is used for connection control
-/// messages; the stream identifier of zero cannot be used to establish a
-/// new stream.
-///
-/// [Section 5.1.1]: https://tools.ietf.org/html/rfc7540#section-5.1.1
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
-pub struct StreamId(u32);
-
-impl From<StreamId> for u32 {
-    fn from(src: StreamId) -> Self {
-        src.0
-    }
 }
 
 /// Receives the body stream and trailers from the remote peer.
@@ -387,29 +369,10 @@ impl<B: Buf> SendStream<B> {
     ///
     /// If the lock on the stream store has been poisoned.
     pub fn stream_id(&self) -> StreamId {
-        StreamId::from_internal(self.inner.stream_id())
+        self.inner.stream_id()
     }
 }
 
-// ===== impl StreamId =====
-
-impl StreamId {
-    pub(crate) fn from_internal(id: crate::h2::frame::StreamId) -> Self {
-        StreamId(id.into())
-    }
-
-    /// Returns the `u32` corresponding to this `StreamId`
-    ///
-    /// # Note
-    ///
-    /// This is the same as the `From<StreamId>` implementation, but
-    /// included as an inherent method because that implementation doesn't
-    /// appear in rustdocs, as well as a way to force the type instead of
-    /// relying on inference.
-    pub fn as_u32(&self) -> u32 {
-        (*self).into()
-    }
-}
 // ===== impl RecvStream =====
 
 impl RecvStream {
@@ -509,7 +472,7 @@ impl FlowControl {
     /// Returns the stream ID of the stream whose capacity will
     /// be released by this `FlowControl`.
     pub fn stream_id(&self) -> StreamId {
-        StreamId::from_internal(self.inner.stream_id())
+        self.inner.stream_id()
     }
 
     /// Get the current available capacity of data this stream *could* receive.

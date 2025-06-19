@@ -3,7 +3,8 @@ use super::{Header, huffman};
 
 use rama_core::bytes::{BufMut, BytesMut};
 use rama_core::telemetry::tracing;
-use rama_http_types::dep::http::header::{HeaderName, HeaderValue};
+
+use crate::dep::http::header::{HeaderName, HeaderValue};
 
 #[derive(Debug)]
 pub struct Encoder {
@@ -300,7 +301,7 @@ fn position(buf: &BytesMut) -> usize {
 #[cfg(test)]
 mod test {
     use super::*;
-    use rama_http_types::{HeaderValue, Method};
+    use crate::{HeaderValue, Method};
 
     #[test]
     fn test_encode_method_get() {

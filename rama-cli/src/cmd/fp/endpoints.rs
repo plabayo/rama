@@ -10,12 +10,16 @@ use crate::cmd::fp::data::TlsDisplayInfoExtensionData;
 use itertools::Itertools as _;
 use rama::{
     Context,
-    http::service::web::response::{self, IntoResponse, Json},
     http::{
-        Body, BodyExtractExt, Request, Response, StatusCode, proto::h2, service::web::extract::Path,
+        Body, BodyExtractExt, Request, Response, StatusCode,
+        proto::h2,
+        service::web::{
+            extract::Path,
+            response::{self, IntoResponse, Json},
+        },
     },
     telemetry::tracing,
-    ua::profile::{JsProfileWebApis, UserAgentSourceInfo},
+    ua::profile::{Http2Settings, JsProfileWebApis, UserAgentSourceInfo},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -135,89 +139,7 @@ pub(super) async fn get_report(
     }
 
     if let Some(h2_settings) = http_info.h2_settings {
-        if let Some(pseudo) = h2_settings.http_pseudo_headers {
-            tables.push(Table {
-                title: "🚗 H2 Pseudo Headers".to_owned(),
-                rows: vec![("order".to_owned(), pseudo.iter().join(", "))],
-            });
-        }
-        if let Some(priority) = h2_settings.priority_header {
-            tables.push(Table {
-                title: "🚗 H2 Priority Header".to_owned(),
-                rows: vec![
-                    (
-                        "dependency_id".to_owned(),
-                        u32::from(priority.dependency_id).to_string(),
-                    ),
-                    ("weight".to_owned(), priority.weight.to_string()),
-                    ("is_exclusive".to_owned(), priority.is_exclusive.to_string()),
-                ],
-            });
-        }
-        if let Some(settings) = h2_settings.initial_config {
-            let mut rows = Vec::with_capacity(8);
-            let mut order = settings.setting_order.unwrap_or_default();
-            order.extend_with_default();
-
-            for setting_id in order {
-                match setting_id {
-                    h2::frame::SettingId::HeaderTableSize => {
-                        if let Some(value) = settings.header_table_size {
-                            rows.push(("Header Table Size".to_owned(), value.to_string()));
-                        }
-                    }
-                    h2::frame::SettingId::EnablePush => {
-                        if let Some(value) = settings.enable_push {
-                            rows.push(("Enable Push".to_owned(), value.to_string()));
-                        }
-                    }
-                    h2::frame::SettingId::MaxConcurrentStreams => {
-                        if let Some(value) = settings.max_concurrent_streams {
-                            rows.push(("Max Concurrent Streams".to_owned(), value.to_string()));
-                        }
-                    }
-                    h2::frame::SettingId::InitialWindowSize => {
-                        if let Some(value) = settings.initial_window_size {
-                            rows.push(("Initial Window Size".to_owned(), value.to_string()));
-                        }
-                    }
-                    h2::frame::SettingId::MaxFrameSize => {
-                        if let Some(value) = settings.max_frame_size {
-                            rows.push(("Max Frame Size".to_owned(), value.to_string()));
-                        }
-                    }
-                    h2::frame::SettingId::MaxHeaderListSize => {
-                        if let Some(value) = settings.max_header_list_size {
-                            rows.push(("Max Header List Size".to_owned(), value.to_string()));
-                        }
-                    }
-                    h2::frame::SettingId::EnableConnectProtocol => {
-                        if let Some(value) = settings.enable_connect_protocol {
-                            rows.push(("Enable Connect Protocol".to_owned(), value.to_string()));
-                        }
-                    }
-                    h2::frame::SettingId::Unknown(0x09) => {
-                        if let Some(value) = settings.unknown_setting_9 {
-                            rows.push((
-                                "Unknown Setting with known id 9".to_owned(),
-                                value.to_string(),
-                            ));
-                        }
-                    }
-                    h2::frame::SettingId::Unknown(id) => {
-                        tracing::debug!(
-                            %id,
-                            "ignore unknown h2 setting",
-                        )
-                    }
-                }
-            }
-
-            tables.push(Table {
-                title: "🚗 H2 Initial Settings".to_owned(),
-                rows,
-            });
-        }
+        extend_tables_with_h2_settings(h2_settings, &mut tables);
     }
 
     let tls_info = get_tls_display_info_and_store(&ctx, user_agent)
@@ -235,6 +157,135 @@ pub(super) async fn get_report(
         String::new(),
         tables,
     ))
+}
+
+fn extend_tables_with_h2_settings(h2_settings: Http2Settings, tables: &mut Vec<Table>) {
+    if let Some(pseudo) = h2_settings.http_pseudo_headers {
+        tables.push(Table {
+            title: "🚗 H2 Pseudo Headers".to_owned(),
+            rows: vec![("order".to_owned(), pseudo.iter().join(", "))],
+        });
+    }
+    if let Some(early_frames) = &h2_settings.early_frames {
+        for (index, early_frame) in early_frames.iter().enumerate() {
+            tables.push(match early_frame {
+                h2::frame::EarlyFrame::Priority(priority) => Table {
+                    title: format!("🚗 H2 Early Frame #{} - priority", index + 1),
+                    rows: vec![
+                        (
+                            "stream id".to_owned(),
+                            u32::from(priority.stream_id).to_string(),
+                        ),
+                        (
+                            "dependency id".to_owned(),
+                            u32::from(priority.dependency.dependency_id).to_string(),
+                        ),
+                        (
+                            "weight".to_owned(),
+                            u32::from(priority.dependency.weight).to_string(),
+                        ),
+                        (
+                            "is exclusive".to_owned(),
+                            priority.dependency.is_exclusive.to_string(),
+                        ),
+                    ],
+                },
+                h2::frame::EarlyFrame::Settings(settings) => Table {
+                    title: format!("🚗 H2 Early Frame #{} - settings", index + 1),
+                    rows: {
+                        let mut rows = Vec::with_capacity(9);
+                        rows.push(("Flags".to_owned(), format!("{:?}", settings.flags)));
+                        let order = settings.config.setting_order.clone().unwrap_or_default();
+                        for setting_id in order {
+                            match setting_id {
+                                h2::frame::SettingId::HeaderTableSize => {
+                                    if let Some(value) = settings.header_table_size() {
+                                        rows.push((
+                                            "Header Table Size".to_owned(),
+                                            value.to_string(),
+                                        ));
+                                    }
+                                }
+                                h2::frame::SettingId::EnablePush => {
+                                    if let Some(value) = settings.is_push_enabled() {
+                                        rows.push(("Enable Push".to_owned(), value.to_string()));
+                                    }
+                                }
+                                h2::frame::SettingId::MaxConcurrentStreams => {
+                                    if let Some(value) = settings.max_concurrent_streams() {
+                                        rows.push((
+                                            "Max Concurrent Streams".to_owned(),
+                                            value.to_string(),
+                                        ));
+                                    }
+                                }
+                                h2::frame::SettingId::InitialWindowSize => {
+                                    if let Some(value) = settings.initial_window_size() {
+                                        rows.push((
+                                            "Initial Window Size".to_owned(),
+                                            value.to_string(),
+                                        ));
+                                    }
+                                }
+                                h2::frame::SettingId::MaxFrameSize => {
+                                    if let Some(value) = settings.max_frame_size() {
+                                        rows.push(("Max Frame Size".to_owned(), value.to_string()));
+                                    }
+                                }
+                                h2::frame::SettingId::MaxHeaderListSize => {
+                                    if let Some(value) = settings.max_header_list_size() {
+                                        rows.push((
+                                            "Max Header List Size".to_owned(),
+                                            value.to_string(),
+                                        ));
+                                    }
+                                }
+                                h2::frame::SettingId::EnableConnectProtocol => {
+                                    if let Some(value) =
+                                        settings.is_extended_connect_protocol_enabled()
+                                    {
+                                        rows.push((
+                                            "Enable Connect Protocol".to_owned(),
+                                            value.to_string(),
+                                        ));
+                                    }
+                                }
+                                h2::frame::SettingId::Unknown(0x09) => {
+                                    if let Some(value) = settings.unknown_setting_9() {
+                                        rows.push((
+                                            "Unknown Setting with known id 9".to_owned(),
+                                            value.to_string(),
+                                        ));
+                                    }
+                                }
+                                h2::frame::SettingId::Unknown(id) => {
+                                    tracing::debug!(
+                                        %id,
+                                        "ignore unknown h2 setting",
+                                    )
+                                }
+                            }
+                        }
+
+                        rows
+                    },
+                },
+                h2::frame::EarlyFrame::WindowUpdate(window_update) => Table {
+                    title: format!("🚗 H2 Early Frame #{} - windows update", index + 1),
+                    rows: vec![
+                        (
+                            "stream id".to_owned(),
+                            u32::from(window_update.stream_id).to_string(),
+                        ),
+                        (
+                            "size increment".to_owned(),
+                            window_update.size_increment.to_string(),
+                        ),
+                    ],
+                },
+            });
+        }
+    }
 }
 
 //------------------------------------------
@@ -490,76 +541,7 @@ pub(super) async fn form(mut ctx: Context<Arc<State>>, req: Request) -> Result<H
     }
 
     if let Some(h2_settings) = http_info.h2_settings {
-        if let Some(pseudo) = h2_settings.http_pseudo_headers {
-            tables.push(Table {
-                title: "🚗 H2 Pseudo Headers".to_owned(),
-                rows: vec![("order".to_owned(), pseudo.iter().join(", "))],
-            });
-        }
-        if let Some(settings) = h2_settings.initial_config {
-            let mut rows = Vec::with_capacity(8);
-            let mut order = settings.setting_order.unwrap_or_default();
-            order.extend_with_default();
-
-            for setting_id in order {
-                match setting_id {
-                    h2::frame::SettingId::HeaderTableSize => {
-                        if let Some(value) = settings.header_table_size {
-                            rows.push(("Header Table Size".to_owned(), value.to_string()));
-                        }
-                    }
-                    h2::frame::SettingId::EnablePush => {
-                        if let Some(value) = settings.enable_push {
-                            rows.push(("Enable Push".to_owned(), value.to_string()));
-                        }
-                    }
-                    h2::frame::SettingId::MaxConcurrentStreams => {
-                        if let Some(value) = settings.max_concurrent_streams {
-                            rows.push(("Max Concurrent Streams".to_owned(), value.to_string()));
-                        }
-                    }
-                    h2::frame::SettingId::InitialWindowSize => {
-                        if let Some(value) = settings.initial_window_size {
-                            rows.push(("Initial Window Size".to_owned(), value.to_string()));
-                        }
-                    }
-                    h2::frame::SettingId::MaxFrameSize => {
-                        if let Some(value) = settings.max_frame_size {
-                            rows.push(("Max Frame Size".to_owned(), value.to_string()));
-                        }
-                    }
-                    h2::frame::SettingId::MaxHeaderListSize => {
-                        if let Some(value) = settings.max_header_list_size {
-                            rows.push(("Max Header List Size".to_owned(), value.to_string()));
-                        }
-                    }
-                    h2::frame::SettingId::EnableConnectProtocol => {
-                        if let Some(value) = settings.enable_connect_protocol {
-                            rows.push(("Enable Connect Protocol".to_owned(), value.to_string()));
-                        }
-                    }
-                    h2::frame::SettingId::Unknown(0x09) => {
-                        if let Some(value) = settings.unknown_setting_9 {
-                            rows.push((
-                                "Unknown Setting with known id 9".to_owned(),
-                                value.to_string(),
-                            ));
-                        }
-                    }
-                    h2::frame::SettingId::Unknown(id) => {
-                        tracing::debug!(
-                            %id,
-                            "ignore unknown h2 setting",
-                        )
-                    }
-                }
-            }
-
-            tables.push(Table {
-                title: "🚗 H2 Initial Settings".to_owned(),
-                rows,
-            });
-        }
+        extend_tables_with_h2_settings(h2_settings, &mut tables);
     }
 
     let tls_info = get_tls_display_info_and_store(&ctx, user_agent)

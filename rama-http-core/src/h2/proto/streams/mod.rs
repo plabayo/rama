@@ -25,12 +25,12 @@ use self::state::State;
 use self::store::Store;
 use self::stream::Stream;
 
-use crate::h2::frame::{Priority, StreamDependency, StreamId, StreamIdOverflow};
 use crate::h2::proto::*;
 
 use rama_core::bytes::Bytes;
+use rama_http::proto::h2::frame::EarlyFrameStreamContext;
 use rama_http_types::proto::h2::PseudoHeaderOrder;
-use std::borrow::Cow;
+use rama_http_types::proto::h2::frame::{StreamId, StreamIdOverflow};
 use std::time::Duration;
 
 #[derive(Debug)]
@@ -78,9 +78,5 @@ pub(crate) struct Config {
     /// Pseudo order of the headers stream
     pub headers_pseudo_order: Option<PseudoHeaderOrder>,
 
-    /// Priority of the headers stream
-    pub headers_priority: Option<StreamDependency>,
-
-    /// Priority stream list
-    pub priority: Option<Cow<'static, [Priority]>>,
+    pub early_frame_ctx: EarlyFrameStreamContext,
 }

@@ -1,14 +1,14 @@
 use super::{StreamDependency, StreamId, util};
-use crate::h2::ext::Protocol;
-use crate::h2::frame::{Error, Frame, Head, Kind};
-use crate::h2::hpack::{self, BytesStr};
+use crate::proto::h2::ext::Protocol;
+use crate::proto::h2::frame::{Error, Frame, Head, Kind};
+use crate::proto::h2::hpack::{self, BytesStr};
 
-use rama_http_types::dep::http::uri;
-use rama_http_types::proto::h1::Http1HeaderMap;
-use rama_http_types::proto::h1::headers::Http1HeaderMapIntoIter;
-use rama_http_types::proto::h1::headers::original::OriginalHttp1Headers;
-use rama_http_types::proto::h2::{PseudoHeader, PseudoHeaderOrder, PseudoHeaderOrderIter};
-use rama_http_types::{HeaderMap, HeaderName, Method, Request, StatusCode, Uri, header};
+use crate::dep::http::uri;
+use crate::proto::h1::Http1HeaderMap;
+use crate::proto::h1::headers::Http1HeaderMapIntoIter;
+use crate::proto::h1::headers::original::OriginalHttp1Headers;
+use crate::proto::h2::{PseudoHeader, PseudoHeaderOrder, PseudoHeaderOrderIter};
+use crate::{HeaderMap, HeaderName, Method, Request, StatusCode, Uri, header};
 
 use rama_core::bytes::{Buf, BufMut, Bytes, BytesMut};
 use rama_core::telemetry::tracing;
@@ -242,7 +242,7 @@ impl Headers {
             }
             let stream_dep = StreamDependency::load(&src[..5])?;
 
-            if stream_dep.dependency_id() == head.stream_id() {
+            if stream_dep.dependency_id == head.stream_id() {
                 return Err(Error::InvalidDependencyId);
             }
 
@@ -320,17 +320,16 @@ impl Headers {
         )
     }
 
-    #[cfg(feature = "unstable")]
     pub fn pseudo_mut(&mut self) -> &mut Pseudo {
         &mut self.header_block.pseudo
     }
 
-    pub(crate) fn pseudo(&self) -> &Pseudo {
+    pub fn pseudo(&self) -> &Pseudo {
         &self.header_block.pseudo
     }
 
     /// Whether it has status 1xx
-    pub(crate) fn is_informational(&self) -> bool {
+    pub fn is_informational(&self) -> bool {
         self.header_block.pseudo.is_informational()
     }
 
@@ -475,7 +474,6 @@ impl PushPromise {
         &self.header_block.fields
     }
 
-    #[cfg(feature = "unstable")]
     pub fn into_fields(self) -> (HeaderMap, OriginalHttp1Headers) {
         (self.header_block.fields, self.header_block.field_order)
     }
@@ -690,7 +688,6 @@ impl Pseudo {
         }
     }
 
-    #[cfg(feature = "unstable")]
     pub fn set_status(&mut self, value: StatusCode) {
         self.status = Some(value);
     }
@@ -704,7 +701,6 @@ impl Pseudo {
         self.scheme = Some(bytes_str);
     }
 
-    #[cfg(feature = "unstable")]
     pub fn set_protocol(&mut self, protocol: Protocol) {
         self.protocol = Some(protocol);
     }
@@ -714,7 +710,7 @@ impl Pseudo {
     }
 
     /// Whether it has status 1xx
-    pub(crate) fn is_informational(&self) -> bool {
+    pub fn is_informational(&self) -> bool {
         self.status.is_some_and(|status| status.is_informational())
     }
 }

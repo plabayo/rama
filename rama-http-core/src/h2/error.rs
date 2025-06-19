@@ -1,11 +1,11 @@
 use crate::h2::codec::{SendError, UserError};
-use crate::h2::frame::StreamId;
 use crate::h2::proto::{self, Initiator};
 
 use rama_core::bytes::Bytes;
 use std::{error, fmt, io};
 
-pub use crate::h2::frame::Reason;
+pub use rama_http_types::proto::h2::frame::Reason;
+use rama_http_types::proto::h2::frame::StreamId;
 
 /// Represents HTTP/2 operation errors.
 ///
@@ -129,6 +129,7 @@ impl From<proto::Error> for Error {
                 proto::Error::Io(kind, inner) => {
                     Kind::Io(inner.map_or_else(|| kind.into(), |inner| io::Error::new(kind, inner)))
                 }
+                proto::Error::User(err) => Kind::User(err),
             },
         }
     }

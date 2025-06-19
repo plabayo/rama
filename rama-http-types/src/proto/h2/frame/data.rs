@@ -1,4 +1,4 @@
-use crate::h2::frame::{Error, Frame, Head, Kind, StreamId, util};
+use super::{Error, Frame, Head, Kind, StreamId, util};
 use rama_core::bytes::{Buf, BufMut, Bytes};
 
 use std::fmt;
@@ -64,13 +64,11 @@ impl<T> Data<T> {
     }
 
     /// Returns whether the `PADDED` flag is set on this frame.
-    #[cfg(feature = "unstable")]
     pub fn is_padded(&self) -> bool {
         self.flags.is_padded()
     }
 
     /// Sets the value for the `PADDED` flag on this frame.
-    #[cfg(feature = "unstable")]
     pub fn set_padded(&mut self) {
         self.flags.set_padded();
     }
@@ -99,11 +97,11 @@ impl<T> Data<T> {
         self.data
     }
 
-    pub(crate) fn head(&self) -> Head {
+    pub fn head(&self) -> Head {
         Head::new(Kind::Data, self.flags.into(), self.stream_id)
     }
 
-    pub(crate) fn map<F, U>(self, f: F) -> Data<U>
+    pub fn map<F, U>(self, f: F) -> Data<U>
     where
         F: FnOnce(T) -> U,
     {
@@ -117,7 +115,7 @@ impl<T> Data<T> {
 }
 
 impl Data<Bytes> {
-    pub(crate) fn load(head: Head, mut payload: Bytes) -> Result<Self, Error> {
+    pub fn load(head: Head, mut payload: Bytes) -> Result<Self, Error> {
         let flags = DataFlags::load(head.flag());
 
         // The stream identifier must not be zero
@@ -147,7 +145,7 @@ impl<T: Buf> Data<T> {
     /// # Panics
     ///
     /// Panics if `dst` cannot contain the data frame.
-    pub(crate) fn encode_chunk<U: BufMut>(&mut self, dst: &mut U) {
+    pub fn encode_chunk<U: BufMut>(&mut self, dst: &mut U) {
         let len = self.data.remaining();
 
         assert!(dst.remaining_mut() >= len);
@@ -205,7 +203,6 @@ impl DataFlags {
         self.0 & PADDED == PADDED
     }
 
-    #[cfg(feature = "unstable")]
     fn set_padded(&mut self) {
         self.0 |= PADDED
     }

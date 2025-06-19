@@ -7,7 +7,7 @@ mod table;
 #[cfg(test)]
 mod test;
 
-pub(crate) use self::decoder::{Decoder, DecoderError, NeedMore};
-pub(crate) use self::encoder::Encoder;
+pub use self::decoder::{Decoder, DecoderError, NeedMore};
+pub use self::encoder::Encoder;
 pub use self::header::BytesStr;
-pub(crate) use self::header::Header;
+pub use self::header::Header;

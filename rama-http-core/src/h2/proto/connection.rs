@@ -1,14 +1,14 @@
 use crate::h2::codec::UserError;
-use crate::h2::frame::DEFAULT_INITIAL_WINDOW_SIZE;
-use crate::h2::frame::{Priority, Reason, StreamDependency, StreamId};
 use crate::h2::proto::*;
 use crate::h2::{client, server};
 
 use rama_core::bytes::Bytes;
 use rama_core::futures::Stream;
 use rama_core::telemetry::tracing;
+use rama_http::proto::h2::frame::EarlyFrameStreamContext;
 use rama_http_types::proto::h2::PseudoHeaderOrder;
-use std::borrow::Cow;
+use rama_http_types::proto::h2::frame::DEFAULT_INITIAL_WINDOW_SIZE;
+use rama_http_types::proto::h2::frame::{Reason, StreamId};
 use std::io;
 use std::marker::PhantomData;
 use std::pin::Pin;
@@ -86,8 +86,7 @@ pub(crate) struct Config {
     pub local_error_reset_streams_max: Option<usize>,
     pub settings: frame::Settings,
     pub headers_pseudo_order: Option<PseudoHeaderOrder>,
-    pub headers_priority: Option<StreamDependency>,
-    pub priority: Option<Cow<'static, [Priority]>>,
+    pub early_frame_ctx: EarlyFrameStreamContext,
 }
 
 #[derive(Debug)]
@@ -128,9 +127,8 @@ where
                     .max_concurrent_streams()
                     .map(|max| max as usize),
                 local_max_error_reset_streams: config.local_error_reset_streams_max,
-                headers_priority: config.headers_priority.clone(),
                 headers_pseudo_order: config.headers_pseudo_order.clone(),
-                priority: config.priority.clone(),
+                early_frame_ctx: config.early_frame_ctx.clone(),
             }
         }
         let streams = Streams::new(streams_config(&config));
@@ -203,7 +201,12 @@ where
                 .settings
                 .poll_send(cx, &mut self.codec, &mut self.inner.streams)
         )?;
-        ready!(self.inner.streams.send_pending_refusal(cx, &mut self.codec))?;
+
+        if let Some(settings) = ready!(self.inner.streams.send_pending(cx, &mut self.codec))? {
+            if let Err(err) = self.inner.settings.send_settings(settings) {
+                return Poll::Ready(Err(err.into()));
+            }
+        }
 
         Poll::Ready(Ok(()))
     }
@@ -365,13 +368,6 @@ where
                         &mut self.inner.streams,
                     )?;
                 }
-                ReceivedFrame::Priority(frame) => {
-                    self.inner.settings.recv_priority(
-                        frame,
-                        &mut self.codec,
-                        &mut self.inner.streams,
-                    )?;
-                }
                 ReceivedFrame::Continue => (),
                 ReceivedFrame::Done => {
                     return Poll::Ready(Ok(()));
@@ -481,6 +477,15 @@ where
                 self.streams.send_reset(id, reason);
                 Ok(())
             }
+            Err(Error::User(err)) => {
+                tracing::debug!(%err, "Connection::poll; user error");
+                let e = Error::User(err);
+
+                // Reset all active streams
+                self.streams.handle_error(e.clone());
+
+                Err(e)
+            }
             // Attempting to read a frame resulted in an I/O error. All
             // active streams must be reset.
             //
@@ -562,7 +567,7 @@ where
             }
             Some(Frame::Priority(frame)) => {
                 tracing::trace!(?frame, "recv PRIORITY");
-                return Ok(ReceivedFrame::Priority(frame));
+                self.streams.recv_priority(frame)?;
             }
             None => {
                 tracing::trace!("codec closed");
@@ -576,7 +581,6 @@ where
 
 enum ReceivedFrame {
     Settings(frame::Settings),
-    Priority(frame::Priority),
     Continue,
     Done,
 }

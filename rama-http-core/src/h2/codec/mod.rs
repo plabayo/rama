@@ -7,12 +7,12 @@ pub use self::error::{SendError, UserError};
 use self::framed_read::FramedRead;
 use self::framed_write::FramedWrite;
 
-use crate::h2::frame::{self, Data, Frame};
 use crate::h2::proto::Error;
 
 use rama_core::bytes::Buf;
 use rama_core::futures::Sink;
 use rama_core::futures::Stream;
+use rama_http_types::proto::h2::frame::{self, Data, Frame};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncWrite};

@@ -1,6 +1,5 @@
 //! HTTP/2 client connections
 
-use std::borrow::Cow;
 use std::fmt;
 use std::marker::PhantomData;
 use std::pin::Pin;
@@ -10,6 +9,7 @@ use std::time::Duration;
 use rama_core::error::BoxError;
 use rama_core::rt::Executor;
 use rama_core::telemetry::tracing::{debug, trace};
+use rama_http::proto::h2::frame::EarlyFrame;
 use rama_http_types::proto::h2::PseudoHeaderOrder;
 use rama_http_types::proto::h2::frame::{SettingOrder, SettingsConfig};
 use rama_http_types::{Request, Response};
@@ -17,7 +17,6 @@ use tokio::io::{AsyncRead, AsyncWrite};
 
 use super::super::dispatch::{self, TrySendError};
 use crate::body::{Body, Incoming as IncomingBody};
-use crate::h2::frame::{Priority, StreamDependency};
 use crate::proto;
 
 /// The sender side of an established connection.
@@ -59,8 +58,7 @@ pub struct Builder {
     pub(super) exec: Executor,
     h2_builder: proto::h2::client::Config,
     headers_pseudo_order: Option<PseudoHeaderOrder>,
-    headers_priority: Option<StreamDependency>,
-    priority: Option<Cow<'static, [Priority]>>,
+    early_frames: Option<Vec<EarlyFrame>>,
 }
 
 /// Returns a handshake future over some IO.
@@ -246,8 +244,7 @@ impl Builder {
             exec,
             h2_builder: Default::default(),
             headers_pseudo_order: None,
-            headers_priority: None,
-            priority: None,
+            early_frames: None,
         }
     }
 
@@ -492,13 +489,8 @@ impl Builder {
         self
     }
 
-    pub fn headers_priority(&mut self, headers_priority: StreamDependency) -> &mut Self {
-        self.headers_priority = Some(headers_priority);
-        self
-    }
-
-    pub fn priority(&mut self, priority: impl Into<Cow<'static, [Priority]>>) -> &mut Self {
-        self.priority = Some(priority.into());
+    pub fn early_frames(&mut self, frames: Vec<EarlyFrame>) -> &mut Self {
+        self.early_frames = Some(frames);
         self
     }
 
@@ -524,11 +516,8 @@ impl Builder {
             if let Some(order) = self.headers_pseudo_order.clone() {
                 client_builder.headers_pseudo_order(order);
             }
-            if let Some(priority) = self.headers_priority.clone() {
-                client_builder.headers_priority(priority);
-            }
-            if let Some(priority) = self.priority.clone() {
-                client_builder.priority(priority);
+            if let Some(frames) = self.early_frames.clone() {
+                client_builder.early_frames(frames);
             }
 
             let (tx, rx) = dispatch::channel();

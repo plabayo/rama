@@ -1,6 +1,6 @@
 //! Extensions specific to the HTTP/2 protocol.
 
-use crate::h2::hpack::BytesStr;
+use crate::proto::h2::hpack::BytesStr;
 
 use rama_core::bytes::Bytes;
 use std::fmt;

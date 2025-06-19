@@ -1,19 +1,21 @@
 use std::fmt;
 
-use crate::h2::frame::{Error, Frame, FrameSize, Head, Kind, StreamId, util};
+use super::{
+    Error, Frame, FrameSize, Head, Kind, Setting, SettingId, SettingOrder, SettingsConfig,
+    StreamId, util,
+};
+
 use rama_core::bytes::BytesMut;
 use rama_core::telemetry::tracing;
+use serde::{Deserialize, Serialize};
 
-use rama_http_types::proto::h2::frame::SettingOrder;
-pub use rama_http_types::proto::h2::frame::{Setting, SettingId, SettingsConfig};
-
-#[derive(Clone, Default, Eq, PartialEq)]
+#[derive(Clone, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Settings {
-    flags: SettingsFlags,
-    pub(crate) config: SettingsConfig,
+    pub flags: SettingsFlags,
+    pub config: SettingsConfig,
 }
 
-#[derive(Copy, Clone, Eq, PartialEq, Default)]
+#[derive(Copy, Clone, Eq, PartialEq, Default, Serialize, Deserialize)]
 pub struct SettingsFlags(u8);
 
 const ACK: u8 = 0x1;
@@ -115,12 +117,16 @@ impl Settings {
         self.config.unknown_setting_9 = size;
     }
 
+    pub fn unknown_setting_9(&self) -> Option<u32> {
+        self.config.unknown_setting_9
+    }
+
     pub fn set_setting_order(&mut self, order: Option<SettingOrder>) {
         self.config.setting_order = order;
     }
 
     pub fn load(head: Head, payload: &[u8]) -> Result<Settings, Error> {
-        debug_assert_eq!(head.kind(), crate::h2::frame::Kind::Settings);
+        debug_assert_eq!(head.kind(), super::Kind::Settings);
 
         if !head.stream_id().is_zero() {
             return Err(Error::InvalidStreamId);

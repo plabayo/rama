@@ -4,13 +4,10 @@ use rama::{
     error::{BoxError, ErrorContext, OpaqueError},
     http::{
         self, HeaderMap, HeaderName, Request,
-        conn::LastPeerPriorityParams,
+        core::h2::frame::EarlyFrameCapture,
         dep::http::{Extensions, request::Parts},
         headers::forwarded::Forwarded,
-        proto::{
-            h1::Http1HeaderMap,
-            h2::{PseudoHeaderOrder, frame::InitialPeerSettings},
-        },
+        proto::{h1::Http1HeaderMap, h2::PseudoHeaderOrder},
     },
     net::{
         fingerprint::{Ja3, Ja4, Ja4H, PeetPrint},
@@ -231,12 +228,7 @@ pub(super) async fn get_and_store_http_info(
     let h2_settings = match http_version {
         http::Version::HTTP_2 => Some(Http2Settings {
             http_pseudo_headers: ext.get::<PseudoHeaderOrder>().cloned(),
-            initial_config: ext
-                .get::<InitialPeerSettings>()
-                .map(|p| p.0.as_ref().clone()),
-            priority_header: ext
-                .get::<LastPeerPriorityParams>()
-                .map(|p| p.0.dependency.clone()),
+            early_frames: ext.get::<EarlyFrameCapture>().cloned(),
         }),
         _ => None,
     };

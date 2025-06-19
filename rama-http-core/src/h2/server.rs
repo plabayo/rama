@@ -116,7 +116,6 @@
 //! [`TcpListener`]: https://docs.rs/tokio-core/0.1/tokio_core/net/struct.TcpListener.html
 
 use crate::h2::codec::{Codec, UserError};
-use crate::h2::frame::{self, Pseudo, PushPromiseHeaderError, Reason, Settings, StreamId};
 use crate::h2::proto::{self, Config, Error, Prioritized};
 use crate::h2::{FlowControl, PingPong, RecvStream, SendStream};
 
@@ -125,8 +124,12 @@ use rama_core::telemetry::tracing::{
     self,
     instrument::{Instrument, Instrumented},
 };
+use rama_http::proto::h2::frame::EarlyFrameStreamContext;
 use rama_http_types::proto::h1::headers::original::OriginalHttp1Headers;
-use rama_http_types::proto::h2::PseudoHeaderOrder;
+use rama_http_types::proto::h2::frame::{
+    self, Pseudo, PushPromiseHeaderError, Reason, Settings, StreamId,
+};
+use rama_http_types::proto::h2::{PseudoHeaderOrder, ext};
 use rama_http_types::{HeaderMap, Method, Request, Response};
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -1189,8 +1192,8 @@ impl<B: Buf> SendResponse<B> {
     /// # Panics
     ///
     /// If the lock on the stream store has been poisoned.
-    pub fn stream_id(&self) -> crate::h2::StreamId {
-        crate::h2::StreamId::from_internal(self.inner.stream_id())
+    pub fn stream_id(&self) -> StreamId {
+        self.inner.stream_id()
     }
 }
 
@@ -1261,7 +1264,7 @@ impl<B: Buf> SendPushedResponse<B> {
     /// # Panics
     ///
     /// If the lock on the stream store has been poisoned.
-    pub fn stream_id(&self) -> crate::h2::StreamId {
+    pub fn stream_id(&self) -> StreamId {
         self.inner.stream_id()
     }
 }
@@ -1393,9 +1396,8 @@ where
                                 .builder
                                 .local_max_error_reset_streams,
                             settings: self.builder.settings.clone(),
-                            headers_priority: None,
                             headers_pseudo_order: None,
-                            priority: None,
+                            early_frame_ctx: EarlyFrameStreamContext::new_recorder(),
                         },
                     );
 
@@ -1569,7 +1571,7 @@ impl proto::Peer for Peer {
         if has_protocol {
             if is_connect {
                 // Assert that we have the right type.
-                b = b.extension::<crate::h2::ext::Protocol>(pseudo.protocol.unwrap());
+                b = b.extension::<ext::Protocol>(pseudo.protocol.unwrap());
             } else {
                 malformed!("malformed headers: :protocol on non-CONNECT request");
             }
@@ -1585,7 +1587,7 @@ impl proto::Peer for Peer {
         // A request translated from HTTP/1 must not include the :authority
         // header
         if let Some(authority) = pseudo.authority {
-            let maybe_authority = uri::Authority::from_maybe_shared(authority.clone().into_inner());
+            let maybe_authority = uri::Authority::from_maybe_shared(authority.clone());
             parts.authority = Some(maybe_authority.or_else(|why| {
                 malformed!(
                     "malformed headers: malformed authority ({:?}): {}",
@@ -1629,7 +1631,7 @@ impl proto::Peer for Peer {
                 malformed!("malformed headers: missing path");
             }
 
-            let maybe_path = uri::PathAndQuery::from_maybe_shared(path.clone().into_inner());
+            let maybe_path = uri::PathAndQuery::from_maybe_shared(path.clone());
             parts.path_and_query = Some(maybe_path.or_else(|why| {
                 malformed!("malformed headers: malformed path ({:?}): {}", path, why,)
             })?);

@@ -1,8 +1,8 @@
 use super::{DecoderError, NeedMore};
-use crate::h2::ext::Protocol;
+use crate::proto::h2::ext::Protocol;
+use crate::{HeaderName, HeaderValue, Method, StatusCode};
 
 use rama_core::bytes::Bytes;
-use rama_http_types::{HeaderName, HeaderValue, Method, StatusCode};
 use std::fmt;
 
 /// HTTP/2 Header
@@ -99,6 +99,7 @@ impl Header {
         }
     }
 
+    #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> usize {
         match *self {
             Header::Field {
@@ -184,7 +185,7 @@ impl Header {
     }
 
     pub fn skip_value_index(&self) -> bool {
-        use rama_http_types::header;
+        use crate::header;
 
         match *self {
             Header::Field { ref name, .. } => matches!(
@@ -278,10 +279,6 @@ impl BytesStr {
     pub(crate) fn as_str(&self) -> &str {
         // Safety: check valid utf-8 in constructor
         unsafe { std::str::from_utf8_unchecked(self.0.as_ref()) }
-    }
-
-    pub(crate) fn into_inner(self) -> Bytes {
-        self.0
     }
 }
 

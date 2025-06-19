@@ -3,14 +3,13 @@ use super::{
     StreamIdOverflow, WindowSize, store,
 };
 use crate::h2::codec::UserError;
-use crate::h2::frame::{self, Reason};
 use crate::h2::proto::{self, Error, Initiator};
 
 use rama_core::bytes::Buf;
 use rama_core::telemetry::tracing;
+use rama_http_types::proto::h2::frame::{self, Reason};
 use tokio::io::AsyncWrite;
 
-use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::io;
 use std::task::{Context, Poll, Waker};
@@ -132,18 +131,6 @@ impl Send {
         counts: &mut Counts,
         task: &mut Option<Waker>,
     ) -> Result<(), UserError> {
-        self.send_priority_and_headers(None, frame, buffer, stream, counts, task)
-    }
-
-    pub(super) fn send_priority_and_headers<B>(
-        &mut self,
-        priority_frame: Option<Cow<'static, [frame::Priority]>>,
-        frame: frame::Headers,
-        buffer: &mut Buffer<Frame<B>>,
-        stream: &mut store::Ptr,
-        counts: &mut Counts,
-        task: &mut Option<Waker>,
-    ) -> Result<(), UserError> {
         Self::check_headers(frame.fields())?;
 
         let end_stream = frame.is_end_stream();
@@ -155,20 +142,6 @@ impl Send {
         if counts.peer().is_local_init(frame.stream_id()) && !stream.is_pending_push {
             self.prioritize.queue_open(stream);
             pending_open = true;
-        }
-
-        // Queue the priority frame if it exists
-        if let Some(priority_frames) = priority_frame {
-            for priority_frame in priority_frames.iter().cloned() {
-                tracing::trace!(
-                    "send_priority; frame={:?}; init_window={:?}",
-                    priority_frame,
-                    self.init_window_sz
-                );
-
-                self.prioritize
-                    .queue_frame(priority_frame.into(), buffer, stream, task);
-            }
         }
 
         tracing::trace!(
@@ -392,7 +365,7 @@ impl Send {
         counts: &mut Counts,
     ) -> Result<(), Reason> {
         self.prioritize
-            .recv_connection_window_update(frame.size_increment(), store, counts)
+            .recv_connection_window_update(frame.size_increment, store, counts)
     }
 
     pub(super) fn recv_stream_window_update<B>(
@@ -591,6 +564,17 @@ impl Send {
         // if next_stream_id is overflowed, that's ok.
 
         Ok(())
+    }
+
+    pub(super) fn set_next_stream_id_from(&mut self, stream_id: StreamId) -> Option<StreamId> {
+        if let Ok(cur_id) = self.next_stream_id {
+            if cur_id > stream_id {
+                self.next_stream_id = cur_id.next_id();
+                return Some(cur_id);
+            }
+        }
+        self.next_stream_id = stream_id.next_id();
+        None
     }
 
     pub(super) fn ensure_next_stream_id(&self) -> Result<StreamId, UserError> {

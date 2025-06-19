@@ -135,26 +135,25 @@
 //! [`Error`]: ../struct.Error.html
 
 use crate::h2::codec::{Codec, SendError, UserError};
-use crate::h2::ext::Protocol;
-use crate::h2::frame::{Headers, Pseudo, Reason, Settings, StreamId};
 use crate::h2::proto::{self, Error};
 use crate::h2::{FlowControl, PingPong, RecvStream, SendStream};
 
 use rama_core::bytes::{Buf, Bytes};
 use rama_core::telemetry::tracing::{self, Instrument};
+use rama_http::proto::h2::frame::{EarlyFrame, EarlyFrameStreamContext};
 use rama_http_types::dep::http::{request, uri};
 use rama_http_types::proto::h1::headers::original::OriginalHttp1Headers;
 use rama_http_types::proto::h2::PseudoHeaderOrder;
+use rama_http_types::proto::h2::ext::Protocol;
+use rama_http_types::proto::h2::frame::StreamDependency;
+use rama_http_types::proto::h2::frame::{Headers, Pseudo, Reason, Settings, StreamId};
 use rama_http_types::proto::h2::frame::{SettingOrder, SettingsConfig};
 use rama_http_types::{HeaderMap, Method, Request, Response, Version};
-use std::borrow::Cow;
 use std::fmt;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
-
-use super::frame::{Priority, StreamDependency};
 
 /// Initializes new HTTP/2 streams on a connection by sending a request.
 ///
@@ -352,11 +351,8 @@ pub struct Builder {
     /// The headers frame pseudo order
     headers_pseudo_order: Option<PseudoHeaderOrder>,
 
-    /// The headers frame priority
-    headers_priority: Option<StreamDependency>,
-
-    /// Priority stream list
-    priority: Option<Cow<'static, [Priority]>>,
+    /// The early frames to be used by the client
+    early_frames: Option<Vec<EarlyFrame>>,
 }
 
 #[derive(Debug)]
@@ -678,8 +674,7 @@ impl Builder {
             stream_id: 1.into(),
             local_max_error_reset_streams: Some(proto::DEFAULT_LOCAL_RESET_COUNT_MAX),
             headers_pseudo_order: None,
-            headers_priority: None,
-            priority: None,
+            early_frames: None,
         }
     }
 
@@ -689,21 +684,14 @@ impl Builder {
         self
     }
 
-    /// Set http2 header priority
-    pub fn headers_priority(&mut self, headers_priority: StreamDependency) -> &mut Self {
-        self.headers_priority = Some(headers_priority);
-        self
-    }
-
     /// Settings frame order
     pub fn setting_order(&mut self, order: SettingOrder) -> &mut Self {
         self.settings.set_setting_order(Some(order));
         self
     }
 
-    /// Priority stream list
-    pub fn priority(&mut self, priority: Cow<'static, [Priority]>) -> &mut Self {
-        self.priority = Some(priority);
+    pub fn early_frames(&mut self, early_frames: Vec<EarlyFrame>) -> &mut Self {
+        self.early_frames = Some(early_frames);
         self
     }
 
@@ -1393,8 +1381,10 @@ where
                 local_error_reset_streams_max: builder.local_max_error_reset_streams,
                 settings: builder.settings,
                 headers_pseudo_order: builder.headers_pseudo_order,
-                headers_priority: builder.headers_priority,
-                priority: builder.priority,
+                early_frame_ctx: match builder.early_frames {
+                    Some(frames) => EarlyFrameStreamContext::new_replayer(frames),
+                    None => EarlyFrameStreamContext::new_nop(),
+                },
             },
         );
         let send_request = SendRequest {
@@ -1542,8 +1532,8 @@ impl ResponseFuture {
     /// # Panics
     ///
     /// If the lock on the stream store has been poisoned.
-    pub fn stream_id(&self) -> crate::h2::StreamId {
-        crate::h2::StreamId::from_internal(self.inner.stream_id())
+    pub fn stream_id(&self) -> StreamId {
+        self.inner.stream_id()
     }
     /// Returns a stream of PushPromises
     ///
@@ -1636,7 +1626,7 @@ impl PushedResponseFuture {
     /// # Panics
     ///
     /// If the lock on the stream store has been poisoned.
-    pub fn stream_id(&self) -> crate::h2::StreamId {
+    pub fn stream_id(&self) -> StreamId {
         self.inner.stream_id()
     }
 }
@@ -1651,8 +1641,7 @@ impl Peer {
         end_of_stream: bool,
         headers_pseudo_order: Option<PseudoHeaderOrder>,
         headers_priority: Option<StreamDependency>,
-        priority: Option<Cow<'static, [Priority]>>,
-    ) -> Result<(Option<Cow<'static, [Priority]>>, Headers), SendError> {
+    ) -> Result<Headers, SendError> {
         use request::Parts;
 
         let (
@@ -1713,16 +1702,6 @@ impl Peer {
             }
         }
 
-        // Check the priority list for overflowed stream IDs
-        if let Some(ref priority) = priority {
-            if let Some(last_priority) = priority.last() {
-                // Ensure the next stream ID does not overflow
-                if last_priority.stream_id().next_id()? > id {
-                    return Err(UserError::OverflowedStreamId.into());
-                }
-            }
-        }
-
         // Create the HEADERS frame
         let mut frame = Headers::new(id, pseudo, headers, header_order, headers_priority);
 
@@ -1730,7 +1709,7 @@ impl Peer {
             frame.set_end_stream()
         }
 
-        Ok((priority, frame))
+        Ok(frame)
     }
 }
 
