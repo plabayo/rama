@@ -566,20 +566,13 @@ impl Send {
         Ok(())
     }
 
-    pub(super) fn set_next_stream_id_from(&mut self, stream_id: StreamId) -> Option<StreamId> {
-        if let Ok(cur_id) = self.next_stream_id {
-            if cur_id > stream_id {
-                self.next_stream_id = cur_id.next_id();
-                return Some(cur_id);
-            }
-        }
-        self.next_stream_id = stream_id.next_id();
-        None
-    }
-
     pub(super) fn ensure_next_stream_id(&self) -> Result<StreamId, UserError> {
         self.next_stream_id
             .map_err(|_| UserError::OverflowedStreamId)
+    }
+
+    pub(super) fn peek_next_id(&self) -> Option<StreamId> {
+        self.next_stream_id.ok()
     }
 
     pub(super) fn may_have_created_stream(&self, id: StreamId) -> bool {

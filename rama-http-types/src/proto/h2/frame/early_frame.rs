@@ -1,4 +1,5 @@
-use crate::proto::h2::frame::{Frame, Priority, Settings, WindowUpdate};
+use crate::proto::h2::frame::{Frame, Priority, Settings, StreamId, WindowUpdate};
+use rama_core::telemetry::tracing;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -8,6 +9,17 @@ pub enum EarlyFrame {
     Priority(Priority),
     Settings(Settings),
     WindowUpdate(WindowUpdate),
+}
+
+impl EarlyFrame {
+    /// returns true if this early frame applies to a stream already created
+    pub fn stream_created(&self, next_stream_id: StreamId) -> bool {
+        match self {
+            EarlyFrame::Priority(priority) => next_stream_id > priority.stream_id,
+            EarlyFrame::Settings(_) => true,
+            EarlyFrame::WindowUpdate(window_update) => next_stream_id > window_update.stream_id,
+        }
+    }
 }
 
 impl<T> From<EarlyFrame> for Frame<T> {
@@ -41,28 +53,51 @@ impl EarlyFrameStreamContext {
         }
     }
 
-    pub fn new_replayer(mut frames: Vec<EarlyFrame>) -> Self {
+    pub fn new_replayer(mut frames: Vec<EarlyFrame>) -> (Self, Option<Settings>) {
         frames.reverse();
-        Self {
-            kind: EarlyFrameKind::Replayer(frames),
-        }
+        let settings = match frames.pop() {
+            Some(frame) => match frame {
+                EarlyFrame::Settings(settings) => Some(settings),
+                EarlyFrame::Priority(_) | EarlyFrame::WindowUpdate(_) => {
+                    frames.push(frame);
+                    None
+                }
+            },
+            None => {
+                return (
+                    Self {
+                        kind: EarlyFrameKind::Nop,
+                    },
+                    None,
+                );
+            }
+        };
+        (
+            Self {
+                kind: EarlyFrameKind::Replayer(frames),
+            },
+            settings,
+        )
     }
 }
 
 impl EarlyFrameStreamContext {
     pub fn record_priority_frame(&mut self, frame: &Priority) {
+        tracing::trace!(?frame, "record priority frame");
         if let EarlyFrameKind::Recorder(ref mut recorder) = self.kind {
             recorder.record_priority_frame(frame);
         }
     }
 
     pub fn record_settings_frame(&mut self, frame: &Settings) {
+        tracing::trace!(?frame, "record settings frame");
         if let EarlyFrameKind::Recorder(ref mut recorder) = self.kind {
             recorder.record_settings_frame(frame);
         }
     }
 
     pub fn record_windows_update_frame(&mut self, frame: &WindowUpdate) {
+        tracing::trace!(?frame, "record windows update frame");
         if let EarlyFrameKind::Recorder(ref mut recorder) = self.kind {
             recorder.record_windows_update_frame(frame);
         }
@@ -71,19 +106,37 @@ impl EarlyFrameStreamContext {
     /// Does nothing in case the ctx is not a recorder.
     pub fn freeze_recorder(&mut self) -> Option<EarlyFrameCapture> {
         if let EarlyFrameKind::Recorder(ref mut recorder) = self.kind {
+            tracing::trace!("freeze recorder");
             return recorder.freeze();
         }
+        tracing::trace!("ctx::freeze_recorder: nop");
         None
     }
 
-    pub fn replay_next_frame(&mut self) -> Option<EarlyFrame> {
+    pub fn replay_next_frame(&mut self, next_stream_id: Option<StreamId>) -> Option<EarlyFrame> {
         if let EarlyFrameKind::Replayer(ref mut v) = self.kind {
+            if let Some(next_stream_id) = next_stream_id {
+                if !v
+                    .last()
+                    .map(|f| f.stream_created(next_stream_id))
+                    .unwrap_or_default()
+                {
+                    self.kind = EarlyFrameKind::Nop;
+                    tracing::trace!(
+                        "stop replayer early, the scenario has changed, we are beyond the existing streams now"
+                    );
+                    return None;
+                }
+            }
+
             let next = v.pop();
             if v.is_empty() {
                 self.kind = EarlyFrameKind::Nop;
             }
+            tracing::trace!(frame = ?next, "replay_next_frame");
             return next;
         }
+        tracing::trace!("replay_next_frame: EOF");
         None
     }
 }

@@ -336,7 +336,11 @@ pub struct Builder {
     pending_accept_reset_stream_max: usize,
 
     /// Initial `Settings` frame to send as part of the handshake.
-    settings: Settings,
+    settings: Option<Settings>,
+
+    /// If true and if `Settings` are set, the settings defined will overwrite initial
+    /// settings given by the replay
+    overwrite_replay_settings: bool,
 
     /// The stream ID of the first (lowest) stream. Subsequent streams will use
     /// monotonically increasing stream IDs.
@@ -670,7 +674,8 @@ impl Builder {
             pending_accept_reset_stream_max: proto::DEFAULT_REMOTE_RESET_STREAM_MAX,
             initial_target_connection_window_size: None,
             initial_max_send_streams: usize::MAX,
-            settings: Default::default(),
+            settings: None,
+            overwrite_replay_settings: false,
             stream_id: 1.into(),
             local_max_error_reset_streams: Some(proto::DEFAULT_LOCAL_RESET_COUNT_MAX),
             headers_pseudo_order: None,
@@ -686,7 +691,9 @@ impl Builder {
 
     /// Settings frame order
     pub fn setting_order(&mut self, order: SettingOrder) -> &mut Self {
-        self.settings.set_setting_order(Some(order));
+        self.settings
+            .get_or_insert_default()
+            .set_setting_order(Some(order));
         self
     }
 
@@ -696,7 +703,7 @@ impl Builder {
     }
 
     pub fn setting_config(&mut self, config: SettingsConfig) -> &mut Self {
-        self.settings.set_config(config);
+        self.settings.get_or_insert_default().set_config(config);
         self
     }
 
@@ -731,7 +738,9 @@ impl Builder {
     /// # pub fn main() {}
     /// ```
     pub fn initial_window_size(&mut self, size: u32) -> &mut Self {
-        self.settings.set_initial_window_size(Some(size));
+        self.settings
+            .get_or_insert_default()
+            .set_initial_window_size(Some(size));
         self
     }
 
@@ -805,7 +814,9 @@ impl Builder {
     /// This function panics if `max` is not within the legal range specified
     /// above.
     pub fn max_frame_size(&mut self, max: u32) -> &mut Self {
-        self.settings.set_max_frame_size(Some(max));
+        self.settings
+            .get_or_insert_default()
+            .set_max_frame_size(Some(max));
         self
     }
 
@@ -840,7 +851,9 @@ impl Builder {
     /// # pub fn main() {}
     /// ```
     pub fn max_header_list_size(&mut self, max: u32) -> &mut Self {
-        self.settings.set_max_header_list_size(Some(max));
+        self.settings
+            .get_or_insert_default()
+            .set_max_header_list_size(Some(max));
         self
     }
 
@@ -889,7 +902,9 @@ impl Builder {
     /// # pub fn main() {}
     /// ```
     pub fn max_concurrent_streams(&mut self, max: u32) -> &mut Self {
-        self.settings.set_max_concurrent_streams(Some(max));
+        self.settings
+            .get_or_insert_default()
+            .set_max_concurrent_streams(Some(max));
         self
     }
 
@@ -1142,17 +1157,23 @@ impl Builder {
     /// # pub fn main() {}
     /// ```
     pub fn enable_push(&mut self, enabled: bool) -> &mut Self {
-        self.settings.set_enable_push(enabled);
+        self.settings
+            .get_or_insert_default()
+            .set_enable_push(enabled);
         self
     }
 
     pub fn enable_connect_protocol(&mut self, value: u32) -> &mut Self {
-        self.settings.set_enable_connect_protocol(Some(value));
+        self.settings
+            .get_or_insert_default()
+            .set_enable_connect_protocol(Some(value));
         self
     }
 
     pub fn unknown_setting_9(&mut self, value: u32) -> &mut Self {
-        self.settings.set_unknown_setting_9(Some(value));
+        self.settings
+            .get_or_insert_default()
+            .set_unknown_setting_9(Some(value));
         self
     }
 
@@ -1185,7 +1206,9 @@ impl Builder {
     /// # pub fn main() {}
     /// ```
     pub fn header_table_size(&mut self, size: u32) -> &mut Self {
-        self.settings.set_header_table_size(Some(size));
+        self.settings
+            .get_or_insert_default()
+            .set_header_table_size(Some(size));
         self
     }
 
@@ -1356,17 +1379,64 @@ where
         // Create the codec
         let mut codec = Codec::new(io);
 
-        if let Some(max) = builder.settings.max_frame_size() {
+        let (initial_settings, early_frame_ctx) = match builder.early_frames {
+            Some(frames) => {
+                let (ctx, settings) = EarlyFrameStreamContext::new_replayer(frames);
+                match settings {
+                    Some(mut settings) => {
+                        tracing::trace!(
+                            builder_settings = ?builder.settings,
+                            ?settings,
+                            "early frame replayer used for client w/ custom settings",
+                        );
+                        if let Some(overwrites) = builder.settings {
+                            if builder.overwrite_replay_settings {
+                                settings.merge(overwrites);
+                                tracing::trace!(
+                                    ?settings,
+                                    "overwrites from builder have been applied on top of of early frame replayer",
+                                );
+                            } else {
+                                tracing::trace!(
+                                    ?overwrites,
+                                    ?settings,
+                                    "overwrites from builder have been ignored in favor of of early frame replayer",
+                                );
+                            }
+                        }
+                        (settings, ctx)
+                    }
+                    None => {
+                        let settings = builder.settings.unwrap_or_default();
+                        tracing::trace!(
+                            ?settings,
+                            "early frame replayer used for client w/o settings; use builder settings (or default)",
+                        );
+                        (settings, ctx)
+                    }
+                }
+            }
+            None => {
+                let settings = builder.settings.unwrap_or_default();
+                tracing::trace!(
+                    ?settings,
+                    "no early frames replayer used for client, use builder settings (or default)",
+                );
+                (settings, EarlyFrameStreamContext::new_nop())
+            }
+        };
+
+        if let Some(max) = initial_settings.max_frame_size() {
             codec.set_max_recv_frame_size(max as usize);
         }
 
-        if let Some(max) = builder.settings.max_header_list_size() {
+        if let Some(max) = initial_settings.max_header_list_size() {
             codec.set_max_recv_header_list_size(max as usize);
         }
 
         // Send initial settings frame
         codec
-            .buffer(builder.settings.clone().into())
+            .buffer(initial_settings.clone().into())
             .expect("invalid SETTINGS frame");
 
         let inner = proto::Connection::new(
@@ -1379,12 +1449,9 @@ where
                 reset_stream_max: builder.reset_stream_max,
                 remote_reset_stream_max: builder.pending_accept_reset_stream_max,
                 local_error_reset_streams_max: builder.local_max_error_reset_streams,
-                settings: builder.settings,
+                settings: initial_settings,
                 headers_pseudo_order: builder.headers_pseudo_order,
-                early_frame_ctx: match builder.early_frames {
-                    Some(frames) => EarlyFrameStreamContext::new_replayer(frames),
-                    None => EarlyFrameStreamContext::new_nop(),
-                },
+                early_frame_ctx,
             },
         );
         let send_request = SendRequest {

@@ -156,6 +156,7 @@ where
 
     /// Send a new SETTINGS frame with an updated initial window size.
     pub(crate) fn set_initial_window_size(&mut self, size: WindowSize) -> Result<(), UserError> {
+        tracing::trace!(%size, "set_initial_window_size");
         let mut settings = frame::Settings::default();
         settings.set_initial_window_size(Some(size));
         self.inner.settings.send_settings(settings)
@@ -163,6 +164,7 @@ where
 
     /// Send a new SETTINGS frame with extended CONNECT protocol enabled.
     pub(crate) fn set_enable_connect_protocol(&mut self) -> Result<(), UserError> {
+        tracing::trace!("set_enable_connect_protocol");
         let mut settings = frame::Settings::default();
         settings.set_enable_connect_protocol(Some(1));
         self.inner.settings.send_settings(settings)
@@ -203,6 +205,7 @@ where
         )?;
 
         if let Some(settings) = ready!(self.inner.streams.send_pending(cx, &mut self.codec))? {
+            tracing::trace!("send replayed early settings frame: {settings:?}");
             if let Err(err) = self.inner.settings.send_settings(settings) {
                 return Poll::Ready(Err(err.into()));
             }

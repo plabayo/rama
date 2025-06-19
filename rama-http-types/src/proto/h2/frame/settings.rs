@@ -58,6 +58,10 @@ impl Settings {
         self.config = config;
     }
 
+    pub fn merge(&mut self, other: Settings) {
+        self.config.merge(other.config);
+    }
+
     pub fn set_initial_window_size(&mut self, size: Option<u32>) {
         self.config.initial_window_size = size;
     }

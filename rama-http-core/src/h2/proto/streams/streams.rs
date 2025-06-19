@@ -197,32 +197,16 @@ where
             return Poll::Ready(Err(err.into()));
         }
 
-        match me.early_frame_ctx.replay_next_frame() {
+        let next_stream_id = me.actions.send.peek_next_id();
+        match me.early_frame_ctx.replay_next_frame(next_stream_id) {
             Some(early_frame) => {
                 let frame: Frame<Prioritized<B>> = match early_frame {
-                    frame::EarlyFrame::Priority(mut priority) => {
-                        if let Some(id) =
-                            me.actions.send.set_next_stream_id_from(priority.stream_id)
-                        {
-                            priority.dependency.dependency_id = StreamId::ZERO;
-                            priority.stream_id = id;
-                        }
-                        priority.into()
-                    }
+                    frame::EarlyFrame::Priority(priority) => priority.into(),
                     frame::EarlyFrame::Settings(settings) => {
                         // NOTE: if ever issues, we might need to do something locally with settings as well
                         return Poll::Ready(Ok((!settings.is_ack()).then_some(settings)));
                     }
-                    frame::EarlyFrame::WindowUpdate(mut window_update) => {
-                        if let Some(id) = me
-                            .actions
-                            .send
-                            .set_next_stream_id_from(window_update.stream_id)
-                        {
-                            window_update.stream_id = id;
-                        }
-                        window_update.into()
-                    }
+                    frame::EarlyFrame::WindowUpdate(window_update) => window_update.into(),
                 };
                 Poll::Ready(match dst.buffer(frame) {
                     Ok(_) => Ok(None),

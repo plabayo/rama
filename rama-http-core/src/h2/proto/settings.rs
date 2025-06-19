@@ -93,9 +93,16 @@ impl Settings {
     pub(crate) fn send_settings(&mut self, frame: frame::Settings) -> Result<(), UserError> {
         assert!(!frame.is_ack());
         match &self.local {
-            Local::ToSend(..) | Local::WaitingAck(..) => Err(UserError::SendSettingsWhilePending),
+            Local::ToSend(..) => {
+                tracing::debug!("SendSettingsWhilePending (send local, no early)");
+                Err(UserError::SendSettingsWhilePending)
+            }
+            Local::WaitingAck(..) => {
+                tracing::debug!("SendSettingsWhilePending (send local, waiting ack)");
+                Err(UserError::SendSettingsWhilePending)
+            }
             Local::Synced => {
-                tracing::trace!("queue to send local settings: {:?}", frame);
+                tracing::trace!(?frame, "queue to send local settings");
                 self.local = Local::ToSend(frame);
                 Ok(())
             }

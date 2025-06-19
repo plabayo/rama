@@ -158,7 +158,6 @@ impl TlsConnectorDataBuilder {
     );
 
     implement_reference_getters!(
-        keylog_intent: Option<KeyLogIntent>,
         cipher_list: Option<Vec<u16>>,
         extension_order: Option<Vec<u16>>,
         alpn_protos: Option<Bytes>,
@@ -169,6 +168,23 @@ impl TlsConnectorDataBuilder {
         delegated_credential_schemes: Option<Vec<SslSignatureAlgorithm>>,
         server_name: Option<Domain>,
     );
+
+    /// Return the SSL keylog file path if one exists.
+    pub fn keylog_filepath(&self) -> Option<String> {
+        if let Some(intent) = self.keylog_intent_inner() {
+            return intent.file_path();
+        }
+        KeyLogIntent::default().file_path()
+    }
+
+    fn keylog_intent_inner(&self) -> Option<&KeyLogIntent> {
+        self.keylog_intent.as_ref().or_else(|| {
+            self.base_builders
+                .iter()
+                .rev()
+                .find_map(|builder| builder.keylog_intent_inner())
+        })
+    }
 
     pub fn new() -> Self {
         Self::default()
@@ -420,11 +436,7 @@ impl TlsConnectorDataBuilder {
             rama_boring::ssl::SslConnector::builder(rama_boring::ssl::SslMethod::tls_client())
                 .context("create (boring) ssl connector builder")?;
 
-        if let Some(keylog_filename) = self
-            .keylog_intent()
-            .as_ref()
-            .and_then(|intent| intent.file_path())
-        {
+        if let Some(keylog_filename) = self.keylog_filepath() {
             let handle = new_key_log_file_handle(keylog_filename)?;
             cfg_builder.set_keylog_callback(move |_, line| {
                 let line = format!("{}\n", line);
@@ -611,7 +623,7 @@ impl std::fmt::Debug for TlsConnectorDataBuilder {
             .field("server_verify_mode", &self.server_verify_mode)
             .field("server_verify_mode()", &self.server_verify_mode())
             .field("keylog_intent", &self.keylog_intent)
-            .field("keylog_intent()", &self.keylog_intent())
+            .field("keylog_intent()", &self.keylog_intent_inner())
             .field("cipher_list", &self.cipher_list)
             .field("cipher_list()", &self.cipher_list())
             .field(

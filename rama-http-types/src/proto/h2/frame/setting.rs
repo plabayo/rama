@@ -308,6 +308,32 @@ pub struct SettingsConfig {
     pub setting_order: Option<SettingOrder>,
 }
 
+impl SettingsConfig {
+    pub fn merge(&mut self, other: SettingsConfig) {
+        macro_rules! merge_fields {
+            ($($field:ident),+$(,)?) => {
+                $(
+                    if let Some(value) = other.$field {
+                        self.$field = Some(value);
+                    }
+                )+
+            };
+        }
+
+        merge_fields!(
+            header_table_size,
+            enable_push,
+            max_concurrent_streams,
+            initial_window_size,
+            max_frame_size,
+            max_header_list_size,
+            enable_connect_protocol,
+            unknown_setting_9,
+            setting_order,
+        );
+    }
+}
+
 impl PartialEq for SettingsConfig {
     fn eq(&self, other: &Self) -> bool {
         self.header_table_size == other.header_table_size
