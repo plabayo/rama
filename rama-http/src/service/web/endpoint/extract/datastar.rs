@@ -1,4 +1,4 @@
-//! [🚀 data-\*](https://data-star.dev/) support extractor for rama.
+//! [🚀 Datastar](https://data-star.dev/) support extractor for rama.
 
 use crate::service::web::{
     extract::{FromRequest, OptionalFromRequest, Query},

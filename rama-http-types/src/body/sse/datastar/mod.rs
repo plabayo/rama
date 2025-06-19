@@ -1,4 +1,4 @@
-//! [🚀 data-\*] support for rama.
+//! [🚀 Datastar] support for rama.
 //!
 //! Datastar helps you build reactive web applications with the simplicity
 //! of server-side rendering and the power of a full-stack SPA framework.
@@ -7,14 +7,14 @@
 //! this module implements the event data types used from the server-side to send to the client,
 //! which makes use of this JS library.
 //!
-//! You can join the discord server of [🚀 data-\*] at <https://discord.gg/sGfFuw9k>,
+//! You can join the discord server of [🚀 Datastar] at <https://discord.gg/sGfFuw9k>,
 //! after which you can join [the #general-rust channel](https://discord.com/channels/1296224603642925098/1315397669954392146)
 //! for any datastar specific help.
 //!
-//! Combining [🚀 data-\*] with 🦙 Rama (ラマ) provides a powerful foundation
+//! Combining [🚀 Datastar] with 🦙 Rama (ラマ) provides a powerful foundation
 //! for your web application—one that **empowers you to build and scale without limitations**.
 //!
-//! [🚀 data-\*]: https://data-star.dev/
+//! [🚀 Datastar]: https://data-star.dev/
 
 mod enums;
 use std::marker::PhantomData;

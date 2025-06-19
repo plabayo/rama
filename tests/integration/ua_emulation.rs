@@ -29,6 +29,7 @@ use rama::ua::profile::{
 use rama::ua::profile::{TlsProfile, UserAgentProfile};
 use rama::ua::{PlatformKind, UserAgentKind};
 use rama::{Context, Layer, Service};
+use rama_ua::emulate::SelectedUserAgentProfile;
 use std::convert::Infallible;
 use std::fmt;
 use std::net::Ipv4Addr;
@@ -370,7 +371,7 @@ async fn test_ua_embedded_profiles_are_all_resulting_in_correct_traffic_flow() {
                 .into_shared_builder();
 
             let client = (
-                UserAgentEmulateLayer::new(profile),
+                UserAgentEmulateLayer::new(profile.clone()),
                 EmulateTlsProfileLayer::new().with_builder_overwrites(tls_config),
             )
                 .into_layer(service_fn(async |ctx: Context<State>, req: Request| {
@@ -385,15 +386,20 @@ async fn test_ua_embedded_profiles_are_all_resulting_in_correct_traffic_flow() {
                     ))
                     .with_svc_req_inspector(UserAgentEmulateHttpRequestModifier::default());
 
-                    let EstablishedClientConnection { ctx, req, conn } =
-                        connector.serve(ctx, req).await.unwrap();
+                    let profile = ctx.get::<SelectedUserAgentProfile>().unwrap();
+                    let expect_msg = format!("selected profile to work: {profile:?}");
 
-                    Ok::<_, Infallible>(conn.serve(ctx, req).await.unwrap())
+                    let EstablishedClientConnection { ctx, req, conn } =
+                        connector.serve(ctx, req).await.expect(&expect_msg);
+
+                    Ok::<_, Infallible>(conn.serve(ctx, req).await.expect(&expect_msg))
                 }));
 
             let ctx = Context::with_state(State {
                 counter: counter.clone(),
             });
+
+            let expect_msg = format!("profile to work: {profile:?}");
 
             client
                 .serve(
@@ -401,10 +407,10 @@ async fn test_ua_embedded_profiles_are_all_resulting_in_correct_traffic_flow() {
                     Request::builder()
                         .uri("https://www.example.com")
                         .body(Body::empty())
-                        .unwrap(),
+                        .expect(&expect_msg),
                 )
                 .await
-                .unwrap();
+                .expect(&expect_msg);
         });
     }
 
