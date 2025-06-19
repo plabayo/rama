@@ -50,7 +50,7 @@ The choice between them often comes down to your priorities:
 >
 > — <https://data-star.dev/>
 
-Rama has built-in support for [🚀 data-\*](https://data-star.dev).
+Rama has built-in support for [🚀 Datastar](https://data-star.dev).
 You can see it in action in [Examples](https://github.com/plabayo/rama/tree/main/examples):
 
 - [/examples/http_sse_datastar_hello.rs](https://github.com/plabayo/rama/tree/main/examples/http_sse_datastar_hello.rs):
@@ -67,11 +67,11 @@ Rama rust docs:
 <img style="width: 50%" src="img/rama_datastar.jpg" alt="llama cruising through space empowered by the powerfull rama/datastar combo">
 </div>
 
-You can join the discord server of [🚀 data-\*](https://data-star.dev) at <https://discord.gg/sGfFuw9k>,
+You can join the discord server of [🚀 Datastar](https://data-star.dev) at <https://discord.gg/sGfFuw9k>,
 after which you can join [the #general-rust channel](https://discord.com/channels/1296224603642925098/1315397669954392146)
 for any datastar specific help.
 
-Combining [🚀 data-\*](https://data-star.dev) with 🦙 Rama (ラマ) provides a powerful foundation for your web application—one that **empowers you to build and scale without limitations**.
+Combining [🚀 Datastar](https://data-star.dev) with 🦙 Rama (ラマ) provides a powerful foundation for your web application—one that **empowers you to build and scale without limitations**.
 
 The core concept of datastar is to keep one long lived connection per user (agent) session open,
 through which you stream your data(star) events (SSE). While your client interacts with the server

@@ -309,7 +309,7 @@ Examples of the kind of web services you might build with rama in function of yo
 >
 > — <https://data-star.dev/>
 
-Rama has built-in support for [🚀 data-\*](https://data-star.dev).
+Rama has built-in support for [🚀 Datastar](https://data-star.dev).
 You can see it in action in [Examples](https://github.com/plabayo/rama/tree/main/examples):
 
 - [/examples/http_sse_datastar_hello.rs](https://github.com/plabayo/rama/tree/main/examples/http_sse_datastar_hello.rs):
