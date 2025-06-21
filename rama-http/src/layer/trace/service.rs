@@ -359,7 +359,7 @@ where
                         let res = res.map(|body| ResponseBody {
                             inner: body,
                             classify_eos: None,
-                            on_eos: None,
+                            on_eos: Some((self.on_eos.clone(), Instant::now())),
                             on_body_chunk: self.on_body_chunk.clone(),
                             on_failure: Some(self.on_failure.clone()),
                             start,

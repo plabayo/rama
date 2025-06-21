@@ -34,7 +34,7 @@ where
 
         Ok(OpenFileOutput::Html(payload)) => Ok(Html(payload).into_response()),
 
-        Ok(OpenFileOutput::FileNotFound) => {
+        Ok(OpenFileOutput::FileNotFound | OpenFileOutput::InvalidFilename) => {
             if let Some((fallback, ctx, request)) = fallback_and_request {
                 serve_fallback(fallback, ctx, request).await
             } else {
