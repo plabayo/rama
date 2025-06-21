@@ -2,6 +2,9 @@ use serde::{Deserialize, Serialize};
 
 use super::common::Identifier;
 
+pub const REPLAY_NONCE_HEADER: &str = "replay-nonce";
+pub const LOCATION_HEADER: &str = "location";
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 /// Directy contain all endpoints needed by an acme client, defined in [rfc8555 section 7.1.1]
@@ -27,7 +30,7 @@ pub struct DirectoryMeta {
     external_account_required: Option<bool>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 /// [`Account`] info returned by the acme server, defined in [rfc8555 section 7.1.2]
 ///
@@ -45,7 +48,7 @@ pub struct Account {
     pub orders: String,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 /// Current account status
 pub enum AccountStatus {
@@ -59,7 +62,7 @@ pub enum AccountStatus {
 
 //
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 /// List of [`Order`]s currently opened by an account, defined in [rfc8555 section 7.1.2.1]
 ///
@@ -71,7 +74,7 @@ pub struct OrdersList {
     pub orders: Vec<String>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 /// All info about a specific [`Order`], defined in [rfc8555 section 7.1.3]
 ///
@@ -101,7 +104,7 @@ pub struct Order {
     pub certificate: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 /// Current status of an [`Order`]
 pub enum OrderStatus {
@@ -120,7 +123,7 @@ pub enum OrderStatus {
 
 // 7.1.4 Authorization Objects
 // TODO test parse 30
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 /// All info about a specific [`Authorization`], defined in [rfc8555 section 7.1.4]
 ///
@@ -135,7 +138,7 @@ pub struct Authorization {
     pub wildcard: Option<bool>,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum AuthorizationStatus {
     /// Default when created
@@ -152,7 +155,7 @@ pub enum AuthorizationStatus {
     Revoked,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 /// All info about a specific [`Challenge`], defined in [rfc8555 section 7.1.5]
 ///
@@ -170,7 +173,7 @@ pub struct Challenge {
     pub error: Option<Problem>,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
 /// Type of acme challenge
 pub enum ChallengeType {
     #[serde(rename = "http-01")]
@@ -183,7 +186,7 @@ pub enum ChallengeType {
     Unknown(String),
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 /// Current status of a [`Challenge`]
 pub enum ChallengeStatus {
@@ -193,7 +196,7 @@ pub enum ChallengeStatus {
     Invalid,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 /// Problem response such as described in [rfc7808]
 ///
@@ -212,7 +215,7 @@ impl std::fmt::Display for RawProblemResponse {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
 #[serde(tag = "type", content = "detail")]
 /// Problem types used by acme server, as described in [rfc8555 section 6.7]
 ///

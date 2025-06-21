@@ -8,7 +8,7 @@ use rama::{
     },
     rt::Executor,
     tls::acme::{
-        Client,
+        AcmeClient,
         proto::{
             client::{CreateAccountOptions, KeyAuthorization, NewOrderPayload},
             common::Identifier,
@@ -27,7 +27,7 @@ const ADDR: &str = "0.0.0.0:5002";
 
 #[tokio::main]
 async fn main() {
-    let client = Client::new(TEST_DIRECTORY_URL).await.unwrap();
+    let client = AcmeClient::new(TEST_DIRECTORY_URL).await.unwrap();
 
     let account = client
         .create_account(CreateAccountOptions {

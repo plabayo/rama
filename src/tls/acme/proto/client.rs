@@ -1,17 +1,19 @@
+use std::{fmt::Debug, marker::PhantomData};
+
 use super::{common::Identifier, server::Challenge};
 use aws_lc_rs::{
     digest::{Digest, SHA256, digest},
     error::{KeyRejected, Unspecified},
     pkcs8,
     rand::SystemRandom,
-    signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair},
+    signature::{self, ECDSA_P256_SHA256_FIXED, ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair},
     signature::{KeyPair, Signature},
 };
 use base64::prelude::{BASE64_URL_SAFE_NO_PAD, Engine};
 use rama_core::error::{BoxError, ErrorContext, OpaqueError};
-use serde::Serialize;
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 /// Options used to create a new account, or request an identifier for an existing account, defined in [rfc8555 section 7.3]
 ///
@@ -24,7 +26,7 @@ pub struct CreateAccountOptions {
     pub external_account_binding: Option<()>,
 }
 
-#[derive(Default, Debug, Serialize)]
+#[derive(Default, Debug, Serialize, Deserialize)]
 /// List of [`Identifier`] for which we want to issue certificate(s), defined in [rfc8555 section 7.4]
 ///
 /// [rfc8555 section 7.4]: https://datatracker.ietf.org/doc/html/rfc8555/#section-7.4
@@ -37,7 +39,7 @@ pub struct NewOrderPayload {
     pub not_after: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 /// [`KeyAuthorization`] concatenates the token for a challenge with key fingerprint, defined in [rfc8555 section 8.1]
 ///
@@ -46,8 +48,8 @@ pub struct KeyAuthorization(String);
 
 impl KeyAuthorization {
     /// Create [`KeyAuthorization`] for the given challenge and key
-    pub(crate) fn new(challenge: &Challenge, key: &Key) -> Self {
-        Self(format!("{}.{}", challenge.token, &key.thumb))
+    pub(crate) fn new(token: &str, key_thumb: &str) -> Self {
+        Self(format!("{}.{}", token, key_thumb))
     }
 
     /// Encode [`KeyAuthorization`] for use in Http challenge
@@ -68,7 +70,7 @@ impl KeyAuthorization {
 
 // TODO move common crypto logic such as JWK to rama-crypto and work it more out there
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 /// ProtectedHeader is the first part of the JWS that contains
 /// all the metadata that is needed to guarantee the integrity and
 /// authenticy of this request
@@ -85,16 +87,14 @@ pub(crate) struct ProtectedHeader<'a> {
     pub(crate) key: ProtectedHeaderKey<'a>,
 }
 
-#[derive(Debug, Serialize, Clone, Copy)]
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "UPPERCASE")]
 /// Algorithm that was used to sign
 pub(crate) enum SigningAlgorithm {
     ES256,
-    /// TODO support his one
-    _EdDSA,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 /// [`ProtectedHeaderKey`] send as key for [`ProtectedHeader`]
 ///
 /// `JWK` is used for the first request to create an account, once we
@@ -106,18 +106,33 @@ pub(crate) enum ProtectedHeaderKey<'a> {
     KeyID(&'a str),
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 /// [`Jwk`] or JSON Web Key used to create a new account
 ///
 /// This key contains the public correspending to our
 /// private key which will be using to sign requests
-pub(crate) struct Jwk {
+pub struct Jwk {
     alg: SigningAlgorithm,
+    #[serde(skip_deserializing, default = "default_crv")]
     crv: &'static str,
+    #[serde(skip_deserializing, default = "default_kty")]
     kty: &'static str,
+    #[serde(skip_deserializing, default = "default_use")]
     r#use: &'static str,
     x: String,
     y: String,
+}
+
+fn default_crv() -> &'static str {
+    "P-256"
+}
+
+fn default_kty() -> &'static str {
+    "EC"
+}
+
+fn default_use() -> &'static str {
+    "sig"
 }
 
 #[derive(Debug, Serialize)]
@@ -174,6 +189,7 @@ impl From<Unspecified> for JwkFailure {
 
 impl Jwk {
     fn new(key: &EcdsaKeyPair) -> Self {
+        // 0x04 prefix + 32-byte X + 32-byte Y = 65-bytes
         let (x, y) = key.public_key().as_ref()[1..].split_at(32);
         Self {
             alg: SigningAlgorithm::ES256,
@@ -186,7 +202,7 @@ impl Jwk {
     }
 
     // rfc7638
-    fn thumb_sha256(&self) -> Result<Digest, JwkFailure> {
+    pub fn thumb_sha256(&self) -> Result<Digest, JwkFailure> {
         Ok(digest(
             &SHA256,
             &serde_json::to_vec(&JwkThumb {
@@ -197,6 +213,19 @@ impl Jwk {
             })?,
         ))
     }
+
+    pub(crate) fn unparsed_public_key(&self) -> signature::UnparsedPublicKey<Vec<u8>> {
+        // 0x04 prefix + 32-byte X + 32-byte Y = 65-bytes
+        let x_bytes = BASE64_URL_SAFE_NO_PAD.decode(&self.x).unwrap();
+        let y_bytes = BASE64_URL_SAFE_NO_PAD.decode(&self.y).unwrap();
+
+        // 0x04 prefix + 32-byte X + 32-byte Y = 65-bytes
+        let mut point_bytes = Vec::with_capacity(65);
+        point_bytes.push(0x04);
+        point_bytes.extend_from_slice(&x_bytes);
+        point_bytes.extend_from_slice(&y_bytes);
+        signature::UnparsedPublicKey::new(&ECDSA_P256_SHA256_FIXED, point_bytes)
+    }
 }
 
 /// [`Key`] which is used to identify and authenticate our requests
@@ -204,7 +233,7 @@ pub(crate) struct Key {
     rng: SystemRandom,
     pub(crate) signing_algorithm: SigningAlgorithm,
     inner: EcdsaKeyPair,
-    pub(super) thumb: String,
+    pub thumb: String,
 }
 
 impl Key {
@@ -215,6 +244,7 @@ impl Key {
         // TODO support other algorithms
         let inner = Self::ecdsa_key_pair_from_pkcs8(pkcs8_der, &rng)?;
         let thumb_sha256 = Jwk::new(&inner).thumb_sha256()?;
+        println!("thumb_sha256: {thumb_sha256:?}");
         let thumb = BASE64_URL_SAFE_NO_PAD.encode(thumb_sha256);
         Ok(Self {
             rng,
@@ -264,10 +294,6 @@ pub(crate) trait Signer {
     fn sign(&self, payload: &[u8]) -> Result<Self::Signature, BoxError>;
 }
 
-fn encode_base64_url(data: &impl Serialize) -> Result<String, serde_json::Error> {
-    Ok(BASE64_URL_SAFE_NO_PAD.encode(serde_json::to_vec(data)?))
-}
-
 impl Signer for Key {
     type Signature = Signature;
 
@@ -296,51 +322,173 @@ impl<'a> ProtectedHeaderKey<'a> {
     }
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 /// [`Jws`] combines [`ProtectedHeader`], payload, and signature into one
-pub(crate) struct Jws {
+pub struct Jws<T = ()> {
     protected: String,
-    payload: String,
+    payload: Option<String>,
     signature: String,
+    _phantom: PhantomData<fn() -> T>,
 }
 
-impl Jws {
+// impl<T> DeserializeOwned for Jws<T> {}
+
+impl<T> Jws<T> {
+    /// Create a JWS struct for the provided payload and protected header using the provided signer
+    ///
+    /// Important note: Some(&Emtpy) is different then None::<&Empty>. The first serializes to an
+    /// empty JSON struct (= empty payload) while the later serializes to an empty string (= no payload)
     pub(crate) fn new(
-        payload: Option<&impl Serialize>,
+        payload: Option<&T>,
         protected: &ProtectedHeader<'_>,
         signer: &impl Signer,
-    ) -> Result<Self, OpaqueError> {
-        let protected = encode_base64_url(protected).context("encode base64 protected header")?;
+    ) -> Result<Self, OpaqueError>
+    where
+        T: Serialize,
+    {
+        let protected = BASE64_URL_SAFE_NO_PAD
+            .encode(serde_json::to_vec(protected).context("encode base64 protected header")?);
         let payload = match payload {
-            Some(data) => encode_base64_url(&data).context("encode base64 protected payload")?,
-            None => String::new(),
+            Some(data) => Some(
+                BASE64_URL_SAFE_NO_PAD
+                    .encode(serde_json::to_vec(&data).context("encode base64 protected payload")?),
+            ),
+            None => None,
         };
 
-        let combined = format!("{protected}.{payload}");
+        let signing_input = match &payload {
+            Some(payload) => format!("{protected}.{payload}"),
+            None => format!("{protected}."),
+        };
         let signature = signer
-            .sign(combined.as_bytes())
+            .sign(signing_input.as_bytes())
             .map_err(|err| OpaqueError::from_boxed(err))
             .context("create signature over protected payload")?;
+
         Ok(Self {
             protected,
             payload,
             signature: BASE64_URL_SAFE_NO_PAD.encode(signature.as_ref()),
+            _phantom: PhantomData,
         })
+    }
+
+    pub fn decode_without_key_id_support(&self) -> Result<DecodedJws<T>, OpaqueError>
+    where
+        T: DeserializeOwned,
+    {
+        self.decode(&NoKeyIdStorage)
+    }
+
+    pub(crate) fn decode(
+        &self,
+        key_to_pub_key: &impl KeyIdToUnparsedPublicKey,
+    ) -> Result<DecodedJws<T>, OpaqueError>
+    where
+        T: DeserializeOwned,
+    {
+        let protected_data = BASE64_URL_SAFE_NO_PAD.decode(&self.protected).unwrap();
+        let signature_data = BASE64_URL_SAFE_NO_PAD.decode(&self.signature).unwrap();
+
+        let signing_input = match &self.payload {
+            Some(payload) => format!("{}.{}", self.protected, payload),
+            None => format!("{}.", self.protected),
+        };
+
+        let decoded = DecodedJws {
+            _phantom: std::marker::PhantomData,
+            protected_data,
+            payload: match &self.payload {
+                Some(payload) => {
+                    println!("decoding payload: {:?}", payload);
+                    let payload_data = BASE64_URL_SAFE_NO_PAD.decode(payload).unwrap();
+                    Some(serde_json::from_slice(&payload_data).unwrap())
+                }
+                None => None,
+            },
+        };
+
+        let protected_header = decoded.protected().unwrap();
+
+        match protected_header.key {
+            ProtectedHeaderKey::JWK(jwk) => {
+                if protected_header.alg != jwk.alg {
+                    return Err(OpaqueError::from_display(
+                        "protected header alg and jwk don't match",
+                    ));
+                }
+                jwk.unparsed_public_key()
+                    .verify(signing_input.as_bytes(), &signature_data)
+                    .map_err(|_err| OpaqueError::from_display("verify failed"))
+            }
+            ProtectedHeaderKey::KeyID(id) => {
+                println!("verifying keyid: {}", id);
+                key_to_pub_key.verify(id, |public_key| match public_key {
+                    Some(key) => key
+                        .verify(signing_input.as_bytes(), &signature_data)
+                        .map_err(|_err| OpaqueError::from_display("verify failed")),
+                    None => {
+                        return Err(OpaqueError::from_display(
+                            "no public key found for given key id",
+                        ));
+                    }
+                })
+            }
+        }?;
+
+        Ok(decoded)
+    }
+}
+
+pub trait KeyIdToUnparsedPublicKey {
+    fn verify<F>(&self, key_id: &str, verify: F) -> Result<(), OpaqueError>
+    where
+        F: FnOnce(Option<&signature::UnparsedPublicKey<Vec<u8>>>) -> Result<(), OpaqueError>;
+}
+
+struct NoKeyIdStorage;
+
+impl KeyIdToUnparsedPublicKey for NoKeyIdStorage {
+    fn verify<F>(&self, _key_id: &str, verify: F) -> Result<(), OpaqueError>
+    where
+        F: FnOnce(Option<&signature::UnparsedPublicKey<Vec<u8>>>) -> Result<(), OpaqueError>,
+    {
+        (verify)(None)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DecodedJws<T> {
+    protected_data: Vec<u8>,
+    payload: Option<T>,
+    _phantom: std::marker::PhantomData<T>,
+}
+
+impl<T> DecodedJws<T> {
+    pub(crate) fn protected(&self) -> Result<ProtectedHeader<'_>, serde_json::Error> {
+        serde_json::from_slice(&self.protected_data)
+    }
+}
+
+impl<T: DeserializeOwned> DecodedJws<T> {
+    pub fn payload(&self) -> &Option<T> {
+        &self.payload
+    }
+
+    pub fn into_payload(self) -> Option<T> {
+        self.payload
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use serde::de::DeserializeOwned;
+    use std::collections::HashMap;
 
-    fn decode_base64_url<T>(data: &str) -> T
-    where
-        T: DeserializeOwned,
-    {
-        let sl = BASE64_URL_SAFE_NO_PAD.decode(data).unwrap();
-        serde_json::from_slice(sl.as_slice()).unwrap()
-    }
+    use tokio_test::assert_err;
+
+    use crate::tls::acme::proto::common::{EMPTY_PAYLOAD, Empty, NO_PAYLOAD};
+
+    use super::*;
 
     #[test]
     fn can_generate_and_reuse_keys() {
@@ -350,15 +498,106 @@ mod tests {
     }
 
     #[test]
-    fn can_create_jws() {
+    fn can_encode_and_decode_jws_with_payload() {
         let (key, _) = Key::generate().unwrap();
         let nonce = "test_nonce";
         let url = "http://test.test";
         let payload = String::from("test_payload");
         let protected_header = key.protected_header(Some(nonce), url);
-        let jose_json = Jws::new(Some(&payload), &protected_header, &key).unwrap();
+        let jws = Jws::new(Some(&payload), &protected_header, &key).unwrap();
 
-        let decoded_payload = decode_base64_url::<String>(jose_json.payload.as_str());
-        assert_eq!(decoded_payload, payload);
+        let decoded = jws.decode_without_key_id_support().unwrap();
+        assert_eq!(decoded.payload(), &Some(String::from("test_payload")));
+    }
+
+    #[test]
+    fn can_encode_and_decode_jws_without_payload() {
+        let (key, _) = Key::generate().unwrap();
+        let nonce = "test_nonce";
+        let url = "http://test.test";
+        let protected_header = key.protected_header(Some(nonce), url);
+        let jws = Jws::new(NO_PAYLOAD, &protected_header, &key).unwrap();
+
+        let decoded = jws.decode_without_key_id_support().unwrap();
+        assert_eq!(decoded.payload(), &None);
+    }
+
+    #[test]
+    fn can_encode_and_decode_jws_with_empty_payload() {
+        let (key, _) = Key::generate().unwrap();
+        let nonce = "test_nonce";
+        let url = "http://test.test";
+        let protected_header = key.protected_header(Some(nonce), url);
+        let jws = Jws::new(EMPTY_PAYLOAD, &protected_header, &key).unwrap();
+        println!("jws: {:?}", jws);
+        let decoded = jws.decode_without_key_id_support().unwrap();
+        println!("decoded jws: {:?}", decoded);
+        assert_eq!(decoded.payload(), &Some(Empty));
+    }
+
+    #[test]
+    fn can_decode_with_key_id() {
+        struct KeyId {
+            key: Key,
+            id: String,
+        }
+
+        impl Signer for KeyId {
+            type Signature = <Key as Signer>::Signature;
+
+            fn protected_header<'n, 'u: 'n, 's: 'u>(
+                &'s self,
+                nonce: Option<&'n str>,
+                url: &'u str,
+            ) -> ProtectedHeader<'n> {
+                ProtectedHeader {
+                    alg: self.key.signing_algorithm,
+                    key: ProtectedHeaderKey::KeyID(&self.id),
+                    nonce,
+                    url,
+                }
+            }
+
+            fn sign(&self, payload: &[u8]) -> Result<Self::Signature, BoxError> {
+                self.key.sign(payload)
+            }
+        }
+
+        #[derive(Default)]
+        struct DummyStorage(HashMap<String, signature::UnparsedPublicKey<Vec<u8>>>);
+
+        impl KeyIdToUnparsedPublicKey for DummyStorage {
+            fn verify<F>(&self, key_id: &str, verify: F) -> Result<(), OpaqueError>
+            where
+                F: FnOnce(
+                    Option<&signature::UnparsedPublicKey<Vec<u8>>>,
+                ) -> Result<(), OpaqueError>,
+            {
+                (verify)(self.0.get(key_id))
+            }
+        }
+
+        let (key, _) = Key::generate().unwrap();
+        let signer = KeyId {
+            id: "test_id".into(),
+            key: key,
+        };
+        let pub_key = Jwk::new(&signer.key.inner).unparsed_public_key();
+
+        let mut key_id_storage = DummyStorage::default();
+
+        let nonce = "test_nonce";
+        let url = "http://test.test";
+        let payload = String::from("test_payload");
+        let protected_header = signer.protected_header(Some(nonce), url);
+        let jws = Jws::new(Some(&payload), &protected_header, &signer).unwrap();
+
+        assert_err!(jws.decode_without_key_id_support());
+        assert_err!(jws.decode(&key_id_storage));
+
+        key_id_storage.0.insert("test_id".into(), pub_key);
+
+        let decoded = jws.decode(&key_id_storage).unwrap();
+        assert_eq!(decoded.payload(), &Some(String::from("test_payload")));
     }
 }

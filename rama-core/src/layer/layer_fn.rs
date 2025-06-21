@@ -5,7 +5,7 @@ use std::fmt;
 /// given function.
 ///
 /// The [`Layer::layer`] method takes a type implementing [`Service`] and
-/// returns a different type implementing [`Service`]. In many cases, this can
+/// returns a different type implementing [`Layer`]. In many cases, this can
 /// be implemented by a function or a closure. The [`LayerFn`] helper allows
 /// writing simple [`Layer`] implementations without needing the boilerplate of
 /// a new struct implementing [`Layer`].

@@ -3,6 +3,7 @@ use super::proto::{
         CreateAccountOptions, Jws, Key, KeyAuthorization, NewOrderPayload, ProtectedHeader,
         ProtectedHeaderKey, Signer,
     },
+    common::{EMPTY_PAYLOAD, NO_PAYLOAD},
     server::{self, Problem},
 };
 use crate::{
@@ -13,15 +14,21 @@ use crate::{
         dep::http_body_util::BodyExt, service::client::HttpClientExt, utils::HeaderValueGetter,
     },
     service::BoxService,
-    tls::rustls::dep::{
-        pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer},
-        rcgen::{self},
-        rustls::{crypto::aws_lc_rs::sign::any_ecdsa_type, sign::CertifiedKey},
+    tls::{
+        acme::proto::{
+            common::Empty,
+            server::{LOCATION_HEADER, REPLAY_NONCE_HEADER},
+        },
+        rustls::dep::{
+            pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer},
+            rcgen::{self},
+            rustls::{crypto::aws_lc_rs::sign::any_ecdsa_type, sign::CertifiedKey},
+        },
     },
 };
 
 use parking_lot::Mutex;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::time::Duration;
 use tokio::time::{sleep, timeout};
 
@@ -51,11 +58,8 @@ Happy path
 - download cert
 */
 
-const REPLAY_NONCE_HEADER: &str = "replay-nonce";
-const LOCATION_HEADER: &str = "location";
-
 /// Acme client that will used for all acme operations
-pub struct Client {
+pub struct AcmeClient {
     https_client: AcmeHttpsClient,
     directory: server::Directory,
     nonce: Mutex<Option<String>>,
@@ -64,15 +68,15 @@ pub struct Client {
 /// Alias for http client used by acme client
 type AcmeHttpsClient = BoxService<(), Request, Response, OpaqueError>;
 
-impl Client {
+impl AcmeClient {
     /// Create a new acme [`Client`] for the given directory url and using the default https client
-    pub async fn new(directory_url: &str) -> Result<Client, OpaqueError> {
+    pub async fn new(directory_url: &str) -> Result<AcmeClient, OpaqueError> {
         let https_client = EasyHttpWebClient::default().boxed();
         Self::new_with_https_client(directory_url, https_client).await
     }
 
     /// Create a new acme [`Client`] for the given acme provider and using the default https client
-    pub async fn new_for_provider(provider: &AcmeProvider) -> Result<Client, OpaqueError> {
+    pub async fn new_for_provider(provider: &AcmeProvider) -> Result<AcmeClient, OpaqueError> {
         let https_client = EasyHttpWebClient::default().boxed();
         Self::new_with_https_client(provider.as_str(), https_client).await
     }
@@ -81,7 +85,7 @@ impl Client {
     pub async fn new_with_https_client(
         directory_url: &str,
         https_client: AcmeHttpsClient,
-    ) -> Result<Client, OpaqueError> {
+    ) -> Result<AcmeClient, OpaqueError> {
         let directory = https_client
             .get(directory_url)
             .send(Context::default())
@@ -99,14 +103,14 @@ impl Client {
     /// Create a new acme [`Client`] for the given acme provider and using the provided https client
     pub async fn new_for_provider_with_https_client(
         provider: &AcmeProvider,
-    ) -> Result<Client, OpaqueError> {
+    ) -> Result<AcmeClient, OpaqueError> {
         let https_client = EasyHttpWebClient::default().boxed();
         Self::new_with_https_client(provider.as_str(), https_client).await
     }
 
     /// Get a nonce for making requests, if no nonce from a previous request is
     /// available this function will try to fetch a new one
-    async fn nonce(&self) -> Result<String, OpaqueError> {
+    pub async fn nonce(&self) -> Result<String, OpaqueError> {
         if let Some(nonce) = self.nonce.lock().take() {
             return Ok(nonce);
         }
@@ -142,7 +146,7 @@ impl Client {
             .await
             .context("create account request")?;
 
-        let location: String = response.header_str("location").unwrap().into();
+        let location: String = response.header_str(LOCATION_HEADER).unwrap().into();
         println!("Status code: {}", response.status());
         let account = response.into_body().context("accound info")?;
 
@@ -247,7 +251,7 @@ impl AcmeProvider {
 }
 
 pub struct Account<'a> {
-    client: &'a Client,
+    client: &'a AcmeClient,
     credentials: AccountCredentials,
     inner: server::Account,
 }
@@ -257,9 +261,6 @@ struct AccountCredentials {
     kid: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct Empty {}
-
 impl<'a> Account<'a> {
     pub fn state(&self) -> &server::Account {
         &self.inner
@@ -267,7 +268,7 @@ impl<'a> Account<'a> {
 
     pub async fn new_order(&self, new_order: NewOrderPayload) -> Result<Order, OpaqueError> {
         let response = self
-            .post::<server::Order>(&self.client.directory.new_order.clone(), Some(&new_order))
+            .post::<server::Order>(&self.client.directory.new_order, Some(&new_order))
             .await?;
 
         let location: String = response.header_str(LOCATION_HEADER).unwrap().into();
@@ -281,7 +282,7 @@ impl<'a> Account<'a> {
 
     pub async fn orders(&self) -> Result<server::OrdersList, OpaqueError> {
         let response = self
-            .post::<server::OrdersList>(&self.inner.orders, None::<&Empty>)
+            .post::<server::OrdersList>(&self.inner.orders, NO_PAYLOAD)
             .await?;
 
         let orders = response.into_body().context("open order list")?;
@@ -289,9 +290,7 @@ impl<'a> Account<'a> {
     }
 
     pub async fn get_order(&self, order_url: &str) -> Result<Order, OpaqueError> {
-        let response = self
-            .post::<server::Order>(&order_url, None::<&Empty>)
-            .await?;
+        let response = self.post::<server::Order>(&order_url, NO_PAYLOAD).await?;
 
         let location: String = response.header_str(LOCATION_HEADER).unwrap().into();
 
@@ -351,7 +350,7 @@ impl<'a> Order<'a> {
     pub async fn refresh(&mut self) -> Result<&server::Order, OpaqueError> {
         let response = self
             .account
-            .post::<server::Order>(&self.url, None::<&Empty>)
+            .post::<server::Order>(&self.url, NO_PAYLOAD)
             .await?;
         self.inner = response.into_body().context("order info")?;
         Ok(&self.inner)
@@ -372,9 +371,10 @@ impl<'a> Order<'a> {
         &self,
         authorization_url: &str,
     ) -> Result<server::Authorization, OpaqueError> {
+        println!("{}", authorization_url);
         let response = self
             .account
-            .post::<server::Authorization>(&authorization_url, None::<&Empty>)
+            .post::<server::Authorization>(&authorization_url, NO_PAYLOAD)
             .await?;
 
         let authorization = response.into_body().context("authorization info")?;
@@ -406,7 +406,7 @@ impl<'a> Order<'a> {
         challenge: &mut server::Challenge,
     ) -> Result<(), OpaqueError> {
         let response = self
-            .post::<server::Challenge>(&challenge.url, None::<&Empty>)
+            .post::<server::Challenge>(&challenge.url, NO_PAYLOAD)
             .await
             .unwrap();
 
@@ -418,7 +418,8 @@ impl<'a> Order<'a> {
         &self,
         challenge: &server::Challenge,
     ) -> Result<(), OpaqueError> {
-        self.post::<Empty>(&challenge.url, Some(&Empty {}))
+        println!("sending: {:?}", EMPTY_PAYLOAD);
+        self.post::<Empty>(&challenge.url, EMPTY_PAYLOAD)
             .await?
             .into_body()
             .context("empty confirmation")?;
@@ -427,7 +428,7 @@ impl<'a> Order<'a> {
     }
 
     pub fn create_key_authorization(&self, challenge: &server::Challenge) -> KeyAuthorization {
-        KeyAuthorization::new(challenge, &self.account.credentials.key)
+        KeyAuthorization::new(&challenge.token, &self.account.credentials.key.thumb)
     }
 
     // TODO boring variants
@@ -450,6 +451,10 @@ impl<'a> Order<'a> {
         cert_params.custom_extensions = vec![rcgen::CustomExtension::new_acme_identifier(
             key_authz.digest().as_ref(),
         )];
+
+        println!("key_authz: {key_authz:?}");
+
+        println!("cert_params: {:?}", cert_params);
 
         let key_pair = rcgen::KeyPair::generate().unwrap();
         let key_der = key_pair.serialize_der();
@@ -502,166 +507,3 @@ impl<'a> Order<'a> {
         self.account.post::<T>(url, payload).await
     }
 }
-
-// #[cfg(test)]
-// mod tests {
-//     use rama_http::Response;
-//     use rama_http::service::web::Router;
-//     use rama_http::service::web::response::Html;
-//     use std::sync::Arc;
-//     use std::sync::atomic::AtomicU64;
-
-//     use super::*;
-
-//     use rama_core::layer::MapErrLayer;
-//     use rama_http::service::web::response::Json;
-
-//     const HOST: &str = "https://example.com";
-//     const DIRECTORY_PATH: &str = "/directory";
-//     const NONCE_PATH: &str = "/nonce";
-//     const NEW_ACCOUNT_PATH: &str = "/account";
-
-//     fn with_host(path: &str) -> String {
-//         format!("{}{}", HOST, path)
-//     }
-
-//     fn test_server() -> AcmeHttpsClient {
-//         let nonce = Arc::new(AtomicU64::new(0));
-
-//         struct NonceEndpoint {
-//             nonce: Arc<AtomicU64>,
-//         }
-
-//         struct NonceProtectedService<S> {
-//             nonce: Arc<AtomicU64>,
-//             inner: S,
-//         }
-
-//         impl<State> Service<State, Request> for NonceEndpoint
-//         where
-//             State: Send + Sync + 'static,
-//         {
-//             type Error = Infallible;
-//             type Response = Response;
-
-//             async fn serve(
-//                 &self,
-//                 _ctx: Context<State>,
-//                 _req: Request,
-//             ) -> Result<Self::Response, Self::Error> {
-//                 let nonce = self.nonce.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-
-//                 let resp = Response::builder()
-//                     .header(REPLAY_NONCE_HEADER, nonce.clone())
-//                     .body(rama_http::Body::empty())
-//                     .unwrap();
-
-//                 resp.header_str(REPLAY_NONCE_HEADER).unwrap();
-//                 Ok(resp)
-//             }
-//         }
-
-//         #[derive(Default, Clone, Debug, PartialEq, Eq)]
-//         struct NonceValue(u64);
-
-//         impl<State, S> Service<State, Request> for NonceProtectedService<S>
-//         where
-//             State: Send + Sync + 'static,
-//             S: Service<State, Request, Response = Response, Error = Infallible>,
-//         {
-//             type Error = Infallible;
-//             type Response = Response;
-
-//             async fn serve(
-//                 &self,
-//                 mut ctx: Context<State>,
-//                 req: Request,
-//             ) -> Result<Self::Response, Self::Error> {
-//                 let nonce = self.nonce.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-//                 ctx.insert(NonceValue(nonce));
-//                 let mut resp = self.inner.serve(ctx, req).await?;
-
-//                 let nonce = self.nonce.load(std::sync::atomic::Ordering::Acquire);
-//                 resp.headers_mut().insert(REPLAY_NONCE_HEADER, nonce.into());
-//                 println!("response: {:?}", resp);
-//                 Ok(resp)
-//             }
-//         }
-
-//         let nonce_endpoint = NonceEndpoint {
-//             nonce: nonce.clone(),
-//         };
-
-//         let protected_router: Router<()> = Router::new();
-//         // .post(NEW_ACCOUNT_PATH, async |ctx: Context<()>, req: Request| {
-//         //     println!("body: {:?}", req.body());
-//         //     Ok::<_, Infallible>(
-//         //         Json(server::Account {
-//         //             status: server::AccountStatus::Valid,
-//         //             contact: None,
-//         //             terms_of_service_agreed: None,
-//         //             external_account_binding: None,
-//         //             orders: String::new(),
-//         //         })
-//         //         .into_response(),
-//         //     )
-//         // });
-
-//         let protected_router = NonceProtectedService {
-//             inner: protected_router,
-//             nonce: nonce.clone(),
-//         };
-
-//         let router: Router<()> = Router::new()
-//             .get("/", Html("Very basic acme server".to_owned()))
-//             .get(
-//                 DIRECTORY_PATH,
-//                 Json(server::Directory {
-//                     new_nonce: with_host(NONCE_PATH),
-//                     key_change: String::new(),
-//                     new_account: with_host(NEW_ACCOUNT_PATH),
-//                     new_authz: None,
-//                     new_order: String::new(),
-//                     revoke_cert: String::new(),
-//                     meta: None,
-//                 }),
-//             )
-//             .head(NONCE_PATH, nonce_endpoint)
-//             .sub("", protected_router);
-
-//         (MapErrLayer::new(|_err| OpaqueError::from_display("something went wrong")))
-//             .into_layer(router)
-//             .boxed()
-//     }
-
-//     #[tokio::test]
-//     async fn local_test() {
-//         let local_client = test_server();
-//         let mut test_nonce: u64 = 0;
-
-//         let acme_client = Client::new_with_https_client(
-//             format!("https://example.com{}", DIRECTORY_PATH).as_str(),
-//             local_client,
-//         )
-//         .await
-//         .unwrap();
-
-//         // Should fetch a nonce from server
-//         let nonce = acme_client.nonce().await.unwrap();
-//         assert_eq!(nonce, test_nonce.to_string());
-
-//         *acme_client.nonce.lock() = Some(test_nonce.to_string());
-//         let nonce = acme_client.nonce().await.unwrap();
-//         assert_eq!(nonce, test_nonce.to_string());
-
-//         let account = acme_client
-//             .create_account(CreateAccountOptions {
-//                 terms_of_service_agreed: Some(true),
-//                 contact: None,
-//                 external_account_binding: None,
-//                 only_return_existing: None,
-//             })
-//             .await
-//             .unwrap();
-//     }
-// }

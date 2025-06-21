@@ -14,3 +14,9 @@ impl From<Identifier> for String {
         }
     }
 }
+
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct Empty;
+
+pub(crate) const NO_PAYLOAD: Option<&Empty> = None::<&Empty>;
+pub(crate) const EMPTY_PAYLOAD: Option<&Empty> = Some(&Empty);
