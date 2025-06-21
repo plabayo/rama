@@ -128,9 +128,9 @@ impl<R: EventDataLineReader> EventDataLineReader for MergeSignalsReader<R> {
                 .context("MergeSignalsReader: parse onlyIfMissing")?;
         } else {
             tracing::debug!(
-                %keyword,
-                %value,
-                "MergeSignalsReader: ignore unknown merge signals line",
+                "MergeSignalsReader: ignore unknown merge signals line: keyword = {}; value = {}",
+                keyword,
+                value,
             );
         }
 

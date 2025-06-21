@@ -57,14 +57,14 @@ impl<State: Clone + Send + Sync + 'static> UdpPacketProxy<State> for DirectUdpRe
         loop {
             match relay.recv().await.map_err(Error::service)? {
                 Some(UdpRelayState::ReadNorth(server_address)) => {
-                    tracing::trace!(%server_address, "relay: north -> south");
+                    tracing::trace!("relay: north -> south @ {server_address}");
                     relay
                         .send_to_south(None, server_address)
                         .await
                         .map_err(Error::service)?
                 }
                 Some(UdpRelayState::ReadSouth(server_address)) => {
-                    tracing::trace!(%server_address, "relay: south -> north");
+                    tracing::trace!("relay: south @ {server_address} -> north");
                     relay
                         .send_to_north(None, server_address)
                         .await
@@ -149,7 +149,7 @@ where
         loop {
             match relay.recv().await.map_err(Error::service)? {
                 Some(UdpRelayState::ReadNorth(server_address)) => {
-                    tracing::trace!(%server_address, "relay request: north -> south");
+                    tracing::trace!("relay request: north -> south @ {server_address}");
 
                     let request = RelayRequest {
                         direction: RelayDirection::South,
@@ -158,10 +158,15 @@ where
                     };
 
                     let maybe_payload;
-                    (ctx, maybe_payload) = self.0.serve(ctx, request).await
+                    (ctx, maybe_payload) = self
+                        .0
+                        .serve(ctx, request)
+                        .await
                         .map_err(Into::into)
                         .inspect_err(|err| {
-                            tracing::debug!(%err, %server_address, "relay request: south -> north: failed");
+                            tracing::debug!(
+                                "relay request: south @ {server_address} -> north: failed: {err:?}"
+                            );
                         })
                         .map_err(Error::service)?;
 
@@ -171,12 +176,14 @@ where
                             .await
                             .map_err(Error::service)?,
                         None => {
-                            tracing::trace!(%server_address, "block request: north -> south: inspecter blocked");
+                            tracing::trace!(
+                                "block request: north -> south @ {server_address}: inspecter blocked"
+                            );
                         }
                     }
                 }
                 Some(UdpRelayState::ReadSouth(server_address)) => {
-                    tracing::trace!(%server_address, "relay request: south -> north");
+                    tracing::trace!("relay request: south @ {server_address} -> north");
 
                     let request = RelayRequest {
                         direction: RelayDirection::North,
@@ -185,10 +192,15 @@ where
                     };
 
                     let maybe_payload;
-                    (ctx, maybe_payload) = self.0.serve(ctx, request).await
+                    (ctx, maybe_payload) = self
+                        .0
+                        .serve(ctx, request)
+                        .await
                         .map_err(Into::into)
                         .inspect_err(|err| {
-                            tracing::debug!(%err, %server_address, "relay request: north -> south: failed");
+                            tracing::debug!(
+                                "relay request: north -> south @ {server_address}: failed: {err:?}"
+                            );
                         })
                         .map_err(Error::service)?;
 
@@ -198,7 +210,9 @@ where
                             .await
                             .map_err(Error::service)?,
                         None => {
-                            tracing::trace!(%server_address, "block request: north -> south: inspecter blocked");
+                            tracing::trace!(
+                                "block request: north -> south @ {server_address}: inspecter blocked"
+                            );
                         }
                     }
                 }
@@ -307,33 +321,44 @@ where
         loop {
             match relay.recv().await.map_err(Error::service)? {
                 Some(UdpRelayState::ReadNorth(server_address)) => {
-                    tracing::trace!(%server_address, "relay request: north -> south");
+                    tracing::trace!("relay request: north -> south @ {server_address}");
 
-                    let action = self.0.inspect_packet(
-                        &ctx,
-                        RelayDirection::South,
-                        server_address,
-                        relay.north_read_buf_slice(),
-                    )
+                    let action = self
+                        .0
+                        .inspect_packet(
+                            &ctx,
+                            RelayDirection::South,
+                            server_address,
+                            relay.north_read_buf_slice(),
+                        )
                         .map_err(Into::into)
                         .inspect_err(|err| {
-                            tracing::debug!(%err, %server_address, "relay request: north -> south: failed");
+                            tracing::debug!(
+                                "relay request: north -> south @ {server_address}: failed: {err:?}"
+                            );
                         })
                         .map_err(Error::service)?;
 
                     match action {
                         UdpInspectAction::Forward => {
-                            tracing::trace!(%server_address, "relay request: north -> south: forward");
+                            tracing::trace!(
+                                "relay request: north -> south @ {server_address}: forward"
+                            );
                             relay
                                 .send_to_south(None, server_address)
                                 .await
                                 .map_err(Error::service)?;
                         }
                         UdpInspectAction::Block => {
-                            tracing::trace!(%server_address, "block request: north -> south: inspecter blocked");
+                            tracing::trace!(
+                                "block request: north -> south @ {server_address}: inspecter blocked"
+                            );
                         }
                         UdpInspectAction::Modify(bytes) => {
-                            tracing::trace!(len = %bytes.len(), %server_address, "relay request: north -> south: forward modified bytes");
+                            tracing::trace!(
+                                "relay request: north -> south @ {server_address}: forward modified bytes (len = {})",
+                                bytes.len()
+                            );
                             relay
                                 .send_to_south(Some(bytes), server_address)
                                 .await
@@ -342,33 +367,44 @@ where
                     }
                 }
                 Some(UdpRelayState::ReadSouth(server_address)) => {
-                    tracing::trace!(%server_address, "relay request: south -> north");
+                    tracing::trace!("relay request: south @ {server_address} -> north");
 
-                    let action = self.0.inspect_packet(
-                        &ctx,
-                        RelayDirection::North,
-                        server_address,
-                        relay.south_read_buf_slice(),
-                    )
+                    let action = self
+                        .0
+                        .inspect_packet(
+                            &ctx,
+                            RelayDirection::North,
+                            server_address,
+                            relay.south_read_buf_slice(),
+                        )
                         .map_err(Into::into)
                         .inspect_err(|err| {
-                            tracing::debug!(%err, %server_address, "relay request: south -> north: failed");
+                            tracing::debug!(
+                                "relay request: south @ {server_address} -> north: failed: {err:?}"
+                            );
                         })
                         .map_err(Error::service)?;
 
                     match action {
                         UdpInspectAction::Forward => {
-                            tracing::trace!(%server_address, "relay request: south -> north: forward");
+                            tracing::trace!(
+                                "relay request: south @ {server_address} -> north: forward"
+                            );
                             relay
                                 .send_to_north(None, server_address)
                                 .await
                                 .map_err(Error::service)?;
                         }
                         UdpInspectAction::Block => {
-                            tracing::trace!(%server_address, "block request: south -> north: inspecter blocked");
+                            tracing::trace!(
+                                "block request: south @ {server_address} -> north: inspecter blocked"
+                            );
                         }
                         UdpInspectAction::Modify(bytes) => {
-                            tracing::trace!(len = %bytes.len(), %server_address, "relay request: south -> north: forward modified bytes");
+                            tracing::trace!(
+                                "relay request: south @ {server_address} -> north: forward modified bytes (len = {})",
+                                bytes.len()
+                            );
                             relay
                                 .send_to_north(Some(bytes), server_address)
                                 .await

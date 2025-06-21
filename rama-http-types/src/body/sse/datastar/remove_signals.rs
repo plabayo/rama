@@ -118,9 +118,9 @@ impl EventDataLineReader for RemoveSignalsReader {
             }
         } else {
             tracing::debug!(
-                %keyword,
-                %value,
-                "RemoveSignalsReader: ignore unknown remove signals line",
+                "RemoveSignalsReader: ignore unknown remove signals line: keyword = {}; value = {}",
+                keyword,
+                value,
             );
         }
 

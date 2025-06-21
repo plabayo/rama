@@ -30,6 +30,7 @@ use rama::{
         service::web::WebService,
         service::web::response::{IntoResponse, Json},
     },
+    net::address::SocketAddress,
     net::user::Basic,
     rt::Executor,
     telemetry::tracing::{self, level_filters::LevelFilter},
@@ -44,7 +45,7 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, fmt};
 
-const ADDRESS: &str = "127.0.0.1:62004";
+const ADDRESS: SocketAddress = SocketAddress::local_ipv4(62004);
 
 #[tokio::main]
 async fn main() {
@@ -97,7 +98,7 @@ async fn main() {
         .await
         .unwrap();
     let body = resp.try_into_string().await.unwrap();
-    tracing::info!("body: {:?}", body);
+    tracing::info!("body: {body}");
     assert_eq!(body, "Hello, World!");
 
     //--------------------------------------------------------------------------------
@@ -124,7 +125,7 @@ async fn main() {
         .try_into_json()
         .await
         .unwrap();
-    tracing::info!("info: {:?}", info);
+    tracing::info!("info: {info:?}");
     assert_eq!(info.name, "Rama");
     assert_eq!(info.example, "http_high_level_client.rs");
     assert_eq!(info.magic, 42);
@@ -141,7 +142,7 @@ async fn main() {
         .try_into_string()
         .await
         .unwrap();
-    tracing::info!("resp: {:?}", resp);
+    tracing::info!("response: {resp}");
     assert_eq!(resp, "Hello, Rama!");
 
     // Example to show how to set basic auth directly while making request,
@@ -167,11 +168,15 @@ fn setup_tracing() {
         .init();
 }
 
-async fn run_server(addr: &str) {
+async fn run_server(addr: SocketAddress) {
     // artificial delay to show the client retries
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
-    tracing::info!("running service at: {addr}");
+    tracing::info!(
+        network.local.address = %addr.ip_addr(),
+        network.local.port = %addr.port(),
+        "running server",
+    );
     let exec = Executor::default();
     HttpServer::auto(exec)
         .listen(
@@ -222,7 +227,11 @@ async fn auth_request<S>(ctx: Context<S>, req: Request) -> Result<(Context<S>, R
         .map(|auth| auth.username() == "john" && auth.password() == "123")
         .unwrap_or_default()
     {
-        tracing::info!("authorized request for {} from {}", req.uri(), "john");
+        tracing::info!(
+            proxy.user = "john",
+            url.full = %req.uri(),
+            "authorized request",
+        );
         Ok((ctx, req))
     } else {
         Err(StatusCode::UNAUTHORIZED.into_response())

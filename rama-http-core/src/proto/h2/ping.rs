@@ -296,7 +296,7 @@ impl Ponger {
                 }
             }
             Poll::Ready(Err(_e)) => {
-                debug!("pong error: {}", _e);
+                debug!("pong error: {:?}", _e);
             }
             Poll::Pending => {
                 if let Some(ref mut ka) = self.keep_alive {

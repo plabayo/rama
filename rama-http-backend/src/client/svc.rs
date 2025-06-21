@@ -62,15 +62,13 @@ where
             SendRequest::Http1(_) => match original_http_version {
                 Version::HTTP_10 | Version::HTTP_11 => {
                     tracing::trace!(
-                        ?original_http_version,
-                        "request version is already h1 compatible, it will remain unchanged",
+                        "request version {original_http_version:?} is already h1 compatible, it will remain unchanged",
                     );
                 }
                 _ => {
                     tracing::debug!(
-                        ?original_http_version,
-                        new_http_version = ?Version::HTTP_11,
-                        "modify request version to compatible h1 connection version",
+                        "modify request version {original_http_version:?} to compatible h1 connection version: {:?}",
+                        Version::HTTP_11
                     );
                     *req.version_mut() = Version::HTTP_11;
                 }
@@ -78,15 +76,13 @@ where
             SendRequest::Http2(_) => match original_http_version {
                 Version::HTTP_2 => {
                     tracing::trace!(
-                        ?original_http_version,
-                        "request version is already h2 compatible, it will remain unchanged",
+                        "request version {original_http_version:?} is already h2 compatible, it will remain unchanged",
                     );
                 }
                 _ => {
                     tracing::debug!(
-                        ?original_http_version,
-                        new_http_version = ?Version::HTTP_2,
-                        "modify request version to compatible h2 connection version",
+                        "modify request version {original_http_version:?} to compatible h2 connection version: {:?}",
+                        Version::HTTP_2,
                     );
                     *req.version_mut() = Version::HTTP_2;
                 }
@@ -130,15 +126,12 @@ where
         let original_resp_http_version = resp.version();
         if original_resp_http_version == original_http_version {
             tracing::trace!(
-                ?original_http_version,
-                "response version matches original http request version, it will remain unchanged",
+                "response version {original_http_version:?} matches original http request version, it will remain unchanged",
             );
         } else {
             *resp.version_mut() = original_http_version;
             tracing::trace!(
-                ?original_http_version,
-                ?original_resp_http_version,
-                "change the response http version into the original http request version",
+                "change the response http version {original_http_version:?} into the original http request version {original_resp_http_version:?}",
             );
         }
 
@@ -192,17 +185,11 @@ fn sanitize_client_req_header<S, B>(
                 if !parts.headers.contains_key(HOST) {
                     if request_ctx.authority_has_default_port() {
                         let host = request_ctx.authority.host().clone();
-                        tracing::trace!(
-                            %host,
-                            "add missing host from authority as host header"
-                        );
+                        tracing::trace!("add missing host {host} from authority as host header");
                         parts.headers.typed_insert(Host::from(host));
                     } else {
                         let authority = request_ctx.authority.clone();
-                        tracing::trace!(
-                            %authority,
-                            "add missing authority as host header"
-                        );
+                        tracing::trace!("add missing authority {authority} as host header");
                         parts.headers.typed_insert(Host::from(authority));
                     }
                 }
@@ -215,17 +202,17 @@ fn sanitize_client_req_header<S, B>(
                 if request_ctx.authority_has_default_port() {
                     let authority = request_ctx.authority.clone();
                     tracing::trace!(
-                        uri = %req.uri(),
-                        %authority,
+                        url.full = %req.uri(),
+                        server.address = %authority.host(),
+                        server.port = %authority.port(),
                         "add host from authority as HOST header to req (was missing it)",
                     );
                     req.headers_mut().typed_insert(Host::from(authority));
                 } else {
                     let host = request_ctx.authority.host().clone();
                     tracing::trace!(
-                        uri = %req.uri(),
-                        %host,
-                        "add authority as HOST header to req (was missing it)",
+                        url.full = %req.uri(),
+                        "add {host} as HOST header to req (was missing it)",
                     );
                     req.headers_mut().typed_insert(Host::from(host));
                 }
@@ -245,7 +232,8 @@ fn sanitize_client_req_header<S, B>(
                 })?;
 
                 tracing::trace!(
-                    http_version = ?req.version(),
+                    network.protocol.name = "http",
+                    network.protocol.version = ?req.version(),
                     "defining authority and scheme to non-connect direct http request"
                 );
 
@@ -294,7 +282,10 @@ fn sanitize_client_req_header<S, B>(
                 &HOST,
             ] {
                 if let Some(header) = req.headers_mut().remove(illegal_h2_header) {
-                    tracing::trace!(?header, "removed illegal (~http1) header from h2 request");
+                    tracing::trace!(
+                        http.header.name = ?header,
+                        "removed illegal (~http1) header from h2 request",
+                    );
                 }
             }
 
@@ -302,15 +293,15 @@ fn sanitize_client_req_header<S, B>(
         }
         Version::HTTP_3 => {
             tracing::debug!(
-                uri = %req.uri(),
+                url.full = %req.uri(),
                 "h3 request detected, but sanitize_client_req_header does not yet support this",
             );
             req
         }
         _ => {
             tracing::debug!(
-                uri = %req.uri(),
-                method = ?req.method(),
+                url.full = %req.uri(),
+                http.method = ?req.method(),
                 "request with unknown version detected, sanitize_client_req_header cannot support this",
             );
             req

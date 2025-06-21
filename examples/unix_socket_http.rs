@@ -50,7 +50,10 @@ mod unix_example {
             .expect("bind Unix socket");
 
         graceful.spawn_task_fn(async |guard| {
-            tracing::info!(%PATH, "ready to unix-serve");
+            tracing::info!(
+                file.path = %PATH,
+                "ready to unix-serve",
+            );
             listener
                 .serve_graceful(
                     guard,
@@ -60,7 +63,10 @@ mod unix_example {
         });
 
         let duration = graceful.shutdown().await;
-        tracing::info!(shutdown_after = ?duration, "bye!");
+        tracing::info!(
+           shutdown.duration_ms = %duration.as_millis(),
+           "bye!",
+        );
     }
 }
 

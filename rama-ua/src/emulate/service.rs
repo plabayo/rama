@@ -194,9 +194,8 @@ where
                 Some(ua_str) => {
                     let user_agent = UserAgent::new(ua_str);
                     tracing::trace!(
-                        ua_str = %ua_str,
-                        %user_agent,
-                        "user agent auto-detected from request"
+                        user_agent.original = %ua_str,
+                        "user agent {user_agent} auto-detected from request"
                     );
                     ctx.insert(user_agent);
                 }
@@ -223,9 +222,9 @@ where
         };
 
         tracing::debug!(
-            ua_kind = %profile.ua_kind,
-            ua_version = ?profile.ua_version,
-            platform = ?profile.platform,
+            user_agent.kind = %profile.ua_kind,
+            user_agent.version = ?profile.ua_version,
+            user_agent.platform = ?profile.platform,
             "user agent profile selected for emulation"
         );
 
@@ -236,16 +235,16 @@ where
 
         if preserve_http {
             tracing::trace!(
-                ua_kind = %profile.ua_kind,
-                ua_version = ?profile.ua_version,
-                platform = ?profile.platform,
+                user_agent.kind = %profile.ua_kind,
+                user_agent.version = ?profile.ua_version,
+                user_agent.platform = ?profile.platform,
                 "user agent emulation: skip http settings as http is instructed to be preserved"
             );
         } else {
             tracing::trace!(
-                ua_kind = %profile.ua_kind,
-                ua_version = ?profile.ua_version,
-                platform = ?profile.platform,
+                user_agent.kind = %profile.ua_kind,
+                user_agent.version = ?profile.ua_version,
+                user_agent.platform = ?profile.platform,
                 "user agent emulation: inject http context data to prepare for HTTP emulation"
             );
             ctx.insert(profile.http.clone());
@@ -278,17 +277,17 @@ where
             );
             if preserve_tls {
                 tracing::trace!(
-                    ua_kind = %profile.ua_kind,
-                    ua_version = ?profile.ua_version,
-                    platform = ?profile.platform,
+                    user_agent.kind = %profile.ua_kind,
+                    user_agent.version = ?profile.ua_version,
+                    user_agent.platform = ?profile.platform,
                     "user agent emulation: skip tls settings as tls is instructed to be preserved"
                 );
             } else {
                 ctx.insert(profile.tls.clone());
                 tracing::trace!(
-                    ua_kind = %profile.ua_kind,
-                    ua_version = ?profile.ua_version,
-                    platform = ?profile.platform,
+                    user_agent.kind = %profile.ua_kind,
+                    user_agent.version = ?profile.ua_version,
+                    user_agent.platform = ?profile.platform,
                     "user agent emulation: tls profile injected in ctx"
                 );
             }
@@ -333,14 +332,14 @@ where
         match ctx.get().cloned() {
             Some(http_profile) => {
                 tracing::trace!(
-                    http_version = ?req.version(),
+                    http.version = ?req.version(),
                     "http profile found in context to use for http connection emulation, proceed",
                 );
                 emulate_http_connect_settings(&mut ctx, &mut req, &http_profile);
             }
             None => {
                 tracing::trace!(
-                    http_version = ?req.version(),
+                    http.version = ?req.version(),
                     "no http profile found in context to use for http connection emulation, request is passed through as-is",
                 );
             }
@@ -367,9 +366,9 @@ fn emulate_http_connect_settings<Body, State>(
 
             if pseudo_headers.is_some() || early_frames.is_some() {
                 tracing::trace!(
-                    ?pseudo_headers,
-                    ?early_frames,
-                    "user agent emulation: insert h2 settings into extensions"
+                    "user agent emulation: insert h2 settings into extensions: (pseudo headers = {:?} ; early frames: {:?})",
+                    pseudo_headers,
+                    early_frames,
                 );
                 req.extensions_mut().insert(H2ClientContextParams {
                     headers_pseudo_order: pseudo_headers,
@@ -381,7 +380,7 @@ fn emulate_http_connect_settings<Body, State>(
             "UA emulation not yet supported for h3: not applying anything h3-specific"
         ),
         _ => tracing::debug!(
-            version = ?req.version(),
+            http.version = ?req.version(),
             "UA emulation not supported for unknown http version: not applying anything version-specific",
         ),
     }
@@ -418,7 +417,7 @@ where
         match ctx.get() {
             Some(http_profile) => {
                 tracing::trace!(
-                    http_version = ?req.version(),
+                    http.version = ?req.version(),
                     "http profile found in context to use for emulation, proceed",
                 );
 
@@ -442,8 +441,7 @@ where
                                 ),
                                 Err(err) => {
                                     tracing::debug!(
-                                        ?err,
-                                        "failed to compute request's authority and protocol for UA Emulation purposes",
+                                        "failed to compute request's authority and protocol for UA Emulation purposes: {err:?}",
                                     );
                                     (None, None)
                                 }
@@ -477,8 +475,7 @@ where
                     let pseudo_headers = http_profile.h2.settings.http_pseudo_headers.clone();
 
                     tracing::trace!(
-                        ?pseudo_headers,
-                        "user agent emulation: insert h2 pseudo headers into request extensions"
+                        "user agent emulation: insert h2 pseudo headers into request extensions: {pseudo_headers:?}"
                     );
 
                     if let Some(pseudo_headers) = pseudo_headers.clone() {
@@ -488,7 +485,7 @@ where
             }
             None => {
                 tracing::trace!(
-                    http_version = ?req.version(),
+                    http.version = ?req.version(),
                     "no http profile found in context to use for emulation, request is passed through as-is",
                 );
             }
@@ -507,7 +504,7 @@ fn get_base_http_headers<'a, Body, State>(
         Version::HTTP_2 => &profile.h2.headers,
         _ => {
             tracing::debug!(
-                version = ?req.version(),
+                http.version = ?req.version(),
                 "UA emulation not supported for unknown http version: not applying anything version-specific",
             );
             return None;
@@ -515,7 +512,9 @@ fn get_base_http_headers<'a, Body, State>(
     };
     Some(match ctx.get::<RequestInitiator>().copied() {
         Some(req_init) => {
-            tracing::trace!(%req_init, "base http headers defined based on hint from UserAgent (overwrite)");
+            tracing::trace!(
+                "base http headers defined based on hint from UserAgent (overwrite): {req_init}"
+            );
             get_base_http_headers_from_req_init(req_init, headers_profile)
         }
         // NOTE: the primitive checks below are pretty bad,
@@ -532,7 +531,9 @@ fn get_base_http_headers<'a, Body, State>(
                 } else {
                     RequestInitiator::Navigate
                 };
-                tracing::trace!(%req_init, "base http headers defined based on Get=NavigateOrXhr assumption");
+                tracing::trace!(
+                    "base http headers defined based on Get=NavigateOrXhr assumption: {req_init}"
+                );
                 get_base_http_headers_from_req_init(req_init, headers_profile)
             }
             Method::POST => {
@@ -547,7 +548,9 @@ fn get_base_http_headers<'a, Body, State>(
                 } else {
                     RequestInitiator::Fetch
                 };
-                tracing::trace!(%req_init, "base http headers defined based on Post=FormOrFetch assumption");
+                tracing::trace!(
+                    "base http headers defined based on Post=FormOrFetch assumption: {req_init}"
+                );
                 get_base_http_headers_from_req_init(req_init, headers_profile)
             }
             _ => {
@@ -560,7 +563,9 @@ fn get_base_http_headers<'a, Body, State>(
                 } else {
                     RequestInitiator::Fetch
                 };
-                tracing::trace!(%req_init, "base http headers defined based on XhrOrFetch assumption");
+                tracing::trace!(
+                    "base http headers defined based on XhrOrFetch assumption: {req_init}"
+                );
                 get_base_http_headers_from_req_init(req_init, headers_profile)
             }
         },
@@ -741,11 +746,11 @@ fn compute_sec_fetch_site_value(
                         .and_then(|h| Host::try_from(h).ok().and_then(|h| {
                             match default_port {
                                 Some(default_port) => {
-                                    tracing::trace!(uri = %uri, host = %h, "detected host from (abs) referer uri");
+                                    tracing::trace!(url.full = %uri, "detected host {h} from (abs) referer uri");
                                     Some(Authority::new(h, default_port))
                                 },
                                 None => {
-                                    tracing::trace!(uri = %uri, host = %h, "detected host from (abs) referer uri: but no port available");
+                                    tracing::trace!(url.full = %uri, "detected host {h} from (abs) referer uri: but no port available");
                                     None
                                 },
                             }
@@ -774,7 +779,7 @@ fn compute_sec_fetch_site_value(
                                     }
                                 } else {
                                     tracing::debug!(
-                                        referer = ?referer_value,
+                                        http.request.header.referer = ?referer_value,
                                         "missing request authority, returning none as default",
                                     );
                                     HeaderValue::from_static("none")
@@ -785,7 +790,7 @@ fn compute_sec_fetch_site_value(
                         }
                         None => {
                             tracing::debug!(
-                                referer = ?referer_value,
+                                http.request.header.referer = ?referer_value,
                                 "invalid referer value (failed to extract authority from uri value)",
                             );
                             HeaderValue::from_static("none")
@@ -794,9 +799,8 @@ fn compute_sec_fetch_site_value(
                 }
                 Err(err) => {
                     tracing::debug!(
-                        err = ?err,
-                        referer = ?referer_value,
-                        "invalid referer value (expected a valid uri, defaulting to none)",
+                        http.request.header.referer = ?referer_value,
+                        "invalid referer value (expected a valid uri, defaulting to none): {err:?}",
                     );
                     HeaderValue::from_static("none")
                 }

@@ -40,7 +40,9 @@ impl<State, Body> rama_core::matcher::Matcher<State, Request<Body>> for DomainMa
                 let req_ctx: RequestContext = match (ctx, req).try_into() {
                     Ok(req_ctx) => req_ctx,
                     Err(err) => {
-                        tracing::error!(error = %err, "DomainMatcher: failed to lazy-make the request ctx");
+                        tracing::error!(
+                            "DomainMatcher: failed to lazy-make the request ctx: {err:?}"
+                        );
                         return false;
                     }
                 };

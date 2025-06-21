@@ -102,7 +102,7 @@ impl Settings {
                 Err(UserError::SendSettingsWhilePending)
             }
             Local::Synced => {
-                tracing::trace!(?frame, "queue to send local settings");
+                tracing::trace!("queue to send local settings: {frame:?}");
                 self.local = Local::ToSend(frame);
                 Ok(())
             }

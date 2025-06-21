@@ -161,11 +161,15 @@ where
         .map(|ctx| ctx.authority.clone())
     {
         Ok(authority) => {
-            tracing::info!(%authority, "accept CONNECT (lazy): insert proxy target into context");
+            tracing::info!(
+                server.address = %authority.host(),
+                server.port = %authority.port(),
+                "accept CONNECT (lazy): insert proxy target into context",
+            );
             ctx.insert(ProxyTarget(authority));
         }
         Err(err) => {
-            tracing::error!(err = %err, "error extracting authority");
+            tracing::error!("error extracting authority: {err:?}");
             return Err(StatusCode::BAD_REQUEST.into_response());
         }
     }
@@ -184,11 +188,17 @@ where
 {
     let client = EasyHttpWebClient::default();
     let uri = req.uri().clone();
-    tracing::debug!(uri = %req.uri(), "proxy connect plain text request");
+    tracing::debug!(
+        url.full = %req.uri(),
+        "proxy connect plain text request",
+    );
     match client.serve(ctx, req).await {
         Ok(resp) => Ok(resp),
         Err(err) => {
-            tracing::error!(error = %err, uri = %uri, "error in client request");
+            tracing::error!(
+                url.full = %uri,
+                "error in client request: {err:?}",
+            );
             Ok(Response::builder()
                 .status(StatusCode::INTERNAL_SERVER_ERROR)
                 .body(Body::empty())

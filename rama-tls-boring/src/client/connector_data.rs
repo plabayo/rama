@@ -900,15 +900,21 @@ impl TlsConnectorDataBuilder {
                     }
                     other => match other.id() {
                         ExtensionId::STATUS_REQUEST | ExtensionId::STATUS_REQUEST_V2 => {
-                            trace!(ext = ?other, "TlsConnectorData: builder: from std client config: enable ocsp stapling");
+                            trace!(
+                                "TlsConnectorData: builder: from std client config: enable ocsp stapling (ext = {other:?})"
+                            );
                             ocsp_stapling_enabled = true;
                         }
                         ExtensionId::SIGNED_CERTIFICATE_TIMESTAMP => {
-                            trace!(ext = ?other, "TlsConnectorData: builder: from std client config: enable signed cert timestamps");
+                            trace!(
+                                "TlsConnectorData: builder: from std client config: enable signed cert timestamps (ext = {other:?})"
+                            );
                             signed_cert_timestamps_enabled = true;
                         }
                         _ => {
-                            trace!(ext = ?other, "TlsConnectorData: builder: from std client config: ignore client hello ext");
+                            trace!(
+                                "TlsConnectorData: builder: from std client config: ignore client hello ext (ext = {other:?})"
+                            );
                         }
                     },
                 }

@@ -1385,22 +1385,18 @@ where
                 match settings {
                     Some(mut settings) => {
                         tracing::trace!(
-                            builder_settings = ?builder.settings,
-                            ?settings,
-                            "early frame replayer used for client w/ custom settings",
+                            "early frame replayer used for client w/ custom settings {settings:?}; builder settings = {:?}",
+                            builder.settings,
                         );
                         if let Some(overwrites) = builder.settings {
                             if builder.overwrite_replay_settings {
                                 settings.merge(overwrites);
                                 tracing::trace!(
-                                    ?settings,
-                                    "overwrites from builder have been applied on top of of early frame replayer",
+                                    "overwrites from builder have been applied on top of of early frame replayer: settings = {settings:?}",
                                 );
                             } else {
                                 tracing::trace!(
-                                    ?overwrites,
-                                    ?settings,
-                                    "overwrites from builder have been ignored in favor of of early frame replayer",
+                                    "overwrites {overwrites:?} from builder have been ignored in favor of of early frame replayer w/ settings {settings:?}",
                                 );
                             }
                         }
@@ -1409,8 +1405,7 @@ where
                     None => {
                         let settings = builder.settings.unwrap_or_default();
                         tracing::trace!(
-                            ?settings,
-                            "early frame replayer used for client w/o settings; use builder settings (or default)",
+                            "early frame replayer used for client w/o settings; use builder settings (or default): {settings:?}",
                         );
                         (settings, ctx)
                     }
@@ -1419,8 +1414,7 @@ where
             None => {
                 let settings = builder.settings.unwrap_or_default();
                 tracing::trace!(
-                    ?settings,
-                    "no early frames replayer used for client, use builder settings (or default)",
+                    "no early frames replayer used for client, use builder settings (or default): {settings:?}",
                 );
                 (settings, EarlyFrameStreamContext::new_nop())
             }

@@ -108,7 +108,7 @@ where
                     .any(|qv| qv.value == server_encoding) =>
             {
                 tracing::trace!(
-                    %server_encoding,
+                    http.response_content_encoding = %server_encoding,
                     "server encoded not supported by requested client encoding, decompressing"
                 );
                 let decompress_body = DecompressionBody::new(match server_encoding {
@@ -139,8 +139,8 @@ where
                 ) {
                     Some(client_encoding) => {
                         tracing::trace!(
-                            %server_encoding,
-                            %client_encoding,
+                            http.response_content_encoding = %server_encoding,
+                            http.request_content_encoding = %client_encoding,
                             "re-encode decompressed response body into preferred client encoding"
                         );
                         parts

@@ -156,7 +156,7 @@ where
 
     /// Send a new SETTINGS frame with an updated initial window size.
     pub(crate) fn set_initial_window_size(&mut self, size: WindowSize) -> Result<(), UserError> {
-        tracing::trace!(%size, "set_initial_window_size");
+        tracing::trace!("set_initial_window_size(%size)");
         let mut settings = frame::Settings::default();
         settings.set_initial_window_size(Some(size));
         self.inner.settings.send_settings(settings)
@@ -285,7 +285,7 @@ where
         let _e = span.enter();
 
         loop {
-            tracing::trace!(connection.state = ?self.inner.state);
+            tracing::trace!("connection state = {:?}", self.inner.state);
             // TODO: probably clean up this glob of code
             match self.inner.state {
                 // When open, continue to poll a frame
@@ -452,7 +452,7 @@ where
             // terminating the connection.
             Err(Error::GoAway(debug_data, reason, initiator)) => {
                 let e = Error::GoAway(debug_data.clone(), reason, initiator);
-                tracing::debug!(error = ?e, "Connection::poll; connection error");
+                tracing::debug!("Connection::poll; connection error: {e:?}");
 
                 // We may have already sent a GOAWAY for this error,
                 // if so, don't send another, just flush and close up.
@@ -476,12 +476,12 @@ where
             // another frame.
             Err(Error::Reset(id, reason, initiator)) => {
                 debug_assert_eq!(initiator, Initiator::Library);
-                tracing::trace!(?id, ?reason, "stream error");
+                tracing::trace!("stream {id:?} error w/ reason: {reason:?}");
                 self.streams.send_reset(id, reason);
                 Ok(())
             }
             Err(Error::User(err)) => {
-                tracing::debug!(%err, "Connection::poll; user error");
+                tracing::debug!("connection::poll; user error: {err:?}");
                 let e = Error::User(err);
 
                 // Reset all active streams
@@ -494,7 +494,7 @@ where
             //
             // TODO: Are I/O errors recoverable?
             Err(Error::Io(kind, inner)) => {
-                tracing::debug!(error = ?kind, "Connection::poll; IO error");
+                tracing::debug!("Connection::poll; IO error: {kind:?}");
                 let e = Error::Io(kind, inner);
 
                 // Reset all active streams
@@ -523,27 +523,27 @@ where
     fn recv_frame(&mut self, frame: Option<Frame>) -> Result<ReceivedFrame, Error> {
         match frame {
             Some(Frame::Headers(frame)) => {
-                tracing::trace!(?frame, "recv HEADERS");
+                tracing::trace!("recv HEADERS: {frame:?}");
                 self.streams.recv_headers(frame)?;
             }
             Some(Frame::Data(frame)) => {
-                tracing::trace!(?frame, "recv DATA");
+                tracing::trace!("recv DATA: {frame:?}");
                 self.streams.recv_data(frame)?;
             }
             Some(Frame::Reset(frame)) => {
-                tracing::trace!(?frame, "recv RST_STREAM");
+                tracing::trace!("recv RST_STREAM: {frame:?}");
                 self.streams.recv_reset(frame)?;
             }
             Some(Frame::PushPromise(frame)) => {
-                tracing::trace!(?frame, "recv PUSH_PROMISE");
+                tracing::trace!("recv PUSH_PROMISE: {frame:?}");
                 self.streams.recv_push_promise(frame)?;
             }
             Some(Frame::Settings(frame)) => {
-                tracing::trace!(?frame, "recv SETTINGS");
+                tracing::trace!("recv SETTINGS: {frame:?}");
                 return Ok(ReceivedFrame::Settings(frame));
             }
             Some(Frame::GoAway(frame)) => {
-                tracing::trace!(?frame, "recv GOAWAY");
+                tracing::trace!("recv GOAWAY: {frame:?}");
                 // This should prevent starting new streams,
                 // but should allow continuing to process current streams
                 // until they are all EOS. Once they are, State should
@@ -552,7 +552,7 @@ where
                 *self.error = Some(frame);
             }
             Some(Frame::Ping(frame)) => {
-                tracing::trace!(?frame, "recv PING");
+                tracing::trace!("recv PING: {frame:?}");
                 let status = self.ping_pong.recv_ping(frame);
                 if status.is_shutdown() {
                     assert!(
@@ -565,11 +565,11 @@ where
                 }
             }
             Some(Frame::WindowUpdate(frame)) => {
-                tracing::trace!(?frame, "recv WINDOW_UPDATE");
+                tracing::trace!("recv WINDOW_UPDATE: {frame:?}");
                 self.streams.recv_window_update(frame)?;
             }
             Some(Frame::Priority(frame)) => {
-                tracing::trace!(?frame, "recv PRIORITY");
+                tracing::trace!("recv PRIORITY: {frame:?}");
                 self.streams.recv_priority(frame)?;
             }
             None => {

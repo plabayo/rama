@@ -142,7 +142,7 @@ fn decode_frame(
 
     let kind = head.kind();
 
-    tracing::trace!(frame.kind = ?kind);
+    tracing::trace!("frame kind = {kind:?}");
 
     macro_rules! header_block {
         ($frame:ident, $head:ident, $bytes:ident) => ({
@@ -387,7 +387,7 @@ where
                 None => return Poll::Ready(None),
             };
 
-            tracing::trace!(read.bytes = bytes.len());
+            tracing::trace!("bytes read = {}", bytes.len());
             let Self {
                 ref mut hpack,
                 max_header_list_size,
@@ -402,7 +402,7 @@ where
                 partial,
                 bytes,
             )? {
-                tracing::debug!(?frame, "received");
+                tracing::debug!("frame received: {frame:?}");
                 return Poll::Ready(Some(Ok(frame)));
             }
         }

@@ -99,17 +99,14 @@ impl UdpSocketRelay {
                 match result {
                     Ok((len, src)) => {
                         tracing::trace!(
-                            %len,
-                            %src,
-                            "north socket: received packet",
+                            "north socket: received packet (len = {len}; src = {src})",
                         );
 
                         if !self.client_address.eq(&src) {
                             tracing::debug!(
-                                %len,
-                                %src,
-                                client = %self.client_address,
-                                "north socket: drop packet non-client packet",
+                                network.peer.address = %self.client_address.ip_addr(),
+                                network.peer.port = %self.client_address.port(),
+                                "north socket: drop packet non-client packet (len = {len}; src = {src})",
                             );
                             return Ok(None);
                         }
@@ -119,9 +116,10 @@ impl UdpSocketRelay {
                             Ok(header) => {
                                 if header.fragment_number != 0 {
                                     tracing::debug!(
-                                        client = %self.client_address,
-                                        fragment_number = header.fragment_number,
-                                        "received north packet with non-zero fragment number: drop it",
+                                        network.peer.address = %self.client_address.ip_addr(),
+                                        network.peer.port = %self.client_address.port(),
+                                        "received north packet with non-zero fragment number {}: drop it",
+                                        header.fragment_number,
                                     );
                                     return Ok(None);
                                 }
@@ -129,9 +127,9 @@ impl UdpSocketRelay {
                             }
                             Err(err) => {
                                 tracing::debug!(
-                                    %err,
-                                    client = %self.client_address,
-                                    "received invalid north packet: drop it",
+                                    network.peer.address = %self.client_address.ip_addr(),
+                                    network.peer.port = %self.client_address.port(),
+                                    "received invalid north packet: drop it: err = {err:?}",
                                 );
                                 return Ok(None);
                             }
@@ -141,9 +139,9 @@ impl UdpSocketRelay {
                             Ok(addr) => addr,
                             Err(err) => {
                                 tracing::debug!(
-                                    %err,
-                                    client = %self.client_address,
-                                    "north packet's destination authority failed to (dns) resolve",
+                                    network.peer.address = %self.client_address.ip_addr(),
+                                    network.peer.port = %self.client_address.port(),
+                                    "north packet's destination authority failed to (dns) resolve: {err:?}",
                                 );
                                 return Ok(None);
                             },
@@ -158,7 +156,7 @@ impl UdpSocketRelay {
                     }
 
                     Err(err) if is_fatal_io_error(&err) => {
-                        tracing::debug!(?err, "north socket: non-fatal error: retry again");
+                        tracing::debug!("north socket: non-fatal error: retry again: {err:?}");
                         Ok(None)
                     }
 
@@ -172,16 +170,14 @@ impl UdpSocketRelay {
                 match result {
                     Ok((len, src)) => {
                         tracing::trace!(
-                            %len,
-                            %src,
-                            "south socket: received packet",
+                            "south socket: received packet (len = {len}; src = {src})",
                         );
                         self.south_read_buf.truncate(len);
                         Ok(Some(UdpRelayState::ReadSouth(src)))
                     }
 
                     Err(err) if is_fatal_io_error(&err) => {
-                        tracing::debug!(?err, "south socket: non-fatal error: retry again");
+                        tracing::debug!("south socket: non-fatal error: retry again: {err:?}");
                         Ok(None)
                     }
 
@@ -201,18 +197,22 @@ impl UdpSocketRelay {
         let result = match data {
             Some(data) => {
                 tracing::trace!(
-                    len = %data.len(),
-                    client = %self.client_address,
-                    server = %server_address,
-                    "send packet south: data from input",
+                    network.peer.address = %self.client_address.ip_addr(),
+                    network.peer.port = %self.client_address.port(),
+                    server.address = %server_address.ip_addr(),
+                    server.port = %server_address.port(),
+                    "send packet south: data from input (len = {})",
+                    data.len()
                 );
                 if data.len() > self.south_max_size {
                     tracing::trace!(
-                        len = %data.len(),
-                        max_len = self.south_max_size,
-                        client = %self.client_address,
-                        server = %server_address,
-                        "drop packet south: length is too large for defined limit",
+                        network.peer.address = %self.client_address.ip_addr(),
+                        network.peer.port = %self.client_address.port(),
+                        server.address = %server_address.ip_addr(),
+                        server.port = %server_address.port(),
+                        "drop packet south: length is too large for defined limit (len = {}; max len = {})",
+                        data.len(),
+                        self.south_max_size,
                     );
                     return Ok(());
                 }
@@ -220,10 +220,12 @@ impl UdpSocketRelay {
             }
             None => {
                 tracing::trace!(
-                    len = %self.north_read_buf.len(),
-                    client = %self.client_address,
-                    server = %server_address,
-                    "send packet south: data from north socket",
+                    network.peer.address = %self.client_address.ip_addr(),
+                    network.peer.port = %self.client_address.port(),
+                    server.address = %server_address.ip_addr(),
+                    server.port = %server_address.port(),
+                    "send packet south: data from north socket (len = {})",
+                    self.north_read_buf.len(),
                 );
                 self.south
                     .send_to(&self.north_read_buf, server_address)
@@ -234,31 +236,32 @@ impl UdpSocketRelay {
         match result {
             Ok(len) => {
                 tracing::trace!(
-                    len = %self.north_read_buf.len(),
-                    write_len = len,
-                    client = %self.client_address,
-                    server = %server_address,
-                    "send packet south: complete",
+                    network.peer.address = %self.client_address.ip_addr(),
+                    network.peer.port = %self.client_address.port(),
+                    server.address = %server_address.ip_addr(),
+                    server.port = %server_address.port(),
+                    "send packet south: complete (len = {}; write len = {})",
+                    self.north_read_buf.len(),
+                    len
                 );
                 Ok(())
             }
 
             Err(err) => match err.downcast::<std::io::Error>() {
                 Ok(err) if is_fatal_io_error(&err) => {
-                    tracing::debug!(?err, "south socket: fatal I/O write error");
+                    tracing::debug!(?err, "south socket: fatal I/O write error: {err:?}");
                     Err(err
                         .context("south socket fatal I/O write error")
                         .into_boxed())
                 }
                 Ok(err) => {
                     tracing::debug!(
-                        ?err,
-                        "south socket: write error: packet lost but relay continues"
+                        "south socket: write error: packet lost but relay continues: {err:?}"
                     );
                     Ok(())
                 }
                 Err(err) => {
-                    tracing::debug!(?err, "south socket: fatal unknown write error");
+                    tracing::debug!("south socket: fatal unknown write error: {err:?}");
                     Err(OpaqueError::from_boxed(err)
                         .context("south socket fatal unknown write error")
                         .into_boxed())
@@ -282,19 +285,23 @@ impl UdpSocketRelay {
         match data {
             Some(data) => {
                 tracing::trace!(
-                    len = %data.len(),
-                    client = %self.client_address,
-                    server = %server_address,
-                    "send packet north: data from input",
+                    network.peer.address = %self.client_address.ip_addr(),
+                    network.peer.port = %self.client_address.port(),
+                    server.address = %server_address.ip_addr(),
+                    server.port = %server_address.port(),
+                    "send packet north: data from input (len = {})",
+                    data.len(),
                 );
 
                 if data.len() > self.north_max_size {
                     tracing::trace!(
-                        len = %data.len(),
-                        max_len = self.north_max_size,
-                        client = %self.client_address,
-                        server = %server_address,
-                        "drop packet north: length is too large for defined limit",
+                        network.peer.address = %self.client_address.ip_addr(),
+                        network.peer.port = %self.client_address.port(),
+                        server.address = %server_address.ip_addr(),
+                        server.port = %server_address.port(),
+                        "drop packet north: length is too large for defined limit (len = {}; max len = {})",
+                        data.len(),
+                        self.north_max_size,
                     );
                     return Ok(());
                 }
@@ -304,10 +311,12 @@ impl UdpSocketRelay {
             }
             None => {
                 tracing::trace!(
-                    len = %self.north_read_buf.len(),
-                    client = %self.client_address,
-                    server = %server_address,
-                    "send packet north: data from south socket",
+                    network.peer.address = %self.client_address.ip_addr(),
+                    network.peer.port = %self.client_address.port(),
+                    server.address = %server_address.ip_addr(),
+                    server.port = %server_address.port(),
+                    "send packet north: data from south socket (len = {})",
+                    self.north_read_buf.len(),
                 );
                 self.north_write_buf
                     .resize(self.south_read_buf.len() + header.serialized_len(), 0);
@@ -323,31 +332,32 @@ impl UdpSocketRelay {
         {
             Ok(len) => {
                 tracing::trace!(
-                    len = %self.north_write_buf.len(),
-                    write_len = len,
-                    client = %self.client_address,
-                    server = %server_address,
-                    "send packet north: complete",
+                    network.peer.address = %self.client_address.ip_addr(),
+                    network.peer.port = %self.client_address.port(),
+                    server.address = %server_address.ip_addr(),
+                    server.port = %server_address.port(),
+                    "send packet north: complete (len = {}; write len = {})",
+                    self.north_write_buf.len(),
+                    len,
                 );
                 Ok(())
             }
 
             Err(err) => match err.downcast::<std::io::Error>() {
                 Ok(err) if is_fatal_io_error(&err) => {
-                    tracing::debug!(?err, "north socket: fatal I/O write error");
+                    tracing::debug!("north socket: fatal I/O write error: {err:?}");
                     Err(err
                         .context("north socket fatal I/O write error")
                         .into_boxed())
                 }
                 Ok(err) => {
                     tracing::debug!(
-                        ?err,
-                        "north socket: write error: packet lost but relay continues"
+                        "north socket: write error: packet lost but relay continues: {err:?}"
                     );
                     Ok(())
                 }
                 Err(err) => {
-                    tracing::debug!(?err, "north socket: fatal unknown write error");
+                    tracing::debug!("north socket: fatal unknown write error: {err:?}");
                     Err(OpaqueError::from_boxed(err)
                         .context("north socket fatal unknown write error")
                         .into_boxed())
@@ -457,16 +467,13 @@ impl UdpSocketRelay {
                                             {
                                                 if let Err(err) = tx.send(IpAddr::V4(ip)) {
                                                     tracing::trace!(
-                                                        ?err,
-                                                        %ip,
-                                                        "failed to send ipv4 lookup result"
+                                                        "failed to send ipv4 lookup result for {ip}: {err:?}"
                                                     )
                                                 }
                                             }
                                         }
                                         Err(err) => tracing::debug!(
-                                            ?err,
-                                            "failed to lookup ipv4 addresses for domain"
+                                            "failed to lookup ipv4 addresses for domain: {err:?}"
                                         ),
                                     }
                                 }
@@ -484,16 +491,13 @@ impl UdpSocketRelay {
                                             {
                                                 if let Err(err) = tx.send(IpAddr::V6(ip)) {
                                                     tracing::trace!(
-                                                        ?err,
-                                                        %ip,
-                                                        "failed to send ipv6 lookup result"
+                                                        "failed to send ipv6 lookup result for ip {ip}: {err:?}"
                                                     )
                                                 }
                                             }
                                         }
                                         Err(err) => tracing::debug!(
-                                            ?err,
-                                            "failed to lookup ipv6 addresses for domain"
+                                            "failed to lookup ipv6 addresses for domain: {err:?}"
                                         ),
                                     }
                                 }

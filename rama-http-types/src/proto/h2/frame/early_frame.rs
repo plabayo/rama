@@ -83,21 +83,21 @@ impl EarlyFrameStreamContext {
 
 impl EarlyFrameStreamContext {
     pub fn record_priority_frame(&mut self, frame: &Priority) {
-        tracing::trace!(?frame, "record priority frame");
+        tracing::trace!("record priority frame: {frame:?}");
         if let EarlyFrameKind::Recorder(ref mut recorder) = self.kind {
             recorder.record_priority_frame(frame);
         }
     }
 
     pub fn record_settings_frame(&mut self, frame: &Settings) {
-        tracing::trace!(?frame, "record settings frame");
+        tracing::trace!("record settings frame: {frame:?}");
         if let EarlyFrameKind::Recorder(ref mut recorder) = self.kind {
             recorder.record_settings_frame(frame);
         }
     }
 
     pub fn record_windows_update_frame(&mut self, frame: &WindowUpdate) {
-        tracing::trace!(?frame, "record windows update frame");
+        tracing::trace!("record windows update frame: {frame:?}");
         if let EarlyFrameKind::Recorder(ref mut recorder) = self.kind {
             recorder.record_windows_update_frame(frame);
         }
@@ -133,7 +133,7 @@ impl EarlyFrameStreamContext {
             if v.is_empty() {
                 self.kind = EarlyFrameKind::Nop;
             }
-            tracing::trace!(frame = ?next, "replay_next_frame");
+            tracing::trace!("replay_next_frame: frame = {:?}", next);
             return next;
         }
         tracing::trace!("replay_next_frame: EOF");

@@ -122,7 +122,7 @@ where
                                 }
                                 Err(e) => {
                                     // TODO: do we need to allow the user to hook into this?
-                                    tracing::error!(error = %e, "upgrade error");
+                                    tracing::error!("upgrade error: {e:?}");
                                 }
                             }
                         }

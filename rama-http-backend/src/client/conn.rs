@@ -145,7 +145,7 @@ where
 
         match req.version() {
             Version::HTTP_2 => {
-                tracing::trace!(uri = %req.uri(), "create h2 client executor");
+                tracing::trace!(url.full = %req.uri(), "create h2 client executor");
 
                 let executor = ctx.executor().clone();
                 let mut builder = rama_http_core::client::conn::http2::Builder::new(executor);
@@ -187,7 +187,7 @@ where
                 ctx.spawn(
                     async move {
                         if let Err(err) = conn.await {
-                            tracing::debug!("connection failed: {:?}", err);
+                            tracing::debug!("connection failed: {err:?}");
                         }
                     }
                     .instrument(conn_span),
@@ -205,7 +205,7 @@ where
                 })
             }
             Version::HTTP_11 | Version::HTTP_10 | Version::HTTP_09 => {
-                tracing::trace!(uri = %req.uri(), "create ~h1 client executor");
+                tracing::trace!(url.full = %req.uri(), "create ~h1 client executor");
                 let mut builder = rama_http_core::client::conn::http1::Builder::new();
                 if let Some(params) = ctx.get::<Http1ClientContextParams>() {
                     builder.title_case_headers(params.title_header_case);
@@ -230,7 +230,7 @@ where
                 ctx.spawn(
                     async move {
                         if let Err(err) = conn.await {
-                            tracing::debug!("connection failed: {:?}", err);
+                            tracing::debug!("connection failed: {err:?}");
                         }
                     }
                     .instrument(conn_span),

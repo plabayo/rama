@@ -260,7 +260,7 @@ fn extend_tables_with_h2_settings(h2_settings: Http2Settings, tables: &mut Vec<T
                                 }
                                 h2::frame::SettingId::Unknown(id) => {
                                     tracing::debug!(
-                                        %id,
+                                        h2.settings.id = %id,
                                         "ignore unknown h2 setting",
                                     )
                                 }

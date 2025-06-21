@@ -48,7 +48,11 @@ pub async fn run(cfg: CliCommandTls) -> Result<(), BoxError> {
         Authority::new(host, 443)
     };
 
-    tracing::info!("Connecting to: {}", authority);
+    tracing::info!(
+        server.address = %authority.host(),
+        server.port = %authority.port(),
+        "connecting to server",
+    );
 
     let tls_conn_data = TlsConnectorDataBuilder::new()
         .maybe_with_server_verify_mode(cfg.insecure.then_some(ServerVerifyMode::Disable))
@@ -119,7 +123,11 @@ where
 
         if let Ok(ref established_conn) = result {
             if let Ok(Some(peer_addr)) = established_conn.conn.peer_addr().map(Some) {
-                tracing::info!("TCP connection established to IP: {}", peer_addr);
+                tracing::info!(
+                    network.peer.address = %peer_addr.ip(),
+                    network.peer.port = %peer_addr.port(),
+                    "TCP connection established",
+                );
             }
         }
 

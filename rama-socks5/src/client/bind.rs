@@ -136,8 +136,10 @@ impl<S: Stream + Unpin> Binder<S> {
         };
 
         tracing::trace!(
-            bind_address = %self.selected_bind_address,
-            %server,
+            network.local.address = %self.selected_bind_address.ip_addr(),
+            network.local.port = %self.selected_bind_address.port(),
+            server.address = %server.host(),
+            server.port = %server.port(),
             "socks5: bind handshake complete",
         );
 

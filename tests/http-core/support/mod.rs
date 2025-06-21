@@ -391,7 +391,7 @@ async fn async_test(cfg: __TestConfig) {
                                 res
                             }
                             Err(err) => {
-                                tracing::error!(?err, "failed to collect result");
+                                tracing::error!("failed to collect result: {err:?}");
                                 Response::builder()
                                     .status(StatusCode::INTERNAL_SERVER_ERROR)
                                     .body(rama::http::Body::empty())
@@ -578,7 +578,7 @@ async fn naive_proxy(cfg: ProxyConfig) -> (SocketAddr, impl Future<Output = ()>)
                             let resp = match result {
                                 Ok(resp) => resp.map(rama::http::Body::new),
                                 Err(err) => {
-                                    tracing::error!(?err, "failed to collect result");
+                                    tracing::error!("failed to collect result: {err:?}");
                                     Response::builder()
                                         .status(StatusCode::INTERNAL_SERVER_ERROR)
                                         .body(rama::http::Body::empty())

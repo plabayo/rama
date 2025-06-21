@@ -83,7 +83,7 @@ impl ResponseWriterLayer<UnboundedSender<Response>> {
                     if let Err(err) =
                         write_http_response(&mut writer, res, write_headers, write_body).await
                     {
-                        tracing::error!(err = %err, "failed to write http response to writer")
+                        tracing::error!("failed to write http response to writer: {err:?}")
                     }
                 }
             }
@@ -135,7 +135,7 @@ impl ResponseWriterLayer<Sender<Response>> {
                     if let Err(err) =
                         write_http_response(&mut writer, res, write_headers, write_body).await
                     {
-                        tracing::error!(err = %err, "failed to write http response to writer")
+                        tracing::error!("failed to write http response to writer: {err:?}")
                     }
                 }
             }
@@ -322,7 +322,7 @@ where
 impl ResponseWriter for Sender<Response> {
     async fn write_response(&self, res: Response) {
         if let Err(err) = self.send(res).await {
-            tracing::error!(err = %err, "failed to send response to channel")
+            tracing::error!("failed to send response to channel: {err:?}")
         }
     }
 }
@@ -330,7 +330,7 @@ impl ResponseWriter for Sender<Response> {
 impl ResponseWriter for UnboundedSender<Response> {
     async fn write_response(&self, res: Response) {
         if let Err(err) = self.send(res) {
-            tracing::error!(err = %err, "failed to send response to unbounded channel")
+            tracing::error!("failed to send response to unbounded channel: {err:?}")
         }
     }
 }

@@ -407,7 +407,10 @@ impl Service<(), Request> for EchoService {
             .get(USER_AGENT)
             .and_then(|h| h.to_str().ok())
             .map(ToOwned::to_owned);
-        tracing::debug!(?ua_str, "echo request received from ua with ua header");
+        tracing::debug!(
+            user_agent.original = ua_str,
+            "echo request received from ua with ua header",
+        );
 
         #[derive(Debug, Serialize)]
         struct FingerprintProfileData {
@@ -417,7 +420,7 @@ impl Service<(), Request> for EchoService {
         }
 
         let ja4h = Ja4H::compute(&req)
-            .inspect_err(|err| tracing::error!(?err, "ja4h compute failure"))
+            .inspect_err(|err| tracing::error!("ja4h compute failure: {err:?}"))
             .ok()
             .map(|ja4h| {
                 let mut profile_ja4h: Option<FingerprintProfileData> = None;
@@ -432,8 +435,7 @@ impl Service<(), Request> for EchoService {
                                 .ja4h_h1_navigate(Some(req.method().clone()))
                                 .inspect_err(|err| {
                                     tracing::trace!(
-                                        ?err,
-                                        "ja4h computation of matched profile for incoming h1 req"
+                                        "ja4h computation of matched profile for incoming h1 req: {err:?}"
                                     )
                                 })
                                 .ok(),
@@ -442,8 +444,7 @@ impl Service<(), Request> for EchoService {
                                 .ja4h_h2_navigate(Some(req.method().clone()))
                                 .inspect_err(|err| {
                                     tracing::trace!(
-                                        ?err,
-                                        "ja4h computation of matched profile for incoming h2 req"
+                                        "ja4h computation of matched profile for incoming h2 req: {err:?}"
                                     )
                                 })
                                 .ok(),
@@ -491,7 +492,7 @@ impl Service<(), Request> for EchoService {
             .and_then(|st| st.client_hello())
             .map(|hello| {
                 let ja4 = Ja4::compute(ctx.extensions())
-                    .inspect_err(|err| tracing::trace!(?err, "ja4 computation"))
+                    .inspect_err(|err| tracing::trace!("ja4 computation: {err:?}"))
                     .ok();
 
                 let mut profile_ja4: Option<FingerprintProfileData> = None;
@@ -507,7 +508,7 @@ impl Service<(), Request> for EchoService {
                                     .map(|param| param.protocol_version),
                             )
                             .inspect_err(|err| {
-                                tracing::trace!(?err, "ja4 computation of matched profile")
+                                tracing::trace!("ja4 computation of matched profile: {err:?}")
                             })
                             .ok();
                         if let (Some(src), Some(tgt)) = (ja4.as_ref(), matched_ja4) {
@@ -531,7 +532,7 @@ impl Service<(), Request> for EchoService {
                 });
 
                 let ja3 = Ja3::compute(ctx.extensions())
-                    .inspect_err(|err| tracing::trace!(?err, "ja3 computation"))
+                    .inspect_err(|err| tracing::trace!("ja3 computation: {err:?}"))
                     .ok();
 
                 let mut profile_ja3: Option<FingerprintProfileData> = None;
@@ -547,7 +548,7 @@ impl Service<(), Request> for EchoService {
                                     .map(|param| param.protocol_version),
                             )
                             .inspect_err(|err| {
-                                tracing::trace!(?err, "ja3 computation of matched profile")
+                                tracing::trace!("ja3 computation of matched profile: {err:?}")
                             })
                             .ok();
                         if let (Some(src), Some(tgt)) = (ja3.as_ref(), matched_ja3) {
@@ -571,7 +572,7 @@ impl Service<(), Request> for EchoService {
                 });
 
                 let peet = PeetPrint::compute(ctx.extensions())
-                    .inspect_err(|err| tracing::trace!(?err, "peet computation"))
+                    .inspect_err(|err| tracing::trace!("peet computation: {err:?}"))
                     .ok();
 
                 let mut profile_peet: Option<FingerprintProfileData> = None;
@@ -584,7 +585,7 @@ impl Service<(), Request> for EchoService {
                             .tls
                             .compute_peet()
                             .inspect_err(|err| {
-                                tracing::trace!(?err, "peetprint computation of matched profile")
+                                tracing::trace!("peetprint computation of matched profile: {err:?}")
                             })
                             .ok();
                         if let (Some(src), Some(tgt)) = (peet.as_ref(), matched_peet) {

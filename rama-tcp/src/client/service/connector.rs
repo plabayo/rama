@@ -140,8 +140,7 @@ where
                 conn.local_addr()
                     .inspect_err(|err| {
                         tracing::debug!(
-                            ?err,
-                            "failed to receive local addr of established connection to proxy"
+                            "failed to receive local addr of established connection to proxy: {err:?}"
                         )
                     })
                     .ok(),
@@ -178,8 +177,7 @@ where
             conn.local_addr()
                 .inspect_err(|err| {
                     tracing::debug!(
-                        ?err,
-                        "failed to receive local addr of established connection"
+                        "failed to receive local addr of established connection: {err:?}"
                     )
                 })
                 .ok(),

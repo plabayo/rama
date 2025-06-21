@@ -416,7 +416,7 @@ macro_rules! reply {
         match $me.reply.send_response($res, $eos) {
             Ok(tx) => tx,
             Err(e) => {
-                debug!("send response error: {}", e);
+                debug!("send response error: {:?}", e);
                 $me.reply.send_reset(Reason::INTERNAL_ERROR);
                 return Poll::Ready(Err(crate::Error::new_h2(e)));
             }
@@ -535,7 +535,7 @@ where
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         self.poll2(cx).map(|res| {
             if let Err(_e) = res {
-                debug!("stream error: {}", _e);
+                debug!("stream error: {:?}", _e);
             }
         })
     }

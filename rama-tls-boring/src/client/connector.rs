@@ -248,7 +248,8 @@ where
             .unwrap_or_default()
         {
             tracing::trace!(
-                authority = %transport_ctx.authority,
+                server.address = %transport_ctx.authority.host(),
+                server.port = %transport_ctx.authority.port(),
                 "TlsConnector(auto): protocol not secure, return inner connection",
             );
             return Ok(EstablishedClientConnection {
@@ -264,7 +265,8 @@ where
         let (stream, negotiated_params) = handshake(connector_data, host, conn).await?;
 
         tracing::trace!(
-            authority = %transport_ctx.authority,
+            server.address = %transport_ctx.authority.host(),
+            server.port = %transport_ctx.authority.port(),
             "TlsConnector(auto): protocol secure, established tls connection",
         );
 
@@ -303,9 +305,10 @@ where
                     .context("TlsConnector(auto): compute transport context")
             })?;
         tracing::trace!(
-            authority = %transport_ctx.authority,
-            app_protocol = ?transport_ctx.app_protocol,
-            "TlsConnector(secure): attempt to secure inner connection",
+            server.address = %transport_ctx.authority.host(),
+            server.port = %transport_ctx.authority.port(),
+            "TlsConnector(secure): attempt to secure inner connection w/ app protocol: {:?}",
+            transport_ctx.app_protocol,
         );
 
         let host = transport_ctx.authority.host().clone();
@@ -436,7 +439,7 @@ where
                 .selected_alpn_protocol()
                 .map(ApplicationProtocol::from);
             if let Some(ref proto) = application_layer_protocol {
-                tracing::trace!(%proto, "boring client (connector) has selected ALPN");
+                tracing::trace!("boring client (connector) has selected ALPN {proto}");
             }
 
             let server_certificate_chain = match store_server_certificate_chain

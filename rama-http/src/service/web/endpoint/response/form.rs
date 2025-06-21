@@ -97,7 +97,7 @@ where
                     (Headers::single(ContentType::form_url_encoded()), body).into_response()
                 }
                 Err(err) => {
-                    tracing::error!(error = %err, "response error");
+                    tracing::error!("response error: {err:?}");
                     StatusCode::INTERNAL_SERVER_ERROR.into_response()
                 }
             }

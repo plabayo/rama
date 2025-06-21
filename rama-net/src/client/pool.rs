@@ -235,7 +235,7 @@ where
         let pooled_conn = idx.and_then(|idx| storage.remove(idx));
 
         if let (Some(idx), Some(pooled_conn)) = (idx, pooled_conn) {
-            trace!(%idx, ?id, "fifo connection pool: connection found for given id");
+            trace!("fifo connection pool: connection #{idx} found for given id {id:?}");
             let mut timeout_triggered = false;
             if let Some(timeout) = self.idle_timeout {
                 if pooled_conn.last_used.elapsed() > timeout {
@@ -246,7 +246,9 @@ where
             // Since we always insert in the beginning we can assume if this connection has been idle for too long
             // all connections older then this one should also be evicted
             if timeout_triggered {
-                trace!(start_idx = ?idx, "fifo connection pool: idle timeout was triggered, dropping this connection and all older ones");
+                trace!(
+                    "fifo connection pool: idle timeout was triggered, dropping this connection (w/ start index {idx:?}) and all older ones"
+                );
                 storage.drain(idx..);
             } else {
                 return Ok(ConnectionResult::Connection(LeasedConnection {
@@ -263,8 +265,7 @@ where
             Err(_) => {
                 // By poping from back when we have no new Poolslot available we implement LRU drop policy
                 trace!(
-                    ?id,
-                    "fifo connection pool: evicting lru connection to create a new one"
+                    "fifo connection pool: evicting lru connection (#{id:?}) to create a new one"
                 );
                 storage
                     .pop_back()
@@ -274,14 +275,13 @@ where
         };
 
         trace!(
-            ?id,
-            "fifo connection pool: no connection for given id found, returning create permit"
+            "fifo connection pool: no connection for given id {id:?} found, returning create permit"
         );
         Ok(ConnectionResult::CreatePermit((active_slot, pool_slot)))
     }
 
     async fn create(&self, id: ID, conn: C, permit: Self::CreatePermit) -> Self::Connection {
-        trace!(?id, "adding new connection to pool");
+        trace!("adding new connection (w/ id {id:?}) to pool");
         let (active_slot, pool_slot) = permit;
         LeasedConnection {
             active_slot,
@@ -472,8 +472,7 @@ where
         if result.is_err() {
             let id = &self.pooled_conn.as_ref().expect("msg").id;
             trace!(
-                ?id,
-                "fifo connection pool: detected error result, marking connection as failed"
+                "fifo connection pool: detected error result, marking connection w/ id {id:?} as failed"
             );
             self.mark_as_failed();
         }
@@ -576,7 +575,7 @@ where
                 timeout(duration, pool.get_conn(&conn_id))
                     .await
                     .map_err(|err|{
-                        trace!(?conn_id, "pooled connector: timeout triggered while waiting for a connection from pool");
+                        trace!("pooled connector: timeout triggered while waiting for a connection (/w conn id: {conn_id:?}) from pool");
                         OpaqueError::from_std(err)
                     })?
             } else {
@@ -586,15 +585,13 @@ where
             match pool_result? {
                 ConnectionResult::Connection(c) => {
                     trace!(
-                        ?conn_id,
-                        "pooled connector: got connection from pool, returning"
+                        "pooled connector: got connection (w/ conn id: {conn_id:?}) from pool, returning"
                     );
                     return Ok(EstablishedClientConnection { ctx, conn: c, req });
                 }
                 ConnectionResult::CreatePermit(permit) => {
                     trace!(
-                        ?conn_id,
-                        "pooled connector: no connection found, received permit to create a new one"
+                        "pooled connector: no connection (w/ conn id: {conn_id:?}) found, received permit to create a new one"
                     );
                     permit
                 }
@@ -604,10 +601,7 @@ where
         let EstablishedClientConnection { ctx, req, conn } =
             self.inner.connect(ctx, req).await.map_err(Into::into)?;
 
-        trace!(
-            ?conn_id,
-            "pooled connector: returning new pooled connection"
-        );
+        trace!("pooled connector: returning new pooled connection (w/ conn id: {conn_id:?}");
         let pool = ctx.get::<P>().unwrap_or(&self.pool);
         let conn = pool.create(conn_id, conn, create_permit).await;
         Ok(EstablishedClientConnection { ctx, req, conn })

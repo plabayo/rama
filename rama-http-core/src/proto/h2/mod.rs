@@ -205,7 +205,7 @@ impl<B: Buf> SendStreamExt for SendStream<SendBuf<B>> {
         E: Into<BoxError>,
     {
         let err = crate::Error::new_user_body(err);
-        debug!("send body user stream error: {}", err);
+        debug!("send body user stream error: {:?}", err);
         self.send_reset(err.h2_reason());
         err
     }

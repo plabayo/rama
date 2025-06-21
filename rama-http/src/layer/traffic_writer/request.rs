@@ -84,10 +84,10 @@ impl RequestWriterInspector<UnboundedSender<Request>> {
                     if let Err(err) =
                         write_http_request(&mut writer, req, write_headers, write_body).await
                     {
-                        tracing::error!(err = %err, "failed to write http request to writer")
+                        tracing::error!("failed to write http request to writer: {err:?}")
                     }
                     if let Err(err) = writer.write_all(b"\r\n").await {
-                        tracing::error!(err = %err, "failed to write separator to writer")
+                        tracing::error!("failed to write separator to writer: {err:?}")
                     }
                 }
             }
@@ -138,10 +138,10 @@ impl RequestWriterInspector<Sender<Request>> {
                     if let Err(err) =
                         write_http_request(&mut writer, req, write_headers, write_body).await
                     {
-                        tracing::error!(err = %err, "failed to write http request to writer")
+                        tracing::error!("failed to write http request to writer: {err:?}")
                     }
                     if let Err(err) = writer.write_all(b"\r\n").await {
-                        tracing::error!(err = %err, "failed to write separator to writer")
+                        tracing::error!("failed to write separator to writer: {err:?}")
                     }
                 }
             }
@@ -201,7 +201,7 @@ where
 impl RequestWriter for Sender<Request> {
     async fn write_request(&self, req: Request) {
         if let Err(err) = self.send(req).await {
-            tracing::error!(err = %err, "failed to send request to channel")
+            tracing::error!("failed to send request to channel: {err:?}")
         }
     }
 }
@@ -209,7 +209,7 @@ impl RequestWriter for Sender<Request> {
 impl RequestWriter for UnboundedSender<Request> {
     async fn write_request(&self, req: Request) {
         if let Err(err) = self.send(req) {
-            tracing::error!(err = %err, "failed to send request to unbounded channel")
+            tracing::error!("failed to send request to unbounded channel: {err:?}")
         }
     }
 }

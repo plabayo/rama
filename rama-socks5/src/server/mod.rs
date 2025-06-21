@@ -350,20 +350,19 @@ impl<C, B, U> Socks5Acceptor<C, B, U> {
             .await?;
 
         tracing::trace!(
-            client_methods = ?client_header.methods,
-            ?negotiated_method,
-            "socks5 server: headers exchanged"
+            "socks5 server: headers exchanged negotiated method = {negotiated_method:?} (for client methods: {:?}",
+            client_header.methods,
         );
 
         let client_request = client::Request::read_from(&mut stream)
             .await
             .map_err(|err| Error::protocol(err).with_context("read client request"))?;
         tracing::trace!(
-            client_methods = ?client_header.methods,
-            ?negotiated_method,
-            command = ?client_request.command,
-            destination = %client_request.destination,
-            "socks5 server: client request received"
+            "socks5 server w/ destination {} and negotiated method {:?} (for client methods: {:?}): client request received cmd {:?}",
+            client_request.destination,
+            negotiated_method,
+            client_header.methods,
+            client_request.command,
         );
 
         match client_request.command {
@@ -384,11 +383,11 @@ impl<C, B, U> Socks5Acceptor<C, B, U> {
             }
             Command::Unknown(_) => {
                 tracing::debug!(
-                    client_methods = ?client_header.methods,
-                    ?negotiated_method,
-                    command = ?client_request.command,
-                    destination = %client_request.destination,
-                    "socks5 server: abort: unknown command not supported",
+                    "socks5 server w/ destination {} for negotiated method: {:?} (for client methods: {:?}): abort: unknown command {:?} not supported",
+                    client_request.destination,
+                    negotiated_method,
+                    client_header.methods,
+                    client_request.command,
                 );
 
                 Reply::error_reply(ReplyKind::CommandNotSupported)

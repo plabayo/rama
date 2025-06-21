@@ -351,7 +351,9 @@ async fn tcp_connect_inner_branch<Dns, Connector>(
             Ok(ips) => Either::A(ips.into_iter().map(IpAddr::V4)),
             Err(err) => {
                 let err = OpaqueError::from_boxed(err.into());
-                tracing::trace!(err = %err, "[{ip_kind:?}] failed to resolve domain to IPv4 addresses");
+                tracing::trace!(
+                    "[{ip_kind:?}] failed to resolve domain to IPv4 addresses: {err:?}"
+                );
                 return;
             }
         },
@@ -359,7 +361,9 @@ async fn tcp_connect_inner_branch<Dns, Connector>(
             Ok(ips) => Either::B(ips.into_iter().map(IpAddr::V6)),
             Err(err) => {
                 let err = OpaqueError::from_boxed(err.into());
-                tracing::trace!(err = ?err, "[{ip_kind:?}] failed to resolve domain to IPv6 addresses");
+                tracing::trace!(
+                    "[{ip_kind:?}] failed to resolve domain to IPv6 addresses: {err:?}"
+                );
                 return;
             }
         },
@@ -423,12 +427,12 @@ async fn tcp_connect_inner_branch<Dns, Connector>(
                 Ok(stream) => {
                     tracing::trace!("[{ip_kind:?}] #{index}: tcp connection stablished to {addr}");
                     if let Err(err) = tx.send((stream, addr)).await {
-                        tracing::trace!(err = %err, "[{ip_kind:?}] #{index}: failed to send resolved IP address");
+                        tracing::trace!("[{ip_kind:?}] #{index}: failed to send resolved IP address: {err:?}");
                     }
                 }
                 Err(err) => {
                     let err = OpaqueError::from_boxed(err.into());
-                    tracing::trace!(err = %err, "[{ip_kind:?}] #{index}: tcp connector failed to connect");
+                    tracing::trace!("[{ip_kind:?}] #{index}: tcp connector failed to connect: {err:?}");
                 }
             };
         }.instrument(trace_span!(

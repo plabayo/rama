@@ -80,7 +80,7 @@ pub fn normalize_path(path: &Path) -> PathBuf {
 
 fn try_init_key_log_file_handle(path: PathBuf) -> Result<KeyLogFileHandle, OpaqueError> {
     tracing::trace!(
-        file = ?path,
+        file.path = ?path,
         "KeyLogFileHandle: try to create a new handle",
     );
 
@@ -99,15 +99,14 @@ fn try_init_key_log_file_handle(path: PathBuf) -> Result<KeyLogFileHandle, Opaqu
     let path_name = path.clone();
     std::thread::spawn(move || {
         tracing::trace!(
-            file = ?path_name,
+            file.path = ?path_name,
             "KeyLogFileHandle[rx]: receiver task up and running",
         );
         while let Ok(line) = rx.recv() {
             if let Err(err) = file.write_all(line.as_bytes()) {
                 tracing::error!(
-                    file = ?path_name,
-                    error = %err,
-                    "KeyLogFileHandle[rx]: failed to write file",
+                    file.path = ?path_name,
+                    "KeyLogFileHandle[rx]: failed to write file: {err:?}",
                 );
             }
         }
@@ -134,9 +133,9 @@ impl KeyLogFileHandle {
     pub fn write_log_line(&self, line: String) {
         if let Err(err) = self.sender.send(line) {
             tracing::error!(
-                file = ?self.path,
+                file.path = ?self.path,
                 error = %err,
-                "KeyLogFileHandle[tx]: failed to send log line for writing",
+                "KeyLogFileHandle[tx]: failed to send log line for writing: {err:?}",
             );
         }
     }

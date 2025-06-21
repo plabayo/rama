@@ -93,10 +93,10 @@ async fn test_http_client_over_socks5_proxy_connect(
     let proxy_socket_addr = SocketAddress::local_ipv4(62029);
 
     tracing::info!(
-        %proxy_socket_addr,
-        %http_socket_addr,
-        %https_socket_addr,
-        "local servers up and running",
+        "local servers up and running (http = {}; https = {}; proxy = {})",
+        http_socket_addr,
+        https_socket_addr,
+        proxy_socket_addr,
     );
 
     // TODO: once we have socks5 support in Easy http web client
@@ -126,7 +126,7 @@ async fn test_http_client_over_socks5_proxy_connect(
     ];
     for uri in test_uris {
         tracing::info!(
-            %uri,
+            url.full = %uri,
             "try to establish proxied connection over SOCKS5",
         );
 
@@ -145,7 +145,7 @@ async fn test_http_client_over_socks5_proxy_connect(
             .expect("establish a proxied connection ready to make http(s) requests");
 
         tracing::info!(
-            %uri,
+            url.full = %uri,
             "try to make GET http(s) request and try to receive response text",
         );
 

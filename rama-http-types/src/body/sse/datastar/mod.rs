@@ -272,7 +272,7 @@ impl<T: EventDataRead> EventDataLineReader for EventDataReader<T> {
                 reader.data(event).map(|v| v.map(EventData::ExecuteScript))
             }
             EventType::Unknown(event_type) => {
-                tracing::trace!(%event_type, "ignore datastar event with unknown event type");
+                tracing::trace!("ignore datastar event with unknown event type: {event_type}");
                 Ok(None)
             }
         }

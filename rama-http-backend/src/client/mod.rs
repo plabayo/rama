@@ -147,7 +147,7 @@ where
 
         let EstablishedClientConnection { ctx, req, conn } = self.connector.serve(ctx, req).await?;
         // NOTE: stack might change request version based on connector data,
-        tracing::trace!(uri = %uri, "send http req to connector stack");
+        tracing::trace!(url.full = %uri, "send http req to connector stack");
 
         let result = conn.serve(ctx, req).await;
 
@@ -155,7 +155,7 @@ where
             .map_err(OpaqueError::from_boxed)
             .with_context(|| format!("http request failure for uri: {uri}"))?;
 
-        tracing::trace!(uri = %uri, "response received from connector stack");
+        tracing::trace!(url.full = %uri, "response received from connector stack");
 
         Ok(resp)
     }

@@ -89,11 +89,7 @@ impl<T: EventDataRead> EventBuilder<T> {
                     }
                 }
                 _ => {
-                    tracing::debug!(
-                        %field,
-                        value = ?val,
-                        "ignore unknown SSE field",
-                    )
+                    tracing::debug!("ignore unknown SSE field {field}: value = {val:?}",)
                 }
             },
             RawEventLine::Comment(comment) => {

@@ -69,14 +69,15 @@ impl<T: HttpRequestParts, State> TryFrom<(&Context<State>, &T)> for RequestConte
 
         let protocol = protocol_from_uri_or_context(ctx, uri, req.method());
         tracing::trace!(
-            uri = %uri, "request context: detected protocol: {protocol} (scheme: {:?})",
-            uri.scheme()
+            url.full = %uri,
+            "request context: detected protocol: {protocol} (scheme: {:?}",
+            uri.scheme(),
         );
 
         let default_port = uri
             .port_u16()
             .unwrap_or_else(|| protocol.default_port().unwrap_or(80));
-        tracing::trace!(uri = %uri, "request context: detected default port: {default_port}");
+        tracing::trace!(url.full = %uri, "request context: detected default port: {default_port}");
 
         let proxy_authority_opt: Option<Authority> = ctx
             .get::<ProxyTarget>()
@@ -85,17 +86,17 @@ impl<T: HttpRequestParts, State> TryFrom<(&Context<State>, &T)> for RequestConte
         let sni_host_opt = ctx.get().and_then(try_get_sni_from_secure_transport);
         let authority = match (proxy_authority_opt, sni_host_opt) {
             (Some(authority), _) => {
-                tracing::trace!(uri = %uri, %authority, "request context: use proxy target as authority");
+                tracing::trace!(url.full = %uri, "request context: use proxy target as authority: {authority}");
                 authority
             },
             (None, Some(h)) => {
-                tracing::trace!(uri = %uri, host = %h, "request context: detected host from SNI");
+                tracing::trace!(url.full = %uri, "request context: detected host {h} from SNI");
                 (h, default_port).into()
             },
             (None, None) => uri
                 .host()
                 .and_then(|h| Host::try_from(h).ok().map(|h| {
-                    tracing::trace!(uri = %uri, host = %h, "request context: detected host from (abs) uri");
+                    tracing::trace!(url.full = %uri, "request context: detected host {h} from (abs) uri");
                     (h, default_port).into()
                 }))
                 .or_else(|| {
@@ -103,7 +104,7 @@ impl<T: HttpRequestParts, State> TryFrom<(&Context<State>, &T)> for RequestConte
                         f.client_host().map(|fauth| {
                             let (host, port) = fauth.clone().into_parts();
                             let port = port.unwrap_or(default_port);
-                            tracing::trace!(uri = %uri, host = %host, "request context: detected host from forwarded info");
+                            tracing::trace!(url.full = %uri, "request context: detected host {host} from forwarded info");
                             (host, port).into()
                         })
                     })
@@ -114,7 +115,7 @@ impl<T: HttpRequestParts, State> TryFrom<(&Context<State>, &T)> for RequestConte
                         .and_then(|host| {
                             host.try_into() // try to consume as Authority, otherwise as Host
                                 .or_else(|_| Host::try_from(host).map(|h| {
-                                    tracing::trace!(uri = %uri, host = %h, "request context: detected host from host header");
+                                    tracing::trace!(url.full = %uri, "request context: detected host {h} from host header");
                                     (h, default_port).into()
                                 }))
                                 .ok()
@@ -125,7 +126,7 @@ impl<T: HttpRequestParts, State> TryFrom<(&Context<State>, &T)> for RequestConte
                 })?
         };
 
-        tracing::trace!(uri = %uri, "request context: detected authority: {authority}");
+        tracing::trace!(url.full = %uri, "request context: detected authority: {authority}");
 
         let http_version = ctx
             .get::<Forwarded>()
@@ -139,7 +140,7 @@ impl<T: HttpRequestParts, State> TryFrom<(&Context<State>, &T)> for RequestConte
                 })
             })
             .unwrap_or_else(|| req.version());
-        tracing::trace!(uri = %uri, "request context: maybe detected http version: {http_version:?}");
+        tracing::trace!(url.full = %uri, "request context: maybe detected http version: {http_version:?}");
 
         Ok(RequestContext {
             http_version,
@@ -157,15 +158,15 @@ fn protocol_from_uri_or_context<State>(
 ) -> Protocol {
     Protocol::maybe_from_uri_scheme_str_and_method(uri.scheme(), Some(method)).or_else(|| ctx.get::<Forwarded>()
         .and_then(|f| f.client_proto().map(|p| {
-            tracing::trace!(uri = %uri, "request context: detected protocol from forwarded client proto");
+            tracing::trace!(url.furi = %uri, "request context: detected protocol from forwarded client proto");
             p.into()
         })))
         .unwrap_or_else(|| {
             if method == Method::CONNECT {
-                tracing::trace!(uri = %uri, method = %method, "request context: CONNECT: defaulting protocol to HTTPS");
+                tracing::trace!(url.full = %uri, http.method = %method, "request context: CONNECT: defaulting protocol to HTTPS");
                 Protocol::HTTPS
             } else {
-                tracing::trace!(uri = %uri, method = %method, "request context: defaulting protocol to HTTP");
+                tracing::trace!(url.full = %uri, http.method = %method, "request context: defaulting protocol to HTTP");
                 Protocol::HTTP
             }
         })

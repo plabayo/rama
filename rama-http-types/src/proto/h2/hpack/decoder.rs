@@ -201,14 +201,14 @@ impl Decoder {
             // determined from the first byte.
             match Representation::load(ty)? {
                 Representation::Indexed => {
-                    tracing::trace!(rem = src.remaining(), kind = %"Indexed");
+                    tracing::trace!("indexed: rem = {}", src.remaining());
                     can_resize = false;
                     let entry = self.decode_indexed(src)?;
                     consume(src);
                     f(entry);
                 }
                 Representation::LiteralWithIndexing => {
-                    tracing::trace!(rem = src.remaining(), kind = %"LiteralWithIndexing");
+                    tracing::trace!("literal with indexing: rem = {}", src.remaining());
                     can_resize = false;
                     let entry = self.decode_literal(src, true)?;
 
@@ -219,14 +219,14 @@ impl Decoder {
                     f(entry);
                 }
                 Representation::LiteralWithoutIndexing => {
-                    tracing::trace!(rem = src.remaining(), kind = %"LiteralWithoutIndexing");
+                    tracing::trace!("LiteralWithoutIndexing: rem = {}", src.remaining());
                     can_resize = false;
                     let entry = self.decode_literal(src, false)?;
                     consume(src);
                     f(entry);
                 }
                 Representation::LiteralNeverIndexed => {
-                    tracing::trace!(rem = src.remaining(), kind = %"LiteralNeverIndexed");
+                    tracing::trace!("LiteralNeverIndexed: rem = {}", src.remaining());
                     can_resize = false;
                     let entry = self.decode_literal(src, false)?;
                     consume(src);
@@ -236,7 +236,7 @@ impl Decoder {
                     f(entry);
                 }
                 Representation::SizeUpdate => {
-                    tracing::trace!(rem = src.remaining(), kind = %"SizeUpdate");
+                    tracing::trace!("SizeUpdate: rem = {}", src.remaining());
                     if !can_resize {
                         return Err(DecoderError::InvalidMaxDynamicSize);
                     }
@@ -319,7 +319,11 @@ impl Decoder {
         let len = decode_int(buf, 7)?;
 
         if len > buf.remaining() {
-            tracing::trace!(len, remaining = buf.remaining(), "decode_string underflow",);
+            tracing::trace!(
+                "decode_string underflow: len = {}; remaining = {}",
+                len,
+                buf.remaining()
+            );
             return Err(DecoderError::NeedMore(NeedMore::StringUnderflow));
         }
 

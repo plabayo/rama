@@ -1355,7 +1355,7 @@ where
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let span = self.span.clone(); // XXX(eliza): T_T
         let _e = span.enter();
-        tracing::trace!(state = ?self.state);
+        tracing::trace!("state = {:?}", self.state);
 
         loop {
             match &mut self.state {
@@ -1365,11 +1365,11 @@ where
                     // for the client preface.
                     let codec = match Pin::new(flush).poll(cx)? {
                         Poll::Pending => {
-                            tracing::trace!(flush.poll = %"Pending");
+                            tracing::trace!("flush poll pending");
                             return Poll::Pending;
                         }
                         Poll::Ready(flushed) => {
-                            tracing::trace!(flush.poll = %"Ready");
+                            tracing::trace!("flush poll ready");
                             flushed
                         }
                     };
@@ -1479,14 +1479,14 @@ impl Peer {
         if let Err(e) = frame::PushPromise::validate_request(&request) {
             match e {
                 PushPromiseHeaderError::NotSafeAndCacheable => tracing::debug!(
-                    ?promised_id,
-                    "convert_push_message: method {} is not safe and cacheable",
+                    "convert_push_message: method {} is not safe and cacheable (promised id: {:?})",
                     request.method(),
+                    promised_id,
                 ),
                 PushPromiseHeaderError::InvalidContentLength(e) => tracing::debug!(
-                    ?promised_id,
-                    "convert_push_message; promised request has invalid content-length {:?}",
+                    "convert_push_message; promised request has invalid content-length {:?}: (promised id: {:?})",
                     e,
+                    promised_id,
                 ),
             }
             return Err(UserError::MalformedHeaders);

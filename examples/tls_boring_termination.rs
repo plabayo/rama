@@ -82,7 +82,7 @@ async fn main() {
             TlsAcceptorLayer::new(acceptor_data).with_store_client_hello(true),
             GetExtensionLayer::new(async move |st: SecureTransport| {
                 let client_hello = st.client_hello().unwrap();
-                tracing::debug!(?client_hello, "secure connection established");
+                tracing::debug!("secure connection established: client hello = {client_hello:?}");
             }),
         )
             .into_layer(Forwarder::new(([127, 0, 0, 1], 62801)).connector(

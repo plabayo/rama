@@ -153,10 +153,7 @@ pub async fn run(cfg: CliCommandServe) -> Result<(), BoxError> {
         .map_err(OpaqueError::from_boxed)
         .context("build serve service")?;
 
-    tracing::info!(
-        bind = %cfg.bind,
-        "starting serve service on",
-    );
+    tracing::info!("starting serve service on: bind interface = {}", cfg.bind);
     let tcp_listener = TcpListener::build()
         .bind(cfg.bind.clone())
         .await
@@ -169,9 +166,9 @@ pub async fn run(cfg: CliCommandServe) -> Result<(), BoxError> {
 
     graceful.spawn_task_fn(async move |guard| {
         tracing::info!(
-            bind = %cfg.bind,
-            %bind_address,
-            "ready to serve",
+            network.local.address = %bind_address.ip(),
+            network.local.port = %bind_address.port(),
+            "ready to serve: bind interface = {}", cfg.bind,
         );
         tcp_listener.serve_graceful(guard, tcp_service).await;
     });

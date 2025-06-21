@@ -70,6 +70,7 @@ use rama::{
     rt::Executor,
     telemetry::tracing::{self, level_filters::LevelFilter},
 };
+use rama_net::address::SocketAddress;
 use serde::Deserialize;
 use serde_json::json;
 use std::{collections::HashMap, sync::Arc};
@@ -99,8 +100,12 @@ async fn main() {
         )
         .init();
 
-    let addr = "127.0.0.1:62006";
-    tracing::info!("running service at: {addr}");
+    let addr = SocketAddress::local_ipv4(62006);
+    tracing::info!(
+        network.local.address = %addr.ip_addr(),
+        network.local.port = %addr.port(),
+        "running service",
+    );
     let exec = Executor::default();
     HttpServer::auto(exec)
         .listen_with_state(

@@ -62,8 +62,10 @@ async fn main() {
     let http_socket_addr = spawn_http_server().await;
 
     tracing::info!(
-        %proxy_socket_addr,
-        %http_socket_addr,
+        network.peer.address = %proxy_socket_addr.ip_addr(),
+        network.peer.port = %proxy_socket_addr.port(),
+        server.address = %http_socket_addr.ip_addr(),
+        server.port = %http_socket_addr.port(),
         "local servers up and running",
     );
 
@@ -84,7 +86,7 @@ async fn main() {
 
     let uri = format!("http://{http_socket_addr}/ping");
     tracing::info!(
-        %uri,
+        url.full = %uri,
         "try to establish proxied connection over SOCKS5 within a TLS Tunnel",
     );
 
@@ -103,7 +105,7 @@ async fn main() {
         .expect("establish a proxied connection ready to make http requests");
 
     tracing::info!(
-        %uri,
+        url.full = %uri,
         "try to make GET http request and try to receive response text",
     );
 

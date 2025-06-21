@@ -409,7 +409,7 @@ where
     ) -> Result<Self::Response, Self::Error> {
         let result = self.try_call(ctx, req).await;
         Ok(result.unwrap_or_else(|err| {
-            tracing::error!(error = %err, "Failed to read file");
+            tracing::error!("Failed to read file: {err:?}");
 
             let body = Body::empty();
             Response::builder()

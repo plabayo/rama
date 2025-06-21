@@ -69,7 +69,11 @@ async fn main() {
         .expect("get local addr of bind udp server")
         .into();
 
-    tracing::info!(%udp_server_addr, "server: socket created");
+    tracing::info!(
+        network.local.address = %udp_server_addr.ip_addr(),
+        network.local.port = %udp_server_addr.port(),
+        "server: socket created",
+    );
 
     tokio::spawn(async move {
         tracing::info!("server: ready");
@@ -104,7 +108,11 @@ async fn main() {
         .local_addr()
         .expect("get client udp socket addr");
 
-    tracing::info!(%udp_client_addr, "client: socket created");
+    tracing::info!(
+        network.local.address = %udp_client_addr.ip(),
+        network.local.port = %udp_client_addr.port(),
+        "client: socket created",
+    );
 
     let mut udp_framed_relay = udp_socket_relay.into_framed(BytesCodec::new());
 

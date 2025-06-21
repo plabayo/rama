@@ -35,14 +35,15 @@ where
                     (StatusCode::BAD_REQUEST, "Failed to parse JSON").into_response()
                 })?;
 
-                serde_json::from_str(signals)
-                    .map_err(|err| {
-                        tracing::debug!(%err, "failed to parse datastar query json value from GET request");
-                        (StatusCode::BAD_REQUEST, err.to_string()).into_response()}
-                    )?
+                serde_json::from_str(signals).map_err(|err| {
+                    tracing::debug!(
+                        "failed to parse datastar query json value from GET request: {err:?}"
+                    );
+                    (StatusCode::BAD_REQUEST, err.to_string()).into_response()
+                })?
             }
             _ => req.into_body().try_into_json().await.map_err(|err| {
-                tracing::debug!(%err, "failed to parse datastar json payload from POST request");
+                tracing::debug!("failed to parse datastar json payload from POST request: {err:?}");
                 (StatusCode::BAD_REQUEST, err.to_string()).into_response()
             })?,
         };

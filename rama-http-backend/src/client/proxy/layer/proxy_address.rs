@@ -186,7 +186,11 @@ where
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
         if let Some(ref address) = self.address {
             if !self.preserve || !ctx.contains::<ProxyAddress>() {
-                tracing::trace!(authority = %address.authority, "setting proxy address");
+                tracing::trace!(
+                    server.address = %address.authority.host(),
+                    server.port = %address.authority.port(),
+                    "setting proxy address",
+                );
                 ctx.insert(address.clone());
             }
         }

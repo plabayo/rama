@@ -80,10 +80,7 @@ pub async fn run(cfg: CliCommandIp) -> Result<(), BoxError> {
         )
     };
 
-    tracing::info!(
-        bind = %cfg.bind,
-        "starting ip service",
-    );
+    tracing::info!("starting ip service: bind interface = {}", cfg.bind);
     let tcp_listener = TcpListener::build()
         .bind(cfg.bind.clone())
         .await
@@ -96,9 +93,9 @@ pub async fn run(cfg: CliCommandIp) -> Result<(), BoxError> {
 
     graceful.spawn_task_fn(async move |guard| {
         tracing::info!(
-            bind = %cfg.bind,
-            %bind_address,
-            "ip service ready",
+            network.local.address = %bind_address.ip(),
+            network.local.port = %bind_address.port(),
+            "ip service ready: bind interface = {}", cfg.bind
         );
 
         tcp_listener.serve_graceful(guard, tcp_service).await;

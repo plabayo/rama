@@ -88,11 +88,12 @@ async fn main() {
         .expect("tcp port to be bound");
     let bind_address = listener.local_addr().expect("retrieve bind address");
 
-    tracing::info!(%bind_address, "http's tcp listener ready to serve");
     tracing::info!(
-        "open http://{} in your browser to see the service in action",
-        bind_address
+        network.local.address = %bind_address.ip(),
+        network.local.port = %bind_address.port(),
+        "http's tcp listener ready to serve",
     );
+    tracing::info!("open http://{bind_address} in your browser to see the service in action");
 
     let controller = Controller::new(graceful.guard());
 
@@ -242,7 +243,7 @@ pub mod controller {
                     weak_guard.into_cancelled().await;
                     tracing::trace!("shutdown initiated, send exit command to controller runtime");
                     if let Err(err) = exit_cmd_tx.send(Command::Exit).await {
-                        tracing::error!(%err, "failed to send exit cmd")
+                        tracing::error!("failed to send exit cmd: {err:?}")
                     }
                 }
                 .instrument(tracing::trace_span!("exit worker")),
@@ -278,7 +279,7 @@ pub mod controller {
 
         pub async fn reset(&self, delay: u64) {
             if let Err(err) = self.cmd_tx.send(Command::Reset(delay)).await {
-                tracing::warn!(%err, "failed to send reset command");
+                tracing::warn!("failed to send reset command: {err:?}");
             }
         }
 
@@ -306,7 +307,10 @@ pub mod controller {
                         biased;
 
                         instant = sse_status_interval.tick() => {
-                            tracing::debug!(?instant, "subscriber: SSE status interval tick");
+                            tracing::debug!(
+                                interval.elapsed_ms = %instant.elapsed().as_millis(),
+                                "subscriber: SSE status interval tick",
+                            );
                             sse_status_fragment_message(instant.elapsed().as_secs_f64())
                         }
 
@@ -333,9 +337,7 @@ pub mod controller {
             tracing::debug!(
                 %delay,
                 %anim_index,
-                %progress,
-                %text,
-                "render index"
+                "render index: {text} (progress: {progress})"
             );
 
             format!(
@@ -544,7 +546,7 @@ pub mod controller {
                                     delay: Some(delay),
                                 }))
                         {
-                            tracing::error!(%err, "failed to update delay signal via broadcast");
+                            tracing::error!("failed to update delay signal via broadcast: {err:?}");
                         }
                     }
                     Command::Exit => {
@@ -560,7 +562,9 @@ pub mod controller {
                         ];
                         for event in exit_events {
                             if let Err(err) = self.msg_tx.send(event) {
-                                tracing::error!(%err, "failed to send exit message to subscribers");
+                                tracing::error!(
+                                    "failed to send exit message to subscribers: {err:?}"
+                                );
                             }
                         }
                     }
@@ -597,7 +601,7 @@ pub mod controller {
                             .send(data_animation_fragment_message(text, progress))
                         {
                             Err(err) => {
-                                tracing::error!(%err, "failed to merge fragment via broadcast")
+                                tracing::error!("failed to merge fragment via broadcast: {err:?}")
                             }
                             Ok(_) => tokio::time::sleep(delay).await,
                         }

@@ -154,19 +154,19 @@ where
                 const MESSAGE: &str = "unhandled service error consumed";
                 match self.f.0 {
                     tracing::Level::TRACE => {
-                        tracing::trace!(error = err.into(), MESSAGE);
+                        tracing::trace!("{MESSAGE}: {:?}", err.into());
                     }
                     tracing::Level::DEBUG => {
-                        tracing::debug!(error = err.into(), MESSAGE);
+                        tracing::debug!("{MESSAGE}: {:?}", err.into());
                     }
                     tracing::Level::INFO => {
-                        tracing::info!(error = err.into(), MESSAGE);
+                        tracing::info!("{MESSAGE}: {:?}", err.into());
                     }
                     tracing::Level::WARN => {
-                        tracing::warn!(error = err.into(), MESSAGE);
+                        tracing::warn!("{MESSAGE}: {:?}", err.into());
                     }
                     tracing::Level::ERROR => {
-                        tracing::error!(error = err.into(), MESSAGE);
+                        tracing::error!("{MESSAGE}: {:?}", err.into());
                     }
                 }
                 Ok(S::Response::default())

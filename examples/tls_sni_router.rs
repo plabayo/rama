@@ -84,7 +84,8 @@ async fn main() {
     shutdown.spawn_task_fn(async move |guard| {
         let interface = SocketAddress::default_ipv4(62026);
         tracing::info!(
-            %interface,
+            network.local.address = %interface.ip_addr(),
+            network.local.port = %interface.port(),
             "[tcp] spawn sni router: bind and go",
         );
         TcpListener::bind(interface)
@@ -128,16 +129,20 @@ where
             } else if *sni == HOST_BAR {
                 INTERFACE_BAR
             } else {
-                tracing::debug!(%sni, "block connection for unknown destination");
+                tracing::debug!(
+                    server.address = %sni,
+                    "block connection for unknown destination",
+                );
                 return Err(OpaqueError::from_display("unknown destination"));
             }
         }
     };
 
     tracing::debug!(
-        ?sni,
-        %fwd_interface,
-        "forward incoming connection"
+        server.address = %sni.as_ref().map(|s| s.as_str()).unwrap_or_default(),
+        network.local.address = %fwd_interface.ip_addr(),
+        network.local.port = %fwd_interface.port(),
+        "forward incoming connection",
     );
 
     Forwarder::new(fwd_interface)
@@ -155,8 +160,9 @@ fn spawn_https_server(guard: ShutdownGuard, name: &'static str, interface: Socke
 
     guard.into_spawn_task_fn(async move |guard| {
         tracing::info!(
-            %name,
-            %interface,
+            host.name = %name,
+            network.local.address = %interface.ip_addr(),
+            network.local.port = %interface.port(),
             "[tcp] spawn https server: bind and go",
         );
         TcpListener::bind(interface)

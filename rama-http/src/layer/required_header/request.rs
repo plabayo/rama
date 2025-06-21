@@ -198,14 +198,15 @@ where
             if request_ctx.authority_has_default_port() {
                 let host = request_ctx.authority.host().clone();
                 tracing::trace!(
-                    %host,
-                    "add missing host from authority as host header"
+                    server.address = %host,
+                    "add missing host from authority as host header",
                 );
                 req.headers_mut().typed_insert(Host::from(host));
             } else {
                 let authority = request_ctx.authority.clone();
                 tracing::trace!(
-                    %authority,
+                    server.address = %authority.host(),
+                    server.port = %authority.port(),
                     "add missing authority as host header"
                 );
                 req.headers_mut().typed_insert(Host::from(authority));

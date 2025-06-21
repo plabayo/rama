@@ -74,13 +74,15 @@ where
 
                 match transport_ctx.authority.host() {
                     Host::Name(domain) => {
-                        tracing::trace!(%domain, "ua tls emulator: ensure we append domain (SNI) overwriter");
+                        tracing::trace!(
+                            "ua tls emulator: ensure we append domain {domain} (SNI) overwriter"
+                        );
                         domain_overwrite = Some(Arc::new(
                             TlsConnectorDataBuilder::new().with_server_name(domain.clone()),
                         ));
                     }
                     Host::Address(ip) => {
-                        tracing::trace!(%ip, "ua tls emulator: drop SNI as target is IP");
+                        tracing::trace!("ua tls emulator: drop SNI as target is IP: {ip}");
                         let cfg = emulate_config.to_mut();
                         let extensions: Vec<_> = cfg
                             .extensions

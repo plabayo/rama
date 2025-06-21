@@ -157,7 +157,7 @@ where
             Ok(config) => config,
             Err(err) => {
                 if self.optional && matches!(err, crate::utils::HeaderValueErr::HeaderMissing(_)) {
-                    tracing::debug!(error = %err, "failed to extract header config");
+                    tracing::debug!("failed to extract header config: {err:?}");
                     return self.inner.serve(ctx, request).await.map_err(Into::into);
                 } else {
                     return Err(err.into());

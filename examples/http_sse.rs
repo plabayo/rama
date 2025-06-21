@@ -95,11 +95,12 @@ async fn main() {
         .expect("tcp port to be bound");
     let bind_address = listener.local_addr().expect("retrieve bind address");
 
-    tracing::info!(%bind_address, "http's tcp listener ready to serve");
     tracing::info!(
-        "open http://{} in your browser to see the service in action",
-        bind_address
+        network.local.address = %bind_address.ip(),
+        network.local.port = %bind_address.port(),
+        "http's tcp listener ready to serve",
     );
+    tracing::info!("open http://{bind_address} in your browser to see the service in action");
 
     graceful.spawn_task_fn(async |guard| {
         let exec = Executor::graceful(guard.clone());

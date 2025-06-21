@@ -102,7 +102,9 @@ impl HickoryDns {
         tracing::trace!("try to create HickoryDns resolver using system config");
         Ok(TokioResolver::builder_tokio()
             .context("build async dns resolver with system conf")
-            .inspect_err(|err| tracing::debug!(%err, "failed to create HickoryDns resolver using system config"))?
+            .inspect_err(|err| {
+                tracing::debug!("failed to create HickoryDns resolver using system config: {err:?}")
+            })?
             .build()
             .into())
     }

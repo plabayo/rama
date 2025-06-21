@@ -173,7 +173,7 @@ where
                     .into_boxed());
             }
 
-            tracing::debug!("Incomplete header. Read {} bytes so far.", read);
+            tracing::debug!("Incomplete header. Read {read} bytes so far.");
         };
 
         let consumed = match header {

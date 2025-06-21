@@ -129,7 +129,7 @@ impl InnerHttpProxyConnector {
 
         tokio::spawn(async move {
             if let Err(err) = conn.with_upgrades().await {
-                tracing::debug!(?err, "http upgrade proxy client conn failed");
+                tracing::debug!("http upgrade proxy client conn failed: {err:?}");
             }
         });
 
@@ -149,7 +149,7 @@ impl InnerHttpProxyConnector {
 
         tokio::spawn(async move {
             if let Err(err) = conn.await {
-                tracing::debug!(?err, "http2 proxy client conn failed");
+                tracing::debug!("http2 proxy client conn failed: {err:?}");
             }
         });
 

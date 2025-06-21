@@ -48,7 +48,9 @@ impl UsernameLabelParser for ProxyFilterUsernameParser {
                     self.proxy_filter.id = Some(match label.try_into() {
                         Ok(id) => id,
                         Err(err) => {
-                            tracing::trace!(err = %err, "abort username label parsing: invalid parse label");
+                            tracing::trace!(
+                                "abort username label parsing: invalid parse label: {err:?}"
+                            );
                             return UsernameLabelState::Abort;
                         }
                     })
@@ -111,7 +113,9 @@ impl UsernameLabelParser for ProxyFilterUsernameParser {
                     let asn = match label.try_into() {
                         Ok(asn) => asn,
                         Err(err) => {
-                            tracing::trace!(err = %err, "failed to parse asn username label; abort username parsing");
+                            tracing::trace!(
+                                "failed to parse asn username label; abort username parsing: {err:?}"
+                            );
                             return UsernameLabelState::Abort;
                         }
                     };

@@ -72,18 +72,26 @@ async fn main() {
             SetSensitiveRequestHeadersLayer::from_shared(sensitive_headers.clone()),
             TraceLayer::new_for_http()
                 .on_body_chunk(|chunk: &Bytes, latency: Duration, _: &tracing::Span| {
-                    tracing::trace!(size_bytes = chunk.len(), latency = ?latency, "sending body chunk")
+                    tracing::trace!(
+                        http.request.body.chunk_size = chunk.len(),
+                        http.request.body.chunk_read_ms = latency.as_millis(),
+                        "sending body chunk"
+                    )
                 })
                 .make_span_with(DefaultMakeSpan::new().include_headers(true))
-                .on_response(DefaultOnResponse::new().include_headers(true).latency_unit(LatencyUnit::Micros)),
+                .on_response(
+                    DefaultOnResponse::new()
+                        .include_headers(true)
+                        .latency_unit(LatencyUnit::Micros),
+                ),
             SetSensitiveResponseHeadersLayer::from_shared(sensitive_headers),
             MapResponseLayer::new(IntoResponse::into_response),
-        ).into_layer(service_fn(
-                async |ctx: Context<()>, req: Request| {
-                    let socket_info = ctx.get::<SocketInfo>().unwrap();
-                    let tracker = ctx.get::<BytesRWTrackerHandle>().unwrap();
-                    Ok(Html(format!(
-                        r##"
+        )
+            .into_layer(service_fn(async |ctx: Context<()>, req: Request| {
+                let socket_info = ctx.get::<SocketInfo>().unwrap();
+                let tracker = ctx.get::<BytesRWTrackerHandle>().unwrap();
+                Ok(Html(format!(
+                    r##"
                         <html>
                             <head>
                                 <title>Rama — Http Service Hello</title>
@@ -99,13 +107,12 @@ async fn main() {
                                 </ul>
                             </body>
                         </html>"##,
-                        socket_info.peer_addr(),
-                        req.uri().path(),
-                        tracker.read(),
-                        tracker.written(),
-                    )))
-                },
-            ));
+                    socket_info.peer_addr(),
+                    req.uri().path(),
+                    tracker.read(),
+                    tracker.written(),
+                )))
+            }));
 
         let tcp_http_service = HttpServer::auto(exec).service(http_service);
 
@@ -118,7 +125,8 @@ async fn main() {
                     TraceErrLayer::new(),
                     TimeoutLayer::new(Duration::from_secs(8)),
                     IncomingBytesTrackerLayer::new(),
-                ).into_layer(tcp_http_service),
+                )
+                    .into_layer(tcp_http_service),
             )
             .await;
     });

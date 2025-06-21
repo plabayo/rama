@@ -116,13 +116,16 @@ impl TlsCertSource {
                 if let Some(maybe_client_hello) = maybe_client_hello {
                     let cb_maybe_client_hello = maybe_client_hello.clone();
                     builder.set_select_certificate_callback(move |boring_client_hello| {
-                        let maybe_client_hello = match RamaClientHello::rama_try_from(boring_client_hello) {
-                            Ok(ch) => Some(ch),
-                            Err(err) => {
-                                tracing::warn!(err = %err, "failed to extract boringssl client hello");
-                                None
-                            }
-                        };
+                        let maybe_client_hello =
+                            match RamaClientHello::rama_try_from(boring_client_hello) {
+                                Ok(ch) => Some(ch),
+                                Err(err) => {
+                                    tracing::warn!(
+                                        "failed to extract boringssl client hello: {err:?}"
+                                    );
+                                    None
+                                }
+                            };
                         *cb_maybe_client_hello.lock() = maybe_client_hello;
                         Ok(())
                     });
@@ -136,10 +139,11 @@ impl TlsCertSource {
                 let cb_maybe_client_hello = maybe_client_hello.clone();
                 builder.set_select_certificate_callback(move |client_hello| {
                     if let Some(cb_maybe_client_hello) = &cb_maybe_client_hello {
-                        let maybe_client_hello = match RamaClientHello::rama_try_from(&client_hello) {
+                        let maybe_client_hello = match RamaClientHello::rama_try_from(&client_hello)
+                        {
                             Ok(ch) => Some(ch),
                             Err(err) => {
-                                tracing::warn!(err = %err, "failed to extract boringssl client hello");
+                                tracing::warn!("failed to extract boringssl client hello: {err:?}");
                                 None
                             }
                         };
@@ -150,32 +154,37 @@ impl TlsCertSource {
                     let ssl_ref = client_hello.ssl_mut();
 
                     let host = to_host(ssl_ref, &server_name).map_err(|err| {
-                        tracing::error!(error = %err, "boring: failed getting host");
+                        tracing::error!("boring: failed getting host: {err:?}");
                         SelectCertError::ERROR
                     })?;
 
                     tracing::trace!(%host, "try to use cached issued cert or generate new one");
                     let issued_cert = match &cert_cache {
-                        None => issue_cert_for_ca(host.clone(), &ca_cert, &ca_key).context("fresh issue of cert").map_err(|err| {
-                            tracing::error!(error = %err, "boring: select certificate callback: issue failed");
-                            SelectCertError::ERROR
-                        })?,
+                        None => issue_cert_for_ca(host.clone(), &ca_cert, &ca_key)
+                            .context("fresh issue of cert")
+                            .map_err(|err| {
+                                tracing::error!(
+                                    "boring: select certificate callback: issue failed: {err:?}"
+                                );
+                                SelectCertError::ERROR
+                            })?,
                         Some(cert_cache) => cert_cache
-                        .try_get_with(host.clone(), || {
-                            issue_cert_for_ca(host.clone(), &ca_cert, &ca_key)
-                        })
-                        .context("fresh issue of cert + insert").map_err(|err| {
-                            tracing::error!(error = %err, "boring: select certificate callback: issue failed");
-                            SelectCertError::ERROR
-                        })?,
+                            .try_get_with(host.clone(), || {
+                                issue_cert_for_ca(host.clone(), &ca_cert, &ca_key)
+                            })
+                            .context("fresh issue of cert + insert")
+                            .map_err(|err| {
+                                tracing::error!(
+                                    "boring: select certificate callback: issue failed: {err:?}"
+                                );
+                                SelectCertError::ERROR
+                            })?,
                     };
 
-                    add_issued_cert_to_ssl_ref(
-                        host,
-                        issued_cert,
-                        ssl_ref,
-                    ).map_err(|err| {
-                        tracing::error!(error = %err, "boring: select certificate callback: add certs to ssl ref");
+                    add_issued_cert_to_ssl_ref(host, issued_cert, ssl_ref).map_err(|err| {
+                        tracing::error!(
+                            "boring: select certificate callback: add certs to ssl ref: {err:?}"
+                        );
                         SelectCertError::ERROR
                     })?;
 
@@ -189,7 +198,7 @@ impl TlsCertSource {
                 builder.set_async_select_certificate_callback(move |client_hello| {
                     let rama_client_hello =
                         RamaClientHello::rama_try_from(&*client_hello).map_err(|err| {
-                            tracing::error!(error = %err, "boring: failed converting to rama client hello");
+                            tracing::error!("boring: failed converting to rama client hello: {err:?}");
                             AsyncSelectCertError{}
                         })?;
 
@@ -199,7 +208,7 @@ impl TlsCertSource {
 
                     let ssl_ref = client_hello.ssl_mut();
                     let host = to_host(ssl_ref, &server_name).map_err(|err| {
-                        tracing::error!(error = %err, "boring: failed getting host");
+                        tracing::error!("boring: failed getting host: {err:?}");
                         AsyncSelectCertError{}
                     })?;
 
@@ -213,11 +222,11 @@ impl TlsCertSource {
                             cached_cert
                         } else {
                             let auth_data = issuer.issue_cert(rama_client_hello, server_name).await.map_err(|err| {
-                                tracing::error!(error = %err, "boring: dynamic cert issuer failed");
+                                tracing::error!("boring: dynamic cert issuer failed: {err:?}");
                                 AsyncSelectCertError{}
                             })?;
                             server_auth_data_to_private_key_and_ca_chain(&auth_data).map_err(|err| {
-                                tracing::error!(error = %err, "boring: server_auth_data to key and ca chain failed");
+                                tracing::error!("boring: server_auth_data to key and ca chain failed: {err:?}");
                                 AsyncSelectCertError{}
                             })?
                         };
@@ -235,7 +244,7 @@ impl TlsCertSource {
                                 issued_cert,
                                 ssl_ref,
                             ).map_err(|err| {
-                                tracing::error!(error = %err, "boring: async select certificate callback: add certs to ssl ref");
+                                tracing::error!("boring: async select certificate callback: add certs to ssl ref: {err:?}");
                                 AsyncSelectCertError{}
                             })?;
                             Ok(())
@@ -353,14 +362,14 @@ impl TryFrom<rama_net::tls::server::ServerConfig> for TlsAcceptorData {
 fn to_host(ssl_ref: &SslRef, server_name: &Option<Host>) -> Result<Host, OpaqueError> {
     let host = match (ssl_ref.servername(NameType::HOST_NAME), &server_name) {
         (Some(sni), _) => {
-            tracing::trace!(host = %sni, "boring: server_name to host: use client SNI");
+            tracing::trace!("boring: server_name to host: use client SNI: {sni}");
             sni.parse().map_err(|err| {
-                tracing::warn!(error = %err, "boring: invalid servername received in callback");
+                tracing::warn!("boring: invalid servername received in callback: {err:?}");
                 OpaqueError::from_display("sni parse failed")
             })? // from client (e.g. only possibility for SNI proxy)
         }
         (_, Some(host)) => {
-            tracing::trace!(%host, "boring: server_name not in sni: using context");
+            tracing::trace!("boring: server_name {host} not in sni: using context");
             host.clone() // from context (lower prio)
         }
         // We aren't sure if we actually want this logic here or if this should be an error path
@@ -419,10 +428,7 @@ fn issue_cert_for_ca(
     ca_cert: &X509,
     ca_key: &PKey<Private>,
 ) -> Result<IssuedCert, OpaqueError> {
-    tracing::trace!(
-        %host,
-        "generate certs for host using in-memory ca cert"
-    );
+    tracing::trace!("generate certs for host {host} using in-memory ca cert");
     let (cert, key) = self_signed_server_auth_gen_cert(
         &SelfSignedData {
             organisation_name: Some(
@@ -453,10 +459,7 @@ fn add_issued_cert_to_ssl_ref(
     issued_cert: IssuedCert,
     builder: &mut SslRef,
 ) -> Result<(), OpaqueError> {
-    tracing::trace!(
-        %host,
-        "add issued cert for host to (boring) SslAcceptorBuilder"
-    );
+    tracing::trace!("add issued cert for host {host} to (boring) SslAcceptorBuilder");
 
     for (i, ca_cert) in issued_cert.cert_chain.iter().enumerate() {
         if i == 0 {

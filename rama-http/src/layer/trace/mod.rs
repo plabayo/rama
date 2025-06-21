@@ -111,7 +111,11 @@
 //!             tracing::debug_span!("http-request")
 //!         })
 //!         .on_request(|request: &Request, _span: &Span| {
-//!             tracing::debug!("started {} {}", request.method(), request.uri().path())
+//!             tracing::debug!(
+//!                 http.method = %request.method(),
+//!                 url.path = %request.uri().path(),
+//!                 "started request",
+//!             )
 //!         })
 //!         .on_response(|response: &Response, latency: Duration, _span: &Span| {
 //!             tracing::debug!("response generated in {:?}", latency)

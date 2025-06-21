@@ -201,7 +201,7 @@ pub(super) struct Ja4HInfo {
 
 pub(super) fn get_ja4h_info<B>(req: &Request<B>) -> Option<Ja4HInfo> {
     Ja4H::compute(req)
-        .inspect_err(|err| tracing::error!(?err, "ja4h compute failure"))
+        .inspect_err(|err| tracing::error!("ja4h compute failure: {err:?}"))
         .ok()
         .map(|ja4h| Ja4HInfo {
             hash: format!("{ja4h}"),
@@ -263,9 +263,9 @@ pub(super) async fn get_and_store_http_info(
                             });
 
                             tracing::debug!(
-                                "Custom header marker found: {}, title-cased: {}",
-                                header_str,
-                                title_case_headers
+                                http.header.name = %header_str,
+                                http.header.title_cased = %title_case_headers,
+                                "Custom header marker found",
                             );
 
                             storage

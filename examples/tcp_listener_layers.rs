@@ -55,11 +55,14 @@ async fn main() {
                         service_fn(async |stream: TcpStream| {
                             match stream.peer_addr() {
                                 Ok(addr) => {
-                                    tracing::debug!("blocked incoming connection: {}", addr)
+                                    tracing::debug!(
+                                        network.peer.address = %addr.ip(),
+                                        network.peer.port = %addr.port(),
+                                        "blocked incoming connection",
+                                    )
                                 }
                                 Err(err) => tracing::error!(
-                                    error = %err,
-                                    "blocked incoming connection with unknown peer address",
+                                    "blocked incoming connection with unknown peer address: {err:?}",
                                 ),
                             }
                             Ok::<u64, Infallible>(0)

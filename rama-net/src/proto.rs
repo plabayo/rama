@@ -43,7 +43,7 @@ impl Protocol {
                     }
                     Protocol::WSS => Protocol::WSS,
                     other => {
-                        warn!(protocol = %other, "CONNECT request: unexpected protocol");
+                        warn!("CONNECT request: unexpected protocol: {other}");
                         other
                     }
                 }

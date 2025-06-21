@@ -192,14 +192,14 @@ where
     ) -> Result<Self::Response, Self::Error> {
         let (version, stream) = peek_http_stream(stream).await?;
         if version.is_some() {
-            tracing::trace!(?version, "http peek: serve[auto]: http acceptor");
+            tracing::trace!("http peek: serve[auto]: http acceptor; version = {version:?}");
             self.http_acceptor
                 .0
                 .serve(ctx, stream)
                 .await
                 .map_err(Into::into)
         } else {
-            tracing::trace!(?version, "http peek: serve[auto]: fallback");
+            tracing::trace!("http peek: serve[auto]: fallback; version = {version:?}");
             self.fallback.serve(ctx, stream).await.map_err(Into::into)
         }
     }
@@ -223,14 +223,14 @@ where
     ) -> Result<Self::Response, Self::Error> {
         let (version, stream) = peek_http_stream(stream).await?;
         if version == Some(HttpPeekVersion::Http1x) {
-            tracing::trace!(?version, "http peek: serve[http1]: http/1x acceptor");
+            tracing::trace!("http peek: serve[http1]: http/1x acceptor; version = {version:?}");
             self.http_acceptor
                 .0
                 .serve(ctx, stream)
                 .await
                 .map_err(Into::into)
         } else {
-            tracing::trace!(?version, "http peek: serve[http1]: fallback");
+            tracing::trace!("http peek: serve[http1]: fallback; version = {version:?}");
             self.fallback.serve(ctx, stream).await.map_err(Into::into)
         }
     }
@@ -254,14 +254,14 @@ where
     ) -> Result<Self::Response, Self::Error> {
         let (version, stream) = peek_http_stream(stream).await?;
         if version == Some(HttpPeekVersion::H2) {
-            tracing::trace!(?version, "http peek: serve[h2]: http acceptor");
+            tracing::trace!("http peek: serve[h2]: http acceptor; version = {version:?}");
             self.http_acceptor
                 .0
                 .serve(ctx, stream)
                 .await
                 .map_err(Into::into)
         } else {
-            tracing::trace!(?version, "http peek: serve[h2]: fallback");
+            tracing::trace!("http peek: serve[h2]: fallback; version = {version:?}");
             self.fallback.serve(ctx, stream).await.map_err(Into::into)
         }
     }
@@ -288,7 +288,7 @@ where
         let (version, stream) = peek_http_stream(stream).await?;
         match version {
             Some(HttpPeekVersion::H2) => {
-                tracing::trace!(?version, "http peek: serve[dual]: h2 acceptor");
+                tracing::trace!("http peek: serve[dual]: h2 acceptor; version = {version:?}");
                 self.http_acceptor
                     .h2
                     .serve(ctx, stream)
@@ -296,7 +296,7 @@ where
                     .map_err(Into::into)
             }
             Some(HttpPeekVersion::Http1x) => {
-                tracing::trace!(?version, "http peek: serve[dual]: http/1x acceptor");
+                tracing::trace!("http peek: serve[dual]: http/1x acceptor; version = {version:?}");
                 self.http_acceptor
                     .http1
                     .serve(ctx, stream)
@@ -304,7 +304,7 @@ where
                     .map_err(Into::into)
             }
             None => {
-                tracing::trace!(?version, "http peek: serve[dual]: fallback");
+                tracing::trace!("http peek: serve[dual]: fallback; version = {version:?}");
                 self.fallback.serve(ctx, stream).await.map_err(Into::into)
             }
         }
@@ -349,14 +349,11 @@ async fn peek_http_stream<Stream: crate::stream::Stream + Unpin>(
         None
     };
 
-    tracing::trace!(?http_version, "http prefix header read");
+    tracing::trace!("http prefix header read: version = {http_version:?}");
 
     let offset = HTTP_HEADER_PEEK_LEN - n;
     if offset > 0 {
-        tracing::trace!(
-            %n,
-            "move http peek buffer cursor due to reading not enough"
-        );
+        tracing::trace!("move http peek buffer cursor due to reading not enough (read: {n})");
         for i in (0..n).rev() {
             peek_buf[i + offset] = peek_buf[i];
         }

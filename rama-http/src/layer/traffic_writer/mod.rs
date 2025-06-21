@@ -95,7 +95,7 @@ impl BidirectionalWriter<UnboundedSender<BidirectionalMessage>> {
                         )
                         .await
                         {
-                            tracing::error!(err = %err, "failed to write http request to writer")
+                            tracing::error!("failed to write http request to writer: {err:?}")
                         }
                     }
                     BidirectionalMessage::Response(res) => {
@@ -107,12 +107,12 @@ impl BidirectionalWriter<UnboundedSender<BidirectionalMessage>> {
                         )
                         .await
                         {
-                            tracing::error!(err = %err, "failed to write http response to writer")
+                            tracing::error!("failed to write http response to writer: {err:?}")
                         }
                     }
                 }
                 if let Err(err) = writer.write_all(b"\r\n").await {
-                    tracing::error!(err = %err, "failed to write separator to writer")
+                    tracing::error!("failed to write separator to writer: {err:?}")
                 }
             }
         });
@@ -173,39 +173,42 @@ impl BidirectionalWriter<Sender<BidirectionalMessage>> {
             otel.kind = "consumer",
         );
 
-        executor.spawn_task(async move {
-            while let Some(msg) = rx.recv().await {
-                match msg {
-                    BidirectionalMessage::Request(req) => {
-                        if let Err(err) = write_http_request(
-                            &mut writer,
-                            req,
-                            write_request_headers,
-                            write_request_body,
-                        )
-                        .await
-                        {
-                            tracing::error!(err = %err, "failed to write http request to writer")
+        executor.spawn_task(
+            async move {
+                while let Some(msg) = rx.recv().await {
+                    match msg {
+                        BidirectionalMessage::Request(req) => {
+                            if let Err(err) = write_http_request(
+                                &mut writer,
+                                req,
+                                write_request_headers,
+                                write_request_body,
+                            )
+                            .await
+                            {
+                                tracing::error!("failed to write http request to writer: {err:?}")
+                            }
+                        }
+                        BidirectionalMessage::Response(res) => {
+                            if let Err(err) = write_http_response(
+                                &mut writer,
+                                res,
+                                write_response_headers,
+                                write_response_body,
+                            )
+                            .await
+                            {
+                                tracing::error!("failed to write http response to writer: {err:?}")
+                            }
                         }
                     }
-                    BidirectionalMessage::Response(res) => {
-                        if let Err(err) = write_http_response(
-                            &mut writer,
-                            res,
-                            write_response_headers,
-                            write_response_body,
-                        )
-                        .await
-                        {
-                            tracing::error!(err = %err, "failed to write http response to writer")
-                        }
+                    if let Err(err) = writer.write_all(b"\r\n").await {
+                        tracing::error!("failed to write separator to writer: {err:?}")
                     }
-                }
-                if let Err(err) = writer.write_all(b"\r\n").await {
-                    tracing::error!(err = %err, "failed to write separator to writer")
                 }
             }
-        }.instrument(span));
+            .instrument(span),
+        );
 
         Self { sender: tx }
     }
@@ -261,10 +264,10 @@ impl BidirectionalWriter<Sender<BidirectionalMessage>> {
                     )
                     .await
                     {
-                        tracing::error!(err = %err, "failed to write last http request to writer")
+                        tracing::error!("failed to write last http request to writer: {err:?}")
                     }
                     if let Err(err) = writer.write_all(b"\r\n").await {
-                        tracing::error!(err = %err, "failed to write separator to writer")
+                        tracing::error!("failed to write separator to writer: {err:?}")
                     }
                 }
 
@@ -277,10 +280,10 @@ impl BidirectionalWriter<Sender<BidirectionalMessage>> {
                     )
                     .await
                     {
-                        tracing::error!(err = %err, "failed to write last http response to writer")
+                        tracing::error!("failed to write last http response to writer: {err:?}")
                     }
                     if let Err(err) = writer.write_all(b"\r\n").await {
-                        tracing::error!(err = %err, "failed to write separator to writer")
+                        tracing::error!("failed to write separator to writer: {err:?}")
                     }
                 }
             }
@@ -346,7 +349,7 @@ impl BidirectionalWriter<Sender<BidirectionalMessage>> {
 impl RequestWriter for BidirectionalWriter<UnboundedSender<BidirectionalMessage>> {
     async fn write_request(&self, req: Request) {
         if let Err(err) = self.sender.send(BidirectionalMessage::Request(req)) {
-            tracing::error!(err = %err, "failed to send request to writer over unbounded channel")
+            tracing::error!("failed to send request to writer over unbounded channel: {err:?}")
         }
     }
 }
@@ -354,7 +357,7 @@ impl RequestWriter for BidirectionalWriter<UnboundedSender<BidirectionalMessage>
 impl ResponseWriter for BidirectionalWriter<UnboundedSender<BidirectionalMessage>> {
     async fn write_response(&self, res: Response) {
         if let Err(err) = self.sender.send(BidirectionalMessage::Response(res)) {
-            tracing::error!(err = %err, "failed to send response to writer over unbounded channel")
+            tracing::error!("failed to send response to writer over unbounded channel: {err:?}")
         }
     }
 }
@@ -362,7 +365,7 @@ impl ResponseWriter for BidirectionalWriter<UnboundedSender<BidirectionalMessage
 impl RequestWriter for BidirectionalWriter<Sender<BidirectionalMessage>> {
     async fn write_request(&self, req: Request) {
         if let Err(err) = self.sender.send(BidirectionalMessage::Request(req)).await {
-            tracing::error!(err = %err, "failed to send request to writer over bounded channel")
+            tracing::error!("failed to send request to writer over bounded channel: {err:?}")
         }
     }
 }
@@ -370,7 +373,7 @@ impl RequestWriter for BidirectionalWriter<Sender<BidirectionalMessage>> {
 impl ResponseWriter for BidirectionalWriter<Sender<BidirectionalMessage>> {
     async fn write_response(&self, res: Response) {
         if let Err(err) = self.sender.send(BidirectionalMessage::Response(res)).await {
-            tracing::error!(err = %err, "failed to send response to writer over bounded channel")
+            tracing::error!("failed to send response to writer over bounded channel: {err:?}")
         }
     }
 }

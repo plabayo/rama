@@ -54,7 +54,8 @@ impl<S: rama_net::stream::Stream + Unpin> UdpSocketRelayBinder<S> {
         })?;
 
         tracing::trace!(
-            %socket_addr,
+            network.local.address = %socket_addr.ip(),
+            network.local.port = %socket_addr.port(),
             "socks5 client: udp associate handshake initiated"
         );
 
@@ -83,9 +84,9 @@ impl<S: rama_net::stream::Stream + Unpin> UdpSocketRelayBinder<S> {
         })?;
 
         tracing::trace!(
-            %socket_addr,
-            %bind_address,
-            "socks5 client: socks5 server ready to bind for udp purposes",
+            network.local.address = %socket_addr.ip(),
+            network.local.port = %socket_addr.port(),
+            "socks5 client: socks5 server ready to bind at {bind_address} for udp purposes",
         );
 
         Ok(UdpSocketRelay {
@@ -457,9 +458,7 @@ where
             Ok(())
         } else {
             tracing::debug!(
-                len = %n,
-                wr_len = %wr_n,
-                "failed to write entire datagram to socket"
+                "failed to write entire datagram to socket: len = {n}; wr len = {wr_n}"
             );
             Err(io::Error::other("failed to write entire datagram to socket").into())
         };

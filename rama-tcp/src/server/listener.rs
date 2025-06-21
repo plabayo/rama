@@ -457,10 +457,7 @@ where
 
 async fn handle_accept_err(err: io::Error) {
     if rama_net::conn::is_connection_error(&err) {
-        tracing::trace!(
-            error = &err as &dyn std::error::Error,
-            "TCP accept error: connect error"
-        );
+        tracing::trace!("TCP accept error: connect error: {err:?}");
     } else {
         // [From `hyper::Server` in 0.14](https://github.com/hyperium/hyper/blob/v0.14.27/src/server/tcp.rs#L186)
         //
@@ -473,7 +470,7 @@ async fn handle_accept_err(err: io::Error) {
         // > and then the listener will sleep for 1 second.
         //
         // hyper allowed customizing this but axum does not.
-        tracing::error!(error = &err as &dyn std::error::Error, "TCP accept error");
+        tracing::error!("TCP accept error: {err:?}");
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
 }

@@ -49,7 +49,8 @@ where
         destination: Authority,
     ) -> Result<(), Error> {
         tracing::debug!(
-            %destination,
+            server.address = %destination.host(),
+            server.port = %destination.port(),
             "socks5 server: abort: command not supported: Bind",
         );
 
@@ -275,18 +276,12 @@ where
         mut stream: S,
         requested_bind_address: Authority,
     ) -> Result<(), Error> {
-        tracing::trace!(
-            %requested_bind_address,
-            "socks5 server: bind: try to create acceptor"
-        );
+        tracing::trace!("socks5 server: bind: try to create acceptor @ {requested_bind_address}");
 
         let (requested_host, requested_port) = requested_bind_address.into_parts();
         let requested_addr = match requested_host {
             Host::Name(domain) => {
-                tracing::debug!(
-                    %domain,
-                    "bind command does not accept domain as bind address",
-                );
+                tracing::debug!("bind command does not accept domain {domain} as bind address",);
                 let reply_kind = ReplyKind::AddressTypeNotSupported;
                 Reply::error_reply(reply_kind)
                     .write_to(&mut stream)
@@ -303,15 +298,13 @@ where
         let bind_interface = match self.bind_interface.clone() {
             Some(bind_interface) => {
                 tracing::trace!(
-                    %bind_interface,
-                    "socks5 server: bind: use server-defined bind interface"
+                    "socks5 server: bind: use server-defined bind interface: {bind_interface}"
                 );
                 bind_interface
             }
             None => {
                 tracing::debug!(
-                    %requested_interface,
-                    "socks5 server: bind: no server-defined bind interface: use requested client interface"
+                    "socks5 server: bind: no server-defined bind interface: use requested client interface @ {requested_interface}"
                 );
                 requested_interface.into()
             }
@@ -321,7 +314,7 @@ where
             Ok(twin) => twin,
             Err(err) => {
                 let err = err.into();
-                tracing::debug!(error = %err, "make bind listener failed",);
+                tracing::debug!("make bind listener failed: {err:?}");
                 let reply_kind = ReplyKind::GeneralServerFailure;
                 Reply::error_reply(reply_kind)
                     .write_to(&mut stream)
@@ -339,9 +332,7 @@ where
             Ok(addr) => addr,
             Err(err) => {
                 tracing::debug!(
-                    %bind_interface,
-                    error = %err,
-                    "retrieve local addr of (tcp) acceptor failed",
+                    "retrieve local addr of (tcp) acceptor failed @ {bind_interface}: {err:?}",
                 );
                 let reply_kind = ReplyKind::GeneralServerFailure;
                 Reply::error_reply(reply_kind)
@@ -367,11 +358,7 @@ where
             Some(duration) => match tokio::time::timeout(duration, accept_future).await {
                 Ok(result) => result,
                 Err(err) => {
-                    tracing::debug!(
-                        %bind_interface,
-                        timeout_err=?err,
-                        "accept future timed out",
-                    );
+                    tracing::debug!("accept future timed out @ {bind_interface}: {err:?}",);
                     let reply_kind = ReplyKind::TtlExpired;
                     Reply::error_reply(reply_kind)
                         .write_to(&mut stream)
@@ -389,11 +376,7 @@ where
             Ok((stream, addr)) => (stream, addr),
             Err(err) => {
                 let err: BoxError = err.into();
-                tracing::debug!(
-                    %bind_interface,
-                    ?err,
-                    "socks5 server: abort: bind failed",
-                );
+                tracing::debug!("socks5 server: abort: bind failed @ {bind_interface}: {err:?}",);
 
                 let reply_kind = (&err).into();
                 Reply::error_reply(reply_kind)
@@ -409,9 +392,7 @@ where
         };
 
         tracing::trace!(
-            %bind_interface,
-            remote_address = %incoming_addr,
-            "incoming connection received on bind address",
+            "incoming connection {incoming_addr} received on bind interface {bind_interface}",
         );
 
         Reply::new(incoming_addr)
@@ -422,9 +403,7 @@ where
             })?;
 
         tracing::trace!(
-            %bind_interface,
-            remote_address = %incoming_addr,
-            "socks5 server: bind: ready to serve",
+            "socks5 server @ {bind_interface}: bind: ready to serve from {incoming_addr}",
         );
 
         self.service

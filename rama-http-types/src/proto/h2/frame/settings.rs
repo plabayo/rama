@@ -208,9 +208,8 @@ impl Settings {
                 }
                 SettingId::Unknown(id) => {
                     tracing::trace!(
-                        %id,
-                        value = %setting.value,
-                        "ignore unknown h2 frame setting",
+                        "ignore unknown h2 frame setting w/ id {id}: value = {}",
+                        setting.value
                     );
                 }
             }
@@ -292,10 +291,7 @@ impl Settings {
                     }
                 }
                 SettingId::Unknown(id) => {
-                    tracing::trace!(
-                        %id,
-                        "ignore unknown setting, nop apply",
-                    )
+                    tracing::trace!("ignore unknown setting w/ id {id}, nop apply",)
                 }
             }
         }

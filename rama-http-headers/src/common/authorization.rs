@@ -76,7 +76,7 @@ impl Authorization<Bearer> {
     pub fn bearer(token: impl Into<Cow<'static, str>>) -> Result<Self, InvalidHttpBearerToken> {
         Ok(Authorization(Bearer::try_from_clear_str(token).map_err(
             |err| {
-                tracing::debug!(%err, "invalid bearer http bearer token");
+                tracing::debug!("invalid bearer http bearer token: {err:?}");
                 InvalidHttpBearerToken
             },
         )?))

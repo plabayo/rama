@@ -30,7 +30,7 @@
 //! # async fn main() {
 //!     let home_handler = (
 //!         ErrorHandlerLayer::new().error_mapper(|err| {
-//!             tracing::error!("Error: {:?}", err);
+//!             tracing::error!("Error: {err:?}");
 //!             StatusCode::INTERNAL_SERVER_ERROR.into_response()
 //!         }),
 //!         TimeoutLayer::new(Duration::from_secs(5)),

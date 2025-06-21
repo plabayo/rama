@@ -64,7 +64,7 @@ impl Header for Forwarded {
         {
             Ok(f) => f,
             Err(err) => {
-                tracing::trace!(err = %err, "failed to turn header into Forwarded extension");
+                tracing::trace!("failed to turn header into Forwarded extension: {err:?}");
                 return Err(Error::invalid());
             }
         };
@@ -73,7 +73,7 @@ impl Header for Forwarded {
             let other: rama_net::forwarded::Forwarded = match header.as_bytes().try_into() {
                 Ok(f) => f,
                 Err(err) => {
-                    tracing::trace!(err = %err, "failed to turn header into Forwarded extension");
+                    tracing::trace!("failed to turn header into Forwarded extension: {err:?}");
                     return Err(Error::invalid());
                 }
             };

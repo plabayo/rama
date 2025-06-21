@@ -69,7 +69,7 @@ async fn main() {
         .unwrap();
 
     let body = resp.try_into_string().await.unwrap();
-    tracing::info!("body: {:?}", body);
+    tracing::info!("body: {body}");
     assert_eq!(body, "Hello, World!");
 
     // Server has a limit of one total connection. So this request will work if we reuse

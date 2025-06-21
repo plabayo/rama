@@ -184,9 +184,9 @@ impl EventDataLineReader for MergeFragmentsReader {
             fragments.push('\n');
         } else {
             tracing::debug!(
-                %keyword,
-                %value,
-                "MergeFragmentsReader: ignore unknown merge fragment line",
+                "MergeFragmentsReader: ignore unknown merge fragment line: keyword = {}; value = {}",
+                keyword,
+                value,
             );
         }
 

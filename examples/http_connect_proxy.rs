@@ -186,11 +186,15 @@ where
         .map(|ctx| ctx.authority.clone())
     {
         Ok(authority) => {
-            tracing::info!(%authority, "accept CONNECT (lazy): insert proxy target into context");
+            tracing::info!(
+                server.address = %authority.host(),
+                server.port = %authority.port(),
+                "accept CONNECT (lazy): insert proxy target into context",
+            );
             ctx.insert(ProxyTarget(authority));
         }
         Err(err) => {
-            tracing::error!(err = %err, "error extracting authority");
+            tracing::error!("error extracting authority: {err:?}");
             return Err(StatusCode::BAD_REQUEST.into_response());
         }
     }
@@ -226,7 +230,7 @@ where
             Ok(resp)
         }
         Err(err) => {
-            tracing::error!(error = %err, "error in client request");
+            tracing::error!("error in client request: {err:?}");
             Ok(Response::builder()
                 .status(StatusCode::INTERNAL_SERVER_ERROR)
                 .body(Body::empty())
@@ -261,7 +265,7 @@ impl UsernameLabelParser for PriorityUsernameLabelParser {
                 "medium" => self.priority = Some(Priority::Medium),
                 "low" => self.priority = Some(Priority::Low),
                 _ => {
-                    tracing::trace!("invalid priority username label value: {label}");
+                    tracing::trace!(%label, "invalid priority username label value");
                     return UsernameLabelState::Abort;
                 }
             }

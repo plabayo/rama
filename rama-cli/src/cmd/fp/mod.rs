@@ -312,9 +312,9 @@ pub async fn run(cfg: CliCommandFingerprint) -> Result<(), BoxError> {
         match cfg.http_version {
             HttpVersion::Auto => {
                 tracing::info!(
-                    bind = %cfg.bind,
-                    %bind_address,
-                    "FP Service (auto) listening",
+                    network.local.address = %bind_address.ip(),
+                    network.local.port = %bind_address.port(),
+                    "FP Service (auto) listening: bind interface = {}", cfg.bind,
                 );
                 tcp_listener
                     .serve_graceful(
@@ -327,9 +327,9 @@ pub async fn run(cfg: CliCommandFingerprint) -> Result<(), BoxError> {
             }
             HttpVersion::H1 => {
                 tracing::info!(
-                    bind = %cfg.bind,
-                    %bind_address,
-                    "FP Service (HTTP/1.1) listening",
+                    network.local.address = %bind_address.ip(),
+                    network.local.port = %bind_address.port(),
+                    "FP Service (HTTP/1.1) listening: bind interface = {}", cfg.bind,
                 );
                 tcp_listener
                     .serve_graceful(
@@ -340,9 +340,9 @@ pub async fn run(cfg: CliCommandFingerprint) -> Result<(), BoxError> {
             }
             HttpVersion::H2 => {
                 tracing::info!(
-                    bind = %cfg.bind,
-                    %bind_address,
-                    "FP Service (H2) listening",
+                    network.local.address = %bind_address.ip(),
+                    network.local.port = %bind_address.port(),
+                    "FP Service (H2) listening: bind interface = {}", cfg.bind,
                 );
                 tcp_listener
                     .serve_graceful(

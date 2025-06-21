@@ -238,8 +238,7 @@ impl<S> Socks5ProxyConnector<S> {
                                     .unwrap_or(Host::Name(domain)),
                                 Err(err) => {
                                     tracing::debug!(
-                                        ?err,
-                                        "failed to lookup ipv4 addresses for domain"
+                                        "failed to lookup ipv4 addresses for domain: {err:?}"
                                     );
                                     Host::Name(domain)
                                 }
@@ -254,8 +253,7 @@ impl<S> Socks5ProxyConnector<S> {
                                     .unwrap_or(Host::Name(domain)),
                                 Err(err) => {
                                     tracing::debug!(
-                                        ?err,
-                                        "failed to lookup ipv6 addresses for domain"
+                                        "failed to lookup ipv6 addresses for domain: {err:?}"
                                     );
                                     Host::Name(domain)
                                 }
@@ -279,16 +277,13 @@ impl<S> Socks5ProxyConnector<S> {
                                                 {
                                                     if let Err(err) = tx.send(IpAddr::V4(ip)) {
                                                         tracing::trace!(
-                                                            ?err,
-                                                            %ip,
-                                                            "failed to send ipv4 lookup result"
+                                                            "failed to send ipv4 lookup result for ip: {ip}; err = {err:?}"
                                                         )
                                                     }
                                                 }
                                             }
                                             Err(err) => tracing::debug!(
-                                                ?err,
-                                                "failed to lookup ipv4 addresses for domain"
+                                                "failed to lookup ipv4 addresses for domain: {err:?}"
                                             ),
                                         }
                                     }
@@ -308,16 +303,13 @@ impl<S> Socks5ProxyConnector<S> {
                                                 {
                                                     if let Err(err) = tx.send(IpAddr::V6(ip)) {
                                                         tracing::trace!(
-                                                            ?err,
-                                                            %ip,
-                                                            "failed to send ipv6 lookup result"
+                                                            "failed to send ipv6 lookup result for ip {ip}: {err:?}"
                                                         )
                                                     }
                                                 }
                                             }
                                             Err(err) => tracing::debug!(
-                                                ?err,
-                                                "failed to lookup ipv6 addresses for domain"
+                                                "failed to lookup ipv6 addresses for domain: {err:?}"
                                             ),
                                         }
                                     }
@@ -436,8 +428,10 @@ where
             .clone();
 
         tracing::trace!(
-            %proxy_address,
-            authority = %transport_ctx.authority,
+            network.peer.address = %proxy_address.authority.host(),
+            network.peer.port = %proxy_address.authority.port(),
+            server.address = %transport_ctx.authority.host(),
+            server.port = %transport_ctx.authority.port(),
             "socks5 proxy connector: connected to proxy",
         );
 
@@ -446,8 +440,10 @@ where
         match &proxy_address.credential {
             Some(ProxyCredential::Basic(basic)) => {
                 tracing::trace!(
-                    %proxy_address,
-                    authority = %transport_ctx.authority,
+                    network.peer.address = %proxy_address.authority.host(),
+                    network.peer.port = %proxy_address.authority.port(),
+                    server.address = %transport_ctx.authority.host(),
+                    server.port = %transport_ctx.authority.port(),
                     "socks5 proxy connector: continue handshake with authorisation",
                 );
                 client.set_auth(basic.into());
@@ -460,8 +456,10 @@ where
             }
             None => {
                 tracing::trace!(
-                    %proxy_address,
-                    authority = %transport_ctx.authority,
+                    network.peer.address = %proxy_address.authority.host(),
+                    network.peer.port = %proxy_address.authority.port(),
+                    server.address = %transport_ctx.authority.host(),
+                    server.port = %transport_ctx.authority.port(),
                     "socks5 proxy connector: continue handshake without authorisation",
                 );
             }
@@ -474,8 +472,10 @@ where
         {
             Ok(bind_addr) => {
                 tracing::trace!(
-                    %proxy_address,
-                    authority = %transport_ctx.authority,
+                    network.peer.address = %proxy_address.authority.host(),
+                    network.peer.port = %proxy_address.authority.port(),
+                    server.address = %transport_ctx.authority.host(),
+                    server.port = %transport_ctx.authority.port(),
                     %bind_addr,
                     "socks5 proxy connector: handshake complete",
                 )

@@ -461,7 +461,7 @@ where
 
         let result = ready!(self.io.poll_read_from_io(cx));
         Poll::Ready(result.map_err(|e| {
-            trace!(error = %e, "force_io_read; io error");
+            trace!("force_io_read; io error: {e:?}");
             self.state.close();
             e
         }))

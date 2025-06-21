@@ -84,14 +84,11 @@ where
             .context("try to read tls prefix header")?;
 
         let is_tls = n == TLS_HEADER_PEEK_LEN && matches!(peek_buf, [0x16, 0x03, 0x00..=0x04, ..]);
-        tracing::trace!(%is_tls, "tls prefix header read");
+        tracing::trace!(%is_tls, "tls prefix header read: is tls: {is_tls}");
 
         let offset = TLS_HEADER_PEEK_LEN - n;
         if offset > 0 {
-            tracing::trace!(
-                %n,
-                "move tls peek buffer cursor due to reading not enough"
-            );
+            tracing::trace!("move tls peek buffer cursor due to reading not enough: (read: {n})");
             for i in (0..n).rev() {
                 peek_buf[i + offset] = peek_buf[i];
             }

@@ -68,8 +68,7 @@ where
         destination: Authority,
     ) -> Result<(), Error> {
         tracing::debug!(
-            %destination,
-            "socks5 server: abort: command not supported: UDP Associate",
+            "socks5 server w/ destination {destination}: abort: command not supported: UDP Associate",
         );
 
         Reply::error_reply(ReplyKind::CommandNotSupported)
@@ -446,16 +445,14 @@ where
         destination: Authority,
     ) -> Result<(), Error> {
         tracing::trace!(
-            %destination,
-            "socks5 server: udp associate: try to bind incoming socket",
+            "socks5 server w/ destination {destination}: udp associate: try to bind incoming socket to destination {destination}",
         );
 
         let (dest_host, dest_port) = destination.into_parts();
         let dest_addr = match dest_host {
             Host::Name(domain) => {
                 tracing::debug!(
-                    %domain,
-                    "udp associate command does not accept domain as bind address",
+                    "udp associate command does not accept domain {domain} as bind address",
                 );
                 let reply_kind = ReplyKind::AddressTypeNotSupported;
                 Reply::error_reply(reply_kind)
@@ -479,10 +476,7 @@ where
             Err(err) => {
                 let err = err.into();
 
-                tracing::debug!(
-                    error=%err,
-                    "udp north socket bind failed",
-                );
+                tracing::debug!("udp north socket bind failed: {err:?}",);
 
                 let reply_kind = ReplyKind::GeneralServerFailure;
                 Reply::error_reply(reply_kind)
@@ -501,7 +495,7 @@ where
         let socket_north_address = match socket_north.local_addr() {
             Ok(addr) => addr,
             Err(err) => {
-                tracing::debug!(error = %err, "retrieve local addr of north (udp) socket failed");
+                tracing::debug!("retrieve local addr of north (udp) socket failed: {err:?}");
                 let reply_kind = ReplyKind::GeneralServerFailure;
                 Reply::error_reply(reply_kind)
                     .write_to(&mut stream)
@@ -525,10 +519,7 @@ where
             Err(err) => {
                 let err = err.into();
 
-                tracing::debug!(
-                    error=%err,
-                    "udp south socket bind failed",
-                );
+                tracing::debug!("udp south socket bind failed: {err:?}",);
 
                 let reply_kind = ReplyKind::GeneralServerFailure;
                 Reply::error_reply(reply_kind)
@@ -573,14 +564,16 @@ where
         tokio::select! {
             _ = &mut drop_stream_fut => {
                 tracing::trace!(
-                    %client_address,
-                    "socks5 server: udp associate: tcp stream dropped: drop relay",
+                    network.peer.address = %client_address.ip_addr(),
+                    network.peer.port = %client_address.port(),
+                    "socks5 server: udp associate: tcp stream dropped from client: drop relay",
                 );
             }
 
             _ = &mut timeout_fut => {
                 tracing::debug!(
-                    %client_address,
+                    network.peer.address = %client_address.ip_addr(),
+                    network.peer.port = %client_address.port(),
                     "socks5 server: udp associate: timeout reached: drop relay",
                 );
                 return Err(Error::io(std::io::Error::new(std::io::ErrorKind::TimedOut, "relay timeout reached")));
@@ -588,7 +581,8 @@ where
 
             Err(err) = udp_relay => {
                 tracing::debug!(
-                    %client_address,
+                    network.peer.address = %client_address.ip_addr(),
+                    network.peer.port = %client_address.port(),
                     "socks5 server: udp associate: udp relay: exit with an error",
                 );
                 return Err(err);
@@ -596,9 +590,9 @@ where
         }
 
         tracing::trace!(
-            %client_address,
-            "socks5 server: udp associate: udp relay: done",
-        );
+            network.peer.address = %client_address.ip_addr(),
+            network.peer.port = %client_address.port(),
+            "socks5 server: udp associate: udp relay: done",);
         Ok(())
     }
 }

@@ -155,8 +155,9 @@ where
                 .unwrap_or_default()
             {
                 tracing::trace!(
-                    authority = %transport_ctx.authority,
-                    "http proxy connector: preparing proxy connection for tls tunnel"
+                    server.address = %transport_ctx.authority.host(),
+                    server.port = %transport_ctx.authority.port(),
+                    "http proxy connector: preparing proxy connection for tls tunnel",
                 );
                 ctx.insert(TlsTunnel {
                     server_host: address.authority.host().clone(),
@@ -206,7 +207,8 @@ where
         let EstablishedClientConnection { ctx, req, conn } = established_conn;
 
         tracing::trace!(
-            authority = %transport_ctx.authority,
+            server.address = %transport_ctx.authority.host(),
+            server.port = %transport_ctx.authority.port(),
             "http proxy connector: connected to proxy",
         );
 
@@ -249,7 +251,8 @@ where
             .map_err(|err| OpaqueError::from_std(err).context("http proxy handshake"))?;
 
         tracing::trace!(
-            authority = %transport_ctx.authority,
+            server.address = %transport_ctx.authority.host(),
+            server.port = %transport_ctx.authority.port(),
             "http proxy connector: connected to proxy: ready secure request",
         );
         Ok(EstablishedClientConnection {

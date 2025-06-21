@@ -124,7 +124,7 @@ impl Http1Transaction for Server {
                     Some(cap) => smallvec![MaybeUninit::uninit(); cap],
                     None => smallvec_inline![MaybeUninit::uninit(); DEFAULT_MAX_HEADERS],
                 };
-            trace!(bytes = buf.len(), "Request.parse");
+            trace!("Request.parse: bytes = {}", buf.len());
             let mut req = httparse::Request::new(&mut []);
             let bytes = buf.as_ref();
             match req.parse_with_uninit_headers(bytes, &mut headers) {
@@ -835,7 +835,7 @@ impl Http1Transaction for Client {
                     Some(cap) => smallvec![MaybeUninit::uninit(); cap],
                     None => smallvec_inline![MaybeUninit::uninit(); DEFAULT_MAX_HEADERS],
                 };
-                trace!(bytes = buf.len(), "Response.parse");
+                trace!("Response.parse: bytes len = {}", buf.len());
                 let mut res = httparse::Response::new(&mut []);
                 let bytes = buf.as_ref();
                 match ctx.h1_parser_config.parse_response_with_uninit_headers(

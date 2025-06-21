@@ -97,25 +97,22 @@ impl Header {
     {
         let n = self.serialized_len();
         if n == 3 {
-            tracing::trace!(%n, "write socks5 client header w/ 1 method: on stack");
+            tracing::trace!("write socks5 client header w/ 1 method: on stack (w={n})");
             let mut buf = [0u8; 3];
             self.write_to_buf(&mut buf.as_mut_slice());
             w.write_all(&buf[..]).await
         } else if n == 4 {
-            tracing::trace!(%n, "write socks5 client header w/ 2 methods: on stack");
+            tracing::trace!("write socks5 client header w/ 2 methods: on stack (w={n})");
             let mut buf = [0u8; 4];
             self.write_to_buf(&mut buf.as_mut_slice());
             w.write_all(&buf[..]).await
         } else if n == 5 {
-            tracing::trace!(%n, "write socks5 client header w/ 3 methods: on stack");
+            tracing::trace!("write socks5 client header w/ 3 methods: on stack (w={n})");
             let mut buf = [0u8; 5];
             self.write_to_buf(&mut buf.as_mut_slice());
             w.write_all(&buf[..]).await
         } else {
-            tracing::trace!(
-                %n,
-                "write socks5 client header w/ > 3 methods: on heap",
-            );
+            tracing::trace!("write socks5 client header w/ > 3 methods: on heap (w={n})",);
             let mut buf = BytesMut::with_capacity(n);
             self.write_to_buf(&mut buf);
             w.write_all(&buf).await
@@ -268,7 +265,7 @@ impl RequestRef<'_> {
 
         match self.destination.host() {
             rama_net::address::Host::Address(IpAddr::V4(_)) => {
-                tracing::trace!(%n, "write socks5 client request w/ Ipv4 addr: on stack");
+                tracing::trace!("write socks5 client request w/ Ipv4 addr: on stack (w={n})");
                 debug_assert_eq!(4 + 4 + 2, n);
                 let mut buf = [0u8; 10];
                 self.write_to_buf(&mut buf.as_mut_slice());
@@ -280,29 +277,29 @@ impl RequestRef<'_> {
 
                 if n <= SMALL_LEN {
                     tracing::trace!(
-                        %n,
-                        "write socks5 client request w/ (small) domain name: on stack",
+                        "write socks5 client request w/ (small) domain name: on stack (w={n})",
                     );
                     let mut buf = [0u8; SMALL_LEN];
                     self.write_to_buf(&mut buf.as_mut_slice());
                     w.write_all(&buf[..n]).await
                 } else if n <= MED_LEN {
                     tracing::trace!(
-                        %n,
-                        "write socks5 client request w/ (medium) domain name: on stack",
+                        "write socks5 client request w/ (medium) domain name: on stack (w={n})",
                     );
                     let mut buf = [0u8; MED_LEN];
                     self.write_to_buf(&mut buf.as_mut_slice());
                     w.write_all(&buf[..n]).await
                 } else {
-                    tracing::trace!(%n, "write socks5 client request w/ (large) domain name: on heap");
+                    tracing::trace!(
+                        "write socks5 client request w/ (large) domain name: on heap (w={n})"
+                    );
                     let mut buf = BytesMut::with_capacity(n);
                     self.write_to_buf(&mut buf);
                     w.write_all(&buf).await
                 }
             }
             rama_net::address::Host::Address(IpAddr::V6(_)) => {
-                tracing::trace!(%n, "write socks5 client request w/ Ipv6 addr: on stack");
+                tracing::trace!("write socks5 client request w/ Ipv6 addr: on stack (w={n})");
                 debug_assert_eq!(4 + 16 + 2, n);
                 let mut buf = [0u8; 22];
                 self.write_to_buf(&mut buf.as_mut_slice());
@@ -501,22 +498,30 @@ impl<'a> UsernamePasswordRequestRef<'a> {
         let n = self.serialized_len();
 
         if n <= SMALL_LEN {
-            tracing::trace!(%n, "write socks5 Username/Password request w/ (small) credentials: on stack");
+            tracing::trace!(
+                "write socks5 Username/Password request w/ (small) credentials: on stack (w={n})"
+            );
             let mut buf = [0u8; SMALL_LEN];
             self.write_to_buf(&mut buf.as_mut_slice());
             w.write_all(&buf[..n]).await
         } else if n <= MED_LEN {
-            tracing::trace!(%n, "write socks5 Username/Password request w/ (medium) credentials: on stack");
+            tracing::trace!(
+                "write socks5 Username/Password request w/ (medium) credentials: on stack (w={n})"
+            );
             let mut buf = [0u8; MED_LEN];
             self.write_to_buf(&mut buf.as_mut_slice());
             w.write_all(&buf[..n]).await
         } else if n <= LARGE_LEN {
-            tracing::trace!(%n, "write socks5 Username/Password request w/ (large) credentials: on stack");
+            tracing::trace!(
+                "write socks5 Username/Password request w/ (large) credentials: on stack (w={n})"
+            );
             let mut buf = [0u8; LARGE_LEN];
             self.write_to_buf(&mut buf.as_mut_slice());
             w.write_all(&buf[..n]).await
         } else {
-            tracing::trace!(%n, "write socks5 Username/Password request w/ (jumbo) credentials: on heap");
+            tracing::trace!(
+                "write socks5 Username/Password request w/ (jumbo) credentials: on heap (w={n})"
+            );
             let mut buf = BytesMut::with_capacity(n);
             self.write_to_buf(&mut buf);
             w.write_all(&buf).await

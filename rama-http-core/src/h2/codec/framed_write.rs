@@ -138,12 +138,12 @@ where
             while !self.encoder.is_empty() {
                 match self.encoder.next {
                     Some(Next::Data(ref mut frame)) => {
-                        tracing::trace!(queued_data_frame = true);
+                        tracing::trace!("data frame queued");
                         let mut buf = (&mut self.encoder.buf).chain(frame.payload_mut());
                         ready!(poll_write_buf(Pin::new(&mut self.inner), cx, &mut buf))?
                     }
                     _ => {
-                        tracing::trace!(queued_data_frame = false);
+                        tracing::trace!("data not frame queued");
                         ready!(poll_write_buf(
                             Pin::new(&mut self.inner),
                             cx,
@@ -242,7 +242,7 @@ where
         let span = tracing::trace_span!("FramedWrite::buffer", frame = ?item);
         let _e = span.enter();
 
-        tracing::debug!(frame = ?item, "send");
+        tracing::debug!("send: frame = {item:?}");
 
         match item {
             Frame::Data(mut v) => {
@@ -291,31 +291,31 @@ where
             }
             Frame::Settings(v) => {
                 v.encode(self.buf.get_mut());
-                tracing::trace!(rem = self.buf.remaining(), "encoded settings");
+                tracing::trace!("encoded settings: rem = {}", self.buf.remaining());
             }
             Frame::GoAway(v) => {
                 v.encode(self.buf.get_mut());
-                tracing::trace!(rem = self.buf.remaining(), "encoded go_away");
+                tracing::trace!("encoded go_away: rem = {}", self.buf.remaining());
             }
             Frame::Ping(v) => {
                 v.encode(self.buf.get_mut());
-                tracing::trace!(rem = self.buf.remaining(), "encoded ping");
+                tracing::trace!("encoded ping: rem = {}", self.buf.remaining());
             }
             Frame::WindowUpdate(v) => {
                 v.encode(self.buf.get_mut());
-                tracing::trace!(rem = self.buf.remaining(), "encoded window_update");
+                tracing::trace!("encoded window_update: rem = {}", self.buf.remaining());
             }
 
             Frame::Priority(_) => {
                 /*
                 v.encode(self.buf.get_mut());
-                tracing::trace!("encoded priority; rem={:?}", self.buf.remaining());
+                tracing::trace!("encoded priority; rem = {:?}", self.buf.remaining());
                 */
                 unimplemented!();
             }
             Frame::Reset(v) => {
                 v.encode(self.buf.get_mut());
-                tracing::trace!(rem = self.buf.remaining(), "encoded reset");
+                tracing::trace!("encoded reset: rem = {}", self.buf.remaining());
             }
         }
 

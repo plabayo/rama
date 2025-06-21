@@ -106,7 +106,10 @@ async fn main() {
 }
 
 async fn send_form_data(Form(payload): Form<Payload>) -> Response {
-    tracing::info!("{:?}", payload.name);
+    tracing::info!(
+        payload.name = %payload.name,
+        "send_form_data",
+    );
 
     let name = payload.name;
     let age = payload.age;

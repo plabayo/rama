@@ -53,8 +53,7 @@ where
         destination: Authority,
     ) -> Result<(), Error> {
         tracing::trace!(
-            %destination,
-            "socks5 server: abort: command not supported: Connect",
+            "socks5 server w/ destination {destination}: abort: command not supported: Connect",
         );
 
         Reply::error_reply(ReplyKind::CommandNotSupported)
@@ -226,8 +225,7 @@ where
         destination: Authority,
     ) -> Result<(), Error> {
         tracing::trace!(
-            %destination,
-            "socks5 server: connect: try to establish connection",
+            "socks5 server w/ destination {destination}: connect: try to establish connection",
         );
 
         // TODO: replace with timeout layer once possible
@@ -240,10 +238,7 @@ where
             Some(duration) => match tokio::time::timeout(duration, connect_future).await {
                 Ok(result) => result,
                 Err(err) => {
-                    tracing::debug!(
-                        timeout_err=?err,
-                        "connect future timed out",
-                    );
+                    tracing::debug!("connect future timed out: {err:?}",);
                     let reply_kind = ReplyKind::TtlExpired;
                     Reply::error_reply(reply_kind)
                         .write_to(&mut stream)
@@ -264,9 +259,7 @@ where
             Err(err) => {
                 let err: BoxError = err.into();
                 tracing::debug!(
-                    %destination,
-                    ?err,
-                    "socks5 server: abort: connect failed",
+                    "socks5 server w/ destination {destination}: abort: connect failed: {err:?}",
                 );
 
                 let reply_kind = (&err).into();
@@ -287,19 +280,14 @@ where
             .map(Into::into)
             .inspect_err(|err| {
                 tracing::debug!(
-                    %destination,
-                    %err,
-                    "socks5 server: connect: failed to retrieve local addr from established conn, use default '0.0.0.0:0'",
+                    "socks5 server w/ destination: {destination}: connect: failed to retrieve local addr from established conn, use default '0.0.0.0:0': {err}",
                 );
             })
             .unwrap_or(Authority::default_ipv4(0));
         let peer_addr = target.peer_addr();
 
         tracing::trace!(
-            %destination,
-            %local_addr,
-            ?peer_addr,
-            "socks5 server: connect: connection established, serve pipe",
+            "socks5 server w/ destination {destination}: connect: connection established, serve pipe: {local_addr} <-> {peer_addr:?}",
         );
 
         Reply::new(if self.hide_local_address {
@@ -312,10 +300,7 @@ where
         .map_err(|err| Error::io(err).with_context("write server reply: connect succeeded"))?;
 
         tracing::trace!(
-            %destination,
-            %local_addr,
-            ?peer_addr,
-            "socks5 server: connect: reply sent, start serving source-target pipe",
+            "socks5 server w/ destination {destination}: connect: reply sent, start serving source-target pipe: {local_addr} <-> {peer_addr:?}",
         );
 
         self.service
@@ -396,8 +381,7 @@ where
         destination: Authority,
     ) -> Result<(), Error> {
         tracing::trace!(
-            %destination,
-            "socks5 server: lazy connect: try to establish connection",
+            "socks5 server w/ destination {destination}: lazy connect: try to establish connection",
         );
 
         Reply::new(Authority::default_ipv4(0))
@@ -406,8 +390,7 @@ where
             .map_err(|err| Error::io(err).with_context("write server reply: connect succeeded"))?;
 
         tracing::trace!(
-            %destination,
-            "socks5 server: lazy connect: reply sent, delegate to inner stream service",
+            "socks5 server w/ destination {destination}: lazy connect: reply sent, delegate to inner stream service",
         );
 
         ctx.insert(ProxyTarget(destination));
@@ -493,9 +476,9 @@ mod test {
                         match tokio::io::copy_bidirectional(&mut stream, target.deref_mut()).await {
                             Ok((bytes_copied_north, bytes_copied_south)) => {
                                 tracing::trace!(
-                                    %bytes_copied_north,
-                                    %bytes_copied_south,
-                                    "(proxy) I/O stream forwarder finished"
+                                    "(proxy) I/O stream forwarder finished: bytes north = {}; bytes south = {}",
+                                    bytes_copied_north,
+                                    bytes_copied_south,
                                 );
                                 Ok(())
                             }

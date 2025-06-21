@@ -255,7 +255,8 @@ where
             .unwrap_or_default()
         {
             tracing::trace!(
-                authority = %transport_ctx.authority,
+                server.address = %transport_ctx.authority.host(),
+                server.port = %transport_ctx.authority.port(),
                 "TlsConnector(auto): protocol not secure, return inner connection",
             );
             return Ok(EstablishedClientConnection {
@@ -270,18 +271,20 @@ where
         let server_host = transport_ctx.authority.host().clone();
 
         tracing::trace!(
-            authority = %transport_ctx.authority,
-            app_protocol = ?transport_ctx.app_protocol,
-            "TlsConnector(auto): attempt to secure inner connection",
+            server.address = %transport_ctx.authority.host(),
+            server.port = %transport_ctx.authority.port(),
+            "TlsConnector(auto): attempt to secure inner connection w/ app protcol: {:?}",
+            transport_ctx.app_protocol,
         );
 
         let connector_data = ctx.get::<TlsConnectorData>().cloned();
         let (stream, negotiated_params) = self.handshake(connector_data, server_host, conn).await?;
 
         tracing::trace!(
-            authority = %transport_ctx.authority,
-            app_protocol = ?transport_ctx.app_protocol,
-            "TlsConnector(auto): protocol secure, established tls connection",
+            server.address = %transport_ctx.authority.host(),
+            server.port = %transport_ctx.authority.port(),
+            "TlsConnector(auto): protocol secure, established tls connection w/ app protcol: {:?}",
+            transport_ctx.app_protocol,
         );
 
         ctx.insert(negotiated_params);
@@ -321,9 +324,10 @@ where
                     .context("TlsConnector(auto): compute transport context")
             })?;
         tracing::trace!(
-            authority = %transport_ctx.authority,
-            app_protocol = ?transport_ctx.app_protocol,
-            "TlsConnector(secure): attempt to secure inner connection",
+            server.address = %transport_ctx.authority.host(),
+            server.port = %transport_ctx.authority.port(),
+            "TlsConnector(secure): attempt to secure inner connection w/ app protcol: {:?}",
+            transport_ctx.app_protocol,
         );
 
         let server_host = transport_ctx.authority.host().clone();

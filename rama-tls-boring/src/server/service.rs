@@ -159,14 +159,12 @@ where
                             Err(error) => {
                                 return Err(if error.kind() == ErrorKind::UnexpectedEof {
                                     trace!(
-                                        %error,
-                                        "tls boring server service: alpn protos callback: no compatible ALPN found",
+                                        "tls boring server service: alpn protos callback: no compatible ALPN found: {error:?}",
                                     );
                                     AlpnError::NOACK
                                 } else {
                                     debug!(
-                                        %error,
-                                        "tls boring server service: alpn protos callback: client ALPN decode error",
+                                        "tls boring server service: alpn protos callback: client ALPN decode error: {error:?}",
                                     );
                                     AlpnError::ALERT_FATAL
                                 })

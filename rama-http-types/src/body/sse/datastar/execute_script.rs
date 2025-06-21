@@ -370,17 +370,17 @@ impl EventDataLineReader for ExecuteScriptReader {
                 );
             } else {
                 tracing::debug!(
-                    %keyword,
-                    %r#type,
-                    %value,
-                    "ExecuteScriptReader: ignore unknown execute script attribute line",
+                    "ExecuteScriptReader: ignore unknown execute script attribute line: keyword = {}; type = {}; value = {}",
+                    keyword,
+                    r#type,
+                    value,
                 );
             }
         } else {
             tracing::debug!(
-                %keyword,
-                %value,
-                "ExecuteScriptReader: ignore unknown execute script line",
+                "ExecuteScriptReader: ignore unknown execute script line: keyword = {}; value = {}",
+                keyword,
+                value,
             );
         }
 

@@ -331,7 +331,7 @@ where
             *this.is_terminated = true;
         }
         polled.map_err(|_e| {
-            debug!(error = %_e, "connection error");
+            debug!("connection error: {_e:?}");
         })
     }
 }
@@ -534,7 +534,7 @@ where
         match Pin::new(&mut this.pipe).poll(cx) {
             Poll::Ready(result) => {
                 if let Err(_e) = result {
-                    debug!("client request body error: {}", _e);
+                    debug!("client request body error: {_e:?}");
                 }
                 drop(this.conn_drop_ref.take().expect("Future polled twice"));
                 drop(this.ping.take().expect("Future polled twice"));
@@ -692,7 +692,7 @@ where
             Err(err) => {
                 ping.ensure_not_timed_out().map_err(|e| (e, None))?;
 
-                debug!("client response error: {}", err);
+                debug!("client response error: {err:?}");
                 Poll::Ready(Err((crate::Error::new_h2(err), None::<Request<B>>)))
             }
         }

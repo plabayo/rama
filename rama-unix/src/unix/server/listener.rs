@@ -82,7 +82,7 @@ where
         let path = path.as_ref();
 
         if tokio::fs::try_exists(path).await.unwrap_or_default() {
-            tracing::trace!(?path, "try delete existing UNIX socket path");
+            tracing::trace!(file.path = ?path, "try delete existing UNIX socket path");
             // some errors might lead to false positives (e.g. no permissions),
             // this is ok as this is a best-effort cleanup to anyway only be of use
             // if we have permission to do so
@@ -395,12 +395,9 @@ where
 
 async fn handle_accept_err(err: io::Error) {
     if rama_net::conn::is_connection_error(&err) {
-        tracing::trace!(
-            error = &err as &dyn std::error::Error,
-            "unix accept error: connect error"
-        );
+        tracing::trace!("unix accept error: connect error: {err:?}");
     } else {
-        tracing::error!(error = &err as &dyn std::error::Error, "unix accept error");
+        tracing::error!("unix accept error: {err:?}");
     }
 }
 
@@ -412,7 +409,7 @@ struct UnixSocketCleanup {
 impl Drop for UnixSocketCleanup {
     fn drop(&mut self) {
         if let Err(err) = std::fs::remove_file(&self.path) {
-            tracing::debug!(path = ?self.path, %err, "failed to remove unix listener's file socket");
+            tracing::debug!(file.path = ?self.path, "failed to remove unix listener's file socket {err:?}");
         }
     }
 }

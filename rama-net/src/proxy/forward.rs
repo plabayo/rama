@@ -43,9 +43,9 @@ where
         match tokio::io::copy_bidirectional(&mut source, &mut target).await {
             Ok((bytes_copied_north, bytes_copied_south)) => {
                 tracing::trace!(
-                    %bytes_copied_north,
-                    %bytes_copied_south,
-                    "(proxy) I/O stream forwarder finished"
+                    "(proxy) I/O stream forwarder finished: bytes north: {}; bytes south: {}",
+                    bytes_copied_north,
+                    bytes_copied_south,
                 );
                 Ok(())
             }

@@ -93,12 +93,18 @@ mod unix_example {
                 }
             }
 
-            tracing::info!(%PATH, "ready to unix-serve");
+            tracing::info!(
+                file.path = %PATH,
+                "ready to unix-serve",
+            );
             listener.serve_graceful(guard, service_fn(handle)).await;
         });
 
         let duration = graceful.shutdown().await;
-        tracing::info!(shutdown_after = ?duration, "bye!");
+        tracing::info!(
+            shutdown.duration_ms = %duration.as_millis(),
+            "bye!",
+        );
     }
 }
 

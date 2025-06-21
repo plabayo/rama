@@ -68,7 +68,7 @@ impl Header {
     where
         W: AsyncWrite + Unpin,
     {
-        tracing::trace!(n = 2, "write socks5 server headerr: on stack");
+        tracing::trace!("write socks5 server headerr: on stack (w=2)");
         let mut buf = [0u8; 2];
         self.write_to_buf(&mut buf.as_mut_slice());
         w.write_all(&buf[..]).await
@@ -175,7 +175,7 @@ impl Reply {
 
         match self.bind_address.host() {
             rama_net::address::Host::Address(IpAddr::V4(_)) => {
-                tracing::trace!(%n, "write socks5 server reply w/ Ipv4 addr: on stack");
+                tracing::trace!("write socks5 server reply w/ Ipv4 addr: on stack (w={n})");
                 debug_assert_eq!(4 + 4 + 2, n);
                 let mut buf = [0u8; 10];
                 self.write_to_buf(&mut buf.as_mut_slice());
@@ -187,29 +187,29 @@ impl Reply {
 
                 if n <= SMALL_LEN {
                     tracing::trace!(
-                        %n,
-                        "write socks5 server reply w/ (small) domain name: on stack",
+                        "write socks5 server reply w/ (small) domain name: on stack (w={n})",
                     );
                     let mut buf = [0u8; SMALL_LEN];
                     self.write_to_buf(&mut buf.as_mut_slice());
                     w.write_all(&buf[..n]).await
                 } else if n <= MED_LEN {
                     tracing::trace!(
-                        %n,
-                        "write socks5 server reply w/ (medium) domain name: on stack",
+                        "write socks5 server reply w/ (medium) domain name: on stack (w={n})",
                     );
                     let mut buf = [0u8; MED_LEN];
                     self.write_to_buf(&mut buf.as_mut_slice());
                     w.write_all(&buf[..n]).await
                 } else {
-                    tracing::trace!(%n, "write socks5 server reply w/ (large) domain name: on heap");
+                    tracing::trace!(
+                        "write socks5 server reply w/ (large) domain name: on heap (w={n})"
+                    );
                     let mut buf = BytesMut::with_capacity(n);
                     self.write_to_buf(&mut buf);
                     w.write_all(&buf).await
                 }
             }
             rama_net::address::Host::Address(IpAddr::V6(_)) => {
-                tracing::trace!(%n, "write socks5 server reply w/ Ipv6 addr: on stack");
+                tracing::trace!("write socks5 server reply w/ Ipv6 addr: on stack (w={n})");
                 debug_assert_eq!(4 + 16 + 2, n);
                 let mut buf = [0u8; 22];
                 self.write_to_buf(&mut buf.as_mut_slice());
@@ -328,7 +328,7 @@ impl UsernamePasswordResponse {
     where
         W: AsyncWrite + Unpin,
     {
-        tracing::trace!(n = 2, "write socks5 server headerr: on stack");
+        tracing::trace!("write socks5 server headerr: on stack (w=2)");
         let mut buf = [0u8; 2];
         self.write_to_buf(&mut buf.as_mut_slice());
         w.write_all(&buf[..]).await

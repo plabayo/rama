@@ -37,7 +37,7 @@ impl UsernameLabelParser for DnsResolveModeUsernameParser {
             {
                 Ok(mode) => mode,
                 Err(err) => {
-                    tracing::trace!(err = %err, "abort username label parsing: invalid parse label");
+                    tracing::trace!("abort username label parsing: invalid parse label: {err:?}");
                     return UsernameLabelState::Abort;
                 }
             };
