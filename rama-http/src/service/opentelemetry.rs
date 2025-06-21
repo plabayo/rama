@@ -1,6 +1,11 @@
 use crate::{Request, Response};
 use opentelemetry_http::HttpClient;
-use rama_core::{Context, Service, bytes::Bytes, error::BoxError, rt::Executor};
+use rama_core::{
+    Context, Service,
+    bytes::Bytes,
+    error::{BoxError, ErrorContext},
+    rt::Executor,
+};
 use rama_http_types::{Body, dep::http_body_util::BodyExt};
 use std::{fmt, pin::Pin};
 
@@ -9,6 +14,7 @@ use std::{fmt, pin::Pin};
 pub struct OtelExporter<S, State = ()> {
     service: S,
     ctx: Context<State>,
+    handle: tokio::runtime::Handle,
 }
 
 impl<S, State> Clone for OtelExporter<S, State>
@@ -20,6 +26,7 @@ where
         Self {
             service: self.service.clone(),
             ctx: self.ctx.clone(),
+            handle: self.handle.clone(),
         }
     }
 }
@@ -33,6 +40,7 @@ where
         f.debug_struct("OtelExporter")
             .field("service", &self.service)
             .field("ctx", &self.ctx)
+            .field("handle", &self.handle)
             .finish()
     }
 }
@@ -43,6 +51,7 @@ impl<S> OtelExporter<S> {
         OtelExporter {
             service,
             ctx: Context::default(),
+            handle: tokio::runtime::Handle::current(),
         }
     }
 
@@ -53,6 +62,7 @@ impl<S> OtelExporter<S> {
         OtelExporter {
             service: self.service,
             ctx,
+            handle: self.handle,
         }
     }
 
@@ -79,7 +89,7 @@ impl<S> OtelExporter<S> {
 
 impl<S, State> HttpClient for OtelExporter<S, State>
 where
-    S: fmt::Debug + Service<State, Request, Response = Response, Error: Into<BoxError>>,
+    S: fmt::Debug + Clone + Service<State, Request, Response = Response, Error: Into<BoxError>>,
     State: fmt::Debug + Send + Sync + Clone + 'static,
 {
     fn send_bytes<'life0, 'async_trait>(
@@ -93,13 +103,16 @@ where
         let ctx = self.ctx.clone();
         let request = request.map(Body::from);
 
-        let fut = self.service.serve(ctx, request);
+        let svc = self.service.clone();
 
-        Box::pin(async move {
-            let resp = fut.await.map_err(Into::into)?;
+        // spawn actual work to ensure we run it within the tokio runtime
+        let handle = self.handle.spawn(async move {
+            let resp = svc.serve(ctx, request).await.map_err(Into::into)?;
             let (parts, body) = resp.into_parts();
             let body = body.collect().await?.to_bytes();
             Ok(Response::from_parts(parts, body))
-        })
+        });
+
+        Box::pin(async move { handle.await.context("await tokio handle to fut exec")? })
     }
 }
