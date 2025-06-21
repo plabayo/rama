@@ -18,11 +18,11 @@ all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
-opentelemetry = ["rama-core/opentelemetry", "rama-net/opentelemetry"]
-
+opentelemetry = ["rama-core/opentelemetry", "rama-net/opentelemetry", "dep:opentelemetry-http"]
 default = []
 compression = ["dep:async-compression"]
 tls = ["rama-net/tls"]
+
 [dependencies]
 async-compression = { workspace = true, features = [
     "tokio",
@@ -42,6 +42,7 @@ iri-string = { workspace = true }
 matchit = { workspace = true }
 mime = { workspace = true }
 mime_guess = { workspace = true }
+opentelemetry-http = { workspace = true, optional = true }
 percent-encoding = { workspace = true }
 pin-project-lite = { workspace = true }
 rama-core = { workspace = true }
