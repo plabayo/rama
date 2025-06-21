@@ -1,11 +1,15 @@
-use opentelemetry_otlp::SpanExporter;
-use rama::telemetry::{
-    opentelemetry::{
-        KeyValue,
-        sdk::{Resource, trace::SdkTracerProvider},
-        trace::TracerProvider,
+use opentelemetry_otlp::{SpanExporter, WithHttpConfig};
+use rama::{
+    http::{client::EasyHttpWebClient, service::opentelemetry::OtelExporter},
+    net::client::pool::http::HttpPooledConnectorConfig,
+    telemetry::{
+        opentelemetry::{
+            KeyValue,
+            sdk::{Resource, trace::SdkTracerProvider},
+            trace::TracerProvider,
+        },
+        tracing::{self, layer},
     },
-    tracing::{self, layer},
 };
 use std::io::IsTerminal as _;
 use tracing_subscriber::{
@@ -34,7 +38,21 @@ fn init_default(default_directive: impl Into<Directive>) {
 }
 
 fn init_structured(default_directive: impl Into<Directive>) {
-    let exportor = SpanExporter::builder().with_http().build().unwrap();
+    let svc = EasyHttpWebClient::builder()
+        .with_default_transport_connector()
+        .without_tls_proxy_support()
+        .without_proxy_support()
+        .with_tls_support_using_boringssl(None)
+        .with_connection_pool(HttpPooledConnectorConfig::default())
+        .expect("build http exporter client service")
+        .build();
+    let client = OtelExporter::new(svc);
+
+    let exportor = SpanExporter::builder()
+        .with_http()
+        .with_http_client(client)
+        .build()
+        .unwrap();
 
     let provider = SdkTracerProvider::builder()
         .with_batch_exporter(exportor)
