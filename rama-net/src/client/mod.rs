@@ -2,7 +2,7 @@
 
 mod conn;
 #[doc(inline)]
-pub use conn::{ConnectorService, EstablishedClientConnection};
+pub use conn::{BoxedConnectorService, ConnectorService, EstablishedClientConnection};
 
 pub mod pool;
 
