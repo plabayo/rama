@@ -1,14 +1,17 @@
 use crate::tls::acme::proto::{
-    client::{Jwk, KeyAuthorization, KeyIdToUnparsedPublicKey, NewOrderPayload},
-    common::{Empty, Identifier},
-    server::{AccountStatus, Authorization, Challenge, Order, OrderStatus},
+    client::{FinalizePayload, KeyAuthorization, NewOrderPayload},
+    common::Identifier,
+    server::{
+        AccountStatus, Authorization, AuthorizationStatus, Challenge, Order, OrderStatus, Problem,
+    },
 };
 
 use super::proto::{
-    client::{CreateAccountOptions, DecodedJws, Jws},
+    client::CreateAccountOptions,
     server::{Account, Directory, DirectoryMeta, LOCATION_HEADER, REPLAY_NONCE_HEADER},
 };
-use aws_lc_rs::signature;
+use crate::crypto::dep::aws_lc_rs::signature;
+use crate::crypto::jose::{DecodedJws, Empty, Jwk, Jws, VerifyKeyId};
 use base64::{Engine, prelude::BASE64_URL_SAFE_NO_PAD};
 use parking_lot::Mutex;
 use rama_core::{
@@ -20,6 +23,7 @@ use rama_core::{
 use rama_http::{
     Body, Request, Response,
     dep::http_body_util::BodyExt,
+    layer::auth,
     matcher::UriParams,
     service::{
         client::HttpClientExt,
@@ -30,7 +34,10 @@ use rama_net::{
     client::EstablishedClientConnection,
     tls::{DataEncoding, client::NegotiatedTlsParameters},
 };
-use rama_tls_rustls::dep::pki_types::CertificateDer;
+use rama_tls_rustls::dep::rcgen::{
+    self, Certificate, CertificateParams, CertificateSigningRequestParams, DistinguishedName, IsCa,
+    KeyPair,
+};
 use serde::de::DeserializeOwned;
 /// Very very basic acme server implementation, currently only useful
 /// for testing but can extended to a full one
@@ -51,10 +58,9 @@ pub struct AcmeServer<T = Config> {
     router: Router<Arc<Config>>,
 }
 
-#[derive(Default)]
 /// Config for the [`AcmeServer`]
 ///
-/// Note that how we generate ids is unsecure and how we store/fetch
+/// Note that how we generate ids is insecure and how we store/fetch
 /// them is highly inefficient under load
 pub struct Config {
     http_challenge_client: Option<HttpChallengeClient>,
@@ -67,11 +73,15 @@ pub struct Config {
     key_ids: KeyIds,
     jwks: Arc<Mutex<HashMap<String, Jwk>>>,
     current_order: AtomicU64,
-    orders: Arc<Mutex<HashMap<String, Order>>>,
-    current_authorization: AtomicU64,
-    authorizations: Arc<Mutex<HashMap<String, Authorization>>>,
-    current_challenge: AtomicU64,
-    challenges: Arc<Mutex<HashMap<String, Challenge>>>,
+    orders: Arc<Mutex<HashMap<String, CompleteOrder>>>,
+    certificate: Certificate,
+    keypair: KeyPair,
+}
+
+struct CompleteOrder {
+    order: Order,
+    authorizations: Vec<Authorization>,
+    certificate: Option<Certificate>,
 }
 
 struct TlsCertResponse<S> {
@@ -131,7 +141,7 @@ pub struct DirectoryPaths<'a> {
 #[derive(Default)]
 struct KeyIds(Arc<Mutex<HashMap<String, signature::UnparsedPublicKey<Vec<u8>>>>>);
 
-impl KeyIdToUnparsedPublicKey for KeyIds {
+impl VerifyKeyId for KeyIds {
     fn verify<F>(&self, key_id: &str, verify: F) -> Result<(), OpaqueError>
     where
         F: FnOnce(Option<&signature::UnparsedPublicKey<Vec<u8>>>) -> Result<(), OpaqueError>,
@@ -160,9 +170,28 @@ impl AcmeServer {
             meta: directory_meta,
         };
 
+        let ca_key_pair = rcgen::KeyPair::generate().unwrap();
+        let mut ca_params = CertificateParams::default();
+        let mut ca_distinguished_name = DistinguishedName::new();
+        ca_distinguished_name.push(rcgen::DnType::CommonName, "My Test CA");
+        ca_params.distinguished_name = ca_distinguished_name;
+        ca_params.is_ca = IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        let ca_cert = ca_params.self_signed(&ca_key_pair).unwrap();
+
         let config = Config {
             host: host.into(),
-            ..Default::default()
+            certificate: ca_cert,
+            keypair: ca_key_pair,
+            accounts: Default::default(),
+            current_kid: Default::default(),
+            current_nonce: Default::default(),
+            current_order: Default::default(),
+            http_challenge_client: Default::default(),
+            jwks: Default::default(),
+            key_ids: Default::default(),
+            nonces: Default::default(),
+            orders: Default::default(),
+            tls_challenge_client: Default::default(),
         };
 
         let layers = (WithNonceHeaderLayer, ConsumeErrLayer::default());
@@ -182,12 +211,23 @@ impl AcmeServer {
                 directory_paths.new_order,
                 layers.layer(service_fn(Self::new_order)),
             )
-            .post("/order/{id}", layers.layer(service_fn(Self::order)))
+            .post("/order/{order_idx}", layers.layer(service_fn(Self::order)))
             .post(
-                "/authorization/{id}",
+                "/finalize/{order_idx}",
+                layers.layer(service_fn(Self::finalize)),
+            )
+            .post(
+                "/certificate/{order_idx}",
+                layers.layer(service_fn(Self::certificate)),
+            )
+            .post(
+                "/authorization/{order_idx}/{auth_idx}",
                 layers.layer(service_fn(Self::authorization)),
             )
-            .post("/challenge/{id}", layers.layer(service_fn(Self::challenge)));
+            .post(
+                "/challenge/{order_idx}/{auth_idx}/{challenge_idx}",
+                layers.layer(service_fn(Self::challenge)),
+            );
 
         Self { config, router }
     }
@@ -242,11 +282,11 @@ impl AcmeServer {
         let location = format!("{host}/account/{kid}");
 
         let (jwk, pub_key) = match result.protected().unwrap().key {
-            crate::tls::acme::proto::client::ProtectedHeaderKey::JWK(jwk) => {
+            crate::crypto::jose::ProtectedHeaderKey::JWK(jwk) => {
                 let pub_key = jwk.unparsed_public_key();
                 (jwk, pub_key)
             }
-            crate::tls::acme::proto::client::ProtectedHeaderKey::KeyID(_) => {
+            crate::crypto::jose::ProtectedHeaderKey::KeyID(_) => {
                 return Err(OpaqueError::from_display("JWK needed to create account"));
             }
         };
@@ -289,33 +329,45 @@ impl AcmeServer {
             .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
 
         let mut authorizations = Vec::with_capacity(payload.identifiers.len());
-        for identifier in payload.identifiers.iter() {
-            authorizations.push(Self::create_authorization(&ctx, identifier)?)
+        let mut authorizations_locations = Vec::with_capacity(payload.identifiers.len());
+        for (idx, identifier) in payload.identifiers.iter().enumerate() {
+            let auth = Self::create_authorization(&ctx, identifier, order_id, idx as u64)?;
+            authorizations_locations.push(auth.0);
+            authorizations.push(auth.1);
         }
 
+        let host = ctx.state().host.as_str();
+        let location = format!("{host}/order/{order_id}");
+        let finalize_location = format!("{host}/finalize/{order_id}");
+
         let order = Order {
-            authorizations: authorizations,
+            authorizations: authorizations_locations,
             certificate: None,
             error: None,
             expires: None,
-            finalize: "finalize".into(),
+            finalize: finalize_location,
             identifiers: payload.identifiers,
             not_after: payload.not_after,
             not_before: payload.not_before,
             status: OrderStatus::Pending,
         };
 
-        let mut orders = ctx.state().orders.lock();
-        let inserted = orders.entry(order_id.to_string()).insert_entry(order);
-        let order = inserted.get();
-
-        let host = ctx.state().host.as_str();
-        let location = format!("{host}/order/{order_id}");
-
         let resp = Response::builder()
             .header(LOCATION_HEADER, location)
-            .body(Body::from(serde_json::to_vec(order).unwrap()))
+            .status(201)
+            .body(Body::from(serde_json::to_vec(&order).unwrap()))
             .unwrap();
+
+        let order = CompleteOrder {
+            order,
+            authorizations,
+            certificate: None,
+        };
+
+        ctx.state()
+            .orders
+            .lock()
+            .insert(order_id.to_string(), order);
 
         Ok(resp)
     }
@@ -323,41 +375,48 @@ impl AcmeServer {
     fn create_authorization(
         ctx: &Context<State>,
         identifier: &Identifier,
-    ) -> Result<String, OpaqueError> {
-        let authz_id = ctx
-            .state()
-            .current_authorization
-            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-
+        order_idx: u64,
+        auth_idx: u64,
+    ) -> Result<(String, Authorization), OpaqueError> {
         let authz = Authorization {
-            challenges: Self::create_challenges(ctx, identifier)?,
+            challenges: Self::create_challenges(ctx, identifier, order_idx, auth_idx)?,
             expires: None,
             identifier: identifier.clone(),
             status: super::proto::server::AuthorizationStatus::Pending,
             wildcard: None,
         };
 
-        ctx.state()
-            .authorizations
-            .lock()
-            .insert(authz_id.to_string(), authz);
-
         let host = ctx.state().host.as_str();
-        let location = format!("{host}/authorization/{authz_id}");
-        Ok(location)
+        let location = format!("{host}/authorization/{order_idx}/{auth_idx}");
+
+        Ok((location, authz))
     }
 
     fn create_challenges(
         ctx: &Context<State>,
         identifier: &Identifier,
+        order_idx: u64,
+        auth_idx: u64,
     ) -> Result<Vec<Challenge>, OpaqueError> {
         let mut challenges = vec![];
         if ctx.state().http_challenge_client.is_some() {
-            challenges.push(Self::create_http_challenge(&ctx, identifier)?);
+            challenges.push(Self::create_http_challenge(
+                &ctx,
+                identifier,
+                order_idx,
+                auth_idx,
+                challenges.len() as u64,
+            )?);
         }
 
         if ctx.state().tls_challenge_client.is_some() {
-            challenges.push(Self::create_tls_challenge(&ctx, identifier)?);
+            challenges.push(Self::create_tls_challenge(
+                &ctx,
+                identifier,
+                order_idx,
+                auth_idx,
+                challenges.len() as u64,
+            )?);
         }
 
         Ok(challenges)
@@ -366,16 +425,15 @@ impl AcmeServer {
     fn create_http_challenge(
         ctx: &Context<State>,
         _identifier: &Identifier,
+        order_idx: u64,
+        auth_idx: u64,
+        challenge_idx: u64,
     ) -> Result<Challenge, OpaqueError> {
         if ctx.state().http_challenge_client.is_none() {
             return Err(OpaqueError::from_display(
                 "http challenge only possible if a http client is configured",
             ));
         }
-        let challenge_id = ctx
-            .state()
-            .current_challenge
-            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
 
         let host = ctx.state().host.as_str();
         let challenge = Challenge {
@@ -383,13 +441,8 @@ impl AcmeServer {
             error: None,
             status: super::proto::server::ChallengeStatus::Pending,
             token: "random-uuid".into(),
-            url: format!("{host}/challenge/{challenge_id}"),
+            url: format!("{host}/challenge/{order_idx}/{auth_idx}/{challenge_idx}"),
         };
-
-        ctx.state()
-            .challenges
-            .lock()
-            .insert(challenge_id.to_string(), challenge.clone());
 
         Ok(challenge)
     }
@@ -397,16 +450,15 @@ impl AcmeServer {
     fn create_tls_challenge(
         ctx: &Context<State>,
         _identifier: &Identifier,
+        order_idx: u64,
+        auth_idx: u64,
+        challenge_idx: u64,
     ) -> Result<Challenge, OpaqueError> {
         if ctx.state().tls_challenge_client.is_none() {
             return Err(OpaqueError::from_display(
                 "tls challenge only possible if a tls client is configured",
             ));
         }
-        let challenge_id = ctx
-            .state()
-            .current_challenge
-            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
 
         let host = ctx.state().host.as_str();
         let challenge = Challenge {
@@ -414,26 +466,72 @@ impl AcmeServer {
             error: None,
             status: super::proto::server::ChallengeStatus::Pending,
             token: "random-uuid".into(),
-            url: format!("{host}/challenge/{challenge_id}"),
+            url: format!("{host}/challenge/{order_idx}/{auth_idx}/{challenge_idx}"),
         };
-
-        ctx.state()
-            .challenges
-            .lock()
-            .insert(challenge_id.to_string(), challenge.clone());
 
         Ok(challenge)
     }
 
     async fn order(ctx: Context<State>, _req: Request) -> Result<Response, OpaqueError> {
         let params = ctx.get::<UriParams>().unwrap();
-        let id = params.get("id").unwrap();
+        let id = params.get("order_idx").unwrap();
 
         let orders = ctx.state().orders.lock();
         let order = orders.get(id).unwrap();
 
         let resp = Response::builder()
-            .body(Body::from(serde_json::to_vec(order).unwrap()))
+            .body(Body::from(serde_json::to_vec(&order.order).unwrap()))
+            .unwrap();
+
+        Ok(resp)
+    }
+
+    async fn finalize(ctx: Context<State>, req: Request) -> Result<Response, OpaqueError> {
+        let params = ctx.get::<UriParams>().unwrap();
+        let id = params.get("order_idx").unwrap();
+
+        let result = Self::parse_request::<FinalizePayload>(&ctx, req).await?;
+        let payload = result.into_payload().unwrap();
+
+        let mut orders = ctx.state().orders.lock();
+        let order = orders.get_mut(id).unwrap();
+
+        if order.order.status != OrderStatus::Ready {
+            return Err(OpaqueError::from_display("order not in ready state"));
+        }
+
+        // TODO checks to verify that csr is valid for this order
+
+        order.order.status = OrderStatus::Processing;
+        println!("csr: {:?}", &payload);
+
+        let csr = CertificateSigningRequestParams::from_pem(&payload.csr).unwrap();
+        let signed_cert = csr
+            .signed_by(&ctx.state().certificate, &ctx.state().keypair)
+            .unwrap();
+        order.certificate = Some(signed_cert);
+        let host = ctx.state().host.as_str();
+        order.order.certificate = Some(format!("{host}/certificate/{id}"));
+        order.order.status = OrderStatus::Valid;
+
+        let resp = Response::builder()
+            .body(Body::from(serde_json::to_vec(&order.order).unwrap()))
+            .unwrap();
+
+        Ok(resp)
+    }
+
+    async fn certificate(ctx: Context<State>, _req: Request) -> Result<Response, OpaqueError> {
+        let params = ctx.get::<UriParams>().unwrap();
+        let id = params.get("order_idx").unwrap();
+
+        let orders = ctx.state().orders.lock();
+        let order = orders.get(id).unwrap();
+
+        let certificate = order.certificate.as_ref().unwrap().pem();
+
+        let resp = Response::builder()
+            .body(Body::from(serde_json::to_vec(&certificate).unwrap()))
             .unwrap();
 
         Ok(resp)
@@ -441,10 +539,13 @@ impl AcmeServer {
 
     async fn authorization(ctx: Context<State>, _req: Request) -> Result<Response, OpaqueError> {
         let params = ctx.get::<UriParams>().unwrap();
-        let id = params.get("id").unwrap();
+        let order_idx = params.get("order_idx").unwrap();
+        let auth_idx = params.get("auth_idx").unwrap().parse::<usize>().unwrap();
 
-        let authorizations = ctx.state().authorizations.lock();
-        let authorization = authorizations.get(id).unwrap();
+        let orders = ctx.state().orders.lock();
+
+        let order = orders.get(order_idx).unwrap();
+        let authorization = &order.authorizations[auth_idx];
 
         let resp = Response::builder()
             .body(Body::from(serde_json::to_vec(authorization).unwrap()))
@@ -455,14 +556,22 @@ impl AcmeServer {
 
     async fn challenge(ctx: Context<State>, req: Request) -> Result<Response, OpaqueError> {
         let params = ctx.get::<UriParams>().unwrap();
-        let id = params.get("id").unwrap();
+        let order_idx = params.get("order_idx").unwrap();
+        let auth_idx = params.get("auth_idx").unwrap().parse::<usize>().unwrap();
+        let challenge_idx = params
+            .get("challenge_idx")
+            .unwrap()
+            .parse::<usize>()
+            .unwrap();
 
         let result = Self::parse_request::<Empty>(&ctx, req).await?;
 
         // No payload = client wants to refresh data
         if result.payload().is_none() {
-            let challenges = ctx.state().challenges.lock();
-            let challenge = challenges.get(id).unwrap();
+            let orders = ctx.state().orders.lock();
+            let order = orders.get(order_idx).unwrap();
+            let challenge = &order.authorizations[auth_idx].challenges[challenge_idx];
+
             let resp = Response::builder()
                 .body(Body::from(serde_json::to_vec(challenge).unwrap()))
                 .unwrap();
@@ -475,8 +584,9 @@ impl AcmeServer {
         }
 
         let (challenge_type, key_authz) = {
-            let mut challenges = ctx.state().challenges.lock();
-            let challenge = challenges.get_mut(id).unwrap();
+            let mut orders = ctx.state().orders.lock();
+            let order = orders.get_mut(order_idx).unwrap();
+            let challenge = &mut order.authorizations[auth_idx].challenges[challenge_idx];
             println!("checking challenge: {:?}", challenge);
 
             challenge.status = super::proto::server::ChallengeStatus::Processing;
@@ -496,10 +606,8 @@ impl AcmeServer {
             let jwks = ctx.state().jwks.lock();
 
             let jwk = match &result.protected().unwrap().key {
-                crate::tls::acme::proto::client::ProtectedHeaderKey::JWK(jwk) => todo!("jkfd"),
-                crate::tls::acme::proto::client::ProtectedHeaderKey::KeyID(id) => {
-                    jwks.get(*id).unwrap()
-                }
+                crate::crypto::jose::ProtectedHeaderKey::JWK(jwk) => todo!("jkfd"),
+                crate::crypto::jose::ProtectedHeaderKey::KeyID(id) => jwks.get(*id).unwrap(),
             };
 
             let thumb_sha256 = jwk.thumb_sha256().unwrap();
@@ -512,8 +620,14 @@ impl AcmeServer {
         };
 
         match challenge_type {
-            ChallengeType::Http(url) => Self::verify_http_challenge(&ctx, &url, id).await?,
-            ChallengeType::Tls => Self::verify_tls_challenge(&ctx, id, &key_authz).await?,
+            ChallengeType::Http(url) => {
+                Self::verify_http_challenge(&ctx, &url, (order_idx, auth_idx, challenge_idx))
+                    .await?
+            }
+            ChallengeType::Tls => {
+                Self::verify_tls_challenge(&ctx, (order_idx, auth_idx, challenge_idx), &key_authz)
+                    .await?
+            }
         }
 
         let resp = Response::builder()
@@ -524,7 +638,7 @@ impl AcmeServer {
 
     async fn verify_tls_challenge(
         ctx: &Context<State>,
-        id: &str,
+        id: (&str, usize, usize),
         key_authz: &KeyAuthorization,
     ) -> Result<(), OpaqueError> {
         let client = ctx
@@ -547,8 +661,9 @@ impl AcmeServer {
         println!("keyauthz received: {:?}", &data);
 
         {
-            let mut challenges = ctx.state().challenges.lock();
-            let challenge = challenges.get_mut(id).unwrap();
+            let mut orders = ctx.state().orders.lock();
+            let order = orders.get_mut(id.0).unwrap();
+            let challenge = &mut order.authorizations[id.1].challenges[id.2];
             println!("checking challenge: {:?}", challenge);
 
             let cert = match data {
@@ -562,22 +677,19 @@ impl AcmeServer {
                 key_authz.digest().as_ref()
             );
 
-            // let cert = CertificateDer::from(cert);
-
             if true {
                 // challenge.status = super::proto::server::ChallengeStatus::Valid;
-                return Err(OpaqueError::from_display("wrong key provided"));
+                todo!("use boring here")
             } else {
                 return Err(OpaqueError::from_display("wrong key provided"));
             }
         };
-        Ok(())
     }
 
     async fn verify_http_challenge(
         ctx: &Context<State>,
         url: &str,
-        id: &str,
+        id: (&str, usize, usize),
     ) -> Result<(), OpaqueError> {
         let client = ctx
             .state()
@@ -599,14 +711,26 @@ impl AcmeServer {
         println!("keyauthz received: {}", &data);
 
         {
-            let mut challenges = ctx.state().challenges.lock();
-            let challenge = challenges.get_mut(id).unwrap();
+            let mut orders = ctx.state().orders.lock();
+            let order = orders.get_mut(id.0).unwrap();
+            let auth = &mut order.authorizations[id.1];
+            let challenge = &mut auth.challenges[id.2];
             println!("checking challenge: {:?}", challenge);
 
             if data.contains(challenge.token.as_str()) {
+                auth.status = AuthorizationStatus::Valid;
                 challenge.status = super::proto::server::ChallengeStatus::Valid;
             } else {
                 return Err(OpaqueError::from_display("wrong key provided"));
+            }
+
+            let all_valid = order
+                .authorizations
+                .iter()
+                .all(|auth| auth.status == AuthorizationStatus::Valid);
+
+            if all_valid {
+                order.order.status = OrderStatus::Ready;
             }
         };
         Ok(())

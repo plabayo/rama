@@ -104,7 +104,7 @@ pub struct Order {
     pub certificate: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 /// Current status of an [`Order`]
 pub enum OrderStatus {

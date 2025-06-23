@@ -1,13 +1,12 @@
 use super::proto::{
-    client::{
-        CreateAccountOptions, Jws, Key, KeyAuthorization, NewOrderPayload, ProtectedHeader,
-        ProtectedHeaderKey, Signer,
-    },
-    common::{EMPTY_PAYLOAD, NO_PAYLOAD},
+    client::{CreateAccountOptions, KeyAuthorization, NewOrderPayload},
     server::{self, Problem},
 };
 use crate::{
     Context, Service,
+    crypto::jose::{
+        EMPTY_PAYLOAD, Empty, Jws, Key, NO_PAYLOAD, ProtectedHeader, ProtectedHeaderKey, Signer,
+    },
     error::{BoxError, ErrorContext, ErrorExt, OpaqueError},
     http::{
         Body, BodyExtractExt, Request, Response, client::EasyHttpWebClient,
@@ -16,7 +15,8 @@ use crate::{
     service::BoxService,
     tls::{
         acme::proto::{
-            common::Empty,
+            client::FinalizePayload,
+            common::{self},
             server::{LOCATION_HEADER, REPLAY_NONCE_HEADER},
         },
         rustls::dep::{
@@ -28,6 +28,18 @@ use crate::{
 };
 
 use parking_lot::Mutex;
+use rama_net::tls::{DataEncoding, server::ServerAuthData};
+use rama_tls_boring::core::{
+    asn1::{Asn1Object, Asn1Time},
+    bn::BigNum,
+    hash::MessageDigest,
+    pkey::PKey,
+    rsa::Rsa,
+    x509::{
+        X509, X509Builder, X509Extension, X509NameBuilder,
+        extension::{BasicConstraints, KeyUsage, SubjectAlternativeName},
+    },
+};
 use serde::Serialize;
 use std::time::Duration;
 use tokio::time::{sleep, timeout};
@@ -385,18 +397,61 @@ impl<'a> Order<'a> {
         &mut self,
         timeout_duration: Duration,
     ) -> Result<&server::Order, OpaqueError> {
+        self.poll_until_status(timeout_duration, server::OrderStatus::Ready)
+            .await
+    }
+
+    pub async fn poll_until_certificate_ready(
+        &mut self,
+        timeout_duration: Duration,
+    ) -> Result<&server::Order, OpaqueError> {
+        self.poll_until_status(timeout_duration, server::OrderStatus::Valid)
+            .await
+    }
+
+    pub async fn finalize(
+        &mut self,
+        payload: FinalizePayload,
+    ) -> Result<&server::Order, OpaqueError> {
+        let response = self
+            .account
+            .post::<server::Order>(&self.inner.finalize, Some(&payload))
+            .await?;
+
+        self.inner = response.into_body().context("order info")?;
+        Ok(&self.inner)
+    }
+
+    pub async fn download_certificate(&self) -> Result<String, OpaqueError> {
+        let response = self
+            .account
+            .post::<String>(self.inner.certificate.as_ref().unwrap(), NO_PAYLOAD)
+            .await?;
+
+        let certificate = response.into_body().context("response into certificate")?;
+        Ok(certificate)
+    }
+
+    pub async fn poll_until_status(
+        &mut self,
+        timeout_duration: Duration,
+        status: server::OrderStatus,
+    ) -> Result<&server::Order, OpaqueError> {
         timeout(timeout_duration, async {
             loop {
                 self.refresh().await.unwrap();
-                if self.inner.status != server::OrderStatus::Pending {
-                    break;
+                if self.inner.status == status {
+                    break Ok(());
+                }
+                if self.inner.status == server::OrderStatus::Invalid {
+                    break Err(OpaqueError::from_display("Order is invalid state"));
                 }
                 // TODO use retry header
                 sleep(Duration::from_millis(1000)).await;
             }
         })
         .await
-        .context("poll until complete")?;
+        .context("poll until status ")??;
 
         Ok(&self.inner)
     }
@@ -433,20 +488,15 @@ impl<'a> Order<'a> {
 
     // TODO boring variants
 
-    pub fn create_rustls_cert_for_acme_authz<'b>(
+    pub fn create_rustls_cert_for_acme_authz(
         &self,
-        authorization: &'b server::Authorization,
-    ) -> Result<(&'b server::Challenge, CertifiedKey), OpaqueError> {
-        let challenge = authorization
-            .challenges
-            .iter()
-            .find(|challenge| challenge.r#type == server::ChallengeType::TlsAlpn01)
-            .unwrap();
-
+        challenge: &server::Challenge,
+        identifier: &common::Identifier,
+    ) -> Result<CertifiedKey, OpaqueError> {
         let key_authz = self.create_key_authorization(challenge);
 
         let mut cert_params =
-            rcgen::CertificateParams::new(vec![authorization.identifier.clone().into()]).unwrap();
+            rcgen::CertificateParams::new(vec![identifier.clone().into()]).unwrap();
         cert_params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
         cert_params.custom_extensions = vec![rcgen::CustomExtension::new_acme_identifier(
             key_authz.digest().as_ref(),
@@ -470,7 +520,161 @@ impl<'a> Order<'a> {
             any_ecdsa_type(&pk).unwrap().into(),
         );
 
-        Ok((challenge, cert_key))
+        Ok(cert_key)
+    }
+
+    pub fn create_boring_cert_for_acme_authz<'b>(
+        &self,
+        challenge: &server::Challenge,
+        identifier: &common::Identifier,
+    ) -> Result<ServerAuthData, OpaqueError> {
+        // use rama_tls_boring::core::asn1::Asn1Object;
+        // use rama_tls_boring::core::bn::BigNum;
+        // use rama_tls_boring::core::pkey::PKey;
+        // use rama_tls_boring::core::rsa::Rsa;
+        // use rama_tls_boring::core::x509::extension::{ExtendedKeyUsage, KeyUsage};
+        // use rama_tls_boring::core::x509::{X509Builder, X509Extension, X509NameBuilder};
+
+        // let key_authz = self.create_key_authorization(challenge);
+
+        // let mut cert_params =
+        //     rcgen::CertificateParams::new(vec![identifier.clone().into()]).unwrap();
+        // cert_params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
+        // cert_params.custom_extensions = vec![rcgen::CustomExtension::new_acme_identifier(
+        //     key_authz.digest().as_ref(),
+        // )];
+
+        // let key_pair = rcgen::KeyPair::generate().unwrap();
+        // let key_der = key_pair.serialize_der();
+
+        // let cert = cert_params.self_signed(&key_pair).unwrap();
+        // println!("{:?}", cert.pem());
+        // // let cert_der = cert.der();
+
+        // let pk = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key_der));
+
+        // let server_auth = ServerAuthData {
+        //     private_key: DataEncoding::Der(pk.secret_der().into()),
+        //     cert_chain: DataEncoding::DerStack(vec![cert.der().to_vec()]),
+        //     ocsp: None,
+        // };
+
+        // Ok(server_auth)
+
+        // TO
+        let key_authz = self.create_key_authorization(challenge);
+
+        // Generate an RSA private key
+        let rsa = Rsa::generate(4096).unwrap();
+        let pkey = PKey::from_rsa(rsa).unwrap();
+
+        // Create X.509 certificate builder
+        let mut builder = X509Builder::new().unwrap();
+
+        // Set version and serial number
+        builder.set_version(2).unwrap();
+        let serial = BigNum::from_u32(1).unwrap().to_asn1_integer().unwrap();
+        builder.set_serial_number(&serial).unwrap();
+
+        let mut name = X509NameBuilder::new().unwrap();
+        name.append_entry_by_text("O", "Example Org").unwrap(); // Optional organization name
+        let name = name.build();
+        builder.set_issuer_name(&name).unwrap(); // Self-signed
+
+        // Set public key
+        builder.set_pubkey(&pkey).unwrap();
+
+        let not_before =
+            Asn1Time::days_from_now(0).context("x509 cert builder: create ASN1Time for today")?;
+        builder
+            .set_not_before(&not_before)
+            .context("x509 cert builder: set not before to today")?;
+        let not_after = Asn1Time::days_from_now(90)
+            .context("x509 cert builder: create ASN1Time for 90 days in future")?;
+        builder
+            .set_not_after(&not_after)
+            .context("x509 cert builder: set not after to 90 days in future")?;
+
+        builder
+            .append_extension(
+                BasicConstraints::new()
+                    .build()
+                    .context("x509 cert builder: build basic constraints")
+                    .unwrap(),
+            )
+            .context("x509 cert builder: add basic constraints as x509 extension")
+            .unwrap();
+
+        // Subject Alternative Name (SAN)
+        let subject_alt_name = SubjectAlternativeName::new()
+            .dns("https://todo.todo") // Adjust as needed
+            .build(&builder.x509v3_context(None, None))
+            .unwrap();
+        builder.append_extension(subject_alt_name).unwrap();
+
+        // Key Usage (Digital Signature, Key Encipherment)
+        let key_usage = KeyUsage::new()
+            .digital_signature()
+            .key_encipherment()
+            .build()
+            .unwrap();
+        builder.append_extension(key_usage).unwrap();
+
+        // Custom ACME Identifier Extension (Replace with actual ACME identifier data)
+        // let acme_oid = Asn1Object::from_str("1.3.6.1.5.5.7.1.31")?; // Example OID for ACME (replace if needed)
+        // let acme_data = key_authz.digest(); // Replace with actual ACME data
+
+        let xctx = &builder.x509v3_context(None, None);
+
+        // **Set ACME Identifier Extension**
+        let acme_oid = Asn1Object::from_str("1.3.6.1.5.5.7.1.31").unwrap();
+        println!("nid: {:?}", acme_oid.nid());
+        let digest = key_authz.digest();
+        let acme_identifier_ext = X509Extension::new_nid(
+            None,
+            Some(xctx),
+            acme_oid.nid(), // Use ACME-specific NID
+            hex::encode(digest).as_str(),
+        )
+        .unwrap();
+        builder.append_extension(acme_identifier_ext).unwrap();
+
+        // Sign the certificate with SHA-256
+        builder.sign(&pkey, MessageDigest::sha256()).unwrap();
+
+        // Generate the final X.509 certificate
+        let cert: X509 = builder.build();
+
+        // let mut cert_params =
+        //     rcgen::CertificateParams::new(vec![authorization.identifier.clone().into()]).unwrap();
+        // cert_params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
+        // cert_params.custom_extensions = vec![rcgen::CustomExtension::new_acme_identifier(
+        //     key_authz.digest().as_ref(),
+        // )];
+
+        // let key_pair = rcgen::KeyPair::generate().unwrap();
+        // let key_der = key_pair.serialize_der();
+
+        // let cert = cert_params.self_signed(&key_pair).unwrap();
+        // println!("{:?}", cert.pem());
+        // // let cert_der = cert.der();
+
+        // let pk = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key_der));
+
+        // let cert_key = CertifiedKey::new(
+        //     vec![cert.der().clone()],
+        //     any_ecdsa_type(&pk).unwrap().into(),
+        // );
+
+        let x = cert.to_der().unwrap();
+
+        let server_auth = ServerAuthData {
+            private_key: DataEncoding::Der(pkey.private_key_to_der().unwrap()),
+            cert_chain: DataEncoding::DerStack(vec![x]),
+            ocsp: None,
+        };
+
+        Ok(server_auth)
     }
 
     pub async fn poll_until_challenge_finished(

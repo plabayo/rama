@@ -12,26 +12,32 @@ pub use server::{AcmeServer, DirectoryPaths};
 mod test {
     use std::{convert::Infallible, sync::Arc, time::Duration};
 
+    use crate::tls::acme::proto::{
+        client::{CreateAccountOptions, FinalizePayload, KeyAuthorization, NewOrderPayload},
+        common::Identifier,
+        server::{ChallengeType, OrderStatus},
+    };
     use http::HeaderValue;
     use parking_lot::Mutex;
     use rama_core::{Context, Service, error::BoxError};
+    use rama_crypto::dep::aws_lc_rs::{
+        rand::SystemRandom,
+        signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair},
+    };
     use rama_http::{Body, Request, Response, service::web::Router};
     use rama_net::client::EstablishedClientConnection;
     use rama_net::test_utils::client::MockConnectorService;
     use rama_tls_rustls::{
         client::{TlsConnector, TlsConnectorDataBuilder},
-        dep::rustls::{
-            self,
-            server::{ClientHello, ResolvesServerCert},
-            sign::CertifiedKey,
+        dep::{
+            rcgen::{self, Certificate, CertificateParams, DistinguishedName, DnType, KeyPair},
+            rustls::{
+                self, crypto,
+                server::{ClientHello, ResolvesServerCert},
+                sign::CertifiedKey,
+            },
         },
         server::{TlsAcceptorData, TlsAcceptorService},
-    };
-
-    use crate::tls::acme::proto::{
-        client::{CreateAccountOptions, KeyAuthorization, NewOrderPayload},
-        common::Identifier,
-        server::{ChallengeType, OrderStatus},
     };
 
     use super::*;
@@ -133,6 +139,34 @@ mod test {
             .unwrap();
 
         assert_eq!(state.status, OrderStatus::Ready);
+
+        let csr = create_csr();
+
+        order.finalize(FinalizePayload { csr }).await.unwrap();
+
+        order
+            .poll_until_certificate_ready(Duration::from_secs(3))
+            .await
+            .unwrap();
+
+        let cert = order.download_certificate().await.unwrap();
+        println!("got certificate: {cert:?}");
+    }
+
+    fn create_csr() -> String {
+        let key_pair = rcgen::KeyPair::generate().unwrap();
+
+        let params = CertificateParams::new(vec!["example.com".to_string()]).unwrap();
+
+        let mut distinguished_name = DistinguishedName::new();
+        distinguished_name.push(DnType::CountryName, "US");
+        distinguished_name.push(DnType::StateOrProvinceName, "California");
+        distinguished_name.push(DnType::LocalityName, "San Francisco");
+        distinguished_name.push(DnType::OrganizationName, "ACME Corporation");
+        distinguished_name.push(DnType::CommonName, "example.com");
+
+        let csr_pem = params.serialize_request(&key_pair).unwrap().pem().unwrap();
+        csr_pem
     }
 
     #[tokio::test]
@@ -210,7 +244,15 @@ mod test {
 
         let auth = &authz[0];
         println!("authz: {:?}", auth);
-        let (challenge, cert_key) = order.create_rustls_cert_for_acme_authz(auth).unwrap();
+        let challenge = auth
+            .challenges
+            .iter()
+            .find(|challenge| challenge.r#type == ChallengeType::TlsAlpn01)
+            .unwrap();
+
+        let cert_key = order
+            .create_rustls_cert_for_acme_authz(&challenge, &auth.identifier)
+            .unwrap();
 
         *cert_store.lock() = Some(Arc::new(cert_key));
         println!("challegen: {:?}", challenge);
