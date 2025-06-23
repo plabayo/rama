@@ -8,7 +8,7 @@ use rama::{
             proto::{
                 client::{CreateAccountOptions, NewOrderPayload},
                 common::Identifier,
-                server::OrderStatus,
+                server::{ChallengeType, OrderStatus},
             },
         },
         rustls::{
@@ -51,18 +51,25 @@ async fn main() {
         .await
         .unwrap();
 
-    let authz = order.get_authorizations().await.unwrap();
+    let mut authz = order.get_authorizations().await.unwrap();
     // println!("authz: {:?}", authz);
     // println!("challenges: {:?}", authz[0].challenges);
 
-    let auth = &authz[0];
+    let auth = &mut authz[0];
 
     tracing::info!("running service at: {ADDR}");
 
     let graceful = crate::graceful::Shutdown::default();
 
-    let (challenge, cert_key) = order.create_rustls_cert_for_acme_authz(auth).unwrap();
-    let mut challenge = challenge.to_owned();
+    let challenge = auth
+        .challenges
+        .iter_mut()
+        .find(|challenge| challenge.r#type == ChallengeType::TlsAlpn01)
+        .unwrap();
+
+    let cert_key = order
+        .create_rustls_cert_for_acme_authz(&challenge, &auth.identifier)
+        .unwrap();
 
     let cert_resolver = Arc::new(ResolvesServerCertAcme::new(cert_key));
 
@@ -91,7 +98,7 @@ async fn main() {
 
     println!("waiting for challenge");
     order
-        .poll_until_challenge_finished(&mut challenge, Duration::from_secs(30))
+        .poll_until_challenge_finished(challenge, Duration::from_secs(30))
         .await
         .unwrap();
 
@@ -103,6 +110,8 @@ async fn main() {
 
     println!("new order state: {:?}", order.state());
     assert_eq!(order.state().status, OrderStatus::Ready);
+
+    todo!("crs");
 }
 
 #[derive(Debug)]
