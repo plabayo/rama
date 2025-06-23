@@ -23,10 +23,12 @@
 #![cfg_attr(test, allow(clippy::float_cmp))]
 #![cfg_attr(not(test), warn(clippy::print_stdout, clippy::dbg_macro))]
 
+pub mod jose;
+
 pub mod dep {
     //! Dependencies for rama crypto modules.
     //!
-    //! Exported for your convenience.
+    //! Exported for your convenience
 
     pub mod aws_lc_rs {
         //! Re-export of the [`aws-lc-rs`] crate.
@@ -35,5 +37,14 @@ pub mod dep {
 
         #[doc(inline)]
         pub use aws_lc_rs::*;
+    }
+
+    pub mod rcgen {
+        //! Re-export of the [`rcgen`] crate.
+        //!
+        //! [`rcgen`]: https://docs.rs/rcgen
+
+        #[doc(inline)]
+        pub use rcgen::*;
     }
 }
