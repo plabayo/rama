@@ -24,6 +24,7 @@ members = [
     "fuzz",
     "rama-cli",
     "rama-core",
+    "rama-crypto",
     "rama-dns",
     "rama-error",
     "rama-haproxy",
@@ -146,9 +147,11 @@ psl = "2"
 quickcheck = "1.0"
 quote = "1.0"
 radix_trie = "0.2"
+aws-lc-rs = "1.10.0"
 rama-boring = "0.3.1"
 rama-boring-tokio = "0.3.1"
 rama-core = { version = "0.3.0-alpha.1", path = "./rama-core" }
+rama-crypto = { version = "0.3.0-alpha.1", path = "./rama-crypto" }
 rama-dns = { version = "0.3.0-alpha.1", path = "./rama-dns" }
 rama-error = { version = "0.3.0-alpha.1", path = "./rama-error" }
 rama-haproxy = { version = "0.3.0-alpha.1", path = "./rama-haproxy" }
@@ -170,7 +173,7 @@ rama-udp = { version = "0.3.0-alpha.1", path = "./rama-udp" }
 rama-unix = { version = "0.3.0-alpha.1", path = "./rama-unix" }
 rama-utils = { version = "0.3.0-alpha.1", path = "./rama-utils" }
 rand = "0.9"
-rcgen = { version = "0.13", default-features = false, features = ["pem", "aws_lc_rs"] }
+rcgen = { version = "0.13", default-features = false, features = ["pem", "aws_lc_rs", "x509-parser"] }
 regex = "1.11"
 rustls = { version = "0.23", default-features = false, features = [
     "logging",
@@ -333,6 +336,7 @@ base64 = { workspace = true, optional = true }
 bytes = { workspace = true, optional = true }
 hex = { workspace = true, optional = true }
 rama-core = { workspace = true }
+rama-crypto = { workspace = true }
 rama-dns = { workspace = true, optional = true }
 rama-haproxy = { workspace = true, optional = true }
 rama-http = { workspace = true, optional = true }
