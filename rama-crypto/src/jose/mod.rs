@@ -1,11 +1,17 @@
 use crate::dep::aws_lc_rs::{
     digest::Digest,
-    pkcs8,
     rand::SystemRandom,
     signature::{self, ECDSA_P256_SHA256_FIXED, ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair},
     signature::{KeyPair, Signature},
 };
-use aws_lc_rs::digest::{SHA256, digest};
+use aws_lc_rs::{
+    digest::{SHA256, digest},
+    pkcs8::Document,
+    signature::{
+        ECDSA_P384_SHA384_FIXED, ECDSA_P384_SHA384_FIXED_SIGNING, EcdsaSigningAlgorithm,
+        EcdsaVerificationAlgorithm,
+    },
+};
 use base64::prelude::{BASE64_URL_SAFE_NO_PAD, Engine};
 use rama_core::error::{BoxError, ErrorContext, OpaqueError};
 use serde::{Deserialize, Serialize, Serializer, de::DeserializeOwned, ser::SerializeStruct};
@@ -34,7 +40,30 @@ pub struct ProtectedHeader<'a> {
 ///
 /// [`rfc7518`]: https://datatracker.ietf.org/doc/html/rfc7518
 pub enum JWA {
+    /// HMAC using SHA-256 (Required)
+    HS256,
+    /// HMAC using SHA-384 (Optional)
+    HS384,
+    /// HMAC using SHA-512 (Optional)
+    HS512,
+    /// RSASSA-PKCS1-v1_5 using SHA-256 (Recommended)
+    RS256,
+    /// RSASSA-PKCS1-v1_5 using SHA-384 (Optional)
+    RS384,
+    /// RSASSA-PKCS1-v1_5 using SHA-512 (Optional)
+    RS512,
+    /// ECDSA using P-256 and SHA-256 (Recommended+)
     ES256,
+    /// ECDSA using P-384 and SHA-384 (Optional)
+    ES384,
+    /// ECDSA using P-521 and SHA-512 (Optional)
+    ES512,
+    /// RSASSA-PSS using SHA-256 and MGF1 with SHA-256 (Optional)
+    PS256,
+    /// RSASSA-PSS using SHA-384 and MGF1 with SHA-384 (Optional)
+    PS384,
+    /// RSASSA-PSS using SHA-512 and MGF1 with SHA-512 (Optional)
+    PS512,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -78,7 +107,7 @@ pub enum JWKType {
     },
     /// Elleptic curve
     EC {
-        crv: String,
+        crv: JWKellipticCurves,
         x: String,
         y: String,
     },
@@ -86,6 +115,80 @@ pub enum JWKType {
     OCT {
         k: String,
     },
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum JWKellipticCurves {
+    #[serde(rename = "P-256")]
+    P256,
+    #[serde(rename = "P-384")]
+    P384,
+    #[serde(rename = "P-521")]
+    P521,
+}
+
+impl From<JWKellipticCurves> for JWA {
+    fn from(value: JWKellipticCurves) -> Self {
+        match value {
+            JWKellipticCurves::P256 => Self::ES256,
+            JWKellipticCurves::P384 => Self::ES384,
+            JWKellipticCurves::P521 => Self::ES512,
+        }
+    }
+}
+
+impl TryFrom<JWA> for JWKellipticCurves {
+    type Error = OpaqueError;
+
+    fn try_from(value: JWA) -> Result<Self, Self::Error> {
+        match value {
+            JWA::ES256 => Ok(JWKellipticCurves::P256),
+            JWA::ES384 => Ok(JWKellipticCurves::P384),
+            JWA::ES512 => Ok(JWKellipticCurves::P521),
+            JWA::HS256 | JWA::HS384 | JWA::HS512 => Err(OpaqueError::from_display(
+                "Hmac cannot be converted to elliptic curve",
+            )),
+            JWA::RS256 | JWA::RS384 | JWA::RS512 | JWA::PS256 | JWA::PS384 | JWA::PS512 => Err(
+                OpaqueError::from_display("RSA cannot be converted to elliptic curve"),
+            ),
+        }
+    }
+}
+
+impl TryFrom<JWA> for &'static EcdsaVerificationAlgorithm {
+    type Error = OpaqueError;
+
+    fn try_from(value: JWA) -> Result<Self, Self::Error> {
+        match value {
+            JWA::ES256 => Ok(&ECDSA_P256_SHA256_FIXED),
+            JWA::ES384 => Ok(&ECDSA_P384_SHA384_FIXED),
+            JWA::ES512 => Ok(&ECDSA_P256_SHA256_FIXED),
+            JWA::HS256 | JWA::HS384 | JWA::HS512 => Err(OpaqueError::from_display(
+                "Hmac cannot be converted to elliptic curve",
+            )),
+            JWA::RS256 | JWA::RS384 | JWA::RS512 | JWA::PS256 | JWA::PS384 | JWA::PS512 => Err(
+                OpaqueError::from_display("RSA cannot be converted to elliptic curve"),
+            ),
+        }
+    }
+}
+
+impl TryFrom<JWA> for &'static EcdsaSigningAlgorithm {
+    type Error = OpaqueError;
+
+    fn try_from(value: JWA) -> Result<Self, Self::Error> {
+        match value {
+            JWA::ES256 => Ok(&ECDSA_P256_SHA256_FIXED_SIGNING),
+            JWA::ES384 => Ok(&ECDSA_P384_SHA384_FIXED_SIGNING),
+            JWA::ES512 => Ok(&ECDSA_P256_SHA256_FIXED_SIGNING),
+            JWA::HS256 | JWA::HS384 | JWA::HS512 => Err(OpaqueError::from_display(
+                "Hmac cannot be converted to elliptic curve",
+            )),
+            JWA::RS256 | JWA::RS384 | JWA::RS512 | JWA::PS256 | JWA::PS384 | JWA::PS512 => Err(
+                OpaqueError::from_display("RSA cannot be converted to elliptic curve"),
+            ),
+        }
+    }
 }
 
 impl Serialize for JWKType {
@@ -130,13 +233,17 @@ pub enum JWKUse {
 }
 
 impl JWK {
-    fn new_for_escdsa_keypair(key: &EcdsaKeyPair) -> Self {
-        // 0x04 prefix + 32-byte X + 32-byte Y = 65-bytes
-        let (x, y) = key.public_key().as_ref()[1..].split_at(32);
-        Self {
-            alg: JWA::ES256,
+    fn new_for_escdsa_keypair(key: &EcdsaKeyPair, alg: JWA) -> Result<Self, OpaqueError> {
+        let curve = alg.try_into()?;
+        // 0x04 prefix + x + y
+        let pub_key = key.public_key().as_ref();
+        let middle = (pub_key.len() - 1) / 2;
+        let (x, y) = key.public_key().as_ref()[1..].split_at(middle);
+
+        Ok(Self {
+            alg,
             key_type: JWKType::EC {
-                crv: "P-256".into(),
+                crv: curve,
                 x: BASE64_URL_SAFE_NO_PAD.encode(x),
                 y: BASE64_URL_SAFE_NO_PAD.encode(y),
             },
@@ -145,7 +252,7 @@ impl JWK {
             x5c: None,
             x5t: None,
             x5t_sha256: None,
-        }
+        })
     }
 
     /// [`JWKThumb`] as defined in [`rfc7638`] is url safe identifier for a [`JWK`]
@@ -158,78 +265,88 @@ impl JWK {
         ))
     }
 
+    /// Convert this [`JWK`] to an unparsed public key which can be used to verify signatures
+    ///
+    /// Warning no verification is done on this key until `.verify` is called
     pub fn unparsed_public_key(
         &self,
     ) -> Result<signature::UnparsedPublicKey<Vec<u8>>, OpaqueError> {
         match &self.key_type {
             JWKType::RSA { .. } => Err(OpaqueError::from_display("currently not supported")),
-            JWKType::OCT { .. } => Err(OpaqueError::from_display("currently not supported")),
-            JWKType::EC { crv: _, x, y } => {
+            JWKType::OCT { .. } => Err(OpaqueError::from_display(
+                "Symmetric key cannot be converted to public key",
+            )),
+            JWKType::EC { crv, x, y } => {
+                let alg: &'static EcdsaVerificationAlgorithm =
+                    JWA::from(crv.to_owned()).try_into()?;
+
                 let x_bytes = BASE64_URL_SAFE_NO_PAD.decode(x).unwrap();
                 let y_bytes = BASE64_URL_SAFE_NO_PAD.decode(y).unwrap();
 
-                // 0x04 prefix + 32-byte X + 32-byte Y = 65-bytes
-                let mut point_bytes = Vec::with_capacity(65);
+                let mut point_bytes = Vec::with_capacity(1 + x_bytes.len() + y_bytes.len());
                 point_bytes.push(0x04);
                 point_bytes.extend_from_slice(&x_bytes);
                 point_bytes.extend_from_slice(&y_bytes);
-                Ok(signature::UnparsedPublicKey::new(
-                    &ECDSA_P256_SHA256_FIXED,
-                    point_bytes,
-                ))
+
+                Ok(signature::UnparsedPublicKey::new(alg, point_bytes))
             }
         }
     }
 }
 
-/// [`Key`] which is used to identify and authenticate our requests
-pub struct Key {
+/// [`EcdsaKey`] which is used to identify and authenticate our requests
+///
+/// This contains the private and public key we will be using for JWS
+pub struct EcdsaKey {
     rng: SystemRandom,
     alg: JWA,
     inner: EcdsaKeyPair,
 }
 
-impl Key {
-    /// Create a new [`Key`] from the given pkcs8 der key and the given rng
-    ///
-    /// WARNING: right now we only support an ECDSA key pair
-    pub fn new(pkcs8_der: &[u8], rng: SystemRandom) -> Result<Self, OpaqueError> {
-        // TODO support other algorithms
-        let inner = Self::ecdsa_key_pair_from_pkcs8(pkcs8_der, &rng)?;
-
+impl EcdsaKey {
+    /// Create a new [`EcdsaKey`] from the given EcdsaKeyPair
+    pub fn new(key_pair: EcdsaKeyPair, alg: JWA, rng: SystemRandom) -> Result<Self, OpaqueError> {
+        // Check if passed algorithm is a correct elliptic curve one
+        let _curve = JWKellipticCurves::try_from(alg)?;
         Ok(Self {
             rng,
-            alg: JWA::ES256,
-            inner,
+            alg,
+            inner: key_pair,
         })
     }
 
-    /// Create a new [`Key`] from the given pkcs8 der key containing an ECDSA key pair
-    fn ecdsa_key_pair_from_pkcs8(
-        pkcs8: &[u8],
-        _: &SystemRandom,
-    ) -> Result<EcdsaKeyPair, OpaqueError> {
-        EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, pkcs8)
-            .context("create EcdsaKeyPair from pkcs8")
-    }
+    /// Generate a new [`Key`] from a newly generated [`EcdsaKeyPair`] using P-256 EC
+    pub fn generate() -> Result<Self, OpaqueError> {
+        let key_pair = EcdsaKeyPair::generate(&ECDSA_P256_SHA256_FIXED_SIGNING)
+            .context("generate EcdsaKeyPair")?;
 
-    /// Generate a new [`Key`] from a newly generated [`EcdsaKeyPair`]
-    pub fn generate() -> Result<(Self, pkcs8::Document), OpaqueError> {
-        let rng = SystemRandom::new();
-        let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &rng)
-            .context("generate pkcs8")?;
-        Self::new(pkcs8.as_ref(), rng).map(|key| (key, pkcs8))
+        Self::new(key_pair, JWA::ES256, SystemRandom::new())
     }
 
     /// Generate a new [`Key`] from the given pkcs8 der
-    ///
-    /// WARNING: right now we only support an ECDSA key pair
-    pub fn from_pkcs8_der(pkcs8_der: &[u8]) -> Result<Self, OpaqueError> {
-        Self::new(pkcs8_der, SystemRandom::new())
+    pub fn from_pkcs8_der(
+        pkcs8_der: &[u8],
+        alg: JWA,
+        rng: SystemRandom,
+    ) -> Result<Self, OpaqueError> {
+        let ec_alg: &'static EcdsaSigningAlgorithm = alg.try_into()?;
+        let key_pair = EcdsaKeyPair::from_pkcs8(ec_alg, pkcs8_der)
+            .context("create EcdsaKeyPair from pkcs8")?;
+
+        Self::new(key_pair, alg, rng)
+    }
+
+    pub fn pkcs8_der(&self) -> Result<(JWA, Document), OpaqueError> {
+        let doc = self
+            .inner
+            .to_pkcs8v1()
+            .context("create pkcs8 der from keypair")?;
+        Ok((self.alg, doc))
     }
 
     pub fn create_jwk(&self) -> JWK {
-        JWK::new_for_escdsa_keypair(&self.inner)
+        // `expect` because `new_for_escdsa_keypair`` can only fail if curve is not elliptic but we also check that in `new`
+        JWK::new_for_escdsa_keypair(&self.inner, self.alg).expect("create JWK from escdsa keypair")
     }
 }
 
@@ -246,7 +363,7 @@ pub trait Signer {
     fn sign(&self, payload: &[u8]) -> Result<Self::Signature, BoxError>;
 }
 
-impl Signer for Key {
+impl Signer for EcdsaKey {
     type Signature = Signature;
 
     fn protected_header<'n, 'u: 'n, 's: 'u>(
@@ -256,7 +373,7 @@ impl Signer for Key {
     ) -> ProtectedHeader<'n> {
         ProtectedHeader {
             alg: self.alg,
-            key: ProtectedHeaderKey::from_key(&self.inner),
+            key: ProtectedHeaderKey::JWK(self.create_jwk()),
             nonce,
             url,
         }
@@ -264,13 +381,6 @@ impl Signer for Key {
 
     fn sign(&self, payload: &[u8]) -> Result<Self::Signature, BoxError> {
         Ok(self.inner.sign(&self.rng, payload)?)
-    }
-}
-
-impl ProtectedHeaderKey<'_> {
-    /// Create a [`ProtectedHeaderKey`] with a JWK encoded [`EcdsaKeyPair`]
-    pub fn from_key(key: &EcdsaKeyPair) -> ProtectedHeaderKey<'static> {
-        ProtectedHeaderKey::JWK(JWK::new_for_escdsa_keypair(key))
     }
 }
 
@@ -434,12 +544,12 @@ mod tests {
     #[test]
     fn jwk_thumb_order_is_correct() {
         let jwk_type = JWKType::EC {
-            crv: "crv".into(),
+            crv: JWKellipticCurves::P256,
             x: "x".into(),
             y: "y".into(),
         };
         let output = serde_json::to_string(&jwk_type).unwrap();
-        let expected_output = r##"{"crv":"crv","kty":"EC","x":"x","y":"y"}"##;
+        let expected_output = r##"{"crv":"P-256","kty":"EC","x":"x","y":"y"}"##;
         assert_eq!(&output, expected_output);
 
         let jwk_type = JWKType::RSA {
@@ -458,15 +568,17 @@ mod tests {
 
     #[test]
     fn can_generate_and_reuse_keys() {
-        let (generated_key, pkcs8_document) = Key::generate().unwrap();
-        let recreated_key = Key::from_pkcs8_der(pkcs8_document.as_ref()).unwrap();
+        let key = EcdsaKey::generate().unwrap();
+        let stored = key.pkcs8_der().unwrap();
+        let recreated_key =
+            EcdsaKey::from_pkcs8_der(stored.1.as_ref(), stored.0, SystemRandom::new()).unwrap();
 
-        assert_eq!(generated_key.create_jwk(), recreated_key.create_jwk())
+        assert_eq!(key.create_jwk(), recreated_key.create_jwk())
     }
 
     #[test]
     fn can_encode_and_decode_jws_with_payload() {
-        let (key, _) = Key::generate().unwrap();
+        let key = EcdsaKey::generate().unwrap();
         let nonce = "test_nonce";
         let url = "http://test.test";
         let payload = String::from("test_payload");
@@ -479,7 +591,7 @@ mod tests {
 
     #[test]
     fn can_encode_and_decode_jws_without_payload() {
-        let (key, _) = Key::generate().unwrap();
+        let key = EcdsaKey::generate().unwrap();
         let nonce = "test_nonce";
         let url = "http://test.test";
         let protected_header = key.protected_header(Some(nonce), url);
@@ -491,7 +603,7 @@ mod tests {
 
     #[test]
     fn can_encode_and_decode_jws_with_empty_payload() {
-        let (key, _) = Key::generate().unwrap();
+        let key = EcdsaKey::generate().unwrap();
         let nonce = "test_nonce";
         let url = "http://test.test";
         let protected_header = key.protected_header(Some(nonce), url);
@@ -502,7 +614,7 @@ mod tests {
 
     #[test]
     fn should_serialize_correctly() {
-        let (key, _) = Key::generate().unwrap();
+        let key = EcdsaKey::generate().unwrap();
         let nonce = "test_nonce";
         let url = "http://test.test";
         let protected_header = key.protected_header(Some(nonce), url);
@@ -517,12 +629,12 @@ mod tests {
     #[test]
     fn can_decode_with_key_id() {
         struct KeyId {
-            key: Key,
+            key: EcdsaKey,
             id: String,
         }
 
         impl Signer for KeyId {
-            type Signature = <Key as Signer>::Signature;
+            type Signature = <EcdsaKey as Signer>::Signature;
 
             fn protected_header<'n, 'u: 'n, 's: 'u>(
                 &'s self,
@@ -556,12 +668,13 @@ mod tests {
             }
         }
 
-        let (key, _) = Key::generate().unwrap();
+        let key = EcdsaKey::generate().unwrap();
         let signer = KeyId {
             id: "test_id".into(),
             key,
         };
-        let pub_key = JWK::new_for_escdsa_keypair(&signer.key.inner)
+        let pub_key = JWK::new_for_escdsa_keypair(&signer.key.inner, JWA::ES256)
+            .unwrap()
             .unparsed_public_key()
             .unwrap();
 
