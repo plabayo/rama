@@ -1,4 +1,6 @@
 use super::{Proxy, StringFilter};
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD as ENGINE;
 use rama_net::{
     address::ProxyAddress,
     asn::{Asn, InvalidAsn},
@@ -108,7 +110,9 @@ pub(crate) fn parse_csv_row(row: &str) -> Option<Proxy> {
             address.credential = Some(match value.split_once(' ') {
                 Some((t, v)) => {
                     if t.eq_ignore_ascii_case("basic") {
-                        ProxyCredential::Basic(v.parse().ok()?)
+                        let bytes = ENGINE.decode(v).ok()?;
+                        let decoded = String::from_utf8(bytes).ok()?;
+                        ProxyCredential::Basic(decoded.parse().ok()?)
                     } else if t.eq_ignore_ascii_case("bearer") {
                         ProxyCredential::Bearer(v.parse().ok()?)
                     } else {

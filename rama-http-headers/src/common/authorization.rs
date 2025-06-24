@@ -35,9 +35,10 @@ use crate::{Error, Header};
 ///
 /// ```
 /// use rama_http_headers::Authorization;
+/// use rama_net::user::{Basic, Bearer};
 ///
-/// let basic = Authorization::basic("Aladdin", "open sesame");
-/// let bearer = Authorization::bearer("some-opaque-token").unwrap();
+/// let basic = Authorization::new(Basic::new_static("Aladdin", "open sesame"));
+/// let bearer = Authorization::new(Bearer::new_static("some-opaque-token"));
 /// ```
 ///
 #[derive(Clone, PartialEq, Debug)]

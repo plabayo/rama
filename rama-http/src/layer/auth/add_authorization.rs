@@ -13,6 +13,7 @@
 //! use rama_core::service::service_fn;
 //! use rama_core::{Context, Service, Layer};
 //! use rama_core::error::BoxError;
+//! use rama_net::user::Basic;
 //!
 //! # async fn handle(request: Request) -> Result<Response, BoxError> {
 //! #     Ok(Response::new(Body::default()))
@@ -20,14 +21,13 @@
 //!
 //! # #[tokio::main]
 //! # async fn main() -> Result<(), BoxError> {
-//! # let service_that_requires_auth = ValidateRequestHeader::basic(
+//! # let service_that_requires_auth = ValidateRequestHeader::auth(
 //! #     service_fn(handle),
-//! #     "username",
-//! #     "password",
+//! #     Basic::new_static("username", "password"),
 //! # );
 //! let mut client = (
 //!     // Use basic auth with the given username and password
-//!     AddAuthorizationLayer::basic("username", "password"),
+//!     AddAuthorizationLayer::new(Basic::new_static("username", "password")),
 //! ).layer(service_that_requires_auth);
 //!
 //! // Make a request, we don't have to add the `Authorization` header manually
@@ -281,7 +281,8 @@ mod tests {
     #[tokio::test]
     async fn basic() {
         // service that requires auth for all requests
-        let svc = ValidateRequestHeaderLayer::basic("foo", "bar").layer(service_fn(echo));
+        let svc = ValidateRequestHeaderLayer::auth(Basic::new_static("foo", "bar"))
+            .into_layer(service_fn(echo));
 
         // make a client that adds auth
         let client = AddAuthorization::new(svc, Basic::new_static("foo", "bar"));
@@ -297,7 +298,8 @@ mod tests {
     #[tokio::test]
     async fn token() {
         // service that requires auth for all requests
-        let svc = ValidateRequestHeaderLayer::bearer("foo").layer(service_fn(echo));
+        let svc = ValidateRequestHeaderLayer::auth(Bearer::new_static("foo"))
+            .into_layer(service_fn(echo));
 
         // make a client that adds auth
         let client = AddAuthorization::new(svc, Bearer::new_static("foo"));
@@ -312,8 +314,8 @@ mod tests {
 
     #[tokio::test]
     async fn making_header_sensitive() {
-        let svc = ValidateRequestHeaderLayer::bearer("foo").layer(service_fn(
-            async |request: Request<Body>| {
+        let svc = ValidateRequestHeaderLayer::auth(Bearer::new_static("foo")).into_layer(
+            service_fn(async |request: Request<Body>| {
                 let auth = request
                     .headers()
                     .get(rama_http_types::header::AUTHORIZATION)
@@ -321,8 +323,8 @@ mod tests {
                 assert!(auth.is_sensitive());
 
                 Ok::<_, Infallible>(Response::new(Body::empty()))
-            },
-        ));
+            }),
+        );
 
         let client = AddAuthorization::new(svc, Bearer::new_static("foo")).as_sensitive(true);
 

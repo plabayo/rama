@@ -21,10 +21,11 @@ rustdoc-args = ["--cfg", "docsrs"]
 default = []
 memory-db = ["dep:venndb", "rama-net/venndb"]
 live-update = ["dep:arc-swap"]
-csv = ["dep:tokio", "tokio/fs"]
+csv = ["dep:tokio", "tokio/fs", "dep:base64"]
 
 [dependencies]
 arc-swap = { workspace = true, optional = true }
+base64 = { workspace = true, optional = true }
 rama-core = { workspace = true }
 rama-net = { workspace = true, features = ["http"] }
 rama-utils = { workspace = true }
