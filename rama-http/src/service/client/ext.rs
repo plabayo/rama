@@ -1,10 +1,9 @@
-use std::borrow::Cow;
-
 use crate::{Method, Request, Response, Uri};
 use rama_core::{
     Context, Service,
     error::{BoxError, ErrorExt, OpaqueError},
 };
+use rama_http_headers::authorization::Credentials;
 
 /// Extends an Http Client with high level features,
 /// to facilitate the creation and sending of http requests,
@@ -450,34 +449,9 @@ where
         self
     }
 
-    /// Enable HTTP basic authentication.
-    pub fn basic_auth<U, P>(self, username: U, password: P) -> Self
-    where
-        U: Into<Cow<'static, str>>,
-        P: Into<Cow<'static, str>>,
-    {
-        let header = crate::headers::Authorization::basic(username, password);
-        self.typed_header(header)
-    }
-
-    /// Enable HTTP bearer authentication.
-    pub fn bearer_auth<T>(mut self, token: T) -> Self
-    where
-        T: Into<Cow<'static, str>>,
-    {
-        let header = match crate::headers::Authorization::bearer(token) {
-            Ok(header) => header,
-            Err(err) => {
-                self.state = match self.state {
-                    RequestBuilderState::Error(original_err) => {
-                        RequestBuilderState::Error(original_err)
-                    }
-                    _ => RequestBuilderState::Error(OpaqueError::from_std(err)),
-                };
-                return self;
-            }
-        };
-
+    /// Enable HTTP authentication.
+    pub fn auth(self, credentials: impl Credentials) -> Self {
+        let header = crate::headers::Authorization::new(credentials);
         self.typed_header(header)
     }
 

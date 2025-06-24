@@ -105,10 +105,18 @@ pub(crate) fn parse_csv_row(row: &str) -> Option<Proxy> {
     // support header format or cleartext format
     if let Some(value) = iter.next() {
         if !value.is_empty() {
-            let credential = ProxyCredential::try_from_header_str(value)
-                .or_else(|_| ProxyCredential::try_from_clear_str(value.to_owned()))
-                .ok()?;
-            address.credential = Some(credential);
+            address.credential = Some(match value.split_once(' ') {
+                Some((t, v)) => {
+                    if t.eq_ignore_ascii_case("basic") {
+                        ProxyCredential::Basic(v.parse().ok()?)
+                    } else if t.eq_ignore_ascii_case("bearer") {
+                        ProxyCredential::Bearer(v.parse().ok()?)
+                    } else {
+                        ProxyCredential::Basic(value.parse().ok()?)
+                    }
+                }
+                None => ProxyCredential::Basic(value.parse().ok()?),
+            });
         }
     }
 

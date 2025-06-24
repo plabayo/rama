@@ -64,7 +64,7 @@ async fn main() {
         //
         // NOTE: the high level http client has also a `::basic` method
         // that can be used to add basic auth headers only for that specific request
-        AddAuthorizationLayer::basic("john", "123")
+        AddAuthorizationLayer::new(Basic::new_static("john", "123"))
             .as_sensitive(true)
             .if_not_present(true),
         RetryLayer::new(
@@ -150,7 +150,7 @@ async fn main() {
 
     let resp = client
         .get(format!("http://{ADDRESS}/info"))
-        .basic_auth("joe", "456")
+        .auth(Basic::new_static("joe", "456"))
         .send(Context::default())
         .await
         .unwrap();
