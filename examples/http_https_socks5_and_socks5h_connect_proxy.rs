@@ -50,7 +50,7 @@ use rama::{
         },
         user::Basic,
     },
-    proxy::socks5::{Socks5Acceptor, Socks5Auth, server::Socks5PeekRouter},
+    proxy::socks5::{Socks5Acceptor, server::Socks5PeekRouter},
     rt::Executor,
     service::service_fn,
     tcp::{client::service::Forwarder, server::TcpListener},
@@ -119,14 +119,14 @@ async fn main() {
         .await
         .expect("bind http+https+socks5+socks5h proxy to 127.0.0.1:62029");
 
-    let socks5_acceptor =
-        Socks5Acceptor::default().with_auth(Socks5Auth::username_password("john", "secret"));
+    let socks5_acceptor = Socks5Acceptor::default()
+        .with_authorizer(Basic::new_static("john", "secret").into_authorizer());
 
     let exec = Executor::graceful(graceful.guard());
     let http_service = HttpServer::auto(exec).service(
         (
             TraceLayer::new_for_http(),
-            ProxyAuthLayer::new(Basic::new("tom", "clancy")),
+            ProxyAuthLayer::new(Basic::new_static("tom", "clancy")),
             UpgradeLayer::new(
                 MethodMatcher::CONNECT,
                 service_fn(http_connect_accept),

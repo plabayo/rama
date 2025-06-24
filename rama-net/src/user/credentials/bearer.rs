@@ -1,6 +1,8 @@
 use rama_core::error::OpaqueError;
 use std::{borrow::Cow, fmt, str::FromStr};
 
+use crate::user::authority::StaticAuthorizer;
+
 #[derive(Clone, PartialEq, Eq)]
 /// Bearer credentials.
 pub struct Bearer(Cow<'static, str>);
@@ -54,6 +56,13 @@ impl Bearer {
     /// View the token part as a `&str`.
     pub fn token(&self) -> &str {
         &self.0
+    }
+
+    /// Turn itself into a [`StaticAuthorizer`], so it can be used to authorize.
+    ///
+    /// Just a shortcut, QoL.
+    pub fn into_authorizer(self) -> StaticAuthorizer<Bearer> {
+        StaticAuthorizer::new(self)
     }
 }
 

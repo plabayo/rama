@@ -34,6 +34,17 @@ rama_utils::macros::error::static_str_error! {
     pub struct Unauthorized;
 }
 
+impl<C: Send + 'static> Authorizer<C> for () {
+    type Error = Unauthorized;
+
+    async fn authorize(&self, credentials: C) -> AuthorizeResult<C, Self::Error> {
+        AuthorizeResult {
+            credentials,
+            result: Err(Unauthorized),
+        }
+    }
+}
+
 impl<C: Send + 'static> Authorizer<C> for bool {
     type Error = Unauthorized;
 

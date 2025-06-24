@@ -9,15 +9,16 @@
 //! For MITM socks5 proxies you can use [`LazyConnector`] as the
 //! connector service of [`Socks5Acceptor`].
 
-use crate::{
-    Socks5Auth,
-    proto::{
-        Command, ProtocolError, ReplyKind, SocksMethod, client,
-        server::{Header, Reply, UsernamePasswordResponse},
-    },
+use crate::proto::{
+    Command, ProtocolError, ReplyKind, SocksMethod, client,
+    server::{Header, Reply, UsernamePasswordResponse},
 };
-use rama_core::{Context, Service, error::BoxError, telemetry::tracing};
-use rama_net::{socket::Interface, stream::Stream};
+use rama_core::{Context, Service, context::Extensions, error::BoxError, telemetry::tracing};
+use rama_net::{
+    socket::Interface,
+    stream::Stream,
+    user::{self, authority::Authorizer},
+};
 use rama_tcp::{TcpStream, server::TcpListener};
 use std::fmt;
 
@@ -48,14 +49,12 @@ pub use udp::{DefaultUdpRelay, Socks5UdpAssociator, UdpRelay};
 /// supports the [`Command::Connect`] method using the [`DefaultConnector`],
 /// but custom connectors as well as binders and udp associators
 /// are optionally possible.
-pub struct Socks5Acceptor<C = DefaultConnector, B = (), U = ()> {
+pub struct Socks5Acceptor<C = DefaultConnector, B = (), U = (), A = ()> {
     connector: C,
     binder: B,
     udp_associator: U,
 
-    // TODO: replace with proper auth support
-    // <https://github.com/plabayo/rama/issues/496>
-    auth: Option<Socks5Auth>,
+    auth: AuthKind<A>,
 
     // opt-in flag which allows even if server has auth configured
     // to also support a client which doesn't support username-password auth,
@@ -65,7 +64,30 @@ pub struct Socks5Acceptor<C = DefaultConnector, B = (), U = ()> {
     auth_opt: bool,
 }
 
-impl Socks5Acceptor<(), (), ()> {
+enum AuthKind<A> {
+    NoAuth(A),
+    WithAuth(A),
+}
+
+impl<A: fmt::Debug> fmt::Debug for AuthKind<A> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            AuthKind::NoAuth(auth) => write!(f, "AuthKind::NoAuth({auth:?})"),
+            AuthKind::WithAuth(auth) => write!(f, "AuthKind::WithAuth({auth:?})"),
+        }
+    }
+}
+
+impl<A: Clone> Clone for AuthKind<A> {
+    fn clone(&self) -> Self {
+        match self {
+            AuthKind::NoAuth(auth) => AuthKind::NoAuth(auth.clone()),
+            AuthKind::WithAuth(auth) => AuthKind::WithAuth(auth.clone()),
+        }
+    }
+}
+
+impl Socks5Acceptor<(), (), (), ()> {
     /// Create a new [`Socks5Acceptor`] which supports none of the valid [`Command`]s.
     ///
     /// Use [`Socks5Acceptor::default`] instead if you wish to create a default
@@ -75,43 +97,43 @@ impl Socks5Acceptor<(), (), ()> {
             connector: (),
             binder: (),
             udp_associator: (),
-            auth: None,
+            auth: AuthKind::NoAuth(()),
             auth_opt: false,
         }
     }
 }
 
 impl<C, B, U> Socks5Acceptor<C, B, U> {
-    rama_utils::macros::generate_field_setters!(auth, Socks5Auth);
-
-    /// Define whether or not the authentication (if supported by this [`Socks5Acceptor`]) is optional,
-    /// by default it is no optional.
-    ///
-    /// Making authentication optional, despite supporting authentication on server side,
-    /// can be useful in case you wish to support so called Guest users.
-    pub fn set_auth_optional(&mut self, optional: bool) -> &mut Self {
-        self.auth_opt = optional;
-        self
+    pub fn with_authorizer<A>(self, authorizer: A) -> Socks5Acceptor<C, B, U, A> {
+        Socks5Acceptor {
+            connector: self.connector,
+            binder: self.binder,
+            udp_associator: self.udp_associator,
+            auth: AuthKind::WithAuth(authorizer),
+            auth_opt: self.auth_opt,
+        }
     }
 
-    /// Define whether or not the authentication (if supported by this [`Socks5Acceptor`]) is optional,
-    /// by default it is no optional.
-    ///
-    /// Making authentication optional, despite supporting authentication on server side,
-    /// can be useful in case you wish to support so called Guest users.
-    pub fn with_auth_optional(mut self, optional: bool) -> Self {
-        self.auth_opt = optional;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Define whether or not the authentication (if supported by this [`Socks5Acceptor`]) is optional,
+        /// by default it is no optional.
+        ///
+        /// Making authentication optional, despite supporting authentication on server side,
+        /// can be useful in case you wish to support so called Guest users.
+        pub fn auth_optional(mut self, optional: bool) -> Self {
+            self.auth_opt = optional;
+            self
+        }
     }
 }
 
-impl<B, U> Socks5Acceptor<(), B, U> {
+impl<B, U, A> Socks5Acceptor<(), B, U, A> {
     /// Attach a [`Socks5Connector`] to this [`Socks5Acceptor`],
     /// used to accept incoming [`Command::Connect`] [`client::Request`]s.
     ///
     /// Use [`Socks5Acceptor::with_default_connector`] in case
     /// the [`DefaultConnector`] serves your needs just fine.
-    pub fn with_connector<C>(self, connector: C) -> Socks5Acceptor<C, B, U> {
+    pub fn with_connector<C>(self, connector: C) -> Socks5Acceptor<C, B, U, A> {
         Socks5Acceptor {
             connector,
             binder: self.binder,
@@ -127,18 +149,18 @@ impl<B, U> Socks5Acceptor<(), B, U> {
     /// Use [`Socks5Acceptor::with_connector`] in case you want to use a custom
     /// [`Socks5Connector`] or customised [`Connector`].
     #[inline]
-    pub fn with_default_connector(self) -> Socks5Acceptor<DefaultConnector, B, U> {
+    pub fn with_default_connector(self) -> Socks5Acceptor<DefaultConnector, B, U, A> {
         self.with_connector(DefaultConnector::default())
     }
 }
 
-impl<C, U> Socks5Acceptor<C, (), U> {
+impl<C, U, A> Socks5Acceptor<C, (), U, A> {
     /// Attach a [`Socks5Binder`] to this [`Socks5Acceptor`],
     /// used to accept incoming [`Command::Bind`] [`client::Request`]s.
     ///
     /// Use [`Socks5Acceptor::with_default_binder`] in case
     /// the [`DefaultConnector`] serves your needs just fine.
-    pub fn with_binder<B>(self, binder: B) -> Socks5Acceptor<C, B, U> {
+    pub fn with_binder<B>(self, binder: B) -> Socks5Acceptor<C, B, U, A> {
         Socks5Acceptor {
             connector: self.connector,
             binder,
@@ -154,18 +176,18 @@ impl<C, U> Socks5Acceptor<C, (), U> {
     /// Use [`Socks5Acceptor::with_binder`] in case you want to use a custom
     /// [`Socks5Binder`] or customised [`Binder`].
     #[inline]
-    pub fn with_default_binder(self) -> Socks5Acceptor<C, DefaultBinder, U> {
+    pub fn with_default_binder(self) -> Socks5Acceptor<C, DefaultBinder, U, A> {
         self.with_binder(DefaultBinder::default())
     }
 }
 
-impl<C, B> Socks5Acceptor<C, B, ()> {
+impl<C, B, A> Socks5Acceptor<C, B, (), A> {
     /// Attach a [`Socks5UdpAssociator`] to this [`Socks5Acceptor`],
     /// used to accept incoming [`Command::UdpAssociate`] [`client::Request`]s.
     ///
     /// Use [`Socks5Acceptor::with_default_udp_associator`] in case
     /// the [`DefaultUdpRelay`] serves your needs just fine.
-    pub fn with_udp_associator<U>(self, udp_associator: U) -> Socks5Acceptor<C, B, U> {
+    pub fn with_udp_associator<U>(self, udp_associator: U) -> Socks5Acceptor<C, B, U, A> {
         Socks5Acceptor {
             connector: self.connector,
             binder: self.binder,
@@ -181,7 +203,7 @@ impl<C, B> Socks5Acceptor<C, B, ()> {
     /// Use [`Socks5Acceptor::with_udp_associator`] in case you want to use a custom
     /// [`Socks5UdpAssociator`] or customised [`udp::UdpRelay`].
     #[inline]
-    pub fn with_default_udp_associator(self) -> Socks5Acceptor<C, B, DefaultUdpRelay> {
+    pub fn with_default_udp_associator(self) -> Socks5Acceptor<C, B, DefaultUdpRelay, A> {
         self.with_udp_associator(DefaultUdpRelay::default())
     }
 }
@@ -193,7 +215,9 @@ impl Default for Socks5Acceptor {
     }
 }
 
-impl<C: fmt::Debug, B: fmt::Debug, U: fmt::Debug> fmt::Debug for Socks5Acceptor<C, B, U> {
+impl<C: fmt::Debug, B: fmt::Debug, U: fmt::Debug, A: fmt::Debug> fmt::Debug
+    for Socks5Acceptor<C, B, U, A>
+{
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Socks5Acceptor")
             .field("connector", &self.connector)
@@ -205,7 +229,7 @@ impl<C: fmt::Debug, B: fmt::Debug, U: fmt::Debug> fmt::Debug for Socks5Acceptor<
     }
 }
 
-impl<C: Clone, B: Clone, U: Clone> Clone for Socks5Acceptor<C, B, U> {
+impl<C: Clone, B: Clone, U: Clone, A: Clone> Clone for Socks5Acceptor<C, B, U, A> {
     fn clone(&self) -> Self {
         Self {
             connector: self.connector.clone(),
@@ -332,11 +356,16 @@ impl std::error::Error for Error {
     }
 }
 
-impl<C, B, U> Socks5Acceptor<C, B, U> {
-    pub async fn accept<S, State>(&self, ctx: Context<State>, mut stream: S) -> Result<(), Error>
+impl<C, B, U, A> Socks5Acceptor<C, B, U, A> {
+    pub async fn accept<S, State>(
+        &self,
+        mut ctx: Context<State>,
+        mut stream: S,
+    ) -> Result<(), Error>
     where
         C: Socks5Connector<S, State>,
         U: Socks5UdpAssociator<S, State>,
+        A: Authorizer<user::Basic, Error: fmt::Debug>,
         B: Socks5Binder<S, State>,
         S: Stream + Unpin,
         State: Clone + Send + Sync + 'static,
@@ -345,9 +374,13 @@ impl<C, B, U> Socks5Acceptor<C, B, U> {
             .await
             .map_err(|err| Error::protocol(err).with_context("read client header"))?;
 
-        let negotiated_method = self
+        let (negotiated_method, maybe_ext) = self
             .handle_method(&client_header.methods, &mut stream)
             .await?;
+
+        if let Some(ext) = maybe_ext {
+            ctx.extend(ext);
+        }
 
         tracing::trace!(
             "socks5 server: headers exchanged negotiated method = {negotiated_method:?} (for client methods: {:?}",
@@ -402,14 +435,16 @@ impl<C, B, U> Socks5Acceptor<C, B, U> {
             }
         }
     }
+}
 
+impl<C, B, U, A: Authorizer<user::Basic, Error: fmt::Debug>> Socks5Acceptor<C, B, U, A> {
     async fn handle_method<S: Stream + Unpin>(
         &self,
         methods: &[SocksMethod],
         stream: &mut S,
-    ) -> Result<SocksMethod, Error> {
-        match self.auth.as_ref() {
-            Some(Socks5Auth::UsernamePassword { username, password }) => {
+    ) -> Result<(SocksMethod, Option<Extensions>), Error> {
+        match &self.auth {
+            AuthKind::WithAuth(authorizer) => {
                 if methods.contains(&SocksMethod::UsernamePassword) {
                     Header::new(SocksMethod::UsernamePassword)
                         .write_to(stream)
@@ -426,28 +461,34 @@ impl<C, B, U> Socks5Acceptor<C, B, U> {
                                 "read client auth sub-negotiation request: username-password",
                             )
                         })?;
-                    if username.eq(&client_auth_req.username)
-                        && password.eq(&client_auth_req.password)
-                    {
-                        UsernamePasswordResponse::new_success()
-                            .write_to(stream)
-                            .await
-                            .map_err(|err| {
-                                Error::io(err).with_context(
-                                    "write server auth sub-negotiation success response",
-                                )
-                            })?;
-                        Ok(SocksMethod::UsernamePassword)
-                    } else {
-                        UsernamePasswordResponse::new_invalid_credentails()
-                            .write_to(stream)
-                            .await
-                            .map_err(|err| {
-                                Error::io(err).with_context(
+                    let user::authority::AuthorizeResult { result, .. } =
+                        authorizer.authorize(client_auth_req.basic).await;
+                    match result {
+                        Ok(maybe_ext) => {
+                            UsernamePasswordResponse::new_success()
+                                .write_to(stream)
+                                .await
+                                .map_err(|err| {
+                                    Error::io(err).with_context(
+                                        "write server auth sub-negotiation success response",
+                                    )
+                                })?;
+                            Ok((SocksMethod::UsernamePassword, maybe_ext))
+                        }
+                        Err(err) => {
+                            tracing::trace!(
+                                "socks5 acceptor's authorizer stopped inc request: {err:?}"
+                            );
+                            UsernamePasswordResponse::new_invalid_credentails()
+                                .write_to(stream)
+                                .await
+                                .map_err(|err| {
+                                    Error::io(err).with_context(
                                     "write server auth sub-negotiation error response: unauthorized",
                                 )
-                            })?;
-                        Err(Error::aborted("username-password: client unauthorized"))
+                                })?;
+                            Err(Error::aborted("username-password: client unauthorized"))
+                        }
                     }
                 } else if self.auth_opt && methods.contains(&SocksMethod::NoAuthenticationRequired)
                 {
@@ -462,22 +503,22 @@ impl<C, B, U> Socks5Acceptor<C, B, U> {
                             Error::io(err).with_context("write server reply: no auth required")
                         })?;
 
-                    return Ok(SocksMethod::NoAuthenticationRequired);
+                    return Ok((SocksMethod::NoAuthenticationRequired, None));
                 } else {
                     Header::new(SocksMethod::NoAcceptableMethods)
-                    .write_to(stream)
-                    .await
-                    .map_err(|err| {
-                        Error::io(err).with_context(
-                            "write server auth sub-negotiation error response: no acceptable methods",
-                        )
-                    })?;
+                        .write_to(stream)
+                        .await
+                        .map_err(|err| {
+                            Error::io(err).with_context(
+                        "write server auth sub-negotiation error response: no acceptable methods",
+                    )
+                        })?;
                     Err(Error::aborted(
                         "username-password required but client doesn't support the method (auth == required)",
                     ))
                 }
             }
-            None => {
+            AuthKind::NoAuth(_) => {
                 if methods.contains(&SocksMethod::NoAuthenticationRequired) {
                     Header::new(SocksMethod::NoAuthenticationRequired)
                         .write_to(stream)
@@ -486,7 +527,7 @@ impl<C, B, U> Socks5Acceptor<C, B, U> {
                             Error::io(err).with_context("write server reply: no auth required")
                         })?;
 
-                    return Ok(SocksMethod::NoAuthenticationRequired);
+                    return Ok((SocksMethod::NoAuthenticationRequired, None));
                 }
 
                 Header::new(SocksMethod::NoAcceptableMethods)
@@ -494,8 +535,8 @@ impl<C, B, U> Socks5Acceptor<C, B, U> {
                     .await
                     .map_err(|err| {
                         Error::io(err).with_context(
-                        "write server auth sub-negotiation error response: no acceptable methods",
-                    )
+                    "write server auth sub-negotiation error response: no acceptable methods",
+                )
                     })?;
                 Err(Error::aborted("no acceptable methods"))
             }
@@ -503,10 +544,11 @@ impl<C, B, U> Socks5Acceptor<C, B, U> {
     }
 }
 
-impl<C, B, U, State, S> Service<State, S> for Socks5Acceptor<C, B, U>
+impl<C, B, U, A, State, S> Service<State, S> for Socks5Acceptor<C, B, U, A>
 where
     C: Socks5Connector<S, State>,
     U: Socks5UdpAssociator<S, State>,
+    A: Authorizer<user::Basic, Error: fmt::Debug>,
     B: Socks5Binder<S, State>,
     S: Stream + Unpin,
     State: Clone + Send + Sync + 'static,
@@ -524,10 +566,11 @@ where
     }
 }
 
-impl<C, B, U> Socks5Acceptor<C, B, U>
+impl<C, B, U, A> Socks5Acceptor<C, B, U, A>
 where
     C: Socks5Connector<TcpStream, ()>,
     U: Socks5UdpAssociator<TcpStream, ()>,
+    A: Authorizer<user::Basic, Error: fmt::Debug>,
     B: Socks5Binder<TcpStream, ()>,
 {
     /// Listen for connections on the given [`Interface`], serving Socks5(h) connections.
@@ -543,7 +586,7 @@ where
     }
 }
 
-impl<C, B, U> Socks5Acceptor<C, B, U> {
+impl<C, B, U, A> Socks5Acceptor<C, B, U, A> {
     /// Listen for connections on the given [`Interface`], serving Socks5(h) connections.
     ///
     /// Same as [`Self::listen`], but including the given state in the [`Service`]'s [`Context`].
@@ -558,6 +601,7 @@ impl<C, B, U> Socks5Acceptor<C, B, U> {
     where
         C: Socks5Connector<TcpStream, State>,
         U: Socks5UdpAssociator<TcpStream, State>,
+        A: Authorizer<user::Basic, Error: fmt::Debug>,
         B: Socks5Binder<TcpStream, State>,
         State: Clone + Send + Sync + 'static,
         State: Clone + Send + Sync + 'static,

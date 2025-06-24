@@ -43,7 +43,8 @@ use rama::{
         client::ServerVerifyMode,
         server::{SelfSignedData, ServerAuth, ServerConfig, TlsPeekRouter},
     },
-    proxy::socks5::{Socks5Acceptor, Socks5Auth, server::LazyConnector},
+    net::user::Basic,
+    proxy::socks5::{Socks5Acceptor, server::LazyConnector},
     rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
@@ -89,7 +90,7 @@ async fn main() {
         .await
         .expect("bind proxy to 127.0.0.1:62022");
     let socks5_acceptor = Socks5Acceptor::new()
-        .with_auth(Socks5Auth::username_password("john", "secret"))
+        .with_authorizer(Basic::new_static("john", "secret").into_authorizer())
         .with_connector(LazyConnector::new(auto_https_service));
     graceful.spawn_task_fn(|guard| tcp_service.serve_graceful(guard, socks5_acceptor));
 

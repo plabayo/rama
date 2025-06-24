@@ -127,7 +127,7 @@ async fn main() {
                     TraceLayer::new_for_http(),
                     // See [`ProxyAuthLayer::with_labels`] for more information,
                     // e.g. can also be used to extract upstream proxy filters
-                    ProxyAuthLayer::new(Basic::new("john", "secret")).with_labels::<(PriorityUsernameLabelParser, UsernameOpaqueLabelParser)>(),
+                    ProxyAuthLayer::new(Basic::new_static("john", "secret")).with_labels::<(PriorityUsernameLabelParser, UsernameOpaqueLabelParser)>(),
                     // example of how one might insert an API layer into their proxy
                     HijackLayer::new(
                         DomainMatcher::exact(Domain::from_static("echo.example.internal")),

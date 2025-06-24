@@ -1,7 +1,7 @@
 use rama_core::error::OpaqueError;
 
 use super::common::ReadError;
-use std::fmt;
+use std::{fmt, string::FromUtf8Error};
 
 #[derive(Debug)]
 pub enum ProtocolError {
@@ -11,6 +11,8 @@ pub enum ProtocolError {
     UnexpectedByte { pos: usize, byte: u8 },
     /// Unexpected error happened
     Unexpected(OpaqueError),
+    /// Utf-8 error in case something went wrong during bytes to utf-8 conversion
+    Utf8(FromUtf8Error),
 }
 
 impl ProtocolError {
@@ -32,6 +34,9 @@ impl fmt::Display for ProtocolError {
             ProtocolError::Unexpected(error) => {
                 write!(f, "protocol error: unexpected: {error}")
             }
+            ProtocolError::Utf8(error) => {
+                write!(f, "protocol error: utf-8 conversion: {error}")
+            }
         }
     }
 }
@@ -45,6 +50,7 @@ impl std::error::Error for ProtocolError {
                 err.source()
                     .unwrap_or(err as &(dyn std::error::Error + 'static)),
             ),
+            ProtocolError::Utf8(err) => Some(err as &(dyn std::error::Error + 'static)),
         }
     }
 }
@@ -58,6 +64,12 @@ impl From<std::io::Error> for ProtocolError {
 impl From<OpaqueError> for ProtocolError {
     fn from(value: OpaqueError) -> Self {
         ProtocolError::Unexpected(value)
+    }
+}
+
+impl From<FromUtf8Error> for ProtocolError {
+    fn from(value: FromUtf8Error) -> Self {
+        ProtocolError::Utf8(value)
     }
 }
 

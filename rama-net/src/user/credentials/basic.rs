@@ -2,6 +2,8 @@ use std::{borrow::Cow, fmt, str::FromStr};
 
 use rama_core::error::OpaqueError;
 
+use crate::user::authority::StaticAuthorizer;
+
 #[derive(Clone)]
 /// Basic credentials.
 pub struct Basic {
@@ -78,6 +80,13 @@ impl Basic {
             self.password = Some(password.into());
             self
         }
+    }
+
+    /// Turn itself into a [`StaticAuthorizer`], so it can be used to authorize.
+    ///
+    /// Just a shortcut, QoL.
+    pub fn into_authorizer(self) -> StaticAuthorizer<Basic> {
+        StaticAuthorizer::new(self)
     }
 }
 

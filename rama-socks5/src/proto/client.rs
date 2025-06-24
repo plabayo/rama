@@ -4,7 +4,7 @@
 //! [RFC 1928]: https://datatracker.ietf.org/doc/html/rfc1928
 //! [RFC 1929]: https://datatracker.ietf.org/doc/html/rfc1929
 
-use std::{fmt, net::IpAddr};
+use std::net::IpAddr;
 
 use super::{
     Command, ProtocolError, ProtocolVersion, SocksMethod, UsernamePasswordSubnegotiationVersion,
@@ -12,7 +12,7 @@ use super::{
 };
 use rama_core::bytes::{BufMut, BytesMut};
 use rama_core::telemetry::tracing;
-use rama_net::address::Authority;
+use rama_net::{address::Authority, user};
 use smallvec::{SmallVec, smallvec};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
@@ -323,7 +323,7 @@ impl RequestRef<'_> {
     }
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 /// Initial username-password negotiation starts with the client sending this request.
 ///
 /// Once the SOCKS V5 server has started, and the client has selected the
@@ -355,27 +355,15 @@ impl RequestRef<'_> {
 /// environments where "sniffing" is possible and practical.
 pub struct UsernamePasswordRequest {
     pub version: UsernamePasswordSubnegotiationVersion,
-    pub username: Vec<u8>,
-    pub password: Option<Vec<u8>>,
-}
-
-impl fmt::Debug for UsernamePasswordRequest {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("UsernamePasswordRequest")
-            .field("version", &self.username)
-            .field("username", &self.username)
-            .field("password_defined", &self.password.is_some())
-            .finish()
-    }
+    pub basic: user::Basic,
 }
 
 impl UsernamePasswordRequest {
     /// Create a new [`UsernamePasswordRequest`].
-    pub fn new(username: impl Into<Vec<u8>>, password: impl Into<Vec<u8>>) -> Self {
+    pub fn new(basic: user::Basic) -> Self {
         Self {
             version: UsernamePasswordSubnegotiationVersion::One,
-            username: username.into(),
-            password: Some(password.into()),
+            basic,
         }
     }
 
@@ -404,23 +392,25 @@ impl UsernamePasswordRequest {
                 byte: username_length,
             });
         }
-        let mut username = vec![0u8; username_length as usize];
-        r.read_exact(username.as_mut_slice()).await?;
+        let mut username_bytes = vec![0u8; username_length as usize];
+        r.read_exact(username_bytes.as_mut_slice()).await?;
+
+        let username = String::from_utf8(username_bytes)?;
 
         let password_length = r.read_u8().await?;
-        let password = if password_length == 0 {
-            None
+
+        let basic = if password_length == 0 {
+            user::Basic::new_insecure(username)
         } else {
-            let mut password = vec![0u8; password_length as usize];
-            r.read_exact(password.as_mut_slice()).await?;
-            Some(password)
+            let mut password_bytes = vec![0u8; password_length as usize];
+            r.read_exact(password_bytes.as_mut_slice()).await?;
+
+            let password = String::from_utf8(password_bytes)?;
+
+            user::Basic::new(username, password)
         };
 
-        Ok(UsernamePasswordRequest {
-            version,
-            username,
-            password,
-        })
+        Ok(UsernamePasswordRequest { version, basic })
     }
 
     /// Write the client [`UsernamePasswordRequest`] in binary format as specified by [RFC 1929] into the writer.
@@ -432,39 +422,27 @@ impl UsernamePasswordRequest {
     {
         let self_ref = UsernamePasswordRequestRef {
             version: self.version,
-            username: self.username.as_ref(),
-            password: self.password.as_deref(),
+            basic: &self.basic,
         };
         self_ref.write_to(w).await
     }
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 /// Initial username-password negotiation starts with the client sending this request.
 ///
 /// Reference (write-only) version of [`UsernamePasswordRequest`],
 /// see the latter for more information.
 pub struct UsernamePasswordRequestRef<'a> {
     pub version: UsernamePasswordSubnegotiationVersion,
-    pub username: &'a [u8],
-    pub password: Option<&'a [u8]>,
-}
-
-impl fmt::Debug for UsernamePasswordRequestRef<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("UsernamePasswordRequestRef")
-            .field("version", &self.username)
-            .field("username", &self.username)
-            .field("password_defined", &self.password.is_some())
-            .finish()
-    }
+    pub basic: &'a user::Basic,
 }
 
 impl PartialEq<UsernamePasswordRequest> for UsernamePasswordRequestRef<'_> {
     fn eq(&self, other: &UsernamePasswordRequest) -> bool {
         self.version == other.version
-            && self.username == other.username
-            && self.password == other.password.as_deref()
+            && self.basic.username() == other.basic.username()
+            && self.basic.password() == other.basic.password()
     }
 }
 
@@ -476,11 +454,10 @@ impl PartialEq<UsernamePasswordRequestRef<'_>> for UsernamePasswordRequest {
 }
 
 impl<'a> UsernamePasswordRequestRef<'a> {
-    pub fn new(username: &'a [u8], password: &'a [u8]) -> Self {
+    pub fn new(basic: &'a user::Basic) -> Self {
         Self {
             version: UsernamePasswordSubnegotiationVersion::One,
-            username,
-            password: Some(password),
+            basic,
         }
     }
 
@@ -534,26 +511,25 @@ impl<'a> UsernamePasswordRequestRef<'a> {
     pub fn write_to_buf<B: BufMut>(&self, buf: &mut B) {
         buf.put_u8(self.version.into());
 
-        debug_assert!((1..=255).contains(&self.username.len()));
-        buf.put_u8(self.username.len() as u8);
-        buf.put_slice(self.username);
+        let username = self.basic.username();
 
-        match self.password {
-            Some(password) => {
-                if password.is_empty() {
-                    buf.put_u8(0)
-                } else {
-                    debug_assert!((1..=255).contains(&password.len()));
-                    buf.put_u8(password.len() as u8);
-                    buf.put_slice(password);
-                }
-            }
-            None => buf.put_u8(0),
+        debug_assert!((1..=255).contains(&username.len()));
+        buf.put_u8(username.len() as u8);
+        buf.put_slice(username.as_bytes());
+
+        let password = self.basic.password();
+
+        if password.is_empty() {
+            buf.put_u8(0)
+        } else {
+            debug_assert!((1..=255).contains(&password.len()));
+            buf.put_u8(password.len() as u8);
+            buf.put_slice(password.as_bytes());
         }
     }
 
     fn serialized_len(&self) -> usize {
-        3 + self.username.len() + self.password.map(|p| p.len()).unwrap_or_default()
+        3 + self.basic.username().len() + self.basic.password().len()
     }
 }
 
@@ -609,15 +585,14 @@ mod tests {
     #[tokio::test]
     async fn test_username_password_request_write_read_eq() {
         test_write_read_eq!(
-            UsernamePasswordRequest::new("john", "secret"),
+            UsernamePasswordRequest::new(user::Basic::new_static("john", "secret")),
             UsernamePasswordRequest,
         );
 
         test_write_read_eq!(
             UsernamePasswordRequestRef {
                 version: UsernamePasswordSubnegotiationVersion::One,
-                username: b"a",
-                password: Some(b"b"),
+                basic: &user::Basic::new_static("a", "b"),
             },
             UsernamePasswordRequest,
         );
@@ -625,8 +600,10 @@ mod tests {
         test_write_read_eq!(
             UsernamePasswordRequestRef {
                 version: UsernamePasswordSubnegotiationVersion::One,
-                username: b"adasdadadadadsadasdasdasdasddada",
-                password: Some(b"bdafasdfdasdadasfsfsfdsasdasdsadsadsad"),
+                basic: &user::Basic::new_static(
+                    "adasdadadadadsadasdasdasdasddada",
+                    "bdafasdfdasdadasfsfsfdsasdasdsadsadsad"
+                ),
             },
             UsernamePasswordRequest,
         );
@@ -634,8 +611,7 @@ mod tests {
         test_write_read_eq!(
             UsernamePasswordRequestRef {
                 version: UsernamePasswordSubnegotiationVersion::One,
-                username: b"a",
-                password: None,
+                basic: &user::Basic::new_static_insecure("a"),
             },
             UsernamePasswordRequest,
         );

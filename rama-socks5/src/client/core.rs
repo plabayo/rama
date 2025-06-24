@@ -14,7 +14,6 @@ use rama_net::{
     address::{Authority, Host, SocketAddress},
     stream::Stream,
 };
-use rama_utils::macros::generate_field_setters;
 use std::fmt;
 
 use super::bind::Binder;
@@ -34,7 +33,13 @@ impl Client {
         Self::default()
     }
 
-    generate_field_setters!(auth, Socks5Auth);
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the [`Socks5Auth`] to be used by this client.
+        pub fn auth(mut self, auth: impl Into<Socks5Auth>) -> Self {
+            self.auth = Some(auth.into());
+            self
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -355,11 +360,10 @@ impl Client {
         );
 
         match auth {
-            Socks5Auth::UsernamePassword { username, password } => {
+            Socks5Auth::UsernamePassword(basic) => {
                 UsernamePasswordRequestRef {
                     version: UsernamePasswordSubnegotiationVersion::One,
-                    username: username.as_ref(),
-                    password: password.as_deref(),
+                    basic,
                 }
                 .write_to(stream)
                 .await
@@ -431,7 +435,7 @@ impl Client {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rama_net::address::Host;
+    use rama_net::{address::Host, user};
 
     #[tokio::test]
     async fn test_client_handshake_connect_no_auth_failure_command_not_supported() {
@@ -484,7 +488,7 @@ mod tests {
             .read(b"\x05\x07\x00\x01\x00\x00\x00\x00\x00\x00")
             .build();
 
-        let client = Client::default().with_auth(Socks5Auth::username_password("john", "secret"));
+        let client = Client::default().with_auth(user::Basic::new_static("john", "secret"));
         let err = client
             .handshake_connect(&mut stream, &Authority::default_ipv4(0))
             .await
@@ -509,7 +513,7 @@ mod tests {
             .read(b"\x05\x07\x00\x01\x00\x00\x00\x00\x00\x00")
             .build();
 
-        let client = Client::default().with_auth(Socks5Auth::username_password("john", "secret"));
+        let client = Client::default().with_auth(user::Basic::new_static("john", "secret"));
         let err = client
             .handshake_connect(&mut stream, &Authority::default_ipv4(0))
             .await
@@ -530,7 +534,7 @@ mod tests {
             .read(b"\x01\x01")
             .build();
 
-        let client = Client::default().with_auth(Socks5Auth::username_password("john", "secret"));
+        let client = Client::default().with_auth(user::Basic::new_static("john", "secret"));
         let err = client
             .handshake_connect(&mut stream, &Authority::default_ipv4(0))
             .await
@@ -617,7 +621,7 @@ mod tests {
             .read(&[b'\x05', b'\x00', b'\x00', b'\x01', 127, 0, 0, 1, 0, 1])
             .build();
 
-        let client = Client::default().with_auth(Socks5Auth::username_password("john", "secret"));
+        let client = Client::default().with_auth(user::Basic::new_static("john", "secret"));
         let local_addr = client
             .handshake_connect(&mut stream, &Authority::new(Host::EXAMPLE_NAME, 1))
             .await
@@ -643,7 +647,7 @@ mod tests {
             .read(&[b'\x05', b'\x00', b'\x00', b'\x01', 127, 0, 0, 1, 0, 1])
             .build();
 
-        let client = Client::default().with_auth(Socks5Auth::username("john"));
+        let client = Client::default().with_auth(user::Basic::new_static_insecure("john"));
         let local_addr = client
             .handshake_connect(&mut stream, &Authority::new(Host::EXAMPLE_NAME, 1))
             .await

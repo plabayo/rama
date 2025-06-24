@@ -184,7 +184,7 @@ mod tests {
             ProxyAddress {
                 protocol: None,
                 authority: Authority::new(Host::Address("127.0.0.1".parse().unwrap()), 8080),
-                credential: Some(Basic::new("foo", "bar").into()),
+                credential: Some(Basic::new_static("foo", "bar").into()),
             }
         );
     }
@@ -210,7 +210,7 @@ mod tests {
             ProxyAddress {
                 protocol: Some(Protocol::HTTP),
                 authority: Authority::new(Host::Address("127.0.0.1".parse().unwrap()), 8080),
-                credential: Some(Basic::new("foo", "bar").into()),
+                credential: Some(Basic::new_static("foo", "bar").into()),
             }
         );
     }
@@ -225,7 +225,7 @@ mod tests {
             ProxyAddress {
                 protocol: Some(Protocol::HTTPS),
                 authority: Authority::new(Host::Name("my.proxy.io.".parse().unwrap()), 9999),
-                credential: Some(Basic::new("foo-cc-be", "baz").into()),
+                credential: Some(Basic::new_static("foo-cc-be", "baz").into()),
             }
         );
     }

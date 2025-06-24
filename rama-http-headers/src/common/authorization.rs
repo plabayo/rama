@@ -425,8 +425,8 @@ mod test_auth {
 
     #[tokio::test]
     async fn basic_authorization() {
-        let auth = Basic::new("Aladdin", "open sesame");
-        let auths = vec![Basic::new("foo", "bar"), auth.clone()];
+        let auth = Basic::new_static("Aladdin", "open sesame");
+        let auths = vec![Basic::new_static("foo", "bar"), auth.clone()];
         let ext = Authority::<_, ()>::authorized(&auths, auth).await.unwrap();
         let user: &UserId = ext.get().unwrap();
         assert_eq!(user, "Aladdin");
@@ -434,11 +434,14 @@ mod test_auth {
 
     #[tokio::test]
     async fn basic_authorization_with_labels_found() {
-        let auths = vec![Basic::new("foo", "bar"), Basic::new("john", "secret")];
+        let auths = vec![
+            Basic::new_static("foo", "bar"),
+            Basic::new_static("john", "secret"),
+        ];
 
         let ext = Authority::<_, UsernameOpaqueLabelParser>::authorized(
             &auths,
-            Basic::new("john-green-red", "secret"),
+            Basic::new_static("john-green-red", "secret"),
         )
         .await
         .unwrap();
@@ -452,8 +455,8 @@ mod test_auth {
 
     #[tokio::test]
     async fn basic_authorization_with_labels_not_found() {
-        let auth = Basic::new("john", "secret");
-        let auths = vec![Basic::new("foo", "bar"), auth.clone()];
+        let auth = Basic::new_static("john", "secret");
+        let auths = vec![Basic::new_static("foo", "bar"), auth.clone()];
 
         let ext = Authority::<_, UsernameOpaqueLabelParser>::authorized(&auths, auth)
             .await
