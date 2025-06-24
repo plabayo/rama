@@ -34,7 +34,7 @@ use rama::{
         tls::server::{SelfSignedData, ServerAuth, ServerConfig},
         user::{Basic, ProxyCredential},
     },
-    proxy::socks5::{Socks5Acceptor, Socks5Auth, Socks5ProxyConnector},
+    proxy::socks5::{Socks5Acceptor, Socks5ProxyConnector},
     rt::Executor,
     tcp::{client::service::TcpConnector, server::TcpListener},
     telemetry::tracing::{self, level_filters::LevelFilter},
@@ -81,7 +81,7 @@ async fn main() {
     ctx.insert(ProxyAddress {
         protocol: Some(Protocol::SOCKS5),
         authority: proxy_socket_addr.into(),
-        credential: Some(ProxyCredential::Basic(Basic::new("john", "secret"))),
+        credential: Some(ProxyCredential::Basic(Basic::new_static("john", "secret"))),
     });
 
     let uri = format!("http://{http_socket_addr}/ping");
@@ -131,8 +131,8 @@ async fn spawn_socks5_over_tls_server() -> SocketAddress {
         .expect("get bind address of socks5-over-tls proxy server")
         .into();
 
-    let socks5_acceptor =
-        Socks5Acceptor::default().with_auth(Socks5Auth::username_password("john", "secret"));
+    let socks5_acceptor = Socks5Acceptor::default()
+        .with_authorizer(Basic::new_static("john", "secret").into_authorizer());
 
     let tls_server_config = ServerConfig::new(ServerAuth::SelfSigned(SelfSignedData::default()));
     let acceptor_data =

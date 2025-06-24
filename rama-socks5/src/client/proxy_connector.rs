@@ -446,7 +446,7 @@ where
                     server.port = %transport_ctx.authority.port(),
                     "socks5 proxy connector: continue handshake with authorisation",
                 );
-                client.set_auth(basic.into());
+                client.set_auth(basic.clone());
             }
             Some(ProxyCredential::Bearer(_)) => {
                 return Err(OpaqueError::from_display(

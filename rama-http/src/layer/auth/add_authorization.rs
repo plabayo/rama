@@ -13,6 +13,7 @@
 //! use rama_core::service::service_fn;
 //! use rama_core::{Context, Service, Layer};
 //! use rama_core::error::BoxError;
+//! use rama_net::user::Basic;
 //!
 //! # async fn handle(request: Request) -> Result<Response, BoxError> {
 //! #     Ok(Response::new(Body::default()))
@@ -20,14 +21,13 @@
 //!
 //! # #[tokio::main]
 //! # async fn main() -> Result<(), BoxError> {
-//! # let service_that_requires_auth = ValidateRequestHeader::basic(
+//! # let service_that_requires_auth = ValidateRequestHeader::auth(
 //! #     service_fn(handle),
-//! #     "username",
-//! #     "password",
+//! #     Basic::new_static("username", "password"),
 //! # );
 //! let mut client = (
 //!     // Use basic auth with the given username and password
-//!     AddAuthorizationLayer::basic("username", "password"),
+//!     AddAuthorizationLayer::new(Basic::new_static("username", "password")),
 //! ).layer(service_that_requires_auth);
 //!
 //! // Make a request, we don't have to add the `Authorization` header manually
@@ -41,13 +41,10 @@
 //! ```
 
 use crate::{HeaderValue, Request, Response};
-use base64::Engine as _;
 use rama_core::{Context, Layer, Service};
+use rama_http_headers::authorization::Credentials;
 use rama_utils::macros::define_inner_service_accessors;
-use std::convert::TryFrom;
 use std::fmt;
-
-const BASE64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
 
 /// Layer that applies [`AddAuthorization`] which adds authorization to all requests using the
 /// [`Authorization`] header.
@@ -77,34 +74,11 @@ impl AddAuthorizationLayer {
         }
     }
 
-    /// Authorize requests using a username and password pair.
-    ///
-    /// The `Authorization` header will be set to `Basic {credentials}` where `credentials` is
-    /// `base64_encode("{username}:{password}")`.
-    ///
-    /// Since the username and password is sent in clear text it is recommended to use HTTPS/TLS
-    /// with this method. However use of HTTPS/TLS is not enforced by this middleware.
-    pub fn basic(username: &str, password: &str) -> Self {
-        let encoded = BASE64.encode(format!("{}:{}", username, password));
-        let value = HeaderValue::try_from(format!("Basic {}", encoded)).unwrap();
+    /// Authorize requests using the given [`Credentials`].
+    pub fn new(credential: impl Credentials) -> Self {
+        let encoded = credential.encode();
         Self {
-            value: Some(value),
-            if_not_present: false,
-        }
-    }
-
-    /// Authorize requests using a "bearer token". Commonly used for OAuth 2.
-    ///
-    /// The `Authorization` header will be set to `Bearer {token}`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the token is not a valid [`HeaderValue`].
-    pub fn bearer(token: &str) -> Self {
-        let value =
-            HeaderValue::try_from(format!("Bearer {}", token)).expect("token is not valid header");
-        Self {
-            value: Some(value),
+            value: Some(encoded),
             if_not_present: false,
         }
     }
@@ -191,29 +165,12 @@ impl<S> AddAuthorization<S> {
     /// Can be useful if you only want to add authorization for some branches
     /// of your service.
     pub fn none(inner: S) -> Self {
-        AddAuthorizationLayer::none().layer(inner)
+        AddAuthorizationLayer::none().into_layer(inner)
     }
 
-    /// Authorize requests using a username and password pair.
-    ///
-    /// The `Authorization` header will be set to `Basic {credentials}` where `credentials` is
-    /// `base64_encode("{username}:{password}")`.
-    ///
-    /// Since the username and password is sent in clear text it is recommended to use HTTPS/TLS
-    /// with this method. However use of HTTPS/TLS is not enforced by this middleware.
-    pub fn basic(inner: S, username: &str, password: &str) -> Self {
-        AddAuthorizationLayer::basic(username, password).layer(inner)
-    }
-
-    /// Authorize requests using a "bearer token". Commonly used for OAuth 2.
-    ///
-    /// The `Authorization` header will be set to `Bearer {token}`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the token is not a valid [`HeaderValue`].
-    pub fn bearer(inner: S, token: &str) -> Self {
-        AddAuthorizationLayer::bearer(token).layer(inner)
+    /// Authorize requests using the given [`Credentials`].
+    pub fn new(inner: S, credential: impl Credentials) -> Self {
+        AddAuthorizationLayer::new(credential).into_layer(inner)
     }
 
     define_inner_service_accessors!();
@@ -318,15 +275,17 @@ mod tests {
     use rama_core::error::BoxError;
     use rama_core::service::service_fn;
     use rama_core::{Context, Service};
+    use rama_net::user::{Basic, Bearer};
     use std::convert::Infallible;
 
     #[tokio::test]
     async fn basic() {
         // service that requires auth for all requests
-        let svc = ValidateRequestHeaderLayer::basic("foo", "bar").layer(service_fn(echo));
+        let svc = ValidateRequestHeaderLayer::auth(Basic::new_static("foo", "bar"))
+            .into_layer(service_fn(echo));
 
         // make a client that adds auth
-        let client = AddAuthorization::basic(svc, "foo", "bar");
+        let client = AddAuthorization::new(svc, Basic::new_static("foo", "bar"));
 
         let res = client
             .serve(Context::default(), Request::new(Body::empty()))
@@ -339,10 +298,11 @@ mod tests {
     #[tokio::test]
     async fn token() {
         // service that requires auth for all requests
-        let svc = ValidateRequestHeaderLayer::bearer("foo").layer(service_fn(echo));
+        let svc = ValidateRequestHeaderLayer::auth(Bearer::new_static("foo"))
+            .into_layer(service_fn(echo));
 
         // make a client that adds auth
-        let client = AddAuthorization::bearer(svc, "foo");
+        let client = AddAuthorization::new(svc, Bearer::new_static("foo"));
 
         let res = client
             .serve(Context::default(), Request::new(Body::empty()))
@@ -354,8 +314,8 @@ mod tests {
 
     #[tokio::test]
     async fn making_header_sensitive() {
-        let svc = ValidateRequestHeaderLayer::bearer("foo").layer(service_fn(
-            async |request: Request<Body>| {
+        let svc = ValidateRequestHeaderLayer::auth(Bearer::new_static("foo")).into_layer(
+            service_fn(async |request: Request<Body>| {
                 let auth = request
                     .headers()
                     .get(rama_http_types::header::AUTHORIZATION)
@@ -363,10 +323,10 @@ mod tests {
                 assert!(auth.is_sensitive());
 
                 Ok::<_, Infallible>(Response::new(Body::empty()))
-            },
-        ));
+            }),
+        );
 
-        let client = AddAuthorization::bearer(svc, "foo").as_sensitive(true);
+        let client = AddAuthorization::new(svc, Bearer::new_static("foo")).as_sensitive(true);
 
         let res = client
             .serve(Context::default(), Request::new(Body::empty()))

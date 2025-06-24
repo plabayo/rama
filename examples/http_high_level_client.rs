@@ -15,20 +15,21 @@
 use rama::{
     Context, Layer, Service,
     http::{
-        Body, BodyExtractExt, Request, Response, StatusCode,
+        Body, BodyExtractExt, Request, StatusCode,
         client::EasyHttpWebClient,
-        headers::{Accept, Authorization, HeaderMapExt},
+        headers::Accept,
         layer::{
-            auth::{AddAuthorizationLayer, AsyncRequireAuthorizationLayer},
+            auth::AddAuthorizationLayer,
             compression::CompressionLayer,
             decompression::DecompressionLayer,
             retry::{ManagedPolicy, RetryLayer},
             trace::TraceLayer,
+            validate_request::ValidateRequestHeaderLayer,
         },
         server::HttpServer,
         service::client::HttpClientExt,
         service::web::WebService,
-        service::web::response::{IntoResponse, Json},
+        service::web::response::Json,
     },
     net::address::SocketAddress,
     net::user::Basic,
@@ -64,7 +65,7 @@ async fn main() {
         //
         // NOTE: the high level http client has also a `::basic` method
         // that can be used to add basic auth headers only for that specific request
-        AddAuthorizationLayer::basic("john", "123")
+        AddAuthorizationLayer::new(Basic::new_static("john", "123"))
             .as_sensitive(true)
             .if_not_present(true),
         RetryLayer::new(
@@ -150,7 +151,7 @@ async fn main() {
 
     let resp = client
         .get(format!("http://{ADDRESS}/info"))
-        .basic_auth("joe", "456")
+        .auth(Basic::new_static("joe", "456"))
         .send(Context::default())
         .await
         .unwrap();
@@ -184,7 +185,7 @@ async fn run_server(addr: SocketAddress) {
             (
                 TraceLayer::new_for_http(),
                 CompressionLayer::new(),
-                AsyncRequireAuthorizationLayer::new(auth_request),
+                ValidateRequestHeaderLayer::auth(Basic::new_static("john", "123")),
             )
                 .into_layer(
                     WebService::default()
@@ -218,22 +219,4 @@ async fn run_server(addr: SocketAddress) {
         )
         .await
         .unwrap();
-}
-
-async fn auth_request<S>(ctx: Context<S>, req: Request) -> Result<(Context<S>, Request), Response> {
-    if req
-        .headers()
-        .typed_get::<Authorization<Basic>>()
-        .map(|auth| auth.username() == "john" && auth.password() == "123")
-        .unwrap_or_default()
-    {
-        tracing::info!(
-            proxy.user = "john",
-            url.full = %req.uri(),
-            "authorized request",
-        );
-        Ok((ctx, req))
-    } else {
-        Err(StatusCode::UNAUTHORIZED.into_response())
-    }
 }

@@ -1,12 +1,14 @@
 //! Authorization header and types.
 
-use std::borrow::Cow;
+use std::ops::{Deref, DerefMut};
+
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD as ENGINE;
 
 use rama_core::context::Extensions;
 use rama_core::telemetry::tracing;
 use rama_core::username::{UsernameLabelParser, parse_username};
 use rama_http_types::{HeaderName, HeaderValue};
-use rama_net::user::credentials::{BASIC_SCHEME, BEARER_SCHEME};
 use rama_net::user::{Basic, Bearer, UserId};
 
 use crate::{Error, Header};
@@ -33,58 +35,47 @@ use crate::{Error, Header};
 ///
 /// ```
 /// use rama_http_headers::Authorization;
+/// use rama_net::user::{Basic, Bearer};
 ///
-/// let basic = Authorization::basic("Aladdin", "open sesame");
-/// let bearer = Authorization::bearer("some-opaque-token").unwrap();
+/// let basic = Authorization::new(Basic::new_static("Aladdin", "open sesame"));
+/// let bearer = Authorization::new(Bearer::new_static("some-opaque-token"));
 /// ```
 ///
 #[derive(Clone, PartialEq, Debug)]
-pub struct Authorization<C: Credentials>(pub C);
+pub struct Authorization<C>(pub C);
 
-impl Authorization<Basic> {
-    /// Create a `Basic` authorization header.
-    pub fn basic(
-        username: impl Into<Cow<'static, str>>,
-        password: impl Into<Cow<'static, str>>,
-    ) -> Self {
-        Authorization(Basic::new(username, password))
+impl<C> Authorization<C> {
+    /// Create a new authorization header.
+    pub fn new(credentials: C) -> Self {
+        Authorization(credentials)
     }
 
-    /// Create a `Basic` authorization header with only a username.
-    pub fn basic_username(username: impl Into<Cow<'static, str>>) -> Self {
-        Authorization(Basic::unprotected(username))
+    pub fn credentials(&self) -> &C {
+        &self.0
     }
 
-    /// View the decoded username.
-    pub fn username(&self) -> &str {
-        self.0.username()
-    }
-
-    /// View the decoded password.
-    pub fn password(&self) -> &str {
-        self.0.password()
+    pub fn into_inner(self) -> C {
+        self.0
     }
 }
 
-rama_utils::macros::error::static_str_error! {
-    #[doc = "bearer token is not a valid header value"]
-    pub struct InvalidHttpBearerToken;
+impl<C> AsRef<C> for Authorization<C> {
+    fn as_ref(&self) -> &C {
+        &self.0
+    }
 }
 
-impl Authorization<Bearer> {
-    /// Try to create a `Bearer` authorization header.
-    pub fn bearer(token: impl Into<Cow<'static, str>>) -> Result<Self, InvalidHttpBearerToken> {
-        Ok(Authorization(Bearer::try_from_clear_str(token).map_err(
-            |err| {
-                tracing::debug!("invalid bearer http bearer token: {err:?}");
-                InvalidHttpBearerToken
-            },
-        )?))
-    }
+impl<C> Deref for Authorization<C> {
+    type Target = C;
 
-    /// View the token part as a `&str`.
-    pub fn token(&self) -> &str {
-        self.0.token()
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<C> DerefMut for Authorization<C> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
     }
 }
 
@@ -144,27 +135,105 @@ pub trait Credentials: Sized {
 }
 
 impl Credentials for Basic {
-    const SCHEME: &'static str = BASIC_SCHEME;
+    const SCHEME: &'static str = "Basic";
 
     fn decode(value: &HeaderValue) -> Option<Self> {
-        let value = value.to_str().ok()?;
-        Self::try_from_header_str(value).ok()
+        let value = value.as_ref();
+
+        if value.len() <= Self::SCHEME.len() + 1 {
+            tracing::trace!(
+                "Basic credentials failed to decode: invalid scheme length in basic str"
+            );
+            return None;
+        }
+        if !value[..Self::SCHEME.len()].eq_ignore_ascii_case(Self::SCHEME.as_bytes()) {
+            tracing::trace!("Basic credentials failed to decode: invalid scheme in basic str");
+            return None;
+        }
+
+        let bytes = &value[Self::SCHEME.len() + 1..];
+        let non_space_pos = match bytes.iter().position(|b| *b != b' ') {
+            Some(pos) => pos,
+            None => {
+                tracing::trace!(
+                    "Basic credentials failed to decode: missing space separator in basic str"
+                );
+                return None;
+            }
+        };
+
+        let bytes = &bytes[non_space_pos..];
+
+        let bytes = ENGINE
+            .decode(bytes)
+            .inspect_err(|err| {
+                tracing::trace!("Basic credentials failed to decode: base64 decode: {err:?}");
+            })
+            .ok()?;
+
+        let decoded = String::from_utf8(bytes)
+            .inspect_err(|err| {
+                tracing::trace!("Basic credentials failed to decode: utf8 validation: {err:?}");
+            })
+            .ok()?;
+
+        decoded
+            .parse()
+            .inspect_err(|err| {
+                tracing::trace!("Basic credentials failed to decode: str parse: {err:?}");
+            })
+            .ok()
     }
 
     fn encode(&self) -> HeaderValue {
-        self.as_header_value()
+        let mut encoded = format!("{} ", Self::SCHEME);
+        ENGINE.encode_string(self.to_string(), &mut encoded);
+        HeaderValue::from_str(&encoded).unwrap()
     }
 }
 
 impl Credentials for Bearer {
-    const SCHEME: &'static str = BEARER_SCHEME;
+    const SCHEME: &'static str = "Bearer";
 
     fn decode(value: &HeaderValue) -> Option<Self> {
-        Self::try_from_header_str(value.to_str().ok()?).ok()
+        let value = value.as_ref();
+
+        if value.len() <= Self::SCHEME.len() + 1 {
+            tracing::trace!("Bearer credentials failed to decode: invalid bearer scheme length");
+            return None;
+        }
+        if !value[..Self::SCHEME.len()].eq_ignore_ascii_case(Self::SCHEME.as_bytes()) {
+            tracing::trace!("Bearer credentials failed to decode: invalid bearer scheme");
+            return None;
+        }
+
+        let bytes = &value[Self::SCHEME.len() + 1..];
+
+        let non_space_pos = match bytes.iter().position(|b| *b != b' ') {
+            Some(pos) => pos,
+            None => {
+                tracing::trace!("Bearer credentials failed to decode: no token found");
+                return None;
+            }
+        };
+
+        let bytes = &bytes[non_space_pos..];
+
+        let s = std::str::from_utf8(bytes)
+            .inspect_err(|err| {
+                tracing::trace!("Bearer credentials failed to decode: {err:?}");
+            })
+            .ok()?;
+
+        Self::try_from(s.to_owned())
+            .inspect_err(|err| {
+                tracing::trace!("Bearer credentials failed to decode: {err:?}");
+            })
+            .ok()
     }
 
     fn encode(&self) -> HeaderValue {
-        self.as_header_value()
+        HeaderValue::from_str(&format!("{} {}", Self::SCHEME, self.token())).unwrap()
     }
 }
 
@@ -261,7 +330,7 @@ mod tests {
 
     #[test]
     fn basic_encode() {
-        let auth = Authorization::basic("Aladdin", "open sesame");
+        let auth = Authorization::new(Basic::new_static("Aladdin", "open sesame"));
         let headers = test_encode(auth);
 
         assert_eq!(
@@ -272,7 +341,7 @@ mod tests {
 
     #[test]
     fn basic_username_encode() {
-        let auth = Authorization::basic_username("Aladdin");
+        let auth = Authorization::new(Basic::new_static_insecure("Aladdin"));
         let headers = test_encode(auth);
 
         assert_eq!(headers["authorization"], "Basic QWxhZGRpbjo=",);
@@ -280,18 +349,10 @@ mod tests {
 
     #[test]
     fn basic_roundtrip() {
-        let auth = Authorization::basic("Aladdin", "open sesame");
+        let auth = Authorization::new(Basic::new_static("Aladdin", "open sesame"));
         let mut h = HeaderMap::new();
         h.typed_insert(auth.clone());
         assert_eq!(h.typed_get(), Some(auth));
-    }
-
-    #[test]
-    fn basic_encode_no_password() {
-        let auth = Authorization::basic("Aladdin", "");
-        let headers = test_encode(auth);
-
-        assert_eq!(headers["authorization"], "Basic QWxhZGRpbjo=",);
     }
 
     #[test]
@@ -327,7 +388,7 @@ mod tests {
 
     #[test]
     fn bearer_encode() {
-        let auth = Authorization::bearer("fpKL54jvWmEGVoRdCNjG").unwrap();
+        let auth = Authorization::new(Bearer::new_static("fpKL54jvWmEGVoRdCNjG"));
 
         let headers = test_encode(auth);
 
@@ -364,8 +425,8 @@ mod test_auth {
 
     #[tokio::test]
     async fn basic_authorization() {
-        let auth = Basic::new("Aladdin", "open sesame");
-        let auths = vec![Basic::new("foo", "bar"), auth.clone()];
+        let auth = Basic::new_static("Aladdin", "open sesame");
+        let auths = vec![Basic::new_static("foo", "bar"), auth.clone()];
         let ext = Authority::<_, ()>::authorized(&auths, auth).await.unwrap();
         let user: &UserId = ext.get().unwrap();
         assert_eq!(user, "Aladdin");
@@ -373,11 +434,14 @@ mod test_auth {
 
     #[tokio::test]
     async fn basic_authorization_with_labels_found() {
-        let auths = vec![Basic::new("foo", "bar"), Basic::new("john", "secret")];
+        let auths = vec![
+            Basic::new_static("foo", "bar"),
+            Basic::new_static("john", "secret"),
+        ];
 
         let ext = Authority::<_, UsernameOpaqueLabelParser>::authorized(
             &auths,
-            Basic::new("john-green-red", "secret"),
+            Basic::new_static("john-green-red", "secret"),
         )
         .await
         .unwrap();
@@ -391,8 +455,8 @@ mod test_auth {
 
     #[tokio::test]
     async fn basic_authorization_with_labels_not_found() {
-        let auth = Basic::new("john", "secret");
-        let auths = vec![Basic::new("foo", "bar"), auth.clone()];
+        let auth = Basic::new_static("john", "secret");
+        let auths = vec![Basic::new_static("foo", "bar"), auth.clone()];
 
         let ext = Authority::<_, UsernameOpaqueLabelParser>::authorized(&auths, auth)
             .await

@@ -3,6 +3,7 @@ use itertools::Itertools;
 use rama::{
     Context,
     http::{BodyExtractExt, StatusCode},
+    net::user::Bearer,
 };
 use serde_json::json;
 
@@ -71,7 +72,7 @@ async fn test_example_http_form() {
     // delete a key
     let response = runner
         .delete("http://127.0.0.1:62006/admin/item/key3")
-        .bearer_auth("secret-token")
+        .auth(Bearer::new_static("secret-token"))
         .send(Context::default())
         .await
         .unwrap();

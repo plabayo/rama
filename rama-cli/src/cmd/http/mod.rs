@@ -25,7 +25,7 @@ use rama::{
     net::{
         address::ProxyAddress,
         tls::{KeyLogIntent, client::ServerVerifyMode},
-        user::ProxyCredential,
+        user::{Basic, Bearer, ProxyCredential},
     },
     rt::Executor,
     telemetry::tracing::level_filters::LevelFilter,
@@ -39,7 +39,7 @@ use rama::{
     },
 };
 
-use std::{io::IsTerminal, sync::Arc, time::Duration};
+use std::{io::IsTerminal, str::FromStr, sync::Arc, time::Duration};
 use terminal_prompt::Terminal;
 use tokio::sync::oneshot;
 
@@ -385,24 +385,25 @@ where
         DecompressionLayer::new(),
         cfg.auth
             .as_deref()
-            .map(|auth| {
-                let auth = auth.trim().trim_end_matches(':');
-                match cfg.auth_type.trim().to_lowercase().as_str() {
-                    "basic" => match auth.split_once(':') {
-                        Some((user, pass)) => AddAuthorizationLayer::basic(user, pass),
-                        None => {
-                            let mut terminal =
-                                Terminal::open().expect("open terminal for password prompting");
-                            let password = terminal
-                                .prompt_sensitive("password: ")
-                                .expect("prompt password from terminal");
-                            AddAuthorizationLayer::basic(auth, password.as_str())
-                        }
-                    },
-                    "bearer" => AddAuthorizationLayer::bearer(auth),
-                    unknown => panic!("unknown auth type: {} (known: basic, bearer)", unknown),
+            .map(|auth| match cfg.auth_type.trim().to_lowercase().as_str() {
+                "basic" => {
+                    let mut basic = Basic::from_str(auth).context("parse basic str")?;
+                    if auth.ends_with(':') && basic.password().is_empty() {
+                        let mut terminal =
+                            Terminal::open().context("open terminal for password prompting")?;
+                        let password = terminal
+                            .prompt_sensitive("password: ")
+                            .context("prompt password from terminal")?;
+                        basic.set_password(password);
+                    }
+                    Ok::<_, OpaqueError>(AddAuthorizationLayer::new(basic).as_sensitive(true))
                 }
+                "bearer" => Ok(AddAuthorizationLayer::new(
+                    Bearer::try_from(auth).context("parse bearer str")?,
+                )),
+                unknown => panic!("unknown auth type: {} (known: basic, bearer)", unknown),
             })
+            .transpose()?
             .unwrap_or_else(AddAuthorizationLayer::none),
         AddRequiredRequestHeadersLayer::default(),
         match cfg.proxy {
@@ -411,8 +412,11 @@ where
                 let mut proxy_address: ProxyAddress =
                     proxy.parse().context("parse proxy address")?;
                 if let Some(proxy_user) = cfg.proxy_user {
-                    let credential = ProxyCredential::try_from_clear_str(proxy_user)
-                        .context("parse proxy credentials")?;
+                    let credential = ProxyCredential::Basic(
+                        proxy_user
+                            .parse()
+                            .context("parse basic proxy credentials")?,
+                    );
                     proxy_address.credential = Some(credential);
                 }
                 HttpProxyAddressLayer::maybe(Some(proxy_address))
