@@ -10,7 +10,7 @@ use rama::{
         headers::{ContentType, HeaderMapExt, dep::mime},
         sse::{
             JsonEventData,
-            datastar::{DatastarEvent, EventType, MergeFragments, RemoveFragments},
+            datastar::{DatastarEvent, EventType, PatchElements},
         },
     },
 };
@@ -66,8 +66,8 @@ async fn test_http_sse_datastar_hello() {
     // test the actual stream content
 
     let mut expected_events: Vec<TestEvent> = vec![
-        RemoveFragments::new("#server-warning").into(),
-        MergeFragments::new(
+        PatchElements::new_remove("#server-warning").into(),
+        PatchElements::new(
             r##"
 <div id='message'>Hello, Datastar!</div>
 <div id="progress-bar" style="width: 100%"></div>
@@ -83,7 +83,7 @@ async fn test_http_sse_datastar_hello() {
         let text = &MESSAGE[..i];
         let progress = (i as f64) / (MESSAGE.len() as f64) * 100f64;
         expected_events.push(
-            MergeFragments::new(format!(
+            PatchElements::new(format!(
                 r##"
 <div id='message'>{text}</div>
 <div id="progress-bar" style="width: {progress}%"></div>
@@ -122,10 +122,10 @@ async fn test_http_sse_datastar_hello() {
         index += 1;
         println!("#{index}> >>RECVD: {event:?}");
 
-        if event.event() == Some(EventType::MergeSignals.as_str()) {
+        if event.event() == Some(EventType::PatchSignals.as_str()) {
             // check separately for out of order stuff that's not important to this test
 
-            let data = event.into_data().unwrap().into_merge_signals().unwrap();
+            let data = event.into_data().unwrap().into_patch_signals().unwrap();
             assert!(!data.only_if_missing);
 
             if signal_counter == 0 {
@@ -142,8 +142,8 @@ async fn test_http_sse_datastar_hello() {
         if event
             .data()
             .cloned()
-            .and_then(|d| d.into_merge_fragments().ok())
-            .map(|d| d.fragments.contains("sse-status"))
+            .and_then(|d| d.into_patch_elements().ok())
+            .map(|d| d.elements.unwrap_or_default().contains("sse-status"))
             .unwrap_or_default()
         {
             sse_status_counter += 1;
@@ -152,9 +152,9 @@ async fn test_http_sse_datastar_hello() {
 
         match expected_events.pop() {
             Some(expected_event) => {
-                // merge fragments handled differently
-                // as fragments can have meaningless differences in newlines
-                if expected_event.event() == Some(EventType::MergeFragments.as_str()) {
+                // merge elements handled differently
+                // as elements can have meaningless differences in newlines
+                if expected_event.event() == Some(EventType::PatchElements.as_str()) {
                     assert_eq!(
                         expected_event.event(),
                         event.event(),
@@ -175,29 +175,41 @@ async fn test_http_sse_datastar_hello() {
                     let expected_data = expected_event
                         .into_data()
                         .unwrap()
-                        .into_merge_fragments()
+                        .into_patch_elements()
                         .unwrap();
-                    let data = event.into_data().unwrap().into_merge_fragments().unwrap();
+                    let data = event.into_data().unwrap().into_patch_elements().unwrap();
 
                     assert_eq!(expected_data.selector, data.selector);
-                    assert_eq!(expected_data.merge_mode, data.merge_mode);
+                    assert_eq!(expected_data.mode, data.mode);
                     assert_eq!(expected_data.use_view_transition, data.use_view_transition);
 
-                    if expected_data.fragments.contains("sse-status") {
+                    if expected_data
+                        .elements
+                        .as_deref()
+                        .unwrap_or_default()
+                        .contains("sse-status")
+                    {
                         // only check if data also contains, as there
-                        // is some data in the fragment that is based on timing
+                        // is some data in the element that is based on timing
                         assert!(
-                            data.fragments.contains("sse-status"),
+                            data.elements
+                                .as_deref()
+                                .unwrap_or_default()
+                                .contains("sse-status"),
                             "event #{index}: data = {data:?}"
                         );
                     } else {
-                        let mut expected_fragments = expected_data.fragments.to_string();
-                        expected_fragments.retain(|c| !c.is_whitespace());
+                        let mut expected_elements = expected_data
+                            .elements
+                            .as_deref()
+                            .unwrap_or_default()
+                            .to_owned();
+                        expected_elements.retain(|c| !c.is_whitespace());
 
-                        let mut fragments = data.fragments.to_string();
-                        fragments.retain(|c| !c.is_whitespace());
+                        let mut elements = data.elements.as_deref().unwrap_or_default().to_owned();
+                        elements.retain(|c| !c.is_whitespace());
 
-                        assert_eq!(expected_fragments, fragments, "event #{index}");
+                        assert_eq!(expected_elements, elements, "event #{index}");
                     }
                 } else {
                     assert_eq!(expected_event, event);
