@@ -1,0 +1,29 @@
+//! # JOSE: JSON Object Signing and Encryption
+//!
+//! JOSE is an IETF standard for securely transferring data between parties using JSON.
+//! It provides a general framework for signing and encrypting any kind of data, and it's
+//! the foundation for technologies like JSON Web Tokens (JWTs).
+//!
+//! The JOSE framework is made up of several key components:
+//!
+//! * JWS (JSON Web Signature): This specification defines how to create a digital signature for
+//!   any data. A JWS proves data integrity and authenticity. It consists of a Header, a
+//!   Payload (the data), and a Signature, all encoded in Base64Url and joined by dots.
+//!
+//! * JWE (JSON Web Encryption): This defines a standard way to encrypt data. A JWE ensures
+//!   the confidentiality of the information, making sure only authorized parties can read it.
+//!
+//! * JWK (JSON Web Key): This specifies a JSON format for representing cryptographic keys.
+//!   This makes it simple to share the public keys required to verify signatures or encrypt data.
+//!
+//! * JWA (JSON Web Algorithm): This is essentially a list of the specific cryptographic
+//!   algorithms that are used for signing and encryption within the JOSE framework. The alg
+//!   parameter in the JOSE header identifies which algorithm was used.
+mod jwa;
+pub use jwa::JWA;
+
+mod jwk;
+pub use jwk::{EcdsaKey, JWK, JWKType, JWKUse, JWKellipticCurves};
+
+mod jws;
+pub use jws::{DecodedJWS, Empty, JWS, JWSBuilder, JWSCompact, Signer, Verifier};
