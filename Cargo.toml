@@ -255,6 +255,8 @@ verbose_file_reads = "warn"
 unnested_or_patterns = "warn"
 str_to_string = "warn"
 type_complexity = "allow"
+# TODO: remove this once MSRV >= 1.89
+collapsible_if = "allow"
 
 [features]
 default = []
