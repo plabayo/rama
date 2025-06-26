@@ -2259,6 +2259,7 @@ dependencies = [
  "rama-udp",
  "rama-unix",
  "rama-utils",
+ "rama-ws",
  "regex",
  "rustversion",
  "serde",
@@ -2733,6 +2734,16 @@ dependencies = [
  "smol_str",
  "tokio",
  "tokio-test",
+]
+
+[[package]]
+name = "rama-ws"
+version = "0.3.0-alpha.1"
+dependencies = [
+ "rama-core",
+ "rama-http",
+ "rama-utils",
+ "tokio",
 ]
 
 [[package]]

@@ -47,6 +47,7 @@ members = [
     "rama-udp",
     "rama-unix",
     "rama-utils",
+    "rama-ws",
 ]
 
 [workspace.package]
@@ -169,6 +170,7 @@ rama-ua = { version = "0.3.0-alpha.1", path = "./rama-ua" }
 rama-udp = { version = "0.3.0-alpha.1", path = "./rama-udp" }
 rama-unix = { version = "0.3.0-alpha.1", path = "./rama-unix" }
 rama-utils = { version = "0.3.0-alpha.1", path = "./rama-utils" }
+rama-ws = { version = "0.3.0-alpha.1", path = "./rama-ws" }
 rand = "0.9"
 rcgen = { version = "0.13", default-features = false, features = ["pem", "aws_lc_rs"] }
 regex = "1.11"
@@ -296,6 +298,7 @@ net = ["dep:rama-net"]
 dns = ["net", "dep:rama-dns", "rama-socks5?/dns"]
 tcp = ["dns", "dep:rama-tcp"]
 udp = ["net", "dep:rama-udp"]
+ws = ["dep:rama-ws", "http"]
 http = [
     "net",
     "dep:rama-http",
@@ -309,10 +312,12 @@ http = [
 http-full = [
     "http",
     "tcp",
+    "ws",
     "dep:rama-http-backend",
     "dep:rama-http-core",
     "ua-embed-profiles",
     "compression",
+
 ]
 proxy = ["dep:rama-proxy"]
 haproxy = ["dep:rama-haproxy"]
@@ -350,6 +355,7 @@ rama-tower = { workspace = true, optional = true }
 rama-ua = { workspace = true, optional = true }
 rama-udp = { workspace = true, optional = true }
 rama-utils = { workspace = true }
+rama-ws = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 serde_html_form = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
