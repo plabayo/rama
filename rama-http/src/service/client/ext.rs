@@ -236,7 +236,7 @@ mod private {
         fn into_url(self) -> Result<Uri, OpaqueError> {
             match self.parse::<Uri>() {
                 Ok(uri) => uri.into_url(),
-                Err(_) => Err(OpaqueError::from_display(format!("Invalid URL: {}", self))),
+                Err(_) => Err(OpaqueError::from_display(format!("Invalid URL: {self}"))),
             }
         }
     }

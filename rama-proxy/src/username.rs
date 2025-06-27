@@ -530,13 +530,11 @@ mod tests {
             let filter = ext.get::<ProxyFilter>().cloned();
             assert_eq!(
                 username, expected_username,
-                "username = '{}' ; expected_username = '{}'",
-                username, expected_username
+                "username = '{username}' ; expected_username = '{expected_username}'",
             );
             assert_eq!(
                 filter, expected_filter,
-                "username = '{}' ; expected_username = '{}'",
-                username, expected_username
+                "username = '{username}' ; expected_username = '{expected_username}'",
             );
         }
     }
@@ -559,8 +557,7 @@ mod tests {
 
             assert!(
                 parse_username(&mut ext, parser, username).is_err(),
-                "username = {}",
-                username
+                "username = {username}",
             );
         }
     }
@@ -580,8 +577,7 @@ mod tests {
 
             assert!(
                 parse_username(&mut ext, parser, username).is_err(),
-                "username = {}",
-                username
+                "username = {username}",
             );
         }
     }

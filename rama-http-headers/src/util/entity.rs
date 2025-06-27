@@ -158,7 +158,7 @@ impl EntityTag {
         match EntityTag::from_val(&val) {
             Some(tag) => tag,
             None => {
-                panic!("invalid static string for EntityTag: {:?}", bytes);
+                panic!("invalid static string for EntityTag: {bytes:?}");
             }
         }
     }

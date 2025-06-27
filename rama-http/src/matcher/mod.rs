@@ -800,9 +800,7 @@ mod test {
             assert_eq!(
                 matcher.matches(None, &Context::default(), &req),
                 expected,
-                "({:#?}).matches({:#?})",
-                matcher,
-                req
+                "({matcher:#?}).matches({req:#?})",
             );
         }
     }
@@ -820,9 +818,7 @@ mod test {
             assert_eq!(
                 matcher.matches(None, &Context::default(), &req),
                 expected,
-                "({:#?}).matches({:#?})",
-                matcher,
-                req
+                "({matcher:#?}).matches({req:#?})",
             );
         }
     }
@@ -840,9 +836,7 @@ mod test {
             assert_eq!(
                 matcher.matches(None, &Context::default(), &req),
                 expected,
-                "({:#?}).matches({:#?})",
-                matcher,
-                req
+                "({matcher:#?}).matches({req:#?})",
             );
         }
     }
@@ -860,9 +854,7 @@ mod test {
             assert_eq!(
                 matcher.matches(None, &Context::default(), &req),
                 expected,
-                "({:#?}).matches({:#?})",
-                matcher,
-                req
+                "({matcher:#?}).matches({req:#?})",
             );
         }
     }
@@ -880,9 +872,7 @@ mod test {
             assert_eq!(
                 matcher.matches(None, &Context::default(), &req),
                 expected,
-                "({:#?}).matches({:#?})",
-                matcher,
-                req
+                "({matcher:#?}).matches({req:#?})",
             );
         }
     }
@@ -900,9 +890,7 @@ mod test {
             assert_eq!(
                 matcher.matches(None, &Context::default(), &req),
                 expected,
-                "({:#?}).matches({:#?})",
-                matcher,
-                req
+                "({matcher:#?}).matches({req:#?})",
             );
         }
     }
@@ -922,9 +910,7 @@ mod test {
             assert_eq!(
                 matcher.matches(None, &Context::default(), &req),
                 expected,
-                "({:#?}).matches({:#?})",
-                matcher,
-                req
+                "({matcher:#?}).matches({req:#?})",
             );
         }
     }

@@ -407,9 +407,9 @@ impl fmt::Display for Directive {
                 Directive::NoTransform => "no-transform",
                 Directive::OnlyIfCached => "only-if-cached",
 
-                Directive::MaxAge(secs) => return write!(f, "max-age={}", secs),
-                Directive::MaxStale(secs) => return write!(f, "max-stale={}", secs),
-                Directive::MinFresh(secs) => return write!(f, "min-fresh={}", secs),
+                Directive::MaxAge(secs) => return write!(f, "max-age={secs}"),
+                Directive::MaxStale(secs) => return write!(f, "max-stale={secs}"),
+                Directive::MinFresh(secs) => return write!(f, "min-fresh={secs}"),
 
                 Directive::MustRevalidate => "must-revalidate",
                 Directive::MustUnderstand => "must-understand",
@@ -417,7 +417,7 @@ impl fmt::Display for Directive {
                 Directive::Private => "private",
                 Directive::Immutable => "immutable",
                 Directive::ProxyRevalidate => "proxy-revalidate",
-                Directive::SMaxAge(secs) => return write!(f, "s-maxage={}", secs),
+                Directive::SMaxAge(secs) => return write!(f, "s-maxage={secs}"),
             },
             f,
         )

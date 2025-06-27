@@ -111,7 +111,7 @@ where
                     b.await
                 }
                 Right((v, _)) => v,
-                Left((Err(e), _)) => panic!("err: {:?}", e),
+                Left((Err(e), _)) => panic!("err: {e:?}"),
             }
         })
     }

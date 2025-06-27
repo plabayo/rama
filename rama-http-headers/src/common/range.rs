@@ -54,11 +54,11 @@ impl Range {
     /// Creates a `Range` header from bounds.
     pub fn bytes(bounds: impl RangeBounds<u64>) -> Result<Self, InvalidRange> {
         let v = match (bounds.start_bound(), bounds.end_bound()) {
-            (Bound::Included(start), Bound::Included(end)) => format!("bytes={}-{}", start, end),
+            (Bound::Included(start), Bound::Included(end)) => format!("bytes={start}-{end}"),
             (Bound::Included(start), Bound::Excluded(&end)) => {
-                format!("bytes={}-{}", start, end - 1)
+                format!("bytes={start}-{}", end - 1)
             }
-            (Bound::Included(start), Bound::Unbounded) => format!("bytes={}-", start),
+            (Bound::Included(start), Bound::Unbounded) => format!("bytes={start}-"),
             // These do not directly translate.
             //(Bound::Unbounded, Bound::Included(end)) => format!("bytes=-{}", end),
             //(Bound::Unbounded, Bound::Excluded(&end)) => format!("bytes=-{}", end - 1),

@@ -736,7 +736,7 @@ mod tests {
 
             match (err.error.is_canceled(), err.message.as_ref()) {
                 (true, Some(_)) => (),
-                _ => panic!("expected Canceled, got {:?}", err),
+                _ => panic!("expected Canceled, got {err:?}"),
             }
         });
     }

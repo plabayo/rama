@@ -201,8 +201,8 @@ pub enum ProxyCsvRowReaderErrorKind {
 impl std::fmt::Display for ProxyCsvRowReaderError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.kind {
-            ProxyCsvRowReaderErrorKind::IoError(err) => write!(f, "I/O error: {}", err),
-            ProxyCsvRowReaderErrorKind::InvalidRow(row) => write!(f, "Invalid row: {}", row),
+            ProxyCsvRowReaderErrorKind::IoError(err) => write!(f, "I/O error: {err}"),
+            ProxyCsvRowReaderErrorKind::InvalidRow(row) => write!(f, "Invalid row: {row}"),
         }
     }
 }
@@ -447,7 +447,7 @@ mod tests {
             // invalid credentials
             "id,,,,,,,,authority,,,,,:foo",
         ] {
-            assert!(parse_csv_row(input).is_none(), "input: {}", input);
+            assert!(parse_csv_row(input).is_none(), "input: {input}");
         }
     }
 
@@ -590,7 +590,7 @@ mod tests {
                 ..Default::default()
             },
         ] {
-            assert!(proxy.is_match(&ctx, &filter), "filter: {:?}", filter);
+            assert!(proxy.is_match(&ctx, &filter), "filter: {filter:?}");
         }
     }
 
@@ -672,7 +672,7 @@ mod tests {
                 ..Default::default()
             },
         ] {
-            assert!(proxy.is_match(&ctx, &filter), "filter: {:?}", filter);
+            assert!(proxy.is_match(&ctx, &filter), "filter: {filter:?}");
         }
     }
 }

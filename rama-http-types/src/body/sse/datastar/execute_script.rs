@@ -188,12 +188,10 @@ impl EventDataWrite for ExecuteScript {
             .next()
             .context("ExecuteScript: no script lines found")?;
         for script_line in script_lines {
-            write!(w, "script {}\n", next_script_line)
-                .context("ExecuteScript: write script line")?;
+            write!(w, "script {next_script_line}\n").context("ExecuteScript: write script line")?;
             next_script_line = script_line;
         }
-        write!(w, "script {}", next_script_line)
-            .context("ExecuteScript: write last script line")?;
+        write!(w, "script {next_script_line}").context("ExecuteScript: write last script line")?;
 
         if let Some(auto_remove) = self.auto_remove {
             write!(w, "\nautoRemove {auto_remove}").context("ExecuteScript: write autoRemove")?;

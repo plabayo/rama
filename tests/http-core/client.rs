@@ -1154,11 +1154,9 @@ test! {
             let long_header = "A".repeat(500_000);
             format!("\
                 HTTP/1.1 200 OK\r\n\
-                {}: {}\r\n\
+                {long_header}: {long_header}\r\n\
                 \r\n\
                 ",
-                long_header,
-                long_header,
             )
         },
 
@@ -1640,7 +1638,7 @@ mod conn {
 
         let (mut client, conn) = rt.block_on(conn::http1::handshake(tcp)).unwrap();
 
-        rt.spawn(conn.map_err(|e| panic!("conn error: {}", e)).map(|_| ()));
+        rt.spawn(conn.map_err(|e| panic!("conn error: {e}")).map(|_| ()));
 
         let req = Request::builder()
             .uri("/")
@@ -1684,7 +1682,7 @@ mod conn {
 
         let (mut client, conn) = rt.block_on(conn::http1::handshake(tcp)).unwrap();
 
-        rt.spawn(conn.map_err(|e| panic!("conn error: {}", e)).map(|_| ()));
+        rt.spawn(conn.map_err(|e| panic!("conn error: {e}")).map(|_| ()));
 
         let (mut sender, recv) = mpsc::channel::<Result<Frame<Bytes>, BoxError>>(0);
 
@@ -1739,7 +1737,7 @@ mod conn {
 
         let (mut client, conn) = rt.block_on(conn::http1::handshake(tcp)).unwrap();
 
-        rt.spawn(conn.map_err(|e| panic!("conn error: {}", e)).map(|_| ()));
+        rt.spawn(conn.map_err(|e| panic!("conn error: {e}")).map(|_| ()));
 
         let req = Request::builder()
             .uri("http://hyper.local/a")
@@ -1783,7 +1781,7 @@ mod conn {
 
         let (mut client, conn) = rt.block_on(conn::http1::handshake(tcp)).unwrap();
 
-        rt.spawn(conn.map_err(|e| panic!("conn error: {}", e)).map(|_| ()));
+        rt.spawn(conn.map_err(|e| panic!("conn error: {e}")).map(|_| ()));
 
         let req = Request::builder()
             .uri("/a")
@@ -1824,7 +1822,7 @@ mod conn {
 
         let (mut client, conn) = rt.block_on(conn::http1::handshake(tcp)).unwrap();
 
-        rt.spawn(conn.map_err(|e| panic!("conn error: {}", e)).map(|_| ()));
+        rt.spawn(conn.map_err(|e| panic!("conn error: {e}")).map(|_| ()));
 
         let req = Request::builder()
             .uri("/a")
@@ -1842,7 +1840,7 @@ mod conn {
             .unwrap();
         let res2 = client.send_request(req).map(|result| {
             let err = result.expect_err("res2");
-            assert!(err.is_canceled(), "err not canceled, {:?}", err);
+            assert!(err.is_canceled(), "err not canceled, {err:?}");
             Ok::<_, ()>(())
         });
 
@@ -2206,8 +2204,7 @@ mod conn {
 
             assert!(
                 err.take_message().is_some(),
-                "request was returned: {:?}",
-                err
+                "request was returned: {err:?}",
             );
         })
         .await
@@ -2273,7 +2270,7 @@ mod conn {
             .expect("client poll ready sanity");
 
         let req = Request::builder()
-            .uri(format!("http://{}/", addr))
+            .uri(format!("http://{addr}/"))
             .body(Empty::<Bytes>::new())
             .expect("request builder");
 
@@ -2354,7 +2351,7 @@ mod conn {
             let rx = rxs.pop().unwrap();
             let req = Request::builder()
                 .method(Method::CONNECT)
-                .uri(format!("{}", addr))
+                .uri(format!("{addr}"))
                 .body(Empty::<Bytes>::new())
                 .expect("request builder");
 
@@ -2473,8 +2470,7 @@ mod conn {
             .expect_err("client should be closed");
         assert!(
             err.is_closed(),
-            "poll_ready error should be closed: {:?}",
-            err
+            "poll_ready error should be closed: {err:?}",
         );
     }
 
@@ -2795,7 +2791,7 @@ where
 {
     fn expect(self, msg: &'static str) -> Pin<Box<dyn Future<Output = Self::Ok>>> {
         Box::pin(
-            self.inspect_err(move |e| panic!("expect: {}; error={:?}", msg, e))
+            self.inspect_err(move |e| panic!("expect: {msg}; error={e:?}"))
                 .map(Result::unwrap),
         )
     }

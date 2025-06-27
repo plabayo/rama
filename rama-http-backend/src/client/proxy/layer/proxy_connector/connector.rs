@@ -92,15 +92,13 @@ impl InnerHttpProxyConnector {
                 Version::HTTP_2 => Self::handshake_h2(self.req, stream).await?,
                 version => {
                     return Err(HttpProxyError::Other(format!(
-                        "invalid http version: {:?}",
-                        version,
+                        "invalid http version: {version:?}",
                     )));
                 }
             },
             version => {
                 return Err(HttpProxyError::Other(format!(
-                    "invalid http version: {:?}",
-                    version,
+                    "invalid http version: {version:?}",
                 )));
             }
         };

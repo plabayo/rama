@@ -271,8 +271,8 @@ pub enum GrpcFailureClass {
 impl fmt::Display for GrpcFailureClass {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            Self::Code(code) => write!(f, "Code: {}", code),
-            Self::Error(error) => write!(f, "Error: {}", error),
+            Self::Code(code) => write!(f, "Code: {code}"),
+            Self::Error(error) => write!(f, "Error: {error}"),
         }
     }
 }

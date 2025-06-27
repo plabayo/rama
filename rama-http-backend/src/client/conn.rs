@@ -248,8 +248,7 @@ where
                 })
             }
             version => Err(OpaqueError::from_display(format!(
-                "unsupported Http version: {:?}",
-                version
+                "unsupported Http version: {version:?}",
             ))
             .into()),
         }
