@@ -84,8 +84,7 @@ mod string_collect {
         pub(super) fn into_string(self) -> Result<String, ProtocolError> {
             if let Some(incomplete) = self.incomplete {
                 Err(ProtocolError::Utf8(OpaqueError::from_display(format!(
-                    "incomplete string: {:?}",
-                    incomplete
+                    "incomplete string: {incomplete:?}",
                 ))))
             } else {
                 Ok(self.data)

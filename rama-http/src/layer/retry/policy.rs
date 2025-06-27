@@ -172,12 +172,10 @@ where
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            PolicyResult::Abort(err) => write!(f, "PolicyResult::Abort({:?})", err),
-            PolicyResult::Retry { ctx, req } => write!(
-                f,
-                "PolicyResult::Retry {{ ctx: {:?}, req: {:?} }}",
-                ctx, req
-            ),
+            PolicyResult::Abort(err) => write!(f, "PolicyResult::Abort({err:?})"),
+            PolicyResult::Retry { ctx, req } => {
+                write!(f, "PolicyResult::Retry {{ ctx: {ctx:?}, req: {req:?} }}",)
+            }
         }
     }
 }

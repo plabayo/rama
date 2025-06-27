@@ -1448,7 +1448,7 @@ mod tests {
             let expected_str = test_case
                 .expected
                 .iter()
-                .map(|(name, value)| format!("{}: {}\r\n", name, value))
+                .map(|(name, value)| format!("{name}: {value}\r\n"))
                 .join("");
 
             assert_eq!(
@@ -2104,8 +2104,7 @@ mod tests {
             assert_eq!(
                 computed_value.to_str().unwrap(),
                 test_case.expected_value,
-                "test_case: {:?}",
-                test_case,
+                "test_case: {test_case:?}",
             );
         }
     }

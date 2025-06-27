@@ -295,7 +295,7 @@ mod tests {
     #[test]
     fn test_all_client_hint_header_name_strings_contains_some_hints() {
         let strings = all_client_hint_header_name_strings().collect::<Vec<_>>();
-        assert!(strings.contains(&"sec-ch-ua"), "{:?}", strings);
+        assert!(strings.contains(&"sec-ch-ua"), "{strings:?}");
     }
 
     #[test]

@@ -261,21 +261,21 @@ async fn test_ua_emulation() {
             let expected = ctx.state().expected;
             let description = ctx.state().description;
 
-            println!("server receives {}: {:?}", description, expected);
+            println!("server receives {description}: {expected:?}");
 
             let ja4h = Ja4H::compute(&req).expect(description);
-            println!("server receives {}: ja4h: {:?}", description, ja4h);
-            assert_eq!(ja4h.to_string(), expected.ja4h, "{}", description);
+            println!("server receives {description}: ja4h: {ja4h:?}");
+            assert_eq!(ja4h.to_string(), expected.ja4h, "{description}");
 
             // TODO: enable ja3 + ja4 tests
             // once we support more tls extensions
 
             let ja4 = Ja4::compute(ctx.extensions()).expect(description);
-            println!("server receives {}: ja4: {:?}", description, ja4);
+            println!("server receives {description}: ja4: {ja4:?}");
             // assert_eq!(ja4.to_string(), expected.ja4, "{}", description);
 
             let ja3 = format!("{:x}", Ja3::compute(ctx.extensions()).expect(description));
-            println!("server receives {}: ja3: {:?}", description, ja3);
+            println!("server receives {description}: ja3: {ja3:?}");
             // assert_eq!(ja3, expected.ja3, "{}", description);
 
             Ok(Response::new(Body::empty()))

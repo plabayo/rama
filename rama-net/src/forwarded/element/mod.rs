@@ -485,7 +485,7 @@ mod tests {
                 Ok(el) => el,
                 Err(err) => panic!("failed to parse happy spec el '{s}': {err}"),
             };
-            assert_eq!(element, expected, "input: {}", s);
+            assert_eq!(element, expected, "input: {s}");
         }
     }
 }

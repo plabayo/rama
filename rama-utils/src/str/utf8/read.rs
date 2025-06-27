@@ -23,7 +23,7 @@ pub enum BufReadDecoderError<'a> {
     Io(io::Error),
 }
 
-impl<'a> BufReadDecoderError<'a> {
+impl BufReadDecoderError<'_> {
     /// Replace UTF-8 errors with U+FFFD
     pub fn lossy(self) -> Result<&'static str, io::Error> {
         match self {
@@ -33,18 +33,18 @@ impl<'a> BufReadDecoderError<'a> {
     }
 }
 
-impl<'a> fmt::Display for BufReadDecoderError<'a> {
+impl fmt::Display for BufReadDecoderError<'_> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
             BufReadDecoderError::InvalidByteSequence(bytes) => {
-                write!(f, "invalid byte sequence: {:02x?}", bytes)
+                write!(f, "invalid byte sequence: {bytes:02x?}")
             }
-            BufReadDecoderError::Io(ref err) => write!(f, "underlying bytestream error: {}", err),
+            BufReadDecoderError::Io(ref err) => write!(f, "underlying bytestream error: {err}"),
         }
     }
 }
 
-impl<'a> Error for BufReadDecoderError<'a> {
+impl Error for BufReadDecoderError<'_> {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match *self {
             BufReadDecoderError::InvalidByteSequence(_) => None,

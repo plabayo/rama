@@ -191,13 +191,13 @@ fn test_bufread_decoder() {
 
 struct Chunks<'a>(VecDeque<&'a [u8]>);
 
-impl<'a> io::Read for Chunks<'a> {
+impl io::Read for Chunks<'_> {
     fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
         unimplemented!()
     }
 }
 
-impl<'a> io::BufRead for Chunks<'a> {
+impl io::BufRead for Chunks<'_> {
     fn fill_buf(&mut self) -> io::Result<&[u8]> {
         Ok(*self.0.front().unwrap())
     }

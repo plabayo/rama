@@ -43,7 +43,7 @@ pub enum DecodeError<'a> {
     },
 }
 
-impl<'a> fmt::Display for DecodeError<'a> {
+impl fmt::Display for DecodeError<'_> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
             DecodeError::Invalid {
@@ -73,7 +73,7 @@ impl<'a> fmt::Display for DecodeError<'a> {
     }
 }
 
-impl<'a> Error for DecodeError<'a> {}
+impl Error for DecodeError<'_> {}
 
 #[derive(Debug, Copy, Clone)]
 pub struct Incomplete {

@@ -91,9 +91,7 @@ mod tests {
         ] {
             assert!(
                 !super::submatch_ignore_ascii_case(s, sub),
-                "'{}' in '{}'",
-                sub,
-                s
+                "'{sub}' in '{s}'",
             );
         }
     }
@@ -110,9 +108,7 @@ mod tests {
             assert_eq!(
                 super::contains_ignore_ascii_case(s, sub),
                 Some(index),
-                "'{}' in '{}'",
-                sub,
-                s
+                "'{sub}' in '{s}'",
             );
         }
     }
@@ -132,9 +128,7 @@ mod tests {
             assert_eq!(
                 super::contains_ignore_ascii_case(s, sub),
                 Some(index),
-                "'{}' in '{}'",
-                sub,
-                s
+                "'{sub}' in '{s}'",
             );
         }
     }
@@ -150,9 +144,7 @@ mod tests {
             assert_eq!(
                 super::contains_ignore_ascii_case(s, sub),
                 Some(index),
-                "'{}' in '{}'",
-                sub,
-                s
+                "'{sub}' in '{s}'",
             );
         }
     }
@@ -167,9 +159,7 @@ mod tests {
         ] {
             assert!(
                 !super::submatch_any_ignore_ascii_case(s, &[sub]),
-                "'{}' in '{}'",
-                sub,
-                s
+                "'{sub}' in '{s}'",
             );
         }
     }
@@ -202,9 +192,7 @@ mod tests {
             assert_eq!(
                 super::contains_any_ignore_ascii_case(s, &subs[..]),
                 Some(index),
-                "any_of({:?}) in '{}'",
-                subs,
-                s
+                "any_of({subs:?}) in '{s}'",
             );
         }
     }
@@ -220,9 +208,7 @@ mod tests {
             assert_eq!(
                 super::contains_any_ignore_ascii_case(s, &[sub]),
                 Some(index),
-                "'{}' in '{}'",
-                sub,
-                s
+                "'{sub}' in '{s}'",
             );
         }
     }

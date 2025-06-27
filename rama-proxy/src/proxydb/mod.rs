@@ -1128,18 +1128,14 @@ mod memdb {
             ] {
                 let err = match db.get_proxy(ctx.clone(), filter.clone()).await {
                     Ok(proxy) => {
-                        panic!(
-                            "expected error for filter {:?}, not found proxy: {:?}",
-                            filter, proxy
-                        );
+                        panic!("expected error for filter {filter:?}, not found proxy: {proxy:?}");
                     }
                     Err(err) => err,
                 };
                 assert_eq!(
                     MemoryProxyDBQueryErrorKind::NotFound,
                     err.kind(),
-                    "filter: {:?}",
-                    filter
+                    "filter: {filter:?}",
                 );
             }
         }

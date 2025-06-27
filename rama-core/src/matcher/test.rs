@@ -83,7 +83,7 @@ fn test_and() {
     assert!(matcher.matches(None, &Context::default(), &1));
     assert!(!matcher.matches(None, &Context::default(), &2));
     for i in 3..=255 {
-        assert!(!matcher.matches(None, &Context::default(), &i), "i = {}", i);
+        assert!(!matcher.matches(None, &Context::default(), &i), "i = {i}");
     }
 }
 
@@ -94,7 +94,7 @@ fn test_and_builder() {
     assert!(matcher.matches(None, &Context::default(), &1));
     assert!(!matcher.matches(None, &Context::default(), &2));
     for i in 3..=255 {
-        assert!(!matcher.matches(None, &Context::default(), &i), "i = {}", i);
+        assert!(!matcher.matches(None, &Context::default(), &i), "i = {i}");
     }
 }
 
@@ -106,9 +106,9 @@ fn test_or() {
     assert!(matcher.matches(None, &Context::default(), &2));
     for i in 3..=255 {
         if i % 2 == 0 {
-            assert!(matcher.matches(None, &Context::default(), &i), "i = {}", i);
+            assert!(matcher.matches(None, &Context::default(), &i), "i = {i}");
         } else {
-            assert!(!matcher.matches(None, &Context::default(), &i), "i = {}", i);
+            assert!(!matcher.matches(None, &Context::default(), &i), "i = {i}");
         }
     }
 }
@@ -130,10 +130,10 @@ fn test_or_builder() {
 
     assert!(!matcher.matches(None, &Context::default(), &0));
     for i in 1..=12 {
-        assert!(matcher.matches(None, &Context::default(), &i), "i = {}", i);
+        assert!(matcher.matches(None, &Context::default(), &i), "i = {i}");
     }
     for i in 13..=255 {
-        assert!(!matcher.matches(None, &Context::default(), &i), "i = {}", i);
+        assert!(!matcher.matches(None, &Context::default(), &i), "i = {i}");
     }
 }
 
@@ -142,8 +142,7 @@ fn test_and_never() {
     for i in 0..=255 {
         assert!(
             !And::new((OddMatcher, EvenMatcher)).matches(None, &Context::default(), &i),
-            "i = {}",
-            i
+            "i = {i}"
         );
     }
 }
@@ -153,8 +152,7 @@ fn test_or_never() {
     for i in 0..=255 {
         assert!(
             Or::new((OddMatcher, EvenMatcher)).matches(None, &Context::default(), &i),
-            "i = {}",
-            i
+            "i = {i}",
         );
     }
 }
@@ -167,7 +165,7 @@ fn test_and_or() {
     assert!(matcher.matches(None, &Context::default(), &1));
     assert!(matcher.matches(None, &Context::default(), &2));
     for i in 3..=255 {
-        assert!(!matcher.matches(None, &Context::default(), &i), "i = {}", i);
+        assert!(!matcher.matches(None, &Context::default(), &i), "i = {i}");
     }
 }
 
@@ -195,9 +193,9 @@ fn test_match_fn() {
     let matcher = match_fn(|req: &u8| *req % 2 != 0);
     for i in 0..=255 {
         if i % 2 != 0 {
-            assert!(matcher.matches(None, &Context::default(), &i), "i = {}", i);
+            assert!(matcher.matches(None, &Context::default(), &i), "i = {i}");
         } else {
-            assert!(!matcher.matches(None, &Context::default(), &i), "i = {}", i);
+            assert!(!matcher.matches(None, &Context::default(), &i), "i = {i}");
         }
     }
 }
@@ -273,22 +271,19 @@ fn test_iter_enum_or() {
     for i in 0..=2 {
         assert!(
             matchers.iter().matches_or(None, &Context::default(), &i),
-            "i = {}",
-            i
+            "i = {i}",
         );
     }
     for i in 3..=255 {
         if i % 2 == 1 {
             assert!(
                 matchers.iter().matches_or(None, &Context::default(), &i),
-                "i = {}",
-                i
+                "i = {i}",
             );
         } else {
             assert!(
                 !matchers.iter().matches_or(None, &Context::default(), &i),
-                "i = {}",
-                i
+                "i = {i}",
             );
         }
     }
@@ -333,22 +328,19 @@ fn test_iter_box_or() {
     for i in 0..=2 {
         assert!(
             matchers.iter().matches_or(None, &Context::default(), &i),
-            "i = {}",
-            i
+            "i = {i}",
         );
     }
     for i in 3..=255 {
         if i % 2 == 1 {
             assert!(
                 matchers.iter().matches_or(None, &Context::default(), &i),
-                "i = {}",
-                i
+                "i = {i}",
             );
         } else {
             assert!(
                 !matchers.iter().matches_or(None, &Context::default(), &i),
-                "i = {}",
-                i
+                "i = {i}",
             );
         }
     }

@@ -60,10 +60,10 @@ async fn main() -> Result<(), BoxError> {
         Ok(()) => Ok(()),
         Err(err) => {
             if let Some(err) = err.downcast_ref::<error::ErrorWithExitCode>() {
-                eprintln!("🚩 exit with error ({}): {}", err.exit_code(), err);
+                eprintln!("🚩 exit with error ({}): {err}", err.exit_code());
                 std::process::exit(err.exit_code());
             } else {
-                eprintln!("🚩 exit with error: {}", err);
+                eprintln!("🚩 exit with error: {err}");
                 std::process::exit(1);
             }
         }

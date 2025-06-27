@@ -34,10 +34,10 @@ impl fmt::Display for HttpProxyError {
                 write!(f, "http proxy error: proxy unavailable (http 503)")
             }
             HttpProxyError::Transport(error) => {
-                write!(f, "http proxy error: transport error: I/O [{}]", error)
+                write!(f, "http proxy error: transport error: I/O [{error}]")
             }
             HttpProxyError::Other(header) => {
-                write!(f, "http proxy error: first line of header = [{}]", header)
+                write!(f, "http proxy error: first line of header = [{header}]")
             }
         }
     }

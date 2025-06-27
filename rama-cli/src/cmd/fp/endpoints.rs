@@ -596,8 +596,7 @@ fn render_report(title: &'static str, head: String, mut html: String, tables: Ve
         html.push_str("<table>");
         for (key, value) in table.rows {
             html.push_str(&format!(
-                r##"<tr><td class="key">{}</td><td><code>{}</code></td></tr>"##,
-                key, value
+                r##"<tr><td class="key">{key}</td><td><code>{value}</code></td></tr>"##,
             ));
         }
         html.push_str("</table>");
@@ -637,7 +636,7 @@ fn render_page(title: &'static str, head: String, content: String) -> Html {
 
             <link rel="stylesheet" type="text/css" href="/assets/style.css">
 
-            {}
+            {head}
         </head>
         <body>
             <main>
@@ -646,9 +645,9 @@ fn render_page(title: &'static str, head: String, content: String) -> Html {
                     &nbsp;
                     |
                     &nbsp;
-                    {}
+                    {title}
                 </h1>
-                <div id="content">{}</div>
+                <div id="content">{content}</div>
                 <div id="input" hidden></div>
                 <div id="banner">
                     <a href="https://ramaproxy.org" title="rama proxy website">
@@ -658,8 +657,7 @@ fn render_page(title: &'static str, head: String, content: String) -> Html {
             </main>
         </body>
         </html>
-    "#,
-        head, title, content
+    "#
     ))
 }
 

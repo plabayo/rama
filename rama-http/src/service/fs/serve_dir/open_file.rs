@@ -357,7 +357,7 @@ async fn maybe_serve_directory(
                 if !part.is_empty() {
                     current_path.push('/');
                     current_path.push_str(part);
-                    nav_parts.push(format!("<a href=\"{0}\">{1}</a>", current_path, part));
+                    nav_parts.push(format!("<a href=\"{current_path}\">{part}</a>"));
                 }
             }
             let breadcrumb = if nav_parts.is_empty() {
