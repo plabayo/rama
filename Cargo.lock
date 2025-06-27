@@ -2740,9 +2740,12 @@ dependencies = [
 name = "rama-ws"
 version = "0.3.0-alpha.1"
 dependencies = [
+ "pin-project-lite",
  "rama-core",
  "rama-http",
+ "rama-net",
  "rama-utils",
+ "rand 0.9.1",
  "tokio",
 ]
 

@@ -20,10 +20,13 @@ rustdoc-args = ["--cfg", "docsrs"]
 [dependencies]
 rama-core = { workspace = true }
 rama-http = { workspace = true }
+rama-net = { workspace = true }
 rama-utils = { workspace = true }
+rand = { workspace = true }
 tokio = { workspace = true, features = ["time", "macros"] }
 
 [dev-dependencies]
+pin-project-lite = { workspace = true }
 
 [lints]
 workspace = true
