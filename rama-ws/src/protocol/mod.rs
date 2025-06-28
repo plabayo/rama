@@ -792,10 +792,10 @@ impl WebSocketContext {
 }
 
 fn check_max_size(size: usize, max_size: Option<usize>) -> Result<(), ProtocolError> {
-    if let Some(max_size) = max_size {
-        if size > max_size {
-            return Err(ProtocolError::MessageTooLong { size, max_size });
-        }
+    if let Some(max_size) = max_size
+        && size > max_size
+    {
+        return Err(ProtocolError::MessageTooLong { size, max_size });
     }
     Ok(())
 }

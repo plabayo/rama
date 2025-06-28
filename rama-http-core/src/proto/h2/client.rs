@@ -738,10 +738,10 @@ where
                     let (head, body) = req.into_parts();
                     let mut req = Request::from_parts(head, ());
                     super::strip_connection_headers(req.headers_mut(), true);
-                    if let Some(len) = body.size_hint().exact() {
-                        if len != 0 || headers::method_has_defined_payload_semantics(req.method()) {
-                            headers::set_content_length_if_missing(req.headers_mut(), len);
-                        }
+                    if let Some(len) = body.size_hint().exact()
+                        && (len != 0 || headers::method_has_defined_payload_semantics(req.method()))
+                    {
+                        headers::set_content_length_if_missing(req.headers_mut(), len);
                     }
 
                     let is_connect = req.method() == Method::CONNECT;

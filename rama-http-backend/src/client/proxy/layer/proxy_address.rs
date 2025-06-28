@@ -184,15 +184,15 @@ where
         mut ctx: Context<State>,
         req: Request,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
-        if let Some(ref address) = self.address {
-            if !self.preserve || !ctx.contains::<ProxyAddress>() {
-                tracing::trace!(
-                    server.address = %address.authority.host(),
-                    server.port = %address.authority.port(),
-                    "setting proxy address",
-                );
-                ctx.insert(address.clone());
-            }
+        if let Some(ref address) = self.address
+            && (!self.preserve || !ctx.contains::<ProxyAddress>())
+        {
+            tracing::trace!(
+                server.address = %address.authority.host(),
+                server.port = %address.authority.port(),
+                "setting proxy address",
+            );
+            ctx.insert(address.clone());
         }
         self.inner.serve(ctx, req)
     }

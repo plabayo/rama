@@ -556,10 +556,10 @@ impl Send {
     }
 
     pub(super) fn ensure_not_idle(&self, id: StreamId) -> Result<(), Reason> {
-        if let Ok(next) = self.next_stream_id {
-            if id >= next {
-                return Err(Reason::PROTOCOL_ERROR);
-            }
+        if let Ok(next) = self.next_stream_id
+            && id >= next
+        {
+            return Err(Reason::PROTOCOL_ERROR);
         }
         // if next_stream_id is overflowed, that's ok.
 
