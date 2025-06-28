@@ -470,34 +470,34 @@ where
                             .or_insert_with(date::update_and_header_value);
                     }
 
-                    if let Some(connect_parts) = connect_parts.take() {
-                        if res.status().is_success() {
-                            if headers::content_length_parse_all(res.headers())
-                                .is_some_and(|len| len != 0)
-                            {
-                                warn!(
-                                    "h2 successful response to CONNECT request with body not supported"
-                                );
-                                me.reply.send_reset(crate::h2::Reason::INTERNAL_ERROR);
-                                return Poll::Ready(Err(crate::Error::new_user_header()));
-                            }
-                            if res.headers_mut().remove(header::CONTENT_LENGTH).is_some() {
-                                warn!(
-                                    "successful response to CONNECT request disallows content-length header"
-                                );
-                            }
-                            let send_stream = reply!(me, res, false);
-                            connect_parts.pending.fulfill(Upgraded::new(
-                                H2Upgraded {
-                                    ping: connect_parts.ping,
-                                    recv_stream: connect_parts.recv_stream,
-                                    send_stream: unsafe { UpgradedSendStream::new(send_stream) },
-                                    buf: Bytes::new(),
-                                },
-                                Bytes::new(),
-                            ));
-                            return Poll::Ready(Ok(()));
+                    if let Some(connect_parts) = connect_parts.take()
+                        && res.status().is_success()
+                    {
+                        if headers::content_length_parse_all(res.headers())
+                            .is_some_and(|len| len != 0)
+                        {
+                            warn!(
+                                "h2 successful response to CONNECT request with body not supported"
+                            );
+                            me.reply.send_reset(crate::h2::Reason::INTERNAL_ERROR);
+                            return Poll::Ready(Err(crate::Error::new_user_header()));
                         }
+                        if res.headers_mut().remove(header::CONTENT_LENGTH).is_some() {
+                            warn!(
+                                "successful response to CONNECT request disallows content-length header"
+                            );
+                        }
+                        let send_stream = reply!(me, res, false);
+                        connect_parts.pending.fulfill(Upgraded::new(
+                            H2Upgraded {
+                                ping: connect_parts.ping,
+                                recv_stream: connect_parts.recv_stream,
+                                send_stream: unsafe { UpgradedSendStream::new(send_stream) },
+                                buf: Bytes::new(),
+                            },
+                            Bytes::new(),
+                        ));
+                        return Poll::Ready(Ok(()));
                     }
 
                     if !body.is_end_stream() {

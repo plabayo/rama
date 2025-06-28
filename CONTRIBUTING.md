@@ -48,7 +48,7 @@ just qa
 
 Before you can do this you do require the following to be installed:
 
-* `Rust`, version 1.85 or beyond: <https://www.rust-lang.org/tools/install>
+* `Rust`, version 1.88 or beyond: <https://www.rust-lang.org/tools/install>
 * `just` (to run _just_ (config) files): <https://just.systems/man/en/packages.html>
 * `cargo hack`: <https://github.com/taiki-e/cargo-hack?tab=readme-ov-file#installation>
 

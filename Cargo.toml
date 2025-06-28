@@ -64,7 +64,7 @@ categories = [
     "web-programming::http-server",
 ]
 authors = ["Glen De Cauwsemaecker <glen@plabayo.tech>"]
-rust-version = "1.85.0"
+rust-version = "1.88.0"
 
 [workspace.dependencies]
 arc-swap = "1.7"
@@ -255,8 +255,6 @@ verbose_file_reads = "warn"
 unnested_or_patterns = "warn"
 str_to_string = "warn"
 type_complexity = "allow"
-# TODO: remove this once MSRV >= 1.89
-collapsible_if = "allow"
 
 [features]
 default = []
