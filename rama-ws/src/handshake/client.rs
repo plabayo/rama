@@ -61,7 +61,6 @@ impl<B: Clone> Clone for WebsocketRequestBuilder<B> {
 pub struct WithService<'a, S, Body, State> {
     builder: RequestBuilder<'a, S, State, Response<Body>>,
     config: Option<WebSocketConfig>,
-    is_h2: bool,
 }
 
 impl<S: fmt::Debug, Body, State> fmt::Debug for WithService<'_, S, Body, State> {
@@ -69,7 +68,6 @@ impl<S: fmt::Debug, Body, State> fmt::Debug for WithService<'_, S, Body, State> 
         f.debug_struct("WithService")
             .field("builder", &self.builder)
             .field("config", &self.config)
-            .field("is_h2", &self.is_h2)
             .finish()
     }
 }
@@ -248,11 +246,14 @@ pub fn validate_http_server_response<Body>(
     // the |Sec-WebSocket-Accept| contains a value other than the
     // base64-encoded SHA-1 of ... the client MUST _Fail the WebSocket
     // Connection_. (RFC 6455)
-    if response
+    let sec_websocket_accept_header = response
         .headers()
-        .typed_get::<headers::SecWebsocketAccept>()
-        != Some(headers::SecWebsocketAccept::from(key))
-    {
+        .typed_get::<headers::SecWebsocketAccept>();
+    let expected_key = Some(headers::SecWebsocketAccept::from(key));
+    if sec_websocket_accept_header != expected_key {
+        tracing::trace!(
+            "unexpected websocket accept key: {sec_websocket_accept_header:?} (expected: {expected_key:?})"
+        );
         return Err(ResponseValidateError::SecWebSocketAcceptKeyMismatch);
     }
 
@@ -368,11 +369,10 @@ impl WebsocketRequestBuilder<request::Builder> {
             .body(Body::empty())
             .context("request failed to build (invalid custom header?)")?;
 
-        if request.version() == Version::HTTP_2 {
-            request
-                .extensions_mut()
-                .insert(Protocol::from_static("websocket"));
-        }
+        // only required for h2, but we might upgrade from h1 to h2 based on layers such as tls
+        request
+            .extensions_mut()
+            .insert(Protocol::from_static("websocket"));
 
         Ok(HandshakeRequest {
             request,
@@ -400,7 +400,6 @@ where
                     Version::HTTP_11,
                 ),
                 config: Default::default(),
-                is_h2: false,
             },
             sub_protocols: Default::default(),
             key: Default::default(),
@@ -420,7 +419,6 @@ where
                     Version::HTTP_2,
                 ),
                 config: Default::default(),
-                is_h2: true,
             },
             sub_protocols: Default::default(),
             key: Default::default(),
@@ -437,7 +435,6 @@ where
             inner: WithService {
                 builder: self.inner.builder.header(name, value),
                 config: self.inner.config,
-                is_h2: self.inner.is_h2,
             },
             sub_protocols: self.sub_protocols,
             key: self.key,
@@ -453,7 +450,6 @@ where
             inner: WithService {
                 builder: self.inner.builder.typed_header(header),
                 config: self.inner.config,
-                is_h2: self.inner.is_h2,
             },
             sub_protocols: self.sub_protocols,
             key: self.key,
@@ -484,11 +480,8 @@ where
         let key = self.key.unwrap_or_else(headers::SecWebsocketKey::random);
         let builder = builder.typed_header(key.clone());
 
-        let builder = if self.inner.is_h2 {
-            builder.extension(Protocol::from_static("websocket"))
-        } else {
-            builder
-        };
+        // only required in h1, but because of layers such as tls we might anyway turn from h1 into h2
+        let builder = builder.extension(Protocol::from_static("websocket"));
 
         let response = builder
             .send(ctx)

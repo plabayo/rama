@@ -862,12 +862,20 @@ mod tests {
         struct WriteMoc<Stream> {
             #[pin]
             stream: Stream,
+            written_bytes: usize,
+            write_count: usize,
+            flush_count: usize,
         }
     }
 
     impl<Stream> WriteMoc<Stream> {
         fn new(stream: Stream) -> Self {
-            Self { stream }
+            Self {
+                stream,
+                written_bytes: 0,
+                write_count: 0,
+                flush_count: 0,
+            }
         }
     }
 
@@ -888,6 +896,9 @@ mod tests {
             _cx: &mut std::task::Context<'_>,
             buf: &[u8],
         ) -> std::task::Poll<Result<usize, io::Error>> {
+            let this = self.project();
+            *this.written_bytes += buf.len();
+            *this.write_count += 1;
             std::task::Poll::Ready(Ok(buf.len()))
         }
 
@@ -895,6 +906,8 @@ mod tests {
             self: std::pin::Pin<&mut Self>,
             _cx: &mut std::task::Context<'_>,
         ) -> std::task::Poll<Result<(), io::Error>> {
+            let this = self.project();
+            *this.flush_count += 1;
             std::task::Poll::Ready(Ok(()))
         }
 
@@ -968,5 +981,44 @@ mod tests {
                 max_size: 2
             })
         ));
+    }
+
+    #[tokio::test]
+    async fn server_write_flush_behaviour() {
+        const SEND_ME_LEN: usize = 10;
+        const BATCH_ME_LEN: usize = 11;
+        const WRITE_BUFFER_SIZE: usize = 600;
+
+        let mut ws = WebSocket::from_raw_socket(
+            WriteMoc::new(Cursor::new(Vec::default())),
+            Role::Server,
+            Some(WebSocketConfig::default().write_buffer_size(WRITE_BUFFER_SIZE)),
+        );
+
+        assert_eq!(ws.get_ref().written_bytes, 0);
+        assert_eq!(ws.get_ref().write_count, 0);
+        assert_eq!(ws.get_ref().flush_count, 0);
+
+        // `send` writes & flushes immediately
+        ws.send(Message::Text("Send me!".into())).await.unwrap();
+        assert_eq!(ws.get_ref().written_bytes, SEND_ME_LEN);
+        assert_eq!(ws.get_ref().write_count, 1);
+        assert_eq!(ws.get_ref().flush_count, 1);
+
+        // send a batch of messages
+        for msg in (0..100).map(|_| Message::Text("Batch me!".into())) {
+            ws.write(msg).await.unwrap();
+        }
+        // after 55 writes the out_buffer will exceed write_buffer_size=600
+        // and so do a single underlying write (not flushing).
+        assert_eq!(ws.get_ref().written_bytes, 55 * BATCH_ME_LEN + SEND_ME_LEN);
+        assert_eq!(ws.get_ref().write_count, 2);
+        assert_eq!(ws.get_ref().flush_count, 1);
+
+        // flushing will perform a single write for the remaining out_buffer & flush.
+        ws.flush().await.unwrap();
+        assert_eq!(ws.get_ref().written_bytes, 100 * BATCH_ME_LEN + SEND_ME_LEN);
+        assert_eq!(ws.get_ref().write_count, 3);
+        assert_eq!(ws.get_ref().flush_count, 2);
     }
 }

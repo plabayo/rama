@@ -1,5 +1,6 @@
 use crate::protocol::{frame::coding::OpCodeData, message::Message};
 use rama_core::error::OpaqueError;
+use rama_net::conn::is_connection_error;
 use rama_utils::str::utf8;
 use std::{error, fmt, io};
 
@@ -52,6 +53,18 @@ pub enum ProtocolError {
     ExpectedFragment(OpCodeData),
     /// Type of data frame not recognised.
     UnknownDataFrameType(u8),
+}
+
+impl ProtocolError {
+    /// Check if the error is a connection error,
+    /// in which case the error can be ignored.
+    pub fn is_connection_error(&self) -> bool {
+        if let Self::Io(err) = self {
+            is_connection_error(err)
+        } else {
+            false
+        }
+    }
 }
 
 impl From<utf8::DecodeError<'_>> for ProtocolError {

@@ -173,36 +173,6 @@ impl dyn Io {
     }
 }
 
-/*
-*
-* pub(super) trait Io: Read + Write + Unpin + 'static {
-    fn __hyper_type_id(&self) -> TypeId {
-        TypeId::of::<Self>()
-    }
-}
-
-impl<T: Read + Write + Unpin + 'static> Io for T {}
-
-impl dyn Io + Send {
-    fn __hyper_is<T: Io>(&self) -> bool {
-        let t = TypeId::of::<T>();
-        self.__hyper_type_id() == t
-    }
-
-    fn __hyper_downcast<T: Io>(self: Box<Self>) -> Result<Box<T>, Box<Self>> {
-        if self.__hyper_is::<T>() {
-            // Taken from `std::error::Error::downcast()`.
-            unsafe {
-                let raw: *mut dyn Io = Box::into_raw(self);
-                Ok(Box::from_raw(raw as *mut T))
-            }
-        } else {
-            Err(self)
-        }
-    }
-}
-*/
-
 impl AsyncRead for Upgraded {
     fn poll_read(
         mut self: Pin<&mut Self>,
