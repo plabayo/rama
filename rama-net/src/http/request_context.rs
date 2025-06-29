@@ -335,7 +335,7 @@ mod tests {
                 .unwrap()
                 .clone();
 
-            assert_eq!(req_ctx, expected, "Failed for {:?}", forwarded_str_vec);
+            assert_eq!(req_ctx, expected, "Failed for {forwarded_str_vec:?}");
         }
     }
 
@@ -390,7 +390,7 @@ mod tests {
             assert_eq!(req_ctx.protocol, expected_protocol);
             assert_eq!(
                 req_ctx.authority.to_string(),
-                format!("www.example.com:{}", port)
+                format!("www.example.com:{port}")
             );
         }
     }

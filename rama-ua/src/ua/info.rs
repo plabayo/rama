@@ -236,7 +236,7 @@ impl FromStr for UserAgentKind {
                 "chromium" => Ok(UserAgentKind::Chromium),
                 "firefox" => Ok(UserAgentKind::Firefox),
                 "safari" => Ok(UserAgentKind::Safari),
-                _ => Err(OpaqueError::from_display(format!("invalid user agent kind: {}", s))),
+                _ => Err(OpaqueError::from_display(format!("invalid user agent kind: {s}"))),
             }
         }
     }
@@ -287,7 +287,7 @@ impl FromStr for DeviceKind {
             match (s) {
                 "desktop" => Ok(DeviceKind::Desktop),
                 "mobile" => Ok(DeviceKind::Mobile),
-                _ => Err(OpaqueError::from_display(format!("invalid device: {}", s))),
+                _ => Err(OpaqueError::from_display(format!("invalid device: {s}"))),
             }
         }
     }
@@ -365,7 +365,7 @@ impl FromStr for PlatformKind {
                 "linux" => Ok(PlatformKind::Linux),
                 "android" => Ok(PlatformKind::Android),
                 "ios" => Ok(PlatformKind::IOS),
-                _ => Err(OpaqueError::from_display(format!("invalid platform: {}", s))),
+                _ => Err(OpaqueError::from_display(format!("invalid platform: {s}"))),
             }
         }
     }
@@ -458,7 +458,7 @@ impl FromStr for HttpAgent {
                 "Firefox" => Ok(HttpAgent::Firefox),
                 "Safari" => Ok(HttpAgent::Safari),
                 "preserve" => Ok(HttpAgent::Preserve),
-                _ => Err(OpaqueError::from_display(format!("invalid http agent: {}", s))),
+                _ => Err(OpaqueError::from_display(format!("invalid http agent: {s}"))),
             }
         }
     }
@@ -528,7 +528,7 @@ impl FromStr for TlsAgent {
                 "boring" | "boringssl" => Ok(TlsAgent::Boringssl),
                 "nss" => Ok(TlsAgent::Nss),
                 "preserve" => Ok(TlsAgent::Preserve),
-                _ => Err(OpaqueError::from_display(format!("invalid tls agent: {}", s))),
+                _ => Err(OpaqueError::from_display(format!("invalid tls agent: {s}"))),
             }
         }
     }

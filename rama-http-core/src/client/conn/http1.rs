@@ -524,7 +524,7 @@ impl Builder {
 }
 
 mod upgrades {
-    use crate::upgrade::Upgraded;
+    use rama_http::io::upgrade::Upgraded;
 
     use super::*;
 

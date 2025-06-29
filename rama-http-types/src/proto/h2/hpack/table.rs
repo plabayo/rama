@@ -471,11 +471,11 @@ impl Table {
         let mut first_ideal = 0;
 
         for (i, pos) in self.indices.iter().enumerate() {
-            if let Some(pos) = *pos {
-                if 0 == probe_distance(self.mask, pos.hash, i) {
-                    first_ideal = i;
-                    break;
-                }
+            if let Some(pos) = *pos
+                && 0 == probe_distance(self.mask, pos.hash, i)
+            {
+                first_ideal = i;
+                break;
             }
         }
 

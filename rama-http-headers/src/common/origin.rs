@@ -87,7 +87,7 @@ impl Origin {
         impl fmt::Display for MaybePort {
             fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
                 if let Some(port) = self.0 {
-                    write!(f, ":{}", port)
+                    write!(f, ":{port}")
                 } else {
                     Ok(())
                 }
@@ -114,7 +114,7 @@ impl Origin {
 impl fmt::Display for Origin {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self.0 {
-            OriginOrNull::Origin(ref scheme, ref auth) => write!(f, "{}://{}", scheme, auth),
+            OriginOrNull::Origin(ref scheme, ref auth) => write!(f, "{scheme}://{auth}"),
             OriginOrNull::Null => f.write_str("null"),
         }
     }
@@ -171,7 +171,7 @@ impl<'a> From<&'a OriginOrNull> for HeaderValue {
     fn from(origin: &'a OriginOrNull) -> HeaderValue {
         match origin {
             OriginOrNull::Origin(scheme, auth) => {
-                let s = format!("{}://{}", scheme, auth);
+                let s = format!("{scheme}://{auth}");
                 let bytes = Bytes::from(s);
                 HeaderValue::from_maybe_shared(bytes)
                     .expect("Scheme and Authority are valid header values")

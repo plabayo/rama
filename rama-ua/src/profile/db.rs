@@ -406,7 +406,7 @@ mod tests {
 
         for (ua_str, ua_kind) in test_cases {
             let profile = db.get(&UserAgent::new(ua_str)).expect(ua_str);
-            assert_eq!(profile.ua_kind, ua_kind, "ua_str: {}", ua_str);
+            assert_eq!(profile.ua_kind, ua_kind, "ua_str: {ua_str}");
         }
     }
 
@@ -427,8 +427,7 @@ mod tests {
             assert_eq!(
                 profile.platform.map(|p| p.device() == device),
                 Some(true),
-                "ua_str: {}",
-                ua_str
+                "ua_str: {ua_str}",
             );
         }
     }

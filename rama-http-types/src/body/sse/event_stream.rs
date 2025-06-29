@@ -77,10 +77,10 @@ impl<T: EventDataRead> EventBuilder<T> {
                     self.reader.read_line(val.unwrap_or(""))?;
                 }
                 "id" => {
-                    if let Some(val) = val {
-                        if !val.contains('\u{0000}') {
-                            self.event.try_set_id(val).unwrap();
-                        }
+                    if let Some(val) = val
+                        && !val.contains('\u{0000}')
+                    {
+                        self.event.try_set_id(val).unwrap();
                     }
                 }
                 "retry" => {

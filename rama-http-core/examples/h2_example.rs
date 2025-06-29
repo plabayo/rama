@@ -46,7 +46,7 @@ pub async fn main() -> Result<(), BoxError> {
     // Sync DNS resolution.
     let addr = "example.com:443".to_socket_addrs().unwrap().next().unwrap();
 
-    println!("ADDR: {:?}", addr);
+    println!("ADDR: {addr:?}");
 
     let tcp = TcpStream::connect(&addr).await?;
     let dns_name = ServerName::try_from("example.com").unwrap();
@@ -74,11 +74,11 @@ pub async fn main() -> Result<(), BoxError> {
 
     tokio::spawn(async move {
         if let Err(e) = h2.await {
-            println!("GOT ERR={:?}", e);
+            println!("GOT ERR={e:?}");
         }
     });
 
-    println!("waiting on response : {:?}", other);
+    println!("waiting on response : {other:?}");
     let (_, mut body) = response.await?.into_parts();
     println!("processing body");
     while let Some(chunk) = body.data().await {

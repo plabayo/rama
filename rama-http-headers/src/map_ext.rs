@@ -4,7 +4,7 @@ use super::{Error, Header};
 
 /// An extension trait adding "typed" methods to `http::HeaderMap`.
 pub trait HeaderMapExt: self::sealed::Sealed {
-    /// Inserts the typed `Header` into this `HeaderMap`.
+    /// Inserts the typed [`Header`] into this `HeaderMap`.
     fn typed_insert<H>(&mut self, header: H)
     where
         H: Header;

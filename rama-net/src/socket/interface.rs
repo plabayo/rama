@@ -540,10 +540,9 @@ mod tests {
                 assert_eq!(
                     socket_address.ip_addr().to_string(),
                     ip_addr,
-                    "parsing: {}",
-                    s
+                    "parsing: {s}",
                 );
-                assert_eq!(socket_address.port(), port, "parsing: {}", s);
+                assert_eq!(socket_address.port(), port, "parsing: {s}");
             }
             #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
             Interface::Device(name) => panic!("unexpected device name '{name}': parsing '{s}'"),
@@ -563,7 +562,7 @@ mod tests {
                 ("2001:db8:3333:4444:5555:6666:7777:8888", 80),
             ),
         ] {
-            let msg = format!("parsing '{}'", s);
+            let msg = format!("parsing '{s}'");
 
             assert_eq_socket_address(s, s.parse().expect(&msg), expected_ip_addr, expected_port);
             assert_eq_socket_address(
@@ -618,7 +617,7 @@ mod tests {
             "veth_abcd1234",
             "lo",
         ] {
-            let msg = format!("parsing '{}'", s);
+            let msg = format!("parsing '{s}'");
 
             assert_eq_device_name(s, s.parse().expect(&msg));
             assert_eq_device_name(s, s.try_into().expect(&msg));
@@ -662,25 +661,21 @@ mod tests {
             "GigabitEthernet0/1",
             "ge-0/0/0",
         ] {
-            let msg = format!("parsing '{}'", s);
-            assert!(s.parse::<Interface>().is_err(), "{}", msg);
-            assert!(Interface::try_from(s).is_err(), "{}", msg);
-            assert!(Interface::try_from(s.to_owned()).is_err(), "{}", msg);
-            assert!(Interface::try_from(s.as_bytes()).is_err(), "{}", msg);
-            assert!(
-                Interface::try_from(s.as_bytes().to_vec()).is_err(),
-                "{}",
-                msg
-            );
+            let msg = format!("parsing '{s}'");
+            assert!(s.parse::<Interface>().is_err(), "{msg}");
+            assert!(Interface::try_from(s).is_err(), "{msg}");
+            assert!(Interface::try_from(s.to_owned()).is_err(), "{msg}");
+            assert!(Interface::try_from(s.as_bytes()).is_err(), "{msg}");
+            assert!(Interface::try_from(s.as_bytes().to_vec()).is_err(), "{msg}");
         }
     }
 
     #[test]
     fn test_parse_display_address() {
         for (s, expected) in [("[::1]:80", "[::1]:80"), ("127.0.0.1:80", "127.0.0.1:80")] {
-            let msg = format!("parsing '{}'", s);
+            let msg = format!("parsing '{s}'");
             let bind_address: Interface = s.parse().expect(&msg);
-            assert_eq!(bind_address.to_string(), expected, "{}", msg);
+            assert_eq!(bind_address.to_string(), expected, "{msg}");
         }
     }
 
@@ -695,9 +690,9 @@ mod tests {
             "veth_abcd1234",
             "lo",
         ] {
-            let msg = format!("parsing '{}'", s);
+            let msg = format!("parsing '{s}'");
             let bind_address: Interface = s.parse().expect(&msg);
-            assert_eq!(bind_address.to_string(), s, "{}", msg);
+            assert_eq!(bind_address.to_string(), s, "{msg}");
         }
     }
 }

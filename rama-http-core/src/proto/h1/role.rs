@@ -345,7 +345,7 @@ impl Http1Transaction for Server {
                     debug!("response with HTTP2 version coerced to HTTP/1.1");
                     extend(dst, b"HTTP/1.1 ");
                 }
-                other => panic!("unexpected response version: {:?}", other),
+                other => panic!("unexpected response version: {other:?}"),
             }
 
             extend(dst, msg.head.subject.as_str().as_bytes());
@@ -562,9 +562,7 @@ impl Server {
                                     if msg.req_method != &Some(Method::HEAD) || known_len != 0 {
                                         assert!(
                                             len == known_len,
-                                            "payload claims content-length of {}, custom content-length header claims {}",
-                                            known_len,
-                                            len,
+                                            "payload claims content-length of {known_len}, custom content-length header claims {len}",
                                         );
                                     }
                                 }
@@ -716,8 +714,7 @@ impl Server {
             // non-special write Name and Value
             debug_assert!(
                 !is_name_written,
-                "{:?} set is_name_written and didn't continue loop",
-                name,
+                "{name:?} set is_name_written and didn't continue loop",
             );
             header_name_writer.write_header_name_with_colon(dst, &name);
             extend(dst, value.as_bytes());
@@ -988,7 +985,7 @@ impl Http1Transaction for Client {
                 debug!("request with HTTP2 version coerced to HTTP/1.1");
                 extend(dst, b"HTTP/1.1");
             }
-            other => panic!("unexpected request version: {:?}", other),
+            other => panic!("unexpected request version: {other:?}"),
         }
         extend(dst, b"\r\n");
 
@@ -2578,7 +2575,7 @@ mod tests {
     fn test_is_complete_fast() {
         let s = b"GET / HTTP/1.1\r\na: b\r\n\r\n";
         for n in 0..s.len() {
-            assert!(is_complete_fast(s, n), "{:?}; {}", s, n);
+            assert!(is_complete_fast(s, n), "{s:?}; {n}");
         }
         let s = b"GET / HTTP/1.1\na: b\n\n";
         for n in 0..s.len() {

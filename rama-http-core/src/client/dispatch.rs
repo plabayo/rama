@@ -394,7 +394,7 @@ mod tests {
             .expect_err("promise should error");
         match (err.error.is_canceled(), err.message) {
             (true, Some(_)) => (),
-            e => panic!("expected Error::Cancel(_), found {:?}", e),
+            e => panic!("expected Error::Cancel(_), found {e:?}"),
         }
     }
 

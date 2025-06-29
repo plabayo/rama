@@ -119,13 +119,12 @@ async fn send_form_data(Form(payload): Form<Payload>) -> Response {
             r##"<html>
                     <body>
                         <h1>Success</h1>
-                        <p>Thank you for submitting the form {}, {} years old.</p>
+                        <p>Thank you for submitting the form {name}, {age} years old.</p>
                     </body>
-                </html>"##,
-            name, age
+                </html>"##
         ))
         .into_response()
     } else {
-        format!("{} is {} years old.", name, age).into_response()
+        format!("{name} is {age} years old.").into_response()
     }
 }

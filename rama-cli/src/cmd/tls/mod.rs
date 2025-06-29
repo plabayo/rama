@@ -83,7 +83,7 @@ pub async fn run(cfg: CliCommandTls) -> Result<(), BoxError> {
                 }
             }
             DataEncoding::Pem(raw_data) => {
-                println!("PEM certificate: {:?}", raw_data);
+                println!("PEM certificate: {raw_data:?}");
             }
         }
     }
@@ -94,12 +94,12 @@ pub async fn run(cfg: CliCommandTls) -> Result<(), BoxError> {
 fn log_cert(raw_data: &[u8], index: usize) {
     match X509::from_der(raw_data) {
         Ok(cert) => {
-            println!("Certificate #{}:", index);
+            println!("Certificate #{index}:");
             println!("Subject: {:?}", cert.subject_name());
             println!("Issuer: {:?}", cert.issuer_name());
         }
         Err(err) => {
-            eprintln!("Failed to decode certificate #{}: {:?}", index, err);
+            eprintln!("Failed to decode certificate #{index}: {err:?}");
         }
     }
 }

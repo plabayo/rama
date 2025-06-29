@@ -202,20 +202,17 @@ mod tests {
             assert_eq!(
                 super::parse_ua_version_safari(test_case),
                 expected_version,
-                "test_case: '{}'",
-                test_case
+                "test_case: '{test_case}'",
             );
             assert_eq!(
                 super::parse_ua_version_safari(format!("foo {test_case}").as_str()),
                 expected_version,
-                "[prefixed] test_case: '{}'",
-                test_case
+                "[prefixed] test_case: '{test_case}'",
             );
             assert_eq!(
                 super::parse_ua_version_safari(format!("{test_case} bar").as_str()),
                 expected_version,
-                "[postfixed] test_case: '{}'",
-                test_case
+                "[postfixed] test_case: '{test_case}'",
             );
         }
     }
@@ -244,20 +241,17 @@ mod tests {
             assert_eq!(
                 super::parse_ua_version_firefox_and_chromium(test_case),
                 expected_version,
-                "test_case: '{}'",
-                test_case
+                "test_case: '{test_case}'",
             );
             assert_eq!(
                 super::parse_ua_version_firefox_and_chromium(format!("foo {test_case}").as_str()),
                 expected_version,
-                "[prefixed] test_case: '{}'",
-                test_case
+                "[prefixed] test_case: '{test_case}'",
             );
             assert_eq!(
                 super::parse_ua_version_firefox_and_chromium(format!("{test_case} bar").as_str()),
                 expected_version,
-                "[postfixed] test_case: '{}'",
-                test_case
+                "[postfixed] test_case: '{test_case}'",
             );
         }
     }

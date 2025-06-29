@@ -125,8 +125,7 @@ impl DynamicConfigProvider for DynamicConfig {
                 "example" => load_example_certificate().await,
                 "second.example" => load_second_example_certificate().await,
                 name => Err(OpaqueError::from_display(format!(
-                    "server name {} not recognized",
-                    name
+                    "server name {name} not recognized",
                 ))),
             },
             _ => Err(OpaqueError::from_display(

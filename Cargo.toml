@@ -47,6 +47,7 @@ members = [
     "rama-udp",
     "rama-unix",
     "rama-utils",
+    "rama-ws",
 ]
 
 [workspace.package]
@@ -64,7 +65,7 @@ categories = [
     "web-programming::http-server",
 ]
 authors = ["Glen De Cauwsemaecker <glen@plabayo.tech>"]
-rust-version = "1.85.0"
+rust-version = "1.88.0"
 
 [workspace.dependencies]
 arc-swap = "1.7"
@@ -169,6 +170,7 @@ rama-ua = { version = "0.3.0-alpha.1", path = "./rama-ua" }
 rama-udp = { version = "0.3.0-alpha.1", path = "./rama-udp" }
 rama-unix = { version = "0.3.0-alpha.1", path = "./rama-unix" }
 rama-utils = { version = "0.3.0-alpha.1", path = "./rama-utils" }
+rama-ws = { version = "0.3.0-alpha.1", path = "./rama-ws" }
 rand = "0.9"
 rcgen = { version = "0.13", default-features = false, features = ["pem", "aws_lc_rs"] }
 regex = "1.11"
@@ -224,7 +226,6 @@ zstd = "0.13"
 
 [workspace.lints.rust]
 unreachable_pub = "deny"
-elided_lifetimes_in_paths = "allow"
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }
 
 [workspace.lints.clippy]
@@ -240,7 +241,6 @@ needless_borrow = "warn"
 match_wildcard_for_single_variants = "warn"
 if_let_mutex = "warn"
 await_holding_lock = "warn"
-match_on_vec_items = "warn"
 imprecise_flops = "warn"
 suboptimal_flops = "warn"
 lossy_float_literal = "warn"
@@ -255,8 +255,6 @@ verbose_file_reads = "warn"
 unnested_or_patterns = "warn"
 str_to_string = "warn"
 type_complexity = "allow"
-# TODO: remove this once MSRV >= 1.89
-collapsible_if = "allow"
 
 [features]
 default = []
@@ -296,6 +294,7 @@ net = ["dep:rama-net"]
 dns = ["net", "dep:rama-dns", "rama-socks5?/dns"]
 tcp = ["dns", "dep:rama-tcp"]
 udp = ["net", "dep:rama-udp"]
+ws = ["dep:rama-ws", "http"]
 http = [
     "net",
     "dep:rama-http",
@@ -309,10 +308,12 @@ http = [
 http-full = [
     "http",
     "tcp",
+    "ws",
     "dep:rama-http-backend",
     "dep:rama-http-core",
     "ua-embed-profiles",
     "compression",
+
 ]
 proxy = ["dep:rama-proxy"]
 haproxy = ["dep:rama-haproxy"]
@@ -350,6 +351,7 @@ rama-tower = { workspace = true, optional = true }
 rama-ua = { workspace = true, optional = true }
 rama-udp = { workspace = true, optional = true }
 rama-utils = { workspace = true }
+rama-ws = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 serde_html_form = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }

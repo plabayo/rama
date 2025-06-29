@@ -88,8 +88,7 @@ where
     pub(crate) fn set_max_buf_size(&mut self, max: usize) {
         assert!(
             max >= MINIMUM_MAX_BUFFER_SIZE,
-            "The max_buf_size cannot be smaller than {}.",
-            MINIMUM_MAX_BUFFER_SIZE,
+            "The max_buf_size cannot be smaller than {MINIMUM_MAX_BUFFER_SIZE}.",
         );
         self.read_buf_strategy = ReadStrategy::with_max(max);
         self.write_buf.max_buf_size = max;
@@ -799,9 +798,7 @@ mod tests {
                 next = strategy.next();
                 assert!(
                     next.is_power_of_two(),
-                    "decrement should be powers of two: {} (max = {})",
-                    next,
-                    max,
+                    "decrement should be powers of two: {next} (max = {max})",
                 );
             }
         }

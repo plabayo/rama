@@ -813,17 +813,14 @@ mod tests {
             assert_eq!(
                 &buf[..],
                 expected_wire_format.as_bytes(),
-                "proto({}) => expected_wire_format({})",
-                proto,
-                expected_wire_format
+                "proto({proto}) => expected_wire_format({expected_wire_format})",
             );
 
             let mut reader = std::io::Cursor::new(&buf[..]);
             let output_proto = ApplicationProtocol::decode_wire_format(&mut reader).unwrap();
             assert_eq!(
                 output_proto, proto,
-                "expected_wire_format({}) => proto({})",
-                expected_wire_format, proto,
+                "expected_wire_format({expected_wire_format}) => proto({proto})",
             );
         }
     }

@@ -326,7 +326,7 @@ impl State {
                 tracing::trace!("send_close: HalfClosedRemote => Closed");
                 self.inner = Inner::Closed(Cause::EndStream);
             }
-            ref state => panic!("send_close: unexpected state {:?}", state),
+            ref state => panic!("send_close: unexpected state {state:?}"),
         }
     }
 

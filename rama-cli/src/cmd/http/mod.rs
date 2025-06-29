@@ -401,7 +401,7 @@ where
                 "bearer" => Ok(AddAuthorizationLayer::new(
                     Bearer::try_from(auth).context("parse bearer str")?,
                 )),
-                unknown => panic!("unknown auth type: {} (known: basic, bearer)", unknown),
+                unknown => panic!("unknown auth type: {unknown} (known: basic, bearer)"),
             })
             .transpose()?
             .unwrap_or_else(AddAuthorizationLayer::none),

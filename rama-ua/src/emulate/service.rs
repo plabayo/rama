@@ -1448,7 +1448,7 @@ mod tests {
             let expected_str = test_case
                 .expected
                 .iter()
-                .map(|(name, value)| format!("{}: {}\r\n", name, value))
+                .map(|(name, value)| format!("{name}: {value}\r\n"))
                 .join("");
 
             assert_eq!(
@@ -1482,7 +1482,7 @@ mod tests {
                 h2: Arc::new(Http2Profile {
                     headers: HttpHeadersProfile {
                         navigate: Http1HeaderMap::new(
-                            [(ETAG, HeaderValue::from_str("navigate").unwrap())]
+                            [(ETAG, HeaderValue::from_static("navigate"))]
                                 .into_iter()
                                 .collect(),
                             None,
@@ -1543,7 +1543,7 @@ mod tests {
                 h1: Arc::new(Http1Profile {
                     headers: HttpHeadersProfile {
                         navigate: Http1HeaderMap::new(
-                            [(ETAG, HeaderValue::from_str("navigate").unwrap())]
+                            [(ETAG, HeaderValue::from_static("navigate"))]
                                 .into_iter()
                                 .collect(),
                             None,
@@ -1605,20 +1605,20 @@ mod tests {
                 h1: Arc::new(Http1Profile {
                     headers: HttpHeadersProfile {
                         navigate: Http1HeaderMap::new(
-                            [(ETAG, HeaderValue::from_str("navigate").unwrap())]
+                            [(ETAG, HeaderValue::from_static("navigate"))]
                                 .into_iter()
                                 .collect(),
                             None,
                         ),
                         xhr: Some(Http1HeaderMap::new(
-                            [(ETAG, HeaderValue::from_str("xhr").unwrap())]
+                            [(ETAG, HeaderValue::from_static("xhr"))]
                                 .into_iter()
                                 .collect(),
                             None,
                         )),
                         fetch: None,
                         form: Some(Http1HeaderMap::new(
-                            [(ETAG, HeaderValue::from_str("form").unwrap())]
+                            [(ETAG, HeaderValue::from_static("form"))]
                                 .into_iter()
                                 .collect(),
                             None,
@@ -1677,20 +1677,20 @@ mod tests {
                 h1: Arc::new(Http1Profile {
                     headers: HttpHeadersProfile {
                         navigate: Http1HeaderMap::new(
-                            [(ETAG, HeaderValue::from_str("navigate").unwrap())]
+                            [(ETAG, HeaderValue::from_static("navigate"))]
                                 .into_iter()
                                 .collect(),
                             None,
                         ),
                         fetch: Some(Http1HeaderMap::new(
-                            [(ETAG, HeaderValue::from_str("fetch").unwrap())]
+                            [(ETAG, HeaderValue::from_static("fetch"))]
                                 .into_iter()
                                 .collect(),
                             None,
                         )),
                         xhr: None,
                         form: Some(Http1HeaderMap::new(
-                            [(ETAG, HeaderValue::from_str("form").unwrap())]
+                            [(ETAG, HeaderValue::from_static("form"))]
                                 .into_iter()
                                 .collect(),
                             None,
@@ -1753,25 +1753,25 @@ mod tests {
                 h1: Arc::new(Http1Profile {
                     headers: HttpHeadersProfile {
                         navigate: Http1HeaderMap::new(
-                            [(ETAG, HeaderValue::from_str("navigate").unwrap())]
+                            [(ETAG, HeaderValue::from_static("navigate"))]
                                 .into_iter()
                                 .collect(),
                             None,
                         ),
                         fetch: Some(Http1HeaderMap::new(
-                            [(ETAG, HeaderValue::from_str("fetch").unwrap())]
+                            [(ETAG, HeaderValue::from_static("fetch"))]
                                 .into_iter()
                                 .collect(),
                             None,
                         )),
                         xhr: Some(Http1HeaderMap::new(
-                            [(ETAG, HeaderValue::from_str("xhr").unwrap())]
+                            [(ETAG, HeaderValue::from_static("xhr"))]
                                 .into_iter()
                                 .collect(),
                             None,
                         )),
                         form: Some(Http1HeaderMap::new(
-                            [(ETAG, HeaderValue::from_str("form").unwrap())]
+                            [(ETAG, HeaderValue::from_static("form"))]
                                 .into_iter()
                                 .collect(),
                             None,
@@ -2104,8 +2104,7 @@ mod tests {
             assert_eq!(
                 computed_value.to_str().unwrap(),
                 test_case.expected_value,
-                "test_case: {:?}",
-                test_case,
+                "test_case: {test_case:?}",
             );
         }
     }

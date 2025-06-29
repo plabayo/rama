@@ -134,22 +134,19 @@ mod response_body_lengths {
         assert_eq!(
             case.expects_chunked,
             has_header(&body, "transfer-encoding:"),
-            "expects_chunked, headers = {:?}",
-            body
+            "expects_chunked, headers = {body:?}",
         );
 
         assert_eq!(
             case.expects_chunked,
             has_header(&body, "chunked\r\n"),
-            "expects_chunked, headers = {:?}",
-            body
+            "expects_chunked, headers = {body:?}",
         );
 
         assert_eq!(
             case.expects_con_len,
             has_header(&body, "content-length:"),
-            "expects_con_len, headers = {:?}",
-            body
+            "expects_con_len, headers = {body:?}",
         );
 
         let n = body.find("\r\n\r\n").unwrap() + 4;
@@ -524,8 +521,7 @@ fn post_with_chunked_overflow() {
     let err = server.body_err().source().unwrap().to_string();
     assert!(
         err.contains("overflow"),
-        "error should be overflow: {:?}",
-        err
+        "error should be overflow: {err:?}",
     );
 }
 
@@ -727,8 +723,7 @@ fn http_10_keep_alive() {
     let sres = s(&res);
     assert!(
         sres.contains("connection: keep-alive\r\n"),
-        "HTTP/1.0 response should have sent keep-alive: {:?}",
-        sres,
+        "HTTP/1.0 response should have sent keep-alive: {sres:?}",
     );
 
     // try again!
@@ -783,8 +778,7 @@ fn http_10_close_on_no_ka() {
     let sbuf = s(&buf);
     assert!(
         !sbuf.contains("connection: keep-alive\r\n"),
-        "HTTP/1.0 response shouldn't have sent keep-alive: {:?}",
-        sbuf,
+        "HTTP/1.0 response shouldn't have sent keep-alive: {sbuf:?}",
     );
 }
 
@@ -842,8 +836,7 @@ fn header_connection_close() {
     let sbuf = s(&buf);
     assert!(
         sbuf.contains("connection: close\r\n"),
-        "response should have sent close: {:?}",
-        sbuf,
+        "response should have sent close: {sbuf:?}",
     );
 }
 
@@ -1152,7 +1145,7 @@ fn http_11_uri_too_long() {
     let server = serve();
 
     let long_path = "a".repeat(65534);
-    let request_line = format!("GET /{} HTTP/1.1\r\n\r\n", long_path);
+    let request_line = format!("GET /{long_path} HTTP/1.1\r\n\r\n");
 
     let mut req = connect(server.addr());
     req.write_all(request_line.as_bytes()).unwrap();
@@ -1160,7 +1153,7 @@ fn http_11_uri_too_long() {
     let expected = "HTTP/1.1 414 URI Too Long\r\nconnection: close\r\ncontent-length: 0\r\n";
     let mut buf = [0; 256];
     let n = req.read(&mut buf).unwrap();
-    assert!(n >= expected.len(), "read: {:?} >= {:?}", n, expected.len());
+    assert!(n >= expected.len(), "read: {n:?} >= {:?}", expected.len());
     assert_eq!(s(&buf[..expected.len()]), expected);
 }
 
@@ -1181,14 +1174,12 @@ async fn disable_keep_alive_mid_request() {
         req.read_to_end(&mut buf).unwrap();
         assert!(
             buf.starts_with(b"HTTP/1.1 200 OK\r\n"),
-            "should receive OK response, but buf: {:?}",
-            buf,
+            "should receive OK response, but buf: {buf:?}",
         );
         let sbuf = s(&buf);
         assert!(
             sbuf.contains("connection: close\r\n"),
-            "response should have sent close: {:?}",
-            sbuf,
+            "response should have sent close: {sbuf:?}",
         );
     });
 
@@ -1205,8 +1196,8 @@ async fn disable_keep_alive_mid_request() {
                 tx2.send(()).unwrap();
                 conn
             }
-            Err(Either::Left((e, _))) => panic!("unexpected error {}", e),
-            Err(Either::Right((e, _))) => panic!("unexpected error {}", e),
+            Err(Either::Left((e, _))) => panic!("unexpected error {e}"),
+            Err(Either::Right((e, _))) => panic!("unexpected error {e}"),
         })
         .await
         .unwrap();
@@ -1256,8 +1247,8 @@ async fn disable_keep_alive_post_request() {
             Pin::new(&mut conn).graceful_shutdown();
             conn
         }
-        Err(Either::Left((e, _))) => panic!("unexpected error {}", e),
-        Err(Either::Right((e, _))) => panic!("unexpected error {}", e),
+        Err(Either::Left((e, _))) => panic!("unexpected error {e}"),
+        Err(Either::Right((e, _))) => panic!("unexpected error {e}"),
     });
 
     assert!(!dropped.load());
@@ -1296,7 +1287,7 @@ async fn http1_graceful_shutdown_after_upgrade() {
     let svc = RamaHttpService::new(
         rama::Context::default(),
         service_fn(move |req: Request| {
-            let on_upgrade = rama::http::core::upgrade::on(req);
+            let on_upgrade = rama::http::io::upgrade::on(req);
             let _ = upgrades_tx.send(on_upgrade);
             future::ok::<_, Infallible>(
                 Response::builder()
@@ -1819,7 +1810,7 @@ async fn upgrades_new() {
     let svc = RamaHttpService::new(
         rama::Context::default(),
         service_fn(move |req: Request| {
-            let on_upgrade = rama::http::core::upgrade::on(req);
+            let on_upgrade = rama::http::io::upgrade::on(req);
             let _ = upgrades_tx.send(on_upgrade);
             future::ok::<_, Infallible>(
                 Response::builder()
@@ -1879,7 +1870,7 @@ async fn upgrades_ignored() {
     });
 
     let client = TestClient::new();
-    let url = format!("http://{}/", addr);
+    let url = format!("http://{addr}/");
 
     let make_req = || {
         rama::http::Request::builder()
@@ -1929,7 +1920,7 @@ async fn http_connect_new() {
     let svc = RamaHttpService::new(
         rama::Context::default(),
         service_fn(move |req: Request| {
-            let on_upgrade = rama::http::core::upgrade::on(req);
+            let on_upgrade = rama::http::io::upgrade::on(req);
             let _ = upgrades_tx.send(on_upgrade);
             future::ok::<_, Infallible>(
                 Response::builder()
@@ -2001,7 +1992,7 @@ async fn h2_connect() {
     let svc = RamaHttpService::new(
         rama::Context::default(),
         service_fn(move |req: Request| {
-            let on_upgrade = rama::http::core::upgrade::on(req);
+            let on_upgrade = rama::http::io::upgrade::on(req);
 
             tokio::spawn(async move {
                 let mut upgraded = on_upgrade.await.expect("on_upgrade");
@@ -2091,12 +2082,12 @@ async fn h2_connect_multiplex() {
         rama::Context::default(),
         service_fn(move |req: Request| {
             let authority = req.uri().authority().unwrap().to_string();
-            let on_upgrade = rama::http::core::upgrade::on(req);
+            let on_upgrade = rama::http::io::upgrade::on(req);
 
             tokio::spawn(async move {
                 let upgrade_res = on_upgrade.await;
                 if authority == "localhost_0" {
-                    assert!(upgrade_res.expect_err("upgrade cancelled").is_canceled());
+                    upgrade_res.expect_err("upgrade cancelled");
                     return;
                 }
                 let mut upgraded = upgrade_res.expect("upgrade successful");
@@ -2186,7 +2177,7 @@ async fn h2_connect_large_body() {
     let svc = RamaHttpService::new(
         rama::Context::default(),
         service_fn(move |req: Request| {
-            let on_upgrade = rama::http::core::upgrade::on(req);
+            let on_upgrade = rama::http::io::upgrade::on(req);
 
             tokio::spawn(async move {
                 let mut upgraded = on_upgrade.await.expect("on_upgrade");
@@ -2260,7 +2251,7 @@ async fn h2_connect_empty_frames() {
     let svc = RamaHttpService::new(
         rama::Context::default(),
         service_fn(move |req: Request| {
-            let on_upgrade = rama::http::core::upgrade::on(req);
+            let on_upgrade = rama::http::io::upgrade::on(req);
 
             tokio::spawn(async move {
                 let mut upgraded = on_upgrade.await.expect("on_upgrade");
@@ -2968,7 +2959,7 @@ impl Serve {
                 }
                 Ok(Msg::Error(e)) => return Err(e),
                 Ok(Msg::End) => break,
-                Err(e) => panic!("expected body, found: {:?}", e),
+                Err(e) => panic!("expected body, found: {e:?}"),
             }
         }
         Ok(buf)
@@ -3471,7 +3462,7 @@ impl TestClient {
         let host = req.uri().host().expect("uri has no host");
         let port = req.uri().port_u16().expect("uri has no port");
 
-        let stream = TkTcpStream::connect(format!("{}:{}", host, port))
+        let stream = TkTcpStream::connect(format!("{host}:{port}"))
             .await
             .unwrap();
 

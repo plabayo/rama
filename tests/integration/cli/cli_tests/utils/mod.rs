@@ -52,7 +52,7 @@ impl RamaService {
         thread::spawn(move || {
             for line in stdout {
                 let line = line.unwrap();
-                eprintln!("rama ip >> {}", line);
+                eprintln!("rama ip >> {line}");
             }
         });
 
@@ -116,7 +116,7 @@ impl RamaService {
         thread::spawn(move || {
             for line in stdout {
                 let line = line.unwrap();
-                println!("rama echo >> {}", line);
+                println!("rama echo >> {line}");
             }
         });
 
@@ -215,7 +215,7 @@ impl RamaService {
         thread::spawn(move || {
             for line in stdout {
                 let line = line.unwrap();
-                println!("rama serve >> {}", line);
+                println!("rama serve >> {line}");
             }
         });
 

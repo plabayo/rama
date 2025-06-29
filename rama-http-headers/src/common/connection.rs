@@ -49,16 +49,34 @@ impl Connection {
         Connection(HeaderValue::from_static("close").into())
     }
 
+    /// Returns true if this [`Connection`] header contains `close`.
+    #[inline]
+    pub fn contains_close(&self) -> bool {
+        self.contains("close")
+    }
+
     /// A constructor to easily create a `Connection: keep-alive` header.
     #[inline]
     pub fn keep_alive() -> Connection {
         Connection(HeaderValue::from_static("keep-alive").into())
     }
 
+    /// Returns true if this [`Connection`] header contains `keep-alive`.
+    #[inline]
+    pub fn contains_keep_alive(&self) -> bool {
+        self.contains("keep-alive")
+    }
+
     /// A constructor to easily create a `Connection: Upgrade` header.
     #[inline]
     pub fn upgrade() -> Connection {
         Connection(HeaderValue::from_static("upgrade").into())
+    }
+
+    /// Returns true if this [`Connection`] header contains `Upgrade`.
+    #[inline]
+    pub fn contains_upgrade(&self) -> bool {
+        self.contains("upgrade")
     }
 
     /// Check if this header contains a given "connection option".

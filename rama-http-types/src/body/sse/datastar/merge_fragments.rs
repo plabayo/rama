@@ -104,7 +104,7 @@ impl EventDataWrite for MergeFragments {
     #[allow(clippy::write_with_newline)]
     fn write_data(&self, w: &mut impl std::io::Write) -> Result<(), OpaqueError> {
         if let Some(selector) = &self.selector {
-            write!(w, "selector {}\n", selector).context("MergeFragments: write selector")?;
+            write!(w, "selector {selector}\n").context("MergeFragments: write selector")?;
         }
 
         if self.merge_mode != FragmentMergeMode::default() {
@@ -122,11 +122,10 @@ impl EventDataWrite for MergeFragments {
             .next()
             .context("MergeFragments: no fragments specified")?;
         for fragment in fragments {
-            write!(w, "fragments {}\n", next_fragment)
-                .context("MergeFragments: write fragments")?;
+            write!(w, "fragments {next_fragment}\n").context("MergeFragments: write fragments")?;
             next_fragment = fragment;
         }
-        write!(w, "fragments {}", next_fragment).context("MergeFragments: write last fragments")?;
+        write!(w, "fragments {next_fragment}").context("MergeFragments: write last fragments")?;
 
         Ok(())
     }

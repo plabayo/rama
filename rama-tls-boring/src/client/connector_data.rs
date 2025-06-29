@@ -439,7 +439,7 @@ impl TlsConnectorDataBuilder {
         if let Some(keylog_filename) = self.keylog_filepath() {
             let handle = new_key_log_file_handle(keylog_filename)?;
             cfg_builder.set_keylog_callback(move |_, line| {
-                let line = format!("{}\n", line);
+                let line = format!("{line}\n");
                 handle.write_log_line(line);
             });
         }

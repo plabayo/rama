@@ -330,8 +330,8 @@ mod tests {
     use super::*;
 
     fn assert_eq(s: &str, authority: Authority, host: &str, port: u16) {
-        assert_eq!(authority.host(), &host, "parsing: {}", s);
-        assert_eq!(authority.port(), port, "parsing: {}", s);
+        assert_eq!(authority.host(), &host, "parsing: {s}");
+        assert_eq!(authority.port(), port, "parsing: {s}");
     }
 
     #[test]
@@ -345,7 +345,7 @@ mod tests {
                 ("2001:db8:3333:4444:5555:6666:7777:8888", 80),
             ),
         ] {
-            let msg = format!("parsing '{}'", s);
+            let msg = format!("parsing '{s}'");
 
             assert_eq(s, s.parse().expect(&msg), expected_host, expected_port);
             assert_eq(s, s.try_into().expect(&msg), expected_host, expected_port);
@@ -393,16 +393,12 @@ mod tests {
             "[127.0.0.1]:80",
             "2001:db8:3333:4444:5555:6666:7777:8888:80",
         ] {
-            let msg = format!("parsing '{}'", s);
-            assert!(s.parse::<Authority>().is_err(), "{}", msg);
-            assert!(Authority::try_from(s).is_err(), "{}", msg);
-            assert!(Authority::try_from(s.to_owned()).is_err(), "{}", msg);
-            assert!(Authority::try_from(s.as_bytes()).is_err(), "{}", msg);
-            assert!(
-                Authority::try_from(s.as_bytes().to_vec()).is_err(),
-                "{}",
-                msg
-            );
+            let msg = format!("parsing '{s}'");
+            assert!(s.parse::<Authority>().is_err(), "{msg}");
+            assert!(Authority::try_from(s).is_err(), "{msg}");
+            assert!(Authority::try_from(s.to_owned()).is_err(), "{msg}");
+            assert!(Authority::try_from(s.as_bytes()).is_err(), "{msg}");
+            assert!(Authority::try_from(s.as_bytes().to_vec()).is_err(), "{msg}");
         }
     }
 
@@ -413,9 +409,9 @@ mod tests {
             ("[::1]:80", "[::1]:80"),
             ("127.0.0.1:80", "127.0.0.1:80"),
         ] {
-            let msg = format!("parsing '{}'", s);
+            let msg = format!("parsing '{s}'");
             let authority: Authority = s.parse().expect(&msg);
-            assert_eq!(authority.to_string(), expected, "{}", msg);
+            assert_eq!(authority.to_string(), expected, "{msg}");
         }
     }
 }

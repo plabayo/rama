@@ -92,11 +92,13 @@ pub mod util;
 
 mod common;
 mod map_ext;
+mod req_builder_ext;
 
 pub mod specifier;
 
 pub use self::common::*;
 pub use self::map_ext::HeaderMapExt;
+pub use self::req_builder_ext::HttpRequestBuilderExt;
 
 pub mod encoding;
 pub mod forwarded;

@@ -41,7 +41,7 @@ impl Server {
                     let mk_data = mk_data.clone();
                     tokio::spawn(async move {
                         if let Err(e) = handle_request(socket, reqs, mk_data).await {
-                            eprintln!("serve conn error: {:?}", e)
+                            eprintln!("serve conn error: {e:?}")
                         }
                     });
                 }
@@ -97,7 +97,7 @@ fn hammer_client_concurrency() {
     let rsps = Arc::new(AtomicUsize::new(0));
 
     for i in 0..N {
-        print!("sending {}", i);
+        print!("sending {i}");
         let rsps = rsps.clone();
         let tcp = TcpStream::connect(&addr);
         let tcp = tcp
@@ -135,7 +135,7 @@ fn hammer_client_concurrency() {
                         }
                     })
                     .map_err(|e| {
-                        panic!("client error: {:?}", e);
+                        panic!("client error: {e:?}");
                     })
                     .map(move |_| {
                         rsps.fetch_add(1, Ordering::Release);

@@ -7,3 +7,4 @@ pub mod ip;
 pub mod proxy;
 pub mod serve;
 pub mod tls;
+pub mod ws;

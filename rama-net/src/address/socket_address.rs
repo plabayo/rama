@@ -330,13 +330,8 @@ mod tests {
     use super::*;
 
     fn assert_eq(s: &str, sock_address: SocketAddress, ip_addr: &str, port: u16) {
-        assert_eq!(
-            sock_address.ip_addr().to_string(),
-            ip_addr,
-            "parsing: {}",
-            s
-        );
-        assert_eq!(sock_address.port(), port, "parsing: {}", s);
+        assert_eq!(sock_address.ip_addr().to_string(), ip_addr, "parsing: {s}");
+        assert_eq!(sock_address.port(), port, "parsing: {s}");
     }
 
     #[test]
@@ -349,7 +344,7 @@ mod tests {
                 ("2001:db8:3333:4444:5555:6666:7777:8888", 80),
             ),
         ] {
-            let msg = format!("parsing '{}'", s);
+            let msg = format!("parsing '{s}'");
 
             assert_eq(s, s.parse().expect(&msg), expected_ip_addr, expected_port);
             assert_eq(
@@ -403,15 +398,14 @@ mod tests {
             "[127.0.0.1]:80",
             "2001:db8:3333:4444:5555:6666:7777:8888:80",
         ] {
-            let msg = format!("parsing '{}'", s);
-            assert!(s.parse::<SocketAddress>().is_err(), "{}", msg);
-            assert!(SocketAddress::try_from(s).is_err(), "{}", msg);
-            assert!(SocketAddress::try_from(s.to_owned()).is_err(), "{}", msg);
-            assert!(SocketAddress::try_from(s.as_bytes()).is_err(), "{}", msg);
+            let msg = format!("parsing '{s}'");
+            assert!(s.parse::<SocketAddress>().is_err(), "{msg}");
+            assert!(SocketAddress::try_from(s).is_err(), "{msg}");
+            assert!(SocketAddress::try_from(s.to_owned()).is_err(), "{msg}");
+            assert!(SocketAddress::try_from(s.as_bytes()).is_err(), "{msg}");
             assert!(
                 SocketAddress::try_from(s.as_bytes().to_vec()).is_err(),
-                "{}",
-                msg
+                "{msg}",
             );
         }
     }
@@ -419,9 +413,9 @@ mod tests {
     #[test]
     fn test_parse_display() {
         for (s, expected) in [("[::1]:80", "[::1]:80"), ("127.0.0.1:80", "127.0.0.1:80")] {
-            let msg = format!("parsing '{}'", s);
+            let msg = format!("parsing '{s}'");
             let socket_address: SocketAddress = s.parse().expect(&msg);
-            assert_eq!(socket_address.to_string(), expected, "{}", msg);
+            assert_eq!(socket_address.to_string(), expected, "{msg}");
         }
     }
 }

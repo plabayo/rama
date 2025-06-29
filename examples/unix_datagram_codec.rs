@@ -131,7 +131,7 @@ mod unix_example {
             .unwrap()
             .as_nanos();
 
-        format!("/tmp/{}_{}_{}", prefix, pid, nanos)
+        format!("/tmp/{prefix}_{pid}_{nanos}")
     }
 }
 

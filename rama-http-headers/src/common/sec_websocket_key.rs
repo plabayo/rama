@@ -5,6 +5,13 @@ use rama_http_types::HeaderValue;
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct SecWebsocketKey(pub(super) HeaderValue);
 
+impl SecWebsocketKey {
+    pub fn random() -> Self {
+        let r: [u8; 16] = rand::random();
+        r.into()
+    }
+}
+
 derive_header! {
     SecWebsocketKey(_),
     name: SEC_WEBSOCKET_KEY
@@ -12,7 +19,7 @@ derive_header! {
 
 impl From<[u8; 16]> for SecWebsocketKey {
     fn from(bytes: [u8; 16]) -> Self {
-        let mut value = HeaderValue::from_str(&STANDARD.encode(bytes)).unwrap();
+        let mut value = HeaderValue::try_from(STANDARD.encode(bytes)).unwrap();
         value.set_sensitive(true);
         Self(value)
     }

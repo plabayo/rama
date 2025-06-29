@@ -1727,10 +1727,9 @@ impl Peer {
         if let Some(order) = extensions
             .remove::<PseudoHeaderOrder>()
             .or(headers_pseudo_order)
+            && !order.is_empty()
         {
-            if !order.is_empty() {
-                pseudo.order = order;
-            }
+            pseudo.order = order;
         }
 
         let header_order: OriginalHttp1Headers = extensions.remove().unwrap_or_default();

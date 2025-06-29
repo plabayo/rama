@@ -73,10 +73,10 @@ impl EventDataWrite for RemoveSignals {
             .context("paths missing for this RemoveSignals blob")?;
 
         for path in paths {
-            write!(w, "paths {}\n", next_path).context("RemoveSignals: write paths")?;
+            write!(w, "paths {next_path}\n").context("RemoveSignals: write paths")?;
             next_path = path;
         }
-        write!(w, "paths {}", next_path).context("RemoveSignals: write last paths")?;
+        write!(w, "paths {next_path}").context("RemoveSignals: write last paths")?;
 
         Ok(())
     }

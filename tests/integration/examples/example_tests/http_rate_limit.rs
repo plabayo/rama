@@ -57,11 +57,10 @@ async fn assert_endpoint_concurrent_runs(
         }
     }
 
-    assert_eq!(success_count, expected_success, "endpoint: {}", endpoint);
+    assert_eq!(success_count, expected_success, "endpoint: {endpoint}");
     assert_eq!(
         too_many_request_count,
         n - expected_success,
-        "endpoint: {}",
-        endpoint
+        "endpoint: {endpoint}",
     );
 }

@@ -61,12 +61,12 @@ pub async fn main() -> Result<(), BoxError> {
     // Spawn a task to run the conn...
     tokio::spawn(async move {
         if let Err(e) = h2.await {
-            println!("GOT ERR={:?}", e);
+            println!("GOT ERR={e:?}");
         }
     });
 
     let response = response.await?;
-    println!("GOT RESPONSE: {:?}", response);
+    println!("GOT RESPONSE: {response:?}");
 
     // Get the body
     let mut body = response.into_body();
@@ -76,7 +76,7 @@ pub async fn main() -> Result<(), BoxError> {
     }
 
     if let Some(trailers) = body.trailers().await? {
-        println!("GOT TRAILERS: {:?}", trailers);
+        println!("GOT TRAILERS: {trailers:?}");
     }
 
     Ok(())

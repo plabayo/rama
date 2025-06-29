@@ -158,7 +158,7 @@ impl Handle {
             while buf.has_remaining() {
                 let res = Pin::new(self.codec.get_mut())
                     .poll_write(cx, buf.chunk())
-                    .map_err(|e| panic!("write err={:?}", e));
+                    .map_err(|e| panic!("write err={e:?}"));
 
                 let n = ready!(res).unwrap();
                 buf.advance(n);
@@ -197,7 +197,7 @@ impl Handle {
                     settings
                 }
                 frame => {
-                    panic!("unexpected frame; frame={:?}", frame);
+                    panic!("unexpected frame; frame={frame:?}");
                 }
             },
             None => {

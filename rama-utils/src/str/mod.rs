@@ -10,3 +10,5 @@ pub use search::{
     contains_any_ignore_ascii_case, contains_ignore_ascii_case, starts_with_ignore_ascii_case,
     submatch_any_ignore_ascii_case, submatch_ignore_ascii_case,
 };
+
+pub mod utf8;

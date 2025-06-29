@@ -469,7 +469,7 @@ mod tests {
         .iter()
         {
             let uri =
-                rama_http_types::Uri::from_str(format!("{}://example.com", s).as_str()).unwrap();
+                rama_http_types::Uri::from_str(format!("{s}://example.com").as_str()).unwrap();
             assert_eq!(Protocol::from(uri.scheme().unwrap()), *s);
         }
     }
@@ -512,9 +512,9 @@ mod tests {
             match expected {
                 Some(t) => match result {
                     Err(err) => panic!("unexpected err: {err} (case: {s}"),
-                    Ok(p) => assert_eq!(t, p, "case: {}", s),
+                    Ok(p) => assert_eq!(t, p, "case: {s}"),
                 },
-                None => assert!(result.is_err(), "case: {}, result: {:?}", s, result),
+                None => assert!(result.is_err(), "case: {s}, result: {result:?}"),
             }
         }
     }

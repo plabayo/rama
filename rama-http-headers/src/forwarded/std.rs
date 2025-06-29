@@ -86,7 +86,7 @@ impl Header for Forwarded {
     fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
         let s = self.0.to_string();
 
-        let value = HeaderValue::from_str(&s)
+        let value = HeaderValue::try_from(s)
             .expect("Forwarded extension should always result in a valid header value");
 
         values.extend(std::iter::once(value));

@@ -48,7 +48,7 @@ use rama::{
     tls::boring::server::TlsAcceptorLayer,
     utils::backoff::ExponentialBackoff,
 };
-use std::{convert::Infallible, str::FromStr, sync::Arc, time::Duration};
+use std::{convert::Infallible, sync::Arc, time::Duration};
 
 mod data;
 mod endpoints;
@@ -59,6 +59,7 @@ mod storage;
 use state::State;
 
 use self::state::ACMEData;
+use crate::utils::http::HttpVersion;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct StorageAuthorized;
@@ -363,30 +364,6 @@ pub async fn run(cfg: CliCommandFingerprint) -> Result<(), BoxError> {
     Ok(())
 }
 
-#[derive(Debug, Clone, Copy, PartialOrd, Ord, PartialEq, Eq, Hash)]
-enum HttpVersion {
-    Auto,
-    H1,
-    H2,
-}
-
-impl FromStr for HttpVersion {
-    type Err = OpaqueError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(match s.trim().to_lowercase().as_str() {
-            "" | "auto" => Self::Auto,
-            "h1" | "http1" | "http/1" | "http/1.0" | "http/1.1" => Self::H1,
-            "h2" | "http2" | "http/2" | "http/2.0" => Self::H2,
-            version => {
-                return Err(OpaqueError::from_display(format!(
-                    "unsupported http version: {version}"
-                )));
-            }
-        })
-    }
-}
-
 #[derive(Debug, Clone, Default)]
 struct StorageAuthLayer;
 
@@ -441,7 +418,7 @@ where
                 .join("; ");
             if !cookie.is_empty() {
                 req.headers_mut()
-                    .insert(COOKIE, HeaderValue::from_str(&cookie).unwrap());
+                    .insert(COOKIE, HeaderValue::try_from(cookie).unwrap());
             }
         }
 

@@ -127,12 +127,12 @@ pub(super) async fn open_file(
         }
 
         let maybe_range = try_parse_range(range_header.as_deref(), meta.len());
-        if let Some(Ok(ranges)) = maybe_range.as_ref() {
+        if let Some(Ok(ranges)) = maybe_range.as_ref()
+            && ranges.len() == 1
+        {
             // if there is any other amount of ranges than 1 we'll return an
             // unsatisfiable later as there isn't yet support for multipart ranges
-            if ranges.len() == 1 {
-                file.seek(SeekFrom::Start(*ranges[0].start())).await?;
-            }
+            file.seek(SeekFrom::Start(*ranges[0].start())).await?;
         }
 
         Ok(OpenFileOutput::FileOpened(Box::new(FileOpened {
@@ -155,12 +155,12 @@ fn is_invalid_filename_error(err: &io::Error) -> bool {
     // FIXME: Remove when MSRV >= 1.87.
     // `io::ErrorKind::InvalidFilename` is stabilized in v1.87
     #[cfg(windows)]
-    if let Some(raw_err) = err.raw_os_error() {
+    if let Some(raw_err) = err.raw_os_error()
+        && (raw_err == 123 || raw_err == 161 || raw_err == 206)
+    {
         // https://github.com/rust-lang/rust/blob/70e2b4a4d197f154bed0eb3dcb5cac6a948ff3a3/library/std/src/sys/pal/windows/mod.rs
         // Lines 81 and 115
-        if (raw_err == 123) || (raw_err == 161) || (raw_err == 206) {
-            return true;
-        }
+        return true;
     }
 
     false
@@ -357,7 +357,7 @@ async fn maybe_serve_directory(
                 if !part.is_empty() {
                     current_path.push('/');
                     current_path.push_str(part);
-                    nav_parts.push(format!("<a href=\"{0}\">{1}</a>", current_path, part));
+                    nav_parts.push(format!("<a href=\"{current_path}\">{part}</a>"));
                 }
             }
             let breadcrumb = if nav_parts.is_empty() {

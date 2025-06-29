@@ -197,16 +197,12 @@ impl Ja4 {
                 f,
                 "_{}_{}",
                 hash12(cipher_suites),
-                hash12(format!(
-                    "{}{}{}",
-                    extensions, ext_sig_sep, signature_algorithms,
-                )),
+                hash12(format!("{extensions}{ext_sig_sep}{signature_algorithms}",)),
             )
         } else {
             write!(
                 f,
-                "_{}_{}{}{}",
-                cipher_suites, extensions, ext_sig_sep, signature_algorithms,
+                "_{cipher_suites}_{extensions}{ext_sig_sep}{signature_algorithms}",
             )
         }
     }

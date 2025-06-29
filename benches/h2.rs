@@ -24,7 +24,7 @@ async fn server(addr: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
         if let Ok((socket, _peer_addr)) = listener.accept().await {
             tokio::spawn(async move {
                 if let Err(e) = serve(socket).await {
-                    println!("  -> err={:?}", e);
+                    println!("  -> err={e:?}");
                 }
             });
         }
@@ -37,7 +37,7 @@ async fn serve(socket: TcpStream) -> Result<(), Box<dyn Error + Send + Sync>> {
         let (request, respond) = result?;
         tokio::spawn(async move {
             if let Err(e) = handle_request(request, respond).await {
-                println!("error while handling request: {}", e);
+                println!("error while handling request: {e}");
             }
         });
     }
@@ -72,7 +72,7 @@ async fn send_requests(addr: &str) -> Result<(), Box<dyn Error>> {
     // Spawn a task to run the conn...
     tokio::spawn(async move {
         if let Err(e) = h2.await {
-            println!("GOT ERR={:?}", e);
+            println!("GOT ERR={e:?}");
         }
     });
 

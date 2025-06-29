@@ -6,21 +6,21 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 /// Combine a buffer with an IO, rewinding reads to use the buffer.
 #[derive(Debug)]
-pub(crate) struct Rewind<T> {
+pub struct Rewind<T> {
     pre: Option<Bytes>,
     inner: T,
 }
 
 impl<T> Rewind<T> {
     #[cfg(test)]
-    pub(crate) fn new(io: T) -> Self {
+    pub fn new(io: T) -> Self {
         Rewind {
             pre: None,
             inner: io,
         }
     }
 
-    pub(crate) fn new_buffered(io: T, buf: Bytes) -> Self {
+    pub fn new_buffered(io: T, buf: Bytes) -> Self {
         Rewind {
             pre: Some(buf),
             inner: io,
@@ -28,16 +28,16 @@ impl<T> Rewind<T> {
     }
 
     #[cfg(test)]
-    pub(crate) fn rewind(&mut self, bs: Bytes) {
+    pub fn rewind(&mut self, bs: Bytes) {
         debug_assert!(self.pre.is_none());
         self.pre = Some(bs);
     }
 
-    pub(crate) fn into_inner(self) -> (T, Bytes) {
+    pub fn into_inner(self) -> (T, Bytes) {
         (self.inner, self.pre.unwrap_or_default())
     }
 
-    // pub(crate) fn get_mut(&mut self) -> &mut T {
+    // pub fn get_mut(&mut self) -> &mut T {
     //     &mut self.inner
     // }
 }
@@ -108,7 +108,6 @@ mod tests {
     use rama_core::bytes::Bytes;
     use tokio::io::AsyncReadExt;
 
-    #[cfg(not(miri))]
     #[tokio::test]
     async fn partial_rewind() {
         let underlying = [104, 101, 108, 108, 111];
@@ -131,7 +130,6 @@ mod tests {
         assert_eq!(&buf, &underlying);
     }
 
-    #[cfg(not(miri))]
     #[tokio::test]
     async fn full_rewind() {
         let underlying = [104, 101, 108, 108, 111];

@@ -451,7 +451,7 @@ mod tests {
             "rr5---sn-q4fl6n6s.video.com", // multiple dashes
             "127.0.0.1",
         ] {
-            let msg = format!("to parse: {}", str);
+            let msg = format!("to parse: {str}");
             assert_eq!(Domain::try_from(str.to_owned()).expect(msg.as_str()), str);
             assert_eq!(
                 Domain::try_from(str.as_bytes().to_vec()).expect(msg.as_str()),
@@ -508,7 +508,7 @@ mod tests {
         for (a, b) in test_cases.into_iter() {
             let a = Domain::from_static(a);
             let b = Domain::from_static(b);
-            assert!(a.is_parent_of(&b), "({:?}).is_parent_of({})", a, b);
+            assert!(a.is_parent_of(&b), "({a:?}).is_parent_of({b})");
         }
     }
 
@@ -524,7 +524,7 @@ mod tests {
         for (a, b) in test_cases.into_iter() {
             let a = Domain::from_static(a);
             let b = Domain::from_static(b);
-            assert!(!a.is_parent_of(&b), "!({:?}).is_parent_of({})", a, b);
+            assert!(!a.is_parent_of(&b), "!({a:?}).is_parent_of({b})");
         }
     }
 

@@ -211,6 +211,7 @@ where
                     builder.title_case_headers(params.title_header_case);
                 }
                 let (sender, conn) = builder.handshake(io).await?;
+                let conn = conn.with_upgrades();
 
                 let conn_span = tracing::trace_root_span!(
                     "h1::conn::serve",
@@ -248,8 +249,7 @@ where
                 })
             }
             version => Err(OpaqueError::from_display(format!(
-                "unsupported Http version: {:?}",
-                version
+                "unsupported Http version: {version:?}",
             ))
             .into()),
         }

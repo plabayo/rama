@@ -116,11 +116,12 @@ impl PingPong {
                 self.pending_ping = Some(pending);
             }
 
-            if let Some(ref users) = self.user_pings {
-                if ping.payload() == &Ping::USER && users.receive_pong() {
-                    tracing::trace!("recv PING USER ack");
-                    return ReceivedPing::Unknown;
-                }
+            if let Some(ref users) = self.user_pings
+                && ping.payload() == &Ping::USER
+                && users.receive_pong()
+            {
+                tracing::trace!("recv PING USER ack");
+                return ReceivedPing::Unknown;
             }
 
             // else we were acked a ping we didn't send?

@@ -15,7 +15,7 @@ async fn test_tcp_listener_layers() {
         match default_tcp_connect(&ctx, ([127, 0, 0, 1], 62501).into()).await {
             Ok((s, _)) => stream = Some(s),
             Err(e) => {
-                eprintln!("connect_tcp error: {}", e);
+                eprintln!("connect_tcp error: {e}");
                 tokio::time::sleep(std::time::Duration::from_millis(500 + 250 * i)).await;
             }
         }

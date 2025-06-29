@@ -112,12 +112,9 @@ impl RequestArgsBuilder {
             }
             BuilderState::Error { message, ignored } => {
                 Err(OpaqueError::from_display(if ignored.is_empty() {
-                    format!("request arg parser failed: {}", message)
+                    format!("request arg parser failed: {message}")
                 } else {
-                    format!(
-                        "request arg parser failed: {} (ignored: {:?})",
-                        message, ignored
-                    )
+                    format!("request arg parser failed: {message} (ignored: {ignored:?})")
                 }))
             }
             BuilderState::Data {
@@ -172,7 +169,7 @@ impl RequestArgsBuilder {
                         None => {
                             let query = serde_html_form::to_string(&query)
                                 .map_err(OpaqueError::from_std)?;
-                            format!("/?{}", query)
+                            format!("/?{query}")
                                 .parse()
                                 .map_err(OpaqueError::from_std)?
                         }
@@ -366,12 +363,12 @@ fn expand_url(url: String) -> String {
             .map(|c| c.is_ascii_digit())
             .unwrap_or_default()
         {
-            format!("http://localhost{}", url)
+            format!("http://localhost{url}")
         } else {
-            format!("http://localhost{}", stripped_url)
+            format!("http://localhost{stripped_url}")
         }
     } else if !url.contains("://") {
-        format!("http://{}", url)
+        format!("http://{url}")
     } else {
         url.to_string()
     }
