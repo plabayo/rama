@@ -14,6 +14,7 @@ use rama_core::rt::Executor;
 use rama_core::telemetry::tracing::{Instrument, debug, trace, trace_root_span, warn};
 use rama_core::{bytes::Bytes, combinators::Either};
 use rama_core::{error::BoxError, futures::future::FusedFuture};
+use rama_http::io::upgrade::{self, Upgraded};
 use rama_http_types::{
     Method, Request, Response, StatusCode, Version, dep::http_body,
     opentelemetry::version_as_protocol_version, proto::h2::frame::SettingOrder,
@@ -32,7 +33,6 @@ use crate::h2::client::{Builder, Connection, SendRequest};
 use crate::headers;
 use crate::proto::Dispatched;
 use crate::proto::h2::UpgradedSendStream;
-use crate::upgrade::Upgraded;
 
 type ClientRx<B> = crate::client::dispatch::Receiver<Request<B>, Response<IncomingBody>>;
 
@@ -668,7 +668,7 @@ where
                     let (parts, recv_stream) = res.into_parts();
                     let mut res = Response::from_parts(parts, IncomingBody::empty());
 
-                    let (pending, on_upgrade) = crate::upgrade::pending();
+                    let (pending, on_upgrade) = upgrade::pending();
                     let io = H2Upgraded {
                         ping,
                         send_stream: unsafe { UpgradedSendStream::new(send_stream) },

@@ -330,7 +330,7 @@ macro_rules! test {
 
                 let host = format!("{}:{}", host, port);
 
-                req.headers_mut().append("Host", HeaderValue::from_str(&host).unwrap());
+                req.headers_mut().append("Host", HeaderValue::try_from(host).unwrap());
             }
 
             let (mut sender, conn) = builder.handshake(stream).await?;
@@ -1496,8 +1496,8 @@ mod conn {
     use rama::http::core::body::{Body, Frame};
     use rama::http::core::client::conn;
     use rama::http::core::service::RamaHttpService;
-    use rama::http::core::upgrade::OnUpgrade;
     use rama::http::dep::http_body_util::{BodyExt, Empty, StreamBody};
+    use rama::http::io::upgrade::OnUpgrade;
     use rama::http::{Method, Request, Response, StatusCode};
     use rama::rt::Executor;
 
@@ -2312,7 +2312,7 @@ mod conn {
                 rama::Context::default(),
                 service_fn(move |req: Request| {
                     tokio::task::spawn(async move {
-                        let io = &mut rama::http::core::upgrade::on(req).await.unwrap();
+                        let io = &mut rama::http::io::upgrade::on(req).await.unwrap();
                         io.write_all(b"hello\n").await.unwrap();
                     });
 
@@ -2357,7 +2357,7 @@ mod conn {
 
             let resp = client.send_request(req).await.expect("req1 send");
             assert_eq!(resp.status(), 200);
-            let upgrade = rama::http::core::upgrade::on(resp).await.unwrap();
+            let upgrade = rama::http::io::upgrade::on(resp).await.unwrap();
             tokio::task::spawn(async move {
                 let _ = rx.await;
                 drop(upgrade);
@@ -2631,7 +2631,7 @@ mod conn {
         let res = client.send_request(req).await.expect("send_request");
         assert_eq!(res.status(), StatusCode::OK);
 
-        let mut upgraded = rama::http::core::upgrade::on(res).await.unwrap();
+        let mut upgraded = rama::http::io::upgrade::on(res).await.unwrap();
 
         let mut vec = vec![];
         upgraded.read_to_end(&mut vec).await.unwrap();

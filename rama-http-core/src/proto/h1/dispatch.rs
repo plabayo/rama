@@ -7,6 +7,7 @@ use std::{
 use rama_core::bytes::{Buf, Bytes};
 use rama_core::error::BoxError;
 use rama_core::telemetry::tracing::{debug, error, trace};
+use rama_http::io::upgrade::OnUpgrade;
 use rama_http_types::{Request, Response, StatusCode};
 use std::task::ready;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -16,7 +17,6 @@ use crate::body::{Body, DecodedLength, Incoming as IncomingBody};
 use crate::client::dispatch::TrySendError;
 use crate::common::task;
 use crate::proto::{BodyLength, Conn, Dispatched, MessageHead, RequestHead};
-use crate::upgrade::OnUpgrade;
 
 pub(crate) struct Dispatcher<D, Bs: Body, I, T> {
     conn: Conn<I, Bs::Data, T>,

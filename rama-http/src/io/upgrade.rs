@@ -31,16 +31,8 @@
 //! corresponding headers in a response. To then wait for rama_http_core to finish the
 //! upgrade, you call `on()` with the `Request`, and then can spawn a task
 //! awaiting it.
-//!
-//! # Example
-//!
-//! See [this example][example] showing how upgrades work with both
-//! Clients and Servers.
-//!
-//! [example]: https://github.com/hyperium/hyper/blob/master/examples/upgrades.rs
 
 use std::any::TypeId;
-use std::error::Error as StdError;
 use std::fmt;
 use std::io;
 use std::pin::Pin;
@@ -48,11 +40,12 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 
 use rama_core::bytes::Bytes;
+use rama_core::error::OpaqueError;
 use rama_core::telemetry::tracing::trace;
+use rama_net::stream::Stream;
+use rama_net::stream::rewind::Rewind;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::sync::oneshot;
-
-use crate::common::io::Rewind;
 
 /// An upgraded HTTP connection.
 ///
@@ -63,7 +56,7 @@ use crate::common::io::Rewind;
 /// Alternatively, if the exact type is known, this can be deconstructed
 /// into its parts.
 pub struct Upgraded {
-    io: Rewind<Box<dyn Io + Send>>,
+    io: Rewind<Box<dyn Io>>,
 }
 
 /// A future for a possible HTTP upgrade.
@@ -71,7 +64,7 @@ pub struct Upgraded {
 /// If no upgrade was available, or it doesn't succeed, yields an `Error`.
 #[derive(Clone)]
 pub struct OnUpgrade {
-    rx: Option<Arc<Mutex<oneshot::Receiver<crate::Result<Upgraded>>>>>,
+    rx: Option<Arc<Mutex<oneshot::Receiver<Result<Upgraded, OpaqueError>>>>>,
 }
 
 /// The deconstructed parts of an [`Upgraded`] type.
@@ -106,11 +99,13 @@ pub fn on<T: sealed::CanUpgrade>(msg: T) -> OnUpgrade {
     msg.on_upgrade()
 }
 
-pub(super) struct Pending {
-    tx: oneshot::Sender<crate::Result<Upgraded>>,
+/// A pending upgrade, created with [`pending`].
+pub struct Pending {
+    tx: oneshot::Sender<Result<Upgraded, OpaqueError>>,
 }
 
-pub(super) fn pending() -> (Pending, OnUpgrade) {
+/// Initiate an upgrade.
+pub fn pending() -> (Pending, OnUpgrade) {
     let (tx, rx) = oneshot::channel();
     (
         Pending { tx },
@@ -123,9 +118,10 @@ pub(super) fn pending() -> (Pending, OnUpgrade) {
 // ===== impl Upgraded =====
 
 impl Upgraded {
-    pub(super) fn new<T>(io: T, read_buf: Bytes) -> Self
+    /// Create a new [`Upgraded`] from an IO stream and existing buffer.
+    pub fn new<T>(io: T, read_buf: Bytes) -> Self
     where
-        T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+        T: Stream + Unpin,
     {
         Upgraded {
             io: Rewind::new_buffered(Box::new(io), read_buf),
@@ -136,9 +132,9 @@ impl Upgraded {
     ///
     /// On success, returns the downcasted parts. On error, returns the
     /// `Upgraded` back.
-    pub fn downcast<T: AsyncRead + AsyncWrite + Unpin + 'static>(self) -> Result<Parts<T>, Self> {
+    pub fn downcast<T: Stream + Unpin>(self) -> Result<Parts<T>, Self> {
         let (io, buf) = self.io.into_inner();
-        match io.__rama_downcast() {
+        match io.__downcast() {
             Ok(t) => Ok(Parts {
                 io: *t,
                 read_buf: buf,
@@ -149,6 +145,63 @@ impl Upgraded {
         }
     }
 }
+
+trait Io: Stream + Unpin {
+    fn __type_id(&self) -> TypeId {
+        TypeId::of::<Self>()
+    }
+}
+
+impl<T: Stream + Unpin> Io for T {}
+
+impl dyn Io {
+    fn __is<T: Io>(&self) -> bool {
+        let t = TypeId::of::<T>();
+        self.__type_id() == t
+    }
+
+    fn __downcast<T: Io>(self: Box<Self>) -> Result<Box<T>, Box<Self>> {
+        if self.__is::<T>() {
+            // Taken from `std::error::Error::downcast()`.
+            unsafe {
+                let raw: *mut dyn Io = Box::into_raw(self);
+                Ok(Box::from_raw(raw as *mut T))
+            }
+        } else {
+            Err(self)
+        }
+    }
+}
+
+/*
+*
+* pub(super) trait Io: Read + Write + Unpin + 'static {
+    fn __hyper_type_id(&self) -> TypeId {
+        TypeId::of::<Self>()
+    }
+}
+
+impl<T: Read + Write + Unpin + 'static> Io for T {}
+
+impl dyn Io + Send {
+    fn __hyper_is<T: Io>(&self) -> bool {
+        let t = TypeId::of::<T>();
+        self.__hyper_type_id() == t
+    }
+
+    fn __hyper_downcast<T: Io>(self: Box<Self>) -> Result<Box<T>, Box<Self>> {
+        if self.__hyper_is::<T>() {
+            // Taken from `std::error::Error::downcast()`.
+            unsafe {
+                let raw: *mut dyn Io = Box::into_raw(self);
+                Ok(Box::from_raw(raw as *mut T))
+            }
+        } else {
+            Err(self)
+        }
+    }
+}
+*/
 
 impl AsyncRead for Upgraded {
     fn poll_read(
@@ -203,13 +256,14 @@ impl OnUpgrade {
         OnUpgrade { rx: None }
     }
 
-    pub(super) fn is_none(&self) -> bool {
+    /// Returns true if no upgrade is in progress.
+    pub fn is_none(&self) -> bool {
         self.rx.is_none()
     }
 }
 
 impl Future for OnUpgrade {
-    type Output = Result<Upgraded, crate::Error>;
+    type Output = Result<Upgraded, OpaqueError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         match self.rx {
@@ -218,11 +272,13 @@ impl Future for OnUpgrade {
                 .map(|res| match res {
                     Ok(Ok(upgraded)) => Ok(upgraded),
                     Ok(Err(err)) => Err(err),
-                    Err(_oneshot_canceled) => {
-                        Err(crate::Error::new_canceled().with(UpgradeExpected))
-                    }
+                    Err(_oneshot_canceled) => Err(OpaqueError::from_display(
+                        "OnUpgrade: cancelled while expecting upgrade",
+                    )),
                 }),
-            None => Poll::Ready(Err(crate::Error::new_user_no_upgrade())),
+            None => Poll::Ready(Err(OpaqueError::from_display(
+                "OnUpgrade: polled for upgrade while none was expected",
+            ))),
         }
     }
 }
@@ -236,62 +292,19 @@ impl fmt::Debug for OnUpgrade {
 // ===== impl Pending =====
 
 impl Pending {
-    pub(super) fn fulfill(self, upgraded: Upgraded) {
+    /// fulfill the pending upgrade with the given [`Upgraded`] stream.
+    pub fn fulfill(self, upgraded: Upgraded) {
         trace!("pending upgrade fulfill");
         let _ = self.tx.send(Ok(upgraded));
     }
 
     /// Don't fulfill the pending Upgrade, but instead signal that
     /// upgrades are handled manually.
-    pub(super) fn manual(self) {
+    pub fn manual(self) {
         trace!("pending upgrade handled manually");
-        let _ = self.tx.send(Err(crate::Error::new_user_manual_upgrade()));
-    }
-}
-
-// ===== impl UpgradeExpected =====
-
-/// Error cause returned when an upgrade was expected but canceled
-/// for whatever reason.
-///
-/// This likely means the actual `Conn` future wasn't polled and upgraded.
-#[derive(Debug)]
-struct UpgradeExpected;
-
-impl fmt::Display for UpgradeExpected {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("upgrade expected but not completed")
-    }
-}
-
-impl StdError for UpgradeExpected {}
-
-// ===== impl Io =====
-
-pub(super) trait Io: AsyncRead + AsyncWrite + Unpin + 'static {
-    fn __rama_type_id(&self) -> TypeId {
-        TypeId::of::<Self>()
-    }
-}
-
-impl<T: AsyncRead + AsyncWrite + Unpin + 'static> Io for T {}
-
-impl dyn Io + Send {
-    fn __rama_is<T: Io>(&self) -> bool {
-        let t = TypeId::of::<T>();
-        self.__rama_type_id() == t
-    }
-
-    fn __rama_downcast<T: Io>(self: Box<Self>) -> Result<Box<T>, Box<Self>> {
-        if self.__rama_is::<T>() {
-            // Taken from `std::error::Error::downcast()`.
-            unsafe {
-                let raw: *mut dyn Io = Box::into_raw(self);
-                Ok(Box::from_raw(raw as *mut T))
-            }
-        } else {
-            Err(self)
-        }
+        let _ = self.tx.send(Err(OpaqueError::from_display(
+            "OnUpgrade: manual upgrade failed",
+        )));
     }
 }
 

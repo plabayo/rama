@@ -9,6 +9,7 @@ use rama_core::bytes::Bytes;
 use rama_core::error::BoxError;
 use rama_core::rt::Executor;
 use rama_core::telemetry::tracing::{Instrument, debug, trace, trace_root_span, warn};
+use rama_http::io::upgrade::{self, OnUpgrade, Pending, Upgraded};
 use rama_http::opentelemetry::version_as_protocol_version;
 use rama_http_types::proto::h2::ext;
 use rama_http_types::{Method, Request, Response, header};
@@ -23,8 +24,6 @@ use crate::proto::Dispatched;
 use crate::proto::h2::ping::Recorder;
 use crate::proto::h2::{H2Upgraded, UpgradedSendStream};
 use crate::service::HttpService;
-
-use crate::upgrade::{OnUpgrade, Pending, Upgraded};
 
 // Our defaults are chosen for the "majority" case, which usually are not
 // resource constrained, and so the spec default of 64kb can be too limiting
@@ -263,7 +262,7 @@ where
                                 respond.send_reset(crate::h2::Reason::INTERNAL_ERROR);
                                 return Poll::Ready(Ok(()));
                             }
-                            let (pending, upgrade) = crate::upgrade::pending();
+                            let (pending, upgrade) = upgrade::pending();
                             debug_assert!(parts.extensions.get::<OnUpgrade>().is_none());
                             parts.extensions.insert(upgrade);
                             (

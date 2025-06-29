@@ -1287,7 +1287,7 @@ async fn http1_graceful_shutdown_after_upgrade() {
     let svc = RamaHttpService::new(
         rama::Context::default(),
         service_fn(move |req: Request| {
-            let on_upgrade = rama::http::core::upgrade::on(req);
+            let on_upgrade = rama::http::io::upgrade::on(req);
             let _ = upgrades_tx.send(on_upgrade);
             future::ok::<_, Infallible>(
                 Response::builder()
@@ -1810,7 +1810,7 @@ async fn upgrades_new() {
     let svc = RamaHttpService::new(
         rama::Context::default(),
         service_fn(move |req: Request| {
-            let on_upgrade = rama::http::core::upgrade::on(req);
+            let on_upgrade = rama::http::io::upgrade::on(req);
             let _ = upgrades_tx.send(on_upgrade);
             future::ok::<_, Infallible>(
                 Response::builder()
@@ -1920,7 +1920,7 @@ async fn http_connect_new() {
     let svc = RamaHttpService::new(
         rama::Context::default(),
         service_fn(move |req: Request| {
-            let on_upgrade = rama::http::core::upgrade::on(req);
+            let on_upgrade = rama::http::io::upgrade::on(req);
             let _ = upgrades_tx.send(on_upgrade);
             future::ok::<_, Infallible>(
                 Response::builder()
@@ -1992,7 +1992,7 @@ async fn h2_connect() {
     let svc = RamaHttpService::new(
         rama::Context::default(),
         service_fn(move |req: Request| {
-            let on_upgrade = rama::http::core::upgrade::on(req);
+            let on_upgrade = rama::http::io::upgrade::on(req);
 
             tokio::spawn(async move {
                 let mut upgraded = on_upgrade.await.expect("on_upgrade");
@@ -2082,12 +2082,12 @@ async fn h2_connect_multiplex() {
         rama::Context::default(),
         service_fn(move |req: Request| {
             let authority = req.uri().authority().unwrap().to_string();
-            let on_upgrade = rama::http::core::upgrade::on(req);
+            let on_upgrade = rama::http::io::upgrade::on(req);
 
             tokio::spawn(async move {
                 let upgrade_res = on_upgrade.await;
                 if authority == "localhost_0" {
-                    assert!(upgrade_res.expect_err("upgrade cancelled").is_canceled());
+                    upgrade_res.expect_err("upgrade cancelled");
                     return;
                 }
                 let mut upgraded = upgrade_res.expect("upgrade successful");
@@ -2177,7 +2177,7 @@ async fn h2_connect_large_body() {
     let svc = RamaHttpService::new(
         rama::Context::default(),
         service_fn(move |req: Request| {
-            let on_upgrade = rama::http::core::upgrade::on(req);
+            let on_upgrade = rama::http::io::upgrade::on(req);
 
             tokio::spawn(async move {
                 let mut upgraded = on_upgrade.await.expect("on_upgrade");
@@ -2251,7 +2251,7 @@ async fn h2_connect_empty_frames() {
     let svc = RamaHttpService::new(
         rama::Context::default(),
         service_fn(move |req: Request| {
-            let on_upgrade = rama::http::core::upgrade::on(req);
+            let on_upgrade = rama::http::io::upgrade::on(req);
 
             tokio::spawn(async move {
                 let mut upgraded = on_upgrade.await.expect("on_upgrade");

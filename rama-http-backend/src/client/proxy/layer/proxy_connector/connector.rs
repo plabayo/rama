@@ -6,9 +6,9 @@ use super::HttpProxyError;
 use rama_core::error::{ErrorContext, OpaqueError};
 use rama_core::rt::Executor;
 use rama_core::telemetry::tracing;
+use rama_http::io::upgrade;
 use rama_http_core::body::Incoming;
 use rama_http_core::client::conn::{http1, http2};
-use rama_http_core::upgrade;
 use rama_http_headers::{Header, HeaderMapExt};
 use rama_http_types::Response;
 use rama_http_types::{

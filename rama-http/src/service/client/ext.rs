@@ -68,6 +68,13 @@ pub trait HttpClientExt<State>:
     /// This method fails whenever the supplied `Url` cannot be parsed.
     fn head(&self, url: impl IntoUrl) -> RequestBuilder<Self, State, Self::ExecuteResponse>;
 
+    /// Convenience method to make a `CONNECT` request to a URL.
+    ///
+    /// # Errors
+    ///
+    /// This method fails whenever the supplied `Url` cannot be parsed.
+    fn connect(&self, url: impl IntoUrl) -> RequestBuilder<Self, State, Self::ExecuteResponse>;
+
     /// Start building a [`Request`] with the [`Method`] and [`Url`].
     ///
     /// Returns a [`RequestBuilder`], which will allow setting headers and
@@ -127,6 +134,10 @@ where
 
     fn head(&self, url: impl IntoUrl) -> RequestBuilder<Self, State, Self::ExecuteResponse> {
         self.request(Method::HEAD, url)
+    }
+
+    fn connect(&self, url: impl IntoUrl) -> RequestBuilder<Self, State, Self::ExecuteResponse> {
+        self.request(Method::CONNECT, url)
     }
 
     fn request(
@@ -453,6 +464,26 @@ where
     pub fn auth(self, credentials: impl Credentials) -> Self {
         let header = crate::headers::Authorization::new(credentials);
         self.typed_header(header)
+    }
+
+    /// Adds an extension to this builder
+    pub fn extension<T: Clone + Send + Sync + 'static>(mut self, extension: T) -> Self {
+        match self.state {
+            RequestBuilderState::PreBody(builder) => {
+                let builder = builder.extension(extension);
+                self.state = RequestBuilderState::PreBody(builder);
+                self
+            }
+            RequestBuilderState::PostBody(mut request) => {
+                request.extensions_mut().insert(extension);
+                self.state = RequestBuilderState::PostBody(request);
+                self
+            }
+            state @ RequestBuilderState::Error(_) => {
+                self.state = state;
+                self
+            }
+        }
     }
 
     /// Set the [`Request`]'s [`Body`].

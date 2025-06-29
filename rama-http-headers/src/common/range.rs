@@ -65,7 +65,7 @@ impl Range {
             _ => return Err(InvalidRange),
         };
 
-        Ok(Range(HeaderValue::from_str(&v).unwrap()))
+        Ok(Range(HeaderValue::try_from(v).unwrap()))
     }
 
     /// Iterate the range sets as a tuple of bounds, if valid with length.

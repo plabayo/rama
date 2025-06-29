@@ -2480,6 +2480,7 @@ dependencies = [
  "rama-error",
  "rama-http",
  "rama-http-types",
+ "rama-net",
  "rama-utils",
  "rand 0.9.1",
  "serde_json",
@@ -2507,6 +2508,7 @@ dependencies = [
  "rama-macros",
  "rama-net",
  "rama-utils",
+ "rand 0.9.1",
  "serde",
  "sha1",
  "tokio",
@@ -2740,12 +2742,15 @@ dependencies = [
 name = "rama-ws"
 version = "0.3.0-alpha.1"
 dependencies = [
+ "base64",
  "pin-project-lite",
  "rama-core",
  "rama-http",
  "rama-net",
  "rama-utils",
  "rand 0.9.1",
+ "smallvec",
+ "smol_str",
  "tokio",
 ]
 

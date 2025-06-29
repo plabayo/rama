@@ -441,7 +441,7 @@ where
                 .join("; ");
             if !cookie.is_empty() {
                 req.headers_mut()
-                    .insert(COOKIE, HeaderValue::from_str(&cookie).unwrap());
+                    .insert(COOKIE, HeaderValue::try_from(cookie).unwrap());
             }
         }
 

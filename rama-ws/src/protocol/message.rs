@@ -335,10 +335,13 @@ impl From<Message> for Bytes {
 
 impl fmt::Display for Message {
     fn fmt(&self, f: &mut fmt::Formatter) -> StdResult<(), fmt::Error> {
-        if let Ok(string) = self.to_text() {
-            write!(f, "{string}")
-        } else {
-            write!(f, "Binary Data<length={}>", self.len())
+        match self {
+            Message::Text(utf8_bytes) => write!(f, "Message::Text({utf8_bytes})"),
+            Message::Binary(bytes) => write!(f, "Message::Binary({bytes:x})"),
+            Message::Ping(bytes) => write!(f, "Message::Ping({bytes:x})"),
+            Message::Pong(bytes) => write!(f, "Message::Pong({bytes:x})"),
+            Message::Close(_) => write!(f, "Message::Close<length={}>", self.len()),
+            Message::Frame(_) => write!(f, "Message::Frame<length={}>", self.len()),
         }
     }
 }
@@ -350,10 +353,10 @@ mod tests {
     #[test]
     fn display() {
         let t = Message::text("test".to_owned());
-        assert_eq!(t.to_string(), "test".to_owned());
+        assert_eq!(t.to_string(), "Message::Text(test)".to_owned());
 
         let bin = Message::binary(vec![0, 1, 3, 4, 241]);
-        assert_eq!(bin.to_string(), "Binary Data<length=5>".to_owned());
+        assert_eq!(bin.to_string(), "Message::Binary(00010304f1)".to_owned());
     }
 
     #[test]

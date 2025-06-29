@@ -7,7 +7,7 @@ use rama_core::{
     error::{BoxError, ErrorExt, OpaqueError},
     telemetry::tracing,
 };
-use rama_http_core::upgrade;
+use rama_http::io::upgrade;
 use rama_http_headers::ProxyAuthorization;
 use rama_http_types::Version;
 use rama_net::{

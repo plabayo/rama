@@ -4,7 +4,7 @@ use rama_core::{
     error::OpaqueError,
     telemetry::tracing::{debug, trace},
 };
-use std::{io, mem};
+use std::{fmt, io, mem};
 use tokio::io::{AsyncRead, AsyncWriteExt};
 
 pub mod frame;
@@ -165,12 +165,20 @@ impl WebSocketConfig {
 /// It may be created by calling `connect`, `accept` or `client` functions.
 ///
 /// Use [`WebSocket::read`], [`WebSocket::send`] to received and send messages.
-#[derive(Debug)]
 pub struct WebSocket<Stream> {
     /// The underlying socket.
     socket: Stream,
     /// The context for managing a WebSocket.
     context: WebSocketContext,
+}
+
+impl<Stream: fmt::Debug> fmt::Debug for WebSocket<Stream> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("WebSocket")
+            .field("socket", &self.socket)
+            .field("context", &self.context)
+            .finish()
+    }
 }
 
 impl<Stream> WebSocket<Stream> {
