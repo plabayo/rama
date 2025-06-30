@@ -4,8 +4,11 @@ use rama_core::{
     error::OpaqueError,
     telemetry::tracing::{debug, trace},
 };
-use std::{fmt, io, mem};
-use tokio::io::{AsyncRead, AsyncWriteExt};
+use std::{
+    fmt,
+    io::{self, Read, Write},
+    mem,
+};
 
 pub mod frame;
 
@@ -247,7 +250,7 @@ impl<Stream> WebSocket<Stream> {
     }
 }
 
-impl<Stream: rama_net::stream::Stream + Unpin> WebSocket<Stream> {
+impl<Stream: Read + Write> WebSocket<Stream> {
     /// Read a message from stream, if possible.
     ///
     /// This will also queue responses to ping and close messages. These responses
@@ -261,15 +264,15 @@ impl<Stream: rama_net::stream::Stream + Unpin> WebSocket<Stream> {
     /// You should continue calling [`read`](Self::read), [`write`](Self::write) or
     /// [`flush`](Self::flush) to drive the reply to the close frame until [`Error::ConnectionClosed`]
     /// is returned. Once that happens it is safe to drop the underlying connection.
-    pub async fn read(&mut self) -> Result<Message, ProtocolError> {
-        self.context.read(&mut self.socket).await
+    pub fn read(&mut self) -> Result<Message, ProtocolError> {
+        self.context.read(&mut self.socket)
     }
 
     /// Writes and immediately flushes a message.
     /// Equivalent to calling [`write`](Self::write) then [`flush`](Self::flush).
-    pub async fn send(&mut self, message: Message) -> Result<(), ProtocolError> {
-        self.write(message).await?;
-        self.flush().await
+    pub fn send(&mut self, message: Message) -> Result<(), ProtocolError> {
+        self.write(message)?;
+        self.flush()
     }
 
     /// Write a message to the provided stream, if possible.
@@ -306,16 +309,16 @@ impl<Stream: rama_net::stream::Stream + Unpin> WebSocket<Stream> {
     /// - [`Error::Io`] is returned if the underlying connection returns an error
     ///   (consider these fatal except for WouldBlock).
     /// - [`Error::Capacity`] if your message size is bigger than the configured max message size.
-    pub async fn write(&mut self, message: Message) -> Result<(), ProtocolError> {
-        self.context.write(&mut self.socket, message).await
+    pub fn write(&mut self, message: Message) -> Result<(), ProtocolError> {
+        self.context.write(&mut self.socket, message)
     }
 
     /// Flush writes.
     ///
     /// Ensures all messages previously passed to [`write`](Self::write) and automatic
     /// queued pong responses are written & flushed into the underlying stream.
-    pub async fn flush(&mut self) -> Result<(), ProtocolError> {
-        self.context.flush(&mut self.socket).await
+    pub fn flush(&mut self) -> Result<(), ProtocolError> {
+        self.context.flush(&mut self.socket)
     }
 
     /// Close the connection.
@@ -339,8 +342,8 @@ impl<Stream: rama_net::stream::Stream + Unpin> WebSocket<Stream> {
     ///
     /// It is thus safe to drop the underlying connection as soon as [Error::ConnectionClosed]
     /// is returned from [`read`](Self::read) or [`flush`](Self::flush).
-    pub async fn close(&mut self, code: Option<CloseFrame>) -> Result<(), ProtocolError> {
-        self.context.close(&mut self.socket, code).await
+    pub fn close(&mut self, code: Option<CloseFrame>) -> Result<(), ProtocolError> {
+        self.context.close(&mut self.socket, code)
     }
 }
 
@@ -439,9 +442,9 @@ impl WebSocketContext {
     ///
     /// This function sends pong and close responses automatically.
     /// However, it never blocks on write.
-    pub async fn read<Stream>(&mut self, stream: &mut Stream) -> Result<Message, ProtocolError>
+    pub fn read<Stream>(&mut self, stream: &mut Stream) -> Result<Message, ProtocolError>
     where
-        Stream: rama_net::stream::Stream + Unpin,
+        Stream: Read + Write,
     {
         // Do not read from already closed connections.
         self.state.check_not_terminated()?;
@@ -449,7 +452,7 @@ impl WebSocketContext {
         loop {
             if self.additional_send.is_some() || self.unflushed_additional {
                 // Since we may get ping or close, we need to reply to the messages even during read.
-                match self.flush(stream).await {
+                match self.flush(stream) {
                     Ok(_) => {}
                     Err(ProtocolError::Io(err)) if err.kind() == io::ErrorKind::WouldBlock => {
                         // If blocked continue reading, but try again later
@@ -467,7 +470,7 @@ impl WebSocketContext {
 
             // If we get here, either write blocks or we have nothing to write.
             // Thus if read blocks, just let it return WouldBlock.
-            if let Some(message) = self.read_message_frame(stream).await? {
+            if let Some(message) = self.read_message_frame(stream)? {
                 trace!("Received message {message}");
                 return Ok(message);
             }
@@ -484,13 +487,13 @@ impl WebSocketContext {
     ///
     /// If the write buffer would exceed the configured [`WebSocketConfig::max_write_buffer_size`]
     /// [`Err(WriteBufferFull(msg_frame))`](Error::WriteBufferFull) is returned.
-    pub async fn write<Stream>(
+    pub fn write<Stream>(
         &mut self,
         stream: &mut Stream,
         message: Message,
     ) -> Result<(), ProtocolError>
     where
-        Stream: rama_net::stream::Stream + Unpin,
+        Stream: Read + Write,
     {
         // When terminated, return AlreadyClosed.
         self.state.check_not_terminated()?;
@@ -507,15 +510,15 @@ impl WebSocketContext {
             Message::Pong(data) => {
                 self.set_additional(Frame::pong(data));
                 // Note: user pongs can be user flushed so no need to flush here
-                return self._write(stream, None).await.map(|_| ());
+                return self._write(stream, None).map(|_| ());
             }
-            Message::Close(code) => return self.close(stream, code).await,
+            Message::Close(code) => return self.close(stream, code),
             Message::Frame(f) => f,
         };
 
-        let should_flush = self._write(stream, Some(frame)).await?;
+        let should_flush = self._write(stream, Some(frame))?;
         if should_flush {
-            self.flush(stream).await?;
+            self.flush(stream)?;
         }
         Ok(())
     }
@@ -525,13 +528,13 @@ impl WebSocketContext {
     /// Ensures all messages previously passed to [`write`](Self::write) and automatically
     /// queued pong responses are written & flushed into the `stream`.
     #[inline]
-    pub async fn flush<Stream>(&mut self, stream: &mut Stream) -> Result<(), ProtocolError>
+    pub fn flush<Stream>(&mut self, stream: &mut Stream) -> Result<(), ProtocolError>
     where
-        Stream: rama_net::stream::Stream + Unpin,
+        Stream: Read + Write,
     {
-        self._write(stream, None).await?;
-        self.frame.write_out_buffer(stream).await?;
-        stream.flush().await?;
+        self._write(stream, None)?;
+        self.frame.write_out_buffer(stream)?;
+        stream.flush()?;
         self.unflushed_additional = false;
         Ok(())
     }
@@ -541,16 +544,16 @@ impl WebSocketContext {
     /// Does **not** flush.
     ///
     /// Returns true if the write contents indicate we should flush immediately.
-    async fn _write<Stream>(
+    fn _write<Stream>(
         &mut self,
         stream: &mut Stream,
         data: Option<Frame>,
     ) -> Result<bool, ProtocolError>
     where
-        Stream: rama_net::stream::Stream + Unpin,
+        Stream: Read + Write,
     {
         if let Some(data) = data {
-            self.buffer_frame(stream, data).await?;
+            self.buffer_frame(stream, data)?;
         }
 
         // Upon receipt of a Ping frame, an endpoint MUST send a Pong frame in
@@ -558,7 +561,7 @@ impl WebSocketContext {
         // respond with Pong frame as soon as is practical. (RFC 6455)
         let should_flush = if let Some(msg) = self.additional_send.take() {
             trace!("Sending pong/close");
-            match self.buffer_frame(stream, msg).await {
+            match self.buffer_frame(stream, msg) {
                 Err(ProtocolError::WriteBufferFull(Message::Frame(msg))) => {
                     // if an system message would exceed the buffer put it back in
                     // `additional_send` for retry. Otherwise returning this error
@@ -581,7 +584,7 @@ impl WebSocketContext {
             // maximum segment lifetimes (2MSL), while there is no corresponding
             // server impact as a TIME_WAIT connection is immediately reopened upon
             // a new SYN with a higher seq number). (RFC 6455)
-            self.frame.write_out_buffer(stream).await?;
+            self.frame.write_out_buffer(stream)?;
             self.state = WebSocketState::Terminated;
             Err(ProtocolError::Io(io::Error::new(
                 io::ErrorKind::ConnectionAborted,
@@ -597,37 +600,33 @@ impl WebSocketContext {
     /// This function guarantees that the close frame will be queued.
     /// There is no need to call it again. Calling this function is
     /// the same as calling `send(Message::Close(..))`.
-    pub async fn close<Stream>(
+    pub fn close<Stream>(
         &mut self,
         stream: &mut Stream,
         code: Option<CloseFrame>,
     ) -> Result<(), ProtocolError>
     where
-        Stream: rama_net::stream::Stream + Unpin,
+        Stream: Read + Write,
     {
         if let WebSocketState::Active = self.state {
             self.state = WebSocketState::ClosedByUs;
             let frame = Frame::close(code);
-            self._write(stream, Some(frame)).await?;
+            self._write(stream, Some(frame))?;
         }
-        self.flush(stream).await
+        self.flush(stream)
     }
 
     /// Try to decode one message frame. May return None.
-    async fn read_message_frame(
+    fn read_message_frame(
         &mut self,
-        stream: &mut (impl AsyncRead + Send + Unpin + 'static),
+        stream: &mut (impl Read + Write),
     ) -> Result<Option<Message>, ProtocolError> {
-        if let Some(frame) = self
-            .frame
-            .read_frame(
-                stream,
-                self.config.max_frame_size,
-                matches!(self.role, Role::Server),
-                self.config.accept_unmasked_frames,
-            )
-            .await?
-        {
+        if let Some(frame) = self.frame.read_frame(
+            stream,
+            self.config.max_frame_size,
+            matches!(self.role, Role::Server),
+            self.config.accept_unmasked_frames,
+        )? {
             if !self.state.can_read() {
                 return Err(ProtocolError::ReceivedAfterClosing);
             }
@@ -766,13 +765,13 @@ impl WebSocketContext {
     }
 
     /// Write a single frame into the write-buffer.
-    async fn buffer_frame<Stream>(
+    fn buffer_frame<Stream>(
         &mut self,
         stream: &mut Stream,
         mut frame: Frame,
     ) -> Result<(), ProtocolError>
     where
-        Stream: rama_net::stream::Stream + Unpin,
+        Stream: Read + Write,
     {
         match self.role {
             Role::Server => {}
@@ -784,7 +783,7 @@ impl WebSocketContext {
         }
 
         trace!("Sending frame: {frame:?}");
-        self.frame.buffer_frame(stream, frame).await
+        self.frame.buffer_frame(stream, frame)
     }
 
     /// Replace `additional_send` if it is currently a `Pong` message.
@@ -850,13 +849,9 @@ impl WebSocketState {
 
 #[cfg(test)]
 mod tests {
-    use tokio::io::{AsyncRead, AsyncWrite};
-
-    use crate::protocol::error::ProtocolError;
-
     use super::{Message, Role, WebSocket, WebSocketConfig};
-
-    use std::{io, io::Cursor};
+    use crate::protocol::error::ProtocolError;
+    use std::io::{self, Cursor, Read, Write};
 
     pin_project_lite::pin_project! {
         struct WriteMoc<Stream> {
@@ -879,71 +874,48 @@ mod tests {
         }
     }
 
-    impl<Stream: AsyncRead> AsyncRead for WriteMoc<Stream> {
-        fn poll_read(
-            self: std::pin::Pin<&mut Self>,
-            cx: &mut std::task::Context<'_>,
-            buf: &mut tokio::io::ReadBuf<'_>,
-        ) -> std::task::Poll<io::Result<()>> {
-            let this = self.project();
-            this.stream.poll_read(cx, buf)
+    impl<Stream: Read> Read for WriteMoc<Stream> {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            self.stream.read(buf)
         }
     }
 
-    impl<Stream> AsyncWrite for WriteMoc<Stream> {
-        fn poll_write(
-            self: std::pin::Pin<&mut Self>,
-            _cx: &mut std::task::Context<'_>,
-            buf: &[u8],
-        ) -> std::task::Poll<Result<usize, io::Error>> {
-            let this = self.project();
-            *this.written_bytes += buf.len();
-            *this.write_count += 1;
-            std::task::Poll::Ready(Ok(buf.len()))
+    impl<Stream> Write for WriteMoc<Stream> {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            let n = buf.len();
+            self.written_bytes += n;
+            self.write_count += 1;
+            Ok(n)
         }
 
-        fn poll_flush(
-            self: std::pin::Pin<&mut Self>,
-            _cx: &mut std::task::Context<'_>,
-        ) -> std::task::Poll<Result<(), io::Error>> {
-            let this = self.project();
-            *this.flush_count += 1;
-            std::task::Poll::Ready(Ok(()))
-        }
-
-        fn poll_shutdown(
-            self: std::pin::Pin<&mut Self>,
-            _cx: &mut std::task::Context<'_>,
-        ) -> std::task::Poll<Result<(), io::Error>> {
-            std::task::Poll::Ready(Ok(()))
+        fn flush(&mut self) -> io::Result<()> {
+            self.flush_count += 1;
+            Ok(())
         }
     }
 
-    #[tokio::test]
-    async fn receive_messages() {
+    #[test]
+    fn receive_messages() {
         let incoming = Cursor::new(vec![
             0x89, 0x02, 0x01, 0x02, 0x8a, 0x01, 0x03, 0x01, 0x07, 0x48, 0x65, 0x6c, 0x6c, 0x6f,
             0x2c, 0x20, 0x80, 0x06, 0x57, 0x6f, 0x72, 0x6c, 0x64, 0x21, 0x82, 0x03, 0x01, 0x02,
             0x03,
         ]);
         let mut socket = WebSocket::from_raw_socket(WriteMoc::new(incoming), Role::Client, None);
+        assert_eq!(socket.read().unwrap(), Message::Ping(vec![1, 2].into()));
+        assert_eq!(socket.read().unwrap(), Message::Pong(vec![3].into()));
         assert_eq!(
-            socket.read().await.unwrap(),
-            Message::Ping(vec![1, 2].into())
-        );
-        assert_eq!(socket.read().await.unwrap(), Message::Pong(vec![3].into()));
-        assert_eq!(
-            socket.read().await.unwrap(),
+            socket.read().unwrap(),
             Message::Text("Hello, World!".into())
         );
         assert_eq!(
-            socket.read().await.unwrap(),
+            socket.read().unwrap(),
             Message::Binary(vec![0x01, 0x02, 0x03].into())
         );
     }
 
-    #[tokio::test]
-    async fn size_limiting_text_fragmented() {
+    #[test]
+    fn size_limiting_text_fragmented() {
         let incoming = Cursor::new(vec![
             0x01, 0x07, 0x48, 0x65, 0x6c, 0x6c, 0x6f, 0x2c, 0x20, 0x80, 0x06, 0x57, 0x6f, 0x72,
             0x6c, 0x64, 0x21,
@@ -956,7 +928,7 @@ mod tests {
             WebSocket::from_raw_socket(WriteMoc::new(incoming), Role::Client, Some(limit));
 
         assert!(matches!(
-            socket.read().await,
+            socket.read(),
             Err(ProtocolError::MessageTooLong {
                 size: 13,
                 max_size: 10
@@ -964,8 +936,8 @@ mod tests {
         ));
     }
 
-    #[tokio::test]
-    async fn size_limiting_binary() {
+    #[test]
+    fn size_limiting_binary() {
         let incoming = Cursor::new(vec![0x82, 0x03, 0x01, 0x02, 0x03]);
         let limit = WebSocketConfig {
             max_message_size: Some(2),
@@ -975,7 +947,7 @@ mod tests {
             WebSocket::from_raw_socket(WriteMoc::new(incoming), Role::Client, Some(limit));
 
         assert!(matches!(
-            socket.read().await,
+            socket.read(),
             Err(ProtocolError::MessageTooLong {
                 size: 3,
                 max_size: 2
@@ -983,8 +955,8 @@ mod tests {
         ));
     }
 
-    #[tokio::test]
-    async fn server_write_flush_behaviour() {
+    #[test]
+    fn server_write_flush_behaviour() {
         const SEND_ME_LEN: usize = 10;
         const BATCH_ME_LEN: usize = 11;
         const WRITE_BUFFER_SIZE: usize = 600;
@@ -1000,14 +972,14 @@ mod tests {
         assert_eq!(ws.get_ref().flush_count, 0);
 
         // `send` writes & flushes immediately
-        ws.send(Message::Text("Send me!".into())).await.unwrap();
+        ws.send(Message::Text("Send me!".into())).unwrap();
         assert_eq!(ws.get_ref().written_bytes, SEND_ME_LEN);
         assert_eq!(ws.get_ref().write_count, 1);
         assert_eq!(ws.get_ref().flush_count, 1);
 
         // send a batch of messages
         for msg in (0..100).map(|_| Message::Text("Batch me!".into())) {
-            ws.write(msg).await.unwrap();
+            ws.write(msg).unwrap();
         }
         // after 55 writes the out_buffer will exceed write_buffer_size=600
         // and so do a single underlying write (not flushing).
@@ -1016,7 +988,7 @@ mod tests {
         assert_eq!(ws.get_ref().flush_count, 1);
 
         // flushing will perform a single write for the remaining out_buffer & flush.
-        ws.flush().await.unwrap();
+        ws.flush().unwrap();
         assert_eq!(ws.get_ref().written_bytes, 100 * BATCH_ME_LEN + SEND_ME_LEN);
         assert_eq!(ws.get_ref().write_count, 3);
         assert_eq!(ws.get_ref().flush_count, 2);

@@ -21,5 +21,6 @@
 
 pub mod handshake;
 pub mod protocol;
+pub mod runtime;
 
 pub use crate::protocol::{Message, ProtocolError, WebSocket, frame::Utf8Bytes};

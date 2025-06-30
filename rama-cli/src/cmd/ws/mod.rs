@@ -173,11 +173,11 @@ async fn run_inner(guard: ShutdownGuard, cfg: CliCommandWs) -> Result<(), BoxErr
         loop {
             tokio::select! {
                 Some(line) = rx.recv() => {
-                    if let Err(err) = socket.send(line.into()).await {
+                    if let Err(err) = socket.send_message(line.into()).await {
                         return Err(err.context("send error"));
                     }
                 }
-                msg = socket.read() => {
+                msg = socket.recv_message() => {
                     match msg {
                         Ok(msg) => println!("<<< {msg}"),
                         Err(err) => {

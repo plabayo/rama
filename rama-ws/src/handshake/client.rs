@@ -16,9 +16,9 @@ use rama_http::{
 use smallvec::SmallVec;
 use smol_str::SmolStr;
 
-use crate::WebSocket;
 use crate::handshake::{AcceptedSubProtocol, SubProtocols};
 use crate::protocol::{Role, WebSocketConfig};
+use crate::runtime::AsyncWebSocket;
 
 /// Builder that can be used by clients to initiate the WebSocket handshake.
 pub struct WebsocketRequestBuilder<B> {
@@ -502,7 +502,7 @@ where
             .context("upgrade http connection into a raw web socket")
             .map_err(HandshakeError::HttpUpgradeError)?;
 
-        let socket = WebSocket::from_raw_socket(stream, Role::Client, self.inner.config);
+        let socket = AsyncWebSocket::from_raw_socket(stream, Role::Client, self.inner.config).await;
 
         Ok(ClientWebSocket {
             socket,
@@ -570,12 +570,12 @@ impl<B> WebsocketRequestBuilder<B> {
 ///
 /// Utility type created via [`WebsocketRequestBuilder::handshake`].
 pub struct ClientWebSocket {
-    socket: WebSocket<upgrade::Upgraded>,
+    socket: AsyncWebSocket<upgrade::Upgraded>,
     accepted_protocol: Option<AcceptedSubProtocol>,
 }
 
 impl Deref for ClientWebSocket {
-    type Target = WebSocket<upgrade::Upgraded>;
+    type Target = AsyncWebSocket<upgrade::Upgraded>;
 
     fn deref(&self) -> &Self::Target {
         &self.socket

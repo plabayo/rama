@@ -4,7 +4,6 @@ use std::{
     convert::{From, Into},
     fmt,
 };
-
 /// WebSocket message opcode as in RFC 6455.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum OpCode {

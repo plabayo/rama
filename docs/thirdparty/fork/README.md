@@ -84,3 +84,9 @@ as a distant relative.
     - Original: <https://github.com/snapview/tungstenite-rs/blob/3ffeb33e29824deae10d86f7edff2ed4de22e91b/LICENSE-MIT>
     - Type: MIT
     - Copy: [./licenses/tungstenite-rs](./licenses/tungstenite-rs)
+- <https://github.com/snapview/tokio-tungstenite/tree/25b544e43fe979bca951f085ee1b66e9c1cc3113>
+  - minor improvements, and adapted+scoped for rama use
+  - License:
+    - Original: <https://github.com/snapview/tokio-tungstenite/blob/25b544e43fe979bca951f085ee1b66e9c1cc3113/LICENSE>
+    - Type: MIT
+    - Copy: [./licenses/tokio-tungstenite](./licenses/tokio-tungstenite)

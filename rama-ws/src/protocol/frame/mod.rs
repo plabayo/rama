@@ -5,8 +5,7 @@ use rama_core::{
     bytes::{self, BytesMut},
     telemetry::tracing::trace,
 };
-use std::io::{self, Cursor, Error as IoError, ErrorKind as IoErrorKind};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use std::io::{self, Cursor, Error as IoError, ErrorKind as IoErrorKind, Read, Write};
 
 pub mod coding;
 
@@ -66,25 +65,24 @@ impl<Stream> FrameSocket<Stream> {
 
 impl<Stream> FrameSocket<Stream>
 where
-    Stream: AsyncRead + Unpin,
+    Stream: Read,
 {
     /// Read a frame from stream.
-    pub async fn read(&mut self, max_size: Option<usize>) -> Result<Option<Frame>, ProtocolError> {
+    pub fn read(&mut self, max_size: Option<usize>) -> Result<Option<Frame>, ProtocolError> {
         self.codec
             .read_frame(&mut self.stream, max_size, false, true)
-            .await
     }
 }
 
 impl<Stream> FrameSocket<Stream>
 where
-    Stream: AsyncWrite + Unpin,
+    Stream: Write,
 {
     /// Writes and immediately flushes a frame.
     /// Equivalent to calling [`write`](Self::write) then [`flush`](Self::flush).
-    pub async fn send(&mut self, frame: Frame) -> Result<(), ProtocolError> {
-        self.write(frame).await?;
-        self.flush().await
+    pub fn send(&mut self, frame: Frame) -> Result<(), ProtocolError> {
+        self.write(frame)?;
+        self.flush()
     }
 
     /// Write a frame to stream.
@@ -94,14 +92,14 @@ where
     /// This function guarantees that the frame is queued unless [`Error::WriteBufferFull`]
     /// is returned.
     /// In order to handle WouldBlock or Incomplete, call [`flush`](Self::flush) afterwards.
-    pub async fn write(&mut self, frame: Frame) -> Result<(), ProtocolError> {
-        self.codec.buffer_frame(&mut self.stream, frame).await
+    pub fn write(&mut self, frame: Frame) -> Result<(), ProtocolError> {
+        self.codec.buffer_frame(&mut self.stream, frame)
     }
 
     /// Flush writes.
-    pub async fn flush(&mut self) -> Result<(), ProtocolError> {
-        self.codec.write_out_buffer(&mut self.stream).await?;
-        Ok(self.stream.flush().await?)
+    pub fn flush(&mut self) -> Result<(), ProtocolError> {
+        self.codec.write_out_buffer(&mut self.stream)?;
+        Ok(self.stream.flush()?)
     }
 }
 
@@ -164,9 +162,9 @@ impl FrameCodec {
     }
 
     /// Read a frame from the provided stream.
-    pub(super) async fn read_frame(
+    pub(super) fn read_frame(
         &mut self,
-        stream: &mut (impl AsyncRead + Unpin),
+        stream: &mut impl Read,
         max_size: Option<usize>,
         unmask: bool,
         accept_unmasked: bool,
@@ -207,7 +205,7 @@ impl FrameCodec {
             }
 
             // Not enough data in buffer.
-            if self.read_in(stream).await? == 0 {
+            if self.read_in(stream)? == 0 {
                 trace!("no frame received");
                 return Ok(None);
             }
@@ -236,12 +234,12 @@ impl FrameCodec {
     }
 
     /// Read into available `in_buffer` capacity.
-    async fn read_in(&mut self, stream: &mut (impl AsyncRead + Unpin)) -> io::Result<usize> {
+    fn read_in(&mut self, stream: &mut impl Read) -> io::Result<usize> {
         let len = self.in_buffer.len();
         debug_assert!(self.in_buffer.capacity() > len);
         self.in_buffer
             .resize(self.in_buffer.capacity().min(len + self.in_buf_max_read), 0);
-        let size = stream.read(&mut self.in_buffer[len..]).await;
+        let size = stream.read(&mut self.in_buffer[len..]);
         self.in_buffer
             .truncate(len + size.as_ref().copied().unwrap_or(0));
         size
@@ -254,13 +252,13 @@ impl FrameCodec {
     /// To ensure buffered frames are written call [`Self::write_out_buffer`].
     ///
     /// May write to the stream, will **not** flush.
-    pub(super) async fn buffer_frame<Stream>(
+    pub(super) fn buffer_frame<Stream>(
         &mut self,
         stream: &mut Stream,
         frame: Frame,
     ) -> Result<(), ProtocolError>
     where
-        Stream: AsyncWrite + Unpin,
+        Stream: Write,
     {
         if frame.len() + self.out_buffer.len() > self.max_out_buffer_len {
             return Err(ProtocolError::WriteBufferFull(Message::Frame(frame)));
@@ -274,7 +272,7 @@ impl FrameCodec {
             .expect("Bug: can't write to vector");
 
         if self.out_buffer.len() > self.out_buffer_write_len {
-            self.write_out_buffer(stream).await
+            self.write_out_buffer(stream)
         } else {
             Ok(())
         }
@@ -283,15 +281,15 @@ impl FrameCodec {
     /// Writes the out_buffer to the provided stream.
     ///
     /// Does **not** flush.
-    pub(super) async fn write_out_buffer<Stream>(
+    pub(super) fn write_out_buffer<Stream>(
         &mut self,
         stream: &mut Stream,
     ) -> Result<(), ProtocolError>
     where
-        Stream: AsyncWrite + Unpin,
+        Stream: Write,
     {
         while !self.out_buffer.is_empty() {
-            let len = stream.write(&self.out_buffer).await?;
+            let len = stream.write(&self.out_buffer)?;
             if len == 0 {
                 // This is the same as "Connection reset by peer"
                 return Err(IoError::new(
@@ -315,8 +313,8 @@ mod tests {
 
     use std::io::Cursor;
 
-    #[tokio::test]
-    async fn read_frames() {
+    #[test]
+    fn read_frames() {
         let raw = Cursor::new(vec![
             0x82, 0x07, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x82, 0x03, 0x03, 0x02, 0x01,
             0x99,
@@ -324,58 +322,58 @@ mod tests {
         let mut sock = FrameSocket::new(raw);
 
         assert_eq!(
-            sock.read(None).await.unwrap().unwrap().into_payload(),
+            sock.read(None).unwrap().unwrap().into_payload(),
             &[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07][..]
         );
         assert_eq!(
-            sock.read(None).await.unwrap().unwrap().into_payload(),
+            sock.read(None).unwrap().unwrap().into_payload(),
             &[0x03, 0x02, 0x01][..]
         );
-        assert!(sock.read(None).await.unwrap().is_none());
+        assert!(sock.read(None).unwrap().is_none());
 
         let (_, rest) = sock.into_inner();
         assert_eq!(rest, vec![0x99]);
     }
 
-    #[tokio::test]
-    async fn from_partially_read() {
+    #[test]
+    fn from_partially_read() {
         let raw = Cursor::new(vec![0x02, 0x03, 0x04, 0x05, 0x06, 0x07]);
         let mut sock = FrameSocket::from_partially_read(raw, vec![0x82, 0x07, 0x01]);
         assert_eq!(
-            sock.read(None).await.unwrap().unwrap().into_payload(),
+            sock.read(None).unwrap().unwrap().into_payload(),
             &[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07][..]
         );
     }
 
-    #[tokio::test]
-    async fn write_frames() {
+    #[test]
+    fn write_frames() {
         let mut sock = FrameSocket::new(Vec::new());
 
         let frame = Frame::ping(vec![0x04, 0x05]);
-        sock.send(frame).await.unwrap();
+        sock.send(frame).unwrap();
 
         let frame = Frame::pong(vec![0x01]);
-        sock.send(frame).await.unwrap();
+        sock.send(frame).unwrap();
 
         let (buf, _) = sock.into_inner();
         assert_eq!(buf, vec![0x89, 0x02, 0x04, 0x05, 0x8a, 0x01, 0x01]);
     }
 
-    #[tokio::test]
-    async fn parse_overflow() {
+    #[test]
+    fn parse_overflow() {
         let raw = Cursor::new(vec![
             0x83, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00,
         ]);
         let mut sock = FrameSocket::new(raw);
-        let _ = sock.read(None).await; // should not crash
+        let _ = sock.read(None); // should not crash
     }
 
-    #[tokio::test]
-    async fn size_limit_hit() {
+    #[test]
+    fn size_limit_hit() {
         let raw = Cursor::new(vec![0x82, 0x07, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07]);
         let mut sock = FrameSocket::new(raw);
         assert!(matches!(
-            sock.read(Some(5)).await,
+            sock.read(Some(5)),
             Err(ProtocolError::MessageTooLong {
                 size: 7,
                 max_size: 5
