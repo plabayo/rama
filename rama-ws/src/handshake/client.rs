@@ -566,6 +566,7 @@ impl<B> WebsocketRequestBuilder<B> {
     }
 }
 
+#[derive(Debug)]
 /// Client [`WebSocket`], used as input-output stream.
 ///
 /// Utility type created via [`WebsocketRequestBuilder::handshake`].

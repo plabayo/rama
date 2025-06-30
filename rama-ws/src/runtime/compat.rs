@@ -108,7 +108,7 @@ where
     where
         F: FnOnce(&mut Context<'_>, Pin<&mut S>) -> Poll<std::io::Result<R>>,
     {
-        trace!("{}:{} AllowStd.with_context", file!(), line!());
+        trace!("AllowStd.with_context");
         let waker = match kind {
             ContextWaker::Read => task::waker_ref(&self.read_waker_proxy),
             ContextWaker::Write => task::waker_ref(&self.write_waker_proxy),
@@ -131,14 +131,10 @@ where
     S: AsyncRead + Unpin,
 {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        trace!("{}:{} Read.read", file!(), line!());
+        trace!("Read.read");
         let mut buf = ReadBuf::new(buf);
         match self.with_context(ContextWaker::Read, |ctx, stream| {
-            trace!(
-                "{}:{} Read.with_context read -> poll_read",
-                file!(),
-                line!()
-            );
+            trace!("Read.with_context read -> poll_read");
             stream.poll_read(ctx, &mut buf)
         }) {
             Poll::Ready(Ok(_)) => Ok(buf.filled().len()),
@@ -153,13 +149,9 @@ where
     S: AsyncWrite + Unpin,
 {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        trace!("{}:{} Write.write", file!(), line!());
+        trace!("Write.write");
         match self.with_context(ContextWaker::Write, |ctx, stream| {
-            trace!(
-                "{}:{} Write.with_context write -> poll_write",
-                file!(),
-                line!()
-            );
+            trace!("Write.with_context write -> poll_write",);
             stream.poll_write(ctx, buf)
         }) {
             Poll::Ready(r) => r,
@@ -168,13 +160,9 @@ where
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
-        trace!("{}:{} Write.flush", file!(), line!());
+        trace!("Write.flush");
         match self.with_context(ContextWaker::Write, |ctx, stream| {
-            trace!(
-                "{}:{} Write.with_context flush -> poll_flush",
-                file!(),
-                line!()
-            );
+            trace!("Write.with_context flush -> poll_flush",);
             stream.poll_flush(ctx)
         }) {
             Poll::Ready(r) => r,
