@@ -8,7 +8,6 @@ use rama_core::telemetry::tracing;
 use rama_core::{Context, Service};
 use rama_http::dep::http::{self, request};
 use rama_http::headers::{HeaderMapExt, HttpRequestBuilderExt as _, SecWebsocketKey};
-use rama_http::io::upgrade;
 use rama_http::proto::h2::ext::Protocol;
 use rama_http::service::client::ext::{IntoHeaderName, IntoHeaderValue};
 use rama_http::service::client::{HttpClientExt, IntoUrl, RequestBuilder};
@@ -571,12 +570,12 @@ impl<B> WebsocketRequestBuilder<B> {
 ///
 /// Utility type created via [`WebsocketRequestBuilder::handshake`].
 pub struct ClientWebSocket {
-    socket: AsyncWebSocket<upgrade::Upgraded>,
+    socket: AsyncWebSocket,
     accepted_protocol: Option<AcceptedSubProtocol>,
 }
 
 impl Deref for ClientWebSocket {
-    type Target = AsyncWebSocket<upgrade::Upgraded>;
+    type Target = AsyncWebSocket;
 
     fn deref(&self) -> &Self::Target {
         &self.socket

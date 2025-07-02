@@ -44,6 +44,11 @@ impl SubProtocols {
         Self(smallvec![protocol.into()])
     }
 
+    /// Return the first protocol in this [`SubProtocols`] as the [`AcceptedSubProtocol`].
+    pub fn accept_first_protocol(&self) -> AcceptedSubProtocol {
+        AcceptedSubProtocol(self.0.first().unwrap().clone())
+    }
+
     /// returns true if the given sub protocol is found in this [`SubProtocols`]
     pub fn contains(&self, sub_protocol: impl AsRef<str>) -> Option<AcceptedSubProtocol> {
         let sub_protocol = sub_protocol.as_ref().trim();
@@ -79,6 +84,13 @@ impl SubProtocols {
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Utility type containing the accepted Web Socket sub protocol.
 pub struct AcceptedSubProtocol(SmolStr);
+
+impl AcceptedSubProtocol {
+    /// Create a new [`AcceptedSubProtocol`]
+    pub fn new(s: impl Into<SmolStr>) -> Self {
+        AcceptedSubProtocol(s.into())
+    }
+}
 
 impl fmt::Display for AcceptedSubProtocol {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

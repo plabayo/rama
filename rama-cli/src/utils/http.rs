@@ -1,4 +1,4 @@
-use rama::error::OpaqueError;
+use rama::{error::OpaqueError, http};
 use std::str::FromStr;
 
 #[derive(Debug, Clone, Copy, PartialOrd, Ord, PartialEq, Eq, Hash)]
@@ -6,6 +6,16 @@ pub enum HttpVersion {
     Auto,
     H1,
     H2,
+}
+
+impl From<HttpVersion> for Option<http::Version> {
+    fn from(value: HttpVersion) -> Self {
+        match value {
+            HttpVersion::Auto => None,
+            HttpVersion::H1 => Some(http::Version::HTTP_11),
+            HttpVersion::H2 => Some(http::Version::HTTP_2),
+        }
+    }
 }
 
 impl FromStr for HttpVersion {

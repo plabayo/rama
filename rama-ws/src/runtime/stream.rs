@@ -9,6 +9,7 @@ use rama_core::{
     futures::{self, SinkExt, StreamExt},
     telemetry::tracing::{debug, trace},
 };
+use rama_http::io::upgrade;
 use rama_net::stream::Stream;
 
 use crate::{
@@ -28,7 +29,7 @@ use crate::{
 /// and sending data. Message from a `AsyncWebSocket<S>` are accessible
 /// through the respective `Stream` and `Sink`.
 #[derive(Debug)]
-pub struct AsyncWebSocket<S> {
+pub struct AsyncWebSocket<S = upgrade::Upgraded> {
     inner: WebSocket<AllowStd<S>>,
     closing: bool,
     ended: bool,
