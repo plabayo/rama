@@ -1,3 +1,5 @@
+//! WebSocket client types and utilities
+
 use std::fmt;
 use std::ops::{Deref, DerefMut};
 
@@ -467,8 +469,6 @@ where
     /// Establish a client [`WebSocket`], consuming this [`WebsocketRequestBuilder`],
     /// by doing the http-handshake, including validation and returning the socket if all is good.
     pub async fn handshake(self, ctx: Context<State>) -> Result<ClientWebSocket, HandshakeError> {
-        // TODO: replace with HandshakeError
-
         let builder = match self.sub_protocols.as_ref() {
             Some(protocols) => {
                 let s = protocols.to_string();

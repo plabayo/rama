@@ -1,5 +1,6 @@
-use std::{io, time::Duration};
+use std::{fmt, io, path::PathBuf, time::Duration};
 
+use chrono::{DateTime, Local};
 use rama::{
     error::{ErrorContext, ErrorExt, OpaqueError},
     futures::{FutureExt, StreamExt},
@@ -12,20 +13,36 @@ use ratatui::{
     prelude::*,
     widgets::{Block, HighlightSpacing, List, ListItem, ListState, Paragraph},
 };
-use tui_logger::{TuiLoggerLevelOutput, TuiLoggerWidget};
+use tui_logger::{TuiLoggerLevelOutput, TuiLoggerSmartWidget, TuiWidgetState};
 
-#[derive(Debug)]
 pub(super) struct App {
     title: String,
+    log_file_path: PathBuf,
+
     screen: Screen,
-    fatal_error: Option<OpaqueError>,
 
     input_buffer: String,
     history: ChatHistory,
 
+    tui_logger_state: TuiWidgetState,
+
     socket: ClientWebSocket,
 
     terminal: Terminal<CrosstermBackend<io::Stdout>>,
+}
+
+impl fmt::Debug for App {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("App")
+            .field("title", &self.title)
+            .field("screen", &self.screen)
+            .field("input_buffer", &self.input_buffer)
+            .field("history", &self.history)
+            .field("tui_logger_state", &())
+            .field("socket", &self.socket)
+            .field("terminal", &self.terminal)
+            .finish()
+    }
 }
 
 #[derive(Debug, Default)]
@@ -38,21 +55,28 @@ struct ChatHistory {
 struct ChatMessage {
     role: Role,
     message: Utf8Bytes,
+    ts: DateTime<Local>,
 }
 
-impl ChatMessage {
-    fn new_client(message: Utf8Bytes) -> Self {
-        Self {
+impl ChatHistory {
+    fn push_client_message(&mut self, message: Utf8Bytes) {
+        let msg = ChatMessage {
             role: Role::Client,
             message,
-        }
+            ts: Local::now(),
+        };
+        self.items.push(msg);
+        self.state.select_last();
     }
 
-    fn new_server(message: Utf8Bytes) -> Self {
-        Self {
+    fn push_server_message(&mut self, message: Utf8Bytes) {
+        let msg = ChatMessage {
             role: Role::Server,
             message,
-        }
+            ts: Local::now(),
+        };
+        self.items.push(msg);
+        self.state.select_last();
     }
 }
 
@@ -70,7 +94,7 @@ enum ChatMode {
 
 impl App {
     pub(super) async fn new(cfg: super::CliCommandWs) -> Result<Self, OpaqueError> {
-        let log_file_path = super::log::init_logger(cfg.clone()).context("init tui logger")?;
+        let log_file_path = super::log::init_logger().context("init tui logger")?;
 
         let socket = super::client::connect(cfg.clone())
             .await
@@ -83,10 +107,11 @@ impl App {
                 cfg.uri,
                 log_file_path.to_string_lossy()
             ),
+            log_file_path,
             screen: Screen::Chat(ChatMode::Insert),
-            fatal_error: None,
             input_buffer: Default::default(),
             history: ChatHistory::default(),
+            tui_logger_state: TuiWidgetState::new(),
             socket,
             terminal,
         })
@@ -124,11 +149,7 @@ impl App {
                         "  chat | type input | 'esc' exit insert mode  "
                     }
                     Screen::Chat(ChatMode::View) => {
-                        if self.fatal_error.is_some() {
-                            "  chat | 'q' quit | 't' logs view  "
-                        } else {
-                            "  chat | 'q' quit | 'i' insert | 't' logs view  "
-                        }
+                        "  chat | 'q' quit | 'i' insert | 't' logs view  "
                     }
                     Screen::Logs => "  logs | q' quit | 'esc' chat view  ",
                 });
@@ -147,17 +168,14 @@ impl App {
 
                     main_block.render(title, frame.buffer_mut());
 
-                    Paragraph::new(match self.fatal_error.as_ref() {
-                        Some(err) => format!(" Fatal Error (please exit): {err} "),
-                        None => format!(
-                            " > {}{}",
-                            self.input_buffer,
-                            match mode {
-                                ChatMode::Insert => "_ ",
-                                ChatMode::View => " ",
-                            }
-                        ),
-                    })
+                    Paragraph::new(format!(
+                        " > {}{}",
+                        self.input_buffer,
+                        match mode {
+                            ChatMode::Insert => "_ ",
+                            ChatMode::View => " ",
+                        }
+                    ))
                     .block(Block::bordered())
                     .render(input, frame.buffer_mut());
 
@@ -171,16 +189,27 @@ impl App {
                     );
                 }
                 Screen::Logs => {
-                    let logs = TuiLoggerWidget::default()
-                        .block(main_block)
+                    let [title, logger] = Layout::vertical([
+                        Constraint::Length(3), // title
+                        Constraint::Fill(1),   // logger
+                    ])
+                    .areas(frame.area());
+
+                    let logs = TuiLoggerSmartWidget::default()
+                        .state(&self.tui_logger_state)
                         .style_error(Style::default().fg(Color::Red))
                         .style_debug(Style::default().fg(Color::Green))
                         .style_warn(Style::default().fg(Color::Yellow))
-                        .style_trace(Style::default().fg(Color::Magenta))
+                        .style_trace(Style::default().fg(Color::Gray))
                         .style_info(Style::default().fg(Color::Cyan))
                         .output_level(Some(TuiLoggerLevelOutput::Abbreviated));
 
-                    frame.render_widget(logs, frame.area());
+                    let instructions = Paragraph::new(
+                        "  'h' visible | 'f' focus | '↔' level select | '↕' target select | '+/-' capture level | 'j/k' scroll | 's' scroll mode | 't' target toggle  "
+                    ).block(main_block);
+                    instructions.render(title, frame.buffer_mut());
+
+                    logs.render(logger, frame.buffer_mut());
                 }
             })
             .context("draw tui screen")?;
@@ -191,8 +220,7 @@ impl App {
         while let Some(result) = self.socket.next().now_or_never().unwrap_or_default() {
             match result {
                 Ok(Message::Text(text)) => {
-                    self.history.items.push(ChatMessage::new_server(text));
-                    self.history.state.select_last();
+                    self.history.push_server_message(text);
                 }
                 Ok(message) => {
                     tracing::info!("received non-text message: {message}");
@@ -210,38 +238,28 @@ impl App {
                 }
 
                 match self.screen {
-                    Screen::Chat(ChatMode::Insert) => {
-                        if self.fatal_error.is_some() {
+                    Screen::Chat(ChatMode::Insert) => match key.code {
+                        KeyCode::Esc => {
                             self.screen = Screen::Chat(ChatMode::View);
-                            return Ok(false);
                         }
-
-                        match key.code {
-                            KeyCode::Esc => {
-                                self.screen = Screen::Chat(ChatMode::View);
-                            }
-                            KeyCode::Enter if !self.input_buffer.is_empty() => {
-                                let message = std::mem::take(&mut self.input_buffer);
-                                self.socket
-                                    .send_message(message.clone().into())
-                                    .await
-                                    .context("send WS message")?;
-                                self.history
-                                    .items
-                                    .push(ChatMessage::new_client(Utf8Bytes::from(message)));
-                                self.history.state.select_last();
-                            }
-                            KeyCode::Backspace => {
-                                if let Some(char) = self.input_buffer.pop() {
-                                    tracing::debug!("popped character from input buffer: {char}");
-                                }
-                            }
-                            KeyCode::Char(char) if char.is_ascii() => {
-                                self.input_buffer.push(char);
-                            }
-                            _ => (),
+                        KeyCode::Enter if !self.input_buffer.is_empty() => {
+                            let message = std::mem::take(&mut self.input_buffer);
+                            self.socket
+                                .send_message(message.clone().into())
+                                .await
+                                .context("send WS message")?;
+                            self.history.push_client_message(Utf8Bytes::from(message));
                         }
-                    }
+                        KeyCode::Backspace => {
+                            if let Some(char) = self.input_buffer.pop() {
+                                tracing::debug!("popped character from input buffer: {char}");
+                            }
+                        }
+                        KeyCode::Char(char) if char.is_ascii() => {
+                            self.input_buffer.push(char);
+                        }
+                        _ => (),
+                    },
                     Screen::Chat(ChatMode::View) => match key.code {
                         KeyCode::Char('q') => return Ok(true),
                         KeyCode::Char('i') => {
@@ -257,6 +275,54 @@ impl App {
                         KeyCode::Esc => {
                             self.screen = Screen::Chat(ChatMode::View);
                         }
+                        KeyCode::Char('h') => {
+                            self.tui_logger_state
+                                .transition(tui_logger::TuiWidgetEvent::HideKey);
+                        }
+                        KeyCode::Char('f') => {
+                            self.tui_logger_state
+                                .transition(tui_logger::TuiWidgetEvent::FocusKey);
+                        }
+                        KeyCode::Up => {
+                            self.tui_logger_state
+                                .transition(tui_logger::TuiWidgetEvent::UpKey);
+                        }
+                        KeyCode::Down => {
+                            self.tui_logger_state
+                                .transition(tui_logger::TuiWidgetEvent::DownKey);
+                        }
+                        KeyCode::Left => {
+                            self.tui_logger_state
+                                .transition(tui_logger::TuiWidgetEvent::LeftKey);
+                        }
+                        KeyCode::Right => {
+                            self.tui_logger_state
+                                .transition(tui_logger::TuiWidgetEvent::RightKey);
+                        }
+                        KeyCode::Char('-') => {
+                            self.tui_logger_state
+                                .transition(tui_logger::TuiWidgetEvent::MinusKey);
+                        }
+                        KeyCode::Char('+') => {
+                            self.tui_logger_state
+                                .transition(tui_logger::TuiWidgetEvent::PlusKey);
+                        }
+                        KeyCode::Char('k') => {
+                            self.tui_logger_state
+                                .transition(tui_logger::TuiWidgetEvent::PrevPageKey);
+                        }
+                        KeyCode::Char('j') => {
+                            self.tui_logger_state
+                                .transition(tui_logger::TuiWidgetEvent::NextPageKey);
+                        }
+                        KeyCode::Char('s') => {
+                            self.tui_logger_state
+                                .transition(tui_logger::TuiWidgetEvent::EscapeKey);
+                        }
+                        KeyCode::Char('t') => {
+                            self.tui_logger_state
+                                .transition(tui_logger::TuiWidgetEvent::SpaceKey);
+                        }
                         _ => (),
                     },
                 }
@@ -269,13 +335,18 @@ impl App {
 impl Drop for App {
     fn drop(&mut self) {
         ratatui::restore();
+        eprintln!(
+            "Bye! Logfile available at {}",
+            self.log_file_path.to_string_lossy()
+        )
     }
 }
 
 impl From<&ChatMessage> for ListItem<'_> {
     fn from(value: &ChatMessage) -> Self {
         let line = Line::from(format!(
-            " {} {} ",
+            "[{}] {} {} ",
+            value.ts.time(),
             match value.role {
                 Role::Server => "<<",
                 Role::Client => ">>",

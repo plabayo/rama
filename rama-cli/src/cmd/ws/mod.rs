@@ -24,10 +24,6 @@ pub struct CliCommandWs {
     /// follow Location redirects
     follow: bool,
 
-    #[arg(short = 'v', long)]
-    /// print verbose output, alias for --all --print hHbB
-    verbose: bool,
-
     #[arg(long, default_value_t = 30)]
     /// the maximum number of redirects to follow
     max_redirects: usize,
