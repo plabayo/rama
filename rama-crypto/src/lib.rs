@@ -2,7 +2,7 @@
 //!
 //! This includes but is not limited to:
 //! - Certificates
-//! - Javascript object signing and encryption (JOSE): JWS, JWK, JWT, JWE...
+//! - Javascript object signing and encryption (JOSE): JWS, JWK, JWE...
 //! - Public and private keys
 //! - Signing
 //!

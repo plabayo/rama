@@ -19,11 +19,15 @@
 //! * JWA (JSON Web Algorithm): This is essentially a list of the specific cryptographic
 //!   algorithms that are used for signing and encryption within the JOSE framework. The alg
 //!   parameter in the JOSE header identifies which algorithm was used.
+
 mod jwa;
 pub use jwa::JWA;
 
 mod jwk;
-pub use jwk::{EcdsaKey, JWK, JWKType, JWKUse, JWKellipticCurves};
+pub use jwk::{EcdsaKey, JWK, JWKEllipticCurves, JWKType, JWKUse};
 
 mod jws;
-pub use jws::{DecodedJWS, Empty, JWS, JWSBuilder, JWSCompact, Signer, Verifier};
+pub use jws::{
+    DecodedJWS, DecodedJWSFlattened, DecodedSignature, Empty, JWS, JWSBuilder, JWSCompact,
+    JWSFlattened, Signer, ToVerifySignature, Verifier,
+};

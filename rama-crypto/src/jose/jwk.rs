@@ -37,7 +37,7 @@ pub struct JWK {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kty")]
-/// The "kty" (key type) parameter identifies the cryptographic algorithm family used with the key, such as "RSA" or "EC"
+/// The "kty" (key type) parameter identifies the cryptographic algorithm family used with the key, such as "RSA", "EC", or "OCT"
 pub enum JWKType {
     RSA {
         n: String,
@@ -45,7 +45,7 @@ pub enum JWKType {
     },
     /// Elleptic curve
     EC {
-        crv: JWKellipticCurves,
+        crv: JWKEllipticCurves,
         x: String,
         y: String,
     },
@@ -88,7 +88,7 @@ impl Serialize for JWKType {
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
-pub enum JWKellipticCurves {
+pub enum JWKEllipticCurves {
     #[serde(rename = "P-256")]
     P256,
     #[serde(rename = "P-384")]
@@ -109,9 +109,9 @@ pub enum JWKUse {
 impl JWK {
     /// Create a [`JWK`] for the given [`EcdsaKeyPair`]
     ///
-    /// Warning: make sure to specify the correct alg
-    fn new_for_escdsa_keypair(key: &EcdsaKeyPair, alg: JWA) -> Result<Self, OpaqueError> {
-        // TODO expose algorithm used to EcdsaKeyPair on keypair itself so we dont have to specify it manually
+    /// Warning: make sure to specify the correct algorithm.
+    /// If `https://github.com/aws/aws-lc-rs/pull/834` gets merged this won't be needed anymore
+    fn new_from_escdsa_keypair(key: &EcdsaKeyPair, alg: JWA) -> Result<Self, OpaqueError> {
         let curve = alg.try_into()?;
         // 0x04 prefix + x + y
         let pub_key = key.public_key().as_ref();
@@ -145,7 +145,7 @@ impl JWK {
 
     /// Convert this [`JWK`] to an unparsed public key which can be used to verify signatures
     ///
-    /// Warning no verification is done on this key until `.verify` is called
+    /// Warning no verification is done on this key until `.verify()` is called
     pub fn unparsed_public_key(
         &self,
     ) -> Result<signature::UnparsedPublicKey<Vec<u8>>, OpaqueError> {
@@ -186,10 +186,10 @@ pub struct EcdsaKey {
 }
 
 impl EcdsaKey {
-    /// Create a new [`EcdsaKey`] from the given EcdsaKeyPair
+    /// Create a new [`EcdsaKey`] from the given [`EcdsaKeyPair`]
     pub fn new(key_pair: EcdsaKeyPair, alg: JWA, rng: SystemRandom) -> Result<Self, OpaqueError> {
         // Check if passed algorithm is a correct elliptic curve one
-        let _curve = JWKellipticCurves::try_from(alg)?;
+        let _curve = JWKEllipticCurves::try_from(alg)?;
         Ok(Self {
             rng,
             alg,
@@ -197,7 +197,7 @@ impl EcdsaKey {
         })
     }
 
-    /// Generate a new [`Key`] from a newly generated [`EcdsaKeyPair`] using P-256 EC
+    /// Generate a new [`EcdsaKey`] from a newly generated [`EcdsaKeyPair`] using P-256 EC
     pub fn generate() -> Result<Self, OpaqueError> {
         let key_pair = EcdsaKeyPair::generate(&ECDSA_P256_SHA256_FIXED_SIGNING)
             .context("generate EcdsaKeyPair")?;
@@ -205,7 +205,7 @@ impl EcdsaKey {
         Self::new(key_pair, JWA::ES256, SystemRandom::new())
     }
 
-    /// Generate a new [`Key`] from the given pkcs8 der
+    /// Generate a new [`EcdsaKey`] from the given pkcs8 der
     pub fn from_pkcs8_der(
         pkcs8_der: &[u8],
         alg: JWA,
@@ -218,7 +218,7 @@ impl EcdsaKey {
         Self::new(key_pair, alg, rng)
     }
 
-    /// Create pkcs8 der for the current EcdsaKeyPair
+    /// Create pkcs8 der for the current [`EcdsaKeyPair`]
     pub fn pkcs8_der(&self) -> Result<(JWA, Document), OpaqueError> {
         let doc = self
             .inner
@@ -227,9 +227,10 @@ impl EcdsaKey {
         Ok((self.alg, doc))
     }
 
+    /// Create a [`JWK`] for this [`EcdsaKey`]
     pub fn create_jwk(&self) -> JWK {
         // `expect` because `new_for_escdsa_keypair`` can only fail if curve is not elliptic but we already check that in `new`
-        JWK::new_for_escdsa_keypair(&self.inner, self.alg).expect("create JWK from escdsa keypair")
+        JWK::new_from_escdsa_keypair(&self.inner, self.alg).expect("create JWK from escdsa keypair")
     }
 
     pub fn rng(&self) -> &SystemRandom {
@@ -244,7 +245,7 @@ mod tests {
     #[test]
     fn jwk_thumb_order_is_correct() {
         let jwk_type = JWKType::EC {
-            crv: JWKellipticCurves::P256,
+            crv: JWKEllipticCurves::P256,
             x: "x".into(),
             y: "y".into(),
         };

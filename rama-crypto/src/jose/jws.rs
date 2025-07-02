@@ -1,272 +1,905 @@
 use base64::{Engine as _, prelude::BASE64_URL_SAFE_NO_PAD};
-use rama_core::error::{ErrorContext as _, OpaqueError};
+use rama_core::error::{BoxError, ErrorContext as _, OpaqueError};
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 /// When used with serde this will serialize to null
 pub struct Empty;
 
-#[derive(Default)]
-/// [`JWSBuilder`] should be used when manually creating a [`JWS`]
-pub struct JWSBuilder<U = ()> {
-    protected_header: String,
-    unprotected_header: Option<U>,
+#[derive(Default, Debug)]
+/// [`JWSBuilder`] should be used when manually creating a [`JWS`], [`JWSCompact`] or [`JWSFlattened`]
+pub struct JWSBuilder {
+    protected_headers: Headers,
+    unprotected_headers: Headers,
     payload: String,
 }
 
-impl<U: std::fmt::Debug> std::fmt::Debug for JWSBuilder<U> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("JWS")
-            .field("protected_header", &self.protected_header)
-            .field("unprotected_header", &self.unprotected_header)
-            .field("payload", &self.payload)
-            .finish()
+#[derive(Default, Debug, Serialize, Deserialize, PartialEq, Eq)]
+/// [`Headers`] store protected or unprotected headers and already
+/// serializes them to correct JSON values.
+pub struct Headers(Option<Map<String, Value>>);
+
+impl Headers {
+    /// Set provided header in the header map
+    ///
+    /// Warning: this function will replace already existing headers
+    /// If more control is needed, use `.header_map()` or `.header_map_raw()`
+    /// to get access to the underlying header map
+    pub fn with_header<T: Serialize>(
+        mut self,
+        name: String,
+        value: T,
+    ) -> Result<Self, OpaqueError> {
+        let headers = self.0.get_or_insert(Default::default());
+        let value = serde_json::to_value(value).context("convert to value")?;
+        headers.insert(name, value);
+        Ok(self)
+    }
+
+    /// Set provided header in the header map
+    ///
+    /// Warning: this function will replace already existing headers
+    /// If more control is needed, use `.header_map()` or `.header_map_raw()`
+    /// to get access to the underlying header map
+    pub fn set_header<T: Serialize>(
+        &mut self,
+        name: String,
+        value: T,
+    ) -> Result<&mut Self, OpaqueError> {
+        let headers = self.0.get_or_insert(Default::default());
+        let value = serde_json::to_value(value).context("convert to value")?;
+        headers.insert(name, value);
+        Ok(self)
+    }
+
+    /// Set provided headers in the header map
+    ///
+    /// Warning: this function will replace already existing headers
+    /// If more control is needed, use `.header_map()` or `.header_map_raw()`
+    /// to get access to the underlying header map
+    pub fn with_headers<T: Serialize>(mut self, headers: T) -> Result<Self, OpaqueError> {
+        let headers =
+            serde_json::to_value(headers).context("convert headers to serde json value")?;
+
+        let mut headers = match headers {
+            Value::Object(map) => map,
+            _ => Err(OpaqueError::from_display(
+                "Can only set multiple headers if input is key value object",
+            ))?,
+        };
+
+        match &mut self.0 {
+            Some(existing_headers) => existing_headers.append(&mut headers),
+            None => self.0 = Some(headers),
+        };
+
+        Ok(self)
+    }
+
+    /// Set provided headers in the header map
+    ///
+    /// Warning: this function will replace already existing headers
+    /// If more control is needed, use `.header_map()` or `.header_map_raw()`
+    /// to get access to the underlying header map
+    pub fn set_headers<T: Serialize>(&mut self, headers: T) -> Result<&mut Self, OpaqueError> {
+        let headers =
+            serde_json::to_value(headers).context("convert headers to serde json value")?;
+
+        let mut headers = match headers {
+            Value::Object(map) => map,
+            _ => Err(OpaqueError::from_display(
+                "Can only set multiple headers if input is key value object",
+            ))?,
+        };
+
+        match &mut self.0 {
+            Some(existing_headers) => existing_headers.append(&mut headers),
+            None => self.0 = Some(headers),
+        };
+
+        Ok(self)
+    }
+
+    /// Get a mutable reference to the underlying header map
+    ///
+    /// Warning: this will create a header map if one doesn't exist already.
+    /// If you don't want this behaviour using `.header_map_raw()` instead.
+    pub fn header_map(&mut self) -> &mut Map<String, Value> {
+        self.0.get_or_insert(Default::default())
+    }
+
+    /// Get a mutable reference to the underlying optional header map
+    pub fn header_map_raw(&mut self) -> &mut Option<Map<String, Value>> {
+        &mut self.0
+    }
+
+    /// Encode headers to a base64 url safe representation
+    fn as_encoded_string(&self) -> Result<String, OpaqueError> {
+        let encoded = match &self.0 {
+            Some(headers) => {
+                let headers = serde_json::to_vec(headers).context("convert to bytes")?;
+                BASE64_URL_SAFE_NO_PAD.encode(headers)
+            }
+            None => String::new(),
+        };
+        Ok(encoded)
+    }
+
+    fn is_none(&self) -> bool {
+        self.0.is_none()
+    }
+
+    fn is_some(&self) -> bool {
+        self.0.is_some()
+    }
+
+    /// Try decode headers to the provided `T`
+    pub fn decode<'de, 'a: 'de, T>(&'a self) -> Result<T, OpaqueError>
+    where
+        T: Deserialize<'de>,
+    {
+        match &self.0 {
+            Some(headers) => Ok(T::deserialize(headers).context("deserialize headers into T")?),
+            None => Err(OpaqueError::from_display(
+                "headers are None, deserialize not supported",
+            )),
+        }
     }
 }
 
-impl<U: PartialEq> PartialEq for JWSBuilder<U> {
-    fn eq(&self, other: &Self) -> bool {
-        self.protected_header == other.protected_header
-            && self.unprotected_header == other.unprotected_header
-            && self.payload == other.payload
-    }
+/// [`ChainedJWSBuilder`] will be used to create a [`JWS`] with multiple signatures
+pub struct ChainedJWSBuilder {
+    signatures: Vec<Signature>,
+    payload: String,
+    protected_headers: Headers,
+    unprotected_headers: Headers,
 }
 
-impl<U: Eq> Eq for JWSBuilder<U> {}
-
-impl JWSBuilder<()> {
+impl JWSBuilder {
+    /// Create a new builder
     pub fn new() -> Self {
         Self::default()
     }
-}
 
-impl<U> JWSBuilder<U> {
+    /// Add the provided payload to this [`JWSBuilder`]
     pub fn with_payload<T: AsRef<[u8]>>(mut self, payload: T) -> Self {
         let payload = BASE64_URL_SAFE_NO_PAD.encode(payload);
         self.payload = payload;
         self
     }
 
+    /// Set provided header in the protected header map
+    ///
+    /// Warning: this function will replace already existing headers
+    /// If more control is use `.protected_headers_raw()` to get access
+    /// to the underlying header store
     pub fn with_protected_header<T: Serialize>(
         mut self,
-        mut header: T,
-        signer: &impl Signer<T, U>,
-    ) -> Self {
-        signer.set_protected_header(&mut header);
-        let header = serde_json::to_vec(&header).expect("Failed to serialize JWS Protected Header");
-        let header = BASE64_URL_SAFE_NO_PAD.encode(header);
-        self.protected_header = header;
-        self
+        name: String,
+        value: T,
+    ) -> Result<Self, OpaqueError> {
+        self.protected_headers.set_header(name, value)?;
+        Ok(self)
     }
 
-    pub fn with_unprotected_header<T: Serialize, X>(
-        self,
-        mut header: T,
-        signer: &impl Signer<X, T>,
-    ) -> JWSBuilder<T> {
-        signer.set_unprotected_header(&mut header);
-        JWSBuilder {
-            payload: self.payload,
-            protected_header: self.protected_header,
-            unprotected_header: Some(header),
-        }
+    /// Set provided header in the protected header map
+    ///
+    /// Warning: this function will replace already existing headers
+    /// If more control is use `.protected_headers_raw()` to get access
+    /// to the underlying header store
+    pub fn set_protected_header<T: Serialize>(
+        &mut self,
+        name: String,
+        value: T,
+    ) -> Result<&mut Self, OpaqueError> {
+        self.protected_headers.set_header(name, value)?;
+        Ok(self)
     }
 
-    fn signed_data(&self) -> String {
-        format!("{}.{}", self.protected_header, self.payload)
+    /// Set provided headers in the protected header map
+    ///
+    /// Warning: this function will replace already existing headers
+    /// If more control is use `.protected_headers_raw()` to get access
+    /// to the underlying header store
+    pub fn with_protected_headers<T: Serialize>(mut self, headers: T) -> Result<Self, OpaqueError> {
+        self.protected_headers.set_headers(headers)?;
+        Ok(self)
     }
-}
 
-impl JWSBuilder<()> {
-    /// Generate compact serialization of this [`JWS`]
+    /// Set provided headers in the protected header map
+    ///
+    /// Warning: this function will replace already existing headers
+    /// If more control is use `.protected_headers_raw()` to get access
+    /// to the underlying header store
+    pub fn set_protected_headers<T: Serialize>(
+        &mut self,
+        headers: T,
+    ) -> Result<&mut Self, OpaqueError> {
+        self.protected_headers.set_headers(headers)?;
+        Ok(self)
+    }
+
+    /// Get mutable reference to the underlying protected header store
+    ///
+    /// This can be used in cases where more granual control is needed
+    pub fn protected_headers_raw(&mut self) -> &mut Headers {
+        &mut self.protected_headers
+    }
+
+    /// Set provided header in the unprotected header map
+    ///
+    /// Warning: this function will replace already existing headers
+    /// If more control is use `.unprotected_headers_raw()` to get access
+    /// to the underlying header store
+    pub fn with_unprotected_header<T: Serialize>(
+        mut self,
+        name: String,
+        value: T,
+    ) -> Result<Self, OpaqueError> {
+        self.unprotected_headers.set_header(name, value)?;
+        Ok(self)
+    }
+
+    /// Set provided header in the unprotected header map
+    ///
+    /// Warning: this function will replace already existing headers
+    /// If more control is use `.unprotected_headers_raw()` to get access
+    /// to the underlying header store
+    pub fn set_unprotected_header<T: Serialize>(
+        &mut self,
+        name: String,
+        value: T,
+    ) -> Result<&mut Self, OpaqueError> {
+        self.unprotected_headers.set_header(name, value)?;
+        Ok(self)
+    }
+
+    /// Set provided headers in the unprotected header map
+    ///
+    /// Warning: this function will replace already existing headers
+    /// If more control is use `.unprotected_headers_raw()` to get access
+    /// to the underlying header store
+    pub fn with_unprotected_headers<T: Serialize>(
+        mut self,
+        headers: T,
+    ) -> Result<Self, OpaqueError> {
+        self.unprotected_headers.set_headers(headers)?;
+        Ok(self)
+    }
+
+    /// Set provided headers in the unprotected header map
+    ///
+    /// Warning: this function will replace already existing headers
+    /// If more control is use `.unprotected_headers_raw()` to get access
+    /// to the underlying header store
+    pub fn set_unprotected_headers<T: Serialize>(
+        &mut self,
+        headers: T,
+    ) -> Result<&mut Self, OpaqueError> {
+        self.unprotected_headers.set_headers(headers)?;
+        Ok(self)
+    }
+
+    /// Get mutable reference to the underlying unprotected header store
+    ///
+    /// This can be used in cases where more granual control is needed
+    pub fn unprotected_headers_raw(&mut self) -> &mut Headers {
+        &mut self.unprotected_headers
+    }
+
+    /// Generate compact serialization of this `JWS`
     ///
     /// This only available if there is no unprotected header set
-    pub fn builder_compact<P>(
-        &self,
-        signer: &impl Signer<P, ()>,
-    ) -> Result<JWSCompact, OpaqueError> {
-        let signing_input = self.signed_data();
+    pub fn build_compact(mut self, signer: &impl Signer) -> Result<JWSCompact, OpaqueError> {
+        if self.unprotected_headers.is_some() {
+            return Err(OpaqueError::from_display(
+                "Compact jws does not support unprotected headers",
+            ));
+        }
 
-        let signature = signer.sign(&self.signed_data())?;
+        signer
+            .set_headers(&mut self.protected_headers, &mut self.unprotected_headers)
+            .map_err(|err| OpaqueError::from_boxed(err.into()))
+            .context("signer set headers")?;
+        let protected = self.protected_headers.as_encoded_string()?;
+        let signing_input = format!("{}.{}", protected, self.payload);
+
+        let signature = signer
+            .sign(&signing_input)
+            .map_err(|err| OpaqueError::from_boxed(err.into()))
+            .context("signer sign protected data")?;
         let signature = BASE64_URL_SAFE_NO_PAD.encode(signature.as_ref());
 
         Ok(JWSCompact(format!("{signing_input}.{signature}")))
     }
-}
 
-impl<U> JWSBuilder<U> {
-    /// Build the final [`JWS`]
-    pub fn build<P>(self, signer: &impl Signer<P, U>) -> Result<JWS<U>, OpaqueError> {
-        let signature = signer.sign(&self.signed_data())?;
+    /// Build a [`JWSFlattened`]
+    pub fn build_flattened(mut self, signer: &impl Signer) -> Result<JWSFlattened, OpaqueError> {
+        signer
+            .set_headers(&mut self.protected_headers, &mut self.unprotected_headers)
+            .map_err(|err| OpaqueError::from_boxed(err.into()))
+            .context("signer set headers")?;
+
+        let protected = self.protected_headers.as_encoded_string()?;
+        let signing_input = format!("{}.{}", protected, self.payload);
+
+        let signature = signer
+            .sign(&signing_input)
+            .map_err(|err| OpaqueError::from_boxed(err.into()))
+            .context("signer sign protected data")?;
         let signature = BASE64_URL_SAFE_NO_PAD.encode(signature.as_ref());
 
-        Ok(JWS {
-            protected: self.protected_header,
-            header: self.unprotected_header,
+        Ok(JWSFlattened {
+            signature: Signature {
+                protected,
+                unprotected: self.unprotected_headers,
+                signature,
+            },
+
             payload: self.payload,
+        })
+    }
+
+    /// Build a [`JWS`]
+    pub fn build_jws(mut self, signer: &impl Signer) -> Result<JWS, OpaqueError> {
+        signer
+            .set_headers(&mut self.protected_headers, &mut self.unprotected_headers)
+            .map_err(|err| OpaqueError::from_boxed(err.into()))
+            .context("signer set headers")?;
+
+        let protected = self.protected_headers.as_encoded_string()?;
+        let signing_input = format!("{}.{}", protected, self.payload);
+
+        let signature = signer
+            .sign(&signing_input)
+            .map_err(|err| OpaqueError::from_boxed(err.into()))
+            .context("signer sign protected data")?;
+        let signature = BASE64_URL_SAFE_NO_PAD.encode(signature.as_ref());
+
+        let signature = Signature {
+            protected,
             signature,
+            unprotected: self.unprotected_headers,
+        };
+
+        Ok(JWS {
+            signatures: vec![signature],
+            payload: self.payload,
+        })
+    }
+
+    /// Create a [`ChainedJWSBuilder`] with the same payload but that can add a new set of headers
+    /// and which will be signed again. This is needed to create a [`JWS`] with multiple signatures.
+    pub fn add_signature(mut self, signer: &impl Signer) -> Result<ChainedJWSBuilder, OpaqueError> {
+        signer
+            .set_headers(&mut self.protected_headers, &mut self.unprotected_headers)
+            .map_err(|err| OpaqueError::from_boxed(err.into()))
+            .context("signer set headers")?;
+
+        let protected = self.protected_headers.as_encoded_string()?;
+        let signing_input = format!("{}.{}", protected, self.payload);
+
+        let signature = signer
+            .sign(&signing_input)
+            .map_err(|err| OpaqueError::from_boxed(err.into()))
+            .context("signer sign protected data")?;
+        let signature = BASE64_URL_SAFE_NO_PAD.encode(signature.as_ref());
+
+        let signature = Signature {
+            protected,
+            signature,
+            unprotected: self.unprotected_headers,
+        };
+
+        Ok(ChainedJWSBuilder {
+            signatures: vec![signature],
+            protected_headers: Default::default(),
+            unprotected_headers: Default::default(),
+            payload: self.payload,
+        })
+    }
+}
+
+impl ChainedJWSBuilder {
+    /// Set provided header in the protected header map
+    ///
+    /// Warning: this function will replace already existing headers
+    /// If more control is use `.protected_headers_raw()` to get access
+    /// to the underlying header store
+    pub fn with_protected_header<T: Serialize>(
+        mut self,
+        name: String,
+        value: T,
+    ) -> Result<Self, OpaqueError> {
+        self.protected_headers.set_header(name, value)?;
+        Ok(self)
+    }
+
+    /// Set provided header in the protected header map
+    ///
+    /// Warning: this function will replace already existing headers
+    /// If more control is use `.protected_headers_raw()` to get access
+    /// to the underlying header store
+    pub fn set_protected_header<T: Serialize>(
+        &mut self,
+        name: String,
+        value: T,
+    ) -> Result<&mut Self, OpaqueError> {
+        self.protected_headers.set_header(name, value)?;
+        Ok(self)
+    }
+
+    /// Set provided headers in the protected header map
+    ///
+    /// Warning: this function will replace already existing headers
+    /// If more control is use `.protected_headers_raw()` to get access
+    /// to the underlying header store
+    pub fn with_protected_headers<T: Serialize>(mut self, headers: T) -> Result<Self, OpaqueError> {
+        self.protected_headers.set_headers(headers)?;
+        Ok(self)
+    }
+
+    /// Set provided headers in the protected header map
+    ///
+    /// Warning: this function will replace already existing headers
+    /// If more control is use `.protected_headers_raw()` to get access
+    /// to the underlying header store
+    pub fn set_protected_headers<T: Serialize>(
+        &mut self,
+        headers: T,
+    ) -> Result<&mut Self, OpaqueError> {
+        self.protected_headers.set_headers(headers)?;
+        Ok(self)
+    }
+
+    /// Get mutable reference to the underlying protected header store
+    ///
+    /// This can be used in cases where more granual control is needed
+    pub fn protected_headers_raw(&mut self) -> &mut Headers {
+        &mut self.protected_headers
+    }
+
+    /// Set provided header in the unprotected header map
+    ///
+    /// Warning: this function will replace already existing headers
+    /// If more control is use `.unprotected_headers_raw()` to get access
+    /// to the underlying header store
+    pub fn with_unprotected_header<T: Serialize>(
+        mut self,
+        name: String,
+        value: T,
+    ) -> Result<Self, OpaqueError> {
+        self.unprotected_headers.set_header(name, value)?;
+        Ok(self)
+    }
+
+    /// Set provided header in the unprotected header map
+    ///
+    /// Warning: this function will replace already existing headers
+    /// If more control is use `.unprotected_headers_raw()` to get access
+    /// to the underlying header store
+    pub fn set_unprotected_header<T: Serialize>(
+        &mut self,
+        name: String,
+        value: T,
+    ) -> Result<&mut Self, OpaqueError> {
+        self.unprotected_headers.set_header(name, value)?;
+        Ok(self)
+    }
+
+    /// Set provided headers in the unprotected header map
+    ///
+    /// Warning: this function will replace already existing headers
+    /// If more control is use `.unprotected_headers_raw()` to get access
+    /// to the underlying header store
+    pub fn with_unprotected_headers<T: Serialize>(
+        mut self,
+        headers: T,
+    ) -> Result<Self, OpaqueError> {
+        self.unprotected_headers.set_headers(headers)?;
+        Ok(self)
+    }
+
+    /// Set provided headers in the unprotected header map
+    ///
+    /// Warning: this function will replace already existing headers
+    /// If more control is use `.unprotected_headers_raw()` to get access
+    /// to the underlying header store
+    pub fn set_unprotected_headers<T: Serialize>(
+        &mut self,
+        headers: T,
+    ) -> Result<&mut Self, OpaqueError> {
+        self.unprotected_headers.set_headers(headers)?;
+        Ok(self)
+    }
+
+    /// Get mutable reference to the underlying unprotected header store
+    ///
+    /// This can be used in cases where more granual control is needed
+    pub fn unprotected_headers_raw(&mut self) -> &mut Headers {
+        &mut self.unprotected_headers
+    }
+
+    /// Create a new [`ChainedJWSBuilder`] so we can add another signature
+    pub fn add_signature(mut self, signer: &impl Signer) -> Result<ChainedJWSBuilder, OpaqueError> {
+        signer
+            .set_headers(&mut self.protected_headers, &mut self.unprotected_headers)
+            .map_err(|err| OpaqueError::from_boxed(err.into()))
+            .context("signer set headers")?;
+        let protected = self.protected_headers.as_encoded_string()?;
+        let signing_input = format!("{}.{}", protected, self.payload);
+
+        let signature = signer
+            .sign(&signing_input)
+            .map_err(|err| OpaqueError::from_boxed(err.into()))
+            .context("signer sign protected data")?;
+        let signature = BASE64_URL_SAFE_NO_PAD.encode(signature.as_ref());
+
+        let signature = Signature {
+            protected,
+            signature,
+            unprotected: self.unprotected_headers,
+        };
+
+        self.signatures.push(signature);
+
+        Ok(ChainedJWSBuilder {
+            signatures: self.signatures,
+            protected_headers: Default::default(),
+            unprotected_headers: Default::default(),
+            payload: self.payload,
+        })
+    }
+
+    /// Build the final [`JWS] containing all provided signatures
+    pub fn build(mut self, signer: &impl Signer) -> Result<JWS, OpaqueError> {
+        signer
+            .set_headers(&mut self.protected_headers, &mut self.unprotected_headers)
+            .map_err(|err| OpaqueError::from_boxed(err.into()))
+            .context("signer set headers")?;
+        let protected = self.protected_headers.as_encoded_string()?;
+        let signing_input = format!("{}.{}", protected, self.payload);
+
+        let signature = signer
+            .sign(&signing_input)
+            .map_err(|err| OpaqueError::from_boxed(err.into()))
+            .context("signer sign protected data")?;
+        let signature = BASE64_URL_SAFE_NO_PAD.encode(signature.as_ref());
+
+        let signature = Signature {
+            protected,
+            signature,
+            unprotected: self.unprotected_headers,
+        };
+
+        self.signatures.push(signature);
+
+        Ok(JWS {
+            payload: self.payload,
+            signatures: self.signatures,
         })
     }
 }
 
 /// [`Signer`] implements all methods which are needed to sign our JWS requests,
 /// and add the needed info to our JOSE headers (JOSE headers = protected + unprotected headers)
-pub trait Signer<P, U> {
+pub trait Signer {
     type Signature: AsRef<[u8]>;
+    type Error: Into<BoxError>;
 
-    /// Modify protected headers to included info about algorithm used
+    /// Set headers which are needed to verify the final `Signature`
     ///
-    /// Because we want everything fully typed the type `P` should be
-    /// specified by the implementer or implement a trait to provide
-    /// access to the needed header keys
-    fn set_protected_header(&self, _header: &mut P) {}
+    /// Example headers are: `alg`, `curve`
+    fn set_headers(
+        &self,
+        protected_headers: &mut Headers,
+        unprotected_headers: &mut Headers,
+    ) -> Result<(), Self::Error>;
 
-    /// Modify unprotected headers to included info about algorithm used
-    ///
-    /// Because we want everything fully typed the type `U` should be
-    /// specified by the implementer or implement a trait to provide
-    /// access to the needed header keys
-    fn set_unprotected_header(&self, _header: &mut U) {}
-
-    fn sign(&self, data: &str) -> Result<Self::Signature, OpaqueError>;
+    /// Sign the str encoded payload
+    fn sign(&self, data: &str) -> Result<Self::Signature, Self::Error>;
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// [`JWSCompact`] is a compact `JWS` representation as defined in [`rfc7515, section 7.1`]
+///
+/// [`rfc7515, section 7.1`]: https://datatracker.ietf.org/doc/html/rfc7515#section-7.1
 pub struct JWSCompact(String);
 
-#[derive(Serialize, Deserialize)]
-pub struct JWS<U> {
-    #[serde(skip_serializing_if = "String::is_empty")]
-    protected: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    header: Option<U>,
+#[derive(Serialize, Deserialize, Debug)]
+/// [`JWSFlattened`] is a `JWS` which is optimized for a single signature, as defined in [`rfc7515, section 7.2.2`]
+///
+/// It does this by setting protected, header and signature at the root,
+/// vs setting it in the signatures array
+///
+/// [`rfc7515, section 7.2.2`]: https://datatracker.ietf.org/doc/html/rfc7515#section-7.2.2
+pub struct JWSFlattened {
     #[serde(skip_serializing_if = "String::is_empty")]
     payload: String,
-    signature: String,
+    #[serde(flatten)]
+    signature: Signature,
 }
 
-impl JWS<()> {
-    pub fn builder() -> JWSBuilder<()> {
+#[derive(Debug, Serialize, Deserialize)]
+/// [`JWS`] is the general serialization format as defined in [`rfc7515, section 7.2.1`]
+///
+/// [`rfc7515, section 7.2.1`]: https://datatracker.ietf.org/doc/html/rfc7515#section-7.2.1
+pub struct JWS {
+    payload: String,
+    signatures: Vec<Signature>,
+}
+
+impl JWSCompact {
+    /// Create a builder which can be used to create a [`JWSCompact`]
+    pub fn builder() -> JWSBuilder {
+        JWSBuilder::new()
+    }
+}
+
+impl JWS {
+    /// Create a builder which can be used to create a [`JWS`]
+    pub fn builder() -> JWSBuilder {
         JWSBuilder::new()
     }
 
-    pub fn as_compact(&self) -> String {
-        format!("{}.{}.{}", self.protected, self.payload, self.signature)
-    }
-}
+    /// Decode this [`JWS`] to a [`DecodedJWS`] by decoding all values and checking with [`Verifier`]
+    /// if all signatures are correct
+    pub fn decode(self, verifier: &impl Verifier) -> Result<DecodedJWS, OpaqueError> {
+        let mut signatures = Vec::with_capacity(self.signatures.len());
 
-impl<U> JWS<U> {
-    pub fn decoded(&self) -> Result<DecodedJWS<&U>, OpaqueError> {
-        self.try_into()
-    }
+        for signature in self.signatures.into_iter() {
+            let protected = BASE64_URL_SAFE_NO_PAD
+                .decode(&signature.protected)
+                .context("decode protected header")?;
 
-    pub fn into_decoded(self) -> Result<DecodedJWS<U>, OpaqueError> {
-        self.try_into()
-    }
+            let protected = serde_json::from_slice::<Headers>(&protected)
+                .context("deserialize protected headers")?;
 
-    pub fn signed_data(&self) -> String {
-        format!("{}.{}", self.protected, self.payload)
-    }
-}
+            let decoded_signature = DecodedSignature {
+                protected,
+                signature: signature.signature,
+                unprotected: signature.unprotected,
+            };
 
-impl<U> TryFrom<JWS<U>> for DecodedJWS<U> {
-    type Error = OpaqueError;
-    fn try_from(value: JWS<U>) -> Result<Self, Self::Error> {
-        Ok(DecodedJWS {
-            signed_data: value.signed_data(),
-            signature: value.signature,
-            header: value.header,
-            payload: BASE64_URL_SAFE_NO_PAD
-                .decode(&value.payload)
-                .context("decode payload")?,
-            protected: BASE64_URL_SAFE_NO_PAD
-                .decode(&value.protected)
-                .context("decode protected header")?,
-        })
-    }
-}
-
-impl<'a, U> TryFrom<&'a JWS<U>> for DecodedJWS<&'a U> {
-    type Error = OpaqueError;
-
-    fn try_from(value: &'a JWS<U>) -> Result<Self, Self::Error> {
-        Ok(DecodedJWS {
-            signed_data: value.signed_data(),
-            signature: value.signature.clone(),
-            header: value.header.as_ref(),
-            payload: BASE64_URL_SAFE_NO_PAD
-                .decode(&value.payload)
-                .context("decode payload")?,
-            protected: BASE64_URL_SAFE_NO_PAD
-                .decode(&value.protected)
-                .context("decode protected header")?,
-        })
-    }
-}
-
-#[derive(Debug, PartialEq, Deserialize)]
-#[serde(try_from = "JWS<U>")]
-pub struct DecodedJWS<U> {
-    // We store signed data from [`JWS`] so we dont have to recalculate it, but technically
-    // we this could be skipped
-    signed_data: String,
-    signature: String,
-    protected: Vec<u8>,
-    header: Option<U>,
-    payload: Vec<u8>,
-}
-
-impl<U> DecodedJWS<U> {
-    pub fn protected<'de, 'a: 'de, T: Deserialize<'de>>(
-        &'a self,
-    ) -> Result<Option<T>, OpaqueError> {
-        if self.protected.is_empty() {
-            Ok(None)
-        } else {
-            Ok(Some(
-                serde_json::from_slice(&self.protected).context("Deserialize protected headers")?,
-            ))
+            let to_verify = ToVerifySignature {
+                decoded_signature,
+                signed_data: format!("{}.{}", signature.protected, self.payload),
+            };
+            signatures.push(to_verify);
         }
+
+        let payload = BASE64_URL_SAFE_NO_PAD
+            .decode(&self.payload)
+            .context("decode payload")?;
+
+        verifier
+            .verify(&payload, &signatures)
+            .map_err(|err| OpaqueError::from_boxed(err.into()))
+            .context("signer verify signatures")?;
+
+        let signatures = signatures
+            .into_iter()
+            .map(|sig| sig.decoded_signature)
+            .collect();
+
+        Ok(DecodedJWS {
+            signatures,
+            payload,
+        })
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct Signature {
+    #[serde(skip_serializing_if = "String::is_empty")]
+    protected: String,
+    #[serde(skip_serializing_if = "Headers::is_none")]
+    #[serde(rename = "name")]
+    unprotected: Headers,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    signature: String,
+}
+
+impl JWSFlattened {
+    /// Create a builder which can be used to create a [`JWSFlattened`]
+    pub fn builder() -> JWSBuilder {
+        JWSBuilder::new()
     }
 
-    pub fn protected_raw(&self) -> &[u8] {
-        &self.protected
+    /// Create a [`JWSCompact`] from this [`JWSFlattened`]
+    pub fn as_compact(&self) -> Result<String, OpaqueError> {
+        if self.signature.unprotected.is_some() {
+            return Err(OpaqueError::from_display(
+                "JWSCompact does not support unprotected headers",
+            ));
+        };
+
+        Ok(format!(
+            "{}.{}.{}",
+            self.signature.protected, self.payload, self.signature.signature
+        ))
     }
 
-    pub fn payload(&self) -> &[u8] {
-        &self.payload
-    }
+    /// Decode this [`JWS`] to a [`DecodedJWS`] by decoding all values and checking with [`Verifier`]
+    /// if the provided signature is correct
+    pub fn decode(self, verifier: &impl Verifier) -> Result<DecodedJWSFlattened, OpaqueError> {
+        let protected = BASE64_URL_SAFE_NO_PAD
+            .decode(&self.signature.protected)
+            .context("decode protected header")?;
 
-    pub fn header(&self) -> Option<&U> {
-        self.header.as_ref()
-    }
+        let protected = serde_json::from_slice::<Headers>(&protected)
+            .context("deserialize protected headers")?;
 
-    pub fn signature(&self) -> &str {
-        &self.signature
-    }
+        let decoded_signature = DecodedSignature {
+            protected,
+            signature: self.signature.signature,
+            unprotected: self.signature.unprotected,
+        };
 
+        let to_verify = ToVerifySignature {
+            decoded_signature,
+            signed_data: format!("{}.{}", self.signature.protected, self.payload),
+        };
+
+        let payload = BASE64_URL_SAFE_NO_PAD
+            .decode(&self.payload)
+            .context("decode payload")?;
+
+        verifier
+            .verify(&payload, std::slice::from_ref(&to_verify))
+            .map_err(|err| OpaqueError::from_boxed(err.into()))
+            .context("signer verify signature")?;
+
+        let signature = to_verify.decoded_signature;
+
+        Ok(DecodedJWSFlattened { signature, payload })
+    }
+}
+
+#[derive(Debug)]
+/// Decoded version of a [`JWSFlattened`]
+///
+/// Data here has already been verified, so everything
+/// here is ready for usage
+pub struct DecodedJWSFlattened {
+    payload: Vec<u8>,
+    signature: DecodedSignature,
+}
+
+#[derive(Debug)]
+/// Decode version of a [`JWS`]
+///
+/// Data here has already been verified, so everything
+/// here is ready for usage
+pub struct DecodedJWS {
+    payload: Vec<u8>,
+    signatures: Vec<DecodedSignature>,
+}
+
+#[derive(Debug)]
+/// Decode version of a [`Signature`]
+///
+/// Data here has already been verified, so everything
+/// here is ready for usage
+pub struct DecodedSignature {
+    protected: Headers,
+    unprotected: Headers,
+    signature: String,
+}
+
+/// A `Signature` which still needs to be checked
+///
+/// It included a String representation of the signed data
+/// so this doesn't need to be re-encoded
+pub struct ToVerifySignature {
+    signed_data: String,
+    decoded_signature: DecodedSignature,
+}
+
+impl ToVerifySignature {
+    /// Encoded String representation of protected + payload before it was decoded
+    /// again. This should be used instead of re-encoding everything for efficiency
     pub fn signed_data(&self) -> &str {
         &self.signed_data
     }
 
-    pub fn verify(&self, verifier: &impl Verifier<U>) -> Result<(), OpaqueError> {
-        verifier.verify(self)
+    /// Reference to the [`DecodedSignature`]
+    pub fn decoded_signature(&self) -> &DecodedSignature {
+        &self.decoded_signature
     }
 }
 
-impl<U: std::fmt::Debug> std::fmt::Debug for JWS<U> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("JWS")
-            .field("protected", &self.protected)
-            .field("header", &self.header)
-            .field("payload", &self.payload)
-            .field("signature", &self.signature)
-            .finish()
+impl DecodedSignature {
+    /// Reference to the protected [`Headers`]
+    pub fn protected_headers(&self) -> &Headers {
+        &self.protected
+    }
+
+    /// Trying decoding the protected headers to the provided `T`
+    pub fn decode_protected_headers<'de, 'a: 'de, T: Deserialize<'de>>(
+        &'a self,
+    ) -> Result<T, OpaqueError> {
+        self.protected.decode()
+    }
+
+    /// Reference to the unprotected [`Headers`]
+    pub fn unprotected_headers(&self) -> &Headers {
+        &self.unprotected
+    }
+
+    /// Trying decoding the unprotected headers to the provided `T`
+    pub fn decode_unprotected_headers<'de, 'a: 'de, T: Deserialize<'de>>(
+        &'a self,
+    ) -> Result<T, OpaqueError> {
+        self.unprotected.decode()
+    }
+
+    /// Str signature which was provided for the encoded signature
+    pub fn signature(&self) -> &str {
+        &self.signature
     }
 }
 
-pub trait Verifier<U> {
-    fn verify(&self, decoded_jws: &DecodedJWS<U>) -> Result<(), OpaqueError>;
+impl DecodedJWS {
+    /// Get refence to the [`DecodedSignature`]s
+    pub fn signatures(&self) -> &[DecodedSignature] {
+        self.signatures.as_slice()
+    }
+
+    /// Get refence to the payload
+    pub fn payload(&self) -> &[u8] {
+        &self.payload
+    }
+}
+
+impl DecodedJWSFlattened {
+    /// Reference to the protected [`Headers`]
+    pub fn protected_headers(&self) -> &Headers {
+        self.signature.protected_headers()
+    }
+
+    /// Trying decoding the protected headers to the provided `T`
+    pub fn decode_protected_headers<'de, 'a: 'de, T: Deserialize<'de>>(
+        &'a self,
+    ) -> Result<T, OpaqueError> {
+        self.signature.decode_protected_headers()
+    }
+
+    /// Reference to the unprotected [`Headers`]
+    pub fn unprotected_headers(&self) -> &Headers {
+        self.signature.unprotected_headers()
+    }
+
+    /// Trying decoding the unprotected headers to the provided `T`
+    pub fn decode_unprotected_headers<'de, 'a: 'de, T: Deserialize<'de>>(
+        &'a self,
+    ) -> Result<T, OpaqueError> {
+        self.signature.decode_unprotected_headers()
+    }
+
+    /// Str signature which was provided for the encoded signature
+    pub fn signature(&self) -> &str {
+        self.signature.signature()
+    }
+
+    /// Get refence to the payload
+    pub fn payload(&self) -> &[u8] {
+        &self.payload
+    }
+}
+
+/// [`Verifier`] will be called to confirm if the received data is valid
+///
+/// For some algorithms all signatures need to be valid, but there are also
+/// cases when only one or some need to be valid.
+///
+/// Warning: in some cases order of signatures is not always pre-determined,
+/// so in those cases make sure that [`Verifier`] can handle this.
+pub trait Verifier {
+    type Error: Into<BoxError>;
+    /// Verify if data is valid
+    fn verify(&self, payload: &[u8], signatures: &[ToVerifySignature]) -> Result<(), Self::Error>;
 }
 
 #[cfg(test)]
@@ -288,26 +921,38 @@ mod tests {
 
     struct DummyKey;
 
-    impl<U> Signer<AcmeProtected<'_>, U> for DummyKey {
+    impl Signer for DummyKey {
         type Signature = Vec<u8>;
-
-        fn set_protected_header(&self, header: &mut AcmeProtected) {
-            header.alg = Some("test_algo");
-        }
+        type Error = OpaqueError;
 
         fn sign(&self, data: &str) -> Result<Self::Signature, OpaqueError> {
             let mut out = data.as_bytes().to_vec();
             out.push(33);
             Ok(out)
         }
+
+        fn set_headers(
+            &self,
+            protected_headers: &mut Headers,
+            _unprotected_headers: &mut Headers,
+        ) -> Result<(), OpaqueError> {
+            protected_headers.set_header("alg".to_owned(), "test_algo".to_owned())?;
+            Ok(())
+        }
     }
 
-    impl<U> Verifier<U> for DummyKey {
-        fn verify(&self, decoded_jws: &DecodedJWS<U>) -> Result<(), OpaqueError> {
-            let original = decoded_jws.signed_data().as_bytes();
+    impl Verifier for DummyKey {
+        type Error = OpaqueError;
+        fn verify(
+            &self,
+            _payload: &[u8],
+            to_verify_sigs: &[ToVerifySignature],
+        ) -> Result<(), OpaqueError> {
+            let to_verify = &to_verify_sigs[0];
+            let original = to_verify.signed_data.as_bytes();
 
             let signature = BASE64_URL_SAFE_NO_PAD
-                .decode(decoded_jws.signature())
+                .decode(to_verify.decoded_signature.signature())
                 .context("decode signature")?;
 
             if original.len() + 1 != signature.len() {
@@ -339,48 +984,42 @@ mod tests {
 
         let payload = "something".to_owned();
 
-        let signer = DummyKey;
+        let signer_and_verifier = DummyKey;
 
         let jws = JWSBuilder::new()
             .with_payload(payload.clone())
-            .with_protected_header(protected.clone(), &signer)
-            .with_unprotected_header(header.clone(), &signer)
-            .build(&signer)
+            .with_protected_headers(protected.clone())
+            .unwrap()
+            .with_unprotected_headers(header.clone())
+            .unwrap()
+            .build_flattened(&signer_and_verifier)
             .unwrap();
 
-        let encoded = serde_json::to_string(&jws).unwrap();
-        let jws_received = serde_json::from_str::<JWS<Random>>(&encoded).unwrap();
+        let serialized = serde_json::to_string(&jws).unwrap();
+        let jws_received = serde_json::from_str::<JWSFlattened>(&serialized).unwrap();
 
         // This will be set by our signer
         let mut expected_protected = protected.clone();
         expected_protected.alg = Some("test_algo");
 
-        assert_eq!(jws.protected, jws_received.protected);
-        assert_eq!(jws.header, jws_received.header);
+        assert_eq!(jws.signature.protected, jws_received.signature.protected);
+        assert_eq!(
+            jws.signature.unprotected,
+            jws_received.signature.unprotected
+        );
         assert_eq!(jws.payload, jws_received.payload);
 
-        let decoded_jws = jws_received.decoded().unwrap();
+        let decoded_jws = jws_received.decode(&signer_and_verifier).unwrap();
 
         let received_payload = String::from_utf8(decoded_jws.payload().to_vec()).unwrap();
-        let received_protected = decoded_jws.protected::<AcmeProtected>().unwrap().unwrap();
-        let received_header = decoded_jws.header().unwrap();
+        let received_protected = decoded_jws
+            .decode_protected_headers::<AcmeProtected>()
+            .unwrap();
+        let received_header = decoded_jws.decode_unprotected_headers::<Random>().unwrap();
 
         assert_eq!(payload, received_payload);
         assert_eq!(expected_protected, received_protected);
-        assert_eq!(&&header, received_header);
-
-        // Shortcut to skip creating received jws should be the same, but this skips verify the
-        let short_decoded = serde_json::from_str::<DecodedJWS<Random>>(&encoded).unwrap();
-
-        let short_payload = String::from_utf8(short_decoded.payload().to_vec()).unwrap();
-        let short_protected = short_decoded.protected::<AcmeProtected>().unwrap().unwrap();
-        let short_header = short_decoded.header().unwrap();
-
-        assert_eq!(payload, short_payload);
-        assert_eq!(expected_protected, short_protected);
-        assert_eq!(&header, short_header);
-
-        decoded_jws.verify(&signer).unwrap();
+        assert_eq!(header, received_header);
     }
 
     #[test]
@@ -392,18 +1031,21 @@ mod tests {
             alg: None,
         };
 
-        let jws = JWS::builder()
-            .with_protected_header(protected.clone(), &signer)
-            .build(&signer)
+        let jws = JWSFlattened::builder()
+            .with_protected_headers(protected.clone())
+            .unwrap()
+            .build_flattened(&signer)
             .unwrap();
 
         assert_eq!(jws.payload, "".to_owned());
 
-        let jws = JWS::builder()
-            .with_protected_header(protected, &signer)
+        let jws = JWSFlattened::builder()
             .with_payload(serde_json::to_vec(&Empty).unwrap())
-            .build(&signer)
+            .with_protected_headers(protected.clone())
+            .unwrap()
+            .build_flattened(&signer)
             .unwrap();
+
         assert_eq!(jws.payload, "bnVsbA".to_owned());
     }
 
@@ -419,29 +1061,154 @@ mod tests {
 
         let payload = "something".to_owned();
 
-        let signer = DummyKey;
+        let signer_and_verifier = DummyKey;
 
-        let jws = JWSBuilder::new()
+        let jws = JWSFlattened::builder()
             .with_payload(payload.clone())
-            .with_protected_header(protected.clone(), &signer)
-            .build(&signer)
+            .with_protected_headers(protected.clone())
+            .unwrap()
+            .build_flattened(&signer_and_verifier)
             .unwrap();
 
-        let encoded = serde_json::to_string(&jws).unwrap();
+        let serialized = serde_json::to_string(&jws).unwrap();
 
         // Something should fail in this part
-        let server = move |encoded: String| {
-            let received = serde_json::from_str::<JWS<Random>>(&encoded).context("decode jws")?;
-            let decoded = received.decoded()?;
-            decoded.verify(&signer)?;
+        let server = move |serialized: String| {
+            let received =
+                serde_json::from_str::<JWSFlattened>(&serialized).context("decode jws")?;
+            let _decoded = received.decode(&signer_and_verifier)?;
             Ok::<_, OpaqueError>(())
         };
 
-        println!("len: {}", encoded.len());
-        for i in 0..encoded.len() - 1 {
-            let mut encoded: String = encoded.clone();
-            encoded.insert(i, 't');
-            assert_err!(server(encoded), "failed at {i}");
+        for i in 0..serialized.len() - 1 {
+            let mut serialized: String = serialized.clone();
+            serialized.insert(i, 't');
+            assert_err!(server(serialized), "failed at {i}");
         }
+    }
+
+    #[test]
+    fn can_create_jws() {
+        let nonce = "random".to_owned();
+
+        let something = "something_random".to_owned();
+        let header = Random { data: &something };
+
+        let payload = "something".to_owned();
+
+        let signer_and_verifier = DummyKey;
+
+        let jws = JWSBuilder::new()
+            .with_payload(payload.clone())
+            .with_protected_header("nonce".to_owned(), &nonce)
+            .unwrap()
+            .with_unprotected_headers(header.clone())
+            .unwrap()
+            .build_jws(&signer_and_verifier)
+            .unwrap();
+
+        let serialized = serde_json::to_string(&jws).unwrap();
+        let received = serde_json::from_str::<JWS>(&serialized).unwrap();
+        let decoded = received.decode(&signer_and_verifier).unwrap();
+        let decoded_payload = String::from_utf8(decoded.payload().to_vec()).unwrap();
+
+        assert_eq!(payload, decoded_payload);
+    }
+
+    #[test]
+    fn can_create_multi_signature_jws() {
+        let nonce = "random".to_owned();
+        let protected = AcmeProtected {
+            nonce: &nonce,
+            alg: None,
+        };
+
+        let something = "something_random".to_owned();
+        let header = Random { data: &something };
+
+        let payload = "something".to_owned();
+        let signer_and_verifier = DummyKey;
+
+        let builder = JWSBuilder::new()
+            .with_payload(payload.clone())
+            .with_protected_headers(protected.clone())
+            .unwrap()
+            .with_unprotected_headers(header.clone())
+            .unwrap();
+
+        struct SecondSigner;
+
+        impl Signer for SecondSigner {
+            type Signature = Vec<u8>;
+            type Error = OpaqueError;
+
+            fn sign(&self, data: &str) -> Result<Self::Signature, OpaqueError> {
+                Ok(data.as_bytes().to_owned())
+            }
+
+            fn set_headers(
+                &self,
+                protected_headers: &mut Headers,
+                _unprotected_headers: &mut Headers,
+            ) -> Result<(), OpaqueError> {
+                protected_headers.set_header("data".to_owned(), "very protected")?;
+                Ok(())
+            }
+        }
+
+        let second_signer = SecondSigner;
+
+        let jws = builder
+            .add_signature(&signer_and_verifier)
+            .unwrap()
+            .with_unprotected_header("second".to_owned(), "something second")
+            .unwrap()
+            .with_protected_header("app specific".to_owned(), "will not be used by verifier")
+            .unwrap()
+            .build(&second_signer)
+            .unwrap();
+
+        let serialized = serde_json::to_string(&jws).unwrap();
+
+        #[derive(Debug, Deserialize)]
+        struct SecondProtectedHeader {
+            data: String,
+        }
+
+        struct MultiVerifier {
+            dummy_verifier: DummyKey,
+        }
+
+        impl Verifier for MultiVerifier {
+            type Error = OpaqueError;
+            fn verify(
+                &self,
+                payload: &[u8],
+                to_verify_sigs: &[ToVerifySignature],
+            ) -> Result<(), OpaqueError> {
+                self.dummy_verifier.verify(payload, to_verify_sigs)?;
+                let second = &to_verify_sigs[1];
+                let protected_header = second
+                    .decoded_signature
+                    .decode_protected_headers::<SecondProtectedHeader>()?;
+
+                if protected_header.data.as_str() == "very protected" {
+                    Ok(())
+                } else {
+                    Err(OpaqueError::from_display(
+                        "received unexpected second protected header",
+                    ))
+                }
+            }
+        }
+
+        let multi_verifier = MultiVerifier {
+            dummy_verifier: signer_and_verifier,
+        };
+
+        let received = serde_json::from_str::<JWS>(&serialized).unwrap();
+        let decoded = received.decode(&multi_verifier).unwrap();
+        let decoded_payload = String::from_utf8(decoded.payload().to_vec()).unwrap();
+        assert_eq!(payload, decoded_payload);
     }
 }

@@ -1,11 +1,13 @@
+use std::ops::Deref;
+
 use aws_lc_rs::signature::{
-    ECDSA_P256_SHA256_FIXED, ECDSA_P256_SHA256_FIXED_SIGNING, ECDSA_P384_SHA384_FIXED,
-    ECDSA_P384_SHA384_FIXED_SIGNING, EcdsaSigningAlgorithm, EcdsaVerificationAlgorithm,
+    ECDSA_P256_SHA256_FIXED_SIGNING, ECDSA_P384_SHA384_FIXED_SIGNING, EcdsaSigningAlgorithm,
+    EcdsaVerificationAlgorithm,
 };
 use rama_core::error::OpaqueError;
 use serde::{Deserialize, Serialize};
 
-use crate::jose::JWKellipticCurves;
+use crate::jose::JWKEllipticCurves;
 
 #[derive(Debug, Serialize, Deserialize, Copy, Clone, PartialEq, Eq)]
 #[serde(rename_all = "UPPERCASE")]
@@ -39,42 +41,24 @@ pub enum JWA {
     PS512,
 }
 
-impl From<JWKellipticCurves> for JWA {
-    fn from(value: JWKellipticCurves) -> Self {
+impl From<JWKEllipticCurves> for JWA {
+    fn from(value: JWKEllipticCurves) -> Self {
         match value {
-            JWKellipticCurves::P256 => Self::ES256,
-            JWKellipticCurves::P384 => Self::ES384,
-            JWKellipticCurves::P521 => Self::ES512,
+            JWKEllipticCurves::P256 => Self::ES256,
+            JWKEllipticCurves::P384 => Self::ES384,
+            JWKEllipticCurves::P521 => Self::ES512,
         }
     }
 }
 
-impl TryFrom<JWA> for JWKellipticCurves {
+impl TryFrom<JWA> for JWKEllipticCurves {
     type Error = OpaqueError;
 
     fn try_from(value: JWA) -> Result<Self, Self::Error> {
         match value {
-            JWA::ES256 => Ok(JWKellipticCurves::P256),
-            JWA::ES384 => Ok(JWKellipticCurves::P384),
-            JWA::ES512 => Ok(JWKellipticCurves::P521),
-            JWA::HS256 | JWA::HS384 | JWA::HS512 => Err(OpaqueError::from_display(
-                "Hmac cannot be converted to elliptic curve",
-            )),
-            JWA::RS256 | JWA::RS384 | JWA::RS512 | JWA::PS256 | JWA::PS384 | JWA::PS512 => Err(
-                OpaqueError::from_display("RSA cannot be converted to elliptic curve"),
-            ),
-        }
-    }
-}
-
-impl TryFrom<JWA> for &'static EcdsaVerificationAlgorithm {
-    type Error = OpaqueError;
-
-    fn try_from(value: JWA) -> Result<Self, Self::Error> {
-        match value {
-            JWA::ES256 => Ok(&ECDSA_P256_SHA256_FIXED),
-            JWA::ES384 => Ok(&ECDSA_P384_SHA384_FIXED),
-            JWA::ES512 => Ok(&ECDSA_P256_SHA256_FIXED),
+            JWA::ES256 => Ok(JWKEllipticCurves::P256),
+            JWA::ES384 => Ok(JWKEllipticCurves::P384),
+            JWA::ES512 => Ok(JWKEllipticCurves::P521),
             JWA::HS256 | JWA::HS384 | JWA::HS512 => Err(OpaqueError::from_display(
                 "Hmac cannot be converted to elliptic curve",
             )),
@@ -100,5 +84,14 @@ impl TryFrom<JWA> for &'static EcdsaSigningAlgorithm {
                 OpaqueError::from_display("RSA cannot be converted to elliptic curve"),
             ),
         }
+    }
+}
+
+impl TryFrom<JWA> for &'static EcdsaVerificationAlgorithm {
+    type Error = OpaqueError;
+
+    fn try_from(value: JWA) -> Result<Self, Self::Error> {
+        let signing_algo: &'static EcdsaSigningAlgorithm = value.try_into()?;
+        Ok(signing_algo.deref())
     }
 }

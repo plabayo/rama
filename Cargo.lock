@@ -2443,6 +2443,7 @@ dependencies = [
  "base64",
  "rama-core",
  "rama-net",
+ "rama-utils",
  "rcgen",
  "serde",
  "serde_json",
