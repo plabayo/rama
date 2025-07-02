@@ -2648,6 +2648,7 @@ dependencies = [
  "rama-boring",
  "rama-boring-tokio",
  "rama-core",
+ "rama-http-types",
  "rama-net",
  "rama-ua",
  "rama-utils",

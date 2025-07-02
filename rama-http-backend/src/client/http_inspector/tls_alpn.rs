@@ -3,6 +3,7 @@ use rama_core::{
     Context, Service,
     error::{BoxError, OpaqueError},
 };
+use rama_http::conn::EnforcedHttpVersion;
 use rama_http_types::Request;
 use rama_net::tls::{ApplicationProtocol, client::NegotiatedTlsParameters};
 
@@ -32,7 +33,9 @@ where
         ctx: Context<State>,
         mut req: Request<ReqBody>,
     ) -> Result<Self::Response, Self::Error> {
-        if let Some(proto) = ctx
+        if let Some(version) = ctx.get::<EnforcedHttpVersion>() {
+            *req.version_mut() = version.0;
+        } else if let Some(proto) = ctx
             .get::<NegotiatedTlsParameters>()
             .and_then(|params| params.application_layer_protocol.as_ref())
         {
