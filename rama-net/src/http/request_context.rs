@@ -8,6 +8,7 @@ use crate::{
 use rama_core::Context;
 use rama_core::error::OpaqueError;
 use rama_core::telemetry::tracing;
+use rama_http_types::conn::EnforcedHttpVersion;
 use rama_http_types::{HttpRequestParts, Method};
 use rama_http_types::{Uri, Version};
 
@@ -128,7 +129,11 @@ impl<T: HttpRequestParts, State> TryFrom<(&Context<State>, &T)> for RequestConte
 
         tracing::trace!(url.full = %uri, "request context: detected authority: {authority}");
 
-        let http_version = ctx
+        let http_version = ctx.get::<EnforcedHttpVersion>().and_then(|version|{
+            tracing::trace!(url.full = %uri, "request context: using enforce http version: {version:?}");
+            Some(version.0)
+        }).or_else(|| {
+            ctx
             .get::<Forwarded>()
             .and_then(|f| {
                 f.client_version().map(|v| match v {
@@ -139,7 +144,8 @@ impl<T: HttpRequestParts, State> TryFrom<(&Context<State>, &T)> for RequestConte
                     crate::forwarded::ForwardedVersion::HTTP_3 => Version::HTTP_3,
                 })
             })
-            .unwrap_or_else(|| req.version());
+        }).unwrap_or_else(|| req.version());
+
         tracing::trace!(url.full = %uri, "request context: maybe detected http version: {http_version:?}");
 
         Ok(RequestContext {
