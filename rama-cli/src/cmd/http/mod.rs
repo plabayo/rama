@@ -143,31 +143,31 @@ pub struct CliCommandHttp {
     emulate: bool,
 
     #[arg(long = "http0.9")]
-    /// forced http_version to http/0.9
+    /// force http_version to http/0.9
     ///
     /// Mutually exclusive with --http1.0, --http1.1, --http2, --http3
     http_09: bool,
 
     #[arg(long = "http1.0")]
-    /// forced http_version to http/1.0
+    /// force http_version to http/1.0
     ///
     /// Mutually exclusive with --http1.0, --http1.1, --http2, --http3
     http_10: bool,
 
     #[arg(long = "http1.1")]
-    /// forced http_version to http/1.1
+    /// force http_version to http/1.1
     ///
     /// Mutually exclusive with --http0.9, --http1.0, --http2, --http3
     http_11: bool,
 
     #[arg(long = "http2")]
-    /// forced http_version to http/2
+    /// force http_version to http/2
     ///
     /// Mutually exclusive with --http0.9, --http1.0, --http1.1, --http3
     http_2: bool,
 
     #[arg(long = "http3")]
-    /// forced http_version to http/3
+    /// force http_version to http/3
     ///
     /// Mutually exclusive with --http0.9, --http1.0, --http1.1, --http2
     http_3: bool,
