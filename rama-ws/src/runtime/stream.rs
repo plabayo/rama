@@ -13,8 +13,8 @@ use rama_http::io::upgrade;
 use rama_net::stream::Stream;
 
 use crate::{
-    Message, ProtocolError, WebSocket,
-    protocol::{CloseFrame, Role, WebSocketConfig},
+    Message, ProtocolError,
+    protocol::{CloseFrame, Role, WebSocket, WebSocketConfig},
     runtime::{
         compat::{self, AllowStd, ContextWaker},
         handshake::without_handshake,

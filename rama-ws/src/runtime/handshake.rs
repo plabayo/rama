@@ -8,7 +8,7 @@ use rama_core::telemetry::tracing::trace;
 use rama_net::stream::Stream;
 
 use crate::{
-    WebSocket,
+    protocol::WebSocket,
     runtime::{AsyncWebSocket, compat::AllowStd},
 };
 

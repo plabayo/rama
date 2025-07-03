@@ -83,11 +83,12 @@ where
         .typed_header(headers::SecWebsocketVersion::V13);
 
     match version {
-        Version::HTTP_11 => builder
+        version @ (Version::HTTP_10 | Version::HTTP_11) => builder
             .method(Method::GET)
+            .version(version)
             .typed_header(headers::Upgrade::websocket())
             .typed_header(headers::Connection::upgrade()),
-        Version::HTTP_2 => builder.method(Method::CONNECT),
+        Version::HTTP_2 => builder.method(Method::CONNECT).version(Version::HTTP_2),
         _ => unreachable!("bug"),
     }
 }
@@ -102,11 +103,12 @@ where
     T: IntoUrl,
 {
     let builder = match version {
-        Version::HTTP_11 => service
+        version @ (Version::HTTP_10 | Version::HTTP_11) => service
             .get(uri)
+            .version(version)
             .typed_header(headers::Upgrade::websocket())
             .typed_header(headers::Connection::upgrade()),
-        Version::HTTP_2 => service.connect(uri),
+        Version::HTTP_2 => service.connect(uri).version(Version::HTTP_2),
         _ => unreachable!("bug"),
     };
 

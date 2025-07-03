@@ -23,4 +23,5 @@ pub mod handshake;
 pub mod protocol;
 pub mod runtime;
 
-pub use crate::protocol::{Message, ProtocolError, WebSocket, frame::Utf8Bytes};
+pub use crate::protocol::{Message, ProtocolError, frame::Utf8Bytes};
+pub use runtime::AsyncWebSocket;

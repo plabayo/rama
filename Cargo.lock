@@ -2898,12 +2898,14 @@ dependencies = [
  "pin-project-lite",
  "rama-core",
  "rama-http",
+ "rama-http-backend",
  "rama-net",
  "rama-utils",
  "rand 0.9.1",
  "smallvec",
  "smol_str",
  "tokio",
+ "tracing-subscriber",
 ]
 
 [[package]]

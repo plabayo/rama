@@ -65,7 +65,7 @@ pub struct CliCommandWs {
     /// emulate user agent
     emulate: bool,
 
-    #[arg(long, short = 'p', num_args = 1.., value_delimiter = ',')]
+    #[arg(long, short = 'p', value_delimiter = ',')]
     /// WebSocket sub protocols to use
     protocols: Option<Vec<String>>,
 
