@@ -90,6 +90,7 @@ impl RamaService {
         builder
             .stdout(std::process::Stdio::piped())
             .arg("echo")
+            .arg("--ws")
             .arg("--bind")
             .arg(format!("127.0.0.1:{port}"))
             .env(

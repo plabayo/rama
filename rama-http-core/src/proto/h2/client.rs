@@ -26,7 +26,6 @@ use super::ping::{Ponger, Recorder};
 use super::{H2Upgraded, PipeToSendStream, SendBuf, ping};
 use crate::body::{Body, Incoming as IncomingBody};
 use crate::client::dispatch::{Callback, SendWhen, TrySendError};
-use crate::ext::Protocol;
 use crate::h2::SendStream;
 use crate::h2::client::ResponseFuture;
 use crate::h2::client::{Builder, Connection, SendRequest};
@@ -757,10 +756,6 @@ where
                             message: None,
                         }));
                         continue;
-                    }
-
-                    if let Some(protocol) = req.extensions_mut().remove::<Protocol>() {
-                        req.extensions_mut().insert(protocol.into_inner());
                     }
 
                     let (fut, body_tx) = match self.h2_tx.send_request(req, !is_connect && eos) {

@@ -8,6 +8,7 @@ use rama_http::{
     header::{HOST, USER_AGENT},
     opentelemetry::version_as_protocol_version,
 };
+use rama_http_core::h2::ext::Protocol;
 use rama_http_types::{
     Request, Version,
     conn::{H2ClientContextParams, Http1ClientContextParams},
@@ -149,6 +150,11 @@ where
 
                 let executor = ctx.executor().clone();
                 let mut builder = rama_http_core::client::conn::http2::Builder::new(executor);
+
+                if req.extensions().get::<Protocol>().is_some() {
+                    // e.g. used for h2 bootstrap support for WebSocket
+                    builder.enable_connect_protocol(1);
+                }
 
                 if let Some(params) = ctx
                     .get::<H2ClientContextParams>()

@@ -1,28 +1,33 @@
 //! WebSocket server types and utilities
 
-use std::fmt;
+use std::{
+    fmt,
+    ops::{Deref, DerefMut},
+};
 
 use rama_core::{
     Context, Service,
     context::Extensions,
     error::{ErrorContext, OpaqueError},
-    futures::{StreamExt, TryStreamExt, future},
+    futures::{StreamExt, TryStreamExt},
     matcher::Matcher,
     telemetry::tracing::{self, Instrument},
 };
 use rama_http::{
     HeaderValue, Method, Request, Response, StatusCode, Version,
+    dep::http::request,
     header::{self, SEC_WEBSOCKET_PROTOCOL},
     headers::{self, HeaderMapExt, HttpResponseBuilderExt},
     io::upgrade,
     proto::h2::ext::Protocol,
-    service::web::response::IntoResponse,
+    service::web::response::{Headers, IntoResponse},
 };
 use smallvec::SmallVec;
 use smol_str::SmolStr;
 
 use crate::{
-    handshake::SubProtocols,
+    Message,
+    handshake::{AcceptedSubProtocol, SubProtocols},
     protocol::{Role, WebSocketConfig},
     runtime::AsyncWebSocket,
 };
@@ -172,11 +177,13 @@ impl std::error::Error for RequestValidateError {}
 
 pub fn validate_http_client_request<Body>(
     request: &Request<Body>,
-) -> Result<(headers::SecWebsocketAccept, Option<SubProtocols>), RequestValidateError> {
+) -> Result<(Option<headers::SecWebsocketAccept>, Option<SubProtocols>), RequestValidateError> {
     tracing::trace!(
         http.version = ?request.version(),
         "validate http client request"
     );
+
+    let mut accept_header = None;
 
     match request.version() {
         Version::HTTP_10 | Version::HTTP_11 => {
@@ -210,6 +217,17 @@ pub fn validate_http_client_request<Body>(
             {
                 return Err(RequestValidateError::MissingConnectionUpgradeHeader);
             }
+
+            // A |Sec-WebSocket-Key| header field with a base64-encoded (see
+            // Section 4 of [RFC4648]) value that, when decoded, is 16 bytes in
+            // length.
+            //
+            // Only used for http/1.1 style WebSocket upgrade, not h2
+            // as in the latter it is deprecated by the `:protocol` PSEUDO header.
+            accept_header = match request.headers().typed_get::<headers::SecWebsocketKey>() {
+                Some(key) => Some(headers::SecWebsocketAccept::from(key)),
+                None => return Err(RequestValidateError::InvalidSecWebSocketKeyHeader),
+            };
         }
         Version::HTTP_2 => {
             match request.method() {
@@ -233,7 +251,7 @@ pub fn validate_http_client_request<Body>(
         }
     }
 
-    //  A |Sec-WebSocket-Version| header field, with a value of 13.
+    // A |Sec-WebSocket-Version| header field, with a value of 13.
     if request
         .headers()
         .typed_get::<headers::SecWebsocketVersion>()
@@ -241,14 +259,6 @@ pub fn validate_http_client_request<Body>(
     {
         return Err(RequestValidateError::InvalidSecWebSocketVersionHeader);
     }
-
-    // A |Sec-WebSocket-Key| header field with a base64-encoded (see
-    // Section 4 of [RFC4648]) value that, when decoded, is 16 bytes in
-    // length.
-    let accept_header = match request.headers().typed_get::<headers::SecWebsocketKey>() {
-        Some(key) => headers::SecWebsocketAccept::from(key),
-        None => return Err(RequestValidateError::InvalidSecWebSocketKeyHeader),
-    };
 
     // Optionally, a |Sec-WebSocket-Protocol| header field, with a list
     // of values indicating which protocols the client would like to
@@ -367,7 +377,11 @@ impl WebSocketAcceptor {
     }
 
     /// Turn this [`WebSocketAcceptor`] into an echo [`WebSocketAcceptorService`]].
-    pub fn into_echo_service(self) -> WebSocketAcceptorService<WebSocketEchoService> {
+    pub fn into_echo_service(mut self) -> WebSocketAcceptorService<WebSocketEchoService> {
+        if self.sub_protocols.is_none() {
+            self.sub_protocols_flex = true;
+            self.sub_protocols = Some(ECHO_SERVICE_SUB_PROTOCOLS);
+        }
         WebSocketAcceptorService {
             acceptor: self,
             config: None,
@@ -448,13 +462,17 @@ where
 
                 match req.version() {
                     version @ (Version::HTTP_10 | Version::HTTP_11) => {
+                        let accept_header = accept_header.ok_or_else(|| {
+                            tracing::debug!("WebSocketAcceptor: missing accept header (no key?)");
+                            StatusCode::BAD_REQUEST.into_response()
+                        })?;
+
                         let mut response = Response::builder()
                             .status(StatusCode::SWITCHING_PROTOCOLS)
                             .version(version)
                             .typed_header(accept_header)
                             .typed_header(headers::Upgrade::websocket())
                             .typed_header(headers::Connection::upgrade())
-                            .typed_header(headers::SecWebsocketVersion::V13)
                             .body(rama_http::Body::empty())
                             .unwrap();
                         if let Some(protocol) = protocol_header_value {
@@ -468,8 +486,6 @@ where
                         let mut response = Response::builder()
                             .status(StatusCode::OK)
                             .version(Version::HTTP_2)
-                            .typed_header(accept_header)
-                            .typed_header(headers::SecWebsocketVersion::V13)
                             .body(rama_http::Body::empty())
                             .unwrap();
                         if let Some(protocol) = protocol_header_value {
@@ -489,8 +505,18 @@ where
                 }
             }
             Err(err) => {
+                let response =
+                    if matches!(err, RequestValidateError::InvalidSecWebSocketVersionHeader) {
+                        (
+                            Headers::single(headers::SecWebsocketVersion::V13),
+                            StatusCode::BAD_REQUEST,
+                        )
+                            .into_response()
+                    } else {
+                        StatusCode::BAD_REQUEST.into_response()
+                    };
                 tracing::debug!("WebSocketAcceptor: http client request failed to validate: {err}");
-                Err(StatusCode::BAD_REQUEST.into_response())
+                Err(response)
             }
         }
     }
@@ -536,9 +562,51 @@ impl<S> WebSocketAcceptorService<S> {
     }
 }
 
+#[derive(Debug)]
+/// Server WebSocket, used as input-output stream.
+///
+/// Utility type created via [`WebSocketAcceptorService`].
+///
+/// [`AcceptedSubProtocol`] can be found in the [`Context`], if any.
+pub struct ServerWebSocket {
+    socket: AsyncWebSocket,
+    request: request::Parts,
+}
+
+impl Deref for ServerWebSocket {
+    type Target = AsyncWebSocket;
+
+    fn deref(&self) -> &Self::Target {
+        &self.socket
+    }
+}
+
+impl DerefMut for ServerWebSocket {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.socket
+    }
+}
+
+impl ServerWebSocket {
+    /// View the original request data, from which this server web socket was created.
+    pub fn request(&self) -> &request::Parts {
+        &self.request
+    }
+
+    /// Consume `self` as an [`AsyncWebSocket].
+    pub fn into_inner(self) -> AsyncWebSocket {
+        self.socket
+    }
+
+    /// Consume `self` into its parts.
+    pub fn into_parts(self) -> (AsyncWebSocket, request::Parts) {
+        (self.socket, self.request)
+    }
+}
+
 impl<S, State, Body> Service<State, Request<Body>> for WebSocketAcceptorService<S>
 where
-    S: Clone + Service<State, AsyncWebSocket, Response = ()>,
+    S: Clone + Service<State, ServerWebSocket, Response = ()>,
     State: Clone + Send + Sync + 'static,
     Body: Send + 'static,
 {
@@ -551,7 +619,7 @@ where
         req: Request<Body>,
     ) -> Result<Self::Response, Self::Error> {
         match self.acceptor.serve(ctx, req).await {
-            Ok((resp, ctx, req)) => {
+            Ok((resp, ctx, mut req)) => {
                 let handler = self.service.clone();
                 let span = tracing::trace_root_span!(
                     "ws::serve",
@@ -564,14 +632,22 @@ where
                 );
 
                 let exec = ctx.executor().clone();
+
                 exec.spawn_task(
                     async move {
-                        match upgrade::on(req).await {
+                        match upgrade::on(&mut req).await {
                             Ok(upgraded) => {
                                 let socket =
                                     AsyncWebSocket::from_raw_socket(upgraded, Role::Server, None)
                                         .await;
-                                let _ = handler.serve(ctx, socket).await;
+                                let (parts, _) = req.into_parts();
+
+                                let server_socket = ServerWebSocket {
+                                    socket,
+                                    request: parts,
+                                };
+
+                                let _ = handler.serve(ctx, server_socket).await;
                             }
                             Err(e) => {
                                 tracing::error!("ws upgrade error: {e:?}");
@@ -587,6 +663,20 @@ where
     }
 }
 
+/// Default protocol used by [`WebSocketEchoService`], incl when no match is found
+pub const ECHO_SERVICE_SUB_PROTOCOL_DEFAULT: &str = "echo";
+/// Uppercase all characters as part of the echod response in [`WebSocketEchoService`].
+pub const ECHO_SERVICE_SUB_PROTOCOL_UPPER: &str = "echo-upper";
+/// Lowercase all characters as part of the echod response in [`WebSocketEchoService`].
+pub const ECHO_SERVICE_SUB_PROTOCOL_LOWER: &str = "echo-lower";
+
+/// The protocols supported by the [`WebSocketEchoService`].
+pub const ECHO_SERVICE_SUB_PROTOCOLS: SubProtocols = SubProtocols(SmallVec::from_const([
+    SmolStr::new_static(ECHO_SERVICE_SUB_PROTOCOL_DEFAULT),
+    SmolStr::new_static(ECHO_SERVICE_SUB_PROTOCOL_UPPER),
+    SmolStr::new_static(ECHO_SERVICE_SUB_PROTOCOL_LOWER),
+]));
+
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
 /// Create a service which echos all incoming messages.
@@ -596,6 +686,79 @@ impl WebSocketEchoService {
     /// Create a new [`EchoWebSocketService`].
     pub fn new() -> Self {
         Self
+    }
+}
+
+impl<State> Service<State, AsyncWebSocket> for WebSocketEchoService
+where
+    State: Clone + Send + Sync + 'static,
+{
+    type Response = ();
+    type Error = OpaqueError;
+
+    async fn serve(
+        &self,
+        ctx: Context<State>,
+        socket: AsyncWebSocket,
+    ) -> Result<Self::Response, Self::Error> {
+        let protocol = ctx
+            .get::<AcceptedSubProtocol>()
+            .map(|p| p.as_str())
+            .unwrap_or(ECHO_SERVICE_SUB_PROTOCOL_DEFAULT);
+        let transformer = if protocol.eq_ignore_ascii_case(ECHO_SERVICE_SUB_PROTOCOL_LOWER) {
+            |msg: Message| {
+                std::future::ready(Ok(match msg {
+                    Message::Text(original) => Some(original.to_lowercase().to_string().into()),
+                    msg @ Message::Binary(_) => Some(msg),
+                    Message::Ping(_) | Message::Pong(_) | Message::Close(_) | Message::Frame(_) => {
+                        None
+                    }
+                }))
+            }
+        } else if protocol.eq_ignore_ascii_case(ECHO_SERVICE_SUB_PROTOCOL_UPPER) {
+            |msg: Message| {
+                std::future::ready(Ok(match msg {
+                    Message::Text(original) => Some(original.to_uppercase().to_string().into()),
+                    msg @ Message::Binary(_) => Some(msg),
+                    Message::Ping(_) | Message::Pong(_) | Message::Close(_) | Message::Frame(_) => {
+                        None
+                    }
+                }))
+            }
+        } else {
+            |msg: Message| {
+                std::future::ready(Ok(match msg {
+                    msg @ (Message::Text(_) | Message::Binary(_)) => Some(msg),
+                    Message::Ping(_) | Message::Pong(_) | Message::Close(_) | Message::Frame(_) => {
+                        None
+                    }
+                }))
+            }
+        };
+
+        let (write, read) = socket.split();
+        // We should not forward messages other than text or binary.
+        read.try_filter_map(transformer)
+            .forward(write)
+            .await
+            .context("forward messages")
+    }
+}
+
+impl<State> Service<State, ServerWebSocket> for WebSocketEchoService
+where
+    State: Clone + Send + Sync + 'static,
+{
+    type Response = ();
+    type Error = OpaqueError;
+
+    async fn serve(
+        &self,
+        ctx: Context<State>,
+        socket: ServerWebSocket,
+    ) -> Result<Self::Response, Self::Error> {
+        let socket = socket.into_inner();
+        self.serve(ctx, socket).await
     }
 }
 
@@ -609,31 +772,10 @@ where
     async fn serve(
         &self,
         ctx: Context<State>,
-        stream: upgrade::Upgraded,
+        io: upgrade::Upgraded,
     ) -> Result<Self::Response, Self::Error> {
-        let socket = AsyncWebSocket::from_raw_socket(stream, Role::Server, None).await;
+        let socket = AsyncWebSocket::from_raw_socket(io, Role::Server, None).await;
         self.serve(ctx, socket).await
-    }
-}
-
-impl<State> Service<State, AsyncWebSocket> for WebSocketEchoService
-where
-    State: Clone + Send + Sync + 'static,
-{
-    type Response = ();
-    type Error = OpaqueError;
-
-    async fn serve(
-        &self,
-        _ctx: Context<State>,
-        socket: AsyncWebSocket,
-    ) -> Result<Self::Response, Self::Error> {
-        let (write, read) = socket.split();
-        // We should not forward messages other than text or binary.
-        read.try_filter(|msg| future::ready(msg.is_text() || msg.is_binary()))
-            .forward(write)
-            .await
-            .context("forward messages")
     }
 }
 
@@ -862,7 +1004,6 @@ mod tests {
             request! {
                 "CONNECT" "HTTP/2" "/"
                 "Sec-WebSocket-Version": "13"
-                "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ=="
                 w/ [
                     Protocol::from_static("websocket"),
                 ]
@@ -1008,7 +1149,6 @@ mod tests {
             request! {
                 "CONNECT" "HTTP/2" "/"
                 "Sec-WebSocket-Version": "13"
-                "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ=="
                 w/ [
                     Protocol::from_static("websocket"),
                 ]
@@ -1037,7 +1177,6 @@ mod tests {
             request! {
                 "CONNECT" "HTTP/2" "/"
                 "Sec-WebSocket-Version": "13"
-                "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ=="
                 "Sec-WebSocket-Protocol": "foo"
                 w/ [
                     Protocol::from_static("websocket"),
@@ -1067,7 +1206,6 @@ mod tests {
             request! {
                 "CONNECT" "HTTP/2" "/"
                 "Sec-WebSocket-Version": "13"
-                "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ=="
                 "Sec-WebSocket-Protocol": "foo,baz, foo"
                 w/ [
                     Protocol::from_static("websocket"),
@@ -1100,7 +1238,6 @@ mod tests {
             request! {
                 "CONNECT" "HTTP/2" "/"
                 "Sec-WebSocket-Version": "13"
-                "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ=="
                 "Sec-WebSocket-Protocol": "baz,fo"
                 w/ [
                     Protocol::from_static("websocket"),
@@ -1134,7 +1271,6 @@ mod tests {
             request! {
                 "CONNECT" "HTTP/2" "/"
                 "Sec-WebSocket-Version": "13"
-                "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ=="
                 w/ [
                     Protocol::from_static("websocket"),
                 ]
@@ -1162,7 +1298,6 @@ mod tests {
             request! {
                 "CONNECT" "HTTP/2" "/"
                 "Sec-WebSocket-Version": "13"
-                "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ=="
                 "Sec-WebSocket-Protocol": "b"
                 w/ [
                     Protocol::from_static("websocket"),
@@ -1192,7 +1327,6 @@ mod tests {
             request! {
                 "CONNECT" "HTTP/2" "/"
                 "Sec-WebSocket-Version": "13"
-                "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ=="
                 "Sec-WebSocket-Protocol": "a,test, c"
                 w/ [
                     Protocol::from_static("websocket"),
@@ -1221,7 +1355,6 @@ mod tests {
             request! {
                 "CONNECT" "HTTP/2" "/"
                 "Sec-WebSocket-Version": "13"
-                "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ=="
                 "Sec-WebSocket-Protocol": "test"
                 w/ [
                     Protocol::from_static("websocket"),

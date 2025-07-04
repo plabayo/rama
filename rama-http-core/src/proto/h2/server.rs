@@ -11,14 +11,12 @@ use rama_core::rt::Executor;
 use rama_core::telemetry::tracing::{Instrument, debug, trace, trace_root_span, warn};
 use rama_http::io::upgrade::{self, OnUpgrade, Pending, Upgraded};
 use rama_http::opentelemetry::version_as_protocol_version;
-use rama_http_types::proto::h2::ext;
 use rama_http_types::{Method, Request, Response, header};
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use super::{PipeToSendStream, SendBuf, ping};
 use crate::body::{Body, Incoming as IncomingBody};
 use crate::common::date;
-use crate::ext::Protocol;
 use crate::headers;
 use crate::proto::Dispatched;
 use crate::proto::h2::ping::Recorder;
@@ -248,7 +246,7 @@ where
 
                         let is_connect = req.method() == Method::CONNECT;
                         let (mut parts, stream) = req.into_parts();
-                        let (mut req, connect_parts) = if !is_connect {
+                        let (req, connect_parts) = if !is_connect {
                             (
                                 Request::from_parts(
                                     parts,
@@ -274,10 +272,6 @@ where
                                 }),
                             )
                         };
-
-                        if let Some(protocol) = req.extensions_mut().remove::<ext::Protocol>() {
-                            req.extensions_mut().insert(Protocol::from_inner(protocol));
-                        }
 
                         let serve_span = trace_root_span!(
                             "h2::stream",

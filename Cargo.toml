@@ -630,3 +630,19 @@ required-features = ["http-full"]
 [[example]]
 name = "unix_datagram_codec"
 required-features = ["net"]
+
+[[example]]
+name = "ws_echo_server"
+required-features = ["http-full"]
+
+[[example]]
+name = "ws_chat_server"
+required-features = ["http-full"]
+
+[[example]]
+name = "ws_tls_server"
+required-features = ["http-full", "boring"]
+
+[[example]]
+name = "ws_over_h2"
+required-features = ["http-full", "boring"]
