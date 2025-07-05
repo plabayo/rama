@@ -941,7 +941,7 @@ impl SocketOptions {
         }
         #[cfg(target_os = "linux")]
         if let Some(transparent) = self.ip_transparent {
-            socket.set_ip_transparent(transparent)?;
+            socket.set_ip_transparent_v4(transparent)?;
         }
         if let Some(ttl) = self.ttl {
             socket.set_ttl_v4(ttl)?;
@@ -1080,22 +1080,22 @@ impl SocketOptions {
                 socket.set_mark(mark)?;
             }
             if let Some(cork) = self.tcp_cork {
-                socket.set_cork(cork)?;
+                socket.set_tcp_cork(cork)?;
             }
             if let Some(quickack) = self.tcp_quick_ack {
-                socket.set_quickack(quickack)?;
+                socket.set_tcp_quickack(quickack)?;
             }
             if let Some(timeouts) = self.tcp_thin_linear_timeouts {
-                socket.set_thin_linear_timeouts(timeouts)?;
+                socket.set_tcp_thin_linear_timeouts(timeouts)?;
             }
             if let Some(tcp_user_timeout) = self.tcp_user_timeout {
                 socket.set_tcp_user_timeout(Some(tcp_user_timeout))?;
             }
             if let Some(freebind) = self.freebind {
-                socket.set_freebind(freebind)?;
+                socket.set_freebind_v4(freebind)?;
             }
             if let Some(freebind_ipv6) = self.freebind_ipv6 {
-                socket.set_freebind_ipv6(freebind_ipv6)?;
+                socket.set_freebind_v6(freebind_ipv6)?;
             }
         }
 
