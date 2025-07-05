@@ -114,7 +114,7 @@ impl Ja3 {
                 panic!("md5 ingest failed: {err:?}");
             }
         });
-        let digest = ctx.compute();
+        let digest = ctx.finalize();
         if lower {
             write!(w, "{digest:x}",)?;
         } else {

@@ -944,7 +944,7 @@ impl SocketOptions {
             socket.set_ip_transparent(transparent)?;
         }
         if let Some(ttl) = self.ttl {
-            socket.set_ttl(ttl)?;
+            socket.set_ttl_v4(ttl)?;
         }
         #[cfg(not(any(
             target_os = "fuchsia",
@@ -954,7 +954,7 @@ impl SocketOptions {
             target_os = "haiku",
         )))]
         if let Some(tos) = self.tos {
-            socket.set_tos(tos)?;
+            socket.set_tos_v4(tos)?;
         }
         #[cfg(not(any(
             target_os = "aix",
@@ -972,7 +972,7 @@ impl SocketOptions {
             target_os = "vita",
         )))]
         if let Some(recv_tos) = self.recv_tos {
-            socket.set_recv_tos(recv_tos)?;
+            socket.set_recv_tos_v4(recv_tos)?;
         }
         if let Some(loop_v4) = self.multicast_loop_v4 {
             socket.set_multicast_loop_v4(loop_v4)?;
@@ -1061,12 +1061,12 @@ impl SocketOptions {
             socket.set_tcp_keepalive(&keep_alive.into_socket_keep_alive())?;
         }
         if let Some(no_delay) = self.tcp_no_delay {
-            socket.set_nodelay(no_delay)?;
+            socket.set_tcp_nodelay(no_delay)?;
         }
 
         #[cfg(all(unix, not(target_os = "redox")))]
         if let Some(mss) = self.tcp_max_segments {
-            socket.set_mss(mss)?;
+            socket.set_tcp_mss(mss)?;
         }
 
         #[cfg(any(target_os = "freebsd", target_os = "linux"))]

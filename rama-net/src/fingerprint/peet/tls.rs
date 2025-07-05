@@ -259,7 +259,7 @@ impl PeetPrint {
                 let mut writer = Md5Writer(&mut ctx);
                 self.write_to_fmt(&mut writer)?;
             }
-            let digest = ctx.compute();
+            let digest = ctx.finalize();
             write!(f, "{}", hex::encode(*digest))
         } else {
             self.write_to_fmt(f)

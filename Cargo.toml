@@ -113,7 +113,7 @@ itoa = "1"
 jemallocator = { package = "tikv-jemallocator", version = "0.6" }
 libfuzzer-sys = "0.4"
 matchit = "0.8"
-md5 = "0.7"
+md5 = "0.8"
 memchr = "2.7"
 mimalloc = { version = "0.1", default-features = false }
 mime = "0.3.17"
@@ -172,7 +172,7 @@ rama-utils = { version = "0.3.0-alpha.1", path = "./rama-utils" }
 rama-ws = { version = "0.3.0-alpha.1", path = "./rama-ws" }
 rand = "0.9"
 ratatui = "0.29"
-rcgen = { version = "0.13", default-features = false, features = ["pem", "aws_lc_rs"] }
+rcgen = { version = "0.14", default-features = false, features = ["pem", "aws_lc_rs"] }
 regex = "1.11"
 rustls = { version = "0.23", default-features = false, features = [
     "logging",
@@ -192,13 +192,13 @@ sha2 = "0.10"
 slab = "0.4"
 smallvec = { version = "1.15", features = ["const_generics", "const_new"] }
 smol_str = "0.3"
-socket2 = "0.5.10"
+socket2 = "0.6"
 spmc = "0.3"
 syn = "2.0"
 sync_wrapper = "1.0"
 tempfile = "3.20"
 terminal-prompt = "0.2"
-tokio = "1.45"
+tokio = "1.46"
 tokio-graceful = "0.2"
 tokio-postgres = "0.7"
 tokio-rustls = { version = "0.26", default-features = false, features = [
