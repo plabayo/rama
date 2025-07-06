@@ -175,7 +175,7 @@ async fn test_http_echo_secure() {
 async fn test_http_forced_version() {
     utils::init_tracing();
 
-    let _guard = utils::RamaService::echo(63103, true, None);
+    let _guard = utils::RamaService::echo(63104, true, None);
 
     struct Test {
         cli_flag: &'static str,
@@ -209,7 +209,7 @@ async fn test_http_forced_version() {
 
         let lines = utils::RamaService::http(vec![
             test.cli_flag,
-            "https://127.0.0.1:63103",
+            "https://127.0.0.1:63104",
             "foo:bar",
             "a=4",
             "q==1",
