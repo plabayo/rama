@@ -183,7 +183,7 @@ async fn test_http_forced_version() {
         tls_alpn: &'static str,
     }
 
-    let tests = vec![
+    let tests = [
         Test {
             cli_flag: "--http1.0",
             version_response: "HTTP/1.0 200 OK",

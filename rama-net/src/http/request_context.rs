@@ -129,9 +129,9 @@ impl<T: HttpRequestParts, State> TryFrom<(&Context<State>, &T)> for RequestConte
 
         tracing::trace!(url.full = %uri, "request context: detected authority: {authority}");
 
-        let http_version = ctx.get::<EnforcedHttpVersion>().and_then(|version|{
+        let http_version = ctx.get::<EnforcedHttpVersion>().map(|version|{
             tracing::trace!(url.full = %uri, "request context: using enforce http version: {version:?}");
-            Some(version.0)
+            version.0
         }).or_else(|| {
             ctx
             .get::<Forwarded>()
