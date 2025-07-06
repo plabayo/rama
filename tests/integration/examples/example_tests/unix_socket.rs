@@ -21,7 +21,7 @@ async fn test_unix_socket() {
         {
             Ok(EstablishedClientConnection { conn, .. }) => stream = Some(conn),
             Err(e) => {
-                eprintln!("unix connect error: {}", e);
+                eprintln!("unix connect error: {e}");
                 tokio::time::sleep(std::time::Duration::from_millis(500 + 250 * i)).await;
             }
         }

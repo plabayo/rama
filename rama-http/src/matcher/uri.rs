@@ -80,9 +80,7 @@ mod test {
         for (matcher, uri) in test_cases.into_iter() {
             assert!(
                 matcher.matches_uri(&(uri.parse().unwrap())),
-                "({:?}).matches_uri({})",
-                matcher,
-                uri
+                "({matcher:?}).matches_uri({uri})",
             );
         }
     }
@@ -99,9 +97,7 @@ mod test {
         for (matcher, uri) in test_cases.into_iter() {
             assert!(
                 !matcher.matches_uri(&(uri.parse().unwrap())),
-                "!({:?}).matches_uri({})",
-                matcher,
-                uri
+                "!({matcher:?}).matches_uri({uri})",
             );
         }
     }

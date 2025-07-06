@@ -25,6 +25,8 @@ use base64::engine::general_purpose::STANDARD as ENGINE;
 
 use std::{convert::Infallible, sync::Arc, time::Duration};
 
+use crate::utils::http::HttpVersion;
+
 #[derive(Debug, Args)]
 /// rama echo service (echos the http request and tls client config)
 pub struct CliCommandEcho {
@@ -58,9 +60,17 @@ pub struct CliCommandEcho {
     /// Or using HaProxy protocol.
     forward: Option<ForwardKind>,
 
+    /// http version to serve echo Service from
+    #[arg(long, default_value = "auto")]
+    http_version: HttpVersion,
+
     #[arg(long, short = 's')]
     /// run echo service in secure mode (enable TLS)
     secure: bool,
+
+    #[arg(long)]
+    /// enable ws support
+    ws: bool,
 }
 
 /// run the rama echo service
@@ -126,11 +136,13 @@ pub async fn run(cfg: CliCommandEcho) -> Result<(), BoxError> {
     let graceful = rama::graceful::Shutdown::default();
 
     let tcp_service = EchoServiceBuilder::new()
-        .concurrent(cfg.concurrent)
-        .timeout(Duration::from_secs(cfg.timeout))
-        .maybe_forward(cfg.forward)
-        .maybe_tls_server_config(maybe_tls_server_config)
-        .http_layer(maybe_acme_service)
+        .with_concurrent(cfg.concurrent)
+        .with_timeout(Duration::from_secs(cfg.timeout))
+        .with_ws_support(cfg.ws)
+        .maybe_with_http_version(cfg.http_version.into())
+        .maybe_with_forward(cfg.forward)
+        .maybe_with_tls_server_config(maybe_tls_server_config)
+        .with_http_layer(maybe_acme_service)
         .with_user_agent_database(Arc::new(UserAgentDatabase::embedded()))
         .build(Executor::graceful(graceful.guard()))
         .map_err(OpaqueError::from_boxed)

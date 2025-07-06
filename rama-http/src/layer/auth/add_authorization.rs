@@ -251,15 +251,14 @@ where
         ctx: Context<State>,
         mut req: Request<ReqBody>,
     ) -> Result<Self::Response, Self::Error> {
-        if let Some(value) = &self.value {
-            if !self.if_not_present
+        if let Some(value) = &self.value
+            && (!self.if_not_present
                 || !req
                     .headers()
-                    .contains_key(rama_http_types::header::AUTHORIZATION)
-            {
-                req.headers_mut()
-                    .insert(rama_http_types::header::AUTHORIZATION, value.clone());
-            }
+                    .contains_key(rama_http_types::header::AUTHORIZATION))
+        {
+            req.headers_mut()
+                .insert(rama_http_types::header::AUTHORIZATION, value.clone());
         }
         self.inner.serve(ctx, req).await
     }

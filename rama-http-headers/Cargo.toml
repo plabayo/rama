@@ -27,6 +27,7 @@ rama-http-types = { workspace = true }
 rama-macros = { workspace = true }
 rama-net = { workspace = true, features = ["http"] }
 rama-utils = { workspace = true }
+rand = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 sha1 = { workspace = true }
 

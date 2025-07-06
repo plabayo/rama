@@ -5,6 +5,7 @@ use rama_core::{
     inspect::RequestInspector,
     telemetry::tracing,
 };
+use rama_http::header::SEC_WEBSOCKET_KEY;
 use rama_http_headers::{HeaderMapExt, Host};
 use rama_http_types::{
     Method, Request, Response, Version,
@@ -278,6 +279,7 @@ fn sanitize_client_req_header<S, B>(
                 &TRANSFER_ENCODING,
                 &PROXY_CONNECTION,
                 &UPGRADE,
+                &SEC_WEBSOCKET_KEY,
                 &KEEP_ALIVE,
                 &HOST,
             ] {

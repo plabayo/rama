@@ -42,7 +42,7 @@ pub(super) fn debug_flags<'a, 'f: 'a>(
     fmt: &'a mut fmt::Formatter<'f>,
     bits: u8,
 ) -> DebugFlags<'a, 'f> {
-    let result = write!(fmt, "({:#x}", bits);
+    let result = write!(fmt, "({bits:#x}");
     DebugFlags {
         fmt,
         result,
@@ -67,7 +67,7 @@ impl<'a, 'f: 'a> DebugFlags<'a, 'f> {
                     ": "
                 };
 
-                write!(self.fmt, "{}{}", prefix, name)
+                write!(self.fmt, "{prefix}{name}")
             });
         }
         self

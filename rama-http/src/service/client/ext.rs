@@ -68,6 +68,13 @@ pub trait HttpClientExt<State>:
     /// This method fails whenever the supplied `Url` cannot be parsed.
     fn head(&self, url: impl IntoUrl) -> RequestBuilder<Self, State, Self::ExecuteResponse>;
 
+    /// Convenience method to make a `CONNECT` request to a URL.
+    ///
+    /// # Errors
+    ///
+    /// This method fails whenever the supplied `Url` cannot be parsed.
+    fn connect(&self, url: impl IntoUrl) -> RequestBuilder<Self, State, Self::ExecuteResponse>;
+
     /// Start building a [`Request`] with the [`Method`] and [`Url`].
     ///
     /// Returns a [`RequestBuilder`], which will allow setting headers and
@@ -84,6 +91,15 @@ pub trait HttpClientExt<State>:
         &self,
         method: Method,
         url: impl IntoUrl,
+    ) -> RequestBuilder<Self, State, Self::ExecuteResponse>;
+
+    /// Start building a [`Request`], using the given [`Request`].
+    ///
+    /// Returns a [`RequestBuilder`], which will allow setting headers and
+    /// the request body before sending.
+    fn build_from_request<Body: Into<crate::Body>>(
+        &self,
+        request: Request<Body>,
     ) -> RequestBuilder<Self, State, Self::ExecuteResponse>;
 
     /// Executes a `Request`.
@@ -129,6 +145,10 @@ where
         self.request(Method::HEAD, url)
     }
 
+    fn connect(&self, url: impl IntoUrl) -> RequestBuilder<Self, State, Self::ExecuteResponse> {
+        self.request(Method::CONNECT, url)
+    }
+
     fn request(
         &self,
         method: Method,
@@ -152,6 +172,17 @@ where
         RequestBuilder {
             http_client_service: self,
             state: RequestBuilderState::PreBody(builder),
+            _phantom: std::marker::PhantomData,
+        }
+    }
+
+    fn build_from_request<RequestBody: Into<crate::Body>>(
+        &self,
+        request: Request<RequestBody>,
+    ) -> RequestBuilder<Self, State, Self::ExecuteResponse> {
+        RequestBuilder {
+            http_client_service: self,
+            state: RequestBuilderState::PostBody(request.map(Into::into)),
             _phantom: std::marker::PhantomData,
         }
     }
@@ -219,7 +250,7 @@ mod private {
             let protocol: Option<Protocol> = self.scheme().map(Into::into);
             match protocol {
                 Some(protocol) => {
-                    if protocol.is_http() {
+                    if protocol.is_http() || protocol.is_ws() {
                         Ok(self)
                     } else {
                         Err(OpaqueError::from_display(format!(
@@ -236,7 +267,7 @@ mod private {
         fn into_url(self) -> Result<Uri, OpaqueError> {
             match self.parse::<Uri>() {
                 Ok(uri) => uri.into_url(),
-                Err(_) => Err(OpaqueError::from_display(format!("Invalid URL: {}", self))),
+                Err(_) => Err(OpaqueError::from_display(format!("Invalid URL: {self}"))),
             }
         }
     }
@@ -449,10 +480,96 @@ where
         self
     }
 
+    /// Overwrite a `Header` to this [`Request`].
+    pub fn overwrite_header<K, V>(mut self, key: K, value: V) -> Self
+    where
+        K: IntoHeaderName,
+        V: IntoHeaderValue,
+    {
+        match self.state {
+            RequestBuilderState::PreBody(mut builder) => {
+                // None in case builder has errors
+                if let Some(headers) = builder.headers_mut() {
+                    let key = match key.into_header_name() {
+                        Ok(key) => key,
+                        Err(err) => {
+                            self.state = RequestBuilderState::Error(err);
+                            return self;
+                        }
+                    };
+                    let value = match value.into_header_value() {
+                        Ok(value) => value,
+                        Err(err) => {
+                            self.state = RequestBuilderState::Error(err);
+                            return self;
+                        }
+                    };
+                    let _ = headers.insert(key, value);
+                }
+
+                self.state = RequestBuilderState::PreBody(builder);
+                self
+            }
+            RequestBuilderState::PostBody(mut request) => {
+                let key = match key.into_header_name() {
+                    Ok(key) => key,
+                    Err(err) => {
+                        self.state = RequestBuilderState::Error(err);
+                        return self;
+                    }
+                };
+                let value = match value.into_header_value() {
+                    Ok(value) => value,
+                    Err(err) => {
+                        self.state = RequestBuilderState::Error(err);
+                        return self;
+                    }
+                };
+                let _ = request.headers_mut().insert(key, value);
+                self.state = RequestBuilderState::PostBody(request);
+                self
+            }
+            RequestBuilderState::Error(err) => {
+                self.state = RequestBuilderState::Error(err);
+                self
+            }
+        }
+    }
+
+    /// Overwrite a typed [`Header`] to this [`Request`].
+    ///
+    /// [`Header`]: crate::headers::Header
+    pub fn overwrite_typed_header<H>(self, header: H) -> Self
+    where
+        H: crate::headers::Header,
+    {
+        self.overwrite_header(H::name().clone(), header.encode_to_value())
+    }
+
     /// Enable HTTP authentication.
     pub fn auth(self, credentials: impl Credentials) -> Self {
         let header = crate::headers::Authorization::new(credentials);
         self.typed_header(header)
+    }
+
+    /// Adds an extension to this builder
+    pub fn extension<T: Clone + Send + Sync + 'static>(mut self, extension: T) -> Self {
+        match self.state {
+            RequestBuilderState::PreBody(builder) => {
+                let builder = builder.extension(extension);
+                self.state = RequestBuilderState::PreBody(builder);
+                self
+            }
+            RequestBuilderState::PostBody(mut request) => {
+                request.extensions_mut().insert(extension);
+                self.state = RequestBuilderState::PostBody(request);
+                self
+            }
+            state @ RequestBuilderState::Error(_) => {
+                self.state = state;
+                self
+            }
+        }
     }
 
     /// Set the [`Request`]'s [`Body`].

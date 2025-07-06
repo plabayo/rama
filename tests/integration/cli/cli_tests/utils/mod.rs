@@ -52,7 +52,7 @@ impl RamaService {
         thread::spawn(move || {
             for line in stdout {
                 let line = line.unwrap();
-                eprintln!("rama ip >> {}", line);
+                eprintln!("rama ip >> {line}");
             }
         });
 
@@ -90,6 +90,7 @@ impl RamaService {
         builder
             .stdout(std::process::Stdio::piped())
             .arg("echo")
+            .arg("--ws")
             .arg("--bind")
             .arg(format!("127.0.0.1:{port}"))
             .env(
@@ -116,7 +117,7 @@ impl RamaService {
         thread::spawn(move || {
             for line in stdout {
                 let line = line.unwrap();
-                println!("rama echo >> {}", line);
+                println!("rama echo >> {line}");
             }
         });
 
@@ -215,7 +216,7 @@ impl RamaService {
         thread::spawn(move || {
             for line in stdout {
                 let line = line.unwrap();
-                println!("rama serve >> {}", line);
+                println!("rama serve >> {line}");
             }
         });
 

@@ -31,7 +31,7 @@ where
                 parts
                     .uri
                     .query()
-                    .map(|q| format!("?{}", q))
+                    .map(|q| format!("?{q}"))
                     .unwrap_or_default(),
                 parts.version
             )

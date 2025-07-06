@@ -47,8 +47,30 @@ derive_header! {
 }
 
 impl Upgrade {
+    #[inline]
+    pub fn as_bytes(&self) -> &[u8] {
+        self.0.as_ref()
+    }
+}
+
+impl AsRef<[u8]> for Upgrade {
+    #[inline]
+    fn as_ref(&self) -> &[u8] {
+        self.0.as_ref()
+    }
+}
+
+impl Upgrade {
     /// Constructs an `Upgrade: websocket` header.
     pub fn websocket() -> Upgrade {
         Upgrade(HeaderValue::from_static("websocket"))
+    }
+
+    /// Returns true if this is an `Upgrade: websocket` header.
+    pub fn is_websocket(&self) -> bool {
+        self.0
+            .as_bytes()
+            .trim_ascii()
+            .eq_ignore_ascii_case(b"websocket")
     }
 }

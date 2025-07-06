@@ -119,8 +119,8 @@ mod tests {
     use super::*;
 
     fn assert_eq(s: &str, domain_address: DomainAddress, domain: &str, port: u16) {
-        assert_eq!(domain_address.domain().as_str(), domain, "parsing: {}", s);
-        assert_eq!(domain_address.port(), port, "parsing: {}", s);
+        assert_eq!(domain_address.domain().as_str(), domain, "parsing: {s}");
+        assert_eq!(domain_address.port(), port, "parsing: {s}");
     }
 
     #[test]
@@ -130,7 +130,7 @@ mod tests {
             ("subdomain.example.com:443", ("subdomain.example.com", 443)),
             ("127.0.0.1:8080", ("127.0.0.1", 8080)),
         ] {
-            let msg = format!("parsing '{}'", s);
+            let msg = format!("parsing '{s}'");
 
             assert_eq(s, s.parse().expect(&msg), expected_domain, expected_port);
             assert_eq(s, s.try_into().expect(&msg), expected_domain, expected_port);
@@ -184,15 +184,14 @@ mod tests {
             "[127.0.0.1]:80",
             "2001:db8:3333:4444:5555:6666:7777:8888:80",
         ] {
-            let msg = format!("parsing '{}'", s);
-            assert!(s.parse::<DomainAddress>().is_err(), "{}", msg);
-            assert!(DomainAddress::try_from(s).is_err(), "{}", msg);
-            assert!(DomainAddress::try_from(s.to_owned()).is_err(), "{}", msg);
-            assert!(DomainAddress::try_from(s.as_bytes()).is_err(), "{}", msg);
+            let msg = format!("parsing '{s}'");
+            assert!(s.parse::<DomainAddress>().is_err(), "{msg}");
+            assert!(DomainAddress::try_from(s).is_err(), "{msg}");
+            assert!(DomainAddress::try_from(s.to_owned()).is_err(), "{msg}");
+            assert!(DomainAddress::try_from(s.as_bytes()).is_err(), "{msg}");
             assert!(
                 DomainAddress::try_from(s.as_bytes().to_vec()).is_err(),
-                "{}",
-                msg
+                "{msg}"
             );
         }
     }
@@ -203,9 +202,9 @@ mod tests {
             ("example.com:80", "example.com:80"),
             ("subdomain.example.com:443", "subdomain.example.com:443"),
         ] {
-            let msg = format!("parsing '{}'", s);
+            let msg = format!("parsing '{s}'");
             let domain_address: DomainAddress = s.parse().expect(&msg);
-            assert_eq!(domain_address.to_string(), expected, "{}", msg);
+            assert_eq!(domain_address.to_string(), expected, "{msg}");
         }
     }
 }

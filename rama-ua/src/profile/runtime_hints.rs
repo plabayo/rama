@@ -102,7 +102,7 @@ impl FromStr for RequestInitiator {
                 "form" => Ok(RequestInitiator::Form),
                 "xhr" => Ok(RequestInitiator::Xhr),
                 "fetch" => Ok(RequestInitiator::Fetch),
-                _ => Err(OpaqueError::from_display(format!("invalid request initiator: {}", s))),
+                _ => Err(OpaqueError::from_display(format!("invalid request initiator: {s}"))),
             }
         }
     }

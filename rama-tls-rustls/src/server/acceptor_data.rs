@@ -2,6 +2,7 @@ use crate::dep::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use crate::dep::rcgen::{self, KeyPair};
 use crate::dep::rustls;
 use crate::key_log::KeyLogFile;
+use ::rcgen::Issuer;
 use rama_core::error::{ErrorContext, OpaqueError};
 use rama_net::address::{Domain, Host};
 use rama_net::tls::server::SelfSignedData;
@@ -243,7 +244,7 @@ pub fn self_signed_server_auth(
     server_ee_params.is_ca = rcgen::IsCa::NoCa;
     server_ee_params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
     let server_cert = server_ee_params
-        .signed_by(&server_key_pair, &ca_cert, &ca_key_pair)
+        .signed_by(&server_key_pair, &Issuer::new(ca_params, ca_key_pair))
         .context("self-signed: sign servert cert")?;
 
     let server_ca_cert_der: CertificateDer = ca_cert.into();

@@ -49,7 +49,7 @@ use rama::{
         },
         sse::{
             JsonEventData,
-            datastar::{MergeFragments, MergeSignals},
+            datastar::PatchSignals,
             server::{KeepAlive, KeepAliveStream},
         },
     },
@@ -188,7 +188,8 @@ pub mod controller {
     use super::*;
 
     use rama::futures::Stream;
-    use rama::http::sse::datastar::{FragmentMergeMode, RemoveFragments};
+    use rama::http::sse::datastar::{ElementPatchMode, PatchElements};
+    use rama_http::sse::datastar::ExecuteScript;
     use serde::{Deserialize, Serialize};
     use std::pin::Pin;
 
@@ -293,10 +294,10 @@ pub mod controller {
 
             Box::pin(stream! {
                 tracing::debug!("subscriber: fresh connect: send current signal/dom state");
-                yield sse_status_fragment_message(0f64);
+                yield sse_status_element_message(0f64);
                 yield remove_server_warning();
-                yield data_animation_fragment_message(text, progress);
-                yield update_signal_fragment_message(UpdateSignals { delay: Some(delay) });
+                yield data_animation_element_message(text, progress);
+                yield update_signal_element_message(UpdateSignals { delay: Some(delay) });
 
                 tracing::debug!("subscriber: enter inner subscriber loop");
 
@@ -311,7 +312,7 @@ pub mod controller {
                                 interval.elapsed_ms = %instant.elapsed().as_millis(),
                                 "subscriber: SSE status interval tick",
                             );
-                            sse_status_fragment_message(instant.elapsed().as_secs_f64())
+                            sse_status_element_message(instant.elapsed().as_secs_f64())
                         }
 
                         result = subscriber.recv() => {
@@ -486,6 +487,7 @@ pub mod controller {
     </style>
 </head>
 <body data-on-load="@get('/hello-world')">
+    <div id="server-warning" style="display: none"></div>
     <div data-signals-delay="{delay}" class="card">
         <div class="card-header">
             <h1>🦙💬 "hello 🚀 data-*"</h1>
@@ -542,7 +544,7 @@ pub mod controller {
                         self.delay.store(delay, Ordering::Release);
                         if let Err(err) =
                             self.msg_tx
-                                .send(update_signal_fragment_message(UpdateSignals {
+                                .send(update_signal_element_message(UpdateSignals {
                                     delay: Some(delay),
                                 }))
                         {
@@ -554,7 +556,11 @@ pub mod controller {
                         tracing::debug!("exit command received: exit controller");
 
                         let exit_events = [
-                            sse_status_failure_fragment_message(),
+                            sse_status_failure_element_message(),
+                            sse_failure_alert(
+                                // mostly just here to showcase the execute script sugar
+                                "Connection with server was lost. Wait or refresh the page.",
+                            ),
                             critical_error_banner(
                                 "Server was shutdown. Please wait a bit or refresh page to retry immediately.",
                             ),
@@ -598,7 +604,7 @@ pub mod controller {
 
                         match self
                             .msg_tx
-                            .send(data_animation_fragment_message(text, progress))
+                            .send(data_animation_element_message(text, progress))
                         {
                             Err(err) => {
                                 tracing::error!("failed to merge fragment via broadcast: {err:?}")
@@ -624,12 +630,12 @@ pub mod controller {
     }
 
     fn remove_server_warning() -> Message {
-        Message::Event(RemoveFragments::new("#server-warning").into())
+        Message::Event(PatchElements::new_remove("#server-warning").into())
     }
 
-    fn data_animation_fragment_message(text: &str, progress: f64) -> Message {
+    fn data_animation_element_message(text: &str, progress: f64) -> Message {
         Message::Event(
-            MergeFragments::new(format!(
+            PatchElements::new(format!(
                 r##"
 <div id='message'>{text}</div>
 <div id="progress-bar" style="width: {progress}%"></div>
@@ -639,9 +645,13 @@ pub mod controller {
         )
     }
 
-    fn sse_status_failure_fragment_message() -> Message {
+    fn sse_failure_alert(msg: &str) -> Message {
+        Message::Event(ExecuteScript::new(format!(r##"window.alert("{msg}");"##)).into())
+    }
+
+    fn sse_status_failure_element_message() -> Message {
         Message::Event(
-            MergeFragments::new(
+            PatchElements::new(
                 r##"
 <div id="sse-status">🔴</div>
 "##,
@@ -650,9 +660,9 @@ pub mod controller {
         )
     }
 
-    fn sse_status_fragment_message(elapsed: f64) -> Message {
+    fn sse_status_element_message(elapsed: f64) -> Message {
         Message::Event(
-            MergeFragments::new(format!(
+            PatchElements::new(format!(
                 r##"
 <div id="sse-status">
     <span
@@ -669,7 +679,7 @@ pub mod controller {
 
     fn critical_error_banner(msg: &'static str) -> Message {
         Message::Event(
-            MergeFragments::new(format!(
+            PatchElements::new(format!(
                 r##"
 <div id="server-warning" style="
     background-color: #ff4d4f;
@@ -690,13 +700,13 @@ pub mod controller {
 "##
             ))
             .with_selector("body")
-            .with_merge_mode(FragmentMergeMode::Prepend)
+            .with_mode(ElementPatchMode::Prepend)
             .into(),
         )
     }
 
-    fn update_signal_fragment_message(update: UpdateSignals) -> Message {
-        Message::Event(MergeSignals::new(JsonEventData(update)).into())
+    fn update_signal_element_message(update: UpdateSignals) -> Message {
+        Message::Event(PatchSignals::new(JsonEventData(update)).into())
     }
 }
 use controller::{Controller, Message, Signals};

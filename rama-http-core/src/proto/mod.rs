@@ -1,5 +1,6 @@
 //! Pieces pertaining to the HTTP message protocol.
 
+use rama_http::io::upgrade;
 use rama_http_types::HeaderMap;
 use rama_http_types::Version;
 use rama_http_types::dep::http;
@@ -47,7 +48,7 @@ pub(crate) enum Dispatched {
     /// Dispatcher completely shutdown connection.
     Shutdown,
     /// Dispatcher has pending upgrade, and so did not shutdown.
-    Upgrade(crate::upgrade::Pending),
+    Upgrade(upgrade::Pending),
 }
 
 impl MessageHead<http::StatusCode> {

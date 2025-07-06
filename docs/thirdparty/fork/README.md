@@ -72,3 +72,21 @@ as a distant relative.
     - Original: <https://github.com/dtolnay/paste/blob/6a302522990cbfd9de4e0c61d91854622f7b2999/LICENSE-MIT>
     - Type: MIT
     - Copy: [./licenses/paste](./licenses/paste)
+- <https://github.com/SimonSapin/rust-utf8/tree/218fea2b57b0e4c3de9fa17a376fcc4a4c0d08f3>
+  - it was no longer maintained, so we're taking it over for ourselves
+  - License:
+    - Original: <https://github.com/SimonSapin/rust-utf8/blob/218fea2b57b0e4c3de9fa17a376fcc4a4c0d08f3/LICENSE-MIT>
+    - Type: MIT
+    - Copy: [./licenses/rust-utf8](./licenses/rust-utf8)
+- <https://github.com/snapview/tungstenite-rs/tree/3ffeb33e29824deae10d86f7edff2ed4de22e91b>
+  - minor improvements, and adapted+scoped for rama use
+  - License:
+    - Original: <https://github.com/snapview/tungstenite-rs/blob/3ffeb33e29824deae10d86f7edff2ed4de22e91b/LICENSE-MIT>
+    - Type: MIT
+    - Copy: [./licenses/tungstenite-rs](./licenses/tungstenite-rs)
+- <https://github.com/snapview/tokio-tungstenite/tree/25b544e43fe979bca951f085ee1b66e9c1cc3113>
+  - minor improvements, and adapted+scoped for rama use
+  - License:
+    - Original: <https://github.com/snapview/tokio-tungstenite/blob/25b544e43fe979bca951f085ee1b66e9c1cc3113/LICENSE>
+    - Type: MIT
+    - Copy: [./licenses/tokio-tungstenite](./licenses/tokio-tungstenite)
