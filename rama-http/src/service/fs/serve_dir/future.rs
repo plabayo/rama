@@ -144,7 +144,7 @@ fn build_response(output: FileOpened) -> Response {
             if let Some(range) = ranges.first() {
                 if ranges.len() > 1 {
                     builder
-                        .header(header::CONTENT_RANGE, format!("bytes */{}", size))
+                        .header(header::CONTENT_RANGE, format!("bytes */{size}"))
                         .status(StatusCode::RANGE_NOT_SATISFIABLE)
                         .body(body_from_bytes(Bytes::from(
                             "Cannot serve multipart range requests",
@@ -183,7 +183,7 @@ fn build_response(output: FileOpened) -> Response {
                 }
             } else {
                 builder
-                    .header(header::CONTENT_RANGE, format!("bytes */{}", size))
+                    .header(header::CONTENT_RANGE, format!("bytes */{size}"))
                     .status(StatusCode::RANGE_NOT_SATISFIABLE)
                     .body(body_from_bytes(Bytes::from(
                         "No range found after parsing range header, please file an issue",
@@ -193,7 +193,7 @@ fn build_response(output: FileOpened) -> Response {
         }
 
         Some(Err(_)) => builder
-            .header(header::CONTENT_RANGE, format!("bytes */{}", size))
+            .header(header::CONTENT_RANGE, format!("bytes */{size}"))
             .status(StatusCode::RANGE_NOT_SATISFIABLE)
             .body(empty_body())
             .unwrap(),

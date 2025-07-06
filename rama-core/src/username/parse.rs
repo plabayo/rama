@@ -48,14 +48,12 @@ where
             UsernameLabelState::Used => (), // optimistic smiley
             UsernameLabelState::Ignored => {
                 return Err(OpaqueError::from_display(format!(
-                    "ignored username label #{index}: {}",
-                    label
+                    "ignored username label #{index}: {label}",
                 )));
             }
             UsernameLabelState::Abort => {
                 return Err(OpaqueError::from_display(format!(
-                    "invalid username label #{index}: {}",
-                    label
+                    "invalid username label #{index}: {label}",
                 )));
             }
         }

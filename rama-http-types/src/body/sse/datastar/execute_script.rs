@@ -188,61 +188,56 @@ impl EventDataWrite for ExecuteScript {
             .next()
             .context("ExecuteScript: no script lines found")?;
         for script_line in script_lines {
-            write!(w, "script {}\n", next_script_line)
-                .context("ExecuteScript: write script line")?;
+            write!(w, "script {next_script_line}\n").context("ExecuteScript: write script line")?;
             next_script_line = script_line;
         }
-        write!(w, "script {}", next_script_line)
-            .context("ExecuteScript: write last script line")?;
+        write!(w, "script {next_script_line}").context("ExecuteScript: write last script line")?;
 
         if let Some(auto_remove) = self.auto_remove {
             write!(w, "\nautoRemove {auto_remove}").context("ExecuteScript: write autoRemove")?;
         }
 
-        if let Some(ref attributes) = self.attributes {
-            if attributes.len() != 1
-                || !matches!(attributes[0], ScriptAttribute::Type(ScriptType::Module))
-            {
-                for attribute in attributes {
-                    w.write_all(b"\nattributes ")
-                        .context("ExecuteScript: write attribute line keyword")?;
-                    match attribute {
-                        ScriptAttribute::Src(src) => {
-                            write!(w, "src {src}").context("ExecuteScript: write attribute: src")?
-                        }
-                        ScriptAttribute::Type(script_type) => match script_type {
-                            ScriptType::Module => w
-                                .write_all(b"type module")
-                                .context("ExecuteScript: write attribute: type=module")?,
-                            ScriptType::ImportMap => w
-                                .write_all(b"type importmap")
-                                .context("ExecuteScript: write attribute: type=importmap")?,
-                            ScriptType::Mime(mime) => write!(w, "type {mime}")
-                                .context("ExecuteScript: write attribute: type=<mime>")?,
-                        },
-                        ScriptAttribute::Async => {
-                            w.write_all(b"async true")
-                                .context("ExecuteScript: write attribute: async=true")?;
-                        }
-                        ScriptAttribute::Defer => {
-                            w.write_all(b"defer true")
-                                .context("ExecuteScript: write attribute: defer=true")?;
-                        }
-                        ScriptAttribute::NoModule => {
-                            w.write_all(b"nomodule true")
-                                .context("ExecuteScript: write attribute: nomodule=true")?;
-                        }
-                        ScriptAttribute::Integrity(integrity) => write!(w, "integrity {integrity}")
-                            .context("ExecuteScript: write attribute: integrity")?,
-                        ScriptAttribute::CrossOrigin(kind) => write!(w, "crossorigin {kind}")
-                            .context("ExecuteScript: write attribute: crossorigin")?,
-                        ScriptAttribute::ReferrerPolicy(policy) => {
-                            write!(w, "referrerpolicy {policy}")
-                                .context("ExecuteScript: write attribute: referrerpolicy")?
-                        }
-                        ScriptAttribute::Charset(charset) => write!(w, "charset {charset}")
-                            .context("ExecuteScript: write attribute: charset")?,
+        if let Some(ref attributes) = self.attributes
+            && (attributes.len() != 1
+                || !matches!(attributes[0], ScriptAttribute::Type(ScriptType::Module)))
+        {
+            for attribute in attributes {
+                w.write_all(b"\nattributes ")
+                    .context("ExecuteScript: write attribute line keyword")?;
+                match attribute {
+                    ScriptAttribute::Src(src) => {
+                        write!(w, "src {src}").context("ExecuteScript: write attribute: src")?
                     }
+                    ScriptAttribute::Type(script_type) => match script_type {
+                        ScriptType::Module => w
+                            .write_all(b"type module")
+                            .context("ExecuteScript: write attribute: type=module")?,
+                        ScriptType::ImportMap => w
+                            .write_all(b"type importmap")
+                            .context("ExecuteScript: write attribute: type=importmap")?,
+                        ScriptType::Mime(mime) => write!(w, "type {mime}")
+                            .context("ExecuteScript: write attribute: type=<mime>")?,
+                    },
+                    ScriptAttribute::Async => {
+                        w.write_all(b"async true")
+                            .context("ExecuteScript: write attribute: async=true")?;
+                    }
+                    ScriptAttribute::Defer => {
+                        w.write_all(b"defer true")
+                            .context("ExecuteScript: write attribute: defer=true")?;
+                    }
+                    ScriptAttribute::NoModule => {
+                        w.write_all(b"nomodule true")
+                            .context("ExecuteScript: write attribute: nomodule=true")?;
+                    }
+                    ScriptAttribute::Integrity(integrity) => write!(w, "integrity {integrity}")
+                        .context("ExecuteScript: write attribute: integrity")?,
+                    ScriptAttribute::CrossOrigin(kind) => write!(w, "crossorigin {kind}")
+                        .context("ExecuteScript: write attribute: crossorigin")?,
+                    ScriptAttribute::ReferrerPolicy(policy) => write!(w, "referrerpolicy {policy}")
+                        .context("ExecuteScript: write attribute: referrerpolicy")?,
+                    ScriptAttribute::Charset(charset) => write!(w, "charset {charset}")
+                        .context("ExecuteScript: write attribute: charset")?,
                 }
             }
         }

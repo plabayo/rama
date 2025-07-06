@@ -14,6 +14,7 @@ use rama_core::rt::Executor;
 use rama_core::telemetry::tracing::{Instrument, debug, trace, trace_root_span, warn};
 use rama_core::{bytes::Bytes, combinators::Either};
 use rama_core::{error::BoxError, futures::future::FusedFuture};
+use rama_http::io::upgrade::{self, Upgraded};
 use rama_http_types::{
     Method, Request, Response, StatusCode, Version, dep::http_body,
     opentelemetry::version_as_protocol_version, proto::h2::frame::SettingOrder,
@@ -25,14 +26,12 @@ use super::ping::{Ponger, Recorder};
 use super::{H2Upgraded, PipeToSendStream, SendBuf, ping};
 use crate::body::{Body, Incoming as IncomingBody};
 use crate::client::dispatch::{Callback, SendWhen, TrySendError};
-use crate::ext::Protocol;
 use crate::h2::SendStream;
 use crate::h2::client::ResponseFuture;
 use crate::h2::client::{Builder, Connection, SendRequest};
 use crate::headers;
 use crate::proto::Dispatched;
 use crate::proto::h2::UpgradedSendStream;
-use crate::upgrade::Upgraded;
 
 type ClientRx<B> = crate::client::dispatch::Receiver<Request<B>, Response<IncomingBody>>;
 
@@ -668,7 +667,7 @@ where
                     let (parts, recv_stream) = res.into_parts();
                     let mut res = Response::from_parts(parts, IncomingBody::empty());
 
-                    let (pending, on_upgrade) = crate::upgrade::pending();
+                    let (pending, on_upgrade) = upgrade::pending();
                     let io = H2Upgraded {
                         ping,
                         send_stream: unsafe { UpgradedSendStream::new(send_stream) },
@@ -738,10 +737,10 @@ where
                     let (head, body) = req.into_parts();
                     let mut req = Request::from_parts(head, ());
                     super::strip_connection_headers(req.headers_mut(), true);
-                    if let Some(len) = body.size_hint().exact() {
-                        if len != 0 || headers::method_has_defined_payload_semantics(req.method()) {
-                            headers::set_content_length_if_missing(req.headers_mut(), len);
-                        }
+                    if let Some(len) = body.size_hint().exact()
+                        && (len != 0 || headers::method_has_defined_payload_semantics(req.method()))
+                    {
+                        headers::set_content_length_if_missing(req.headers_mut(), len);
                     }
 
                     let is_connect = req.method() == Method::CONNECT;
@@ -757,10 +756,6 @@ where
                             message: None,
                         }));
                         continue;
-                    }
-
-                    if let Some(protocol) = req.extensions_mut().remove::<Protocol>() {
-                        req.extensions_mut().insert(protocol.into_inner());
                     }
 
                     let (fut, body_tx) = match self.h2_tx.send_request(req, !is_connect && eos) {

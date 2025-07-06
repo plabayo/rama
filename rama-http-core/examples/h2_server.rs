@@ -48,7 +48,7 @@ async fn main() -> Result<(), BoxError> {
         if let Ok((socket, _peer_addr)) = listener.accept().await {
             tokio::spawn(async move {
                 if let Err(e) = serve(socket).await {
-                    println!("  -> err={:?}", e);
+                    println!("  -> err={e:?}");
                 }
             });
         }
@@ -63,7 +63,7 @@ async fn serve(socket: TcpStream) -> Result<(), BoxError> {
         let (request, respond) = result?;
         tokio::spawn(async move {
             if let Err(e) = handle_request(request, respond).await {
-                println!("error while handling request: {}", e);
+                println!("error while handling request: {e}");
             }
         });
     }
@@ -76,12 +76,12 @@ async fn handle_request(
     mut request: Request<RecvStream>,
     mut respond: SendResponse<Bytes>,
 ) -> Result<(), BoxError> {
-    println!("GOT request: {:?}", request);
+    println!("GOT request: {request:?}");
 
     let body = request.body_mut();
     while let Some(data) = body.data().await {
         let data = data?;
-        println!("<<<< recv {:?}", data);
+        println!("<<<< recv {data:?}");
         let _ = body.flow_control().release_capacity(data.len());
     }
 

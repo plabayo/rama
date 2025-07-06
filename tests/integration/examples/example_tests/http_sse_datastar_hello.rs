@@ -203,7 +203,7 @@ async fn test_http_sse_datastar_hello() {
                     assert_eq!(expected_event, event);
                 }
             }
-            None => panic!("unexpected stream event: {:?} (epxected EOF)", event),
+            None => panic!("unexpected stream event: {event:?} (epxected EOF)"),
         }
 
         if expected_events.is_empty() {

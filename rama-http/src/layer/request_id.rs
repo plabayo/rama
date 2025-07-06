@@ -545,7 +545,7 @@ mod tests {
             PropagateRequestIdLayer::x_request_id(),
             set_header::SetResponseHeaderLayer::overriding(
                 HeaderName::from_static("x-request-id"),
-                HeaderValue::from_str("foo").unwrap(),
+                HeaderValue::from_static("foo"),
             ),
         )
             .into_layer(service_fn(handler));

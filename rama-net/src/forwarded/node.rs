@@ -466,7 +466,7 @@ mod tests {
         ] {
             match s.parse::<NodeId>() {
                 Err(err) => panic!("failed to parse '{s}': {err}"),
-                Ok(node_id) => assert_eq!(node_id, expected, "parse: {}", s),
+                Ok(node_id) => assert_eq!(node_id, expected, "parse: {s}"),
             }
         }
     }
@@ -485,9 +485,7 @@ mod tests {
             let node_result = s.parse::<NodeId>();
             assert!(
                 node_result.is_err(),
-                "parse invalid: {}; parsed: {:?}",
-                s,
-                node_result
+                "parse invalid: {s}; parsed: {node_result:?}",
             );
         }
     }
@@ -550,10 +548,10 @@ mod tests {
             ),
         ] {
             let node_id = NodeId::from_str_lossy(s);
-            assert_eq!(node_id, expected, "parse str: {}", s);
+            assert_eq!(node_id, expected, "parse str: {s}");
 
             let node_id = NodeId::from_bytes_lossy(s.as_bytes());
-            assert_eq!(node_id, expected, "parse bytes: {}", s);
+            assert_eq!(node_id, expected, "parse bytes: {s}");
         }
     }
 }

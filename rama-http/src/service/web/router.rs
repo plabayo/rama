@@ -220,7 +220,7 @@ where
                     params.iter().filter(|(key, _)| *key != "nest").collect();
 
                 // build the nested path and update the request URI
-                let path = format!("/{}", nested_path);
+                let path = format!("/{nested_path}");
                 *req.uri_mut() = path.parse().unwrap();
 
                 filtered_params
@@ -330,7 +330,7 @@ mod tests {
             let id = uri_params.get("user_id").unwrap();
             Ok(Response::builder()
                 .status(200)
-                .body(Body::from(format!("Get User: {}", id)))
+                .body(Body::from(format!("Get User: {id}")))
                 .unwrap())
         })
     }
@@ -341,7 +341,7 @@ mod tests {
             let id = uri_params.get("user_id").unwrap();
             Ok(Response::builder()
                 .status(200)
-                .body(Body::from(format!("Delete User: {}", id)))
+                .body(Body::from(format!("Delete User: {id}")))
                 .unwrap())
         })
     }
@@ -353,7 +353,7 @@ mod tests {
             let path = uri_params.get("path").unwrap();
             Ok(Response::builder()
                 .status(200)
-                .body(Body::from(format!("Serve Assets: /{}", path)))
+                .body(Body::from(format!("Serve Assets: /{path}")))
                 .unwrap())
         })
     }
@@ -376,8 +376,7 @@ mod tests {
             Ok(Response::builder()
                 .status(200)
                 .body(Body::from(format!(
-                    "Get Order: {} for User: {}",
-                    order_id, user_id
+                    "Get Order: {order_id} for User: {user_id}",
                 )))
                 .unwrap())
         })

@@ -1,5 +1,6 @@
 //! Http1 or Http2 connection.
 
+use rama_net::stream::rewind::Rewind;
 use std::marker::PhantomPinned;
 use std::mem::MaybeUninit;
 use std::pin::Pin;
@@ -14,7 +15,6 @@ use pin_project_lite::pin_project;
 use rama_core::bytes::Bytes;
 
 use crate::body::Incoming;
-use crate::common::io::Rewind;
 use crate::service::HttpService;
 use rama_core::error::BoxError;
 use rama_core::rt::Executor;

@@ -464,7 +464,7 @@ async fn access_cjk_percent_encoded_uri_path() {
     let svc = ServeDir::new("../test-files");
 
     let req = Request::builder()
-        .uri(format!("/{}", cjk_filename_encoded))
+        .uri(format!("/{cjk_filename_encoded}"))
         .body(Body::empty())
         .unwrap();
     let res = svc.serve(Context::default(), req).await.unwrap();
@@ -480,7 +480,7 @@ async fn access_space_percent_encoded_uri_path() {
     let svc = ServeDir::new("../test-files");
 
     let req = Request::builder()
-        .uri(format!("/{}", encoded_filename))
+        .uri(format!("/{encoded_filename}"))
         .body(Body::empty())
         .unwrap();
     let res = svc.serve(Context::default(), req).await.unwrap();
@@ -518,7 +518,7 @@ async fn read_partial_in_bounds() {
         .uri("/README.md")
         .header(
             "Range",
-            format!("bytes={}-{}", bytes_start_incl, bytes_end_incl),
+            format!("bytes={bytes_start_incl}-{bytes_end_incl}"),
         )
         .body(Body::empty())
         .unwrap();

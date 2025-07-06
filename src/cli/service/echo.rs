@@ -50,7 +50,9 @@ use crate::{
     tls::boring::server::{TlsAcceptorData, TlsAcceptorLayer},
 };
 use rama_http::service::web::{extract::Json, response::IntoResponse};
+use rama_http_backend::server::layer::upgrade::UpgradeLayer;
 use rama_http_core::h2::frame::EarlyFrameCapture;
+use rama_ws::handshake::server::{WebSocketAcceptor, WebSocketEchoService, WebSocketMatcher};
 use serde::Serialize;
 use serde_json::json;
 use std::{convert::Infallible, time::Duration};
@@ -79,6 +81,8 @@ pub struct EchoServiceBuilder<H> {
 
     http_version: Option<Version>,
 
+    ws_support: bool,
+
     http_service_builder: H,
 
     uadb: Option<std::sync::Arc<UserAgentDatabase>>,
@@ -97,6 +101,8 @@ impl Default for EchoServiceBuilder<()> {
 
             http_version: None,
 
+            ws_support: false,
+
             http_service_builder: (),
 
             uadb: None,
@@ -112,125 +118,72 @@ impl EchoServiceBuilder<()> {
 }
 
 impl<H> EchoServiceBuilder<H> {
-    /// set the number of concurrent connections to allow
-    ///
-    /// (0 = no limit)
-    pub fn concurrent(mut self, limit: usize) -> Self {
-        self.concurrent_limit = limit;
-        self
+    crate::utils::macros::generate_set_and_with! {
+        /// set the number of concurrent connections to allow
+        ///
+        /// (0 = no limit)
+        pub fn concurrent(mut self, limit: usize) -> Self {
+            self.concurrent_limit = limit;
+            self
+        }
     }
 
-    /// set the number of concurrent connections to allow
-    ///
-    /// (0 = no limit)
-    pub fn set_concurrent(&mut self, limit: usize) -> &mut Self {
-        self.concurrent_limit = limit;
-        self
+    crate::utils::macros::generate_set_and_with! {
+        /// set the body limit in bytes for each request
+        pub fn body_limit(mut self, limit: usize) -> Self {
+            self.body_limit = limit;
+            self
+        }
     }
 
-    /// set the body limit in bytes for each request
-    pub fn body_limit(mut self, limit: usize) -> Self {
-        self.body_limit = limit;
-        self
+    crate::utils::macros::generate_set_and_with! {
+        /// set the timeout in seconds for each connection
+        ///
+        /// (0 = no timeout)
+        pub fn timeout(mut self, timeout: Duration) -> Self {
+            self.timeout = timeout;
+            self
+        }
     }
 
-    /// set the body limit in bytes for each request
-    pub fn set_body_limit(&mut self, limit: usize) -> &mut Self {
-        self.body_limit = limit;
-        self
+    crate::utils::macros::generate_set_and_with! {
+        /// enable support for one of the following "forward" headers or protocols
+        ///
+        /// Supported headers:
+        ///
+        /// Forwarded ("for="), X-Forwarded-For
+        ///
+        /// X-Client-IP Client-IP, X-Real-IP
+        ///
+        /// CF-Connecting-IP, True-Client-IP
+        ///
+        /// Or using HaProxy protocol.
+        pub fn forward(mut self, kind: Option<ForwardKind>) -> Self {
+            self.forward = kind;
+            self
+        }
     }
 
-    /// set the timeout in seconds for each connection
-    ///
-    /// (0 = no timeout)
-    pub fn timeout(mut self, timeout: Duration) -> Self {
-        self.timeout = timeout;
-        self
+    crate::utils::macros::generate_set_and_with! {
+        #[cfg(any(feature = "rustls", feature = "boring"))]
+        /// define a tls server cert config to be used for tls terminaton
+        /// by the echo service.
+        pub fn tls_server_config(mut self, cfg: Option<TlsConfig>) -> Self {
+            self.tls_server_config = cfg;
+            self
+        }
     }
 
-    /// set the timeout in seconds for each connection
-    ///
-    /// (0 = no timeout)
-    pub fn set_timeout(&mut self, timeout: Duration) -> &mut Self {
-        self.timeout = timeout;
-        self
-    }
-
-    /// enable support for one of the following "forward" headers or protocols
-    ///
-    /// Supported headers:
-    ///
-    /// Forwarded ("for="), X-Forwarded-For
-    ///
-    /// X-Client-IP Client-IP, X-Real-IP
-    ///
-    /// CF-Connecting-IP, True-Client-IP
-    ///
-    /// Or using HaProxy protocol.
-    pub fn forward(self, kind: ForwardKind) -> Self {
-        self.maybe_forward(Some(kind))
-    }
-
-    /// enable support for one of the following "forward" headers or protocols
-    ///
-    /// Same as [`Self::forward`] but without consuming `self`.
-    pub fn set_forward(&mut self, kind: ForwardKind) -> &mut Self {
-        self.forward = Some(kind);
-        self
-    }
-
-    /// maybe enable support for one of the following "forward" headers or protocols.
-    ///
-    /// See [`Self::forward`] for more information.
-    pub fn maybe_forward(mut self, maybe_kind: Option<ForwardKind>) -> Self {
-        self.forward = maybe_kind;
-        self
-    }
-
-    #[cfg(any(feature = "rustls", feature = "boring"))]
-    /// define a tls server cert config to be used for tls terminaton
-    /// by the echo service.
-    pub fn tls_server_config(mut self, cfg: TlsConfig) -> Self {
-        self.tls_server_config = Some(cfg);
-        self
-    }
-
-    #[cfg(any(feature = "rustls", feature = "boring"))]
-    /// define a tls server cert config to be used for tls terminaton
-    /// by the echo service.
-    pub fn set_tls_server_config(&mut self, cfg: TlsConfig) -> &mut Self {
-        self.tls_server_config = Some(cfg);
-        self
-    }
-
-    #[cfg(any(feature = "rustls", feature = "boring"))]
-    /// define a tls server cert config to be used for tls terminaton
-    /// by the echo service.
-    pub fn maybe_tls_server_config(mut self, cfg: Option<TlsConfig>) -> Self {
-        self.tls_server_config = cfg;
-        self
-    }
-
-    /// set the http version to use for the http server (auto by default)
-    pub fn http_version(mut self, version: Version) -> Self {
-        self.http_version = Some(version);
-        self
-    }
-
-    /// maybe set the http version to use for the http server (auto by default)
-    pub fn maybe_http_version(mut self, version: Option<Version>) -> Self {
-        self.http_version = version;
-        self
-    }
-
-    /// set the http version to use for the http server (auto by default)
-    pub fn set_http_version(&mut self, version: Version) -> &mut Self {
-        self.http_version = Some(version);
-        self
+    crate::utils::macros::generate_set_and_with! {
+        /// set the http version to use for the http server (auto by default)
+        pub fn http_version(mut self, version: Option<Version>) -> Self {
+            self.http_version = version;
+            self
+        }
     }
 
     /// add a custom http layer which will be applied to the existing http layers
-    pub fn http_layer<H2>(self, layer: H2) -> EchoServiceBuilder<(H, H2)> {
+    pub fn with_http_layer<H2>(self, layer: H2) -> EchoServiceBuilder<(H, H2)> {
         EchoServiceBuilder {
             concurrent_limit: self.concurrent_limit,
             body_limit: self.body_limit,
@@ -242,34 +195,35 @@ impl<H> EchoServiceBuilder<H> {
 
             http_version: self.http_version,
 
+            ws_support: self.ws_support,
+
             http_service_builder: (self.http_service_builder, layer),
 
             uadb: self.uadb,
         }
     }
 
-    /// set the user agent datasbase that if set would be used to look up
-    /// a user agent (by ua header string) to see if we have a ja3/ja4 hash.
-    pub fn with_user_agent_database(mut self, db: std::sync::Arc<UserAgentDatabase>) -> Self {
-        self.uadb = Some(db);
-        self
+    crate::utils::macros::generate_set_and_with! {
+        /// maybe set the user agent datasbase that if set would be used to look up
+        /// a user agent (by ua header string) to see if we have a ja3/ja4 hash.
+        pub fn user_agent_database(
+            mut self,
+            db: Option<std::sync::Arc<UserAgentDatabase>>,
+        ) -> Self {
+            self.uadb = db;
+            self
+        }
     }
 
-    /// maybe set the user agent datasbase that if set would be used to look up
-    /// a user agent (by ua header string) to see if we have a ja3/ja4 hash.
-    pub fn maybe_with_user_agent_database(
-        mut self,
-        db: Option<std::sync::Arc<UserAgentDatabase>>,
-    ) -> Self {
-        self.uadb = db;
-        self
-    }
-
-    /// set the user agent datasbase that if set would be used to look up
-    /// a user agent (by ua header string) to see if we have a ja3/ja4 hash.
-    pub fn set_user_agent_database(&mut self, db: std::sync::Arc<UserAgentDatabase>) -> &mut Self {
-        self.uadb = Some(db);
-        self
+    crate::utils::macros::generate_set_and_with! {
+        /// define whether or not WS support is enabled
+        pub fn ws_support(
+            mut self,
+            support: bool,
+        ) -> Self {
+            self.ws_support = support;
+            self
+        }
     }
 }
 
@@ -362,6 +316,14 @@ where
             UserAgentClassifierLayer::new(),
             ConsumeErrLayer::default(),
             http_forwarded_layer,
+            self.ws_support.then(|| {
+                UpgradeLayer::new(
+                    WebSocketMatcher::default(),
+                    WebSocketAcceptor::default().with_sub_protocols_flex(true),
+                    ConsumeErrLayer::trace(tracing::Level::DEBUG)
+                        .into_layer(WebSocketEchoService::default()),
+                )
+            }),
         )
             .into_layer(self.http_service_builder.layer(EchoService {
                 uadb: self.uadb.clone(),

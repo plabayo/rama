@@ -116,7 +116,7 @@ where
 
                     exec.spawn_task(
                         async move {
-                            match rama_http_core::upgrade::on(&mut req).await {
+                            match rama_http::io::upgrade::on(&mut req).await {
                                 Ok(upgraded) => {
                                     let _ = handler.serve(ctx, upgraded).await;
                                 }

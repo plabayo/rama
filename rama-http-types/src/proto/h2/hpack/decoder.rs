@@ -878,7 +878,6 @@ mod test {
         assert_eq!(res.len(), 1);
         assert_eq!(de.table.size(), 0);
 
-        #[allow(clippy::match_on_vec_items)]
         match res[0] {
             Header::Field {
                 ref name,
@@ -928,7 +927,6 @@ mod test {
         assert_eq!(res.len(), 1);
         assert_eq!(de.table.size(), 0);
 
-        #[allow(clippy::match_on_vec_items)]
         match res[0] {
             Header::Field {
                 ref name,

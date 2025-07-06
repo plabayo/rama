@@ -105,23 +105,23 @@ pub(crate) fn parse_csv_row(row: &str) -> Option<Proxy> {
     let asn = parse_csv_opt_asn(iter.next()?).ok()?;
 
     // support header format or cleartext format
-    if let Some(value) = iter.next() {
-        if !value.is_empty() {
-            address.credential = Some(match value.split_once(' ') {
-                Some((t, v)) => {
-                    if t.eq_ignore_ascii_case("basic") {
-                        let bytes = ENGINE.decode(v).ok()?;
-                        let decoded = String::from_utf8(bytes).ok()?;
-                        ProxyCredential::Basic(decoded.parse().ok()?)
-                    } else if t.eq_ignore_ascii_case("bearer") {
-                        ProxyCredential::Bearer(v.parse().ok()?)
-                    } else {
-                        ProxyCredential::Basic(value.parse().ok()?)
-                    }
+    if let Some(value) = iter.next()
+        && !value.is_empty()
+    {
+        address.credential = Some(match value.split_once(' ') {
+            Some((t, v)) => {
+                if t.eq_ignore_ascii_case("basic") {
+                    let bytes = ENGINE.decode(v).ok()?;
+                    let decoded = String::from_utf8(bytes).ok()?;
+                    ProxyCredential::Basic(decoded.parse().ok()?)
+                } else if t.eq_ignore_ascii_case("bearer") {
+                    ProxyCredential::Bearer(v.parse().ok()?)
+                } else {
+                    ProxyCredential::Basic(value.parse().ok()?)
                 }
-                None => ProxyCredential::Basic(value.parse().ok()?),
-            });
-        }
+            }
+            None => ProxyCredential::Basic(value.parse().ok()?),
+        });
     }
 
     // Ensure there are no more values in the row
@@ -201,8 +201,8 @@ pub enum ProxyCsvRowReaderErrorKind {
 impl std::fmt::Display for ProxyCsvRowReaderError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.kind {
-            ProxyCsvRowReaderErrorKind::IoError(err) => write!(f, "I/O error: {}", err),
-            ProxyCsvRowReaderErrorKind::InvalidRow(row) => write!(f, "Invalid row: {}", row),
+            ProxyCsvRowReaderErrorKind::IoError(err) => write!(f, "I/O error: {err}"),
+            ProxyCsvRowReaderErrorKind::InvalidRow(row) => write!(f, "Invalid row: {row}"),
         }
     }
 }
@@ -447,7 +447,7 @@ mod tests {
             // invalid credentials
             "id,,,,,,,,authority,,,,,:foo",
         ] {
-            assert!(parse_csv_row(input).is_none(), "input: {}", input);
+            assert!(parse_csv_row(input).is_none(), "input: {input}");
         }
     }
 
@@ -590,7 +590,7 @@ mod tests {
                 ..Default::default()
             },
         ] {
-            assert!(proxy.is_match(&ctx, &filter), "filter: {:?}", filter);
+            assert!(proxy.is_match(&ctx, &filter), "filter: {filter:?}");
         }
     }
 
@@ -672,7 +672,7 @@ mod tests {
                 ..Default::default()
             },
         ] {
-            assert!(proxy.is_match(&ctx, &filter), "filter: {:?}", filter);
+            assert!(proxy.is_match(&ctx, &filter), "filter: {filter:?}");
         }
     }
 }

@@ -15,6 +15,8 @@ mod peek;
 #[doc(inline)]
 pub use peek::PeekStream;
 
+pub mod rewind;
+
 /// A stream is a type that implements `AsyncRead`, `AsyncWrite` and `Send`.
 /// This is specific to Rama and is directly linked to the supertraits of `Tokio`.
 pub trait Stream: AsyncRead + AsyncWrite + Send + 'static {}

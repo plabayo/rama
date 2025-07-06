@@ -109,7 +109,7 @@ async fn run(script: &[u8]) -> Result<(), rama_http_core::h2::Error> {
             match Pin::new(&mut futs).poll_next(cx) {
                 Poll::Pending | Poll::Ready(None) => break,
                 r @ Poll::Ready(Some(Ok(_) | Err(_))) => {
-                    eprintln!("{:?}", r);
+                    eprintln!("{r:?}");
                 }
             }
         }

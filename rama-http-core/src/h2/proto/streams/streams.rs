@@ -314,10 +314,10 @@ where
         //
         // If that stream is still pending, the Client isn't allowed to
         // queue up another pending stream. They should use `poll_ready`.
-        if let Some(stream) = pending {
-            if me.store.resolve(stream.key).is_pending_open {
-                return Err(UserError::Rejected.into());
-            }
+        if let Some(stream) = pending
+            && me.store.resolve(stream.key).is_pending_open
+        {
+            return Err(UserError::Rejected.into());
         }
 
         if me.counts.peer().is_server() {

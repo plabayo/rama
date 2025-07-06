@@ -1189,7 +1189,7 @@ async fn client_update_initial_window_size() {
         // We'll never release_capacity back...
         async fn data(body: &mut h2::RecvStream, expect: &str) {
             let buf = body.data().await.expect(expect).expect(expect);
-            assert_eq!(buf.len(), 16_384, "{}", expect);
+            assert_eq!(buf.len(), 16_384, "{expect}");
         }
 
         let res_fut = client.get("https://http2.akamai.com/");
@@ -1300,7 +1300,7 @@ async fn client_decrease_initial_window_size() {
 
         async fn data(body: &mut h2::RecvStream, expect: &str) {
             let buf = body.data().await.expect(expect).expect(expect);
-            assert_eq!(buf.len(), 100, "{}", expect);
+            assert_eq!(buf.len(), 100, "{expect}");
         }
 
         let mut body1 = conn.drive(req(&mut client)).await;
@@ -1776,7 +1776,7 @@ async fn max_send_buffer_size_poll_capacity_wakes_task() {
             loop {
                 match poll_fn(|cx| stream.poll_capacity(cx)).await {
                     None => panic!("no cap"),
-                    Some(Err(e)) => panic!("cap error: {:?}", e),
+                    Some(Err(e)) => panic!("cap error: {e:?}"),
                     Some(Ok(cap)) => {
                         stream
                             .send_data(buf[sent..(sent + cap)].to_vec().into(), false)
