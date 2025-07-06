@@ -270,14 +270,26 @@ where
         );
 
         let http_transport_service = match self.http_version {
-            Some(Version::HTTP_2) => Either3::A(HttpServer::h2(executor).service(http_service)),
+            Some(Version::HTTP_2) => Either3::A({
+                let mut http = HttpServer::h2(executor);
+                if self.ws_support {
+                    http.h2_mut().enable_connect_protocol();
+                }
+                http.service(http_service)
+            }),
             Some(Version::HTTP_11 | Version::HTTP_10 | Version::HTTP_09) => {
                 Either3::B(HttpServer::http1().service(http_service))
             }
             Some(_) => {
                 return Err(OpaqueError::from_display("unsupported http version").into_boxed());
             }
-            None => Either3::C(HttpServer::auto(executor).service(http_service)),
+            None => Either3::C({
+                let mut http = HttpServer::auto(executor);
+                if self.ws_support {
+                    http.h2_mut().enable_connect_protocol();
+                }
+                http.service(http_service)
+            }),
         };
 
         Ok(tcp_service_builder.into_layer(http_transport_service))
