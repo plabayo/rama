@@ -355,9 +355,7 @@ async fn async_test(cfg: __TestConfig) {
         cnt += 1;
         assert!(
             cnt <= expected_connections,
-            "server expected {} connections, received {}",
-            expected_connections,
-            cnt
+            "server expected {expected_connections} connections, received {cnt}",
         );
 
         loop {
@@ -454,7 +452,7 @@ async fn async_test(cfg: __TestConfig) {
 
                 tokio::task::spawn(async move {
                     if let Err(err) = conn.await {
-                        panic!("{:?}", err);
+                        panic!("{err:?}");
                     }
                 });
                 sender.send_request(req).await.unwrap()
@@ -466,7 +464,7 @@ async fn async_test(cfg: __TestConfig) {
 
                 tokio::task::spawn(async move {
                     if let Err(err) = conn.await {
-                        panic!("{:?}", err);
+                        panic!("{err:?}");
                     }
                 });
                 sender.send_request(req).await.unwrap()
@@ -542,9 +540,7 @@ async fn naive_proxy(cfg: ProxyConfig) -> (SocketAddr, impl Future<Output = ()>)
                             let uri = req.uri().host().expect("uri has no host");
                             let port = req.uri().port_u16().expect("uri has no port");
 
-                            let stream = TcpStream::connect(format!("{}:{}", uri, port))
-                                .await
-                                .unwrap();
+                            let stream = TcpStream::connect(format!("{uri}:{port}")).await.unwrap();
 
                             let result = if http2_only {
                                 let (mut sender, conn) =
@@ -557,7 +553,7 @@ async fn naive_proxy(cfg: ProxyConfig) -> (SocketAddr, impl Future<Output = ()>)
 
                                 tokio::task::spawn(async move {
                                     if let Err(err) = conn.await {
-                                        panic!("{:?}", err);
+                                        panic!("{err:?}");
                                     }
                                 });
 
@@ -568,7 +564,7 @@ async fn naive_proxy(cfg: ProxyConfig) -> (SocketAddr, impl Future<Output = ()>)
 
                                 tokio::task::spawn(async move {
                                     if let Err(err) = conn.await {
-                                        panic!("{:?}", err);
+                                        panic!("{err:?}");
                                     }
                                 });
 

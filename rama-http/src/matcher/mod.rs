@@ -351,6 +351,31 @@ impl<State, Body> HttpMatcher<State, Body> {
         self.or(Self::method_trace())
     }
 
+    /// Create a new matcher that matches [`MethodMatcher::CONNECT`] requests.
+    ///
+    /// See [`MethodMatcher`] for more information.
+    pub fn method_connect() -> Self {
+        Self {
+            kind: HttpMatcherKind::Method(MethodMatcher::CONNECT),
+            negate: false,
+        }
+    }
+
+    /// Add a new matcher that also matches [`MethodMatcher::CONNECT`] on top of the existing [`HttpMatcher`] matchers.
+    ///
+    /// See [`MethodMatcher`] for more information.
+    pub fn and_method_connect(self) -> Self {
+        self.and(Self::method_connect())
+    }
+
+    /// Add a new matcher that can also match [`MethodMatcher::CONNECT`]
+    /// as an alternative tothe existing [`HttpMatcher`] matchers.
+    ///
+    /// See [`MethodMatcher`] for more information.
+    pub fn or_method_connect(self) -> Self {
+        self.or(Self::method_connect())
+    }
+
     /// Create a [`DomainMatcher`] matcher, matching on the exact given [`Domain`].
     pub fn domain(domain: Domain) -> Self {
         Self {
@@ -686,6 +711,11 @@ impl<State, Body> HttpMatcher<State, Body> {
         Self::method_trace().and_path(path)
     }
 
+    /// Create a [`PathMatcher`] matcher to match for a CONNECT request.
+    pub fn connect(path: impl AsRef<str>) -> Self {
+        Self::method_connect().and_path(path)
+    }
+
     /// Add a [`HttpMatcher`] to match on top of the existing set of [`HttpMatcher`] matchers.
     pub fn and(mut self, matcher: HttpMatcher<State, Body>) -> Self {
         match (self.negate, &mut self.kind) {
@@ -800,9 +830,7 @@ mod test {
             assert_eq!(
                 matcher.matches(None, &Context::default(), &req),
                 expected,
-                "({:#?}).matches({:#?})",
-                matcher,
-                req
+                "({matcher:#?}).matches({req:#?})",
             );
         }
     }
@@ -820,9 +848,7 @@ mod test {
             assert_eq!(
                 matcher.matches(None, &Context::default(), &req),
                 expected,
-                "({:#?}).matches({:#?})",
-                matcher,
-                req
+                "({matcher:#?}).matches({req:#?})",
             );
         }
     }
@@ -840,9 +866,7 @@ mod test {
             assert_eq!(
                 matcher.matches(None, &Context::default(), &req),
                 expected,
-                "({:#?}).matches({:#?})",
-                matcher,
-                req
+                "({matcher:#?}).matches({req:#?})",
             );
         }
     }
@@ -860,9 +884,7 @@ mod test {
             assert_eq!(
                 matcher.matches(None, &Context::default(), &req),
                 expected,
-                "({:#?}).matches({:#?})",
-                matcher,
-                req
+                "({matcher:#?}).matches({req:#?})",
             );
         }
     }
@@ -880,9 +902,7 @@ mod test {
             assert_eq!(
                 matcher.matches(None, &Context::default(), &req),
                 expected,
-                "({:#?}).matches({:#?})",
-                matcher,
-                req
+                "({matcher:#?}).matches({req:#?})",
             );
         }
     }
@@ -900,9 +920,7 @@ mod test {
             assert_eq!(
                 matcher.matches(None, &Context::default(), &req),
                 expected,
-                "({:#?}).matches({:#?})",
-                matcher,
-                req
+                "({matcher:#?}).matches({req:#?})",
             );
         }
     }
@@ -922,9 +940,7 @@ mod test {
             assert_eq!(
                 matcher.matches(None, &Context::default(), &req),
                 expected,
-                "({:#?}).matches({:#?})",
-                matcher,
-                req
+                "({matcher:#?}).matches({req:#?})",
             );
         }
     }

@@ -1,0 +1,12 @@
+{
+  "outdir": "./autobahn/server",
+  "servers": [
+    {
+      "agent": "Rama",
+      "url": "ws://host.docker.internal:9002"
+    }
+  ],
+  "cases": ["*"],
+  "exclude-cases": [],
+  "exclude-agent-cases": {}
+}

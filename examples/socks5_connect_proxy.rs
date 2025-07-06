@@ -31,8 +31,7 @@
 //! ```
 
 use rama::{
-    proxy::socks5::{Socks5Acceptor, Socks5Auth},
-    tcp::server::TcpListener,
+    net::user::Basic, proxy::socks5::Socks5Acceptor, tcp::server::TcpListener,
     telemetry::tracing::level_filters::LevelFilter,
 };
 
@@ -55,8 +54,8 @@ async fn main() {
     let tcp_service = TcpListener::bind("127.0.0.1:62021")
         .await
         .expect("bind proxy to 127.0.0.1:62021");
-    let socks5_acceptor =
-        Socks5Acceptor::default().with_auth(Socks5Auth::username_password("john", "secret"));
+    let socks5_acceptor = Socks5Acceptor::default()
+        .with_authorizer(Basic::new_static("john", "secret").into_authorizer());
     graceful.spawn_task_fn(|guard| tcp_service.serve_graceful(guard, socks5_acceptor));
 
     graceful

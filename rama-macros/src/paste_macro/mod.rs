@@ -250,7 +250,7 @@ fn pasted_to_tokens(mut pasted: String, span: Span) -> Result<TokenStream> {
             Ok(Err(LexError { .. })) | Err(_) => {
                 return Err(Error::new(
                     span,
-                    &format!("`{:?}` is not a valid literal", pasted),
+                    &format!("`{pasted:?}` is not a valid literal"),
                 ));
             }
         };
@@ -270,7 +270,7 @@ fn pasted_to_tokens(mut pasted: String, span: Span) -> Result<TokenStream> {
         Err(_) => {
             return Err(Error::new(
                 span,
-                &format!("`{:?}` is not a valid identifier", pasted),
+                &format!("`{pasted:?}` is not a valid identifier"),
             ));
         }
     };

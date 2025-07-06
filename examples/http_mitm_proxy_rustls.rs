@@ -109,7 +109,7 @@ async fn main() -> Result<(), BoxError> {
                 TraceLayer::new_for_http(),
                 // See [`ProxyAuthLayer::with_labels`] for more information,
                 // e.g. can also be used to extract upstream proxy filters
-                ProxyAuthLayer::new(Basic::new("john", "secret")),
+                ProxyAuthLayer::new(Basic::new_static("john", "secret")),
                 UpgradeLayer::new(
                     MethodMatcher::CONNECT,
                     service_fn(http_connect_accept),

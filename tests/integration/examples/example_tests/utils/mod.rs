@@ -20,6 +20,8 @@ use rama::{
     telemetry::tracing::level_filters::LevelFilter,
     utils::{backoff::ExponentialBackoff, rng::HasherRng},
 };
+use rama_http::Body;
+use rama_ws::handshake::client::{HttpClientWebSocketExt, WebsocketRequestBuilder, WithService};
 use std::{
     process::{Child, ExitStatus},
     sync::Once,
@@ -204,6 +206,22 @@ where
         url: impl IntoUrl,
     ) -> RequestBuilder<ClientService<State>, State, Response> {
         self.client.delete(url)
+    }
+
+    /// Create a websocket builder.
+    pub(super) fn websocket(
+        &self,
+        url: impl IntoUrl,
+    ) -> WebsocketRequestBuilder<WithService<ClientService<State>, Body, State>> {
+        self.client.websocket(url)
+    }
+
+    /// Create an h2 websocket builder.
+    pub(super) fn websocket_h2(
+        &self,
+        url: impl IntoUrl,
+    ) -> WebsocketRequestBuilder<WithService<ClientService<State>, Body, State>> {
+        self.client.websocket_h2(url)
     }
 }
 

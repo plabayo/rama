@@ -7,8 +7,8 @@ app = 'rama-echo'
 primary_region = 'lhr'
 
 [processes]
-app_secure = "echo --bind 0.0.0.0:8443 -c 2048 -t 16 -f haproxy -s"
-app_insecure = "echo --bind 0.0.0.0:8080 -c 2048 -t 16 -f haproxy"
+app_secure = "echo --bind 0.0.0.0:8443 -c 2048 -t 300 -f haproxy --ws -s"
+app_insecure = "echo --bind 0.0.0.0:8080 -c 2048 -t 300 -f haproxy --ws"
 
 [build]
 image = 'glendc/rama:latest'

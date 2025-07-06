@@ -201,7 +201,7 @@ fn trim_trailing_slash(uri: &mut Uri) {
         };
 
         let new_path_and_query = if let Some(query) = path_and_query.query() {
-            Cow::Owned(format!("{}?{}", new_path, query))
+            Cow::Owned(format!("{new_path}?{query}"))
         } else {
             new_path.into()
         }

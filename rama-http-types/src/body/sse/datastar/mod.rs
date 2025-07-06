@@ -17,49 +17,36 @@
 //! [🚀 Datastar]: https://data-star.dev/
 
 mod enums;
-use std::marker::PhantomData;
+pub use enums::{ElementPatchMode, EventType};
 
-pub use enums::{EventType, FragmentMergeMode};
+mod patch_elements;
+pub use patch_elements::{PatchElements, PatchElementsReader};
 
-mod merge_fragments;
-pub use merge_fragments::{MergeFragments, MergeFragmentsReader};
+pub mod execute_script;
+pub use execute_script::ExecuteScript;
 
-mod remove_fragments;
-use rama_error::{ErrorContext, OpaqueError};
-pub use remove_fragments::{RemoveFragments, RemoveFragmentsReader};
-
-mod merge_signals;
-pub use merge_signals::{MergeSignals, MergeSignalsReader};
-
-mod remove_signals;
-pub use remove_signals::{RemoveSignals, RemoveSignalsReader};
-
-mod execute_script;
-pub use execute_script::{
-    CrossOriginKind, ExecuteScript, ExecuteScriptReader, ReferrerPolicy, ScriptAttribute,
-    ScriptType,
-};
+mod patch_signals;
+pub use patch_signals::{PatchSignals, PatchSignalsReader};
 
 mod consts;
 
 use crate::sse::{Event, EventDataLineReader, EventDataMultiLineReader, EventDataRead};
 use rama_core::telemetry::tracing;
+use rama_error::{ErrorContext, OpaqueError};
+use std::marker::PhantomData;
 
 pub type DatastarEvent<T = String> = Event<EventData<T>>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum EventData<T = String> {
-    /// [`MergeFragments`] merges one or more fragments into the DOM.
-    MergeFragments(MergeFragments),
-    /// [`RemoveFragments`] sends a selector to the browser to remove HTML fragments from the DOM.
-    RemoveFragments(RemoveFragments),
-    /// [`MergeSignals`] sends one or more signals to the browser
-    /// to be merged into the signals.
-    MergeSignals(MergeSignals<T>),
-    /// [`RemoveSignals`] sends signals to the browser to be removed from the signals.
-    RemoveSignals(RemoveSignals),
-    /// [`ExecuteScript`] executes JavaScript in the browser
+    /// [`PatchElements`]: patches HTML elements into the DOM
+    PatchElements(PatchElements),
+    /// [`ExecuteScript`]: utility sugar for [`PatchElements`]
+    /// specialized for adding js scripts. Required by datastar
+    /// to be part of all datastar SDKs.
     ExecuteScript(ExecuteScript),
+    /// [`RemoveFragments`]: patches signals into the signal store
+    PatchSignals(PatchSignals<T>),
 }
 
 macro_rules! into_event_data {
@@ -75,68 +62,36 @@ macro_rules! into_event_data {
 }
 
 into_event_data! {
-    MergeFragments,
-    RemoveFragments,
-    RemoveSignals,
+    PatchElements,
     ExecuteScript,
 }
 
-impl<T> From<MergeSignals<T>> for EventData<T> {
-    fn from(value: MergeSignals<T>) -> Self {
-        EventData::MergeSignals(value)
+impl<T> From<PatchSignals<T>> for EventData<T> {
+    fn from(value: PatchSignals<T>) -> Self {
+        EventData::PatchSignals(value)
     }
 }
 
 impl<T> EventData<T> {
-    /// Consume `self` as [`MergeFragments`],
+    /// Consume `self` as [`PatchElements`],
     ///
     /// returning itself as an error if it is of a different type.
-    pub fn into_merge_fragments(self) -> Result<MergeFragments, Self> {
+    pub fn into_patch_elements(self) -> Result<PatchElements, Self> {
         match self {
-            EventData::MergeFragments(data) => Ok(data),
-            EventData::RemoveFragments(_) => Err(self),
-            EventData::MergeSignals(_) => Err(self),
-            EventData::RemoveSignals(_) => Err(self),
+            EventData::PatchElements(data) => Ok(data),
             EventData::ExecuteScript(_) => Err(self),
+            EventData::PatchSignals(_) => Err(self),
         }
     }
 
-    /// Consume `self` as [`RemoveFragments`].
+    /// Consume `self` as [`PatchSignals`].
     ///
     /// returning itself as an error if it is of a different type.
-    pub fn into_remove_fragments(self) -> Result<RemoveFragments, Self> {
+    pub fn into_patch_signals(self) -> Result<PatchSignals<T>, Self> {
         match self {
-            EventData::MergeFragments(_) => Err(self),
-            EventData::RemoveFragments(data) => Ok(data),
-            EventData::MergeSignals(_) => Err(self),
-            EventData::RemoveSignals(_) => Err(self),
+            EventData::PatchElements(_) => Err(self),
             EventData::ExecuteScript(_) => Err(self),
-        }
-    }
-
-    /// Consume `self` as [`MergeSignals`].
-    ///
-    /// returning itself as an error if it is of a different type.
-    pub fn into_merge_signals(self) -> Result<MergeSignals<T>, Self> {
-        match self {
-            EventData::MergeFragments(_) => Err(self),
-            EventData::RemoveFragments(_) => Err(self),
-            EventData::MergeSignals(data) => Ok(data),
-            EventData::RemoveSignals(_) => Err(self),
-            EventData::ExecuteScript(_) => Err(self),
-        }
-    }
-
-    /// Consume `self` as [`RemoveSignals`].
-    ///
-    /// returning itself as an error if it is of a different type.
-    pub fn into_remove_signals(self) -> Result<RemoveSignals, Self> {
-        match self {
-            EventData::MergeFragments(_) => Err(self),
-            EventData::RemoveFragments(_) => Err(self),
-            EventData::MergeSignals(_) => Err(self),
-            EventData::RemoveSignals(data) => Ok(data),
-            EventData::ExecuteScript(_) => Err(self),
+            EventData::PatchSignals(data) => Ok(data),
         }
     }
 
@@ -145,22 +100,17 @@ impl<T> EventData<T> {
     /// returning itself as an error if it is of a different type.
     pub fn into_execute_script(self) -> Result<ExecuteScript, Self> {
         match self {
-            EventData::MergeFragments(_) => Err(self),
-            EventData::RemoveFragments(_) => Err(self),
-            EventData::MergeSignals(_) => Err(self),
-            EventData::RemoveSignals(_) => Err(self),
+            EventData::PatchElements(_) => Err(self),
             EventData::ExecuteScript(data) => Ok(data),
+            EventData::PatchSignals(_) => Err(self),
         }
     }
 
     /// Return the [`EventType`] for the current data
     pub fn event_type(&self) -> EventType {
         match self {
-            EventData::MergeFragments(_) => EventType::MergeFragments,
-            EventData::RemoveFragments(_) => EventType::RemoveFragments,
-            EventData::MergeSignals(_) => EventType::MergeSignals,
-            EventData::RemoveSignals(_) => EventType::RemoveSignals,
-            EventData::ExecuteScript(_) => EventType::ExecuteScript,
+            EventData::PatchElements(_) | EventData::ExecuteScript(_) => EventType::PatchElements,
+            EventData::PatchSignals(_) => EventType::PatchSignals,
         }
     }
 
@@ -178,11 +128,9 @@ impl<T> EventData<T> {
 impl<T: crate::sse::EventDataWrite> crate::sse::EventDataWrite for EventData<T> {
     fn write_data(&self, w: &mut impl std::io::Write) -> Result<(), OpaqueError> {
         match self {
-            EventData::MergeFragments(merge_fragments) => merge_fragments.write_data(w),
-            EventData::RemoveFragments(remove_fragments) => remove_fragments.write_data(w),
-            EventData::MergeSignals(merge_signals) => merge_signals.write_data(w),
-            EventData::RemoveSignals(remove_signals) => remove_signals.write_data(w),
-            EventData::ExecuteScript(execute_script) => execute_script.write_data(w),
+            EventData::PatchElements(patch_elements) => patch_elements.write_data(w),
+            EventData::ExecuteScript(exec_script) => exec_script.write_data(w),
+            EventData::PatchSignals(patch_signals) => patch_signals.write_data(w),
         }
     }
 }
@@ -224,52 +172,23 @@ impl<T: EventDataRead> EventDataLineReader for EventDataReader<T> {
             .context("parse event type as datastar event type")?;
 
         match event_type {
-            EventType::MergeFragments => {
-                let mut reader = MergeFragments::line_reader();
+            EventType::PatchElements => {
+                let mut reader = PatchElements::line_reader();
                 for line in lines {
                     reader
                         .read_line(&line)
-                        .context("EventData: MergeFragments: read line")?;
+                        .context("EventData: PatchElements: read line")?;
                 }
-                reader.data(event).map(|v| v.map(EventData::MergeFragments))
+                reader.data(event).map(|v| v.map(EventData::PatchElements))
             }
-            EventType::MergeSignals => {
-                let mut reader = MergeSignals::<T>::line_reader();
+            EventType::PatchSignals => {
+                let mut reader = PatchSignals::<T>::line_reader();
                 for line in lines {
                     reader
                         .read_line(&line)
-                        .context("EventData: MergeSignals: read line")?;
+                        .context("EventData: PatchSignals: read line")?;
                 }
-                reader.data(event).map(|v| v.map(EventData::MergeSignals))
-            }
-            EventType::RemoveFragments => {
-                let mut reader = RemoveFragments::line_reader();
-                for line in lines {
-                    reader
-                        .read_line(&line)
-                        .context("EventData: RemoveFragments: read line")?;
-                }
-                reader
-                    .data(event)
-                    .map(|v| v.map(EventData::RemoveFragments))
-            }
-            EventType::RemoveSignals => {
-                let mut reader = RemoveSignals::line_reader();
-                for line in lines {
-                    reader
-                        .read_line(&line)
-                        .context("EventData: RemoveSignals: read line")?;
-                }
-                reader.data(event).map(|v| v.map(EventData::RemoveSignals))
-            }
-            EventType::ExecuteScript => {
-                let mut reader = ExecuteScript::line_reader();
-                for line in lines {
-                    reader
-                        .read_line(&line)
-                        .context("EventData: ExecuteScript: read line")?;
-                }
-                reader.data(event).map(|v| v.map(EventData::ExecuteScript))
+                reader.data(event).map(|v| v.map(EventData::PatchSignals))
             }
             EventType::Unknown(event_type) => {
                 tracing::trace!("ignore datastar event with unknown event type: {event_type}");
@@ -296,33 +215,14 @@ mod tests {
     #[test]
     fn test_serialize_deserialize_reflect() {
         let test_cases: Vec<EventData> = vec![
-            ExecuteScript::new(
-                r##"console.log('Hello, world!')\nconsole.log('A second greeting')"##,
-            )
-            .with_auto_remove(false)
-            .with_attributes([
-                ScriptAttribute::Type(ScriptType::Module),
-                ScriptAttribute::Defer,
-            ])
-            .into(),
-            ExecuteScript::new(
-                r##"console.log('Hello, world!')\nconsole.log('A second greeting')"##,
-            )
-            .with_auto_remove(true)
-            .with_attribute(ScriptAttribute::Async)
-            .into(),
-            MergeFragments::new("<div>\nHello, world!\n</div>")
+            PatchElements::new("<div>\nHello, world!\n</div>")
                 .with_selector("#foo")
-                .with_merge_mode(FragmentMergeMode::Append)
+                .with_mode(ElementPatchMode::Append)
                 .with_use_view_transition(true)
                 .into(),
-            MergeSignals::new(r##"{a:1,b:{"c":2}}"##.to_owned())
+            PatchSignals::new(r##"{a:1,b:{"c":2}}"##.to_owned())
                 .with_only_if_missing(true)
                 .into(),
-            RemoveFragments::new("body > main > header > .foo#bar::first")
-                .with_use_view_transition(true)
-                .into(),
-            RemoveSignals::new_multi(["foo.bar", "baz"]).into(),
         ];
 
         for test_case in test_cases {

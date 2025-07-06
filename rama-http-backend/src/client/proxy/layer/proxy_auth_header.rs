@@ -69,28 +69,27 @@ where
         mut ctx: Context<State>,
         mut req: Request<Body>,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
-        let maybe_request_ctx = ctx
-            .get_or_try_insert_with_ctx::<RequestContext, _>(|ctx| (ctx, &req).try_into())
-            .ok();
-        if !maybe_request_ctx
-            .map(|ctx| ctx.protocol.is_secure())
-            .unwrap_or_default()
-        {
-            // only do this for non-secure requests!!!
-
-            if let Some(pa) = ctx.get::<ProxyAddress>() {
-                if let Some(credential) = pa.credential.clone() {
-                    match credential {
-                        ProxyCredential::Basic(basic) => {
+        if let Some(pa) = ctx.get::<ProxyAddress>() {
+            if let Some(credential) = pa.credential.clone() {
+                match credential {
+                    ProxyCredential::Basic(basic) => {
+                        let maybe_request_ctx = ctx
+                            .get_or_try_insert_with_ctx::<RequestContext, _>(|ctx| {
+                                (ctx, &req).try_into()
+                            })
+                            .ok();
+                        if !maybe_request_ctx
+                            .map(|ctx| ctx.protocol.is_secure())
+                            .unwrap_or_default()
+                        {
                             tracing::trace!("inserted proxy Basic credentials into (http) request");
                             req.headers_mut().typed_insert(ProxyAuthorization(basic))
                         }
-                        ProxyCredential::Bearer(bearer) => {
-                            tracing::trace!(
-                                "inserted proxy Bearer credentials into (http) request"
-                            );
-                            req.headers_mut().typed_insert(ProxyAuthorization(bearer))
-                        }
+                    }
+                    ProxyCredential::Bearer(bearer) => {
+                        // Bearer tokens always need to be inserted, as there's no uri support for these
+                        tracing::trace!("inserted proxy Bearer credentials into (http) request");
+                        req.headers_mut().typed_insert(ProxyAuthorization(bearer))
                     }
                 }
             }

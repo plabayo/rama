@@ -31,6 +31,12 @@ This directory contains example implementations demonstrating various features a
 - [`http_high_level_client.rs`](./http_high_level_client.rs) - High-level HTTP client implementation
 - [`http_pooled_client.rs`](./http_pooled_client.rs) - Connection pooling client
 
+### WebSocket
+- [`ws_echo_server.rs`](./ws_echo_server.rs) - WebSocket server which echos all messages back
+- [`ws_chat_server.rs`](./ws_chat_server.rs) - WebSocket chat server
+- [`ws_tls_server.rs`](./ws_tls_server.rs) - Secure WebSocket server example (WSS)
+- [`ws_over_h2.rs`](./ws_over_h2.rs) - Secure WebSocket server example using h2.
+
 ## Proxies
 
 ### Http Proxies

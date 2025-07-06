@@ -1456,7 +1456,7 @@ async fn early_hints() {
             .unwrap();
         let (response, _) = client.send_request(request, true).unwrap();
         let (ha, mut body) = response.await.unwrap().into_parts();
-        eprintln!("{:?}", ha);
+        eprintln!("{ha:?}");
         assert_eq!(body.data().await.unwrap().unwrap(), "ok");
     };
 
@@ -1871,7 +1871,7 @@ async fn receive_settings_frame_twice_with_second_one_empty() {
                     srv.send(ack.into()).await.unwrap();
                 }
                 frame => {
-                    panic!("unexpected frame: {:?}", frame);
+                    panic!("unexpected frame: {frame:?}");
                 }
             },
             None => {
@@ -1922,7 +1922,7 @@ async fn receive_settings_frame_twice_with_second_one_non_empty() {
                     srv.send(ack.into()).await.unwrap();
                 }
                 frame => {
-                    panic!("unexpected frame: {:?}", frame);
+                    panic!("unexpected frame: {frame:?}");
                 }
             },
             None => {

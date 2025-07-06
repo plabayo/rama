@@ -3,6 +3,8 @@ use rama_core::{
     Context, Service,
     error::{BoxError, OpaqueError},
 };
+use rama_http::Method;
+use rama_http_headers::HeaderMapExt;
 use rama_http_types::Request;
 use rama_net::tls::{ApplicationProtocol, client::NegotiatedTlsParameters};
 
@@ -54,6 +56,16 @@ where
                 new_version,
                 req.version(),
             );
+            if (req.version() == rama_http_types::Version::HTTP_10
+                || req.version() == rama_http_types::Version::HTTP_11)
+                && new_version == rama_http_types::Version::HTTP_2
+                && req
+                    .headers()
+                    .typed_get::<rama_http_headers::Upgrade>()
+                    .is_some()
+            {
+                *req.method_mut() = Method::CONNECT;
+            }
             *req.version_mut() = new_version;
         }
         Ok((ctx, req))

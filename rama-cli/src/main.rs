@@ -8,11 +8,12 @@ use clap::{Parser, Subcommand};
 use rama::error::BoxError;
 
 pub mod cmd;
-use cmd::{echo, fp, http, ip, proxy, serve, tls};
+use cmd::{echo, fp, http, ip, proxy, serve, tls, ws};
 
 pub mod error;
 
 pub mod trace;
+pub mod utils;
 
 #[cfg(unix)]
 #[global_allocator]
@@ -35,6 +36,7 @@ struct Cli {
 #[allow(clippy::large_enum_variant)]
 enum CliCommands {
     Http(http::CliCommandHttp),
+    Ws(ws::CliCommandWs),
     Tls(tls::CliCommandTls),
     Proxy(proxy::CliCommandProxy),
     Echo(echo::CliCommandEcho),
@@ -50,6 +52,7 @@ async fn main() -> Result<(), BoxError> {
     #[allow(clippy::exit)]
     match match cli.cmds {
         CliCommands::Http(cfg) => http::run(cfg).await,
+        CliCommands::Ws(cfg) => ws::run(cfg).await,
         CliCommands::Tls(cfg) => tls::run(cfg).await,
         CliCommands::Proxy(cfg) => proxy::run(cfg).await,
         CliCommands::Echo(cfg) => echo::run(cfg).await,
@@ -60,10 +63,10 @@ async fn main() -> Result<(), BoxError> {
         Ok(()) => Ok(()),
         Err(err) => {
             if let Some(err) = err.downcast_ref::<error::ErrorWithExitCode>() {
-                eprintln!("🚩 exit with error ({}): {}", err.exit_code(), err);
+                eprintln!("🚩 exit with error ({}): {err}", err.exit_code());
                 std::process::exit(err.exit_code());
             } else {
-                eprintln!("🚩 exit with error: {}", err);
+                eprintln!("🚩 exit with error: {err}");
                 std::process::exit(1);
             }
         }

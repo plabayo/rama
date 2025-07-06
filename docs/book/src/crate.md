@@ -27,6 +27,7 @@ Here is a list of all `rama` crates:
 - [`rama-error`](https://crates.io/crates/rama-error): error utilities for rama and its users
 - [`rama-macros`](https://crates.io/crates/rama-macros): contains the procedural macros used by `rama`
 - [`rama-utils`](https://crates.io/crates/rama-utils): utilities crate for rama
+- [`rama-ws`](https://crates.io/crates/rama-ws): WebSocket (WS) support for rama
 - [`rama-core`](https://crates.io/crates/rama-core): core crate containing the service, layer and
   context used by all other `rama` code, as well as some other _core_ utilities
 - [`rama-crypto`](https://crates.io/crates/rama-crytpo): rama crypto primitives and dependencies
@@ -127,7 +128,7 @@ and continue to happen with community/ecosystem support.
 
 ### Minimum supported Rust version
 
-Rama's MSRV is `1.85`.
+Rama's MSRV is `1.88`.
 
 [Using GitHub Actions we also test](https://github.com/plabayo/rama/blob/main/.github/workflows/CI.yml) if `rama` on that version still works on
 the stable and beta versions of _rust_ as well.

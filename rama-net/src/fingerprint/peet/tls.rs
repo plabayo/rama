@@ -191,7 +191,7 @@ impl PeetPrint {
             W: fmt::Write,
             T: fmt::Display,
         {
-            write_joined_with_cb(w, items, |w, t| write!(w, "{}", t))
+            write_joined_with_cb(w, items, |w, t| write!(w, "{t}"))
         }
 
         fn write_u16<W, T>(w: &mut W, items: &[T]) -> fmt::Result
@@ -236,7 +236,7 @@ impl PeetPrint {
         write!(w, "|")?;
 
         if let Some(mode) = self.psk_key_exchange_mode {
-            write!(w, "{}|", mode)?;
+            write!(w, "{mode}|")?;
         } else {
             write!(w, "|")?;
         }
@@ -259,7 +259,7 @@ impl PeetPrint {
                 let mut writer = Md5Writer(&mut ctx);
                 self.write_to_fmt(&mut writer)?;
             }
-            let digest = ctx.compute();
+            let digest = ctx.finalize();
             write!(f, "{}", hex::encode(*digest))
         } else {
             self.write_to_fmt(f)

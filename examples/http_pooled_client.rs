@@ -113,7 +113,7 @@ async fn run_server(addr: &str, ready: Sender<()>) {
         .bind(addr)
         .await
         .expect("bind TCP Listener")
-        .serve((LimitLayer::new(FirstConnOnly::new())).layer(http_service));
+        .serve(LimitLayer::new(FirstConnOnly::new()).into_layer(http_service));
 
     ready.send(()).unwrap();
     serve.await;

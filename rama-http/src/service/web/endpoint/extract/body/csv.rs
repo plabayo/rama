@@ -114,7 +114,7 @@ mod test {
             .body("name,age,alive\nglen,42,\nadr,40,true\n".into())
             .unwrap();
         let resp = service.serve(Context::default(), req).await.unwrap();
-        println!("debug {:?}", resp);
+        println!("debug {resp:?}");
         assert_eq!(resp.status(), StatusCode::OK);
     }
 

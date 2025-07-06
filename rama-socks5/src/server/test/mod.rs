@@ -17,7 +17,8 @@ async fn test_socks5_acceptor_auth_flow_used_failure_unauthorized() {
         .write(b"\x01\x01")
         .build();
 
-    let server = Socks5Acceptor::new().with_auth(Socks5Auth::username_password("john", "secret"));
+    let server = Socks5Acceptor::new()
+        .with_authorizer(user::Basic::new_static("john", "secret").into_authorizer());
     let result = server.accept(Context::default(), stream).await;
     assert!(result.is_err());
 }
@@ -35,7 +36,8 @@ async fn test_socks5_acceptor_auth_flow_used_failure_unauthorized_missing_passwo
         .write(b"\x01\x01")
         .build();
 
-    let server = Socks5Acceptor::new().with_auth(Socks5Auth::username_password("john", "secret"));
+    let server = Socks5Acceptor::new()
+        .with_authorizer(user::Basic::new_static("john", "secret").into_authorizer());
     let result = server.accept(Context::default(), stream).await;
     assert!(result.is_err());
 }

@@ -330,7 +330,7 @@ macro_rules! test {
 
                 let host = format!("{}:{}", host, port);
 
-                req.headers_mut().append("Host", HeaderValue::from_str(&host).unwrap());
+                req.headers_mut().append("Host", HeaderValue::try_from(host).unwrap());
             }
 
             let (mut sender, conn) = builder.handshake(stream).await?;
@@ -1154,11 +1154,9 @@ test! {
             let long_header = "A".repeat(500_000);
             format!("\
                 HTTP/1.1 200 OK\r\n\
-                {}: {}\r\n\
+                {long_header}: {long_header}\r\n\
                 \r\n\
                 ",
-                long_header,
-                long_header,
             )
         },
 
@@ -1498,8 +1496,8 @@ mod conn {
     use rama::http::core::body::{Body, Frame};
     use rama::http::core::client::conn;
     use rama::http::core::service::RamaHttpService;
-    use rama::http::core::upgrade::OnUpgrade;
     use rama::http::dep::http_body_util::{BodyExt, Empty, StreamBody};
+    use rama::http::io::upgrade::OnUpgrade;
     use rama::http::{Method, Request, Response, StatusCode};
     use rama::rt::Executor;
 
@@ -1640,7 +1638,7 @@ mod conn {
 
         let (mut client, conn) = rt.block_on(conn::http1::handshake(tcp)).unwrap();
 
-        rt.spawn(conn.map_err(|e| panic!("conn error: {}", e)).map(|_| ()));
+        rt.spawn(conn.map_err(|e| panic!("conn error: {e}")).map(|_| ()));
 
         let req = Request::builder()
             .uri("/")
@@ -1684,7 +1682,7 @@ mod conn {
 
         let (mut client, conn) = rt.block_on(conn::http1::handshake(tcp)).unwrap();
 
-        rt.spawn(conn.map_err(|e| panic!("conn error: {}", e)).map(|_| ()));
+        rt.spawn(conn.map_err(|e| panic!("conn error: {e}")).map(|_| ()));
 
         let (mut sender, recv) = mpsc::channel::<Result<Frame<Bytes>, BoxError>>(0);
 
@@ -1739,7 +1737,7 @@ mod conn {
 
         let (mut client, conn) = rt.block_on(conn::http1::handshake(tcp)).unwrap();
 
-        rt.spawn(conn.map_err(|e| panic!("conn error: {}", e)).map(|_| ()));
+        rt.spawn(conn.map_err(|e| panic!("conn error: {e}")).map(|_| ()));
 
         let req = Request::builder()
             .uri("http://hyper.local/a")
@@ -1783,7 +1781,7 @@ mod conn {
 
         let (mut client, conn) = rt.block_on(conn::http1::handshake(tcp)).unwrap();
 
-        rt.spawn(conn.map_err(|e| panic!("conn error: {}", e)).map(|_| ()));
+        rt.spawn(conn.map_err(|e| panic!("conn error: {e}")).map(|_| ()));
 
         let req = Request::builder()
             .uri("/a")
@@ -1824,7 +1822,7 @@ mod conn {
 
         let (mut client, conn) = rt.block_on(conn::http1::handshake(tcp)).unwrap();
 
-        rt.spawn(conn.map_err(|e| panic!("conn error: {}", e)).map(|_| ()));
+        rt.spawn(conn.map_err(|e| panic!("conn error: {e}")).map(|_| ()));
 
         let req = Request::builder()
             .uri("/a")
@@ -1842,7 +1840,7 @@ mod conn {
             .unwrap();
         let res2 = client.send_request(req).map(|result| {
             let err = result.expect_err("res2");
-            assert!(err.is_canceled(), "err not canceled, {:?}", err);
+            assert!(err.is_canceled(), "err not canceled, {err:?}");
             Ok::<_, ()>(())
         });
 
@@ -2206,8 +2204,7 @@ mod conn {
 
             assert!(
                 err.take_message().is_some(),
-                "request was returned: {:?}",
-                err
+                "request was returned: {err:?}",
             );
         })
         .await
@@ -2273,7 +2270,7 @@ mod conn {
             .expect("client poll ready sanity");
 
         let req = Request::builder()
-            .uri(format!("http://{}/", addr))
+            .uri(format!("http://{addr}/"))
             .body(Empty::<Bytes>::new())
             .expect("request builder");
 
@@ -2315,7 +2312,7 @@ mod conn {
                 rama::Context::default(),
                 service_fn(move |req: Request| {
                     tokio::task::spawn(async move {
-                        let io = &mut rama::http::core::upgrade::on(req).await.unwrap();
+                        let io = &mut rama::http::io::upgrade::on(req).await.unwrap();
                         io.write_all(b"hello\n").await.unwrap();
                     });
 
@@ -2354,13 +2351,13 @@ mod conn {
             let rx = rxs.pop().unwrap();
             let req = Request::builder()
                 .method(Method::CONNECT)
-                .uri(format!("{}", addr))
+                .uri(format!("{addr}"))
                 .body(Empty::<Bytes>::new())
                 .expect("request builder");
 
             let resp = client.send_request(req).await.expect("req1 send");
             assert_eq!(resp.status(), 200);
-            let upgrade = rama::http::core::upgrade::on(resp).await.unwrap();
+            let upgrade = rama::http::io::upgrade::on(resp).await.unwrap();
             tokio::task::spawn(async move {
                 let _ = rx.await;
                 drop(upgrade);
@@ -2473,8 +2470,7 @@ mod conn {
             .expect_err("client should be closed");
         assert!(
             err.is_closed(),
-            "poll_ready error should be closed: {:?}",
-            err
+            "poll_ready error should be closed: {err:?}",
         );
     }
 
@@ -2635,7 +2631,7 @@ mod conn {
         let res = client.send_request(req).await.expect("send_request");
         assert_eq!(res.status(), StatusCode::OK);
 
-        let mut upgraded = rama::http::core::upgrade::on(res).await.unwrap();
+        let mut upgraded = rama::http::io::upgrade::on(res).await.unwrap();
 
         let mut vec = vec![];
         upgraded.read_to_end(&mut vec).await.unwrap();
@@ -2795,7 +2791,7 @@ where
 {
     fn expect(self, msg: &'static str) -> Pin<Box<dyn Future<Output = Self::Ok>>> {
         Box::pin(
-            self.inspect_err(move |e| panic!("expect: {}; error={:?}", msg, e))
+            self.inspect_err(move |e| panic!("expect: {msg}; error={e:?}"))
                 .map(Result::unwrap),
         )
     }

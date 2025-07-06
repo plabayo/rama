@@ -67,10 +67,11 @@ use rama::{
             response::{IntoResponse, Json},
         },
     },
+    net::{address::SocketAddress, user::Bearer},
     rt::Executor,
     telemetry::tracing::{self, level_filters::LevelFilter},
 };
-use rama_net::address::SocketAddress;
+
 use serde::Deserialize;
 use serde_json::json;
 use std::{collections::HashMap, sync::Arc};
@@ -126,7 +127,7 @@ async fn main() {
                                 }
                             })))
                         .get("/keys", list_keys)
-                        .nest("/admin", ValidateRequestHeaderLayer::bearer("secret-token")
+                        .nest("/admin", ValidateRequestHeaderLayer::auth(Bearer::new_static("secret-token"))
                             .into_layer(WebService::default()
                                 .delete("/keys", async |ctx: Context<Arc<AppState>>| {
                                     ctx.state().db.write().await.clear();

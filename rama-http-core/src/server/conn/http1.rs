@@ -5,9 +5,9 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
-use crate::upgrade::Upgraded;
 use httparse::ParserConfig;
 use rama_core::bytes::Bytes;
+use rama_http::io::upgrade::Upgraded;
 use std::task::ready;
 use tokio::io::{AsyncRead, AsyncWrite};
 

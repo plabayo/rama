@@ -1,0 +1,37 @@
+[package]
+name = "rama-ws"
+description = "WebSocket (WS) support for rama (RFC 6455)"
+version = { workspace = true }
+license = { workspace = true }
+edition = { workspace = true }
+repository = { workspace = true }
+keywords = ["io", "async", "websocket", "http", "rama"]
+categories = ["asynchronous", "network-programming", "web-programming"]
+authors = { workspace = true }
+rust-version = { workspace = true }
+
+[package.metadata.cargo-public-api-crates]
+allowed = []
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[dependencies]
+base64 = { workspace = true }
+rama-core = { workspace = true }
+rama-http = { workspace = true }
+rama-net = { workspace = true }
+rama-utils = { workspace = true }
+rand = { workspace = true }
+smallvec = { workspace = true }
+smol_str = { workspace = true }
+tokio = { workspace = true, features = ["time", "macros"] }
+
+[dev-dependencies]
+pin-project-lite = { workspace = true }
+rama-http-backend = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+
+[lints]
+workspace = true
