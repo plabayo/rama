@@ -1,11 +1,11 @@
 use crate::sse::{
-    Event, EventDataLineReader, EventDataRead, EventDataWrite, datastar::EventType, parser::is_lf,
+    Event, EventDataWrite,
+    datastar::{ElementPatchMode, EventType},
 };
 use mime::Mime;
-use rama_core::telemetry::tracing;
 use rama_error::{ErrorContext, OpaqueError};
 use smol_str::SmolStr;
-use std::{borrow::Cow, str::FromStr};
+use std::borrow::Cow;
 
 /// [`ExecuteScript`] executes JavaScript in the browser
 ///
@@ -94,7 +94,7 @@ rama_utils::macros::enums::enum_builder! {
 }
 
 impl ExecuteScript {
-    pub const TYPE: EventType = EventType::ExecuteScript;
+    pub const TYPE: EventType = EventType::PatchElements;
 
     /// Create a new [`ExecuteScript`] data blob.
     pub fn new(script: impl Into<Cow<'static, str>>) -> Self {
@@ -187,296 +187,167 @@ impl EventDataWrite for ExecuteScript {
         let mut next_script_line = script_lines
             .next()
             .context("ExecuteScript: no script lines found")?;
-        for script_line in script_lines {
-            write!(w, "script {next_script_line}\n").context("ExecuteScript: write script line")?;
-            next_script_line = script_line;
-        }
-        write!(w, "script {next_script_line}").context("ExecuteScript: write last script line")?;
 
-        if let Some(auto_remove) = self.auto_remove {
-            write!(w, "\nautoRemove {auto_remove}").context("ExecuteScript: write autoRemove")?;
-        }
+        write!(w, "selector body\nmode {}\n", ElementPatchMode::Append)
+            .context("write hardcoded selector and mode for execute script sugar")?;
+
+        w.write_all(b"elements <script")
+            .context("write opening of opening tag <script")?;
 
         if let Some(ref attributes) = self.attributes
             && (attributes.len() != 1
                 || !matches!(attributes[0], ScriptAttribute::Type(ScriptType::Module)))
         {
             for attribute in attributes {
-                w.write_all(b"\nattributes ")
-                    .context("ExecuteScript: write attribute line keyword")?;
                 match attribute {
-                    ScriptAttribute::Src(src) => {
-                        write!(w, "src {src}").context("ExecuteScript: write attribute: src")?
-                    }
+                    ScriptAttribute::Src(src) => write!(w, r##" src="{src}""##)
+                        .context("ExecuteScript: write attribute: src")?,
                     ScriptAttribute::Type(script_type) => match script_type {
                         ScriptType::Module => w
-                            .write_all(b"type module")
+                            .write_all(b" type=\"module\"")
                             .context("ExecuteScript: write attribute: type=module")?,
                         ScriptType::ImportMap => w
-                            .write_all(b"type importmap")
+                            .write_all(b" type=\"importmap\"")
                             .context("ExecuteScript: write attribute: type=importmap")?,
-                        ScriptType::Mime(mime) => write!(w, "type {mime}")
+                        ScriptType::Mime(mime) => write!(w, r##"type="{mime}""##)
                             .context("ExecuteScript: write attribute: type=<mime>")?,
                     },
                     ScriptAttribute::Async => {
-                        w.write_all(b"async true")
+                        w.write_all(b" async")
                             .context("ExecuteScript: write attribute: async=true")?;
                     }
                     ScriptAttribute::Defer => {
-                        w.write_all(b"defer true")
+                        w.write_all(b" defer")
                             .context("ExecuteScript: write attribute: defer=true")?;
                     }
                     ScriptAttribute::NoModule => {
-                        w.write_all(b"nomodule true")
+                        w.write_all(b" nomodule")
                             .context("ExecuteScript: write attribute: nomodule=true")?;
                     }
-                    ScriptAttribute::Integrity(integrity) => write!(w, "integrity {integrity}")
-                        .context("ExecuteScript: write attribute: integrity")?,
-                    ScriptAttribute::CrossOrigin(kind) => write!(w, "crossorigin {kind}")
-                        .context("ExecuteScript: write attribute: crossorigin")?,
-                    ScriptAttribute::ReferrerPolicy(policy) => write!(w, "referrerpolicy {policy}")
-                        .context("ExecuteScript: write attribute: referrerpolicy")?,
-                    ScriptAttribute::Charset(charset) => write!(w, "charset {charset}")
+                    ScriptAttribute::Integrity(integrity) => {
+                        write!(w, r##" integrity="{integrity}""##)
+                            .context("ExecuteScript: write attribute: integrity")?
+                    }
+                    ScriptAttribute::CrossOrigin(kind) => {
+                        write!(w, r##" crossorigin="{kind}""##)
+                            .context("ExecuteScript: write attribute: crossorigin")?
+                    }
+                    ScriptAttribute::ReferrerPolicy(policy) => {
+                        write!(w, r##" referrerpolicy="{policy}""##)
+                            .context("ExecuteScript: write attribute: referrerpolicy")?
+                    }
+                    ScriptAttribute::Charset(charset) => write!(w, r##" charset="{charset}""##)
                         .context("ExecuteScript: write attribute: charset")?,
                 }
             }
         }
 
-        Ok(())
-    }
-}
-
-/// [`EventDataLineReader`] for the [`EventDataRead`] implementation of [`ExecuteScript`].
-#[derive(Debug)]
-pub struct ExecuteScriptReader(Option<ExecuteScript>);
-
-impl EventDataRead for ExecuteScript {
-    type Reader = ExecuteScriptReader;
-
-    fn line_reader() -> Self::Reader {
-        ExecuteScriptReader(None)
-    }
-}
-
-impl EventDataLineReader for ExecuteScriptReader {
-    type Data = ExecuteScript;
-
-    fn read_line(&mut self, line: &str) -> Result<(), OpaqueError> {
-        let line = line.trim();
-        if line.is_empty() {
-            return Ok(());
-        };
-
-        let execute_script = self
-            .0
-            .get_or_insert_with(|| ExecuteScript::new(Cow::Owned(Default::default())));
-
-        let (keyword, value) = line
-            .split_once(' ')
-            // in case of empty value
-            .unwrap_or((line, ""));
-
-        if keyword.eq_ignore_ascii_case("script") {
-            let script = execute_script.script.to_mut();
-            script.push_str(value);
-            script.push('\n');
-        } else if keyword.eq_ignore_ascii_case("autoRemove") {
-            execute_script.auto_remove = Some(
-                value
-                    .parse()
-                    .context("ExecuteScriptReader: parse autoRemove")?,
-            );
-        } else if keyword.eq_ignore_ascii_case("attributes") {
-            let (r#type, value) = value
-                .trim()
-                .split_once(' ')
-                .context("invalid execute script attribute line: missing type separator")?;
-            if r#type.eq_ignore_ascii_case("src") {
-                execute_script
-                    .attributes
-                    .get_or_insert_default()
-                    .push(ScriptAttribute::Src(value.to_owned()));
-            } else if r#type.eq_ignore_ascii_case("type") {
-                let value = value.trim();
-                execute_script
-                    .attributes
-                    .get_or_insert_default()
-                    .push(ScriptAttribute::Type(
-                        if value.eq_ignore_ascii_case("module") {
-                            ScriptType::Module
-                        } else if value.eq_ignore_ascii_case("importmap") {
-                            ScriptType::ImportMap
-                        } else {
-                            let mime = Mime::from_str(value)
-                                .context("script attribute line: parse mime type")?;
-                            ScriptType::Mime(mime)
-                        },
-                    ));
-            } else if r#type.eq_ignore_ascii_case("async") {
-                let value: bool = value
-                    .parse()
-                    .context("script attribute line: parse async boolean indicator")?;
-                if value {
-                    execute_script
-                        .attributes
-                        .get_or_insert_default()
-                        .push(ScriptAttribute::Async);
-                }
-            } else if r#type.eq_ignore_ascii_case("defer") {
-                let value: bool = value
-                    .parse()
-                    .context("script attribute line: parse defer boolean indicator")?;
-                if value {
-                    execute_script
-                        .attributes
-                        .get_or_insert_default()
-                        .push(ScriptAttribute::Defer);
-                }
-            } else if r#type.eq_ignore_ascii_case("noModule") {
-                let value: bool = value
-                    .parse()
-                    .context("script attribute line: parse noModule boolean indicator")?;
-                if value {
-                    execute_script
-                        .attributes
-                        .get_or_insert_default()
-                        .push(ScriptAttribute::NoModule);
-                }
-            } else if r#type.eq_ignore_ascii_case("integrity") {
-                execute_script
-                    .attributes
-                    .get_or_insert_default()
-                    .push(ScriptAttribute::Integrity(value.to_owned()));
-            } else if r#type.eq_ignore_ascii_case("crossOrigin") {
-                execute_script.attributes.get_or_insert_default().push(
-                    ScriptAttribute::CrossOrigin(
-                        value
-                            .parse()
-                            .context("script attribute line: parse cross-origin value")?,
-                    ),
-                );
-            } else if r#type.eq_ignore_ascii_case("referrerPolicy") {
-                execute_script.attributes.get_or_insert_default().push(
-                    ScriptAttribute::ReferrerPolicy(
-                        value
-                            .parse()
-                            .context("script attribute line: parse referrer-policy value")?,
-                    ),
-                );
-            } else {
-                tracing::debug!(
-                    "ExecuteScriptReader: ignore unknown execute script attribute line: keyword = {}; type = {}; value = {}",
-                    keyword,
-                    r#type,
-                    value,
-                );
-            }
-        } else {
-            tracing::debug!(
-                "ExecuteScriptReader: ignore unknown execute script line: keyword = {}; value = {}",
-                keyword,
-                value,
-            );
+        if self.auto_remove.unwrap_or(true) {
+            write!(w, r##" data-effect="el.remove()""##)
+                .context("ExecuteScript: write autoRemove")?;
         }
+
+        write!(w, ">\n").context("ExecuteScript: write closing tag of <script>")?;
+
+        for script_line in script_lines {
+            write!(w, "elements {next_script_line}\n")
+                .context("ExecuteScript: write script line")?;
+            next_script_line = script_line;
+        }
+        write!(w, "elements {next_script_line}\n")
+            .context("ExecuteScript: write last script line")?;
+        write!(w, "elements </script>").context("ExecuteScript: write closing tag </script>")?;
 
         Ok(())
-    }
-
-    fn data(&mut self, event: Option<&str>) -> Result<Option<Self::Data>, OpaqueError> {
-        let mut execute_script = match self.0.take() {
-            Some(execute_script) => execute_script,
-            None => return Ok(None),
-        };
-
-        if !event
-            .and_then(|e| {
-                e.parse::<EventType>()
-                    .ok()
-                    .map(|t| t == EventType::ExecuteScript)
-            })
-            .unwrap_or_default()
-        {
-            return Err(OpaqueError::from_display(
-                "ExecuteScriptReader: unexpected event type: expected: datastar-execute-script",
-            ));
-        }
-
-        if execute_script
-            .script
-            .chars()
-            .next_back()
-            .map(is_lf)
-            .unwrap_or_default()
-        {
-            execute_script.script.to_mut().pop();
-        }
-        if execute_script.script.is_empty() {
-            return Err(OpaqueError::from_display(
-                "execute script contains no script",
-            ));
-        }
-
-        Ok(Some(execute_script))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sse::{EventDataLineReader, EventDataRead, datastar::PatchElements};
 
-    fn read_execute_script(input: &str) -> ExecuteScript {
-        let mut reader = ExecuteScript::line_reader();
-        for line in input.lines() {
+    fn assert_sugar_is_valid_patch_element(data: String) {
+        let mut reader = PatchElements::line_reader();
+        for line in data.lines() {
             reader.read_line(line).unwrap();
         }
         reader
-            .data(Some("datastar-execute-script"))
+            .data(Some(EventType::PatchElements.as_str()))
             .unwrap()
-            .unwrap()
+            .unwrap();
     }
 
     #[test]
-    fn test_deserialize_minimal() {
-        let data = read_execute_script(r##"script console.log('Hello, world!')"##);
-        assert_eq!(data.script, r##"console.log('Hello, world!')"##);
-        assert_eq!(data.auto_remove, None);
-        assert_eq!(data.attributes, None);
+    fn test_execute_script_sugar_simple() {
+        let mut output_sugar = Vec::new();
+        ExecuteScript::new("console.alert('hello!');")
+            .write_data(&mut output_sugar)
+            .expect("write data");
+
+        let mut output_expected = Vec::new();
+        PatchElements::new(
+            "<script data-effect=\"el.remove()\">\nconsole.alert('hello!');\n</script>",
+        )
+        .with_mode(ElementPatchMode::Append)
+        .with_selector("body")
+        .write_data(&mut output_expected)
+        .expect("write data");
+
+        let sugar = String::from_utf8(output_sugar).unwrap();
+        let expected = String::from_utf8(output_expected).unwrap();
+        assert_eq!(sugar, expected);
+        assert_sugar_is_valid_patch_element(sugar);
     }
 
     #[test]
-    fn test_serialize_deserialize_reflect() {
-        let expected_data = ExecuteScript::new(
-            r##"console.log('Hello, world!')\nconsole.log('A second greeting')"##,
+    fn test_execute_script_sugar_complex() {
+        let mut output_sugar = Vec::new();
+        ExecuteScript::new(
+            r##"const url = "https://example.org/products.json";
+try {
+    const response = await fetch(url);
+    if (!response.ok) {
+        throw new Error(`Response status: ${response.status}`);
+    }
+
+    const json = await response.json();
+    console.log(json);
+} catch (error) {
+    console.error(error.message);
+}"##,
         )
         .with_auto_remove(false)
-        .with_attributes([
-            ScriptAttribute::Type(ScriptType::Module),
-            ScriptAttribute::Defer,
-        ]);
+        .with_attribute(ScriptAttribute::Async)
+        .with_additional_attribute(ScriptAttribute::Charset(SmolStr::new_static("utf-8")))
+        .write_data(&mut output_sugar)
+        .expect("write data");
 
-        let mut buf = Vec::new();
-        expected_data.write_data(&mut buf).unwrap();
-
-        let input = String::from_utf8(buf).unwrap();
-        let data = read_execute_script(&input);
-
-        assert_eq!(expected_data, data);
+        let mut output_expected = Vec::new();
+        PatchElements::new(
+            r##"<script async charset="utf-8">
+const url = "https://example.org/products.json";
+try {
+    const response = await fetch(url);
+    if (!response.ok) {
+        throw new Error(`Response status: ${response.status}`);
     }
 
-    #[test]
-    fn test_serialize_deserialize_reflect_with_auto_remove() {
-        let expected_data = ExecuteScript::new(
-            r##"console.log('Hello, world!')\nconsole.log('A second greeting')"##,
+    const json = await response.json();
+    console.log(json);
+} catch (error) {
+    console.error(error.message);
+}
+</script>"##,
         )
-        .with_auto_remove(true)
-        .with_attribute(ScriptAttribute::Async);
+        .with_mode(ElementPatchMode::Append)
+        .with_selector("body")
+        .write_data(&mut output_expected)
+        .expect("write data");
 
-        let mut buf = Vec::new();
-        expected_data.write_data(&mut buf).unwrap();
-
-        let input = String::from_utf8(buf).unwrap();
-        let data = read_execute_script(&input);
-
-        assert_eq!(expected_data, data);
+        let sugar = String::from_utf8(output_sugar).unwrap();
+        let expected = String::from_utf8(output_expected).unwrap();
+        assert_eq!(sugar, expected);
+        assert_sugar_is_valid_patch_element(sugar);
     }
 }
