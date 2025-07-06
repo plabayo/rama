@@ -515,6 +515,22 @@ where
         }
     }
 
+    /// Overwrite a custom http header
+    pub fn with_header_overwrite<K, V>(self, name: K, value: V) -> Self
+    where
+        K: IntoHeaderName,
+        V: IntoHeaderValue,
+    {
+        Self {
+            inner: WithService {
+                builder: self.inner.builder.overwrite_header(name, value),
+                ..self.inner
+            },
+            sub_protocols: self.sub_protocols,
+            key: self.key,
+        }
+    }
+
     /// Set a custom typed http header
     pub fn with_typed_header<H>(self, header: H) -> Self
     where
@@ -523,6 +539,21 @@ where
         Self {
             inner: WithService {
                 builder: self.inner.builder.typed_header(header),
+                ..self.inner
+            },
+            sub_protocols: self.sub_protocols,
+            key: self.key,
+        }
+    }
+
+    /// Overwrite a custom typed http header
+    pub fn with_typed_header_overwrite<H>(self, header: H) -> Self
+    where
+        H: headers::Header,
+    {
+        Self {
+            inner: WithService {
+                builder: self.inner.builder.overwrite_typed_header(header),
                 ..self.inner
             },
             sub_protocols: self.sub_protocols,
@@ -544,7 +575,9 @@ where
         let builder = match self.sub_protocols.as_ref() {
             Some(protocols) => {
                 let s = protocols.to_string();
-                self.inner.builder.header(header::SEC_WEBSOCKET_PROTOCOL, s)
+                self.inner
+                    .builder
+                    .overwrite_header(header::SEC_WEBSOCKET_PROTOCOL, s)
             }
             None => self.inner.builder,
         };
