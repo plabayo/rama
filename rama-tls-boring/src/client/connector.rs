@@ -377,27 +377,19 @@ impl<S, K> TlsConnector<S, K> {
         &self,
         ctx: &mut Context<State>,
     ) -> Result<TlsConnectorData, OpaqueError> {
-        let enforced_version_config = match ctx.get::<EnforcedHttpVersion>() {
+        let enforced_alpn = match ctx.get::<EnforcedHttpVersion>() {
             None => None,
-            Some(version) => {
-                let alpn = &[version.0.try_into()?];
-                let config = TlsConnectorDataBuilder::new()
-                    .try_with_rama_alpn_protos(alpn)?
-                    .into_shared_builder();
-
-                Some(config)
-            }
+            Some(version) => Some(ApplicationProtocol::try_from(version.0)?),
         };
 
-        let base_builder = self.connector_data.clone();
         let builder = ctx.get_or_insert_default::<TlsConnectorDataBuilder>();
 
-        if let Some(base_builder) = base_builder {
+        if let Some(base_builder) = self.connector_data.clone() {
             builder.prepend_base_config(base_builder);
         }
 
-        if let Some(enforced_version_config) = enforced_version_config {
-            builder.push_base_config(enforced_version_config);
+        if let Some(enforced_alpn) = enforced_alpn {
+            builder.try_set_rama_alpn_protos(&[enforced_alpn])?;
         }
         builder.build()
     }
