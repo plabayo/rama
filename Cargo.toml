@@ -52,7 +52,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.3.0-alpha.1"
+version = "0.3.0-alpha.2"
 license = "MIT OR Apache-2.0"
 edition = "2024"
 repository = "https://github.com/plabayo/rama"
@@ -150,29 +150,29 @@ quote = "1.0"
 radix_trie = "0.2"
 rama-boring = "0.3.1"
 rama-boring-tokio = "0.3.1"
-rama-core = { version = "0.3.0-alpha.1", path = "./rama-core" }
-rama-crypto = { version = "0.3.0-alpha.1", path = "./rama-crypto" }
-rama-dns = { version = "0.3.0-alpha.1", path = "./rama-dns" }
-rama-error = { version = "0.3.0-alpha.1", path = "./rama-error" }
-rama-haproxy = { version = "0.3.0-alpha.1", path = "./rama-haproxy" }
-rama-http = { version = "0.3.0-alpha.1", path = "./rama-http" }
-rama-http-backend = { version = "0.3.0-alpha.1", path = "./rama-http-backend" }
-rama-http-core = { version = "0.3.0-alpha.1", path = "./rama-http-core" }
-rama-http-headers = { version = "0.3.0-alpha.1", path = "./rama-http-headers" }
-rama-http-types = { version = "0.3.0-alpha.1", path = "./rama-http-types" }
-rama-macros = { version = "0.3.0-alpha.1", path = "./rama-macros" }
-rama-net = { version = "0.3.0-alpha.1", path = "./rama-net" }
-rama-proxy = { version = "0.3.0-alpha.1", path = "./rama-proxy" }
-rama-socks5 = { version = "0.3.0-alpha.1", path = "./rama-socks5" }
-rama-tcp = { version = "0.3.0-alpha.1", path = "./rama-tcp" }
-rama-tls-boring = { version = "0.3.0-alpha.1", path = "./rama-tls-boring" }
-rama-tls-rustls = { version = "0.3.0-alpha.1", path = "./rama-tls-rustls" }
-rama-tower = { version = "0.3.0-alpha.1", path = "./rama-tower" }
-rama-ua = { version = "0.3.0-alpha.1", path = "./rama-ua" }
-rama-udp = { version = "0.3.0-alpha.1", path = "./rama-udp" }
-rama-unix = { version = "0.3.0-alpha.1", path = "./rama-unix" }
-rama-utils = { version = "0.3.0-alpha.1", path = "./rama-utils" }
-rama-ws = { version = "0.3.0-alpha.1", path = "./rama-ws" }
+rama-core = { version = "0.3.0-alpha.2", path = "./rama-core" }
+rama-crypto = { version = "0.3.0-alpha.2", path = "./rama-crypto" }
+rama-dns = { version = "0.3.0-alpha.2", path = "./rama-dns" }
+rama-error = { version = "0.3.0-alpha.2", path = "./rama-error" }
+rama-haproxy = { version = "0.3.0-alpha.2", path = "./rama-haproxy" }
+rama-http = { version = "0.3.0-alpha.2", path = "./rama-http" }
+rama-http-backend = { version = "0.3.0-alpha.2", path = "./rama-http-backend" }
+rama-http-core = { version = "0.3.0-alpha.2", path = "./rama-http-core" }
+rama-http-headers = { version = "0.3.0-alpha.2", path = "./rama-http-headers" }
+rama-http-types = { version = "0.3.0-alpha.2", path = "./rama-http-types" }
+rama-macros = { version = "0.3.0-alpha.2", path = "./rama-macros" }
+rama-net = { version = "0.3.0-alpha.2", path = "./rama-net" }
+rama-proxy = { version = "0.3.0-alpha.2", path = "./rama-proxy" }
+rama-socks5 = { version = "0.3.0-alpha.2", path = "./rama-socks5" }
+rama-tcp = { version = "0.3.0-alpha.2", path = "./rama-tcp" }
+rama-tls-boring = { version = "0.3.0-alpha.2", path = "./rama-tls-boring" }
+rama-tls-rustls = { version = "0.3.0-alpha.2", path = "./rama-tls-rustls" }
+rama-tower = { version = "0.3.0-alpha.2", path = "./rama-tower" }
+rama-ua = { version = "0.3.0-alpha.2", path = "./rama-ua" }
+rama-udp = { version = "0.3.0-alpha.2", path = "./rama-udp" }
+rama-unix = { version = "0.3.0-alpha.2", path = "./rama-unix" }
+rama-utils = { version = "0.3.0-alpha.2", path = "./rama-utils" }
+rama-ws = { version = "0.3.0-alpha.2", path = "./rama-ws" }
 rand = "0.9"
 ratatui = "0.29"
 rcgen = { version = "0.14", default-features = false, features = ["pem", "aws_lc_rs", "x509-parser"] }
