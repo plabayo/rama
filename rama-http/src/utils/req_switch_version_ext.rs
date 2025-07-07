@@ -15,6 +15,8 @@ impl<Body> RequestSwitchVersionExt for http::Request<Body> {
             target_version,
         );
 
+        // TODO full implementation: https://github.com/plabayo/rama/issues/624
+
         if (self.version() == Version::HTTP_10 || self.version() == Version::HTTP_11)
             && target_version == Version::HTTP_2
             && self.headers().typed_get::<Upgrade>().is_some()

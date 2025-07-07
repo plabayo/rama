@@ -1,13 +1,9 @@
 use rama_core::telemetry::tracing::trace;
-use rama_core::{
-    Context, Service,
-    error::{BoxError, OpaqueError},
-};
-use rama_http::Method;
-use rama_http::conn::EnforcedHttpVersion;
-use rama_http_headers::HeaderMapExt;
+use rama_core::{Context, Service, error::BoxError};
+use rama_http::conn::OriginalHttpVersion;
+use rama_http::utils::RequestSwitchVersionExt;
 use rama_http_types::Request;
-use rama_net::tls::{ApplicationProtocol, client::NegotiatedTlsParameters};
+use rama_net::tls::client::NegotiatedTlsParameters;
 
 #[derive(Debug, Clone, Copy, Default)]
 #[non_exhaustive]
@@ -32,42 +28,24 @@ where
 
     async fn serve(
         &self,
-        ctx: Context<State>,
+        mut ctx: Context<State>,
         mut req: Request<ReqBody>,
     ) -> Result<Self::Response, Self::Error> {
         if let Some(proto) = ctx
             .get::<NegotiatedTlsParameters>()
             .and_then(|params| params.application_layer_protocol.as_ref())
         {
-            let new_version = match proto {
-                ApplicationProtocol::HTTP_09 => rama_http_types::Version::HTTP_09,
-                ApplicationProtocol::HTTP_10 => rama_http_types::Version::HTTP_10,
-                ApplicationProtocol::HTTP_11 => rama_http_types::Version::HTTP_11,
-                ApplicationProtocol::HTTP_2 => rama_http_types::Version::HTTP_2,
-                ApplicationProtocol::HTTP_3 => rama_http_types::Version::HTTP_3,
-                _ => {
-                    return Err(OpaqueError::from_display(
-                        "HttpsAlpnModifier: unsupported negotiated ALPN: {proto}",
-                    )
-                    .into_boxed());
-                }
-            };
+            let new_version = proto.try_into()?;
             trace!(
                 "setting request version to {:?} based on negotiated APLN (was: {:?})",
                 new_version,
                 req.version(),
             );
-            if (req.version() == rama_http_types::Version::HTTP_10
-                || req.version() == rama_http_types::Version::HTTP_11)
-                && new_version == rama_http_types::Version::HTTP_2
-                && req
-                    .headers()
-                    .typed_get::<rama_http_headers::Upgrade>()
-                    .is_some()
-            {
-                *req.method_mut() = Method::CONNECT;
+
+            if req.version() != new_version {
+                ctx.insert(OriginalHttpVersion(req.version()));
+                req.switch_version(new_version)?;
             }
-            *req.version_mut() = new_version;
         }
         Ok((ctx, req))
     }

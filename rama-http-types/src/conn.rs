@@ -31,6 +31,12 @@ pub struct H2ClientContextParams {
     pub early_frames: Option<EarlyFrameCapture>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 /// Extension that when set will enforce this specific http version
 pub struct EnforcedHttpVersion(pub Version);
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// Original request version before it was changed
+///
+/// Changing of version happens because of things like tls alpn
+pub struct OriginalHttpVersion(pub Version);
