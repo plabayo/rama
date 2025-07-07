@@ -1,5 +1,6 @@
 use base64::{Engine as _, prelude::BASE64_URL_SAFE_NO_PAD};
 use rama_core::error::{BoxError, ErrorContext as _, OpaqueError};
+use rama_utils::macros::generate_set_and_with;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
@@ -21,97 +22,55 @@ pub struct JWSBuilder {
 pub struct Headers(Option<Map<String, Value>>);
 
 impl Headers {
-    /// Set provided header in the header map
-    ///
-    /// Warning: this function will replace already existing headers
-    /// If more control is needed, use `.header_map()` or `.header_map_raw()`
-    /// to get access to the underlying header map
-    pub fn with_header<T: Serialize>(
-        mut self,
-        name: String,
-        value: T,
-    ) -> Result<Self, OpaqueError> {
-        let headers = self.0.get_or_insert(Default::default());
-        let value = serde_json::to_value(value).context("convert to value")?;
-        headers.insert(name, value);
-        Ok(self)
+    generate_set_and_with! {
+        /// Set provided header in the header map
+        ///
+        /// Warning: this function will replace already existing headers
+        /// If more control is needed, use `.header_map()` or `.header_map_raw()`
+        /// to get access to the underlying header map
+        pub fn header(
+            mut self,
+            name: String,
+            value: impl Serialize,
+        ) -> Result<Self, OpaqueError> {
+            let headers = self.0.get_or_insert_default();
+            let value = serde_json::to_value(value).context("convert to value")?;
+            headers.insert(name, value);
+            Ok(self)
+        }
     }
 
-    /// Set provided header in the header map
-    ///
-    /// Warning: this function will replace already existing headers
-    /// If more control is needed, use `.header_map()` or `.header_map_raw()`
-    /// to get access to the underlying header map
-    pub fn set_header<T: Serialize>(
-        &mut self,
-        name: String,
-        value: T,
-    ) -> Result<&mut Self, OpaqueError> {
-        let headers = self.0.get_or_insert(Default::default());
-        let value = serde_json::to_value(value).context("convert to value")?;
-        headers.insert(name, value);
-        Ok(self)
-    }
+    generate_set_and_with! {
+        /// Set provided headers in the header map
+        ///
+        /// Warning: this function will replace already existing headers
+        /// If more control is needed, use `.header_map()` or `.header_map_raw()`
+        /// to get access to the underlying header map
+        pub fn headers(mut self, headers: impl Serialize) -> Result<Self, OpaqueError> {
+            let headers =
+                serde_json::to_value(headers).context("convert headers to serde json value")?;
 
-    /// Set provided headers in the header map
-    ///
-    /// Warning: this function will replace already existing headers
-    /// If more control is needed, use `.header_map()` or `.header_map_raw()`
-    /// to get access to the underlying header map
-    pub fn with_headers<T: Serialize>(mut self, headers: T) -> Result<Self, OpaqueError> {
-        let headers =
-            serde_json::to_value(headers).context("convert headers to serde json value")?;
+            let mut headers = match headers {
+                Value::Object(map) => map,
+                _ => Err(OpaqueError::from_display(
+                    "Can only set multiple headers if input is key value object",
+                ))?,
+            };
 
-        let mut headers = match headers {
-            Value::Object(map) => map,
-            _ => Err(OpaqueError::from_display(
-                "Can only set multiple headers if input is key value object",
-            ))?,
-        };
+            match &mut self.0 {
+                Some(existing_headers) => existing_headers.append(&mut headers),
+                None => self.0 = Some(headers),
+            };
 
-        match &mut self.0 {
-            Some(existing_headers) => existing_headers.append(&mut headers),
-            None => self.0 = Some(headers),
-        };
-
-        Ok(self)
-    }
-
-    /// Set provided headers in the header map
-    ///
-    /// Warning: this function will replace already existing headers
-    /// If more control is needed, use `.header_map()` or `.header_map_raw()`
-    /// to get access to the underlying header map
-    pub fn set_headers<T: Serialize>(&mut self, headers: T) -> Result<&mut Self, OpaqueError> {
-        let headers =
-            serde_json::to_value(headers).context("convert headers to serde json value")?;
-
-        let mut headers = match headers {
-            Value::Object(map) => map,
-            _ => Err(OpaqueError::from_display(
-                "Can only set multiple headers if input is key value object",
-            ))?,
-        };
-
-        match &mut self.0 {
-            Some(existing_headers) => existing_headers.append(&mut headers),
-            None => self.0 = Some(headers),
-        };
-
-        Ok(self)
+            Ok(self)
+        }
     }
 
     /// Get a mutable reference to the underlying header map
     ///
-    /// Warning: this will create a header map if one doesn't exist already.
-    /// If you don't want this behaviour using `.header_map_raw()` instead.
-    pub fn header_map(&mut self) -> &mut Map<String, Value> {
+    /// Note: this will create a header map if one doesn't exist already.
+    pub fn header_map_mut(&mut self) -> &mut Map<String, Value> {
         self.0.get_or_insert(Default::default())
-    }
-
-    /// Get a mutable reference to the underlying optional header map
-    pub fn header_map_raw(&mut self) -> &mut Option<Map<String, Value>> {
-        &mut self.0
     }
 
     /// Encode headers to a base64 url safe representation
@@ -162,129 +121,82 @@ impl JWSBuilder {
         Self::default()
     }
 
-    /// Add the provided payload to this [`JWSBuilder`]
-    pub fn with_payload<T: AsRef<[u8]>>(mut self, payload: T) -> Self {
-        let payload = BASE64_URL_SAFE_NO_PAD.encode(payload);
-        self.payload = payload;
-        self
+    generate_set_and_with! {
+        /// Add the provided payload to this [`JWSBuilder`]
+        pub fn payload(mut self, payload: impl AsRef<[u8]>) -> Self {
+            let payload = BASE64_URL_SAFE_NO_PAD.encode(payload);
+            self.payload = payload;
+            self
+        }
     }
 
-    /// Set provided header in the protected header map
-    ///
-    /// Warning: this function will replace already existing headers
-    /// If more control is use `.protected_headers_raw()` to get access
-    /// to the underlying header store
-    pub fn with_protected_header<T: Serialize>(
-        mut self,
-        name: String,
-        value: T,
-    ) -> Result<Self, OpaqueError> {
-        self.protected_headers.set_header(name, value)?;
-        Ok(self)
+    generate_set_and_with! {
+        /// Set provided header in the protected header map
+        ///
+        /// Warning: this function will replace already existing headers
+        /// If more control is use `.protected_headers_mut()` to get access
+        /// to the underlying header store
+        pub fn protected_header(
+            mut self,
+            name: String,
+            value: impl Serialize,
+        ) -> Result<Self, OpaqueError> {
+            self.protected_headers.try_set_header(name, value)?;
+            Ok(self)
+        }
     }
 
-    /// Set provided header in the protected header map
-    ///
-    /// Warning: this function will replace already existing headers
-    /// If more control is use `.protected_headers_raw()` to get access
-    /// to the underlying header store
-    pub fn set_protected_header<T: Serialize>(
-        &mut self,
-        name: String,
-        value: T,
-    ) -> Result<&mut Self, OpaqueError> {
-        self.protected_headers.set_header(name, value)?;
-        Ok(self)
-    }
-
-    /// Set provided headers in the protected header map
-    ///
-    /// Warning: this function will replace already existing headers
-    /// If more control is use `.protected_headers_raw()` to get access
-    /// to the underlying header store
-    pub fn with_protected_headers<T: Serialize>(mut self, headers: T) -> Result<Self, OpaqueError> {
-        self.protected_headers.set_headers(headers)?;
-        Ok(self)
-    }
-
-    /// Set provided headers in the protected header map
-    ///
-    /// Warning: this function will replace already existing headers
-    /// If more control is use `.protected_headers_raw()` to get access
-    /// to the underlying header store
-    pub fn set_protected_headers<T: Serialize>(
-        &mut self,
-        headers: T,
-    ) -> Result<&mut Self, OpaqueError> {
-        self.protected_headers.set_headers(headers)?;
-        Ok(self)
+    generate_set_and_with! {
+        /// Set provided headers in the protected header map
+        ///
+        /// Warning: this function will replace already existing headers
+        /// If more control is use `.protected_headers_mut()` to get access
+        /// to the underlying header store
+        pub fn protected_headers(mut self, headers: impl Serialize) -> Result<Self, OpaqueError> {
+            self.protected_headers.try_set_headers(headers)?;
+            Ok(self)
+        }
     }
 
     /// Get mutable reference to the underlying protected header store
     ///
     /// This can be used in cases where more granual control is needed
-    pub fn protected_headers_raw(&mut self) -> &mut Headers {
+    pub fn protected_headers_mut(&mut self) -> &mut Headers {
         &mut self.protected_headers
     }
 
-    /// Set provided header in the unprotected header map
-    ///
-    /// Warning: this function will replace already existing headers
-    /// If more control is use `.unprotected_headers_raw()` to get access
-    /// to the underlying header store
-    pub fn with_unprotected_header<T: Serialize>(
-        mut self,
-        name: String,
-        value: T,
-    ) -> Result<Self, OpaqueError> {
-        self.unprotected_headers.set_header(name, value)?;
-        Ok(self)
+    generate_set_and_with! {
+        /// Set provided header in the unprotected header map
+        ///
+        /// Warning: this function will replace already existing headers
+        /// If more control is use `.unprotected_headers_mut()` to get access
+        /// to the underlying header store
+        pub fn unprotected_header(
+            mut self,
+            name: String,
+            value: impl Serialize,
+        ) -> Result<Self, OpaqueError> {
+            self.unprotected_headers.try_set_header(name, value)?;
+            Ok(self)
+        }
     }
 
-    /// Set provided header in the unprotected header map
-    ///
-    /// Warning: this function will replace already existing headers
-    /// If more control is use `.unprotected_headers_raw()` to get access
-    /// to the underlying header store
-    pub fn set_unprotected_header<T: Serialize>(
-        &mut self,
-        name: String,
-        value: T,
-    ) -> Result<&mut Self, OpaqueError> {
-        self.unprotected_headers.set_header(name, value)?;
-        Ok(self)
-    }
-
-    /// Set provided headers in the unprotected header map
-    ///
-    /// Warning: this function will replace already existing headers
-    /// If more control is use `.unprotected_headers_raw()` to get access
-    /// to the underlying header store
-    pub fn with_unprotected_headers<T: Serialize>(
-        mut self,
-        headers: T,
-    ) -> Result<Self, OpaqueError> {
-        self.unprotected_headers.set_headers(headers)?;
-        Ok(self)
-    }
-
-    /// Set provided headers in the unprotected header map
-    ///
-    /// Warning: this function will replace already existing headers
-    /// If more control is use `.unprotected_headers_raw()` to get access
-    /// to the underlying header store
-    pub fn set_unprotected_headers<T: Serialize>(
-        &mut self,
-        headers: T,
-    ) -> Result<&mut Self, OpaqueError> {
-        self.unprotected_headers.set_headers(headers)?;
-        Ok(self)
+    generate_set_and_with! {
+        /// Set provided headers in the unprotected header map
+        ///
+        /// Warning: this function will replace already existing headers
+        /// If more control is use `.unprotected_headers_mut()` to get access
+        /// to the underlying header store
+        pub fn unprotected_headers(mut self, headers: impl Serialize) -> Result<Self, OpaqueError> {
+            self.unprotected_headers.try_set_headers(headers)?;
+            Ok(self)
+        }
     }
 
     /// Get mutable reference to the underlying unprotected header store
     ///
     /// This can be used in cases where more granual control is needed
-    pub fn unprotected_headers_raw(&mut self) -> &mut Headers {
+    pub fn unprotected_headers_mut(&mut self) -> &mut Headers {
         &mut self.unprotected_headers
     }
 
@@ -402,122 +314,76 @@ impl JWSBuilder {
 }
 
 impl ChainedJWSBuilder {
-    /// Set provided header in the protected header map
-    ///
-    /// Warning: this function will replace already existing headers
-    /// If more control is use `.protected_headers_raw()` to get access
-    /// to the underlying header store
-    pub fn with_protected_header<T: Serialize>(
-        mut self,
-        name: String,
-        value: T,
-    ) -> Result<Self, OpaqueError> {
-        self.protected_headers.set_header(name, value)?;
-        Ok(self)
+    generate_set_and_with! {
+        /// Set provided header in the protected header map
+        ///
+        /// Warning: this function will replace already existing headers
+        /// If more control is use `.protected_headers_mut()` to get access
+        /// to the underlying header store
+        pub fn protected_header(
+            mut self,
+            name: String,
+            value: impl Serialize,
+        ) -> Result<Self, OpaqueError> {
+            self.protected_headers.try_set_header(name, value)?;
+            Ok(self)
+        }
     }
 
-    /// Set provided header in the protected header map
-    ///
-    /// Warning: this function will replace already existing headers
-    /// If more control is use `.protected_headers_raw()` to get access
-    /// to the underlying header store
-    pub fn set_protected_header<T: Serialize>(
-        &mut self,
-        name: String,
-        value: T,
-    ) -> Result<&mut Self, OpaqueError> {
-        self.protected_headers.set_header(name, value)?;
-        Ok(self)
-    }
-
-    /// Set provided headers in the protected header map
-    ///
-    /// Warning: this function will replace already existing headers
-    /// If more control is use `.protected_headers_raw()` to get access
-    /// to the underlying header store
-    pub fn with_protected_headers<T: Serialize>(mut self, headers: T) -> Result<Self, OpaqueError> {
-        self.protected_headers.set_headers(headers)?;
-        Ok(self)
-    }
-
-    /// Set provided headers in the protected header map
-    ///
-    /// Warning: this function will replace already existing headers
-    /// If more control is use `.protected_headers_raw()` to get access
-    /// to the underlying header store
-    pub fn set_protected_headers<T: Serialize>(
-        &mut self,
-        headers: T,
-    ) -> Result<&mut Self, OpaqueError> {
-        self.protected_headers.set_headers(headers)?;
-        Ok(self)
+    generate_set_and_with! {
+        /// Set provided headers in the protected header map
+        ///
+        /// Warning: this function will replace already existing headers
+        /// If more control is use `.protected_headers_mut()` to get access
+        /// to the underlying header store
+        pub fn protected_headers(mut self, headers: impl Serialize) -> Result<Self, OpaqueError> {
+            self.protected_headers.try_set_headers(headers)?;
+            Ok(self)
+        }
     }
 
     /// Get mutable reference to the underlying protected header store
     ///
     /// This can be used in cases where more granual control is needed
-    pub fn protected_headers_raw(&mut self) -> &mut Headers {
+    pub fn protected_headers_mut(&mut self) -> &mut Headers {
         &mut self.protected_headers
     }
 
-    /// Set provided header in the unprotected header map
-    ///
-    /// Warning: this function will replace already existing headers
-    /// If more control is use `.unprotected_headers_raw()` to get access
-    /// to the underlying header store
-    pub fn with_unprotected_header<T: Serialize>(
-        mut self,
-        name: String,
-        value: T,
-    ) -> Result<Self, OpaqueError> {
-        self.unprotected_headers.set_header(name, value)?;
-        Ok(self)
+    generate_set_and_with! {
+        /// Set provided header in the unprotected header map
+        ///
+        /// Warning: this function will replace already existing headers
+        /// If more control is use `.unprotected_headers_mut()` to get access
+        /// to the underlying header store
+        pub fn unprotected_header(
+            mut self,
+            name: String,
+            value: impl Serialize,
+        ) -> Result<Self, OpaqueError> {
+            self.unprotected_headers.try_set_header(name, value)?;
+            Ok(self)
+        }
     }
 
-    /// Set provided header in the unprotected header map
-    ///
-    /// Warning: this function will replace already existing headers
-    /// If more control is use `.unprotected_headers_raw()` to get access
-    /// to the underlying header store
-    pub fn set_unprotected_header<T: Serialize>(
-        &mut self,
-        name: String,
-        value: T,
-    ) -> Result<&mut Self, OpaqueError> {
-        self.unprotected_headers.set_header(name, value)?;
-        Ok(self)
-    }
-
-    /// Set provided headers in the unprotected header map
-    ///
-    /// Warning: this function will replace already existing headers
-    /// If more control is use `.unprotected_headers_raw()` to get access
-    /// to the underlying header store
-    pub fn with_unprotected_headers<T: Serialize>(
-        mut self,
-        headers: T,
-    ) -> Result<Self, OpaqueError> {
-        self.unprotected_headers.set_headers(headers)?;
-        Ok(self)
-    }
-
-    /// Set provided headers in the unprotected header map
-    ///
-    /// Warning: this function will replace already existing headers
-    /// If more control is use `.unprotected_headers_raw()` to get access
-    /// to the underlying header store
-    pub fn set_unprotected_headers<T: Serialize>(
-        &mut self,
-        headers: T,
-    ) -> Result<&mut Self, OpaqueError> {
-        self.unprotected_headers.set_headers(headers)?;
-        Ok(self)
+    generate_set_and_with! {
+        /// Set provided headers in the unprotected header map
+        ///
+        /// Warning: this function will replace already existing headers
+        /// If more control is use `.unprotected_headers_mut()` to get access
+        /// to the underlying header store
+        pub fn with_unprotected_headers(
+            mut self,
+            headers: impl Serialize,
+        ) -> Result<Self, OpaqueError> {
+            self.unprotected_headers.try_set_headers(headers)?;
+            Ok(self)
+        }
     }
 
     /// Get mutable reference to the underlying unprotected header store
     ///
     /// This can be used in cases where more granual control is needed
-    pub fn unprotected_headers_raw(&mut self) -> &mut Headers {
+    pub fn unprotected_headers_mut(&mut self) -> &mut Headers {
         &mut self.unprotected_headers
     }
 
@@ -936,7 +802,7 @@ mod tests {
             protected_headers: &mut Headers,
             _unprotected_headers: &mut Headers,
         ) -> Result<(), OpaqueError> {
-            protected_headers.set_header("alg".to_owned(), "test_algo".to_owned())?;
+            protected_headers.try_set_header("alg".to_owned(), "test_algo".to_owned())?;
             Ok(())
         }
     }
@@ -988,9 +854,9 @@ mod tests {
 
         let jws = JWSBuilder::new()
             .with_payload(payload.clone())
-            .with_protected_headers(protected.clone())
+            .try_with_protected_headers(protected.clone())
             .unwrap()
-            .with_unprotected_headers(header.clone())
+            .try_with_unprotected_headers(header.clone())
             .unwrap()
             .build_flattened(&signer_and_verifier)
             .unwrap();
@@ -1032,7 +898,7 @@ mod tests {
         };
 
         let jws = JWSFlattened::builder()
-            .with_protected_headers(protected.clone())
+            .try_with_protected_headers(protected.clone())
             .unwrap()
             .build_flattened(&signer)
             .unwrap();
@@ -1041,7 +907,7 @@ mod tests {
 
         let jws = JWSFlattened::builder()
             .with_payload(serde_json::to_vec(&Empty).unwrap())
-            .with_protected_headers(protected.clone())
+            .try_with_protected_headers(protected.clone())
             .unwrap()
             .build_flattened(&signer)
             .unwrap();
@@ -1065,7 +931,7 @@ mod tests {
 
         let jws = JWSFlattened::builder()
             .with_payload(payload.clone())
-            .with_protected_headers(protected.clone())
+            .try_with_protected_headers(protected.clone())
             .unwrap()
             .build_flattened(&signer_and_verifier)
             .unwrap();
@@ -1100,9 +966,9 @@ mod tests {
 
         let jws = JWSBuilder::new()
             .with_payload(payload.clone())
-            .with_protected_header("nonce".to_owned(), &nonce)
+            .try_with_protected_header("nonce".to_owned(), &nonce)
             .unwrap()
-            .with_unprotected_headers(header.clone())
+            .try_with_unprotected_headers(header.clone())
             .unwrap()
             .build_jws(&signer_and_verifier)
             .unwrap();
@@ -1131,9 +997,9 @@ mod tests {
 
         let builder = JWSBuilder::new()
             .with_payload(payload.clone())
-            .with_protected_headers(protected.clone())
+            .try_with_protected_headers(protected.clone())
             .unwrap()
-            .with_unprotected_headers(header.clone())
+            .try_with_unprotected_headers(header.clone())
             .unwrap();
 
         struct SecondSigner;
@@ -1151,7 +1017,7 @@ mod tests {
                 protected_headers: &mut Headers,
                 _unprotected_headers: &mut Headers,
             ) -> Result<(), OpaqueError> {
-                protected_headers.set_header("data".to_owned(), "very protected")?;
+                protected_headers.try_set_header("data".to_owned(), "very protected")?;
                 Ok(())
             }
         }
@@ -1161,9 +1027,9 @@ mod tests {
         let jws = builder
             .add_signature(&signer_and_verifier)
             .unwrap()
-            .with_unprotected_header("second".to_owned(), "something second")
+            .try_with_unprotected_header("second".to_owned(), "something second")
             .unwrap()
-            .with_protected_header("app specific".to_owned(), "will not be used by verifier")
+            .try_with_protected_header("app specific".to_owned(), "will not be used by verifier")
             .unwrap()
             .build(&second_signer)
             .unwrap();

@@ -13,6 +13,11 @@ use crate::jose::JWKEllipticCurves;
 #[serde(rename_all = "UPPERCASE")]
 /// [`JWA`] or JSON Web Algorithms as defined in [`rfc7518`]
 ///
+/// Some algorithms are required to be implemented when supporting
+/// JWA, while others are recommended or optional.
+///
+/// TODO support all algorithms: https://github.com/plabayo/rama/issues/621
+///
 /// [`rfc7518`]: https://datatracker.ietf.org/doc/html/rfc7518
 pub enum JWA {
     /// HMAC using SHA-256 (Required)

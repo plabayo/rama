@@ -1,4 +1,4 @@
-//! All cyrpto logic used by rama.
+//! Crypto primitives and dependencies used by rama.
 //!
 //! This includes but is not limited to:
 //! - Certificates
