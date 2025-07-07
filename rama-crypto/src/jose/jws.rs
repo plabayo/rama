@@ -8,7 +8,7 @@ use serde_json::{Map, Value};
 /// When used with serde this will serialize to null
 pub struct Empty;
 
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone, PartialEq, Eq)]
 /// [`JWSBuilder`] should be used when manually creating a [`JWS`], [`JWSCompact`] or [`JWSFlattened`]
 pub struct JWSBuilder {
     protected_headers: Headers,
@@ -16,7 +16,7 @@ pub struct JWSBuilder {
     payload: String,
 }
 
-#[derive(Default, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Default, Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 /// [`Headers`] store protected or unprotected headers and already
 /// serializes them to correct JSON values.
 pub struct Headers(Option<Map<String, Value>>);
@@ -66,13 +66,6 @@ impl Headers {
         }
     }
 
-    /// Get a mutable reference to the underlying header map
-    ///
-    /// Note: this will create a header map if one doesn't exist already.
-    pub fn header_map_mut(&mut self) -> &mut Map<String, Value> {
-        self.0.get_or_insert(Default::default())
-    }
-
     /// Encode headers to a base64 url safe representation
     fn as_encoded_string(&self) -> Result<String, OpaqueError> {
         let encoded = match &self.0 {
@@ -107,6 +100,7 @@ impl Headers {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
 /// [`ChainedJWSBuilder`] will be used to create a [`JWS`] with multiple signatures
 pub struct ChainedJWSBuilder {
     signatures: Vec<Signature>,
@@ -134,7 +128,7 @@ impl JWSBuilder {
         /// Set provided header in the protected header map
         ///
         /// Warning: this function will replace already existing headers
-        /// If more control is use `.protected_headers_mut()` to get access
+        /// If more control is needed, use [`Self::protected_headers_mut`] to get access
         /// to the underlying header store
         pub fn protected_header(
             mut self,
@@ -150,7 +144,7 @@ impl JWSBuilder {
         /// Set provided headers in the protected header map
         ///
         /// Warning: this function will replace already existing headers
-        /// If more control is use `.protected_headers_mut()` to get access
+        /// If more control is needed, use[`Self::protected_headers_mut]` to get access
         /// to the underlying header store
         pub fn protected_headers(mut self, headers: impl Serialize) -> Result<Self, OpaqueError> {
             self.protected_headers.try_set_headers(headers)?;
@@ -169,7 +163,7 @@ impl JWSBuilder {
         /// Set provided header in the unprotected header map
         ///
         /// Warning: this function will replace already existing headers
-        /// If more control is use `.unprotected_headers_mut()` to get access
+        /// If more control is needed, use [`Self::unprotected_headers_mut`] to get access
         /// to the underlying header store
         pub fn unprotected_header(
             mut self,
@@ -185,7 +179,7 @@ impl JWSBuilder {
         /// Set provided headers in the unprotected header map
         ///
         /// Warning: this function will replace already existing headers
-        /// If more control is use `.unprotected_headers_mut()` to get access
+        /// If more control is needed, use [`Self::unprotected_headers_mut`] to get access
         /// to the underlying header store
         pub fn unprotected_headers(mut self, headers: impl Serialize) -> Result<Self, OpaqueError> {
             self.unprotected_headers.try_set_headers(headers)?;
@@ -473,7 +467,7 @@ pub trait Signer {
 /// [`rfc7515, section 7.1`]: https://datatracker.ietf.org/doc/html/rfc7515#section-7.1
 pub struct JWSCompact(String);
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 /// [`JWSFlattened`] is a `JWS` which is optimized for a single signature, as defined in [`rfc7515, section 7.2.2`]
 ///
 /// It does this by setting protected, header and signature at the root,
@@ -487,7 +481,7 @@ pub struct JWSFlattened {
     signature: Signature,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// [`JWS`] is the general serialization format as defined in [`rfc7515, section 7.2.1`]
 ///
 /// [`rfc7515, section 7.2.1`]: https://datatracker.ietf.org/doc/html/rfc7515#section-7.2.1
@@ -556,7 +550,7 @@ impl JWS {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 struct Signature {
     #[serde(skip_serializing_if = "String::is_empty")]
     protected: String,
@@ -633,7 +627,7 @@ pub struct DecodedJWSFlattened {
     signature: DecodedSignature,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 /// Decode version of a [`JWS`]
 ///
 /// Data here has already been verified, so everything
@@ -643,7 +637,7 @@ pub struct DecodedJWS {
     signatures: Vec<DecodedSignature>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 /// Decode version of a [`Signature`]
 ///
 /// Data here has already been verified, so everything
@@ -654,6 +648,7 @@ pub struct DecodedSignature {
     signature: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
 /// A `Signature` which still needs to be checked
 ///
 /// It included a String representation of the signed data
