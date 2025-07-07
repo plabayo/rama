@@ -46,6 +46,8 @@ mod http_sse;
 #[cfg(feature = "http-full")]
 mod http_sse_datastar_hello;
 #[cfg(feature = "http-full")]
+mod http_sse_datastar_test_suite;
+#[cfg(feature = "http-full")]
 mod http_sse_json;
 #[cfg(all(feature = "http-full", feature = "opentelemetry"))]
 mod http_telemetry;

@@ -52,6 +52,8 @@ pub enum ScriptAttribute {
     ReferrerPolicy(ReferrerPolicy),
     /// Largely ignored by modern browsers; use UTF-8 everywhere.
     Charset(SmolStr),
+    /// Any other custom script attribute
+    Custom { key: String, value: Option<String> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Hash)]
@@ -110,7 +112,6 @@ impl ExecuteScript {
         Event::new()
             .try_with_event(Self::TYPE.as_smol_str())
             .unwrap()
-            .with_retry(super::consts::DEFAULT_DATASTAR_DURATION)
             .with_data(self)
     }
 
@@ -119,7 +120,6 @@ impl ExecuteScript {
         Event::new()
             .try_with_event(Self::TYPE.as_smol_str())
             .unwrap()
-            .with_retry(super::consts::DEFAULT_DATASTAR_DURATION)
             .with_data(super::EventData::ExecuteScript(self))
     }
 
@@ -238,6 +238,11 @@ impl EventDataWrite for ExecuteScript {
                     }
                     ScriptAttribute::Charset(charset) => write!(w, r##" charset="{charset}""##)
                         .context("ExecuteScript: write attribute: charset")?,
+                    ScriptAttribute::Custom { key, value } => match value {
+                        Some(value) => write!(w, r##" key="{value}""##),
+                        None => write!(w, " {key}"),
+                    }
+                    .context("ExecuteScript: write custom attribute")?,
                 }
             }
         }

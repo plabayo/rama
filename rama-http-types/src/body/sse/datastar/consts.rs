@@ -1,1 +1,0 @@
-pub(super) const DEFAULT_DATASTAR_DURATION: u64 = 1000;

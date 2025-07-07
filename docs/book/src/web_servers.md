@@ -56,6 +56,8 @@ You can see it in action in [Examples](https://github.com/plabayo/rama/tree/main
 - [/examples/http_sse_datastar_hello.rs](https://github.com/plabayo/rama/tree/main/examples/http_sse_datastar_hello.rs):
   SSE Example, showcasing a very simple datastar example,
   which is supported by rama both on the client as well as the server side.
+- [/examples/http_sse_datastar_test_suite.rs](https://github.com/plabayo/rama/tree/main/examples/http_sse_datastar_test_suite.rs):
+  Datastar Test Suite Server
 
 Rama rust docs:
 

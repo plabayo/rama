@@ -34,7 +34,6 @@ impl<T> PatchSignals<T> {
         Event::new()
             .try_with_event(Self::TYPE.as_smol_str())
             .unwrap()
-            .with_retry(super::consts::DEFAULT_DATASTAR_DURATION)
             .with_data(self)
     }
 
@@ -43,7 +42,6 @@ impl<T> PatchSignals<T> {
         Event::new()
             .try_with_event(Self::TYPE.as_smol_str())
             .unwrap()
-            .with_retry(super::consts::DEFAULT_DATASTAR_DURATION)
             .with_data(super::EventData::PatchSignals(self))
     }
 
@@ -73,7 +71,7 @@ impl<T: EventDataWrite> EventDataWrite for PatchSignals<T> {
         w.write_all(b"signals ")
             .context("PatchSignals: write signals keyword")?;
         self.signals
-            .write_data(w)
+            .write_data(&mut DataWriteSplitter(w))
             .context("PatchSignals: write signals value")?;
 
         if self.only_if_missing {
@@ -82,6 +80,25 @@ impl<T: EventDataWrite> EventDataWrite for PatchSignals<T> {
         }
 
         Ok(())
+    }
+}
+
+struct DataWriteSplitter<'a, W: std::io::Write>(&'a mut W);
+
+impl<W: std::io::Write> std::io::Write for DataWriteSplitter<'_, W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let mut last_split = 0;
+        for delimiter in memchr::memchr2_iter(b'\n', b'\r', buf) {
+            self.0.write_all(&buf[last_split..=delimiter])?;
+            self.0.write_all(b"signals ")?;
+            last_split = delimiter + 1;
+        }
+        self.0.write_all(&buf[last_split..])?;
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.0.flush()
     }
 }
 
@@ -181,6 +198,27 @@ mod tests {
         let data: PatchSignals<String> = read_patch_signals(r##"signals {answer: 42}"##);
         assert_eq!(data.signals, r##"{answer: 42}"##);
         assert!(!data.only_if_missing);
+    }
+
+    #[test]
+    fn test_serialize_signals_multiline() {
+        let mut buf = Vec::default();
+        PatchSignals::new(
+            r##"{
+"foo": 1,
+"bar": false,
+}"##,
+        )
+        .write_data(&mut buf)
+        .unwrap();
+        let output = String::from_utf8(buf).unwrap();
+        assert_eq!(
+            r##"signals {
+signals "foo": 1,
+signals "bar": false,
+signals }"##,
+            output
+        );
     }
 
     #[test]

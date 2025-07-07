@@ -26,6 +26,7 @@ This directory contains example implementations demonstrating various features a
 - [`http_sse`](./http_sse.rs) - simple example demonstrating how one can expose an SSE endpoint
 - [`http_sse_json`](./http_sse_json.rs) - same as `http_sse` but using structured _json_ data
 - [`http_sse_datastar_hello`](./http_sse_datastar_hello.rs) - a hello world example for datastar (featuring DIY `CQRS` in action);
+- [`http_sse_datastar_test_suite`](./http_sse_datastar_test_suite.rs) - datastar sdk test suite server
 
 ## HTTP Clients
 - [`http_high_level_client.rs`](./http_high_level_client.rs) - High-level HTTP client implementation

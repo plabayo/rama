@@ -52,7 +52,6 @@ impl PatchElements {
         Event::new()
             .try_with_event(Self::TYPE.as_smol_str())
             .unwrap()
-            .with_retry(super::consts::DEFAULT_DATASTAR_DURATION)
             .with_data(self)
     }
 
@@ -61,7 +60,6 @@ impl PatchElements {
         Event::new()
             .try_with_event(Self::TYPE.as_smol_str())
             .unwrap()
-            .with_retry(super::consts::DEFAULT_DATASTAR_DURATION)
             .with_data(super::EventData::PatchElements(self))
     }
 
