@@ -2580,6 +2580,7 @@ dependencies = [
  "percent-encoding",
  "pin-project-lite",
  "rama-core",
+ "rama-error",
  "rama-http-headers",
  "rama-http-types",
  "rama-net",
