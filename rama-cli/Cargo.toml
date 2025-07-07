@@ -24,7 +24,7 @@ hex = { workspace = true }
 itertools = { workspace = true }
 mimalloc = { workspace = true, optional = true }
 opentelemetry-otlp = { workspace = true }
-rama = { version = "0.3.0-alpha.1", path = "..", features = [
+rama = { version = "0.3.0-alpha.2", path = "..", features = [
     "compression",
     "boring",
     "cli",
