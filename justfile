@@ -149,6 +149,7 @@ publish:
     cargo publish -p rama-macros
     cargo publish -p rama-utils
     cargo publish -p rama-core
+    cargo publish -p rama-crypto
     cargo publish -p rama-http-types
     cargo publish -p rama-net
     cargo publish -p rama-unix

@@ -179,6 +179,7 @@
 //! - [`rama-ws`](https://crates.io/crates/rama-ws): WebSocket (WS) support for rama
 //! - [`rama-core`](https://crates.io/crates/rama-core): core crate containing the service, layer and
 //!   context used by all other `rama` code, as well as some other _core_ utilities
+//! - [`rama-crypto`](https://crates.io/crates/rama-crytpo): rama crypto primitives and dependencies
 //! - [`rama-net`](https://crates.io/crates/rama-net): rama network types and utilities
 //! - [`rama-dns`](https://crates.io/crates/rama-dns): DNS support for rama
 //! - [`rama-unix`](https://crates.io/crates/rama-unix): Unix (domain) socket support for rama
@@ -366,6 +367,9 @@ pub use ::rama_core::{
     Context, Layer, Service, bytes, combinators, context, error, futures, graceful, inspect, layer,
     matcher, rt, service, username,
 };
+
+#[doc(inline)]
+pub use ::rama_crypto as crypto;
 
 #[cfg(all(unix, feature = "net"))]
 #[doc(inline)]
