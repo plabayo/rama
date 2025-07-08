@@ -84,6 +84,7 @@ async fn main() {
 }
 
 pub mod handlers {
+    use indexmap::IndexMap;
     use rama_http::sse::datastar::{
         ElementPatchMode, ExecuteScript, PatchElements,
         execute_script::{ScriptAttribute, ScriptType},
@@ -108,8 +109,8 @@ pub mod handlers {
             event_id: Option<String>,
             #[serde(alias = "retryDuration")]
             retry_duration: Option<u64>,
-            attributes: Option<Map<String, Value>>,
-            #[serde(alias = "auto_remove")]
+            attributes: Option<IndexMap<String, Value>>,
+            #[serde(alias = "autoRemove")]
             auto_remove: Option<bool>,
         },
         #[serde(rename = "patchElements")]
@@ -150,11 +151,11 @@ pub mod handlers {
                                 auto_remove,
                                 attributes: attributes.map(|attributes| {
                                     attributes.into_iter().filter_map(|(key, value)| match key.as_str() {
-                                        "src" => Some(ScriptAttribute::Src(value.to_string())),
-                                        "type" => Some(ScriptAttribute::Type(match value.to_string().as_str() {
+                                        "src" => Some(ScriptAttribute::Src(value.as_str().unwrap_or_default().to_owned())),
+                                        "type" => Some(ScriptAttribute::Type(match value.as_str().unwrap_or_default() {
                                             "module" => ScriptType::Module,
                                             "importmap" => ScriptType::ImportMap,
-                                            mime => mime.parse().map(ScriptType::Mime).unwrap_or_default(),
+                                            mime => mime.parse().map(ScriptType::Mime).inspect_err(|err| tracing::error!("failed to parse exec script type attribute as mime ({mime}): {err}")).unwrap_or_default(),
                                         })),
                                         "async" => if value.as_bool().unwrap_or_default() {
                                             Some(ScriptAttribute::Async)
@@ -171,12 +172,11 @@ pub mod handlers {
                                         } else {
                                             None
                                         },
-                                        "integrity" => Some(ScriptAttribute::Integrity(value.to_string())),
-                                        "crossorigin" => Some(ScriptAttribute::CrossOrigin(value.to_string().into())),
-                                        "referrerpolicy" => Some(ScriptAttribute::ReferrerPolicy(value.to_string().into())),
-                                        "charset" => Some(ScriptAttribute::Charset(value.to_string().into())),
-                                        "custom" => Some(ScriptAttribute::Custom { key, value: value.to_string().into() }),
-                                        _ => None,
+                                        "integrity" => Some(ScriptAttribute::Integrity(value.as_str().unwrap_or_default().to_owned())),
+                                        "crossorigin" => Some(ScriptAttribute::CrossOrigin(value.as_str().unwrap_or_default().into())),
+                                        "referrerpolicy" => Some(ScriptAttribute::ReferrerPolicy(value.as_str().unwrap_or_default().into())),
+                                        "charset" => Some(ScriptAttribute::Charset(value.as_str().unwrap_or_default().into())),
+                                        _ => Some(ScriptAttribute::Custom { key, value: Some(value.to_string().trim_matches('"').to_owned()) }),
                                     }).collect()
                                 }),
                             }.into_datastar_event();

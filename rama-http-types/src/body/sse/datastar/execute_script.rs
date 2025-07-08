@@ -209,7 +209,7 @@ impl EventDataWrite for ExecuteScript {
                         ScriptType::ImportMap => w
                             .write_all(b" type=\"importmap\"")
                             .context("ExecuteScript: write attribute: type=importmap")?,
-                        ScriptType::Mime(mime) => write!(w, r##"type="{mime}""##)
+                        ScriptType::Mime(mime) => write!(w, r##" type="{mime}""##)
                             .context("ExecuteScript: write attribute: type=<mime>")?,
                     },
                     ScriptAttribute::Async => {
@@ -239,7 +239,7 @@ impl EventDataWrite for ExecuteScript {
                     ScriptAttribute::Charset(charset) => write!(w, r##" charset="{charset}""##)
                         .context("ExecuteScript: write attribute: charset")?,
                     ScriptAttribute::Custom { key, value } => match value {
-                        Some(value) => write!(w, r##" key="{value}""##),
+                        Some(value) => write!(w, r##" {key}="{value}""##),
                         None => write!(w, " {key}"),
                     }
                     .context("ExecuteScript: write custom attribute")?,
@@ -252,16 +252,17 @@ impl EventDataWrite for ExecuteScript {
                 .context("ExecuteScript: write autoRemove")?;
         }
 
-        write!(w, ">\n").context("ExecuteScript: write closing tag of <script>")?;
+        write!(w, ">").context("ExecuteScript: write closing tag of <script>")?;
 
+        let mut script_prefix = "";
         for script_line in script_lines {
-            write!(w, "elements {next_script_line}\n")
+            write!(w, "{script_prefix}{next_script_line}")
                 .context("ExecuteScript: write script line")?;
             next_script_line = script_line;
+            script_prefix = "\nelements ";
         }
-        write!(w, "elements {next_script_line}\n")
+        write!(w, "{script_prefix}{next_script_line}</script>")
             .context("ExecuteScript: write last script line")?;
-        write!(w, "elements </script>").context("ExecuteScript: write closing tag </script>")?;
 
         Ok(())
     }
@@ -291,13 +292,11 @@ mod tests {
             .expect("write data");
 
         let mut output_expected = Vec::new();
-        PatchElements::new(
-            "<script data-effect=\"el.remove()\">\nconsole.alert('hello!');\n</script>",
-        )
-        .with_mode(ElementPatchMode::Append)
-        .with_selector("body")
-        .write_data(&mut output_expected)
-        .expect("write data");
+        PatchElements::new("<script data-effect=\"el.remove()\">console.alert('hello!');</script>")
+            .with_mode(ElementPatchMode::Append)
+            .with_selector("body")
+            .write_data(&mut output_expected)
+            .expect("write data");
 
         let sugar = String::from_utf8(output_sugar).unwrap();
         let expected = String::from_utf8(output_expected).unwrap();
@@ -330,8 +329,7 @@ try {
 
         let mut output_expected = Vec::new();
         PatchElements::new(
-            r##"<script async charset="utf-8">
-const url = "https://example.org/products.json";
+            r##"<script async charset="utf-8">const url = "https://example.org/products.json";
 try {
     const response = await fetch(url);
     if (!response.ok) {
@@ -342,8 +340,7 @@ try {
     console.log(json);
 } catch (error) {
     console.error(error.message);
-}
-</script>"##,
+}</script>"##,
         )
         .with_mode(ElementPatchMode::Append)
         .with_selector("body")
