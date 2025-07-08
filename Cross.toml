@@ -68,22 +68,6 @@ passthrough = [
     "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc",
 ]
 
-[target.i686-unknown-linux-gnu]
-pre-build = [
-    "apt update && apt install -y clang llvm gcc-multilib",
-]
-
-[target.i686-unknown-linux-gnu.env]
-passthrough = [
-    "CC=clang",
-    "CXX=clang++",
-    "CFLAGS=--target=i686-unknown-linux-gnu -msse2",
-    "CXXFLAGS=--target=i686-unknown-linux-gnu -msse2",
-    "CMAKE_C_COMPILER=clang",
-    "CMAKE_CXX_COMPILER=clang++",
-    "CARGO_TARGET_I686_UNKNOWN_LINUX_GNU_LINKER=clang",
-]
-
 [target.x86_64-pc-windows-gnu]
 pre-build = [
     "apt update && apt install -y libclang-10-dev clang-10 cmake nasm gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64",
