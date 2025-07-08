@@ -47,6 +47,10 @@ jobs:
         run: |
           cargo install --git https://github.com/cross-rs/cross --branch main cross
 
+      - name: Install bindgen-cli
+        run: |
+          cargo install --force --locked bindgen-cli
+
       - name: Build release
         timeout-minutes: 120
         run: |
