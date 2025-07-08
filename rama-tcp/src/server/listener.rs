@@ -145,6 +145,9 @@ where
             }
             .try_build_socket()
             .context("create tcp ipv4 socket attached to device")?;
+            socket
+                .listen(4096)
+                .context("mark the socket as ready to accept incoming connection requests")?;
             bind_socket_internal(self.state, socket)
         })
         .await
@@ -166,6 +169,9 @@ where
                 let socket = opts
                     .try_build_socket()
                     .context("build socket from options")?;
+                socket
+                    .listen(4096)
+                    .context("mark the socket as ready to accept incoming connection requests")?;
                 self.bind_socket(socket).await
             }
         }
