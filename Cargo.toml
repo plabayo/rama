@@ -540,6 +540,10 @@ name = "http_sse_datastar_hello"
 required-features = ["http-full"]
 
 [[example]]
+name = "http_sse_datastar_test_suite"
+required-features = ["http-full"]
+
+[[example]]
 name = "https_connect_proxy"
 required-features = ["http-full", "rustls"]
 

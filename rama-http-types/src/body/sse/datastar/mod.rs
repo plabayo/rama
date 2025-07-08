@@ -28,8 +28,6 @@ pub use execute_script::ExecuteScript;
 mod patch_signals;
 pub use patch_signals::{PatchSignals, PatchSignalsReader};
 
-mod consts;
-
 use crate::sse::{Event, EventDataLineReader, EventDataMultiLineReader, EventDataRead};
 use rama_core::telemetry::tracing;
 use rama_error::{ErrorContext, OpaqueError};
@@ -120,7 +118,6 @@ impl<T> EventData<T> {
         Event::new()
             .try_with_event(event_type.as_smol_str())
             .unwrap()
-            .with_retry(consts::DEFAULT_DATASTAR_DURATION)
             .with_data(self)
     }
 }
