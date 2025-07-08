@@ -77,8 +77,8 @@ pre-build = [
 passthrough = [
     "CC=clang",
     "CXX=clang++",
-    "CFLAGS=--target=i686-linux-gnu -msse2",
-    "CXXFLAGS=--target=i686-linux-gnu -msse2",
+    "CFLAGS=--target=i686-unknown-linux-gnu -msse2",
+    "CXXFLAGS=--target=i686-unknown-linux-gnu -msse2",
     "CMAKE_C_COMPILER=clang",
     "CMAKE_CXX_COMPILER=clang++",
     "CARGO_TARGET_I686_UNKNOWN_LINUX_GNU_LINKER=clang",
