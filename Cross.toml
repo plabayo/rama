@@ -70,16 +70,18 @@ passthrough = [
 
 [target.i686-unknown-linux-gnu]
 pre-build = [
-    "apt update && apt install -y gcc-i686-linux-gnu g++-i686-linux-gnu",
+    "apt update && apt install -y clang llvm gcc-multilib",
 ]
 
 [target.i686-unknown-linux-gnu.env]
 passthrough = [
-    "CC=i686-linux-gnu-gcc",
-    "CXX=i686-linux-gnu-g++ -msse2",
-    "CMAKE_C_COMPILER=i686-linux-gnu-gcc",
-    "CMAKE_CXX_COMPILER=i686-linux-gnu-g++",
-    "CARGO_TARGET_I686_UNKNOWN_LINUX_GNU_LINKER=i686-linux-gnu-gcc",
+    "CC=clang",
+    "CXX=clang++",
+    "CFLAGS=--target=i686-linux-gnu -msse2",
+    "CXXFLAGS=--target=i686-linux-gnu -msse2",
+    "CMAKE_C_COMPILER=clang",
+    "CMAKE_CXX_COMPILER=clang++",
+    "CARGO_TARGET_I686_UNKNOWN_LINUX_GNU_LINKER=clang",
 ]
 
 [target.x86_64-pc-windows-gnu]
