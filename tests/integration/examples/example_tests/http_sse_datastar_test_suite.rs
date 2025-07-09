@@ -32,9 +32,7 @@ async fn test_http_sse_datastar_test_suite() {
     assert_eq!(Some("body"), patch_elements.selector.as_deref());
     assert_eq!(ElementPatchMode::Append, patch_elements.mode);
     assert_eq!(
-        Some(
-            r##"<script data-effect="el.remove()">console.log('hello');</script>"##
-        ),
+        Some(r##"<script type="text/javascript" blocking="false">console.log('hello');</script>"##),
         patch_elements.elements.as_deref()
     );
 
