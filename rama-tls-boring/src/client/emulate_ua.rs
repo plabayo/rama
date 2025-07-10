@@ -1,7 +1,7 @@
 use super::TlsConnectorDataBuilder;
 use rama_core::{
     Layer, Service,
-    error::{BoxError, ErrorExt, OpaqueError},
+    error::{BoxError, ErrorContext, ErrorExt, OpaqueError},
     telemetry::tracing,
 };
 use rama_net::{
@@ -58,6 +58,13 @@ where
             let mut domain_overwrite = None;
             let mut emulate_config = Cow::Borrowed(profile.client_config.as_ref());
 
+            let transport_ctx = ctx
+                .get_or_try_insert_with_ctx(|ctx| req.try_ref_into_transport_ctx(ctx))
+                .map_err(|err| {
+                    OpaqueError::from_boxed(err.into())
+                        .context("UA TLS Emulator: compute transport context to get authority")
+                })?;
+
             if profile
                 .client_config
                 .extensions
@@ -65,13 +72,6 @@ where
                 .flatten()
                 .any(|e| matches!(e, ClientHelloExtension::ServerName(_)))
             {
-                let transport_ctx = ctx
-                    .get_or_try_insert_with_ctx(|ctx| req.try_ref_into_transport_ctx(ctx))
-                    .map_err(|err| {
-                        OpaqueError::from_boxed(err.into())
-                            .context("UA TLS Emulator: compute transport context to get authority")
-                    })?;
-
                 match transport_ctx.authority.host() {
                     Host::Name(domain) => {
                         tracing::trace!(
@@ -106,6 +106,22 @@ where
                 .map_err(Into::<BoxError>::into)?
                 .into_shared_builder();
 
+            let mut ws_overwrite = None;
+            if transport_ctx
+                .app_protocol
+                .as_ref()
+                .map(|p| p.is_ws())
+                .unwrap_or_default()
+                && let Some(overwrites) = profile.ws_client_config_overwrites
+                && let Some(alpn) = overwrites.alpn
+            {
+                ws_overwrite = Some(Arc::new(
+                    TlsConnectorDataBuilder::new()
+                        .try_with_rama_alpn_protos(alpn.as_slice())
+                        .context("set rama ALPNs")?,
+                ));
+            }
+
             let builder = ctx.get_or_insert_default::<TlsConnectorDataBuilder>();
             builder.push_base_config(emulate_builder);
             if let Some(overwrites) = self.builder_overwrites.clone() {
@@ -113,6 +129,10 @@ where
             }
 
             if let Some(overwrite) = domain_overwrite.take() {
+                builder.push_base_config(overwrite);
+            }
+
+            if let Some(overwrite) = ws_overwrite.take() {
                 builder.push_base_config(overwrite);
             }
         }

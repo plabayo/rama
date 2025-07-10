@@ -104,7 +104,7 @@ use rama::{
             UserAgentEmulateHttpConnectModifier, UserAgentEmulateHttpRequestModifier,
             UserAgentEmulateLayer,
         },
-        profile::{HttpProfile, UserAgentDatabase},
+        profile::UserAgentDatabase,
     },
 };
 
@@ -361,11 +361,6 @@ where
     let target_version = req.version();
     tracing::debug!("forcing egress http connection as {target_version:?} to ensure WS upgrade");
     ctx.insert(TargetHttpVersion(target_version));
-
-    // TODO:
-    // - once <https://github.com/plabayo/rama/issues/619> is resolved
-    //   we no longer need preserve http
-    ctx.remove::<HttpProfile>();
 
     let egress_socket = match client.websocket_with_request(req).handshake(ctx).await {
         Ok(socket) => socket,

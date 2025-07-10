@@ -11,7 +11,7 @@ use rama_http_types::{
     conn::{H2ClientContextParams, Http1ClientContextParams},
     header::{
         ACCEPT, ACCEPT_LANGUAGE, AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, COOKIE, HOST, ORIGIN,
-        REFERER, USER_AGENT,
+        REFERER, SEC_WEBSOCKET_VERSION, USER_AGENT,
     },
     proto::h1::{
         Http1HeaderMap,
@@ -510,7 +510,7 @@ fn get_base_http_headers<'a, Body, State>(
             return None;
         }
     };
-    Some(match ctx.get::<RequestInitiator>().copied() {
+    match ctx.get::<RequestInitiator>().copied() {
         Some(req_init) => {
             tracing::trace!(
                 "base http headers defined based on hint from UserAgent (overwrite): {req_init}"
@@ -528,11 +528,17 @@ fn get_base_http_headers<'a, Body, State>(
                     "XmlHttpRequest",
                 ) {
                     RequestInitiator::Xhr
+                } else if headers_contains_partial_value(
+                    req.headers(),
+                    &SEC_WEBSOCKET_VERSION,
+                    "13",
+                ) {
+                    RequestInitiator::Ws
                 } else {
                     RequestInitiator::Navigate
                 };
                 tracing::trace!(
-                    "base http headers defined based on Get=NavigateOrXhr assumption: {req_init}"
+                    "base http headers defined based on Get=XhrOrWsOrNavigate assumption: {req_init}"
                 );
                 get_base_http_headers_from_req_init(req_init, headers_profile)
             }
@@ -560,16 +566,21 @@ fn get_base_http_headers<'a, Body, State>(
                     "XmlHttpRequest",
                 ) {
                     RequestInitiator::Xhr
+                } else if req.version() == Version::HTTP_2
+                    && req.method() == Method::CONNECT
+                    && headers_contains_partial_value(req.headers(), &SEC_WEBSOCKET_VERSION, "13")
+                {
+                    RequestInitiator::Ws
                 } else {
                     RequestInitiator::Fetch
                 };
                 tracing::trace!(
-                    "base http headers defined based on XhrOrFetch assumption: {req_init}"
+                    "base http headers defined based on XhrOrWsOrFetch assumption: {req_init}"
                 );
                 get_base_http_headers_from_req_init(req_init, headers_profile)
             }
         },
-    })
+    }
 }
 
 static X_REQUESTED_WITH: HeaderName = HeaderName::from_static("x-requested-with");
@@ -585,20 +596,25 @@ fn headers_contains_partial_value(headers: &HeaderMap, name: &HeaderName, value:
 fn get_base_http_headers_from_req_init(
     req_init: RequestInitiator,
     headers: &HttpHeadersProfile,
-) -> &Http1HeaderMap {
+) -> Option<&Http1HeaderMap> {
     match req_init {
-        RequestInitiator::Navigate => &headers.navigate,
-        RequestInitiator::Form => headers.form.as_ref().unwrap_or(&headers.navigate),
-        RequestInitiator::Xhr => headers
-            .xhr
-            .as_ref()
-            .or(headers.fetch.as_ref())
-            .unwrap_or(&headers.navigate),
-        RequestInitiator::Fetch => headers
-            .fetch
-            .as_ref()
-            .or(headers.xhr.as_ref())
-            .unwrap_or(&headers.navigate),
+        RequestInitiator::Navigate => Some(&headers.navigate),
+        RequestInitiator::Form => Some(headers.form.as_ref().unwrap_or(&headers.navigate)),
+        RequestInitiator::Xhr => Some(
+            headers
+                .xhr
+                .as_ref()
+                .or(headers.fetch.as_ref())
+                .unwrap_or(&headers.navigate),
+        ),
+        RequestInitiator::Fetch => Some(
+            headers
+                .fetch
+                .as_ref()
+                .or(headers.xhr.as_ref())
+                .unwrap_or(&headers.navigate),
+        ),
+        RequestInitiator::Ws => headers.ws.as_ref(),
     }
 }
 
@@ -1476,6 +1492,7 @@ mod tests {
                         fetch: None,
                         xhr: None,
                         form: None,
+                        ws: None,
                     },
                     settings: Http1Settings::default(),
                 }),
@@ -1490,6 +1507,7 @@ mod tests {
                         fetch: None,
                         xhr: None,
                         form: None,
+                        ws: None,
                     },
                     settings: Http2Settings::default(),
                 }),
@@ -1497,6 +1515,7 @@ mod tests {
             #[cfg(feature = "tls")]
             tls: crate::profile::TlsProfile {
                 client_config: std::sync::Arc::new(rama_net::tls::client::ClientConfig::default()),
+                ws_client_config_overwrites: None,
             },
             runtime: None,
         };
@@ -1551,6 +1570,7 @@ mod tests {
                         xhr: None,
                         fetch: None,
                         form: None,
+                        ws: None,
                     },
                     settings: Http1Settings::default(),
                 }),
@@ -1560,6 +1580,7 @@ mod tests {
                         fetch: None,
                         xhr: None,
                         form: None,
+                        ws: None,
                     },
                     settings: Http2Settings::default(),
                 }),
@@ -1567,6 +1588,7 @@ mod tests {
             #[cfg(feature = "tls")]
             tls: crate::profile::TlsProfile {
                 client_config: std::sync::Arc::new(rama_net::tls::client::ClientConfig::default()),
+                ws_client_config_overwrites: None,
             },
             runtime: None,
         };
@@ -1623,6 +1645,7 @@ mod tests {
                                 .collect(),
                             None,
                         )),
+                        ws: None,
                     },
                     settings: Http1Settings::default(),
                 }),
@@ -1632,6 +1655,7 @@ mod tests {
                         fetch: None,
                         xhr: None,
                         form: None,
+                        ws: None,
                     },
                     settings: Http2Settings::default(),
                 }),
@@ -1639,6 +1663,7 @@ mod tests {
             #[cfg(feature = "tls")]
             tls: crate::profile::TlsProfile {
                 client_config: std::sync::Arc::new(rama_net::tls::client::ClientConfig::default()),
+                ws_client_config_overwrites: None,
             },
             runtime: None,
         };
@@ -1695,6 +1720,7 @@ mod tests {
                                 .collect(),
                             None,
                         )),
+                        ws: None,
                     },
                     settings: Http1Settings::default(),
                 }),
@@ -1704,6 +1730,7 @@ mod tests {
                         fetch: None,
                         xhr: None,
                         form: None,
+                        ws: None,
                     },
                     settings: Http2Settings::default(),
                 }),
@@ -1711,6 +1738,7 @@ mod tests {
             #[cfg(feature = "tls")]
             tls: crate::profile::TlsProfile {
                 client_config: std::sync::Arc::new(rama_net::tls::client::ClientConfig::default()),
+                ws_client_config_overwrites: None,
             },
             runtime: None,
         };
@@ -1776,15 +1804,47 @@ mod tests {
                                 .collect(),
                             None,
                         )),
+                        ws: Some(Http1HeaderMap::new(
+                            [(ETAG, HeaderValue::from_static("ws"))]
+                                .into_iter()
+                                .collect(),
+                            None,
+                        )),
                     },
                     settings: Http1Settings::default(),
                 }),
                 h2: Arc::new(Http2Profile {
                     headers: HttpHeadersProfile {
-                        navigate: Http1HeaderMap::default(),
-                        fetch: None,
-                        xhr: None,
-                        form: None,
+                        navigate: Http1HeaderMap::new(
+                            [(ETAG, HeaderValue::from_static("navigate2"))]
+                                .into_iter()
+                                .collect(),
+                            None,
+                        ),
+                        fetch: Some(Http1HeaderMap::new(
+                            [(ETAG, HeaderValue::from_static("fetch2"))]
+                                .into_iter()
+                                .collect(),
+                            None,
+                        )),
+                        xhr: Some(Http1HeaderMap::new(
+                            [(ETAG, HeaderValue::from_static("xhr2"))]
+                                .into_iter()
+                                .collect(),
+                            None,
+                        )),
+                        form: Some(Http1HeaderMap::new(
+                            [(ETAG, HeaderValue::from_static("form2"))]
+                                .into_iter()
+                                .collect(),
+                            None,
+                        )),
+                        ws: Some(Http1HeaderMap::new(
+                            [(ETAG, HeaderValue::from_static("ws2"))]
+                                .into_iter()
+                                .collect(),
+                            None,
+                        )),
                     },
                     settings: Http2Settings::default(),
                 }),
@@ -1792,6 +1852,7 @@ mod tests {
             #[cfg(feature = "tls")]
             tls: crate::profile::TlsProfile {
                 client_config: std::sync::Arc::new(rama_net::tls::client::ClientConfig::default()),
+                ws_client_config_overwrites: None,
             },
             runtime: None,
         };
@@ -1811,6 +1872,7 @@ mod tests {
 
         struct TestCase {
             description: &'static str,
+            version: Option<Version>,
             method: Option<Method>,
             headers: Option<HeaderMap>,
             ctx: Option<Context<()>>,
@@ -1820,6 +1882,7 @@ mod tests {
         let test_cases = [
             TestCase {
                 description: "GET request",
+                version: None,
                 method: None,
                 headers: None,
                 ctx: None,
@@ -1827,6 +1890,7 @@ mod tests {
             },
             TestCase {
                 description: "GET request with XRW header",
+                version: None,
                 method: None,
                 headers: Some(
                     [(
@@ -1841,6 +1905,7 @@ mod tests {
             },
             TestCase {
                 description: "GET request with RequestInitiator hint Navigate",
+                version: None,
                 method: None,
                 headers: None,
                 ctx: Some({
@@ -1852,6 +1917,7 @@ mod tests {
             },
             TestCase {
                 description: "GET request with RequestInitiator hint Form",
+                version: None,
                 method: None,
                 headers: None,
                 ctx: Some({
@@ -1863,13 +1929,39 @@ mod tests {
             },
             TestCase {
                 description: "explicit GET request",
+                version: None,
                 method: Some(Method::GET),
                 headers: None,
                 ctx: None,
                 expected: "navigate",
             },
             TestCase {
+                description: "HTTP/1.1 WebSocket upgrade request",
+                version: None,
+                method: Some(Method::GET),
+                headers: Some(
+                    [(SEC_WEBSOCKET_VERSION, HeaderValue::from_static("13"))]
+                        .into_iter()
+                        .collect(),
+                ),
+                ctx: None,
+                expected: "ws",
+            },
+            TestCase {
+                description: "H2 WebSocket upgrade request",
+                version: Some(Version::HTTP_2),
+                method: Some(Method::CONNECT),
+                headers: Some(
+                    [(SEC_WEBSOCKET_VERSION, HeaderValue::from_static("13"))]
+                        .into_iter()
+                        .collect(),
+                ),
+                ctx: None,
+                expected: "ws2",
+            },
+            TestCase {
                 description: "explicit POST request",
+                version: None,
                 method: Some(Method::POST),
                 headers: None,
                 ctx: None,
@@ -1877,6 +1969,7 @@ mod tests {
             },
             TestCase {
                 description: "explicit POST request with XRW header",
+                version: None,
                 method: Some(Method::POST),
                 headers: Some(
                     [(
@@ -1891,6 +1984,7 @@ mod tests {
             },
             TestCase {
                 description: "explicit POST request with multipart/form-data and XRW header",
+                version: None,
                 method: Some(Method::POST),
                 headers: Some(
                     [
@@ -1913,6 +2007,7 @@ mod tests {
             },
             TestCase {
                 description: "explicit POST request with application/x-www-form-urlencoded and XRW header",
+                version: None,
                 method: Some(Method::POST),
                 headers: Some(
                     [
@@ -1933,6 +2028,7 @@ mod tests {
             },
             TestCase {
                 description: "explicit POST request with multipart/form-data",
+                version: None,
                 method: Some(Method::POST),
                 headers: Some(
                     [(
@@ -1949,6 +2045,7 @@ mod tests {
             },
             TestCase {
                 description: "explicit POST request with application/x-www-form-urlencoded",
+                version: None,
                 method: Some(Method::POST),
                 headers: Some(
                     [(
@@ -1963,6 +2060,7 @@ mod tests {
             },
             TestCase {
                 description: "explicit DELETE request with XRW header",
+                version: None,
                 method: Some(Method::DELETE),
                 headers: Some(
                     [(
@@ -1977,6 +2075,7 @@ mod tests {
             },
             TestCase {
                 description: "explicit DELETE request",
+                version: None,
                 method: Some(Method::DELETE),
                 headers: None,
                 ctx: None,
@@ -1984,6 +2083,7 @@ mod tests {
             },
             TestCase {
                 description: "explicit DELETE request with RequestInitiator hint",
+                version: None,
                 method: Some(Method::DELETE),
                 headers: None,
                 ctx: Some({
@@ -1997,6 +2097,7 @@ mod tests {
 
         for test_case in test_cases {
             let mut req = Request::builder()
+                .version(test_case.version.unwrap_or(Version::HTTP_11))
                 .method(test_case.method.unwrap_or(Method::GET))
                 .body(Body::empty())
                 .unwrap();

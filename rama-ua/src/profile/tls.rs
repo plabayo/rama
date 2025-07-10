@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use rama_net::fingerprint::{PeetComputeError, PeetPrint};
+use rama_net::tls::ApplicationProtocol;
 use rama_net::{
     fingerprint::{Ja3, Ja3ComputeError, Ja4, Ja4ComputeError},
     tls::{
@@ -21,6 +22,14 @@ use serde::{Deserialize, Serialize};
 pub struct TlsProfile {
     /// The TLS client configuration.
     pub client_config: Arc<ClientConfig>,
+    /// Optional WebSocket-specific client config overwrites.
+    pub ws_client_config_overwrites: Option<WsClientConfigOverwrites>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Client Config (overwrites) specific to WebSocket traffic.
+pub struct WsClientConfigOverwrites {
+    pub alpn: Option<Vec<ApplicationProtocol>>,
 }
 
 impl TlsProfile {
@@ -77,6 +86,7 @@ impl<'de> Deserialize<'de> for TlsProfile {
         }
         Ok(Self {
             client_config: Arc::new(cfg),
+            ws_client_config_overwrites: input.ws_client_config_overwrites,
         })
     }
 }
@@ -92,6 +102,7 @@ impl Serialize for TlsProfile {
         );
         TlsProfileSerde {
             client_hello: self.client_config.as_ref().clone().into(),
+            ws_client_config_overwrites: self.ws_client_config_overwrites.clone(),
             insecure,
         }
         .serialize(serializer)
@@ -101,5 +112,6 @@ impl Serialize for TlsProfile {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct TlsProfileSerde {
     client_hello: ClientHello,
+    ws_client_config_overwrites: Option<WsClientConfigOverwrites>,
     insecure: bool,
 }
