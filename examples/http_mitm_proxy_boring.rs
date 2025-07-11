@@ -104,11 +104,12 @@ use rama::{
             UserAgentEmulateHttpConnectModifier, UserAgentEmulateHttpRequestModifier,
             UserAgentEmulateLayer,
         },
-        profile::{HttpProfile, TlsProfile, UserAgentDatabase},
+        profile::{HttpProfile, UserAgentDatabase},
     },
 };
 
 use itertools::Itertools;
+use rama_http::conn::TargetHttpVersion;
 use std::{convert::Infallible, sync::Arc, time::Duration};
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -357,19 +358,14 @@ where
         }
     };
 
-    if req.version() != http::Version::HTTP_2 {
-        tracing::debug!("forcing egress http connection as HTTP/1.1 to ensure WS upgrade");
-        let builder = ctx.get_or_insert_default::<TlsConnectorDataBuilder>();
-        builder.push_base_config(TlsConnectorDataBuilder::new_http_1().into());
-    }
+    let target_version = req.version();
+    tracing::debug!("forcing egress http connection as {target_version:?} to ensure WS upgrade");
+    ctx.insert(TargetHttpVersion(target_version));
 
     // TODO:
     // - once <https://github.com/plabayo/rama/issues/619> is resolved
     //   we no longer need preserve http
     ctx.remove::<HttpProfile>();
-    // - once <https://github.com/plabayo/rama/issues/616> is resolved
-    //   we no longer need to preserve tls
-    ctx.remove::<TlsProfile>();
 
     let egress_socket = match client.websocket_with_request(req).handshake(ctx).await {
         Ok(socket) => socket,

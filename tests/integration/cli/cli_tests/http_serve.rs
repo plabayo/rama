@@ -6,8 +6,8 @@ use std::path::PathBuf;
 async fn test_http_serve_placeholder() {
     utils::init_tracing();
 
-    let _guard = utils::RamaService::serve(63104, None);
-    let lines = utils::RamaService::http(vec!["https://127.0.0.1:63104"]).unwrap();
+    let _guard = utils::RamaService::serve(63109, None);
+    let lines = utils::RamaService::http(vec!["https://127.0.0.1:63109"]).unwrap();
 
     assert!(lines.contains("GET /"), "req method, lines: {lines:?}",);
     assert!(
