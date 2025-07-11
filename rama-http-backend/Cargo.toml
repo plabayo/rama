@@ -49,6 +49,7 @@ tokio = { workspace = true, features = ["macros"] }
 rama-unix = { workspace = true }
 
 [dev-dependencies]
+tokio-test = { workspace = true }
 
 [lints]
 workspace = true

@@ -3,10 +3,13 @@ use rama_core::{
     Context, Layer, Service,
     error::{BoxError, OpaqueError},
     inspect::RequestInspector,
+    telemetry::tracing::trace,
 };
 use rama_http::{
+    conn::TargetHttpVersion,
     header::{HOST, USER_AGENT},
     opentelemetry::version_as_protocol_version,
+    utils::RequestSwitchVersionExt,
 };
 use rama_http_core::h2::ext::Protocol;
 use rama_http_types::{
@@ -124,11 +127,28 @@ where
         let EstablishedClientConnection { ctx, req, conn } =
             self.inner.connect(ctx, req).await.map_err(Into::into)?;
 
-        let (ctx, req) = self
+        let (ctx, mut req) = self
             .http_req_inspector_jit
             .inspect_request(ctx, req)
             .await
             .map_err(Into::into)?;
+
+        match ctx.get::<TargetHttpVersion>() {
+            Some(version) => {
+                trace!(
+                    "setting request version to {:?} based on configured TargetHttpVersion (was: {:?})",
+                    version,
+                    req.version(),
+                );
+                req.switch_version(version.0)?;
+            }
+            None => {
+                trace!(
+                    "no TargetHttpVersion configured, leaving request version {:?}",
+                    req.version(),
+                );
+            }
+        }
 
         let server_address = ctx
             .get::<RequestContext>()

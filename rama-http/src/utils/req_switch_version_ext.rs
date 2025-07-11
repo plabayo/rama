@@ -9,6 +9,11 @@ pub trait RequestSwitchVersionExt {
 
 impl<Body> RequestSwitchVersionExt for http::Request<Body> {
     fn switch_version(&mut self, target_version: Version) -> Result<(), OpaqueError> {
+        if self.version() == target_version {
+            trace!("request version is already {target_version:?}, no version switching needed",);
+            return Ok(());
+        }
+
         trace!(
             "changing request version from {:?} to {:?}",
             self.version(),

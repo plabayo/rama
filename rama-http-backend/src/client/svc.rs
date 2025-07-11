@@ -5,7 +5,9 @@ use rama_core::{
     inspect::RequestInspector,
     telemetry::tracing,
 };
-use rama_http::header::SEC_WEBSOCKET_KEY;
+use rama_http::{
+    conn::TargetHttpVersion, header::SEC_WEBSOCKET_KEY, utils::RequestSwitchVersionExt,
+};
 use rama_http_headers::{HeaderMapExt, Host};
 use rama_http_types::{
     Method, Request, Response, Version,
@@ -57,6 +59,22 @@ where
         ctx: Context<State>,
         mut req: Request<BodyIn>,
     ) -> Result<Self::Response, Self::Error> {
+        // Check if this http connection can actually be used for TargetHttpVersion
+        if let Some(target_version) = ctx.get::<TargetHttpVersion>() {
+            match (&self.sender, target_version.0) {
+                (SendRequest::Http1(_), Version::HTTP_10 | Version::HTTP_11) => (),
+                (SendRequest::Http2(_), Version::HTTP_2) => (),
+                (SendRequest::Http1(_), version) => Err(OpaqueError::from_display(format!(
+                    "Http1 connector cannot send TargetHttpVersion {version:?}"
+                ))
+                .into_boxed())?,
+                (SendRequest::Http2(_), version) => Err(OpaqueError::from_display(format!(
+                    "Http2 connector cannot send TargetHttpVersion {version:?}"
+                ))
+                .into_boxed())?,
+            }
+        }
+
         let original_http_version = req.version();
 
         match self.sender {
@@ -71,7 +89,7 @@ where
                         "modify request version {original_http_version:?} to compatible h1 connection version: {:?}",
                         Version::HTTP_11
                     );
-                    *req.version_mut() = Version::HTTP_11;
+                    req.switch_version(Version::HTTP_11)?;
                 }
             },
             SendRequest::Http2(_) => match original_http_version {
@@ -85,7 +103,7 @@ where
                         "modify request version {original_http_version:?} to compatible h2 connection version: {:?}",
                         Version::HTTP_2,
                     );
-                    *req.version_mut() = Version::HTTP_2;
+                    req.switch_version(Version::HTTP_2)?;
                 }
             },
         }

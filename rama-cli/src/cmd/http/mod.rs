@@ -12,7 +12,7 @@ use rama::{
             EasyHttpWebClient,
             proxy::layer::{HttpProxyAddressLayer, SetProxyAuthHttpHeaderLayer},
         },
-        conn::EnforcedHttpVersion,
+        conn::TargetHttpVersion,
         layer::{
             auth::AddAuthorizationLayer,
             decompression::DecompressionLayer,
@@ -300,11 +300,11 @@ async fn run_inner(guard: ShutdownGuard, cfg: CliCommandHttp) -> Result<(), BoxE
         cfg.http_2,
         cfg.http_3,
     ) {
-        (true, false, false, false, false) => Some(EnforcedHttpVersion(Version::HTTP_09)),
-        (false, true, false, false, false) => Some(EnforcedHttpVersion(Version::HTTP_10)),
-        (false, false, true, false, false) => Some(EnforcedHttpVersion(Version::HTTP_11)),
-        (false, false, false, true, false) => Some(EnforcedHttpVersion(Version::HTTP_2)),
-        (false, false, false, false, true) => Some(EnforcedHttpVersion(Version::HTTP_3)),
+        (true, false, false, false, false) => Some(TargetHttpVersion(Version::HTTP_09)),
+        (false, true, false, false, false) => Some(TargetHttpVersion(Version::HTTP_10)),
+        (false, false, true, false, false) => Some(TargetHttpVersion(Version::HTTP_11)),
+        (false, false, false, true, false) => Some(TargetHttpVersion(Version::HTTP_2)),
+        (false, false, false, false, true) => Some(TargetHttpVersion(Version::HTTP_3)),
         (false, false, false, false, false) => None,
         _ => Err(OpaqueError::from_display(
             "--http0.9, --http1.0, --http1.1, --http2, --http3 are mutually exclusive",

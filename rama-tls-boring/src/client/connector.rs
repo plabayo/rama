@@ -3,7 +3,7 @@ use rama_boring_tokio::SslStream;
 use rama_core::error::{BoxError, ErrorExt, OpaqueError};
 use rama_core::telemetry::tracing;
 use rama_core::{Context, Layer, Service};
-use rama_http_types::conn::EnforcedHttpVersion;
+use rama_http_types::conn::TargetHttpVersion;
 use rama_net::address::Host;
 use rama_net::client::{ConnectorService, EstablishedClientConnection};
 use rama_net::stream::Stream;
@@ -377,10 +377,10 @@ impl<S, K> TlsConnector<S, K> {
         &self,
         ctx: &mut Context<State>,
     ) -> Result<TlsConnectorData, OpaqueError> {
-        let enforced_alpn = match ctx.get::<EnforcedHttpVersion>() {
-            None => None,
-            Some(version) => Some(ApplicationProtocol::try_from(version.0)?),
-        };
+        let target_version = ctx
+            .get::<TargetHttpVersion>()
+            .map(|version| ApplicationProtocol::try_from(version.0))
+            .transpose()?;
 
         let builder = ctx.get_or_insert_default::<TlsConnectorDataBuilder>();
 
@@ -388,8 +388,8 @@ impl<S, K> TlsConnector<S, K> {
             builder.prepend_base_config(base_builder);
         }
 
-        if let Some(enforced_alpn) = enforced_alpn {
-            builder.try_set_rama_alpn_protos(&[enforced_alpn])?;
+        if let Some(target_version) = target_version {
+            builder.try_set_rama_alpn_protos(&[target_version])?;
         }
         builder.build()
     }
