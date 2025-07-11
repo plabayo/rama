@@ -4,7 +4,10 @@ use rama::{
     http::proto::h1::Http1HeaderMap,
     net::tls::client::ClientHello,
     telemetry::tracing,
-    ua::profile::{Http1Settings, Http2Settings, JsProfileWebApis, UserAgentSourceInfo},
+    ua::profile::{
+        Http1Settings, Http2Settings, JsProfileWebApis, UserAgentSourceInfo,
+        WsClientConfigOverwrites,
+    },
 };
 
 mod postgres;
@@ -198,6 +201,38 @@ impl Storage {
         Ok(())
     }
 
+    pub(super) async fn store_h1_headers_ws(
+        &self,
+        ua: String,
+        auth: bool,
+        headers: Http1HeaderMap,
+    ) -> Result<(), OpaqueError> {
+        tracing::debug!(
+            user_agent.original = %ua,
+            "store h1 ws headers for UA: {headers:?}",
+        );
+
+        let updated_at = Utc::now();
+
+        let client = self.pool.get().await.context("get postgres client")?;
+        let n = client.execute(
+                insert_stmt!(
+                    auth,
+                    "(uastr, h1_headers_ws, updated_at) VALUES ($1, $2, $3) ON CONFLICT (uastr) DO UPDATE SET h1_headers_ws = $2, updated_at = $3",
+                ),
+                &[&ua, &types::Json(headers), &updated_at],
+            ).await.context("store h1 ws headers in postgres")?;
+
+        if n != 1 {
+            tracing::error!(
+                user_agent.original = %ua,
+                "unexpected number of rows affected to store h1 ws headers for UA: {n}",
+            );
+        }
+
+        Ok(())
+    }
+
     pub(super) async fn store_h2_settings(
         &self,
         ua: String,
@@ -358,6 +393,38 @@ impl Storage {
         Ok(())
     }
 
+    pub(super) async fn store_h2_headers_ws(
+        &self,
+        ua: String,
+        auth: bool,
+        headers: Http1HeaderMap,
+    ) -> Result<(), OpaqueError> {
+        tracing::debug!(
+            user_agent.original = %ua,
+            "store h2 ws headers for UA: {headers:?}",
+        );
+
+        let updated_at = Utc::now();
+
+        let client = self.pool.get().await.context("get postgres client")?;
+        let n = client.execute(
+                insert_stmt!(
+                    auth,
+                    "(uastr, h2_headers_ws, updated_at) VALUES ($1, $2, $3) ON CONFLICT (uastr) DO UPDATE SET h2_headers_ws = $2, updated_at = $3",
+                ),
+                &[&ua, &types::Json(headers), &updated_at],
+            ).await.context("store h2 ws headers in postgres")?;
+
+        if n != 1 {
+            tracing::error!(
+                user_agent.original = %ua,
+                "unexpected number of rows affected to store h2 ws headers for UA: {n}",
+            );
+        }
+
+        Ok(())
+    }
+
     pub(super) async fn store_tls_client_hello(
         &self,
         ua: String,
@@ -384,6 +451,42 @@ impl Storage {
             tracing::error!(
                 user_agent.original = %ua,
                 "unexpected number of rows affected to store tls client hello for UA: {n}",
+            );
+        }
+
+        Ok(())
+    }
+
+    pub(super) async fn store_tls_ws_client_overwrites_from_client_hello(
+        &self,
+        ua: String,
+        auth: bool,
+        tls_client_hello: ClientHello,
+    ) -> Result<(), OpaqueError> {
+        tracing::debug!(
+            user_agent.original = %ua,
+            "store tls ws client config overwritesfor UA: {tls_client_hello:?}",
+        );
+
+        let updated_at = Utc::now();
+
+        let overwrites = WsClientConfigOverwrites {
+            alpn: tls_client_hello.ext_alpn().map(ToOwned::to_owned),
+        };
+
+        let client = self.pool.get().await.context("get postgres client")?;
+        let n = client.execute(
+            insert_stmt!(
+                auth,
+                "(uastr, tls_ws_client_config_overwrites, updated_at) VALUES ($1, $2, $3) ON CONFLICT (uastr) DO UPDATE SET tls_ws_client_config_overwrites = $2, updated_at = $3",
+            ),
+            &[&ua, &types::Json(overwrites), &updated_at],
+        ).await.context("store tls client config overwrites in postgres")?;
+
+        if n != 1 {
+            tracing::error!(
+                user_agent.original = %ua,
+                "unexpected number of rows affected to store tls ws client config overwrites for UA: {n}",
             );
         }
 

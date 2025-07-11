@@ -27,6 +27,7 @@ pub fn load_embedded_profiles() -> impl Iterator<Item = UserAgentProfile> {
                         fetch: row.h1_headers_fetch,
                         xhr: row.h1_headers_xhr,
                         form: row.h1_headers_form,
+                        ws: row.h1_headers_ws,
                     },
                 }),
                 h2: Arc::new(Http2Profile {
@@ -36,6 +37,7 @@ pub fn load_embedded_profiles() -> impl Iterator<Item = UserAgentProfile> {
                         fetch: row.h2_headers_fetch,
                         xhr: row.h2_headers_xhr,
                         form: row.h2_headers_form,
+                        ws: row.h2_headers_ws,
                     },
                 }),
             },
@@ -45,6 +47,7 @@ pub fn load_embedded_profiles() -> impl Iterator<Item = UserAgentProfile> {
                     row.tls_client_hello
                         .map(rama_net::tls::client::ClientConfig::from)?,
                 ),
+                ws_client_config_overwrites: row.tls_ws_client_config_overwrites,
             },
             runtime: match (&row.js_web_apis, &row.source_info) {
                 (Some(_), _) | (_, Some(_)) => Some(Arc::new(UserAgentRuntimeProfile {
@@ -67,13 +70,17 @@ struct UserAgentProfileRow {
     h1_headers_fetch: Option<Http1HeaderMap>,
     h1_headers_xhr: Option<Http1HeaderMap>,
     h1_headers_form: Option<Http1HeaderMap>,
+    h1_headers_ws: Option<Http1HeaderMap>,
     h2_settings: Option<Http2Settings>,
     h2_headers_navigate: Option<Http1HeaderMap>,
     h2_headers_fetch: Option<Http1HeaderMap>,
     h2_headers_xhr: Option<Http1HeaderMap>,
     h2_headers_form: Option<Http1HeaderMap>,
+    h2_headers_ws: Option<Http1HeaderMap>,
     #[cfg(feature = "tls")]
     tls_client_hello: Option<rama_net::tls::client::ClientHello>,
+    #[cfg(feature = "tls")]
+    tls_ws_client_config_overwrites: Option<WsClientConfigOverwrites>,
     js_web_apis: Option<JsProfileWebApis>,
     source_info: Option<UserAgentSourceInfo>,
 }

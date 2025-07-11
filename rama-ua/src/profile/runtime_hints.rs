@@ -52,6 +52,8 @@ pub enum RequestInitiator {
     /// optional and for example not supported by user-agents that are only capable of
     /// handling regular navigate requests or do not support more than one request type.
     Fetch,
+    /// WebSocket Upgrade Request
+    Ws,
 }
 
 impl RequestInitiator {
@@ -62,6 +64,7 @@ impl RequestInitiator {
             RequestInitiator::Form => "form",
             RequestInitiator::Xhr => "xhr",
             RequestInitiator::Fetch => "fetch",
+            RequestInitiator::Ws => "ws",
         }
     }
 }

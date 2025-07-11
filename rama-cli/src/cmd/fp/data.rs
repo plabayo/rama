@@ -92,6 +92,7 @@ pub(super) enum Initiator {
     Fetch,
     XMLHttpRequest,
     Form,
+    Ws,
 }
 
 impl std::fmt::Display for Initiator {
@@ -101,6 +102,7 @@ impl std::fmt::Display for Initiator {
             Self::Fetch => write!(f, "fetch"),
             Self::XMLHttpRequest => write!(f, "xmlhttprequest"),
             Self::Form => write!(f, "form"),
+            Self::Ws => write!(f, "ws"),
         }
     }
 }
@@ -289,6 +291,12 @@ pub(super) async fn get_and_store_http_info(
                             .await
                             .context("store h1 headers form")?;
                     }
+                    Initiator::Ws => {
+                        storage
+                            .store_h1_headers_ws(ua, auth, original_headers.clone())
+                            .await
+                            .context("store h1 headers ws")?;
+                    }
                 }
             }
             http::Version::HTTP_2 => {
@@ -322,6 +330,12 @@ pub(super) async fn get_and_store_http_info(
                             .store_h2_headers_form(ua, auth, original_headers.clone())
                             .await
                             .context("store h2 headers form")?;
+                    }
+                    Initiator::Ws => {
+                        storage
+                            .store_h2_headers_ws(ua, auth, original_headers.clone())
+                            .await
+                            .context("store h2 headers ws")?;
                     }
                 }
             }

@@ -226,6 +226,12 @@ pub struct HttpHeadersProfile {
     /// In case the user-agent does not support forms (e.g. because it does not handle html forms),
     /// then it is recommended to try to use the `fetch` headers and any fallbacks that the latter may have.
     pub form: Option<Http1HeaderMap>,
+    /// The headers to be used for WebSocket handshake requests.
+    ///
+    /// No UA profile is used for http headers
+    /// - in case WS is detected
+    /// - and no profile is defined
+    pub ws: Option<Http1HeaderMap>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

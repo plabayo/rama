@@ -212,6 +212,7 @@ async fn test_ua_emulation() {
                         fetch: None,
                         xhr: None,
                         form: None,
+                        ws : None,
                     },
                     settings: Http1Settings::default(),
                 }),
@@ -235,6 +236,7 @@ async fn test_ua_emulation() {
                         fetch: None,
                         xhr: None,
                         form: None,
+                        ws : None,
                     },
                     settings: Http2Settings::default(),
                 }),
@@ -290,6 +292,7 @@ async fn test_ua_emulation() {
             http: test_case.http_profile,
             tls: TlsProfile {
                 client_config: Arc::new(client_hello.into()),
+                ws_client_config_overwrites: None,
             },
             runtime: None,
         };

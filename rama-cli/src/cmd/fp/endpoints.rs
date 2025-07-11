@@ -6,10 +6,11 @@ use super::{
         get_user_agent_info,
     },
 };
-use crate::cmd::fp::data::TlsDisplayInfoExtensionData;
+use crate::cmd::fp::{StorageAuthorized, data::TlsDisplayInfoExtensionData};
 use itertools::Itertools as _;
 use rama::{
     Context,
+    error::{ErrorContext, OpaqueError},
     http::{
         Body, BodyExtractExt, Request, Response, StatusCode,
         proto::h2,
@@ -17,7 +18,9 @@ use rama::{
             extract::Path,
             response::{self, IntoResponse, Json},
         },
+        ws::handshake::server::ServerWebSocket,
     },
+    net::tls::{SecureTransport, client::ClientHello},
     telemetry::tracing,
     ua::profile::{Http2Settings, JsProfileWebApis, UserAgentSourceInfo},
 };
@@ -559,6 +562,58 @@ pub(super) async fn form(mut ctx: Context<Arc<State>>, req: Request) -> Result<H
         content,
         tables,
     ))
+}
+
+//------------------------------------------
+// endpoints: WS(S)
+//------------------------------------------
+
+pub(super) async fn ws_api(
+    ctx: Context<Arc<State>>,
+    ws: ServerWebSocket,
+) -> Result<(), OpaqueError> {
+    tracing::debug!("ws api called");
+    let (mut ws, mut parts) = ws.into_parts();
+
+    let user_agent_info = get_user_agent_info(&ctx).await;
+
+    let user_agent = user_agent_info.user_agent.clone();
+
+    let _ = get_and_store_http_info(
+        &ctx,
+        parts.headers,
+        &mut parts.extensions,
+        parts.version,
+        user_agent.clone(),
+        Initiator::Ws,
+    )
+    .await?;
+    tracing::debug!("ws api: http info stored");
+
+    let hello: &ClientHello = match ctx
+        .get::<SecureTransport>()
+        .and_then(|st| st.client_hello())
+    {
+        Some(hello) => hello,
+        None => return Ok(()),
+    };
+
+    if let Some(storage) = ctx.state().storage.as_ref() {
+        let auth = ctx.contains::<StorageAuthorized>();
+        storage
+            .store_tls_ws_client_overwrites_from_client_hello(user_agent, auth, hello.clone())
+            .await
+            .context("store tls client hello as ws client overwrites")?;
+        tracing::debug!("ws api: tls overwrite info stored");
+    }
+
+    ws.send_message("hello".into())
+        .await
+        .context("send hello msg")?;
+
+    tracing::debug!("ws api: hello sent");
+
+    Ok(())
 }
 
 //------------------------------------------

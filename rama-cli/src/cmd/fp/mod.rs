@@ -27,6 +27,7 @@ use rama::{
             match_service,
             response::{IntoResponse, Redirect},
         },
+        ws::handshake::server::WebSocketAcceptor,
     },
     layer::{
         ConsumeErrLayer, HijackLayer, Layer, LimitLayer, TimeoutLayer,
@@ -239,8 +240,14 @@ pub async fn run(cfg: CliCommandFingerprint) -> Result<(), BoxError> {
         .context("get local addr of tcp listener")?;
 
     graceful.spawn_task_fn(async move |guard|  {
+        let ws_service = ConsumeErrLayer::default().into_layer(WebSocketAcceptor::new()
+            .with_sub_protocols(["a", "b"])
+            .with_sub_protocols_flex(true)
+            .into_service(service_fn(endpoints::ws_api)));
+
         let inner_http_service = HijackLayer::new(
-                HttpMatcher::header_exists(HeaderName::from_static("referer"))
+                HttpMatcher::path("/api/ws")
+                    .or_header_exists(HeaderName::from_static("referer"))
                     .and_header_exists(HeaderName::from_static("cookie"))
                     .negate(),
                 service_fn(async || {
@@ -249,6 +256,7 @@ pub async fn run(cfg: CliCommandFingerprint) -> Result<(), BoxError> {
             )
             .into_layer(match_service!{
                 HttpMatcher::get("/report") => endpoints::get_report,
+                HttpMatcher::path("/api/ws") => ws_service,
                 HttpMatcher::post("/api/fetch/number/:number") => endpoints::post_api_fetch_number,
                 HttpMatcher::post("/api/xml/number/:number") => endpoints::post_api_xml_http_request_number,
                 HttpMatcher::method_get().or_method_post().and_path("/form") => endpoints::form,
