@@ -7,11 +7,12 @@ use rama::{
     error::{BoxError, ErrorContext, OpaqueError, error},
     graceful::{self, Shutdown, ShutdownGuard},
     http::{
-        Request, Response,
+        Request, Response, Version,
         client::{
             EasyHttpWebClient,
             proxy::layer::{HttpProxyAddressLayer, SetProxyAuthHttpHeaderLayer},
         },
+        conn::TargetHttpVersion,
         layer::{
             auth::AddAuthorizationLayer,
             decompression::DecompressionLayer,
@@ -141,6 +142,36 @@ pub struct CliCommandHttp {
     /// emulate user agent
     emulate: bool,
 
+    #[arg(long = "http0.9")]
+    /// force http_version to http/0.9
+    ///
+    /// Mutually exclusive with --http1.0, --http1.1, --http2, --http3
+    http_09: bool,
+
+    #[arg(long = "http1.0")]
+    /// force http_version to http/1.0
+    ///
+    /// Mutually exclusive with --http1.0, --http1.1, --http2, --http3
+    http_10: bool,
+
+    #[arg(long = "http1.1")]
+    /// force http_version to http/1.1
+    ///
+    /// Mutually exclusive with --http0.9, --http1.0, --http2, --http3
+    http_11: bool,
+
+    #[arg(long = "http2")]
+    /// force http_version to http/2
+    ///
+    /// Mutually exclusive with --http0.9, --http1.0, --http1.1, --http3
+    http_2: bool,
+
+    #[arg(long = "http3")]
+    /// force http_version to http/3
+    ///
+    /// Mutually exclusive with --http0.9, --http1.0, --http1.1, --http2
+    http_3: bool,
+
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     /// positional arguments to populate request headers and body
     ///
@@ -260,8 +291,32 @@ async fn run_inner(guard: ShutdownGuard, cfg: CliCommandHttp) -> Result<(), BoxE
     let request = request_args_builder.build()?;
 
     let client = create_client(guard, cfg.clone()).await?;
+    let mut ctx = Context::default();
 
-    let response = client.serve(Context::default(), request).await?;
+    let forced_version = match (
+        cfg.http_09,
+        cfg.http_10,
+        cfg.http_11,
+        cfg.http_2,
+        cfg.http_3,
+    ) {
+        (true, false, false, false, false) => Some(TargetHttpVersion(Version::HTTP_09)),
+        (false, true, false, false, false) => Some(TargetHttpVersion(Version::HTTP_10)),
+        (false, false, true, false, false) => Some(TargetHttpVersion(Version::HTTP_11)),
+        (false, false, false, true, false) => Some(TargetHttpVersion(Version::HTTP_2)),
+        (false, false, false, false, true) => Some(TargetHttpVersion(Version::HTTP_3)),
+        (false, false, false, false, false) => None,
+        _ => Err(OpaqueError::from_display(
+            "--http0.9, --http1.0, --http1.1, --http2, --http3 are mutually exclusive",
+        )
+        .into_boxed())?,
+    };
+
+    if let Some(forced_version) = forced_version {
+        ctx.insert(forced_version);
+    }
+
+    let response = client.serve(ctx, request).await?;
 
     if cfg.check_status {
         let status = response.status();

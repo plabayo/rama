@@ -168,3 +168,67 @@ async fn test_http_echo_secure() {
             .as_str()
     );
 }
+
+#[cfg(feature = "boring")]
+#[tokio::test]
+#[ignore]
+async fn test_http_forced_version() {
+    utils::init_tracing();
+
+    let _guard = utils::RamaService::echo(63104, true, None);
+
+    struct Test {
+        cli_flag: &'static str,
+        version_response: &'static str,
+        tls_alpn: &'static str,
+    }
+
+    let tests = [
+        Test {
+            cli_flag: "--http1.0",
+            version_response: "HTTP/1.0 200 OK",
+            tls_alpn: "http/1.0",
+        },
+        Test {
+            cli_flag: "--http1.1",
+            version_response: "HTTP/1.1 200 OK",
+            tls_alpn: "http/1.1",
+        },
+        Test {
+            cli_flag: "--http2",
+            version_response: "HTTP/2.0 200 OK",
+            tls_alpn: "h2",
+        },
+    ];
+
+    for test in tests.iter() {
+        let tls_alpn = format!(
+            r#"{{"data":["{}"],"id":"APPLICATION_LAYER_PROTOCOL_NEGOTIATION (0x0010)"}}"#,
+            test.tls_alpn
+        );
+
+        let lines = utils::RamaService::http(vec![
+            test.cli_flag,
+            "https://127.0.0.1:63104",
+            "foo:bar",
+            "a=4",
+            "q==1",
+        ])
+        .unwrap();
+
+        assert!(
+            lines.contains(test.version_response),
+            "cli flag {}, didn't find '{}' lines: {:?}",
+            test.cli_flag,
+            test.version_response,
+            lines
+        );
+        assert!(
+            lines.contains(&tls_alpn),
+            "cli flag {}, didn't find '{}' lines: {:?}",
+            test.cli_flag,
+            tls_alpn,
+            lines
+        );
+    }
+}

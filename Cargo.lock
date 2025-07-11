@@ -2698,6 +2698,7 @@ dependencies = [
  "percent-encoding",
  "pin-project-lite",
  "rama-core",
+ "rama-error",
  "rama-http-headers",
  "rama-http-types",
  "rama-net",
@@ -2740,6 +2741,7 @@ dependencies = [
  "rama-unix",
  "rama-utils",
  "tokio",
+ "tokio-test",
 ]
 
 [[package]]
@@ -2932,6 +2934,7 @@ dependencies = [
  "rama-boring",
  "rama-boring-tokio",
  "rama-core",
+ "rama-http-types",
  "rama-net",
  "rama-ua",
  "rama-utils",

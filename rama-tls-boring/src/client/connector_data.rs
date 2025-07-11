@@ -219,7 +219,7 @@ impl TlsConnectorDataBuilder {
 
     /// Add [`ConfigBuilder`] to the start of our base builders
     ///
-    /// Builder in the start is evaluated as the the last one we iterating over builders
+    /// Builder in the start is evaluated as the last one when iterating over builders
     pub fn prepend_base_config(&mut self, config: Arc<TlsConnectorDataBuilder>) -> &mut Self {
         self.base_builders.insert(0, config);
         self

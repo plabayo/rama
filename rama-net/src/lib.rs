@@ -43,4 +43,7 @@ pub mod tls;
 #[cfg(any(feature = "tls", feature = "http"))]
 pub mod fingerprint;
 
+#[cfg(all(feature = "tls", feature = "http"))]
+pub mod https;
+
 pub mod socket;

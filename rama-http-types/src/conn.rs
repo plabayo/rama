@@ -1,5 +1,6 @@
 //! HTTP connection utilities.
 
+use crate::dep::http::Version;
 use crate::proto::h2::{PseudoHeaderOrder, frame::EarlyFrameCapture};
 
 #[derive(Debug, Clone, Default)]
@@ -29,3 +30,11 @@ pub struct H2ClientContextParams {
     /// Early frames to be applied first
     pub early_frames: Option<EarlyFrameCapture>,
 }
+
+#[derive(Debug, Copy, Clone, Default, PartialEq, Eq)]
+/// Target http version
+///
+/// This can be set manually to enforce a specific version,
+/// otherwise this will be set automatically by things such
+/// tls alpn
+pub struct TargetHttpVersion(pub Version);
