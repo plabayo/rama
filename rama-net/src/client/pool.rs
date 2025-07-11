@@ -5,6 +5,7 @@ use rama_core::error::{BoxError, ErrorContext, OpaqueError};
 use rama_core::telemetry::tracing::trace;
 use rama_core::{Context, Layer, Service};
 use rama_utils::macros::generate_set_and_with;
+use rama_utils::macros::traits::impl_inner_traits;
 use std::collections::VecDeque;
 use std::fmt::Debug;
 use std::ops::{Deref, DerefMut};
@@ -385,73 +386,93 @@ impl<C, ID> Drop for LeasedConnection<C, ID> {
 // We want to be able to use LeasedConnection as a transparent wrapper around our connection.
 // To achieve that we conditially implement all traits that are used by our Connectors
 
-impl<C, ID> Socket for LeasedConnection<C, ID>
-where
-    ID: Send + Sync + 'static,
-    C: Socket,
-{
-    fn local_addr(&self) -> std::io::Result<SocketAddr> {
-        self.as_ref().local_addr()
-    }
+// impl<C, ID> Socket for LeasedConnection<C, ID>
+// where
+//     ID: Send + Sync + 'static,
+//     C: Socket,
+// {
+//     fn local_addr(&self) -> std::io::Result<SocketAddr> {
+//         self.as_ref().local_addr()
+//     }
 
-    fn peer_addr(&self) -> std::io::Result<SocketAddr> {
-        self.as_ref().peer_addr()
+//     fn peer_addr(&self) -> std::io::Result<SocketAddr> {
+//         self.as_ref().peer_addr()
+//     }
+// }
+
+impl_inner_traits! {
+    Socket for LeasedConnection<C, ID> where {
+        C: Socket,
+        ID: Send + Sync + 'static,
+    } target: {pooled_conn.as_ref().expect("only None after drop").conn};
+
+    AsyncWrite for LeasedConnection<C, ID> where {
+        C: AsyncWrite + Unpin,
+        ID: Unpin,
     }
+    target: {pooled_conn.as_ref().expect("only None after drop").conn}
+    target_mut: {pooled_conn.as_mut().expect("only None after drop").conn};
+
+    AsyncRead for LeasedConnection<C, ID> where {
+        C: AsyncRead + Unpin,
+        ID: Unpin,
+    }
+    target_mut: {pooled_conn.as_mut().expect("only None after drop").conn};
 }
 
-impl<C, ID> AsyncWrite for LeasedConnection<C, ID>
-where
-    C: AsyncWrite + Unpin,
-    ID: Unpin,
-{
-    fn poll_write(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        buf: &[u8],
-    ) -> std::task::Poll<Result<usize, std::io::Error>> {
-        Pin::new(self.deref_mut().as_mut()).poll_write(cx, buf)
-    }
+// impl<C, ID> AsyncWrite for LeasedConnection<C, ID>
+// where
+//     C: AsyncWrite + Unpin,
+//     ID: Unpin,
+// {
+//     fn poll_write(
+//         mut self: std::pin::Pin<&mut Self>,
+//         cx: &mut std::task::Context<'_>,
+//         buf: &[u8],
+//     ) -> std::task::Poll<Result<usize, std::io::Error>> {
+//         Pin::new(self.deref_mut().as_mut()).poll_write(cx, buf)
+//     }
 
-    fn poll_flush(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Result<(), std::io::Error>> {
-        Pin::new(self.deref_mut().as_mut()).poll_flush(cx)
-    }
+//     fn poll_flush(
+//         mut self: std::pin::Pin<&mut Self>,
+//         cx: &mut std::task::Context<'_>,
+//     ) -> std::task::Poll<Result<(), std::io::Error>> {
+//         Pin::new(self.deref_mut().as_mut()).poll_flush(cx)
+//     }
 
-    fn poll_shutdown(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Result<(), std::io::Error>> {
-        Pin::new(self.deref_mut().as_mut()).poll_shutdown(cx)
-    }
+//     fn poll_shutdown(
+//         mut self: std::pin::Pin<&mut Self>,
+//         cx: &mut std::task::Context<'_>,
+//     ) -> std::task::Poll<Result<(), std::io::Error>> {
+//         Pin::new(self.deref_mut().as_mut()).poll_shutdown(cx)
+//     }
 
-    fn is_write_vectored(&self) -> bool {
-        self.deref().is_write_vectored()
-    }
+//     fn is_write_vectored(&self) -> bool {
+//         self.deref().is_write_vectored()
+//     }
 
-    fn poll_write_vectored(
-        mut self: Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        bufs: &[std::io::IoSlice<'_>],
-    ) -> std::task::Poll<Result<usize, std::io::Error>> {
-        Pin::new(self.deref_mut().as_mut()).poll_write_vectored(cx, bufs)
-    }
-}
+//     fn poll_write_vectored(
+//         mut self: Pin<&mut Self>,
+//         cx: &mut std::task::Context<'_>,
+//         bufs: &[std::io::IoSlice<'_>],
+//     ) -> std::task::Poll<Result<usize, std::io::Error>> {
+//         Pin::new(self.deref_mut().as_mut()).poll_write_vectored(cx, bufs)
+//     }
+// }
 
-impl<C, ID> AsyncRead for LeasedConnection<C, ID>
-where
-    C: AsyncRead + Unpin,
-    ID: Unpin,
-{
-    fn poll_read(
-        mut self: Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        buf: &mut tokio::io::ReadBuf<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        Pin::new(self.deref_mut().as_mut()).poll_read(cx, buf)
-    }
-}
+// impl<C, ID> AsyncRead for LeasedConnection<C, ID>
+// where
+//     C: AsyncRead + Unpin,
+//     ID: Unpin,
+// {
+//     fn poll_read(
+//         mut self: Pin<&mut Self>,
+//         cx: &mut std::task::Context<'_>,
+//         buf: &mut tokio::io::ReadBuf<'_>,
+//     ) -> std::task::Poll<std::io::Result<()>> {
+//         Pin::new(self.deref_mut().as_mut()).poll_read(cx, buf)
+//     }
+// }
 
 impl<State, Request, C, ID> Service<State, Request> for LeasedConnection<C, ID>
 where
