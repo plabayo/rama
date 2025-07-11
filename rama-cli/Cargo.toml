@@ -25,13 +25,13 @@ hex = { workspace = true }
 itertools = { workspace = true }
 mimalloc = { workspace = true, optional = true }
 rama = { version = "0.3.0-alpha.4", path = "..", features = [
-    "boring",
-    "cli",
-    "tcp",
-    "udp",
-    "http-full",
-    "proxy-full",
-    "opentelemetry",
+  "boring",
+  "cli",
+  "tcp",
+  "udp",
+  "http-full",
+  "proxy-full",
+  "opentelemetry",
 ] }
 ratatui = { workspace = true }
 serde = { workspace = true }
