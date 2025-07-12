@@ -18,9 +18,13 @@ use rama::{
             extract::Path,
             response::{self, IntoResponse, Json},
         },
-        ws::handshake::server::ServerWebSocket,
+        ws::{
+            Utf8Bytes,
+            handshake::server::ServerWebSocket,
+            protocol::{CloseFrame, frame::coding::CloseCode},
+        },
     },
-    net::tls::{SecureTransport, client::ClientHello},
+    net::tls::SecureTransport,
     telemetry::tracing,
     ua::profile::{Http2Settings, JsProfileWebApis, UserAgentSourceInfo},
 };
@@ -39,7 +43,7 @@ fn html<T: Into<String>>(inner: T) -> Html {
 //------------------------------------------
 
 pub(super) async fn get_consent() -> impl IntoResponse {
-    ([("Set-Cookie", "rama-fp=ready; Max-Age=60")], render_page(
+    ([("Set-Cookie", "rama-fp=ready; Max-Age=60; path=/")], render_page(
         "🕵️ Fingerprint Consent",
         String::new(),
         r##"<div class="consent">
@@ -590,15 +594,11 @@ pub(super) async fn ws_api(
     .await?;
     tracing::debug!("ws api: http info stored");
 
-    let hello: &ClientHello = match ctx
+    if let Some(hello) = ctx
         .get::<SecureTransport>()
         .and_then(|st| st.client_hello())
+        && let Some(storage) = ctx.state().storage.as_ref()
     {
-        Some(hello) => hello,
-        None => return Ok(()),
-    };
-
-    if let Some(storage) = ctx.state().storage.as_ref() {
         let auth = ctx.contains::<StorageAuthorized>();
         storage
             .store_tls_ws_client_overwrites_from_client_hello(user_agent, auth, hello.clone())
@@ -612,6 +612,16 @@ pub(super) async fn ws_api(
         .context("send hello msg")?;
 
     tracing::debug!("ws api: hello sent");
+
+    ws.close(Some(CloseFrame {
+        code: CloseCode::Normal,
+        reason: Utf8Bytes::from_static("finished"),
+    }))
+    .await
+    .context("close ws frame")?;
+
+    let result = ws.recv_message().await;
+    tracing::debug!("ws api: socket closed with result: {result:?}");
 
     Ok(())
 }

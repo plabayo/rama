@@ -130,6 +130,10 @@ function connectWebSocket() {
       `ws${location.protocol === "https:" ? "s" : ""}://${location.host}/api/ws`,
     );
 
+    socket.onmessage = function (event) {
+      console.log(`WebSocket message received: ${event.data}`);
+    };
+
     socket.onerror = function () {
       reject(new Error("WebSocket connection error"));
     };
