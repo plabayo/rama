@@ -1060,7 +1060,7 @@ impl<B, P> Streams<B, P>
 where
     P: Peer,
 {
-    pub(crate) fn as_dyn(&self) -> DynStreams<B> {
+    pub(crate) fn as_dyn(&self) -> DynStreams<'_, B> {
         let Self {
             inner,
             send_buffer,

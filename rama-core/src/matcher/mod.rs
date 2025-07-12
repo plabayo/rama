@@ -119,7 +119,7 @@ where
     }
 }
 
-impl<State, Request> Matcher<State, Request> for Box<(dyn Matcher<State, Request> + 'static)>
+impl<State, Request> Matcher<State, Request> for Box<dyn Matcher<State, Request> + 'static>
 where
     State: Clone + Send + Sync + 'static,
     Request: Send + 'static,

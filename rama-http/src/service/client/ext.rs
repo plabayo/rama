@@ -23,7 +23,7 @@ pub trait HttpClientExt<State>:
     /// This method fails whenever the supplied [`Url`] cannot be parsed.
     ///
     /// [`Url`]: crate::Uri
-    fn get(&self, url: impl IntoUrl) -> RequestBuilder<Self, State, Self::ExecuteResponse>;
+    fn get(&self, url: impl IntoUrl) -> RequestBuilder<'_, Self, State, Self::ExecuteResponse>;
 
     /// Convenience method to make a `POST` request to a URL.
     ///
@@ -32,7 +32,7 @@ pub trait HttpClientExt<State>:
     /// This method fails whenever the supplied [`Url`] cannot be parsed.
     ///
     /// [`Url`]: crate::Uri
-    fn post(&self, url: impl IntoUrl) -> RequestBuilder<Self, State, Self::ExecuteResponse>;
+    fn post(&self, url: impl IntoUrl) -> RequestBuilder<'_, Self, State, Self::ExecuteResponse>;
 
     /// Convenience method to make a `PUT` request to a URL.
     ///
@@ -41,7 +41,7 @@ pub trait HttpClientExt<State>:
     /// This method fails whenever the supplied [`Url`] cannot be parsed.
     ///
     /// [`Url`]: crate::Uri
-    fn put(&self, url: impl IntoUrl) -> RequestBuilder<Self, State, Self::ExecuteResponse>;
+    fn put(&self, url: impl IntoUrl) -> RequestBuilder<'_, Self, State, Self::ExecuteResponse>;
 
     /// Convenience method to make a `PATCH` request to a URL.
     ///
@@ -50,7 +50,7 @@ pub trait HttpClientExt<State>:
     /// This method fails whenever the supplied [`Url`] cannot be parsed.
     ///
     /// [`Url`]: crate::Uri
-    fn patch(&self, url: impl IntoUrl) -> RequestBuilder<Self, State, Self::ExecuteResponse>;
+    fn patch(&self, url: impl IntoUrl) -> RequestBuilder<'_, Self, State, Self::ExecuteResponse>;
 
     /// Convenience method to make a `DELETE` request to a URL.
     ///
@@ -59,21 +59,21 @@ pub trait HttpClientExt<State>:
     /// This method fails whenever the supplied [`Url`] cannot be parsed.
     ///
     /// [`Url`]: crate::Uri
-    fn delete(&self, url: impl IntoUrl) -> RequestBuilder<Self, State, Self::ExecuteResponse>;
+    fn delete(&self, url: impl IntoUrl) -> RequestBuilder<'_, Self, State, Self::ExecuteResponse>;
 
     /// Convenience method to make a `HEAD` request to a URL.
     ///
     /// # Errors
     ///
     /// This method fails whenever the supplied `Url` cannot be parsed.
-    fn head(&self, url: impl IntoUrl) -> RequestBuilder<Self, State, Self::ExecuteResponse>;
+    fn head(&self, url: impl IntoUrl) -> RequestBuilder<'_, Self, State, Self::ExecuteResponse>;
 
     /// Convenience method to make a `CONNECT` request to a URL.
     ///
     /// # Errors
     ///
     /// This method fails whenever the supplied `Url` cannot be parsed.
-    fn connect(&self, url: impl IntoUrl) -> RequestBuilder<Self, State, Self::ExecuteResponse>;
+    fn connect(&self, url: impl IntoUrl) -> RequestBuilder<'_, Self, State, Self::ExecuteResponse>;
 
     /// Start building a [`Request`] with the [`Method`] and [`Url`].
     ///
@@ -91,7 +91,7 @@ pub trait HttpClientExt<State>:
         &self,
         method: Method,
         url: impl IntoUrl,
-    ) -> RequestBuilder<Self, State, Self::ExecuteResponse>;
+    ) -> RequestBuilder<'_, Self, State, Self::ExecuteResponse>;
 
     /// Start building a [`Request`], using the given [`Request`].
     ///
@@ -100,7 +100,7 @@ pub trait HttpClientExt<State>:
     fn build_from_request<Body: Into<crate::Body>>(
         &self,
         request: Request<Body>,
-    ) -> RequestBuilder<Self, State, Self::ExecuteResponse>;
+    ) -> RequestBuilder<'_, Self, State, Self::ExecuteResponse>;
 
     /// Executes a `Request`.
     ///
@@ -121,31 +121,31 @@ where
     type ExecuteResponse = Response<Body>;
     type ExecuteError = S::Error;
 
-    fn get(&self, url: impl IntoUrl) -> RequestBuilder<Self, State, Self::ExecuteResponse> {
+    fn get(&self, url: impl IntoUrl) -> RequestBuilder<'_, Self, State, Self::ExecuteResponse> {
         self.request(Method::GET, url)
     }
 
-    fn post(&self, url: impl IntoUrl) -> RequestBuilder<Self, State, Self::ExecuteResponse> {
+    fn post(&self, url: impl IntoUrl) -> RequestBuilder<'_, Self, State, Self::ExecuteResponse> {
         self.request(Method::POST, url)
     }
 
-    fn put(&self, url: impl IntoUrl) -> RequestBuilder<Self, State, Self::ExecuteResponse> {
+    fn put(&self, url: impl IntoUrl) -> RequestBuilder<'_, Self, State, Self::ExecuteResponse> {
         self.request(Method::PUT, url)
     }
 
-    fn patch(&self, url: impl IntoUrl) -> RequestBuilder<Self, State, Self::ExecuteResponse> {
+    fn patch(&self, url: impl IntoUrl) -> RequestBuilder<'_, Self, State, Self::ExecuteResponse> {
         self.request(Method::PATCH, url)
     }
 
-    fn delete(&self, url: impl IntoUrl) -> RequestBuilder<Self, State, Self::ExecuteResponse> {
+    fn delete(&self, url: impl IntoUrl) -> RequestBuilder<'_, Self, State, Self::ExecuteResponse> {
         self.request(Method::DELETE, url)
     }
 
-    fn head(&self, url: impl IntoUrl) -> RequestBuilder<Self, State, Self::ExecuteResponse> {
+    fn head(&self, url: impl IntoUrl) -> RequestBuilder<'_, Self, State, Self::ExecuteResponse> {
         self.request(Method::HEAD, url)
     }
 
-    fn connect(&self, url: impl IntoUrl) -> RequestBuilder<Self, State, Self::ExecuteResponse> {
+    fn connect(&self, url: impl IntoUrl) -> RequestBuilder<'_, Self, State, Self::ExecuteResponse> {
         self.request(Method::CONNECT, url)
     }
 
@@ -153,7 +153,7 @@ where
         &self,
         method: Method,
         url: impl IntoUrl,
-    ) -> RequestBuilder<Self, State, Self::ExecuteResponse> {
+    ) -> RequestBuilder<'_, Self, State, Self::ExecuteResponse> {
         let uri = match url.into_url() {
             Ok(uri) => uri,
             Err(err) => {
@@ -179,7 +179,7 @@ where
     fn build_from_request<RequestBody: Into<crate::Body>>(
         &self,
         request: Request<RequestBody>,
-    ) -> RequestBuilder<Self, State, Self::ExecuteResponse> {
+    ) -> RequestBuilder<'_, Self, State, Self::ExecuteResponse> {
         RequestBuilder {
             http_client_service: self,
             state: RequestBuilderState::PostBody(request.map(Into::into)),

@@ -383,7 +383,7 @@ mod memdb {
             &self,
             ctx: ProxyContext,
             filter: ProxyFilter,
-        ) -> internal::ProxyDBQuery {
+        ) -> internal::ProxyDBQuery<'_> {
             let mut query = self.data.query();
 
             for pool_id in filter.pool_id.into_iter().flatten() {

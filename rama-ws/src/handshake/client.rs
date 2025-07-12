@@ -734,13 +734,13 @@ pub trait HttpClientWebSocketExt<Body, State>:
     fn websocket(
         &self,
         url: impl IntoUrl,
-    ) -> WebsocketRequestBuilder<WithService<Self, Body, State>>;
+    ) -> WebsocketRequestBuilder<WithService<'_, Self, Body, State>>;
 
     /// Create a new [`WebsocketRequestBuilder`] to be used to establish a WebSocket connection over h2.
     fn websocket_h2(
         &self,
         url: impl IntoUrl,
-    ) -> WebsocketRequestBuilder<WithService<Self, Body, State>>;
+    ) -> WebsocketRequestBuilder<WithService<'_, Self, Body, State>>;
 
     /// Create a new [`WebsocketRequestBuilder`] starting from the given request.
     ///
@@ -749,7 +749,7 @@ pub trait HttpClientWebSocketExt<Body, State>:
     fn websocket_with_request<RequestBody: Into<rama_http::Body>>(
         &self,
         req: Request<RequestBody>,
-    ) -> WebsocketRequestBuilder<WithService<Self, Body, State>>;
+    ) -> WebsocketRequestBuilder<WithService<'_, Self, Body, State>>;
 }
 
 impl<State, S, Body> HttpClientWebSocketExt<Body, State> for S
@@ -760,21 +760,21 @@ where
     fn websocket(
         &self,
         url: impl IntoUrl,
-    ) -> WebsocketRequestBuilder<WithService<Self, Body, State>> {
+    ) -> WebsocketRequestBuilder<WithService<'_, Self, Body, State>> {
         WebsocketRequestBuilder::new_with_service(self, url)
     }
 
     fn websocket_h2(
         &self,
         url: impl IntoUrl,
-    ) -> WebsocketRequestBuilder<WithService<Self, Body, State>> {
+    ) -> WebsocketRequestBuilder<WithService<'_, Self, Body, State>> {
         WebsocketRequestBuilder::new_h2_with_service(self, url)
     }
 
     fn websocket_with_request<RequestBody: Into<rama_http::Body>>(
         &self,
         req: Request<RequestBody>,
-    ) -> WebsocketRequestBuilder<WithService<Self, Body, State>> {
+    ) -> WebsocketRequestBuilder<WithService<'_, Self, Body, State>> {
         WebsocketRequestBuilder::new_with_service_and_request(self, req)
     }
 }

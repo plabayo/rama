@@ -82,7 +82,7 @@ fn end_of_line(input: &str) -> IResult<&str, ()> {
 }
 
 #[inline]
-fn comment(input: &str) -> IResult<&str, RawEventLine> {
+fn comment(input: &str) -> IResult<&str, RawEventLine<'_>> {
     preceded(
         take_while_m_n(1, 1, is_colon),
         terminated(take_while(is_any_char), end_of_line),
@@ -97,7 +97,7 @@ fn comment(input: &str) -> IResult<&str, RawEventLine> {
 }
 
 #[inline]
-fn field(input: &str) -> IResult<&str, RawEventLine> {
+fn field(input: &str) -> IResult<&str, RawEventLine<'_>> {
     terminated(
         (
             take_while1(is_name_char),
@@ -113,11 +113,11 @@ fn field(input: &str) -> IResult<&str, RawEventLine> {
 }
 
 #[inline]
-fn empty(input: &str) -> IResult<&str, RawEventLine> {
+fn empty(input: &str) -> IResult<&str, RawEventLine<'_>> {
     end_of_line(input).map(|(i, _)| (i, RawEventLine::Empty))
 }
 
-pub(super) fn line(input: &str) -> IResult<&str, RawEventLine> {
+pub(super) fn line(input: &str) -> IResult<&str, RawEventLine<'_>> {
     alt((comment, field, empty)).parse(input)
 }
 

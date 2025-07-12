@@ -75,7 +75,7 @@ pub(super) struct VacantEntry<'a> {
 }
 
 pub(super) trait Resolve {
-    fn resolve(&mut self, key: Key) -> Ptr;
+    fn resolve(&mut self, key: Key) -> Ptr<'_>;
 }
 
 // ===== impl Store =====
@@ -103,7 +103,7 @@ impl Store {
         })
     }
 
-    pub(super) fn insert(&mut self, id: StreamId, val: Stream) -> Ptr {
+    pub(super) fn insert(&mut self, id: StreamId, val: Stream) -> Ptr<'_> {
         let index = SlabIndex(self.slab.insert(val) as u32);
         assert!(self.ids.insert(id, index).is_none());
 
@@ -116,7 +116,7 @@ impl Store {
         }
     }
 
-    pub(super) fn find_entry(&mut self, id: StreamId) -> Entry {
+    pub(super) fn find_entry(&mut self, id: StreamId) -> Entry<'_> {
         match self.ids.entry(id) {
             indexmap::map::Entry::Occupied(e) => Entry::Occupied(OccupiedEntry { ids: e }),
             indexmap::map::Entry::Vacant(e) => Entry::Vacant(VacantEntry {
@@ -176,7 +176,7 @@ impl Store {
 }
 
 impl Resolve for Store {
-    fn resolve(&mut self, key: Key) -> Ptr {
+    fn resolve(&mut self, key: Key) -> Ptr<'_> {
         Ptr { key, store: self }
     }
 }
@@ -411,7 +411,7 @@ impl Ptr<'_> {
 }
 
 impl Resolve for Ptr<'_> {
-    fn resolve(&mut self, key: Key) -> Ptr {
+    fn resolve(&mut self, key: Key) -> Ptr<'_> {
         Ptr {
             key,
             store: &mut *self.store,

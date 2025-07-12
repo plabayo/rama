@@ -81,7 +81,7 @@ pub struct Incomplete {
     pub buffer_len: u8,
 }
 
-pub fn decode(input: &[u8]) -> Result<&str, DecodeError> {
+pub fn decode(input: &[u8]) -> Result<&str, DecodeError<'_>> {
     let error = match str::from_utf8(input) {
         Ok(valid) => return Ok(valid),
         Err(error) => error,

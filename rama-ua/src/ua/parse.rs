@@ -173,7 +173,7 @@ fn parse_ua_version_safari(ua: &str) -> Option<usize> {
             .next()
             .and_then(|s| s.parse().ok())
             .unwrap_or_default();
-        Some(major * 100 + minor)
+        Some(major.saturating_mul(100).saturating_add(minor))
     })
 }
 

@@ -85,7 +85,7 @@ impl<B: BufRead> BufReadDecoder<B> {
     /// This is similar to `Iterator::next`,
     /// except that decoded chunks borrow the decoder (~iterator)
     /// so they need to be handled or copied before the next chunk can start decoding.
-    pub fn next_strict(&mut self) -> Option<Result<&str, BufReadDecoderError>> {
+    pub fn next_strict(&mut self) -> Option<Result<&str, BufReadDecoderError<'_>>> {
         enum BytesSource {
             BufRead(usize),
             Incomplete,
