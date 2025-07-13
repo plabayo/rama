@@ -24,7 +24,7 @@ desktop_permutations = [
     ["Chrome", "Edge", "Firefox", "Safari"],
     (
         [["Windows", v] for v in ["10", "11"]]
-        + [["OS X", v] for v in ["Ventura", "Sonoma", "Sequoia"]]
+        + [["OS X", v] for v in ["Ventura", "Sonoma", "Sequoia", "Tahoe"]]
     ),
 ]
 
