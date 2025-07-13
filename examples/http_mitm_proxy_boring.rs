@@ -55,6 +55,7 @@ use rama::{
     Layer, Service,
     error::{BoxError, ErrorContext, OpaqueError},
     futures::SinkExt,
+    http::conn::TargetHttpVersion,
     http::{
         Body, Request, Response, StatusCode,
         client::EasyHttpWebClient,
@@ -109,7 +110,6 @@ use rama::{
 };
 
 use itertools::Itertools;
-use rama_http::conn::TargetHttpVersion;
 use std::{convert::Infallible, sync::Arc, time::Duration};
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 

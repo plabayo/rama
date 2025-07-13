@@ -11,7 +11,8 @@ use rama_http_types::{
     conn::{H2ClientContextParams, Http1ClientContextParams},
     header::{
         ACCEPT, ACCEPT_LANGUAGE, AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, COOKIE, HOST, ORIGIN,
-        REFERER, SEC_WEBSOCKET_VERSION, USER_AGENT,
+        REFERER, SEC_WEBSOCKET_EXTENSIONS, SEC_WEBSOCKET_KEY, SEC_WEBSOCKET_PROTOCOL,
+        SEC_WEBSOCKET_VERSION, USER_AGENT,
     },
     proto::h1::{
         Http1HeaderMap,
@@ -670,7 +671,11 @@ fn merge_http_headers<'a>(
         let base_header_name = base_name.header_name();
         let original_value = original_headers.remove(base_header_name);
         match base_header_name {
-            &ACCEPT | &ACCEPT_LANGUAGE => {
+            &ACCEPT
+            | &ACCEPT_LANGUAGE
+            | &SEC_WEBSOCKET_KEY
+            | &SEC_WEBSOCKET_EXTENSIONS
+            | &SEC_WEBSOCKET_PROTOCOL => {
                 let value = original_value.unwrap_or(base_value);
                 output_headers_ref.push((base_name, value));
             }
