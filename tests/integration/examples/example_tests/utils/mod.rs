@@ -1,10 +1,23 @@
 #![allow(dead_code)]
 
+use rama::telemetry::tracing::level_filters::LevelFilter;
+use std::{
+    process::{Child, ExitStatus},
+    sync::Once,
+};
+use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
+
+#[cfg(feature = "http-full")]
+use ::std::time::Duration;
+
+#[cfg(feature = "http-full")]
 use rama::{
     Layer, Service,
     error::BoxError,
+    http::Body,
     http::client::proxy::layer::SetProxyAuthHttpHeaderLayer,
     http::service::client::{HttpClientExt, IntoUrl, RequestBuilder},
+    http::ws::handshake::client::{HttpClientWebSocketExt, WebsocketRequestBuilder, WithService},
     http::{
         Request, Response,
         client::EasyHttpWebClient,
@@ -17,33 +30,28 @@ use rama::{
     },
     layer::MapResultLayer,
     service::BoxService,
-    telemetry::tracing::level_filters::LevelFilter,
     utils::{backoff::ExponentialBackoff, rng::HasherRng},
 };
-use rama_http::Body;
-use rama_ws::handshake::client::{HttpClientWebSocketExt, WebsocketRequestBuilder, WithService};
-use std::{
-    process::{Child, ExitStatus},
-    sync::Once,
-    time::Duration,
-};
-use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
-#[cfg(feature = "compression")]
+#[cfg(all(feature = "http-full", feature = "compression"))]
 use rama::http::layer::decompression::DecompressionLayer;
 
-#[cfg(feature = "boring")]
+#[cfg(all(feature = "http-full", feature = "boring"))]
 use rama::{net::tls::client::ServerVerifyMode, tls::boring::client as boring_client};
 
-#[cfg(all(feature = "rustls", not(feature = "boring")))]
+#[cfg(all(feature = "http-full", feature = "rustls", not(feature = "boring")))]
 use rama::tls::rustls::client as rustls_client;
 
+#[cfg(feature = "http-full")]
 pub(super) type ClientService<State> = BoxService<State, Request, Response, BoxError>;
 
 /// Runner for examples.
 pub(super) struct ExampleRunner<State = ()> {
     pub(super) server_process: Child,
+    #[cfg(feature = "http-full")]
     pub(super) client: ClientService<State>,
+    #[cfg(not(feature = "http-full"))]
+    _phantom: std::marker::PhantomData<State>,
 }
 
 /// to ensure we only ever register tracing once,
@@ -98,84 +106,97 @@ where
             .spawn()
             .unwrap();
 
-        #[cfg(all(not(feature = "rustls"), not(feature = "boring")))]
-        let inner_client = EasyHttpWebClient::default();
+        #[cfg(not(feature = "http-full"))]
+        {
+            Self {
+                server_process: child,
+                _phantom: std::marker::PhantomData,
+            }
+        }
 
-        #[cfg(feature = "boring")]
-        let inner_client = {
-            let tls_config = boring_client::TlsConnectorDataBuilder::new_http_auto()
-                .with_server_verify_mode(ServerVerifyMode::Disable)
-                .with_store_server_certificate_chain(true)
-                .into_shared_builder();
-            let proxy_tls_config = boring_client::TlsConnectorDataBuilder::new()
-                .with_server_verify_mode(ServerVerifyMode::Disable)
-                .into_shared_builder();
+        #[cfg(feature = "http-full")]
+        {
+            #[cfg(all(not(feature = "rustls"), not(feature = "boring")))]
+            let inner_client = EasyHttpWebClient::default();
 
-            EasyHttpWebClient::builder()
-                .with_default_transport_connector()
-                .with_tls_proxy_support_using_boringssl_config(proxy_tls_config)
-                .with_proxy_support()
-                .with_tls_support_using_boringssl(Some(tls_config))
-                .build()
-        };
+            #[cfg(feature = "boring")]
+            let inner_client = {
+                let tls_config = boring_client::TlsConnectorDataBuilder::new_http_auto()
+                    .with_server_verify_mode(ServerVerifyMode::Disable)
+                    .with_store_server_certificate_chain(true)
+                    .into_shared_builder();
+                let proxy_tls_config = boring_client::TlsConnectorDataBuilder::new()
+                    .with_server_verify_mode(ServerVerifyMode::Disable)
+                    .into_shared_builder();
 
-        #[cfg(all(feature = "rustls", not(feature = "boring")))]
-        let inner_client = {
-            let tls_config = rustls_client::TlsConnectorDataBuilder::new()
-                .with_no_cert_verifier()
-                .with_alpn_protocols_http_auto()
-                .with_env_key_logger()
-                .expect("connector with env keylogger")
-                .with_store_server_certificate_chain(true)
-                .build();
+                EasyHttpWebClient::builder()
+                    .with_default_transport_connector()
+                    .with_tls_proxy_support_using_boringssl_config(proxy_tls_config)
+                    .with_proxy_support()
+                    .with_tls_support_using_boringssl(Some(tls_config))
+                    .build()
+            };
 
-            let proxy_tls_config = rustls_client::TlsConnectorDataBuilder::new()
-                .with_no_cert_verifier()
-                .with_env_key_logger()
-                .expect("connector with env keylogger")
-                .build();
+            #[cfg(all(feature = "rustls", not(feature = "boring")))]
+            let inner_client = {
+                let tls_config = rustls_client::TlsConnectorDataBuilder::new()
+                    .with_no_cert_verifier()
+                    .with_alpn_protocols_http_auto()
+                    .with_env_key_logger()
+                    .expect("connector with env keylogger")
+                    .with_store_server_certificate_chain(true)
+                    .build();
 
-            EasyHttpWebClient::builder()
-                .with_default_transport_connector()
-                .with_tls_proxy_support_using_rustls_config(proxy_tls_config)
-                .with_proxy_support()
-                .with_tls_support_using_rustls(Some(tls_config))
-                .build()
-        };
+                let proxy_tls_config = rustls_client::TlsConnectorDataBuilder::new()
+                    .with_no_cert_verifier()
+                    .with_env_key_logger()
+                    .expect("connector with env keylogger")
+                    .build();
 
-        let client = (
-            MapResultLayer::new(map_internal_client_error),
-            TraceLayer::new_for_http(),
-            #[cfg(feature = "compression")]
-            DecompressionLayer::new(),
-            FollowRedirectLayer::default(),
-            RetryLayer::new(
-                ManagedPolicy::default().with_backoff(
-                    ExponentialBackoff::new(
-                        Duration::from_millis(100),
-                        Duration::from_secs(60),
-                        0.01,
-                        HasherRng::default,
-                    )
-                    .unwrap(),
+                EasyHttpWebClient::builder()
+                    .with_default_transport_connector()
+                    .with_tls_proxy_support_using_rustls_config(proxy_tls_config)
+                    .with_proxy_support()
+                    .with_tls_support_using_rustls(Some(tls_config))
+                    .build()
+            };
+
+            let client = (
+                MapResultLayer::new(map_internal_client_error),
+                TraceLayer::new_for_http(),
+                #[cfg(feature = "compression")]
+                DecompressionLayer::new(),
+                FollowRedirectLayer::default(),
+                RetryLayer::new(
+                    ManagedPolicy::default().with_backoff(
+                        ExponentialBackoff::new(
+                            Duration::from_millis(100),
+                            Duration::from_secs(60),
+                            0.01,
+                            HasherRng::default,
+                        )
+                        .unwrap(),
+                    ),
                 ),
-            ),
-            AddRequiredRequestHeadersLayer::default(),
-            SetProxyAuthHttpHeaderLayer::default(),
-        )
-            .into_layer(inner_client)
-            .boxed();
+                AddRequiredRequestHeadersLayer::default(),
+                SetProxyAuthHttpHeaderLayer::default(),
+            )
+                .into_layer(inner_client)
+                .boxed();
 
-        Self {
-            server_process: child,
-            client,
+            Self {
+                server_process: child,
+                client,
+            }
         }
     }
 
+    #[cfg(feature = "http-full")]
     pub(super) fn set_client(&mut self, client: ClientService<State>) {
         self.client = client;
     }
 
+    #[cfg(feature = "http-full")]
     /// Create a `GET` http request to be sent to the child server.
     pub(super) fn get(
         &self,
@@ -184,6 +205,7 @@ where
         self.client.get(url)
     }
 
+    #[cfg(feature = "http-full")]
     /// Create a `HEAD` http request to be sent to the child server.
     pub(super) fn head(
         &self,
@@ -192,6 +214,7 @@ where
         self.client.head(url)
     }
 
+    #[cfg(feature = "http-full")]
     /// Create a `POST` http request to be sent to the child server.
     pub(super) fn post(
         &self,
@@ -200,6 +223,7 @@ where
         self.client.post(url)
     }
 
+    #[cfg(feature = "http-full")]
     /// Create a `DELETE` http request to be sent to the child server.
     pub(super) fn delete(
         &self,
@@ -208,6 +232,7 @@ where
         self.client.delete(url)
     }
 
+    #[cfg(feature = "http-full")]
     /// Create a websocket builder.
     pub(super) fn websocket(
         &self,
@@ -216,6 +241,7 @@ where
         self.client.websocket(url)
     }
 
+    #[cfg(feature = "http-full")]
     /// Create an h2 websocket builder.
     pub(super) fn websocket_h2(
         &self,
@@ -261,6 +287,7 @@ impl<State> std::ops::Drop for ExampleRunner<State> {
     }
 }
 
+#[cfg(feature = "http-full")]
 fn map_internal_client_error<E, Body>(
     result: Result<Response<Body>, E>,
 ) -> Result<Response, rama::error::BoxError>
