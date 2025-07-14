@@ -7,6 +7,7 @@
 use super::{Policy, PolicyResult, RetryBody};
 use crate::{Request, Response};
 use rama_core::Context;
+use rama_core::telemetry::tracing;
 use rama_utils::backoff::Backoff;
 
 #[derive(Debug, Clone, Default)]

@@ -8,6 +8,7 @@ use hickory_resolver::{
     proto::rr::rdata::{A, AAAA},
 };
 use rama_core::error::{ErrorContext, OpaqueError};
+use rama_core::telemetry::tracing;
 use rama_net::address::Domain;
 use std::{
     net::{Ipv4Addr, Ipv6Addr},
@@ -101,7 +102,9 @@ impl HickoryDns {
         tracing::trace!("try to create HickoryDns resolver using system config");
         Ok(TokioResolver::builder_tokio()
             .context("build async dns resolver with system conf")
-            .inspect_err(|err| tracing::debug!(%err, "failed to create HickoryDns resolver using system config"))?
+            .inspect_err(|err| {
+                tracing::debug!("failed to create HickoryDns resolver using system config: {err:?}")
+            })?
             .build()
             .into())
     }

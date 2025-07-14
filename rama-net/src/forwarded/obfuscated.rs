@@ -270,7 +270,7 @@ mod tests {
             "A",
             "-FoA-F-sdada_321A---",
         ] {
-            let msg = format!("to parse: {}", str);
+            let msg = format!("to parse: {str}");
             assert_eq!(ObfNode::try_from(str.to_owned()).expect(msg.as_str()), str);
             assert_eq!(
                 ObfNode::try_from(str.as_bytes().to_vec()).expect(msg.as_str()),
@@ -325,7 +325,7 @@ mod tests {
             "_A",
             "_-FoA-F-sdada_321A---",
         ] {
-            let msg = format!("to parse: {}", str);
+            let msg = format!("to parse: {str}");
             assert_eq!(ObfPort::try_from(str.to_owned()).expect(msg.as_str()), str);
             assert_eq!(
                 ObfPort::try_from(str.as_bytes().to_vec()).expect(msg.as_str()),

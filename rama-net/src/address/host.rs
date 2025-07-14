@@ -38,6 +38,14 @@ impl Host {
     pub fn is_ipv6(&self) -> bool {
         matches!(self, Host::Address(IpAddr::V4(_)))
     }
+
+    /// Returns [`Host`] as a string, only allocated if we need to render it.
+    pub fn to_str(&self) -> std::borrow::Cow<'_, str> {
+        match self {
+            Host::Name(domain) => domain.as_str().into(),
+            Host::Address(ip_addr) => ip_addr.to_string().into(),
+        }
+    }
 }
 
 impl Host {
@@ -310,15 +318,14 @@ mod tests {
     fn assert_is(host: Host, expected: Is) {
         match expected {
             Is::Domain(domain) => match host {
-                Host::Address(address) => panic!(
-                    "expected host address {} to be the domain: {}",
-                    address, domain
-                ),
+                Host::Address(address) => {
+                    panic!("expected host address {address} to be the domain: {domain}",)
+                }
                 Host::Name(name) => assert_eq!(domain, name),
             },
             Is::Ip(ip) => match host {
                 Host::Address(address) => assert_eq!(ip, address.to_string()),
-                Host::Name(name) => panic!("expected host domain {} to be the ip: {}", name, ip),
+                Host::Name(name) => panic!("expected host domain {name} to be the ip: {ip}"),
             },
         }
     }
@@ -334,7 +341,7 @@ mod tests {
             ("::", Is::Ip("::")),
             ("[::]", Is::Ip("::")),
         ] {
-            let msg = format!("parsing {}", str);
+            let msg = format!("parsing {str}");
             assert_is(Host::try_from(str).expect(msg.as_str()), expected);
             assert_is(
                 Host::try_from(str.to_owned()).expect(msg.as_str()),
@@ -369,7 +376,7 @@ mod tests {
                 Is::Ip("2001:db8:3333:4444:5555:6666:7777:8888"),
             ),
         ] {
-            let msg = format!("parsing {:?}", bytes);
+            let msg = format!("parsing {bytes:?}");
             assert_is(Host::try_from(bytes).expect(msg.as_str()), expected);
             assert_is(
                 Host::try_from(bytes.to_vec()).expect(msg.as_str()),
@@ -406,7 +413,7 @@ mod tests {
             ("[::]", Is::Ip("::")),
             ("19.117.63.126", Is::Ip("19.117.63.126")),
         ] {
-            let msg = format!("parsing {}", str);
+            let msg = format!("parsing {str}");
             assert_is(Host::try_from(str).expect(msg.as_str()), expected);
             assert_is(
                 Host::try_from(str.to_owned()).expect(msg.as_str()),
@@ -438,8 +445,8 @@ mod tests {
             "こんにちは",
             "こんにちは.com",
         ] {
-            assert!(Host::try_from(str).is_err(), "parsing {}", str);
-            assert!(Host::try_from(str.to_owned()).is_err(), "parsing {}", str);
+            assert!(Host::try_from(str).is_err(), "parsing {str}");
+            assert!(Host::try_from(str.to_owned()).is_err(), "parsing {str}");
         }
     }
 

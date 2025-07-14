@@ -29,10 +29,16 @@ pub use super::assert::assert_frame_eq;
 
 // Re-export useful crates
 pub use tokio_test::io as mock_io;
-pub use {futures, http, rama_core::bytes, tokio::io as tokio_io, tracing, tracing_subscriber};
+pub use {futures, tokio::io as tokio_io, tracing_subscriber};
 
 // Re-export primary future types
-pub use futures::{Future, Sink, Stream};
+pub use rama_core::futures::{Future, Sink, Stream};
+
+// Re-export tracing
+pub use rama_core::telemetry::tracing;
+
+// Re-export bytes
+pub use rama_core::bytes;
 
 // And our Future extensions
 pub use super::future_ext::{TestFuture, join, join_all, join3, join4, select, try_join};
@@ -43,7 +49,7 @@ pub use super::client_ext::SendRequestExt;
 // Re-export HTTP types
 pub use rama_core::bytes::{Buf, BufMut, Bytes, BytesMut};
 pub use rama_http_types::{
-    HeaderMap, Method, Request, Response, StatusCode, Version, dep::http::uri,
+    self as http, HeaderMap, Method, Request, Response, StatusCode, Version, dep::http::uri,
 };
 
 pub use tokio::io::{AsyncRead, AsyncWrite};
@@ -56,9 +62,9 @@ pub static MAGIC_PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 // ===== Everything under here shouldn't be used =====
 // TODO: work on deleting this code
 
-use futures::future;
-use futures::future::Either::*;
-pub use futures::future::poll_fn;
+use rama_core::futures::future;
+use rama_core::futures::future::Either::*;
+pub use rama_core::futures::future::poll_fn;
 use std::pin::Pin;
 
 pub trait MockH2 {
@@ -105,7 +111,7 @@ where
                     b.await
                 }
                 Right((v, _)) => v,
-                Left((Err(e), _)) => panic!("err: {:?}", e),
+                Left((Err(e), _)) => panic!("err: {e:?}"),
             }
         })
     }

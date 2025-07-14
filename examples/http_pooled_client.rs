@@ -29,6 +29,7 @@ use rama::{
     },
     rt::Executor,
     tcp::server::TcpListener,
+    telemetry::tracing::{self, level_filters::LevelFilter},
 };
 
 // Everything else we need is provided by the standard library, community crates or tokio.
@@ -39,7 +40,6 @@ use std::sync::{
 };
 use tokio::{sync::oneshot::Sender, sync::oneshot::channel};
 use tokio_test::assert_err;
-use tracing::level_filters::LevelFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, fmt};
@@ -69,7 +69,7 @@ async fn main() {
         .unwrap();
 
     let body = resp.try_into_string().await.unwrap();
-    tracing::info!("body: {:?}", body);
+    tracing::info!("body: {body}");
     assert_eq!(body, "Hello, World!");
 
     // Server has a limit of one total connection. So this request will work if we reuse
@@ -113,14 +113,14 @@ async fn run_server(addr: &str, ready: Sender<()>) {
         .bind(addr)
         .await
         .expect("bind TCP Listener")
-        .serve((LimitLayer::new(FirstConnOnly::new())).layer(http_service));
+        .serve(LimitLayer::new(FirstConnOnly::new()).into_layer(http_service));
 
     ready.send(()).unwrap();
     serve.await;
 }
 
 #[derive(Clone)]
-/// Polify for limit layer that will only allow the first connection to succeed
+/// Policy for limit layer that will only allow the first connection to succeed
 struct FirstConnOnly(Arc<AtomicBool>);
 
 impl FirstConnOnly {

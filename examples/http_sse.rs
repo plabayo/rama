@@ -11,7 +11,7 @@
 //!
 //! # Expected output
 //!
-//! The server will start and listen on `:62027`. You can use `curl` to interact with the service:
+//! The server will start and listen on `:62027`. You open the url in your browser to easily interact:
 //!
 //! ```sh
 //! open http://127.0.0.1:62027
@@ -23,6 +23,7 @@
 use rama::{
     Layer,
     error::{ErrorContext, OpaqueError},
+    futures::async_stream::stream,
     http::{
         headers::LastEventId,
         layer::trace::TraceLayer,
@@ -40,11 +41,10 @@ use rama::{
     net::address::SocketAddress,
     rt::Executor,
     tcp::server::TcpListener,
+    telemetry::tracing::{self, level_filters::LevelFilter},
 };
 
-use async_stream::stream;
 use std::{sync::Arc, time::Duration};
-use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 async fn api_events_endpoint(last_id: Option<TypedHeader<LastEventId>>) -> impl IntoResponse {
@@ -95,11 +95,12 @@ async fn main() {
         .expect("tcp port to be bound");
     let bind_address = listener.local_addr().expect("retrieve bind address");
 
-    tracing::info!(%bind_address, "http's tcp listener ready to serve");
     tracing::info!(
-        "open http://{} in your browser to see the service in action",
-        bind_address
+        network.local.address = %bind_address.ip(),
+        network.local.port = %bind_address.port(),
+        "http's tcp listener ready to serve",
     );
+    tracing::info!("open http://{bind_address} in your browser to see the service in action");
 
     graceful.spawn_task_fn(async |guard| {
         let exec = Executor::graceful(guard.clone());

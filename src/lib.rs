@@ -51,11 +51,11 @@
 //! | ✅ [transports](crate::net::stream) | ✅ [tcp] ⸱ ✅ [udp] ⸱ ✅ [Unix (UDS)][unix] ⸱ ✅ [middleware](crate::net::stream::layer) |
 //! | ✅ [http] | ✅ [auto](crate::http::server::service::HttpServer::auto) ⸱ ✅ [http/1.1](crate::http::server::service::HttpServer::http1) ⸱ ✅ [h2](crate::http::server::service::HttpServer::h2) ⸱ 🏗️ h3 <sup>(2)</sup> ⸱ ✅ [middleware](crate::http::layer) |
 //! | ✅ web server | ✅ [fs](crate::http::service::fs) ⸱ ✅ [redirect](crate::http::service::redirect::Redirect) ⸱ ✅ [router](crate::http::service::web::Router) ⸱ ✅ [dyn router](crate::http::service::web::WebService) ⸱ ✅ [static router](crate::http::service::web::match_service) ⸱ ✅ [handler extractors](crate::http::service::web::extract) ⸱ ✅ [k8s healthcheck](crate::http::service::web::k8s) |
-//! | ✅ [http client](crate::http::client) | ✅ [easy client](crate::http::client::EasyHttpWebClient) ⸱ ✅ [high level API](crate::http::service::client::HttpClientExt) ⸱ ✅ [Proxy Connect](crate::http::client::proxy::layer::HttpProxyConnector) ⸱ ❌ [Chromium Http](https://github.com/plabayo/rama/issues/189) <sup>(3)</sup> |
+//! | ✅ [http client](crate::http::client) | ✅ [easy client](crate::http::client::EasyHttpWebClient) ⸱ ✅ [high level API](crate::http::service::client::HttpClientExt) ⸱ ✅ [BoringSSL Connect](crate::tls::boring::client::TlsConnectorLayer) ⸱ ✅ [Rustls Connect](crate::tls::rustls::client::TlsConnectorLayer) ⸱ ✅ [HTTP Proxy Connect](crate::http::client::proxy::layer::HttpProxyConnector) ⸱ ✅ [Socks5 Proxy Connect](crate::proxy::socks5::Socks5ProxyConnectorLayer) ⸱ ❌ [Chromium Http](https://github.com/plabayo/rama/issues/189) <sup>(3)</sup> |
 //! | ✅ [tls] | ✅ [Rustls](crate::tls::rustls) ⸱ ✅ [BoringSSL](crate::tls::boring) ⸱ ❌ NSS <sup>(3)</sup> |
 //! | ✅ [dns] | ✅ [DNS Resolver][crate::dns::DnsResolver] |
 //! | ✅ [proxy] protocols | ✅ [PROXY protocol](crate::proxy::haproxy) ⸱ ✅ [http proxy](https://github.com/plabayo/rama/blob/main/examples/http_connect_proxy.rs) ⸱ ✅ [https proxy](https://github.com/plabayo/rama/blob/main/examples/https_connect_proxy.rs) ⸱ ✅ [socks5(h) proxy](https://github.com/plabayo/rama/blob/main/examples/socks5_connect_proxy.rs) |
-//! | 🏗️ web protocols | ✅ [SSE](https://ramaproxy.org/docs/rama/http/sse/index.html) ⸱ 🏗️ Web Sockets <sup>(1)</sup> ⸱ ❌ Web Transport <sup>(3)</sup> ⸱ ❌ gRPC <sup>(2)</sup> |
+//! | ✅ web protocols | ✅ [SSE](crate::http::sse) ⸱ ✅ [WS](crate::http::ws) ⸱ ❌ Web Transport <sup>(3)</sup> ⸱ ❌ gRPC <sup>(2)</sup> |
 //! | ✅ [async-method trait](https://blog.rust-lang.org/inside-rust/2023/05/03/stabilizing-async-fn-in-trait.html) services | ✅ [Service] ⸱ ✅ [Layer] ⸱ ✅ [context] ⸱ ✅ [dyn dispatch](crate::service::BoxService) ⸱ ✅ [middleware](crate::layer) |
 //! | ✅ [telemetry] | ✅ [tracing](https://tracing.rs/tracing/) ⸱ ✅ [opentelemetry][telemetry::opentelemetry] ⸱ ✅ [http metrics](crate::http::layer::opentelemetry) ⸱ ✅ [transport metrics](crate::net::stream::layer::opentelemetry) |
 //! | ✅ upstream [proxies](proxy) | ✅ [MemoryProxyDB](crate::proxy::MemoryProxyDB) ⸱ ✅ [Username Config] ⸱ ✅ [Proxy Filters](crate::proxy::ProxyFilter) |
@@ -176,8 +176,10 @@
 //! - [`rama-error`](https://crates.io/crates/rama-error): error utilities for rama and its users
 //! - [`rama-macros`](https://crates.io/crates/rama-macros): contains the procedural macros used by `rama`
 //! - [`rama-utils`](https://crates.io/crates/rama-utils): utilities crate for rama
+//! - [`rama-ws`](https://crates.io/crates/rama-ws): WebSocket (WS) support for rama
 //! - [`rama-core`](https://crates.io/crates/rama-core): core crate containing the service, layer and
 //!   context used by all other `rama` code, as well as some other _core_ utilities
+//! - [`rama-crypto`](https://crates.io/crates/rama-crytpo): rama crypto primitives and dependencies
 //! - [`rama-net`](https://crates.io/crates/rama-net): rama network types and utilities
 //! - [`rama-dns`](https://crates.io/crates/rama-dns): DNS support for rama
 //! - [`rama-unix`](https://crates.io/crates/rama-unix): Unix (domain) socket support for rama
@@ -283,23 +285,22 @@
 //!
 //! ### Datastar
 //!
-//! [![Crates.io](https://img.shields.io/crates/v/datastar.svg)](https://crates.io/crates/datastar)
-//! [![Docs.rs](https://img.shields.io/docsrs/datastar/latest)](https://docs.rs/datastar/latest/datastar/index.html)
+//! > Datastar helps you build reactive web applications with the simplicity of server-side rendering and the power of a full-stack SPA framework.
+//! >
+//! > — <https://data-star.dev/>
 //!
-//! Rama is also supported in the official Rust SDK of [🚀 data-\*](https://data-star.dev).
-//! Learn more about it at <https://ramaproxy.org/book/web_servers.html#datastar> or see it in
-//! action at [datastar > examples > rust > rama](https://github.com/starfederation/datastar/blob/develop/examples/rust/rama/hello-world/src/main.rs):
+//! Rama has built-in support for [🚀 Datastar](https://data-star.dev).
+//! You can see it in action in [Examples](https://github.com/plabayo/rama/tree/main/examples):
 //!
-//! ```plain
-//! async fn hello_world(ReadSignals(signals): ReadSignals<Signals>) -> impl IntoResponse {
-//!     Sse(stream! {
-//!         for i in 0..MESSAGE.len() {
-//!             yield MergeFragments::new(format!("<div id='message'>{}</div>", &MESSAGE[0..i + 1])).into();
-//!             tokio::time::sleep(Duration::from_millis(signals.delay)).await;
-//!         }
-//!     })
-//! }
-//! ```
+//! - [/examples/http_sse_datastar_hello.rs](https://github.com/plabayo/rama/tree/main/examples/http_sse_datastar_hello.rs):
+//!   SSE Example, showcasing a very simple datastar example,
+//!   which is supported by rama both on the client as well as the server side.
+//!
+//! Rama rust docs:
+//!
+//! - SSE support: <https://ramaproxy.org/docs/rama/http/sse/datastar/index.html>
+//! - Extractor support (`ReadSignals`): <https://ramaproxy.org/docs/rama/http/service/web/extract/datastar/index.html>
+//! - Embedded JS Script: <https://ramaproxy.org/docs/rama/http/service/web/response/struct.DatastarScript.html>
 //!
 //! ## 🧑‍💻 | Http Clients
 //!
@@ -363,9 +364,12 @@
 
 #[doc(inline)]
 pub use ::rama_core::{
-    Context, Layer, Service, bytes, combinators, context, error, graceful, inspect, layer, matcher,
-    rt, service, username,
+    Context, Layer, Service, bytes, combinators, context, error, futures, graceful, inspect, layer,
+    matcher, rt, service, username,
 };
+
+#[doc(inline)]
+pub use ::rama_crypto as crypto;
 
 #[cfg(all(unix, feature = "net"))]
 #[doc(inline)]

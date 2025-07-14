@@ -7,11 +7,12 @@ use rama::{
     error::{BoxError, ErrorContext, OpaqueError, error},
     graceful::{self, Shutdown, ShutdownGuard},
     http::{
-        Request, Response,
+        Request, Response, Version,
         client::{
             EasyHttpWebClient,
             proxy::layer::{HttpProxyAddressLayer, SetProxyAuthHttpHeaderLayer},
         },
+        conn::TargetHttpVersion,
         layer::{
             auth::AddAuthorizationLayer,
             decompression::DecompressionLayer,
@@ -25,9 +26,10 @@ use rama::{
     net::{
         address::ProxyAddress,
         tls::{KeyLogIntent, client::ServerVerifyMode},
-        user::ProxyCredential,
+        user::{Basic, Bearer, ProxyCredential},
     },
     rt::Executor,
+    telemetry::tracing::level_filters::LevelFilter,
     tls::boring::client::{EmulateTlsProfileLayer, TlsConnectorDataBuilder},
     ua::{
         emulate::{
@@ -37,11 +39,10 @@ use rama::{
         profile::UserAgentDatabase,
     },
 };
-use std::{io::IsTerminal, sync::Arc, time::Duration};
+
+use std::{io::IsTerminal, str::FromStr, sync::Arc, time::Duration};
 use terminal_prompt::Terminal;
 use tokio::sync::oneshot;
-use tracing::level_filters::LevelFilter;
-use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 use crate::error::ErrorWithExitCode;
 
@@ -141,6 +142,36 @@ pub struct CliCommandHttp {
     /// emulate user agent
     emulate: bool,
 
+    #[arg(long = "http0.9")]
+    /// force http_version to http/0.9
+    ///
+    /// Mutually exclusive with --http1.0, --http1.1, --http2, --http3
+    http_09: bool,
+
+    #[arg(long = "http1.0")]
+    /// force http_version to http/1.0
+    ///
+    /// Mutually exclusive with --http1.0, --http1.1, --http2, --http3
+    http_10: bool,
+
+    #[arg(long = "http1.1")]
+    /// force http_version to http/1.1
+    ///
+    /// Mutually exclusive with --http0.9, --http1.0, --http2, --http3
+    http_11: bool,
+
+    #[arg(long = "http2")]
+    /// force http_version to http/2
+    ///
+    /// Mutually exclusive with --http0.9, --http1.0, --http1.1, --http3
+    http_2: bool,
+
+    #[arg(long = "http3")]
+    /// force http_version to http/3
+    ///
+    /// Mutually exclusive with --http0.9, --http1.0, --http1.1, --http2
+    http_3: bool,
+
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     /// positional arguments to populate request headers and body
     ///
@@ -203,25 +234,15 @@ pub struct CliCommandHttp {
 
 /// Run the HTTP client command.
 pub async fn run(cfg: CliCommandHttp) -> Result<(), BoxError> {
-    tracing_subscriber::registry()
-        .with(fmt::layer())
-        .with(
-            EnvFilter::builder()
-                .with_default_directive(
-                    if cfg.debug {
-                        if cfg.verbose {
-                            LevelFilter::TRACE
-                        } else {
-                            LevelFilter::DEBUG
-                        }
-                    } else {
-                        LevelFilter::ERROR
-                    }
-                    .into(),
-                )
-                .from_env_lossy(),
-        )
-        .init();
+    crate::trace::init_tracing(if cfg.debug {
+        if cfg.verbose {
+            LevelFilter::TRACE
+        } else {
+            LevelFilter::DEBUG
+        }
+    } else {
+        LevelFilter::ERROR
+    });
 
     let (tx, rx) = oneshot::channel();
     let (tx_final, rx_final) = oneshot::channel();
@@ -270,8 +291,32 @@ async fn run_inner(guard: ShutdownGuard, cfg: CliCommandHttp) -> Result<(), BoxE
     let request = request_args_builder.build()?;
 
     let client = create_client(guard, cfg.clone()).await?;
+    let mut ctx = Context::default();
 
-    let response = client.serve(Context::default(), request).await?;
+    let forced_version = match (
+        cfg.http_09,
+        cfg.http_10,
+        cfg.http_11,
+        cfg.http_2,
+        cfg.http_3,
+    ) {
+        (true, false, false, false, false) => Some(TargetHttpVersion(Version::HTTP_09)),
+        (false, true, false, false, false) => Some(TargetHttpVersion(Version::HTTP_10)),
+        (false, false, true, false, false) => Some(TargetHttpVersion(Version::HTTP_11)),
+        (false, false, false, true, false) => Some(TargetHttpVersion(Version::HTTP_2)),
+        (false, false, false, false, true) => Some(TargetHttpVersion(Version::HTTP_3)),
+        (false, false, false, false, false) => None,
+        _ => Err(OpaqueError::from_display(
+            "--http0.9, --http1.0, --http1.1, --http2, --http3 are mutually exclusive",
+        )
+        .into_boxed())?,
+    };
+
+    if let Some(forced_version) = forced_version {
+        ctx.insert(forced_version);
+    }
+
+    let response = client.serve(ctx, request).await?;
 
     if cfg.check_status {
         let status = response.status();
@@ -395,24 +440,25 @@ where
         DecompressionLayer::new(),
         cfg.auth
             .as_deref()
-            .map(|auth| {
-                let auth = auth.trim().trim_end_matches(':');
-                match cfg.auth_type.trim().to_lowercase().as_str() {
-                    "basic" => match auth.split_once(':') {
-                        Some((user, pass)) => AddAuthorizationLayer::basic(user, pass),
-                        None => {
-                            let mut terminal =
-                                Terminal::open().expect("open terminal for password prompting");
-                            let password = terminal
-                                .prompt_sensitive("password: ")
-                                .expect("prompt password from terminal");
-                            AddAuthorizationLayer::basic(auth, password.as_str())
-                        }
-                    },
-                    "bearer" => AddAuthorizationLayer::bearer(auth),
-                    unknown => panic!("unknown auth type: {} (known: basic, bearer)", unknown),
+            .map(|auth| match cfg.auth_type.trim().to_lowercase().as_str() {
+                "basic" => {
+                    let mut basic = Basic::from_str(auth).context("parse basic str")?;
+                    if auth.ends_with(':') && basic.password().is_empty() {
+                        let mut terminal =
+                            Terminal::open().context("open terminal for password prompting")?;
+                        let password = terminal
+                            .prompt_sensitive("password: ")
+                            .context("prompt password from terminal")?;
+                        basic.set_password(password);
+                    }
+                    Ok::<_, OpaqueError>(AddAuthorizationLayer::new(basic).as_sensitive(true))
                 }
+                "bearer" => Ok(AddAuthorizationLayer::new(
+                    Bearer::try_from(auth).context("parse bearer str")?,
+                )),
+                unknown => panic!("unknown auth type: {unknown} (known: basic, bearer)"),
             })
+            .transpose()?
             .unwrap_or_else(AddAuthorizationLayer::none),
         AddRequiredRequestHeadersLayer::default(),
         match cfg.proxy {
@@ -421,8 +467,11 @@ where
                 let mut proxy_address: ProxyAddress =
                     proxy.parse().context("parse proxy address")?;
                 if let Some(proxy_user) = cfg.proxy_user {
-                    let credential = ProxyCredential::try_from_clear_str(proxy_user)
-                        .context("parse proxy credentials")?;
+                    let credential = ProxyCredential::Basic(
+                        proxy_user
+                            .parse()
+                            .context("parse basic proxy credentials")?,
+                    );
                     proxy_address.credential = Some(credential);
                 }
                 HttpProxyAddressLayer::maybe(Some(proxy_address))

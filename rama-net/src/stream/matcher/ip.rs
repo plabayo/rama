@@ -206,10 +206,7 @@ mod test {
             ctx.insert(SocketInfo::new(None, addr));
             assert!(
                 matcher.matches(None, &ctx, &req),
-                "valid ipv4 subnets => {} >=? {} ({})",
-                SUBNET_IPV4,
-                addr,
-                subnet
+                "valid ipv4 subnets => {SUBNET_IPV4} >=? {addr} ({subnet})",
             );
         }
 
@@ -220,10 +217,7 @@ mod test {
             ctx.insert(SocketInfo::new(None, addr));
             assert!(
                 matcher.matches(None, &ctx, &req),
-                "valid ipv6 subnets => {} >=? {} ({})",
-                SUBNET_IPV6,
-                addr,
-                subnet
+                "valid ipv6 subnets => {SUBNET_IPV6} >=? {addr} ({subnet})",
             );
         }
 
@@ -234,10 +228,7 @@ mod test {
             ctx.insert(SocketInfo::new(None, addr));
             assert!(
                 !matcher.matches(None, &ctx, &req),
-                "invalid ipv4 subnets => {} >=? {} ({})",
-                SUBNET_IPV4,
-                addr,
-                subnet
+                "invalid ipv4 subnets => {SUBNET_IPV4} >=? {addr} ({subnet})",
             );
         }
 
@@ -248,10 +239,7 @@ mod test {
             ctx.insert(SocketInfo::new(None, addr));
             assert!(
                 !matcher.matches(None, &ctx, &req),
-                "invalid ipv6 subnets => {} >=? {} ({})",
-                SUBNET_IPV6,
-                addr,
-                subnet
+                "invalid ipv6 subnets => {SUBNET_IPV6} >=? {addr} ({subnet})",
             );
         }
     }
@@ -308,10 +296,7 @@ mod test {
             socket.peer_addr = Some(addr);
             assert!(
                 matcher.matches(None, &ctx, &socket),
-                "valid ipv4 subnets => {} >=? {} ({})",
-                SUBNET_IPV4,
-                addr,
-                subnet
+                "valid ipv4 subnets => {SUBNET_IPV4} >=? {addr} ({subnet})",
             );
         }
 
@@ -322,10 +307,7 @@ mod test {
             socket.peer_addr = Some(addr);
             assert!(
                 matcher.matches(None, &ctx, &socket),
-                "valid ipv6 subnets => {} >=? {} ({})",
-                SUBNET_IPV6,
-                addr,
-                subnet
+                "valid ipv6 subnets => {SUBNET_IPV6} >=? {addr} ({subnet})",
             );
         }
 
@@ -336,10 +318,7 @@ mod test {
             socket.peer_addr = Some(addr);
             assert!(
                 !matcher.matches(None, &ctx, &socket),
-                "invalid ipv4 subnets => {} >=? {} ({})",
-                SUBNET_IPV4,
-                addr,
-                subnet
+                "invalid ipv4 subnets => {SUBNET_IPV4} >=? {addr} ({subnet})",
             );
         }
 
@@ -350,10 +329,7 @@ mod test {
             socket.peer_addr = Some(addr);
             assert!(
                 !matcher.matches(None, &ctx, &socket),
-                "invalid ipv6 subnets => {} >=? {} ({})",
-                SUBNET_IPV6,
-                addr,
-                subnet
+                "invalid ipv6 subnets => {SUBNET_IPV6} >=? {addr} ({subnet})",
             );
         }
     }

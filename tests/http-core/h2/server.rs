@@ -1,7 +1,7 @@
 #![deny(warnings)]
 
-use futures::StreamExt;
 use h2_support::prelude::*;
+use rama_core::futures::StreamExt;
 use tokio::io::AsyncWriteExt;
 
 const SETTINGS: &[u8] = &[0, 0, 0, 4, 0, 0, 0, 0, 0];
@@ -858,7 +858,7 @@ async fn too_big_headers_sends_431() {
             .expect("handshake");
 
         let req = srv.next().await;
-        assert!(req.is_none(), "req is {:?}", req);
+        assert!(req.is_none(), "req is {req:?}");
     };
 
     join(client, srv).await;
@@ -894,7 +894,7 @@ async fn too_big_headers_sends_reset_after_431_if_not_eos() {
             .expect("handshake");
 
         let req = srv.next().await;
-        assert!(req.is_none(), "req is {:?}", req);
+        assert!(req.is_none(), "req is {req:?}");
     };
 
     join(client, srv).await;

@@ -9,6 +9,7 @@
 - [Http Clients](./http_clients.md)
 - [Transport Protocols](./transport.md)
 - [Server-Sent Events (SSE)](./sse.md)
+- [WebSockets (WS)](./ws.md)
 
 # Rama 101
 

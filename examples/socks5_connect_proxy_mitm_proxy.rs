@@ -43,10 +43,12 @@ use rama::{
         client::ServerVerifyMode,
         server::{SelfSignedData, ServerAuth, ServerConfig, TlsPeekRouter},
     },
-    proxy::socks5::{Socks5Acceptor, Socks5Auth, server::LazyConnector},
+    net::user::Basic,
+    proxy::socks5::{Socks5Acceptor, server::LazyConnector},
     rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
+    telemetry::tracing::{self, level_filters::LevelFilter},
     tls::boring::{
         client::TlsConnectorDataBuilder,
         server::{TlsAcceptorData, TlsAcceptorLayer},
@@ -54,7 +56,6 @@ use rama::{
 };
 
 use std::{convert::Infallible, time::Duration};
-use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 type State = ();
@@ -89,7 +90,7 @@ async fn main() {
         .await
         .expect("bind proxy to 127.0.0.1:62022");
     let socks5_acceptor = Socks5Acceptor::new()
-        .with_auth(Socks5Auth::username_password("john", "secret"))
+        .with_authorizer(Basic::new_static("john", "secret").into_authorizer())
         .with_connector(LazyConnector::new(auto_https_service));
     graceful.spawn_task_fn(|guard| tcp_service.serve_graceful(guard, socks5_acceptor));
 
@@ -155,7 +156,7 @@ async fn http_mitm_proxy(ctx: Context, req: Request) -> Result<Response, Infalli
     match client.serve(ctx, req).await {
         Ok(resp) => Ok(resp),
         Err(err) => {
-            tracing::error!(error = ?err, "error in client request");
+            tracing::error!("error in client request: {err:?}");
             Ok(Response::builder()
                 .status(StatusCode::INTERNAL_SERVER_ERROR)
                 .body(Body::empty())

@@ -5,4 +5,6 @@ pub use pseudo_header::{
     InvalidPseudoHeaderStr, PseudoHeader, PseudoHeaderOrder, PseudoHeaderOrderIter,
 };
 
+pub mod ext;
 pub mod frame;
+pub mod hpack;

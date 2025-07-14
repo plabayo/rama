@@ -8,31 +8,30 @@ use std::{
 
 use futures_channel::mpsc::{Receiver, Sender};
 use futures_channel::{mpsc, oneshot};
-use futures_core::{FusedFuture, FusedStream, Stream};
 use pin_project_lite::pin_project;
-use rama_core::{bytes::Bytes, combinators::Either, telemetry::opentelemetry};
-use rama_core::{error::BoxError, telemetry::opentelemetry::trace::get_active_span};
-use rama_core::{rt::Executor, telemetry::opentelemetry::tracing::OpenTelemetrySpanExt};
+use rama_core::futures::{Stream, stream::FusedStream};
+use rama_core::rt::Executor;
+use rama_core::telemetry::tracing::{Instrument, debug, trace, trace_root_span, warn};
+use rama_core::{bytes::Bytes, combinators::Either};
+use rama_core::{error::BoxError, futures::future::FusedFuture};
+use rama_http::io::upgrade::{self, Upgraded};
 use rama_http_types::{
     Method, Request, Response, StatusCode, Version, dep::http_body,
     opentelemetry::version_as_protocol_version, proto::h2::frame::SettingOrder,
 };
 use std::task::ready;
 use tokio::io::{AsyncRead, AsyncWrite};
-use tracing::{Instrument, debug, trace, warn};
 
 use super::ping::{Ponger, Recorder};
 use super::{H2Upgraded, PipeToSendStream, SendBuf, ping};
 use crate::body::{Body, Incoming as IncomingBody};
 use crate::client::dispatch::{Callback, SendWhen, TrySendError};
-use crate::ext::Protocol;
 use crate::h2::SendStream;
 use crate::h2::client::ResponseFuture;
 use crate::h2::client::{Builder, Connection, SendRequest};
 use crate::headers;
 use crate::proto::Dispatched;
 use crate::proto::h2::UpgradedSendStream;
-use crate::upgrade::Upgraded;
 
 type ClientRx<B> = crate::client::dispatch::Receiver<Request<B>, Response<IncomingBody>>;
 
@@ -80,7 +79,7 @@ pub(crate) struct Config {
     pub(crate) max_concurrent_streams: Option<u32>,
     pub(crate) enable_push: bool,
     pub(crate) enable_connect_protocol: Option<u32>,
-    pub(crate) unknown_setting_9: Option<u32>,
+    pub(crate) no_rfc7540_priorities: Option<u32>,
     pub(crate) setting_order: Option<SettingOrder>,
 }
 
@@ -103,7 +102,7 @@ impl Default for Config {
             max_concurrent_streams: None,
             enable_push: false,
             enable_connect_protocol: None,
-            unknown_setting_9: None,
+            no_rfc7540_priorities: None,
             setting_order: None,
         }
     }
@@ -136,8 +135,8 @@ pub(crate) fn new_builder(config: &Config) -> Builder {
     if let Some(connect_protocol) = config.enable_connect_protocol {
         builder.enable_connect_protocol(connect_protocol);
     }
-    if let Some(unknown_setting_9) = config.unknown_setting_9 {
-        builder.unknown_setting_9(unknown_setting_9);
+    if let Some(no_rfc7540_priorities) = config.no_rfc7540_priorities {
+        builder.set_no_rfc7540_priorities(no_rfc7540_priorities);
     }
     if let Some(setting_order) = config.setting_order.clone() {
         builder.setting_order(setting_order);
@@ -211,14 +210,12 @@ where
         is_terminated: false,
     };
 
-    let task_span = tracing::trace_span!(
+    let task_span = trace_root_span!(
         "h2::task",
         otel.kind = "client",
         network.protocol.name = "http",
         network.protocol.version = version_as_protocol_version(Version::HTTP_2),
     );
-    task_span.set_parent(opentelemetry::Context::new());
-    task_span.add_link(get_active_span(|span| span.span_context().clone()));
 
     exec.spawn_task(
         H2ClientFuture::Task {
@@ -333,7 +330,7 @@ where
             *this.is_terminated = true;
         }
         polled.map_err(|_e| {
-            debug!(error = %_e, "connection error");
+            debug!("connection error: {_e:?}");
         })
     }
 }
@@ -536,7 +533,7 @@ where
         match Pin::new(&mut this.pipe).poll(cx) {
             Poll::Ready(result) => {
                 if let Err(_e) = result {
-                    debug!("client request body error: {}", _e);
+                    debug!("client request body error: {_e:?}");
                 }
                 drop(this.conn_drop_ref.take().expect("Future polled twice"));
                 drop(this.ping.take().expect("Future polled twice"));
@@ -577,14 +574,12 @@ where
                             ping: Some(ping),
                         };
 
-                        let pipe_span = tracing::trace_span!(
+                        let pipe_span = trace_root_span!(
                             "h2::pipe",
                             otel.kind = "client",
                             network.protocol.name = "http",
                             network.protocol.version = version_as_protocol_version(Version::HTTP_2),
                         );
-                        pipe_span.set_parent(opentelemetry::Context::new());
-                        pipe_span.add_link(get_active_span(|span| span.span_context().clone()));
 
                         // Clear send task
                         let fut: H2ClientFuture<_, T> = H2ClientFuture::Pipe { pipe };
@@ -598,14 +593,12 @@ where
             Some(f.body_tx)
         };
 
-        let send_span = tracing::trace_span!(
+        let send_span = trace_root_span!(
             "h2::send",
             otel.kind = "client",
             network.protocol.name = "http",
             network.protocol.version = version_as_protocol_version(Version::HTTP_2),
         );
-        send_span.set_parent(opentelemetry::Context::new());
-        send_span.add_link(get_active_span(|span| span.span_context().clone()));
 
         let fut: H2ClientFuture<_, T> = H2ClientFuture::Send {
             send_when: SendWhen {
@@ -674,7 +667,7 @@ where
                     let (parts, recv_stream) = res.into_parts();
                     let mut res = Response::from_parts(parts, IncomingBody::empty());
 
-                    let (pending, on_upgrade) = crate::upgrade::pending();
+                    let (pending, on_upgrade) = upgrade::pending();
                     let io = H2Upgraded {
                         ping,
                         send_stream: unsafe { UpgradedSendStream::new(send_stream) },
@@ -698,7 +691,7 @@ where
             Err(err) => {
                 ping.ensure_not_timed_out().map_err(|e| (e, None))?;
 
-                debug!("client response error: {}", err);
+                debug!("client response error: {err:?}");
                 Poll::Ready(Err((crate::Error::new_h2(err), None::<Request<B>>)))
             }
         }
@@ -744,10 +737,10 @@ where
                     let (head, body) = req.into_parts();
                     let mut req = Request::from_parts(head, ());
                     super::strip_connection_headers(req.headers_mut(), true);
-                    if let Some(len) = body.size_hint().exact() {
-                        if len != 0 || headers::method_has_defined_payload_semantics(req.method()) {
-                            headers::set_content_length_if_missing(req.headers_mut(), len);
-                        }
+                    if let Some(len) = body.size_hint().exact()
+                        && (len != 0 || headers::method_has_defined_payload_semantics(req.method()))
+                    {
+                        headers::set_content_length_if_missing(req.headers_mut(), len);
                     }
 
                     let is_connect = req.method() == Method::CONNECT;
@@ -763,10 +756,6 @@ where
                             message: None,
                         }));
                         continue;
-                    }
-
-                    if let Some(protocol) = req.extensions_mut().remove::<Protocol>() {
-                        req.extensions_mut().insert(protocol.into_inner());
                     }
 
                     let (fut, body_tx) = match self.h2_tx.send_request(req, !is_connect && eos) {

@@ -1,13 +1,13 @@
-use std::sync::Arc;
-
 use rama_core::Context;
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 use crate::{
     PlatformKind, UserAgentKind,
     profile::{UserAgentDatabase, UserAgentProfile, UserAgentRuntimeProfile},
 };
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 /// Extra information about the selected user agent profile,
 /// which isn't already injected. E.g. http and tls information
 /// is already injected separately.

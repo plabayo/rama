@@ -31,7 +31,7 @@ where
                 parts
                     .status
                     .canonical_reason()
-                    .map(|r| format!(" {}", r))
+                    .map(|r| format!(" {r}"))
                     .unwrap_or_default(),
             )
             .as_bytes(),
@@ -55,7 +55,7 @@ where
                                 parts
                                     .status
                                     .canonical_reason()
-                                    .map(|r| format!(" {}", r))
+                                    .map(|r| format!(" {r}"))
                                     .unwrap_or_default(),
                             )
                             .as_bytes(),

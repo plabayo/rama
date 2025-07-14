@@ -292,6 +292,18 @@ impl<S> Context<S> {
         &self.executor
     }
 
+    /// Set a new [`Executor`] to the [`Context`].
+    pub fn set_executor(&mut self, exec: Executor) -> &mut Self {
+        self.executor = exec;
+        self
+    }
+
+    /// Set a new [`Executor`] to the [`Context`].
+    pub fn with_executor(mut self, exec: Executor) -> Self {
+        self.executor = exec;
+        self
+    }
+
     /// Spawn a future on the current executor,
     /// this is spawned gracefully in case a shutdown guard has been registered.
     pub fn spawn<F>(&self, future: F) -> JoinHandle<F::Output>

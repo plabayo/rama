@@ -1,4 +1,4 @@
-use futures::{FutureExt, StreamExt, pin_mut};
+use rama_core::futures::{FutureExt, StreamExt, pin_mut};
 
 use h2_support::DEFAULT_WINDOW_SIZE;
 use h2_support::prelude::*;
@@ -30,7 +30,7 @@ async fn single_stream_send_large_body() {
 
     let (mut client, mut h2) = client::handshake(mock).await.unwrap();
 
-    let waker = futures::task::noop_waker();
+    let waker = rama_core::futures::task::noop_waker();
     let mut cx = Context::from_waker(&waker);
     // Poll h2 once to get notifications
     loop {
@@ -160,7 +160,7 @@ async fn single_stream_send_extra_large_body_multi_frames_one_buffer() {
 
     let (mut client, mut h2) = client::handshake(mock).await.unwrap();
 
-    let waker = futures::task::noop_waker();
+    let waker = rama_core::futures::task::noop_waker();
     let mut cx = Context::from_waker(&waker);
     // Poll h2 once to get notifications
     loop {
@@ -243,7 +243,7 @@ async fn single_stream_send_body_greater_than_default_window() {
 
     let (mut client, mut h2) = client::handshake(mock).await.unwrap();
 
-    let waker = futures::task::noop_waker();
+    let waker = rama_core::futures::task::noop_waker();
     let mut cx = Context::from_waker(&waker);
     // Poll h2 once to get notifications
     loop {

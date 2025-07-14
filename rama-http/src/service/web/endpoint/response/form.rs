@@ -6,6 +6,7 @@ use crate::Response;
 use crate::dep::http::StatusCode;
 use crate::headers::ContentType;
 use rama_core::error::OpaqueError;
+use rama_core::telemetry::tracing;
 use rama_utils::macros::impl_deref;
 use serde::Serialize;
 
@@ -96,7 +97,7 @@ where
                     (Headers::single(ContentType::form_url_encoded()), body).into_response()
                 }
                 Err(err) => {
-                    tracing::error!(error = %err, "response error");
+                    tracing::error!("response error: {err:?}");
                     StatusCode::INTERNAL_SERVER_ERROR.into_response()
                 }
             }

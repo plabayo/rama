@@ -19,8 +19,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
 const_format = { workspace = true }
-futures-core = { workspace = true }
-futures-lite = { workspace = true }
+fnv = { workspace = true }
 http = { workspace = true }
 http-body = { workspace = true }
 http-body-util = { workspace = true }
@@ -40,10 +39,12 @@ smallvec = { workspace = true }
 smol_str = { workspace = true }
 sync_wrapper = { workspace = true }
 tokio = { workspace = true, features = ["macros", "io-std"] }
-tracing = { workspace = true }
 
 [dev-dependencies]
 futures = { workspace = true }
+hex = { workspace = true }
+quickcheck = { workspace = true }
+rand = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tokio-test = { workspace = true }
 

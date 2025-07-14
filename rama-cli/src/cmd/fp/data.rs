@@ -4,13 +4,10 @@ use rama::{
     error::{BoxError, ErrorContext, OpaqueError},
     http::{
         self, HeaderMap, HeaderName, Request,
-        conn::LastPeerPriorityParams,
+        core::h2::frame::EarlyFrameCapture,
         dep::http::{Extensions, request::Parts},
         headers::forwarded::Forwarded,
-        proto::{
-            h1::Http1HeaderMap,
-            h2::{PseudoHeaderOrder, frame::InitialPeerSettings},
-        },
+        proto::{h1::Http1HeaderMap, h2::PseudoHeaderOrder},
     },
     net::{
         fingerprint::{Ja3, Ja4, Ja4H, PeetPrint},
@@ -21,6 +18,7 @@ use rama::{
             client::{ClientHello, ClientHelloExtension, ECHClientHello},
         },
     },
+    telemetry::tracing,
     ua::{
         UserAgent,
         profile::{Http1Settings, Http2Settings},
@@ -94,6 +92,7 @@ pub(super) enum Initiator {
     Fetch,
     XMLHttpRequest,
     Form,
+    Ws,
 }
 
 impl std::fmt::Display for Initiator {
@@ -103,6 +102,7 @@ impl std::fmt::Display for Initiator {
             Self::Fetch => write!(f, "fetch"),
             Self::XMLHttpRequest => write!(f, "xmlhttprequest"),
             Self::Form => write!(f, "form"),
+            Self::Ws => write!(f, "ws"),
         }
     }
 }
@@ -203,7 +203,7 @@ pub(super) struct Ja4HInfo {
 
 pub(super) fn get_ja4h_info<B>(req: &Request<B>) -> Option<Ja4HInfo> {
     Ja4H::compute(req)
-        .inspect_err(|err| tracing::error!(?err, "ja4h compute failure"))
+        .inspect_err(|err| tracing::error!("ja4h compute failure: {err:?}"))
         .ok()
         .map(|ja4h| Ja4HInfo {
             hash: format!("{ja4h}"),
@@ -230,12 +230,7 @@ pub(super) async fn get_and_store_http_info(
     let h2_settings = match http_version {
         http::Version::HTTP_2 => Some(Http2Settings {
             http_pseudo_headers: ext.get::<PseudoHeaderOrder>().cloned(),
-            initial_config: ext
-                .get::<InitialPeerSettings>()
-                .map(|p| p.0.as_ref().clone()),
-            priority_header: ext
-                .get::<LastPeerPriorityParams>()
-                .map(|p| p.0.dependency.clone()),
+            early_frames: ext.get::<EarlyFrameCapture>().cloned(),
         }),
         _ => None,
     };
@@ -270,9 +265,9 @@ pub(super) async fn get_and_store_http_info(
                             });
 
                             tracing::debug!(
-                                "Custom header marker found: {}, title-cased: {}",
-                                header_str,
-                                title_case_headers
+                                http.header.name = %header_str,
+                                http.header.title_cased = %title_case_headers,
+                                "Custom header marker found",
                             );
 
                             storage
@@ -295,6 +290,12 @@ pub(super) async fn get_and_store_http_info(
                             .store_h1_headers_form(ua, auth, original_headers.clone())
                             .await
                             .context("store h1 headers form")?;
+                    }
+                    Initiator::Ws => {
+                        storage
+                            .store_h1_headers_ws(ua, auth, original_headers.clone())
+                            .await
+                            .context("store h1 headers ws")?;
                     }
                 }
             }
@@ -329,6 +330,12 @@ pub(super) async fn get_and_store_http_info(
                             .store_h2_headers_form(ua, auth, original_headers.clone())
                             .await
                             .context("store h2 headers form")?;
+                    }
+                    Initiator::Ws => {
+                        storage
+                            .store_h2_headers_ws(ua, auth, original_headers.clone())
+                            .await
+                            .context("store h2 headers ws")?;
                     }
                 }
             }

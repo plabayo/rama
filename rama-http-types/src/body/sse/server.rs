@@ -1,11 +1,12 @@
 //! SSE types for servers.
 
 use crate::dep::http_body::{Body, Frame};
-use futures_core::Stream;
 use pin_project_lite::pin_project;
 use rama_core::bytes::Bytes;
+use rama_core::futures::Stream;
 use rama_error::{BoxError, ErrorContext, OpaqueError};
 use rama_utils::macros::generate_set_and_with;
+use smol_str::SmolStr;
 use std::{
     pin::Pin,
     task::{Context, Poll, ready},
@@ -26,7 +27,7 @@ pin_project! {
 impl<S> SseResponseBody<S> {
     /// Create a new `SseBody` from a [`Stream`].
     ///
-    /// [`Stream`]: https://docs.rs/futures-core/latest/futures_core/stream/trait.Stream.html
+    /// [`Stream`]: https://docs.rs/futures/latest/futures/stream/trait.Stream.html
     pub fn new<T, E>(stream: S) -> Self
     where
         S: Stream<Item = Result<Event<T>, E>>,
@@ -96,7 +97,7 @@ impl<T: EventDataWrite> KeepAlive<T> {
         /// Customize the text of the keep-alive message.
         ///
         /// Default is an empty comment.
-        pub fn text(mut self, text: impl AsRef<str>) -> Result<Self, OpaqueError>
+        pub fn text(mut self, text: impl Into<SmolStr>) -> Result<Self, OpaqueError>
         {
             self.event = Event::default().try_with_comment(text).context("build default event with comment")?;
             Ok(self)

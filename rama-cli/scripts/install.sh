@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Fetch the latest release information
-tag=$(jq -r 'map(select(.prerelease)) | first | .tag_name' <<< $(curl --silent https://api.github.com/repos/plabayo/rama/releases))
+tag=$(jq -r 'map(select(.prerelease|not)) | first | .tag_name' <<< $(curl --silent https://api.github.com/repos/plabayo/rama/releases))
 version=${tag#v}
 
 # Get system architecture and OS

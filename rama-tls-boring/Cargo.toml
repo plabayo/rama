@@ -33,11 +33,11 @@ pin-project-lite = { workspace = true }
 rama-boring = { workspace = true }
 rama-boring-tokio = { workspace = true }
 rama-core = { workspace = true }
+rama-http-types = { workspace = true }
 rama-net = { workspace = true, features = ["http", "tls"] }
 rama-ua = { workspace = true, optional = true, features = ["tls"] }
 rama-utils = { workspace = true }
 tokio = { workspace = true, features = ["macros", "io-std"] }
-tracing = { workspace = true }
 zstd = { workspace = true, optional = true }
 
 [dev-dependencies]

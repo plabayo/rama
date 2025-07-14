@@ -21,12 +21,12 @@ rustdoc-args = ["--cfg", "docsrs"]
 default = []
 http = ["dep:rama-http-types", "dep:sha2", "dep:itertools", "dep:hex"]
 tls = ["dep:hex", "dep:md5", "dep:sha2", "dep:itertools"]
+opentelemetry = ["rama-core/opentelemetry"]
 
 [dependencies]
 base64 = { workspace = true }
 const_format = { workspace = true }
 flume = { workspace = true, features = ["async"] }
-futures-lite = { workspace = true }
 hex = { workspace = true, optional = true }
 ipnet = { workspace = true }
 itertools = { workspace = true, optional = true }
@@ -45,7 +45,6 @@ sha2 = { workspace = true, optional = true }
 smol_str = { workspace = true }
 socket2 = { workspace = true, features = ["all"] }
 tokio = { workspace = true, features = ["macros", "fs", "io-std", "io-util", "net"] }
-tracing = { workspace = true }
 venndb = { workspace = true, optional = true }
 
 [dev-dependencies]

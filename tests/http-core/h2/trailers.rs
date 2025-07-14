@@ -1,5 +1,5 @@
-use futures::StreamExt;
 use h2_support::prelude::*;
+use rama_core::futures::StreamExt;
 use rama_http::HeaderName;
 use rama_http::proto::h1::headers::original::OriginalHttp1Headers;
 

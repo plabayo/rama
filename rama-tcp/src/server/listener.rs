@@ -4,9 +4,7 @@ use rama_core::error::BoxError;
 use rama_core::error::ErrorContext;
 use rama_core::graceful::ShutdownGuard;
 use rama_core::rt::Executor;
-use rama_core::telemetry::opentelemetry;
-use rama_core::telemetry::opentelemetry::trace::get_active_span;
-use rama_core::telemetry::opentelemetry::tracing::OpenTelemetrySpanExt;
+use rama_core::telemetry::tracing::{self, Instrument, trace_root_span};
 use rama_net::address::SocketAddress;
 use rama_net::socket::Interface;
 use rama_net::stream::SocketInfo;
@@ -15,7 +13,6 @@ use std::pin::pin;
 use std::sync::Arc;
 use std::{io, net::SocketAddr};
 use tokio::net::TcpListener as TokioTcpListener;
-use tracing::Instrument;
 
 #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
 use rama_net::socket::{DeviceName, SocketOptions};
@@ -148,6 +145,9 @@ where
             }
             .try_build_socket()
             .context("create tcp ipv4 socket attached to device")?;
+            socket
+                .listen(4096)
+                .context("mark the socket as ready to accept incoming connection requests")?;
             bind_socket_internal(self.state, socket)
         })
         .await
@@ -169,6 +169,9 @@ where
                 let socket = opts
                     .try_build_socket()
                     .context("build socket from options")?;
+                socket
+                    .listen(4096)
+                    .context("mark the socket as ready to accept incoming connection requests")?;
                 self.bind_socket(socket).await
             }
         }
@@ -382,7 +385,7 @@ where
                 .map(Into::into)
                 .unwrap_or_else(|| SocketAddress::default_ipv4(0));
 
-            let span = tracing::trace_span!(
+            let span = trace_root_span!(
                 "tcp::serve",
                 otel.kind = "server",
                 network.local.port = %trace_local_addr.port(),
@@ -391,8 +394,6 @@ where
                 network.peer.address = %peer_addr.ip(),
                 network.protocol.name = "tcp",
             );
-            span.set_parent(opentelemetry::Context::new());
-            span.add_link(get_active_span(|span| span.span_context().clone()));
 
             tokio::spawn(
                 async move {
@@ -435,7 +436,7 @@ where
                                 .map(Into::into)
                                 .unwrap_or_else(|| SocketAddress::default_ipv4(0));
 
-                            let span = tracing::trace_span!(
+                            let span = trace_root_span!(
                                 "tcp::serve_graceful",
                                 otel.kind = "server",
                                 network.local.port = %trace_local_addr.port(),
@@ -444,8 +445,6 @@ where
                                 network.peer.address = %peer_addr.ip(),
                                 network.protocol.name = "tcp",
                             );
-                            span.set_parent(opentelemetry::Context::new());
-                            span.add_link(get_active_span(|span| span.span_context().clone()));
 
                             guard.spawn_task(async move {
                                 ctx.insert(SocketInfo::new(local_addr, peer_addr));
@@ -464,10 +463,7 @@ where
 
 async fn handle_accept_err(err: io::Error) {
     if rama_net::conn::is_connection_error(&err) {
-        tracing::trace!(
-            error = &err as &dyn std::error::Error,
-            "TCP accept error: connect error"
-        );
+        tracing::trace!("TCP accept error: connect error: {err:?}");
     } else {
         // [From `hyper::Server` in 0.14](https://github.com/hyperium/hyper/blob/v0.14.27/src/server/tcp.rs#L186)
         //
@@ -480,7 +476,7 @@ async fn handle_accept_err(err: io::Error) {
         // > and then the listener will sleep for 1 second.
         //
         // hyper allowed customizing this but axum does not.
-        tracing::error!(error = &err as &dyn std::error::Error, "TCP accept error");
+        tracing::error!("TCP accept error: {err:?}");
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
 }

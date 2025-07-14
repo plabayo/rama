@@ -3,6 +3,7 @@ use rama_core::username::{UsernameLabelParser, UsernameLabelState};
 use rama_core::{
     context::Extensions,
     error::{ErrorContext, OpaqueError, error},
+    telemetry::tracing,
 };
 use rama_utils::macros::str::eq_ignore_ascii_case;
 
@@ -36,7 +37,7 @@ impl UsernameLabelParser for DnsResolveModeUsernameParser {
             {
                 Ok(mode) => mode,
                 Err(err) => {
-                    tracing::trace!(err = %err, "abort username label parsing: invalid parse label");
+                    tracing::trace!("abort username label parsing: invalid parse label: {err:?}");
                     return UsernameLabelState::Abort;
                 }
             };
@@ -99,13 +100,11 @@ mod tests {
             let mode = *ext.get::<DnsResolveMode>().unwrap();
             assert_eq!(
                 username, expected_username,
-                "username = '{}' ; expected_username = '{}'",
-                username, expected_username
+                "username = '{username}' ; expected_username = '{expected_username}'",
             );
             assert_eq!(
                 mode, expected_mode,
-                "username = '{}' ; expected_mode = '{}'",
-                username, expected_mode
+                "username = '{username}' ; expected_mode = '{expected_mode}'",
             );
         }
     }
@@ -125,8 +124,7 @@ mod tests {
 
             assert!(
                 parse_username(&mut ext, parser, username).is_err(),
-                "username = {}",
-                username
+                "username = {username}",
             );
         }
     }

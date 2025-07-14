@@ -32,16 +32,16 @@
 mod unix_example {
     use rama::{
         bytes::Bytes,
+        futures::{FutureExt, SinkExt, StreamExt},
+        telemetry::tracing::{self, level_filters::LevelFilter},
         unix::{UnixDatagram, UnixDatagramFramed, UnixSocketAddress, codec::BytesCodec},
     };
 
-    use futures::{FutureExt, SinkExt, StreamExt};
     use std::{
         io, process,
         time::{Duration, SystemTime, UNIX_EPOCH},
     };
     use tokio::time;
-    use tracing::level_filters::LevelFilter;
     use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
     pub(super) async fn run() {
@@ -59,11 +59,17 @@ mod unix_example {
 
         let socket_a = UnixDatagram::bind(&path_a).expect("bind unix datagram A");
         let mut socket_framed_a = UnixDatagramFramed::new(socket_a, BytesCodec::new());
-        tracing::info!(path = %path_a, "unix Datagram socket A ready for action");
+        tracing::info!(
+            file.path = %path_a,
+            "unix Datagram socket A ready for action",
+        );
 
         let socket_b = UnixDatagram::bind(&path_b).expect("bind unix datagram B");
         let mut socket_framed_b = UnixDatagramFramed::new(socket_b, BytesCodec::new());
-        tracing::info!(path = %path_b, "unix Datagram socket B ready for action");
+        tracing::info!(
+            file.path = %path_b,
+            "unix Datagram socket B ready for action",
+        );
 
         let b_addr: UnixSocketAddress = socket_framed_b
             .get_ref()
@@ -125,7 +131,7 @@ mod unix_example {
             .unwrap()
             .as_nanos();
 
-        format!("/tmp/{}_{}_{}", prefix, pid, nanos)
+        format!("/tmp/{prefix}_{pid}_{nanos}")
     }
 }
 

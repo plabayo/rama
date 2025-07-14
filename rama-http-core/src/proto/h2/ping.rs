@@ -25,7 +25,7 @@ use std::task::{self, Poll};
 use std::time::Duration;
 use tokio::time::Instant;
 
-use tracing::{debug, trace};
+use rama_core::telemetry::tracing::{debug, trace};
 
 use crate::h2::{Ping, PingPong};
 
@@ -296,7 +296,7 @@ impl Ponger {
                 }
             }
             Poll::Ready(Err(_e)) => {
-                debug!("pong error: {}", _e);
+                debug!("pong error: {:?}", _e);
             }
             Poll::Pending => {
                 if let Some(ref mut ka) = self.keep_alive {

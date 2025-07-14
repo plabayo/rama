@@ -59,13 +59,11 @@ impl fmt::Display for ParseError {
             Self::InvalidSuffix => write!(f, "Header must end in '\r\n'."),
             Self::InvalidSourceAddress(source) => write!(
                 f,
-                "Header contains invalid IP address for the source: {}",
-                source
+                "Header contains invalid IP address for the source: {source}",
             ),
             Self::InvalidDestinationAddress(destination) => write!(
                 f,
-                "Header contains invalid IP address for the destination: {}",
-                destination
+                "Header contains invalid IP address for the destination: {destination}",
             ),
             Self::InvalidSourcePort(port) => write!(
                 f,
@@ -119,8 +117,8 @@ impl From<std::str::Utf8Error> for BinaryParseError {
 impl fmt::Display for BinaryParseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Parse(error) => write!(f, "{}", error),
-            Self::InvalidUtf8(error) => write!(f, "Header is not valid UTF-8: {}", error),
+            Self::Parse(error) => write!(f, "{error}"),
+            Self::InvalidUtf8(error) => write!(f, "Header is not valid UTF-8: {error}"),
         }
     }
 }

@@ -1,7 +1,7 @@
 use super::{DEFAULT_ERROR_LEVEL, Latency};
+use rama_core::telemetry::tracing::{Level, Span};
 use rama_utils::latency::LatencyUnit;
 use std::{fmt, time::Duration};
-use tracing::{Level, Span};
 
 /// Trait used to tell [`Trace`] what to do when a request fails.
 ///

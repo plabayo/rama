@@ -73,7 +73,7 @@
 //!                 let value = if let Some(size) = response.body().size_hint().exact() {
 //!                     // If the response body has a known size, returning `Some` will
 //!                     // set the `Content-Length` header to that value.
-//!                     Some(HeaderValue::from_str(&size.to_string()).unwrap())
+//!                     Some(HeaderValue::try_from(size.to_string()).unwrap())
 //!                 } else {
 //!                     // If the response body doesn't have a known size, return `None`
 //!                     // to skip setting the header on this response.

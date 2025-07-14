@@ -6,15 +6,27 @@ use super::{
         get_user_agent_info,
     },
 };
-use crate::cmd::fp::data::TlsDisplayInfoExtensionData;
+use crate::cmd::fp::{StorageAuthorized, data::TlsDisplayInfoExtensionData};
 use itertools::Itertools as _;
 use rama::{
     Context,
-    http::service::web::response::{self, IntoResponse, Json},
+    error::{ErrorContext, OpaqueError},
     http::{
-        Body, BodyExtractExt, Request, Response, StatusCode, proto::h2, service::web::extract::Path,
+        Body, BodyExtractExt, Request, Response, StatusCode,
+        proto::h2,
+        service::web::{
+            extract::Path,
+            response::{self, IntoResponse, Json},
+        },
+        ws::{
+            Utf8Bytes,
+            handshake::server::ServerWebSocket,
+            protocol::{CloseFrame, frame::coding::CloseCode},
+        },
     },
-    ua::profile::{JsProfileWebApis, UserAgentSourceInfo},
+    net::tls::SecureTransport,
+    telemetry::tracing,
+    ua::profile::{Http2Settings, JsProfileWebApis, UserAgentSourceInfo},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -31,7 +43,7 @@ fn html<T: Into<String>>(inner: T) -> Html {
 //------------------------------------------
 
 pub(super) async fn get_consent() -> impl IntoResponse {
-    ([("Set-Cookie", "rama-fp=ready; Max-Age=60")], render_page(
+    ([("Set-Cookie", "rama-fp=ready; Max-Age=60; path=/")], render_page(
         "🕵️ Fingerprint Consent",
         String::new(),
         r##"<div class="consent">
@@ -134,89 +146,7 @@ pub(super) async fn get_report(
     }
 
     if let Some(h2_settings) = http_info.h2_settings {
-        if let Some(pseudo) = h2_settings.http_pseudo_headers {
-            tables.push(Table {
-                title: "🚗 H2 Pseudo Headers".to_owned(),
-                rows: vec![("order".to_owned(), pseudo.iter().join(", "))],
-            });
-        }
-        if let Some(priority) = h2_settings.priority_header {
-            tables.push(Table {
-                title: "🚗 H2 Priority Header".to_owned(),
-                rows: vec![
-                    (
-                        "dependency_id".to_owned(),
-                        u32::from(priority.dependency_id).to_string(),
-                    ),
-                    ("weight".to_owned(), priority.weight.to_string()),
-                    ("is_exclusive".to_owned(), priority.is_exclusive.to_string()),
-                ],
-            });
-        }
-        if let Some(settings) = h2_settings.initial_config {
-            let mut rows = Vec::with_capacity(8);
-            let mut order = settings.setting_order.unwrap_or_default();
-            order.extend_with_default();
-
-            for setting_id in order {
-                match setting_id {
-                    h2::frame::SettingId::HeaderTableSize => {
-                        if let Some(value) = settings.header_table_size {
-                            rows.push(("Header Table Size".to_owned(), value.to_string()));
-                        }
-                    }
-                    h2::frame::SettingId::EnablePush => {
-                        if let Some(value) = settings.enable_push {
-                            rows.push(("Enable Push".to_owned(), value.to_string()));
-                        }
-                    }
-                    h2::frame::SettingId::MaxConcurrentStreams => {
-                        if let Some(value) = settings.max_concurrent_streams {
-                            rows.push(("Max Concurrent Streams".to_owned(), value.to_string()));
-                        }
-                    }
-                    h2::frame::SettingId::InitialWindowSize => {
-                        if let Some(value) = settings.initial_window_size {
-                            rows.push(("Initial Window Size".to_owned(), value.to_string()));
-                        }
-                    }
-                    h2::frame::SettingId::MaxFrameSize => {
-                        if let Some(value) = settings.max_frame_size {
-                            rows.push(("Max Frame Size".to_owned(), value.to_string()));
-                        }
-                    }
-                    h2::frame::SettingId::MaxHeaderListSize => {
-                        if let Some(value) = settings.max_header_list_size {
-                            rows.push(("Max Header List Size".to_owned(), value.to_string()));
-                        }
-                    }
-                    h2::frame::SettingId::EnableConnectProtocol => {
-                        if let Some(value) = settings.enable_connect_protocol {
-                            rows.push(("Enable Connect Protocol".to_owned(), value.to_string()));
-                        }
-                    }
-                    h2::frame::SettingId::Unknown(0x09) => {
-                        if let Some(value) = settings.unknown_setting_9 {
-                            rows.push((
-                                "Unknown Setting with known id 9".to_owned(),
-                                value.to_string(),
-                            ));
-                        }
-                    }
-                    h2::frame::SettingId::Unknown(id) => {
-                        tracing::debug!(
-                            %id,
-                            "ignore unknown h2 setting",
-                        )
-                    }
-                }
-            }
-
-            tables.push(Table {
-                title: "🚗 H2 Initial Settings".to_owned(),
-                rows,
-            });
-        }
+        extend_tables_with_h2_settings(h2_settings, &mut tables);
     }
 
     let tls_info = get_tls_display_info_and_store(&ctx, user_agent)
@@ -234,6 +164,135 @@ pub(super) async fn get_report(
         String::new(),
         tables,
     ))
+}
+
+fn extend_tables_with_h2_settings(h2_settings: Http2Settings, tables: &mut Vec<Table>) {
+    if let Some(pseudo) = h2_settings.http_pseudo_headers {
+        tables.push(Table {
+            title: "🚗 H2 Pseudo Headers".to_owned(),
+            rows: vec![("order".to_owned(), pseudo.iter().join(", "))],
+        });
+    }
+    if let Some(early_frames) = &h2_settings.early_frames {
+        for (index, early_frame) in early_frames.iter().enumerate() {
+            tables.push(match early_frame {
+                h2::frame::EarlyFrame::Priority(priority) => Table {
+                    title: format!("🚗 H2 Early Frame #{} - priority", index + 1),
+                    rows: vec![
+                        (
+                            "stream id".to_owned(),
+                            u32::from(priority.stream_id).to_string(),
+                        ),
+                        (
+                            "dependency id".to_owned(),
+                            u32::from(priority.dependency.dependency_id).to_string(),
+                        ),
+                        (
+                            "weight".to_owned(),
+                            u32::from(priority.dependency.weight).to_string(),
+                        ),
+                        (
+                            "is exclusive".to_owned(),
+                            priority.dependency.is_exclusive.to_string(),
+                        ),
+                    ],
+                },
+                h2::frame::EarlyFrame::Settings(settings) => Table {
+                    title: format!("🚗 H2 Early Frame #{} - settings", index + 1),
+                    rows: {
+                        let mut rows = Vec::with_capacity(9);
+                        rows.push(("Flags".to_owned(), format!("{:?}", settings.flags)));
+                        let order = settings.config.setting_order.clone().unwrap_or_default();
+                        for setting_id in order {
+                            match setting_id {
+                                h2::frame::SettingId::HeaderTableSize => {
+                                    if let Some(value) = settings.header_table_size() {
+                                        rows.push((
+                                            "Header Table Size".to_owned(),
+                                            value.to_string(),
+                                        ));
+                                    }
+                                }
+                                h2::frame::SettingId::EnablePush => {
+                                    if let Some(value) = settings.is_push_enabled() {
+                                        rows.push(("Enable Push".to_owned(), value.to_string()));
+                                    }
+                                }
+                                h2::frame::SettingId::MaxConcurrentStreams => {
+                                    if let Some(value) = settings.max_concurrent_streams() {
+                                        rows.push((
+                                            "Max Concurrent Streams".to_owned(),
+                                            value.to_string(),
+                                        ));
+                                    }
+                                }
+                                h2::frame::SettingId::InitialWindowSize => {
+                                    if let Some(value) = settings.initial_window_size() {
+                                        rows.push((
+                                            "Initial Window Size".to_owned(),
+                                            value.to_string(),
+                                        ));
+                                    }
+                                }
+                                h2::frame::SettingId::MaxFrameSize => {
+                                    if let Some(value) = settings.max_frame_size() {
+                                        rows.push(("Max Frame Size".to_owned(), value.to_string()));
+                                    }
+                                }
+                                h2::frame::SettingId::MaxHeaderListSize => {
+                                    if let Some(value) = settings.max_header_list_size() {
+                                        rows.push((
+                                            "Max Header List Size".to_owned(),
+                                            value.to_string(),
+                                        ));
+                                    }
+                                }
+                                h2::frame::SettingId::EnableConnectProtocol => {
+                                    if let Some(value) =
+                                        settings.is_extended_connect_protocol_enabled()
+                                    {
+                                        rows.push((
+                                            "Enable Connect Protocol".to_owned(),
+                                            value.to_string(),
+                                        ));
+                                    }
+                                }
+                                h2::frame::SettingId::NoRfc7540Priorities => {
+                                    if let Some(value) = settings.no_rfc7540_priorities() {
+                                        rows.push((
+                                            "No RFC 7540 Priorities".to_owned(),
+                                            value.to_string(),
+                                        ));
+                                    }
+                                }
+                                h2::frame::SettingId::Unknown(id) => {
+                                    tracing::debug!(
+                                        h2.settings.id = %id,
+                                        "ignore unknown h2 setting",
+                                    )
+                                }
+                            }
+                        }
+
+                        rows
+                    },
+                },
+                h2::frame::EarlyFrame::WindowUpdate(window_update) => Table {
+                    title: format!("🚗 H2 Early Frame #{} - windows update", index + 1),
+                    rows: vec![
+                        (
+                            "stream id".to_owned(),
+                            u32::from(window_update.stream_id).to_string(),
+                        ),
+                        (
+                            "size increment".to_owned(),
+                            window_update.size_increment.to_string(),
+                        ),
+                    ],
+                },
+            });
+        }
+    }
 }
 
 //------------------------------------------
@@ -489,76 +548,7 @@ pub(super) async fn form(mut ctx: Context<Arc<State>>, req: Request) -> Result<H
     }
 
     if let Some(h2_settings) = http_info.h2_settings {
-        if let Some(pseudo) = h2_settings.http_pseudo_headers {
-            tables.push(Table {
-                title: "🚗 H2 Pseudo Headers".to_owned(),
-                rows: vec![("order".to_owned(), pseudo.iter().join(", "))],
-            });
-        }
-        if let Some(settings) = h2_settings.initial_config {
-            let mut rows = Vec::with_capacity(8);
-            let mut order = settings.setting_order.unwrap_or_default();
-            order.extend_with_default();
-
-            for setting_id in order {
-                match setting_id {
-                    h2::frame::SettingId::HeaderTableSize => {
-                        if let Some(value) = settings.header_table_size {
-                            rows.push(("Header Table Size".to_owned(), value.to_string()));
-                        }
-                    }
-                    h2::frame::SettingId::EnablePush => {
-                        if let Some(value) = settings.enable_push {
-                            rows.push(("Enable Push".to_owned(), value.to_string()));
-                        }
-                    }
-                    h2::frame::SettingId::MaxConcurrentStreams => {
-                        if let Some(value) = settings.max_concurrent_streams {
-                            rows.push(("Max Concurrent Streams".to_owned(), value.to_string()));
-                        }
-                    }
-                    h2::frame::SettingId::InitialWindowSize => {
-                        if let Some(value) = settings.initial_window_size {
-                            rows.push(("Initial Window Size".to_owned(), value.to_string()));
-                        }
-                    }
-                    h2::frame::SettingId::MaxFrameSize => {
-                        if let Some(value) = settings.max_frame_size {
-                            rows.push(("Max Frame Size".to_owned(), value.to_string()));
-                        }
-                    }
-                    h2::frame::SettingId::MaxHeaderListSize => {
-                        if let Some(value) = settings.max_header_list_size {
-                            rows.push(("Max Header List Size".to_owned(), value.to_string()));
-                        }
-                    }
-                    h2::frame::SettingId::EnableConnectProtocol => {
-                        if let Some(value) = settings.enable_connect_protocol {
-                            rows.push(("Enable Connect Protocol".to_owned(), value.to_string()));
-                        }
-                    }
-                    h2::frame::SettingId::Unknown(0x09) => {
-                        if let Some(value) = settings.unknown_setting_9 {
-                            rows.push((
-                                "Unknown Setting with known id 9".to_owned(),
-                                value.to_string(),
-                            ));
-                        }
-                    }
-                    h2::frame::SettingId::Unknown(id) => {
-                        tracing::debug!(
-                            %id,
-                            "ignore unknown h2 setting",
-                        )
-                    }
-                }
-            }
-
-            tables.push(Table {
-                title: "🚗 H2 Initial Settings".to_owned(),
-                rows,
-            });
-        }
+        extend_tables_with_h2_settings(h2_settings, &mut tables);
     }
 
     let tls_info = get_tls_display_info_and_store(&ctx, user_agent)
@@ -576,6 +566,64 @@ pub(super) async fn form(mut ctx: Context<Arc<State>>, req: Request) -> Result<H
         content,
         tables,
     ))
+}
+
+//------------------------------------------
+// endpoints: WS(S)
+//------------------------------------------
+
+pub(super) async fn ws_api(
+    ctx: Context<Arc<State>>,
+    ws: ServerWebSocket,
+) -> Result<(), OpaqueError> {
+    tracing::debug!("ws api called");
+    let (mut ws, mut parts) = ws.into_parts();
+
+    let user_agent_info = get_user_agent_info(&ctx).await;
+
+    let user_agent = user_agent_info.user_agent.clone();
+
+    let _ = get_and_store_http_info(
+        &ctx,
+        parts.headers,
+        &mut parts.extensions,
+        parts.version,
+        user_agent.clone(),
+        Initiator::Ws,
+    )
+    .await?;
+    tracing::debug!("ws api: http info stored");
+
+    if let Some(hello) = ctx
+        .get::<SecureTransport>()
+        .and_then(|st| st.client_hello())
+        && let Some(storage) = ctx.state().storage.as_ref()
+    {
+        let auth = ctx.contains::<StorageAuthorized>();
+        storage
+            .store_tls_ws_client_overwrites_from_client_hello(user_agent, auth, hello.clone())
+            .await
+            .context("store tls client hello as ws client overwrites")?;
+        tracing::debug!("ws api: tls overwrite info stored");
+    }
+
+    ws.send_message("hello".into())
+        .await
+        .context("send hello msg")?;
+
+    tracing::debug!("ws api: hello sent");
+
+    ws.close(Some(CloseFrame {
+        code: CloseCode::Normal,
+        reason: Utf8Bytes::from_static("finished"),
+    }))
+    .await
+    .context("close ws frame")?;
+
+    let result = ws.recv_message().await;
+    tracing::debug!("ws api: socket closed with result: {result:?}");
+
+    Ok(())
 }
 
 //------------------------------------------
@@ -613,8 +661,7 @@ fn render_report(title: &'static str, head: String, mut html: String, tables: Ve
         html.push_str("<table>");
         for (key, value) in table.rows {
             html.push_str(&format!(
-                r##"<tr><td class="key">{}</td><td><code>{}</code></td></tr>"##,
-                key, value
+                r##"<tr><td class="key">{key}</td><td><code>{value}</code></td></tr>"##,
             ));
         }
         html.push_str("</table>");
@@ -654,7 +701,7 @@ fn render_page(title: &'static str, head: String, content: String) -> Html {
 
             <link rel="stylesheet" type="text/css" href="/assets/style.css">
 
-            {}
+            {head}
         </head>
         <body>
             <main>
@@ -663,9 +710,9 @@ fn render_page(title: &'static str, head: String, content: String) -> Html {
                     &nbsp;
                     |
                     &nbsp;
-                    {}
+                    {title}
                 </h1>
-                <div id="content">{}</div>
+                <div id="content">{content}</div>
                 <div id="input" hidden></div>
                 <div id="banner">
                     <a href="https://ramaproxy.org" title="rama proxy website">
@@ -675,8 +722,7 @@ fn render_page(title: &'static str, head: String, content: String) -> Html {
             </main>
         </body>
         </html>
-    "#,
-        head, title, content
+    "#
     ))
 }
 

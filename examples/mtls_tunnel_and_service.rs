@@ -42,6 +42,7 @@ use rama::{
         client::service::{Forwarder, TcpConnector},
         server::TcpListener,
     },
+    telemetry::tracing::{self, level_filters::LevelFilter},
     tls::rustls::{
         client::{TlsConnectorDataBuilder, TlsConnectorLayer, self_signed_client_auth},
         dep::rustls::{
@@ -58,7 +59,6 @@ use std::{
     net::{IpAddr, Ipv4Addr},
     sync::Arc,
 };
-use tracing::metadata::LevelFilter;
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 const LOCALHOST: Host = Host::Address(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)));
@@ -137,7 +137,11 @@ async fn main() {
             ),
         );
 
-        tracing::info!("start mtls (https) web service: {}", SERVER_AUTHORITY);
+        tracing::info!(
+            server.address = %SERVER_AUTHORITY.host(),
+            server.port = %SERVER_AUTHORITY.port(),
+            "start mtls (https) web service",
+        );
         TcpListener::bind(SERVER_AUTHORITY.to_string())
             .await
             .unwrap_or_else(|e| {
@@ -149,7 +153,11 @@ async fn main() {
 
     // create mtls tunnel proxy
     shutdown.spawn_task_fn(async |guard| {
-        tracing::info!("start mTLS TCP Tunnel Proxys: {}", TUNNEL_AUTHORITY);
+        tracing::info!(
+            server.address = %TUNNEL_AUTHORITY.host(),
+            server.port = %TUNNEL_AUTHORITY.port(),
+            "start mTLS TCP Tunnel Proxy",
+        );
 
         let forwarder = Forwarder::new(SERVER_AUTHORITY).connector(
             TlsConnectorLayer::tunnel(Some(SERVER_AUTHORITY.into_host()))

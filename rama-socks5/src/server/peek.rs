@@ -4,6 +4,7 @@ use rama_core::{
     Context, Service,
     error::{BoxError, ErrorContext},
     service::RejectService,
+    telemetry::tracing,
 };
 use rama_net::stream::{PeekStream, StackReader};
 use tokio::io::AsyncReadExt;
@@ -91,7 +92,7 @@ where
             && !(0..(peek_buf[1] as usize + 2).min(SOCKS5_HEADER_PEEK_LEN))
                 .any(|i| matches!(SocksMethod::from(peek_buf[i]), SocksMethod::Unknown(_)));
 
-        tracing::trace!(%is_socks5, "socks5 prefix header read");
+        tracing::trace!("socks5 prefix header read (is socks5: {is_socks5}");
 
         let offset = SOCKS5_HEADER_PEEK_LEN - n;
         if offset > 0 {

@@ -23,7 +23,7 @@
 //! cargo run --example http_mitm_proxy_boring --features=http-full,boring
 //! ```
 //!
-//! # Expected output
+//! ## Expected output
 //!
 //! The server will start and listen on `:62017`. You can use `curl` to interact with the service:
 //!
@@ -31,13 +31,35 @@
 //! curl -v -x http://127.0.0.1:62017 --proxy-user 'john:secret' http://www.example.com/
 //! curl -k -v -x http://127.0.0.1:62017 --proxy-user 'john:secret' https://www.example.com/
 //! ```
+//!
+//! ## WebSocket support
+//!
+//! Since July of 2025 this example also contains WebSocket MITM support.
+//! You can for example test it using:
+//!
+//! ```sh
+//! rama ws -k \
+//!     --proxy http://127.0.0.1:62017 --proxy-user 'john:secret' \
+//!     wss://echo.ramaproxy.org
+//! ```
+//!
+//! Or use one of alternative sub protocols available in the echo server:
+//!
+//! ```sh
+//! rama ws -k \
+//!     --proxy http://127.0.0.1:62017 --proxy-user 'john:secret' \
+//!     --protocols echo-upper wss://echo.ramaproxy.org
+//! ```
 
 use rama::{
     Layer, Service,
     error::{BoxError, ErrorContext, OpaqueError},
+    futures::SinkExt,
+    http::conn::TargetHttpVersion,
     http::{
         Body, Request, Response, StatusCode,
         client::EasyHttpWebClient,
+        io::upgrade,
         layer::{
             compress_adapter::CompressAdaptLayer,
             map_response_body::MapResponseBodyLayer,
@@ -51,8 +73,14 @@ use rama::{
         matcher::MethodMatcher,
         server::HttpServer,
         service::web::response::IntoResponse,
+        ws::{
+            AsyncWebSocket, Message, ProtocolError,
+            handshake::{client::HttpClientWebSocketExt, server::WebSocketMatcher},
+            protocol::Role,
+        },
     },
     layer::ConsumeErrLayer,
+    matcher::Matcher,
     net::{
         http::RequestContext,
         proxy::ProxyTarget,
@@ -67,8 +95,11 @@ use rama::{
     rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
-    tls::boring::client::{EmulateTlsProfileLayer, TlsConnectorDataBuilder},
-    tls::boring::server::{TlsAcceptorData, TlsAcceptorLayer},
+    telemetry::tracing::{self, level_filters::LevelFilter},
+    tls::boring::{
+        client::{EmulateTlsProfileLayer, TlsConnectorDataBuilder},
+        server::{TlsAcceptorData, TlsAcceptorLayer},
+    },
     ua::{
         emulate::{
             UserAgentEmulateHttpConnectModifier, UserAgentEmulateHttpRequestModifier,
@@ -78,8 +109,8 @@ use rama::{
     },
 };
 
+use itertools::Itertools;
 use std::{convert::Infallible, sync::Arc, time::Duration};
-use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Debug, Clone)]
@@ -124,7 +155,7 @@ async fn main() -> Result<(), BoxError> {
                 TraceLayer::new_for_http(),
                 // See [`ProxyAuthLayer::with_labels`] for more information,
                 // e.g. can also be used to extract upstream proxy filters
-                ProxyAuthLayer::new(Basic::new("john", "secret")),
+                ProxyAuthLayer::new(Basic::new_static("john", "secret")),
                 UpgradeLayer::new(
                     MethodMatcher::CONNECT,
                     service_fn(http_connect_accept),
@@ -163,11 +194,15 @@ async fn http_connect_accept(
         .map(|ctx| ctx.authority.clone())
     {
         Ok(authority) => {
-            tracing::info!(%authority, "accept CONNECT (lazy): insert proxy target into context");
+            tracing::info!(
+                server.address = %authority.host(),
+                server.port = %authority.port(),
+                "accept CONNECT (lazy): insert proxy target into context",
+            );
             ctx.insert(ProxyTarget(authority));
         }
         Err(err) => {
-            tracing::error!(%err, "error extracting authority");
+            tracing::error!("error extracting authority: {err:?}");
             return Err(StatusCode::BAD_REQUEST.into_response());
         }
     }
@@ -189,7 +224,10 @@ async fn http_connect_proxy(ctx: Context, upgraded: Upgraded) -> Result<(), Infa
 
     let http_service = new_http_mitm_proxy(&ctx);
 
-    let http_transport_service = HttpServer::auto(ctx.executor().clone()).service(http_service);
+    let mut http_tp = HttpServer::auto(ctx.executor().clone());
+    http_tp.h2_mut().enable_connect_protocol();
+
+    let http_transport_service = http_tp.service(http_service);
 
     let https_service = TlsAcceptorLayer::new(ctx.state().mitm_tls_service_data.clone())
         .with_store_client_hello(true)
@@ -213,8 +251,6 @@ fn new_http_mitm_proxy(
         UserAgentEmulateLayer::new(ctx.state().ua_db.clone())
             .try_auto_detect_user_agent(true)
             .optional(true),
-        RemoveResponseHeaderLayer::hop_by_hop(),
-        RemoveRequestHeaderLayer::hop_by_hop(),
         CompressAdaptLayer::default(),
         AddRequiredRequestHeadersLayer::new(),
         EmulateTlsProfileLayer::new(),
@@ -241,6 +277,9 @@ async fn http_mitm_proxy(ctx: Context, req: Request) -> Result<Response, Infalli
     };
     let base_tls_config = base_tls_config.with_server_verify_mode(ServerVerifyMode::Disable);
 
+    // NOTE: in a production proxy you most likely
+    // wouldn't want to build this each invocation,
+    // but instead have a pre-built one as a struct local
     let client = EasyHttpWebClient::builder()
         .with_default_transport_connector()
         .with_tls_proxy_support_using_boringssl()
@@ -262,14 +301,22 @@ async fn http_mitm_proxy(ctx: Context, req: Request) -> Result<Response, Infalli
         ))
         .build();
 
+    if WebSocketMatcher::new().matches(None, &ctx, &req) {
+        return Ok(mitm_websocket(&client, ctx, req).await);
+    }
+
+    // these are not desired for WS MITM flow, but they are for regular HTTP flow
+    let client = (
+        RemoveResponseHeaderLayer::hop_by_hop(),
+        RemoveRequestHeaderLayer::hop_by_hop(),
+    )
+        .into_layer(client);
+
     match client.serve(ctx, req).await {
         Ok(resp) => Ok(resp),
         Err(err) => {
-            tracing::error!(error = ?err, "error in client request");
-            Ok(Response::builder()
-                .status(StatusCode::INTERNAL_SERVER_ERROR)
-                .body(Body::empty())
-                .unwrap())
+            tracing::error!("error in client request: {err:?}");
+            Ok(StatusCode::INTERNAL_SERVER_ERROR.into_response())
         }
     }
 }
@@ -291,4 +338,193 @@ fn new_mitm_tls_service_data() -> Result<TlsAcceptorData, OpaqueError> {
     tls_server_config
         .try_into()
         .context("create tls server config")
+}
+
+async fn mitm_websocket<S>(client: &S, mut ctx: Context, req: Request) -> Response
+where
+    S: Service<State, Request, Response = Response, Error = OpaqueError>,
+{
+    tracing::debug!("detected websocket request: starting MITM WS upgrade...");
+
+    let (parts, body) = req.into_parts();
+    let parts_copy = parts.clone();
+
+    let req = Request::from_parts(parts, body);
+    let guard = ctx.guard().cloned();
+    let cancel = async move {
+        match guard {
+            Some(guard) => guard.downgrade().into_cancelled().await,
+            None => std::future::pending::<()>().await,
+        }
+    };
+
+    let target_version = req.version();
+    tracing::debug!("forcing egress http connection as {target_version:?} to ensure WS upgrade");
+    ctx.insert(TargetHttpVersion(target_version));
+
+    let egress_socket = match client.websocket_with_request(req).handshake(ctx).await {
+        Ok(socket) => socket,
+        Err(err) => {
+            tracing::error!("failed to create egress websocket: {err:?}");
+            return StatusCode::BAD_GATEWAY.into_response();
+        }
+    };
+
+    let (egress_socket, response_parts, _) = egress_socket.into_parts();
+    let response = Response::from_parts(response_parts, Body::empty());
+
+    tokio::spawn(async move {
+        tracing::debug!("egresss websocket active: starting ingress WS upgrade...");
+        let request = Request::from_parts(parts_copy, Body::empty());
+        let ingress_socket = match upgrade::on(request).await {
+            Ok(upgraded) => AsyncWebSocket::from_raw_socket(upgraded, Role::Server, None).await,
+            Err(err) => {
+                tracing::error!("error in upgrading ingress websocket: {err:?}");
+                return;
+            }
+        };
+        tracing::debug!("both ingress and egress websockets active: MITM Relay started");
+
+        relay_websockets(cancel, ingress_socket, egress_socket).await;
+    });
+
+    tracing::debug!("return egress WebSocket accept response as ingress WebSocket response");
+    response
+}
+
+async fn relay_websockets<F>(
+    cancel: F,
+    mut ingress_socket: AsyncWebSocket,
+    mut egress_socket: AsyncWebSocket,
+) where
+    F: Future<Output = ()>,
+{
+    let mut cancel = Box::pin(cancel);
+
+    loop {
+        tokio::select! {
+            ingress_result = ingress_socket.recv_message() => {
+                match ingress_result {
+                    Ok(msg) => {
+                        if let Some(msg) = mod_ws_message(msg) {
+                            tracing::info!("relay ingress msg: {msg}");
+                            if let Err(err) = egress_socket.send(msg).await {
+                                if err.is_connection_error() {
+                                    tracing::debug!("egress socket disconnected ({err})... drop MITM relay");
+                                    return;
+                                }
+                                tracing::error!("failed to relay ingress msg: {err}");
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        if err.is_connection_error() || matches!(err, ProtocolError::ResetWithoutClosingHandshake) {
+                            tracing::debug!("ingress socket disconnected ({err})... drop MITM relay");
+                        } else {
+                            tracing::error!("ingress socket failed with error: {err}; drop MITM relay");
+                        }
+                        return
+                    }
+                }
+            }
+
+            egress_result = egress_socket.recv_message() => {
+                match egress_result {
+                    Ok(msg) => {
+                        if let Some(msg) = mod_ws_message(msg) {
+                            tracing::info!("relay egress msg: {msg}");
+                            if let Err(err) = ingress_socket.send(msg).await {
+                                if err.is_connection_error() {
+                                    tracing::debug!("ingress socket disconnected ({err})... drop MITM relay");
+                                    return;
+                                }
+                                tracing::error!("failed to relay egress msg: {err}");
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        if err.is_connection_error() || matches!(err, ProtocolError::ResetWithoutClosingHandshake) {
+                            tracing::debug!("egress socket disconnected ({err})... drop MITM relay");
+                        } else {
+                            tracing::error!("egress socket failed with error: {err}; drop MITM relay");
+                        }
+                        return
+                    }
+                }
+            }
+
+            _ = cancel.as_mut() => {
+                tracing::debug!("shutdown initiated... drop MITM relay early (cancelled)");
+                return;
+            }
+        }
+    }
+}
+
+fn mod_ws_message(msg: Message) -> Option<Message> {
+    match msg {
+        Message::Text(utf8_bytes) => {
+            let s = utf8_bytes.as_str();
+
+            let filtered_s = s
+                .split_whitespace()
+                .map(|word| {
+                    let (prefix, core, suffix) = split_word(word);
+
+                    let replacement = if core.eq_ignore_ascii_case("damn") {
+                        Some("frack")
+                    } else if core.eq_ignore_ascii_case("hell") {
+                        Some("heckscape")
+                    } else if core.eq_ignore_ascii_case("shit") {
+                        Some("gronk")
+                    } else if core.eq_ignore_ascii_case("fuck") {
+                        Some("zarquon")
+                    } else if core.eq_ignore_ascii_case("bastard") {
+                        Some("shazbot")
+                    } else if core.eq_ignore_ascii_case("crap") {
+                        Some("quant-dump")
+                    } else if core.eq_ignore_ascii_case("idiot") {
+                        Some("neural-misfire")
+                    } else if core.eq_ignore_ascii_case("stupid") {
+                        Some("entropy-brained")
+                    } else {
+                        None
+                    };
+
+                    match replacement {
+                        Some(rep) => format!("{prefix}{rep}{suffix}"),
+                        None => word.to_owned(),
+                    }
+                })
+                .join(" ");
+
+            Some(filtered_s.into())
+        }
+        Message::Binary(_) => {
+            tracing::warn!("drop unsupported ws message: {msg}");
+            None
+        }
+        Message::Ping(_) | Message::Pong(_) | Message::Close(_) | Message::Frame(_) => {
+            tracing::debug!("ignore meta ws message: {msg}");
+            None
+        }
+    }
+}
+
+fn split_word(word: &str) -> (&str, &str, &str) {
+    let bytes = word.as_bytes();
+    let mut start = 0;
+    let mut end = bytes.len();
+
+    while start < end && !bytes[start].is_ascii_alphanumeric() {
+        start += 1;
+    }
+    while end > start && !bytes[end - 1].is_ascii_alphanumeric() {
+        end -= 1;
+    }
+
+    let prefix = &word[..start];
+    let core = &word[start..end];
+    let suffix = &word[end..];
+    (prefix, core, suffix)
 }

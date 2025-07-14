@@ -44,8 +44,12 @@ mod http_service_match;
 #[cfg(feature = "http-full")]
 mod http_sse;
 #[cfg(feature = "http-full")]
-mod http_sse_json;
+mod http_sse_datastar_hello;
 #[cfg(feature = "http-full")]
+mod http_sse_datastar_test_suite;
+#[cfg(feature = "http-full")]
+mod http_sse_json;
+#[cfg(all(feature = "http-full", feature = "opentelemetry"))]
 mod http_telemetry;
 #[cfg(feature = "http-full")]
 mod http_user_agent_classifier;
@@ -67,6 +71,14 @@ mod tcp_listener_layers;
 mod tls_sni_router;
 #[cfg(feature = "udp")]
 mod udp_codec;
+#[cfg(feature = "http-full")]
+mod ws_chat_server;
+#[cfg(feature = "http-full")]
+mod ws_echo_server;
+#[cfg(all(feature = "http-full", feature = "boring"))]
+mod ws_over_h2;
+#[cfg(all(feature = "http-full", feature = "boring"))]
+mod ws_tls_server;
 
 #[cfg(all(feature = "net", unix))]
 mod unix_datagram_codec;

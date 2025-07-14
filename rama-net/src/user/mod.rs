@@ -9,3 +9,5 @@ pub use id::UserId;
 pub mod credentials;
 #[doc(inline)]
 pub use credentials::{Basic, Bearer, ProxyCredential};
+
+pub mod authority;

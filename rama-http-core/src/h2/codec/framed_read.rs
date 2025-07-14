@@ -1,14 +1,15 @@
-use crate::h2::frame::{self, Frame, Kind, Reason};
-use crate::h2::frame::{
-    DEFAULT_MAX_FRAME_SIZE, DEFAULT_SETTINGS_HEADER_TABLE_SIZE, MAX_MAX_FRAME_SIZE,
-};
 use crate::h2::proto::Error;
 
-use crate::h2::hpack;
+use rama_http_types::proto::h2::frame::{self, Frame, Kind, Reason};
+use rama_http_types::proto::h2::frame::{
+    DEFAULT_MAX_FRAME_SIZE, DEFAULT_SETTINGS_HEADER_TABLE_SIZE, MAX_MAX_FRAME_SIZE,
+};
+use rama_http_types::proto::h2::hpack;
 
-use futures_core::Stream;
+use rama_core::futures::Stream;
 
 use rama_core::bytes::{Buf, BytesMut};
+use rama_core::telemetry::tracing;
 
 use std::io;
 
@@ -141,7 +142,7 @@ fn decode_frame(
 
     let kind = head.kind();
 
-    tracing::trace!(frame.kind = ?kind);
+    tracing::trace!("frame kind = {kind:?}");
 
     macro_rules! header_block {
         ($frame:ident, $head:ident, $bytes:ident) => ({
@@ -386,7 +387,7 @@ where
                 None => return Poll::Ready(None),
             };
 
-            tracing::trace!(read.bytes = bytes.len());
+            tracing::trace!("bytes read = {}", bytes.len());
             let Self {
                 ref mut hpack,
                 max_header_list_size,
@@ -401,7 +402,7 @@ where
                 partial,
                 bytes,
             )? {
-                tracing::debug!(?frame, "received");
+                tracing::debug!("frame received: {frame:?}");
                 return Poll::Ready(Some(Ok(frame)));
             }
         }

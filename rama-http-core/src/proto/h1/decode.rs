@@ -4,11 +4,10 @@ use std::io;
 use std::task::{Context, Poll};
 
 use rama_core::bytes::{BufMut, Bytes, BytesMut};
+use rama_core::telemetry::tracing::{debug, trace};
 use rama_http_types::dep::http_body::Frame;
 use rama_http_types::{HeaderMap, HeaderName, HeaderValue};
 use std::task::ready;
-use tracing::debug;
-use tracing::trace;
 
 use super::DecodedLength;
 use super::io::MemRead;
@@ -739,7 +738,7 @@ mod tests {
     use std::io::Write;
     use super::Decoder;
     use super::ChunkedState;
-    use futures::{Async, Poll};
+    use ama_core::futures::{Async, Poll};
     use rama_core::bytes::{BytesMut, Bytes};
     use crate::mock::AsyncIo;
     */
@@ -770,7 +769,7 @@ mod tests {
                     )
                 })
                 .await;
-                let desc = format!("read_size failed for {:?}", s);
+                let desc = format!("read_size failed for {s:?}");
                 state = result.expect(&desc);
                 if state == ChunkedState::Body || state == ChunkedState::EndCr {
                     break;
@@ -814,7 +813,7 @@ mod tests {
                     }
                 };
                 if state == ChunkedState::Body || state == ChunkedState::End {
-                    panic!("Was Ok. Expected Err for {:?}", s);
+                    panic!("Was Ok. Expected Err for {s:?}");
                 }
             }
         }
@@ -1098,7 +1097,7 @@ mod tests {
         let mut scratch = vec![];
         scratch.extend(b"10\r\n1234567890abcdef\r\n0\r\n");
         for i in 0..h1_max_headers {
-            scratch.extend(format!("trailer{}: {}\r\n", i, i).as_bytes());
+            scratch.extend(format!("trailer{i}: {i}\r\n").as_bytes());
         }
         scratch.extend(b"\r\n");
         let mut mock_buf = Bytes::from(scratch);

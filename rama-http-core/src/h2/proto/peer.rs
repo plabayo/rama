@@ -1,8 +1,8 @@
 use crate::h2::error::Reason;
-use crate::h2::frame::{Pseudo, StreamId};
 use crate::h2::proto::{Error, Open};
 
 use rama_http_types::proto::h1::headers::original::OriginalHttp1Headers;
+use rama_http_types::proto::h2::frame::{Pseudo, StreamId};
 use rama_http_types::{HeaderMap, Request, Response};
 
 use std::fmt;

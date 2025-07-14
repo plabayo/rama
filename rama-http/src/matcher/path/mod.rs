@@ -34,7 +34,7 @@ impl UriParams {
                 glob.push('/');
                 glob.push_str(value);
             }
-            None => self.glob = Some(format!("/{}", value)),
+            None => self.glob = Some(format!("/{value}")),
         }
     }
 

@@ -4,13 +4,13 @@ use std::fmt::{self, Write as _};
 
 use rama_core::bytes::Bytes;
 use rama_core::bytes::BytesMut;
+use rama_core::telemetry::tracing::{debug, error, trace, trace_span, warn};
 use rama_http_types::dep::http;
 use rama_http_types::header::Entry;
 use rama_http_types::header::{self, HeaderMap, HeaderValue};
 use rama_http_types::proto::h1::{Http1HeaderMap, Http1HeaderName};
 use rama_http_types::{Method, StatusCode, Version};
 use smallvec::{SmallVec, smallvec, smallvec_inline};
-use tracing::{debug, error, trace, trace_span, warn};
 
 use crate::body::DecodedLength;
 use crate::common::date;
@@ -124,7 +124,7 @@ impl Http1Transaction for Server {
                     Some(cap) => smallvec![MaybeUninit::uninit(); cap],
                     None => smallvec_inline![MaybeUninit::uninit(); DEFAULT_MAX_HEADERS],
                 };
-            trace!(bytes = buf.len(), "Request.parse");
+            trace!("Request.parse: bytes = {}", buf.len());
             let mut req = httparse::Request::new(&mut []);
             let bytes = buf.as_ref();
             match req.parse_with_uninit_headers(bytes, &mut headers) {
@@ -199,7 +199,7 @@ impl Http1Transaction for Server {
             let header = unsafe { header.assume_init_ref() };
             let name = Http1HeaderName::try_copy_from_slice(&slice[header.name.0..header.name.1])
                 .inspect_err(|err| {
-                    tracing::debug!("invalid http1 header: {err:?}");
+                    debug!("invalid http1 header: {err:?}");
                 })
                 .map_err(|_| crate::error::Parse::Internal)?;
             let value = header_value!(slice.slice(header.value.0..header.value.1));
@@ -345,7 +345,7 @@ impl Http1Transaction for Server {
                     debug!("response with HTTP2 version coerced to HTTP/1.1");
                     extend(dst, b"HTTP/1.1 ");
                 }
-                other => panic!("unexpected response version: {:?}", other),
+                other => panic!("unexpected response version: {other:?}"),
             }
 
             extend(dst, msg.head.subject.as_str().as_bytes());
@@ -562,9 +562,7 @@ impl Server {
                                     if msg.req_method != &Some(Method::HEAD) || known_len != 0 {
                                         assert!(
                                             len == known_len,
-                                            "payload claims content-length of {}, custom content-length header claims {}",
-                                            known_len,
-                                            len,
+                                            "payload claims content-length of {known_len}, custom content-length header claims {len}",
                                         );
                                     }
                                 }
@@ -716,8 +714,7 @@ impl Server {
             // non-special write Name and Value
             debug_assert!(
                 !is_name_written,
-                "{:?} set is_name_written and didn't continue loop",
-                name,
+                "{name:?} set is_name_written and didn't continue loop",
             );
             header_name_writer.write_header_name_with_colon(dst, &name);
             extend(dst, value.as_bytes());
@@ -835,7 +832,7 @@ impl Http1Transaction for Client {
                     Some(cap) => smallvec![MaybeUninit::uninit(); cap],
                     None => smallvec_inline![MaybeUninit::uninit(); DEFAULT_MAX_HEADERS],
                 };
-                trace!(bytes = buf.len(), "Response.parse");
+                trace!("Response.parse: bytes len = {}", buf.len());
                 let mut res = httparse::Response::new(&mut []);
                 let bytes = buf.as_ref();
                 match ctx.h1_parser_config.parse_response_with_uninit_headers(
@@ -901,7 +898,7 @@ impl Http1Transaction for Client {
                 let name =
                     Http1HeaderName::try_copy_from_slice(&slice[header.name.0..header.name.1])
                         .inspect_err(|err| {
-                            tracing::debug!("invalid http1 header: {err:?}");
+                            debug!("invalid http1 header: {err:?}");
                         })
                         .map_err(|_| crate::error::Parse::Internal)?;
                 let value = header_value!(slice.slice(header.value.0..header.value.1));
@@ -988,7 +985,7 @@ impl Http1Transaction for Client {
                 debug!("request with HTTP2 version coerced to HTTP/1.1");
                 extend(dst, b"HTTP/1.1");
             }
-            other => panic!("unexpected request version: {:?}", other),
+            other => panic!("unexpected request version: {other:?}"),
         }
         extend(dst, b"\r\n");
 
@@ -2578,7 +2575,7 @@ mod tests {
     fn test_is_complete_fast() {
         let s = b"GET / HTTP/1.1\r\na: b\r\n\r\n";
         for n in 0..s.len() {
-            assert!(is_complete_fast(s, n), "{:?}; {}", s, n);
+            assert!(is_complete_fast(s, n), "{s:?}; {n}");
         }
         let s = b"GET / HTTP/1.1\na: b\n\n";
         for n in 0..s.len() {

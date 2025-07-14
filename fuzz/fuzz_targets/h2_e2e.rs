@@ -1,9 +1,9 @@
 #![no_main]
 use rama::http::{Method, Request};
 
-use futures::stream::FuturesUnordered;
-use futures::{Stream, future};
 use libfuzzer_sys::fuzz_target;
+use rama::futures::stream::FuturesUnordered;
+use rama::futures::{Stream, future};
 
 use std::io;
 use std::pin::Pin;
@@ -109,7 +109,7 @@ async fn run(script: &[u8]) -> Result<(), rama_http_core::h2::Error> {
             match Pin::new(&mut futs).poll_next(cx) {
                 Poll::Pending | Poll::Ready(None) => break,
                 r @ Poll::Ready(Some(Ok(_) | Err(_))) => {
-                    eprintln!("{:?}", r);
+                    eprintln!("{r:?}");
                 }
             }
         }

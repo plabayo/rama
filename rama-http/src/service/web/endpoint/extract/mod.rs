@@ -31,6 +31,8 @@ pub mod body;
 #[doc(inline)]
 pub use body::{Body, Bytes, Csv, Form, Json, Text};
 
+pub mod datastar;
+
 mod option;
 #[doc(inline)]
 pub use option::{OptionalFromRequest, OptionalFromRequestContextRefPair};
@@ -61,7 +63,7 @@ pub trait FromRequestContextRefPair<S>: Sized + Send + Sync + 'static {
 ///
 /// If your extractor doesn't need to consume the request body then you should implement
 /// [`FromRequestParts`] and not [`FromRequest`].
-pub trait FromRequest: Sized + Send + Sync + 'static {
+pub trait FromRequest: Sized + Send + 'static {
     /// If the extractor fails it'll use this "rejection" type. A rejection is
     /// a kind of error that can be converted into a response.
     type Rejection: IntoResponse;

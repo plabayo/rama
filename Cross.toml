@@ -68,23 +68,9 @@ passthrough = [
     "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc",
 ]
 
-[target.i686-unknown-linux-gnu]
-pre-build = [
-    "apt update && apt install -y gcc-i686-linux-gnu g++-i686-linux-gnu",
-]
-
-[target.i686-unknown-linux-gnu.env]
-passthrough = [
-    "CC=i686-linux-gnu-gcc",
-    "CXX=i686-linux-gnu-g++",
-    "CMAKE_C_COMPILER=i686-linux-gnu-gcc",
-    "CMAKE_CXX_COMPILER=i686-linux-gnu-g++",
-    "CARGO_TARGET_I686_UNKNOWN_LINUX_GNU_LINKER=i686-linux-gnu-gcc",
-]
-
 [target.x86_64-pc-windows-gnu]
 pre-build = [
-    "apt update && apt install -y libclang-10-dev clang-10 cmake nasm gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64"
+    "apt update && apt install -y libclang-10-dev clang-10 cmake nasm gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64",
 ]
 
 [target.x86_64-pc-windows-gnu.env]
@@ -94,12 +80,12 @@ passthrough = [
     "CMAKE_C_COMPILER=x86_64-w64-mingw32-gcc",
     "CMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++",
     "CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=x86_64-w64-mingw32-gcc",
-    "BINDGEN_EXTRA_CLANG_ARGS=-idirafter/usr/include"
+    "BINDGEN_EXTRA_CLANG_ARGS=-idirafter/usr/include",
 ]
 
 [target.i686-pc-windows-gnu]
 pre-build = [
-    "apt update && apt install -y libclang-10-dev clang-10 cmake nasm gcc-mingw-w64-i686 g++-mingw-w64-i686"
+    "apt update && apt install -y libclang-10-dev clang-10 cmake nasm gcc-mingw-w64-i686 g++-mingw-w64-i686",
 ]
 
 [target.i686-pc-windows-gnu.env]
@@ -109,5 +95,5 @@ passthrough = [
     "CMAKE_C_COMPILER=i686-w64-mingw32-gcc",
     "CMAKE_CXX_COMPILER=i686-w64-mingw32-g++",
     "CARGO_TARGET_I686_PC_WINDOWS_GNU_LINKER=i686-w64-mingw32-gcc",
-    "BINDGEN_EXTRA_CLANG_ARGS=-idirafter/usr/include"
+    "BINDGEN_EXTRA_CLANG_ARGS=-idirafter/usr/include",
 ]

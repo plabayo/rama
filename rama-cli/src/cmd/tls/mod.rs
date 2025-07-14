@@ -13,14 +13,13 @@ use rama::{
         },
     },
     tcp::client::{Request, service::TcpConnector},
+    telemetry::tracing::{self, level_filters::LevelFilter},
     tls::boring::{
         client::{TlsConnectorDataBuilder, TlsConnectorLayer},
         core::x509::X509,
     },
 };
 use tokio::net::TcpStream;
-use tracing::level_filters::LevelFilter;
-use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Args, Debug, Clone)]
 /// rama tls support
@@ -37,14 +36,7 @@ pub struct CliCommandTls {
 
 /// Run the tls command
 pub async fn run(cfg: CliCommandTls) -> Result<(), BoxError> {
-    tracing_subscriber::registry()
-        .with(fmt::layer())
-        .with(
-            EnvFilter::builder()
-                .with_default_directive(LevelFilter::INFO.into())
-                .from_env_lossy(),
-        )
-        .init();
+    crate::trace::init_tracing(LevelFilter::INFO);
 
     let address = cfg.address.trim();
     let authority = if cfg.address.contains(':') {
@@ -56,7 +48,11 @@ pub async fn run(cfg: CliCommandTls) -> Result<(), BoxError> {
         Authority::new(host, 443)
     };
 
-    tracing::info!("Connecting to: {}", authority);
+    tracing::info!(
+        server.address = %authority.host(),
+        server.port = %authority.port(),
+        "connecting to server",
+    );
 
     let tls_conn_data = TlsConnectorDataBuilder::new()
         .maybe_with_server_verify_mode(cfg.insecure.then_some(ServerVerifyMode::Disable))
@@ -87,7 +83,7 @@ pub async fn run(cfg: CliCommandTls) -> Result<(), BoxError> {
                 }
             }
             DataEncoding::Pem(raw_data) => {
-                println!("PEM certificate: {:?}", raw_data);
+                println!("PEM certificate: {raw_data:?}");
             }
         }
     }
@@ -98,12 +94,12 @@ pub async fn run(cfg: CliCommandTls) -> Result<(), BoxError> {
 fn log_cert(raw_data: &[u8], index: usize) {
     match X509::from_der(raw_data) {
         Ok(cert) => {
-            println!("Certificate #{}:", index);
+            println!("Certificate #{index}:");
             println!("Subject: {:?}", cert.subject_name());
             println!("Issuer: {:?}", cert.issuer_name());
         }
         Err(err) => {
-            eprintln!("Failed to decode certificate #{}: {:?}", index, err);
+            eprintln!("Failed to decode certificate #{index}: {err:?}");
         }
     }
 }
@@ -127,7 +123,11 @@ where
 
         if let Ok(ref established_conn) = result {
             if let Ok(Some(peer_addr)) = established_conn.conn.peer_addr().map(Some) {
-                tracing::info!("TCP connection established to IP: {}", peer_addr);
+                tracing::info!(
+                    network.peer.address = %peer_addr.ip(),
+                    network.peer.port = %peer_addr.port(),
+                    "TCP connection established",
+                );
             }
         }
 

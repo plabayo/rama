@@ -1,7 +1,7 @@
 use crate::h2::codec::Codec;
-use crate::h2::frame::{self, Reason, StreamId};
 
 use rama_core::bytes::Buf;
+use rama_http_types::proto::h2::frame::{self, Reason, StreamId};
 use std::io;
 use std::task::{Context, Poll};
 use tokio::io::AsyncWrite;

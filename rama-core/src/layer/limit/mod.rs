@@ -168,10 +168,9 @@ mod tests {
     use super::policy::ConcurrentPolicy;
     use super::*;
 
+    use crate::futures::zip;
     use crate::{Context, Layer, Service, service::service_fn};
     use std::convert::Infallible;
-
-    use futures_lite::future::zip;
 
     #[tokio::test]
     async fn test_limit() {

@@ -22,9 +22,13 @@
 
 #[cfg(unix)]
 mod unix_example {
-    use rama::{http::server::HttpServer, http::service::web::Router, unix::server::UnixListener};
+    use rama::{
+        http::server::HttpServer,
+        http::service::web::Router,
+        telemetry::tracing::{self, level_filters::LevelFilter},
+        unix::server::UnixListener,
+    };
 
-    use tracing::level_filters::LevelFilter;
     use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
     pub(super) async fn run() {
@@ -46,7 +50,10 @@ mod unix_example {
             .expect("bind Unix socket");
 
         graceful.spawn_task_fn(async |guard| {
-            tracing::info!(%PATH, "ready to unix-serve");
+            tracing::info!(
+                file.path = %PATH,
+                "ready to unix-serve",
+            );
             listener
                 .serve_graceful(
                     guard,
@@ -56,7 +63,10 @@ mod unix_example {
         });
 
         let duration = graceful.shutdown().await;
-        tracing::info!(shutdown_after = ?duration, "bye!");
+        tracing::info!(
+           shutdown.duration_ms = %duration.as_millis(),
+           "bye!",
+        );
     }
 }
 

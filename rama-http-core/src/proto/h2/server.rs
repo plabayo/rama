@@ -8,25 +8,20 @@ use pin_project_lite::pin_project;
 use rama_core::bytes::Bytes;
 use rama_core::error::BoxError;
 use rama_core::rt::Executor;
-use rama_core::telemetry::opentelemetry;
-use rama_core::telemetry::opentelemetry::trace::get_active_span;
-use rama_core::telemetry::opentelemetry::tracing::OpenTelemetrySpanExt;
+use rama_core::telemetry::tracing::{Instrument, debug, trace, trace_root_span, warn};
+use rama_http::io::upgrade::{self, OnUpgrade, Pending, Upgraded};
 use rama_http::opentelemetry::version_as_protocol_version;
 use rama_http_types::{Method, Request, Response, header};
 use tokio::io::{AsyncRead, AsyncWrite};
-use tracing::{Instrument, debug, trace, warn};
 
 use super::{PipeToSendStream, SendBuf, ping};
 use crate::body::{Body, Incoming as IncomingBody};
 use crate::common::date;
-use crate::ext::Protocol;
 use crate::headers;
 use crate::proto::Dispatched;
 use crate::proto::h2::ping::Recorder;
 use crate::proto::h2::{H2Upgraded, UpgradedSendStream};
 use crate::service::HttpService;
-
-use crate::upgrade::{OnUpgrade, Pending, Upgraded};
 
 // Our defaults are chosen for the "majority" case, which usually are not
 // resource constrained, and so the spec default of 64kb can be too limiting
@@ -251,7 +246,7 @@ where
 
                         let is_connect = req.method() == Method::CONNECT;
                         let (mut parts, stream) = req.into_parts();
-                        let (mut req, connect_parts) = if !is_connect {
+                        let (req, connect_parts) = if !is_connect {
                             (
                                 Request::from_parts(
                                     parts,
@@ -265,7 +260,7 @@ where
                                 respond.send_reset(crate::h2::Reason::INTERNAL_ERROR);
                                 return Poll::Ready(Ok(()));
                             }
-                            let (pending, upgrade) = crate::upgrade::pending();
+                            let (pending, upgrade) = upgrade::pending();
                             debug_assert!(parts.extensions.get::<OnUpgrade>().is_none());
                             parts.extensions.insert(upgrade);
                             (
@@ -278,13 +273,7 @@ where
                             )
                         };
 
-                        if let Some(protocol) =
-                            req.extensions_mut().remove::<crate::h2::ext::Protocol>()
-                        {
-                            req.extensions_mut().insert(Protocol::from_inner(protocol));
-                        }
-
-                        let serve_span = tracing::trace_span!(
+                        let serve_span = trace_root_span!(
                             "h2::stream",
                             otel.kind = "server",
                             http.request.method = %req.method().as_str(),
@@ -295,8 +284,6 @@ where
                             network.protocol.name = "http",
                             network.protocol.version = version_as_protocol_version(req.version()),
                         );
-                        serve_span.set_parent(opentelemetry::Context::new());
-                        serve_span.add_link(get_active_span(|span| span.span_context().clone()));
 
                         let fut = H2Stream::new(
                             service.serve_http(req),
@@ -422,7 +409,7 @@ macro_rules! reply {
         match $me.reply.send_response($res, $eos) {
             Ok(tx) => tx,
             Err(e) => {
-                debug!("send response error: {}", e);
+                debug!("send response error: {:?}", e);
                 $me.reply.send_reset(Reason::INTERNAL_ERROR);
                 return Poll::Ready(Err(crate::Error::new_h2(e)));
             }
@@ -476,34 +463,34 @@ where
                             .or_insert_with(date::update_and_header_value);
                     }
 
-                    if let Some(connect_parts) = connect_parts.take() {
-                        if res.status().is_success() {
-                            if headers::content_length_parse_all(res.headers())
-                                .is_some_and(|len| len != 0)
-                            {
-                                warn!(
-                                    "h2 successful response to CONNECT request with body not supported"
-                                );
-                                me.reply.send_reset(crate::h2::Reason::INTERNAL_ERROR);
-                                return Poll::Ready(Err(crate::Error::new_user_header()));
-                            }
-                            if res.headers_mut().remove(header::CONTENT_LENGTH).is_some() {
-                                warn!(
-                                    "successful response to CONNECT request disallows content-length header"
-                                );
-                            }
-                            let send_stream = reply!(me, res, false);
-                            connect_parts.pending.fulfill(Upgraded::new(
-                                H2Upgraded {
-                                    ping: connect_parts.ping,
-                                    recv_stream: connect_parts.recv_stream,
-                                    send_stream: unsafe { UpgradedSendStream::new(send_stream) },
-                                    buf: Bytes::new(),
-                                },
-                                Bytes::new(),
-                            ));
-                            return Poll::Ready(Ok(()));
+                    if let Some(connect_parts) = connect_parts.take()
+                        && res.status().is_success()
+                    {
+                        if headers::content_length_parse_all(res.headers())
+                            .is_some_and(|len| len != 0)
+                        {
+                            warn!(
+                                "h2 successful response to CONNECT request with body not supported"
+                            );
+                            me.reply.send_reset(crate::h2::Reason::INTERNAL_ERROR);
+                            return Poll::Ready(Err(crate::Error::new_user_header()));
                         }
+                        if res.headers_mut().remove(header::CONTENT_LENGTH).is_some() {
+                            warn!(
+                                "successful response to CONNECT request disallows content-length header"
+                            );
+                        }
+                        let send_stream = reply!(me, res, false);
+                        connect_parts.pending.fulfill(Upgraded::new(
+                            H2Upgraded {
+                                ping: connect_parts.ping,
+                                recv_stream: connect_parts.recv_stream,
+                                send_stream: unsafe { UpgradedSendStream::new(send_stream) },
+                                buf: Bytes::new(),
+                            },
+                            Bytes::new(),
+                        ));
+                        return Poll::Ready(Ok(()));
                     }
 
                     if !body.is_end_stream() {
@@ -541,7 +528,7 @@ where
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         self.poll2(cx).map(|res| {
             if let Err(_e) = res {
-                debug!("stream error: {}", _e);
+                debug!("stream error: {:?}", _e);
             }
         })
     }

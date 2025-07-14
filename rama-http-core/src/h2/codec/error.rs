@@ -1,4 +1,5 @@
-use crate::h2::{frame::StreamIdOverflow, proto::Error};
+use crate::h2::proto::Error;
+use rama_http_types::proto::h2::frame::StreamIdOverflow;
 
 use std::{error, fmt, io};
 
@@ -10,7 +11,7 @@ pub enum SendError {
 }
 
 /// Errors caused by users of the library
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum UserError {
     /// The stream ID is no longer accepting frames.
     InactiveStreamId,

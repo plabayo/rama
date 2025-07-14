@@ -74,11 +74,11 @@ where
         let res = self.inner.serve(ctx, req).await;
         if let Err(ref err) = res {
             match level {
-                tracing::Level::TRACE => tracing::trace!(error = %err, "rama service failed"),
-                tracing::Level::DEBUG => tracing::debug!(error = %err, "rama service failed"),
-                tracing::Level::INFO => tracing::info!(error = %err, "rama service failed"),
-                tracing::Level::WARN => tracing::warn!(error = %err, "rama service failed"),
-                tracing::Level::ERROR => tracing::error!(error = %err, "rama service failed"),
+                tracing::Level::TRACE => tracing::trace!("rama service failed: {err}"),
+                tracing::Level::DEBUG => tracing::debug!("rama service failed: {err}"),
+                tracing::Level::INFO => tracing::info!("rama service failed: {err}"),
+                tracing::Level::WARN => tracing::warn!("rama service failed: {err}"),
+                tracing::Level::ERROR => tracing::error!("rama service failed: {err}"),
             }
         }
         res

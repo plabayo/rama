@@ -464,7 +464,7 @@ async fn access_cjk_percent_encoded_uri_path() {
     let svc = ServeDir::new("../test-files");
 
     let req = Request::builder()
-        .uri(format!("/{}", cjk_filename_encoded))
+        .uri(format!("/{cjk_filename_encoded}"))
         .body(Body::empty())
         .unwrap();
     let res = svc.serve(Context::default(), req).await.unwrap();
@@ -480,7 +480,7 @@ async fn access_space_percent_encoded_uri_path() {
     let svc = ServeDir::new("../test-files");
 
     let req = Request::builder()
-        .uri(format!("/{}", encoded_filename))
+        .uri(format!("/{encoded_filename}"))
         .body(Body::empty())
         .unwrap();
     let res = svc.serve(Context::default(), req).await.unwrap();
@@ -518,7 +518,7 @@ async fn read_partial_in_bounds() {
         .uri("/README.md")
         .header(
             "Range",
-            format!("bytes={}-{}", bytes_start_incl, bytes_end_incl),
+            format!("bytes={bytes_start_incl}-{bytes_end_incl}"),
         )
         .body(Body::empty())
         .unwrap();
@@ -810,6 +810,48 @@ async fn calls_fallback_on_invalid_paths() {
 
     let req = Request::builder()
         .uri("/weird_%c3%28_path")
+        .body(Body::empty())
+        .unwrap();
+
+    let res = svc.serve(Context::default(), req).await.unwrap();
+
+    assert_eq!(res.headers()["from-fallback"], "1");
+}
+// https://github.com/tower-rs/tower-http/issues/573
+#[tokio::test]
+async fn calls_fallback_on_invalid_filenames() {
+    async fn fallback<T>(_: T) -> Result<Response<Body>, Infallible> {
+        let mut res = Response::new(Body::empty());
+        res.headers_mut()
+            .insert("from-fallback", "1".parse().unwrap());
+        Ok(res)
+    }
+
+    let svc = ServeDir::new("..").fallback(service_fn(fallback));
+
+    let req = Request::builder()
+        .uri("/invalid|path")
+        .body(Body::empty())
+        .unwrap();
+
+    let res = svc.serve(Context::default(), req).await.unwrap();
+
+    assert_eq!(res.headers()["from-fallback"], "1");
+}
+
+#[tokio::test]
+async fn calls_fallback_on_null() {
+    async fn fallback<T>(_: T) -> Result<Response<Body>, Infallible> {
+        let mut res = Response::new(Body::empty());
+        res.headers_mut()
+            .insert("from-fallback", "1".parse().unwrap());
+        Ok(res)
+    }
+
+    let svc = ServeDir::new("..").fallback(service_fn(fallback));
+
+    let req = Request::builder()
+        .uri("/invalid-path%00")
         .body(Body::empty())
         .unwrap();
 

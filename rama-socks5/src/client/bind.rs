@@ -6,6 +6,7 @@
 
 use super::core::HandshakeError;
 use crate::proto::{ReplyKind, server};
+use rama_core::telemetry::tracing;
 use rama_net::{
     address::{Authority, SocketAddress},
     stream::Stream,
@@ -135,8 +136,10 @@ impl<S: Stream + Unpin> Binder<S> {
         };
 
         tracing::trace!(
-            bind_address = %self.selected_bind_address,
-            %server,
+            network.local.address = %self.selected_bind_address.ip_addr(),
+            network.local.port = %self.selected_bind_address.port(),
+            server.address = %server.host(),
+            server.port = %server.port(),
             "socks5: bind handshake complete",
         );
 

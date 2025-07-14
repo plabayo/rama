@@ -31,3 +31,7 @@ pub mod layer {
 #[cfg(feature = "http-full")]
 #[doc(inline)]
 pub use ::rama_http_backend::{client, server};
+
+#[cfg(feature = "ws")]
+#[doc(inline)]
+pub use ::rama_ws as ws;

@@ -45,7 +45,7 @@ async fn test_http_web_router() {
     ];
 
     for (code, expected_message) in test_cases.iter() {
-        let req_uri = format!("http://{ADDRESS}/lang/{}", code);
+        let req_uri = format!("http://{ADDRESS}/lang/{code}");
         let response = runner.get(req_uri).send(Context::default()).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let json: Lang = response.try_into_json().await.unwrap();
@@ -63,7 +63,7 @@ async fn test_http_web_router() {
     ];
 
     for (path, expected_status) in test_cases.iter() {
-        let req_uri = format!("http://{ADDRESS}{}", path);
+        let req_uri = format!("http://{ADDRESS}{path}");
         let response = runner.get(req_uri).send(Context::default()).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let json: ApiStatus = response.try_into_json().await.unwrap();

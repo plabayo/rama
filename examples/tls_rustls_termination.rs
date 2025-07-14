@@ -53,13 +53,13 @@ use rama::{
         client::service::{Forwarder, TcpConnector},
         server::TcpListener,
     },
+    telemetry::tracing::level_filters::LevelFilter,
     tls::rustls::server::{TlsAcceptorDataBuilder, TlsAcceptorLayer},
 };
 
 // everything else is provided by the standard library, community crates or tokio
 use std::{convert::Infallible, time::Duration};
 use tokio::io::AsyncWriteExt;
-use tracing::metadata::LevelFilter;
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 #[tokio::main]

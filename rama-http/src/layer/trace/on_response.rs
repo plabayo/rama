@@ -1,9 +1,8 @@
 use super::{DEFAULT_MESSAGE_LEVEL, Latency};
 use crate::Response;
+use rama_core::telemetry::tracing::{self, Level, Span};
 use rama_utils::latency::LatencyUnit;
 use std::time::Duration;
-use tracing::Level;
-use tracing::Span;
 
 /// Trait used to tell [`Trace`] what to do when a response has been produced.
 ///

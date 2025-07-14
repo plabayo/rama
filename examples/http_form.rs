@@ -41,10 +41,10 @@ use rama::http::layer::trace::TraceLayer;
 use rama::http::matcher::HttpMatcher;
 use rama::http::service::web::response::{Html, IntoResponse};
 use rama::http::service::web::{WebService, extract::Form};
+use rama::telemetry::tracing::{self, level_filters::LevelFilter};
 use rama::{http::server::HttpServer, rt::Executor};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
-use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -106,7 +106,10 @@ async fn main() {
 }
 
 async fn send_form_data(Form(payload): Form<Payload>) -> Response {
-    tracing::info!("{:?}", payload.name);
+    tracing::info!(
+        payload.name = %payload.name,
+        "send_form_data",
+    );
 
     let name = payload.name;
     let age = payload.age;
@@ -116,13 +119,12 @@ async fn send_form_data(Form(payload): Form<Payload>) -> Response {
             r##"<html>
                     <body>
                         <h1>Success</h1>
-                        <p>Thank you for submitting the form {}, {} years old.</p>
+                        <p>Thank you for submitting the form {name}, {age} years old.</p>
                     </body>
-                </html>"##,
-            name, age
+                </html>"##
         ))
         .into_response()
     } else {
-        format!("{} is {} years old.", name, age).into_response()
+        format!("{name} is {age} years old.").into_response()
     }
 }

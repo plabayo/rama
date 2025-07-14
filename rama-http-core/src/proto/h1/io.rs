@@ -5,12 +5,11 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use rama_core::bytes::{Buf, BufMut, Bytes, BytesMut};
+use rama_core::telemetry::tracing::{debug, trace};
 use std::task::ready;
 use tokio::io::AsyncRead;
 use tokio::io::AsyncWrite;
 use tokio::io::ReadBuf;
-use tracing::debug;
-use tracing::trace;
 
 use super::{Http1Transaction, ParseContext, ParsedMessage};
 use crate::common::buf::BufList;
@@ -89,8 +88,7 @@ where
     pub(crate) fn set_max_buf_size(&mut self, max: usize) {
         assert!(
             max >= MINIMUM_MAX_BUFFER_SIZE,
-            "The max_buf_size cannot be smaller than {}.",
-            MINIMUM_MAX_BUFFER_SIZE,
+            "The max_buf_size cannot be smaller than {MINIMUM_MAX_BUFFER_SIZE}.",
         );
         self.read_buf_strategy = ReadStrategy::with_max(max);
         self.write_buf.max_buf_size = max;
@@ -530,9 +528,9 @@ where
 
                 head.maybe_unshift(buf.remaining());
                 trace!(
-                    self.len = head.remaining(),
-                    buf.len = buf.remaining(),
-                    "buffer.flatten"
+                    "buffer.flatten: head.remaining = {}; buf.remaining: {}",
+                    head.remaining(),
+                    buf.remaining(),
                 );
                 //perf: This is a little faster than <Vec as BufMut>>::put,
                 //but accomplishes the same result.
@@ -550,9 +548,9 @@ where
             }
             WriteStrategy::Queue => {
                 trace!(
-                    self.len = self.remaining(),
-                    buf.len = buf.remaining(),
-                    "buffer.queue"
+                    "buffer.queue: head.remaining = {}; buf.remaining: {}",
+                    self.remaining(),
+                    buf.remaining(),
                 );
                 self.queue.push(buf.into());
             }
@@ -800,9 +798,7 @@ mod tests {
                 next = strategy.next();
                 assert!(
                     next.is_power_of_two(),
-                    "decrement should be powers of two: {} (max = {})",
-                    next,
-                    max,
+                    "decrement should be powers of two: {next} (max = {max})",
                 );
             }
         }

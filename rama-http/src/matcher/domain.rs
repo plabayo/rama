@@ -1,4 +1,5 @@
 use crate::Request;
+use rama_core::telemetry::tracing;
 use rama_core::{Context, context::Extensions};
 use rama_net::address::{Domain, Host};
 use rama_net::http::RequestContext;
@@ -39,7 +40,9 @@ impl<State, Body> rama_core::matcher::Matcher<State, Request<Body>> for DomainMa
                 let req_ctx: RequestContext = match (ctx, req).try_into() {
                     Ok(req_ctx) => req_ctx,
                     Err(err) => {
-                        tracing::error!(error = %err, "DomainMatcher: failed to lazy-make the request ctx");
+                        tracing::error!(
+                            "DomainMatcher: failed to lazy-make the request ctx: {err:?}"
+                        );
                         return false;
                     }
                 };

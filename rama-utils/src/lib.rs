@@ -26,7 +26,6 @@
 pub mod macros;
 
 pub mod backoff;
-pub mod future;
 pub mod info;
 pub mod latency;
 pub mod octets;

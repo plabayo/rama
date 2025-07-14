@@ -1,7 +1,7 @@
 #[macro_export]
 macro_rules! assert_closed {
     ($transport:expr) => {{
-        use futures::StreamExt;
+        use rama_core::futures::StreamExt;
 
         assert!($transport.next().await.is_none());
     }};
@@ -60,7 +60,7 @@ macro_rules! assert_go_away {
 #[macro_export]
 macro_rules! poll_err {
     ($transport:expr) => {{
-        use futures::StreamExt;
+        use rama_core::futures::StreamExt;
         match $transport.next().await {
             Some(Err(e)) => e,
             frame => panic!("expected error; actual={:?}", frame),
@@ -71,7 +71,7 @@ macro_rules! poll_err {
 #[macro_export]
 macro_rules! poll_frame {
     ($type: ident, $transport:expr) => {{
-        use futures::StreamExt;
+        use rama_core::futures::StreamExt;
         use rama_http_core::h2::frame::Frame;
 
         match $transport.next().await {

@@ -5,6 +5,7 @@ use crate::{Body, HeaderValue, Method, Request, Response, StatusCode, header};
 use percent_encoding::percent_decode;
 use rama_core::bytes::Bytes;
 use rama_core::error::{BoxError, OpaqueError};
+use rama_core::telemetry::tracing;
 use rama_core::{Context, Service};
 use std::fmt;
 use std::str::FromStr;
@@ -408,7 +409,7 @@ where
     ) -> Result<Self::Response, Self::Error> {
         let result = self.try_call(ctx, req).await;
         Ok(result.unwrap_or_else(|err| {
-            tracing::error!(error = %err, "Failed to read file");
+            tracing::error!("Failed to read file: {err:?}");
 
             let body = Body::empty();
             Response::builder()

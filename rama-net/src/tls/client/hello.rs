@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::fmt::Display;
 
-use crate::address::Host;
+use crate::address::Domain;
 use crate::tls::enums::{
     AuthenticatedEncryptionWithAssociatedData, CertificateCompressionAlgorithm,
     KeyDerivationFunction,
@@ -65,10 +65,10 @@ impl ClientHello {
     /// Return the server name (SNI) if it is set in the [`ClientHelloExtension`] defined in this [`ClientHello`].
     ///
     /// See [`ClientHelloExtension::ServerName`] for more information about the server name.
-    pub fn ext_server_name(&self) -> Option<&Host> {
+    pub fn ext_server_name(&self) -> Option<&Domain> {
         for ext in &self.extensions {
-            if let ClientHelloExtension::ServerName(host) = ext {
-                return host.as_ref();
+            if let ClientHelloExtension::ServerName(domain) = ext {
+                return domain.as_ref();
             }
         }
         None
@@ -181,7 +181,7 @@ pub enum ClientHelloExtension {
     ///
     /// - <https://www.iana.org/go/rfc6066>
     /// - <https://www.iana.org/go/rfc9261>
-    ServerName(Option<Host>),
+    ServerName(Option<Domain>),
     /// indicates which elliptic curves the client supports
     ///
     /// This extension is required... despite being an extension.

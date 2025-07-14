@@ -57,6 +57,7 @@ use rama::{
     rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
+    telemetry::tracing::level_filters::LevelFilter,
     tls::rustls::{
         dep::{
             pemfile,
@@ -71,7 +72,6 @@ use tokio::time::sleep;
 
 // everything else is provided by the standard library, community crates or tokio
 use std::{convert::Infallible, io::BufReader, sync::Arc, time::Duration};
-use tracing::metadata::LevelFilter;
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 #[tokio::main]
@@ -125,8 +125,7 @@ impl DynamicConfigProvider for DynamicConfig {
                 "example" => load_example_certificate().await,
                 "second.example" => load_second_example_certificate().await,
                 name => Err(OpaqueError::from_display(format!(
-                    "server name {} not recognized",
-                    name
+                    "server name {name} not recognized",
                 ))),
             },
             _ => Err(OpaqueError::from_display(

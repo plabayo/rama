@@ -48,6 +48,7 @@ use crate::{
     Request,
     utils::{HeaderValueErr, HeaderValueGetter},
 };
+use rama_core::telemetry::tracing;
 use rama_core::{Context, Layer, Service, error::BoxError};
 use rama_utils::macros::define_inner_service_accessors;
 use serde::de::DeserializeOwned;
@@ -156,7 +157,7 @@ where
             Ok(config) => config,
             Err(err) => {
                 if self.optional && matches!(err, crate::utils::HeaderValueErr::HeaderMissing(_)) {
-                    tracing::debug!(error = %err, "failed to extract header config");
+                    tracing::debug!("failed to extract header config: {err:?}");
                     return self.inner.serve(ctx, request).await.map_err(Into::into);
                 } else {
                     return Err(err.into());

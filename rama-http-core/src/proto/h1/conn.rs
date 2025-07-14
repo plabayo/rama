@@ -7,12 +7,13 @@ use std::time::Duration;
 
 use httparse::ParserConfig;
 use rama_core::bytes::{Buf, Bytes};
+use rama_core::telemetry::tracing::{debug, error, trace, warn};
+use rama_http::io::upgrade;
 use rama_http_types::dep::http_body::Frame;
 use rama_http_types::header::{CONNECTION, TE};
 use rama_http_types::{HeaderMap, HeaderValue, Method, Version};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::time::{Instant, Sleep};
-use tracing::{debug, error, trace, warn};
 
 use super::io::Buffered;
 use super::{Decoder, Encode, EncodedBuf, Encoder, Http1Transaction, ParseContext, Wants};
@@ -124,7 +125,7 @@ where
         self.io.into_inner()
     }
 
-    pub(crate) fn pending_upgrade(&mut self) -> Option<crate::upgrade::Pending> {
+    pub(crate) fn pending_upgrade(&mut self) -> Option<upgrade::Pending> {
         self.state.upgrade.take()
     }
 
@@ -461,7 +462,7 @@ where
 
         let result = ready!(self.io.poll_read_from_io(cx));
         Poll::Ready(result.map_err(|e| {
-            trace!(error = %e, "force_io_read; io error");
+            trace!("force_io_read; io error: {e:?}");
             self.state.close();
             e
         }))
@@ -831,7 +832,7 @@ where
         }
     }
 
-    pub(super) fn on_upgrade(&mut self) -> crate::upgrade::OnUpgrade {
+    pub(super) fn on_upgrade(&mut self) -> upgrade::OnUpgrade {
         trace!("{}: prepare possible HTTP upgrade", T::LOG);
         self.state.prepare_upgrade()
     }
@@ -881,7 +882,7 @@ struct State {
     /// State of allowed writes
     writing: Writing,
     /// An expected pending HTTP upgrade.
-    upgrade: Option<crate::upgrade::Pending>,
+    upgrade: Option<upgrade::Pending>,
     /// Either HTTP/1.0 or 1.1 connection
     version: Version,
     /// Flag to track if trailer fields are allowed to be sent
@@ -1072,8 +1073,8 @@ impl State {
         matches!(self.writing, Writing::Closed)
     }
 
-    fn prepare_upgrade(&mut self) -> crate::upgrade::OnUpgrade {
-        let (tx, rx) = crate::upgrade::pending();
+    fn prepare_upgrade(&mut self) -> upgrade::OnUpgrade {
+        let (tx, rx) = upgrade::pending();
         self.upgrade = Some(tx);
         rx
     }

@@ -5,8 +5,9 @@ use rama_core::{
     Context, Service,
     combinators::Either,
     error::{BoxError, ErrorExt, OpaqueError},
+    telemetry::tracing,
 };
-use rama_http_core::upgrade;
+use rama_http::io::upgrade;
 use rama_http_headers::ProxyAuthorization;
 use rama_http_types::Version;
 use rama_net::{
@@ -146,21 +147,21 @@ where
 
         #[cfg(feature = "tls")]
         // in case the provider gave us a proxy info, we insert it into the context
-        if let Some(address) = &address {
-            if address
+        if let Some(address) = &address
+            && address
                 .protocol
                 .as_ref()
                 .map(|p| p.is_secure())
                 .unwrap_or_default()
-            {
-                tracing::trace!(
-                    authority = %transport_ctx.authority,
-                    "http proxy connector: preparing proxy connection for tls tunnel"
-                );
-                ctx.insert(TlsTunnel {
-                    server_host: address.authority.host().clone(),
-                });
-            }
+        {
+            tracing::trace!(
+                server.address = %transport_ctx.authority.host(),
+                server.port = %transport_ctx.authority.port(),
+                "http proxy connector: preparing proxy connection for tls tunnel",
+            );
+            ctx.insert(TlsTunnel {
+                server_host: address.authority.host().clone(),
+            });
         }
 
         let established_conn =
@@ -205,7 +206,8 @@ where
         let EstablishedClientConnection { ctx, req, conn } = established_conn;
 
         tracing::trace!(
-            authority = %transport_ctx.authority,
+            server.address = %transport_ctx.authority.host(),
+            server.port = %transport_ctx.authority.port(),
             "http proxy connector: connected to proxy",
         );
 
@@ -248,7 +250,8 @@ where
             .map_err(|err| OpaqueError::from_std(err).context("http proxy handshake"))?;
 
         tracing::trace!(
-            authority = %transport_ctx.authority,
+            server.address = %transport_ctx.authority.host(),
+            server.port = %transport_ctx.authority.port(),
             "http proxy connector: connected to proxy: ready secure request",
         );
         Ok(EstablishedClientConnection {

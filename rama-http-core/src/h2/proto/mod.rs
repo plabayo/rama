@@ -19,7 +19,7 @@ use self::go_away::GoAway;
 use self::ping_pong::PingPong;
 use self::settings::Settings;
 
-use crate::h2::frame::{self, Frame};
+use rama_http_types::proto::h2::frame::{self, Frame};
 
 use rama_core::bytes::Buf;
 

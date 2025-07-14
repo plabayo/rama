@@ -17,14 +17,13 @@ use rama::{
     },
     rt::Executor,
     tcp::server::TcpListener,
+    telemetry::tracing::{self, level_filters::LevelFilter},
 };
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as ENGINE;
 
 use std::{convert::Infallible, path::PathBuf, time::Duration};
-use tracing::level_filters::LevelFilter;
-use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Debug, Args)]
 /// rama serve service (serves a file, directory or placeholder page)
@@ -82,14 +81,7 @@ pub struct CliCommandServe {
 
 /// run the rama serve service
 pub async fn run(cfg: CliCommandServe) -> Result<(), BoxError> {
-    tracing_subscriber::registry()
-        .with(fmt::layer())
-        .with(
-            EnvFilter::builder()
-                .with_default_directive(LevelFilter::INFO.into())
-                .from_env_lossy(),
-        )
-        .init();
+    crate::trace::init_tracing(LevelFilter::INFO);
 
     let maybe_tls_server_config = cfg.secure.then(|| {
         let tls_key_pem_raw = match std::env::var("RAMA_TLS_KEY") {
@@ -161,10 +153,7 @@ pub async fn run(cfg: CliCommandServe) -> Result<(), BoxError> {
         .map_err(OpaqueError::from_boxed)
         .context("build serve service")?;
 
-    tracing::info!(
-        bind = %cfg.bind,
-        "starting serve service on",
-    );
+    tracing::info!("starting serve service on: bind interface = {}", cfg.bind);
     let tcp_listener = TcpListener::build()
         .bind(cfg.bind.clone())
         .await
@@ -177,9 +166,9 @@ pub async fn run(cfg: CliCommandServe) -> Result<(), BoxError> {
 
     graceful.spawn_task_fn(async move |guard| {
         tracing::info!(
-            bind = %cfg.bind,
-            %bind_address,
-            "ready to serve",
+            network.local.address = %bind_address.ip(),
+            network.local.port = %bind_address.port(),
+            "ready to serve: bind interface = {}", cfg.bind,
         );
         tcp_listener.serve_graceful(guard, tcp_service).await;
     });

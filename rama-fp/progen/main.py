@@ -4,6 +4,7 @@ from datetime import datetime
 import os
 import json
 import psycopg
+import time
 
 def write_profile_to_file(row, f):
     f.write("UserAgentProfile {\n")
@@ -40,8 +41,16 @@ def main():
                         for i, col_name in enumerate(column_names):
                             if col_name == "updated_at":
                                 if row[i]:
-                                    profile[col_name] = row[i].strftime("%Y-%m-%d %H:%M:%S")
+                                    updated_at = row[i].strftime("%Y-%m-%d %H:%M:%S")
+                                    one_week_ago_ms = (time.time() - 1.5 * 24 * 60 * 60) * 1000
+                                    if row[i].timestamp() * 1000 > one_week_ago_ms:
+                                        profile[col_name] = updated_at
+                                    else:
+                                        print(f"skip profile #{i}: updated_at to far in the past: {updated_at}")
+                                        profile = None
+                                        break
                                 else:
+                                    print(f"skip profile #{i}: missing updated_at")
                                     profile = None
                                     break
                             else:

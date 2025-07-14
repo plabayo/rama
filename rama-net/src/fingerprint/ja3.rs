@@ -1,4 +1,5 @@
 use rama_core::context::Extensions;
+use rama_core::telemetry::tracing;
 use std::{fmt, io};
 
 use crate::tls::{
@@ -113,7 +114,7 @@ impl Ja3 {
                 panic!("md5 ingest failed: {err:?}");
             }
         });
-        let digest = ctx.compute();
+        let digest = ctx.finalize();
         if lower {
             write!(w, "{digest:x}",)?;
         } else {

@@ -6,6 +6,7 @@ use rama::{
     net::address::ProxyAddress,
     rt::Executor,
     service::service_fn,
+    telemetry::tracing,
 };
 use serde_json::{Value, json};
 
@@ -26,7 +27,7 @@ async fn test_https_connect_proxy() {
                     CompressionLayer::new(),
                 )
                     .into_layer(service_fn(async |req: Request| {
-                        tracing::debug!(uri = %req.uri(), "serve request");
+                        tracing::debug!(url.full = %req.uri(), "serve request");
                         Ok(Json(json!({
                             "method": req.method().as_str(),
                             "path": req.uri().path(),

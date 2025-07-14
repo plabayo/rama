@@ -28,7 +28,6 @@ rama-http-types = { workspace = true, optional = true }
 rama-net = { workspace = true }
 rama-utils = { workspace = true }
 tokio = { workspace = true, features = ["macros", "net"] }
-tracing = { workspace = true }
 
 [dev-dependencies]
 

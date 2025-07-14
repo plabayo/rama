@@ -1,5 +1,5 @@
+use rama_core::telemetry::tracing::Span;
 use std::time::Duration;
-use tracing::Span;
 
 /// Trait used to tell [`Trace`] what to do when a body chunk has been sent.
 ///

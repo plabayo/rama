@@ -15,23 +15,26 @@
 use rama::{
     Context, Layer, Service,
     http::{
-        Body, BodyExtractExt, Request, Response, StatusCode,
+        Body, BodyExtractExt, Request, StatusCode,
         client::EasyHttpWebClient,
-        headers::{Accept, Authorization, HeaderMapExt},
+        headers::Accept,
         layer::{
-            auth::{AddAuthorizationLayer, AsyncRequireAuthorizationLayer},
+            auth::AddAuthorizationLayer,
             compression::CompressionLayer,
             decompression::DecompressionLayer,
             retry::{ManagedPolicy, RetryLayer},
             trace::TraceLayer,
+            validate_request::ValidateRequestHeaderLayer,
         },
         server::HttpServer,
         service::client::HttpClientExt,
         service::web::WebService,
-        service::web::response::{IntoResponse, Json},
+        service::web::response::Json,
     },
+    net::address::SocketAddress,
     net::user::Basic,
     rt::Executor,
+    telemetry::tracing::{self, level_filters::LevelFilter},
     utils::{backoff::ExponentialBackoff, rng::HasherRng},
 };
 
@@ -39,12 +42,11 @@ use rama::{
 
 use serde_json::json;
 use std::time::Duration;
-use tracing::level_filters::LevelFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, fmt};
 
-const ADDRESS: &str = "127.0.0.1:62004";
+const ADDRESS: SocketAddress = SocketAddress::local_ipv4(62004);
 
 #[tokio::main]
 async fn main() {
@@ -63,7 +65,7 @@ async fn main() {
         //
         // NOTE: the high level http client has also a `::basic` method
         // that can be used to add basic auth headers only for that specific request
-        AddAuthorizationLayer::basic("john", "123")
+        AddAuthorizationLayer::new(Basic::new_static("john", "123"))
             .as_sensitive(true)
             .if_not_present(true),
         RetryLayer::new(
@@ -97,7 +99,7 @@ async fn main() {
         .await
         .unwrap();
     let body = resp.try_into_string().await.unwrap();
-    tracing::info!("body: {:?}", body);
+    tracing::info!("body: {body}");
     assert_eq!(body, "Hello, World!");
 
     //--------------------------------------------------------------------------------
@@ -124,7 +126,7 @@ async fn main() {
         .try_into_json()
         .await
         .unwrap();
-    tracing::info!("info: {:?}", info);
+    tracing::info!("info: {info:?}");
     assert_eq!(info.name, "Rama");
     assert_eq!(info.example, "http_high_level_client.rs");
     assert_eq!(info.magic, 42);
@@ -141,7 +143,7 @@ async fn main() {
         .try_into_string()
         .await
         .unwrap();
-    tracing::info!("resp: {:?}", resp);
+    tracing::info!("response: {resp}");
     assert_eq!(resp, "Hello, Rama!");
 
     // Example to show how to set basic auth directly while making request,
@@ -149,7 +151,7 @@ async fn main() {
 
     let resp = client
         .get(format!("http://{ADDRESS}/info"))
-        .basic_auth("joe", "456")
+        .auth(Basic::new_static("joe", "456"))
         .send(Context::default())
         .await
         .unwrap();
@@ -167,11 +169,15 @@ fn setup_tracing() {
         .init();
 }
 
-async fn run_server(addr: &str) {
+async fn run_server(addr: SocketAddress) {
     // artificial delay to show the client retries
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
-    tracing::info!("running service at: {addr}");
+    tracing::info!(
+        network.local.address = %addr.ip_addr(),
+        network.local.port = %addr.port(),
+        "running server",
+    );
     let exec = Executor::default();
     HttpServer::auto(exec)
         .listen(
@@ -179,7 +185,7 @@ async fn run_server(addr: &str) {
             (
                 TraceLayer::new_for_http(),
                 CompressionLayer::new(),
-                AsyncRequireAuthorizationLayer::new(auth_request),
+                ValidateRequestHeaderLayer::auth(Basic::new_static("john", "123")),
             )
                 .into_layer(
                     WebService::default()
@@ -213,18 +219,4 @@ async fn run_server(addr: &str) {
         )
         .await
         .unwrap();
-}
-
-async fn auth_request<S>(ctx: Context<S>, req: Request) -> Result<(Context<S>, Request), Response> {
-    if req
-        .headers()
-        .typed_get::<Authorization<Basic>>()
-        .map(|auth| auth.username() == "john" && auth.password() == "123")
-        .unwrap_or_default()
-    {
-        tracing::info!("authorized request for {} from {}", req.uri(), "john");
-        Ok((ctx, req))
-    } else {
-        Err(StatusCode::UNAUTHORIZED.into_response())
-    }
 }

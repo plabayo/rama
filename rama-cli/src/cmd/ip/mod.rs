@@ -8,10 +8,9 @@ use rama::{
     net::socket::Interface,
     rt::Executor,
     tcp::server::TcpListener,
+    telemetry::tracing::{self, level_filters::LevelFilter},
 };
 use std::time::Duration;
-use tracing::level_filters::LevelFilter;
-use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Debug, Args)]
 /// rama ip service (returns the ip address of the client)
@@ -57,14 +56,7 @@ pub struct CliCommandIp {
 
 /// run the rama ip service
 pub async fn run(cfg: CliCommandIp) -> Result<(), BoxError> {
-    tracing_subscriber::registry()
-        .with(fmt::layer())
-        .with(
-            EnvFilter::builder()
-                .with_default_directive(LevelFilter::INFO.into())
-                .from_env_lossy(),
-        )
-        .init();
+    crate::trace::init_tracing(LevelFilter::INFO);
 
     let graceful = rama::graceful::Shutdown::default();
 
@@ -88,10 +80,7 @@ pub async fn run(cfg: CliCommandIp) -> Result<(), BoxError> {
         )
     };
 
-    tracing::info!(
-        bind = %cfg.bind,
-        "starting ip service",
-    );
+    tracing::info!("starting ip service: bind interface = {}", cfg.bind);
     let tcp_listener = TcpListener::build()
         .bind(cfg.bind.clone())
         .await
@@ -104,9 +93,9 @@ pub async fn run(cfg: CliCommandIp) -> Result<(), BoxError> {
 
     graceful.spawn_task_fn(async move |guard| {
         tracing::info!(
-            bind = %cfg.bind,
-            %bind_address,
-            "ip service ready",
+            network.local.address = %bind_address.ip(),
+            network.local.port = %bind_address.port(),
+            "ip service ready: bind interface = {}", cfg.bind
         );
 
         tcp_listener.serve_graceful(guard, tcp_service).await;

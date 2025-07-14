@@ -24,7 +24,7 @@ const PARTS: usize = 7;
 
 /// Parses a text PROXY protocol header.
 /// The given string is expected to only include the header and to end in \r\n.
-fn parse_header(header: &str) -> Result<Header, ParseError> {
+fn parse_header(header: &str) -> Result<Header<'_>, ParseError> {
     if header.is_empty() {
         return Err(ParseError::MissingPrefix);
     } else if header.len() > MAX_LENGTH {

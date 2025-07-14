@@ -1,40 +1,23 @@
-use rama_core::error::{ErrorContext, OpaqueError};
-use std::borrow::Cow;
+use rama_core::error::OpaqueError;
+use std::{borrow::Cow, fmt, str::FromStr};
 
-#[cfg(feature = "http")]
-use rama_http_types::HeaderValue;
+use crate::user::authority::StaticAuthorizer;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 /// Bearer credentials.
 pub struct Bearer(Cow<'static, str>);
 
-impl Bearer {
-    /// Try to create a [`Bearer`] from a header string.
-    pub fn try_from_header_str(value: impl AsRef<str>) -> Result<Self, OpaqueError> {
-        let value = value.as_ref();
-
-        if value.len() <= BEARER_SCHEME.len() + 1 {
-            return Err(OpaqueError::from_display("invalid bearer scheme length"));
-        }
-        if !value.as_bytes()[..BEARER_SCHEME.len()].eq_ignore_ascii_case(BEARER_SCHEME.as_bytes()) {
-            return Err(OpaqueError::from_display("invalid bearer scheme"));
-        }
-
-        let bytes = &value.as_bytes()[BEARER_SCHEME.len() + 1..];
-
-        let non_space_pos = bytes
-            .iter()
-            .position(|b| *b != b' ')
-            .ok_or_else(|| OpaqueError::from_display("missing space separator in bearer str"))?;
-        let bytes = &bytes[non_space_pos..];
-
-        let s =
-            std::str::from_utf8(bytes).context("turn scheme-trimmed bearer back into utf-8 str")?;
-        Self::try_from_clear_str(s.to_owned())
+impl fmt::Debug for Bearer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("Bearer").field(&"***").finish()
     }
+}
 
-    /// Try to create a [`Bearer`] from a [`&'static str`][str] or [`String`].
-    pub fn try_from_clear_str(s: impl Into<Cow<'static, str>>) -> Result<Self, OpaqueError> {
+impl Bearer {
+    /// Try to create a [`Bearer`] from a [`String`].
+    ///
+    /// Returns an error in case the token contains non-visible ASCII chars.
+    pub fn new(s: impl Into<String>) -> Result<Self, OpaqueError> {
         let s = s.into();
         if s.is_empty() {
             return Err(OpaqueError::from_display(
@@ -47,63 +30,71 @@ impl Bearer {
             ));
         }
 
-        Ok(Self(s))
+        Ok(Self(s.into()))
     }
 
-    /// Serialize this [`Bearer`] credential as a header string.
-    pub fn as_header_string(&self) -> String {
-        format!("{BEARER_SCHEME} {}", self.0)
-    }
-
-    #[cfg(feature = "http")]
-    /// View this [`Bearer`] as a [`HeaderValue`].
-    pub fn as_header_value(&self) -> HeaderValue {
-        let encoded = self.as_header_string();
-        // we validate the inner value upon creation
-        HeaderValue::from_str(&encoded).expect("inner value should always be valid")
-    }
-
-    /// Serialize this [`Bearer`] credential as a clear (not encoded) string.
-    pub fn as_clear_string(&self) -> String {
-        self.0.to_string()
+    /// Try to create a [`Bearer`] from a [`&'static str`][str].
+    ///
+    /// # Panic
+    ///
+    /// Panics in case the token contains non-visible ASCII chars.
+    pub fn new_static(s: &'static str) -> Self {
+        if s.is_empty() {
+            panic!("empty str cannot be used as Bearer");
+        }
+        let mut i = 0;
+        let bytes = s.as_bytes();
+        while i < bytes.len() {
+            if bytes[i] < 32 || bytes[i] >= 127 {
+                panic!("string contains non visible ASCII characters");
+            }
+            i += 1;
+        }
+        Self(s.into())
     }
 
     /// View the token part as a `&str`.
     pub fn token(&self) -> &str {
         &self.0
     }
+
+    /// Turn itself into a [`StaticAuthorizer`], so it can be used to authorize.
+    ///
+    /// Just a shortcut, QoL.
+    pub fn into_authorizer(self) -> StaticAuthorizer<Bearer> {
+        StaticAuthorizer::new(self)
+    }
 }
 
-/// Http Credentail scheme for basic credentails
-pub const BEARER_SCHEME: &str = "Bearer";
+impl TryFrom<&str> for Bearer {
+    type Error = OpaqueError;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn bearer_parse_empty() {
-        let value = Bearer::try_from_header_str("");
-        assert!(value.is_err());
+    #[inline]
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        Self::new(value.to_owned())
     }
+}
 
-    #[test]
-    fn bearer_clear_text_empty() {
-        let value = Bearer::try_from_clear_str("");
-        assert!(value.is_err());
+impl TryFrom<String> for Bearer {
+    type Error = OpaqueError;
+
+    #[inline]
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::new(value)
     }
+}
 
-    #[test]
-    fn bearer_header() {
-        let auth = Bearer::try_from_header_str("Bearer 123abc").unwrap();
-        assert_eq!(auth.token(), "123abc");
-        assert_eq!("Bearer 123abc", auth.as_header_string());
+impl FromStr for Bearer {
+    type Err = OpaqueError;
+
+    #[inline]
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        s.try_into()
     }
+}
 
-    #[test]
-    fn bearer_clear() {
-        let auth = Bearer::try_from_clear_str("foobar".to_owned()).unwrap();
-        assert_eq!(auth.token(), "foobar");
-        assert_eq!("foobar", auth.as_clear_string());
+impl fmt::Display for Bearer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
     }
 }

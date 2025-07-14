@@ -21,7 +21,7 @@
 //! # Run the example
 //!
 //! ```sh
-//! cargo run --example http_telemetry --features=http-full,telemetry
+//! cargo run --example http_telemetry --features=http-full,opentelemetry
 //! ```
 //!
 //! # Expected output
@@ -36,12 +36,13 @@
 //!
 //! You can now use tools like grafana to collect metrics from the collector running at 127.0.0.1:4317 over GRPC.
 
-use opentelemetry_otlp::{ExportConfig, Protocol, WithExportConfig};
 use rama::{
     Context, Layer,
     http::{
+        client::EasyHttpWebClient,
         layer::{opentelemetry::RequestMetricsLayer, trace::TraceLayer},
         server::HttpServer,
+        service::opentelemetry::OtelExporter,
         service::web::WebService,
         service::web::response::Html,
     },
@@ -60,9 +61,11 @@ use rama::{
             resource::{HOST_ARCH, OS_NAME},
         },
     },
+    telemetry::tracing::level_filters::LevelFilter,
 };
+
+use opentelemetry_otlp::{ExportConfig, Protocol, WithExportConfig, WithHttpConfig};
 use std::{sync::Arc, time::Duration};
-use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Debug)]
@@ -107,8 +110,12 @@ async fn main() {
         protocol: Protocol::Grpc,
     };
 
+    let exporter_http_svc = EasyHttpWebClient::default();
+    let exporter_http_client = OtelExporter::new(exporter_http_svc);
+
     let meter_exporter = opentelemetry_otlp::MetricExporter::builder()
-        .with_tonic()
+        .with_http()
+        .with_http_client(exporter_http_client)
         .with_export_config(export_config)
         .with_timeout(Duration::from_secs(10))
         .build()

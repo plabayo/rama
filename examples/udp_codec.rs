@@ -27,12 +27,12 @@
 use rama::{
     bytes::Bytes,
     error::BoxError,
+    futures::{FutureExt, SinkExt, StreamExt},
     net::address::SocketAddress,
     udp::{UdpFramed, UdpSocket, codec::BytesCodec},
 };
 
 // everything else is provided by the standard library, community crates or tokio
-use futures::{FutureExt, SinkExt, StreamExt};
 use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::{io, time};

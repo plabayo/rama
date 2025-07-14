@@ -1,10 +1,10 @@
 #![allow(dead_code)]
 
+use rama::telemetry::tracing::level_filters::LevelFilter;
 use std::{
     process::{Child, ExitStatus},
     sync::Once,
 };
-use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 /// Runner for examples.

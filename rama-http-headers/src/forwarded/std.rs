@@ -1,5 +1,6 @@
 use std::ops::{Deref, DerefMut};
 
+use rama_core::telemetry::tracing;
 use rama_http_types::{HeaderName, HeaderValue, header::FORWARDED};
 use rama_net::forwarded::ForwardedElement;
 
@@ -63,7 +64,7 @@ impl Header for Forwarded {
         {
             Ok(f) => f,
             Err(err) => {
-                tracing::trace!(err = %err, "failed to turn header into Forwarded extension");
+                tracing::trace!("failed to turn header into Forwarded extension: {err:?}");
                 return Err(Error::invalid());
             }
         };
@@ -72,7 +73,7 @@ impl Header for Forwarded {
             let other: rama_net::forwarded::Forwarded = match header.as_bytes().try_into() {
                 Ok(f) => f,
                 Err(err) => {
-                    tracing::trace!(err = %err, "failed to turn header into Forwarded extension");
+                    tracing::trace!("failed to turn header into Forwarded extension: {err:?}");
                     return Err(Error::invalid());
                 }
             };
@@ -85,7 +86,7 @@ impl Header for Forwarded {
     fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
         let s = self.0.to_string();
 
-        let value = HeaderValue::from_str(&s)
+        let value = HeaderValue::try_from(s)
             .expect("Forwarded extension should always result in a valid header value");
 
         values.extend(std::iter::once(value));

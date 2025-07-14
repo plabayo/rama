@@ -44,7 +44,7 @@ impl Header for XForwardedHost {
 
     fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
         let s = self.0.to_string();
-        values.extend(Some(HeaderValue::from_str(&s).unwrap()))
+        values.extend(Some(HeaderValue::try_from(s).unwrap()))
     }
 }
 

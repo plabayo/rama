@@ -55,7 +55,8 @@ async fn test_socks5_acceptor_auth_flow_used_udp_associate_failure_method_not_su
         .write(b"\x05\x07\x00\x01\x00\x00\x00\x00\x00\x00")
         .build();
 
-    let server = Socks5Acceptor::new().with_auth(Socks5Auth::username_password("john", "secret"));
+    let server = Socks5Acceptor::new()
+        .with_authorizer(user::Basic::new_static("john", "secret").into_authorizer());
     let result = server.accept(Context::default(), stream).await;
     assert!(result.is_err());
 }
@@ -77,7 +78,8 @@ async fn test_socks5_acceptor_auth_flow_username_only_udp_associate_failure_meth
         .write(b"\x05\x07\x00\x01\x00\x00\x00\x00\x00\x00")
         .build();
 
-    let server = Socks5Acceptor::new().with_auth(Socks5Auth::username("john"));
+    let server = Socks5Acceptor::new()
+        .with_authorizer(user::Basic::new_static_insecure("john").into_authorizer());
     let result = server.accept(Context::default(), stream).await;
     assert!(result.is_err());
 }

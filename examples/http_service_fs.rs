@@ -34,7 +34,7 @@ async fn main() {
 
     // This will serve files in the current working dir
     let cwd = std::env::current_dir().expect("current working dir");
-    println!("Serving files from: {:?}", cwd);
+    println!("Serving files from: {cwd:?}");
     let http_fs_server = HttpServer::auto(exec).service(ServeDir::new(cwd));
 
     // Serve the HTTP server over TCP,

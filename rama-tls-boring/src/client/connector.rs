@@ -1,7 +1,9 @@
 use crate::RamaTryInto;
 use rama_boring_tokio::SslStream;
 use rama_core::error::{BoxError, ErrorExt, OpaqueError};
+use rama_core::telemetry::tracing;
 use rama_core::{Context, Layer, Service};
+use rama_http_types::conn::TargetHttpVersion;
 use rama_net::address::Host;
 use rama_net::client::{ConnectorService, EstablishedClientConnection};
 use rama_net::stream::Stream;
@@ -247,7 +249,8 @@ where
             .unwrap_or_default()
         {
             tracing::trace!(
-                authority = %transport_ctx.authority,
+                server.address = %transport_ctx.authority.host(),
+                server.port = %transport_ctx.authority.port(),
                 "TlsConnector(auto): protocol not secure, return inner connection",
             );
             return Ok(EstablishedClientConnection {
@@ -263,7 +266,8 @@ where
         let (stream, negotiated_params) = handshake(connector_data, host, conn).await?;
 
         tracing::trace!(
-            authority = %transport_ctx.authority,
+            server.address = %transport_ctx.authority.host(),
+            server.port = %transport_ctx.authority.port(),
             "TlsConnector(auto): protocol secure, established tls connection",
         );
 
@@ -302,9 +306,10 @@ where
                     .context("TlsConnector(auto): compute transport context")
             })?;
         tracing::trace!(
-            authority = %transport_ctx.authority,
-            app_protocol = ?transport_ctx.app_protocol,
-            "TlsConnector(secure): attempt to secure inner connection",
+            server.address = %transport_ctx.authority.host(),
+            server.port = %transport_ctx.authority.port(),
+            "TlsConnector(secure): attempt to secure inner connection w/ app protocol: {:?}",
+            transport_ctx.app_protocol,
         );
 
         let host = transport_ctx.authority.host().clone();
@@ -372,13 +377,20 @@ impl<S, K> TlsConnector<S, K> {
         &self,
         ctx: &mut Context<State>,
     ) -> Result<TlsConnectorData, OpaqueError> {
-        let base_builder = self.connector_data.clone();
+        let target_version = ctx
+            .get::<TargetHttpVersion>()
+            .map(|version| ApplicationProtocol::try_from(version.0))
+            .transpose()?;
+
         let builder = ctx.get_or_insert_default::<TlsConnectorDataBuilder>();
 
-        if let Some(base_builder) = base_builder {
-            builder.push_base_config(base_builder);
+        if let Some(base_builder) = self.connector_data.clone() {
+            builder.prepend_base_config(base_builder);
         }
 
+        if let Some(target_version) = target_version {
+            builder.try_set_rama_alpn_protos(&[target_version])?;
+        }
         builder.build()
     }
 }
@@ -396,7 +408,7 @@ where
         None => TlsConnectorDataBuilder::new().build()?,
     };
 
-    let server_host = data.server_name.unwrap_or(server_host);
+    let server_host = data.server_name.map(Host::Name).unwrap_or(server_host);
     let stream: SslStream<T> =
         rama_boring_tokio::connect(data.config, server_host.to_string().as_str(), stream)
             .await
@@ -435,7 +447,7 @@ where
                 .selected_alpn_protocol()
                 .map(ApplicationProtocol::from);
             if let Some(ref proto) = application_layer_protocol {
-                tracing::trace!(%proto, "boring client (connector) has selected ALPN");
+                tracing::trace!("boring client (connector) has selected ALPN {proto}");
             }
 
             let server_certificate_chain = match store_server_certificate_chain

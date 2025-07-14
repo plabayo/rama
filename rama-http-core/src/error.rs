@@ -106,12 +106,6 @@ pub(super) enum User {
     /// User tried to respond with a 1xx (not 101) response code.
     UnsupportedStatusCode,
 
-    /// User tried polling for an upgrade that doesn't exist.
-    NoUpgrade,
-
-    /// User polled for an upgrade, but low-level API is not using upgrades.
-    ManualUpgrade,
-
     /// The dispatch task is gone.
     DispatchGone,
 }
@@ -265,14 +259,6 @@ impl Error {
         Error::new_user(User::UnsupportedStatusCode)
     }
 
-    pub(super) fn new_user_no_upgrade() -> Error {
-        Error::new_user(User::NoUpgrade)
-    }
-
-    pub(super) fn new_user_manual_upgrade() -> Error {
-        Error::new_user(User::ManualUpgrade)
-    }
-
     pub(super) fn new_user_service<E: Into<Cause>>(cause: E) -> Error {
         Error::new_user(User::Service).with(cause)
     }
@@ -336,8 +322,6 @@ impl Error {
             Kind::User(User::UnsupportedStatusCode) => {
                 "response has 1xx status code, not supported by server"
             }
-            Kind::User(User::NoUpgrade) => "no upgrade available",
-            Kind::User(User::ManualUpgrade) => "upgrade expected but low level API in use",
             Kind::User(User::DispatchGone) => "dispatch task is gone",
         }
     }

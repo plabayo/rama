@@ -12,6 +12,7 @@ from selenium.webdriver.edge.options import Options as EdgeOptions
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.by import By
+import json
 
 # capability source:
 # > <https://www.browserstack.com/docs/automate/capabilities>
@@ -24,7 +25,7 @@ desktop_permutations = [
     ["Chrome", "Edge", "Firefox", "Safari"],
     (
         [["Windows", v] for v in ["10", "11"]]
-        + [["OS X", v] for v in ["Ventura", "Sonoma", "Sequoia"]]
+        + [["OS X", v] for v in ["Ventura", "Sonoma", "Sequoia", "Tahoe"]]
     ),
 ]
 
@@ -106,6 +107,7 @@ desktop_desired_caps = [
         "osVersion": comb[2][1],
         "buildName": build_name,
         "sessionName": f"{comb[1]} {comb[0]} on {comb[2][0]} {comb[2][1]}",
+        "browserstack.networkLogs": True,
     }
     for comb in itertools.product(*desktop_permutations)
     if (comb[1] != "Safari" or (comb[2][0] == "OS X" and comb[0] == "latest"))
@@ -119,6 +121,7 @@ mobile_desired_caps = [
         "osVersion": os_version,
         "buildName": build_name,
         "sessionName": f"{device} {os_version} {browser}",
+        "browserstack.networkLogs": True,
     }
     for (device, os_version, browser) in mobile_configs
 ]
@@ -224,13 +227,15 @@ def run_session(cap):
 
 
 def mark_test_status(status, reason, driver):
-    driver.execute_script(
-        'browserstack_executor: {"action": "setSessionStatus", "arguments": {"status":"'  # noqa: E501
-        + status
-        + '", "reason": "'
-        + reason
-        + '"}}',
-    )
+    payload = {
+        'action': 'setSessionStatus',
+        'arguments': {
+            'status': status,    # 'passed' or 'failed'
+            'reason': reason
+        }
+    }
+    js = 'browserstack_executor: {}'.format(json.dumps(payload))
+    driver.execute_script(js)
 
 
 print("start script")

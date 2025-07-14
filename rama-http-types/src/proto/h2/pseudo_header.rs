@@ -1,3 +1,4 @@
+use rama_core::telemetry::tracing;
 use serde::{Deserialize, Serialize, de::Error};
 use smallvec::SmallVec;
 use std::{fmt, str::FromStr};

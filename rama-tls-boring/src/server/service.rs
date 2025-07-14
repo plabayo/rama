@@ -9,11 +9,13 @@ use crate::{
     types::SecureTransport,
 };
 use parking_lot::Mutex;
+use rama_core::telemetry::tracing::{debug, trace};
 use rama_core::{
     Context, Service,
     error::{BoxError, ErrorContext, ErrorExt, OpaqueError},
 };
 use rama_net::{
+    address::Host,
     http::RequestContext,
     stream::Stream,
     tls::{ApplicationProtocol, DataEncoding, client::NegotiatedTlsParameters},
@@ -21,7 +23,6 @@ use rama_net::{
 };
 use rama_utils::macros::define_inner_service_accessors;
 use std::{io::ErrorKind, sync::Arc};
-use tracing::{debug, trace};
 
 /// A [`Service`] which accepts TLS connections and delegates the underlying transport
 /// stream to the given service.
@@ -90,15 +91,18 @@ where
             .set_default_verify_paths()
             .context("build boring ssl acceptor: set default verify paths")?;
 
-        let server_host = ctx
+        let server_domain = ctx
             .get::<SecureTransport>()
             .and_then(|t| t.client_hello())
-            .and_then(|c| c.ext_server_name())
+            .and_then(|c| c.ext_server_name().map(|domain| Host::Name(domain.clone())))
             .or_else(|| {
                 ctx.get::<TransportContext>()
-                    .map(|ctx| ctx.authority.host())
+                    .map(|ctx| ctx.authority.host().clone())
             })
-            .or_else(|| ctx.get::<RequestContext>().map(|ctx| ctx.authority.host()));
+            .or_else(|| {
+                ctx.get::<RequestContext>()
+                    .map(|ctx| ctx.authority.host().clone())
+            });
 
         // We use arc mutex instead of oneshot channel since it is possible that certificate callbacks
         // are called multiples times (fn closures type). But in testing it seems fnOnce should also
@@ -111,7 +115,7 @@ where
         let mut acceptor_builder = tls_config
             .cert_source
             .clone()
-            .issue_certs(acceptor_builder, server_host.cloned(), &maybe_client_hello)
+            .issue_certs(acceptor_builder, server_domain, &maybe_client_hello)
             .await?;
 
         if let Some(min_ver) = tls_config.protocol_versions.iter().flatten().min() {
@@ -155,14 +159,12 @@ where
                             Err(error) => {
                                 return Err(if error.kind() == ErrorKind::UnexpectedEof {
                                     trace!(
-                                        %error,
-                                        "tls boring server service: alpn protos callback: no compatible ALPN found",
+                                        "tls boring server service: alpn protos callback: no compatible ALPN found: {error:?}",
                                     );
                                     AlpnError::NOACK
                                 } else {
                                     debug!(
-                                        %error,
-                                        "tls boring server service: alpn protos callback: client ALPN decode error",
+                                        "tls boring server service: alpn protos callback: client ALPN decode error: {error:?}",
                                     );
                                     AlpnError::ALERT_FATAL
                                 })
@@ -176,7 +178,7 @@ where
         if let Some(keylog_filename) = tls_config.keylog_intent.file_path() {
             let handle = new_key_log_file_handle(keylog_filename)?;
             acceptor_builder.set_keylog_callback(move |_, line| {
-                let line = format!("{}\n", line);
+                let line = format!("{line}\n");
                 handle.write_log_line(line);
             });
         }

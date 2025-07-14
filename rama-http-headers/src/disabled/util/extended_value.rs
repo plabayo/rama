@@ -46,14 +46,13 @@ pub struct ExtendedValue {
 ///               ; token except ( "*" / "'" / "%" )
 /// ```
 pub fn parse_extended_value(val: &str) -> ::Result<ExtendedValue> {
-
     // Break into three pieces separated by the single-quote character
-    let mut parts = val.splitn(3,'\'');
+    let mut parts = val.splitn(3, '\'');
 
     // Interpret the first piece as a Charset
     let charset: Charset = match parts.next() {
         None => return Err(::Error::Header),
-        Some(n) => try!(FromStr::from_str(n)),
+        Some(n) => FromStr::from_str(n)?,
     };
 
     // Interpret the second piece as a language tag
@@ -63,7 +62,7 @@ pub fn parse_extended_value(val: &str) -> ::Result<ExtendedValue> {
         Some(s) => match s.parse() {
             Ok(lt) => Some(lt),
             Err(_) => return Err(::Error::Header),
-        }
+        },
     };
 
     // Interpret the third piece as a sequence of value characters
@@ -79,11 +78,12 @@ pub fn parse_extended_value(val: &str) -> ::Result<ExtendedValue> {
     })
 }
 
-
 impl Display for ExtendedValue {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let encoded_value =
-            percent_encoding::percent_encode(&self.value[..], self::percent_encoding_http::HTTP_VALUE);
+        let encoded_value = percent_encoding::percent_encode(
+            &self.value[..],
+            self::percent_encoding_http::HTTP_VALUE,
+        );
         if let Some(ref lang) = self.language_tag {
             write!(f, "{}'{}'{}", self.charset, lang, encoded_value)
         } else {
@@ -118,9 +118,9 @@ mod percent_encoding_http {
 
 #[cfg(test)]
 mod tests {
-    use shared::Charset;
     use super::{ExtendedValue, parse_extended_value};
     use language_tags::LanguageTag;
+    use shared::Charset;
 
     #[test]
     fn test_parse_extended_value_with_encoding_and_language_tag() {
@@ -133,7 +133,10 @@ mod tests {
         assert_eq!(Charset::Iso_8859_1, extended_value.charset);
         assert!(extended_value.language_tag.is_some());
         assert_eq!(expected_language_tag, extended_value.language_tag.unwrap());
-        assert_eq!(vec![163, b' ', b'r', b'a', b't', b'e', b's'], extended_value.value);
+        assert_eq!(
+            vec![163, b' ', b'r', b'a', b't', b'e', b's'],
+            extended_value.value
+        );
     }
 
     #[test]
@@ -146,7 +149,13 @@ mod tests {
         let extended_value = result.unwrap();
         assert_eq!(Charset::Ext("UTF-8".to_string()), extended_value.charset);
         assert!(extended_value.language_tag.is_none());
-        assert_eq!(vec![194, 163, b' ', b'a', b'n', b'd', b' ', 226, 130, 172, b' ', b'r', b'a', b't', b'e', b's'], extended_value.value);
+        assert_eq!(
+            vec![
+                194, 163, b' ', b'a', b'n', b'd', b' ', 226, 130, 172, b' ', b'r', b'a', b't',
+                b'e', b's'
+            ],
+            extended_value.value
+        );
     }
 
     #[test]
@@ -183,10 +192,14 @@ mod tests {
         let extended_value = ExtendedValue {
             charset: Charset::Ext("UTF-8".to_string()),
             language_tag: None,
-            value: vec![194, 163, b' ', b'a', b'n', b'd', b' ', 226, 130, 172, b' ', b'r', b'a',
-                        b't', b'e', b's'],
+            value: vec![
+                194, 163, b' ', b'a', b'n', b'd', b' ', 226, 130, 172, b' ', b'r', b'a', b't',
+                b'e', b's',
+            ],
         };
-        assert_eq!("UTF-8''%C2%A3%20and%20%E2%82%AC%20rates",
-                   format!("{}", extended_value));
+        assert_eq!(
+            "UTF-8''%C2%A3%20and%20%E2%82%AC%20rates",
+            format!("{}", extended_value)
+        );
     }
 }

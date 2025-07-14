@@ -1,5 +1,7 @@
 use crate::RamaTryFrom;
+use itertools::Itertools;
 use rama_core::error::{ErrorContext, OpaqueError};
+use rama_core::telemetry::tracing::trace;
 use rama_net::tls::client::{ClientHello, parse_client_hello};
 
 impl<'ssl> RamaTryFrom<rama_boring::ssl::ClientHello<'ssl>> for ClientHello {
@@ -17,9 +19,6 @@ impl<'ssl> RamaTryFrom<&rama_boring::ssl::ClientHello<'ssl>> for ClientHello {
         parse_client_hello(value.as_bytes()).context("parse boring ssl ClientHello")
     }
 }
-
-use itertools::Itertools;
-use tracing::trace;
 
 macro_rules! try_from_mapping {
     (

@@ -12,7 +12,11 @@ use rama_boring::{
         extension::{BasicConstraints, KeyUsage, SubjectKeyIdentifier},
     },
 };
-use rama_core::error::{ErrorContext, ErrorExt, OpaqueError};
+use rama_core::telemetry::tracing::{debug, trace};
+use rama_core::{
+    bytes::Bytes,
+    error::{ErrorContext, ErrorExt, OpaqueError},
+};
 use rama_net::tls::{
     ApplicationProtocol, CertificateCompressionAlgorithm, ExtensionId, KeyLogIntent,
     client::ClientHello,
@@ -21,10 +25,9 @@ use rama_net::tls::{
     DataEncoding,
     client::{ClientAuth, ClientHelloExtension},
 };
-use rama_net::{address::Host, tls::client::ServerVerifyMode};
+use rama_net::{address::Domain, tls::client::ServerVerifyMode};
 use rama_utils::macros::generate_set_and_with;
 use std::{fmt, sync::Arc};
-use tracing::{debug, trace};
 
 #[cfg(feature = "compression")]
 use super::compress_certificate::{
@@ -43,7 +46,7 @@ use crate::keylog::new_key_log_file_handle;
 pub struct TlsConnectorData {
     pub config: ConnectConfiguration,
     pub store_server_certificate_chain: bool,
-    pub server_name: Option<Host>,
+    pub server_name: Option<Domain>,
 }
 
 impl std::fmt::Debug for TlsConnectorData {
@@ -75,7 +78,7 @@ pub struct TlsConnectorDataBuilder {
     keylog_intent: Option<KeyLogIntent>,
     cipher_list: Option<Vec<u16>>,
     store_server_certificate_chain: Option<bool>,
-    alpn_protos: Option<Vec<u8>>,
+    alpn_protos: Option<Bytes>,
     min_ssl_version: Option<SslVersion>,
     max_ssl_version: Option<SslVersion>,
     record_size_limit: Option<u16>,
@@ -90,7 +93,7 @@ pub struct TlsConnectorDataBuilder {
     client_auth: Option<ConnectorConfigClientAuth>,
     certificate_compression_algorithms: Option<Vec<CertificateCompressionAlgorithm>>,
     delegated_credential_schemes: Option<Vec<SslSignatureAlgorithm>>,
-    server_name: Option<Host>,
+    server_name: Option<Domain>,
 }
 
 macro_rules! implement_copy_getters {
@@ -155,17 +158,33 @@ impl TlsConnectorDataBuilder {
     );
 
     implement_reference_getters!(
-        keylog_intent: Option<KeyLogIntent>,
         cipher_list: Option<Vec<u16>>,
         extension_order: Option<Vec<u16>>,
-        alpn_protos: Option<Vec<u8>>,
+        alpn_protos: Option<Bytes>,
         curves: Option<Vec<SslCurve>>,
         verify_algorithm_prefs: Option<Vec<SslSignatureAlgorithm>>,
         client_auth: Option<ConnectorConfigClientAuth>,
         certificate_compression_algorithms: Option<Vec<CertificateCompressionAlgorithm>>,
         delegated_credential_schemes: Option<Vec<SslSignatureAlgorithm>>,
-        server_name: Option<Host>,
+        server_name: Option<Domain>,
     );
+
+    /// Return the SSL keylog file path if one exists.
+    pub fn keylog_filepath(&self) -> Option<String> {
+        if let Some(intent) = self.keylog_intent_inner() {
+            return intent.file_path();
+        }
+        KeyLogIntent::default().file_path()
+    }
+
+    fn keylog_intent_inner(&self) -> Option<&KeyLogIntent> {
+        self.keylog_intent.as_ref().or_else(|| {
+            self.base_builders
+                .iter()
+                .rev()
+                .find_map(|builder| builder.keylog_intent_inner())
+        })
+    }
 
     pub fn new() -> Self {
         Self::default()
@@ -200,7 +219,7 @@ impl TlsConnectorDataBuilder {
 
     /// Add [`ConfigBuilder`] to the start of our base builders
     ///
-    /// Builder in the start is evaluated as the the last one we iterating over builders
+    /// Builder in the start is evaluated as the last one when iterating over builders
     pub fn prepend_base_config(&mut self, config: Arc<TlsConnectorDataBuilder>) -> &mut Self {
         self.base_builders.insert(0, config);
         self
@@ -255,7 +274,7 @@ impl TlsConnectorDataBuilder {
         /// Order of protocols here is important. When server supports
         /// multiple protocols it will choose the first one it supports
         /// from this list.
-        pub fn alpn_protos(mut self, protos: Option<Vec<u8>>) -> Self {
+        pub fn alpn_protos(mut self, protos: Option<Bytes>) -> Self {
             self.alpn_protos = protos;
             self
         }
@@ -273,7 +292,7 @@ impl TlsConnectorDataBuilder {
         ) -> Result<Self, OpaqueError> {
             self.alpn_protos = protos
                 .map(|protos| {
-                    ApplicationProtocol::encode_alpns_to_vec(protos)
+                    ApplicationProtocol::encode_alpns(protos)
                         .context("build (boring) ssl connector: encode alpns")
                 })
                 .transpose()?;
@@ -393,7 +412,7 @@ impl TlsConnectorDataBuilder {
 
     generate_set_and_with!(
         /// Set server name used for SNI extension
-        pub fn server_name(mut self, name: Option<Host>) -> Self {
+        pub fn server_name(mut self, name: Option<Domain>) -> Self {
             self.server_name = name;
             self
         }
@@ -417,14 +436,10 @@ impl TlsConnectorDataBuilder {
             rama_boring::ssl::SslConnector::builder(rama_boring::ssl::SslMethod::tls_client())
                 .context("create (boring) ssl connector builder")?;
 
-        if let Some(keylog_filename) = self
-            .keylog_intent()
-            .as_ref()
-            .and_then(|intent| intent.file_path())
-        {
+        if let Some(keylog_filename) = self.keylog_filepath() {
             let handle = new_key_log_file_handle(keylog_filename)?;
             cfg_builder.set_keylog_callback(move |_, line| {
-                let line = format!("{}\n", line);
+                let line = format!("{line}\n");
                 handle.write_log_line(line);
             });
         }
@@ -608,7 +623,7 @@ impl std::fmt::Debug for TlsConnectorDataBuilder {
             .field("server_verify_mode", &self.server_verify_mode)
             .field("server_verify_mode()", &self.server_verify_mode())
             .field("keylog_intent", &self.keylog_intent)
-            .field("keylog_intent()", &self.keylog_intent())
+            .field("keylog_intent()", &self.keylog_intent_inner())
             .field("cipher_list", &self.cipher_list)
             .field("cipher_list()", &self.cipher_list())
             .field(
@@ -725,21 +740,14 @@ impl TlsConnectorDataBuilder {
             // use the extensions that we can use for the builder
             for extension in cfg.extensions.iter().flatten() {
                 match extension {
-                    ClientHelloExtension::ServerName(maybe_host) => {
-                        server_name = match maybe_host {
-                            Some(Host::Name(_)) => {
+                    ClientHelloExtension::ServerName(maybe_domain) => {
+                        server_name = match maybe_domain {
+                            Some(_) => {
                                 trace!(
                                     "TlsConnectorData: builder: from std client config: set server (domain) name from host: {:?}",
-                                    maybe_host
+                                    maybe_domain
                                 );
-                                maybe_host.clone()
-                            }
-                            Some(Host::Address(_)) => {
-                                trace!(
-                                    "TlsConnectorData: builder: from std client config: set server (ip) name from host: {:?}",
-                                    maybe_host
-                                );
-                                maybe_host.clone()
+                                maybe_domain.clone()
                             }
                             None => {
                                 trace!(
@@ -754,12 +762,9 @@ impl TlsConnectorDataBuilder {
                             "TlsConnectorData: builder: from std client config: alpn: {:?}",
                             alpn_list
                         );
-                        let mut buf = vec![];
-                        for alpn in alpn_list {
-                            alpn.encode_wire_format(&mut buf)
-                                .context("build (boring) ssl connector: encode alpn")?;
-                        }
-                        alpn_protos = Some(buf);
+                        let alpns = ApplicationProtocol::encode_alpns(alpn_list)
+                            .context("build (boring) ssl connector: encode alpns")?;
+                        alpn_protos = Some(alpns);
                     }
                     ClientHelloExtension::SupportedGroups(groups) => {
                         trace!(
@@ -895,15 +900,21 @@ impl TlsConnectorDataBuilder {
                     }
                     other => match other.id() {
                         ExtensionId::STATUS_REQUEST | ExtensionId::STATUS_REQUEST_V2 => {
-                            trace!(ext = ?other, "TlsConnectorData: builder: from std client config: enable ocsp stapling");
+                            trace!(
+                                "TlsConnectorData: builder: from std client config: enable ocsp stapling (ext = {other:?})"
+                            );
                             ocsp_stapling_enabled = true;
                         }
                         ExtensionId::SIGNED_CERTIFICATE_TIMESTAMP => {
-                            trace!(ext = ?other, "TlsConnectorData: builder: from std client config: enable signed cert timestamps");
+                            trace!(
+                                "TlsConnectorData: builder: from std client config: enable signed cert timestamps (ext = {other:?})"
+                            );
                             signed_cert_timestamps_enabled = true;
                         }
                         _ => {
-                            trace!(ext = ?other, "TlsConnectorData: builder: from std client config: ignore client hello ext");
+                            trace!(
+                                "TlsConnectorData: builder: from std client config: ignore client hello ext (ext = {other:?})"
+                            );
                         }
                     },
                 }

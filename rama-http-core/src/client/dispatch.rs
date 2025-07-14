@@ -4,10 +4,10 @@ use std::task::{Context, Poll};
 
 use pin_project_lite::pin_project;
 use rama_core::error::BoxError;
+use rama_core::telemetry::tracing::trace;
 use rama_http_types::dep::http_body::Body;
 use rama_http_types::{Request, Response};
 use tokio::sync::{mpsc, oneshot};
-use tracing::trace;
 
 use crate::{body::Incoming, proto::h2::client::ResponseFutMap};
 
@@ -394,7 +394,7 @@ mod tests {
             .expect_err("promise should error");
         match (err.error.is_canceled(), err.message) {
             (true, Some(_)) => (),
-            e => panic!("expected Error::Cancel(_), found {:?}", e),
+            e => panic!("expected Error::Cancel(_), found {e:?}"),
         }
     }
 

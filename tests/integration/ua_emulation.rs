@@ -1,6 +1,6 @@
 use rama::http::Request;
 use rama::http::client::HttpConnector;
-use rama::http::client::http_inspector::HttpsAlpnModifier;
+use rama::http::client::http_inspector::{HttpVersionAdapater, HttpsAlpnModifier};
 use rama::http::proto::h1::Http1HeaderMap;
 use rama::http::server::HttpServer;
 use rama::http::{Body, Response};
@@ -29,6 +29,7 @@ use rama::ua::profile::{
 use rama::ua::profile::{TlsProfile, UserAgentProfile};
 use rama::ua::{PlatformKind, UserAgentKind};
 use rama::{Context, Layer, Service};
+use rama_ua::emulate::SelectedUserAgentProfile;
 use std::convert::Infallible;
 use std::fmt;
 use std::net::Ipv4Addr;
@@ -211,6 +212,7 @@ async fn test_ua_emulation() {
                         fetch: None,
                         xhr: None,
                         form: None,
+                        ws : None,
                     },
                     settings: Http1Settings::default(),
                 }),
@@ -234,6 +236,7 @@ async fn test_ua_emulation() {
                         fetch: None,
                         xhr: None,
                         form: None,
+                        ws : None,
                     },
                     settings: Http2Settings::default(),
                 }),
@@ -260,21 +263,21 @@ async fn test_ua_emulation() {
             let expected = ctx.state().expected;
             let description = ctx.state().description;
 
-            println!("server receives {}: {:?}", description, expected);
+            println!("server receives {description}: {expected:?}");
 
             let ja4h = Ja4H::compute(&req).expect(description);
-            println!("server receives {}: ja4h: {:?}", description, ja4h);
-            assert_eq!(ja4h.to_string(), expected.ja4h, "{}", description);
+            println!("server receives {description}: ja4h: {ja4h:?}");
+            assert_eq!(ja4h.to_string(), expected.ja4h, "{description}");
 
             // TODO: enable ja3 + ja4 tests
             // once we support more tls extensions
 
             let ja4 = Ja4::compute(ctx.extensions()).expect(description);
-            println!("server receives {}: ja4: {:?}", description, ja4);
+            println!("server receives {description}: ja4: {ja4:?}");
             // assert_eq!(ja4.to_string(), expected.ja4, "{}", description);
 
             let ja3 = format!("{:x}", Ja3::compute(ctx.extensions()).expect(description));
-            println!("server receives {}: ja3: {:?}", description, ja3);
+            println!("server receives {description}: ja3: {ja3:?}");
             // assert_eq!(ja3, expected.ja3, "{}", description);
 
             Ok(Response::new(Body::empty()))
@@ -289,6 +292,7 @@ async fn test_ua_emulation() {
             http: test_case.http_profile,
             tls: TlsProfile {
                 client_config: Arc::new(client_hello.into()),
+                ws_client_config_overwrites: None,
             },
             runtime: None,
         };
@@ -308,6 +312,7 @@ async fn test_ua_emulation() {
                 ))
                 .with_jit_req_inspector((
                     HttpsAlpnModifier::default(),
+                    HttpVersionAdapater::default(),
                     UserAgentEmulateHttpConnectModifier::default(),
                 ))
                 .with_svc_req_inspector(UserAgentEmulateHttpRequestModifier::default());
@@ -370,7 +375,7 @@ async fn test_ua_embedded_profiles_are_all_resulting_in_correct_traffic_flow() {
                 .into_shared_builder();
 
             let client = (
-                UserAgentEmulateLayer::new(profile),
+                UserAgentEmulateLayer::new(profile.clone()),
                 EmulateTlsProfileLayer::new().with_builder_overwrites(tls_config),
             )
                 .into_layer(service_fn(async |ctx: Context<State>, req: Request| {
@@ -381,19 +386,25 @@ async fn test_ua_embedded_profiles_are_all_resulting_in_correct_traffic_flow() {
                     ))
                     .with_jit_req_inspector((
                         HttpsAlpnModifier::default(),
+                        HttpVersionAdapater::default(),
                         UserAgentEmulateHttpConnectModifier::default(),
                     ))
                     .with_svc_req_inspector(UserAgentEmulateHttpRequestModifier::default());
 
-                    let EstablishedClientConnection { ctx, req, conn } =
-                        connector.serve(ctx, req).await.unwrap();
+                    let profile = ctx.get::<SelectedUserAgentProfile>().unwrap();
+                    let expect_msg = format!("selected profile to work: {profile:?}");
 
-                    Ok::<_, Infallible>(conn.serve(ctx, req).await.unwrap())
+                    let EstablishedClientConnection { ctx, req, conn } =
+                        connector.serve(ctx, req).await.expect(&expect_msg);
+
+                    Ok::<_, Infallible>(conn.serve(ctx, req).await.expect(&expect_msg))
                 }));
 
             let ctx = Context::with_state(State {
                 counter: counter.clone(),
             });
+
+            let expect_msg = format!("profile to work: {profile:?}");
 
             client
                 .serve(
@@ -401,10 +412,10 @@ async fn test_ua_embedded_profiles_are_all_resulting_in_correct_traffic_flow() {
                     Request::builder()
                         .uri("https://www.example.com")
                         .body(Body::empty())
-                        .unwrap(),
+                        .expect(&expect_msg),
                 )
                 .await
-                .unwrap();
+                .expect(&expect_msg);
         });
     }
 

@@ -941,10 +941,10 @@ impl SocketOptions {
         }
         #[cfg(target_os = "linux")]
         if let Some(transparent) = self.ip_transparent {
-            socket.set_ip_transparent(transparent)?;
+            socket.set_ip_transparent_v4(transparent)?;
         }
         if let Some(ttl) = self.ttl {
-            socket.set_ttl(ttl)?;
+            socket.set_ttl_v4(ttl)?;
         }
         #[cfg(not(any(
             target_os = "fuchsia",
@@ -954,7 +954,7 @@ impl SocketOptions {
             target_os = "haiku",
         )))]
         if let Some(tos) = self.tos {
-            socket.set_tos(tos)?;
+            socket.set_tos_v4(tos)?;
         }
         #[cfg(not(any(
             target_os = "aix",
@@ -972,7 +972,7 @@ impl SocketOptions {
             target_os = "vita",
         )))]
         if let Some(recv_tos) = self.recv_tos {
-            socket.set_recv_tos(recv_tos)?;
+            socket.set_recv_tos_v4(recv_tos)?;
         }
         if let Some(loop_v4) = self.multicast_loop_v4 {
             socket.set_multicast_loop_v4(loop_v4)?;
@@ -1061,12 +1061,12 @@ impl SocketOptions {
             socket.set_tcp_keepalive(&keep_alive.into_socket_keep_alive())?;
         }
         if let Some(no_delay) = self.tcp_no_delay {
-            socket.set_nodelay(no_delay)?;
+            socket.set_tcp_nodelay(no_delay)?;
         }
 
         #[cfg(all(unix, not(target_os = "redox")))]
         if let Some(mss) = self.tcp_max_segments {
-            socket.set_mss(mss)?;
+            socket.set_tcp_mss(mss)?;
         }
 
         #[cfg(any(target_os = "freebsd", target_os = "linux"))]
@@ -1080,22 +1080,22 @@ impl SocketOptions {
                 socket.set_mark(mark)?;
             }
             if let Some(cork) = self.tcp_cork {
-                socket.set_cork(cork)?;
+                socket.set_tcp_cork(cork)?;
             }
             if let Some(quickack) = self.tcp_quick_ack {
-                socket.set_quickack(quickack)?;
+                socket.set_tcp_quickack(quickack)?;
             }
             if let Some(timeouts) = self.tcp_thin_linear_timeouts {
-                socket.set_thin_linear_timeouts(timeouts)?;
+                socket.set_tcp_thin_linear_timeouts(timeouts)?;
             }
             if let Some(tcp_user_timeout) = self.tcp_user_timeout {
                 socket.set_tcp_user_timeout(Some(tcp_user_timeout))?;
             }
             if let Some(freebind) = self.freebind {
-                socket.set_freebind(freebind)?;
+                socket.set_freebind_v4(freebind)?;
             }
             if let Some(freebind_ipv6) = self.freebind_ipv6 {
-                socket.set_freebind_ipv6(freebind_ipv6)?;
+                socket.set_freebind_v6(freebind_ipv6)?;
             }
         }
 

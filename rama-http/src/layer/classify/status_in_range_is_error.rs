@@ -83,8 +83,8 @@ pub enum StatusInRangeFailureClass {
 impl fmt::Display for StatusInRangeFailureClass {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::StatusCode(code) => write!(f, "Status code: {}", code),
-            Self::Error(error) => write!(f, "Error: {}", error),
+            Self::StatusCode(code) => write!(f, "Status code: {code}"),
+            Self::Error(error) => write!(f, "Error: {error}"),
         }
     }
 }

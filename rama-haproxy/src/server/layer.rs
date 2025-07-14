@@ -2,6 +2,7 @@ use crate::protocol::{HeaderResult, PartialResult, v1, v2};
 use rama_core::{
     Context, Layer, Service,
     error::{BoxError, ErrorContext, ErrorExt, OpaqueError},
+    telemetry::tracing,
 };
 use rama_net::{
     forwarded::{Forwarded, ForwardedElement},
@@ -172,7 +173,7 @@ where
                     .into_boxed());
             }
 
-            tracing::debug!("Incomplete header. Read {} bytes so far.", read);
+            tracing::debug!("Incomplete header. Read {read} bytes so far.");
         };
 
         let consumed = match header {

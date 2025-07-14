@@ -1,7 +1,8 @@
-use futures_core::Stream;
-use futures_sink::Sink;
 use rama_core::bytes::{BufMut, BytesMut};
 use rama_core::error::{BoxError, OpaqueError};
+use rama_core::futures::Sink;
+use rama_core::futures::Stream;
+use rama_core::telemetry::tracing;
 use rama_net::{address::SocketAddress, socket::Interface};
 use rama_udp::UdpSocket;
 use rama_udp::codec::{Decoder, Encoder};
@@ -53,7 +54,8 @@ impl<S: rama_net::stream::Stream + Unpin> UdpSocketRelayBinder<S> {
         })?;
 
         tracing::trace!(
-            %socket_addr,
+            network.local.address = %socket_addr.ip(),
+            network.local.port = %socket_addr.port(),
             "socks5 client: udp associate handshake initiated"
         );
 
@@ -82,9 +84,9 @@ impl<S: rama_net::stream::Stream + Unpin> UdpSocketRelayBinder<S> {
         })?;
 
         tracing::trace!(
-            %socket_addr,
-            %bind_address,
-            "socks5 client: socks5 server ready to bind for udp purposes",
+            network.local.address = %socket_addr.ip(),
+            network.local.port = %socket_addr.port(),
+            "socks5 client: socks5 server ready to bind at {bind_address} for udp purposes",
         );
 
         Ok(UdpSocketRelay {
@@ -456,9 +458,7 @@ where
             Ok(())
         } else {
             tracing::debug!(
-                len = %n,
-                wr_len = %wr_n,
-                "failed to write entire datagram to socket"
+                "failed to write entire datagram to socket: len = {n}; wr len = {wr_n}"
             );
             Err(io::Error::other("failed to write entire datagram to socket").into())
         };

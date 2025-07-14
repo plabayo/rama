@@ -161,7 +161,7 @@ impl Ja4H {
                 hash12(cookie_pairs),
             )
         } else {
-            write!(f, "_{}_{}_{}", headers, cookie_names, cookie_pairs,)
+            write!(f, "_{headers}_{cookie_names}_{cookie_pairs}")
         }
     }
 }

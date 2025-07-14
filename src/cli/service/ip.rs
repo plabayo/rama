@@ -21,6 +21,7 @@ use crate::{
     net::stream::{SocketInfo, Stream, layer::http::BodyLimitLayer},
     proxy::haproxy::server::HaProxyLayer,
     rt::Executor,
+    telemetry::tracing,
 };
 use rama_http::service::web::response::IntoResponse;
 use std::{convert::Infallible, marker::PhantomData, time::Duration};

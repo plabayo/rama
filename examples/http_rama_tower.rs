@@ -26,6 +26,7 @@ use rama::{
     layer::ConsumeErrLayer,
     net::address::SocketAddress,
     rt::Executor,
+    telemetry::tracing::{self, level_filters::LevelFilter},
     utils::tower::{
         ServiceAdapter,
         core::{Layer, Service},
@@ -42,7 +43,6 @@ use std::{
     time::Duration,
 };
 use tokio::time::Sleep;
-use tracing::level_filters::LevelFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, fmt};

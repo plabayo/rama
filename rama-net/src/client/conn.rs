@@ -1,4 +1,4 @@
-use rama_core::{Context, Service, error::BoxError};
+use rama_core::{Context, Service, error::BoxError, service::BoxService};
 use std::fmt;
 
 /// The established connection to a server returned for the http client to be used.
@@ -79,5 +79,67 @@ where
     > + Send
     + '_ {
         self.serve(ctx, req)
+    }
+}
+
+/// A [`ConnectorService`] which only job is to [`Box`]
+/// the created [`Service`] by the inner [`ConnectorService`].
+pub struct BoxedConnectorService<S>(S);
+
+impl<S> BoxedConnectorService<S> {
+    /// Create a new [`BoxedConnector`].
+    pub fn new(connector: S) -> Self {
+        Self(connector)
+    }
+}
+
+impl<S: fmt::Debug> fmt::Debug for BoxedConnectorService<S> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("BoxedConnectorService")
+            .field(&self.0)
+            .finish()
+    }
+}
+
+impl<S: Clone> Clone for BoxedConnectorService<S> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+impl<S, State, Request, Svc> Service<State, Request> for BoxedConnectorService<S>
+where
+    S: Service<
+            State,
+            Request,
+            Response = EstablishedClientConnection<Svc, State, Request>,
+            Error: Into<BoxError>,
+        >,
+    Svc: Service<State, Request>,
+    State: Send + 'static,
+    Request: Send + 'static,
+{
+    type Response = EstablishedClientConnection<
+        BoxService<State, Request, Svc::Response, Svc::Error>,
+        State,
+        Request,
+    >;
+    type Error = S::Error;
+
+    async fn serve(
+        &self,
+        ctx: Context<State>,
+        req: Request,
+    ) -> Result<Self::Response, Self::Error> {
+        let EstablishedClientConnection {
+            ctx,
+            req,
+            conn: svc,
+        } = self.0.serve(ctx, req).await?;
+        Ok(EstablishedClientConnection {
+            ctx,
+            req,
+            conn: svc.boxed(),
+        })
     }
 }

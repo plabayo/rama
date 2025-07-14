@@ -2,6 +2,7 @@ use super::ProxyFilter;
 use rama_core::{
     context::Extensions,
     error::{OpaqueError, error},
+    telemetry::tracing,
     username::{UsernameLabelParser, UsernameLabelState, UsernameLabelWriter},
 };
 use rama_utils::macros::match_ignore_ascii_case_str;
@@ -47,7 +48,9 @@ impl UsernameLabelParser for ProxyFilterUsernameParser {
                     self.proxy_filter.id = Some(match label.try_into() {
                         Ok(id) => id,
                         Err(err) => {
-                            tracing::trace!(err = %err, "abort username label parsing: invalid parse label");
+                            tracing::trace!(
+                                "abort username label parsing: invalid parse label: {err:?}"
+                            );
                             return UsernameLabelState::Abort;
                         }
                     })
@@ -110,7 +113,9 @@ impl UsernameLabelParser for ProxyFilterUsernameParser {
                     let asn = match label.try_into() {
                         Ok(asn) => asn,
                         Err(err) => {
-                            tracing::trace!(err = %err, "failed to parse asn username label; abort username parsing");
+                            tracing::trace!(
+                                "failed to parse asn username label; abort username parsing: {err:?}"
+                            );
                             return UsernameLabelState::Abort;
                         }
                     };
@@ -525,13 +530,11 @@ mod tests {
             let filter = ext.get::<ProxyFilter>().cloned();
             assert_eq!(
                 username, expected_username,
-                "username = '{}' ; expected_username = '{}'",
-                username, expected_username
+                "username = '{username}' ; expected_username = '{expected_username}'",
             );
             assert_eq!(
                 filter, expected_filter,
-                "username = '{}' ; expected_username = '{}'",
-                username, expected_username
+                "username = '{username}' ; expected_username = '{expected_username}'",
             );
         }
     }
@@ -554,8 +557,7 @@ mod tests {
 
             assert!(
                 parse_username(&mut ext, parser, username).is_err(),
-                "username = {}",
-                username
+                "username = {username}",
             );
         }
     }
@@ -575,8 +577,7 @@ mod tests {
 
             assert!(
                 parse_username(&mut ext, parser, username).is_err(),
-                "username = {}",
-                username
+                "username = {username}",
             );
         }
     }

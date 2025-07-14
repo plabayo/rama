@@ -27,6 +27,7 @@ use rama::{
             match_service,
             response::{IntoResponse, Redirect},
         },
+        ws::handshake::server::WebSocketAcceptor,
     },
     layer::{
         ConsumeErrLayer, HijackLayer, Layer, LimitLayer, TimeoutLayer,
@@ -44,12 +45,11 @@ use rama::{
     rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
+    telemetry::tracing::{self, level_filters::LevelFilter},
     tls::boring::server::TlsAcceptorLayer,
     utils::backoff::ExponentialBackoff,
 };
-use std::{convert::Infallible, str::FromStr, sync::Arc, time::Duration};
-use tracing::level_filters::LevelFilter;
-use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
+use std::{convert::Infallible, sync::Arc, time::Duration};
 
 mod data;
 mod endpoints;
@@ -60,6 +60,7 @@ mod storage;
 use state::State;
 
 use self::state::ACMEData;
+use crate::utils::http::HttpVersion;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct StorageAuthorized;
@@ -112,14 +113,7 @@ pub struct CliCommandFingerprint {
 
 /// run the rama FP service
 pub async fn run(cfg: CliCommandFingerprint) -> Result<(), BoxError> {
-    tracing_subscriber::registry()
-        .with(fmt::layer())
-        .with(
-            EnvFilter::builder()
-                .with_default_directive(LevelFilter::INFO.into())
-                .from_env_lossy(),
-        )
-        .init();
+    crate::trace::init_tracing(LevelFilter::INFO);
 
     let graceful = rama::graceful::Shutdown::default();
 
@@ -246,20 +240,32 @@ pub async fn run(cfg: CliCommandFingerprint) -> Result<(), BoxError> {
         .context("get local addr of tcp listener")?;
 
     graceful.spawn_task_fn(async move |guard|  {
+        let ws_service = ConsumeErrLayer::default().into_layer(WebSocketAcceptor::new()
+            .with_sub_protocols(["a", "b"])
+            .with_sub_protocols_flex(true)
+            .into_service(service_fn(endpoints::ws_api)));
+
         let inner_http_service = HijackLayer::new(
-                HttpMatcher::header_exists(HeaderName::from_static("referer"))
-                    .and_header_exists(HeaderName::from_static("cookie"))
-                    .negate(),
+                HttpMatcher::custom(false),
                 service_fn(async || {
+                    tracing::debug!(
+                        "redirecting to consent: conditions not fulfilled"
+                    );
                     Ok::<_, Infallible>(Redirect::temporary("/consent").into_response())
                 }),
             )
             .into_layer(match_service!{
                 HttpMatcher::get("/report") => endpoints::get_report,
+                HttpMatcher::path("/api/ws") => ws_service,
                 HttpMatcher::post("/api/fetch/number/:number") => endpoints::post_api_fetch_number,
                 HttpMatcher::post("/api/xml/number/:number") => endpoints::post_api_xml_http_request_number,
                 HttpMatcher::method_get().or_method_post().and_path("/form") => endpoints::form,
-                _ => Redirect::temporary("/consent"),
+                _ => service_fn(async || {
+                    tracing::debug!(
+                        "redirecting to consent: fallback"
+                    );
+                    Ok::<_, Infallible>(Redirect::temporary("/consent").into_response())
+                }),
             });
 
         let http_service = (
@@ -305,7 +311,7 @@ pub async fn run(cfg: CliCommandFingerprint) -> Result<(), BoxError> {
         let tcp_service_builder = (
             ConsumeErrLayer::trace(tracing::Level::WARN),
             tcp_forwarded_layer,
-            TimeoutLayer::new(Duration::from_secs(16)),
+            TimeoutLayer::new(Duration::from_secs(300)),
             LimitLayer::new(ConcurrentPolicy::max_with_backoff(
                 2048,
                 ExponentialBackoff::default(),
@@ -320,9 +326,9 @@ pub async fn run(cfg: CliCommandFingerprint) -> Result<(), BoxError> {
         match cfg.http_version {
             HttpVersion::Auto => {
                 tracing::info!(
-                    bind = %cfg.bind,
-                    %bind_address,
-                    "FP Service (auto) listening",
+                    network.local.address = %bind_address.ip(),
+                    network.local.port = %bind_address.port(),
+                    "FP Service (auto) listening: bind interface = {}", cfg.bind,
                 );
                 tcp_listener
                     .serve_graceful(
@@ -335,9 +341,9 @@ pub async fn run(cfg: CliCommandFingerprint) -> Result<(), BoxError> {
             }
             HttpVersion::H1 => {
                 tracing::info!(
-                    bind = %cfg.bind,
-                    %bind_address,
-                    "FP Service (HTTP/1.1) listening",
+                    network.local.address = %bind_address.ip(),
+                    network.local.port = %bind_address.port(),
+                    "FP Service (HTTP/1.1) listening: bind interface = {}", cfg.bind,
                 );
                 tcp_listener
                     .serve_graceful(
@@ -348,9 +354,9 @@ pub async fn run(cfg: CliCommandFingerprint) -> Result<(), BoxError> {
             }
             HttpVersion::H2 => {
                 tracing::info!(
-                    bind = %cfg.bind,
-                    %bind_address,
-                    "FP Service (H2) listening",
+                    network.local.address = %bind_address.ip(),
+                    network.local.port = %bind_address.port(),
+                    "FP Service (H2) listening: bind interface = {}", cfg.bind,
                 );
                 tcp_listener
                     .serve_graceful(
@@ -369,30 +375,6 @@ pub async fn run(cfg: CliCommandFingerprint) -> Result<(), BoxError> {
         .await?;
 
     Ok(())
-}
-
-#[derive(Debug, Clone, Copy, PartialOrd, Ord, PartialEq, Eq, Hash)]
-enum HttpVersion {
-    Auto,
-    H1,
-    H2,
-}
-
-impl FromStr for HttpVersion {
-    type Err = OpaqueError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(match s.trim().to_lowercase().as_str() {
-            "" | "auto" => Self::Auto,
-            "h1" | "http1" | "http/1" | "http/1.0" | "http/1.1" => Self::H1,
-            "h2" | "http2" | "http/2" | "http/2.0" => Self::H2,
-            version => {
-                return Err(OpaqueError::from_display(format!(
-                    "unsupported http version: {version}"
-                )));
-            }
-        })
-    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -449,7 +431,7 @@ where
                 .join("; ");
             if !cookie.is_empty() {
                 req.headers_mut()
-                    .insert(COOKIE, HeaderValue::from_str(&cookie).unwrap());
+                    .insert(COOKIE, HeaderValue::try_from(cookie).unwrap());
             }
         }
 

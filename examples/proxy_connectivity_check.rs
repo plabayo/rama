@@ -61,16 +61,16 @@ use rama::{
         user::Basic,
     },
     proxy::socks5::{
-        Socks5Acceptor, Socks5Auth,
+        Socks5Acceptor,
         server::{LazyConnector, Socks5PeekRouter},
     },
     rt::Executor,
     service::service_fn,
     tcp::{client::service::Forwarder, server::TcpListener},
+    telemetry::tracing::{self, level_filters::LevelFilter},
 };
 
 use std::{convert::Infallible, time::Duration};
-use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 fn new_example_hijack_svc()
@@ -157,7 +157,7 @@ async fn main() {
     let http_service = HttpServer::auto(Executor::graceful(graceful.guard())).service(
         (
             TraceLayer::new_for_http(),
-            ProxyAuthLayer::new(Basic::new("tom", "clancy")),
+            ProxyAuthLayer::new(Basic::new_static("tom", "clancy")),
             UpgradeLayer::new(
                 MethodMatcher::CONNECT,
                 service_fn(http_connect_accept),
@@ -171,7 +171,7 @@ async fn main() {
     let socks5_svc = HttpPeekRouter::new(HttpServer::auto(exec).service(proxy_service))
         .with_fallback(Forwarder::ctx());
     let socks5_acceptor = Socks5Acceptor::new()
-        .with_auth(Socks5Auth::username_password("john", "secret"))
+        .with_authorizer(Basic::new_static("john", "secret").into_authorizer())
         .with_connector(LazyConnector::new(socks5_svc));
 
     let auto_socks5_acceptor = Socks5PeekRouter::new(socks5_acceptor).with_fallback(http_service);
@@ -193,11 +193,15 @@ async fn http_connect_accept(
         .map(|ctx| ctx.authority.clone())
     {
         Ok(authority) => {
-            tracing::info!(%authority, "accept CONNECT (lazy): insert proxy target into context");
+            tracing::info!(
+                server.address = %authority.host(),
+                server.port = %authority.port(),
+                "accept CONNECT (lazy): insert proxy target into context",
+            );
             ctx.insert(ProxyTarget(authority));
         }
         Err(err) => {
-            tracing::error!(err = %err, "error extracting authority");
+            tracing::error!("error extracting authority: {err:?}");
             return Err(StatusCode::BAD_REQUEST.into_response());
         }
     }
@@ -235,7 +239,7 @@ async fn http_plain_proxy(ctx: Context<()>, req: Request) -> Result<Response, In
             Ok(resp)
         }
         Err(err) => {
-            tracing::error!(error = %err, "error in client request");
+            tracing::error!("error in client request: {err:?}");
             Ok(Response::builder()
                 .status(StatusCode::INTERNAL_SERVER_ERROR)
                 .body(Body::empty())

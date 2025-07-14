@@ -22,12 +22,16 @@
 #[cfg(unix)]
 mod unix_example {
     use rama::{
-        Context, error::BoxError, graceful::ShutdownGuard, net::stream::Stream,
-        service::service_fn, unix::server::UnixListener,
+        Context,
+        error::BoxError,
+        graceful::ShutdownGuard,
+        net::stream::Stream,
+        service::service_fn,
+        telemetry::tracing::{self, level_filters::LevelFilter},
+        unix::server::UnixListener,
     };
 
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tracing::level_filters::LevelFilter;
     use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
     pub(super) async fn run() {
@@ -89,12 +93,18 @@ mod unix_example {
                 }
             }
 
-            tracing::info!(%PATH, "ready to unix-serve");
+            tracing::info!(
+                file.path = %PATH,
+                "ready to unix-serve",
+            );
             listener.serve_graceful(guard, service_fn(handle)).await;
         });
 
         let duration = graceful.shutdown().await;
-        tracing::info!(shutdown_after = ?duration, "bye!");
+        tracing::info!(
+            shutdown.duration_ms = %duration.as_millis(),
+            "bye!",
+        );
     }
 }
 

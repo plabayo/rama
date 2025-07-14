@@ -3,21 +3,20 @@ use std::{borrow::Cow, fmt};
 use rama_core::{
     Context, Service,
     error::{BoxError, ErrorContext, OpaqueError},
+    telemetry::tracing,
 };
 use rama_http_headers::{ClientHint, all_client_hints};
 use rama_http_types::{
     HeaderMap, HeaderName, HeaderValue, Method, Request, Uri, Version,
-    conn::{H2ClientContextParams, Http1ClientContextParams, StreamDependencyParams},
+    conn::{H2ClientContextParams, Http1ClientContextParams},
     header::{
         ACCEPT, ACCEPT_LANGUAGE, AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, COOKIE, HOST, ORIGIN,
-        REFERER, USER_AGENT,
+        REFERER, SEC_WEBSOCKET_EXTENSIONS, SEC_WEBSOCKET_KEY, SEC_WEBSOCKET_PROTOCOL,
+        SEC_WEBSOCKET_VERSION, USER_AGENT,
     },
-    proto::{
-        h1::{
-            Http1HeaderMap,
-            headers::{HeaderMapValueRemover, original::OriginalHttp1Headers},
-        },
-        h2::frame::StreamId,
+    proto::h1::{
+        Http1HeaderMap,
+        headers::{HeaderMapValueRemover, original::OriginalHttp1Headers},
     },
 };
 use rama_net::{
@@ -196,9 +195,8 @@ where
                 Some(ua_str) => {
                     let user_agent = UserAgent::new(ua_str);
                     tracing::trace!(
-                        ua_str = %ua_str,
-                        %user_agent,
-                        "user agent auto-detected from request"
+                        user_agent.original = %ua_str,
+                        "user agent {user_agent} auto-detected from request"
                     );
                     ctx.insert(user_agent);
                 }
@@ -225,9 +223,9 @@ where
         };
 
         tracing::debug!(
-            ua_kind = %profile.ua_kind,
-            ua_version = ?profile.ua_version,
-            platform = ?profile.platform,
+            user_agent.kind = %profile.ua_kind,
+            user_agent.version = ?profile.ua_version,
+            user_agent.platform = ?profile.platform,
             "user agent profile selected for emulation"
         );
 
@@ -238,16 +236,16 @@ where
 
         if preserve_http {
             tracing::trace!(
-                ua_kind = %profile.ua_kind,
-                ua_version = ?profile.ua_version,
-                platform = ?profile.platform,
+                user_agent.kind = %profile.ua_kind,
+                user_agent.version = ?profile.ua_version,
+                user_agent.platform = ?profile.platform,
                 "user agent emulation: skip http settings as http is instructed to be preserved"
             );
         } else {
             tracing::trace!(
-                ua_kind = %profile.ua_kind,
-                ua_version = ?profile.ua_version,
-                platform = ?profile.platform,
+                user_agent.kind = %profile.ua_kind,
+                user_agent.version = ?profile.ua_version,
+                user_agent.platform = ?profile.platform,
                 "user agent emulation: inject http context data to prepare for HTTP emulation"
             );
             ctx.insert(profile.http.clone());
@@ -280,17 +278,17 @@ where
             );
             if preserve_tls {
                 tracing::trace!(
-                    ua_kind = %profile.ua_kind,
-                    ua_version = ?profile.ua_version,
-                    platform = ?profile.platform,
+                    user_agent.kind = %profile.ua_kind,
+                    user_agent.version = ?profile.ua_version,
+                    user_agent.platform = ?profile.platform,
                     "user agent emulation: skip tls settings as tls is instructed to be preserved"
                 );
             } else {
                 ctx.insert(profile.tls.clone());
                 tracing::trace!(
-                    ua_kind = %profile.ua_kind,
-                    ua_version = ?profile.ua_version,
-                    platform = ?profile.platform,
+                    user_agent.kind = %profile.ua_kind,
+                    user_agent.version = ?profile.ua_version,
+                    user_agent.platform = ?profile.platform,
                     "user agent emulation: tls profile injected in ctx"
                 );
             }
@@ -335,14 +333,14 @@ where
         match ctx.get().cloned() {
             Some(http_profile) => {
                 tracing::trace!(
-                    http_version = ?req.version(),
+                    http.version = ?req.version(),
                     "http profile found in context to use for http connection emulation, proceed",
                 );
                 emulate_http_connect_settings(&mut ctx, &mut req, &http_profile);
             }
             None => {
                 tracing::trace!(
-                    http_version = ?req.version(),
+                    http.version = ?req.version(),
                     "no http profile found in context to use for http connection emulation, request is passed through as-is",
                 );
             }
@@ -365,58 +363,17 @@ fn emulate_http_connect_settings<Body, State>(
         }
         Version::HTTP_2 => {
             let pseudo_headers = profile.h2.settings.http_pseudo_headers.clone();
-            let initial_config = profile.h2.settings.initial_config.clone();
+            let early_frames = profile.h2.settings.early_frames.clone();
 
-            let headers_priority = match (
-                profile.h2.settings.priority_header.clone(),
-                ctx.get::<SelectedUserAgentProfile>().map(|p| p.ua_kind),
-            ) {
-                (Some(priority), _) => Some(priority),
-                (None, Some(crate::UserAgentKind::Chromium)) => {
-                    tracing::trace!(
-                        "no priority h2 settings found, using hardcoded value from chromium instead"
-                    );
-                    Some(StreamDependencyParams {
-                        dependency_id: StreamId::from(0),
-                        weight: 255,
-                        is_exclusive: true,
-                    })
-                }
-                (None, Some(crate::UserAgentKind::Firefox)) => {
-                    tracing::trace!(
-                        "no priority h2 settings found, using hardcoded value from firefox instead"
-                    );
-                    Some(StreamDependencyParams {
-                        dependency_id: StreamId::from(0),
-                        weight: 41,
-                        is_exclusive: true,
-                    })
-                }
-                (None, Some(crate::UserAgentKind::Safari)) => {
-                    tracing::trace!(
-                        "no priority h2 settings found, using hardcoded value from safari instead"
-                    );
-                    Some(StreamDependencyParams {
-                        dependency_id: StreamId::from(0),
-                        weight: 255,
-                        is_exclusive: false,
-                    })
-                }
-                (None, None) => None,
-            };
-
-            if pseudo_headers.is_some() || initial_config.is_some() {
+            if pseudo_headers.is_some() || early_frames.is_some() {
                 tracing::trace!(
-                    ?pseudo_headers,
-                    ?initial_config,
-                    ?headers_priority,
-                    "user agent emulation: insert h2 settings into extensions"
+                    "user agent emulation: insert h2 settings into extensions: (pseudo headers = {:?} ; early frames: {:?})",
+                    pseudo_headers,
+                    early_frames,
                 );
                 req.extensions_mut().insert(H2ClientContextParams {
                     headers_pseudo_order: pseudo_headers,
-                    setting_config: initial_config,
-                    headers_priority,
-                    priority: None, // TODO: do we need to care about priority?
+                    early_frames,
                 });
             }
         }
@@ -424,7 +381,7 @@ fn emulate_http_connect_settings<Body, State>(
             "UA emulation not yet supported for h3: not applying anything h3-specific"
         ),
         _ => tracing::debug!(
-            version = ?req.version(),
+            http.version = ?req.version(),
             "UA emulation not supported for unknown http version: not applying anything version-specific",
         ),
     }
@@ -461,7 +418,7 @@ where
         match ctx.get() {
             Some(http_profile) => {
                 tracing::trace!(
-                    http_version = ?req.version(),
+                    http.version = ?req.version(),
                     "http profile found in context to use for emulation, proceed",
                 );
 
@@ -485,8 +442,7 @@ where
                                 ),
                                 Err(err) => {
                                     tracing::debug!(
-                                        ?err,
-                                        "failed to compute request's authority and protocol for UA Emulation purposes",
+                                        "failed to compute request's authority and protocol for UA Emulation purposes: {err:?}",
                                     );
                                     (None, None)
                                 }
@@ -520,8 +476,7 @@ where
                     let pseudo_headers = http_profile.h2.settings.http_pseudo_headers.clone();
 
                     tracing::trace!(
-                        ?pseudo_headers,
-                        "user agent emulation: insert h2 pseudo headers into request extensions"
+                        "user agent emulation: insert h2 pseudo headers into request extensions: {pseudo_headers:?}"
                     );
 
                     if let Some(pseudo_headers) = pseudo_headers.clone() {
@@ -531,7 +486,7 @@ where
             }
             None => {
                 tracing::trace!(
-                    http_version = ?req.version(),
+                    http.version = ?req.version(),
                     "no http profile found in context to use for emulation, request is passed through as-is",
                 );
             }
@@ -550,15 +505,17 @@ fn get_base_http_headers<'a, Body, State>(
         Version::HTTP_2 => &profile.h2.headers,
         _ => {
             tracing::debug!(
-                version = ?req.version(),
+                http.version = ?req.version(),
                 "UA emulation not supported for unknown http version: not applying anything version-specific",
             );
             return None;
         }
     };
-    Some(match ctx.get::<RequestInitiator>().copied() {
+    match ctx.get::<RequestInitiator>().copied() {
         Some(req_init) => {
-            tracing::trace!(%req_init, "base http headers defined based on hint from UserAgent (overwrite)");
+            tracing::trace!(
+                "base http headers defined based on hint from UserAgent (overwrite): {req_init}"
+            );
             get_base_http_headers_from_req_init(req_init, headers_profile)
         }
         // NOTE: the primitive checks below are pretty bad,
@@ -572,10 +529,18 @@ fn get_base_http_headers<'a, Body, State>(
                     "XmlHttpRequest",
                 ) {
                     RequestInitiator::Xhr
+                } else if headers_contains_partial_value(
+                    req.headers(),
+                    &SEC_WEBSOCKET_VERSION,
+                    "13",
+                ) {
+                    RequestInitiator::Ws
                 } else {
                     RequestInitiator::Navigate
                 };
-                tracing::trace!(%req_init, "base http headers defined based on Get=NavigateOrXhr assumption");
+                tracing::trace!(
+                    "base http headers defined based on Get=XhrOrWsOrNavigate assumption: {req_init}"
+                );
                 get_base_http_headers_from_req_init(req_init, headers_profile)
             }
             Method::POST => {
@@ -590,7 +555,9 @@ fn get_base_http_headers<'a, Body, State>(
                 } else {
                     RequestInitiator::Fetch
                 };
-                tracing::trace!(%req_init, "base http headers defined based on Post=FormOrFetch assumption");
+                tracing::trace!(
+                    "base http headers defined based on Post=FormOrFetch assumption: {req_init}"
+                );
                 get_base_http_headers_from_req_init(req_init, headers_profile)
             }
             _ => {
@@ -600,14 +567,21 @@ fn get_base_http_headers<'a, Body, State>(
                     "XmlHttpRequest",
                 ) {
                     RequestInitiator::Xhr
+                } else if req.version() == Version::HTTP_2
+                    && req.method() == Method::CONNECT
+                    && headers_contains_partial_value(req.headers(), &SEC_WEBSOCKET_VERSION, "13")
+                {
+                    RequestInitiator::Ws
                 } else {
                     RequestInitiator::Fetch
                 };
-                tracing::trace!(%req_init, "base http headers defined based on XhrOrFetch assumption");
+                tracing::trace!(
+                    "base http headers defined based on XhrOrWsOrFetch assumption: {req_init}"
+                );
                 get_base_http_headers_from_req_init(req_init, headers_profile)
             }
         },
-    })
+    }
 }
 
 static X_REQUESTED_WITH: HeaderName = HeaderName::from_static("x-requested-with");
@@ -623,20 +597,25 @@ fn headers_contains_partial_value(headers: &HeaderMap, name: &HeaderName, value:
 fn get_base_http_headers_from_req_init(
     req_init: RequestInitiator,
     headers: &HttpHeadersProfile,
-) -> &Http1HeaderMap {
+) -> Option<&Http1HeaderMap> {
     match req_init {
-        RequestInitiator::Navigate => &headers.navigate,
-        RequestInitiator::Form => headers.form.as_ref().unwrap_or(&headers.navigate),
-        RequestInitiator::Xhr => headers
-            .xhr
-            .as_ref()
-            .or(headers.fetch.as_ref())
-            .unwrap_or(&headers.navigate),
-        RequestInitiator::Fetch => headers
-            .fetch
-            .as_ref()
-            .or(headers.xhr.as_ref())
-            .unwrap_or(&headers.navigate),
+        RequestInitiator::Navigate => Some(&headers.navigate),
+        RequestInitiator::Form => Some(headers.form.as_ref().unwrap_or(&headers.navigate)),
+        RequestInitiator::Xhr => Some(
+            headers
+                .xhr
+                .as_ref()
+                .or(headers.fetch.as_ref())
+                .unwrap_or(&headers.navigate),
+        ),
+        RequestInitiator::Fetch => Some(
+            headers
+                .fetch
+                .as_ref()
+                .or(headers.xhr.as_ref())
+                .unwrap_or(&headers.navigate),
+        ),
+        RequestInitiator::Ws => headers.ws.as_ref(),
     }
 }
 
@@ -692,7 +671,11 @@ fn merge_http_headers<'a>(
         let base_header_name = base_name.header_name();
         let original_value = original_headers.remove(base_header_name);
         match base_header_name {
-            &ACCEPT | &ACCEPT_LANGUAGE => {
+            &ACCEPT
+            | &ACCEPT_LANGUAGE
+            | &SEC_WEBSOCKET_KEY
+            | &SEC_WEBSOCKET_EXTENSIONS
+            | &SEC_WEBSOCKET_PROTOCOL => {
                 let value = original_value.unwrap_or(base_value);
                 output_headers_ref.push((base_name, value));
             }
@@ -784,11 +767,11 @@ fn compute_sec_fetch_site_value(
                         .and_then(|h| Host::try_from(h).ok().and_then(|h| {
                             match default_port {
                                 Some(default_port) => {
-                                    tracing::trace!(uri = %uri, host = %h, "detected host from (abs) referer uri");
+                                    tracing::trace!(url.full = %uri, "detected host {h} from (abs) referer uri");
                                     Some(Authority::new(h, default_port))
                                 },
                                 None => {
-                                    tracing::trace!(uri = %uri, host = %h, "detected host from (abs) referer uri: but no port available");
+                                    tracing::trace!(url.full = %uri, "detected host {h} from (abs) referer uri: but no port available");
                                     None
                                 },
                             }
@@ -817,7 +800,7 @@ fn compute_sec_fetch_site_value(
                                     }
                                 } else {
                                     tracing::debug!(
-                                        referer = ?referer_value,
+                                        http.request.header.referer = ?referer_value,
                                         "missing request authority, returning none as default",
                                     );
                                     HeaderValue::from_static("none")
@@ -828,7 +811,7 @@ fn compute_sec_fetch_site_value(
                         }
                         None => {
                             tracing::debug!(
-                                referer = ?referer_value,
+                                http.request.header.referer = ?referer_value,
                                 "invalid referer value (failed to extract authority from uri value)",
                             );
                             HeaderValue::from_static("none")
@@ -837,9 +820,8 @@ fn compute_sec_fetch_site_value(
                 }
                 Err(err) => {
                     tracing::debug!(
-                        err = ?err,
-                        referer = ?referer_value,
-                        "invalid referer value (expected a valid uri, defaulting to none)",
+                        http.request.header.referer = ?referer_value,
+                        "invalid referer value (expected a valid uri, defaulting to none): {err:?}",
                     );
                     HeaderValue::from_static("none")
                 }
@@ -1487,7 +1469,7 @@ mod tests {
             let expected_str = test_case
                 .expected
                 .iter()
-                .map(|(name, value)| format!("{}: {}\r\n", name, value))
+                .map(|(name, value)| format!("{name}: {value}\r\n"))
                 .join("");
 
             assert_eq!(
@@ -1515,13 +1497,14 @@ mod tests {
                         fetch: None,
                         xhr: None,
                         form: None,
+                        ws: None,
                     },
                     settings: Http1Settings::default(),
                 }),
                 h2: Arc::new(Http2Profile {
                     headers: HttpHeadersProfile {
                         navigate: Http1HeaderMap::new(
-                            [(ETAG, HeaderValue::from_str("navigate").unwrap())]
+                            [(ETAG, HeaderValue::from_static("navigate"))]
                                 .into_iter()
                                 .collect(),
                             None,
@@ -1529,6 +1512,7 @@ mod tests {
                         fetch: None,
                         xhr: None,
                         form: None,
+                        ws: None,
                     },
                     settings: Http2Settings::default(),
                 }),
@@ -1536,6 +1520,7 @@ mod tests {
             #[cfg(feature = "tls")]
             tls: crate::profile::TlsProfile {
                 client_config: std::sync::Arc::new(rama_net::tls::client::ClientConfig::default()),
+                ws_client_config_overwrites: None,
             },
             runtime: None,
         };
@@ -1582,7 +1567,7 @@ mod tests {
                 h1: Arc::new(Http1Profile {
                     headers: HttpHeadersProfile {
                         navigate: Http1HeaderMap::new(
-                            [(ETAG, HeaderValue::from_str("navigate").unwrap())]
+                            [(ETAG, HeaderValue::from_static("navigate"))]
                                 .into_iter()
                                 .collect(),
                             None,
@@ -1590,6 +1575,7 @@ mod tests {
                         xhr: None,
                         fetch: None,
                         form: None,
+                        ws: None,
                     },
                     settings: Http1Settings::default(),
                 }),
@@ -1599,6 +1585,7 @@ mod tests {
                         fetch: None,
                         xhr: None,
                         form: None,
+                        ws: None,
                     },
                     settings: Http2Settings::default(),
                 }),
@@ -1606,6 +1593,7 @@ mod tests {
             #[cfg(feature = "tls")]
             tls: crate::profile::TlsProfile {
                 client_config: std::sync::Arc::new(rama_net::tls::client::ClientConfig::default()),
+                ws_client_config_overwrites: None,
             },
             runtime: None,
         };
@@ -1644,24 +1632,25 @@ mod tests {
                 h1: Arc::new(Http1Profile {
                     headers: HttpHeadersProfile {
                         navigate: Http1HeaderMap::new(
-                            [(ETAG, HeaderValue::from_str("navigate").unwrap())]
+                            [(ETAG, HeaderValue::from_static("navigate"))]
                                 .into_iter()
                                 .collect(),
                             None,
                         ),
                         xhr: Some(Http1HeaderMap::new(
-                            [(ETAG, HeaderValue::from_str("xhr").unwrap())]
+                            [(ETAG, HeaderValue::from_static("xhr"))]
                                 .into_iter()
                                 .collect(),
                             None,
                         )),
                         fetch: None,
                         form: Some(Http1HeaderMap::new(
-                            [(ETAG, HeaderValue::from_str("form").unwrap())]
+                            [(ETAG, HeaderValue::from_static("form"))]
                                 .into_iter()
                                 .collect(),
                             None,
                         )),
+                        ws: None,
                     },
                     settings: Http1Settings::default(),
                 }),
@@ -1671,6 +1660,7 @@ mod tests {
                         fetch: None,
                         xhr: None,
                         form: None,
+                        ws: None,
                     },
                     settings: Http2Settings::default(),
                 }),
@@ -1678,6 +1668,7 @@ mod tests {
             #[cfg(feature = "tls")]
             tls: crate::profile::TlsProfile {
                 client_config: std::sync::Arc::new(rama_net::tls::client::ClientConfig::default()),
+                ws_client_config_overwrites: None,
             },
             runtime: None,
         };
@@ -1716,24 +1707,25 @@ mod tests {
                 h1: Arc::new(Http1Profile {
                     headers: HttpHeadersProfile {
                         navigate: Http1HeaderMap::new(
-                            [(ETAG, HeaderValue::from_str("navigate").unwrap())]
+                            [(ETAG, HeaderValue::from_static("navigate"))]
                                 .into_iter()
                                 .collect(),
                             None,
                         ),
                         fetch: Some(Http1HeaderMap::new(
-                            [(ETAG, HeaderValue::from_str("fetch").unwrap())]
+                            [(ETAG, HeaderValue::from_static("fetch"))]
                                 .into_iter()
                                 .collect(),
                             None,
                         )),
                         xhr: None,
                         form: Some(Http1HeaderMap::new(
-                            [(ETAG, HeaderValue::from_str("form").unwrap())]
+                            [(ETAG, HeaderValue::from_static("form"))]
                                 .into_iter()
                                 .collect(),
                             None,
                         )),
+                        ws: None,
                     },
                     settings: Http1Settings::default(),
                 }),
@@ -1743,6 +1735,7 @@ mod tests {
                         fetch: None,
                         xhr: None,
                         form: None,
+                        ws: None,
                     },
                     settings: Http2Settings::default(),
                 }),
@@ -1750,6 +1743,7 @@ mod tests {
             #[cfg(feature = "tls")]
             tls: crate::profile::TlsProfile {
                 client_config: std::sync::Arc::new(rama_net::tls::client::ClientConfig::default()),
+                ws_client_config_overwrites: None,
             },
             runtime: None,
         };
@@ -1792,25 +1786,31 @@ mod tests {
                 h1: Arc::new(Http1Profile {
                     headers: HttpHeadersProfile {
                         navigate: Http1HeaderMap::new(
-                            [(ETAG, HeaderValue::from_str("navigate").unwrap())]
+                            [(ETAG, HeaderValue::from_static("navigate"))]
                                 .into_iter()
                                 .collect(),
                             None,
                         ),
                         fetch: Some(Http1HeaderMap::new(
-                            [(ETAG, HeaderValue::from_str("fetch").unwrap())]
+                            [(ETAG, HeaderValue::from_static("fetch"))]
                                 .into_iter()
                                 .collect(),
                             None,
                         )),
                         xhr: Some(Http1HeaderMap::new(
-                            [(ETAG, HeaderValue::from_str("xhr").unwrap())]
+                            [(ETAG, HeaderValue::from_static("xhr"))]
                                 .into_iter()
                                 .collect(),
                             None,
                         )),
                         form: Some(Http1HeaderMap::new(
-                            [(ETAG, HeaderValue::from_str("form").unwrap())]
+                            [(ETAG, HeaderValue::from_static("form"))]
+                                .into_iter()
+                                .collect(),
+                            None,
+                        )),
+                        ws: Some(Http1HeaderMap::new(
+                            [(ETAG, HeaderValue::from_static("ws"))]
                                 .into_iter()
                                 .collect(),
                             None,
@@ -1820,10 +1820,36 @@ mod tests {
                 }),
                 h2: Arc::new(Http2Profile {
                     headers: HttpHeadersProfile {
-                        navigate: Http1HeaderMap::default(),
-                        fetch: None,
-                        xhr: None,
-                        form: None,
+                        navigate: Http1HeaderMap::new(
+                            [(ETAG, HeaderValue::from_static("navigate2"))]
+                                .into_iter()
+                                .collect(),
+                            None,
+                        ),
+                        fetch: Some(Http1HeaderMap::new(
+                            [(ETAG, HeaderValue::from_static("fetch2"))]
+                                .into_iter()
+                                .collect(),
+                            None,
+                        )),
+                        xhr: Some(Http1HeaderMap::new(
+                            [(ETAG, HeaderValue::from_static("xhr2"))]
+                                .into_iter()
+                                .collect(),
+                            None,
+                        )),
+                        form: Some(Http1HeaderMap::new(
+                            [(ETAG, HeaderValue::from_static("form2"))]
+                                .into_iter()
+                                .collect(),
+                            None,
+                        )),
+                        ws: Some(Http1HeaderMap::new(
+                            [(ETAG, HeaderValue::from_static("ws2"))]
+                                .into_iter()
+                                .collect(),
+                            None,
+                        )),
                     },
                     settings: Http2Settings::default(),
                 }),
@@ -1831,6 +1857,7 @@ mod tests {
             #[cfg(feature = "tls")]
             tls: crate::profile::TlsProfile {
                 client_config: std::sync::Arc::new(rama_net::tls::client::ClientConfig::default()),
+                ws_client_config_overwrites: None,
             },
             runtime: None,
         };
@@ -1850,6 +1877,7 @@ mod tests {
 
         struct TestCase {
             description: &'static str,
+            version: Option<Version>,
             method: Option<Method>,
             headers: Option<HeaderMap>,
             ctx: Option<Context<()>>,
@@ -1859,6 +1887,7 @@ mod tests {
         let test_cases = [
             TestCase {
                 description: "GET request",
+                version: None,
                 method: None,
                 headers: None,
                 ctx: None,
@@ -1866,6 +1895,7 @@ mod tests {
             },
             TestCase {
                 description: "GET request with XRW header",
+                version: None,
                 method: None,
                 headers: Some(
                     [(
@@ -1880,6 +1910,7 @@ mod tests {
             },
             TestCase {
                 description: "GET request with RequestInitiator hint Navigate",
+                version: None,
                 method: None,
                 headers: None,
                 ctx: Some({
@@ -1891,6 +1922,7 @@ mod tests {
             },
             TestCase {
                 description: "GET request with RequestInitiator hint Form",
+                version: None,
                 method: None,
                 headers: None,
                 ctx: Some({
@@ -1902,13 +1934,39 @@ mod tests {
             },
             TestCase {
                 description: "explicit GET request",
+                version: None,
                 method: Some(Method::GET),
                 headers: None,
                 ctx: None,
                 expected: "navigate",
             },
             TestCase {
+                description: "HTTP/1.1 WebSocket upgrade request",
+                version: None,
+                method: Some(Method::GET),
+                headers: Some(
+                    [(SEC_WEBSOCKET_VERSION, HeaderValue::from_static("13"))]
+                        .into_iter()
+                        .collect(),
+                ),
+                ctx: None,
+                expected: "ws",
+            },
+            TestCase {
+                description: "H2 WebSocket upgrade request",
+                version: Some(Version::HTTP_2),
+                method: Some(Method::CONNECT),
+                headers: Some(
+                    [(SEC_WEBSOCKET_VERSION, HeaderValue::from_static("13"))]
+                        .into_iter()
+                        .collect(),
+                ),
+                ctx: None,
+                expected: "ws2",
+            },
+            TestCase {
                 description: "explicit POST request",
+                version: None,
                 method: Some(Method::POST),
                 headers: None,
                 ctx: None,
@@ -1916,6 +1974,7 @@ mod tests {
             },
             TestCase {
                 description: "explicit POST request with XRW header",
+                version: None,
                 method: Some(Method::POST),
                 headers: Some(
                     [(
@@ -1930,6 +1989,7 @@ mod tests {
             },
             TestCase {
                 description: "explicit POST request with multipart/form-data and XRW header",
+                version: None,
                 method: Some(Method::POST),
                 headers: Some(
                     [
@@ -1952,6 +2012,7 @@ mod tests {
             },
             TestCase {
                 description: "explicit POST request with application/x-www-form-urlencoded and XRW header",
+                version: None,
                 method: Some(Method::POST),
                 headers: Some(
                     [
@@ -1972,6 +2033,7 @@ mod tests {
             },
             TestCase {
                 description: "explicit POST request with multipart/form-data",
+                version: None,
                 method: Some(Method::POST),
                 headers: Some(
                     [(
@@ -1988,6 +2050,7 @@ mod tests {
             },
             TestCase {
                 description: "explicit POST request with application/x-www-form-urlencoded",
+                version: None,
                 method: Some(Method::POST),
                 headers: Some(
                     [(
@@ -2002,6 +2065,7 @@ mod tests {
             },
             TestCase {
                 description: "explicit DELETE request with XRW header",
+                version: None,
                 method: Some(Method::DELETE),
                 headers: Some(
                     [(
@@ -2016,6 +2080,7 @@ mod tests {
             },
             TestCase {
                 description: "explicit DELETE request",
+                version: None,
                 method: Some(Method::DELETE),
                 headers: None,
                 ctx: None,
@@ -2023,6 +2088,7 @@ mod tests {
             },
             TestCase {
                 description: "explicit DELETE request with RequestInitiator hint",
+                version: None,
                 method: Some(Method::DELETE),
                 headers: None,
                 ctx: Some({
@@ -2036,6 +2102,7 @@ mod tests {
 
         for test_case in test_cases {
             let mut req = Request::builder()
+                .version(test_case.version.unwrap_or(Version::HTTP_11))
                 .method(test_case.method.unwrap_or(Method::GET))
                 .body(Body::empty())
                 .unwrap();
@@ -2143,8 +2210,7 @@ mod tests {
             assert_eq!(
                 computed_value.to_str().unwrap(),
                 test_case.expected_value,
-                "test_case: {:?}",
-                test_case,
+                "test_case: {test_case:?}",
             );
         }
     }

@@ -59,6 +59,7 @@ use rama::{
     rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
+    telemetry::tracing::{self, level_filters::LevelFilter},
     tls::rustls::{
         client::TlsConnectorDataBuilder,
         server::{TlsAcceptorData, TlsAcceptorDataBuilder, TlsAcceptorLayer},
@@ -66,7 +67,6 @@ use rama::{
 };
 
 use std::{convert::Infallible, time::Duration};
-use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Debug, Clone)]
@@ -109,7 +109,7 @@ async fn main() -> Result<(), BoxError> {
                 TraceLayer::new_for_http(),
                 // See [`ProxyAuthLayer::with_labels`] for more information,
                 // e.g. can also be used to extract upstream proxy filters
-                ProxyAuthLayer::new(Basic::new("john", "secret")),
+                ProxyAuthLayer::new(Basic::new_static("john", "secret")),
                 UpgradeLayer::new(
                     MethodMatcher::CONNECT,
                     service_fn(http_connect_accept),
@@ -148,11 +148,15 @@ async fn http_connect_accept(
         .map(|ctx| ctx.authority.clone())
     {
         Ok(authority) => {
-            tracing::info!(%authority, "accept CONNECT (lazy): insert proxy target into context");
+            tracing::info!(
+                server.address = %authority.host(),
+                server.port = %authority.port(),
+                "accept CONNECT (lazy): insert proxy target into context",
+            );
             ctx.insert(ProxyTarget(authority));
         }
         Err(err) => {
-            tracing::error!(err = %err, "error extracting authority");
+            tracing::error!("error extracting authority: {err:?}");
             return Err(StatusCode::BAD_REQUEST.into_response());
         }
     }
@@ -224,7 +228,7 @@ async fn http_mitm_proxy(ctx: Context, req: Request) -> Result<Response, Infalli
     match client.serve(ctx, req).await {
         Ok(resp) => Ok(resp),
         Err(err) => {
-            tracing::error!(error = ?err, "error in client request");
+            tracing::error!("error in client request: {err:?}");
             Ok(Response::builder()
                 .status(StatusCode::INTERNAL_SERVER_ERROR)
                 .body(Body::empty())

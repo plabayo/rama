@@ -1,21 +1,23 @@
+use super::utils;
+
 use std::sync::Arc;
 
-use super::utils;
-use rama::http::client::HttpConnector;
-use rama::http::{Body, service::web::Router};
-use rama::net::{
-    Protocol,
-    address::SocketAddress,
-    client::{ConnectorService, EstablishedClientConnection},
-    user::{Basic, ProxyCredential},
-};
-use rama::proxy::socks5::Socks5ProxyConnector;
-use rama::tcp::{client::service::TcpConnector, server::TcpListener};
 use rama::{
     Context, Service,
-    http::{BodyExtractExt, Request, server::HttpServer},
-    net::address::ProxyAddress,
+    http::{
+        Body, BodyExtractExt, Request, client::HttpConnector, server::HttpServer,
+        service::web::Router,
+    },
+    net::{
+        Protocol,
+        address::{ProxyAddress, SocketAddress},
+        client::{ConnectorService, EstablishedClientConnection},
+        user::{Basic, ProxyCredential},
+    },
+    proxy::socks5::Socks5ProxyConnector,
     rt::Executor,
+    tcp::{client::service::TcpConnector, server::TcpListener},
+    telemetry::tracing,
 };
 
 #[tokio::test]
@@ -51,9 +53,9 @@ async fn test_http_client_over_socks5_proxy_connect(http_socket_addr: SocketAddr
     let proxy_socket_addr = SocketAddress::local_ipv4(62023);
 
     tracing::info!(
-        %proxy_socket_addr,
-        %http_socket_addr,
-        "local servers up and running",
+        "local servers up and running (proxy = {} ; http = {})",
+        proxy_socket_addr,
+        http_socket_addr,
     );
 
     // TODO: once we have socks5 support in Easy http web client
@@ -66,12 +68,12 @@ async fn test_http_client_over_socks5_proxy_connect(http_socket_addr: SocketAddr
     ctx.insert(ProxyAddress {
         protocol: Some(Protocol::SOCKS5),
         authority: proxy_socket_addr.into(),
-        credential: Some(ProxyCredential::Basic(Basic::new("john", "secret"))),
+        credential: Some(ProxyCredential::Basic(Basic::new_static("john", "secret"))),
     });
 
     let uri = format!("http://{http_socket_addr}/ping");
     tracing::info!(
-        %uri,
+        url.full = %uri,
         "try to establish proxied connection over SOCKS5 within a TLS Tunnel",
     );
 
@@ -90,7 +92,7 @@ async fn test_http_client_over_socks5_proxy_connect(http_socket_addr: SocketAddr
         .expect("establish a proxied connection ready to make http requests");
 
     tracing::info!(
-        %uri,
+        url.full = %uri,
         "try to make GET http request and try to receive response text",
     );
 

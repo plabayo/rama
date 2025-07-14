@@ -23,6 +23,7 @@ use crate::{
     net::stream::layer::http::BodyLimitLayer,
     proxy::haproxy::server::HaProxyLayer,
     rt::Executor,
+    telemetry::tracing,
 };
 
 use std::{convert::Infallible, path::PathBuf, time::Duration};

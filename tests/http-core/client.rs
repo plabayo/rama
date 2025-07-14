@@ -18,8 +18,8 @@ use rama::http::{Method, Request, StatusCode, Uri, Version};
 use super::support;
 
 use futures_channel::oneshot;
-use futures_util::future::{self, FutureExt, TryFuture, TryFutureExt};
-use rama_core::bytes::Bytes;
+use rama::bytes::Bytes;
+use rama::futures::future::{self, FutureExt, TryFuture, TryFutureExt};
 use tokio::net::TcpStream;
 
 fn s(buf: &[u8]) -> &str {
@@ -330,7 +330,7 @@ macro_rules! test {
 
                 let host = format!("{}:{}", host, port);
 
-                req.headers_mut().append("Host", HeaderValue::from_str(&host).unwrap());
+                req.headers_mut().append("Host", HeaderValue::try_from(host).unwrap());
             }
 
             let (mut sender, conn) = builder.handshake(stream).await?;
@@ -424,7 +424,7 @@ macro_rules! __client_req_prop {
     }};
 
     ($req_builder:ident, $body:ident, $addr:ident, body_stream: $body_e:expr) => {{
-        $body = BodyExt::boxed(StreamBody::new(futures_util::TryStreamExt::map_ok(
+        $body = BodyExt::boxed(StreamBody::new(rama::futures::TryStreamExt::map_ok(
             $body_e,
             Frame::data,
         )));
@@ -434,7 +434,7 @@ macro_rules! __client_req_prop {
         use support::trailers::StreamBodyWithTrailers;
         let (body, trailers) = $body_e;
         $body = BodyExt::boxed(StreamBodyWithTrailers::with_trailers(
-            futures_util::TryStreamExt::map_ok(body, Frame::data),
+            rama::futures::TryStreamExt::map_ok(body, Frame::data),
             trailers,
         ));
     }};
@@ -687,7 +687,7 @@ test! {
                 "trailer" => "chunky-trailer",
             },
             body_stream_with_trailers: (
-                (futures_util::stream::once(async { Ok::<_, Infallible>(Bytes::from("hello"))})),
+                (rama::futures::stream::once(async { Ok::<_, Infallible>(Bytes::from("hello"))})),
                 HeaderMap::from_iter(vec![(
                     HeaderName::from_static("chunky-trailer"),
                     HeaderValue::from_static("header data")
@@ -809,7 +809,7 @@ test! {
             },
             // use a "stream" (where Body doesn't know length) with a
             // content-length header
-            body_stream: (futures_util::stream::once(async {
+            body_stream: (rama::futures::stream::once(async {
                 Ok::<_, Infallible>(Bytes::from("hello"))
             })),
         },
@@ -839,7 +839,7 @@ test! {
             //
             // But since the headers cannot tell us, and the method typically
             // doesn't have a body, the body must be ignored.
-            body_stream: (futures_util::stream::once(async {
+            body_stream: (rama::futures::stream::once(async {
                 Ok::<_, Infallible>(Bytes::from("hello"))
             })),
         },
@@ -872,7 +872,7 @@ test! {
             // but we're wrapping a non-empty stream.
             //
             // But since the headers cannot tell us, the body must be ignored.
-            body_stream: (futures_util::stream::once(async {
+            body_stream: (rama::futures::stream::once(async {
                 Ok::<_, Infallible>(Bytes::from("hello"))
             })),
         },
@@ -960,7 +960,7 @@ test! {
             method: POST,
             url: "http://{addr}/chunks",
             // use a stream to "hide" that the full amount is known
-            body_stream: (futures_util::stream::once(async {
+            body_stream: (rama::futures::stream::once(async {
                 Ok::<_, Infallible>(Bytes::from("foo bar baz"))
             })),
         },
@@ -1154,11 +1154,9 @@ test! {
             let long_header = "A".repeat(500_000);
             format!("\
                 HTTP/1.1 200 OK\r\n\
-                {}: {}\r\n\
+                {long_header}: {long_header}\r\n\
                 \r\n\
                 ",
-                long_header,
-                long_header,
             )
         },
 
@@ -1489,8 +1487,8 @@ mod conn {
     use std::time::Duration;
 
     use futures_channel::{mpsc, oneshot};
-    use futures_util::future::{self, FutureExt, TryFutureExt, poll_fn};
-    use rama_core::bytes::{Buf, Bytes};
+    use rama::bytes::{Buf, Bytes};
+    use rama::futures::future::{self, FutureExt, TryFutureExt, poll_fn};
     use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _, ReadBuf};
     use tokio::net::{TcpListener as TkTcpListener, TcpStream};
 
@@ -1498,8 +1496,8 @@ mod conn {
     use rama::http::core::body::{Body, Frame};
     use rama::http::core::client::conn;
     use rama::http::core::service::RamaHttpService;
-    use rama::http::core::upgrade::OnUpgrade;
     use rama::http::dep::http_body_util::{BodyExt, Empty, StreamBody};
+    use rama::http::io::upgrade::OnUpgrade;
     use rama::http::{Method, Request, Response, StatusCode};
     use rama::rt::Executor;
 
@@ -1640,7 +1638,7 @@ mod conn {
 
         let (mut client, conn) = rt.block_on(conn::http1::handshake(tcp)).unwrap();
 
-        rt.spawn(conn.map_err(|e| panic!("conn error: {}", e)).map(|_| ()));
+        rt.spawn(conn.map_err(|e| panic!("conn error: {e}")).map(|_| ()));
 
         let req = Request::builder()
             .uri("/")
@@ -1684,7 +1682,7 @@ mod conn {
 
         let (mut client, conn) = rt.block_on(conn::http1::handshake(tcp)).unwrap();
 
-        rt.spawn(conn.map_err(|e| panic!("conn error: {}", e)).map(|_| ()));
+        rt.spawn(conn.map_err(|e| panic!("conn error: {e}")).map(|_| ()));
 
         let (mut sender, recv) = mpsc::channel::<Result<Frame<Bytes>, BoxError>>(0);
 
@@ -1739,7 +1737,7 @@ mod conn {
 
         let (mut client, conn) = rt.block_on(conn::http1::handshake(tcp)).unwrap();
 
-        rt.spawn(conn.map_err(|e| panic!("conn error: {}", e)).map(|_| ()));
+        rt.spawn(conn.map_err(|e| panic!("conn error: {e}")).map(|_| ()));
 
         let req = Request::builder()
             .uri("http://hyper.local/a")
@@ -1783,7 +1781,7 @@ mod conn {
 
         let (mut client, conn) = rt.block_on(conn::http1::handshake(tcp)).unwrap();
 
-        rt.spawn(conn.map_err(|e| panic!("conn error: {}", e)).map(|_| ()));
+        rt.spawn(conn.map_err(|e| panic!("conn error: {e}")).map(|_| ()));
 
         let req = Request::builder()
             .uri("/a")
@@ -1824,7 +1822,7 @@ mod conn {
 
         let (mut client, conn) = rt.block_on(conn::http1::handshake(tcp)).unwrap();
 
-        rt.spawn(conn.map_err(|e| panic!("conn error: {}", e)).map(|_| ()));
+        rt.spawn(conn.map_err(|e| panic!("conn error: {e}")).map(|_| ()));
 
         let req = Request::builder()
             .uri("/a")
@@ -1842,7 +1840,7 @@ mod conn {
             .unwrap();
         let res2 = client.send_request(req).map(|result| {
             let err = result.expect_err("res2");
-            assert!(err.is_canceled(), "err not canceled, {:?}", err);
+            assert!(err.is_canceled(), "err not canceled, {err:?}");
             Ok::<_, ()>(())
         });
 
@@ -2206,8 +2204,7 @@ mod conn {
 
             assert!(
                 err.take_message().is_some(),
-                "request was returned: {:?}",
-                err
+                "request was returned: {err:?}",
             );
         })
         .await
@@ -2216,7 +2213,7 @@ mod conn {
 
     #[tokio::test]
     async fn http2_detect_conn_eof() {
-        use futures_util::future;
+        use rama::futures::future;
 
         let (listener, addr) = setup_tk_test_server().await;
 
@@ -2273,7 +2270,7 @@ mod conn {
             .expect("client poll ready sanity");
 
         let req = Request::builder()
-            .uri(format!("http://{}/", addr))
+            .uri(format!("http://{addr}/"))
             .body(Empty::<Bytes>::new())
             .expect("request builder");
 
@@ -2300,7 +2297,7 @@ mod conn {
     async fn http2_connect_detect_close() {
         // Regression test for failure to fully close connections when using HTTP2 CONNECT
         // We send 2 requests and then drop them. We should see the connection gracefully close.
-        use futures_util::future;
+        use rama::futures::future;
         let (listener, addr) = setup_tk_test_server().await;
         let (tx, rxx) = oneshot::channel::<()>();
 
@@ -2315,7 +2312,7 @@ mod conn {
                 rama::Context::default(),
                 service_fn(move |req: Request| {
                     tokio::task::spawn(async move {
-                        let io = &mut rama::http::core::upgrade::on(req).await.unwrap();
+                        let io = &mut rama::http::io::upgrade::on(req).await.unwrap();
                         io.write_all(b"hello\n").await.unwrap();
                     });
 
@@ -2354,13 +2351,13 @@ mod conn {
             let rx = rxs.pop().unwrap();
             let req = Request::builder()
                 .method(Method::CONNECT)
-                .uri(format!("{}", addr))
+                .uri(format!("{addr}"))
                 .body(Empty::<Bytes>::new())
                 .expect("request builder");
 
             let resp = client.send_request(req).await.expect("req1 send");
             assert_eq!(resp.status(), 200);
-            let upgrade = rama::http::core::upgrade::on(resp).await.unwrap();
+            let upgrade = rama::http::io::upgrade::on(resp).await.unwrap();
             tokio::task::spawn(async move {
                 let _ = rx.await;
                 drop(upgrade);
@@ -2473,8 +2470,7 @@ mod conn {
             .expect_err("client should be closed");
         assert!(
             err.is_closed(),
-            "poll_ready error should be closed: {:?}",
-            err
+            "poll_ready error should be closed: {err:?}",
         );
     }
 
@@ -2635,7 +2631,7 @@ mod conn {
         let res = client.send_request(req).await.expect("send_request");
         assert_eq!(res.status(), StatusCode::OK);
 
-        let mut upgraded = rama::http::core::upgrade::on(res).await.unwrap();
+        let mut upgraded = rama::http::io::upgrade::on(res).await.unwrap();
 
         let mut vec = vec![];
         upgraded.read_to_end(&mut vec).await.unwrap();
@@ -2795,7 +2791,7 @@ where
 {
     fn expect(self, msg: &'static str) -> Pin<Box<dyn Future<Output = Self::Ok>>> {
         Box::pin(
-            self.inspect_err(move |e| panic!("expect: {}; error={:?}", msg, e))
+            self.inspect_err(move |e| panic!("expect: {msg}; error={e:?}"))
                 .map(Result::unwrap),
         )
     }

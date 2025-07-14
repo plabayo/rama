@@ -24,10 +24,9 @@ use rama::{
     rt::Executor,
     service::service_fn,
     tcp::{client::service::Forwarder, server::TcpListener},
+    telemetry::tracing::{self, level_filters::LevelFilter},
 };
 use std::{convert::Infallible, time::Duration};
-use tracing::level_filters::LevelFilter;
-use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Debug, Args)]
 /// rama proxy server
@@ -47,21 +46,11 @@ pub struct CliCommandProxy {
 
 /// run the rama proxy service
 pub async fn run(cfg: CliCommandProxy) -> Result<(), BoxError> {
-    tracing_subscriber::registry()
-        .with(fmt::layer())
-        .with(
-            EnvFilter::builder()
-                .with_default_directive(LevelFilter::INFO.into())
-                .from_env_lossy(),
-        )
-        .init();
+    crate::trace::init_tracing(LevelFilter::INFO);
 
     let graceful = rama::graceful::Shutdown::default();
 
-    tracing::info!(
-        bind = %cfg.bind,
-        "starting proxy on",
-    );
+    tracing::info!("starting proxy on: bind interface = {}", cfg.bind);
 
     let tcp_service = TcpListener::build()
         .bind(cfg.bind.clone())
@@ -97,9 +86,9 @@ pub async fn run(cfg: CliCommandProxy) -> Result<(), BoxError> {
         );
 
         tracing::info!(
-            bind = %cfg.bind,
-            %bind_address,
-            "proxy ready",
+            network.local.address = %bind_address.ip(),
+            network.local.port = %bind_address.port(),
+            "proxy ready: bind interface = {}", cfg.bind,
         );
 
         tcp_service
@@ -126,11 +115,15 @@ where
         .map(|ctx| ctx.authority.clone())
     {
         Ok(authority) => {
-            tracing::info!(%authority, "accept CONNECT (lazy): insert proxy target into context");
+            tracing::info!(
+                server.address = %authority.host(),
+                server.port = %authority.port(),
+                "accept CONNECT (lazy): insert proxy target into context",
+            );
             ctx.insert(ProxyTarget(authority));
         }
         Err(err) => {
-            tracing::error!(err = %err, "error extracting authority");
+            tracing::error!("error extracting authority: {err:?}");
             return Err(StatusCode::BAD_REQUEST.into_response());
         }
     }
@@ -146,7 +139,7 @@ where
     match client.serve(ctx, req).await {
         Ok(resp) => Ok(resp),
         Err(err) => {
-            tracing::error!(error = %err, "error in client request");
+            tracing::error!("error in client request: {err:?}");
             Ok(Response::builder()
                 .status(StatusCode::INTERNAL_SERVER_ERROR)
                 .body(Body::empty())

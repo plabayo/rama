@@ -6,6 +6,7 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
+use futures::FutureExt;
 use rama::Context;
 use rama::http::StatusCode;
 use rama::http::core::server;
@@ -13,15 +14,12 @@ use rama::http::core::service::RamaHttpService;
 use rama::http::dep::http_body_util::{BodyExt, Full};
 use rama::rt::Executor;
 use rama_core::bytes::Bytes;
+use rama_core::telemetry::tracing;
 use tokio::net::{TcpListener, TcpStream};
 
 use rama::http::{Request, Response, Version};
 use rama::service::service_fn;
 
-#[allow(unused_imports)]
-pub(crate) use futures_util::{
-    FutureExt as _, StreamExt as _, TryFutureExt as _, TryStreamExt as _, future,
-};
 pub(crate) use rama::http::HeaderMap;
 pub(crate) use std::net::SocketAddr;
 
@@ -357,9 +355,7 @@ async fn async_test(cfg: __TestConfig) {
         cnt += 1;
         assert!(
             cnt <= expected_connections,
-            "server expected {} connections, received {}",
-            expected_connections,
-            cnt
+            "server expected {expected_connections} connections, received {cnt}",
         );
 
         loop {
@@ -393,7 +389,7 @@ async fn async_test(cfg: __TestConfig) {
                                 res
                             }
                             Err(err) => {
-                                tracing::error!(?err, "failed to collect result");
+                                tracing::error!("failed to collect result: {err:?}");
                                 Response::builder()
                                     .status(StatusCode::INTERNAL_SERVER_ERROR)
                                     .body(rama::http::Body::empty())
@@ -456,7 +452,7 @@ async fn async_test(cfg: __TestConfig) {
 
                 tokio::task::spawn(async move {
                     if let Err(err) = conn.await {
-                        panic!("{:?}", err);
+                        panic!("{err:?}");
                     }
                 });
                 sender.send_request(req).await.unwrap()
@@ -468,7 +464,7 @@ async fn async_test(cfg: __TestConfig) {
 
                 tokio::task::spawn(async move {
                     if let Err(err) = conn.await {
-                        panic!("{:?}", err);
+                        panic!("{err:?}");
                     }
                 });
                 sender.send_request(req).await.unwrap()
@@ -491,10 +487,10 @@ async fn async_test(cfg: __TestConfig) {
         for (creq, cres) in cfg.client_msgs {
             client_futures.push(make_request(creq, cres));
         }
-        Box::pin(future::join_all(client_futures).map(|_| ()))
+        Box::pin(rama::futures::future::join_all(client_futures).map(|_| ()))
     } else {
         let mut client_futures: Pin<Box<dyn Future<Output = ()> + Send>> =
-            Box::pin(future::ready(()));
+            Box::pin(std::future::ready(()));
         for (creq, cres) in cfg.client_msgs {
             let mk_request = make_request.clone();
             client_futures = Box::pin(client_futures.then(move |_| mk_request(creq, cres)));
@@ -544,9 +540,7 @@ async fn naive_proxy(cfg: ProxyConfig) -> (SocketAddr, impl Future<Output = ()>)
                             let uri = req.uri().host().expect("uri has no host");
                             let port = req.uri().port_u16().expect("uri has no port");
 
-                            let stream = TcpStream::connect(format!("{}:{}", uri, port))
-                                .await
-                                .unwrap();
+                            let stream = TcpStream::connect(format!("{uri}:{port}")).await.unwrap();
 
                             let result = if http2_only {
                                 let (mut sender, conn) =
@@ -559,7 +553,7 @@ async fn naive_proxy(cfg: ProxyConfig) -> (SocketAddr, impl Future<Output = ()>)
 
                                 tokio::task::spawn(async move {
                                     if let Err(err) = conn.await {
-                                        panic!("{:?}", err);
+                                        panic!("{err:?}");
                                     }
                                 });
 
@@ -570,7 +564,7 @@ async fn naive_proxy(cfg: ProxyConfig) -> (SocketAddr, impl Future<Output = ()>)
 
                                 tokio::task::spawn(async move {
                                     if let Err(err) = conn.await {
-                                        panic!("{:?}", err);
+                                        panic!("{err:?}");
                                     }
                                 });
 
@@ -580,7 +574,7 @@ async fn naive_proxy(cfg: ProxyConfig) -> (SocketAddr, impl Future<Output = ()>)
                             let resp = match result {
                                 Ok(resp) => resp.map(rama::http::Body::new),
                                 Err(err) => {
-                                    tracing::error!(?err, "failed to collect result");
+                                    tracing::error!("failed to collect result: {err:?}");
                                     Response::builder()
                                         .status(StatusCode::INTERNAL_SERVER_ERROR)
                                         .body(rama::http::Body::empty())

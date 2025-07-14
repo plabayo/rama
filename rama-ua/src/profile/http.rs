@@ -1,9 +1,8 @@
 use rama_http_types::{
     HeaderName, Method, Version,
-    conn::StreamDependencyParams,
     proto::{
         h1::Http1HeaderMap,
-        h2::{PseudoHeaderOrder, frame::SettingsConfig},
+        h2::{PseudoHeaderOrder, frame::EarlyFrameCapture},
     },
 };
 use rama_net::fingerprint::{HttpRequestInput, Ja4H, Ja4HComputeError};
@@ -227,6 +226,12 @@ pub struct HttpHeadersProfile {
     /// In case the user-agent does not support forms (e.g. because it does not handle html forms),
     /// then it is recommended to try to use the `fetch` headers and any fallbacks that the latter may have.
     pub form: Option<Http1HeaderMap>,
+    /// The headers to be used for WebSocket handshake requests.
+    ///
+    /// No UA profile is used for http headers
+    /// - in case WS is detected
+    /// - and no profile is defined
+    pub ws: Option<Http1HeaderMap>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -266,13 +271,6 @@ pub struct Http2Settings {
     /// See [`PseudoHeader`] for more details.
     pub http_pseudo_headers: Option<PseudoHeaderOrder>,
 
-    /// The (initial) h2 settings to be used for the HTTP/2 profile.
-    ///
-    /// See [`SettingsConfig`] for more details.
-    pub initial_config: Option<SettingsConfig>,
-
-    /// The priority settings to be used for the HTTP/2 profile.
-    ///
-    /// See [`StreamDependencyParams`] for more details.
-    pub priority_header: Option<StreamDependencyParams>,
+    /// Frames to be sent at the start of a stream.
+    pub early_frames: Option<EarlyFrameCapture>,
 }

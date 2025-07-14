@@ -1,8 +1,10 @@
 use std::io;
 
 use crate::h2::codec::UserError;
-use crate::h2::frame::{self, Reason, StreamId};
 use crate::h2::proto::{self, Error, Initiator, PollReset};
+
+use rama_core::telemetry::tracing;
+use rama_http_types::proto::h2::frame::{self, Reason, StreamId};
 
 /// Represents the state of an H2 stream
 ///
@@ -324,7 +326,7 @@ impl State {
                 tracing::trace!("send_close: HalfClosedRemote => Closed");
                 self.inner = Inner::Closed(Cause::EndStream);
             }
-            ref state => panic!("send_close: unexpected state {:?}", state),
+            ref state => panic!("send_close: unexpected state {state:?}"),
         }
     }
 

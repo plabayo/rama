@@ -135,26 +135,25 @@
 //! [`Error`]: ../struct.Error.html
 
 use crate::h2::codec::{Codec, SendError, UserError};
-use crate::h2::ext::Protocol;
-use crate::h2::frame::{Headers, Pseudo, Reason, Settings, StreamId};
 use crate::h2::proto::{self, Error};
 use crate::h2::{FlowControl, PingPong, RecvStream, SendStream};
 
 use rama_core::bytes::{Buf, Bytes};
+use rama_core::telemetry::tracing::{self, Instrument};
+use rama_http::proto::h2::frame::{EarlyFrame, EarlyFrameStreamContext};
 use rama_http_types::dep::http::{request, uri};
 use rama_http_types::proto::h1::headers::original::OriginalHttp1Headers;
 use rama_http_types::proto::h2::PseudoHeaderOrder;
+use rama_http_types::proto::h2::ext::Protocol;
+use rama_http_types::proto::h2::frame::StreamDependency;
+use rama_http_types::proto::h2::frame::{Headers, Pseudo, Reason, Settings, StreamId};
 use rama_http_types::proto::h2::frame::{SettingOrder, SettingsConfig};
 use rama_http_types::{HeaderMap, Method, Request, Response, Version};
-use std::borrow::Cow;
 use std::fmt;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
-use tracing::Instrument;
-
-use super::frame::{Priority, StreamDependency};
 
 /// Initializes new HTTP/2 streams on a connection by sending a request.
 ///
@@ -337,7 +336,11 @@ pub struct Builder {
     pending_accept_reset_stream_max: usize,
 
     /// Initial `Settings` frame to send as part of the handshake.
-    settings: Settings,
+    settings: Option<Settings>,
+
+    /// If true and if `Settings` are set, the settings defined will overwrite initial
+    /// settings given by the replay
+    overwrite_replay_settings: bool,
 
     /// The stream ID of the first (lowest) stream. Subsequent streams will use
     /// monotonically increasing stream IDs.
@@ -352,11 +355,8 @@ pub struct Builder {
     /// The headers frame pseudo order
     headers_pseudo_order: Option<PseudoHeaderOrder>,
 
-    /// The headers frame priority
-    headers_priority: Option<StreamDependency>,
-
-    /// Priority stream list
-    priority: Option<Cow<'static, [Priority]>>,
+    /// The early frames to be used by the client
+    early_frames: Option<Vec<EarlyFrame>>,
 }
 
 #[derive(Debug)]
@@ -674,12 +674,12 @@ impl Builder {
             pending_accept_reset_stream_max: proto::DEFAULT_REMOTE_RESET_STREAM_MAX,
             initial_target_connection_window_size: None,
             initial_max_send_streams: usize::MAX,
-            settings: Default::default(),
+            settings: None,
+            overwrite_replay_settings: false,
             stream_id: 1.into(),
             local_max_error_reset_streams: Some(proto::DEFAULT_LOCAL_RESET_COUNT_MAX),
             headers_pseudo_order: None,
-            headers_priority: None,
-            priority: None,
+            early_frames: None,
         }
     }
 
@@ -689,26 +689,21 @@ impl Builder {
         self
     }
 
-    /// Set http2 header priority
-    pub fn headers_priority(&mut self, headers_priority: StreamDependency) -> &mut Self {
-        self.headers_priority = Some(headers_priority);
-        self
-    }
-
     /// Settings frame order
     pub fn setting_order(&mut self, order: SettingOrder) -> &mut Self {
-        self.settings.set_setting_order(Some(order));
+        self.settings
+            .get_or_insert_default()
+            .set_setting_order(Some(order));
         self
     }
 
-    /// Priority stream list
-    pub fn priority(&mut self, priority: Cow<'static, [Priority]>) -> &mut Self {
-        self.priority = Some(priority);
+    pub fn early_frames(&mut self, early_frames: Vec<EarlyFrame>) -> &mut Self {
+        self.early_frames = Some(early_frames);
         self
     }
 
     pub fn setting_config(&mut self, config: SettingsConfig) -> &mut Self {
-        self.settings.set_config(config);
+        self.settings.get_or_insert_default().set_config(config);
         self
     }
 
@@ -743,7 +738,9 @@ impl Builder {
     /// # pub fn main() {}
     /// ```
     pub fn initial_window_size(&mut self, size: u32) -> &mut Self {
-        self.settings.set_initial_window_size(Some(size));
+        self.settings
+            .get_or_insert_default()
+            .set_initial_window_size(Some(size));
         self
     }
 
@@ -817,7 +814,9 @@ impl Builder {
     /// This function panics if `max` is not within the legal range specified
     /// above.
     pub fn max_frame_size(&mut self, max: u32) -> &mut Self {
-        self.settings.set_max_frame_size(Some(max));
+        self.settings
+            .get_or_insert_default()
+            .set_max_frame_size(Some(max));
         self
     }
 
@@ -852,7 +851,9 @@ impl Builder {
     /// # pub fn main() {}
     /// ```
     pub fn max_header_list_size(&mut self, max: u32) -> &mut Self {
-        self.settings.set_max_header_list_size(Some(max));
+        self.settings
+            .get_or_insert_default()
+            .set_max_header_list_size(Some(max));
         self
     }
 
@@ -901,7 +902,9 @@ impl Builder {
     /// # pub fn main() {}
     /// ```
     pub fn max_concurrent_streams(&mut self, max: u32) -> &mut Self {
-        self.settings.set_max_concurrent_streams(Some(max));
+        self.settings
+            .get_or_insert_default()
+            .set_max_concurrent_streams(Some(max));
         self
     }
 
@@ -1154,17 +1157,23 @@ impl Builder {
     /// # pub fn main() {}
     /// ```
     pub fn enable_push(&mut self, enabled: bool) -> &mut Self {
-        self.settings.set_enable_push(enabled);
+        self.settings
+            .get_or_insert_default()
+            .set_enable_push(enabled);
         self
     }
 
     pub fn enable_connect_protocol(&mut self, value: u32) -> &mut Self {
-        self.settings.set_enable_connect_protocol(Some(value));
+        self.settings
+            .get_or_insert_default()
+            .set_enable_connect_protocol(Some(value));
         self
     }
 
-    pub fn unknown_setting_9(&mut self, value: u32) -> &mut Self {
-        self.settings.set_unknown_setting_9(Some(value));
+    pub fn set_no_rfc7540_priorities(&mut self, value: u32) -> &mut Self {
+        self.settings
+            .get_or_insert_default()
+            .set_no_rfc7540_priorities(Some(value));
         self
     }
 
@@ -1197,7 +1206,9 @@ impl Builder {
     /// # pub fn main() {}
     /// ```
     pub fn header_table_size(&mut self, size: u32) -> &mut Self {
-        self.settings.set_header_table_size(Some(size));
+        self.settings
+            .get_or_insert_default()
+            .set_header_table_size(Some(size));
         self
     }
 
@@ -1368,17 +1379,58 @@ where
         // Create the codec
         let mut codec = Codec::new(io);
 
-        if let Some(max) = builder.settings.max_frame_size() {
+        let (initial_settings, early_frame_ctx) = match builder.early_frames {
+            Some(frames) => {
+                let (ctx, settings) = EarlyFrameStreamContext::new_replayer(frames);
+                match settings {
+                    Some(mut settings) => {
+                        tracing::trace!(
+                            "early frame replayer used for client w/ custom settings {settings:?}; builder settings = {:?}",
+                            builder.settings,
+                        );
+                        if let Some(overwrites) = builder.settings {
+                            if builder.overwrite_replay_settings {
+                                settings.merge(overwrites);
+                                tracing::trace!(
+                                    "overwrites from builder have been applied on top of of early frame replayer: settings = {settings:?}",
+                                );
+                            } else {
+                                tracing::trace!(
+                                    "overwrites {overwrites:?} from builder have been ignored in favor of of early frame replayer w/ settings {settings:?}",
+                                );
+                            }
+                        }
+                        (settings, ctx)
+                    }
+                    None => {
+                        let settings = builder.settings.unwrap_or_default();
+                        tracing::trace!(
+                            "early frame replayer used for client w/o settings; use builder settings (or default): {settings:?}",
+                        );
+                        (settings, ctx)
+                    }
+                }
+            }
+            None => {
+                let settings = builder.settings.unwrap_or_default();
+                tracing::trace!(
+                    "no early frames replayer used for client, use builder settings (or default): {settings:?}",
+                );
+                (settings, EarlyFrameStreamContext::new_nop())
+            }
+        };
+
+        if let Some(max) = initial_settings.max_frame_size() {
             codec.set_max_recv_frame_size(max as usize);
         }
 
-        if let Some(max) = builder.settings.max_header_list_size() {
+        if let Some(max) = initial_settings.max_header_list_size() {
             codec.set_max_recv_header_list_size(max as usize);
         }
 
         // Send initial settings frame
         codec
-            .buffer(builder.settings.clone().into())
+            .buffer(initial_settings.clone().into())
             .expect("invalid SETTINGS frame");
 
         let inner = proto::Connection::new(
@@ -1391,10 +1443,9 @@ where
                 reset_stream_max: builder.reset_stream_max,
                 remote_reset_stream_max: builder.pending_accept_reset_stream_max,
                 local_error_reset_streams_max: builder.local_max_error_reset_streams,
-                settings: builder.settings,
+                settings: initial_settings,
                 headers_pseudo_order: builder.headers_pseudo_order,
-                headers_priority: builder.headers_priority,
-                priority: builder.priority,
+                early_frame_ctx,
             },
         );
         let send_request = SendRequest {
@@ -1542,8 +1593,8 @@ impl ResponseFuture {
     /// # Panics
     ///
     /// If the lock on the stream store has been poisoned.
-    pub fn stream_id(&self) -> crate::h2::StreamId {
-        crate::h2::StreamId::from_internal(self.inner.stream_id())
+    pub fn stream_id(&self) -> StreamId {
+        self.inner.stream_id()
     }
     /// Returns a stream of PushPromises
     ///
@@ -1592,7 +1643,7 @@ impl PushPromises {
     }
 }
 
-impl futures_core::Stream for PushPromises {
+impl rama_core::futures::Stream for PushPromises {
     type Item = Result<PushPromise, crate::h2::Error>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
@@ -1636,7 +1687,7 @@ impl PushedResponseFuture {
     /// # Panics
     ///
     /// If the lock on the stream store has been poisoned.
-    pub fn stream_id(&self) -> crate::h2::StreamId {
+    pub fn stream_id(&self) -> StreamId {
         self.inner.stream_id()
     }
 }
@@ -1651,8 +1702,7 @@ impl Peer {
         end_of_stream: bool,
         headers_pseudo_order: Option<PseudoHeaderOrder>,
         headers_priority: Option<StreamDependency>,
-        priority: Option<Cow<'static, [Priority]>>,
-    ) -> Result<(Option<Cow<'static, [Priority]>>, Headers), SendError> {
+    ) -> Result<Headers, SendError> {
         use request::Parts;
 
         let (
@@ -1677,10 +1727,9 @@ impl Peer {
         if let Some(order) = extensions
             .remove::<PseudoHeaderOrder>()
             .or(headers_pseudo_order)
+            && !order.is_empty()
         {
-            if !order.is_empty() {
-                pseudo.order = order;
-            }
+            pseudo.order = order;
         }
 
         let header_order: OriginalHttp1Headers = extensions.remove().unwrap_or_default();
@@ -1713,16 +1762,6 @@ impl Peer {
             }
         }
 
-        // Check the priority list for overflowed stream IDs
-        if let Some(ref priority) = priority {
-            if let Some(last_priority) = priority.last() {
-                // Ensure the next stream ID does not overflow
-                if last_priority.stream_id().next_id()? > id {
-                    return Err(UserError::OverflowedStreamId.into());
-                }
-            }
-        }
-
         // Create the HEADERS frame
         let mut frame = Headers::new(id, pseudo, headers, header_order, headers_priority);
 
@@ -1730,7 +1769,7 @@ impl Peer {
             frame.set_end_stream()
         }
 
-        Ok((priority, frame))
+        Ok(frame)
     }
 }
 

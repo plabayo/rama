@@ -52,7 +52,7 @@ impl Header for XForwardedFor {
                 util::csv::fmt_comma_delimited(&mut *f, self.0.iter())
             })
         );
-        values.extend(Some(HeaderValue::from_str(&s).unwrap()))
+        values.extend(Some(HeaderValue::try_from(s).unwrap()))
     }
 }
 

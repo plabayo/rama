@@ -5,9 +5,10 @@
 use super::HttpProxyError;
 use rama_core::error::{ErrorContext, OpaqueError};
 use rama_core::rt::Executor;
+use rama_core::telemetry::tracing;
+use rama_http::io::upgrade;
 use rama_http_core::body::Incoming;
 use rama_http_core::client::conn::{http1, http2};
-use rama_http_core::upgrade;
 use rama_http_headers::{Header, HeaderMapExt};
 use rama_http_types::Response;
 use rama_http_types::{
@@ -91,15 +92,13 @@ impl InnerHttpProxyConnector {
                 Version::HTTP_2 => Self::handshake_h2(self.req, stream).await?,
                 version => {
                     return Err(HttpProxyError::Other(format!(
-                        "invalid http version: {:?}",
-                        version,
+                        "invalid http version: {version:?}",
                     )));
                 }
             },
             version => {
                 return Err(HttpProxyError::Other(format!(
-                    "invalid http version: {:?}",
-                    version,
+                    "invalid http version: {version:?}",
                 )));
             }
         };
@@ -128,7 +127,7 @@ impl InnerHttpProxyConnector {
 
         tokio::spawn(async move {
             if let Err(err) = conn.with_upgrades().await {
-                tracing::debug!(?err, "http upgrade proxy client conn failed");
+                tracing::debug!("http upgrade proxy client conn failed: {err:?}");
             }
         });
 
@@ -148,7 +147,7 @@ impl InnerHttpProxyConnector {
 
         tokio::spawn(async move {
             if let Err(err) = conn.await {
-                tracing::debug!(?err, "http2 proxy client conn failed");
+                tracing::debug!("http2 proxy client conn failed: {err:?}");
             }
         });
 

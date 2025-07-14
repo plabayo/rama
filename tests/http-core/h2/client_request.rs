@@ -1,7 +1,7 @@
-use futures::StreamExt;
-use futures::future::{Either, ready};
-use futures::stream::FuturesUnordered;
 use h2_support::prelude::*;
+use rama_core::futures::StreamExt;
+use rama_core::futures::future::{Either, ready};
+use rama_core::futures::stream::FuturesUnordered;
 use std::pin::Pin;
 use std::task::Context;
 use std::{io, panic};
@@ -264,7 +264,7 @@ async fn request_over_max_concurrent_streams_errors() {
             .body(())
             .unwrap();
 
-        let waker = futures::task::noop_waker();
+        let waker = rama_core::futures::task::noop_waker();
         let mut cx = Context::from_waker(&waker);
 
         // third stream is over max concurrent
@@ -455,8 +455,9 @@ async fn send_request_poll_ready_when_connection_error() {
         // We don't want a join, since any of the other futures notifying
         // will make the until_ready future polled again, but we are
         // specifically testing that until_ready gets notified on its own.
-        let mut unordered =
-            futures::stream::FuturesUnordered::<Pin<Box<dyn Future<Output = ()>>>>::new();
+        let mut unordered = rama_core::futures::stream::FuturesUnordered::<
+            Pin<Box<dyn Future<Output = ()>>>,
+        >::new();
         unordered.push(Box::pin(until_ready));
         unordered.push(Box::pin(async move {
             h2.await.expect_err("client conn");
@@ -1455,7 +1456,7 @@ async fn early_hints() {
             .unwrap();
         let (response, _) = client.send_request(request, true).unwrap();
         let (ha, mut body) = response.await.unwrap().into_parts();
-        eprintln!("{:?}", ha);
+        eprintln!("{ha:?}");
         assert_eq!(body.data().await.unwrap().unwrap(), "ok");
     };
 
@@ -1870,7 +1871,7 @@ async fn receive_settings_frame_twice_with_second_one_empty() {
                     srv.send(ack.into()).await.unwrap();
                 }
                 frame => {
-                    panic!("unexpected frame: {:?}", frame);
+                    panic!("unexpected frame: {frame:?}");
                 }
             },
             None => {
@@ -1921,7 +1922,7 @@ async fn receive_settings_frame_twice_with_second_one_non_empty() {
                     srv.send(ack.into()).await.unwrap();
                 }
                 frame => {
-                    panic!("unexpected frame: {:?}", frame);
+                    panic!("unexpected frame: {frame:?}");
                 }
             },
             None => {

@@ -374,7 +374,7 @@ macro_rules! __generate_set_and_with {
     };
     (
         $(#[$outer_doc:meta])*
-        $vis:vis fn $fn_name:ident(mut $self_token:ident, $($param_name:ident: $param_ty:ty),+ $(,)?) ->Result<Self, $error:ty> {
+        $vis:vis fn $fn_name:ident(mut $self_token:ident, $($param_name:ident: $param_ty:ty),+ $(,)?) -> Result<Self, $error:ty> {
             $($body:tt)*
         }
     ) => {

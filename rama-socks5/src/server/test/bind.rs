@@ -56,7 +56,8 @@ async fn test_socks5_acceptor_auth_flow_used_bind_failure_method_not_supported()
         .write(b"\x05\x07\x00\x01\x00\x00\x00\x00\x00\x00")
         .build();
 
-    let server = Socks5Acceptor::new().with_auth(Socks5Auth::username_password("john", "secret"));
+    let server = Socks5Acceptor::new()
+        .with_authorizer(user::Basic::new_static("john", "secret").into_authorizer());
     let result = server.accept(Context::default(), stream).await;
     assert!(result.is_err());
 }
@@ -78,7 +79,8 @@ async fn test_socks5_acceptor_auth_flow_username_only_bind_failure_method_not_su
         .write(b"\x05\x07\x00\x01\x00\x00\x00\x00\x00\x00")
         .build();
 
-    let server = Socks5Acceptor::new().with_auth(Socks5Auth::username("john"));
+    let server = Socks5Acceptor::new()
+        .with_authorizer(user::Basic::new_static_insecure("john").into_authorizer());
     let result = server.accept(Context::default(), stream).await;
     assert!(result.is_err());
 }
@@ -204,7 +206,7 @@ async fn test_socks5_acceptor_with_auth_flow_client_bind_mock_success_with_data(
         .build();
 
     let server = Socks5Acceptor::new()
-        .with_auth(Socks5Auth::username_password("john", "secret"))
+        .with_authorizer(user::Basic::new_static("john", "secret").into_authorizer())
         .with_binder(
             MockBinder::new(Authority::local_ipv4(42), Authority::local_ipv4(43)).with_proxy_data(
                 tokio_test::io::Builder::new()
@@ -243,7 +245,7 @@ async fn test_socks5_acceptor_with_auth_flow_username_only_client_bind_mock_succ
         .build();
 
     let server = Socks5Acceptor::new()
-        .with_auth(Socks5Auth::username("john"))
+        .with_authorizer(user::Basic::new_static_insecure("john").into_authorizer())
         .with_binder(
             MockBinder::new(Authority::local_ipv4(42), Authority::local_ipv4(43)).with_proxy_data(
                 tokio_test::io::Builder::new()

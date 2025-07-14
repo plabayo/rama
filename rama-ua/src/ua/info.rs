@@ -236,7 +236,7 @@ impl FromStr for UserAgentKind {
                 "chromium" => Ok(UserAgentKind::Chromium),
                 "firefox" => Ok(UserAgentKind::Firefox),
                 "safari" => Ok(UserAgentKind::Safari),
-                _ => Err(OpaqueError::from_display(format!("invalid user agent kind: {}", s))),
+                _ => Err(OpaqueError::from_display(format!("invalid user agent kind: {s}"))),
             }
         }
     }
@@ -276,6 +276,39 @@ impl DeviceKind {
             DeviceKind::Desktop => "Desktop",
             DeviceKind::Mobile => "Mobile",
         }
+    }
+}
+
+impl FromStr for DeviceKind {
+    type Err = OpaqueError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match_ignore_ascii_case_str! {
+            match (s) {
+                "desktop" => Ok(DeviceKind::Desktop),
+                "mobile" => Ok(DeviceKind::Mobile),
+                _ => Err(OpaqueError::from_display(format!("invalid device: {s}"))),
+            }
+        }
+    }
+}
+
+impl Serialize for DeviceKind {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::ser::Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for DeviceKind {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = <std::borrow::Cow<'de, str>>::deserialize(deserializer)?;
+        s.parse::<DeviceKind>().map_err(serde::de::Error::custom)
     }
 }
 
@@ -332,7 +365,7 @@ impl FromStr for PlatformKind {
                 "linux" => Ok(PlatformKind::Linux),
                 "android" => Ok(PlatformKind::Android),
                 "ios" => Ok(PlatformKind::IOS),
-                _ => Err(OpaqueError::from_display(format!("invalid platform: {}", s))),
+                _ => Err(OpaqueError::from_display(format!("invalid platform: {s}"))),
             }
         }
     }
@@ -425,7 +458,7 @@ impl FromStr for HttpAgent {
                 "Firefox" => Ok(HttpAgent::Firefox),
                 "Safari" => Ok(HttpAgent::Safari),
                 "preserve" => Ok(HttpAgent::Preserve),
-                _ => Err(OpaqueError::from_display(format!("invalid http agent: {}", s))),
+                _ => Err(OpaqueError::from_display(format!("invalid http agent: {s}"))),
             }
         }
     }
@@ -495,7 +528,7 @@ impl FromStr for TlsAgent {
                 "boring" | "boringssl" => Ok(TlsAgent::Boringssl),
                 "nss" => Ok(TlsAgent::Nss),
                 "preserve" => Ok(TlsAgent::Preserve),
-                _ => Err(OpaqueError::from_display(format!("invalid tls agent: {}", s))),
+                _ => Err(OpaqueError::from_display(format!("invalid tls agent: {s}"))),
             }
         }
     }

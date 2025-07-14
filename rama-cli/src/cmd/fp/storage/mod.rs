@@ -3,7 +3,11 @@ use rama::{
     error::{ErrorContext, OpaqueError},
     http::proto::h1::Http1HeaderMap,
     net::tls::client::ClientHello,
-    ua::profile::{Http1Settings, Http2Settings, JsProfileWebApis, UserAgentSourceInfo},
+    telemetry::tracing,
+    ua::profile::{
+        Http1Settings, Http2Settings, JsProfileWebApis, UserAgentSourceInfo,
+        WsClientConfigOverwrites,
+    },
 };
 
 mod postgres;
@@ -17,7 +21,10 @@ pub(super) struct Storage {
 
 impl Storage {
     pub(super) async fn new(pg_url: String) -> Result<Self, OpaqueError> {
-        tracing::debug!("create new storage with PG URL: {}", pg_url);
+        tracing::debug!(
+            url.full = %pg_url,
+            "create new PG storage",
+        );
         let pool = postgres::new_pool(pg_url).await?;
         Ok(Self { pool })
     }
@@ -40,7 +47,10 @@ impl Storage {
         auth: bool,
         settings: Http1Settings,
     ) -> Result<(), OpaqueError> {
-        tracing::debug!("store h1 settings for UA '{ua}': {settings:?}");
+        tracing::debug!(
+            user_agent.original = %ua,
+            "store h1 settings for UA: {settings:?}",
+        );
 
         let updated_at = Utc::now();
 
@@ -55,7 +65,8 @@ impl Storage {
 
         if n != 1 {
             tracing::error!(
-                "unexpected number of rows affected to store h1 settings for UA '{ua}': {n}"
+                user_agent.original = %ua,
+                "unexpected number of rows affected to store h1 settings for UA: {n}",
             );
         }
 
@@ -68,7 +79,10 @@ impl Storage {
         auth: bool,
         headers: Http1HeaderMap,
     ) -> Result<(), OpaqueError> {
-        tracing::debug!("store h1 navigateheaders for UA '{ua}': {headers:?}");
+        tracing::debug!(
+            user_agent.original = %ua,
+            "store h1 navigateheaders for UA: {headers:?}",
+        );
 
         let updated_at = Utc::now();
 
@@ -83,7 +97,8 @@ impl Storage {
 
         if n != 1 {
             tracing::error!(
-                "unexpected number of rows affected to store h1 navigate headers for UA '{ua}': {n}"
+                user_agent.original = %ua,
+                "unexpected number of rows affected to store h1 navigate headers for UA: {n}",
             );
         }
 
@@ -96,7 +111,10 @@ impl Storage {
         auth: bool,
         headers: Http1HeaderMap,
     ) -> Result<(), OpaqueError> {
-        tracing::debug!("store h1 fetch headers for UA '{ua}': {headers:?}");
+        tracing::debug!(
+            user_agent.original = %ua,
+            "store h1 fetch headers for UA: {headers:?}",
+        );
 
         let updated_at = Utc::now();
 
@@ -111,7 +129,8 @@ impl Storage {
 
         if n != 1 {
             tracing::error!(
-                "unexpected number of rows affected to store h1 fetch headers for UA '{ua}': {n}"
+                user_agent.original = %ua,
+                "unexpected number of rows affected to store h1 fetch headers for UA: {n}",
             );
         }
 
@@ -124,7 +143,10 @@ impl Storage {
         auth: bool,
         headers: Http1HeaderMap,
     ) -> Result<(), OpaqueError> {
-        tracing::debug!("store h1 xhr headers for UA '{ua}': {headers:?}");
+        tracing::debug!(
+            user_agent.original = %ua,
+            "store h1 xhr headers for UA: {headers:?}",
+        );
 
         let updated_at = Utc::now();
 
@@ -139,7 +161,8 @@ impl Storage {
 
         if n != 1 {
             tracing::error!(
-                "unexpected number of rows affected to store h1 xhr headers for UA '{ua}': {n}"
+                user_agent.original = %ua,
+                "unexpected number of rows affected to store h1 xhr headers for UA: {n}",
             );
         }
 
@@ -152,7 +175,10 @@ impl Storage {
         auth: bool,
         headers: Http1HeaderMap,
     ) -> Result<(), OpaqueError> {
-        tracing::debug!("store h1 form headers for UA '{ua}': {headers:?}");
+        tracing::debug!(
+            user_agent.original = %ua,
+            "store h1 form headers for UA: {headers:?}",
+        );
 
         let updated_at = Utc::now();
 
@@ -167,7 +193,40 @@ impl Storage {
 
         if n != 1 {
             tracing::error!(
-                "unexpected number of rows affected to store h1 form headers for UA '{ua}': {n}"
+                user_agent.original = %ua,
+                "unexpected number of rows affected to store h1 form headers for UA: {n}",
+            );
+        }
+
+        Ok(())
+    }
+
+    pub(super) async fn store_h1_headers_ws(
+        &self,
+        ua: String,
+        auth: bool,
+        headers: Http1HeaderMap,
+    ) -> Result<(), OpaqueError> {
+        tracing::debug!(
+            user_agent.original = %ua,
+            "store h1 ws headers for UA: {headers:?}",
+        );
+
+        let updated_at = Utc::now();
+
+        let client = self.pool.get().await.context("get postgres client")?;
+        let n = client.execute(
+                insert_stmt!(
+                    auth,
+                    "(uastr, h1_headers_ws, updated_at) VALUES ($1, $2, $3) ON CONFLICT (uastr) DO UPDATE SET h1_headers_ws = $2, updated_at = $3",
+                ),
+                &[&ua, &types::Json(headers), &updated_at],
+            ).await.context("store h1 ws headers in postgres")?;
+
+        if n != 1 {
+            tracing::error!(
+                user_agent.original = %ua,
+                "unexpected number of rows affected to store h1 ws headers for UA: {n}",
             );
         }
 
@@ -180,7 +239,10 @@ impl Storage {
         auth: bool,
         settings: Http2Settings,
     ) -> Result<(), OpaqueError> {
-        tracing::debug!("store h2 settings for UA '{ua}': {settings:?}");
+        tracing::debug!(
+            user_agent.original = %ua,
+            "store h2 settings for UA: {settings:?}",
+        );
 
         let updated_at = Utc::now();
 
@@ -195,7 +257,8 @@ impl Storage {
 
         if n != 1 {
             tracing::error!(
-                "unexpected number of rows affected to store h2 settings for UA '{ua}': {n}"
+                user_agent.original = %ua,
+                "unexpected number of rows affected to store h2 settings for UA: {n}",
             );
         }
 
@@ -208,7 +271,10 @@ impl Storage {
         auth: bool,
         headers: Http1HeaderMap,
     ) -> Result<(), OpaqueError> {
-        tracing::debug!("store h2 navigate headers for UA '{ua}': {headers:?}");
+        tracing::debug!(
+            user_agent.original = %ua,
+            "store h2 navigate headers for UA: {headers:?}",
+        );
 
         let updated_at = Utc::now();
 
@@ -223,7 +289,8 @@ impl Storage {
 
         if n != 1 {
             tracing::error!(
-                "unexpected number of rows affected to store h2 navigate headers for UA '{ua}': {n}"
+                user_agent.original = %ua,
+                "unexpected number of rows affected to store h2 navigate headers for UA: {n}",
             );
         }
 
@@ -236,7 +303,10 @@ impl Storage {
         auth: bool,
         headers: Http1HeaderMap,
     ) -> Result<(), OpaqueError> {
-        tracing::debug!("store h2 fetch headers for UA '{ua}': {headers:?}");
+        tracing::debug!(
+            user_agent.original = %ua,
+            "store h2 fetch headers for UA: {headers:?}",
+        );
 
         let updated_at = Utc::now();
 
@@ -251,7 +321,8 @@ impl Storage {
 
         if n != 1 {
             tracing::error!(
-                "unexpected number of rows affected to store h2 fetch headers for UA '{ua}': {n}"
+                user_agent.original = %ua,
+                "unexpected number of rows affected to store h2 fetch headers for UA: {n}",
             );
         }
 
@@ -264,7 +335,10 @@ impl Storage {
         auth: bool,
         headers: Http1HeaderMap,
     ) -> Result<(), OpaqueError> {
-        tracing::debug!("store h2 xhr headers for UA '{ua}': {headers:?}");
+        tracing::debug!(
+            user_agent.original = %ua,
+            "store h2 xhr headers for UA: {headers:?}",
+        );
 
         let updated_at = Utc::now();
 
@@ -279,7 +353,8 @@ impl Storage {
 
         if n != 1 {
             tracing::error!(
-                "unexpected number of rows affected to store h2 xhr headers for UA '{ua}': {n}"
+                user_agent.original = %ua,
+                "unexpected number of rows affected to store h2 xhr headers for UA: {n}",
             );
         }
 
@@ -292,7 +367,10 @@ impl Storage {
         auth: bool,
         headers: Http1HeaderMap,
     ) -> Result<(), OpaqueError> {
-        tracing::debug!("store h2 form headers for UA '{ua}': {headers:?}");
+        tracing::debug!(
+            user_agent.original = %ua,
+            "store h2 form headers for UA: {headers:?}",
+        );
 
         let updated_at = Utc::now();
 
@@ -307,7 +385,40 @@ impl Storage {
 
         if n != 1 {
             tracing::error!(
-                "unexpected number of rows affected to store h2 form headers for UA '{ua}': {n}"
+                user_agent.original = %ua,
+                "unexpected number of rows affected to store h2 form headers for UA: {n}",
+            );
+        }
+
+        Ok(())
+    }
+
+    pub(super) async fn store_h2_headers_ws(
+        &self,
+        ua: String,
+        auth: bool,
+        headers: Http1HeaderMap,
+    ) -> Result<(), OpaqueError> {
+        tracing::debug!(
+            user_agent.original = %ua,
+            "store h2 ws headers for UA: {headers:?}",
+        );
+
+        let updated_at = Utc::now();
+
+        let client = self.pool.get().await.context("get postgres client")?;
+        let n = client.execute(
+                insert_stmt!(
+                    auth,
+                    "(uastr, h2_headers_ws, updated_at) VALUES ($1, $2, $3) ON CONFLICT (uastr) DO UPDATE SET h2_headers_ws = $2, updated_at = $3",
+                ),
+                &[&ua, &types::Json(headers), &updated_at],
+            ).await.context("store h2 ws headers in postgres")?;
+
+        if n != 1 {
+            tracing::error!(
+                user_agent.original = %ua,
+                "unexpected number of rows affected to store h2 ws headers for UA: {n}",
             );
         }
 
@@ -320,7 +431,10 @@ impl Storage {
         auth: bool,
         tls_client_hello: ClientHello,
     ) -> Result<(), OpaqueError> {
-        tracing::debug!("store tls client hello for UA '{ua}': {tls_client_hello:?}");
+        tracing::debug!(
+            user_agent.original = %ua,
+            "store tls client hello for UA: {tls_client_hello:?}",
+        );
 
         let updated_at = Utc::now();
 
@@ -335,7 +449,44 @@ impl Storage {
 
         if n != 1 {
             tracing::error!(
-                "unexpected number of rows affected to store tls client hello for UA '{ua}': {n}"
+                user_agent.original = %ua,
+                "unexpected number of rows affected to store tls client hello for UA: {n}",
+            );
+        }
+
+        Ok(())
+    }
+
+    pub(super) async fn store_tls_ws_client_overwrites_from_client_hello(
+        &self,
+        ua: String,
+        auth: bool,
+        tls_client_hello: ClientHello,
+    ) -> Result<(), OpaqueError> {
+        tracing::debug!(
+            user_agent.original = %ua,
+            "store tls ws client config overwritesfor UA: {tls_client_hello:?}",
+        );
+
+        let updated_at = Utc::now();
+
+        let overwrites = WsClientConfigOverwrites {
+            alpn: tls_client_hello.ext_alpn().map(ToOwned::to_owned),
+        };
+
+        let client = self.pool.get().await.context("get postgres client")?;
+        let n = client.execute(
+            insert_stmt!(
+                auth,
+                "(uastr, tls_ws_client_config_overwrites, updated_at) VALUES ($1, $2, $3) ON CONFLICT (uastr) DO UPDATE SET tls_ws_client_config_overwrites = $2, updated_at = $3",
+            ),
+            &[&ua, &types::Json(overwrites), &updated_at],
+        ).await.context("store tls client config overwrites in postgres")?;
+
+        if n != 1 {
+            tracing::error!(
+                user_agent.original = %ua,
+                "unexpected number of rows affected to store tls ws client config overwrites for UA: {n}",
             );
         }
 
@@ -348,7 +499,10 @@ impl Storage {
         auth: bool,
         js_web_apis: JsProfileWebApis,
     ) -> Result<(), OpaqueError> {
-        tracing::debug!("store js web apis for UA '{ua}': {js_web_apis:?}");
+        tracing::debug!(
+            user_agent.original = %ua,
+            "store js web apis for UA: {js_web_apis:?}",
+        );
 
         let updated_at = Utc::now();
 
@@ -363,7 +517,8 @@ impl Storage {
 
         if n != 1 {
             tracing::error!(
-                "unexpected number of rows affected to store js web apis for UA '{ua}': {n}"
+                user_agent.original = %ua,
+                "unexpected number of rows affected to store js web apis for UA: {n}",
             );
         }
 
@@ -376,7 +531,10 @@ impl Storage {
         auth: bool,
         source_info: UserAgentSourceInfo,
     ) -> Result<(), OpaqueError> {
-        tracing::debug!("store source info for UA '{ua}': {source_info:?}");
+        tracing::debug!(
+            user_agent.original = %ua,
+            "store source info for UA: {source_info:?}",
+        );
 
         let updated_at = Utc::now();
 
@@ -391,7 +549,8 @@ impl Storage {
 
         if n != 1 {
             tracing::error!(
-                "unexpected number of rows affected to store js source info for UA '{ua}': {n}"
+                user_agent.original = %ua,
+                "unexpected number of rows affected to store js source info for UA: {n}",
             );
         }
 

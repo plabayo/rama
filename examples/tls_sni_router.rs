@@ -26,13 +26,19 @@
 //! ```sh
 //! curl -k https://127.0.0.1:63805  # outputs bar
 //! ```
+//! The no SNI server will start and listen on `:63806`. You can use `curl` to interact with the service:
 //!
-//! Both services are available in a single interface (exposed by this example as `:62026`),
-//! routed to the correct backend service based on its TLS SNI value:
+//! ```sh
+//! curl -k https://127.0.0.1:63806  # outputs baz
+//! ```
+//!
+//! Those services are available in a single interface (exposed by this example as `:62026`),
+//! routed to the correct backend service based on its TLS SNI value or lack of:
 //!
 //! ```sh
 //! curl -k --resolve foo.local:62026:127.0.0.1 https://foo.local:62026  # outputs foo
 //! curl -k --resolve bar.local:62026:127.0.0.1 https://bar.local:62026  # outputs bar
+//! curl -k https://127.0.0.1:62026  # outputs baz
 //! ```
 
 // rama provides everything out of the box to build a TLS termination proxy
@@ -40,22 +46,22 @@ use rama::{
     Context, Layer, Service,
     error::OpaqueError,
     graceful::{Shutdown, ShutdownGuard},
+    http::layer::trace::TraceLayer,
     http::{server::HttpServer, service::web::Router},
     net::{
-        address::{Domain, Host, SocketAddress},
+        address::{Domain, SocketAddress},
         stream::Stream,
         tls::server::{SelfSignedData, ServerAuth, ServerConfig, SniRequest, SniRouter},
     },
     rt::Executor,
     service::service_fn,
     tcp::{client::service::Forwarder, server::TcpListener},
+    telemetry::tracing::{self, Instrument, level_filters::LevelFilter},
     tls::boring::server::{TlsAcceptorData, TlsAcceptorLayer},
 };
-use rama_http::layer::trace::TraceLayer;
 
 // everything else is provided by the standard library, community crates or tokio
 use std::time::Duration;
-use tracing::{Instrument, metadata::LevelFilter};
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 #[tokio::main]
@@ -73,11 +79,13 @@ async fn main() {
 
     spawn_https_server(shutdown.guard(), NAME_FOO, INTERFACE_FOO);
     spawn_https_server(shutdown.guard(), NAME_BAR, INTERFACE_BAR);
+    spawn_https_server(shutdown.guard(), NAME_BAZ, INTERFACE_BAZ);
 
     shutdown.spawn_task_fn(async move |guard| {
         let interface = SocketAddress::default_ipv4(62026);
         tracing::info!(
-            %interface,
+            network.local.address = %interface.ip_addr(),
+            network.local.port = %interface.port(),
             "[tcp] spawn sni router: bind and go",
         );
         TcpListener::bind(interface)
@@ -94,12 +102,15 @@ async fn main() {
 }
 
 const NAME_FOO: &str = "foo";
-const HOST_FOO: Host = Host::Name(Domain::from_static("foo.local"));
+const HOST_FOO: Domain = Domain::from_static("foo.local");
 const INTERFACE_FOO: SocketAddress = SocketAddress::local_ipv4(63804);
 
 const NAME_BAR: &str = "bar";
-const HOST_BAR: Host = Host::Name(Domain::from_static("bar.local"));
+const HOST_BAR: Domain = Domain::from_static("bar.local");
 const INTERFACE_BAR: SocketAddress = SocketAddress::local_ipv4(63805);
+
+const NAME_BAZ: &str = "baz";
+const INTERFACE_BAZ: SocketAddress = SocketAddress::local_ipv4(63806);
 
 async fn sni_router<S>(
     ctx: Context<()>,
@@ -110,19 +121,28 @@ where
 {
     // NOTE: for production settings you probably want to use a tri-like structure,
     // rama provided or bring your own
-    let fwd_interface = if sni == HOST_FOO {
-        INTERFACE_FOO
-    } else if sni == HOST_BAR {
-        INTERFACE_BAR
-    } else {
-        tracing::debug!(%sni, "block connection for unknown destination");
-        return Err(OpaqueError::from_display("unknown destination"));
+    let fwd_interface = match sni {
+        None => INTERFACE_BAZ,
+        Some(ref sni) => {
+            if *sni == HOST_FOO {
+                INTERFACE_FOO
+            } else if *sni == HOST_BAR {
+                INTERFACE_BAR
+            } else {
+                tracing::debug!(
+                    server.address = %sni,
+                    "block connection for unknown destination",
+                );
+                return Err(OpaqueError::from_display("unknown destination"));
+            }
+        }
     };
 
     tracing::debug!(
-        %sni,
-        %fwd_interface,
-        "forward incoming connection"
+        server.address = %sni.as_ref().map(|s| s.as_str()).unwrap_or_default(),
+        network.local.address = %fwd_interface.ip_addr(),
+        network.local.port = %fwd_interface.port(),
+        "forward incoming connection",
     );
 
     Forwarder::new(fwd_interface)
@@ -140,8 +160,9 @@ fn spawn_https_server(guard: ShutdownGuard, name: &'static str, interface: Socke
 
     guard.into_spawn_task_fn(async move |guard| {
         tracing::info!(
-            %name,
-            %interface,
+            host.name = %name,
+            network.local.address = %interface.ip_addr(),
+            network.local.port = %interface.port(),
             "[tcp] spawn https server: bind and go",
         );
         TcpListener::bind(interface)

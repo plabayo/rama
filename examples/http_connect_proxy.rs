@@ -88,6 +88,7 @@ use rama::{
     service::service_fn,
     tcp::client::service::Forwarder,
     tcp::server::TcpListener,
+    telemetry::tracing::{self, level_filters::LevelFilter},
     username::{
         UsernameLabelParser, UsernameLabelState, UsernameLabels, UsernameOpaqueLabelParser,
     },
@@ -96,7 +97,6 @@ use rama::{
 use serde::Deserialize;
 use serde_json::json;
 use std::{convert::Infallible, sync::Arc, time::Duration};
-use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
@@ -127,7 +127,7 @@ async fn main() {
                     TraceLayer::new_for_http(),
                     // See [`ProxyAuthLayer::with_labels`] for more information,
                     // e.g. can also be used to extract upstream proxy filters
-                    ProxyAuthLayer::new(Basic::new("john", "secret")).with_labels::<(PriorityUsernameLabelParser, UsernameOpaqueLabelParser)>(),
+                    ProxyAuthLayer::new(Basic::new_static("john", "secret")).with_labels::<(PriorityUsernameLabelParser, UsernameOpaqueLabelParser)>(),
                     // example of how one might insert an API layer into their proxy
                     HijackLayer::new(
                         DomainMatcher::exact(Domain::from_static("echo.example.internal")),
@@ -186,11 +186,15 @@ where
         .map(|ctx| ctx.authority.clone())
     {
         Ok(authority) => {
-            tracing::info!(%authority, "accept CONNECT (lazy): insert proxy target into context");
+            tracing::info!(
+                server.address = %authority.host(),
+                server.port = %authority.port(),
+                "accept CONNECT (lazy): insert proxy target into context",
+            );
             ctx.insert(ProxyTarget(authority));
         }
         Err(err) => {
-            tracing::error!(err = %err, "error extracting authority");
+            tracing::error!("error extracting authority: {err:?}");
             return Err(StatusCode::BAD_REQUEST.into_response());
         }
     }
@@ -226,7 +230,7 @@ where
             Ok(resp)
         }
         Err(err) => {
-            tracing::error!(error = %err, "error in client request");
+            tracing::error!("error in client request: {err:?}");
             Ok(Response::builder()
                 .status(StatusCode::INTERNAL_SERVER_ERROR)
                 .body(Body::empty())
@@ -261,7 +265,7 @@ impl UsernameLabelParser for PriorityUsernameLabelParser {
                 "medium" => self.priority = Some(Priority::Medium),
                 "low" => self.priority = Some(Priority::Low),
                 _ => {
-                    tracing::trace!("invalid priority username label value: {label}");
+                    tracing::trace!(%label, "invalid priority username label value");
                     return UsernameLabelState::Abort;
                 }
             }

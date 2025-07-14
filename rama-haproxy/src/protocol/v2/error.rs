@@ -32,48 +32,40 @@ impl fmt::Display for ParseError {
         match self {
             Self::Incomplete(len) => write!(
                 f,
-                "Expected header to the protocol prefix plus 4 bytes after the prefix (length {}).",
-                len
+                "Expected header to the protocol prefix plus 4 bytes after the prefix (length {len}).",
             ),
             Self::Prefix => write!(
                 f,
                 "Expected header to start with a prefix of '\\r\\n\\r\\n\\0\\r\\nQUIT\\n'."
             ),
-            Self::Version(version) => write!(f, "Expected version {:X} to be equal to 2.", version),
+            Self::Version(version) => write!(f, "Expected version {version:X} to be equal to 2."),
             Self::Command(command) => write!(
                 f,
-                "Invalid command {:X}. Command must be one of: Local, Proxy.",
-                command
+                "Invalid command {command:X}. Command must be one of: Local, Proxy.",
             ),
             Self::AddressFamily(af) => write!(
                 f,
-                "Invalid Address Family {:X}. Address Family must be one of: Unspecified, IPv4, IPv6, Unix.",
-                af
+                "Invalid Address Family {af:X}. Address Family must be one of: Unspecified, IPv4, IPv6, Unix.",
             ),
             Self::Protocol(protocol) => write!(
                 f,
-                "Invalid protocol {:X}. Protocol must be one of: Unspecified, Stream, or Datagram.",
-                protocol
+                "Invalid protocol {protocol:X}. Protocol must be one of: Unspecified, Stream, or Datagram.",
             ),
             Self::Partial(len, total) => write!(
                 f,
-                "Header does not contain the advertised length of the address information and TLVs (has {} out of {} bytes).",
-                len, total
+                "Header does not contain the advertised length of the address information and TLVs (has {len} out of {total} bytes).",
             ),
             Self::InvalidAddresses(len, total) => write!(
                 f,
-                "Header length of {} bytes cannot store the {} bytes required for the address family.",
-                len, total
+                "Header length of {len} bytes cannot store the {total} bytes required for the address family.",
             ),
             Self::InvalidTLV(tlv, len) => write!(
                 f,
-                "Header is not long enough to contain TLV {} with length {}.",
-                tlv, len
+                "Header is not long enough to contain TLV {tlv} with length {len}.",
             ),
             Self::Leftovers(len) => write!(
                 f,
-                "Header contains leftover {} bytes not accounted for by the address family or TLVs.",
-                len
+                "Header contains leftover {len} bytes not accounted for by the address family or TLVs.",
             ),
         }
     }

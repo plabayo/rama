@@ -16,7 +16,7 @@ use rama::{
     },
     rt::Executor,
     tcp::server::TcpListener,
-    telemetry::opentelemetry::{self, trace::get_active_span, tracing::OpenTelemetrySpanExt},
+    telemetry::tracing::{self, Instrument, level_filters::LevelFilter},
     ua::profile::UserAgentDatabase,
 };
 
@@ -24,8 +24,8 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD as ENGINE;
 
 use std::{convert::Infallible, sync::Arc, time::Duration};
-use tracing::{Instrument, level_filters::LevelFilter};
-use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
+
+use crate::utils::http::HttpVersion;
 
 #[derive(Debug, Args)]
 /// rama echo service (echos the http request and tls client config)
@@ -60,21 +60,22 @@ pub struct CliCommandEcho {
     /// Or using HaProxy protocol.
     forward: Option<ForwardKind>,
 
+    /// http version to serve echo Service from
+    #[arg(long, default_value = "auto")]
+    http_version: HttpVersion,
+
     #[arg(long, short = 's')]
     /// run echo service in secure mode (enable TLS)
     secure: bool,
+
+    #[arg(long)]
+    /// enable ws support
+    ws: bool,
 }
 
 /// run the rama echo service
 pub async fn run(cfg: CliCommandEcho) -> Result<(), BoxError> {
-    tracing_subscriber::registry()
-        .with(fmt::layer())
-        .with(
-            EnvFilter::builder()
-                .with_default_directive(LevelFilter::INFO.into())
-                .from_env_lossy(),
-        )
-        .init();
+    crate::trace::init_tracing(LevelFilter::INFO);
 
     let maybe_tls_server_config = cfg.secure.then(|| {
         let tls_key_pem_raw = match std::env::var("RAMA_TLS_KEY") {
@@ -135,20 +136,19 @@ pub async fn run(cfg: CliCommandEcho) -> Result<(), BoxError> {
     let graceful = rama::graceful::Shutdown::default();
 
     let tcp_service = EchoServiceBuilder::new()
-        .concurrent(cfg.concurrent)
-        .timeout(Duration::from_secs(cfg.timeout))
-        .maybe_forward(cfg.forward)
-        .maybe_tls_server_config(maybe_tls_server_config)
-        .http_layer(maybe_acme_service)
+        .with_concurrent(cfg.concurrent)
+        .with_timeout(Duration::from_secs(cfg.timeout))
+        .with_ws_support(cfg.ws)
+        .maybe_with_http_version(cfg.http_version.into())
+        .maybe_with_forward(cfg.forward)
+        .maybe_with_tls_server_config(maybe_tls_server_config)
+        .with_http_layer(maybe_acme_service)
         .with_user_agent_database(Arc::new(UserAgentDatabase::embedded()))
         .build(Executor::graceful(graceful.guard()))
         .map_err(OpaqueError::from_boxed)
         .context("build echo service")?;
 
-    tracing::info!(
-        bind = %cfg.bind,
-        "starting echo service",
-    );
+    tracing::info!("starting echo service: bind interface = {:?}", cfg.bind);
     let tcp_listener = TcpListener::build()
         .bind(cfg.bind.clone())
         .await
@@ -159,15 +159,14 @@ pub async fn run(cfg: CliCommandEcho) -> Result<(), BoxError> {
         .local_addr()
         .context("get local addr of tcp listener")?;
 
-    let span = tracing::trace_span!("echo", otel.kind = "server", network.protocol.name = "http");
-    span.set_parent(opentelemetry::Context::new());
-    span.add_link(get_active_span(|span| span.span_context().clone()));
+    let span =
+        tracing::trace_root_span!("echo", otel.kind = "server", network.protocol.name = "http");
 
     graceful.spawn_task_fn(async move |guard| {
         tracing::info!(
-            bind = %cfg.bind,
-            %bind_address,
-            "echo service ready",
+            network.local.address = %bind_address.ip(),
+            network.local.port = %bind_address.port(),
+            "echo service ready: bind interface = {}", cfg.bind,
         );
 
         tcp_listener

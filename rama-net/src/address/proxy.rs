@@ -1,6 +1,13 @@
 use super::{Authority, Host};
-use crate::{Protocol, proto::try_to_extract_protocol_from_uri_scheme, user::ProxyCredential};
-use rama_core::error::{ErrorContext, OpaqueError};
+use crate::{
+    Protocol,
+    proto::try_to_extract_protocol_from_uri_scheme,
+    user::{Basic, ProxyCredential},
+};
+use rama_core::{
+    error::{ErrorContext, OpaqueError},
+    telemetry::tracing,
+};
 use std::{fmt::Display, str::FromStr};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,10 +35,9 @@ impl TryFrom<&str> for ProxyAddress {
 
         for i in 0..slice.len() {
             if slice[i] == b'@' {
-                let credential = ProxyCredential::try_from_clear_str(
+                let credential = Basic::try_from(
                     std::str::from_utf8(&slice[..i])
-                        .context("parse proxy address: view credential as utf-8")?
-                        .to_owned(),
+                        .context("parse proxy address: view credential as utf-8")?,
                 )
                 .context("parse proxy credential from address")?;
 
@@ -54,7 +60,7 @@ impl TryFrom<&str> for ProxyAddress {
                 return Ok(ProxyAddress {
                     protocol,
                     authority,
-                    credential: Some(credential),
+                    credential: Some(ProxyCredential::Basic(credential)),
                 });
             }
         }
@@ -104,7 +110,16 @@ impl Display for ProxyAddress {
             write!(f, "{}://", protocol.as_str())?;
         }
         if let Some(credential) = &self.credential {
-            write!(f, "{}@", credential.as_clear_string())?;
+            match credential {
+                ProxyCredential::Basic(basic) => {
+                    write!(f, "{basic}@")?;
+                }
+                ProxyCredential::Bearer(_) => {
+                    tracing::trace!(
+                        "ignore bearer token for ProxyAddress display (other means are required for these)"
+                    )
+                }
+            }
         }
         self.authority.fmt(f)
     }
@@ -133,10 +148,7 @@ impl<'de> serde::Deserialize<'de> for ProxyAddress {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        address::Host,
-        user::{Basic, Bearer},
-    };
+    use crate::{address::Host, user::Basic};
 
     #[test]
     fn test_valid_proxy() {
@@ -172,7 +184,7 @@ mod tests {
             ProxyAddress {
                 protocol: None,
                 authority: Authority::new(Host::Address("127.0.0.1".parse().unwrap()), 8080),
-                credential: Some(Basic::new("foo", "bar").into()),
+                credential: Some(Basic::new_static("foo", "bar").into()),
             }
         );
     }
@@ -198,7 +210,7 @@ mod tests {
             ProxyAddress {
                 protocol: Some(Protocol::HTTP),
                 authority: Authority::new(Host::Address("127.0.0.1".parse().unwrap()), 8080),
-                credential: Some(Basic::new("foo", "bar").into()),
+                credential: Some(Basic::new_static("foo", "bar").into()),
             }
         );
     }
@@ -213,7 +225,7 @@ mod tests {
             ProxyAddress {
                 protocol: Some(Protocol::HTTPS),
                 authority: Authority::new(Host::Name("my.proxy.io.".parse().unwrap()), 9999),
-                credential: Some(Basic::new("foo-cc-be", "baz").into()),
+                credential: Some(Basic::new_static("foo-cc-be", "baz").into()),
             }
         );
     }
@@ -226,7 +238,20 @@ mod tests {
             ProxyAddress {
                 protocol: Some(Protocol::SOCKS5H),
                 authority: Authority::new(Host::Address("::1".parse().unwrap()), 60000),
-                credential: Some(Bearer::try_from_clear_str("foo").unwrap().into()),
+                credential: Some(Basic::new_insecure("foo").into()),
+            }
+        );
+    }
+
+    #[test]
+    fn test_valid_socks5h_proxy_trailing_colon() {
+        let addr: ProxyAddress = "socks5h://foo:@[::1]:60000".try_into().unwrap();
+        assert_eq!(
+            addr,
+            ProxyAddress {
+                protocol: Some(Protocol::SOCKS5H),
+                authority: Authority::new(Host::Address("::1".parse().unwrap()), 60000),
+                credential: Some(Basic::new_insecure("foo").into()),
             }
         );
     }
@@ -246,12 +271,6 @@ mod tests {
             "socks5://127.0.0.1:8080",
             "socks5://::1",
             "socks5://[::1]:8080",
-            "socks5://foo@proxy.io",
-            "socks5://foo@proxy.io:8080",
-            "socks5://foo@127.0.0.1",
-            "socks5://foo@127.0.0.1:8080",
-            "socks5://foo@::1",
-            "socks5://foo@[::1]:8080",
             "socks5://foo:@proxy.io",
             "socks5://foo:@proxy.io:8080",
             "socks5://foo:@127.0.0.1",

@@ -31,6 +31,7 @@ async fn test_tls_sni_router() {
         ("https://127.0.0.1:63805", "bar"),
         ("https://foo.local:62026", "foo"),
         ("https://bar.local:62026", "bar"),
+        ("https://127.0.0.1:62026", "baz"),
     ] {
         let response = runner
             .get(uri)

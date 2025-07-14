@@ -154,7 +154,7 @@ impl Header for ContentRange {
                 f.write_str("bytes ")?;
 
                 if let Some((first_byte, last_byte)) = self.0.range {
-                    write!(f, "{}-{}", first_byte, last_byte)?;
+                    write!(f, "{first_byte}-{last_byte}")?;
                 } else {
                     f.write_str("*")?;
                 }
@@ -162,7 +162,7 @@ impl Header for ContentRange {
                 f.write_str("/")?;
 
                 if let Some(v) = self.0.complete_length {
-                    write!(f, "{}", v)
+                    write!(f, "{v}")
                 } else {
                     f.write_str("*")
                 }

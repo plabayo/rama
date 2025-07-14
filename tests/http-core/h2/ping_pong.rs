@@ -1,7 +1,7 @@
-use futures::StreamExt;
-use futures::channel::oneshot;
 use h2_support::assert_ping;
 use h2_support::prelude::*;
+use rama_core::futures::StreamExt;
+use rama_core::futures::channel::oneshot;
 
 #[tokio::test]
 #[ignore]
@@ -128,9 +128,11 @@ async fn user_ping_pong() {
             "send_ping while ping pending is a user error",
         );
 
-        conn.drive(futures::future::poll_fn(move |cx| ping_pong.poll_pong(cx)))
-            .await
-            .unwrap();
+        conn.drive(rama_core::futures::future::poll_fn(move |cx| {
+            ping_pong.poll_pong(cx)
+        }))
+        .await
+        .unwrap();
         drop(client);
         conn.await.expect("client");
     };

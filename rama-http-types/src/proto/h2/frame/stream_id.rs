@@ -1,5 +1,4 @@
-use rama_error::OpaqueError;
-use serde::{Deserialize, Serialize, de::Error};
+use serde::{Deserialize, Serialize};
 
 /// A stream identifier, as described in [Section 5.1.1] of RFC 7540.
 ///
@@ -111,11 +110,6 @@ impl<'de> Deserialize<'de> for StreamId {
         D: serde::Deserializer<'de>,
     {
         let n = u32::deserialize(deserializer)?;
-        if n & STREAM_ID_MASK == 0 {
-            return Err(D::Error::custom(OpaqueError::from_display(
-                "invalid stream ID -- MSB is set",
-            )));
-        }
         Ok(Self(n))
     }
 }

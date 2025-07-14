@@ -3,9 +3,11 @@ use crate::sse::event_data::EventDataLineReader;
 use super::parser::{RawEventLine, is_bom, line};
 use super::utf8_stream::Utf8Stream;
 use super::{Event, EventBuildError, EventDataRead};
-use futures_core::stream::Stream;
-use futures_core::task::{Context, Poll};
+
 use pin_project_lite::pin_project;
+use rama_core::futures::stream::Stream;
+use rama_core::futures::task::{Context, Poll};
+use rama_core::telemetry::tracing;
 use rama_error::{BoxError, OpaqueError};
 use smol_str::SmolStr;
 use std::fmt;
@@ -75,10 +77,10 @@ impl<T: EventDataRead> EventBuilder<T> {
                     self.reader.read_line(val.unwrap_or(""))?;
                 }
                 "id" => {
-                    if let Some(val) = val {
-                        if !val.contains('\u{0000}') {
-                            self.event.try_set_id(val).unwrap();
-                        }
+                    if let Some(val) = val
+                        && !val.contains('\u{0000}')
+                    {
+                        self.event.try_set_id(val).unwrap();
                     }
                 }
                 "retry" => {
@@ -87,11 +89,7 @@ impl<T: EventDataRead> EventBuilder<T> {
                     }
                 }
                 _ => {
-                    tracing::debug!(
-                        %field,
-                        value = ?val,
-                        "ignore unknown SSE field",
-                    )
+                    tracing::debug!("ignore unknown SSE field {field}: value = {val:?}",)
                 }
             },
             RawEventLine::Comment(comment) => {
@@ -125,7 +123,7 @@ impl<T: EventDataRead> EventBuilder<T> {
     fn try_dispatch(&mut self) -> Result<Event<T>, OpaqueError> {
         self.is_complete = false;
         let mut event = std::mem::take(&mut self.event);
-        if let Some(data) = self.reader.data()? {
+        if let Some(data) = self.reader.data(event.event.as_deref())? {
             event.set_data(data);
         }
         Ok(event)
@@ -176,14 +174,14 @@ impl<S, T: EventDataRead> EventStream<S, T> {
 
     /// Set the last event ID of the stream. Useful for initializing the stream with a previous
     /// last event ID
-    pub fn try_set_last_event_id(&mut self, id: impl AsRef<str>) -> Result<(), OpaqueError> {
-        let id = id.as_ref();
+    pub fn try_set_last_event_id(&mut self, id: impl Into<SmolStr>) -> Result<(), OpaqueError> {
+        let id = id.into();
         if id.contains(['\n', '\r', '\0']) {
             return Err(OpaqueError::from_std(EventBuildError::invalid_characters(
                 id,
             )));
         }
-        self.last_event_id = Some(SmolStr::new(id));
+        self.last_event_id = Some(id);
         Ok(())
     }
 
@@ -292,7 +290,7 @@ mod tests {
     use crate::{BodyExtractExt, sse::JsonEventData};
 
     use super::*;
-    use futures::prelude::*;
+    use rama_core::futures::prelude::*;
     use serde::{Deserialize, Serialize};
     use serde_json::json;
     use std::convert::Infallible;

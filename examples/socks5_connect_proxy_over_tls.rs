@@ -34,9 +34,10 @@ use rama::{
         tls::server::{SelfSignedData, ServerAuth, ServerConfig},
         user::{Basic, ProxyCredential},
     },
-    proxy::socks5::{Socks5Acceptor, Socks5Auth, Socks5ProxyConnector},
+    proxy::socks5::{Socks5Acceptor, Socks5ProxyConnector},
     rt::Executor,
     tcp::{client::service::TcpConnector, server::TcpListener},
+    telemetry::tracing::{self, level_filters::LevelFilter},
     tls::boring::{
         client::{TlsConnector, TlsConnectorDataBuilder},
         server::{TlsAcceptorData, TlsAcceptorService},
@@ -44,7 +45,6 @@ use rama::{
 };
 
 use std::sync::Arc;
-use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
@@ -62,8 +62,10 @@ async fn main() {
     let http_socket_addr = spawn_http_server().await;
 
     tracing::info!(
-        %proxy_socket_addr,
-        %http_socket_addr,
+        network.peer.address = %proxy_socket_addr.ip_addr(),
+        network.peer.port = %proxy_socket_addr.port(),
+        server.address = %http_socket_addr.ip_addr(),
+        server.port = %http_socket_addr.port(),
         "local servers up and running",
     );
 
@@ -79,12 +81,12 @@ async fn main() {
     ctx.insert(ProxyAddress {
         protocol: Some(Protocol::SOCKS5),
         authority: proxy_socket_addr.into(),
-        credential: Some(ProxyCredential::Basic(Basic::new("john", "secret"))),
+        credential: Some(ProxyCredential::Basic(Basic::new_static("john", "secret"))),
     });
 
     let uri = format!("http://{http_socket_addr}/ping");
     tracing::info!(
-        %uri,
+        url.full = %uri,
         "try to establish proxied connection over SOCKS5 within a TLS Tunnel",
     );
 
@@ -103,7 +105,7 @@ async fn main() {
         .expect("establish a proxied connection ready to make http requests");
 
     tracing::info!(
-        %uri,
+        url.full = %uri,
         "try to make GET http request and try to receive response text",
     );
 
@@ -129,8 +131,8 @@ async fn spawn_socks5_over_tls_server() -> SocketAddress {
         .expect("get bind address of socks5-over-tls proxy server")
         .into();
 
-    let socks5_acceptor =
-        Socks5Acceptor::default().with_auth(Socks5Auth::username_password("john", "secret"));
+    let socks5_acceptor = Socks5Acceptor::default()
+        .with_authorizer(Basic::new_static("john", "secret").into_authorizer());
 
     let tls_server_config = ServerConfig::new(ServerAuth::SelfSigned(SelfSignedData::default()));
     let acceptor_data =

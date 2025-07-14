@@ -7,6 +7,7 @@ use crate::{HeaderName, Request, utils::HeaderValueGetter};
 use rama_core::{
     Context, Layer, Service,
     error::{BoxError, ErrorExt, OpaqueError},
+    telemetry::tracing,
 };
 use rama_utils::macros::define_inner_service_accessors;
 use std::{fmt, marker::PhantomData};
@@ -112,9 +113,8 @@ where
             Err(err) => {
                 if self.optional && matches!(err, crate::utils::HeaderValueErr::HeaderMissing(_)) {
                     tracing::debug!(
-                        error = %err,
-                        header_name = %self.header_name,
-                        "failed to determine header option",
+                        http.header.name  = %self.header_name,
+                        "failed to determine header option: {err:?}",
                     );
                     return self.inner.serve(ctx, request).await.map_err(Into::into);
                 } else {

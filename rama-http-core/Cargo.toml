@@ -30,8 +30,6 @@ unstable = []
 atomic-waker = { workspace = true }
 fnv = { workspace = true }
 futures-channel = { workspace = true }
-futures-core = { workspace = true }
-futures-sink = { workspace = true }
 httparse = { workspace = true }
 httpdate = { workspace = true }
 indexmap = { workspace = true, features = ["std"] }
@@ -40,13 +38,13 @@ pin-project-lite = { workspace = true }
 rama-core = { workspace = true }
 rama-http = { workspace = true }
 rama-http-types = { workspace = true }
+rama-net = { workspace = true }
 rama-utils = { workspace = true }
 slab = { workspace = true }
 smallvec = { workspace = true }
 tokio = { workspace = true, features = ["io-util"] }
 tokio-test = { workspace = true }
 tokio-util = { workspace = true, features = ["codec", "io"] }
-tracing = { workspace = true, features = ["std"] }
 want = { workspace = true }
 
 [dev-dependencies]

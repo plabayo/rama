@@ -9,11 +9,11 @@ use crate::{
     },
 };
 use rama_core::error::BoxError;
+use rama_core::telemetry::tracing;
 use rama_net::{
     address::{Authority, Host, SocketAddress},
     stream::Stream,
 };
-use rama_utils::macros::generate_field_setters;
 use std::fmt;
 
 use super::bind::Binder;
@@ -33,7 +33,13 @@ impl Client {
         Self::default()
     }
 
-    generate_field_setters!(auth, Socks5Auth);
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the [`Socks5Auth`] to be used by this client.
+        pub fn auth(mut self, auth: impl Into<Socks5Auth>) -> Self {
+            self.auth = Some(auth.into());
+            self
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -194,9 +200,9 @@ impl Client {
             .map_err(|err| HandshakeError::io(err).with_context("write client request: connect"))?;
 
         tracing::trace!(
-            %selected_method,
-            %destination,
-            "socks5 client: client request sent"
+            "socks5 client: client request sent w/ {} towards {}",
+            selected_method,
+            destination,
         );
 
         let server_reply = server::Reply::read_from(stream)
@@ -207,7 +213,11 @@ impl Client {
                 .with_context("server responded with non-success reply"));
         }
 
-        tracing::trace!(%selected_method, %destination, "socks5 client: connected");
+        tracing::trace!(
+            "socks5 client: connected w/ {} towards {}",
+            selected_method,
+            destination
+        );
         Ok(server_reply.bind_address)
     }
 
@@ -247,9 +257,7 @@ impl Client {
             .map_err(|err| HandshakeError::io(err).with_context("write client request: bind"))?;
 
         tracing::trace!(
-            requested_bind_address = %destination,
-            %selected_method,
-            "socks5 client: bind handshake initiated"
+            "socks5 client: bind handshake initiated w/ method: {selected_method} for destination: {destination}"
         );
 
         let server_reply = server::Reply::read_from(&mut stream)
@@ -264,8 +272,7 @@ impl Client {
         let selected_addr = match select_host {
             Host::Name(domain) => {
                 tracing::debug!(
-                    %domain,
-                    "bind command response does not accept domain as bind address",
+                    "bind command response does not accept domain {domain} as bind address",
                 );
                 let reply_kind = ReplyKind::AddressTypeNotSupported;
                 Reply::error_reply(reply_kind)
@@ -284,10 +291,7 @@ impl Client {
         let selected_bind_address = SocketAddress::new(selected_addr, selected_port);
 
         tracing::trace!(
-            %selected_method,
-            requested_bind_address = %destination,
-            %selected_bind_address,
-            "socks5 client: socks5 server ready to bind",
+            "socks5 client: socks5 server ready to bind w/ method {selected_method} at requested destination: {destination}",
         );
 
         Ok(Binder::new(
@@ -311,10 +315,7 @@ impl Client {
             None => self.handshake_headers_no_auth(&mut stream).await?,
         };
 
-        tracing::trace!(
-            %selected_method,
-            "socks5 client: ready for udp association",
-        );
+        tracing::trace!("socks5 client: ready for udp association w/ method: {selected_method}",);
 
         Ok(UdpSocketRelayBinder::new(stream))
     }
@@ -331,16 +332,15 @@ impl Client {
         })?;
         let methods = header.methods;
 
-        tracing::trace!(?methods, "socks5 client: header with auth written");
+        tracing::trace!("socks5 client: header with auth written w/ methods: {methods:?}");
 
         let server_header = server::Header::read_from(stream).await.map_err(|err| {
             HandshakeError::protocol(err).with_context("read server header (auth?)")
         })?;
 
         tracing::trace!(
-            ?methods,
-            selected_method = ?server_header.method,
-            "socks5 client: headers exchanged with auth as a provided method",
+            "socks5 client: headers exchanged with auth as a provided method {} (for methods: {methods:?})",
+            server_header.method,
         );
 
         if server_header.method == SocksMethod::NoAuthenticationRequired {
@@ -354,17 +354,16 @@ impl Client {
         }
 
         tracing::trace!(
-            ?methods,
-            selected_method = ?server_header.method,
-            "socks5 client: auth sub-negotation started",
+            "socks5 client: auth sub-negotation started w/ selected method {:?} for methods {:?}",
+            server_header.method,
+            methods,
         );
 
         match auth {
-            Socks5Auth::UsernamePassword { username, password } => {
+            Socks5Auth::UsernamePassword(basic) => {
                 UsernamePasswordRequestRef {
                     version: UsernamePasswordSubnegotiationVersion::One,
-                    username: username.as_ref(),
-                    password: password.as_deref(),
+                    basic,
                 }
                 .write_to(stream)
                 .await
@@ -375,9 +374,9 @@ impl Client {
                 })?;
 
                 tracing::trace!(
-                    ?methods,
-                    selected_method = ?server_header.method,
-                    "socks5 client: username-password request sent"
+                    "socks5 client: username-password request sent w/ selected method {:?} for methods {:?}",
+                    server_header.method,
+                    methods,
                 );
 
                 let auth_reply = server::UsernamePasswordResponse::read_from(stream)
@@ -392,9 +391,9 @@ impl Client {
                 }
 
                 tracing::trace!(
-                    ?methods,
-                    selected_method = %server_header.method,
-                    "socks5 client: authorized using username-password"
+                    "socks5 client: authorized using username-password w/ selected method {:?} for methods {:?}",
+                    server_header.method,
+                    methods,
                 );
             }
         }
@@ -412,16 +411,16 @@ impl Client {
         })?;
         let methods = header.methods;
 
-        tracing::trace!(?methods, "socks5 client: header without auth written");
+        tracing::trace!("socks5 client: header without auth written for methods: {methods:?}");
 
         let server_header = server::Header::read_from(stream).await.map_err(|err| {
             HandshakeError::protocol(err).with_context("read server headers: no auth required (?)")
         })?;
 
         tracing::trace!(
-            ?methods,
-            selected_method = %server_header.method,
-            "socks5 client: headers exchanged without auth",
+            "socks5 client: headers exchanged without auth /w selected method {} for methods: {:?}",
+            server_header.method,
+            methods,
         );
 
         if server_header.method != SocksMethod::NoAuthenticationRequired {
@@ -436,7 +435,7 @@ impl Client {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rama_net::address::Host;
+    use rama_net::{address::Host, user};
 
     #[tokio::test]
     async fn test_client_handshake_connect_no_auth_failure_command_not_supported() {
@@ -489,7 +488,7 @@ mod tests {
             .read(b"\x05\x07\x00\x01\x00\x00\x00\x00\x00\x00")
             .build();
 
-        let client = Client::default().with_auth(Socks5Auth::username_password("john", "secret"));
+        let client = Client::default().with_auth(user::Basic::new_static("john", "secret"));
         let err = client
             .handshake_connect(&mut stream, &Authority::default_ipv4(0))
             .await
@@ -514,7 +513,7 @@ mod tests {
             .read(b"\x05\x07\x00\x01\x00\x00\x00\x00\x00\x00")
             .build();
 
-        let client = Client::default().with_auth(Socks5Auth::username_password("john", "secret"));
+        let client = Client::default().with_auth(user::Basic::new_static("john", "secret"));
         let err = client
             .handshake_connect(&mut stream, &Authority::default_ipv4(0))
             .await
@@ -535,7 +534,7 @@ mod tests {
             .read(b"\x01\x01")
             .build();
 
-        let client = Client::default().with_auth(Socks5Auth::username_password("john", "secret"));
+        let client = Client::default().with_auth(user::Basic::new_static("john", "secret"));
         let err = client
             .handshake_connect(&mut stream, &Authority::default_ipv4(0))
             .await
@@ -622,7 +621,7 @@ mod tests {
             .read(&[b'\x05', b'\x00', b'\x00', b'\x01', 127, 0, 0, 1, 0, 1])
             .build();
 
-        let client = Client::default().with_auth(Socks5Auth::username_password("john", "secret"));
+        let client = Client::default().with_auth(user::Basic::new_static("john", "secret"));
         let local_addr = client
             .handshake_connect(&mut stream, &Authority::new(Host::EXAMPLE_NAME, 1))
             .await
@@ -648,7 +647,7 @@ mod tests {
             .read(&[b'\x05', b'\x00', b'\x00', b'\x01', 127, 0, 0, 1, 0, 1])
             .build();
 
-        let client = Client::default().with_auth(Socks5Auth::username("john"));
+        let client = Client::default().with_auth(user::Basic::new_static_insecure("john"));
         let local_addr = client
             .handshake_connect(&mut stream, &Authority::new(Host::EXAMPLE_NAME, 1))
             .await

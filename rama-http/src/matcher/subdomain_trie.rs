@@ -1,4 +1,5 @@
 use crate::Request;
+use rama_core::telemetry::tracing;
 use rama_core::{Context, context::Extensions, matcher::Matcher};
 use rama_net::address::{DomainTrie, Host};
 use rama_net::http::RequestContext;
@@ -47,10 +48,7 @@ impl<State, Body> Matcher<State, Request<Body>> for SubdomainTrieMatcher {
                 is_match
             }
             Host::Address(address) => {
-                tracing::trace!(
-                    %address,
-                    "SubdomainTrieMatcher: ignoring numeric address",
-                );
+                tracing::trace!("SubdomainTrieMatcher: ignoring numeric address: {address}",);
                 false
             }
         };
@@ -62,8 +60,7 @@ impl<State, Body> Matcher<State, Request<Body>> for SubdomainTrieMatcher {
                     Ok(rc) => rc,
                     Err(err) => {
                         tracing::debug!(
-                            error = %err,
-                            "SubdomainTrieMatcher: failed to extract request context",
+                            "SubdomainTrieMatcher: failed to extract request context: {err:?}",
                         );
                         return false;
                     }

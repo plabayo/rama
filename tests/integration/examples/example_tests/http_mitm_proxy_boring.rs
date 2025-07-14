@@ -1,15 +1,21 @@
 use super::utils;
 use rama::{
     Context, Layer,
-    http::service::web::response::Json,
-    http::{BodyExtractExt, Request, server::HttpServer},
-    net::address::ProxyAddress,
-    net::tls::server::SelfSignedData,
+    http::{
+        BodyExtractExt, Request,
+        matcher::HttpMatcher,
+        server::HttpServer,
+        service::web::{Router, response::Json},
+        ws::handshake::server::{WebSocketAcceptor, WebSocketMatcher},
+    },
+    layer::ConsumeErrLayer,
+    net::{address::ProxyAddress, tls::server::SelfSignedData},
     rt::Executor,
-    service::service_fn,
     tcp::server::TcpListener,
+    telemetry::tracing::Level,
     tls::rustls::server::{TlsAcceptorDataBuilder, TlsAcceptorLayer},
 };
+
 use serde_json::{Value, json};
 
 #[tokio::test]
@@ -21,12 +27,19 @@ async fn test_http_mitm_proxy() {
         HttpServer::auto(Executor::default())
             .listen(
                 "127.0.0.1:63003",
-                service_fn(async |req: Request| {
-                    Ok(Json(json!({
-                        "method": req.method().as_str(),
-                        "path": req.uri().path(),
-                    })))
-                }),
+                Router::new()
+                    .match_route(
+                        "/echo",
+                        HttpMatcher::custom(WebSocketMatcher::new()),
+                        ConsumeErrLayer::trace(Level::DEBUG)
+                            .into_layer(WebSocketAcceptor::new().into_echo_service()),
+                    )
+                    .get("/{*any}", async |req: Request| {
+                        Json(json!({
+                            "method": req.method().as_str(),
+                            "path": req.uri().path(),
+                        }))
+                    }),
             )
             .await
             .unwrap();
@@ -44,14 +57,25 @@ async fn test_http_mitm_proxy() {
 
     let executor = Executor::default();
 
-    let tcp_service = TlsAcceptorLayer::new(data).into_layer(HttpServer::auto(executor).service(
-        service_fn(async |req: Request| {
-            Ok(Json(json!({
-                "method": req.method().as_str(),
-                "path": req.uri().path(),
-            })))
-        }),
-    ));
+    let mut http_tp = HttpServer::auto(executor);
+    http_tp.h2_mut().enable_connect_protocol();
+    let tcp_service = TlsAcceptorLayer::new(data).into_layer(
+        http_tp.service(
+            Router::new()
+                .match_route(
+                    "/echo",
+                    HttpMatcher::custom(WebSocketMatcher::new()),
+                    ConsumeErrLayer::trace(Level::DEBUG)
+                        .into_layer(WebSocketAcceptor::new().into_echo_service()),
+                )
+                .get("/{*any}", async |req: Request| {
+                    Json(json!({
+                        "method": req.method().as_str(),
+                        "path": req.uri().path(),
+                    }))
+                }),
+        ),
+    );
 
     tokio::spawn(async {
         TcpListener::bind("127.0.0.1:63004")
@@ -78,6 +102,25 @@ async fn test_http_mitm_proxy() {
     let expected_value = json!({"method":"GET","path":"/foo/bar"});
     assert_eq!(expected_value, result);
 
+    // test ws proxy flow
+    let mut ws = runner
+        .websocket("ws://127.0.0.1:63003/echo")
+        .handshake(ctx.clone())
+        .await
+        .expect("ws handshake to receive");
+    ws.send_message("You bastard!".into())
+        .await
+        .expect("ws message to be sent");
+    assert_eq!(
+        "You shazbot!",
+        ws.recv_message()
+            .await
+            .expect("echo ws message to be received")
+            .into_text()
+            .expect("echo ws message to be a text message")
+            .as_str()
+    );
+
     // test https request proxy flow
     let result = runner
         .get("https://127.0.0.1:63004/foo/bar")
@@ -89,4 +132,23 @@ async fn test_http_mitm_proxy() {
         .unwrap();
     let expected_value = json!({"method":"GET","path":"/foo/bar"});
     assert_eq!(expected_value, result);
+
+    // test wss proxy flow
+    let mut ws = runner
+        .websocket_h2("wss://127.0.0.1:63004/echo")
+        .handshake(ctx.clone())
+        .await
+        .expect("ws handshake to receive");
+    ws.send_message("You bastard!".into())
+        .await
+        .expect("ws message to be sent");
+    assert_eq!(
+        "You shazbot!",
+        ws.recv_message()
+            .await
+            .expect("echo ws message to be received")
+            .into_text()
+            .expect("echo ws message to be a text message")
+            .as_str()
+    );
 }

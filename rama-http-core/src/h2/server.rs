@@ -22,7 +22,7 @@
 //! # Inbound streams
 //!
 //! The [`Connection`] instance is used to accept inbound HTTP/2 streams. It
-//! does this by implementing [`futures::Stream`]. When a new stream is
+//! does this by implementing [`rama_core::futures::Stream`]. When a new stream is
 //! received, a call to [`Connection::accept`] will return `(request, response)`.
 //! The `request` handle (of type [`http::Request<RecvStream>`]) contains the
 //! HTTP request head as well as provides a way to receive the inbound data
@@ -109,27 +109,33 @@
 //! [`Connection`]: struct.Connection.html
 //! [`Connection::poll`]: struct.Connection.html#method.poll
 //! [`Connection::poll_close`]: struct.Connection.html#method.poll_close
-//! [`futures::Stream`]: https://docs.rs/futures/0.1/futures/stream/trait.Stream.html
+//! [`rama_core::futures::Stream`]: https://docs.rs/rama-core/latest/rama_core/futures/stream/trait.Stream.html
 //! [`http::Request<RecvStream>`]: ../struct.RecvStream.html
 //! [`RecvStream`]: ../struct.RecvStream.html
 //! [`SendStream`]: ../struct.SendStream.html
 //! [`TcpListener`]: https://docs.rs/tokio-core/0.1/tokio_core/net/struct.TcpListener.html
 
 use crate::h2::codec::{Codec, UserError};
-use crate::h2::frame::{self, Pseudo, PushPromiseHeaderError, Reason, Settings, StreamId};
 use crate::h2::proto::{self, Config, Error, Prioritized};
 use crate::h2::{FlowControl, PingPong, RecvStream, SendStream};
 
 use rama_core::bytes::{Buf, Bytes};
+use rama_core::telemetry::tracing::{
+    self,
+    instrument::{Instrument, Instrumented},
+};
+use rama_http::proto::h2::frame::EarlyFrameStreamContext;
 use rama_http_types::proto::h1::headers::original::OriginalHttp1Headers;
-use rama_http_types::proto::h2::PseudoHeaderOrder;
+use rama_http_types::proto::h2::frame::{
+    self, Pseudo, PushPromiseHeaderError, Reason, Settings, StreamId,
+};
+use rama_http_types::proto::h2::{PseudoHeaderOrder, ext};
 use rama_http_types::{HeaderMap, Method, Request, Response};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
 use std::{fmt, io};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
-use tracing::instrument::{Instrument, Instrumented};
 
 /// In progress HTTP/2 connection handshake future.
 ///
@@ -595,7 +601,7 @@ where
     }
 }
 
-impl<T, B> futures_core::Stream for Connection<T, B>
+impl<T, B> rama_core::futures::Stream for Connection<T, B>
 where
     T: AsyncRead + AsyncWrite + Unpin,
     B: Buf,
@@ -1186,8 +1192,8 @@ impl<B: Buf> SendResponse<B> {
     /// # Panics
     ///
     /// If the lock on the stream store has been poisoned.
-    pub fn stream_id(&self) -> crate::h2::StreamId {
-        crate::h2::StreamId::from_internal(self.inner.stream_id())
+    pub fn stream_id(&self) -> StreamId {
+        self.inner.stream_id()
     }
 }
 
@@ -1258,7 +1264,7 @@ impl<B: Buf> SendPushedResponse<B> {
     /// # Panics
     ///
     /// If the lock on the stream store has been poisoned.
-    pub fn stream_id(&self) -> crate::h2::StreamId {
+    pub fn stream_id(&self) -> StreamId {
         self.inner.stream_id()
     }
 }
@@ -1349,7 +1355,7 @@ where
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let span = self.span.clone(); // XXX(eliza): T_T
         let _e = span.enter();
-        tracing::trace!(state = ?self.state);
+        tracing::trace!("state = {:?}", self.state);
 
         loop {
             match &mut self.state {
@@ -1359,11 +1365,11 @@ where
                     // for the client preface.
                     let codec = match Pin::new(flush).poll(cx)? {
                         Poll::Pending => {
-                            tracing::trace!(flush.poll = %"Pending");
+                            tracing::trace!("flush poll pending");
                             return Poll::Pending;
                         }
                         Poll::Ready(flushed) => {
-                            tracing::trace!(flush.poll = %"Ready");
+                            tracing::trace!("flush poll ready");
                             flushed
                         }
                     };
@@ -1390,9 +1396,8 @@ where
                                 .builder
                                 .local_max_error_reset_streams,
                             settings: self.builder.settings.clone(),
-                            headers_priority: None,
                             headers_pseudo_order: None,
-                            priority: None,
+                            early_frame_ctx: EarlyFrameStreamContext::new_recorder(),
                         },
                     );
 
@@ -1446,10 +1451,10 @@ impl Peer {
         let mut pseudo = Pseudo::response(status);
 
         // reuse order if defined
-        if let Some(order) = extensions.remove::<PseudoHeaderOrder>() {
-            if !order.is_empty() {
-                pseudo.order = order;
-            }
+        if let Some(order) = extensions.remove::<PseudoHeaderOrder>()
+            && !order.is_empty()
+        {
+            pseudo.order = order;
         }
 
         let header_order: OriginalHttp1Headers = extensions.remove().unwrap_or_default();
@@ -1474,14 +1479,14 @@ impl Peer {
         if let Err(e) = frame::PushPromise::validate_request(&request) {
             match e {
                 PushPromiseHeaderError::NotSafeAndCacheable => tracing::debug!(
-                    ?promised_id,
-                    "convert_push_message: method {} is not safe and cacheable",
+                    "convert_push_message: method {} is not safe and cacheable (promised id: {:?})",
                     request.method(),
+                    promised_id,
                 ),
                 PushPromiseHeaderError::InvalidContentLength(e) => tracing::debug!(
-                    ?promised_id,
-                    "convert_push_message; promised request has invalid content-length {:?}",
+                    "convert_push_message; promised request has invalid content-length {:?}: (promised id: {:?})",
                     e,
+                    promised_id,
                 ),
             }
             return Err(UserError::MalformedHeaders);
@@ -1502,10 +1507,10 @@ impl Peer {
         let mut pseudo = Pseudo::request(method, uri, None);
 
         // reuse order if defined
-        if let Some(order) = extensions.remove::<PseudoHeaderOrder>() {
-            if !order.is_empty() {
-                pseudo.order = order;
-            }
+        if let Some(order) = extensions.remove::<PseudoHeaderOrder>()
+            && !order.is_empty()
+        {
+            pseudo.order = order;
         }
 
         let header_order: OriginalHttp1Headers = extensions.remove().unwrap_or_default();
@@ -1566,7 +1571,7 @@ impl proto::Peer for Peer {
         if has_protocol {
             if is_connect {
                 // Assert that we have the right type.
-                b = b.extension::<crate::h2::ext::Protocol>(pseudo.protocol.unwrap());
+                b = b.extension::<ext::Protocol>(pseudo.protocol.unwrap());
             } else {
                 malformed!("malformed headers: :protocol on non-CONNECT request");
             }
@@ -1582,7 +1587,7 @@ impl proto::Peer for Peer {
         // A request translated from HTTP/1 must not include the :authority
         // header
         if let Some(authority) = pseudo.authority {
-            let maybe_authority = uri::Authority::from_maybe_shared(authority.clone().into_inner());
+            let maybe_authority = uri::Authority::from_maybe_shared(authority.clone());
             parts.authority = Some(maybe_authority.or_else(|why| {
                 malformed!(
                     "malformed headers: malformed authority ({:?}): {}",
@@ -1626,7 +1631,7 @@ impl proto::Peer for Peer {
                 malformed!("malformed headers: missing path");
             }
 
-            let maybe_path = uri::PathAndQuery::from_maybe_shared(path.clone().into_inner());
+            let maybe_path = uri::PathAndQuery::from_maybe_shared(path.clone());
             parts.path_and_query = Some(maybe_path.or_else(|why| {
                 malformed!("malformed headers: malformed path ({:?}): {}", path, why,)
             })?);

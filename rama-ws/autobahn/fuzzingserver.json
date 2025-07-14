@@ -1,0 +1,7 @@
+{
+  "url": "ws://host.docker.internal:9001",
+  "outdir": "./autobahn/client",
+  "cases": ["*"],
+  "exclude-cases": [],
+  "exclude-agent-cases": {}
+}

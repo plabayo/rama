@@ -1,9 +1,10 @@
 use crate::h2::codec::Codec;
-use crate::h2::frame::Ping;
 use crate::h2::proto::{self, PingPayload};
 
 use atomic_waker::AtomicWaker;
 use rama_core::bytes::Buf;
+use rama_core::telemetry::tracing;
+use rama_http_types::proto::h2::frame::Ping;
 use std::io;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -115,11 +116,12 @@ impl PingPong {
                 self.pending_ping = Some(pending);
             }
 
-            if let Some(ref users) = self.user_pings {
-                if ping.payload() == &Ping::USER && users.receive_pong() {
-                    tracing::trace!("recv PING USER ack");
-                    return ReceivedPing::Unknown;
-                }
+            if let Some(ref users) = self.user_pings
+                && ping.payload() == &Ping::USER
+                && users.receive_pong()
+            {
+                tracing::trace!("recv PING USER ack");
+                return ReceivedPing::Unknown;
             }
 
             // else we were acked a ping we didn't send?

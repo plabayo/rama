@@ -6,11 +6,12 @@ use crate::headers::{encoding::Encoding, specifier::QualityValue};
 use crate::{HeaderValue, Method, Request, Uri, header};
 use chrono::{DateTime, Local};
 use http_range_header::RangeUnsatisfiableError;
+use rama_core::telemetry::tracing;
 use std::{
     ffi::OsStr,
     fmt,
     fs::Metadata,
-    io::{self, SeekFrom},
+    io::{self, ErrorKind, SeekFrom},
     ops::RangeInclusive,
     path::{Path, PathBuf},
     time::SystemTime,
@@ -25,6 +26,7 @@ pub(super) enum OpenFileOutput {
     PreconditionFailed,
     NotModified,
     InvalidRedirectUri,
+    InvalidFilename,
 }
 
 pub(super) struct FileOpened {
@@ -106,7 +108,14 @@ pub(super) async fn open_file(
         })))
     } else {
         let (mut file, maybe_encoding) =
-            open_file_with_fallback(path_to_file, negotiated_encodings).await?;
+            match open_file_with_fallback(path_to_file, negotiated_encodings).await {
+                Ok(result) => result,
+
+                Err(err) if is_invalid_filename_error(&err) => {
+                    return Ok(OpenFileOutput::InvalidFilename);
+                }
+                Err(err) => return Err(err),
+            };
         let meta = file.metadata().await?;
         let last_modified = meta.modified().ok().map(LastModified::from);
         if let Some(output) = check_modified_headers(
@@ -118,12 +127,12 @@ pub(super) async fn open_file(
         }
 
         let maybe_range = try_parse_range(range_header.as_deref(), meta.len());
-        if let Some(Ok(ranges)) = maybe_range.as_ref() {
+        if let Some(Ok(ranges)) = maybe_range.as_ref()
+            && ranges.len() == 1
+        {
             // if there is any other amount of ranges than 1 we'll return an
             // unsatisfiable later as there isn't yet support for multipart ranges
-            if ranges.len() == 1 {
-                file.seek(SeekFrom::Start(*ranges[0].start())).await?;
-            }
+            file.seek(SeekFrom::Start(*ranges[0].start())).await?;
         }
 
         Ok(OpenFileOutput::FileOpened(Box::new(FileOpened {
@@ -135,6 +144,26 @@ pub(super) async fn open_file(
             last_modified,
         })))
     }
+}
+
+fn is_invalid_filename_error(err: &io::Error) -> bool {
+    // Only applies to NULL bytes
+    if err.kind() == ErrorKind::InvalidInput {
+        return true;
+    }
+
+    // FIXME: Remove when MSRV >= 1.87.
+    // `io::ErrorKind::InvalidFilename` is stabilized in v1.87
+    #[cfg(windows)]
+    if let Some(raw_err) = err.raw_os_error()
+        && (raw_err == 123 || raw_err == 161 || raw_err == 206)
+    {
+        // https://github.com/rust-lang/rust/blob/70e2b4a4d197f154bed0eb3dcb5cac6a948ff3a3/library/std/src/sys/pal/windows/mod.rs
+        // Lines 81 and 115
+        return true;
+    }
+
+    false
 }
 
 fn check_modified_headers(
@@ -328,7 +357,7 @@ async fn maybe_serve_directory(
                 if !part.is_empty() {
                     current_path.push('/');
                     current_path.push_str(part);
-                    nav_parts.push(format!("<a href=\"{0}\">{1}</a>", current_path, part));
+                    nav_parts.push(format!("<a href=\"{current_path}\">{part}</a>"));
                 }
             }
             let breadcrumb = if nav_parts.is_empty() {
@@ -477,7 +506,7 @@ fn append_slash_on_path(uri: Uri) -> Result<Uri, OpenFileOutput> {
     };
 
     uri_builder.build().map_err(|err| {
-        tracing::error!(?err, "redirect uri failed to build");
+        tracing::error!("redirect uri failed to build: {err:?}");
         OpenFileOutput::InvalidRedirectUri
     })
 }
