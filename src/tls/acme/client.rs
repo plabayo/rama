@@ -4,9 +4,7 @@ use super::proto::{
 };
 use crate::{
     Context, Service,
-    crypto::jose::{
-        EMPTY_PAYLOAD, Empty, Jws, Key, NO_PAYLOAD, ProtectedHeader, ProtectedHeaderKey, Signer,
-    },
+    crypto::jose::{EMPTY_PAYLOAD, EcdsaKey, Empty, Headers, JWSBuilder, NO_PAYLOAD, Signer},
     error::{BoxError, ErrorContext, ErrorExt, OpaqueError},
     http::{
         Body, BodyExtractExt, Request, Response, client::EasyHttpWebClient,
@@ -151,7 +149,7 @@ impl AcmeClient {
         &self,
         options: CreateAccountOptions,
     ) -> Result<Account, OpaqueError> {
-        let (key, _) = Key::generate().context("generate key for account")?;
+        let key = EcdsaKey::generate().context("generate key for account")?;
 
         let response = self
             .post::<server::Account>(&self.directory.new_account, Some(&options), &key)
@@ -179,10 +177,16 @@ impl AcmeClient {
         signer: &impl Signer,
     ) -> Result<Response<Result<T, Problem>>, OpaqueError> {
         loop {
-            let nonce = self.nonce().await?;
-            let protected_header = signer.protected_header(Some(&nonce), url);
+            let mut builder = JWSBuilder::new();
+            if let Some(payload) = payload {
+                let payload = serde_json::to_vec(payload).context("serialize payload")?;
+                builder.set_payload(payload);
+            }
 
-            let jws = Jws::new(payload, &protected_header, signer).context("create jws payload")?;
+            builder.try_set_protected_header("nonce".to_owned(), self.nonce().await?)?;
+            builder.try_set_protected_header("url".to_owned(), url)?;
+            let jws = builder.build_flattened(signer)?;
+
             // println!("jose_json: {:?}", jose_json);
             let request = self
                 .https_client
@@ -197,7 +201,9 @@ impl AcmeClient {
 
             *self.nonce.lock() = Some(Self::get_nonce_from_response(&response)?);
 
-            let response = Self::parse_response::<T>(response).await.unwrap();
+            let response = Self::parse_response::<T>(response)
+                .await
+                .context("parse response")?;
             match response.body() {
                 Ok(_) => return Ok(response),
                 Err(problem) => {
@@ -215,6 +221,8 @@ impl AcmeClient {
     ) -> Result<Response<Result<T, Problem>>, OpaqueError> {
         let (parts, body) = response.into_parts();
         let bytes = body.collect().await.unwrap().to_bytes();
+
+        println!("body {:?}", bytes);
 
         let result = serde_json::from_slice::<T>(&bytes);
         match result {
@@ -269,7 +277,7 @@ pub struct Account<'a> {
 }
 
 struct AccountCredentials {
-    key: Key,
+    key: EcdsaKey,
     kid: String,
 }
 
@@ -330,22 +338,20 @@ pub struct Order<'a> {
 }
 
 impl Signer for AccountCredentials {
-    type Signature = <Key as Signer>::Signature;
+    type Signature = <EcdsaKey as Signer>::Signature;
+    type Error = OpaqueError;
 
-    fn protected_header<'n, 'u: 'n, 's: 'u>(
-        &'s self,
-        nonce: Option<&'n str>,
-        url: &'u str,
-    ) -> ProtectedHeader<'n> {
-        ProtectedHeader {
-            alg: self.key.signing_algorithm,
-            key: ProtectedHeaderKey::KeyID(&self.kid),
-            nonce,
-            url,
-        }
+    fn set_headers(
+        &self,
+        protected_headers: &mut Headers,
+        unprotected_headers: &mut Headers,
+    ) -> Result<(), Self::Error> {
+        protected_headers.try_set_header("alg".to_string(), self.key.alg())?;
+        protected_headers.try_set_header("kid".to_string(), &self.kid)?;
+        Ok(())
     }
 
-    fn sign(&self, payload: &[u8]) -> Result<Self::Signature, BoxError> {
+    fn sign(&self, payload: &str) -> Result<Self::Signature, Self::Error> {
         self.key.sign(payload)
     }
 }
@@ -482,8 +488,11 @@ impl<'a> Order<'a> {
         Ok(())
     }
 
-    pub fn create_key_authorization(&self, challenge: &server::Challenge) -> KeyAuthorization {
-        KeyAuthorization::new(&challenge.token, &self.account.credentials.key.thumb)
+    pub fn create_key_authorization(
+        &self,
+        challenge: &server::Challenge,
+    ) -> Result<KeyAuthorization, OpaqueError> {
+        KeyAuthorization::new(&challenge.token, &self.account.credentials.key.create_jwk())
     }
 
     // TODO boring variants
@@ -493,7 +502,7 @@ impl<'a> Order<'a> {
         challenge: &server::Challenge,
         identifier: &common::Identifier,
     ) -> Result<CertifiedKey, OpaqueError> {
-        let key_authz = self.create_key_authorization(challenge);
+        let key_authz = self.create_key_authorization(challenge)?;
 
         let mut cert_params =
             rcgen::CertificateParams::new(vec![identifier.clone().into()]).unwrap();
@@ -562,7 +571,7 @@ impl<'a> Order<'a> {
         // Ok(server_auth)
 
         // TO
-        let key_authz = self.create_key_authorization(challenge);
+        let key_authz = self.create_key_authorization(challenge)?;
 
         // Generate an RSA private key
         let rsa = Rsa::generate(4096).unwrap();

@@ -74,10 +74,10 @@ mod test {
             acme_server.boxed(),
         )
         .await
-        .unwrap();
+        .expect("get directory");
 
         // Should fetch a nonce from server
-        let nonce = acme_client.nonce().await.unwrap();
+        let nonce = acme_client.nonce().await.expect("get nonce");
         assert_eq!(nonce, test_nonce.to_string());
 
         // *acme_client.nonce.lock() = Some(test_nonce.to_string());
@@ -93,7 +93,7 @@ mod test {
                 only_return_existing: None,
             })
             .await
-            .unwrap();
+            .expect("create account");
 
         println!("creating order");
         let mut order = account
@@ -102,10 +102,10 @@ mod test {
                 ..Default::default()
             })
             .await
-            .unwrap();
+            .expect("create order");
 
         println!("refresh order");
-        order.refresh().await.unwrap();
+        order.refresh().await.expect("refresh order");
 
         println!("get authz");
         let authz = order.get_authorizations().await.unwrap();
@@ -119,7 +119,7 @@ mod test {
             .unwrap()
             .to_owned();
 
-        let key_authz = order.create_key_authorization(&challenge);
+        let key_authz = order.create_key_authorization(&challenge).unwrap();
 
         *key_authz_store.lock() = Some(key_authz);
 

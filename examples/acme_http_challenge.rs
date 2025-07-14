@@ -57,7 +57,7 @@ async fn main() {
         .unwrap()
         .to_owned();
 
-    let key_authz = order.create_key_authorization(&challenge);
+    let key_authz = order.create_key_authorization(&challenge).unwrap();
 
     let path = format!(".well-known/acme-challenge/{}", challenge.token);
 

@@ -3,6 +3,7 @@ use crate::tls::acme::proto::{
     common::Identifier,
     server::{
         AccountStatus, Authorization, AuthorizationStatus, Challenge, Order, OrderStatus, Problem,
+        ProtectedHeader, ProtectedHeaderKey,
     },
 };
 
@@ -11,7 +12,7 @@ use super::proto::{
     server::{Account, Directory, DirectoryMeta, LOCATION_HEADER, REPLAY_NONCE_HEADER},
 };
 use crate::crypto::dep::aws_lc_rs::signature;
-use crate::crypto::jose::{DecodedJws, Empty, Jwk, Jws, VerifyKeyId};
+use crate::crypto::jose::{Empty, JWK, JWSFlattened, Verifier};
 use base64::{Engine, prelude::BASE64_URL_SAFE_NO_PAD};
 use parking_lot::Mutex;
 use rama_core::{
@@ -20,6 +21,7 @@ use rama_core::{
     layer::ConsumeErrLayer,
     service::{BoxService, service_fn},
 };
+use rama_crypto::dep::{aws_lc_rs::signature::UnparsedPublicKey, rcgen::Issuer};
 use rama_http::{
     Body, Request, Response,
     dep::http_body_util::BodyExt,
@@ -71,11 +73,12 @@ pub struct Config {
     current_kid: AtomicU64,
     accounts: Arc<Mutex<HashMap<String, Account>>>,
     key_ids: KeyIds,
-    jwks: Arc<Mutex<HashMap<String, Jwk>>>,
+    jwks: Arc<Mutex<HashMap<String, JWK>>>,
     current_order: AtomicU64,
     orders: Arc<Mutex<HashMap<String, CompleteOrder>>>,
-    certificate: Certificate,
-    keypair: KeyPair,
+    // certificate: Certificate,
+    // keypair: KeyPair,
+    issuer: Issuer<'static, KeyPair>,
 }
 
 struct CompleteOrder {
@@ -138,15 +141,69 @@ pub struct DirectoryPaths<'a> {
     pub key_change: &'a str,
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 struct KeyIds(Arc<Mutex<HashMap<String, signature::UnparsedPublicKey<Vec<u8>>>>>);
 
-impl VerifyKeyId for KeyIds {
-    fn verify<F>(&self, key_id: &str, verify: F) -> Result<(), OpaqueError>
-    where
-        F: FnOnce(Option<&signature::UnparsedPublicKey<Vec<u8>>>) -> Result<(), OpaqueError>,
-    {
-        (verify)(self.0.lock().get(key_id))
+#[derive(Debug)]
+struct MaybeKeyIdsVerifier<'a> {
+    key_ids: &'a KeyIds,
+    nonces: &'a Arc<Mutex<Vec<u64>>>,
+}
+
+impl<'a> Verifier for MaybeKeyIdsVerifier<'a> {
+    type Error = OpaqueError;
+    type Output = ProtectedHeader;
+
+    fn verify(
+        &self,
+        payload: &[u8],
+        signatures: &[rama_crypto::jose::ToVerifySignature],
+    ) -> Result<Self::Output, Self::Error> {
+        println!("verify");
+        if signatures.len() != 1 {
+            return Err(OpaqueError::from_display(
+                "received unexpected amount of signatures",
+            ));
+        }
+        println!("verify2");
+
+        let signature = &signatures[0];
+        let decoded = signature.decoded_signature();
+        let info = decoded.decode_protected_headers::<ProtectedHeader>()?;
+
+        let received_nonce: u64 = info.nonce.parse().context("parse nonce to u64")?;
+        println!("verify3");
+        let mut nonces = self.nonces.lock();
+        let nonce_idx = nonces.iter().position(|nonce| nonce == &received_nonce);
+
+        if let Some(idx) = nonce_idx {
+            nonces.remove(idx);
+        } else {
+            return Err(OpaqueError::from_display("invalid nonce provided"));
+        };
+
+        println!("verify4");
+        match info.key {
+            ProtectedHeaderKey::JWK(ref jwk) => {
+                println!("verify5");
+                let key = jwk.unparsed_public_key()?;
+                println!("verify5: {:?}", decoded.signature());
+
+                let result = key
+                    .verify(signature.signed_data().as_bytes(), decoded.signature())
+                    .context("verify correct signature");
+                println!("key: {result:?}");
+                println!("verify5");
+            }
+            ProtectedHeaderKey::KeyID(ref id) => {
+                let keys = self.key_ids.0.lock();
+                let key = keys.get(id).context("fetch key for given key_id")?;
+                key.verify(signature.signed_data().as_bytes(), decoded.signature())
+                    .context("verify correct signature")?;
+            }
+        }
+        println!("verify6");
+        Ok(info)
     }
 }
 
@@ -176,12 +233,14 @@ impl AcmeServer {
         ca_distinguished_name.push(rcgen::DnType::CommonName, "My Test CA");
         ca_params.distinguished_name = ca_distinguished_name;
         ca_params.is_ca = IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
-        let ca_cert = ca_params.self_signed(&ca_key_pair).unwrap();
+        // let ca_cert = ca_params.self_signed(&ca_key_pair).unwrap();
+
+        let issuer = Issuer::new(ca_params, ca_key_pair);
 
         let config = Config {
             host: host.into(),
-            certificate: ca_cert,
-            keypair: ca_key_pair,
+            // certificate: ca_cert,
+            // keypair: ca_key_pair,
             accounts: Default::default(),
             current_kid: Default::default(),
             current_nonce: Default::default(),
@@ -192,6 +251,7 @@ impl AcmeServer {
             nonces: Default::default(),
             orders: Default::default(),
             tls_challenge_client: Default::default(),
+            issuer,
         };
 
         let layers = (WithNonceHeaderLayer, ConsumeErrLayer::default());
@@ -267,11 +327,13 @@ impl AcmeServer {
     }
 
     async fn new_account(ctx: Context<State>, req: Request) -> Result<Response, OpaqueError> {
-        let result = Self::parse_request::<CreateAccountOptions>(&ctx, req).await?;
+        println!("server account");
+        let (create_opts, protected_header) =
+            Self::parse_request::<CreateAccountOptions>(&ctx, req).await?;
 
-        println!("protected header: {:?}", result.protected());
+        // println!("protected header: {:?}", result.protected());
 
-        println!("payload: {:?}", result.payload());
+        println!("create_opts: {:?}", create_opts);
 
         let kid = ctx
             .state()
@@ -281,12 +343,12 @@ impl AcmeServer {
         let host = ctx.state().host.as_str();
         let location = format!("{host}/account/{kid}");
 
-        let (jwk, pub_key) = match result.protected().unwrap().key {
-            crate::crypto::jose::ProtectedHeaderKey::JWK(jwk) => {
-                let pub_key = jwk.unparsed_public_key();
+        let (jwk, pub_key) = match protected_header.key {
+            ProtectedHeaderKey::JWK(jwk) => {
+                let pub_key = jwk.unparsed_public_key()?;
                 (jwk, pub_key)
             }
-            crate::crypto::jose::ProtectedHeaderKey::KeyID(_) => {
+            ProtectedHeaderKey::KeyID(_) => {
                 return Err(OpaqueError::from_display("JWK needed to create account"));
             }
         };
@@ -316,12 +378,12 @@ impl AcmeServer {
             .body(Body::from(serde_json::to_vec(account).unwrap()))
             .unwrap();
 
+        println!("creating account server");
         Ok(resp)
     }
 
     async fn new_order(ctx: Context<State>, req: Request) -> Result<Response, OpaqueError> {
-        let result = Self::parse_request::<NewOrderPayload>(&ctx, req).await?;
-        let payload = result.into_payload().unwrap();
+        let (payload, _header) = Self::parse_request::<NewOrderPayload>(&ctx, req).await?;
 
         let order_id = ctx
             .state()
@@ -490,8 +552,7 @@ impl AcmeServer {
         let params = ctx.get::<UriParams>().unwrap();
         let id = params.get("order_idx").unwrap();
 
-        let result = Self::parse_request::<FinalizePayload>(&ctx, req).await?;
-        let payload = result.into_payload().unwrap();
+        let (payload, _) = Self::parse_request::<FinalizePayload>(&ctx, req).await?;
 
         let mut orders = ctx.state().orders.lock();
         let order = orders.get_mut(id).unwrap();
@@ -506,9 +567,7 @@ impl AcmeServer {
         println!("csr: {:?}", &payload);
 
         let csr = CertificateSigningRequestParams::from_pem(&payload.csr).unwrap();
-        let signed_cert = csr
-            .signed_by(&ctx.state().certificate, &ctx.state().keypair)
-            .unwrap();
+        let signed_cert = csr.signed_by(&ctx.state().issuer).unwrap();
         order.certificate = Some(signed_cert);
         let host = ctx.state().host.as_str();
         order.order.certificate = Some(format!("{host}/certificate/{id}"));
@@ -564,10 +623,12 @@ impl AcmeServer {
             .parse::<usize>()
             .unwrap();
 
-        let result = Self::parse_request::<Empty>(&ctx, req).await?;
+        let (payload, headers) = Self::parse_request::<Option<Empty>>(&ctx, req).await?;
+
+        println!("challenge payload: {:?}", payload);
 
         // No payload = client wants to refresh data
-        if result.payload().is_none() {
+        if payload.is_none() {
             let orders = ctx.state().orders.lock();
             let order = orders.get(order_idx).unwrap();
             let challenge = &order.authorizations[auth_idx].challenges[challenge_idx];
@@ -605,16 +666,12 @@ impl AcmeServer {
 
             let jwks = ctx.state().jwks.lock();
 
-            let jwk = match &result.protected().unwrap().key {
-                crate::crypto::jose::ProtectedHeaderKey::JWK(jwk) => todo!("jkfd"),
-                crate::crypto::jose::ProtectedHeaderKey::KeyID(id) => jwks.get(*id).unwrap(),
+            let jwk = match &headers.key {
+                ProtectedHeaderKey::JWK(jwk) => todo!("jkfd"),
+                ProtectedHeaderKey::KeyID(id) => jwks.get(id).unwrap(),
             };
 
-            let thumb_sha256 = jwk.thumb_sha256().unwrap();
-            println!("thumb_sha256: {thumb_sha256:?}");
-            let thumb = BASE64_URL_SAFE_NO_PAD.encode(thumb_sha256);
-
-            let key_authz = KeyAuthorization::new(challenge.token.as_str(), thumb.as_str());
+            let key_authz = KeyAuthorization::new(challenge.token.as_str(), jwk)?;
             println!("key_authz: {key_authz:?}");
             (challenge_type, key_authz)
         };
@@ -631,7 +688,7 @@ impl AcmeServer {
         }
 
         let resp = Response::builder()
-            .body(Body::from(serde_json::to_vec(&Empty).unwrap()))
+            .body(Body::from(serde_json::to_vec(&Empty {}).unwrap()))
             .unwrap();
         Ok(resp)
     }
@@ -736,31 +793,32 @@ impl AcmeServer {
         Ok(())
     }
 
-    async fn parse_request<T: DeserializeOwned>(
+    async fn parse_request<T: DeserializeOwned + std::fmt::Debug>(
         ctx: &Context<State>,
         req: Request,
-    ) -> Result<DecodedJws<T>, OpaqueError> {
+    ) -> Result<(T, ProtectedHeader), OpaqueError> {
         let bytes = req.into_body().collect().await.unwrap().to_bytes();
 
         println!("bytes: {:?}", &bytes);
-        let result = serde_json::from_slice::<Jws<T>>(&bytes).unwrap();
-        // println!("resulting jws: {:?}", result);
-        let key_id_store = &ctx.state().key_ids;
-        let result = result.decode(key_id_store).unwrap();
+        let result = serde_json::from_slice::<JWSFlattened>(&bytes).context("parse response")?;
 
-        // Check if this is a valid request
-        let received_nonce: u64 = result.protected().unwrap().nonce.unwrap().parse().unwrap();
+        let (decoded, protected_header) = result.decode(&MaybeKeyIdsVerifier {
+            key_ids: &ctx.state().key_ids,
+            nonces: &ctx.state().nonces,
+        })?;
 
-        let mut nonces = ctx.state().nonces.lock();
-        let nonce_idx = nonces.iter().position(|nonce| nonce == &received_nonce);
+        println!("decodedd input: {:?}", decoded.payload());
 
-        if let Some(idx) = nonce_idx {
-            nonces.remove(idx);
+        let payload = if decoded.payload().len() > 0 {
+            decoded.payload()
         } else {
-            return Err(OpaqueError::from_display("invalid nonce provided"));
+            "null".as_bytes()
         };
 
-        Ok(result)
+        let result = serde_json::from_slice::<T>(payload).context("decode payload");
+        println!("decodedd payload: {:?}", result);
+        let result = result?;
+        Ok((result, protected_header))
     }
 }
 

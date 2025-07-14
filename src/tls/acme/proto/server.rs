@@ -1,9 +1,35 @@
+use rama_crypto::jose::{JWA, JWK};
 use serde::{Deserialize, Serialize};
 
 use super::common::Identifier;
 
 pub const REPLAY_NONCE_HEADER: &str = "replay-nonce";
 pub const LOCATION_HEADER: &str = "location";
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct ProtectedHeader {
+    /// Algorithm that was used to sign the JWS
+    pub(crate) alg: JWA,
+    #[serde(flatten)]
+    /// JWK or KeyId which is used to identify this request
+    pub(crate) key: ProtectedHeaderKey,
+    /// Previous nonce that was given by the server to use
+    pub(crate) nonce: String,
+    /// Url of the acme endpoint for which we are making a request
+    pub(crate) url: String,
+}
+
+#[derive(Debug, Deserialize)]
+/// [`ProtectedHeaderKey`] send as key for [`ProtectedHeader`]
+///
+/// `JWK` is used for the first request to create an account, once we
+/// have an account we use the `KeyID` instead
+pub(crate) enum ProtectedHeaderKey {
+    #[serde(rename = "jwk")]
+    JWK(JWK),
+    #[serde(rename = "kid")]
+    KeyID(String),
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

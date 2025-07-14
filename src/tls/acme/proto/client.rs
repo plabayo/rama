@@ -11,6 +11,7 @@ use crate::crypto::dep::aws_lc_rs::{
 };
 use base64::prelude::{BASE64_URL_SAFE_NO_PAD, Engine};
 use rama_core::error::{BoxError, ErrorContext, OpaqueError};
+use rama_crypto::jose::JWK;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -48,8 +49,9 @@ pub struct KeyAuthorization(String);
 
 impl KeyAuthorization {
     /// Create [`KeyAuthorization`] for the given challenge and key
-    pub(crate) fn new(token: &str, key_thumb: &str) -> Self {
-        Self(format!("{}.{}", token, key_thumb))
+    pub(crate) fn new(token: &str, jwk: &JWK) -> Result<Self, OpaqueError> {
+        let thumb = BASE64_URL_SAFE_NO_PAD.encode(jwk.thumb_sha256()?);
+        Ok(Self(format!("{}.{}", token, thumb)))
     }
 
     /// Encode [`KeyAuthorization`] for use in Http challenge

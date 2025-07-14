@@ -37,6 +37,6 @@ pub use jwk::{EcdsaKey, JWK, JWKEllipticCurves, JWKType, JWKUse};
 
 mod jws;
 pub use jws::{
-    DecodedJWS, DecodedJWSFlattened, DecodedSignature, Empty, JWS, JWSBuilder, JWSCompact,
-    JWSFlattened, Signer, ToVerifySignature, Verifier,
+    DecodedJWS, DecodedJWSFlattened, DecodedSignature, EMPTY_PAYLOAD, Empty, Headers, JWS,
+    JWSBuilder, JWSCompact, JWSFlattened, NO_PAYLOAD, Signer, ToVerifySignature, Verifier,
 };

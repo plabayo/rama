@@ -1,3 +1,4 @@
+use aws_lc_rs::signature::Signature;
 use aws_lc_rs::{
     digest::{Digest, SHA256, digest},
     pkcs8::Document,
@@ -11,7 +12,7 @@ use base64::{Engine as _, prelude::BASE64_URL_SAFE_NO_PAD};
 use rama_core::error::{ErrorContext, OpaqueError};
 use serde::{Deserialize, Serialize, Serializer, ser::SerializeStruct};
 
-use crate::jose::JWA;
+use crate::jose::{JWA, Signer, Verifier};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 /// [`JWK`] or JSON Web Key as defined in [`rfc7517`]
@@ -235,6 +236,36 @@ impl EcdsaKey {
 
     pub fn rng(&self) -> &SystemRandom {
         &self.rng
+    }
+
+    pub fn alg(&self) -> JWA {
+        self.alg
+    }
+}
+
+impl Signer for EcdsaKey {
+    type Signature = Signature;
+
+    type Error = OpaqueError;
+
+    fn set_headers(
+        &self,
+        protected_headers: &mut super::jws::Headers,
+        _unprotected_headers: &mut super::jws::Headers,
+    ) -> Result<(), Self::Error> {
+        let jwk = self.create_jwk();
+        protected_headers.try_set_header("alg".to_string(), jwk.alg)?;
+        protected_headers.try_set_header("jwk".to_string(), jwk)?;
+        Ok(())
+    }
+
+    fn sign(&self, data: &str) -> Result<Self::Signature, Self::Error> {
+        let sig = self
+            .inner
+            .sign(self.rng(), data.as_bytes())
+            .context("sign protected data")?;
+
+        Ok(sig)
     }
 }
 
