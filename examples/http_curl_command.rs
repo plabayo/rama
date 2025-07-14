@@ -12,9 +12,11 @@
 // rama provides everything out of the box to build a complete web service.
 
 use rama::http::Request;
+use rama::http::request_headers_to_curl_command;
 
 #[tokio::main]
 async fn main() {
     let req = Request::builder().uri("http://example.com").header("accept", "application/json").body(()).unwrap();   
-    println!("request: {:?}", req);
+    // println!("request: {:?}", req);
+    request_headers_to_curl_command(req).unwrap();
 }
