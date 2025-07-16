@@ -1,25 +1,23 @@
-use std::{io::BufReader, path::PathBuf, time::Duration};
-
 use clap::{Args, Subcommand};
+
 use rama::{
     Layer,
-    error::{BoxError, ErrorContext, OpaqueError},
+    error::BoxError,
     graceful::Shutdown,
-    service::service_fn,
-    tcp::{TcpStream, server::TcpListener},
-    telemetry::tracing,
-    tls::rustls::{
-        dep::{
-            pemfile,
-            pki_types::{CertificateDer, PrivateKeyDer},
+    net::{
+        socket::Interface,
+        tls::{
+            DataEncoding,
+            server::{ServerAuth, ServerAuthData, ServerConfig},
         },
-        server::{TlsAcceptorDataBuilder, TlsAcceptorLayer},
     },
+    tcp::{client::service::Forwarder, server::TcpListener},
+    telemetry::tracing::{self, level_filters::LevelFilter},
+    tls::boring::server::{TlsAcceptorData, TlsAcceptorLayer},
+    utils::str::NonEmptyString,
 };
-use tokio::io::copy_bidirectional;
-use tracing_subscriber::{
-    EnvFilter, filter::LevelFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt,
-};
+
+use std::{path::PathBuf, time::Duration};
 
 #[derive(Debug, Args)]
 /// rama stunnel service
@@ -36,49 +34,54 @@ pub enum StunnelSubcommand {
 
 #[derive(Debug, Args)]
 pub struct ServerArgs {
-    #[arg(long)]
-    pub listen: String,
-    #[arg(long)]
-    pub forward: String,
+    // Address and port to listen on
+    #[arg(long, default_value = "127.0.0.1:8443")]
+    pub listen: Interface,
+    // Address to forward connections to
+    #[arg(long, default_value = "127.0.0.1:8080")]
+    pub forward: Interface,
+    // Path to certificate
     #[arg(long)]
     pub cert: PathBuf,
+    // Path to certificate private key
     #[arg(long)]
     pub key: PathBuf,
 }
 
 #[derive(Debug, Args)]
 pub struct ClientArgs {
+    // Address and port to listen on
+    #[arg(long, default_value = "127.0.0.1:8003")]
+    pub listen: Interface,
+    // Address to forward connections to
+    #[arg(long, default_value = "127.0.0.1:8002")]
+    pub target: Interface,
     #[arg(long)]
-    pub listen: String,
-    #[arg(long)]
-    pub connect: String,
-    #[arg(long)]
-    pub cacert: PathBuf,
+    // Path to CA bundle file (PEM/X509). Uses system trust store by default.
+    pub cacert: Option<PathBuf>,
 }
 
 pub async fn run(cmd: StunnelCommand) -> Result<(), BoxError> {
-    tracing_subscriber::registry()
-        .with(fmt::layer())
-        .with(
-            EnvFilter::builder()
-                .with_default_directive(LevelFilter::INFO.into())
-                .from_env_lossy(),
-        )
-        .init();
+    crate::trace::init_tracing(LevelFilter::INFO);
 
     match cmd.commands {
         StunnelSubcommand::Server(args) => {
             let shutdown = Shutdown::default();
 
-            let (certs, key) = load_cert_and_key(
-                &std::fs::read(&args.cert).context("failed to read certificate")?,
-                &std::fs::read(&args.key).context("failed to read private key")?,
-            )?;
+            let cert_data = NonEmptyString::try_from(std::fs::read_to_string(&args.cert)?)?;
+            let key_data = NonEmptyString::try_from(std::fs::read_to_string(&args.key)?)?;
 
-            let acceptor_data = TlsAcceptorDataBuilder::new(certs, key)?
-                .with_env_key_logger()
-                .expect("with env keylogger")
-                .build();
+            let server_config = ServerConfig::new(ServerAuth::Single(ServerAuthData {
+                cert_chain: DataEncoding::Pem(cert_data),
+                private_key: DataEncoding::Pem(key_data),
+                ocsp: None,
+            }));
+
+            let acceptor_data = TlsAcceptorData::try_from(server_config)?;
+
+            let listener = TcpListener::bind(args.listen.clone())
+                .await
+                .expect("Failed to bind stunnel server");
 
             shutdown.spawn_task_fn(async move |guard| {
                 tracing::info!("Stunnel server is running...");
@@ -89,29 +92,11 @@ pub async fn run(cmd: StunnelCommand) -> Result<(), BoxError> {
                     args.forward
                 );
 
-                let tcp_service = TlsAcceptorLayer::new(acceptor_data).layer(service_fn(
-                    move |mut tls_stream| {
-                        let forward = args.forward.clone();
+                let tcp_service = TlsAcceptorLayer::new(acceptor_data)
+                    // TODO: use args.forward here
+                    .layer(Forwarder::new(([127, 0, 0, 1], 8080)));
 
-                        async move {
-                            let mut backend = TcpStream::connect(forward)
-                                .await
-                                .context("failed to connect to backend")?;
-
-                            copy_bidirectional(&mut tls_stream, &mut backend)
-                                .await
-                                .context("failed to relay data")?;
-
-                            Ok::<_, BoxError>(())
-                        }
-                    },
-                ));
-
-                TcpListener::bind(&args.listen)
-                    .await
-                    .expect("Failed to bind stunnel server")
-                    .serve_graceful(guard, tcp_service)
-                    .await;
+                listener.serve_graceful(guard, tcp_service).await;
             });
 
             shutdown
@@ -126,19 +111,4 @@ pub async fn run(cmd: StunnelCommand) -> Result<(), BoxError> {
             todo!()
         }
     }
-}
-
-pub fn load_cert_and_key(
-    cert_bytes: &[u8],
-    key_bytes: &[u8],
-) -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>), OpaqueError> {
-    let cert_chain = pemfile::certs(&mut BufReader::new(cert_bytes))
-        .collect::<Result<Vec<_>, _>>()
-        .context("failed to parse certificate chain")?;
-
-    let private_key = pemfile::private_key(&mut BufReader::new(key_bytes))
-        .context("failed to parse private key")?
-        .context("no private key found")?;
-
-    Ok((cert_chain, private_key))
 }
