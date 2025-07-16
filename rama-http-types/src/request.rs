@@ -18,15 +18,41 @@ pub type Request<T = Body> = http::Request<T>;
 /// [`HttpRequest`]: crate::dep::http::Request
 pub trait HttpRequestParts {
     fn method(&self) -> &Method;
-    fn method_mut(&mut self) -> &mut Method;
     fn uri(&self) -> &Uri;
-    fn uri_mut(&mut self) -> &mut Uri;
     fn version(&self) -> Version;
-    fn version_mut(&mut self) -> &mut Version;
     fn headers(&self) -> &HeaderMap<HeaderValue>;
-    fn headers_mut(&mut self) -> &mut HeaderMap<HeaderValue>;
     fn extensions(&self) -> &Extensions;
+}
+
+/// Same as [`HttpRequestParts`] but also adding mutable access
+pub trait HttpRequestPartsMut: HttpRequestParts {
+    fn method_mut(&mut self) -> &mut Method;
+    fn uri_mut(&mut self) -> &mut Uri;
+    fn version_mut(&mut self) -> &mut Version;
+    fn headers_mut(&mut self) -> &mut HeaderMap<HeaderValue>;
     fn extensions_mut(&mut self) -> &mut Extensions;
+}
+
+impl<Body> HttpRequestParts for &http::Request<Body> {
+    fn method(&self) -> &Method {
+        (*self).method()
+    }
+
+    fn uri(&self) -> &Uri {
+        (*self).uri()
+    }
+
+    fn version(&self) -> Version {
+        (*self).version()
+    }
+
+    fn headers(&self) -> &HeaderMap<HeaderValue> {
+        (*self).headers()
+    }
+
+    fn extensions(&self) -> &Extensions {
+        (*self).extensions()
+    }
 }
 
 impl<Body> HttpRequestParts for http::Request<Body> {
@@ -34,40 +60,64 @@ impl<Body> HttpRequestParts for http::Request<Body> {
         self.method()
     }
 
-    fn method_mut(&mut self) -> &mut Method {
-        self.method_mut()
-    }
-
     fn uri(&self) -> &Uri {
         self.uri()
-    }
-
-    fn uri_mut(&mut self) -> &mut Uri {
-        self.uri_mut()
     }
 
     fn version(&self) -> Version {
         self.version()
     }
 
-    fn version_mut(&mut self) -> &mut Version {
-        self.version_mut()
-    }
-
     fn headers(&self) -> &HeaderMap<HeaderValue> {
         self.headers()
+    }
+
+    fn extensions(&self) -> &Extensions {
+        self.extensions()
+    }
+}
+
+impl<Body> HttpRequestPartsMut for http::Request<Body> {
+    fn method_mut(&mut self) -> &mut Method {
+        self.method_mut()
+    }
+
+    fn uri_mut(&mut self) -> &mut Uri {
+        self.uri_mut()
+    }
+
+    fn version_mut(&mut self) -> &mut Version {
+        self.version_mut()
     }
 
     fn headers_mut(&mut self) -> &mut HeaderMap<HeaderValue> {
         self.headers_mut()
     }
 
-    fn extensions(&self) -> &Extensions {
-        self.extensions()
-    }
-
     fn extensions_mut(&mut self) -> &mut Extensions {
         self.extensions_mut()
+    }
+}
+
+impl HttpRequestParts for &Parts {
+    fn method(&self) -> &Method {
+        &self.method
+    }
+
+    fn uri(&self) -> &Uri {
+        &self.uri
+    }
+
+    fn version(&self) -> Version {
+        self.version
+    }
+
+    fn headers(&self) -> &HeaderMap<HeaderValue> {
+        &self.headers
+    }
+
+    fn extensions(&self) -> &Extensions {
+        &self.extensions
     }
 }
 
@@ -76,36 +126,38 @@ impl HttpRequestParts for Parts {
         &self.method
     }
 
-    fn method_mut(&mut self) -> &mut Method {
-        &mut self.method
-    }
-
     fn uri(&self) -> &Uri {
         &self.uri
-    }
-
-    fn uri_mut(&mut self) -> &mut Uri {
-        &mut self.uri
     }
 
     fn version(&self) -> Version {
         self.version
     }
 
-    fn version_mut(&mut self) -> &mut Version {
-        &mut self.version
-    }
-
     fn headers(&self) -> &HeaderMap<HeaderValue> {
         &self.headers
     }
 
-    fn headers_mut(&mut self) -> &mut HeaderMap<HeaderValue> {
-        &mut self.headers
-    }
-
     fn extensions(&self) -> &Extensions {
         &self.extensions
+    }
+}
+
+impl HttpRequestPartsMut for Parts {
+    fn method_mut(&mut self) -> &mut Method {
+        &mut self.method
+    }
+
+    fn uri_mut(&mut self) -> &mut Uri {
+        &mut self.uri
+    }
+
+    fn version_mut(&mut self) -> &mut Version {
+        &mut self.version
+    }
+
+    fn headers_mut(&mut self) -> &mut HeaderMap<HeaderValue> {
+        &mut self.headers
     }
 
     fn extensions_mut(&mut self) -> &mut Extensions {
