@@ -7,6 +7,7 @@ use rama_core::{Context, Layer, Service};
 use rama_utils::macros::generate_set_and_with;
 use std::collections::VecDeque;
 use std::fmt::Debug;
+use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 use std::pin::Pin;
 use std::sync::atomic::AtomicBool;
@@ -131,13 +132,59 @@ struct PooledConnection<C, ID> {
     last_used: Instant,
 }
 
+pub type FiFoReuseLruDropPool<C, ID> = LruDropPool<FiFoReuse, C, ID>;
+pub type RoundRobinReuseLruDropPool<C, ID> = LruDropPool<RoundRobinReuse, C, ID>;
+
 /// Connection pool that uses FiFo for reuse and LRU to evict connections
-pub struct FiFoReuseLruDropPool<C, ID> {
+pub struct LruDropPool<R, C, ID> {
     storage: Arc<Mutex<VecDeque<PooledConnection<C, ID>>>>,
     total_slots: Arc<Semaphore>,
     active_slots: Arc<Semaphore>,
     idle_timeout: Option<Duration>,
     returner: ConnReturner<C, ID>,
+    _marker: PhantomData<R>,
+}
+
+pub struct FiFoReuse;
+pub struct RoundRobinReuse;
+
+trait Reuse<C, ID> {
+    fn get_conn(
+        storage: &mut VecDeque<PooledConnection<C, ID>>,
+        id: &ID,
+    ) -> Option<(usize, PooledConnection<C, ID>)>;
+}
+
+impl<C, ID> Reuse<C, ID> for FiFoReuse
+where
+    ID: PartialEq,
+{
+    fn get_conn(
+        storage: &mut VecDeque<PooledConnection<C, ID>>,
+        id: &ID,
+    ) -> Option<(usize, PooledConnection<C, ID>)> {
+        let idx = storage.iter().position(|stored| &stored.id == id)?;
+        let pooled_conn = storage.remove(idx)?;
+        Some((idx, pooled_conn))
+    }
+}
+
+impl<C, ID> Reuse<C, ID> for RoundRobinReuse
+where
+    ID: PartialEq,
+{
+    fn get_conn(
+        storage: &mut VecDeque<PooledConnection<C, ID>>,
+        id: &ID,
+    ) -> Option<(usize, PooledConnection<C, ID>)> {
+        let idx = storage
+            .iter()
+            .enumerate()
+            .find(|(_, stored)| &stored.id == id)?
+            .0;
+        let pooled_conn = storage.remove(idx)?;
+        Some((idx, pooled_conn))
+    }
 }
 
 struct ConnReturner<C, ID> {
@@ -161,7 +208,7 @@ impl<C, ID> ConnReturner<C, ID> {
     }
 }
 
-impl<C, ID> Clone for FiFoReuseLruDropPool<C, ID> {
+impl<R, C, ID> Clone for LruDropPool<R, C, ID> {
     fn clone(&self) -> Self {
         Self {
             storage: self.storage.clone(),
@@ -169,11 +216,12 @@ impl<C, ID> Clone for FiFoReuseLruDropPool<C, ID> {
             active_slots: self.active_slots.clone(),
             returner: self.returner.clone(),
             idle_timeout: self.idle_timeout,
+            _marker: PhantomData,
         }
     }
 }
 
-impl<C, ID> FiFoReuseLruDropPool<C, ID> {
+impl<R, C, ID> LruDropPool<R, C, ID> {
     pub fn new(max_active: usize, max_total: usize) -> Result<Self, OpaqueError> {
         if max_active == 0 || max_total == 0 {
             return Err(OpaqueError::from_display(
@@ -193,6 +241,7 @@ impl<C, ID> FiFoReuseLruDropPool<C, ID> {
             total_slots: Arc::new(Semaphore::const_new(max_total)),
             active_slots: Arc::new(Semaphore::const_new(max_active)),
             idle_timeout: None,
+            _marker: PhantomData,
         })
     }
 
@@ -209,8 +258,9 @@ impl<C, ID> FiFoReuseLruDropPool<C, ID> {
     }
 }
 
-impl<C, ID> Pool<C, ID> for FiFoReuseLruDropPool<C, ID>
+impl<R, C, ID> Pool<C, ID> for LruDropPool<R, C, ID>
 where
+    R: Reuse<C, ID> + Send + Sync + 'static,
     C: Send + 'static,
     ID: Clone + Send + Sync + PartialEq + Debug + 'static,
 {
@@ -231,33 +281,25 @@ where
 
         let mut storage = self.storage.lock();
 
-        let idx = storage.iter().position(|stored| &stored.id == id);
-        let pooled_conn = idx.and_then(|idx| storage.remove(idx));
-
-        if let (Some(idx), Some(pooled_conn)) = (idx, pooled_conn) {
-            trace!("fifo connection pool: connection #{idx} found for given id {id:?}");
-            let mut timeout_triggered = false;
-            if let Some(timeout) = self.idle_timeout {
-                if pooled_conn.last_used.elapsed() > timeout {
-                    timeout_triggered = true;
-                }
-            }
-
-            // Since we always insert in the beginning we can assume if this connection has been idle for too long
-            // all connections older then this one should also be evicted
-            if timeout_triggered {
+        if let Some(timeout) = self.idle_timeout {
+            let now = Instant::now();
+            let idx = storage.partition_point(|conn| now.duration_since(conn.last_used) <= timeout);
+            if idx < storage.len() {
                 trace!(
-                    "fifo connection pool: idle timeout was triggered, dropping this connection (w/ start index {idx:?}) and all older ones"
+                    "lru connection pool: idle timeout was triggered, dropping connections with index {idx:?} and later"
                 );
                 storage.drain(idx..);
-            } else {
-                return Ok(ConnectionResult::Connection(LeasedConnection {
-                    active_slot,
-                    pooled_conn: Some(pooled_conn),
-                    returner: self.returner.clone(),
-                    failed: false.into(),
-                }));
             }
+        }
+
+        if let Some((idx, pooled_conn)) = R::get_conn(&mut storage, id) {
+            trace!("fifo connection pool: connection #{idx} found for given id {id:?}");
+            return Ok(ConnectionResult::Connection(LeasedConnection {
+                active_slot,
+                pooled_conn: Some(pooled_conn),
+                returner: self.returner.clone(),
+                failed: false.into(),
+            }));
         }
 
         let pool_slot = match self.total_slots.clone().try_acquire_owned() {
@@ -265,7 +307,7 @@ where
             Err(_) => {
                 // By poping from back when we have no new Poolslot available we implement LRU drop policy
                 trace!(
-                    "fifo connection pool: evicting lru connection (#{id:?}) to create a new one"
+                    "lru connection pool: evicting lru connection (#{id:?}) to create a new one"
                 );
                 storage
                     .pop_back()
@@ -275,7 +317,7 @@ where
         };
 
         trace!(
-            "fifo connection pool: no connection for given id {id:?} found, returning create permit"
+            "lru connection pool: no connection for given id {id:?} found, returning create permit"
         );
         Ok(ConnectionResult::CreatePermit((active_slot, pool_slot)))
     }
@@ -480,7 +522,7 @@ where
     }
 }
 
-impl<C, ID: Debug> Debug for FiFoReuseLruDropPool<C, ID> {
+impl<R, C, ID: Debug> Debug for LruDropPool<R, C, ID> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_list()
             .entries(self.storage.lock().iter().map(|item| &item.id))
