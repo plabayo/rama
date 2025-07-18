@@ -16,7 +16,7 @@ use rama::http::request_headers_to_curl_command;
 
 #[tokio::main]
 async fn main() {
-    let req = Request::builder().uri("http://example.com").header("accept", "application/json").body(()).unwrap();   
+    let req = Request::builder().uri("http://example.com").header("accept", "application/json").body("testing").unwrap();   
     let curl_command = request_headers_to_curl_command(req).unwrap();
     println!("request: {:?}", curl_command);
 }
