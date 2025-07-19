@@ -6,6 +6,7 @@ use std::ops::{Deref, DerefMut};
 use rama_core::error::{BoxError, ErrorContext, OpaqueError};
 use rama_core::telemetry::tracing;
 use rama_core::{Context, Service};
+use rama_http::conn::TargetHttpVersion;
 use rama_http::dep::http::{self, request, response};
 use rama_http::headers::{HeaderMapExt, HttpRequestBuilderExt as _, SecWebsocketKey};
 use rama_http::proto::h2::ext::Protocol;
@@ -571,7 +572,10 @@ where
 
     /// Establish a client [`WebSocket`], consuming this [`WebsocketRequestBuilder`],
     /// by doing the http-handshake, including validation and returning the socket if all is good.
-    pub async fn handshake(self, ctx: Context<State>) -> Result<ClientWebSocket, HandshakeError> {
+    pub async fn handshake(
+        self,
+        mut ctx: Context<State>,
+    ) -> Result<ClientWebSocket, HandshakeError> {
         let builder = match self.sub_protocols.as_ref() {
             Some(protocols) => {
                 let s = protocols.to_string();
@@ -584,10 +588,14 @@ where
 
         let mut key = None;
         let builder = if !self.inner.is_h2 {
+            ctx.insert(TargetHttpVersion(Version::HTTP_11));
+
             let k = self.key.unwrap_or_else(headers::SecWebsocketKey::random);
             key = Some(k.clone());
             builder.overwrite_typed_header(k)
         } else {
+            ctx.insert(TargetHttpVersion(Version::HTTP_2));
+
             builder
         };
 

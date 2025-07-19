@@ -246,11 +246,11 @@ pub async fn run(cfg: CliCommandFingerprint) -> Result<(), BoxError> {
             .into_service(service_fn(endpoints::ws_api)));
 
         let inner_http_service = HijackLayer::new(
-                HttpMatcher::path("/api/ws")
-                    .or_header_exists(HeaderName::from_static("referer"))
-                    .and_header_exists(HeaderName::from_static("cookie"))
-                    .negate(),
+                HttpMatcher::custom(false),
                 service_fn(async || {
+                    tracing::debug!(
+                        "redirecting to consent: conditions not fulfilled"
+                    );
                     Ok::<_, Infallible>(Redirect::temporary("/consent").into_response())
                 }),
             )
@@ -260,7 +260,12 @@ pub async fn run(cfg: CliCommandFingerprint) -> Result<(), BoxError> {
                 HttpMatcher::post("/api/fetch/number/:number") => endpoints::post_api_fetch_number,
                 HttpMatcher::post("/api/xml/number/:number") => endpoints::post_api_xml_http_request_number,
                 HttpMatcher::method_get().or_method_post().and_path("/form") => endpoints::form,
-                _ => Redirect::temporary("/consent"),
+                _ => service_fn(async || {
+                    tracing::debug!(
+                        "redirecting to consent: fallback"
+                    );
+                    Ok::<_, Infallible>(Redirect::temporary("/consent").into_response())
+                }),
             });
 
         let http_service = (
@@ -306,7 +311,7 @@ pub async fn run(cfg: CliCommandFingerprint) -> Result<(), BoxError> {
         let tcp_service_builder = (
             ConsumeErrLayer::trace(tracing::Level::WARN),
             tcp_forwarded_layer,
-            TimeoutLayer::new(Duration::from_secs(16)),
+            TimeoutLayer::new(Duration::from_secs(300)),
             LimitLayer::new(ConcurrentPolicy::max_with_backoff(
                 2048,
                 ExponentialBackoff::default(),

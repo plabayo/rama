@@ -125,10 +125,14 @@ function makeRequestWithXHR(url, method, number) {
 
 // Function to open a WebSocket connection to /api/ws
 function connectWebSocket() {
-  return new Promise((_, reject) => {
+  return new Promise((completed, reject) => {
     const socket = new WebSocket(
       `ws${location.protocol === "https:" ? "s" : ""}://${location.host}/api/ws`,
     );
+
+    socket.onmessage = function (event) {
+      console.log(`WebSocket message received: ${event.data}`);
+    };
 
     socket.onerror = function () {
       reject(new Error("WebSocket connection error"));
@@ -137,7 +141,10 @@ function connectWebSocket() {
     socket.onclose = function (event) {
       if (!event.wasClean) {
         console.warn("WebSocket closed unexpectedly:", event);
+        reject(new Error("WebSocket closed unexpectedly"));
+        return;
       }
+      completed();
     };
   });
 }
