@@ -12,16 +12,18 @@ pub struct TcpStreamConnectorPool<C> {
 
 impl<C: TcpStreamConnector> TcpStreamConnectorPool<C> {
     pub fn new_random(connectors: Vec<C>) -> Self {
-        let mut rng = rand::rng();
-        Self::new_round_robin_with_rng(connectors, &mut rng)
+        Self::new_random_with_rng(connectors, rand::rng())
     }
 
-    pub fn new_round_robin_with_rng<Rng: rand::Rng>(connectors: Vec<C>, rng: &mut Rng) -> Self {
-        let mut connectors = connectors;
-        connectors.shuffle(rng);
+    fn shuffle_connectors<Rng: rand::Rng>(mut connectors: Vec<C>, mut rng: Rng) -> Vec<C> {
+        connectors.shuffle(&mut rng);
+        connectors
+    }
+
+    pub fn new_random_with_rng<Rng: rand::Rng>(connectors: Vec<C>, rng: Rng) -> Self {
         Self {
             idx: Arc::new(AtomicUsize::default()),
-            connectors,
+            connectors: Self::shuffle_connectors(connectors, rng),
         }
     }
 
@@ -56,6 +58,7 @@ impl<C: TcpStreamConnector> TcpStreamConnector for TcpStreamConnectorPool<C> {
 #[cfg(test)]
 mod tests {
     use rama_net::address::SocketAddress;
+    use rand::{rngs::StdRng, seq::SliceRandom, SeedableRng};
 
     use crate::client::TcpStreamConnector;
 
@@ -91,6 +94,43 @@ mod tests {
         for _ in 0..expected_connectors.len() {
             results.push(round_robin_connector.get_next_connector());
         }
+
+        assert_eq!(results, expected_connectors);
+    }
+
+    #[tokio::test]
+    async fn test_get_next_connection_random() {
+        let connectors = vec![
+            SocketAddress::local_ipv4(8080),
+            SocketAddress::local_ipv4(8081),
+            SocketAddress::local_ipv4(8082),
+            SocketAddress::local_ipv4(8083),
+            SocketAddress::local_ipv4(8084),
+            SocketAddress::local_ipv4(8085),
+            SocketAddress::local_ipv4(8086),
+            SocketAddress::local_ipv4(8087),
+            SocketAddress::local_ipv4(8088),
+            SocketAddress::local_ipv4(8089),
+        ];
+
+        let number_of_samples = connectors.len() * 2;
+        let seed = 9999;
+
+        let mut rng = StdRng::seed_from_u64(seed);
+        let random_connector_pool =
+            TcpStreamConnectorPool::new_random_with_rng(connectors.clone(), &mut rng);
+
+        let mut expected_rng = StdRng::seed_from_u64(seed);
+        let mut shuffled_connectors = connectors.clone();
+        shuffled_connectors.shuffle(&mut expected_rng);
+
+        let expected_connectors: Vec<_> = (0..number_of_samples)
+            .map(|i| shuffled_connectors[i % shuffled_connectors.len()])
+            .collect();
+
+        let results = (0..number_of_samples)
+            .map(|_| random_connector_pool.get_next_connector())
+            .collect::<Vec<_>>();
 
         assert_eq!(results, expected_connectors);
     }
