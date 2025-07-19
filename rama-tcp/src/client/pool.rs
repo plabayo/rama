@@ -80,22 +80,29 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_next_connection_round_robin() {
-        let expected_connectors = vec![
+        let connectors = vec![
             SocketAddress::local_ipv4(8080),
             SocketAddress::local_ipv4(8081),
             SocketAddress::local_ipv4(8082),
             SocketAddress::local_ipv4(8083),
             SocketAddress::local_ipv4(8084),
         ];
-        let round_robin_connector =
-            TcpStreamConnectorPool::new_round_robin(expected_connectors.clone());
 
-        let mut results = Vec::new();
-        for _ in 0..expected_connectors.len() {
-            results.push(round_robin_connector.get_next_connector());
-        }
+        let number_of_sample = connectors.len() * 2;
 
-        assert_eq!(results, expected_connectors);
+        let round_robin_connector = TcpStreamConnectorPool::new_round_robin(connectors.clone());
+
+        let expected: Vec<_> = connectors
+            .clone()
+            .into_iter()
+            .cycle()
+            .take(number_of_sample)
+            .collect();
+        let results: Vec<_> = (0..number_of_sample)
+            .map(|_| round_robin_connector.get_next_connector())
+            .collect();
+
+        assert_eq!(results, expected);
     }
 
     #[tokio::test]
