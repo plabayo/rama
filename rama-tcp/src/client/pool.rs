@@ -1,9 +1,7 @@
-use std::{
-    sync::{atomic::AtomicUsize, Arc},
-    task::Poll,
-};
+use std::sync::{atomic::AtomicUsize, Arc};
 
 use rama_core::error::OpaqueError;
+use rand::{rng, seq::IndexedRandom};
 
 use super::TcpStreamConnector;
 
@@ -42,7 +40,15 @@ impl<C: TcpStreamConnector> TcpStreamConnector for TcpStreamConnectorPool<C> {
         &self,
         addr: std::net::SocketAddr,
     ) -> Result<tokio::net::TcpStream, Self::Error> {
-        todo!("Implement connection pooling logic")
+        let connector: C = match &self.mode {
+            PoolMode::RoundRobin(idx) => {
+                let next = idx.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let connector_idx = next % self.connectors.len();
+                self.connectors[connector_idx].clone()
+            }
+            PoolMode::Random => self.connectors.choose(&mut rng()).unwrap().clone(),
+        };
+        connector.connect(addr).await
     }
 }
 
