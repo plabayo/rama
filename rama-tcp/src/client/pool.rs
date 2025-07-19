@@ -1,45 +1,43 @@
 use std::sync::{atomic::AtomicUsize, Arc};
 
-use rand::{rng, seq::IndexedRandom};
+use rand::seq::SliceRandom;
 
 use super::TcpStreamConnector;
 
 #[derive(Debug, Clone)]
-enum PoolMode {
-    RoundRobin(Arc<AtomicUsize>),
-    Random,
-}
-
-#[derive(Debug, Clone)]
 pub struct TcpStreamConnectorPool<C> {
-    mode: PoolMode,
+    idx: Arc<AtomicUsize>,
     connectors: Vec<C>,
 }
 
 impl<C: TcpStreamConnector> TcpStreamConnectorPool<C> {
     pub fn new_random(connectors: Vec<C>) -> Self {
+        let mut rng = rand::rng();
+        Self::new_round_robin_with_rng(connectors, &mut rng)
+    }
+
+    pub fn new_round_robin_with_rng<Rng: rand::Rng>(connectors: Vec<C>, rng: &mut Rng) -> Self {
+        let mut connectors = connectors;
+        connectors.shuffle(rng);
         Self {
-            mode: PoolMode::Random,
+            idx: Arc::new(AtomicUsize::default()),
             connectors,
         }
     }
 
     pub fn new_round_robin(connectors: Vec<C>) -> Self {
         Self {
-            mode: PoolMode::RoundRobin(Arc::new(AtomicUsize::new(0))),
+            idx: Arc::new(AtomicUsize::default()),
             connectors,
         }
     }
 
     pub fn get_next_connector(&self) -> C {
-        match &self.mode {
-            PoolMode::RoundRobin(idx) => {
-                let next = idx.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                let connector_idx = next % self.connectors.len();
-                self.connectors[connector_idx].clone()
-            }
-            PoolMode::Random => self.connectors.choose(&mut rng()).unwrap().clone(),
-        }
+        assert!(!self.connectors.is_empty(), "No connectors available");
+
+        let next = self.idx.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let next_idx = next % self.connectors.len();
+        self.connectors[next_idx].clone()
     }
 }
 
@@ -83,12 +81,14 @@ mod tests {
             SocketAddress::local_ipv4(8080),
             SocketAddress::local_ipv4(8081),
             SocketAddress::local_ipv4(8082),
+            SocketAddress::local_ipv4(8083),
+            SocketAddress::local_ipv4(8084),
         ];
         let round_robin_connector =
             TcpStreamConnectorPool::new_round_robin(expected_connectors.clone());
 
         let mut results = Vec::new();
-        for _ in 0..3 {
+        for _ in 0..expected_connectors.len() {
             results.push(round_robin_connector.get_next_connector());
         }
 
