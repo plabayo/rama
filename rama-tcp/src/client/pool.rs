@@ -4,6 +4,7 @@ use rand::seq::SliceRandom;
 
 use super::TcpStreamConnector;
 
+/// A pool of TcpConnectors
 #[derive(Debug, Clone)]
 pub struct TcpStreamConnectorPool<C> {
     idx: Arc<AtomicUsize>,
@@ -11,6 +12,8 @@ pub struct TcpStreamConnectorPool<C> {
 }
 
 impl<C: TcpStreamConnector> TcpStreamConnectorPool<C> {
+    /// A `TcpStreamConnector` where each connection is chosed randomly from a pool of
+    /// `TcpStreamConnector`s
     pub fn new_random(connectors: Vec<C>) -> Self {
         Self::new_random_with_rng(connectors, rand::rng())
     }
@@ -20,6 +23,8 @@ impl<C: TcpStreamConnector> TcpStreamConnectorPool<C> {
         connectors
     }
 
+    /// A `TcpStreamConnector` where each connection is chosed randomly from a pool of
+    /// `TcpStreamConnector`s using the specified `rand::Rng`
     pub fn new_random_with_rng<Rng: rand::Rng>(connectors: Vec<C>, rng: Rng) -> Self {
         Self {
             idx: Arc::new(AtomicUsize::default()),
@@ -27,6 +32,7 @@ impl<C: TcpStreamConnector> TcpStreamConnectorPool<C> {
         }
     }
 
+    /// New 'Round Robin' `TcpStreamConnector`
     pub fn new_round_robin(connectors: Vec<C>) -> Self {
         Self {
             idx: Arc::new(AtomicUsize::default()),
