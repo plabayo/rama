@@ -2917,6 +2917,7 @@ dependencies = [
  "rama-http-types",
  "rama-net",
  "rama-utils",
+ "rand 0.9.1",
  "tokio",
 ]
 
