@@ -3734,6 +3734,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "test-client-server"
+version = "0.3.0-alpha.2"
+
+[[package]]
 name = "thiserror"
 version = "1.0.69"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -48,7 +48,7 @@ members = [
     "rama-udp",
     "rama-unix",
     "rama-utils",
-    "rama-ws",
+    "rama-ws", "tests-turmoil/test-client-server",
 ]
 
 [workspace.package]
