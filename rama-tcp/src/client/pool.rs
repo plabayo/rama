@@ -88,7 +88,6 @@ where
 #[cfg(test)]
 mod tests {
     use rama_net::address::SocketAddress;
-    use rand::RngCore;
 
     use crate::client::{
         pool::{Selector, TcpStreamConnectorPool},
