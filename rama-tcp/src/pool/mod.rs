@@ -48,9 +48,6 @@ impl<C: TcpStreamConnector> TcpStreamConnectorPool<C> {
     /// A `TcpStreamConnector` where each connection is chosed randomly from a pool of
     /// `TcpStreamConnector`s
     pub fn new_random(connectors: Vec<C>) -> Self {
-        let mut rng = rand::rng();
-        let mut connectors = connectors;
-        connectors.shuffle(&mut rng);
         Self {
             selector: Selector::new_random(),
             connectors,
