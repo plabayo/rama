@@ -152,11 +152,16 @@ mod tests {
     }
 
     #[test]
-    fn test_empty_selector() {
-        let connectors: Vec<usize> = vec![];
-        let selector = Selector::new_round_robin();
-        let next = selector.next(connectors.as_slice());
-        assert!(next.is_none(), "Empty selector should return None");
+    fn test_empty_selectors() {
+        let connectors: Vec<SocketAddress> = vec![];
+        let selectors = vec![Selector::new_round_robin(), Selector::new_random()];
+        for selector in selectors {
+            let next = selector.next(connectors.as_slice());
+            assert!(
+                next.is_none(),
+                "Empty selector should return None. Selector: {selector:?}"
+            );
+        }
     }
 
     #[tokio::test]
