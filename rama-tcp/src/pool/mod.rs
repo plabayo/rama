@@ -8,6 +8,7 @@ use rand::{seq::SliceRandom, RngCore};
 
 use crate::client::TcpStreamConnector;
 
+/// Selection algorithms
 #[derive(Debug, Clone)]
 pub enum Selector {
     RoundRobin(Arc<AtomicUsize>),
