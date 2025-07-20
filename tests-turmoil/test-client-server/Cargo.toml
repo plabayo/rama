@@ -1,5 +1,6 @@
 [package]
 name = "test-client-server"
+description = "Client-Server turmoil testiong"
 version.workspace = true
 license.workspace = true
 edition.workspace = true
@@ -11,6 +12,9 @@ authors.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+rama = { path = "../.." }
+turmoil = "0.6"
+tokio = { workspace = true }
 
 [lints]
 workspace = true
