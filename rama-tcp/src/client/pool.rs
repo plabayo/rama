@@ -1,4 +1,4 @@
-use std::sync::{atomic::AtomicUsize, Arc};
+use std::sync::{Arc, atomic::AtomicUsize};
 
 use rand::seq::SliceRandom;
 
@@ -64,7 +64,7 @@ impl<C: TcpStreamConnector> TcpStreamConnector for TcpStreamConnectorPool<C> {
 #[cfg(test)]
 mod tests {
     use rama_net::address::SocketAddress;
-    use rand::{rngs::StdRng, seq::SliceRandom, SeedableRng};
+    use rand::{SeedableRng, rngs::StdRng, seq::SliceRandom};
 
     use crate::client::TcpStreamConnector;
 
