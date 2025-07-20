@@ -4,7 +4,7 @@ use std::sync::{
 };
 
 use rama_core::error::OpaqueError;
-use rand::{seq::SliceRandom, RngCore};
+use rand::RngCore;
 
 use crate::client::TcpStreamConnector;
 
@@ -73,12 +73,9 @@ where
         &self,
         addr: std::net::SocketAddr,
     ) -> Result<tokio::net::TcpStream, Self::Error> {
-        let connector = self
-            .selector
-            .next(&self.connectors)
-            .ok_or(OpaqueError::from_display(
-                "TcpStreamConnector has empty connectors collection",
-            ))?;
+        let connector = self.selector.next(&self.connectors).ok_or_else(|| {
+            OpaqueError::from_display("TcpStreamConnector has empty connectors collection")
+        })?;
         connector.connect(addr).await
     }
 }
