@@ -24,7 +24,7 @@ impl Selector {
         Self::RoundRobin(Arc::new(AtomicUsize::default()))
     }
 
-    fn next<C: Clone>(&self, connectors: &[C]) -> Option<C> {
+    fn next<'a, C: Clone>(&self, connectors: &'a [C]) -> Option<&'a C> {
         if connectors.is_empty() {
             return None;
         }
@@ -33,7 +33,7 @@ impl Selector {
             Selector::Random => rand::rng().next_u64() as usize,
         };
         let idx = selection % connectors.len();
-        Some(connectors[idx].clone())
+        Some(&connectors[idx])
     }
 }
 
@@ -117,12 +117,7 @@ mod tests {
 
         let selector = Selector::new_round_robin();
 
-        let expected: Vec<_> = connectors
-            .clone()
-            .into_iter()
-            .cycle()
-            .take(number_of_sample)
-            .collect();
+        let expected: Vec<_> = connectors.iter().cycle().take(number_of_sample).collect();
         let results: Vec<_> = (0..number_of_sample)
             .map(|_| {
                 selector
