@@ -82,6 +82,8 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use rama_net::address::SocketAddress;
 
     use crate::{
@@ -148,6 +150,31 @@ mod tests {
         assert!(
             results.iter().all(|connector_opt| connector_opt.is_some()),
             "Unexpected got None from selector",
+        );
+    }
+
+    #[test]
+    fn test_selector_random_selection_coverage() {
+        let connectors = vec![
+            SocketAddress::local_ipv4(8080),
+            SocketAddress::local_ipv4(8081),
+            SocketAddress::local_ipv4(8082),
+        ];
+
+        let selector = Selector::new_random();
+        let mut seen = HashSet::new();
+
+        for _ in 0..1000 {
+            seen.insert(selector.next(connectors.as_slice()));
+            if seen.len() == connectors.len() {
+                break;
+            }
+        }
+
+        assert_eq!(
+            seen.len(),
+            connectors.len(),
+            "Random selector should be able to select all available connectors"
         );
     }
 
