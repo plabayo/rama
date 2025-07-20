@@ -91,20 +91,6 @@ mod tests {
         pool::{Selector, TcpStreamConnectorPool},
     };
 
-    #[derive(Debug, Clone)]
-    struct MockConnector;
-
-    impl TcpStreamConnector for MockConnector {
-        type Error = String;
-
-        async fn connect(
-            &self,
-            _addr: std::net::SocketAddr,
-        ) -> Result<tokio::net::TcpStream, Self::Error> {
-            unimplemented!()
-        }
-    }
-
     #[test]
     fn test_selector_round_robin() {
         let connectors = vec![
