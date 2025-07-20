@@ -10,7 +10,7 @@ use crate::client::TcpStreamConnector;
 
 /// Selection algorithms
 #[derive(Debug, Clone)]
-pub enum Selector {
+enum Selector {
     RoundRobin(Arc<AtomicUsize>),
     Random,
 }
