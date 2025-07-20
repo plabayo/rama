@@ -6,7 +6,7 @@ use std::sync::{
 use rama_core::error::OpaqueError;
 use rand::{seq::SliceRandom, RngCore};
 
-use super::TcpStreamConnector;
+use crate::client::TcpStreamConnector;
 
 #[derive(Debug, Clone)]
 pub enum Selector {
@@ -89,9 +89,9 @@ where
 mod tests {
     use rama_net::address::SocketAddress;
 
-    use crate::client::{
+    use crate::{
+        client::TcpStreamConnector,
         pool::{Selector, TcpStreamConnectorPool},
-        TcpStreamConnector,
     };
 
     #[derive(Debug, Clone)]

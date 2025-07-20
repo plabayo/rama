@@ -4,9 +4,8 @@
 pub mod service;
 
 mod connect;
-pub mod pool;
 #[doc(inline)]
-pub use connect::{TcpStreamConnector, default_tcp_connect, tcp_connect};
+pub use connect::{default_tcp_connect, tcp_connect, TcpStreamConnector};
 
 #[cfg(feature = "http")]
 mod request;
