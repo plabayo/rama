@@ -150,7 +150,7 @@ mod tests {
 
         let number_of_sample = connectors.len() * 2;
 
-        let selector = Selector::new_round_robin();
+        let selector = Selector::new_random();
 
         let results: Vec<_> = (0..number_of_sample)
             .map(|_| selector.next(connectors.as_slice()))
