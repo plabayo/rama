@@ -287,7 +287,7 @@ where
         }
 
         if let Some((idx, pooled_conn)) = self.reuse_strategy.get_conn(&mut storage, id) {
-            trace!("fifo connection pool: connection #{idx} found for given id {id:?}");
+            trace!("lru connection pool: connection #{idx} found for given id {id:?}");
             return Ok(ConnectionResult::Connection(LeasedConnection {
                 active_slot,
                 pooled_conn: Some(pooled_conn),
@@ -407,11 +407,9 @@ impl<C, ID> Drop for LeasedConnection<C, ID> {
     fn drop(&mut self) {
         if let Some(pooled_conn) = self.pooled_conn.take() {
             if self.failed.load(std::sync::atomic::Ordering::Relaxed) {
-                trace!(
-                    "fifo connection pool: dropping pooled connection that was marked as failed"
-                );
+                trace!("lru connection pool: dropping pooled connection that was marked as failed");
             } else {
-                trace!("fifo connection pool: returning pooled connection back to pool");
+                trace!("lru connection pool: returning pooled connection back to pool");
                 self.returner.return_conn(pooled_conn);
             }
         }
@@ -508,7 +506,7 @@ where
         if result.is_err() {
             let id = &self.pooled_conn.as_ref().expect("msg").id;
             trace!(
-                "fifo connection pool: detected error result, marking connection w/ id {id:?} as failed"
+                "lru connection pool: detected error result, marking connection w/ id {id:?} as failed"
             );
             self.mark_as_failed();
         }
