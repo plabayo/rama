@@ -180,6 +180,7 @@ where
         let idx = storage
             .iter()
             .enumerate()
+            .rev()
             .find(|(_, stored)| &stored.id == id)?
             .0;
         let pooled_conn = storage.remove(idx)?;
@@ -1051,5 +1052,50 @@ mod tests {
 
         assert_eq!(svc.inner.created_connection.load(Ordering::Relaxed), 2);
         drop(conn);
+    }
+
+    #[tokio::test]
+    async fn fifo_reuse() {
+        test_reuse::<FiFoReuse, 1>().await;
+    }
+
+    #[tokio::test]
+    async fn round_robin_reuse() {
+        test_reuse::<RoundRobinReuse, 0>().await;
+    }
+
+    async fn test_reuse<R, const EXPECTED: u32>()
+    where
+        R: Reuse<Vec<u32>, usize> + Send + Sync + 'static,
+    {
+        let pool = LruDropPool::<R, Vec<u32>, usize>::new(5, 10).unwrap();
+
+        let svc = PooledConnector::new(TestService::default(), pool, StringRequestLengthID {});
+
+        // Open two concurrent connections and drop them.
+        let mut conns = Vec::new();
+        for i in 0..2 {
+            let mut conn = svc
+                .connect(Context::default(), String::from(""))
+                .await
+                .unwrap()
+                .conn;
+            conn.pooled_conn.as_mut().unwrap().conn.push(i);
+            conns.push(conn);
+        }
+
+        drop(conns);
+
+        // We should now have two connections with the same key in the pool,
+        // from most to least recently used. ([conn2, conn1]). Requesting
+        // another connection should return the first or last one depending on
+        // the reuse policy.
+        let conn = svc
+            .connect(Context::default(), String::from(""))
+            .await
+            .unwrap()
+            .conn;
+
+        assert_eq!(conn.pooled_conn.as_ref().unwrap().conn[0], EXPECTED);
     }
 }
