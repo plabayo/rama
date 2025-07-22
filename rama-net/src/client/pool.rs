@@ -145,7 +145,12 @@ pub struct LruDropPool<R, C, ID> {
     _marker: PhantomData<R>,
 }
 
+#[non_exhaustive]
+#[derive(Clone, Debug, Default)]
 pub struct FiFoReuse;
+
+#[non_exhaustive]
+#[derive(Clone, Debug, Default)]
 pub struct RoundRobinReuse;
 
 trait Reuse<C, ID> {
@@ -153,6 +158,18 @@ trait Reuse<C, ID> {
         storage: &mut VecDeque<PooledConnection<C, ID>>,
         id: &ID,
     ) -> Option<(usize, PooledConnection<C, ID>)>;
+}
+
+impl FiFoReuse {
+    pub fn new() -> Self {
+        FiFoReuse
+    }
+}
+
+impl RoundRobinReuse {
+    pub fn new() -> Self {
+        RoundRobinReuse
+    }
 }
 
 impl<C, ID> Reuse<C, ID> for FiFoReuse
