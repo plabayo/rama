@@ -2634,6 +2634,7 @@ dependencies = [
  "tokio-test",
  "tokio-util",
  "tracing",
+ "x509-parser",
 ]
 
 [[package]]

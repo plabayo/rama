@@ -47,4 +47,13 @@ pub mod dep {
         #[doc(inline)]
         pub use rcgen::*;
     }
+
+    pub mod x509_parser {
+        //! Re-export of the [`x509_parser`] crate.
+        //!
+        //! [`x509_parser`]: https://docs.rs/x509_parser
+
+        #[doc(inline)]
+        pub use x509_parser::*;
+    }
 }

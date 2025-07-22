@@ -267,13 +267,24 @@ mod test {
             .unwrap();
 
         println!("waiting for order");
-        order
+        let state = order
             .poll_until_all_authorizations_finished(Duration::from_secs(3))
             .await
             .unwrap();
 
-        println!("new order state: {:?}", order.state());
-        assert_eq!(order.state().status, OrderStatus::Ready);
+        assert_eq!(state.status, OrderStatus::Ready);
+
+        let csr = create_csr();
+
+        order.finalize(FinalizePayload { csr }).await.unwrap();
+
+        order
+            .poll_until_certificate_ready(Duration::from_secs(3))
+            .await
+            .unwrap();
+
+        let cert = order.download_certificate().await.unwrap();
+        println!("got certificate: {cert:?}");
     }
 
     struct ChallengeResponder {

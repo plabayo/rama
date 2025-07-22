@@ -21,7 +21,11 @@ use rama_core::{
     layer::ConsumeErrLayer,
     service::{BoxService, service_fn},
 };
-use rama_crypto::dep::{aws_lc_rs::signature::UnparsedPublicKey, rcgen::Issuer};
+use rama_crypto::dep::{
+    aws_lc_rs::signature::UnparsedPublicKey,
+    rcgen::Issuer,
+    x509_parser::{asn1_rs::oid, parse_x509_certificate},
+};
 use rama_http::{
     Body, Request, Response,
     dep::http_body_util::BodyExt,
@@ -720,27 +724,60 @@ impl AcmeServer {
         {
             let mut orders = ctx.state().orders.lock();
             let order = orders.get_mut(id.0).unwrap();
-            let challenge = &mut order.authorizations[id.1].challenges[id.2];
+            let auth = &mut order.authorizations[id.1];
+            let challenge = &mut auth.challenges[id.2];
             println!("checking challenge: {:?}", challenge);
 
             let cert = match data {
-                DataEncoding::Der(items) => Err(OpaqueError::from_display("todo")),
+                DataEncoding::Der(_) => Err(OpaqueError::from_display("todo")),
                 DataEncoding::DerStack(items) => Ok(items[0].clone()),
-                DataEncoding::Pem(non_empty_string) => Err(OpaqueError::from_display("todo")),
+                DataEncoding::Pem(_) => Err(OpaqueError::from_display("todo")),
             }?;
 
-            println!(
-                "expected extension content: {:?}",
-                key_authz.digest().as_ref()
-            );
+            let digest = key_authz.digest();
+            let expected = digest.as_ref();
+            println!("expected extension content: {:?}", expected);
 
-            if true {
-                // challenge.status = super::proto::server::ChallengeStatus::Valid;
-                todo!("use boring here")
+            println!("received cert: {:?}", cert);
+
+            let (_, cert) = parse_x509_certificate(&cert).context("parse certificate")?;
+
+            let oid = oid!(1.3.6.1.5.5.7.1.31);
+            let acme = cert
+                .get_extension_unique(&oid)
+                .context("get acme extension")?
+                .unwrap();
+
+            if expected == &acme.value[2..] {
+                auth.status = AuthorizationStatus::Valid;
+                challenge.status = super::proto::server::ChallengeStatus::Valid;
             } else {
                 return Err(OpaqueError::from_display("wrong key provided"));
             }
+
+            let all_valid = order
+                .authorizations
+                .iter()
+                .all(|auth| auth.status == AuthorizationStatus::Valid);
+
+            if all_valid {
+                println!("tls ready");
+                order.order.status = OrderStatus::Ready;
+            }
+        }
+
+        let "rhs" = Self::testtt("e") else {
+            return Err(OpaqueError::from_display("msg"));
         };
+
+        let x = rhs;
+
+        println!("tls ok");
+        Ok(())
+    }
+
+    fn testtt<'a>(a: &'a str) -> &'a str {
+        a
     }
 
     async fn verify_http_challenge(
