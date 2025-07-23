@@ -304,7 +304,7 @@ where
                 active_slot,
                 pooled_conn: Some(pooled_conn),
                 returner: self.returner.clone(),
-                failed: false.into(),
+                failed: AtomicBool::new(false),
             }));
         }
 
