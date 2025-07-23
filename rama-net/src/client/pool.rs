@@ -160,14 +160,7 @@ impl ReuseStrategy {
     ) -> Option<(usize, PooledConnection<C, ID>)> {
         let idx = match self {
             Self::FiFo => storage.iter().position(|stored| &stored.id == id)?,
-            Self::RoundRobin => {
-                storage
-                    .iter()
-                    .enumerate()
-                    .rev()
-                    .find(|(_, stored)| &stored.id == id)?
-                    .0
-            }
+            Self::RoundRobin => storage.iter().rposition(|stored| &stored.id == id)?,
         };
 
         let pooled_conn = storage.remove(idx)?;
