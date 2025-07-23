@@ -520,10 +520,42 @@ where
     }
 }
 
-impl<C, ID: Debug> Debug for LruDropPool<C, ID> {
+/// Helper needed so we can implement debug for LruDropPool
+///
+/// Implementing debug_list and debug_struct at the same time is not
+/// possible, so we have to split it up
+struct StorageDebugHelper<'a, C, ID: Debug> {
+    deque: &'a VecDeque<PooledConnection<C, ID>>,
+}
+
+impl<'a, C, ID: Debug> Debug for StorageDebugHelper<'a, C, ID> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_list()
-            .entries(self.storage.lock().iter().map(|item| &item.id))
+            .entries(self.deque.iter().map(|item| &item.id))
+            .finish()
+    }
+}
+
+impl<C, ID: Debug> Debug for LruDropPool<C, ID> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut builder = f.debug_struct("LruDropPool");
+
+        // Dont block on this, its only for debugging
+        match self.storage.try_lock() {
+            Some(guard) => {
+                let storage_debugger = StorageDebugHelper { deque: &*guard };
+                builder.field("storage", &storage_debugger);
+            }
+            None => {
+                builder.field("storage", &"Mutex(locked)");
+            }
+        };
+
+        builder
+            .field("total_slots", &self.total_slots)
+            .field("active_slots", &self.active_slots)
+            .field("idle_timeout", &self.idle_timeout)
+            .field("reuse_strategy", &self.reuse_strategy)
             .finish()
     }
 }
