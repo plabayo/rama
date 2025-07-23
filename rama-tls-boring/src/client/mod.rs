@@ -18,7 +18,7 @@ pub use connector::{
 
 mod connector_data;
 #[doc(inline)]
-pub use connector_data::{TlsConnectorData, TlsConnectorDataBuilder};
+pub use connector_data::{ConnectorConfigClientAuth, TlsConnectorData, TlsConnectorDataBuilder};
 
 #[cfg(feature = "ua")]
 mod emulate_ua;
