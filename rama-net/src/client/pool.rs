@@ -190,8 +190,11 @@ impl<C, ID> Clone for ConnReturner<C, ID> {
 impl<C, ID> ConnReturner<C, ID> {
     fn return_conn(&self, mut conn: PooledConnection<C, ID>) {
         if let Some(storage) = self.weak_storage.upgrade() {
+            // Ensure correct ordering by locking storage before loading the
+            // last used time.
+            let mut storage = storage.lock();
             conn.last_used = Instant::now();
-            storage.lock().push_front(conn)
+            storage.push_front(conn);
         }
     }
 }
@@ -276,6 +279,15 @@ where
         let mut storage = self.storage.lock();
 
         if let Some(timeout) = self.idle_timeout {
+            // Since new connections are always returned to the front of the
+            // queue, they are ordered from most to least recently used. To
+            // provide a stable predicate, we load `now` once and use it for all
+            // comparisons, rather than using `conn.last_used.elapsed()`, which
+            // would use an updated "current" time for every comparison. The
+            // `partition_point` method performs a binary search to find the
+            // index of the first element for which the predicate returns false,
+            // i.e. the first connection past the idle timeout. All connections
+            // from that index onwards are timed out and can be dropped.
             let now = Instant::now();
             let idx = storage.partition_point(|conn| now.duration_since(conn.last_used) <= timeout);
             if idx < storage.len() {
