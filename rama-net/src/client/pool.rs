@@ -292,14 +292,14 @@ where
             let idx = storage.partition_point(|conn| now.duration_since(conn.last_used) <= timeout);
             if idx < storage.len() {
                 trace!(
-                    "lru connection pool: idle timeout was triggered, dropping connections with index {idx:?} and later"
+                    "LRU connection pool: idle timeout was triggered, dropping connections with index {idx:?} and later"
                 );
                 storage.drain(idx..);
             }
         }
 
         if let Some((idx, pooled_conn)) = self.reuse_strategy.get_conn(&mut storage, id) {
-            trace!("lru connection pool: connection #{idx} found for given id {id:?}");
+            trace!("LRU connection pool: connection #{idx} found for given id {id:?}");
             return Ok(ConnectionResult::Connection(LeasedConnection {
                 active_slot,
                 pooled_conn: Some(pooled_conn),
@@ -313,7 +313,7 @@ where
             Err(_) => {
                 // By poping from back when we have no new Poolslot available we implement LRU drop policy
                 trace!(
-                    "lru connection pool: evicting lru connection (#{id:?}) to create a new one"
+                    "LRU connection pool: evicting lru connection (#{id:?}) to create a new one"
                 );
                 storage
                     .pop_back()
@@ -323,7 +323,7 @@ where
         };
 
         trace!(
-            "lru connection pool: no connection for given id {id:?} found, returning create permit"
+            "LRU connection pool: no connection for given id {id:?} found, returning create permit"
         );
         Ok(ConnectionResult::CreatePermit((active_slot, pool_slot)))
     }
@@ -419,9 +419,9 @@ impl<C, ID> Drop for LeasedConnection<C, ID> {
     fn drop(&mut self) {
         if let Some(pooled_conn) = self.pooled_conn.take() {
             if self.failed.load(std::sync::atomic::Ordering::Relaxed) {
-                trace!("lru connection pool: dropping pooled connection that was marked as failed");
+                trace!("LRU connection pool: dropping pooled connection that was marked as failed");
             } else {
-                trace!("lru connection pool: returning pooled connection back to pool");
+                trace!("LRU connection pool: returning pooled connection back to pool");
                 self.returner.return_conn(pooled_conn);
             }
         }
@@ -518,7 +518,7 @@ where
         if result.is_err() {
             let id = &self.pooled_conn.as_ref().expect("msg").id;
             trace!(
-                "lru connection pool: detected error result, marking connection w/ id {id:?} as failed"
+                "LRU connection pool: detected error result, marking connection w/ id {id:?} as failed"
             );
             self.mark_as_failed();
         }
