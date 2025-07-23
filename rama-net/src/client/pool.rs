@@ -310,9 +310,10 @@ where
 
         let pool_slot = match self.total_slots.clone().try_acquire_owned() {
             Ok(permit) => PoolSlot(permit),
-            Err(_) => {
+            Err(err) => {
                 // By poping from back when we have no new Poolslot available we implement LRU drop policy
                 trace!(
+                    error = %err,
                     "LRU connection pool: evicting lru connection (#{id:?}) to create a new one"
                 );
                 storage
