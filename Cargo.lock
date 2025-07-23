@@ -261,9 +261,9 @@ dependencies = [
 
 [[package]]
 name = "aws-lc-rs"
-version = "1.13.2"
+version = "1.13.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "08b5d4e069cbc868041a64bd68dc8cb39a0d79585cd6c5a24caa8c2d622121be"
+checksum = "5c953fe1ba023e6b7730c0d4b031d06f267f23a46167dcbd40316644b10a17ba"
 dependencies = [
  "aws-lc-fips-sys",
  "aws-lc-sys",
@@ -1346,7 +1346,7 @@ dependencies = [
  "idna",
  "ipnet",
  "once_cell",
- "rand 0.9.1",
+ "rand 0.9.2",
  "ring",
  "thiserror 2.0.12",
  "tinyvec",
@@ -1368,7 +1368,7 @@ dependencies = [
  "moka",
  "once_cell",
  "parking_lot",
- "rand 0.9.1",
+ "rand 0.9.2",
  "resolv-conf",
  "smallvec",
  "thiserror 2.0.12",
@@ -1628,9 +1628,9 @@ dependencies = [
 
 [[package]]
 name = "io-uring"
-version = "0.7.8"
+version = "0.7.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b86e202f00093dcba4275d4636b93ef9dd75d025ae560d2521b45ea28ab49013"
+checksum = "d93587f37623a1a17d94ef2bc9ada592f5465fe7732084ab7beefabe5c77c0c4"
 dependencies = [
  "bitflags",
  "cfg-if",
@@ -2194,7 +2194,7 @@ dependencies = [
  "futures-util",
  "opentelemetry",
  "percent-encoding",
- "rand 0.9.1",
+ "rand 0.9.2",
  "serde_json",
  "thiserror 2.0.12",
  "tokio",
@@ -2340,7 +2340,7 @@ dependencies = [
  "hmac",
  "md-5",
  "memchr",
- "rand 0.9.1",
+ "rand 0.9.2",
  "sha2",
  "stringprep",
 ]
@@ -2623,15 +2623,12 @@ dependencies = [
  "aws-lc-rs",
  "base64",
  "rama-core",
- "rama-net",
  "rama-utils",
  "rcgen",
  "serde",
  "serde_json",
  "tokio",
  "tokio-test",
- "tokio-util",
- "tracing",
 ]
 
 [[package]]
@@ -2679,7 +2676,6 @@ name = "rama-http"
 version = "0.3.0-alpha.2"
 dependencies = [
  "async-compression",
- "base64",
  "bitflags",
  "brotli",
  "chrono",
@@ -2705,7 +2701,7 @@ dependencies = [
  "rama-tcp",
  "rama-ua",
  "rama-utils",
- "rand 0.9.1",
+ "rand 0.9.2",
  "regex",
  "serde",
  "serde_html_form",
@@ -2750,7 +2746,6 @@ version = "0.3.0-alpha.2"
 dependencies = [
  "atomic-waker",
  "env_logger 0.11.8",
- "fnv",
  "futures-channel",
  "hex",
  "httparse",
@@ -2764,8 +2759,7 @@ dependencies = [
  "rama-http",
  "rama-http-types",
  "rama-net",
- "rama-utils",
- "rand 0.9.1",
+ "rand 0.9.2",
  "serde_json",
  "slab",
  "smallvec",
@@ -2791,7 +2785,7 @@ dependencies = [
  "rama-macros",
  "rama-net",
  "rama-utils",
- "rand 0.9.1",
+ "rand 0.9.2",
  "serde",
  "sha1",
  "tokio",
@@ -2820,7 +2814,7 @@ dependencies = [
  "rama-error",
  "rama-macros",
  "rama-utils",
- "rand 0.9.1",
+ "rand 0.9.2",
  "serde",
  "serde_json",
  "smallvec",
@@ -2843,7 +2837,6 @@ dependencies = [
 name = "rama-net"
 version = "0.3.0-alpha.2"
 dependencies = [
- "base64",
  "const_format",
  "flume",
  "hex",
@@ -2902,7 +2895,7 @@ dependencies = [
  "rama-tcp",
  "rama-udp",
  "rama-utils",
- "rand 0.9.1",
+ "rand 0.9.2",
  "smallvec",
  "tokio",
  "tokio-test",
@@ -2917,7 +2910,7 @@ dependencies = [
  "rama-http-types",
  "rama-net",
  "rama-utils",
- "rand 0.9.1",
+ "rand 0.9.2",
  "tokio",
 ]
 
@@ -2982,7 +2975,7 @@ dependencies = [
  "rama-http-types",
  "rama-net",
  "rama-utils",
- "rand 0.9.1",
+ "rand 0.9.2",
  "serde",
  "serde_json",
  "tokio",
@@ -3027,14 +3020,13 @@ dependencies = [
 name = "rama-ws"
 version = "0.3.0-alpha.2"
 dependencies = [
- "base64",
  "pin-project-lite",
  "rama-core",
  "rama-http",
  "rama-http-backend",
  "rama-net",
  "rama-utils",
- "rand 0.9.1",
+ "rand 0.9.2",
  "smallvec",
  "smol_str",
  "tokio",
@@ -3054,9 +3046,9 @@ dependencies = [
 
 [[package]]
 name = "rand"
-version = "0.9.1"
+version = "0.9.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9fbfd9d094a40bf3ae768db9361049ace4c0e04a4fd6b359518bd7b73a73dd97"
+checksum = "6db2770f06117d490610c7488547d543617b21bfa07796d7a12f6f1bd53850d1"
 dependencies = [
  "rand_chacha 0.9.0",
  "rand_core 0.9.3",
@@ -3123,9 +3115,9 @@ dependencies = [
 
 [[package]]
 name = "rcgen"
-version = "0.14.2"
+version = "0.14.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "49bc8ffa8a832eb1d7c8000337f8b0d2f4f2f5ec3cf4ddc26f125e3ad2451824"
+checksum = "0068c5b3cab1d4e271e0bb6539c87563c43411cad90b057b15c79958fbeb41f7"
 dependencies = [
  "aws-lc-rs",
  "pem",
@@ -3137,9 +3129,9 @@ dependencies = [
 
 [[package]]
 name = "redox_syscall"
-version = "0.5.13"
+version = "0.5.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d04b7d0ee6b4a0207a0a7adb104d23ecb0b47d6beae7152d0fa34b692b29fd6"
+checksum = "7e8af0dde094006011e6a740d4879319439489813bd0bcdc7d821beaeeff48ec"
 dependencies = [
  "bitflags",
 ]
@@ -3921,7 +3913,7 @@ dependencies = [
  "pin-project-lite",
  "postgres-protocol",
  "postgres-types",
- "rand 0.9.1",
+ "rand 0.9.2",
  "socket2 0.5.10",
  "tokio",
  "tokio-util",
