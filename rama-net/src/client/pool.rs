@@ -1072,16 +1072,17 @@ mod tests {
             .unwrap()
             .with_reuse_strategy(strategy);
 
-        let svc = PooledConnector::new(TestService::default(), pool, StringRequestLengthID {});
+        let svc =
+            PooledConnector::new(
+                TestService::default(),
+                pool,
+                |_: &Context<_>, _: &()| Ok(()),
+            );
 
         // Open two concurrent connections and drop them.
         let mut conns = Vec::new();
         for i in 0..2 {
-            let mut conn = svc
-                .connect(Context::default(), String::from(""))
-                .await
-                .unwrap()
-                .conn;
+            let mut conn = svc.connect(Context::default(), ()).await.unwrap().conn;
             conn.pooled_conn.as_mut().unwrap().conn.push(i);
             conns.push(conn);
         }
@@ -1092,11 +1093,7 @@ mod tests {
         // from most to least recently used. ([conn2, conn1]). Requesting
         // another connection should return the first or last one depending on
         // the reuse policy.
-        let conn = svc
-            .connect(Context::default(), String::from(""))
-            .await
-            .unwrap()
-            .conn;
+        let conn = svc.connect(Context::default(), ()).await.unwrap().conn;
 
         assert_eq!(conn.pooled_conn.as_ref().unwrap().conn[0], expected);
     }
