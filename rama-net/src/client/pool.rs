@@ -131,13 +131,41 @@ struct PooledConnection<C, ID> {
     last_used: Instant,
 }
 
-/// Connection pool that uses FiFo for reuse and LRU to evict connections
-pub struct FiFoReuseLruDropPool<C, ID> {
+#[deprecated = "use LruDropPool instead"]
+pub type FiFoReuseLruDropPool<C, ID> = LruDropPool<C, ID>;
+
+/// Connection pool that uses LRU to evict connections
+pub struct LruDropPool<C, ID> {
     storage: Arc<Mutex<VecDeque<PooledConnection<C, ID>>>>,
     total_slots: Arc<Semaphore>,
     active_slots: Arc<Semaphore>,
     idle_timeout: Option<Duration>,
     returner: ConnReturner<C, ID>,
+    reuse_strategy: ReuseStrategy,
+}
+
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, Default)]
+pub enum ReuseStrategy {
+    #[default]
+    FiFo,
+    RoundRobin,
+}
+
+impl ReuseStrategy {
+    fn get_conn<C, ID: PartialEq>(
+        &self,
+        storage: &mut VecDeque<PooledConnection<C, ID>>,
+        id: &ID,
+    ) -> Option<(usize, PooledConnection<C, ID>)> {
+        let idx = match self {
+            Self::FiFo => storage.iter().position(|stored| &stored.id == id)?,
+            Self::RoundRobin => storage.iter().rposition(|stored| &stored.id == id)?,
+        };
+
+        let pooled_conn = storage.remove(idx)?;
+        Some((idx, pooled_conn))
+    }
 }
 
 struct ConnReturner<C, ID> {
@@ -155,13 +183,16 @@ impl<C, ID> Clone for ConnReturner<C, ID> {
 impl<C, ID> ConnReturner<C, ID> {
     fn return_conn(&self, mut conn: PooledConnection<C, ID>) {
         if let Some(storage) = self.weak_storage.upgrade() {
+            // Ensure correct ordering by locking storage before loading the
+            // last used time.
+            let mut storage = storage.lock();
             conn.last_used = Instant::now();
-            storage.lock().push_front(conn)
+            storage.push_front(conn);
         }
     }
 }
 
-impl<C, ID> Clone for FiFoReuseLruDropPool<C, ID> {
+impl<C, ID> Clone for LruDropPool<C, ID> {
     fn clone(&self) -> Self {
         Self {
             storage: self.storage.clone(),
@@ -169,11 +200,12 @@ impl<C, ID> Clone for FiFoReuseLruDropPool<C, ID> {
             active_slots: self.active_slots.clone(),
             returner: self.returner.clone(),
             idle_timeout: self.idle_timeout,
+            reuse_strategy: self.reuse_strategy,
         }
     }
 }
 
-impl<C, ID> FiFoReuseLruDropPool<C, ID> {
+impl<C, ID> LruDropPool<C, ID> {
     pub fn new(max_active: usize, max_total: usize) -> Result<Self, OpaqueError> {
         if max_active == 0 || max_total == 0 {
             return Err(OpaqueError::from_display(
@@ -193,6 +225,7 @@ impl<C, ID> FiFoReuseLruDropPool<C, ID> {
             total_slots: Arc::new(Semaphore::const_new(max_total)),
             active_slots: Arc::new(Semaphore::const_new(max_active)),
             idle_timeout: None,
+            reuse_strategy: ReuseStrategy::default(),
         })
     }
 
@@ -207,9 +240,16 @@ impl<C, ID> FiFoReuseLruDropPool<C, ID> {
             self
         }
     }
+
+    generate_set_and_with! {
+        pub fn reuse_strategy(mut self, strategy: ReuseStrategy) -> Self {
+            self.reuse_strategy = strategy;
+            self
+        }
+    }
 }
 
-impl<C, ID> Pool<C, ID> for FiFoReuseLruDropPool<C, ID>
+impl<C, ID> Pool<C, ID> for LruDropPool<C, ID>
 where
     C: Send + 'static,
     ID: Clone + Send + Sync + PartialEq + Debug + 'static,
@@ -231,41 +271,43 @@ where
 
         let mut storage = self.storage.lock();
 
-        let idx = storage.iter().position(|stored| &stored.id == id);
-        let pooled_conn = idx.and_then(|idx| storage.remove(idx));
-
-        if let (Some(idx), Some(pooled_conn)) = (idx, pooled_conn) {
-            trace!("fifo connection pool: connection #{idx} found for given id {id:?}");
-            let mut timeout_triggered = false;
-            if let Some(timeout) = self.idle_timeout {
-                if pooled_conn.last_used.elapsed() > timeout {
-                    timeout_triggered = true;
-                }
-            }
-
-            // Since we always insert in the beginning we can assume if this connection has been idle for too long
-            // all connections older then this one should also be evicted
-            if timeout_triggered {
+        if let Some(timeout) = self.idle_timeout {
+            // Since new connections are always returned to the front of the
+            // queue, they are ordered from most to least recently used. To
+            // provide a stable predicate, we load `now` once and use it for all
+            // comparisons, rather than using `conn.last_used.elapsed()`, which
+            // would use an updated "current" time for every comparison. The
+            // `partition_point` method performs a binary search to find the
+            // index of the first element for which the predicate returns false,
+            // i.e. the first connection past the idle timeout. All connections
+            // from that index onwards are timed out and can be dropped.
+            let now = Instant::now();
+            let idx = storage.partition_point(|conn| now.duration_since(conn.last_used) <= timeout);
+            if idx < storage.len() {
                 trace!(
-                    "fifo connection pool: idle timeout was triggered, dropping this connection (w/ start index {idx:?}) and all older ones"
+                    "LRU connection pool: idle timeout was triggered, dropping connections with index {idx:?} and later"
                 );
                 storage.drain(idx..);
-            } else {
-                return Ok(ConnectionResult::Connection(LeasedConnection {
-                    active_slot,
-                    pooled_conn: Some(pooled_conn),
-                    returner: self.returner.clone(),
-                    failed: false.into(),
-                }));
             }
+        }
+
+        if let Some((idx, pooled_conn)) = self.reuse_strategy.get_conn(&mut storage, id) {
+            trace!("LRU connection pool: connection #{idx} found for given id {id:?}");
+            return Ok(ConnectionResult::Connection(LeasedConnection {
+                active_slot,
+                pooled_conn: Some(pooled_conn),
+                returner: self.returner.clone(),
+                failed: AtomicBool::new(false),
+            }));
         }
 
         let pool_slot = match self.total_slots.clone().try_acquire_owned() {
             Ok(permit) => PoolSlot(permit),
-            Err(_) => {
+            Err(err) => {
                 // By poping from back when we have no new Poolslot available we implement LRU drop policy
                 trace!(
-                    "fifo connection pool: evicting lru connection (#{id:?}) to create a new one"
+                    error = %err,
+                    "LRU connection pool: evicting lru connection (#{id:?}) to create a new one"
                 );
                 storage
                     .pop_back()
@@ -275,7 +317,7 @@ where
         };
 
         trace!(
-            "fifo connection pool: no connection for given id {id:?} found, returning create permit"
+            "LRU connection pool: no connection for given id {id:?} found, returning create permit"
         );
         Ok(ConnectionResult::CreatePermit((active_slot, pool_slot)))
     }
@@ -371,11 +413,9 @@ impl<C, ID> Drop for LeasedConnection<C, ID> {
     fn drop(&mut self) {
         if let Some(pooled_conn) = self.pooled_conn.take() {
             if self.failed.load(std::sync::atomic::Ordering::Relaxed) {
-                trace!(
-                    "fifo connection pool: dropping pooled connection that was marked as failed"
-                );
+                trace!("LRU connection pool: dropping pooled connection that was marked as failed");
             } else {
-                trace!("fifo connection pool: returning pooled connection back to pool");
+                trace!("LRU connection pool: returning pooled connection back to pool");
                 self.returner.return_conn(pooled_conn);
             }
         }
@@ -472,7 +512,7 @@ where
         if result.is_err() {
             let id = &self.pooled_conn.as_ref().expect("msg").id;
             trace!(
-                "fifo connection pool: detected error result, marking connection w/ id {id:?} as failed"
+                "LRU connection pool: detected error result, marking connection w/ id {id:?} as failed"
             );
             self.mark_as_failed();
         }
@@ -480,7 +520,7 @@ where
     }
 }
 
-impl<C, ID: Debug> Debug for FiFoReuseLruDropPool<C, ID> {
+impl<C, ID: Debug> Debug for LruDropPool<C, ID> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_list()
             .entries(self.storage.lock().iter().map(|item| &item.id))
@@ -651,7 +691,7 @@ impl<S, P: Clone, R: Clone> Layer<S> for PooledConnectorLayer<P, R> {
 
 #[cfg(feature = "http")]
 pub mod http {
-    use super::{FiFoReuseLruDropPool, PooledConnector, ReqToConnID};
+    use super::{LruDropPool, PooledConnector, ReqToConnID};
     use crate::{Protocol, address::Authority, client::pool::OpaqueError, http::RequestContext};
     use rama_core::Context;
     use rama_http_types::Request;
@@ -717,10 +757,10 @@ pub mod http {
             self,
             inner: S,
         ) -> Result<
-            PooledConnector<S, FiFoReuseLruDropPool<C, BasicHttpConId>, BasicHttpConnIdentifier>,
+            PooledConnector<S, LruDropPool<C, BasicHttpConId>, BasicHttpConnIdentifier>,
             OpaqueError,
         > {
-            let pool = FiFoReuseLruDropPool::new(self.max_active, self.max_total)?
+            let pool = LruDropPool::new(self.max_active, self.max_total)?
                 .maybe_with_idle_timeout(self.idle_timeout);
 
             Ok(PooledConnector::new(inner, pool, BasicHttpConnIdentifier)
@@ -787,7 +827,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_should_reuse_connections() {
-        let pool = FiFoReuseLruDropPool::new(5, 10).unwrap();
+        let pool = LruDropPool::new(5, 10).unwrap();
         // We use a closure here to maps all requests to `()` id, this will result in all connections being shared and the pool
         // acting like like a global connection pool (eg database connection pool where all connections can be used).
         let svc = PooledConnector::new(
@@ -810,7 +850,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_conn_id_to_separate() {
-        let pool = FiFoReuseLruDropPool::new(5, 10).unwrap();
+        let pool = LruDropPool::new(5, 10).unwrap();
         let svc = PooledConnector::new(TestService::default(), pool, StringRequestLengthID {});
 
         {
@@ -867,7 +907,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_pool_max_size() {
-        let pool = FiFoReuseLruDropPool::new(1, 1).unwrap();
+        let pool = LruDropPool::new(1, 1).unwrap();
         let svc = PooledConnector::new(TestService::default(), pool, StringRequestLengthID {})
             .with_wait_for_pool_timeout(Duration::from_millis(50));
 
@@ -942,7 +982,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_dont_return_broken_connections_to_pool() {
-        let pool = FiFoReuseLruDropPool::new(1, 1).unwrap();
+        let pool = LruDropPool::new(1, 1).unwrap();
         let svc = PooledConnector::new(TestConnector::default(), pool, StringRequestLengthID {});
 
         let conn = svc
@@ -982,7 +1022,7 @@ mod tests {
 
     #[tokio::test]
     async fn drop_idle_connections() {
-        let pool = FiFoReuseLruDropPool::new(5, 10)
+        let pool = LruDropPool::new(5, 10)
             .unwrap()
             .with_idle_timeout(Duration::from_micros(1));
 
@@ -1009,5 +1049,46 @@ mod tests {
 
         assert_eq!(svc.inner.created_connection.load(Ordering::Relaxed), 2);
         drop(conn);
+    }
+
+    #[tokio::test]
+    async fn fifo_reuse() {
+        test_reuse(ReuseStrategy::FiFo, 1).await;
+    }
+
+    #[tokio::test]
+    async fn round_robin_reuse() {
+        test_reuse(ReuseStrategy::RoundRobin, 0).await;
+    }
+
+    async fn test_reuse(strategy: ReuseStrategy, expected: u32) {
+        let pool = LruDropPool::new(5, 10)
+            .unwrap()
+            .with_reuse_strategy(strategy);
+
+        let svc =
+            PooledConnector::new(
+                TestService::default(),
+                pool,
+                |_: &Context<_>, _: &()| Ok(()),
+            );
+
+        // Open two concurrent connections and drop them.
+        let mut conns = Vec::new();
+        for i in 0..2 {
+            let mut conn = svc.connect(Context::default(), ()).await.unwrap().conn;
+            conn.pooled_conn.as_mut().unwrap().conn.push(i);
+            conns.push(conn);
+        }
+
+        drop(conns);
+
+        // We should now have two connections with the same key in the pool,
+        // from most to least recently used. ([conn2, conn1]). Requesting
+        // another connection should return the first or last one depending on
+        // the reuse policy.
+        let conn = svc.connect(Context::default(), ()).await.unwrap().conn;
+
+        assert_eq!(conn.pooled_conn.as_ref().unwrap().conn[0], expected);
     }
 }
