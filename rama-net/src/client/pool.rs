@@ -132,16 +132,17 @@ struct PooledConnection<C, ID> {
 }
 
 #[deprecated = "use LruDropPool instead"]
-pub type FiFoReuseLruDropPool<C, ID> = LruDropPool<C, ID>;
+pub type FiFoReuseLruDropPool<C, ID, M = NoMetrics> = LruDropPool<C, ID, M>;
 
 /// Connection pool that uses LRU to evict connections
-pub struct LruDropPool<C, ID> {
+pub struct LruDropPool<C, ID, M = NoMetrics> {
     storage: Arc<Mutex<VecDeque<PooledConnection<C, ID>>>>,
     total_slots: Arc<Semaphore>,
     active_slots: Arc<Semaphore>,
     idle_timeout: Option<Duration>,
     returner: ConnReturner<C, ID>,
     reuse_strategy: ReuseStrategy,
+    metrics: M,
 }
 
 #[non_exhaustive]
@@ -150,6 +151,33 @@ pub enum ReuseStrategy {
     #[default]
     FiFo,
     RoundRobin,
+}
+
+trait GetPoolMetrics<ID> {
+    #[cfg(feature = "opentelemetry")]
+    fn metrics(
+        &self,
+        id: &ID,
+    ) -> Option<(
+        &metrics::PoolMetrics,
+        Vec<rama_core::telemetry::opentelemetry::KeyValue>,
+    )>;
+}
+
+#[derive(Clone)]
+pub struct NoMetrics;
+
+impl<ID> GetPoolMetrics<ID> for NoMetrics {
+    #[cfg(feature = "opentelemetry")]
+    fn metrics(
+        &self,
+        _id: &ID,
+    ) -> Option<(
+        &metrics::PoolMetrics,
+        Vec<rama_core::telemetry::opentelemetry::KeyValue>,
+    )> {
+        None
+    }
 }
 
 impl ReuseStrategy {
@@ -192,7 +220,7 @@ impl<C, ID> ConnReturner<C, ID> {
     }
 }
 
-impl<C, ID> Clone for LruDropPool<C, ID> {
+impl<C, ID, M: Clone> Clone for LruDropPool<C, ID, M> {
     fn clone(&self) -> Self {
         Self {
             storage: self.storage.clone(),
@@ -201,11 +229,12 @@ impl<C, ID> Clone for LruDropPool<C, ID> {
             returner: self.returner.clone(),
             idle_timeout: self.idle_timeout,
             reuse_strategy: self.reuse_strategy,
+            metrics: self.metrics.clone(),
         }
     }
 }
 
-impl<C, ID> LruDropPool<C, ID> {
+impl<C, ID> LruDropPool<C, ID, NoMetrics> {
     pub fn new(max_active: usize, max_total: usize) -> Result<Self, OpaqueError> {
         if max_active == 0 || max_total == 0 {
             return Err(OpaqueError::from_display(
@@ -226,6 +255,7 @@ impl<C, ID> LruDropPool<C, ID> {
             active_slots: Arc::new(Semaphore::const_new(max_active)),
             idle_timeout: None,
             reuse_strategy: ReuseStrategy::default(),
+            metrics: NoMetrics,
         })
     }
 
@@ -247,12 +277,30 @@ impl<C, ID> LruDropPool<C, ID> {
             self
         }
     }
+
+    #[cfg(feature = "opentelemetry")]
+    pub fn with_metrics<F>(
+        self,
+        prefix: &'static str,
+        attr_extractor: F,
+    ) -> LruDropPool<C, ID, metrics::WithPoolMetrics<F>> {
+        LruDropPool {
+            metrics: metrics::WithPoolMetrics::new(prefix, attr_extractor),
+            storage: self.storage,
+            total_slots: self.total_slots,
+            active_slots: self.active_slots,
+            idle_timeout: self.idle_timeout,
+            returner: self.returner,
+            reuse_strategy: self.reuse_strategy,
+        }
+    }
 }
 
-impl<C, ID> Pool<C, ID> for LruDropPool<C, ID>
+impl<C, ID, M> Pool<C, ID> for LruDropPool<C, ID, M>
 where
     C: Send + 'static,
     ID: Clone + Send + Sync + PartialEq + Debug + 'static,
+    M: GetPoolMetrics<ID> + Send + Sync + 'static,
 {
     type Connection = LeasedConnection<C, ID>;
     type CreatePermit = (ActiveSlot, PoolSlot);
@@ -261,6 +309,11 @@ where
         &self,
         id: &ID,
     ) -> Result<ConnectionResult<Self::Connection, Self::CreatePermit>, OpaqueError> {
+        #[cfg(feature = "opentelemetry")]
+        let metrics = self.metrics.metrics(id);
+
+        #[cfg(feature = "opentelemetry")]
+        let start = Instant::now();
         let active_slot = ActiveSlot(
             self.active_slots
                 .clone()
@@ -268,6 +321,14 @@ where
                 .await
                 .context("get active pool slot")?,
         );
+
+        #[cfg(feature = "opentelemetry")]
+        if let Some((metrics, metric_attrs)) = &metrics {
+            let active_connection_delay_nanoseconds = start.elapsed().as_nanos() as f64;
+            metrics
+                .active_connection_delay_nanoseconds
+                .record(active_connection_delay_nanoseconds, metric_attrs);
+        };
 
         let mut storage = self.storage.lock();
 
@@ -293,6 +354,16 @@ where
 
         if let Some((idx, pooled_conn)) = self.reuse_strategy.get_conn(&mut storage, id) {
             trace!("LRU connection pool: connection #{idx} found for given id {id:?}");
+
+            #[cfg(feature = "opentelemetry")]
+            if let Some((metrics, metric_attrs)) = &metrics {
+                metrics.total_connections.add(1, metric_attrs);
+                metrics.reused_connections.add(1, metric_attrs);
+                metrics
+                    .reused_connection_pos
+                    .record(idx as u64, metric_attrs);
+            }
+
             return Ok(ConnectionResult::Connection(LeasedConnection {
                 active_slot,
                 pooled_conn: Some(pooled_conn),
@@ -309,6 +380,10 @@ where
                     error = %err,
                     "LRU connection pool: evicting lru connection (#{id:?}) to create a new one"
                 );
+                #[cfg(feature = "opentelemetry")]
+                if let Some((metrics, metric_attrs)) = &metrics {
+                    metrics.evicted_connections.add(1, metric_attrs);
+                }
                 storage
                     .pop_back()
                     .context("get least recently used connection from storage")?
@@ -325,6 +400,13 @@ where
     async fn create(&self, id: ID, conn: C, permit: Self::CreatePermit) -> Self::Connection {
         trace!("adding new connection (w/ id {id:?}) to pool");
         let (active_slot, pool_slot) = permit;
+
+        #[cfg(feature = "opentelemetry")]
+        if let Some((metrics, metric_attrs)) = &self.metrics.metrics(&id) {
+            metrics.total_connections.add(1, metric_attrs);
+            metrics.created_connections.add(1, metric_attrs);
+        }
+
         LeasedConnection {
             active_slot,
             returner: self.returner.clone(),
@@ -794,6 +876,111 @@ pub mod http {
 
             Ok(PooledConnector::new(inner, pool, BasicHttpConnIdentifier)
                 .maybe_with_wait_for_pool_timeout(self.wait_for_pool_timeout))
+        }
+    }
+}
+
+#[cfg(feature = "opentelemetry")]
+mod metrics {
+    use std::sync::Arc;
+
+    use rama_core::telemetry::opentelemetry::{
+        InstrumentationScope, KeyValue, global,
+        metrics::{Counter, Histogram},
+        semantic_conventions,
+    };
+
+    #[derive(Clone)]
+    pub struct WithPoolMetrics<F> {
+        pool_metrics: Arc<PoolMetrics>,
+        attr_extractor: Arc<F>,
+    }
+
+    pub(super) struct PoolMetrics {
+        pub(super) total_connections: Counter<u64>,
+        pub(super) created_connections: Counter<u64>,
+        pub(super) reused_connections: Counter<u64>,
+        pub(super) evicted_connections: Counter<u64>,
+        pub(super) reused_connection_pos: Histogram<u64>,
+        pub(super) active_connection_delay_nanoseconds: Histogram<f64>,
+        // _available_active_connections: ObservableGauge<u64>,
+        // _available_total_connections: ObservableGauge<u64>,
+    }
+
+    impl<F> WithPoolMetrics<F> {
+        pub(super) fn new(prefix: &'static str, attr_extractor: F) -> Self {
+            Self {
+                pool_metrics: Arc::new(PoolMetrics::new(prefix)),
+                attr_extractor: Arc::new(attr_extractor),
+            }
+        }
+    }
+
+    impl PoolMetrics {
+        fn new(prefix: &'static str) -> Self {
+            let meter = global::meter_with_scope(
+                InstrumentationScope::builder(const_format::formatcp!(
+                    "{}-connpool",
+                    rama_utils::info::NAME
+                ))
+                .with_version(rama_utils::info::VERSION)
+                .with_schema_url(semantic_conventions::SCHEMA_URL)
+                .build(),
+            );
+
+            Self {
+                total_connections: meter
+                    .u64_counter(format!("{prefix}.connpool.connections"))
+                    .with_description("Connection pool total connections")
+                    .build(),
+                created_connections: meter
+                    .u64_counter(format!("{prefix}.connpool.created_connections"))
+                    .with_description("Connection pool created connections")
+                    .build(),
+                reused_connections: meter
+                    .u64_counter(format!("{prefix}.connpool.reused_connections"))
+                    .with_description("Connection pool reused connections")
+                    .build(),
+                evicted_connections: meter
+                    .u64_counter(format!("{prefix}.connpool.evicted_connections"))
+                    .with_description("Connection pool evicted connections")
+                    .build(),
+                reused_connection_pos: meter
+                    .u64_histogram(format!("{prefix}.connpool.reused_connection_pos"))
+                    .with_description("Connection pool reused connections")
+                    .with_boundaries(vec![0_f64, 1_f64, 2_f64, 3_f64, 4_f64, 5_f64, 6_f64])
+                    .build(),
+                // TODO: migrate to exponentional histogram once fully supported in otel (probably once version 1 is release)
+                // https://github.com/open-telemetry/opentelemetry-rust/issues/2111
+                active_connection_delay_nanoseconds: meter
+                    .f64_histogram(format!("{prefix}.connpool.active_connection_delay"))
+                    .with_unit("ns")
+                    .with_boundaries(vec![
+                        0_f64,
+                        5_f64,
+                        200_f64,
+                        500_f64,
+                        1_000_f64,
+                        10_000_f64,
+                        20_000_f64,
+                        100_000_f64,
+                        500_000_f64,
+                        2_000_000_f64,
+                        5_000_000_f64,
+                        10_000_000_f64,
+                    ])
+                    .with_description("Time spent waiting for an active connection")
+                    .build(),
+            }
+        }
+    }
+
+    impl<ID, F> super::GetPoolMetrics<ID> for WithPoolMetrics<F>
+    where
+        F: Fn(&ID) -> Vec<KeyValue>,
+    {
+        fn metrics(&self, id: &ID) -> Option<(&PoolMetrics, Vec<KeyValue>)> {
+            Some((&self.pool_metrics, (self.attr_extractor)(id)))
         }
     }
 }
