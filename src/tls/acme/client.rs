@@ -377,6 +377,7 @@ impl<'a> Order<'a> {
     pub async fn get_authorizations(&self) -> Result<Vec<server::Authorization>, OpaqueError> {
         let mut authz: Vec<server::Authorization> =
             Vec::with_capacity(self.inner.authorizations.len());
+
         for auth_url in self.inner.authorizations.iter() {
             let auth = self.get_authorization(auth_url.as_str()).await?;
             authz.push(auth);
@@ -415,10 +416,8 @@ impl<'a> Order<'a> {
             .await
     }
 
-    pub async fn finalize(
-        &mut self,
-        payload: FinalizePayload,
-    ) -> Result<&server::Order, OpaqueError> {
+    pub async fn finalize(&mut self, csr_pem: String) -> Result<&server::Order, OpaqueError> {
+        let payload = FinalizePayload { csr: csr_pem };
         let response = self
             .account
             .post::<server::Order>(&self.inner.finalize, Some(&payload))

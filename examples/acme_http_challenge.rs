@@ -1,5 +1,5 @@
 use rama::{
-    Context, Layer, graceful,
+    Context, Layer, Service, graceful,
     http::{
         Body, HeaderValue,
         layer::{compression::CompressionLayer, trace::TraceLayer},
@@ -10,12 +10,16 @@ use rama::{
     tls::acme::{
         AcmeClient,
         proto::{
-            client::{CreateAccountOptions, KeyAuthorization, NewOrderPayload},
+            client::{CreateAccountOptions, FinalizePayload, KeyAuthorization, NewOrderPayload},
             common::Identifier,
             server::{ChallengeType, OrderStatus},
         },
     },
 };
+use rama_crypto::dep::rcgen::{self, CertificateParams, DistinguishedName, DnType};
+use rama_http_backend::client::{EasyHttpWebClient, EasyHttpWebClientBuilder};
+use rama_net::tls::client::ServerVerifyMode;
+use rama_tls_boring::client::TlsConnectorDataBuilder;
 
 use std::{sync::Arc, time::Duration};
 use tokio::time::sleep;
@@ -27,7 +31,22 @@ const ADDR: &str = "0.0.0.0:5002";
 
 #[tokio::main]
 async fn main() {
-    let client = AcmeClient::new(TEST_DIRECTORY_URL).await.unwrap();
+    let tls_config = TlsConnectorDataBuilder::new_http_auto()
+        .with_server_verify_mode(ServerVerifyMode::Disable)
+        .with_keylog_intent(rama_net::tls::KeyLogIntent::Environment)
+        .into_shared_builder();
+
+    let client = EasyHttpWebClient::builder()
+        .with_default_transport_connector()
+        .without_tls_proxy_support()
+        .without_proxy_support()
+        .with_tls_support_using_boringssl(Some(tls_config))
+        .build()
+        .boxed();
+
+    let client = AcmeClient::new_with_https_client(TEST_DIRECTORY_URL, client)
+        .await
+        .unwrap();
 
     let account = client
         .create_account(CreateAccountOptions {
@@ -116,10 +135,36 @@ async fn main() {
 
     assert_eq!(state.status, OrderStatus::Ready);
 
-    todo!("csr");
+    let csr = create_csr();
+
+    order.finalize(csr).await.unwrap();
+
+    order
+        .poll_until_certificate_ready(Duration::from_secs(3))
+        .await
+        .unwrap();
+
+    let cert = order.download_certificate().await.unwrap();
+    println!("got certificate: {cert:?}");
 }
 
 #[derive(Debug)]
 struct ChallengeState {
     key_authz: KeyAuthorization,
+}
+
+fn create_csr() -> String {
+    let key_pair = rcgen::KeyPair::generate().unwrap();
+
+    let params = CertificateParams::new(vec!["example.com".to_string()]).unwrap();
+
+    let mut distinguished_name = DistinguishedName::new();
+    distinguished_name.push(DnType::CountryName, "US");
+    distinguished_name.push(DnType::StateOrProvinceName, "California");
+    distinguished_name.push(DnType::LocalityName, "San Francisco");
+    distinguished_name.push(DnType::OrganizationName, "ACME Corporation");
+    distinguished_name.push(DnType::CommonName, "example.com");
+
+    let csr_pem = params.serialize_request(&key_pair).unwrap().pem().unwrap();
+    csr_pem
 }

@@ -142,7 +142,7 @@ mod test {
 
         let csr = create_csr();
 
-        order.finalize(FinalizePayload { csr }).await.unwrap();
+        order.finalize(csr).await.unwrap();
 
         order
             .poll_until_certificate_ready(Duration::from_secs(3))
@@ -276,7 +276,7 @@ mod test {
 
         let csr = create_csr();
 
-        order.finalize(FinalizePayload { csr }).await.unwrap();
+        order.finalize(csr).await.unwrap();
 
         order
             .poll_until_certificate_ready(Duration::from_secs(3))

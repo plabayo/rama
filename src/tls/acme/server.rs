@@ -766,12 +766,6 @@ impl AcmeServer {
             }
         }
 
-        let "rhs" = Self::testtt("e") else {
-            return Err(OpaqueError::from_display("msg"));
-        };
-
-        let x = rhs;
-
         println!("tls ok");
         Ok(())
     }
