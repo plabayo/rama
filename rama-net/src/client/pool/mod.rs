@@ -261,8 +261,8 @@ impl<C, ID> LruDropPool<C, ID> {
 
     #[cfg(feature = "opentelemetry")]
     generate_set_and_with! {
-        pub fn metrics(mut self, metrics: Arc<metrics::PoolMetrics>) -> Self {
-            self.metrics = Some(metrics);
+        pub fn metrics(mut self, metrics: Option<Arc<metrics::PoolMetrics>>) -> Self {
+            self.metrics = metrics;
             self
         }
     }
