@@ -1,14 +1,14 @@
 use rama::{
+    Context, Layer, Service,
     http::{
-        client::EasyHttpWebClient, layer::trace::TraceLayer, server::HttpServer,
-        service::web::WebService, Body, BodyExtractExt, Request,
+        Body, BodyExtractExt, Request, client::EasyHttpWebClient, layer::trace::TraceLayer,
+        server::HttpServer, service::web::WebService,
     },
     net::address::SocketAddress,
-    Context, Layer, Service,
 };
-use tracing::{info_span, Instrument};
+use tracing::{Instrument, info_span};
 use tracing_subscriber::{
-    filter::LevelFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter,
+    EnvFilter, filter::LevelFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt,
 };
 use turmoil::Builder;
 
