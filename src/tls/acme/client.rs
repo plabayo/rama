@@ -69,19 +69,19 @@ pub struct AcmeClient {
 type AcmeHttpsClient = BoxService<(), Request, Response, OpaqueError>;
 
 impl AcmeClient {
-    /// Create a new acme [`Client`] for the given directory url and using the default https client
+    /// Create a new acme [`AcmeClient`] for the given directory url and using the default https client
     pub async fn new(directory_url: &str) -> Result<AcmeClient, OpaqueError> {
         let https_client = EasyHttpWebClient::default().boxed();
         Self::new_with_https_client(directory_url, https_client).await
     }
 
-    /// Create a new acme [`Client`] for the given acme provider and using the default https client
+    /// Create a new acme [`AcmeClient`] for the given acme provider and using the default https client
     pub async fn new_for_provider(provider: &AcmeProvider) -> Result<AcmeClient, OpaqueError> {
         let https_client = EasyHttpWebClient::default().boxed();
         Self::new_with_https_client(provider.as_str(), https_client).await
     }
 
-    /// Create a new acme [`Client`] for the given directory url and using the provided https client
+    /// Create a new acme [`AcmeClient`] for the given directory url and using the provided https client
     pub async fn new_with_https_client(
         directory_url: &str,
         https_client: AcmeHttpsClient,
@@ -100,7 +100,7 @@ impl AcmeClient {
         })
     }
 
-    /// Create a new acme [`Client`] for the given acme provider and using the provided https client
+    /// Create a new acme [`AcmeClient`] for the given acme provider and using the provided https client
     pub async fn new_for_provider_with_https_client(
         provider: &AcmeProvider,
     ) -> Result<AcmeClient, OpaqueError> {

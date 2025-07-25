@@ -103,7 +103,7 @@ Rama provides a rich set of examples demonstrating its web service capabilities.
 The following examples show how you can integrate ACME into you webservices (ACME is currently still under heavy development)
 - [/examples/acme_http_challenge.rs](https://github.com/plabayo/rama/tree/main/examples/http_key_value_store.rs): Authenticate to an acme server using a http challenge
 - [/examples/acme_tls_challenge_using_boring.rs](https://github.com/plabayo/rama/tree/main/examples/http_key_value_store.rs): Authenticate to an acme server using a tls challenge using boringssl
-- [/examples/acme_tls_challenge_using_ruslts.rs](https://github.com/plabayo/rama/tree/main/examples/http_key_value_store.rs): Authenticate to an acme server using a tls challenge using rustls
+- [/examples/acme_tls_challenge_using_rustls.rs](https://github.com/plabayo/rama/tree/main/examples/http_key_value_store.rs): Authenticate to an acme server using a tls challenge using rustls
 
 ### More Examples
 - [/examples/http_web_router.rs](https://github.com/plabayo/rama/tree/main/examples/http_web_router.rs): Path-based routing, something you are probably already familiar with

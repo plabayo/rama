@@ -279,7 +279,7 @@
 // !   Authenticate to an acme server using a http challenge
 // ! - [/examples/acme_tls_challenge_using_boring.rs](https://github.com/plabayo/rama/tree/main/examples/http_key_value_store.rs):
 // !   Authenticate to an acme server using a tls challenge using boringssl
-// ! - [/examples/acme_tls_challenge_using_ruslts.rs](https://github.com/plabayo/rama/tree/main/examples/http_key_value_store.rs):
+// ! - [/examples/acme_tls_challenge_using_rustls.rs](https://github.com/plabayo/rama/tree/main/examples/http_key_value_store.rs):
 // !   Authenticate to an acme server using a tls challenge using rustls
 //!
 //! For a production-like example of a web service you can also read the [`rama-fp` source code](https://github.com/plabayo/rama/tree/main/rama-fp/src).
