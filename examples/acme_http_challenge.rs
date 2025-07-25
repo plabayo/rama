@@ -16,7 +16,9 @@ use rama::{
         },
     },
 };
-use rama_crypto::dep::rcgen::{self, CertificateParams, DistinguishedName, DnType};
+use rama_crypto::dep::rcgen::{
+    self, CertificateParams, CertificateSigningRequest, DistinguishedName, DnType,
+};
 use rama_http_backend::client::{EasyHttpWebClient, EasyHttpWebClientBuilder};
 use rama_net::tls::client::ServerVerifyMode;
 use rama_tls_boring::client::TlsConnectorDataBuilder;
@@ -136,8 +138,8 @@ async fn main() {
     assert_eq!(state.status, OrderStatus::Ready);
 
     let csr = create_csr();
-
-    order.finalize(csr).await.unwrap();
+    println!("csr: {csr:?}");
+    order.finalize(csr.der()).await.unwrap();
 
     order
         .poll_until_certificate_ready(Duration::from_secs(3))
@@ -153,10 +155,10 @@ struct ChallengeState {
     key_authz: KeyAuthorization,
 }
 
-fn create_csr() -> String {
+fn create_csr() -> CertificateSigningRequest {
     let key_pair = rcgen::KeyPair::generate().unwrap();
 
-    let params = CertificateParams::new(vec!["example.com".to_string()]).unwrap();
+    let params = CertificateParams::new(vec!["test.dev".to_string()]).unwrap();
 
     let mut distinguished_name = DistinguishedName::new();
     distinguished_name.push(DnType::CountryName, "US");
@@ -165,6 +167,5 @@ fn create_csr() -> String {
     distinguished_name.push(DnType::OrganizationName, "ACME Corporation");
     distinguished_name.push(DnType::CommonName, "example.com");
 
-    let csr_pem = params.serialize_request(&key_pair).unwrap().pem().unwrap();
-    csr_pem
+    params.serialize_request(&key_pair).unwrap()
 }

@@ -2,7 +2,7 @@ pub mod proto;
 
 mod client;
 #[doc(inline)]
-pub use client::{AcmeClient, AcmeProvider};
+pub use client::{AcmeClient, AcmeProvider, ClientError};
 
 mod server;
 #[doc(inline)]

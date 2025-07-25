@@ -13,6 +13,9 @@ use rama::{
         },
     },
 };
+use rama_crypto::dep::rcgen::{
+    self, CertificateParams, CertificateSigningRequest, DistinguishedName, DnType,
+};
 use rama_http_backend::client::EasyHttpWebClient;
 use rama_net::{
     address::Host,
@@ -29,7 +32,7 @@ use rama_tls_boring::{
     server::{TlsAcceptorData, TlsAcceptorLayer},
 };
 
-use std::{convert::Infallible, sync::Arc, time::Duration};
+use std::{convert::Infallible, time::Duration};
 use tokio::time::sleep;
 
 // Default directory url of pebble
@@ -143,7 +146,17 @@ async fn main() {
     println!("new order state: {:?}", order.state());
     assert_eq!(order.state().status, OrderStatus::Ready);
 
-    todo!("csr");
+    let csr = create_csr();
+    println!("csr: {csr:?}");
+    order.finalize(csr.der()).await.unwrap();
+
+    order
+        .poll_until_certificate_ready(Duration::from_secs(3))
+        .await
+        .unwrap();
+
+    let cert = order.download_certificate().await.unwrap();
+    println!("got certificate: {cert:?}");
 }
 
 struct TlsAcmeIssue(ServerAuthData);
@@ -161,4 +174,19 @@ impl DynamicCertIssuer for TlsAcmeIssue {
 
 async fn internal_tcp_service_fn<S>(_ctx: Context<()>, _stream: S) -> Result<(), Infallible> {
     Ok(())
+}
+
+fn create_csr() -> CertificateSigningRequest {
+    let key_pair = rcgen::KeyPair::generate().unwrap();
+
+    let params = CertificateParams::new(vec!["test.dev".to_string()]).unwrap();
+
+    let mut distinguished_name = DistinguishedName::new();
+    distinguished_name.push(DnType::CountryName, "US");
+    distinguished_name.push(DnType::StateOrProvinceName, "California");
+    distinguished_name.push(DnType::LocalityName, "San Francisco");
+    distinguished_name.push(DnType::OrganizationName, "ACME Corporation");
+    distinguished_name.push(DnType::CommonName, "example.com");
+
+    params.serialize_request(&key_pair).unwrap()
 }

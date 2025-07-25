@@ -25,7 +25,12 @@ use crate::{
     },
 };
 
+use base64::{
+    Engine as _,
+    prelude::{BASE64_URL_SAFE, BASE64_URL_SAFE_NO_PAD},
+};
 use parking_lot::Mutex;
+use rama_core::Layer;
 use rama_net::tls::{DataEncoding, server::ServerAuthData};
 use rama_tls_boring::core::{
     asn1::{Asn1Object, Asn1Time},
@@ -38,6 +43,7 @@ use rama_tls_boring::core::{
         extension::{BasicConstraints, KeyUsage, SubjectAlternativeName},
     },
 };
+use rama_utils::{backoff::ExponentialBackoff, rng::HasherRng};
 use serde::Serialize;
 use std::time::Duration;
 use tokio::time::{sleep, timeout};
@@ -148,17 +154,23 @@ impl AcmeClient {
     pub async fn create_account(
         &self,
         options: CreateAccountOptions,
-    ) -> Result<Account, OpaqueError> {
+    ) -> Result<Account, ClientError> {
         let key = EcdsaKey::generate().context("generate key for account")?;
 
-        let response = self
-            .post::<server::Account>(&self.directory.new_account, Some(&options), &key)
-            .await
-            .context("create account request")?;
+        let do_request = async || {
+            let response = self
+                .post(&self.directory.new_account, Some(&options), &key)
+                .await
+                .context("create account request")?;
 
-        let location: String = response.header_str(LOCATION_HEADER).unwrap().into();
-        println!("Status code: {}", response.status());
-        let account = response.into_body().context("accound info")?;
+            let location: String = response.header_str(LOCATION_HEADER).unwrap().into();
+            println!("Status code: {}", response.status());
+
+            let account = parse_response::<server::Account>(response).await?;
+            Ok((location, account))
+        };
+
+        let (location, account) = retry_bad_nonce(do_request).await?;
 
         Ok(Account {
             client: self,
@@ -170,71 +182,38 @@ impl AcmeClient {
         })
     }
 
-    async fn post<T: serde::de::DeserializeOwned + Send + 'static>(
+    async fn post(
         &self,
         url: &str,
         payload: Option<&impl Serialize>,
         signer: &impl Signer,
-    ) -> Result<Response<Result<T, Problem>>, OpaqueError> {
-        loop {
-            let mut builder = JWSBuilder::new();
-            if let Some(payload) = payload {
-                let payload = serde_json::to_vec(payload).context("serialize payload")?;
-                builder.set_payload(payload);
-            }
-
-            builder.try_set_protected_header("nonce".to_owned(), self.nonce().await?)?;
-            builder.try_set_protected_header("url".to_owned(), url)?;
-            let jws = builder.build_flattened(signer)?;
-
-            // println!("jose_json: {:?}", jose_json);
-            let request = self
-                .https_client
-                .post(url)
-                .header("content-type", "application/jose+json")
-                // TODO use const
-                .header("user-agent", "rama")
-                .json(&jws);
-
-            // println!("Request: {:?}", request);
-            let response = request.send(Context::default()).await?;
-
-            *self.nonce.lock() = Some(Self::get_nonce_from_response(&response)?);
-
-            let response = Self::parse_response::<T>(response)
-                .await
-                .context("parse response")?;
-            match response.body() {
-                Ok(_) => return Ok(response),
-                Err(problem) => {
-                    if let server::Problem::BadNonce(_) = problem {
-                        continue;
-                    }
-                    return Ok(response);
-                }
-            }
+    ) -> Result<Response, OpaqueError> {
+        let mut builder = JWSBuilder::new();
+        if let Some(payload) = payload {
+            let payload = serde_json::to_vec(payload).context("serialize payload")?;
+            builder.set_payload(payload);
         }
-    }
 
-    async fn parse_response<T: serde::de::DeserializeOwned + Send + 'static>(
-        response: Response,
-    ) -> Result<Response<Result<T, Problem>>, OpaqueError> {
-        let (parts, body) = response.into_parts();
-        let bytes = body.collect().await.unwrap().to_bytes();
+        builder.try_set_protected_header("nonce".to_owned(), self.nonce().await?)?;
+        builder.try_set_protected_header("url".to_owned(), url)?;
+        let jws = builder.build_flattened(signer)?;
 
-        println!("body {:?}", bytes);
+        // println!("jose_json: {:?}", jose_json);
+        let request = self
+            .https_client
+            .post(url)
+            .header("content-type", "application/jose+json")
+            // TODO use const
+            .header("user-agent", "rama")
+            .json(&jws);
 
-        let result = serde_json::from_slice::<T>(&bytes);
-        match result {
-            Ok(result) => Ok(Response::from_parts(parts, Ok(result))),
-            Err(err) => {
-                let problem = serde_json::from_slice::<server::Problem>(&bytes);
-                match problem {
-                    Ok(problem) => Ok(Response::from_parts(parts, Err(problem))),
-                    Err(_err) => Err(err.context("parse problem response")),
-                }
-            }
-        }
+        // println!("Request: {:?}", request);
+        let response = request.send(Context::default()).await?;
+
+        *self.nonce.lock() = Some(Self::get_nonce_from_response(&response)?);
+
+        // TODO retry bad nonce
+        Ok(response)
     }
 }
 
@@ -286,13 +265,19 @@ impl<'a> Account<'a> {
         &self.inner
     }
 
-    pub async fn new_order(&self, new_order: NewOrderPayload) -> Result<Order, OpaqueError> {
-        let response = self
-            .post::<server::Order>(&self.client.directory.new_order, Some(&new_order))
-            .await?;
+    pub async fn new_order(&self, new_order: NewOrderPayload) -> Result<Order, ClientError> {
+        let do_request = async || {
+            let response = self
+                .post(&self.client.directory.new_order, Some(&new_order))
+                .await?;
 
-        let location: String = response.header_str(LOCATION_HEADER).unwrap().into();
-        let order = response.into_body().context("create order info")?;
+            let location: String = response.header_str(LOCATION_HEADER).unwrap().into();
+            let order = parse_response::<server::Order>(response).await?;
+            Ok((location, order))
+        };
+
+        let (location, order) = retry_bad_nonce(do_request).await?;
+
         Ok(Order {
             account: self,
             url: location,
@@ -300,21 +285,29 @@ impl<'a> Account<'a> {
         })
     }
 
-    pub async fn orders(&self) -> Result<server::OrdersList, OpaqueError> {
-        let response = self
-            .post::<server::OrdersList>(&self.inner.orders, NO_PAYLOAD)
-            .await?;
+    pub async fn orders(&self) -> Result<server::OrdersList, ClientError> {
+        let do_request = async || {
+            let response = self.post(&self.inner.orders, NO_PAYLOAD).await?;
 
-        let orders = response.into_body().context("open order list")?;
+            let orders = parse_response::<server::OrdersList>(response).await?;
+            Ok(orders)
+        };
+        let orders = retry_bad_nonce(do_request).await?;
+
         Ok(orders)
     }
 
-    pub async fn get_order(&self, order_url: &str) -> Result<Order, OpaqueError> {
-        let response = self.post::<server::Order>(&order_url, NO_PAYLOAD).await?;
+    pub async fn get_order(&self, order_url: &str) -> Result<Order, ClientError> {
+        let do_request = async || {
+            let response = self.post(&order_url, NO_PAYLOAD).await?;
 
-        let location: String = response.header_str(LOCATION_HEADER).unwrap().into();
+            let location: String = response.header_str(LOCATION_HEADER).unwrap().into();
 
-        let order = response.into_body().context("order info")?;
+            let order = parse_response::<server::Order>(response).await?;
+            Ok((location, order))
+        };
+        let (location, order) = retry_bad_nonce(do_request).await?;
+
         Ok(Order {
             account: self,
             url: location,
@@ -322,12 +315,12 @@ impl<'a> Account<'a> {
         })
     }
 
-    async fn post<T: serde::de::DeserializeOwned + Send + 'static>(
+    async fn post(
         &self,
         url: &str,
         payload: Option<&impl Serialize>,
-    ) -> Result<Response<Result<T, Problem>>, OpaqueError> {
-        self.client.post::<T>(url, payload, &self.credentials).await
+    ) -> Result<Response, OpaqueError> {
+        self.client.post(url, payload, &self.credentials).await
     }
 }
 
@@ -344,7 +337,7 @@ impl Signer for AccountCredentials {
     fn set_headers(
         &self,
         protected_headers: &mut Headers,
-        unprotected_headers: &mut Headers,
+        _unprotected_headers: &mut Headers,
     ) -> Result<(), Self::Error> {
         protected_headers.try_set_header("alg".to_string(), self.key.alg())?;
         protected_headers.try_set_header("kid".to_string(), &self.kid)?;
@@ -365,16 +358,19 @@ impl<'a> Order<'a> {
         self.account
     }
 
-    pub async fn refresh(&mut self) -> Result<&server::Order, OpaqueError> {
-        let response = self
-            .account
-            .post::<server::Order>(&self.url, NO_PAYLOAD)
-            .await?;
-        self.inner = response.into_body().context("order info")?;
+    pub async fn refresh(&mut self) -> Result<&server::Order, ClientError> {
+        let do_request = async || {
+            let response = self.account.post(&self.url, NO_PAYLOAD).await?;
+
+            let order = parse_response::<server::Order>(response).await?;
+            Ok(order)
+        };
+        self.inner = retry_bad_nonce(do_request).await?;
+
         Ok(&self.inner)
     }
 
-    pub async fn get_authorizations(&self) -> Result<Vec<server::Authorization>, OpaqueError> {
+    pub async fn get_authorizations(&self) -> Result<Vec<server::Authorization>, ClientError> {
         let mut authz: Vec<server::Authorization> =
             Vec::with_capacity(self.inner.authorizations.len());
 
@@ -389,21 +385,24 @@ impl<'a> Order<'a> {
     pub async fn get_authorization(
         &self,
         authorization_url: &str,
-    ) -> Result<server::Authorization, OpaqueError> {
+    ) -> Result<server::Authorization, ClientError> {
         println!("{}", authorization_url);
-        let response = self
-            .account
-            .post::<server::Authorization>(&authorization_url, NO_PAYLOAD)
-            .await?;
+        let do_request = async || {
+            let response = self.account.post(&authorization_url, NO_PAYLOAD).await?;
 
-        let authorization = response.into_body().context("authorization info")?;
+            let authorization = parse_response::<server::Authorization>(response).await?;
+            Ok(authorization)
+        };
+
+        let authorization = retry_bad_nonce(do_request).await?;
+
         Ok(authorization)
     }
 
     pub async fn poll_until_all_authorizations_finished(
         &mut self,
         timeout_duration: Duration,
-    ) -> Result<&server::Order, OpaqueError> {
+    ) -> Result<&server::Order, ClientError> {
         self.poll_until_status(timeout_duration, server::OrderStatus::Ready)
             .await
     }
@@ -411,29 +410,45 @@ impl<'a> Order<'a> {
     pub async fn poll_until_certificate_ready(
         &mut self,
         timeout_duration: Duration,
-    ) -> Result<&server::Order, OpaqueError> {
+    ) -> Result<&server::Order, ClientError> {
         self.poll_until_status(timeout_duration, server::OrderStatus::Valid)
             .await
     }
 
-    pub async fn finalize(&mut self, csr_pem: String) -> Result<&server::Order, OpaqueError> {
-        let payload = FinalizePayload { csr: csr_pem };
-        let response = self
-            .account
-            .post::<server::Order>(&self.inner.finalize, Some(&payload))
-            .await?;
+    pub async fn finalize<T: AsRef<[u8]>>(
+        &mut self,
+        csr_der: T,
+    ) -> Result<&server::Order, ClientError> {
+        let csr = BASE64_URL_SAFE_NO_PAD.encode(csr_der.as_ref());
+        let payload = FinalizePayload { csr };
 
-        self.inner = response.into_body().context("order info")?;
+        let do_request = async || {
+            let response = self
+                .account
+                .post(&self.inner.finalize, Some(&payload))
+                .await?;
+
+            let order = parse_response::<server::Order>(response).await?;
+            Ok(order)
+        };
+
+        self.inner = retry_bad_nonce(do_request).await?;
+
         Ok(&self.inner)
     }
 
     pub async fn download_certificate(&self) -> Result<String, OpaqueError> {
         let response = self
             .account
-            .post::<String>(self.inner.certificate.as_ref().unwrap(), NO_PAYLOAD)
+            .post(self.inner.certificate.as_ref().unwrap(), NO_PAYLOAD)
             .await?;
 
-        let certificate = response.into_body().context("response into certificate")?;
+        let body = response.into_body();
+        let bytes = body.collect().await.unwrap().to_bytes();
+        let certificate = str::from_utf8(bytes.as_ref())
+            .context("parse response to pem")?
+            .to_owned();
+
         Ok(certificate)
     }
 
@@ -441,15 +456,15 @@ impl<'a> Order<'a> {
         &mut self,
         timeout_duration: Duration,
         status: server::OrderStatus,
-    ) -> Result<&server::Order, OpaqueError> {
+    ) -> Result<&server::Order, ClientError> {
         timeout(timeout_duration, async {
             loop {
-                self.refresh().await.unwrap();
+                self.refresh().await?;
                 if self.inner.status == status {
-                    break Ok(());
+                    break Ok::<_, ClientError>(());
                 }
                 if self.inner.status == server::OrderStatus::Invalid {
-                    break Err(OpaqueError::from_display("Order is invalid state"));
+                    break Err(OpaqueError::from_display("Order is invalid state").into());
                 }
                 // TODO use retry header
                 sleep(Duration::from_millis(1000)).await;
@@ -464,25 +479,33 @@ impl<'a> Order<'a> {
     pub async fn refresh_challenge(
         &self,
         challenge: &mut server::Challenge,
-    ) -> Result<(), OpaqueError> {
-        let response = self
-            .post::<server::Challenge>(&challenge.url, NO_PAYLOAD)
-            .await
-            .unwrap();
+    ) -> Result<(), ClientError> {
+        let do_request = async || {
+            let response = self.post(&challenge.url, NO_PAYLOAD).await.unwrap();
 
-        *challenge = response.into_body().context("challenge info")?;
+            let challenge = parse_response::<server::Challenge>(response).await?;
+            Ok(challenge)
+        };
+
+        *challenge = retry_bad_nonce(do_request).await?;
+
         Ok(())
     }
 
     pub async fn notify_challenge_ready(
         &self,
         challenge: &server::Challenge,
-    ) -> Result<(), OpaqueError> {
+    ) -> Result<(), ClientError> {
         println!("sending: {:?}", EMPTY_PAYLOAD);
-        self.post::<Empty>(&challenge.url, EMPTY_PAYLOAD)
-            .await?
-            .into_body()
-            .context("empty confirmation")?;
+
+        let do_request = async || {
+            let response = self.post(&challenge.url, EMPTY_PAYLOAD).await?;
+
+            parse_response::<Empty>(response).await?;
+            Ok(())
+        };
+
+        retry_bad_nonce(do_request).await?;
 
         Ok(())
     }
@@ -531,7 +554,7 @@ impl<'a> Order<'a> {
         Ok(cert_key)
     }
 
-    pub fn create_boring_cert_for_acme_authz<'b>(
+    pub fn create_boring_cert_for_acme_authz(
         &self,
         challenge: &server::Challenge,
         identifier: &common::Identifier,
@@ -543,153 +566,152 @@ impl<'a> Order<'a> {
         // use rama_tls_boring::core::x509::extension::{ExtendedKeyUsage, KeyUsage};
         // use rama_tls_boring::core::x509::{X509Builder, X509Extension, X509NameBuilder};
 
-        // let key_authz = self.create_key_authorization(challenge);
-
-        // let mut cert_params =
-        //     rcgen::CertificateParams::new(vec![identifier.clone().into()]).unwrap();
-        // cert_params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
-        // cert_params.custom_extensions = vec![rcgen::CustomExtension::new_acme_identifier(
-        //     key_authz.digest().as_ref(),
-        // )];
-
-        // let key_pair = rcgen::KeyPair::generate().unwrap();
-        // let key_der = key_pair.serialize_der();
-
-        // let cert = cert_params.self_signed(&key_pair).unwrap();
-        // println!("{:?}", cert.pem());
-        // // let cert_der = cert.der();
-
-        // let pk = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key_der));
-
-        // let server_auth = ServerAuthData {
-        //     private_key: DataEncoding::Der(pk.secret_der().into()),
-        //     cert_chain: DataEncoding::DerStack(vec![cert.der().to_vec()]),
-        //     ocsp: None,
-        // };
-
-        // Ok(server_auth)
-
-        // TO
         let key_authz = self.create_key_authorization(challenge)?;
 
-        // Generate an RSA private key
-        let rsa = Rsa::generate(4096).unwrap();
-        let pkey = PKey::from_rsa(rsa).unwrap();
+        let mut cert_params =
+            rcgen::CertificateParams::new(vec![identifier.clone().into()]).unwrap();
+        cert_params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
+        cert_params.custom_extensions = vec![rcgen::CustomExtension::new_acme_identifier(
+            key_authz.digest().as_ref(),
+        )];
 
-        // Create X.509 certificate builder
-        let mut builder = X509Builder::new().unwrap();
+        let key_pair = rcgen::KeyPair::generate().unwrap();
+        let key_der = key_pair.serialize_der();
 
-        // Set version and serial number
-        builder.set_version(2).unwrap();
-        let serial = BigNum::from_u32(1).unwrap().to_asn1_integer().unwrap();
-        builder.set_serial_number(&serial).unwrap();
+        let cert = cert_params.self_signed(&key_pair).unwrap();
+        println!("{:?}", cert.pem());
+        // let cert_der = cert.der();
 
-        let mut name = X509NameBuilder::new().unwrap();
-        name.append_entry_by_text("O", "Example Org").unwrap(); // Optional organization name
-        let name = name.build();
-        builder.set_issuer_name(&name).unwrap(); // Self-signed
-
-        // Set public key
-        builder.set_pubkey(&pkey).unwrap();
-
-        let not_before =
-            Asn1Time::days_from_now(0).context("x509 cert builder: create ASN1Time for today")?;
-        builder
-            .set_not_before(&not_before)
-            .context("x509 cert builder: set not before to today")?;
-        let not_after = Asn1Time::days_from_now(90)
-            .context("x509 cert builder: create ASN1Time for 90 days in future")?;
-        builder
-            .set_not_after(&not_after)
-            .context("x509 cert builder: set not after to 90 days in future")?;
-
-        builder
-            .append_extension(
-                BasicConstraints::new()
-                    .build()
-                    .context("x509 cert builder: build basic constraints")
-                    .unwrap(),
-            )
-            .context("x509 cert builder: add basic constraints as x509 extension")
-            .unwrap();
-
-        // Subject Alternative Name (SAN)
-        let subject_alt_name = SubjectAlternativeName::new()
-            .dns("https://todo.todo") // Adjust as needed
-            .build(&builder.x509v3_context(None, None))
-            .unwrap();
-        builder.append_extension(subject_alt_name).unwrap();
-
-        // Key Usage (Digital Signature, Key Encipherment)
-        let key_usage = KeyUsage::new()
-            .digital_signature()
-            .key_encipherment()
-            .build()
-            .unwrap();
-        builder.append_extension(key_usage).unwrap();
-
-        // Custom ACME Identifier Extension (Replace with actual ACME identifier data)
-        // let acme_oid = Asn1Object::from_str("1.3.6.1.5.5.7.1.31")?; // Example OID for ACME (replace if needed)
-        // let acme_data = key_authz.digest(); // Replace with actual ACME data
-
-        let xctx = &builder.x509v3_context(None, None);
-
-        // **Set ACME Identifier Extension**
-        let acme_oid = Asn1Object::from_str("1.3.6.1.5.5.7.1.31").unwrap();
-        println!("nid: {:?}", acme_oid.nid());
-        let digest = key_authz.digest();
-        let acme_identifier_ext = X509Extension::new_nid(
-            None,
-            Some(xctx),
-            acme_oid.nid(), // Use ACME-specific NID
-            hex::encode(digest).as_str(),
-        )
-        .unwrap();
-        builder.append_extension(acme_identifier_ext).unwrap();
-
-        // Sign the certificate with SHA-256
-        builder.sign(&pkey, MessageDigest::sha256()).unwrap();
-
-        // Generate the final X.509 certificate
-        let cert: X509 = builder.build();
-
-        // let mut cert_params =
-        //     rcgen::CertificateParams::new(vec![authorization.identifier.clone().into()]).unwrap();
-        // cert_params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
-        // cert_params.custom_extensions = vec![rcgen::CustomExtension::new_acme_identifier(
-        //     key_authz.digest().as_ref(),
-        // )];
-
-        // let key_pair = rcgen::KeyPair::generate().unwrap();
-        // let key_der = key_pair.serialize_der();
-
-        // let cert = cert_params.self_signed(&key_pair).unwrap();
-        // println!("{:?}", cert.pem());
-        // // let cert_der = cert.der();
-
-        // let pk = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key_der));
-
-        // let cert_key = CertifiedKey::new(
-        //     vec![cert.der().clone()],
-        //     any_ecdsa_type(&pk).unwrap().into(),
-        // );
-
-        let x = cert.to_der().unwrap();
+        let pk = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key_der));
 
         let server_auth = ServerAuthData {
-            private_key: DataEncoding::Der(pkey.private_key_to_der().unwrap()),
-            cert_chain: DataEncoding::DerStack(vec![x]),
+            private_key: DataEncoding::Der(pk.secret_der().into()),
+            cert_chain: DataEncoding::DerStack(vec![cert.der().to_vec()]),
             ocsp: None,
         };
 
         Ok(server_auth)
+
+        // // TO
+        // let key_authz = self.create_key_authorization(challenge)?;
+
+        // // Generate an RSA private key
+        // let rsa = Rsa::generate(4096).unwrap();
+        // let pkey = PKey::from_rsa(rsa).unwrap();
+
+        // // Create X.509 certificate builder
+        // let mut builder = X509Builder::new().unwrap();
+
+        // // Set version and serial number
+        // builder.set_version(2).unwrap();
+        // let serial = BigNum::from_u32(1).unwrap().to_asn1_integer().unwrap();
+        // builder.set_serial_number(&serial).unwrap();
+
+        // let mut name = X509NameBuilder::new().unwrap();
+        // name.append_entry_by_text("O", "Example Org").unwrap(); // Optional organization name
+        // let name = name.build();
+        // builder.set_issuer_name(&name).unwrap(); // Self-signed
+
+        // // Set public key
+        // builder.set_pubkey(&pkey).unwrap();
+
+        // let not_before =
+        //     Asn1Time::days_from_now(0).context("x509 cert builder: create ASN1Time for today")?;
+        // builder
+        //     .set_not_before(&not_before)
+        //     .context("x509 cert builder: set not before to today")?;
+        // let not_after = Asn1Time::days_from_now(90)
+        //     .context("x509 cert builder: create ASN1Time for 90 days in future")?;
+        // builder
+        //     .set_not_after(&not_after)
+        //     .context("x509 cert builder: set not after to 90 days in future")?;
+
+        // builder
+        //     .append_extension(
+        //         BasicConstraints::new()
+        //             .build()
+        //             .context("x509 cert builder: build basic constraints")
+        //             .unwrap(),
+        //     )
+        //     .context("x509 cert builder: add basic constraints as x509 extension")
+        //     .unwrap();
+
+        // // Subject Alternative Name (SAN)
+        // let subject_alt_name = SubjectAlternativeName::new()
+        //     .dns("https://todo.todo") // Adjust as needed
+        //     .build(&builder.x509v3_context(None, None))
+        //     .unwrap();
+        // builder.append_extension(subject_alt_name).unwrap();
+
+        // // Key Usage (Digital Signature, Key Encipherment)
+        // let key_usage = KeyUsage::new()
+        //     .digital_signature()
+        //     .key_encipherment()
+        //     .build()
+        //     .unwrap();
+        // builder.append_extension(key_usage).unwrap();
+
+        // // Custom ACME Identifier Extension (Replace with actual ACME identifier data)
+        // // let acme_oid = Asn1Object::from_str("1.3.6.1.5.5.7.1.31")?; // Example OID for ACME (replace if needed)
+        // // let acme_data = key_authz.digest(); // Replace with actual ACME data
+
+        // let xctx = &builder.x509v3_context(None, None);
+
+        // let acme_oid = Asn1Object::from_str("1.3.6.1.5.5.7.1.31").unwrap();
+        // println!("nid: {:?}", acme_oid.nid());
+        // let digest = key_authz.digest();
+        // let acme_identifier_ext = X509Extension::new_nid(
+        //     None,
+        //     Some(xctx),
+        //     acme_oid.nid(), // Use ACME-specific NID
+        //     hex::encode(digest).as_str(),
+        // )
+        // .unwrap();
+        // builder.append_extension(acme_identifier_ext).unwrap();
+
+        // // Sign the certificate with SHA-256
+        // builder.sign(&pkey, MessageDigest::sha256()).unwrap();
+
+        // // Generate the final X.509 certificate
+        // let cert: X509 = builder.build();
+
+        // // let mut cert_params =
+        // //     rcgen::CertificateParams::new(vec![authorization.identifier.clone().into()]).unwrap();
+        // // cert_params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
+        // // cert_params.custom_extensions = vec![rcgen::CustomExtension::new_acme_identifier(
+        // //     key_authz.digest().as_ref(),
+        // // )];
+
+        // // let key_pair = rcgen::KeyPair::generate().unwrap();
+        // // let key_der = key_pair.serialize_der();
+
+        // // let cert = cert_params.self_signed(&key_pair).unwrap();
+        // // println!("{:?}", cert.pem());
+        // // // let cert_der = cert.der();
+
+        // // let pk = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key_der));
+
+        // // let cert_key = CertifiedKey::new(
+        // //     vec![cert.der().clone()],
+        // //     any_ecdsa_type(&pk).unwrap().into(),
+        // // );
+
+        // let x = cert.to_der().unwrap();
+
+        // let server_auth = ServerAuthData {
+        //     private_key: DataEncoding::Der(pkey.private_key_to_der().unwrap()),
+        //     cert_chain: DataEncoding::DerStack(vec![x]),
+        //     ocsp: None,
+        // };
+
+        // Ok(server_auth)
     }
 
     pub async fn poll_until_challenge_finished(
         &self,
         challenge: &mut server::Challenge,
         timeout_duration: Duration,
-    ) -> Result<(), OpaqueError> {
+    ) -> Result<(), ClientError> {
         timeout(timeout_duration, async {
             loop {
                 self.refresh_challenge(challenge).await?;
@@ -711,11 +733,91 @@ impl<'a> Order<'a> {
         .context("poll until challenge ready")?
     }
 
-    async fn post<T: serde::de::DeserializeOwned + Send + 'static>(
+    async fn post(
         &self,
         url: &str,
         payload: Option<&impl Serialize>,
-    ) -> Result<Response<Result<T, Problem>>, OpaqueError> {
-        self.account.post::<T>(url, payload).await
+    ) -> Result<Response, OpaqueError> {
+        self.account.post(url, payload).await
+    }
+}
+
+async fn parse_response<T: serde::de::DeserializeOwned + Send + 'static>(
+    response: Response,
+) -> Result<T, ClientError> {
+    let body = response.into_body();
+    let bytes = body.collect().await.unwrap().to_bytes();
+
+    println!("body {:?}", bytes);
+
+    let result = serde_json::from_slice::<T>(&bytes);
+    match result {
+        Ok(result) => Ok(result),
+        Err(err) => {
+            let problem = serde_json::from_slice::<server::Problem>(&bytes);
+            match problem {
+                Ok(problem) => Err(problem.into()),
+                Err(_err) => Err(err.context("parse problem response").into()),
+            }
+        }
+    }
+}
+
+async fn retry_bad_nonce<F, Fut, T>(do_request: F) -> Result<T, ClientError>
+where
+    F: Fn() -> Fut,
+    Fut: Future<Output = Result<T, ClientError>>,
+{
+    let result = do_request().await;
+    if matches!(result, Err(ClientError::Problem(Problem::BadNonce(_)))) {
+        do_request().await
+    } else {
+        result
+    }
+}
+
+pub enum ClientError {
+    /// Normal [`OpaqueError`] like we use everywhere else
+    OpaqueError(OpaqueError),
+    /// Error return by the acme server
+    Problem(Problem),
+}
+
+impl std::fmt::Debug for ClientError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            ClientError::OpaqueError(opaque_error) => write!(f, "opaque error: {opaque_error:?}"),
+            ClientError::Problem(problem) => write!(f, "problem: {problem:?}"),
+        }
+    }
+}
+
+impl std::fmt::Display for ClientError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ClientError::OpaqueError(opaque_error) => write!(f, "opaque error: {opaque_error}"),
+            ClientError::Problem(problem) => write!(f, "problem: {problem}"),
+        }
+    }
+}
+
+impl std::error::Error for ClientError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            ClientError::OpaqueError(opaque_error) => opaque_error.source(),
+            ClientError::Problem(problem) => problem.source(),
+        }
+    }
+}
+
+impl From<OpaqueError> for ClientError {
+    fn from(value: OpaqueError) -> Self {
+        ClientError::OpaqueError(value)
+    }
+}
+
+impl From<Problem> for ClientError {
+    fn from(value: Problem) -> Self {
+        ClientError::Problem(value)
     }
 }

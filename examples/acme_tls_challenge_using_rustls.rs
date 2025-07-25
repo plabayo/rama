@@ -1,5 +1,5 @@
 use rama::{
-    Context, Layer, graceful,
+    Context, Layer, Service, graceful,
     service::service_fn,
     tcp::server::TcpListener,
     tls::{
@@ -21,6 +21,10 @@ use rama::{
         },
     },
 };
+use rama_crypto::dep::rcgen::{
+    self, CertificateParams, CertificateSigningRequest, DistinguishedName, DnType,
+};
+use rama_http_backend::client::EasyHttpWebClient;
 
 use std::{convert::Infallible, sync::Arc, time::Duration};
 use tokio::time::sleep;
@@ -32,7 +36,24 @@ const ADDR: &str = "0.0.0.0:5002";
 
 #[tokio::main]
 async fn main() {
-    let client = AcmeClient::new(TEST_DIRECTORY_URL).await.unwrap();
+    let tls_config = rama_tls_rustls::client::TlsConnectorDataBuilder::new()
+        .with_env_key_logger()
+        .unwrap()
+        .with_alpn_protocols_http_auto()
+        .with_no_cert_verifier()
+        .build();
+
+    let client = EasyHttpWebClient::builder()
+        .with_default_transport_connector()
+        .without_tls_proxy_support()
+        .with_proxy_support()
+        .with_tls_support_using_rustls(Some(tls_config))
+        .build()
+        .boxed();
+
+    let client = AcmeClient::new_with_https_client(TEST_DIRECTORY_URL, client)
+        .await
+        .unwrap();
     let account = client
         .create_account(CreateAccountOptions {
             terms_of_service_agreed: Some(true),
@@ -111,7 +132,17 @@ async fn main() {
     println!("new order state: {:?}", order.state());
     assert_eq!(order.state().status, OrderStatus::Ready);
 
-    todo!("crs");
+    let csr = create_csr();
+    println!("csr: {csr:?}");
+    order.finalize(csr.der()).await.unwrap();
+
+    order
+        .poll_until_certificate_ready(Duration::from_secs(3))
+        .await
+        .unwrap();
+
+    let cert = order.download_certificate().await.unwrap();
+    println!("got certificate: {cert:?}");
 }
 
 #[derive(Debug)]
@@ -133,4 +164,19 @@ impl ResolvesServerCert for ResolvesServerCertAcme {
 
 async fn internal_tcp_service_fn<S>(_ctx: Context<()>, _stream: S) -> Result<(), Infallible> {
     Ok(())
+}
+
+fn create_csr() -> CertificateSigningRequest {
+    let key_pair = rcgen::KeyPair::generate().unwrap();
+
+    let params = CertificateParams::new(vec!["test.dev".to_string()]).unwrap();
+
+    let mut distinguished_name = DistinguishedName::new();
+    distinguished_name.push(DnType::CountryName, "US");
+    distinguished_name.push(DnType::StateOrProvinceName, "California");
+    distinguished_name.push(DnType::LocalityName, "San Francisco");
+    distinguished_name.push(DnType::OrganizationName, "ACME Corporation");
+    distinguished_name.push(DnType::CommonName, "example.com");
+
+    params.serialize_request(&key_pair).unwrap()
 }
