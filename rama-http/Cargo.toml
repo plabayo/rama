@@ -31,7 +31,6 @@ async-compression = { workspace = true, features = [
     "gzip",
     "zstd",
 ], optional = true }
-base64 = { workspace = true }
 bitflags = { workspace = true }
 chrono = { workspace = true }
 const_format = { workspace = true }

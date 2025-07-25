@@ -46,12 +46,14 @@ and scale complex network behavior with safety and speed.
 It's not just a toolkit—it's a mindset shift for how
 to design and operate dynamic, programmable network services
 
-> 💡 The reasons behind the creation of Rama can be read in [the "Why Rama" chapter](https://ramaproxy.org/book/why_rama).
+> [!IMPORTANT]
+> The reasons behind the creation of Rama can be read in [the "Why Rama" chapter](https://ramaproxy.org/book/why_rama).
 
 Rama is async-first using [Tokio](https://tokio.rs/) as its _only_ Async Runtime.
 Please refer to [the examples found in the `/examples` dir](https://github.com/plabayo/rama/tree/main/examples)
 to get inspired on how you can use it for your purposes.
 
+> [!WARNING]
 > This framework might not be for everyone. Particularly if you're building a typical simple web server
 > or just need an HTTP client for making standard requests, you might be better served by other crates.
 > While we at [Plabayo](https://plabayo.tech) use Rama for most of our web needs (clients, servers, and proxies),
@@ -89,7 +91,8 @@ to get inspired on how you can use it for your purposes.
 [![Paypal Donation][paypal-badge]][paypal-url]
 [![Discord][discord-badge]][discord-url]
 
-> 💡 If your organization relies on Rama (ラマ) for its operations,
+> [!NOTE]
+> If your organization relies on Rama (ラマ) for its operations,
 > we invite you to consider becoming a sponsor 💖. By supporting our project,
 > you'll help ensure its continued development and success.
 > To learn more about sponsorship opportunities, please refer to [the "Sponsors" section below](#--sponsors)
@@ -135,7 +138,8 @@ The primary focus of Rama is to aid you in your development of [proxies](https:/
 - 🕵️‍♀️ [Distortion proxies](https://ramaproxy.org/book/proxies/distort).
 - 🧭 [HaProxy (PROXY protocol)](https://ramaproxy.org/book/proxies/haproxy).
 
-> 💡 Check out [the "Intro to Proxies" chapters in the Rama book](https://ramaproxy.org/book/proxies/intro.html)
+> [!TIP]
+> Check out [the "Intro to Proxies" chapters in the Rama book](https://ramaproxy.org/book/proxies/intro.html)
 > to learn more about the different kind of proxies. It might help in case you are new to developing proxies.
 
 The [Distortion proxies](https://ramaproxy.org/book/proxies/distort) support
@@ -179,6 +183,7 @@ Next to proxies, Rama can also be used to develop [Web Services](#--web-services
 
 💬 Come join us at [Discord][discord-url] on the `#rama` public channel. To ask questions, discuss ideas and ask how rama may be useful for you.
 
+> [!NOTE]
 > Rama also has a public channel on the official Discord of the tokio project.
 > Feel free to join us there instead or as well: <https://discord.com/channels/500028886025895936/1349098858831024209>
 
@@ -303,7 +308,9 @@ Examples of the kind of web services you might build with rama in function of yo
 - a minimal api service (e.g. to expose device profiles or certificates);
 - a graphical interface / control panel;
 
-> 📖 Learn more about developing web services in the Rama book: <https://ramaproxy.org/book/web_servers.html>.
+> [!TIP]
+> 📖 Learn more about developing web services
+> in the Rama book: <https://ramaproxy.org/book/web_servers.html>.
 
 ### Datastar
 
@@ -370,7 +377,8 @@ This is the webservice behind the Rama fingerprinting service, which is used by 
 the UA emulation data for the Http and TLS layers. It is not meant to fingerprint humans or users. Instead it is meant to help
 automated processes look like a human.
 
-> 💡 This example showcases how you can make use of the [`match_service`](https://docs.rs/rama-http/latest/rama_http/service/web/macro.match_service.html)
+> [!TIP]
+> This example showcases how you can make use of the [`match_service`](https://docs.rs/rama-http/latest/rama_http/service/web/macro.match_service.html)
 > macro to create a `Box`-free service router. Another example of this approach can be seen in the
 > [http_service_match.rs](https://github.com/plabayo/rama/tree/main/examples/http_service_match.rs) example.
 
@@ -388,7 +396,9 @@ As a 🍒 cherry on the cake you can import the [`HttpClientExt`](https://ramapr
 
 ### 🧑‍💻 | Http Client Example
 
-> 💡 The full "high level" example can be found at [/examples/http_high_level_client.rs](https://github.com/plabayo/rama/tree/main/examples/http_high_level_client.rs).
+> [!TIP]
+> 💡 The full "high level" example can be found at
+> [/examples/http_high_level_client.rs](https://github.com/plabayo/rama/tree/main/examples/http_high_level_client.rs).
 
 ```rust
 use rama::http::service::client::HttpClientExt;
@@ -519,7 +529,8 @@ For that we thank you. You can take a look at the open issues, and in particular
 In general, any issue not assigned already is free to be picked up by anyone else. Please do communicate in the ticket
 if you are planning to pick it up, as to avoid multiple people trying to solve the same one.
 
-> 💡 Some issues have a [`needs input`](https://github.com/plabayo/rama/issues?q=is%3Aissue+is%3Aopen+label%3A%22needs+input%22+) label.
+> [!NOTE]
+> Some issues have a [`needs input`](https://github.com/plabayo/rama/issues?q=is%3Aissue+is%3Aopen+label%3A%22needs+input%22+) label.
 > These mean that the issue is not yet ready for development. First of all prior to starting working on an issue you should always look for
 > alignment with the rama maintainers. However these
 > [`needs input`](https://github.com/plabayo/rama/issues?q=is%3Aissue+is%3Aopen+label%3A%22needs+input%22+) issues require also prior R&D work:

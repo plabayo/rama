@@ -177,7 +177,7 @@ mod easy_connector {
     use rama_net::client::{
         EstablishedClientConnection,
         pool::{
-            FiFoReuseLruDropPool, PooledConnector,
+            LruDropPool, PooledConnector,
             http::{BasicHttpConId, BasicHttpConnIdentifier, HttpPooledConnectorConfig},
         },
     };
@@ -629,7 +629,7 @@ mod easy_connector {
     }
 
     type DefaultConnectionPoolBuilder<T, C> = EasyHttpWebClientBuilder<
-        PooledConnector<T, FiFoReuseLruDropPool<C, BasicHttpConId>, BasicHttpConnIdentifier>,
+        PooledConnector<T, LruDropPool<C, BasicHttpConId>, BasicHttpConnIdentifier>,
         PoolStage,
     >;
 
