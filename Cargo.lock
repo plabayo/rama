@@ -3755,7 +3755,11 @@ name = "test-client-server"
 version = "0.3.0-alpha.2"
 dependencies = [
  "rama",
+ "serde",
+ "serde_json",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
  "turmoil",
 ]
 
