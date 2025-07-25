@@ -24,7 +24,6 @@ tls = ["dep:hex", "dep:md5", "dep:sha2", "dep:itertools"]
 opentelemetry = ["rama-core/opentelemetry"]
 
 [dependencies]
-base64 = { workspace = true }
 const_format = { workspace = true }
 flume = { workspace = true, features = ["async"] }
 hex = { workspace = true, optional = true }

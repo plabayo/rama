@@ -140,8 +140,8 @@ macro_rules! implement_reference_getters {
 
 #[derive(Debug, Clone)]
 pub struct ConnectorConfigClientAuth {
-    pub(super) cert_chain: Vec<X509>,
-    pub(super) private_key: PKey<Private>,
+    pub cert_chain: Vec<X509>,
+    pub private_key: PKey<Private>,
 }
 
 impl TlsConnectorDataBuilder {
@@ -929,58 +929,9 @@ impl TlsConnectorDataBuilder {
             cipher_list
         );
 
-        let client_auth = match client_auth.cloned() {
-            None => None,
-            Some(ClientAuth::SelfSigned) => {
-                let (cert_chain, private_key) =
-                    self_signed_client_auth().context("boring/TlsConnectorData")?;
-                Some(ConnectorConfigClientAuth {
-                    cert_chain,
-                    private_key,
-                })
-            }
-            Some(ClientAuth::Single(data)) => {
-                // server TLS Certs
-                let cert_chain = match data.cert_chain {
-                    DataEncoding::Der(raw_data) => vec![X509::from_der(&raw_data[..]).context(
-                        "boring/TlsConnectorData: parse x509 client cert from DER content",
-                    )?],
-                    DataEncoding::DerStack(raw_data_list) => raw_data_list
-                        .into_iter()
-                        .map(|raw_data| {
-                            X509::from_der(&raw_data[..]).context(
-                                "boring/TlsConnectorData: parse x509 client cert from DER content",
-                            )
-                        })
-                        .collect::<Result<Vec<_>, _>>()?,
-                    DataEncoding::Pem(raw_data) => X509::stack_from_pem(raw_data.as_bytes())
-                        .context(
-                        "boring/TlsConnectorData: parse x509 client cert chain from PEM content",
-                    )?,
-                };
-
-                // server TLS key
-                let private_key = match data.private_key {
-                    DataEncoding::Der(raw_data) => PKey::private_key_from_der(&raw_data[..])
-                        .context("boring/TlsConnectorData: parse private key from DER content")?,
-                    DataEncoding::DerStack(raw_data_list) => {
-                        PKey::private_key_from_der(
-                            &raw_data_list.first().context(
-                                "boring/TlsConnectorData: get first private key raw data",
-                            )?[..],
-                        )
-                        .context("boring/TlsConnectorData: parse private key from DER content")?
-                    }
-                    DataEncoding::Pem(raw_data) => PKey::private_key_from_pem(raw_data.as_bytes())
-                        .context("boring/TlsConnectorData: parse private key from PEM content")?,
-                };
-
-                Some(ConnectorConfigClientAuth {
-                    cert_chain,
-                    private_key,
-                })
-            }
-        };
+        let client_auth = client_auth
+            .map(|auth| auth.clone().try_into())
+            .transpose()?;
 
         Ok(TlsConnectorDataBuilder {
             base_builders: vec![],
@@ -1029,6 +980,64 @@ impl TryFrom<ClientHello> for TlsConnectorDataBuilder {
     fn try_from(value: ClientHello) -> Result<Self, Self::Error> {
         let client_config = rama_net::tls::client::ClientConfig::from(value);
         Self::try_from(&client_config)
+    }
+}
+
+impl TryFrom<ClientAuth> for ConnectorConfigClientAuth {
+    type Error = OpaqueError;
+
+    fn try_from(auth: ClientAuth) -> Result<Self, Self::Error> {
+        match auth {
+            ClientAuth::SelfSigned => {
+                let (cert_chain, private_key) =
+                    self_signed_client_auth().context("boring/TlsConnectorData")?;
+                Ok(ConnectorConfigClientAuth {
+                    cert_chain,
+                    private_key,
+                })
+            }
+            ClientAuth::Single(data) => {
+                // server TLS Certs
+                let cert_chain = match data.cert_chain {
+                    DataEncoding::Der(raw_data) => vec![X509::from_der(&raw_data[..]).context(
+                        "boring/TlsConnectorData: parse x509 client cert from DER content",
+                    )?],
+                    DataEncoding::DerStack(raw_data_list) => raw_data_list
+                        .into_iter()
+                        .map(|raw_data| {
+                            X509::from_der(&raw_data[..]).context(
+                                "boring/TlsConnectorData: parse x509 client cert from DER content",
+                            )
+                        })
+                        .collect::<Result<Vec<_>, _>>()?,
+                    DataEncoding::Pem(raw_data) => X509::stack_from_pem(raw_data.as_bytes())
+                        .context(
+                        "boring/TlsConnectorData: parse x509 client cert chain from PEM content",
+                    )?,
+                };
+
+                // server TLS key
+                let private_key = match data.private_key {
+                    DataEncoding::Der(raw_data) => PKey::private_key_from_der(&raw_data[..])
+                        .context("boring/TlsConnectorData: parse private key from DER content")?,
+                    DataEncoding::DerStack(raw_data_list) => {
+                        PKey::private_key_from_der(
+                            &raw_data_list.first().context(
+                                "boring/TlsConnectorData: get first private key raw data",
+                            )?[..],
+                        )
+                        .context("boring/TlsConnectorData: parse private key from DER content")?
+                    }
+                    DataEncoding::Pem(raw_data) => PKey::private_key_from_pem(raw_data.as_bytes())
+                        .context("boring/TlsConnectorData: parse private key from PEM content")?,
+                };
+
+                Ok(ConnectorConfigClientAuth {
+                    cert_chain,
+                    private_key,
+                })
+            }
+        }
     }
 }
 

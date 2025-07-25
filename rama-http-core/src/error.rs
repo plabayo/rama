@@ -159,6 +159,14 @@ impl Error {
         matches!(self.inner.kind, Kind::User(User::BodyWriteAborted))
     }
 
+    /// Returns true if the error was caused while calling `AsyncWrite::shutdown()`.
+    pub fn is_shutdown(&self) -> bool {
+        if matches!(self.inner.kind, Kind::Shutdown) {
+            return true;
+        }
+        false
+    }
+
     /// Returns true if the error was caused by a timeout.
     pub fn is_timeout(&self) -> bool {
         if matches!(self.inner.kind, Kind::HeaderTimeout) {

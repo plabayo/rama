@@ -9,43 +9,43 @@ as a distant relative.
 
 ### hyperium
 
-- <https://github.com/hyperium/h2/tree/e4ed3502f111302ba601799bf70b4aecd37466fd>
+- h2: <https://github.com/hyperium/h2/tree/0f4f9149d3a922421e23b3e605e55aa34182d3c2>
   - License:
-    - Original: <https://github.com/hyperium/h2/blob/e4ed3502f111302ba601799bf70b4aecd37466fd/LICENSE>
+    - Original: <https://github.com/hyperium/h2/blob/0f4f9149d3a922421e23b3e605e55aa34182d3c2/LICENSE>
     - Type: MIT
     - Copy: [./licenses/h2](./licenses/h2)
-- <https://github.com/hyperium/hyper/tree/436cadd1ac08a9508a46f550e03281db9f2fee97>
+- hyper: <https://github.com/hyperium/hyper/tree/b8affd8a2ee5d77dec0c32050a7234e4f2f3751b>
   - License:
-    - Original: <https://github.com/hyperium/hyper/blob/436cadd1ac08a9508a46f550e03281db9f2fee97/LICENSE>
+    - Original: <https://github.com/hyperium/hyper/blob/b8affd8a2ee5d77dec0c32050a7234e4f2f3751b/LICENSE>
     - Type: MIT
     - Copy: [./licenses/hyper](./licenses/hyper)
-- <https://github.com/hyperium/hyper-util/tree/e74ab7888638e768de17c47ed5f20c8b623a308f>
+- hyper-util: <https://github.com/hyperium/hyper-util/tree/00911ecd3d57c7ab130d19e6ec4f5dceb54b81b9>
   - License:
-    - Original: <https://github.com/hyperium/hyper-util/blob/e74ab7888638e768de17c47ed5f20c8b623a308f/LICENSE>
+    - Original: <https://github.com/hyperium/hyper-util/blob/00911ecd3d57c7ab130d19e6ec4f5dceb54b81b9/LICENSE>
     - Type: MIT
     - Copy: [./licenses/hyper-util](./licenses/hyper-util)
-- <https://github.com/hyperium/headers/tree/d425d3ca90261683150eda8292c3f14f0d3db3ee>
+- headers: <https://github.com/hyperium/headers/tree/8db1b786d414cc43e4d77e73b0f7afdcf061be59>
   - License:
-    - Original: <https://github.com/hyperium/headers/blob/d425d3ca90261683150eda8292c3f14f0d3db3ee/LICENSE>
+    - Original: <https://github.com/hyperium/headers/blob/8db1b786d414cc43e4d77e73b0f7afdcf061be59/LICENSE>
     - Type: MIT
     - Copy: [./licenses/headers](./licenses/headers)
 
 ### tower-rs
 
-- <https://github.com/tower-rs/tower/tree/81658e65ad6dbddaf4fa7d0f19361e4c56d85c80>
+- <https://github.com/tower-rs/tower/tree/a1c277bc90839820bd8b4c0d8b47d14217977a79>
   - Service / Layer traits
   - Some layers such as timeout, filter, most of util ones
   - License:
-    - Original: <https://github.com/tower-rs/tower/blob/81658e65ad6dbddaf4fa7d0f19361e4c56d85c80/LICENSE>
+    - Original: <https://github.com/tower-rs/tower/blob/a1c277bc90839820bd8b4c0d8b47d14217977a79/LICENSE>
     - Type: MIT
     - Copy: [./licenses/tower](./licenses/tower)
-- <https://github.com/tower-rs/tower-http/tree/cf3046f2266230227d268616792ca170fa9d73d3>
+- <https://github.com/tower-rs/tower-http/tree/35a6cb83242b2004352a8a45f97c0c2cb5475254>
   - pretty much everything
   - now kept directly in sync "conceptual logic wise",
     but originally forked as an actual `tower-async` package as found in
     <https://github.com/plabayo/tower-async/tree/57798b7baea8e212197a226a2481fa282591dda4>
   - License:
-    - Original: <https://github.com/tower-rs/tower-http/blob/cf3046f2266230227d268616792ca170fa9d73d3/tower-http/LICENSE>
+    - Original: <https://github.com/tower-rs/tower-http/blob/35a6cb83242b2004352a8a45f97c0c2cb5475254/tower-http/LICENSE>
     - Type: MIT
     - Copy: [./licenses/tower-http](./licenses/tower-http)
 

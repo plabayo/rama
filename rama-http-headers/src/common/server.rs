@@ -43,7 +43,7 @@ impl Server {
     /// # Panic
     ///
     /// Panics if the static string is not a legal header value.
-    pub fn from_static(s: &'static str) -> Server {
+    pub const fn from_static(s: &'static str) -> Server {
         Server(HeaderValueString::from_static(s))
     }
 

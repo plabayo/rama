@@ -18,6 +18,7 @@
 #![cfg_attr(not(test), warn(clippy::print_stdout, clippy::dbg_macro))]
 
 pub mod client;
+pub mod pool;
 pub mod server;
 
 pub use tokio::net::{TcpSocket, TcpStream};

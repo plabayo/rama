@@ -21,7 +21,7 @@ pub(crate) mod body;
 pub use body::{Body, BodyDataStream, BodyExtractExt, BodyLimit, sse};
 
 mod request;
-pub use request::{HttpRequestParts, Request};
+pub use request::{HttpRequestParts, HttpRequestPartsMut, Request};
 
 /// Type alias for [`http::Response`] whose body type defaults to [`Body`], the most common body
 /// type used with rama.

@@ -207,7 +207,7 @@ fn build_response(output: FileOpened) -> Response {
             };
 
             builder
-                .header(header::CONTENT_LENGTH, size.to_string())
+                .header(header::CONTENT_LENGTH, size)
                 .body(body)
                 .unwrap()
         }
