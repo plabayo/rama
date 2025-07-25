@@ -40,7 +40,7 @@ async fn start_server(
 async fn run_client(
     address: impl Into<SocketAddress>,
 ) -> Result<(), Box<dyn std::error::Error + 'static>> {
-    let client = (TraceLayer::new_for_http(),).into_layer(EasyHttpWebClient::default());
+    let client = TraceLayer::new_for_http().into_layer(EasyHttpWebClient::default());
     let resp = client
         .serve(
             Context::default(),
