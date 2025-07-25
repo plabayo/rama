@@ -48,7 +48,7 @@ members = [
     "rama-udp",
     "rama-unix",
     "rama-utils",
-    "rama-ws", "tests-turmoil/test-client-server",
+    "rama-ws",
 ]
 
 [workspace.package]
@@ -391,6 +391,7 @@ spmc = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tokio-test = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
+turmoil = "0.6"
 
 [lints]
 workspace = true

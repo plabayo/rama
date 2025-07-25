@@ -6,7 +6,6 @@ use rama::{
     net::address::SocketAddress,
     Context, Layer, Service,
 };
-use tracing::{info_span, Instrument};
 use tracing_subscriber::{
     filter::LevelFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter,
 };
@@ -34,10 +33,10 @@ async fn start_server(
             TraceLayer::new_for_http().into_layer(WebService::default().get("/", "Hello, World")),
         )
         .await
-        .map_err(Into::into)
+        .map_err(|e| e as Box<dyn std::error::Error + 'static>)
 }
 
-async fn run_client(address: impl Into<SocketAddress>) -> Result<(), BoxError> {
+async fn run_client(address: impl Into<SocketAddress>) -> Result<(), Box<dyn std::error::Error>> {
     let client = TraceLayer::new_for_http().into_layer(EasyHttpWebClient::default());
     let resp = client
         .serve(
@@ -54,18 +53,15 @@ async fn run_client(address: impl Into<SocketAddress>) -> Result<(), BoxError> {
     Ok(())
 }
 
-fn main() {
+#[test]
+fn http_1_client_server_it() {
     setup_tracing();
+
     let mut sim = Builder::new().enable_tokio_io().build();
 
-    sim.host(ADDRESS.ip_addr(), || {
-        start_server(ADDRESS).instrument(info_span!("server"))
-    });
+    sim.host(ADDRESS.ip_addr(), || start_server(ADDRESS));
 
-    sim.client(
-        "client",
-        run_client(ADDRESS).instrument(info_span!("client")),
-    );
+    sim.client("client", run_client(ADDRESS));
 
     sim.run().expect("Error during simulation");
 }
