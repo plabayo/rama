@@ -1,14 +1,14 @@
 use rama::{
-    Context, Layer, Service,
     http::{
-        Body, BodyExtractExt, Request, client::EasyHttpWebClient, layer::trace::TraceLayer,
-        server::HttpServer, service::web::WebService,
+        client::EasyHttpWebClient, layer::trace::TraceLayer, server::HttpServer,
+        service::web::WebService, Body, BodyExtractExt, Request,
     },
     net::address::SocketAddress,
+    Context, Layer, Service,
 };
-use tracing::{Instrument, info_span};
+use tracing::{info_span, Instrument};
 use tracing_subscriber::{
-    EnvFilter, filter::LevelFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt,
+    filter::LevelFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter,
 };
 use turmoil::Builder;
 
@@ -31,15 +31,13 @@ async fn start_server(
     HttpServer::http1()
         .listen(
             address.into(),
-            (TraceLayer::new_for_http()).into_layer(WebService::default().get("/", "Hello, World")),
+            TraceLayer::new_for_http().into_layer(WebService::default().get("/", "Hello, World")),
         )
         .await
         .map_err(Into::into)
 }
 
-async fn run_client(
-    address: impl Into<SocketAddress>,
-) -> Result<(), BoxError> {
+async fn run_client(address: impl Into<SocketAddress>) -> Result<(), BoxError> {
     let client = TraceLayer::new_for_http().into_layer(EasyHttpWebClient::default());
     let resp = client
         .serve(
