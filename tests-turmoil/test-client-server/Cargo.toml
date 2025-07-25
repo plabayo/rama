@@ -12,7 +12,7 @@ authors.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-rama = { path = "../..", features = ["full"] }
+rama = { workspace = true, features = ["full"] }
 turmoil = "0.6"
 tokio = { workspace = true }
 serde = { workspace = true }
