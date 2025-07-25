@@ -23,6 +23,8 @@ pub use ::rama_http_types::{
     Request, Response, Scheme, StatusCode, Uri, Version, conn, header, opentelemetry, proto, sse,
 };
 
+pub use ::rama_http_types::{request_headers_to_curl_command};
+
 pub use ::rama_http_headers as headers;
 
 pub mod matcher;
