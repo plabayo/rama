@@ -122,8 +122,6 @@ impl AcmeClient {
             .await
             .context("fetch new nonce")?;
 
-        println!("response: {:?}", response);
-
         let nonce = Self::get_nonce_from_response(&response)?;
         Ok(nonce)
     }
@@ -148,7 +146,6 @@ impl AcmeClient {
                 .context("create account request")?;
 
             let location: String = response.header_str(LOCATION_HEADER).unwrap().into();
-            println!("Status code: {}", response.status());
 
             let account = parse_response::<server::Account>(response).await?;
             Ok((location, account))
@@ -159,10 +156,7 @@ impl AcmeClient {
         Ok(Account {
             client: self,
             inner: account,
-            credentials: AccountCredentials {
-                key: key,
-                kid: location,
-            },
+            credentials: AccountCredentials { key, kid: location },
         })
     }
 
@@ -283,7 +277,7 @@ impl<'a> Account<'a> {
 
     pub async fn get_order(&self, order_url: &str) -> Result<Order, ClientError> {
         let do_request = async || {
-            let response = self.post(&order_url, NO_PAYLOAD).await?;
+            let response = self.post(order_url, NO_PAYLOAD).await?;
 
             let location: String = response.header_str(LOCATION_HEADER).unwrap().into();
 
@@ -323,8 +317,8 @@ impl Signer for AccountCredentials {
         protected_headers: &mut Headers,
         _unprotected_headers: &mut Headers,
     ) -> Result<(), Self::Error> {
-        protected_headers.try_set_header("alg".to_string(), self.key.alg())?;
-        protected_headers.try_set_header("kid".to_string(), &self.kid)?;
+        protected_headers.try_set_header("alg", self.key.alg())?;
+        protected_headers.try_set_header("kid", &self.kid)?;
         Ok(())
     }
 
@@ -370,9 +364,8 @@ impl<'a> Order<'a> {
         &self,
         authorization_url: &str,
     ) -> Result<server::Authorization, ClientError> {
-        println!("{}", authorization_url);
         let do_request = async || {
-            let response = self.account.post(&authorization_url, NO_PAYLOAD).await?;
+            let response = self.account.post(authorization_url, NO_PAYLOAD).await?;
 
             let authorization = parse_response::<server::Authorization>(response).await?;
             Ok(authorization)
@@ -480,8 +473,6 @@ impl<'a> Order<'a> {
         &self,
         challenge: &server::Challenge,
     ) -> Result<(), ClientError> {
-        println!("sending: {:?}", EMPTY_PAYLOAD);
-
         let do_request = async || {
             let response = self.post(&challenge.url, EMPTY_PAYLOAD).await?;
 
@@ -517,23 +508,14 @@ impl<'a> Order<'a> {
             key_authz.digest().as_ref(),
         )];
 
-        println!("key_authz: {key_authz:?}");
-
-        println!("cert_params: {:?}", cert_params);
-
         let key_pair = rcgen::KeyPair::generate().unwrap();
         let key_der = key_pair.serialize_der();
 
         let cert = cert_params.self_signed(&key_pair).unwrap();
-        println!("{:?}", cert.pem());
-        // let cert_der = cert.der();
 
         let pk = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key_der));
 
-        let cert_key = CertifiedKey::new(
-            vec![cert.der().clone()],
-            any_ecdsa_type(&pk).unwrap().into(),
-        );
+        let cert_key = CertifiedKey::new(vec![cert.der().clone()], any_ecdsa_type(&pk).unwrap());
 
         Ok(cert_key)
     }
@@ -563,7 +545,6 @@ impl<'a> Order<'a> {
         let key_der = key_pair.serialize_der();
 
         let cert = cert_params.self_signed(&key_pair).unwrap();
-        println!("{:?}", cert.pem());
         // let cert_der = cert.der();
 
         let pk = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key_der));
@@ -699,7 +680,6 @@ impl<'a> Order<'a> {
         timeout(timeout_duration, async {
             loop {
                 self.refresh_challenge(challenge).await?;
-                println!("{challenge:?}");
 
                 if challenge.status == server::ChallengeStatus::Valid
                     || challenge.status == server::ChallengeStatus::Invalid
@@ -731,8 +711,6 @@ async fn parse_response<T: serde::de::DeserializeOwned + Send + 'static>(
 ) -> Result<T, ClientError> {
     let body = response.into_body();
     let bytes = body.collect().await.unwrap().to_bytes();
-
-    println!("body {:?}", bytes);
 
     let result = serde_json::from_slice::<T>(&bytes);
     match result {

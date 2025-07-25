@@ -254,8 +254,8 @@ impl Signer for EcdsaKey {
         _unprotected_headers: &mut super::jws::Headers,
     ) -> Result<(), Self::Error> {
         let jwk = self.create_jwk();
-        protected_headers.try_set_header("alg".to_string(), jwk.alg)?;
-        protected_headers.try_set_header("jwk".to_string(), jwk)?;
+        protected_headers.try_set_header("alg", jwk.alg)?;
+        protected_headers.try_set_header("jwk", jwk)?;
         Ok(())
     }
 

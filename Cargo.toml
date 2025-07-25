@@ -176,7 +176,6 @@ rama-ws = { version = "0.3.0-alpha.2", path = "./rama-ws" }
 rand = "0.9"
 ratatui = "0.29"
 rcgen = { version = "0.14", default-features = false, features = ["pem", "aws_lc_rs", "x509-parser"] }
-x509-parser = { version = "0.17.0" }
 regex = "1.11"
 rustls = { version = "0.23", default-features = false, features = [
     "logging",
@@ -227,6 +226,7 @@ venndb = "0.5"
 walkdir = "2.5"
 want = "0.3"
 webpki-roots = "1.0"
+x509-parser = { version = "0.17.0" }
 zstd = "0.13"
 
 [workspace.lints.rust]
@@ -363,7 +363,6 @@ serde = { workspace = true, optional = true }
 serde_html_form = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["macros", "io-std"], optional = true }
-
 
 [target.'cfg(unix)'.dependencies]
 rama-unix = { workspace = true }

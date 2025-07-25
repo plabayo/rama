@@ -83,7 +83,7 @@ async fn main() {
 
     let path = format!(".well-known/acme-challenge/{}", challenge.token);
 
-    println!("localhost:5002/{}", path);
+    println!("localhost:5002/{path}");
     tracing::info!("running service at: {ADDR}");
 
     let state = Arc::new(ChallengeState {
@@ -159,7 +159,7 @@ struct ChallengeState {
 fn create_csr() -> CertificateSigningRequest {
     let key_pair = rcgen::KeyPair::generate().unwrap();
 
-    let params = CertificateParams::new(vec!["test.dev".to_string()]).unwrap();
+    let params = CertificateParams::new(vec!["test.dev".to_owned()]).unwrap();
 
     let mut distinguished_name = DistinguishedName::new();
     distinguished_name.push(DnType::CountryName, "US");

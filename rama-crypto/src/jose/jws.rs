@@ -33,12 +33,12 @@ impl Headers {
         /// to get access to the underlying header map
         pub fn header(
             mut self,
-            name: String,
+            name: impl Into<String>,
             value: impl Serialize,
         ) -> Result<Self, OpaqueError> {
             let headers = self.0.get_or_insert_default();
             let value = serde_json::to_value(value).context("convert to value")?;
-            headers.insert(name, value);
+            headers.insert(name.into(), value);
             Ok(self)
         }
     }

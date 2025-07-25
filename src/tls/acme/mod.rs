@@ -81,7 +81,6 @@ mod test {
         // let nonce = acme_client.nonce().await.unwrap();
         // assert_eq!(nonce, test_nonce.to_string());
 
-        println!("creating account");
         let account = acme_client
             .create_account(CreateAccountOptions {
                 terms_of_service_agreed: Some(true),
@@ -92,7 +91,6 @@ mod test {
             .await
             .expect("create account");
 
-        println!("creating order");
         let mut order = account
             .new_order(NewOrderPayload {
                 identifiers: vec![Identifier::Dns("test.dev".into())],
@@ -101,14 +99,11 @@ mod test {
             .await
             .expect("create order");
 
-        println!("refresh order");
         order.refresh().await.expect("refresh order");
 
-        println!("get authz");
         let authz = order.get_authorizations().await.unwrap();
 
         let auth = &authz[0];
-        println!("authz: {:?}", auth);
         let mut challenge = auth
             .challenges
             .iter()
@@ -120,16 +115,13 @@ mod test {
 
         *key_authz_store.lock() = Some(key_authz);
 
-        println!("notifying ready");
         order.notify_challenge_ready(&challenge).await.unwrap();
 
-        println!("waiting for challenge");
         order
             .poll_until_challenge_finished(&mut challenge, Duration::from_secs(1))
             .await
             .unwrap();
 
-        println!("waiting for order");
         let state = order
             .poll_until_all_authorizations_finished(Duration::from_secs(3))
             .await
@@ -147,13 +139,13 @@ mod test {
             .unwrap();
 
         let cert = order.download_certificate().await.unwrap();
-        println!("got certificate: {cert:?}");
+        println!("received certificate: {cert}");
     }
 
     fn create_csr() -> CertificateSigningRequest {
         let key_pair = rcgen::KeyPair::generate().unwrap();
 
-        let params = CertificateParams::new(vec!["example.com".to_string()]).unwrap();
+        let params = CertificateParams::new(vec!["example.com".to_owned()]).unwrap();
 
         let mut distinguished_name = DistinguishedName::new();
         distinguished_name.push(DnType::CountryName, "US");
@@ -178,7 +170,7 @@ mod test {
 
         server_config.alpn_protocols = vec![rama_net::tls::ApplicationProtocol::ACME_TLS.into()];
 
-        let acceptor_data = TlsAcceptorData::try_from(server_config).expect("create acceptor data");
+        let acceptor_data = TlsAcceptorData::from(server_config);
 
         let tls_acme_test_local_server = TlsConnector::secure(MockConnectorService::new(|| {
             TlsAcceptorService::new(acceptor_data, DummyConnector, false)
@@ -212,7 +204,6 @@ mod test {
         // let nonce = acme_client.nonce().await.unwrap();
         // assert_eq!(nonce, test_nonce.to_string());
 
-        println!("creating account");
         let account = acme_client
             .create_account(CreateAccountOptions {
                 terms_of_service_agreed: Some(true),
@@ -223,7 +214,6 @@ mod test {
             .await
             .unwrap();
 
-        println!("creating order");
         let mut order = account
             .new_order(NewOrderPayload {
                 identifiers: vec![Identifier::Dns("test.dev".into())],
@@ -232,14 +222,11 @@ mod test {
             .await
             .unwrap();
 
-        println!("refresh order");
         order.refresh().await.unwrap();
 
-        println!("get authz");
         let authz = order.get_authorizations().await.unwrap();
 
         let auth = &authz[0];
-        println!("authz: {:?}", auth);
         let challenge = auth
             .challenges
             .iter()
@@ -247,22 +234,19 @@ mod test {
             .unwrap();
 
         let cert_key = order
-            .create_rustls_cert_for_acme_authz(&challenge, &auth.identifier)
+            .create_rustls_cert_for_acme_authz(challenge, &auth.identifier)
             .unwrap();
 
         *cert_store.lock() = Some(Arc::new(cert_key));
-        println!("challegen: {:?}", challenge);
         let mut challenge = challenge.to_owned();
 
         order.notify_challenge_ready(&challenge).await.unwrap();
 
-        println!("waiting for challenge");
         order
             .poll_until_challenge_finished(&mut challenge, Duration::from_secs(30))
             .await
             .unwrap();
 
-        println!("waiting for order");
         let state = order
             .poll_until_all_authorizations_finished(Duration::from_secs(3))
             .await
@@ -280,7 +264,7 @@ mod test {
             .unwrap();
 
         let cert = order.download_certificate().await.unwrap();
-        println!("got certificate: {cert:?}");
+        println!("received certificate: {cert}");
     }
 
     struct ChallengeResponder {
@@ -297,8 +281,6 @@ mod test {
             _ctx: Context<()>,
             _req: Request,
         ) -> Result<Self::Response, Self::Error> {
-            println!("receving get request from acme server");
-
             let authz = self.key_auth.lock();
             match authz.as_ref() {
                 Some(authz) => {

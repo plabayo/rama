@@ -95,7 +95,7 @@ async fn main() {
         .unwrap();
 
     let auth_data = order
-        .create_boring_cert_for_acme_authz(&challenge, &auth.identifier)
+        .create_boring_cert_for_acme_authz(challenge, &auth.identifier)
         .unwrap();
 
     let issuer = TlsAcmeIssue(auth_data);
@@ -130,7 +130,7 @@ async fn main() {
 
     sleep(Duration::from_millis(1000)).await;
 
-    order.notify_challenge_ready(&challenge).await.unwrap();
+    order.notify_challenge_ready(challenge).await.unwrap();
 
     println!("waiting for challenge");
     order
@@ -180,7 +180,7 @@ async fn internal_tcp_service_fn<S>(_ctx: Context<()>, _stream: S) -> Result<(),
 fn create_csr() -> CertificateSigningRequest {
     let key_pair = rcgen::KeyPair::generate().unwrap();
 
-    let params = CertificateParams::new(vec!["test.dev".to_string()]).unwrap();
+    let params = CertificateParams::new(vec!["test.dev".to_owned()]).unwrap();
 
     let mut distinguished_name = DistinguishedName::new();
     distinguished_name.push(DnType::CountryName, "US");

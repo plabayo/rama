@@ -43,7 +43,7 @@ impl KeyAuthorization {
     /// Create [`KeyAuthorization`] for the given challenge and key
     pub(crate) fn new(token: &str, jwk: &JWK) -> Result<Self, OpaqueError> {
         let thumb = BASE64_URL_SAFE_NO_PAD.encode(jwk.thumb_sha256()?);
-        Ok(Self(format!("{}.{}", token, thumb)))
+        Ok(Self(format!("{token}.{thumb}")))
     }
 
     /// Encode [`KeyAuthorization`] for use in Http challenge

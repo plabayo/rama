@@ -26,7 +26,7 @@ pub(crate) struct ProtectedHeader {
 /// have an account we use the `KeyID` instead
 pub(crate) enum ProtectedHeaderKey {
     #[serde(rename = "jwk")]
-    JWK(JWK),
+    Jwk(JWK),
     #[serde(rename = "kid")]
     KeyID(String),
 }
@@ -327,34 +327,34 @@ pub enum Problem {
 impl std::fmt::Display for Problem {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self {
-            Problem::AccountDoesNotExist(detail) => write!(f, "account does not exist: {}", detail),
-            Problem::AlreadyRevoked(detail) => write!(f, "already revoked: {}", detail),
-            Problem::BadCSR(detail) => write!(f, "bad csr: {}", detail),
-            Problem::BadNonce(detail) => write!(f, "bad nonce: {}", detail),
-            Problem::BadPublicKey(detail) => write!(f, "bad public key: {}", detail),
-            Problem::BadRevocationReason(detail) => write!(f, "bad revocation reason: {}", detail),
+            Problem::AccountDoesNotExist(detail) => write!(f, "account does not exist: {detail}"),
+            Problem::AlreadyRevoked(detail) => write!(f, "already revoked: {detail}"),
+            Problem::BadCSR(detail) => write!(f, "bad csr: {detail}"),
+            Problem::BadNonce(detail) => write!(f, "bad nonce: {detail}"),
+            Problem::BadPublicKey(detail) => write!(f, "bad public key: {detail}"),
+            Problem::BadRevocationReason(detail) => write!(f, "bad revocation reason: {detail}"),
             Problem::BadSignatureAlgorithm(detail) => {
-                write!(f, "bad signature algorithm: {}", detail)
+                write!(f, "bad signature algorithm: {detail}")
             }
-            Problem::Caa(detail) => write!(f, "caa forbids requests: {}", detail),
-            Problem::Compound(detail) => write!(f, "compound issue: {}", detail),
-            Problem::Connection(detail) => write!(f, "connection issue: {}", detail),
-            Problem::Dns(detail) => write!(f, "dns issue: {}", detail),
+            Problem::Caa(detail) => write!(f, "caa forbids requests: {detail}"),
+            Problem::Compound(detail) => write!(f, "compound issue: {detail}"),
+            Problem::Connection(detail) => write!(f, "connection issue: {detail}"),
+            Problem::Dns(detail) => write!(f, "dns issue: {detail}"),
             Problem::ExternalAccountRequired(detail) => {
-                write!(f, "external account required: {}", detail)
+                write!(f, "external account required: {detail}")
             }
-            Problem::IncorrectResponse(detail) => write!(f, "incorrect response: {}", detail),
-            Problem::InvalidContact(detail) => write!(f, "invalid contact: {}", detail),
-            Problem::Malformed(detail) => write!(f, "malformed data: {}", detail),
-            Problem::OrderNotReady(detail) => write!(f, "order not ready: {}", detail),
-            Problem::RateLimited(detail) => write!(f, "rate limited: {}", detail),
-            Problem::RejectedIdentifier(detail) => write!(f, "rejected identifier: {}", detail),
-            Problem::ServerInternal(detail) => write!(f, "server internal error: {}", detail),
-            Problem::Tls(detail) => write!(f, "tls issue: {}", detail),
-            Problem::Unauthorized(detail) => write!(f, "unauthorized: {}", detail),
-            Problem::UnsupportedContact(detail) => write!(f, "unsupported contact: {}", detail),
-            Problem::UnsupportIdentifier(detail) => write!(f, "unsupport identifier: {}", detail),
-            Problem::UserActionRequired(detail) => write!(f, "user action required: {}", detail),
+            Problem::IncorrectResponse(detail) => write!(f, "incorrect response: {detail}"),
+            Problem::InvalidContact(detail) => write!(f, "invalid contact: {detail}"),
+            Problem::Malformed(detail) => write!(f, "malformed data: {detail}"),
+            Problem::OrderNotReady(detail) => write!(f, "order not ready: {detail}"),
+            Problem::RateLimited(detail) => write!(f, "rate limited: {detail}"),
+            Problem::RejectedIdentifier(detail) => write!(f, "rejected identifier: {detail}"),
+            Problem::ServerInternal(detail) => write!(f, "server internal error: {detail}"),
+            Problem::Tls(detail) => write!(f, "tls issue: {detail}"),
+            Problem::Unauthorized(detail) => write!(f, "unauthorized: {detail}"),
+            Problem::UnsupportedContact(detail) => write!(f, "unsupported contact: {detail}"),
+            Problem::UnsupportIdentifier(detail) => write!(f, "unsupport identifier: {detail}"),
+            Problem::UserActionRequired(detail) => write!(f, "user action required: {detail}"),
             Problem::Other(raw_problem_response) => raw_problem_response.fmt(f),
         }
     }
@@ -366,23 +366,23 @@ impl std::error::Error for Problem {}
 mod tests {
     use super::*;
 
-    #[test]
-    // TODO test parse page 24
-    fn test_parse_directory() {
-        todo!()
-    }
+    // #[test]
+    // // TODO test parse page 24
+    // fn test_parse_directory() {
+    //     todo!()
+    // }
 
-    #[test]
-    // TODO test parse 25
-    fn test_parse_account() {
-        todo!()
-    }
+    // #[test]
+    // // TODO test parse 25
+    // fn test_parse_account() {
+    //     todo!()
+    // }
 
-    #[test]
-    // TODO test parse 26
-    fn test_parse_order_list() {
-        todo!()
-    }
+    // #[test]
+    // // TODO test parse 26
+    // fn test_parse_order_list() {
+    //     todo!()
+    // }
 
     // TODO test parse 27
     // TODO test parse 30

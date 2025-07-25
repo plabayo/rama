@@ -90,7 +90,7 @@ async fn main() {
         .unwrap();
 
     let cert_key = order
-        .create_rustls_cert_for_acme_authz(&challenge, &auth.identifier)
+        .create_rustls_cert_for_acme_authz(challenge, &auth.identifier)
         .unwrap();
 
     let cert_resolver = Arc::new(ResolvesServerCertAcme::new(cert_key));
@@ -101,7 +101,7 @@ async fn main() {
 
     server_config.alpn_protocols = vec![rama_net::tls::ApplicationProtocol::ACME_TLS.into()];
 
-    let acceptor_data = TlsAcceptorData::try_from(server_config).expect("create acceptor data");
+    let acceptor_data = TlsAcceptorData::from(server_config);
 
     graceful.spawn_task_fn(|guard| async move {
         let tcp_service =
@@ -116,7 +116,7 @@ async fn main() {
 
     sleep(Duration::from_millis(1000)).await;
 
-    order.notify_challenge_ready(&challenge).await.unwrap();
+    order.notify_challenge_ready(challenge).await.unwrap();
 
     println!("waiting for challenge");
     order
@@ -159,7 +159,7 @@ impl ResolvesServerCertAcme {
 
 impl ResolvesServerCert for ResolvesServerCertAcme {
     fn resolve(&self, _client_hello: RustlsClientHello) -> Option<Arc<CertifiedKey>> {
-        return Some(self.key.clone());
+        Some(self.key.clone())
     }
 }
 
@@ -170,7 +170,7 @@ async fn internal_tcp_service_fn<S>(_ctx: Context<()>, _stream: S) -> Result<(),
 fn create_csr() -> CertificateSigningRequest {
     let key_pair = rcgen::KeyPair::generate().unwrap();
 
-    let params = CertificateParams::new(vec!["test.dev".to_string()]).unwrap();
+    let params = CertificateParams::new(vec!["test.dev".to_owned()]).unwrap();
 
     let mut distinguished_name = DistinguishedName::new();
     distinguished_name.push(DnType::CountryName, "US");
