@@ -34,7 +34,7 @@ async fn start_server(
             (TraceLayer::new_for_http()).into_layer(WebService::default().get("/", "Hello, World")),
         )
         .await
-        .map_err(|e| e as Box<dyn std::error::Error>)
+        .map_err(Into::into)
 }
 
 async fn run_client(
