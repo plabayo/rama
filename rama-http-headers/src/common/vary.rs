@@ -1,4 +1,4 @@
-use rama_http_types::HeaderValue;
+use rama_http_types::{HeaderName, HeaderValue};
 
 use crate::util::FlatCsv;
 
@@ -50,6 +50,12 @@ impl Vary {
     /// Iterate the header names of this `Vary`.
     pub fn iter_strs(&self) -> impl Iterator<Item = &str> {
         self.0.iter()
+    }
+}
+
+impl From<HeaderName> for Vary {
+    fn from(name: HeaderName) -> Self {
+        Vary(HeaderValue::from(name).into())
     }
 }
 
