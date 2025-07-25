@@ -13,26 +13,23 @@ mod test {
     use std::{convert::Infallible, sync::Arc, time::Duration};
 
     use crate::tls::acme::proto::{
-        client::{CreateAccountOptions, FinalizePayload, KeyAuthorization, NewOrderPayload},
+        client::{CreateAccountOptions, KeyAuthorization, NewOrderPayload},
         common::Identifier,
         server::{ChallengeType, OrderStatus},
     };
     use http::HeaderValue;
     use parking_lot::Mutex;
     use rama_core::{Context, Service, error::BoxError};
-    use rama_crypto::dep::aws_lc_rs::{
-        rand::SystemRandom,
-        signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair},
-    };
+    use rama_crypto::dep::rcgen::CertificateSigningRequest;
     use rama_http::{Body, Request, Response, service::web::Router};
     use rama_net::client::EstablishedClientConnection;
     use rama_net::test_utils::client::MockConnectorService;
     use rama_tls_rustls::{
         client::{TlsConnector, TlsConnectorDataBuilder},
         dep::{
-            rcgen::{self, Certificate, CertificateParams, DistinguishedName, DnType, KeyPair},
+            rcgen::{self, CertificateParams, DistinguishedName, DnType},
             rustls::{
-                self, crypto,
+                self,
                 server::{ClientHello, ResolvesServerCert},
                 sign::CertifiedKey,
             },
@@ -142,7 +139,7 @@ mod test {
 
         let csr = create_csr();
 
-        order.finalize(csr).await.unwrap();
+        order.finalize(csr.der()).await.unwrap();
 
         order
             .poll_until_certificate_ready(Duration::from_secs(3))
@@ -153,7 +150,7 @@ mod test {
         println!("got certificate: {cert:?}");
     }
 
-    fn create_csr() -> String {
+    fn create_csr() -> CertificateSigningRequest {
         let key_pair = rcgen::KeyPair::generate().unwrap();
 
         let params = CertificateParams::new(vec!["example.com".to_string()]).unwrap();
@@ -165,8 +162,7 @@ mod test {
         distinguished_name.push(DnType::OrganizationName, "ACME Corporation");
         distinguished_name.push(DnType::CommonName, "example.com");
 
-        let csr_pem = params.serialize_request(&key_pair).unwrap().pem().unwrap();
-        csr_pem
+        params.serialize_request(&key_pair).unwrap()
     }
 
     #[tokio::test]
@@ -276,7 +272,7 @@ mod test {
 
         let csr = create_csr();
 
-        order.finalize(csr).await.unwrap();
+        order.finalize(csr.der()).await.unwrap();
 
         order
             .poll_until_certificate_ready(Duration::from_secs(3))

@@ -4,6 +4,7 @@ use rama::{
     graceful,
     service::service_fn,
     tcp::server::TcpListener,
+    telemetry::tracing,
     tls::acme::{
         AcmeClient,
         proto::{
@@ -164,7 +165,7 @@ struct TlsAcmeIssue(ServerAuthData);
 impl DynamicCertIssuer for TlsAcmeIssue {
     async fn issue_cert(
         &self,
-        client_hello: ClientHello,
+        _client_hello: ClientHello,
         _server_name: Option<Host>,
     ) -> Result<ServerAuthData, OpaqueError> {
         // TODO checks

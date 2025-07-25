@@ -2,7 +2,7 @@ use crate::tls::acme::proto::{
     client::{FinalizePayload, KeyAuthorization, NewOrderPayload},
     common::Identifier,
     server::{
-        AccountStatus, Authorization, AuthorizationStatus, Challenge, Order, OrderStatus, Problem,
+        AccountStatus, Authorization, AuthorizationStatus, Challenge, Order, OrderStatus,
         ProtectedHeader, ProtectedHeaderKey,
     },
 };
@@ -22,14 +22,12 @@ use rama_core::{
     service::{BoxService, service_fn},
 };
 use rama_crypto::dep::{
-    aws_lc_rs::signature::UnparsedPublicKey,
     rcgen::Issuer,
     x509_parser::{asn1_rs::oid, parse_x509_certificate},
 };
 use rama_http::{
     Body, Request, Response,
     dep::http_body_util::BodyExt,
-    layer::auth,
     matcher::UriParams,
     service::{
         client::HttpClientExt,
@@ -40,9 +38,12 @@ use rama_net::{
     client::EstablishedClientConnection,
     tls::{DataEncoding, client::NegotiatedTlsParameters},
 };
-use rama_tls_rustls::dep::rcgen::{
-    self, Certificate, CertificateParams, CertificateSigningRequestParams, DistinguishedName, IsCa,
-    KeyPair,
+use rama_tls_rustls::dep::{
+    pki_types::CertificateSigningRequestDer,
+    rcgen::{
+        self, Certificate, CertificateParams, CertificateSigningRequestParams, DistinguishedName,
+        IsCa, KeyPair,
+    },
 };
 use serde::de::DeserializeOwned;
 /// Very very basic acme server implementation, currently only useful
@@ -152,6 +153,7 @@ struct KeyIds(Arc<Mutex<HashMap<String, signature::UnparsedPublicKey<Vec<u8>>>>>
 struct MaybeKeyIdsVerifier<'a> {
     key_ids: &'a KeyIds,
     nonces: &'a Arc<Mutex<Vec<u64>>>,
+    url: String,
 }
 
 impl<'a> Verifier for MaybeKeyIdsVerifier<'a> {
@@ -160,7 +162,7 @@ impl<'a> Verifier for MaybeKeyIdsVerifier<'a> {
 
     fn verify(
         &self,
-        payload: &[u8],
+        _payload: &[u8],
         signatures: &[rama_crypto::jose::ToVerifySignature],
     ) -> Result<Self::Output, Self::Error> {
         println!("verify");
@@ -186,9 +188,18 @@ impl<'a> Verifier for MaybeKeyIdsVerifier<'a> {
             return Err(OpaqueError::from_display("invalid nonce provided"));
         };
 
+        println!("checking urls: {} vs {}", info.url, self.url);
+        if info.url != self.url {
+            return Err(OpaqueError::from_display("invalid url"));
+        }
+
         println!("verify4");
         match info.key {
             ProtectedHeaderKey::JWK(ref jwk) => {
+                if jwk.alg != info.alg {
+                    return Err(OpaqueError::from_display("JWK used unexpected algorithm"));
+                }
+
                 println!("verify5");
                 let key = jwk.unparsed_public_key()?;
                 println!("verify5: {:?}", decoded.signature());
@@ -323,7 +334,9 @@ impl AcmeServer {
         }
     }
 
-    async fn new_nonce(_ctx: Context<State>, _req: Request) -> Result<Response, OpaqueError> {
+    async fn new_nonce(ctx: Context<State>, req: Request) -> Result<Response, OpaqueError> {
+        Self::parse_request::<Empty>(&ctx, req).await?;
+
         // Nonce header is always set by our WithNonceHeaderLayer, we just need to endpoint to return
         // and emtpy 200 response
         let resp = Response::builder().body(rama_http::Body::empty()).unwrap();
@@ -570,7 +583,17 @@ impl AcmeServer {
         order.order.status = OrderStatus::Processing;
         println!("csr: {:?}", &payload);
 
-        let csr = CertificateSigningRequestParams::from_pem(&payload.csr).unwrap();
+        let der = BASE64_URL_SAFE_NO_PAD
+            .decode(&payload.csr)
+            .context("decode csr")?;
+
+        println!("decoded");
+        let der = CertificateSigningRequestDer::from(der.as_slice());
+        println!("decoded der ");
+        let rcsr = CertificateSigningRequestParams::from_der(&der).context("parse csr from der");
+        println!("decoded csr: {:?}", rcsr);
+        let csr = rcsr?;
+
         let signed_cert = csr.signed_by(&ctx.state().issuer).unwrap();
         order.certificate = Some(signed_cert);
         let host = ctx.state().host.as_str();
@@ -671,7 +694,7 @@ impl AcmeServer {
             let jwks = ctx.state().jwks.lock();
 
             let jwk = match &headers.key {
-                ProtectedHeaderKey::JWK(jwk) => todo!("jkfd"),
+                ProtectedHeaderKey::JWK(jwk) => jwk,
                 ProtectedHeaderKey::KeyID(id) => jwks.get(id).unwrap(),
             };
 
@@ -770,10 +793,6 @@ impl AcmeServer {
         Ok(())
     }
 
-    fn testtt<'a>(a: &'a str) -> &'a str {
-        a
-    }
-
     async fn verify_http_challenge(
         ctx: &Context<State>,
         url: &str,
@@ -828,7 +847,8 @@ impl AcmeServer {
         ctx: &Context<State>,
         req: Request,
     ) -> Result<(T, ProtectedHeader), OpaqueError> {
-        let bytes = req.into_body().collect().await.unwrap().to_bytes();
+        let (parts, body) = req.into_parts();
+        let bytes = body.collect().await.unwrap().to_bytes();
 
         println!("bytes: {:?}", &bytes);
         let result = serde_json::from_slice::<JWSFlattened>(&bytes).context("parse response")?;
@@ -836,10 +856,12 @@ impl AcmeServer {
         let (decoded, protected_header) = result.decode(&MaybeKeyIdsVerifier {
             key_ids: &ctx.state().key_ids,
             nonces: &ctx.state().nonces,
+            url: parts.uri.to_string(),
         })?;
 
         println!("decodedd input: {:?}", decoded.payload());
 
+        // TODO skip serde here if null
         let payload = if decoded.payload().len() > 0 {
             decoded.payload()
         } else {

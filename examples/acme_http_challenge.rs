@@ -7,10 +7,11 @@ use rama::{
         service::web::WebService,
     },
     rt::Executor,
+    telemetry::tracing,
     tls::acme::{
         AcmeClient,
         proto::{
-            client::{CreateAccountOptions, FinalizePayload, KeyAuthorization, NewOrderPayload},
+            client::{CreateAccountOptions, KeyAuthorization, NewOrderPayload},
             common::Identifier,
             server::{ChallengeType, OrderStatus},
         },
@@ -19,7 +20,7 @@ use rama::{
 use rama_crypto::dep::rcgen::{
     self, CertificateParams, CertificateSigningRequest, DistinguishedName, DnType,
 };
-use rama_http_backend::client::{EasyHttpWebClient, EasyHttpWebClientBuilder};
+use rama_http_backend::client::EasyHttpWebClient;
 use rama_net::tls::client::ServerVerifyMode;
 use rama_tls_boring::client::TlsConnectorDataBuilder;
 

@@ -2,6 +2,7 @@ use rama::{
     Context, Layer, Service, graceful,
     service::service_fn,
     tcp::server::TcpListener,
+    telemetry::tracing,
     tls::{
         acme::{
             AcmeClient,

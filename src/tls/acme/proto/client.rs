@@ -1,18 +1,10 @@
-use std::{fmt::Debug, marker::PhantomData};
-
-use super::{common::Identifier, server::Challenge};
-use crate::crypto::dep::aws_lc_rs::{
-    digest::{Digest, SHA256, digest},
-    error::{KeyRejected, Unspecified},
-    pkcs8,
-    rand::SystemRandom,
-    signature::{self, ECDSA_P256_SHA256_FIXED, ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair},
-    signature::{KeyPair, Signature},
-};
+use super::common::Identifier;
+use crate::crypto::dep::aws_lc_rs::digest::{SHA256, digest};
 use base64::prelude::{BASE64_URL_SAFE_NO_PAD, Engine};
-use rama_core::error::{BoxError, ErrorContext, OpaqueError};
+use rama_core::error::OpaqueError;
 use rama_crypto::jose::JWK;
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize};
+use std::fmt::Debug;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

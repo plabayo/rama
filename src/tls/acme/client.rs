@@ -5,7 +5,7 @@ use super::proto::{
 use crate::{
     Context, Service,
     crypto::jose::{EMPTY_PAYLOAD, EcdsaKey, Empty, Headers, JWSBuilder, NO_PAYLOAD, Signer},
-    error::{BoxError, ErrorContext, ErrorExt, OpaqueError},
+    error::{ErrorContext, ErrorExt, OpaqueError},
     http::{
         Body, BodyExtractExt, Request, Response, client::EasyHttpWebClient,
         dep::http_body_util::BodyExt, service::client::HttpClientExt, utils::HeaderValueGetter,
@@ -25,25 +25,9 @@ use crate::{
     },
 };
 
-use base64::{
-    Engine as _,
-    prelude::{BASE64_URL_SAFE, BASE64_URL_SAFE_NO_PAD},
-};
+use base64::{Engine as _, prelude::BASE64_URL_SAFE_NO_PAD};
 use parking_lot::Mutex;
-use rama_core::Layer;
 use rama_net::tls::{DataEncoding, server::ServerAuthData};
-use rama_tls_boring::core::{
-    asn1::{Asn1Object, Asn1Time},
-    bn::BigNum,
-    hash::MessageDigest,
-    pkey::PKey,
-    rsa::Rsa,
-    x509::{
-        X509, X509Builder, X509Extension, X509NameBuilder,
-        extension::{BasicConstraints, KeyUsage, SubjectAlternativeName},
-    },
-};
-use rama_utils::{backoff::ExponentialBackoff, rng::HasherRng};
 use serde::Serialize;
 use std::time::Duration;
 use tokio::time::{sleep, timeout};

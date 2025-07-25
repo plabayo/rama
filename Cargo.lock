@@ -2530,7 +2530,6 @@ dependencies = [
  "spmc",
  "tokio",
  "tokio-test",
- "tracing",
  "tracing-subscriber",
 ]
 
