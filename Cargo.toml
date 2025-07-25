@@ -226,6 +226,7 @@ venndb = "0.5"
 walkdir = "2.5"
 want = "0.3"
 webpki-roots = "1.0"
+x509-parser = { version = "0.17.0" }
 zstd = "0.13"
 
 [workspace.lints.rust]
@@ -339,6 +340,7 @@ opentelemetry = [
 base64 = { workspace = true, optional = true }
 bytes = { workspace = true, optional = true }
 hex = { workspace = true, optional = true }
+parking_lot = { workspace = true }
 rama-core = { workspace = true }
 rama-crypto = { workspace = true }
 rama-dns = { workspace = true, optional = true }
@@ -384,7 +386,6 @@ opentelemetry-otlp = { workspace = true }
 opentelemetry_sdk = { workspace = true }
 pin-project-lite = { workspace = true }
 regex = { workspace = true }
-serde = { workspace = true, features = ["derive"] }
 serde_html_form = { workspace = true }
 serde_json = { workspace = true }
 spmc = { workspace = true }
@@ -447,6 +448,18 @@ name = "http_core_server"
 path = "benches/http_core_server.rs"
 required-features = ["full"]
 harness = false
+
+[[example]]
+name = "acme_http_challenge"
+required-features = ["http-full", "boring"]
+
+[[example]]
+name = "acme_tls_challenge_using_boring"
+required-features = ["http-full", "boring"]
+
+[[example]]
+name = "acme_tls_challenge_using_rustls"
+required-features = ["http-full", "rustls"]
 
 [[example]]
 name = "http_conn_state"

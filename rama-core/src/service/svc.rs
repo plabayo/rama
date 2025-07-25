@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 /// A [`Service`] that produces rama services,
 /// to serve requests with, be it transport layer requests or application layer requests.
-pub trait Service<S, Request>: Sized + Send + Sync + 'static {
+pub trait Service<State, Request>: Sized + Send + Sync + 'static {
     /// The type of response returned by the service.
     type Response: Send + 'static;
 
@@ -20,12 +20,12 @@ pub trait Service<S, Request>: Sized + Send + Sync + 'static {
     /// using the given context.
     fn serve(
         &self,
-        ctx: Context<S>,
+        ctx: Context<State>,
         req: Request,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_;
 
     /// Box this service to allow for dynamic dispatch.
-    fn boxed(self) -> BoxService<S, Request, Self::Response, Self::Error> {
+    fn boxed(self) -> BoxService<State, Request, Self::Response, Self::Error> {
         BoxService::new(self)
     }
 }

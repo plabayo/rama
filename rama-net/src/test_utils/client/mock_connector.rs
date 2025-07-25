@@ -45,7 +45,7 @@ impl<S> MockConnectorService<S> {
 
 impl<State, S, Request, Error, Server> Service<State, Request> for MockConnectorService<S>
 where
-    S: Fn() -> Server + Send + Sync + 'static,
+    S: FnOnce() -> Server + Send + Sync + 'static + Clone,
     Server: Service<State, MockSocket, Error = Error>,
     State: Clone + Send + Sync + 'static,
     Request: Send + 'static,
@@ -63,7 +63,7 @@ where
         let client_socket = MockSocket { stream: client };
         let server_socket = MockSocket { stream: server };
 
-        let server = (self.create_server)();
+        let server = (self.create_server.clone())();
         let server_ctx = ctx.clone();
 
         tokio::spawn(async move {

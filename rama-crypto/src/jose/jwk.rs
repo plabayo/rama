@@ -1,3 +1,4 @@
+use aws_lc_rs::signature::Signature;
 use aws_lc_rs::{
     digest::{Digest, SHA256, digest},
     pkcs8::Document,
@@ -11,7 +12,7 @@ use base64::{Engine as _, prelude::BASE64_URL_SAFE_NO_PAD};
 use rama_core::error::{ErrorContext, OpaqueError};
 use serde::{Deserialize, Serialize, Serializer, ser::SerializeStruct};
 
-use crate::jose::JWA;
+use crate::jose::{JWA, Signer};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 /// [`JWK`] or JSON Web Key as defined in [`rfc7517`]
@@ -19,20 +20,20 @@ use crate::jose::JWA;
 /// [`rfc7517`]: https://datatracker.ietf.org/doc/html/rfc7517
 pub struct JWK {
     /// Intended algorithm to be used with this key
-    alg: JWA,
+    pub alg: JWA,
     #[serde(flatten)]
-    key_type: JWKType,
+    pub key_type: JWKType,
     #[serde(skip_serializing_if = "Option::is_none")]
-    r#use: Option<JWKUse>,
+    pub r#use: Option<JWKUse>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    key_ops: Option<Vec<String>>,
+    pub key_ops: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    x5c: Option<Vec<String>>,
+    pub x5c: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    x5t: Option<String>,
+    pub x5t: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "x5t#S256")]
-    x5t_sha256: Option<String>,
+    pub x5t_sha256: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
@@ -235,6 +236,36 @@ impl EcdsaKey {
 
     pub fn rng(&self) -> &SystemRandom {
         &self.rng
+    }
+
+    pub fn alg(&self) -> JWA {
+        self.alg
+    }
+}
+
+impl Signer for EcdsaKey {
+    type Signature = Signature;
+
+    type Error = OpaqueError;
+
+    fn set_headers(
+        &self,
+        protected_headers: &mut super::jws::Headers,
+        _unprotected_headers: &mut super::jws::Headers,
+    ) -> Result<(), Self::Error> {
+        let jwk = self.create_jwk();
+        protected_headers.try_set_header("alg", jwk.alg)?;
+        protected_headers.try_set_header("jwk", jwk)?;
+        Ok(())
+    }
+
+    fn sign(&self, data: &str) -> Result<Self::Signature, Self::Error> {
+        let sig = self
+            .inner
+            .sign(self.rng(), data.as_bytes())
+            .context("sign protected data")?;
+
+        Ok(sig)
     }
 }
 
