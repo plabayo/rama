@@ -13,6 +13,10 @@ pub mod error;
 pub mod str;
 
 #[doc(hidden)]
+#[macro_use]
+pub mod traits;
+
+#[doc(hidden)]
 #[macro_export]
 macro_rules! __opaque_body {
     ($(#[$m:meta])* pub type $name:ident = $actual:ty;) => {
