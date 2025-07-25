@@ -235,6 +235,7 @@ impl<C, ID> LruDropPool<C, ID> {
             active_slots: Arc::new(Semaphore::const_new(max_active)),
             idle_timeout: None,
             reuse_strategy: ReuseStrategy::default(),
+            #[cfg(feature = "opentelemetry")]
             metrics: None,
         })
     }
