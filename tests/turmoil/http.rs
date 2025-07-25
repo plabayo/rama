@@ -1,0 +1,67 @@
+use rama::{
+    Context, Layer, Service,
+    http::{
+        Body, BodyExtractExt, Request, client::EasyHttpWebClient, layer::trace::TraceLayer,
+        server::HttpServer, service::web::WebService,
+    },
+    net::address::SocketAddress,
+};
+use tracing_subscriber::{
+    EnvFilter, filter::LevelFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt,
+};
+use turmoil::Builder;
+
+const ADDRESS: SocketAddress = SocketAddress::default_ipv4(62004);
+
+fn setup_tracing() {
+    tracing_subscriber::registry()
+        .with(fmt::layer())
+        .with(
+            EnvFilter::builder()
+                .with_default_directive(LevelFilter::DEBUG.into())
+                .from_env_lossy(),
+        )
+        .init();
+}
+
+async fn start_server(
+    address: impl Into<SocketAddress>,
+) -> Result<(), Box<dyn std::error::Error + 'static>> {
+    HttpServer::http1()
+        .listen(
+            address.into(),
+            TraceLayer::new_for_http().into_layer(WebService::default().get("/", "Hello, World")),
+        )
+        .await
+        .map_err(|e| e as Box<dyn std::error::Error + 'static>)
+}
+
+async fn run_client(address: impl Into<SocketAddress>) -> Result<(), Box<dyn std::error::Error>> {
+    let client = TraceLayer::new_for_http().into_layer(EasyHttpWebClient::default());
+    let resp = client
+        .serve(
+            Context::default(),
+            Request::builder()
+                .uri(format!("http://{address}/", address = address.into()))
+                .method("GET")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await?;
+    let body = resp.try_into_string().await.unwrap();
+    assert_eq!(body, "Hello, World");
+    Ok(())
+}
+
+#[test]
+fn http_1_client_server_it() {
+    setup_tracing();
+
+    let mut sim = Builder::new().enable_tokio_io().build();
+
+    sim.host(ADDRESS.ip_addr(), || start_server(ADDRESS));
+
+    sim.client("client", run_client(ADDRESS));
+
+    sim.run().expect("Error during simulation");
+}
