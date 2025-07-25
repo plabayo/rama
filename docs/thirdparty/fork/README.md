@@ -32,20 +32,20 @@ as a distant relative.
 
 ### tower-rs
 
-- <https://github.com/tower-rs/tower/tree/81658e65ad6dbddaf4fa7d0f19361e4c56d85c80>
+- <https://github.com/tower-rs/tower/tree/a1c277bc90839820bd8b4c0d8b47d14217977a79>
   - Service / Layer traits
   - Some layers such as timeout, filter, most of util ones
   - License:
-    - Original: <https://github.com/tower-rs/tower/blob/81658e65ad6dbddaf4fa7d0f19361e4c56d85c80/LICENSE>
+    - Original: <https://github.com/tower-rs/tower/blob/a1c277bc90839820bd8b4c0d8b47d14217977a79/LICENSE>
     - Type: MIT
     - Copy: [./licenses/tower](./licenses/tower)
-- <https://github.com/tower-rs/tower-http/tree/cf3046f2266230227d268616792ca170fa9d73d3>
+- <https://github.com/tower-rs/tower-http/tree/35a6cb83242b2004352a8a45f97c0c2cb5475254>
   - pretty much everything
   - now kept directly in sync "conceptual logic wise",
     but originally forked as an actual `tower-async` package as found in
     <https://github.com/plabayo/tower-async/tree/57798b7baea8e212197a226a2481fa282591dda4>
   - License:
-    - Original: <https://github.com/tower-rs/tower-http/blob/cf3046f2266230227d268616792ca170fa9d73d3/tower-http/LICENSE>
+    - Original: <https://github.com/tower-rs/tower-http/blob/35a6cb83242b2004352a8a45f97c0c2cb5475254/tower-http/LICENSE>
     - Type: MIT
     - Copy: [./licenses/tower-http](./licenses/tower-http)
 
