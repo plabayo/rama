@@ -6,7 +6,7 @@ use rama::{
     net::address::SocketAddress,
     Context, Layer, Service,
 };
-use tracing::{info, info_span, Instrument};
+use tracing::{info_span, Instrument};
 use tracing_subscriber::{
     filter::LevelFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter,
 };
