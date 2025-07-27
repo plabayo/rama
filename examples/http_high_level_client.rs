@@ -119,7 +119,7 @@ async fn main() {
     let info: Info = client
         .get(format!("http://{ADDRESS}/info"))
         .header("x-magic", "42")
-        .typed_header(Accept::json())
+        .typed_header(&Accept::json())
         .send(Context::default())
         .await
         .unwrap()
@@ -136,7 +136,7 @@ async fn main() {
     let resp = client
         .post(format!("http://{ADDRESS}/introduce"))
         .json(&json!({"name": "Rama"}))
-        .typed_header(Accept::text())
+        .typed_header(&Accept::text())
         .send(Context::default())
         .await
         .unwrap()

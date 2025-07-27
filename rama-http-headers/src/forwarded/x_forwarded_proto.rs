@@ -32,7 +32,7 @@ impl Header for XForwardedProto {
     }
 
     fn decode<'i, I: Iterator<Item = &'i HeaderValue>>(values: &mut I) -> Result<Self, Error> {
-        Ok(XForwardedProto(
+        Ok(Self(
             values
                 .next()
                 .and_then(|value| value.to_str().ok().and_then(|s| s.parse().ok()))
@@ -48,11 +48,13 @@ impl Header for XForwardedProto {
 
 impl XForwardedProto {
     /// Get a reference to the [`ForwardedProtocol`] of this [`XForwardedProto`].
+    #[must_use]
     pub fn protocol(&self) -> &ForwardedProtocol {
         &self.0
     }
 
     /// Consume this [`Header`] into the inner data ([`ForwardedProtocol`]).
+    #[must_use]
     pub fn into_protocol(self) -> ForwardedProtocol {
         self.0
     }
@@ -73,7 +75,7 @@ impl super::ForwardHeader for XForwardedProto {
         I: IntoIterator<Item = &'a ForwardedElement>,
     {
         let proto = input.into_iter().next()?.ref_forwarded_proto()?;
-        Some(XForwardedProto(proto))
+        Some(Self(proto))
     }
 }
 

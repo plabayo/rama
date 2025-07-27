@@ -56,6 +56,7 @@ pub struct RequestContext {
 
 impl RequestContext {
     /// Check if [`Authority`] is using the default port for the [`Protocol`] set in this [`RequestContext`]
+    #[must_use]
     pub fn authority_has_default_port(&self) -> bool {
         self.protocol.default_port() == Some(self.authority.port())
     }
@@ -142,7 +143,7 @@ impl<T: HttpRequestParts, State> TryFrom<(&Context<State>, &T)> for RequestConte
             .unwrap_or_else(|| req.version());
         tracing::trace!(url.full = %uri, "request context: maybe detected http version: {http_version:?}");
 
-        Ok(RequestContext {
+        Ok(Self {
             http_version,
             protocol,
             authority,

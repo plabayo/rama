@@ -20,14 +20,15 @@ const STREAM_ID_MASK: u32 = 1 << 31;
 
 impl StreamId {
     /// Stream ID 0.
-    pub const ZERO: StreamId = StreamId(0);
+    pub const ZERO: Self = Self(0);
 
     /// The maximum allowed stream ID.
-    pub const MAX: StreamId = StreamId(u32::MAX >> 1);
+    pub const MAX: Self = Self(u32::MAX >> 1);
 
     /// Parse the stream ID
     #[inline]
-    pub fn parse(buf: &[u8]) -> (StreamId, bool) {
+    #[must_use]
+    pub fn parse(buf: &[u8]) -> (Self, bool) {
         let mut ubuf = [0; 4];
         ubuf.copy_from_slice(&buf[0..4]);
         let unpacked = u32::from_be_bytes(ubuf);
@@ -35,11 +36,12 @@ impl StreamId {
 
         // Now clear the most significant bit, as that is reserved and MUST be
         // ignored when received.
-        (StreamId(unpacked & !STREAM_ID_MASK), flag)
+        (Self(unpacked & !STREAM_ID_MASK), flag)
     }
 
     /// Returns true if this stream ID corresponds to a stream that
     /// was initiated by the client.
+    #[must_use]
     pub fn is_client_initiated(&self) -> bool {
         let id = self.0;
         id != 0 && id % 2 == 1
@@ -47,6 +49,7 @@ impl StreamId {
 
     /// Returns true if this stream ID corresponds to a stream that
     /// was initiated by the server.
+    #[must_use]
     pub fn is_server_initiated(&self) -> bool {
         let id = self.0;
         id != 0 && id % 2 == 0
@@ -54,11 +57,13 @@ impl StreamId {
 
     /// Return a new `StreamId` for stream 0.
     #[inline]
-    pub fn zero() -> StreamId {
-        StreamId::ZERO
+    #[must_use]
+    pub fn zero() -> Self {
+        Self::ZERO
     }
 
     /// Returns true if this stream ID is zero.
+    #[must_use]
     pub fn is_zero(&self) -> bool {
         self.0 == 0
     }
@@ -66,12 +71,12 @@ impl StreamId {
     /// Returns the next stream ID initiated by the same peer as this stream
     /// ID, or an error if incrementing this stream ID would overflow the
     /// maximum.
-    pub fn next_id(&self) -> Result<StreamId, StreamIdOverflow> {
+    pub fn next_id(&self) -> Result<Self, StreamIdOverflow> {
         let next = self.0 + 2;
-        if next > StreamId::MAX.0 {
+        if next > Self::MAX.0 {
             Err(StreamIdOverflow)
         } else {
-            Ok(StreamId(next))
+            Ok(Self(next))
         }
     }
 }
@@ -79,7 +84,7 @@ impl StreamId {
 impl From<u32> for StreamId {
     fn from(src: u32) -> Self {
         assert_eq!(src & STREAM_ID_MASK, 0, "invalid stream ID -- MSB is set");
-        StreamId(src)
+        Self(src)
     }
 }
 

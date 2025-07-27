@@ -106,6 +106,7 @@ impl<S, D, P, F> ProxyDBService<S, D, P, F> {
     /// Set a [`ProxyFilterMode`] to define the behaviour surrounding
     /// [`ProxyFilter`] usage, e.g. if a proxy filter is required to be available or not,
     /// or what to do if it is optional and not available.
+    #[must_use]
     pub fn filter_mode(mut self, mode: ProxyFilterMode) -> Self {
         self.mode = mode;
         self
@@ -125,6 +126,7 @@ impl<S, D, P, F> ProxyDBService<S, D, P, F> {
     ///
     /// NOTE even when `preserve=false` it might still be that there's
     /// a [`ProxyAddress`] in case it was set by a previous layer.
+    #[must_use]
     pub const fn preserve_proxy(mut self, preserve: bool) -> Self {
         self.preserve = preserve;
         self
@@ -394,6 +396,7 @@ impl<D, P, F> ProxyDBLayer<D, P, F> {
     /// Set a [`ProxyFilterMode`] to define the behaviour surrounding
     /// [`ProxyFilter`] usage, e.g. if a proxy filter is required to be available or not,
     /// or what to do if it is optional and not available.
+    #[must_use]
     pub fn filter_mode(mut self, mode: ProxyFilterMode) -> Self {
         self.mode = mode;
         self
@@ -405,6 +408,7 @@ impl<D, P, F> ProxyDBLayer<D, P, F> {
     ///
     /// NOTE even when `preserve=false` it might still be that there's
     /// a [`ProxyAddress`] in case it was set by a previous layer.
+    #[must_use]
     pub fn preserve_proxy(mut self, preserve: bool) -> Self {
         self.preserve = preserve;
         self
@@ -413,6 +417,7 @@ impl<D, P, F> ProxyDBLayer<D, P, F> {
     /// Set a [`ProxyQueryPredicate`] that will be used
     /// to possibly filter out proxies that according to the filters are correct,
     /// but not according to the predicate.
+    #[must_use]
     pub fn select_predicate<Predicate>(self, p: Predicate) -> ProxyDBLayer<D, Predicate, F> {
         ProxyDBLayer {
             db: self.db,
@@ -427,6 +432,7 @@ impl<D, P, F> ProxyDBLayer<D, P, F> {
     /// the username based on the selected [`Proxy`]. This is required
     /// in case the proxy is a router that accepts or maybe even requires
     /// username labels to configure proxies further down/up stream.
+    #[must_use]
     pub fn username_formatter<Formatter>(self, f: Formatter) -> ProxyDBLayer<D, P, Formatter> {
         ProxyDBLayer {
             db: self.db,

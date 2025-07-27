@@ -36,8 +36,9 @@ where
 
 impl TimeoutLayer<LayerErrorStatic<Elapsed>> {
     /// Create a timeout from a duration
+    #[must_use]
     pub const fn new(timeout: Duration) -> Self {
-        TimeoutLayer {
+        Self {
             timeout,
             into_error: LayerErrorStatic::new(Elapsed::new(timeout)),
         }

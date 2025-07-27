@@ -51,8 +51,9 @@ pub struct ContentDisposition(HeaderValue);
 
 impl ContentDisposition {
     /// Construct a `Content-Disposition: inline` header.
-    pub fn inline() -> ContentDisposition {
-        ContentDisposition(HeaderValue::from_static("inline"))
+    #[must_use]
+    pub fn inline() -> Self {
+        Self(HeaderValue::from_static("inline"))
     }
 
     /*

@@ -16,6 +16,7 @@ pub struct OriginalHttp1Headers {
 }
 
 impl OriginalHttp1Headers {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             ordered_headers: Vec::new(),
@@ -27,11 +28,13 @@ impl OriginalHttp1Headers {
     }
 
     #[inline]
+    #[must_use]
     pub fn len(&self) -> usize {
         self.ordered_headers.len()
     }
 
     #[inline]
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.ordered_headers.is_empty()
     }
@@ -43,6 +46,7 @@ impl OriginalHttp1Headers {
 
 impl OriginalHttp1Headers {
     #[inline]
+    #[must_use]
     pub fn with_capacity(size: usize) -> Self {
         Self {
             ordered_headers: Vec::with_capacity(size),
@@ -70,7 +74,7 @@ impl IntoIterator for OriginalHttp1Headers {
 
 impl<N: IntoHttp1HeaderName> FromIterator<N> for OriginalHttp1Headers {
     fn from_iter<T: IntoIterator<Item = N>>(iter: T) -> Self {
-        OriginalHttp1Headers {
+        Self {
             ordered_headers: iter
                 .into_iter()
                 .map(|it| it.into_http1_header_name())

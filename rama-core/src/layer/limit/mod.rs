@@ -32,7 +32,7 @@ impl<S, P> Limit<S, P, ()> {
     /// Creates a new [`Limit`] from a limit [`Policy`],
     /// wrapping the given [`Service`].
     pub const fn new(inner: S, policy: P) -> Self {
-        Limit {
+        Self {
             inner,
             policy,
             error_into_response: (),
@@ -57,7 +57,7 @@ impl<T> Limit<T, UnlimitedPolicy, ()> {
     ///
     /// Meaning that all requests are allowed to proceed.
     pub const fn unlimited(inner: T) -> Self {
-        Limit {
+        Self {
             inner,
             policy: UnlimitedPolicy,
             error_into_response: (),
@@ -82,7 +82,7 @@ where
     F: Clone,
 {
     fn clone(&self) -> Self {
-        Limit {
+        Self {
             inner: self.inner.clone(),
             policy: self.policy.clone(),
             error_into_response: self.error_into_response.clone(),

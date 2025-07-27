@@ -51,10 +51,9 @@ enum OriginOrAny {
 
 impl AccessControlAllowOrigin {
     /// `Access-Control-Allow-Origin: *`
-    pub const ANY: AccessControlAllowOrigin = AccessControlAllowOrigin(OriginOrAny::Any);
+    pub const ANY: Self = Self(OriginOrAny::Any);
     /// `Access-Control-Allow-Origin: null`
-    pub const NULL: AccessControlAllowOrigin =
-        AccessControlAllowOrigin(OriginOrAny::Origin(Origin::NULL));
+    pub const NULL: Self = Self(OriginOrAny::Origin(Origin::NULL));
 
     /// Returns the origin if there's one specified.
     pub fn origin(&self) -> Option<&Origin> {
@@ -94,7 +93,7 @@ impl TryFromValues for OriginOrAny {
             .just_one()
             .and_then(|value| {
                 if value == "*" {
-                    return Some(OriginOrAny::Any);
+                    return Some(Self::Any);
                 }
 
                 Origin::try_from_value(value).map(OriginOrAny::Origin)
@@ -104,10 +103,10 @@ impl TryFromValues for OriginOrAny {
 }
 
 impl<'a> From<&'a OriginOrAny> for HeaderValue {
-    fn from(origin: &'a OriginOrAny) -> HeaderValue {
+    fn from(origin: &'a OriginOrAny) -> Self {
         match origin {
             OriginOrAny::Origin(origin) => origin.to_value(),
-            OriginOrAny::Any => HeaderValue::from_static("*"),
+            OriginOrAny::Any => Self::from_static("*"),
         }
     }
 }

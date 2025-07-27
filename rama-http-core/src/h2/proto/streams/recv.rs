@@ -78,7 +78,7 @@ pub(super) enum RecvHeaderBlockError<T> {
     State(Error),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub(crate) enum Open {
     PushPromise,
     Headers,
@@ -96,7 +96,7 @@ impl Recv {
             .expect("invalid initial remote window size");
         flow.assign_capacity(DEFAULT_INITIAL_WINDOW_SIZE).unwrap();
 
-        Recv {
+        Self {
             init_window_sz: DEFAULT_INITIAL_WINDOW_SIZE,
             flow,
             in_flight_data: 0 as WindowSize,
@@ -131,7 +131,7 @@ impl Recv {
         &mut self,
         id: StreamId,
         mode: Open,
-        counts: &mut Counts,
+        counts: &Counts,
     ) -> Result<Option<StreamId>, Error> {
         assert!(self.refused.is_none());
 
@@ -183,12 +183,9 @@ impl Recv {
             use rama_http_types::header;
 
             if let Some(content_length) = frame.fields().get(header::CONTENT_LENGTH) {
-                let content_length = match frame::parse_u64(content_length.as_bytes()) {
-                    Ok(v) => v,
-                    Err(_) => {
-                        proto_err!(stream: "could not parse content-length; stream={:?}", stream.id);
-                        return Err(Error::library_reset(stream.id, Reason::PROTOCOL_ERROR).into());
-                    }
+                let Ok(content_length) = frame::parse_u64(content_length.as_bytes()) else {
+                    proto_err!(stream: "could not parse content-length; stream={:?}", stream.id);
+                    return Err(Error::library_reset(stream.id, Reason::PROTOCOL_ERROR).into());
                 };
 
                 stream.content_length = ContentLength::Remaining(content_length);
@@ -816,7 +813,7 @@ impl Recv {
     }
 
     /// Handle remote sending an explicit RST_STREAM.
-    #[allow(clippy::unused_self)]
+    #[allow(clippy::unused_self, clippy::needless_pass_by_ref_mut)]
     pub(super) fn recv_reset(
         &mut self,
         frame: frame::Reset,
@@ -857,7 +854,7 @@ impl Recv {
     }
 
     /// Handle a connection-level error
-    #[allow(clippy::unused_self)]
+    #[allow(clippy::unused_self, clippy::needless_pass_by_ref_mut)]
     pub(super) fn handle_error(&mut self, err: &proto::Error, stream: &mut Stream) {
         // Receive an error
         stream.state.handle_error(err);
@@ -873,7 +870,7 @@ impl Recv {
         self.max_stream_id = last_processed_id;
     }
 
-    #[allow(clippy::unused_self)]
+    #[allow(clippy::unused_self, clippy::needless_pass_by_ref_mut)]
     pub(super) fn recv_eof(&mut self, stream: &mut Stream) {
         stream.state.recv_eof();
         stream.notify_send();
@@ -1092,9 +1089,8 @@ impl Recv {
             ready!(dst.poll_ready(cx))?;
 
             // Get the next stream
-            let stream = match self.pending_window_updates.pop(store) {
-                Some(stream) => stream,
-                None => return Poll::Ready(Ok(())),
+            let Some(stream) = self.pending_window_updates.pop(store) else {
+                return Poll::Ready(Ok(()));
             };
 
             counts.transition(stream, |_, stream| {
@@ -1179,7 +1175,7 @@ impl Recv {
         }
     }
 
-    #[allow(clippy::unused_self)]
+    #[allow(clippy::unused_self, clippy::needless_pass_by_ref_mut)]
     fn schedule_recv<T>(
         &mut self,
         cx: &Context,
@@ -1199,8 +1195,8 @@ impl Recv {
 // ===== impl Open =====
 
 impl Open {
-    pub(crate) fn is_push_promise(&self) -> bool {
-        matches!(*self, Self::PushPromise)
+    pub(crate) fn is_push_promise(self) -> bool {
+        matches!(self, Self::PushPromise)
     }
 }
 
@@ -1208,6 +1204,6 @@ impl Open {
 
 impl<T> From<Error> for RecvHeaderBlockError<T> {
     fn from(err: Error) -> Self {
-        RecvHeaderBlockError::State(err)
+        Self::State(err)
     }
 }

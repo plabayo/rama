@@ -23,6 +23,7 @@ pub struct HttpProxyAddressLayer {
 impl HttpProxyAddressLayer {
     /// Create a new [`HttpProxyAddressLayer`] that will create
     /// a service to set the given [`ProxyAddress`].
+    #[must_use]
     pub fn new(address: ProxyAddress) -> Self {
         Self::maybe(Some(address))
     }
@@ -30,6 +31,7 @@ impl HttpProxyAddressLayer {
     /// Create a new [`HttpProxyAddressLayer`] which will create
     /// a service that will set the given [`ProxyAddress`] if it is not
     /// `None`.
+    #[must_use]
     pub fn maybe(address: Option<ProxyAddress>) -> Self {
         Self {
             address,
@@ -61,6 +63,7 @@ impl HttpProxyAddressLayer {
     }
 
     /// Preserve the existing [`ProxyAddress`] in the context if it already exists.
+    #[must_use]
     pub fn preserve(mut self, preserve: bool) -> Self {
         self.preserve = preserve;
         self
@@ -159,6 +162,7 @@ impl<S> HttpProxyAddressService<S> {
     }
 
     /// Preserve the existing [`ProxyAddress`] in the context if it already exists.
+    #[must_use]
     pub const fn preserve(mut self, preserve: bool) -> Self {
         self.preserve = preserve;
         self

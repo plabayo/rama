@@ -101,7 +101,7 @@ impl App {
             .context("create websocket stream")?;
         let terminal = ratatui::init();
 
-        Ok(App {
+        Ok(Self {
             title: format!(
                 "  rama-ws @ {} | logs: {} ",
                 cfg.uri,

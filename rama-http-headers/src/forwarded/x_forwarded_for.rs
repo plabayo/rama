@@ -61,7 +61,7 @@ impl FromIterator<IpAddr> for XForwardedFor {
     where
         T: IntoIterator<Item = IpAddr>,
     {
-        XForwardedFor(iter.into_iter().collect())
+        Self(iter.into_iter().collect())
     }
 }
 
@@ -77,7 +77,7 @@ impl super::ForwardHeader for XForwardedFor {
         if vec.is_empty() {
             None
         } else {
-            Some(XForwardedFor(vec))
+            Some(Self(vec))
         }
     }
 }

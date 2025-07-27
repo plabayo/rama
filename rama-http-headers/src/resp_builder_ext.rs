@@ -5,6 +5,7 @@ use super::Header;
 /// An extension trait adding "typed" methods to `http::response::Builder`.
 pub trait HttpResponseBuilderExt: self::sealed::Sealed {
     /// Inserts the typed [`Header`] into this `http::response::Builder`.
+    #[must_use]
     fn typed_header<H>(self, header: H) -> Self
     where
         H: Header;

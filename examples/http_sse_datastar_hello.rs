@@ -253,7 +253,7 @@ pub mod controller {
             let delay = Arc::new(AtomicU64::new(400));
             let anim_index = Arc::new(AtomicUsize::new(Self::MESSAGE.len()));
 
-            let controller = Controller {
+            let controller = Self {
                 is_closed: Arc::new(AtomicBool::new(false)),
 
                 delay,
@@ -274,6 +274,7 @@ pub mod controller {
             controller
         }
 
+        #[must_use]
         pub fn is_closed(&self) -> bool {
             self.is_closed.load(Ordering::Acquire)
         }
@@ -284,6 +285,7 @@ pub mod controller {
             }
         }
 
+        #[must_use]
         pub fn subscribe(&self) -> Pin<Box<impl Stream<Item = Message> + use<>>> {
             let mut subscriber = self.msg_tx.subscribe();
 

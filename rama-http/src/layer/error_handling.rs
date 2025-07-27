@@ -81,6 +81,7 @@ impl<F: Clone> Clone for ErrorHandlerLayer<F> {
 
 impl ErrorHandlerLayer {
     /// Create a new [`ErrorHandlerLayer`].
+    #[must_use]
     pub const fn new() -> Self {
         Self { error_mapper: () }
     }

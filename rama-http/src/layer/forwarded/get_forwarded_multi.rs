@@ -71,6 +71,7 @@ impl<T> Default for GetForwardedHeadersLayer<T> {
 
 impl<T> GetForwardedHeadersLayer<T> {
     /// Create a new `GetForwardedHeadersLayer` for the specified headers `T`.
+    #[must_use]
     pub const fn new() -> Self {
         Self {
             _headers: PhantomData,
@@ -108,7 +109,7 @@ impl<S: fmt::Debug, T> fmt::Debug for GetForwardedHeadersService<S, T> {
 
 impl<S: Clone, T> Clone for GetForwardedHeadersService<S, T> {
     fn clone(&self) -> Self {
-        GetForwardedHeadersService {
+        Self {
             inner: self.inner.clone(),
             _headers: PhantomData,
         }

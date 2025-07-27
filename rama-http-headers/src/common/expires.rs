@@ -38,13 +38,13 @@ derive_header! {
 }
 
 impl From<SystemTime> for Expires {
-    fn from(time: SystemTime) -> Expires {
-        Expires(time.into())
+    fn from(time: SystemTime) -> Self {
+        Self(time.into())
     }
 }
 
 impl From<Expires> for SystemTime {
-    fn from(date: Expires) -> SystemTime {
+    fn from(date: Expires) -> Self {
         date.0.into()
     }
 }

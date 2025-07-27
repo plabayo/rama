@@ -49,6 +49,7 @@ impl TcpConnector {
     ///
     /// You can use middleware around the [`TcpConnector`]
     /// or add connection pools, retry logic and more.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             dns: GlobalDnsResolver::new(),

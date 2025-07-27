@@ -65,7 +65,7 @@ where
         &self,
         req: Request<ReqBody>,
     ) -> impl Future<Output = Result<Response, Infallible>> + Send + 'static {
-        let RamaHttpService { svc, ctx } = self.clone();
+        let Self { svc, ctx } = self.clone();
         async move {
             let req = req.map(rama_http_types::Body::new);
 

@@ -27,7 +27,7 @@ impl FromRequest for Bytes {
             .collect()
             .await
             .map_err(BytesRejection::from_err)
-            .map(|c| Bytes(c.to_bytes()))
+            .map(|c| Self(c.to_bytes()))
     }
 }
 

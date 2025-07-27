@@ -48,8 +48,9 @@ derive_header! {
 
 impl TransferEncoding {
     /// Constructor for the most common Transfer-Encoding, `chunked`.
-    pub fn chunked() -> TransferEncoding {
-        TransferEncoding(HeaderValue::from_static("chunked").into())
+    #[must_use]
+    pub fn chunked() -> Self {
+        Self(HeaderValue::from_static("chunked").into())
     }
 
     /// Returns whether this ends with the `chunked` encoding.

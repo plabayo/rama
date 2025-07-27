@@ -83,13 +83,13 @@ where
     T: AsyncWrite + Unpin,
     B: Buf,
 {
-    pub(super) fn new(inner: T) -> FramedWrite<T, B> {
+    pub(super) fn new(inner: T) -> Self {
         let chain_threshold = if inner.is_write_vectored() {
             CHAIN_THRESHOLD
         } else {
             CHAIN_THRESHOLD_WITHOUT_VECTORED_IO
         };
-        FramedWrite {
+        Self {
             inner,
             final_flush_done: false,
             encoder: Encoder {
@@ -136,20 +136,17 @@ where
 
         loop {
             while !self.encoder.is_empty() {
-                match self.encoder.next {
-                    Some(Next::Data(ref mut frame)) => {
-                        tracing::trace!("data frame queued");
-                        let mut buf = (&mut self.encoder.buf).chain(frame.payload_mut());
-                        ready!(poll_write_buf(Pin::new(&mut self.inner), cx, &mut buf))?
-                    }
-                    _ => {
-                        tracing::trace!("data not frame queued");
-                        ready!(poll_write_buf(
-                            Pin::new(&mut self.inner),
-                            cx,
-                            &mut self.encoder.buf
-                        ))?
-                    }
+                if let Some(Next::Data(ref mut frame)) = self.encoder.next {
+                    tracing::trace!("data frame queued");
+                    let mut buf = (&mut self.encoder.buf).chain(frame.payload_mut());
+                    ready!(poll_write_buf(Pin::new(&mut self.inner), cx, &mut buf))?
+                } else {
+                    tracing::trace!("data not frame queued");
+                    ready!(poll_write_buf(
+                        Pin::new(&mut self.inner),
+                        cx,
+                        &mut self.encoder.buf
+                    ))?
                 };
             }
 

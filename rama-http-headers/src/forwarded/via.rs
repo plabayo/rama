@@ -39,7 +39,7 @@ struct ViaElement {
 
 impl From<ViaElement> for ForwardedElement {
     fn from(via: ViaElement) -> Self {
-        let mut el = ForwardedElement::forwarded_by(via.node_id);
+        let mut el = Self::forwarded_by(via.node_id);
         el.set_forwarded_version(via.version);
         if let Some(protocol) = via.protocol {
             el.set_forwarded_proto(protocol);
@@ -85,7 +85,7 @@ impl FromIterator<ViaElement> for Via {
     where
         T: IntoIterator<Item = ViaElement>,
     {
-        Via(iter.into_iter().collect())
+        Self(iter.into_iter().collect())
     }
 }
 
@@ -107,7 +107,11 @@ impl super::ForwardHeader for Via {
                 })
             })
             .collect();
-        if vec.is_empty() { None } else { Some(Via(vec)) }
+        if vec.is_empty() {
+            None
+        } else {
+            Some(Self(vec))
+        }
     }
 }
 

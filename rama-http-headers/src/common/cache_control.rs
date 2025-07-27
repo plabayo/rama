@@ -66,10 +66,12 @@ impl Flags {
         Self { bits: 0 }
     }
 
+    #[allow(clippy::needless_pass_by_value)]
     fn contains(&self, flag: Self) -> bool {
         (self.bits & flag.bits) != 0
     }
 
+    #[allow(clippy::needless_pass_by_value)]
     fn insert(&mut self, flag: Self) {
         self.bits |= flag.bits;
     }
@@ -84,8 +86,9 @@ impl Default for CacheControl {
 
 impl CacheControl {
     /// Construct a new empty `CacheControl` header.
+    #[must_use]
     pub fn new() -> Self {
-        CacheControl {
+        Self {
             flags: Flags::empty(),
             max_age: None,
             max_stale: None,
@@ -97,47 +100,56 @@ impl CacheControl {
     // getters
 
     /// Check if the `no-cache` directive is set.
-    pub fn no_cache(&self) -> bool {
+    #[must_use]
+    pub fn no_cache(self) -> bool {
         self.flags.contains(Flags::NO_CACHE)
     }
 
     /// Check if the `no-store` directive is set.
-    pub fn no_store(&self) -> bool {
+    #[must_use]
+    pub fn no_store(self) -> bool {
         self.flags.contains(Flags::NO_STORE)
     }
 
     /// Check if the `no-transform` directive is set.
-    pub fn no_transform(&self) -> bool {
+    #[must_use]
+    pub fn no_transform(self) -> bool {
         self.flags.contains(Flags::NO_TRANSFORM)
     }
 
     /// Check if the `only-if-cached` directive is set.
-    pub fn only_if_cached(&self) -> bool {
+    #[must_use]
+    pub fn only_if_cached(self) -> bool {
         self.flags.contains(Flags::ONLY_IF_CACHED)
     }
 
     /// Check if the `public` directive is set.
-    pub fn public(&self) -> bool {
+    #[must_use]
+    pub fn public(self) -> bool {
         self.flags.contains(Flags::PUBLIC)
     }
 
     /// Check if the `private` directive is set.
-    pub fn private(&self) -> bool {
+    #[must_use]
+    pub fn private(self) -> bool {
         self.flags.contains(Flags::PRIVATE)
     }
 
     /// Check if the `immutable` directive is set.
-    pub fn immutable(&self) -> bool {
+    #[must_use]
+    pub fn immutable(self) -> bool {
         self.flags.contains(Flags::IMMUTABLE)
     }
 
     /// Check if the `must-revalidate` directive is set.
+    #[must_use]
     pub fn must_revalidate(&self) -> bool {
         self.flags.contains(Flags::MUST_REVALIDATE)
     }
 
     /// Check if the `must-understand` directive is set.
-    pub fn must_understand(&self) -> bool {
+    #[must_use]
+    pub fn must_understand(self) -> bool {
         self.flags.contains(Flags::MUST_UNDERSTAND)
     }
 
@@ -164,78 +176,91 @@ impl CacheControl {
     // setters
 
     /// Set the `no-cache` directive.
+    #[must_use]
     pub fn with_no_cache(mut self) -> Self {
         self.flags.insert(Flags::NO_CACHE);
         self
     }
 
     /// Set the `no-store` directive.
+    #[must_use]
     pub fn with_no_store(mut self) -> Self {
         self.flags.insert(Flags::NO_STORE);
         self
     }
 
     /// Set the `no-transform` directive.
+    #[must_use]
     pub fn with_no_transform(mut self) -> Self {
         self.flags.insert(Flags::NO_TRANSFORM);
         self
     }
 
     /// Set the `only-if-cached` directive.
+    #[must_use]
     pub fn with_only_if_cached(mut self) -> Self {
         self.flags.insert(Flags::ONLY_IF_CACHED);
         self
     }
 
     /// Set the `private` directive.
+    #[must_use]
     pub fn with_private(mut self) -> Self {
         self.flags.insert(Flags::PRIVATE);
         self
     }
 
     /// Set the `public` directive.
+    #[must_use]
     pub fn with_public(mut self) -> Self {
         self.flags.insert(Flags::PUBLIC);
         self
     }
 
     /// Set the `immutable` directive.
+    #[must_use]
     pub fn with_immutable(mut self) -> Self {
         self.flags.insert(Flags::IMMUTABLE);
         self
     }
 
     /// Set the `must-revalidate` directive.
+    #[must_use]
     pub fn with_must_revalidate(mut self) -> Self {
         self.flags.insert(Flags::MUST_REVALIDATE);
         self
     }
 
     /// Set the `must-understand` directive.
+    #[must_use]
     pub fn with_must_understand(mut self) -> Self {
         self.flags.insert(Flags::MUST_UNDERSTAND);
         self
     }
 
     /// Set the `max-age` directive.
+    #[must_use]
     pub fn with_max_age(mut self, duration: Duration) -> Self {
         self.max_age = Some(duration.into());
         self
     }
 
     /// Set the `max-stale` directive.
+    #[must_use]
     pub fn with_max_stale(mut self, duration: Duration) -> Self {
         self.max_stale = Some(duration.into());
         self
     }
 
     /// Set the `min-fresh` directive.
+    #[must_use]
     pub fn with_min_fresh(mut self, duration: Duration) -> Self {
         self.min_fresh = Some(duration.into());
         self
     }
 
     /// Set the `s-maxage` directive.
+    #[must_use]
     pub fn with_s_max_age(mut self, duration: Duration) -> Self {
         self.s_max_age = Some(duration.into());
         self
@@ -319,7 +344,7 @@ impl FromIterator<KnownDirective> for FromIter {
             }
         }
 
-        FromIter(cc)
+        Self(cc)
     }
 }
 
@@ -402,22 +427,22 @@ impl fmt::Display for Directive {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         fmt::Display::fmt(
             match *self {
-                Directive::NoCache => "no-cache",
-                Directive::NoStore => "no-store",
-                Directive::NoTransform => "no-transform",
-                Directive::OnlyIfCached => "only-if-cached",
+                Self::NoCache => "no-cache",
+                Self::NoStore => "no-store",
+                Self::NoTransform => "no-transform",
+                Self::OnlyIfCached => "only-if-cached",
 
-                Directive::MaxAge(secs) => return write!(f, "max-age={secs}"),
-                Directive::MaxStale(secs) => return write!(f, "max-stale={secs}"),
-                Directive::MinFresh(secs) => return write!(f, "min-fresh={secs}"),
+                Self::MaxAge(secs) => return write!(f, "max-age={secs}"),
+                Self::MaxStale(secs) => return write!(f, "max-stale={secs}"),
+                Self::MinFresh(secs) => return write!(f, "min-fresh={secs}"),
 
-                Directive::MustRevalidate => "must-revalidate",
-                Directive::MustUnderstand => "must-understand",
-                Directive::Public => "public",
-                Directive::Private => "private",
-                Directive::Immutable => "immutable",
-                Directive::ProxyRevalidate => "proxy-revalidate",
-                Directive::SMaxAge(secs) => return write!(f, "s-maxage={secs}"),
+                Self::MustRevalidate => "must-revalidate",
+                Self::MustUnderstand => "must-understand",
+                Self::Public => "public",
+                Self::Private => "private",
+                Self::Immutable => "immutable",
+                Self::ProxyRevalidate => "proxy-revalidate",
+                Self::SMaxAge(secs) => return write!(f, "s-maxage={secs}"),
             },
             f,
         )
@@ -427,7 +452,7 @@ impl fmt::Display for Directive {
 impl FromStr for KnownDirective {
     type Err = ();
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(KnownDirective::Known(match s {
+        Ok(Self::Known(match s {
             "no-cache" => Directive::NoCache,
             "no-store" => Directive::NoStore,
             "no-transform" => Directive::NoTransform,
@@ -452,10 +477,10 @@ impl FromStr for KnownDirective {
                         ("s-maxage", secs) => {
                             secs.parse().map(Directive::SMaxAge).map_err(|_| ())?
                         }
-                        _unknown => return Ok(KnownDirective::Unknown),
+                        _unknown => return Ok(Self::Unknown),
                     }
                 }
-                Some(_) | None => return Ok(KnownDirective::Unknown),
+                Some(_) | None => return Ok(Self::Unknown),
             },
         }))
     }

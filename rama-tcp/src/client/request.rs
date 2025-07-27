@@ -20,6 +20,7 @@ pub struct Request {
 
 impl Request {
     /// Create a new Tcp [`Request`].
+    #[must_use]
     pub const fn new(authority: Authority) -> Self {
         Self {
             authority,
@@ -30,6 +31,7 @@ impl Request {
 
     /// Attach an application protocol to this [`Request`]
     /// on which the established connection will operate.
+    #[must_use]
     pub fn with_protocol(mut self, protocol: Protocol) -> Self {
         self.protocol = Some(protocol);
         self
@@ -44,11 +46,13 @@ impl Request {
 
     /// Return the application protocol on which the established
     /// connection will operate, if known.
+    #[must_use]
     pub fn protocol(&self) -> Option<Protocol> {
         self.protocol.clone()
     }
 
     /// Attach an http version as a hint to the application layer.
+    #[must_use]
     pub const fn with_http_version(mut self, version: Version) -> Self {
         self.http_version = Some(version);
         self
@@ -61,11 +65,13 @@ impl Request {
     }
 
     /// Return the http version hint, if defined
+    #[must_use]
     pub fn http_version(&self) -> Option<Version> {
         self.http_version
     }
 
     /// (re)construct a Tcp [`Request`] from its [`Parts`].
+    #[must_use]
     pub fn from_parts(parts: Parts) -> Self {
         Self {
             authority: parts.authority,
@@ -76,11 +82,13 @@ impl Request {
 
     /// View a reference to the target [`Authority`] of
     /// this Tcp [`Request`].
+    #[must_use]
     pub fn authority(&self) -> &Authority {
         &self.authority
     }
 
     /// Consume the Tcp [`Request`] into the [`Parts`] it is made of.
+    #[must_use]
     pub fn into_parts(self) -> Parts {
         Parts {
             authority: self.authority,
@@ -92,7 +100,7 @@ impl Request {
 
 impl From<&Request> for TransportContext {
     fn from(value: &Request) -> Self {
-        TransportContext {
+        Self {
             protocol: TransportProtocol::Tcp,
             app_protocol: value.protocol.clone(),
             http_version: value.http_version,
@@ -103,7 +111,7 @@ impl From<&Request> for TransportContext {
 
 impl From<Request> for TransportContext {
     fn from(value: Request) -> Self {
-        TransportContext {
+        Self {
             protocol: TransportProtocol::Tcp,
             app_protocol: value.protocol,
             http_version: value.http_version,
@@ -141,7 +149,7 @@ impl From<Request> for Parts {
 
 impl From<&Parts> for TransportContext {
     fn from(value: &Parts) -> Self {
-        TransportContext {
+        Self {
             protocol: TransportProtocol::Tcp,
             app_protocol: value.protocol.clone(),
             http_version: value.http_version,
@@ -152,7 +160,7 @@ impl From<&Parts> for TransportContext {
 
 impl From<Parts> for TransportContext {
     fn from(value: Parts) -> Self {
-        TransportContext {
+        Self {
             protocol: TransportProtocol::Tcp,
             app_protocol: value.protocol,
             http_version: value.http_version,

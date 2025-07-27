@@ -9,12 +9,12 @@ pub struct RetryBody {
 
 impl RetryBody {
     pub(crate) fn new(bytes: Bytes) -> Self {
-        RetryBody { bytes: Some(bytes) }
+        Self { bytes: Some(bytes) }
     }
 
     #[cfg(test)]
     pub(crate) fn empty() -> Self {
-        RetryBody { bytes: None }
+        Self { bytes: None }
     }
 
     /// Turn this body into bytes.
@@ -56,7 +56,7 @@ impl From<RetryBody> for crate::Body {
     fn from(body: RetryBody) -> Self {
         match body.bytes {
             Some(bytes) => bytes.into(),
-            None => crate::Body::empty(),
+            None => Self::empty(),
         }
     }
 }

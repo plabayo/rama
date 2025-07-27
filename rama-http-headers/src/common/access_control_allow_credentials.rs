@@ -42,13 +42,7 @@ impl Header for AccessControlAllowCredentials {
     fn decode<'i, I: Iterator<Item = &'i HeaderValue>>(values: &mut I) -> Result<Self, Error> {
         values
             .next()
-            .and_then(|value| {
-                if value == "true" {
-                    Some(AccessControlAllowCredentials)
-                } else {
-                    None
-                }
-            })
+            .and_then(|value| if value == "true" { Some(Self) } else { None })
             .ok_or_else(Error::invalid)
     }
 

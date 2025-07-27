@@ -18,6 +18,7 @@ impl GlobalDnsResolver {
     /// Create a new [`GlobalDnsResolver`].
     ///
     /// This has no cost.
+    #[must_use]
     pub fn new() -> Self {
         Self
     }

@@ -42,6 +42,7 @@ where
     State: Clone + Send + Sync + 'static,
 {
     /// create a new router.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             routes: MatchitRouter::new(),
@@ -52,6 +53,7 @@ where
     /// add a GET route to the router.
     /// the path can contain parameters, e.g. `/users/{id}`.
     /// the path can also contain a catch call, e.g. `/assets/{*path}`.
+    #[must_use]
     pub fn get<I, T>(self, path: &str, service: I) -> Self
     where
         I: IntoEndpointService<State, T>,
@@ -61,6 +63,7 @@ where
     }
 
     /// add a POST route to the router.
+    #[must_use]
     pub fn post<I, T>(self, path: &str, service: I) -> Self
     where
         I: IntoEndpointService<State, T>,
@@ -70,6 +73,7 @@ where
     }
 
     /// add a PUT route to the router.
+    #[must_use]
     pub fn put<I, T>(self, path: &str, service: I) -> Self
     where
         I: IntoEndpointService<State, T>,
@@ -79,6 +83,7 @@ where
     }
 
     /// add a DELETE route to the router.
+    #[must_use]
     pub fn delete<I, T>(self, path: &str, service: I) -> Self
     where
         I: IntoEndpointService<State, T>,
@@ -88,6 +93,7 @@ where
     }
 
     /// add a PATCH route to the router.
+    #[must_use]
     pub fn patch<I, T>(self, path: &str, service: I) -> Self
     where
         I: IntoEndpointService<State, T>,
@@ -97,6 +103,7 @@ where
     }
 
     /// add a HEAD route to the router.
+    #[must_use]
     pub fn head<I, T>(self, path: &str, service: I) -> Self
     where
         I: IntoEndpointService<State, T>,
@@ -106,6 +113,7 @@ where
     }
 
     /// add a OPTIONS route to the router.
+    #[must_use]
     pub fn options<I, T>(self, path: &str, service: I) -> Self
     where
         I: IntoEndpointService<State, T>,
@@ -115,6 +123,7 @@ where
     }
 
     /// add a TRACE route to the router.
+    #[must_use]
     pub fn trace<I, T>(self, path: &str, service: I) -> Self
     where
         I: IntoEndpointService<State, T>,
@@ -124,6 +133,7 @@ where
     }
 
     /// add a CONNECT route to the router.
+    #[must_use]
     pub fn connect<I, T>(self, path: &str, service: I) -> Self
     where
         I: IntoEndpointService<State, T>,
@@ -135,6 +145,7 @@ where
     /// register a nested router under a prefix.
     ///
     /// The prefix is used to match the request path and strip it from the request URI.
+    #[must_use]
     pub fn sub<I, T>(self, prefix: &str, service: I) -> Self
     where
         I: IntoEndpointService<State, T>,
@@ -156,6 +167,7 @@ where
     }
 
     /// add a route to the router with it's matcher and service.
+    #[must_use]
     pub fn match_route<I, T>(
         mut self,
         path: &str,
@@ -184,6 +196,7 @@ where
     }
 
     /// use the provided service when no route matches the request.
+    #[must_use]
     pub fn not_found<I, T>(mut self, service: I) -> Self
     where
         I: IntoEndpointService<State, T>,

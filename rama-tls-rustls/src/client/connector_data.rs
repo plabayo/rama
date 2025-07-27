@@ -42,7 +42,7 @@ impl TlsConnectorData {
     /// Create a default [`TlsConnectorData`] that is focussed
     /// on providing auto http connections, meaning supporting
     /// the http connections which `rama` supports out of the box.
-    pub fn new_http_auto() -> Result<TlsConnectorData, OpaqueError> {
+    pub fn new_http_auto() -> Result<Self, OpaqueError> {
         Ok(TlsConnectorDataBuilder::new()
             .with_env_key_logger()?
             .with_alpn_protocols_http_auto()
@@ -51,7 +51,7 @@ impl TlsConnectorData {
 
     /// Create a default [`TlsConnectorData`] that is focussed
     /// on providing http/1.1 connections.
-    pub fn new_http_1() -> Result<TlsConnectorData, OpaqueError> {
+    pub fn new_http_1() -> Result<Self, OpaqueError> {
         Ok(TlsConnectorDataBuilder::new()
             .with_env_key_logger()?
             .with_alpn_protocols(&[ApplicationProtocol::HTTP_11])
@@ -60,7 +60,7 @@ impl TlsConnectorData {
 
     /// Create a default [`TlsConnectorData`] that is focussed
     /// on providing h2 connections.
-    pub fn new_http_2() -> Result<TlsConnectorData, OpaqueError> {
+    pub fn new_http_2() -> Result<Self, OpaqueError> {
         Ok(TlsConnectorDataBuilder::new()
             .with_env_key_logger()?
             .with_alpn_protocols(&[ApplicationProtocol::HTTP_2])
@@ -95,6 +95,7 @@ impl From<ClientConfig> for TlsConnectorDataBuilder {
 impl TlsConnectorDataBuilder {
     /// Create a [`TlsConnectorDataBuilder`] with a starting config of: support for all tls versions, global root
     /// certificate store, and no client auth
+    #[must_use]
     pub fn new() -> Self {
         let config = ClientConfig::builder_with_protocol_versions(ALL_VERSIONS)
             .with_root_certificates(client_root_certs())
@@ -127,7 +128,7 @@ impl TlsConnectorDataBuilder {
     /// If [`KeyLogIntent::Environment`] is set to a path, create a key logger that will write to that path
     /// and set it in the current config
     pub fn set_env_key_logger(&mut self) -> Result<&mut Self, OpaqueError> {
-        if let Some(path) = KeyLogIntent::Environment.file_path() {
+        if let Some(path) = KeyLogIntent::Environment.file_path().as_deref() {
             let key_logger = Arc::new(KeyLogFile::new(path)?);
             self.client_config.key_log = key_logger;
         };
@@ -151,6 +152,7 @@ impl TlsConnectorDataBuilder {
     }
 
     /// Same as [`Self::set_alpn_protocols`] but consuming self
+    #[must_use]
     pub fn with_alpn_protocols(mut self, protos: &[ApplicationProtocol]) -> Self {
         self.set_alpn_protocols(protos);
         self
@@ -163,6 +165,7 @@ impl TlsConnectorDataBuilder {
     }
 
     /// Same as [`Self::set_alpn_protocols_http_auto`] but consuming self
+    #[must_use]
     pub fn with_alpn_protocols_http_auto(mut self) -> Self {
         self.set_alpn_protocols_http_auto();
         self
@@ -177,6 +180,7 @@ impl TlsConnectorDataBuilder {
     }
 
     /// Same as [`Self::set_cert_verifier`] but consuming self
+    #[must_use]
     pub fn with_cert_verifier(mut self, verifier: Arc<dyn ServerCertVerifier>) -> Self {
         self.set_cert_verifier(verifier);
         self
@@ -189,6 +193,7 @@ impl TlsConnectorDataBuilder {
     }
 
     /// Same as [`Self::set_no_cert_verifier`] but consuming self
+    #[must_use]
     pub fn with_no_cert_verifier(mut self) -> Self {
         self.set_no_cert_verifier();
         self
@@ -201,12 +206,14 @@ impl TlsConnectorDataBuilder {
     }
 
     /// Same as [`Self::set_server_name`] but consuming self
+    #[must_use]
     pub fn with_server_name(mut self, server_name: Host) -> Self {
         self.set_server_name(server_name);
         self
     }
 
     /// Set server_name on this config to the provided option consuming self
+    #[must_use]
     pub fn maybe_with_server_name(mut self, server_name: Option<Host>) -> Self {
         self.server_name = server_name;
         self
@@ -219,12 +226,14 @@ impl TlsConnectorDataBuilder {
     }
 
     /// Same as [`Self::set_store_server_certificate_chain`] but consuming self
+    #[must_use]
     pub fn with_store_server_certificate_chain(mut self, value: bool) -> Self {
         self.set_store_server_certificate_chain(value);
         self
     }
 
     /// Build [`TlsConnectorData`] from the current config
+    #[must_use]
     pub fn build(self) -> TlsConnectorData {
         TlsConnectorData {
             client_config: Arc::new(self.client_config),

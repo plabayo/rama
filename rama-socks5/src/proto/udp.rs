@@ -105,7 +105,7 @@ impl UdpHeader {
 
         let destination = read_authority(r).await?;
 
-        Ok(UdpHeader {
+        Ok(Self {
             fragment_number,
             destination,
         })
@@ -124,7 +124,7 @@ impl UdpHeader {
 
         let destination = read_authority_sync(r)?;
 
-        Ok(UdpHeader {
+        Ok(Self {
             fragment_number,
             destination,
         })

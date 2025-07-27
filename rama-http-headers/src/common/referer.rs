@@ -43,8 +43,9 @@ impl Referer {
     /// # Panic
     ///
     /// Panics if the string is not a legal header value.
-    pub const fn from_static(s: &'static str) -> Referer {
-        Referer(HeaderValueString::from_static(s))
+    #[must_use]
+    pub const fn from_static(s: &'static str) -> Self {
+        Self(HeaderValueString::from_static(s))
     }
 }
 

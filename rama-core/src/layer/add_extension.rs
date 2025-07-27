@@ -84,7 +84,7 @@ where
 impl<T> AddExtensionLayer<T> {
     /// Create a new [`AddExtensionLayer`].
     pub const fn new(value: T) -> Self {
-        AddExtensionLayer { value }
+        Self { value }
     }
 }
 

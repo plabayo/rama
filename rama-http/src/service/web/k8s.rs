@@ -13,11 +13,13 @@ use std::{convert::Infallible, fmt, marker::PhantomData, sync::Arc};
 use super::match_service;
 
 /// create a k8s web health service builder
+#[must_use]
 pub fn k8s_health_builder<S>() -> K8sHealthServiceBuilder<(), (), S> {
     K8sHealthServiceBuilder::new()
 }
 
 /// create a default k8s web health service
+#[must_use]
 pub fn k8s_health<S>() -> impl Service<S, Request, Response = Response, Error = Infallible> + Clone
 where
     S: Clone + Send + Sync + 'static,

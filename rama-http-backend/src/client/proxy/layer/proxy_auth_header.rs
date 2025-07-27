@@ -13,6 +13,7 @@ pub struct SetProxyAuthHttpHeaderLayer;
 
 impl SetProxyAuthHttpHeaderLayer {
     /// Create a new [`SetProxyAuthHttpHeaderLayer`].
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }

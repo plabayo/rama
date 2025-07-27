@@ -76,7 +76,7 @@ impl<Sep: Separator> TryFromValues for FlatCsv<Sep> {
 
 impl<Sep> From<HeaderValue> for FlatCsv<Sep> {
     fn from(value: HeaderValue) -> Self {
-        FlatCsv {
+        Self {
             value,
             _marker: PhantomData,
         }
@@ -84,7 +84,7 @@ impl<Sep> From<HeaderValue> for FlatCsv<Sep> {
 }
 
 impl<'a, Sep> From<&'a FlatCsv<Sep>> for HeaderValue {
-    fn from(flat: &'a FlatCsv<Sep>) -> HeaderValue {
+    fn from(flat: &'a FlatCsv<Sep>) -> Self {
         flat.value.clone()
     }
 }
@@ -103,7 +103,7 @@ impl<'a, Sep: Separator> FromIterator<&'a HeaderValue> for FlatCsv<Sep> {
         let mut values = iter.into_iter();
 
         // Common case is there is only 1 value, optimize for that
-        if let (1, Some(1)) = values.size_hint() {
+        if values.size_hint() == (1, Some(1)) {
             return values
                 .next()
                 .expect("size_hint claimed 1 item")
@@ -139,7 +139,7 @@ impl<Sep: Separator> FromIterator<HeaderValue> for FlatCsv<Sep> {
         let mut values = iter.into_iter();
 
         // Common case is there is only 1 value, optimize for that
-        if let (1, Some(1)) = values.size_hint() {
+        if values.size_hint() == (1, Some(1)) {
             return values.next().expect("size_hint claimed 1 item").into();
         }
 

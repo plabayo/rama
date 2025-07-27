@@ -412,6 +412,7 @@ where
     ///
     /// [`poll_ready`]: #method.poll_ready
     /// [module]: index.html
+    #[must_use]
     pub fn ready(self) -> ReadySendRequest<B> {
         ReadySendRequest { inner: Some(self) }
     }
@@ -558,16 +559,19 @@ where
     ///
     /// [1]: https://datatracker.ietf.org/doc/html/rfc8441#section-4
     /// [2]: https://datatracker.ietf.org/doc/html/rfc8441#section-3
+    #[must_use]
     pub fn is_extended_connect_protocol_enabled(&self) -> bool {
         self.inner.is_extended_connect_protocol_enabled()
     }
 
     /// Returns the current max send streams
+    #[must_use]
     pub fn current_max_send_streams(&self) -> usize {
         self.inner.current_max_send_streams()
     }
 
     /// Returns the current max recv streams
+    #[must_use]
     pub fn current_max_recv_streams(&self) -> usize {
         self.inner.current_max_recv_streams()
     }
@@ -587,7 +591,7 @@ where
     B: Buf,
 {
     fn clone(&self) -> Self {
-        SendRequest {
+        Self {
             inner: self.inner.clone(),
             pending: None,
         }
@@ -603,6 +607,7 @@ where
     ///
     /// An active stream is a stream that has not yet transitioned to a closed
     /// state.
+    #[must_use]
     pub fn num_active_streams(&self) -> usize {
         self.inner.num_active_streams()
     }
@@ -612,6 +617,7 @@ where
     /// A wired stream is a stream that is either active or is closed but must
     /// stay in memory for some reason. For example, there are still outstanding
     /// userspace handles pointing to the slot.
+    #[must_use]
     pub fn num_wired_streams(&self) -> usize {
         self.inner.num_wired_streams()
     }
@@ -666,8 +672,9 @@ impl Builder {
     /// #
     /// # pub fn main() {}
     /// ```
-    pub fn new() -> Builder {
-        Builder {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
             max_send_buffer_size: proto::DEFAULT_MAX_SEND_BUFFER_SIZE,
             reset_stream_duration: Duration::from_secs(proto::DEFAULT_RESET_STREAM_SECS),
             reset_stream_max: proto::DEFAULT_RESET_STREAM_MAX,
@@ -1296,8 +1303,8 @@ impl Builder {
 }
 
 impl Default for Builder {
-    fn default() -> Builder {
-        Builder::new()
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -1373,51 +1380,45 @@ where
     async fn handshake2(
         mut io: T,
         builder: Builder,
-    ) -> Result<(SendRequest<B>, Connection<T, B>), crate::h2::Error> {
+    ) -> Result<(SendRequest<B>, Self), crate::h2::Error> {
         bind_connection(&mut io).await?;
 
         // Create the codec
         let mut codec = Codec::new(io);
 
-        let (initial_settings, early_frame_ctx) = match builder.early_frames {
-            Some(frames) => {
-                let (ctx, settings) = EarlyFrameStreamContext::new_replayer(frames);
-                match settings {
-                    Some(mut settings) => {
+        let (initial_settings, early_frame_ctx) = if let Some(frames) = builder.early_frames {
+            let (ctx, settings) = EarlyFrameStreamContext::new_replayer(frames);
+            if let Some(mut settings) = settings {
+                tracing::trace!(
+                    "early frame replayer used for client w/ custom settings {settings:?}; builder settings = {:?}",
+                    builder.settings,
+                );
+                if let Some(overwrites) = builder.settings {
+                    if builder.overwrite_replay_settings {
+                        settings.merge(overwrites);
                         tracing::trace!(
-                            "early frame replayer used for client w/ custom settings {settings:?}; builder settings = {:?}",
-                            builder.settings,
+                            "overwrites from builder have been applied on top of of early frame replayer: settings = {settings:?}",
                         );
-                        if let Some(overwrites) = builder.settings {
-                            if builder.overwrite_replay_settings {
-                                settings.merge(overwrites);
-                                tracing::trace!(
-                                    "overwrites from builder have been applied on top of of early frame replayer: settings = {settings:?}",
-                                );
-                            } else {
-                                tracing::trace!(
-                                    "overwrites {overwrites:?} from builder have been ignored in favor of of early frame replayer w/ settings {settings:?}",
-                                );
-                            }
-                        }
-                        (settings, ctx)
-                    }
-                    None => {
-                        let settings = builder.settings.unwrap_or_default();
+                    } else {
                         tracing::trace!(
-                            "early frame replayer used for client w/o settings; use builder settings (or default): {settings:?}",
+                            "overwrites {overwrites:?} from builder have been ignored in favor of of early frame replayer w/ settings {settings:?}",
                         );
-                        (settings, ctx)
                     }
                 }
-            }
-            None => {
+                (settings, ctx)
+            } else {
                 let settings = builder.settings.unwrap_or_default();
                 tracing::trace!(
-                    "no early frames replayer used for client, use builder settings (or default): {settings:?}",
+                    "early frame replayer used for client w/o settings; use builder settings (or default): {settings:?}",
                 );
-                (settings, EarlyFrameStreamContext::new_nop())
+                (settings, ctx)
             }
+        } else {
+            let settings = builder.settings.unwrap_or_default();
+            tracing::trace!(
+                "no early frames replayer used for client, use builder settings (or default): {settings:?}",
+            );
+            (settings, EarlyFrameStreamContext::new_nop())
         };
 
         if let Some(max) = initial_settings.max_frame_size() {
@@ -1453,7 +1454,7 @@ where
             pending: None,
         };
 
-        let mut connection = Connection { inner };
+        let mut connection = Self { inner };
         if let Some(sz) = builder.initial_target_connection_window_size {
             connection.set_target_window_size(sz);
         }
@@ -1593,6 +1594,7 @@ impl ResponseFuture {
     /// # Panics
     ///
     /// If the lock on the stream store has been poisoned.
+    #[must_use]
     pub fn stream_id(&self) -> StreamId {
         self.inner.stream_id()
     }
@@ -1687,6 +1689,7 @@ impl PushedResponseFuture {
     /// # Panics
     ///
     /// If the lock on the stream store has been poisoned.
+    #[must_use]
     pub fn stream_id(&self) -> StreamId {
         self.inner.stream_id()
     }
@@ -1755,7 +1758,7 @@ impl Peer {
                     // HTTP/2 requires that a scheme is set. Since we are
                     // forwarding an HTTP 1.1 request, the scheme is set to
                     // "http".
-                    pseudo.set_scheme(uri::Scheme::HTTP);
+                    pseudo.set_scheme(&uri::Scheme::HTTP);
                 }
             } else if !is_connect {
                 // TODO: Error
@@ -1802,13 +1805,10 @@ impl proto::Peer for Peer {
             b = b.status(status);
         }
 
-        let mut response = match b.body(()) {
-            Ok(response) => response,
-            Err(_) => {
-                // TODO: Should there be more specialized handling for different
-                // kinds of errors
-                return Err(Error::library_reset(stream_id, Reason::PROTOCOL_ERROR));
-            }
+        let Ok(mut response) = b.body(()) else {
+            // TODO: Should there be more specialized handling for different
+            // kinds of errors
+            return Err(Error::library_reset(stream_id, Reason::PROTOCOL_ERROR));
         };
 
         if !pseudo.order.is_empty() {

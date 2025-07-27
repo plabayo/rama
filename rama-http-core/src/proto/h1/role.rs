@@ -136,7 +136,7 @@ impl Http1Transaction for Server {
                         return Err(Parse::UriTooLong);
                     }
                     method = Method::from_bytes(req.method.unwrap().as_bytes())?;
-                    path_range = Server::record_path_range(bytes, uri);
+                    path_range = Self::record_path_range(bytes, uri);
                     version = if req.version.unwrap() == 1 {
                         keep_alive = true;
                         is_http_11 = true;
@@ -403,13 +403,13 @@ impl Http1Transaction for Server {
 }
 
 impl Server {
-    fn can_have_body(method: &Option<Method>, status: StatusCode) -> bool {
-        Server::can_chunked(method, status)
+    fn can_have_body(method: Option<&Method>, status: StatusCode) -> bool {
+        Self::can_chunked(method, status)
     }
 
-    fn can_chunked(method: &Option<Method>, status: StatusCode) -> bool {
-        if method == &Some(Method::HEAD)
-            || method == &Some(Method::CONNECT) && status.is_success()
+    fn can_chunked(method: Option<&Method>, status: StatusCode) -> bool {
+        if method == Some(&Method::HEAD)
+            || method == Some(&Method::CONNECT) && status.is_success()
             || status.is_informational()
         {
             false
@@ -418,16 +418,16 @@ impl Server {
         }
     }
 
-    fn can_have_content_length(method: &Option<Method>, status: StatusCode) -> bool {
-        if status.is_informational() || method == &Some(Method::CONNECT) && status.is_success() {
+    fn can_have_content_length(method: Option<&Method>, status: StatusCode) -> bool {
+        if status.is_informational() || method == Some(&Method::CONNECT) && status.is_success() {
             false
         } else {
             !matches!(status, StatusCode::NO_CONTENT | StatusCode::NOT_MODIFIED)
         }
     }
 
-    fn can_have_implicit_zero_content_length(method: &Option<Method>, status: StatusCode) -> bool {
-        Server::can_have_content_length(method, status) && method != &Some(Method::HEAD)
+    fn can_have_implicit_zero_content_length(method: Option<&Method>, status: StatusCode) -> bool {
+        Self::can_have_content_length(method, status) && method != Some(&Method::HEAD)
     }
 
     #[cold]
@@ -641,7 +641,7 @@ impl Server {
                     }
                     // check that we actually can send a chunked body...
                     if msg.head.version == Version::HTTP_10
-                        || !Server::can_chunked(msg.req_method, msg.head.subject)
+                        || !Self::can_chunked(msg.req_method.as_ref(), msg.head.subject)
                     {
                         continue;
                     }
@@ -681,7 +681,7 @@ impl Server {
                 header::TRAILER => {
                     // check that we actually can send a chunked body...
                     if msg.head.version == Version::HTTP_10
-                        || !Server::can_chunked(msg.req_method, msg.head.subject)
+                        || !Self::can_chunked(msg.req_method.as_ref(), msg.head.subject)
                     {
                         continue;
                     }
@@ -727,7 +727,7 @@ impl Server {
             encoder = match msg.body {
                 Some(BodyLength::Unknown) => {
                     if msg.head.version == Version::HTTP_10
-                        || !Server::can_chunked(msg.req_method, msg.head.subject)
+                        || !Self::can_chunked(msg.req_method.as_ref(), msg.head.subject)
                     {
                         Encoder::close_delimited()
                     } else {
@@ -739,8 +739,8 @@ impl Server {
                     }
                 }
                 None | Some(BodyLength::Known(0)) => {
-                    if Server::can_have_implicit_zero_content_length(
-                        msg.req_method,
+                    if Self::can_have_implicit_zero_content_length(
+                        msg.req_method.as_ref(),
                         msg.head.subject,
                     ) {
                         header_name_writer
@@ -749,7 +749,7 @@ impl Server {
                     Encoder::length(0)
                 }
                 Some(BodyLength::Known(len)) => {
-                    if !Server::can_have_content_length(msg.req_method, msg.head.subject) {
+                    if !Self::can_have_content_length(msg.req_method.as_ref(), msg.head.subject) {
                         Encoder::length(0)
                     } else {
                         header_name_writer
@@ -762,7 +762,7 @@ impl Server {
             };
         }
 
-        if !Server::can_have_body(msg.req_method, msg.head.subject) {
+        if !Self::can_have_body(msg.req_method.as_ref(), msg.head.subject) {
             trace!(
                 "server body forced to 0; method={:?}, status={:?}",
                 msg.req_method, msg.head.subject
@@ -882,7 +882,7 @@ impl Http1Transaction for Client {
                 for header in &mut headers_indices[..headers_len] {
                     // SAFETY: array is valid up to `headers_len`
                     let header = unsafe { header.assume_init_mut() };
-                    Client::obs_fold_line(&mut slice, header);
+                    Self::obs_fold_line(&mut slice, header);
                 }
             }
 
@@ -934,7 +934,7 @@ impl Http1Transaction for Client {
                 headers,
                 extensions,
             };
-            if let Some((decode, is_upgrade)) = Client::decoder(&head, ctx.req_method)? {
+            if let Some((decode, is_upgrade)) = Self::decoder(&head, ctx.req_method)? {
                 return Ok(Some(ParsedMessage {
                     head,
                     decode,
@@ -968,7 +968,7 @@ impl Http1Transaction for Client {
 
         *msg.req_method = Some(msg.head.subject.0.clone());
 
-        let body = Client::set_length(&mut msg.head, msg.body);
+        let body = Self::set_length(&mut msg.head, msg.body);
 
         let init_cap = 30 + msg.head.headers.len() * AVERAGE_HEADER_SIZE;
         dst.reserve(init_cap);
@@ -1015,6 +1015,7 @@ impl Client {
     /// Returns Some(length, wants_upgrade) if successful.
     ///
     /// Returns None if this message head should be skipped (like a 100 status).
+    #[allow(clippy::needless_pass_by_ref_mut)]
     fn decoder(
         inc: &MessageHead<StatusCode>,
         method: &mut Option<Method>,
@@ -1078,10 +1079,9 @@ impl Client {
             Ok(Some((DecodedLength::CLOSE_DELIMITED, false)))
         }
     }
+
     fn set_length(head: &mut EncodeHead<'_, RequestLine>, body: Option<BodyLength>) -> Encoder {
-        let body = if let Some(body) = body {
-            body
-        } else {
+        let Some(body) = body else {
             head.headers.remove(header::TRANSFER_ENCODING);
             return Encoder::length(0);
         };
@@ -1150,7 +1150,7 @@ impl Client {
             Entry::Vacant(te) => {
                 if let Some(len) = existing_con_len {
                     Some(Encoder::length(len))
-                } else if let BodyLength::Unknown = body {
+                } else if matches!(body, BodyLength::Unknown) {
                     // GET, HEAD, and CONNECT almost never have bodies.
                     //
                     // So instead of sending a "chunked" body with a 0-chunk,
@@ -1194,9 +1194,7 @@ impl Client {
         // User didn't set transfer-encoding, AND we know body length,
         // so we can just set the Content-Length automatically.
 
-        let len = if let BodyLength::Known(len) = body {
-            len
-        } else {
+        let BodyLength::Known(len) = body else {
             unreachable!("BodyLength::Unknown would set chunked");
         };
 
@@ -1219,9 +1217,8 @@ impl Client {
         let buf = &mut all[idx.value.0..idx.value.1];
 
         // look for a newline, otherwise bail out
-        let first_nl = match buf.iter().position(|b| *b == b'\n') {
-            Some(i) => i,
-            None => return,
+        let Some(first_nl) = buf.iter().position(|b| *b == b'\n') else {
+            return;
         };
 
         // not on standard slices because whatever, sigh

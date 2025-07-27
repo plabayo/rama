@@ -8,6 +8,7 @@ pub struct Executor {
 
 impl Executor {
     /// Create a new [`Executor`].
+    #[must_use]
     pub const fn new() -> Self {
         Self { guard: None }
     }
@@ -16,6 +17,7 @@ impl Executor {
     ///
     /// This will spawn tasks that are awaited gracefully
     /// in case the shutdown guard is triggered.
+    #[must_use]
     pub fn graceful(guard: ShutdownGuard) -> Self {
         Self { guard: Some(guard) }
     }
@@ -34,6 +36,7 @@ impl Executor {
 
     /// Get a reference to the shutdown guard,
     /// if and only if the executor was created with [`Self::graceful`].
+    #[must_use]
     pub fn guard(&self) -> Option<&ShutdownGuard> {
         self.guard.as_ref()
     }

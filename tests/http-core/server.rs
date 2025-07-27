@@ -91,6 +91,7 @@ mod response_body_lengths {
         Unknown(&'static str),
     }
 
+    #[allow(clippy::needless_pass_by_value)]
     fn run_test(case: TestCase) {
         assert!(
             case.version == 0 || case.version == 1,
@@ -3106,7 +3107,6 @@ impl Service<(), Request> for TestService {
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
         let tx = self.tx.clone();
         let trailers_tx = self.trailers_tx.clone();
-        let replies = self.reply.clone();
 
         Box::pin(async move {
             while let Some(item) = req.frame().await {
@@ -3132,13 +3132,14 @@ impl Service<(), Request> for TestService {
 
             tx.send(Msg::End).unwrap();
 
-            TestService::build_reply(replies)
+            Self::build_reply(&self.reply)
         })
     }
 }
 
 impl TestService {
-    fn build_reply(replies: spmc::Receiver<Reply>) -> Result<Response, Infallible> {
+    #[allow(clippy::needless_pass_by_value)]
+    fn build_reply(replies: &spmc::Receiver<Reply>) -> Result<Response, Infallible> {
         let mut res = Response::new(rama::http::Body::empty());
         while let Ok(reply) = replies.try_recv() {
             match reply {
@@ -3217,7 +3218,7 @@ struct ServeOptions {
 
 impl Default for ServeOptions {
     fn default() -> Self {
-        ServeOptions {
+        Self {
             http2: false,
             keep_alive: true,
             pipeline: false,
@@ -3415,8 +3416,8 @@ impl<T: AsyncRead + Unpin, D: Unpin> AsyncRead for DebugStream<T, D> {
 struct Dropped(Arc<AtomicBool>);
 
 impl Dropped {
-    pub(crate) fn new() -> Dropped {
-        Dropped(Arc::new(AtomicBool::new(false)))
+    pub(crate) fn new() -> Self {
+        Self(Arc::new(AtomicBool::new(false)))
     }
 
     pub(crate) fn load(&self) -> bool {

@@ -36,6 +36,7 @@ impl PrivateIpNetMatcher {
     /// use the [`PrivateIpNetMatcher::optional`] constructor..
     ///
     /// [`SocketAddr`]: std::net::SocketAddr
+    #[must_use]
     pub fn new() -> Self {
         Self::inner_new(false)
     }
@@ -48,6 +49,7 @@ impl PrivateIpNetMatcher {
     /// to match in case socket address could not be found.
     ///
     /// [`SocketAddr`]: std::net::SocketAddr
+    #[must_use]
     pub fn optional() -> Self {
         Self::inner_new(true)
     }

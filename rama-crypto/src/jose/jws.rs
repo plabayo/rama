@@ -111,6 +111,7 @@ pub struct ChainedJWSBuilder {
 
 impl JWSBuilder {
     /// Create a new builder
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -382,7 +383,7 @@ impl ChainedJWSBuilder {
     }
 
     /// Create a new [`ChainedJWSBuilder`] so we can add another signature
-    pub fn add_signature(mut self, signer: &impl Signer) -> Result<ChainedJWSBuilder, OpaqueError> {
+    pub fn add_signature(mut self, signer: &impl Signer) -> Result<Self, OpaqueError> {
         signer
             .set_headers(&mut self.protected_headers, &mut self.unprotected_headers)
             .map_err(|err| OpaqueError::from_boxed(err.into()))
@@ -404,7 +405,7 @@ impl ChainedJWSBuilder {
 
         self.signatures.push(signature);
 
-        Ok(ChainedJWSBuilder {
+        Ok(Self {
             signatures: self.signatures,
             protected_headers: Default::default(),
             unprotected_headers: Default::default(),
@@ -492,6 +493,7 @@ pub struct JWS {
 
 impl JWSCompact {
     /// Create a builder which can be used to create a [`JWSCompact`]
+    #[must_use]
     pub fn builder() -> JWSBuilder {
         JWSBuilder::new()
     }
@@ -499,6 +501,7 @@ impl JWSCompact {
 
 impl JWS {
     /// Create a builder which can be used to create a [`JWS`]
+    #[must_use]
     pub fn builder() -> JWSBuilder {
         JWSBuilder::new()
     }
@@ -563,6 +566,7 @@ struct Signature {
 
 impl JWSFlattened {
     /// Create a builder which can be used to create a [`JWSFlattened`]
+    #[must_use]
     pub fn builder() -> JWSBuilder {
         JWSBuilder::new()
     }
@@ -661,11 +665,13 @@ pub struct ToVerifySignature {
 impl ToVerifySignature {
     /// Encoded String representation of protected + payload before it was decoded
     /// again. This should be used instead of re-encoding everything for efficiency
+    #[must_use]
     pub fn signed_data(&self) -> &str {
         &self.signed_data
     }
 
     /// Reference to the [`DecodedSignature`]
+    #[must_use]
     pub fn decoded_signature(&self) -> &DecodedSignature {
         &self.decoded_signature
     }
@@ -673,6 +679,7 @@ impl ToVerifySignature {
 
 impl DecodedSignature {
     /// Reference to the protected [`Headers`]
+    #[must_use]
     pub fn protected_headers(&self) -> &Headers {
         &self.protected
     }
@@ -685,6 +692,7 @@ impl DecodedSignature {
     }
 
     /// Reference to the unprotected [`Headers`]
+    #[must_use]
     pub fn unprotected_headers(&self) -> &Headers {
         &self.unprotected
     }
@@ -697,6 +705,7 @@ impl DecodedSignature {
     }
 
     /// Str signature which was provided for the encoded signature
+    #[must_use]
     pub fn signature(&self) -> &str {
         &self.signature
     }
@@ -704,11 +713,13 @@ impl DecodedSignature {
 
 impl DecodedJWS {
     /// Get refence to the [`DecodedSignature`]s
+    #[must_use]
     pub fn signatures(&self) -> &[DecodedSignature] {
         self.signatures.as_slice()
     }
 
     /// Get refence to the payload
+    #[must_use]
     pub fn payload(&self) -> &[u8] {
         &self.payload
     }
@@ -716,6 +727,7 @@ impl DecodedJWS {
 
 impl DecodedJWSFlattened {
     /// Reference to the protected [`Headers`]
+    #[must_use]
     pub fn protected_headers(&self) -> &Headers {
         self.signature.protected_headers()
     }
@@ -728,6 +740,7 @@ impl DecodedJWSFlattened {
     }
 
     /// Reference to the unprotected [`Headers`]
+    #[must_use]
     pub fn unprotected_headers(&self) -> &Headers {
         self.signature.unprotected_headers()
     }
@@ -740,11 +753,13 @@ impl DecodedJWSFlattened {
     }
 
     /// Str signature which was provided for the encoded signature
+    #[must_use]
     pub fn signature(&self) -> &str {
         self.signature.signature()
     }
 
     /// Get refence to the payload
+    #[must_use]
     pub fn payload(&self) -> &[u8] {
         &self.payload
     }
@@ -925,7 +940,7 @@ mod tests {
         let signer_and_verifier = DummyKey;
 
         let jws = JWSFlattened::builder()
-            .with_payload(payload.clone())
+            .with_payload(payload)
             .try_with_protected_headers(protected.clone())
             .unwrap()
             .build_flattened(&signer_and_verifier)

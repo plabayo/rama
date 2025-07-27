@@ -18,6 +18,7 @@ pub struct StreamForwardService;
 impl StreamForwardService {
     #[inline]
     /// Create a new [`StreamForwardService`].
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }

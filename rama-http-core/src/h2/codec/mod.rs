@@ -54,7 +54,7 @@ where
         // Use FramedRead's method since it checks the value is within range.
         inner.set_max_frame_size(max_frame_size);
 
-        Codec { inner }
+        Self { inner }
     }
 }
 
@@ -176,7 +176,7 @@ where
     type Error = SendError;
 
     fn start_send(mut self: Pin<&mut Self>, item: Frame<B>) -> Result<(), Self::Error> {
-        Codec::buffer(&mut self, item)?;
+        Self::buffer(&mut self, item)?;
         Ok(())
     }
     /// Returns `Ready` when the codec can buffer a frame

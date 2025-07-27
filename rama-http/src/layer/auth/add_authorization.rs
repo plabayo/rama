@@ -67,6 +67,7 @@ impl AddAuthorizationLayer {
     ///
     /// Can be useful if you only want to add authorization for some branches
     /// of your service.
+    #[must_use]
     pub fn none() -> Self {
         Self {
             value: None,
@@ -75,6 +76,7 @@ impl AddAuthorizationLayer {
     }
 
     /// Authorize requests using the given [`Credentials`].
+    #[allow(clippy::needless_pass_by_value)]
     pub fn new(credential: impl Credentials) -> Self {
         let encoded = credential.encode();
         Self {
@@ -88,6 +90,7 @@ impl AddAuthorizationLayer {
     /// This can for example be used to hide the header value from logs.
     ///
     /// [sensitive]: https://docs.rs/http/latest/http/header/struct.HeaderValue.html#method.set_sensitive
+    #[must_use]
     pub fn as_sensitive(mut self, sensitive: bool) -> Self {
         if let Some(value) = &mut self.value {
             value.set_sensitive(sensitive);
@@ -110,6 +113,7 @@ impl AddAuthorizationLayer {
     /// Preserve the existing `Authorization` header if it exists.
     ///
     /// This can be useful if you want to use different authorization headers for different requests.
+    #[must_use]
     pub fn if_not_present(mut self, value: bool) -> Self {
         self.if_not_present = value;
         self
@@ -180,6 +184,7 @@ impl<S> AddAuthorization<S> {
     /// This can for example be used to hide the header value from logs.
     ///
     /// [sensitive]: https://docs.rs/http/latest/http/header/struct.HeaderValue.html#method.set_sensitive
+    #[must_use]
     pub fn as_sensitive(mut self, sensitive: bool) -> Self {
         if let Some(value) = &mut self.value {
             value.set_sensitive(sensitive);
@@ -202,6 +207,7 @@ impl<S> AddAuthorization<S> {
     /// Preserve the existing `Authorization` header if it exists.
     ///
     /// This can be useful if you want to use different authorization headers for different requests.
+    #[must_use]
     pub fn if_not_present(mut self, value: bool) -> Self {
         self.if_not_present = value;
         self
@@ -228,7 +234,7 @@ impl<S: fmt::Debug> fmt::Debug for AddAuthorization<S> {
 
 impl<S: Clone> Clone for AddAuthorization<S> {
     fn clone(&self) -> Self {
-        AddAuthorization {
+        Self {
             inner: self.inner.clone(),
             value: self.value.clone(),
             if_not_present: self.if_not_present,

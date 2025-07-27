@@ -54,7 +54,7 @@ where
 {
     type Rejection = T::Rejection;
 
-    async fn from_request(req: Request) -> Result<Option<T>, Self::Rejection> {
+    async fn from_request(req: Request) -> Result<Self, Self::Rejection> {
         T::from_request(req).await
     }
 }

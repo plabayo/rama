@@ -55,11 +55,11 @@ enum Continuable {
 }
 
 impl<T> FramedRead<T> {
-    pub(super) fn new(inner: InnerFramedRead<T, LengthDelimitedCodec>) -> FramedRead<T> {
+    pub(super) fn new(inner: InnerFramedRead<T, LengthDelimitedCodec>) -> Self {
         let max_header_list_size = DEFAULT_SETTINGS_MAX_HEADER_LIST_SIZE;
         let max_continuation_frames =
             calc_max_continuation_frames(max_header_list_size, inner.decoder().max_frame_length());
-        FramedRead {
+        Self {
             inner,
             hpack: hpack::Decoder::new(DEFAULT_SETTINGS_HEADER_TABLE_SIZE),
             max_header_list_size,
@@ -281,12 +281,9 @@ fn decode_frame(
         Kind::Continuation => {
             let is_end_headers = (head.flag() & 0x4) == 0x4;
 
-            let mut partial = match partial_inout.take() {
-                Some(partial) => partial,
-                None => {
-                    proto_err!(conn: "received unexpected CONTINUATION frame");
-                    return Err(Error::library_go_away(Reason::PROTOCOL_ERROR));
-                }
+            let Some(mut partial) = partial_inout.take() else {
+                proto_err!(conn: "received unexpected CONTINUATION frame");
+                return Err(Error::library_go_away(Reason::PROTOCOL_ERROR));
             };
 
             // The stream identifiers must match
@@ -410,7 +407,7 @@ where
 }
 
 fn map_err(err: io::Error) -> Error {
-    if let io::ErrorKind::InvalidData = err.kind() {
+    if err.kind() == io::ErrorKind::InvalidData {
         if let Some(custom) = err.get_ref() {
             if custom.is::<LengthDelimitedCodecError>() {
                 return Error::library_go_away(Reason::FRAME_SIZE_ERROR);
@@ -425,15 +422,15 @@ fn map_err(err: io::Error) -> Error {
 impl Continuable {
     fn stream_id(&self) -> frame::StreamId {
         match *self {
-            Continuable::Headers(ref h) => h.stream_id(),
-            Continuable::PushPromise(ref p) => p.stream_id(),
+            Self::Headers(ref h) => h.stream_id(),
+            Self::PushPromise(ref p) => p.stream_id(),
         }
     }
 
     fn is_over_size(&self) -> bool {
         match *self {
-            Continuable::Headers(ref h) => h.is_over_size(),
-            Continuable::PushPromise(ref p) => p.is_over_size(),
+            Self::Headers(ref h) => h.is_over_size(),
+            Self::PushPromise(ref p) => p.is_over_size(),
         }
     }
 
@@ -444,8 +441,8 @@ impl Continuable {
         decoder: &mut hpack::Decoder,
     ) -> Result<(), frame::Error> {
         match *self {
-            Continuable::Headers(ref mut h) => h.load_hpack(src, max_header_list_size, decoder),
-            Continuable::PushPromise(ref mut p) => p.load_hpack(src, max_header_list_size, decoder),
+            Self::Headers(ref mut h) => h.load_hpack(src, max_header_list_size, decoder),
+            Self::PushPromise(ref mut p) => p.load_hpack(src, max_header_list_size, decoder),
         }
     }
 }

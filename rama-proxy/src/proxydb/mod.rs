@@ -37,6 +37,7 @@ pub struct ProxyID(NonEmptyString);
 
 impl ProxyID {
     /// View  this [`ProxyID`] as a `str`.
+    #[must_use]
     pub fn as_str(&self) -> &str {
         self.0.as_str()
     }
@@ -318,7 +319,7 @@ impl ProxyDB for Proxy {
         ctx: ProxyContext,
         filter: ProxyFilter,
         predicate: impl ProxyQueryPredicate,
-    ) -> Result<Proxy, Self::Error> {
+    ) -> Result<Self, Self::Error> {
         (self.is_match(&ctx, &filter) && predicate.execute(self))
             .then(|| self.clone())
             .ok_or_else(|| rama_core::error::OpaqueError::from_display("hardcoded proxy no match"))
@@ -340,7 +341,7 @@ mod memdb {
     impl MemoryProxyDB {
         /// Create a new in-memory proxy database with the given proxies.
         pub fn try_from_rows(proxies: Vec<Proxy>) -> Result<Self, MemoryProxyDBInsertError> {
-            Ok(MemoryProxyDB {
+            Ok(Self {
                 data: internal::ProxyDB::from_rows(proxies).map_err(|err| match err.kind() {
                     ProxyDBErrorKind::DuplicateKey => {
                         MemoryProxyDBInsertError::duplicate_key(err.into_input())
@@ -357,7 +358,7 @@ mod memdb {
         where
             I: IntoIterator<Item = Proxy>,
         {
-            Ok(MemoryProxyDB {
+            Ok(Self {
                 data: internal::ProxyDB::from_iter(proxies).map_err(|err| match err.kind() {
                     ProxyDBErrorKind::DuplicateKey => {
                         MemoryProxyDBInsertError::duplicate_key(err.into_input())
@@ -370,15 +371,18 @@ mod memdb {
         }
 
         /// Return the number of proxies in the database.
+        #[must_use]
         pub fn len(&self) -> usize {
             self.data.len()
         }
 
         /// Rerturns if the database is empty.
+        #[must_use]
         pub fn is_empty(&self) -> bool {
             self.data.is_empty()
         }
 
+        #[allow(clippy::needless_pass_by_value)]
         fn query_from_filter(
             &self,
             ctx: ProxyContext,
@@ -446,8 +450,8 @@ mod memdb {
             filter: ProxyFilter,
             predicate: impl ProxyQueryPredicate,
         ) -> Result<Proxy, Self::Error> {
-            match &filter.id {
-                Some(id) => match self.data.get_by_id(id) {
+            if let Some(id) = &filter.id {
+                match self.data.get_by_id(id) {
                     None => Err(MemoryProxyDBQueryError::not_found()),
                     Some(proxy) => {
                         if proxy.is_match(&ctx, &filter) && predicate.execute(proxy) {
@@ -456,17 +460,16 @@ mod memdb {
                             Err(MemoryProxyDBQueryError::mismatch())
                         }
                     }
-                },
-                None => {
-                    let query = self.query_from_filter(ctx, filter.clone());
-                    match query
-                        .execute()
-                        .and_then(|result| result.filter(|proxy| predicate.execute(proxy)))
-                        .map(|result| result.any())
-                    {
-                        None => Err(MemoryProxyDBQueryError::not_found()),
-                        Some(proxy) => Ok(proxy.clone()),
-                    }
+                }
+            } else {
+                let query = self.query_from_filter(ctx, filter);
+                match query
+                    .execute()
+                    .and_then(|result| result.filter(|proxy| predicate.execute(proxy)))
+                    .map(|result| result.any())
+                {
+                    None => Err(MemoryProxyDBQueryError::not_found()),
+                    Some(proxy) => Ok(proxy.clone()),
                 }
             }
         }
@@ -510,30 +513,33 @@ mod memdb {
 
     impl MemoryProxyDBInsertError {
         fn duplicate_key(proxies: Vec<Proxy>) -> Self {
-            MemoryProxyDBInsertError {
+            Self {
                 kind: MemoryProxyDBInsertErrorKind::DuplicateKey,
                 proxies,
             }
         }
 
         fn invalid_proxy(proxies: Vec<Proxy>) -> Self {
-            MemoryProxyDBInsertError {
+            Self {
                 kind: MemoryProxyDBInsertErrorKind::InvalidProxy,
                 proxies,
             }
         }
 
         /// Returns the kind of error that [`MemoryProxyDBInsertError`] represents.
+        #[must_use]
         pub fn kind(&self) -> MemoryProxyDBInsertErrorKind {
             self.kind
         }
 
         /// Returns the proxies that were not inserted.
+        #[must_use]
         pub fn proxies(&self) -> &[Proxy] {
             &self.proxies
         }
 
         /// Consumes the error and returns the proxies that were not inserted.
+        #[must_use]
         pub fn into_proxies(self) -> Vec<Proxy> {
             self.proxies
         }
@@ -570,20 +576,23 @@ mod memdb {
 
     impl MemoryProxyDBQueryError {
         /// Create a new error that indicates no proxy match could be found.
+        #[must_use]
         pub fn not_found() -> Self {
-            MemoryProxyDBQueryError {
+            Self {
                 kind: MemoryProxyDBQueryErrorKind::NotFound,
             }
         }
 
         /// Create a new error that indicates a proxy looked up by key had a config that did not match the given filters/requirements.
+        #[must_use]
         pub fn mismatch() -> Self {
-            MemoryProxyDBQueryError {
+            Self {
                 kind: MemoryProxyDBQueryErrorKind::Mismatch,
             }
         }
 
         /// Returns the kind of error that [`MemoryProxyDBQueryError`] represents.
+        #[must_use]
         pub fn kind(&self) -> MemoryProxyDBQueryErrorKind {
             self.kind
         }

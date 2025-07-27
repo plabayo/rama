@@ -40,6 +40,7 @@ impl UriParams {
 
     /// Some str slice will be returned in case a glob value was captured
     /// for the last part of the Path that was matched on.
+    #[must_use]
     pub fn glob(&self) -> Option<&str> {
         self.glob.as_deref()
     }
@@ -88,7 +89,7 @@ impl UriParams {
 
 impl<'a> FromIterator<(&'a str, &'a str)> for UriParams {
     fn from_iter<T: IntoIterator<Item = (&'a str, &'a str)>>(iter: T) -> Self {
-        let mut params = UriParams::default();
+        let mut params = Self::default();
         for (k, v) in iter {
             params.insert(k.to_owned(), v.to_owned());
         }
@@ -104,6 +105,7 @@ pub struct UriParamsDeserializeError(de::PathDeserializationError);
 
 impl UriParamsDeserializeError {
     /// Get the response body text used for this rejection.
+    #[must_use]
     pub fn body_text(&self) -> String {
         use de::ErrorKind;
         match self.0.kind {
@@ -119,6 +121,7 @@ impl UriParamsDeserializeError {
     }
 
     /// Get the status code used for this rejection.
+    #[must_use]
     pub fn status(&self) -> StatusCode {
         use de::ErrorKind;
         match self.0.kind {

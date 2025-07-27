@@ -41,8 +41,9 @@ pub struct Extensions {
 impl Extensions {
     /// Create an empty `Extensions`.
     #[inline]
-    pub const fn new() -> Extensions {
-        Extensions { map: None }
+    #[must_use]
+    pub const fn new() -> Self {
+        Self { map: None }
     }
 
     /// Insert a type into this `Extensions`.
@@ -67,7 +68,7 @@ impl Extensions {
     }
 
     /// Extend these extensions with another Extensions.
-    pub fn extend(&mut self, other: Extensions) {
+    pub fn extend(&mut self, other: Self) {
         if let Some(other_map) = other.map {
             let map = self.map.get_or_insert_with(Box::default);
             #[allow(clippy::useless_conversion)]
@@ -83,6 +84,7 @@ impl Extensions {
     }
 
     /// Returns true if the `Extensions` contains the given type.
+    #[must_use]
     pub fn contains<T: Send + Sync + 'static>(&self) -> bool {
         self.map
             .as_ref()
@@ -91,6 +93,7 @@ impl Extensions {
     }
 
     /// Get a shared reference to a type previously inserted on this `Extensions`.
+    #[must_use]
     pub fn get<T: Send + Sync + 'static>(&self) -> Option<&T> {
         self.map
             .as_ref()

@@ -34,7 +34,7 @@ impl std::str::FromStr for ClientAddr {
         if let Ok(ip) = s.parse() {
             // first try host alone, as it is most common,
             // and also prevents IPv6 to be seen by default with port
-            return Ok(ClientAddr { ip, port: None });
+            return Ok(Self { ip, port: None });
         }
 
         let (s, port) = try_to_split_num_port_from_str(s);
@@ -44,7 +44,7 @@ impl std::str::FromStr for ClientAddr {
             IpAddr::V6(_) if port.is_some() && !s.starts_with('[') => Err(
                 OpaqueError::from_display("missing brackets for IPv6 address with port"),
             ),
-            _ => Ok(ClientAddr { ip, port }),
+            _ => Ok(Self { ip, port }),
         }
     }
 }

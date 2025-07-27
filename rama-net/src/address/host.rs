@@ -20,30 +20,35 @@ pub enum Host {
 
 impl Host {
     /// Returns `true` if [`host`] is a [`Domain`].
+    #[must_use]
     pub fn is_domain(&self) -> bool {
-        matches!(self, Host::Name(_))
+        matches!(self, Self::Name(_))
     }
 
     /// Returns `true` if [`host`] is a [`IpAddr`].
+    #[must_use]
     pub fn is_ip(&self) -> bool {
-        matches!(self, Host::Address(_))
+        matches!(self, Self::Address(_))
     }
 
     /// Returns `true` if [`host`] is a [`IpAddr::V4`].
+    #[must_use]
     pub fn is_ipv4(&self) -> bool {
-        matches!(self, Host::Address(IpAddr::V4(_)))
+        matches!(self, Self::Address(IpAddr::V4(_)))
     }
 
     /// Returns `true` if [`host`] is a [`IpAddr::V6`].
+    #[must_use]
     pub fn is_ipv6(&self) -> bool {
-        matches!(self, Host::Address(IpAddr::V4(_)))
+        matches!(self, Self::Address(IpAddr::V4(_)))
     }
 
     /// Returns [`Host`] as a string, only allocated if we need to render it.
+    #[must_use]
     pub fn to_str(&self) -> std::borrow::Cow<'_, str> {
         match self {
-            Host::Name(domain) => domain.as_str().into(),
-            Host::Address(ip_addr) => ip_addr.to_string().into(),
+            Self::Name(domain) => domain.as_str().into(),
+            Self::Address(ip_addr) => ip_addr.to_string().into(),
         }
     }
 }
@@ -164,25 +169,25 @@ impl PartialEq<Host> for IpAddr {
 
 impl From<Domain> for Host {
     fn from(domain: Domain) -> Self {
-        Host::Name(domain)
+        Self::Name(domain)
     }
 }
 
 impl From<IpAddr> for Host {
     fn from(ip: IpAddr) -> Self {
-        Host::Address(ip)
+        Self::Address(ip)
     }
 }
 
 impl From<Ipv4Addr> for Host {
     fn from(ip: Ipv4Addr) -> Self {
-        Host::Address(IpAddr::V4(ip))
+        Self::Address(IpAddr::V4(ip))
     }
 }
 
 impl From<Ipv6Addr> for Host {
     fn from(ip: Ipv6Addr) -> Self {
-        Host::Address(IpAddr::V6(ip))
+        Self::Address(IpAddr::V6(ip))
     }
 }
 
@@ -199,7 +204,7 @@ impl std::str::FromStr for Host {
     type Err = OpaqueError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Host::try_from(s)
+        Self::try_from(s)
     }
 }
 

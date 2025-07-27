@@ -318,10 +318,10 @@ impl CompressionLevel {
     #[allow(dead_code)]
     pub(crate) fn into_async_compression(self) -> AsyncCompressionLevel {
         match self {
-            CompressionLevel::Fastest => AsyncCompressionLevel::Fastest,
-            CompressionLevel::Best => AsyncCompressionLevel::Best,
-            CompressionLevel::Default => AsyncCompressionLevel::Default,
-            CompressionLevel::Precise(quality) => {
+            Self::Fastest => AsyncCompressionLevel::Fastest,
+            Self::Best => AsyncCompressionLevel::Best,
+            Self::Default => AsyncCompressionLevel::Default,
+            Self::Precise(quality) => {
                 AsyncCompressionLevel::Precise(quality.try_into().unwrap_or(i32::MAX))
             }
         }

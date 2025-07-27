@@ -19,6 +19,7 @@ impl ErrorWithExitCode {
     }
 
     /// Get the exit error code
+    #[must_use]
     pub fn exit_code(&self) -> i32 {
         self.code
     }

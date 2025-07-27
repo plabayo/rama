@@ -53,6 +53,7 @@ impl Default for DefaultOnRequest {
 
 impl DefaultOnRequest {
     /// Create a new `DefaultOnRequest`.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -68,6 +69,7 @@ impl DefaultOnRequest {
     ///
     /// [tracing events]: https://docs.rs/tracing/latest/tracing/#events
     /// [`DefaultMakeSpan::level`]: crate::layer::trace::DefaultMakeSpan::level
+    #[must_use]
     pub fn level(mut self, level: Level) -> Self {
         self.level = level;
         self

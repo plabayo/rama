@@ -49,6 +49,7 @@ struct Shared {
 }
 
 impl Sender {
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub(crate) fn send(&mut self, value: Value) {
         if self.shared.value.swap(value, Ordering::SeqCst) != value {
             self.shared.waker.wake();
@@ -63,6 +64,7 @@ impl Drop for Sender {
 }
 
 impl Receiver {
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub(crate) fn load(&mut self, cx: &mut task::Context<'_>) -> Value {
         self.shared.waker.register(cx.waker());
         self.shared.value.load(Ordering::SeqCst)

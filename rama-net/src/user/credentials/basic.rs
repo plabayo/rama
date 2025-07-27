@@ -23,7 +23,7 @@ impl fmt::Debug for Basic {
 impl Basic {
     /// Creates a new [`Basic`] credential.
     pub fn new(username: impl Into<String>, password: impl Into<String>) -> Self {
-        Basic {
+        Self {
             username: Cow::Owned(username.into()),
             password: {
                 let password = password.into();
@@ -33,8 +33,9 @@ impl Basic {
     }
 
     /// Creates a new [`Basic`] credential.
+    #[must_use]
     pub fn new_static(username: &'static str, password: &'static str) -> Self {
-        Basic {
+        Self {
             username: username.into(),
             password: (!password.is_empty()).then_some(password.into()),
         }
@@ -42,26 +43,29 @@ impl Basic {
 
     /// Creates a new [`Basic`] credential.
     pub fn new_insecure(username: impl Into<String>) -> Self {
-        Basic {
+        Self {
             username: Cow::Owned(username.into()),
             password: None,
         }
     }
 
     /// Creates a new [`Basic`] credential.
+    #[must_use]
     pub fn new_static_insecure(username: &'static str) -> Self {
-        Basic {
+        Self {
             username: username.into(),
             password: None,
         }
     }
 
     /// View the decoded username.
+    #[must_use]
     pub fn username(&self) -> &str {
         self.username.as_ref()
     }
 
     /// View the decoded password.
+    #[must_use]
     pub fn password(&self) -> &str {
         self.password.as_deref().unwrap_or_default()
     }
@@ -85,13 +89,14 @@ impl Basic {
     /// Turn itself into a [`StaticAuthorizer`], so it can be used to authorize.
     ///
     /// Just a shortcut, QoL.
-    pub fn into_authorizer(self) -> StaticAuthorizer<Basic> {
+    #[must_use]
+    pub fn into_authorizer(self) -> StaticAuthorizer<Self> {
         StaticAuthorizer::new(self)
     }
 }
 
-impl PartialEq<Basic> for Basic {
-    fn eq(&self, other: &Basic) -> bool {
+impl PartialEq<Self> for Basic {
+    fn eq(&self, other: &Self) -> bool {
         self.username() == other.username() && self.password() == other.password()
     }
 }
@@ -106,11 +111,11 @@ impl TryFrom<&str> for Basic {
             Some(0) => Err(OpaqueError::from_display(
                 "missing username in basic credential",
             )),
-            Some(n) => Ok(Basic {
+            Some(n) => Ok(Self {
                 username: Cow::Owned(value[..n].to_owned()),
                 password: Some(Cow::Owned(value[n + 1..].to_owned())),
             }),
-            None => Ok(Basic {
+            None => Ok(Self {
                 username: Cow::Owned(value.to_owned()),
                 password: None,
             }),

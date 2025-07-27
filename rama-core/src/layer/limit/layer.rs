@@ -14,7 +14,7 @@ pub struct LimitLayer<P, F = ()> {
 impl<P> LimitLayer<P> {
     /// Creates a new [`LimitLayer`] from a [`crate::layer::limit::Policy`].
     pub const fn new(policy: P) -> Self {
-        LimitLayer {
+        Self {
             policy,
             error_into_response: (),
         }
@@ -34,6 +34,7 @@ impl LimitLayer<UnlimitedPolicy> {
     /// Creates a new [`LimitLayer`] with an unlimited policy.
     ///
     /// Meaning that all requests are allowed to proceed.
+    #[must_use]
     pub fn unlimited() -> Self {
         Self::new(UnlimitedPolicy::default())
     }

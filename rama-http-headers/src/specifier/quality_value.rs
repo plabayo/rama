@@ -28,11 +28,13 @@ pub struct Quality(u16);
 
 impl Quality {
     #[inline]
+    #[must_use]
     pub fn one() -> Self {
         Self(1000)
     }
 
     #[inline]
+    #[must_use]
     pub fn as_u16(&self) -> u16 {
         self.0
     }
@@ -101,8 +103,8 @@ impl str::FromStr for Quality {
 }
 
 impl Default for Quality {
-    fn default() -> Quality {
-        Quality(1000)
+    fn default() -> Self {
+        Self(1000)
     }
 }
 
@@ -120,8 +122,8 @@ impl<T: Copy> Copy for QualityValue<T> {}
 
 impl<T> QualityValue<T> {
     /// Creates a new `QualityValue` from an item and a quality.
-    pub const fn new(value: T, quality: Quality) -> QualityValue<T> {
-        QualityValue { value, quality }
+    pub const fn new(value: T, quality: Quality) -> Self {
+        Self { value, quality }
     }
 
     /*
@@ -140,8 +142,8 @@ impl<T> QualityValue<T> {
 }
 
 impl<T> From<T> for QualityValue<T> {
-    fn from(value: T) -> QualityValue<T> {
-        QualityValue {
+    fn from(value: T) -> Self {
+        Self {
             value,
             quality: Quality::default(),
         }
@@ -149,7 +151,7 @@ impl<T> From<T> for QualityValue<T> {
 }
 
 impl<T: PartialEq> cmp::PartialOrd for QualityValue<T> {
-    fn partial_cmp(&self, other: &QualityValue<T>) -> Option<cmp::Ordering> {
+    fn partial_cmp(&self, other: &Self) -> Option<cmp::Ordering> {
         self.quality.partial_cmp(&other.quality)
     }
 }
@@ -167,7 +169,7 @@ impl<T: fmt::Display> fmt::Display for QualityValue<T> {
 
 impl<T: str::FromStr> str::FromStr for QualityValue<T> {
     type Err = Error;
-    fn from_str(s: &str) -> Result<QualityValue<T>, Error> {
+    fn from_str(s: &str) -> Result<Self, Error> {
         // Set defaults used if parsing fails.
         let mut raw_item = s;
         let mut quality = Quality::one();
@@ -184,7 +186,7 @@ impl<T: str::FromStr> str::FromStr for QualityValue<T> {
         }
         match raw_item.parse::<T>() {
             // we already checked above that the quality is within range
-            Ok(item) => Ok(QualityValue::new(item, quality)),
+            Ok(item) => Ok(Self::new(item, quality)),
             Err(_) => Err(Error::invalid()),
         }
     }

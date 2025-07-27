@@ -108,7 +108,8 @@ impl ExecuteScript {
     }
 
     /// Consume `self` as an [`Event`].
-    pub fn into_sse_event(self) -> Event<ExecuteScript> {
+    #[must_use]
+    pub fn into_sse_event(self) -> Event<Self> {
         Event::new()
             .try_with_event(Self::TYPE.as_smol_str())
             .unwrap()
@@ -116,6 +117,7 @@ impl ExecuteScript {
     }
 
     /// Consume `self` as a [`super::DatastarEvent`].
+    #[must_use]
     pub fn into_datastar_event<T>(self) -> super::DatastarEvent<T> {
         Event::new()
             .try_with_event(Self::TYPE.as_smol_str())
@@ -273,7 +275,7 @@ mod tests {
     use super::*;
     use crate::sse::{EventDataLineReader, EventDataRead, datastar::PatchElements};
 
-    fn assert_sugar_is_valid_patch_element(data: String) {
+    fn assert_sugar_is_valid_patch_element(data: &str) {
         let mut reader = PatchElements::line_reader();
         for line in data.lines() {
             reader.read_line(line).unwrap();
@@ -301,7 +303,7 @@ mod tests {
         let sugar = String::from_utf8(output_sugar).unwrap();
         let expected = String::from_utf8(output_expected).unwrap();
         assert_eq!(sugar, expected);
-        assert_sugar_is_valid_patch_element(sugar);
+        assert_sugar_is_valid_patch_element(&sugar);
     }
 
     #[test]
@@ -350,6 +352,6 @@ try {
         let sugar = String::from_utf8(output_sugar).unwrap();
         let expected = String::from_utf8(output_expected).unwrap();
         assert_eq!(sugar, expected);
-        assert_sugar_is_valid_patch_element(sugar);
+        assert_sugar_is_valid_patch_element(&sugar);
     }
 }

@@ -28,7 +28,7 @@ pub(super) struct InnerHttpProxyConnector {
 
 impl InnerHttpProxyConnector {
     /// Create a new [`InnerHttpProxyConnector`] with the given authority.
-    pub(super) fn new(authority: Authority) -> Result<Self, OpaqueError> {
+    pub(super) fn new(authority: &Authority) -> Result<Self, OpaqueError> {
         let uri = authority.to_string();
         let host_value: HeaderValue = uri.parse().context("parse authority as header value")?;
 

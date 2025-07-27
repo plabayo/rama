@@ -44,111 +44,130 @@ pub struct ContentType(Mime);
 impl ContentType {
     /// A constructor to easily create a `Content-Type: application/json` header.
     #[inline]
-    pub fn json() -> ContentType {
-        ContentType(mime::APPLICATION_JSON)
+    #[must_use]
+    pub fn json() -> Self {
+        Self(mime::APPLICATION_JSON)
     }
 
     /// A constructor to easily create a `Content-Type: text/plain` header.
     #[inline]
-    pub fn text() -> ContentType {
-        ContentType(mime::TEXT_PLAIN)
+    #[must_use]
+    pub fn text() -> Self {
+        Self(mime::TEXT_PLAIN)
     }
 
     /// A constructor to easily create a `Content-Type: text/plain; charset=utf-8` header.
     #[inline]
-    pub fn text_utf8() -> ContentType {
-        ContentType(mime::TEXT_PLAIN_UTF_8)
+    #[must_use]
+    pub fn text_utf8() -> Self {
+        Self(mime::TEXT_PLAIN_UTF_8)
     }
 
     /// A constructor to easily create a `Content-Type: text/event-stream` header.
     #[inline]
-    pub fn text_event_stream() -> ContentType {
-        ContentType(mime::TEXT_EVENT_STREAM)
+    #[must_use]
+    pub fn text_event_stream() -> Self {
+        Self(mime::TEXT_EVENT_STREAM)
     }
 
     /// A constructor to easily create a `Content-Type: text/html` header.
     #[inline]
-    pub fn html() -> ContentType {
-        ContentType(mime::TEXT_HTML)
+    #[must_use]
+    pub fn html() -> Self {
+        Self(mime::TEXT_HTML)
     }
 
     /// A constructor to easily create a `Content-Type: text/html; charset=utf-8` header.
     #[inline]
-    pub fn html_utf8() -> ContentType {
-        ContentType(mime::TEXT_HTML_UTF_8)
+    #[must_use]
+    pub fn html_utf8() -> Self {
+        Self(mime::TEXT_HTML_UTF_8)
     }
 
     /// A constructor to easily create a `Content-Type: text/css` header.
     #[inline]
-    pub fn css() -> ContentType {
-        ContentType(mime::TEXT_CSS)
+    #[must_use]
+    pub fn css() -> Self {
+        Self(mime::TEXT_CSS)
     }
 
     /// A constructor to easily create a `text/css; charset=utf-8` header.
     #[inline]
-    pub fn css_utf8() -> ContentType {
-        ContentType(mime::TEXT_CSS_UTF_8)
+    #[must_use]
+    pub fn css_utf8() -> Self {
+        Self(mime::TEXT_CSS_UTF_8)
     }
 
     /// A constructor to easily create a `Content-Type: text/xml` header.
     #[inline]
-    pub fn xml() -> ContentType {
-        ContentType(mime::TEXT_XML)
+    #[must_use]
+    pub fn xml() -> Self {
+        Self(mime::TEXT_XML)
     }
 
     /// A constructor to easily create a `Content-Type: text/csv` header.
     #[inline]
-    pub fn csv() -> ContentType {
-        ContentType(mime::TEXT_CSV)
+    #[must_use]
+    pub fn csv() -> Self {
+        Self(mime::TEXT_CSV)
     }
 
     /// A constructor to easily create a `Content-Type: text/csv; charset=utf-8` header.
     #[inline]
-    pub fn csv_utf8() -> ContentType {
-        ContentType(mime::TEXT_CSV_UTF_8)
+    #[must_use]
+    pub fn csv_utf8() -> Self {
+        Self(mime::TEXT_CSV_UTF_8)
     }
 
     /// A constructor to easily create a `Content-Type: application/www-form-url-encoded` header.
     #[inline]
-    pub fn form_url_encoded() -> ContentType {
-        ContentType(mime::APPLICATION_WWW_FORM_URLENCODED)
+    #[must_use]
+    pub fn form_url_encoded() -> Self {
+        Self(mime::APPLICATION_WWW_FORM_URLENCODED)
     }
     /// A constructor to easily create a `Content-Type: image/jpeg` header.
     #[inline]
-    pub fn jpeg() -> ContentType {
-        ContentType(mime::IMAGE_JPEG)
+    #[must_use]
+    pub fn jpeg() -> Self {
+        Self(mime::IMAGE_JPEG)
     }
 
     /// A constructor to easily create a `Content-Type: image/png` header.
     #[inline]
-    pub fn png() -> ContentType {
-        ContentType(mime::IMAGE_PNG)
+    #[must_use]
+    pub fn png() -> Self {
+        Self(mime::IMAGE_PNG)
     }
 
     /// A constructor to easily create a `Content-Type: application/octet-stream` header.
     #[inline]
-    pub fn octet_stream() -> ContentType {
-        ContentType(mime::APPLICATION_OCTET_STREAM)
+    #[must_use]
+    pub fn octet_stream() -> Self {
+        Self(mime::APPLICATION_OCTET_STREAM)
     }
 
     /// A constructor to easily create a `Content-Type: application/javascript` header.
     #[inline]
-    pub fn javascript() -> ContentType {
-        ContentType(mime::APPLICATION_JAVASCRIPT)
+    #[must_use]
+    pub fn javascript() -> Self {
+        Self(mime::APPLICATION_JAVASCRIPT)
     }
 
     /// A constructor to easily create a `Content-Type: application/javascript; charset=utf-8` header.
     #[inline]
-    pub fn javascript_utf8() -> ContentType {
-        ContentType(mime::APPLICATION_JAVASCRIPT_UTF_8)
+    #[must_use]
+    pub fn javascript_utf8() -> Self {
+        Self(mime::APPLICATION_JAVASCRIPT_UTF_8)
     }
 
     /// Reference to the internal [`Mime`].
+    #[must_use]
     pub fn mime(&self) -> &Mime {
         &self.0
     }
 
     /// Consume `self` into the inner [`Mime`].
+    #[must_use]
     pub fn into_mime(self) -> Mime {
         self.0
     }
@@ -178,13 +197,13 @@ impl Header for ContentType {
 }
 
 impl From<mime::Mime> for ContentType {
-    fn from(m: mime::Mime) -> ContentType {
-        ContentType(m)
+    fn from(m: mime::Mime) -> Self {
+        Self(m)
     }
 }
 
 impl From<ContentType> for mime::Mime {
-    fn from(ct: ContentType) -> mime::Mime {
+    fn from(ct: ContentType) -> Self {
         ct.0
     }
 }
@@ -198,7 +217,7 @@ impl fmt::Display for ContentType {
 impl std::str::FromStr for ContentType {
     type Err = Error;
 
-    fn from_str(s: &str) -> Result<ContentType, Self::Err> {
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         s.parse::<Mime>()
             .map(|m| m.into())
             .map_err(|_| Error::invalid())

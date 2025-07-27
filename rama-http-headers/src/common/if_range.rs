@@ -51,13 +51,14 @@ derive_header! {
 
 impl IfRange {
     /// Create an `IfRange` header with an entity tag.
-    pub fn etag(tag: ETag) -> IfRange {
-        IfRange(IfRange_::EntityTag(tag.0))
+    pub fn etag(tag: ETag) -> Self {
+        Self(IfRange_::EntityTag(tag.0))
     }
 
     /// Create an `IfRange` header with a date value.
-    pub fn date(time: SystemTime) -> IfRange {
-        IfRange(IfRange_::Date(time.into()))
+    #[must_use]
+    pub fn date(time: SystemTime) -> Self {
+        Self(IfRange_::Date(time.into()))
     }
 
     /// Checks if the resource has been modified, or if the range request
@@ -89,18 +90,18 @@ impl TryFromValues for IfRange_ {
             .next()
             .and_then(|val| {
                 if let Some(tag) = EntityTag::from_val(val) {
-                    return Some(IfRange_::EntityTag(tag));
+                    return Some(Self::EntityTag(tag));
                 }
 
                 let date = HttpDate::from_val(val)?;
-                Some(IfRange_::Date(date))
+                Some(Self::Date(date))
             })
             .ok_or_else(Error::invalid)
     }
 }
 
 impl<'a> From<&'a IfRange_> for HeaderValue {
-    fn from(if_range: &'a IfRange_) -> HeaderValue {
+    fn from(if_range: &'a IfRange_) -> Self {
         match *if_range {
             IfRange_::EntityTag(ref tag) => tag.into(),
             IfRange_::Date(ref date) => date.into(),

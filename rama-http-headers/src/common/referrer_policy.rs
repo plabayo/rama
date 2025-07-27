@@ -54,29 +54,28 @@ enum Policy {
 
 impl ReferrerPolicy {
     /// `no-referrer`
-    pub const NO_REFERRER: Self = ReferrerPolicy(Policy::NoReferrer);
+    pub const NO_REFERRER: Self = Self(Policy::NoReferrer);
 
     /// `no-referrer-when-downgrade`
-    pub const NO_REFERRER_WHEN_DOWNGRADE: Self = ReferrerPolicy(Policy::NoReferrerWhenDowngrade);
+    pub const NO_REFERRER_WHEN_DOWNGRADE: Self = Self(Policy::NoReferrerWhenDowngrade);
 
     /// `same-origin`
-    pub const SAME_ORIGIN: Self = ReferrerPolicy(Policy::SameOrigin);
+    pub const SAME_ORIGIN: Self = Self(Policy::SameOrigin);
 
     /// `origin`
-    pub const ORIGIN: Self = ReferrerPolicy(Policy::Origin);
+    pub const ORIGIN: Self = Self(Policy::Origin);
 
     /// `origin-when-cross-origin`
-    pub const ORIGIN_WHEN_CROSS_ORIGIN: Self = ReferrerPolicy(Policy::OriginWhenCrossOrigin);
+    pub const ORIGIN_WHEN_CROSS_ORIGIN: Self = Self(Policy::OriginWhenCrossOrigin);
 
     /// `unsafe-url`
-    pub const UNSAFE_URL: Self = ReferrerPolicy(Policy::UnsafeUrl);
+    pub const UNSAFE_URL: Self = Self(Policy::UnsafeUrl);
 
     /// `strict-origin`
-    pub const STRICT_ORIGIN: Self = ReferrerPolicy(Policy::StrictOrigin);
+    pub const STRICT_ORIGIN: Self = Self(Policy::StrictOrigin);
 
     ///`strict-origin-when-cross-origin`
-    pub const STRICT_ORIGIN_WHEN_CROSS_ORIGIN: Self =
-        ReferrerPolicy(Policy::StrictOriginWhenCrossOrigin);
+    pub const STRICT_ORIGIN_WHEN_CROSS_ORIGIN: Self = Self(Policy::StrictOriginWhenCrossOrigin);
 }
 
 impl TryFromValues for Policy {
@@ -89,14 +88,14 @@ impl TryFromValues for Policy {
         let mut known = None;
         for s in csv(values) {
             known = Some(match s {
-                "no-referrer" | "never" => Policy::NoReferrer,
-                "no-referrer-when-downgrade" | "default" => Policy::NoReferrerWhenDowngrade,
-                "same-origin" => Policy::SameOrigin,
-                "origin" => Policy::Origin,
-                "origin-when-cross-origin" => Policy::OriginWhenCrossOrigin,
-                "strict-origin" => Policy::StrictOrigin,
-                "strict-origin-when-cross-origin" => Policy::StrictOriginWhenCrossOrigin,
-                "unsafe-url" | "always" => Policy::UnsafeUrl,
+                "no-referrer" | "never" => Self::NoReferrer,
+                "no-referrer-when-downgrade" | "default" => Self::NoReferrerWhenDowngrade,
+                "same-origin" => Self::SameOrigin,
+                "origin" => Self::Origin,
+                "origin-when-cross-origin" => Self::OriginWhenCrossOrigin,
+                "strict-origin" => Self::StrictOrigin,
+                "strict-origin-when-cross-origin" => Self::StrictOriginWhenCrossOrigin,
+                "unsafe-url" | "always" => Self::UnsafeUrl,
                 _ => continue,
             });
         }
@@ -106,8 +105,8 @@ impl TryFromValues for Policy {
 }
 
 impl<'a> From<&'a Policy> for HeaderValue {
-    fn from(policy: &'a Policy) -> HeaderValue {
-        HeaderValue::from_static(match *policy {
+    fn from(policy: &'a Policy) -> Self {
+        Self::from_static(match *policy {
             Policy::NoReferrer => "no-referrer",
             Policy::NoReferrerWhenDowngrade => "no-referrer-when-downgrade",
             Policy::SameOrigin => "same-origin",

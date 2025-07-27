@@ -58,16 +58,18 @@ impl StrictTransportSecurity {
     // incorrect assumption about a default.
 
     /// Create an STS header that includes subdomains
-    pub fn including_subdomains(max_age: Duration) -> StrictTransportSecurity {
-        StrictTransportSecurity {
+    #[must_use]
+    pub fn including_subdomains(max_age: Duration) -> Self {
+        Self {
             max_age: max_age.into(),
             include_subdomains: true,
         }
     }
 
     /// Create an STS header that excludes subdomains
-    pub fn excluding_subdomains(max_age: Duration) -> StrictTransportSecurity {
-        StrictTransportSecurity {
+    #[must_use]
+    pub fn excluding_subdomains(max_age: Duration) -> Self {
+        Self {
             max_age: max_age.into(),
             include_subdomains: false,
         }
@@ -76,11 +78,13 @@ impl StrictTransportSecurity {
     // getters
 
     /// Get whether this should include subdomains.
+    #[must_use]
     pub fn include_subdomains(&self) -> bool {
         self.include_subdomains
     }
 
     /// Get the max-age.
+    #[must_use]
     pub fn max_age(&self) -> Duration {
         self.max_age.into()
     }

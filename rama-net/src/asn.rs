@@ -22,6 +22,7 @@ enum AsnData {
 
 impl Asn {
     /// Create a valid ASN from a static number, validated at compile time.
+    #[must_use]
     pub const fn from_static(value: u32) -> Self {
         if value == 0 {
             return Self(AsnData::Unspecified);
@@ -34,11 +35,13 @@ impl Asn {
     /// Internally makes use of a value that's invalid within ASN,
     /// but that be used to identify an AS with an unspecified number,
     /// or a router that can route to the AS of a given ASN.
+    #[must_use]
     pub fn unspecified() -> Self {
         Self(AsnData::Unspecified)
     }
 
     /// Return [`Asn`] as u32
+    #[must_use]
     pub fn as_u32(&self) -> u32 {
         match self.0 {
             AsnData::Specified(n) => n,
@@ -47,6 +50,7 @@ impl Asn {
     }
 
     /// Returns `true` if this value is considered to be "any" value.
+    #[must_use]
     pub fn is_any(&self) -> bool {
         self.0 == AsnData::Unspecified
     }

@@ -32,8 +32,9 @@ impl Priority {
     ///
     /// # Returns
     /// A new `Priority` frame.
+    #[must_use]
     pub fn new(stream_id: StreamId, dependency: StreamDependency) -> Self {
-        Priority {
+        Self {
             stream_id,
             dependency,
         }
@@ -46,12 +47,13 @@ impl Priority {
             return Err(Error::InvalidDependencyId);
         }
 
-        Ok(Priority {
+        Ok(Self {
             stream_id: head.stream_id(),
             dependency,
         })
     }
 
+    #[must_use]
     pub fn head(&self) -> Head {
         Head::new(Kind::Priority, 0, self.stream_id)
     }
@@ -73,15 +75,16 @@ impl Priority {
 
 impl<B> From<Priority> for Frame<B> {
     fn from(src: Priority) -> Self {
-        Frame::Priority(src)
+        Self::Priority(src)
     }
 }
 
 // ===== impl StreamDependency =====
 
 impl StreamDependency {
+    #[must_use]
     pub fn new(dependency_id: StreamId, weight: u8, is_exclusive: bool) -> Self {
-        StreamDependency {
+        Self {
             dependency_id,
             weight,
             is_exclusive,
@@ -99,7 +102,7 @@ impl StreamDependency {
         // Read the weight
         let weight = src[4];
 
-        Ok(StreamDependency::new(dependency_id, weight, is_exclusive))
+        Ok(Self::new(dependency_id, weight, is_exclusive))
     }
 
     pub fn encode<T: BufMut>(&self, dst: &mut T) {

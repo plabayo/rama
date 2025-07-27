@@ -66,7 +66,7 @@ into_event_data! {
 
 impl<T> From<PatchSignals<T>> for EventData<T> {
     fn from(value: PatchSignals<T>) -> Self {
-        EventData::PatchSignals(value)
+        Self::PatchSignals(value)
     }
 }
 
@@ -76,9 +76,8 @@ impl<T> EventData<T> {
     /// returning itself as an error if it is of a different type.
     pub fn into_patch_elements(self) -> Result<PatchElements, Self> {
         match self {
-            EventData::PatchElements(data) => Ok(data),
-            EventData::ExecuteScript(_) => Err(self),
-            EventData::PatchSignals(_) => Err(self),
+            Self::PatchElements(data) => Ok(data),
+            Self::ExecuteScript(_) | Self::PatchSignals(_) => Err(self),
         }
     }
 
@@ -87,9 +86,8 @@ impl<T> EventData<T> {
     /// returning itself as an error if it is of a different type.
     pub fn into_patch_signals(self) -> Result<PatchSignals<T>, Self> {
         match self {
-            EventData::PatchElements(_) => Err(self),
-            EventData::ExecuteScript(_) => Err(self),
-            EventData::PatchSignals(data) => Ok(data),
+            Self::PatchElements(_) | Self::ExecuteScript(_) => Err(self),
+            Self::PatchSignals(data) => Ok(data),
         }
     }
 
@@ -98,22 +96,21 @@ impl<T> EventData<T> {
     /// returning itself as an error if it is of a different type.
     pub fn into_execute_script(self) -> Result<ExecuteScript, Self> {
         match self {
-            EventData::PatchElements(_) => Err(self),
-            EventData::ExecuteScript(data) => Ok(data),
-            EventData::PatchSignals(_) => Err(self),
+            Self::PatchElements(_) | Self::PatchSignals(_) => Err(self),
+            Self::ExecuteScript(data) => Ok(data),
         }
     }
 
     /// Return the [`EventType`] for the current data
     pub fn event_type(&self) -> EventType {
         match self {
-            EventData::PatchElements(_) | EventData::ExecuteScript(_) => EventType::PatchElements,
-            EventData::PatchSignals(_) => EventType::PatchSignals,
+            Self::PatchElements(_) | Self::ExecuteScript(_) => EventType::PatchElements,
+            Self::PatchSignals(_) => EventType::PatchSignals,
         }
     }
 
     /// Consume `self` as an [`Event`].
-    pub fn into_sse_event(self) -> Event<EventData<T>> {
+    pub fn into_sse_event(self) -> Event<Self> {
         let event_type = self.event_type();
         Event::new()
             .try_with_event(event_type.as_smol_str())
@@ -125,9 +122,9 @@ impl<T> EventData<T> {
 impl<T: crate::sse::EventDataWrite> crate::sse::EventDataWrite for EventData<T> {
     fn write_data(&self, w: &mut impl std::io::Write) -> Result<(), OpaqueError> {
         match self {
-            EventData::PatchElements(patch_elements) => patch_elements.write_data(w),
-            EventData::ExecuteScript(exec_script) => exec_script.write_data(w),
-            EventData::PatchSignals(patch_signals) => patch_signals.write_data(w),
+            Self::PatchElements(patch_elements) => patch_elements.write_data(w),
+            Self::ExecuteScript(exec_script) => exec_script.write_data(w),
+            Self::PatchSignals(patch_signals) => patch_signals.write_data(w),
         }
     }
 }
@@ -158,9 +155,8 @@ impl<T: EventDataRead> EventDataLineReader for EventDataReader<T> {
     }
 
     fn data(&mut self, event: Option<&str>) -> Result<Option<Self::Data>, OpaqueError> {
-        let lines = match self.reader.data(None)? {
-            Some(data) => data,
-            None => return Ok(None),
+        let Some(lines) = self.reader.data(None)? else {
+            return Ok(None);
         };
 
         let event_type: EventType = event

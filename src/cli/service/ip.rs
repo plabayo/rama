@@ -50,6 +50,7 @@ impl Default for IpServiceBuilder<mode::Http> {
 
 impl IpServiceBuilder<mode::Http> {
     /// Create a new [`IpServiceBuilder`], echoing the IP back over HTTP.
+    #[must_use]
     pub fn http() -> Self {
         Self::default()
     }
@@ -57,6 +58,7 @@ impl IpServiceBuilder<mode::Http> {
 
 impl IpServiceBuilder<mode::Transport> {
     /// Create a new [`IpServiceBuilder`], echoing the IP back over L4.
+    #[must_use]
     pub fn tcp() -> Self {
         Self {
             concurrent_limit: 0,
@@ -71,6 +73,7 @@ impl<M> IpServiceBuilder<M> {
     /// set the number of concurrent connections to allow
     ///
     /// (0 = no limit)
+    #[must_use]
     pub fn concurrent(mut self, limit: usize) -> Self {
         self.concurrent_limit = limit;
         self
@@ -87,6 +90,7 @@ impl<M> IpServiceBuilder<M> {
     /// set the timeout in seconds for each connection
     ///
     /// (0 = no timeout)
+    #[must_use]
     pub fn timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
         self
@@ -111,6 +115,7 @@ impl<M> IpServiceBuilder<M> {
     /// CF-Connecting-IP, True-Client-IP
     ///
     /// Or using HaProxy protocol.
+    #[must_use]
     pub fn forward(self, kind: ForwardKind) -> Self {
         self.maybe_forward(Some(kind))
     }
@@ -126,6 +131,7 @@ impl<M> IpServiceBuilder<M> {
     /// maybe enable support for one of the following "forward" headers or protocols.
     ///
     /// See [`Self::forward`] for more information.
+    #[must_use]
     pub fn maybe_forward(mut self, maybe_kind: Option<ForwardKind>) -> Self {
         self.forward = maybe_kind;
         self
@@ -234,12 +240,9 @@ where
             .get::<Forwarded>()
             .and_then(|f| f.client_ip())
             .or_else(|| ctx.get::<SocketInfo>().map(|s| s.peer_addr().ip()));
-        let peer_ip = match peer_ip {
-            Some(peer_ip) => peer_ip,
-            None => {
-                tracing::error!("missing peer information");
-                return Ok(());
-            }
+        let Some(peer_ip) = peer_ip else {
+            tracing::error!("missing peer information");
+            return Ok(());
         };
 
         let mut stream = std::pin::pin!(stream);

@@ -62,8 +62,9 @@ impl AsRef<[u8]> for Upgrade {
 
 impl Upgrade {
     /// Constructs an `Upgrade: websocket` header.
-    pub fn websocket() -> Upgrade {
-        Upgrade(HeaderValue::from_static("websocket"))
+    #[must_use]
+    pub fn websocket() -> Self {
+        Self(HeaderValue::from_static("websocket"))
     }
 
     /// Returns true if this is an `Upgrade: websocket` header.

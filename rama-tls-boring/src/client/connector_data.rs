@@ -27,7 +27,7 @@ use rama_net::tls::{
 };
 use rama_net::{address::Domain, tls::client::ServerVerifyMode};
 use rama_utils::macros::generate_set_and_with;
-use std::{fmt, sync::Arc};
+use std::{borrow::Cow, fmt, sync::Arc};
 
 #[cfg(feature = "compression")]
 use super::compress_certificate::{
@@ -62,6 +62,7 @@ impl std::fmt::Debug for TlsConnectorData {
 }
 
 impl TlsConnectorData {
+    #[must_use]
     pub fn builder() -> TlsConnectorDataBuilder {
         TlsConnectorDataBuilder::new()
     }
@@ -170,11 +171,11 @@ impl TlsConnectorDataBuilder {
     );
 
     /// Return the SSL keylog file path if one exists.
-    pub fn keylog_filepath(&self) -> Option<String> {
+    pub fn keylog_filepath(&self) -> Option<Cow<'_, str>> {
         if let Some(intent) = self.keylog_intent_inner() {
             return intent.file_path();
         }
-        KeyLogIntent::default().file_path()
+        KeyLogIntent::env_file_path().map(Into::into)
     }
 
     fn keylog_intent_inner(&self) -> Option<&KeyLogIntent> {
@@ -186,22 +187,26 @@ impl TlsConnectorDataBuilder {
         })
     }
 
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
+    #[must_use]
     pub fn new_http_auto() -> Self {
         Self::new()
             .try_with_rama_alpn_protos(&[ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11])
             .expect("with http2 and http1")
     }
 
+    #[must_use]
     pub fn new_http_1() -> Self {
         Self::new()
             .try_with_rama_alpn_protos(&[ApplicationProtocol::HTTP_11])
             .expect("with http1")
     }
 
+    #[must_use]
     pub fn new_http_2() -> Self {
         Self::new()
             .try_with_rama_alpn_protos(&[ApplicationProtocol::HTTP_2])
@@ -212,7 +217,7 @@ impl TlsConnectorDataBuilder {
     ///
     /// When evaluating builders we start from this builder (the last one) and
     /// work our way back until we find a value.
-    pub fn push_base_config(&mut self, config: Arc<TlsConnectorDataBuilder>) -> &mut Self {
+    pub fn push_base_config(&mut self, config: Arc<Self>) -> &mut Self {
         self.base_builders.push(config);
         self
     }
@@ -220,13 +225,14 @@ impl TlsConnectorDataBuilder {
     /// Add [`ConfigBuilder`] to the start of our base builders
     ///
     /// Builder in the start is evaluated as the last one when iterating over builders
-    pub fn prepend_base_config(&mut self, config: Arc<TlsConnectorDataBuilder>) -> &mut Self {
+    pub fn prepend_base_config(&mut self, config: Arc<Self>) -> &mut Self {
         self.base_builders.insert(0, config);
         self
     }
 
     /// Same as [`TlsConnectorDataBuilder::push_base_config`] but consuming self
-    pub fn with_base_config(mut self, config: Arc<TlsConnectorDataBuilder>) -> Self {
+    #[must_use]
+    pub fn with_base_config(mut self, config: Arc<Self>) -> Self {
         self.push_base_config(config);
         self
     }
@@ -436,7 +442,7 @@ impl TlsConnectorDataBuilder {
             rama_boring::ssl::SslConnector::builder(rama_boring::ssl::SslMethod::tls_client())
                 .context("create (boring) ssl connector builder")?;
 
-        if let Some(keylog_filename) = self.keylog_filepath() {
+        if let Some(keylog_filename) = self.keylog_filepath().as_deref() {
             let handle = new_key_log_file_handle(keylog_filename)?;
             cfg_builder.set_keylog_callback(move |_, line| {
                 let line = format!("{line}\n");
@@ -741,20 +747,17 @@ impl TlsConnectorDataBuilder {
             for extension in cfg.extensions.iter().flatten() {
                 match extension {
                     ClientHelloExtension::ServerName(maybe_domain) => {
-                        server_name = match maybe_domain {
-                            Some(_) => {
-                                trace!(
-                                    "TlsConnectorData: builder: from std client config: set server (domain) name from host: {:?}",
-                                    maybe_domain
-                                );
-                                maybe_domain.clone()
-                            }
-                            None => {
-                                trace!(
-                                    "TlsConnectorData: builder: from std client config: ignore server null value"
-                                );
-                                None
-                            }
+                        server_name = if maybe_domain.is_some() {
+                            trace!(
+                                "TlsConnectorData: builder: from std client config: set server (domain) name from host: {:?}",
+                                maybe_domain
+                            );
+                            maybe_domain.clone()
+                        } else {
+                            trace!(
+                                "TlsConnectorData: builder: from std client config: ignore server null value"
+                            );
+                            None
                         };
                     }
                     ClientHelloExtension::ApplicationLayerProtocolNegotiation(alpn_list) => {
@@ -933,7 +936,7 @@ impl TlsConnectorDataBuilder {
             .map(|auth| auth.clone().try_into())
             .transpose()?;
 
-        Ok(TlsConnectorDataBuilder {
+        Ok(Self {
             base_builders: vec![],
             keylog_intent: keylog_intent.cloned(),
             extension_order,
@@ -962,7 +965,7 @@ impl TryFrom<&rama_net::tls::client::ClientConfig> for TlsConnectorDataBuilder {
     type Error = OpaqueError;
 
     fn try_from(value: &rama_net::tls::client::ClientConfig) -> Result<Self, Self::Error> {
-        TlsConnectorDataBuilder::try_from_multiple_client_configs(std::iter::once(value))
+        Self::try_from_multiple_client_configs(std::iter::once(value))
     }
 }
 
@@ -970,7 +973,7 @@ impl TryFrom<&Arc<rama_net::tls::client::ClientConfig>> for TlsConnectorDataBuil
     type Error = OpaqueError;
 
     fn try_from(value: &Arc<rama_net::tls::client::ClientConfig>) -> Result<Self, Self::Error> {
-        TlsConnectorDataBuilder::try_from_multiple_client_configs(std::iter::once(value.as_ref()))
+        Self::try_from_multiple_client_configs(std::iter::once(value.as_ref()))
     }
 }
 
@@ -991,7 +994,7 @@ impl TryFrom<ClientAuth> for ConnectorConfigClientAuth {
             ClientAuth::SelfSigned => {
                 let (cert_chain, private_key) =
                     self_signed_client_auth().context("boring/TlsConnectorData")?;
-                Ok(ConnectorConfigClientAuth {
+                Ok(Self {
                     cert_chain,
                     private_key,
                 })
@@ -1032,7 +1035,7 @@ impl TryFrom<ClientAuth> for ConnectorConfigClientAuth {
                         .context("boring/TlsConnectorData: parse private key from PEM content")?,
                 };
 
-                Ok(ConnectorConfigClientAuth {
+                Ok(Self {
                     cert_chain,
                     private_key,
                 })

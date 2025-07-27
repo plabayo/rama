@@ -29,8 +29,8 @@ impl Selector {
             return None;
         }
         let selection = match self {
-            Selector::RoundRobin(atomic_usize) => atomic_usize.fetch_add(1, Ordering::Relaxed),
-            Selector::Random => rand::rng().next_u64() as usize,
+            Self::RoundRobin(atomic_usize) => atomic_usize.fetch_add(1, Ordering::Relaxed),
+            Self::Random => rand::rng().next_u64() as usize,
         };
         let idx = selection % connectors.len();
         Some(&connectors[idx])
@@ -47,6 +47,7 @@ pub struct TcpStreamConnectorPool<C> {
 impl<C: TcpStreamConnector> TcpStreamConnectorPool<C> {
     /// A `TcpStreamConnector` where each connection is chosed randomly from a pool of
     /// `TcpStreamConnector`s
+    #[must_use]
     pub fn new_random(connectors: Vec<C>) -> Self {
         Self {
             selector: Selector::new_random(),
@@ -55,6 +56,7 @@ impl<C: TcpStreamConnector> TcpStreamConnectorPool<C> {
     }
 
     /// New 'Round Robin' `TcpStreamConnector`
+    #[must_use]
     pub fn new_round_robin(connectors: Vec<C>) -> Self {
         Self {
             selector: Selector::new_round_robin(),

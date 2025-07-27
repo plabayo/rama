@@ -97,7 +97,7 @@ impl RamaTryFrom<&rama_boring::x509::X509> for rama_net::tls::DataEncoding {
 
     fn rama_try_from(value: &rama_boring::x509::X509) -> Result<Self, Self::Error> {
         let der = value.to_der().context("boring X509 to Der DataEncoding")?;
-        Ok(rama_net::tls::DataEncoding::Der(der))
+        Ok(Self::Der(der))
     }
 }
 
@@ -116,13 +116,14 @@ impl RamaTryFrom<&rama_boring::stack::StackRef<rama_boring::x509::X509>>
                     .context("boring X509 stackref to DerStack DataEncoding")
             })
             .collect::<Result<Vec<Vec<u8>>, _>>()?;
-        Ok(rama_net::tls::DataEncoding::DerStack(der))
+        Ok(Self::DerStack(der))
     }
 }
 
 /// create an openssl cipher list str from the given [`CipherSuite`]
 ///
 /// ref doc: <https://docs.openssl.org/1.1.1/man1/ciphers/#tls-v13-cipher-suites>
+#[must_use]
 pub fn openssl_cipher_list_str_from_cipher_list(
     suites: &[rama_net::tls::CipherSuite],
 ) -> Option<String> {
@@ -155,8 +156,7 @@ fn openssl_cipher_str_from_cipher_suite(suite: rama_net::tls::CipherSuite) -> Op
         rama_net::tls::CipherSuite::TLS_DHE_RSA_WITH_3DES_EDE_CBC_SHA => Some("DHE-RSA-DES-CBC3-SHA"),
         rama_net::tls::CipherSuite::TLS_DH_anon_WITH_RC4_128_MD5 => Some("ADH-RC4-MD5"),
         rama_net::tls::CipherSuite::TLS_DH_anon_WITH_3DES_EDE_CBC_SHA => Some("ADH-DES-CBC3-SHA"),
-        rama_net::tls::CipherSuite::SSL_FORTEZZA_KEA_WITH_NULL_SHA => None, // not implemented (SSL v3.0)
-        rama_net::tls::CipherSuite::SSL_FORTEZZA_KEA_WITH_FORTEZZA_CBC_SHA => None, // not implemented (SSL v3.0)
+        rama_net::tls::CipherSuite::SSL_FORTEZZA_KEA_WITH_NULL_SHA | rama_net::tls::CipherSuite::SSL_FORTEZZA_KEA_WITH_FORTEZZA_CBC_SHA => None, // not implemented (SSL v3.0)
         rama_net::tls::CipherSuite::TLS_RSA_WITH_AES_128_CBC_SHA => Some("AES128-SHA"),
         rama_net::tls::CipherSuite::TLS_RSA_WITH_AES_256_CBC_SHA => Some("AES256-SHA"),
         rama_net::tls::CipherSuite::TLS_DH_DSS_WITH_AES_128_CBC_SHA => Some("DH-DSS-AES128-SHA"),

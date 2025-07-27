@@ -52,7 +52,7 @@ impl<'a> RamaTryFrom<rustls::pki_types::ServerName<'a>> for Host {
             rustls::pki_types::ServerName::DnsName(name) => {
                 Ok(Domain::try_from(name.as_ref().to_owned())?.into())
             }
-            rustls::pki_types::ServerName::IpAddress(ip) => Ok(Host::from(IpAddr::from(ip))),
+            rustls::pki_types::ServerName::IpAddress(ip) => Ok(Self::from(IpAddr::from(ip))),
             _ => Err(OpaqueError::from_display(format!(
                 "urecognised rustls (PKI) server name: {value:?}",
             ))),
@@ -81,7 +81,7 @@ impl<'a> RamaTryFrom<&rustls::pki_types::ServerName<'a>> for Host {
             rustls::pki_types::ServerName::DnsName(name) => {
                 Ok(Domain::try_from(name.as_ref().to_owned())?.into())
             }
-            rustls::pki_types::ServerName::IpAddress(ip) => Ok(Host::from(IpAddr::from(*ip))),
+            rustls::pki_types::ServerName::IpAddress(ip) => Ok(Self::from(IpAddr::from(*ip))),
             _ => Err(OpaqueError::from_display(format!(
                 "urecognised rustls (PKI) server name: {value:?}",
             ))),
@@ -105,13 +105,13 @@ impl<'a> RamaTryFrom<&'a Host> for rustls::pki_types::ServerName<'a> {
 
 impl RamaFrom<&pki_types::CertificateDer<'static>> for DataEncoding {
     fn rama_from(value: &pki_types::CertificateDer<'static>) -> Self {
-        DataEncoding::Der(value.as_ref().into())
+        Self::Der(value.as_ref().into())
     }
 }
 
 impl RamaFrom<&[pki_types::CertificateDer<'static>]> for DataEncoding {
     fn rama_from(value: &[pki_types::CertificateDer<'static>]) -> Self {
-        DataEncoding::DerStack(
+        Self::DerStack(
             value
                 .iter()
                 .map(|cert| Into::<Vec<u8>>::into(cert.as_ref()))

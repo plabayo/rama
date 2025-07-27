@@ -105,6 +105,7 @@ pub struct Pending {
 }
 
 /// Initiate an upgrade.
+#[must_use]
 pub fn pending() -> (Pending, OnUpgrade) {
     let (tx, rx) = oneshot::channel();
     (
@@ -123,7 +124,7 @@ impl Upgraded {
     where
         T: Stream + Unpin,
     {
-        Upgraded {
+        Self {
             io: Rewind::new_buffered(Box::new(io), read_buf),
         }
     }
@@ -139,7 +140,7 @@ impl Upgraded {
                 io: *t,
                 read_buf: buf,
             }),
-            Err(io) => Err(Upgraded {
+            Err(io) => Err(Self {
                 io: Rewind::new_buffered(io, buf),
             }),
         }
@@ -223,10 +224,11 @@ impl fmt::Debug for Upgraded {
 
 impl OnUpgrade {
     pub(super) fn none() -> Self {
-        OnUpgrade { rx: None }
+        Self { rx: None }
     }
 
     /// Returns true if no upgrade is in progress.
+    #[must_use]
     pub fn is_none(&self) -> bool {
         self.rx.is_none()
     }

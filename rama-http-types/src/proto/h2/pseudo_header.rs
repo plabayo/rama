@@ -19,14 +19,15 @@ pub enum PseudoHeader {
 }
 
 impl PseudoHeader {
+    #[must_use]
     pub fn as_str(&self) -> &'static str {
         match self {
-            PseudoHeader::Method => ":method",
-            PseudoHeader::Scheme => ":scheme",
-            PseudoHeader::Authority => ":authority",
-            PseudoHeader::Path => ":path",
-            PseudoHeader::Protocol => ":protocol",
-            PseudoHeader::Status => ":status",
+            Self::Method => ":method",
+            Self::Scheme => ":scheme",
+            Self::Authority => ":authority",
+            Self::Path => ":path",
+            Self::Protocol => ":protocol",
+            Self::Status => ":status",
         }
     }
 }
@@ -95,6 +96,7 @@ pub struct PseudoHeaderOrder {
 }
 
 impl PseudoHeaderOrder {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -114,14 +116,17 @@ impl PseudoHeaderOrder {
         }
     }
 
+    #[must_use]
     pub fn iter(&self) -> PseudoHeaderOrderIter {
         self.clone().into_iter()
     }
 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.headers.is_empty()
     }
 
+    #[must_use]
     pub fn len(&self) -> usize {
         self.headers.len()
     }
@@ -132,7 +137,7 @@ impl IntoIterator for PseudoHeaderOrder {
     type IntoIter = PseudoHeaderOrderIter;
 
     fn into_iter(self) -> Self::IntoIter {
-        let PseudoHeaderOrder { mut headers, .. } = self;
+        let Self { mut headers, .. } = self;
         headers.reverse();
         PseudoHeaderOrderIter { headers }
     }

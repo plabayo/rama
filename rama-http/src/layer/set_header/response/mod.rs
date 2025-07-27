@@ -185,21 +185,21 @@ impl SetResponseHeaderLayer<HeaderValue> {
     /// Create a new [`SetResponseHeaderLayer`] from a typed [`Header`].
     ///
     /// See [`SetResponseHeaderLayer::overriding`] for more details.
-    pub fn overriding_typed<H: Header>(header: H) -> Self {
+    pub fn overriding_typed<H: Header>(header: &H) -> Self {
         Self::overriding(H::name().clone(), header.encode_to_value())
     }
 
     /// Create a new [`SetResponseHeaderLayer`] from a typed [`Header`].
     ///
     /// See [`SetResponseHeaderLayer::appending`] for more details.
-    pub fn appending_typed<H: Header>(header: H) -> Self {
+    pub fn appending_typed<H: Header>(header: &H) -> Self {
         Self::appending(H::name().clone(), header.encode_to_value())
     }
 
     /// Create a new [`SetResponseHeaderLayer`] from a typed [`Header`].
     ///
     /// See [`SetResponseHeaderLayer::if_not_present`] for more details.
-    pub fn if_not_present_typed<H: Header>(header: H) -> Self {
+    pub fn if_not_present_typed<H: Header>(header: &H) -> Self {
         Self::if_not_present(H::name().clone(), header.encode_to_value())
     }
 }

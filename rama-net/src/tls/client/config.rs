@@ -145,8 +145,8 @@ pub fn append_all_client_configs_to_ctx<State>(
         Some(chain) => {
             chain.configs.extend(cfg_it.map(Into::into));
         }
-        None => match ctx.remove::<Arc<ClientConfig>>() {
-            Some(old_cfg) => {
+        None => {
+            if let Some(old_cfg) = ctx.remove::<Arc<ClientConfig>>() {
                 let (lb, _) = cfg_it.size_hint();
                 assert!(lb < usize::MAX);
 
@@ -155,18 +155,17 @@ pub fn append_all_client_configs_to_ctx<State>(
                 configs.extend(cfg_it.map(Into::into));
 
                 ctx.insert(ClientConfigChain { configs });
-            }
-            None => {
+            } else {
                 let chain: ClientConfigChain = cfg_it.collect();
                 ctx.insert(chain);
             }
-        },
+        }
     }
 }
 
 impl From<ClientConfig> for ClientConfigChain {
     fn from(value: ClientConfig) -> Self {
-        ClientConfigChain {
+        Self {
             configs: vec![Arc::new(value)],
         }
     }
@@ -174,7 +173,7 @@ impl From<ClientConfig> for ClientConfigChain {
 
 impl From<Arc<ClientConfig>> for ClientConfigChain {
     fn from(value: Arc<ClientConfig>) -> Self {
-        ClientConfigChain {
+        Self {
             configs: vec![value],
         }
     }
@@ -185,7 +184,7 @@ where
     Item: Into<Arc<ClientConfig>>,
 {
     fn from_iter<T: IntoIterator<Item = Item>>(iter: T) -> Self {
-        ClientConfigChain {
+        Self {
             configs: iter.into_iter().map(Into::into).collect(),
         }
     }
@@ -225,7 +224,7 @@ pub struct ClientConfig {
 
 impl ClientConfig {
     /// Merge this [`ClientConfig`] with aother one.
-    pub fn merge(&mut self, other: ClientConfig) {
+    pub fn merge(&mut self, other: Self) {
         if let Some(cipher_suites) = other.cipher_suites {
             self.cipher_suites = Some(cipher_suites);
         }
@@ -297,7 +296,7 @@ impl From<super::ClientHello> for ClientConfig {
 
 impl From<ClientConfig> for super::ClientHello {
     fn from(value: ClientConfig) -> Self {
-        super::ClientHello {
+        Self {
             protocol_version: ProtocolVersion::TLSv1_2,
             cipher_suites: value.cipher_suites.unwrap_or_default(),
             compression_algorithms: value.compression_algorithms.unwrap_or_default(),

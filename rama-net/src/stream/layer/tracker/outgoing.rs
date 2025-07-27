@@ -79,6 +79,7 @@ pub struct OutgoingBytesTrackerLayer;
 
 impl OutgoingBytesTrackerLayer {
     /// Create a new [`OutgoingBytesTrackerLayer`].
+    #[must_use]
     pub const fn new() -> Self {
         Self
     }

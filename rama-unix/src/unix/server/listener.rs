@@ -42,6 +42,7 @@ where
 
 impl UnixListenerBuilder<()> {
     /// Create a new `UnixListenerBuilder` without a state.
+    #[must_use]
     pub fn new() -> Self {
         Self { state: () }
     }
@@ -162,6 +163,7 @@ impl UnixListener<()> {
     #[inline]
     /// Create a new [`UnixListenerBuilder`] without a state,
     /// which can be used to configure a [`UnixListener`].
+    #[must_use]
     pub fn build() -> UnixListenerBuilder<()> {
         UnixListenerBuilder::new()
     }
@@ -180,7 +182,7 @@ impl UnixListener<()> {
     /// Creates a new [`UnixListener`], which will be bound to the specified path.
     ///
     /// The returned listener is ready for accepting connections.
-    pub async fn bind_path(path: impl AsRef<Path>) -> Result<UnixListener<()>, io::Error> {
+    pub async fn bind_path(path: impl AsRef<Path>) -> Result<Self, io::Error> {
         UnixListenerBuilder::default().bind_path(path).await
     }
 
@@ -188,9 +190,7 @@ impl UnixListener<()> {
     /// Creates a new [`UnixListener`], which will be bound to the specified socket.
     ///
     /// The returned listener is ready for accepting connections.
-    pub fn bind_socket(
-        socket: rama_net::socket::core::Socket,
-    ) -> Result<UnixListener<()>, io::Error> {
+    pub fn bind_socket(socket: rama_net::socket::core::Socket) -> Result<Self, io::Error> {
         UnixListenerBuilder::default().bind_socket(socket)
     }
 
@@ -199,9 +199,7 @@ impl UnixListener<()> {
     /// Creates a new TcpListener, which will be bound to the specified (interface) device name.
     ///
     /// The returned listener is ready for accepting connections.
-    pub async fn bind_socket_opts(
-        opts: SocketOptions,
-    ) -> Result<UnixListener<()>, rama_core::error::BoxError> {
+    pub async fn bind_socket_opts(opts: SocketOptions) -> Result<Self, rama_core::error::BoxError> {
         UnixListenerBuilder::default().bind_socket_opts(opts).await
     }
 }
@@ -241,7 +239,7 @@ impl TryFrom<rama_net::socket::core::Socket> for UnixListener<()> {
 
     #[inline]
     fn try_from(socket: rama_net::socket::core::Socket) -> Result<Self, Self::Error> {
-        UnixListener::bind_socket(socket)
+        Self::bind_socket(socket)
     }
 }
 

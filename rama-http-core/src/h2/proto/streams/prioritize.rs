@@ -80,7 +80,7 @@ pub(crate) struct Prioritized<B> {
 // ===== impl Prioritize =====
 
 impl Prioritize {
-    pub(crate) fn new(config: &Config) -> Prioritize {
+    pub(crate) fn new(config: &Config) -> Self {
         let mut flow = FlowControl::new();
 
         flow.inc_window(config.remote_init_window_sz)
@@ -92,7 +92,7 @@ impl Prioritize {
 
         tracing::trace!("Prioritize::new; flow={:?}", flow);
 
-        Prioritize {
+        Self {
             pending_send: store::Queue::new(),
             pending_capacity: store::Queue::new(),
             pending_open: store::Queue::new(),
@@ -394,9 +394,8 @@ impl Prioritize {
 
         // Assign newly acquired capacity to streams pending capacity.
         while self.flow.available() > 0 {
-            let stream = match self.pending_capacity.pop(store) {
-                Some(stream) => stream,
-                None => return,
+            let Some(stream) = self.pending_capacity.pop(store) else {
+                return;
             };
 
             // Streams pending capacity may have been reset before capacity
@@ -543,34 +542,31 @@ impl Prioritize {
                 self.try_assign_capacity(&mut stream);
             }
 
-            match self.pop_frame(buffer, store, max_frame_len, counts) {
-                Some(frame) => {
-                    tracing::trace!("writing; frame = {frame:?}");
+            if let Some(frame) = self.pop_frame(buffer, store, max_frame_len, counts) {
+                tracing::trace!("writing; frame = {frame:?}");
 
-                    debug_assert_eq!(self.in_flight_data_frame, InFlightData::Nothing);
-                    if let Frame::Data(ref frame) = frame {
-                        self.in_flight_data_frame = InFlightData::DataFrame(frame.payload().stream);
-                    }
-                    dst.buffer(frame).expect("invalid frame");
-
-                    // Ensure the codec is ready to try the loop again.
-                    ready!(dst.poll_ready(cx))?;
-
-                    // Because, always try to reclaim...
-                    self.reclaim_frame(buffer, store, dst);
+                debug_assert_eq!(self.in_flight_data_frame, InFlightData::Nothing);
+                if let Frame::Data(ref frame) = frame {
+                    self.in_flight_data_frame = InFlightData::DataFrame(frame.payload().stream);
                 }
-                None => {
-                    // Try to flush the codec.
-                    ready!(dst.flush(cx))?;
+                dst.buffer(frame).expect("invalid frame");
 
-                    // This might release a data frame...
-                    if !self.reclaim_frame(buffer, store, dst) {
-                        return Poll::Ready(Ok(()));
-                    }
+                // Ensure the codec is ready to try the loop again.
+                ready!(dst.poll_ready(cx))?;
 
-                    // No need to poll ready as poll_complete() does this for
-                    // us...
+                // Because, always try to reclaim...
+                self.reclaim_frame(buffer, store, dst);
+            } else {
+                // Try to flush the codec.
+                ready!(dst.flush(cx))?;
+
+                // This might release a data frame...
+                if !self.reclaim_frame(buffer, store, dst) {
+                    return Poll::Ready(Ok(()));
                 }
+
+                // No need to poll ready as poll_complete() does this for
+                // us...
             }
         }
     }
@@ -832,8 +828,7 @@ impl Prioritize {
                             }))
                         }
                         Some(Frame::PushPromise(pp)) => {
-                            let mut pushed =
-                                stream.store_mut().find_mut(&pp.promised_id()).unwrap();
+                            let mut pushed = stream.store_mut().find_mut(pp.promised_id()).unwrap();
                             pushed.is_pending_push = false;
                             // Transition stream from pending_push to pending_open
                             // if possible

@@ -73,11 +73,13 @@ impl UnixSocketInfo {
     }
 
     /// Try to get the address of the local unix (domain) socket.
+    #[must_use]
     pub fn local_addr(&self) -> Option<&UnixSocketAddress> {
         self.local_addr.as_ref()
     }
 
     /// Get the address of the peer unix (domain) socket.
+    #[must_use]
     pub fn peer_addr(&self) -> &UnixSocketAddress {
         &self.peer_addr
     }

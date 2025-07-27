@@ -17,7 +17,7 @@ impl<A, B> Or<A, B> {
         A: Policy<S, Bd, E>,
         B: Policy<S, Bd, E>,
     {
-        Or { a, b }
+        Self { a, b }
     }
 }
 
@@ -40,7 +40,7 @@ where
     B: Default,
 {
     fn default() -> Self {
-        Or {
+        Self {
             a: Default::default(),
             b: Default::default(),
         }
@@ -84,7 +84,7 @@ mod tests {
 
     impl<P> Taint<P> {
         fn new(policy: P) -> Self {
-            Taint {
+            Self {
                 policy,
                 used: false,
             }

@@ -193,16 +193,19 @@ pub struct Attempt<'a> {
 
 impl<'a> Attempt<'a> {
     /// Returns the redirection response.
+    #[must_use]
     pub fn status(&self) -> StatusCode {
         self.status
     }
 
     /// Returns the destination URI of the redirection.
+    #[must_use]
     pub fn location(&self) -> &'a Uri {
         self.location
     }
 
     /// Returns the URI of the original request.
+    #[must_use]
     pub fn previous(&self) -> &'a Uri {
         self.previous
     }
@@ -220,13 +223,15 @@ pub enum Action {
 
 impl Action {
     /// Returns `true` if the [`Action`] is a [`Follow`](Action::Follow) value.
+    #[must_use]
     pub fn is_follow(&self) -> bool {
-        matches!(self, Action::Follow)
+        matches!(self, Self::Follow)
     }
 
     /// Returns `true` if the [`Action`] is a [`Stop`](Action::Stop) value.
+    #[must_use]
     pub fn is_stop(&self) -> bool {
-        matches!(self, Action::Stop)
+        matches!(self, Self::Stop)
     }
 }
 
@@ -240,7 +245,7 @@ impl<S, B, E> Policy<S, B, E> for Result<Action, E>
 where
     E: Clone + Send + Sync + 'static,
 {
-    fn redirect(&mut self, _: &Context<S>, _: &Attempt<'_>) -> Result<Action, E> {
+    fn redirect(&mut self, _: &Context<S>, _: &Attempt<'_>) -> Self {
         self.clone()
     }
 }

@@ -72,11 +72,11 @@ impl Incoming {
     /// Useful when wanting to stream chunks from another thread.
     #[inline]
     #[cfg(test)]
-    pub(crate) fn channel() -> (Sender, Incoming) {
+    pub(crate) fn channel() -> (Sender, Self) {
         Self::new_channel(DecodedLength::CHUNKED, /*wanter =*/ false)
     }
 
-    pub(crate) fn new_channel(content_length: DecodedLength, wanter: bool) -> (Sender, Incoming) {
+    pub(crate) fn new_channel(content_length: DecodedLength, wanter: bool) -> (Sender, Self) {
         let (data_tx, data_rx) = mpsc::channel(0);
         let (trailers_tx, trailers_rx) = oneshot::channel();
 
@@ -91,7 +91,7 @@ impl Incoming {
             data_tx,
             trailers_tx: Some(trailers_tx),
         };
-        let rx = Incoming::new(Kind::Chan {
+        let rx = Self::new(Kind::Chan {
             content_length,
             want_tx,
             data_rx,
@@ -101,13 +101,13 @@ impl Incoming {
         (tx, rx)
     }
 
-    fn new(kind: Kind) -> Incoming {
-        Incoming { kind }
+    fn new(kind: Kind) -> Self {
+        Self { kind }
     }
 
     #[allow(dead_code)]
-    pub(crate) fn empty() -> Incoming {
-        Incoming::new(Kind::Empty)
+    pub(crate) fn empty() -> Self {
+        Self::new(Kind::Empty)
     }
 
     pub(crate) fn h2(
@@ -121,7 +121,7 @@ impl Incoming {
             content_length = DecodedLength::ZERO;
         }
 
-        Incoming::new(Kind::H2 {
+        Self::new(Kind::H2 {
             data_done: false,
             ping,
             content_length,
@@ -223,8 +223,9 @@ impl Body for Incoming {
 
         match self.kind {
             Kind::Empty => SizeHint::with_exact(0),
-            Kind::Chan { content_length, .. } => opt_len(content_length),
-            Kind::H2 { content_length, .. } => opt_len(content_length),
+            Kind::Chan { content_length, .. } | Kind::H2 { content_length, .. } => {
+                opt_len(content_length)
+            }
         }
     }
 }
@@ -285,9 +286,8 @@ impl Sender {
     /// Send trailers on trailers channel.
     #[allow(unused)]
     pub(crate) async fn send_trailers(&mut self, trailers: HeaderMap) -> crate::Result<()> {
-        let tx = match self.trailers_tx.take() {
-            Some(tx) => tx,
-            None => return Err(crate::Error::new_closed()),
+        let Some(tx) = self.trailers_tx.take() else {
+            return Err(crate::Error::new_closed());
         };
         tx.send(trailers).map_err(|_| crate::Error::new_closed())
     }
@@ -314,9 +314,8 @@ impl Sender {
         &mut self,
         trailers: HeaderMap,
     ) -> Result<(), Option<HeaderMap>> {
-        let tx = match self.trailers_tx.take() {
-            Some(tx) => tx,
-            None => return Err(None),
+        let Some(tx) = self.trailers_tx.take() else {
+            return Err(None);
         };
 
         tx.send(trailers).map_err(Some)
@@ -327,6 +326,7 @@ impl Sender {
         self.send_error(crate::Error::new_body_write_aborted());
     }
 
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub(crate) fn send_error(&mut self, err: crate::Error) {
         let _ = self
             .data_tx
@@ -390,6 +390,7 @@ mod tests {
 
     #[test]
     fn size_hint() {
+        #[allow(clippy::needless_pass_by_value)]
         fn eq(body: Incoming, b: SizeHint, note: &str) {
             let a = body.size_hint();
             assert_eq!(a.lower(), b.lower(), "lower for {note:?}");

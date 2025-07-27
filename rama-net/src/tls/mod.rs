@@ -1,6 +1,8 @@
 //! rama common tls types
 //!
 
+use std::borrow::Cow;
+
 use rama_utils::str::NonEmptyString;
 
 mod enums;
@@ -35,6 +37,7 @@ impl SecureTransport {
     /// Create a [`SecureTransport`] with a [`ClientHello`]
     /// attached to it, containing the client hello info
     /// used to establish this secure transport.
+    #[must_use]
     pub fn with_client_hello(hello: client::ClientHello) -> Self {
         Self {
             client_hello: Some(hello),
@@ -43,6 +46,7 @@ impl SecureTransport {
 
     /// Return the [`ClientHello`] used to establish this secure transport,
     /// only available if the tls service stored it.
+    #[must_use]
     pub fn client_hello(&self) -> Option<&client::ClientHello> {
         self.client_hello.as_ref()
     }
@@ -64,21 +68,29 @@ pub enum KeyLogIntent {
 }
 
 impl KeyLogIntent {
+    /// Return the [`Default`] "SSLKEYLOGFILE" env-based file path as a [`String`].
+    #[must_use]
+    pub fn env_file_path() -> Option<String> {
+        std::env::var("SSLKEYLOGFILE").ok()
+    }
+
     /// get the file path if intended
-    pub fn file_path(&self) -> Option<String> {
+    #[must_use]
+    pub fn file_path(&self) -> Option<Cow<'_, str>> {
         match self {
-            KeyLogIntent::Disabled => None,
-            KeyLogIntent::Environment => std::env::var("SSLKEYLOGFILE").ok().clone(),
-            KeyLogIntent::File(keylog_filename) => Some(keylog_filename.clone()),
+            Self::Disabled => None,
+            Self::Environment => Self::env_file_path().map(Into::into),
+            Self::File(keylog_filename) => Some(keylog_filename.into()),
         }
     }
 
     /// consume itself into the file path if intended
+    #[must_use]
     pub fn into_file_path(self) -> Option<String> {
         match self {
-            KeyLogIntent::Disabled => None,
-            KeyLogIntent::Environment => std::env::var("SSLKEYLOGFILE").ok().clone(),
-            KeyLogIntent::File(keylog_filename) => Some(keylog_filename),
+            Self::Disabled => None,
+            Self::Environment => std::env::var("SSLKEYLOGFILE").ok(),
+            Self::File(keylog_filename) => Some(keylog_filename),
         }
     }
 }

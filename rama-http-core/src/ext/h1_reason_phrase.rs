@@ -24,6 +24,7 @@ impl ReasonPhrase {
     }
 
     /// Converts a static byte slice to a reason phrase.
+    #[must_use]
     pub const fn from_static(reason: &'static [u8]) -> Self {
         // TODO: this can be made const once MSRV is >= 1.57.0
         if find_invalid_byte(reason).is_some() {
@@ -181,7 +182,7 @@ mod tests {
     #[test]
     #[should_panic]
     fn newline_invalid_panic() {
-        ReasonPhrase::from_static(NEWLINE_PHRASE);
+        let _ = ReasonPhrase::from_static(NEWLINE_PHRASE);
     }
 
     #[test]
@@ -194,7 +195,7 @@ mod tests {
     #[test]
     #[should_panic]
     fn cr_invalid_panic() {
-        ReasonPhrase::from_static(CR_PHRASE);
+        let _ = ReasonPhrase::from_static(CR_PHRASE);
     }
 
     #[test]

@@ -31,6 +31,7 @@ impl Forwarded {
     /// Return the inner [`Forwarded`].
     ///
     /// [`Forwarded`]: rama_net::forwarded::Forwarded
+    #[must_use]
     pub fn into_inner(self) -> rama_net::forwarded::Forwarded {
         self.0
     }

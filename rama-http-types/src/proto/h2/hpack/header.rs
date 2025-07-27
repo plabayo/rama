@@ -42,23 +42,23 @@ fn len(name: &HeaderName, value: &HeaderValue) -> usize {
 impl Header<Option<HeaderName>> {
     pub fn reify(self) -> Result<Header, HeaderValue> {
         Ok(match self {
-            Header::Field {
+            Self::Field {
                 name: Some(n),
                 value,
             } => Header::Field { name: n, value },
-            Header::Field { name: None, value } => return Err(value),
-            Header::Authority(v) => Header::Authority(v),
-            Header::Method(v) => Header::Method(v),
-            Header::Scheme(v) => Header::Scheme(v),
-            Header::Path(v) => Header::Path(v),
-            Header::Protocol(v) => Header::Protocol(v),
-            Header::Status(v) => Header::Status(v),
+            Self::Field { name: None, value } => return Err(value),
+            Self::Authority(v) => Header::Authority(v),
+            Self::Method(v) => Header::Method(v),
+            Self::Scheme(v) => Header::Scheme(v),
+            Self::Path(v) => Header::Path(v),
+            Self::Protocol(v) => Header::Protocol(v),
+            Self::Status(v) => Header::Status(v),
         })
     }
 }
 
 impl Header {
-    pub fn new(name: Bytes, value: Bytes) -> Result<Header, DecoderError> {
+    pub fn new(name: &Bytes, value: Bytes) -> Result<Self, DecoderError> {
         if name.is_empty() {
             return Err(DecoderError::NeedMore(NeedMore::UnexpectedEndOfStream));
         }
@@ -66,111 +66,109 @@ impl Header {
             match &name[1..] {
                 b"authority" => {
                     let value = BytesStr::try_from(value)?;
-                    Ok(Header::Authority(value))
+                    Ok(Self::Authority(value))
                 }
                 b"method" => {
                     let method = Method::from_bytes(&value)?;
-                    Ok(Header::Method(method))
+                    Ok(Self::Method(method))
                 }
                 b"scheme" => {
                     let value = BytesStr::try_from(value)?;
-                    Ok(Header::Scheme(value))
+                    Ok(Self::Scheme(value))
                 }
                 b"path" => {
                     let value = BytesStr::try_from(value)?;
-                    Ok(Header::Path(value))
+                    Ok(Self::Path(value))
                 }
                 b"protocol" => {
                     let value = Protocol::try_from(value)?;
-                    Ok(Header::Protocol(value))
+                    Ok(Self::Protocol(value))
                 }
                 b"status" => {
                     let status = StatusCode::from_bytes(&value)?;
-                    Ok(Header::Status(status))
+                    Ok(Self::Status(status))
                 }
                 _ => Err(DecoderError::InvalidPseudoheader),
             }
         } else {
             // HTTP/2 requires lower case header names
-            let name = HeaderName::from_lowercase(&name)?;
+            let name = HeaderName::from_lowercase(name)?;
             let value = HeaderValue::from_bytes(&value)?;
 
-            Ok(Header::Field { name, value })
+            Ok(Self::Field { name, value })
         }
     }
 
     #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> usize {
         match *self {
-            Header::Field {
+            Self::Field {
                 ref name,
                 ref value,
             } => len(name, value),
-            Header::Authority(ref v) => 32 + 10 + v.len(),
-            Header::Method(ref v) => 32 + 7 + v.as_ref().len(),
-            Header::Scheme(ref v) => 32 + 7 + v.len(),
-            Header::Path(ref v) => 32 + 5 + v.len(),
-            Header::Protocol(ref v) => 32 + 9 + v.as_str().len(),
-            Header::Status(_) => 32 + 7 + 3,
+            Self::Authority(ref v) => 32 + 10 + v.len(),
+            Self::Method(ref v) => 32 + 7 + v.as_ref().len(),
+            Self::Scheme(ref v) => 32 + 7 + v.len(),
+            Self::Path(ref v) => 32 + 5 + v.len(),
+            Self::Protocol(ref v) => 32 + 9 + v.as_str().len(),
+            Self::Status(_) => 32 + 7 + 3,
         }
     }
 
     /// Returns the header name
     pub fn name(&self) -> Name<'_> {
         match *self {
-            Header::Field { ref name, .. } => Name::Field(name),
-            Header::Authority(..) => Name::Authority,
-            Header::Method(..) => Name::Method,
-            Header::Scheme(..) => Name::Scheme,
-            Header::Path(..) => Name::Path,
-            Header::Protocol(..) => Name::Protocol,
-            Header::Status(..) => Name::Status,
+            Self::Field { ref name, .. } => Name::Field(name),
+            Self::Authority(..) => Name::Authority,
+            Self::Method(..) => Name::Method,
+            Self::Scheme(..) => Name::Scheme,
+            Self::Path(..) => Name::Path,
+            Self::Protocol(..) => Name::Protocol,
+            Self::Status(..) => Name::Status,
         }
     }
 
     pub fn value_slice(&self) -> &[u8] {
         match *self {
-            Header::Field { ref value, .. } => value.as_ref(),
-            Header::Authority(ref v) => v.as_ref(),
-            Header::Method(ref v) => v.as_ref().as_ref(),
-            Header::Scheme(ref v) => v.as_ref(),
-            Header::Path(ref v) => v.as_ref(),
-            Header::Protocol(ref v) => v.as_ref(),
-            Header::Status(ref v) => v.as_str().as_ref(),
+            Self::Field { ref value, .. } => value.as_ref(),
+            Self::Authority(ref v) | Self::Scheme(ref v) | Self::Path(ref v) => v.as_ref(),
+            Self::Method(ref v) => v.as_ref().as_ref(),
+            Self::Protocol(ref v) => v.as_ref(),
+            Self::Status(ref v) => v.as_str().as_ref(),
         }
     }
 
-    pub fn value_eq(&self, other: &Header) -> bool {
+    pub fn value_eq(&self, other: &Self) -> bool {
         match *self {
-            Header::Field { ref value, .. } => {
+            Self::Field { ref value, .. } => {
                 let a = value;
                 match *other {
-                    Header::Field { ref value, .. } => a == value,
+                    Self::Field { ref value, .. } => a == value,
                     _ => false,
                 }
             }
-            Header::Authority(ref a) => match *other {
-                Header::Authority(ref b) => a == b,
+            Self::Authority(ref a) => match *other {
+                Self::Authority(ref b) => a == b,
                 _ => false,
             },
-            Header::Method(ref a) => match *other {
-                Header::Method(ref b) => a == b,
+            Self::Method(ref a) => match *other {
+                Self::Method(ref b) => a == b,
                 _ => false,
             },
-            Header::Scheme(ref a) => match *other {
-                Header::Scheme(ref b) => a == b,
+            Self::Scheme(ref a) => match *other {
+                Self::Scheme(ref b) => a == b,
                 _ => false,
             },
-            Header::Path(ref a) => match *other {
-                Header::Path(ref b) => a == b,
+            Self::Path(ref a) => match *other {
+                Self::Path(ref b) => a == b,
                 _ => false,
             },
-            Header::Protocol(ref a) => match *other {
-                Header::Protocol(ref b) => a == b,
+            Self::Protocol(ref a) => match *other {
+                Self::Protocol(ref b) => a == b,
                 _ => false,
             },
-            Header::Status(ref a) => match *other {
-                Header::Status(ref b) => a == b,
+            Self::Status(ref a) => match *other {
+                Self::Status(ref b) => a == b,
                 _ => false,
             },
         }
@@ -178,7 +176,7 @@ impl Header {
 
     pub fn is_sensitive(&self) -> bool {
         match *self {
-            Header::Field { ref value, .. } => value.is_sensitive(),
+            Self::Field { ref value, .. } => value.is_sensitive(),
             // TODO: Technically these other header values can be sensitive too.
             _ => false,
         }
@@ -188,7 +186,7 @@ impl Header {
         use crate::header;
 
         match *self {
-            Header::Field { ref name, .. } => matches!(
+            Self::Field { ref name, .. } => matches!(
                 *name,
                 header::AGE
                     | header::AUTHORIZATION
@@ -200,7 +198,7 @@ impl Header {
                     | header::COOKIE
                     | header::SET_COOKIE
             ),
-            Header::Path(..) => true,
+            Self::Path(..) => true,
             _ => false,
         }
     }
@@ -210,16 +208,16 @@ impl Header {
 impl From<Header> for Header<Option<HeaderName>> {
     fn from(src: Header) -> Self {
         match src {
-            Header::Field { name, value } => Header::Field {
+            Header::Field { name, value } => Self::Field {
                 name: Some(name),
                 value,
             },
-            Header::Authority(v) => Header::Authority(v),
-            Header::Method(v) => Header::Method(v),
-            Header::Scheme(v) => Header::Scheme(v),
-            Header::Path(v) => Header::Path(v),
-            Header::Protocol(v) => Header::Protocol(v),
-            Header::Status(v) => Header::Status(v),
+            Header::Authority(v) => Self::Authority(v),
+            Header::Method(v) => Self::Method(v),
+            Header::Scheme(v) => Self::Scheme(v),
+            Header::Path(v) => Self::Path(v),
+            Header::Protocol(v) => Self::Protocol(v),
+            Header::Status(v) => Self::Status(v),
         }
     }
 }
@@ -263,17 +261,17 @@ impl Name<'_> {
 
 impl BytesStr {
     pub(crate) const fn from_static(value: &'static str) -> Self {
-        BytesStr(Bytes::from_static(value.as_bytes()))
+        Self(Bytes::from_static(value.as_bytes()))
     }
 
     pub(crate) fn from(value: &str) -> Self {
-        BytesStr(Bytes::copy_from_slice(value.as_bytes()))
+        Self(Bytes::copy_from_slice(value.as_bytes()))
     }
 
     #[doc(hidden)]
     pub fn try_from(bytes: Bytes) -> Result<Self, std::str::Utf8Error> {
         std::str::from_utf8(bytes.as_ref())?;
-        Ok(BytesStr(bytes))
+        Ok(Self(bytes))
     }
 
     pub(crate) fn as_str(&self) -> &str {

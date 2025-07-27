@@ -16,6 +16,7 @@ pub struct CollectBodyLayer;
 
 impl CollectBodyLayer {
     /// Create a new [`CollectBodyLayer`].
+    #[must_use]
     pub const fn new() -> Self {
         Self
     }

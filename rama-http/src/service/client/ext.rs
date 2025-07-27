@@ -410,6 +410,7 @@ where
     S: Service<State, Request, Response = Response<Body>, Error: Into<BoxError>>,
 {
     /// Add a `Header` to this [`Request`].
+    #[must_use]
     pub fn header<K, V>(mut self, key: K, value: V) -> Self
     where
         K: IntoHeaderName,
@@ -463,7 +464,8 @@ where
     /// Add a typed [`Header`] to this [`Request`].
     ///
     /// [`Header`]: crate::headers::Header
-    pub fn typed_header<H>(self, header: H) -> Self
+    #[must_use]
+    pub fn typed_header<H>(self, header: &H) -> Self
     where
         H: crate::headers::Header,
     {
@@ -473,6 +475,7 @@ where
     /// Add all `Headers` from the [`HeaderMap`] to this [`Request`].
     ///
     /// [`HeaderMap`]: crate::HeaderMap
+    #[must_use]
     pub fn headers(mut self, headers: crate::HeaderMap) -> Self {
         for (key, value) in headers.into_iter() {
             self = self.header(key, value);
@@ -481,6 +484,7 @@ where
     }
 
     /// Overwrite a `Header` to this [`Request`].
+    #[must_use]
     pub fn overwrite_header<K, V>(mut self, key: K, value: V) -> Self
     where
         K: IntoHeaderName,
@@ -539,7 +543,8 @@ where
     /// Overwrite a typed [`Header`] to this [`Request`].
     ///
     /// [`Header`]: crate::headers::Header
-    pub fn overwrite_typed_header<H>(self, header: H) -> Self
+    #[must_use]
+    pub fn overwrite_typed_header<H>(self, header: &H) -> Self
     where
         H: crate::headers::Header,
     {
@@ -547,12 +552,14 @@ where
     }
 
     /// Enable HTTP authentication.
+    #[must_use]
     pub fn auth(self, credentials: impl Credentials) -> Self {
         let header = crate::headers::Authorization::new(credentials);
-        self.typed_header(header)
+        self.typed_header(&header)
     }
 
     /// Adds an extension to this builder
+    #[must_use]
     pub fn extension<T: Clone + Send + Sync + 'static>(mut self, extension: T) -> Self {
         match self.state {
             RequestBuilderState::PreBody(builder) => {
@@ -575,6 +582,7 @@ where
     /// Set the [`Request`]'s [`Body`].
     ///
     /// [`Body`]: crate::Body
+    #[must_use]
     pub fn body<T>(mut self, body: T) -> Self
     where
         T: TryInto<crate::Body, Error: Into<BoxError>>,
@@ -602,6 +610,7 @@ where
     /// Set the given value as a URL-Encoded Form [`Body`] in the [`Request`].
     ///
     /// [`Body`]: crate::Body
+    #[must_use]
     pub fn form<T: serde::Serialize + ?Sized>(mut self, form: &T) -> Self {
         self.state = match self.state {
             RequestBuilderState::PreBody(mut builder) => match serde_html_form::to_string(form) {
@@ -651,6 +660,7 @@ where
     /// Set the given value as a JSON [`Body`] in the [`Request`].
     ///
     /// [`Body`]: crate::Body
+    #[must_use]
     pub fn json<T: serde::Serialize + ?Sized>(mut self, json: &T) -> Self {
         self.state = match self.state {
             RequestBuilderState::PreBody(mut builder) => match serde_json::to_vec(json) {
@@ -698,6 +708,7 @@ where
     /// Set the http [`Version`] of this [`Request`].
     ///
     /// [`Version`]: crate::Version
+    #[must_use]
     pub fn version(mut self, version: crate::Version) -> Self {
         match self.state {
             RequestBuilderState::PreBody(builder) => {

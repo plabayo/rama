@@ -89,6 +89,6 @@ enum ExposeHeadersInner {
 
 impl Default for ExposeHeadersInner {
     fn default() -> Self {
-        ExposeHeadersInner::Const(None)
+        Self::Const(None)
     }
 }

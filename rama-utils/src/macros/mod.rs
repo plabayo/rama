@@ -244,6 +244,7 @@ macro_rules! __generate_set_and_with {
     ) => {
         $crate::macros::paste! {
             $(#[$outer_doc])*
+            #[must_use]
             $vis fn [<with_ $fn_name>](mut $self_token) -> Self {
                 $($body)*
             }
@@ -263,6 +264,7 @@ macro_rules! __generate_set_and_with {
         $crate::macros::paste! {
 
             $(#[$outer_doc])*
+            #[must_use]
             $vis fn [<maybe_with_ $fn_name>](mut $self_token, $param_name: Option<$param_ty>) -> Self {
                 $($body)*
             }
@@ -273,6 +275,7 @@ macro_rules! __generate_set_and_with {
             }
 
             $(#[$outer_doc])*
+            #[must_use]
             $vis fn [<with_ $fn_name>](mut $self_token, $param_name: $param_ty) -> Self {
                 let $param_name: Option<$param_ty> = Some($param_name);
                 $($body)*
@@ -285,6 +288,7 @@ macro_rules! __generate_set_and_with {
             }
 
             $(#[$outer_doc])*
+            #[must_use]
             $vis fn [<without_ $fn_name>](mut $self_token) -> Self {
                 let $param_name: Option<$param_ty> = None;
                 $($body)*
@@ -306,6 +310,7 @@ macro_rules! __generate_set_and_with {
     ) => {
         $crate::macros::paste! {
             $(#[$outer_doc])*
+            #[must_use]
             $vis fn [<try_maybe_with_ $fn_name>](mut $self_token, $param_name: Option<$param_ty>) -> Result<Self, $error> {
                 $($body)*
             }
@@ -316,6 +321,7 @@ macro_rules! __generate_set_and_with {
             }
 
             $(#[$outer_doc])*
+            #[must_use]
             $vis fn [<try_with_ $fn_name>](mut $self_token, $param_name: $param_ty) -> Result<Self, $error> {
                 let $param_name: Option<$param_ty> = Some($param_name);
                 $($body)*
@@ -328,6 +334,7 @@ macro_rules! __generate_set_and_with {
             }
 
             $(#[$outer_doc])*
+            #[must_use]
             $vis fn [<try_without_ $fn_name>](mut $self_token) -> Result<Self, $error> {
                 let $param_name: Option<$param_ty> = None;
                 $($body)*
@@ -349,6 +356,7 @@ macro_rules! __generate_set_and_with {
     ) => {
         $crate::macros::paste! {
             $(#[$outer_doc])*
+            #[must_use]
             $vis const fn [<with_static_ $fn_name>](mut $self_token, $($param_name: $param_ty),+) -> Self {
                 $($body)*
             }
@@ -362,6 +370,7 @@ macro_rules! __generate_set_and_with {
     ) => {
         $crate::macros::paste! {
             $(#[$outer_doc])*
+            #[must_use]
             $vis fn [<with_ $fn_name>](mut $self_token, $($param_name: $param_ty),+) -> Self {
                 $($body)*
             }
@@ -380,6 +389,7 @@ macro_rules! __generate_set_and_with {
     ) => {
         $crate::macros::paste! {
             $(#[$outer_doc])*
+            #[must_use]
             $vis fn [<try_with_ $fn_name>](mut $self_token, $($param_name: $param_ty),+) -> Result<Self, $error> {
                 $($body)*
             }
@@ -539,7 +549,7 @@ mod test {
         builder.unset_something();
         assert_eq!(builder.something, None);
         builder.maybe_set_something(Some(test_string.clone()));
-        assert_eq!(builder.something, Some(test_string.clone()));
+        assert_eq!(builder.something, Some(test_string));
 
         let builder = Builder::default();
         assert!(!builder.should_execute);

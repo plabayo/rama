@@ -473,7 +473,7 @@ where
 }
 
 impl<C, S> UdpFramedRelay<C, S> {
-    fn new(relay_socket: UdpSocketRelay<S>, codec: C) -> UdpFramedRelay<C, S> {
+    fn new(relay_socket: UdpSocketRelay<S>, codec: C) -> Self {
         Self {
             relay_socket,
             codec,

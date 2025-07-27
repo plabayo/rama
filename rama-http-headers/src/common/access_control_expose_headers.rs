@@ -52,7 +52,7 @@ impl FromIterator<HeaderName> for AccessControlExposeHeaders {
         I: IntoIterator<Item = HeaderName>,
     {
         let flat = iter.into_iter().map(HeaderValue::from).collect();
-        AccessControlExposeHeaders(flat)
+        Self(flat)
     }
 }
 

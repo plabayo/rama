@@ -31,7 +31,7 @@ pub enum Interface {
 impl Interface {
     /// creates a new [`Interface`] from a [`SocketAddress`]
     pub fn new_address(addr: impl Into<SocketAddress>) -> Self {
-        Interface::Address(addr.into())
+        Self::Address(addr.into())
     }
 }
 
@@ -51,6 +51,7 @@ mod device {
 
     impl DeviceName {
         /// Create a new [`DeviceName`].
+        #[must_use]
         pub const fn new(name: &'static str) -> Self {
             if !is_valid(name.as_bytes()) {
                 panic!("static str is not a valid (interface) device name");
@@ -59,11 +60,13 @@ mod device {
         }
 
         /// Return a reference to `self` as a byte slice.
+        #[must_use]
         pub fn as_bytes(&self) -> &[u8] {
             self.0.as_bytes()
         }
 
         /// Return a reference to `self` as a string slice.
+        #[must_use]
         pub fn as_str(&self) -> &str {
             self.0.as_str()
         }
@@ -80,7 +83,7 @@ mod device {
 
         #[inline]
         fn from_str(s: &str) -> Result<Self, Self::Err> {
-            DeviceName::try_from(s)
+            Self::try_from(s)
         }
     }
 
@@ -153,9 +156,10 @@ mod device {
     }
 
     impl Interface {
+        #[must_use]
         pub const fn new_device(name: &'static str) -> Self {
             let name = DeviceName::new(name);
-            Interface::Device(name)
+            Self::Device(name)
         }
     }
 
@@ -256,6 +260,7 @@ impl Interface {
     /// assert_eq!("127.0.0.1:8080", interface.to_string());
     /// ```
     #[inline]
+    #[must_use]
     pub const fn local_ipv4(port: u16) -> Self {
         Self::Address(SocketAddress::local_ipv4(port))
     }
@@ -271,6 +276,7 @@ impl Interface {
     /// assert_eq!("[::1]:8080", interface.to_string());
     /// ```
     #[inline]
+    #[must_use]
     pub const fn local_ipv6(port: u16) -> Self {
         Self::Address(SocketAddress::local_ipv6(port))
     }
@@ -286,6 +292,7 @@ impl Interface {
     /// assert_eq!("0.0.0.0:8080", interface.to_string());
     /// ```
     #[inline]
+    #[must_use]
     pub const fn default_ipv4(port: u16) -> Self {
         Self::Address(SocketAddress::default_ipv4(port))
     }
@@ -300,6 +307,7 @@ impl Interface {
     /// let interface = Interface::default_ipv6(8080);
     /// assert_eq!("[::]:8080", interface.to_string());
     /// ```
+    #[must_use]
     pub const fn default_ipv6(port: u16) -> Self {
         Self::Address(SocketAddress::default_ipv6(port))
     }
@@ -314,6 +322,7 @@ impl Interface {
     /// let interface = Interface::broadcast_ipv4(8080);
     /// assert_eq!("255.255.255.255:8080", interface.to_string());
     /// ```
+    #[must_use]
     pub const fn broadcast_ipv4(port: u16) -> Self {
         Self::Address(SocketAddress::broadcast_ipv4(port))
     }
@@ -322,77 +331,77 @@ impl Interface {
 impl From<SocketAddress> for Interface {
     #[inline]
     fn from(addr: SocketAddress) -> Self {
-        Interface::Address(addr)
+        Self::Address(addr)
     }
 }
 
 impl From<&SocketAddress> for Interface {
     #[inline]
     fn from(addr: &SocketAddress) -> Self {
-        Interface::Address(*addr)
+        Self::Address(*addr)
     }
 }
 
 impl From<SocketAddr> for Interface {
     #[inline]
     fn from(addr: SocketAddr) -> Self {
-        Interface::Address(addr.into())
+        Self::Address(addr.into())
     }
 }
 
 impl From<&SocketAddr> for Interface {
     #[inline]
     fn from(addr: &SocketAddr) -> Self {
-        Interface::Address(addr.into())
+        Self::Address(addr.into())
     }
 }
 
 impl From<SocketAddrV4> for Interface {
     #[inline]
     fn from(addr: SocketAddrV4) -> Self {
-        Interface::Address(addr.into())
+        Self::Address(addr.into())
     }
 }
 
 impl From<SocketAddrV6> for Interface {
     #[inline]
     fn from(addr: SocketAddrV6) -> Self {
-        Interface::Address(addr.into())
+        Self::Address(addr.into())
     }
 }
 
 impl From<(IpAddr, u16)> for Interface {
     #[inline]
     fn from(twin: (IpAddr, u16)) -> Self {
-        Interface::Address(twin.into())
+        Self::Address(twin.into())
     }
 }
 
 impl From<(Ipv4Addr, u16)> for Interface {
     #[inline]
     fn from(twin: (Ipv4Addr, u16)) -> Self {
-        Interface::Address(twin.into())
+        Self::Address(twin.into())
     }
 }
 
 impl From<([u8; 4], u16)> for Interface {
     #[inline]
     fn from(twin: ([u8; 4], u16)) -> Self {
-        Interface::Address(twin.into())
+        Self::Address(twin.into())
     }
 }
 
 impl From<(Ipv6Addr, u16)> for Interface {
     #[inline]
     fn from(twin: (Ipv6Addr, u16)) -> Self {
-        Interface::Address(twin.into())
+        Self::Address(twin.into())
     }
 }
 
 impl From<([u8; 16], u16)> for Interface {
     #[inline]
     fn from(twin: ([u8; 16], u16)) -> Self {
-        Interface::Address(twin.into())
+        Self::Address(twin.into())
     }
 }
 
@@ -413,10 +422,10 @@ impl From<Arc<SocketOptions>> for Interface {
 impl fmt::Display for Interface {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Interface::Address(socket_address) => write!(f, "{socket_address}"),
+            Self::Address(socket_address) => write!(f, "{socket_address}"),
             #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
-            Interface::Device(name) => write!(f, "{name}"),
-            Interface::Socket(opts) => write!(f, "{opts:?}"),
+            Self::Device(name) => write!(f, "{name}"),
+            Self::Socket(opts) => write!(f, "{opts:?}"),
         }
     }
 }
@@ -426,7 +435,7 @@ impl FromStr for Interface {
 
     #[inline]
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Interface::try_from(s)
+        Self::try_from(s)
     }
 }
 
@@ -464,21 +473,20 @@ impl TryFrom<&str> for Interface {
             }
         };
 
-        match try_to_parse_str_to_ip(ip_addr) {
-            Some(ip_addr) => match ip_addr {
+        if let Some(ip_addr) = try_to_parse_str_to_ip(ip_addr) {
+            match ip_addr {
                 IpAddr::V6(_) if !s.starts_with('[') => Err(OpaqueError::from_display(
                     "missing brackets for IPv6 address with port",
                 )),
                 _ => Ok(Self::new_address((ip_addr, port))),
-            },
-            None => {
-                #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
-                if let Ok(name) = DeviceName::try_from(s) {
-                    return Ok(Self::Device(name));
-                }
-
-                Err(OpaqueError::from_display("invalid bind interface"))
             }
+        } else {
+            #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+            if let Ok(name) = DeviceName::try_from(s) {
+                return Ok(Self::Device(name));
+            }
+
+            Err(OpaqueError::from_display("invalid bind interface"))
         }
     }
 }
@@ -525,7 +533,7 @@ impl<'de> serde::Deserialize<'de> for Interface {
 
         match Variants::deserialize(deserializer)? {
             Variants::Str(s) => s.parse().map_err(serde::de::Error::custom),
-            Variants::Opts(opts) => Ok(Interface::Socket(Arc::new(opts))),
+            Variants::Opts(opts) => Ok(Self::Socket(Arc::new(opts))),
         }
     }
 }

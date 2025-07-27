@@ -109,6 +109,7 @@ pub struct ResponseParts {
 
 impl ResponseParts {
     /// Gets a reference to the response headers.
+    #[must_use]
     pub fn headers(&self) -> &HeaderMap {
         self.res.headers()
     }
@@ -119,6 +120,7 @@ impl ResponseParts {
     }
 
     /// Gets a reference to the response extensions.
+    #[must_use]
     pub fn extensions(&self) -> &Extensions {
         self.res.extensions()
     }

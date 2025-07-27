@@ -15,6 +15,7 @@ impl DomainMatcher {
     /// create a new domain matcher to match on an exact URI host match.
     ///
     /// If the host is an Ip it will not match.
+    #[must_use]
     pub fn exact(domain: Domain) -> Self {
         Self { domain, sub: false }
     }
@@ -22,6 +23,7 @@ impl DomainMatcher {
     ///
     /// Note that a domain is also a subdomain of itself, so this will also
     /// include all matches that [`Self::exact`] would capture.
+    #[must_use]
     pub fn sub(domain: Domain) -> Self {
         Self { domain, sub: true }
     }
@@ -34,24 +36,21 @@ impl<State, Body> rama_core::matcher::Matcher<State, Request<Body>> for DomainMa
         ctx: &Context<State>,
         req: &Request<Body>,
     ) -> bool {
-        let host = match ctx.get::<RequestContext>() {
-            Some(req_ctx) => req_ctx.authority.host().clone(),
-            None => {
-                let req_ctx: RequestContext = match (ctx, req).try_into() {
-                    Ok(req_ctx) => req_ctx,
-                    Err(err) => {
-                        tracing::error!(
-                            "DomainMatcher: failed to lazy-make the request ctx: {err:?}"
-                        );
-                        return false;
-                    }
-                };
-                let host = req_ctx.authority.host().clone();
-                if let Some(ext) = ext {
-                    ext.insert(req_ctx);
+        let host = if let Some(req_ctx) = ctx.get::<RequestContext>() {
+            req_ctx.authority.host().clone()
+        } else {
+            let req_ctx: RequestContext = match (ctx, req).try_into() {
+                Ok(req_ctx) => req_ctx,
+                Err(err) => {
+                    tracing::error!("DomainMatcher: failed to lazy-make the request ctx: {err:?}");
+                    return false;
                 }
-                host
+            };
+            let host = req_ctx.authority.host().clone();
+            if let Some(ext) = ext {
+                ext.insert(req_ctx);
             }
+            host
         };
         match host {
             Host::Name(domain) => {

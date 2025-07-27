@@ -125,6 +125,7 @@ impl<C, S> Connector<C, S> {
 
     /// Define whether or not the local address is exposed as the bind address in the reply,
     /// by default it is exposed.
+    #[must_use]
     pub fn with_hide_local_address(mut self, hide: bool) -> Self {
         self.hide_local_address = hide;
         self

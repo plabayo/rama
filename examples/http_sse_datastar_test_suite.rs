@@ -195,7 +195,6 @@ pub mod handlers {
                                 elements: elements.map(Into::into),
                                 selector: selector.map(Into::into),
                                 mode: match mode.as_deref().unwrap_or_default() {
-                                    "outer" => ElementPatchMode::Outer,
                                     "inner" => ElementPatchMode::Inner,
                                     "remove" => ElementPatchMode::Remove,
                                     "replace" => ElementPatchMode::Replace,
@@ -203,7 +202,7 @@ pub mod handlers {
                                     "append" => ElementPatchMode::Append,
                                     "before" => ElementPatchMode::Before,
                                     "after" => ElementPatchMode::After,
-                                    _ => ElementPatchMode::Outer,
+                                    _ => ElementPatchMode::Outer, // includes "outer"
                                 },
                                 use_view_transition: use_view_transition.unwrap_or_default(),
                             }.into_datastar_event();

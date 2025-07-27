@@ -24,8 +24,9 @@ const BLOCKLIST: &[HeaderName] = &[
 impl FilterCredentials {
     /// Create a new [`FilterCredentials`] that removes blocklisted request headers in cross-origin
     /// redirections.
+    #[must_use]
     pub const fn new() -> Self {
-        FilterCredentials {
+        Self {
             block_cross_origin: true,
             block_any: false,
             remove_blocklisted: true,
@@ -35,6 +36,7 @@ impl FilterCredentials {
     }
 
     /// Configure `self` to mark cross-origin redirections as "blocked".
+    #[must_use]
     pub fn block_cross_origin(mut self, enable: bool) -> Self {
         self.block_cross_origin = enable;
         self
@@ -47,6 +49,7 @@ impl FilterCredentials {
     }
 
     /// Configure `self` to mark every redirection as "blocked".
+    #[must_use]
     pub fn block_any(mut self, enable: bool) -> Self {
         self.block_any = enable;
         self
@@ -65,6 +68,7 @@ impl FilterCredentials {
     /// - `Authorization`
     /// - `Cookie`
     /// - `Proxy-Authorization`
+    #[must_use]
     pub fn remove_blocklisted(mut self, enable: bool) -> Self {
         self.remove_blocklisted = enable;
         self
@@ -83,6 +87,7 @@ impl FilterCredentials {
     }
 
     /// Configure `self` to remove all headers in "blocked" redirections.
+    #[must_use]
     pub fn remove_all(mut self, enable: bool) -> Self {
         self.remove_all = enable;
         self
@@ -103,7 +108,7 @@ impl Default for FilterCredentials {
 
 impl Clone for FilterCredentials {
     fn clone(&self) -> Self {
-        FilterCredentials {
+        Self {
             block_cross_origin: self.block_cross_origin,
             block_any: self.block_any,
             remove_blocklisted: self.remove_blocklisted,

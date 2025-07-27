@@ -126,8 +126,9 @@ impl Default for CatchPanicLayer<DefaultResponseForPanic> {
 
 impl CatchPanicLayer<DefaultResponseForPanic> {
     /// Create a new `CatchPanicLayer` with the [`Default`]] panic handler.
+    #[must_use]
     pub const fn new() -> Self {
-        CatchPanicLayer {
+        Self {
             panic_handler: DefaultResponseForPanic,
         }
     }
@@ -208,7 +209,7 @@ impl<S: fmt::Debug, T: fmt::Debug> fmt::Debug for CatchPanic<S, T> {
 
 impl<S: Clone, T: Clone> Clone for CatchPanic<S, T> {
     fn clone(&self) -> Self {
-        CatchPanic {
+        Self {
             inner: self.inner.clone(),
             panic_handler: self.panic_handler.clone(),
         }

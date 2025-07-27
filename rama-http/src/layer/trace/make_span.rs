@@ -42,6 +42,7 @@ pub struct DefaultMakeSpan {
 
 impl DefaultMakeSpan {
     /// Create a new `DefaultMakeSpan`.
+    #[must_use]
     pub const fn new() -> Self {
         Self {
             level: DEFAULT_MESSAGE_LEVEL,
@@ -54,6 +55,7 @@ impl DefaultMakeSpan {
     /// Defaults to [`Level::DEBUG`].
     ///
     /// [tracing span]: https://docs.rs/tracing/latest/tracing/#spans
+    #[must_use]
     pub const fn level(mut self, level: Level) -> Self {
         self.level = level;
         self
@@ -74,6 +76,7 @@ impl DefaultMakeSpan {
     /// By default headers are not included.
     ///
     /// [`Span`]: tracing::Span
+    #[must_use]
     pub const fn include_headers(mut self, include_headers: bool) -> Self {
         self.include_headers = include_headers;
         self

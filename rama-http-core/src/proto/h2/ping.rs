@@ -35,7 +35,7 @@ pub(super) fn disabled() -> Recorder {
     Recorder { shared: None }
 }
 
-pub(super) fn channel(ping_pong: PingPong, config: Config) -> (Recorder, Ponger) {
+pub(super) fn channel(ping_pong: PingPong, config: &Config) -> (Recorder, Ponger) {
     debug_assert!(
         config.is_enabled(),
         "ping channel requires bdp or keep-alive config",
@@ -182,9 +182,7 @@ impl Config {
 
 impl Recorder {
     pub(crate) fn record_data(&self, len: usize) {
-        let shared = if let Some(ref shared) = self.shared {
-            shared
-        } else {
+        let Some(shared) = &self.shared else {
             return;
         };
 
@@ -216,9 +214,7 @@ impl Recorder {
     }
 
     pub(crate) fn record_non_data(&self) {
-        let shared = if let Some(ref shared) = self.shared {
-            shared
-        } else {
+        let Some(shared) = &self.shared else {
             return;
         };
 
@@ -300,7 +296,7 @@ impl Ponger {
             }
             Poll::Pending => {
                 if let Some(ref mut ka) = self.keep_alive {
-                    if let Err(KeepAliveTimedOut) = ka.maybe_timeout(cx) {
+                    if matches!(ka.maybe_timeout(cx), Err(KeepAliveTimedOut)) {
                         self.keep_alive = None;
                         locked.is_keep_alive_timed_out = true;
                         return Poll::Ready(Ponged::KeepAliveTimedOut);

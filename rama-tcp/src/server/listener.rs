@@ -39,6 +39,7 @@ where
 
 impl TcpListenerBuilder<()> {
     /// Create a new `TcpListenerBuilder` without a state.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             ttl: None,
@@ -200,6 +201,7 @@ where
 impl TcpListener<()> {
     /// Create a new `TcpListenerBuilder` without a state,
     /// which can be used to configure a `TcpListener`.
+    #[must_use]
     pub fn build() -> TcpListenerBuilder<()> {
         TcpListenerBuilder::new()
     }
@@ -222,7 +224,7 @@ impl TcpListener<()> {
     /// method.
     pub async fn bind_address<A: TryInto<SocketAddress, Error: Into<BoxError>>>(
         addr: A,
-    ) -> Result<TcpListener<()>, BoxError> {
+    ) -> Result<Self, BoxError> {
         TcpListenerBuilder::default().bind_address(addr).await
     }
 
@@ -230,9 +232,7 @@ impl TcpListener<()> {
     /// Creates a new TcpListener, which will be bound to the specified socket.
     ///
     /// The returned listener is ready for accepting connections.
-    pub async fn bind_socket(
-        socket: rama_net::socket::core::Socket,
-    ) -> Result<TcpListener<()>, BoxError> {
+    pub async fn bind_socket(socket: rama_net::socket::core::Socket) -> Result<Self, BoxError> {
         TcpListenerBuilder::default().bind_socket(socket).await
     }
 
@@ -242,7 +242,7 @@ impl TcpListener<()> {
     /// The returned listener is ready for accepting connections.
     pub async fn bind_device<N: TryInto<DeviceName, Error: Into<BoxError>> + Send + 'static>(
         name: N,
-    ) -> Result<TcpListener<()>, BoxError> {
+    ) -> Result<Self, BoxError> {
         TcpListenerBuilder::default().bind_device(name).await
     }
 
@@ -251,7 +251,7 @@ impl TcpListener<()> {
     /// The returned listener is ready for accepting connections.
     pub async fn bind<I: TryInto<Interface, Error: Into<BoxError>>>(
         interface: I,
-    ) -> Result<TcpListener<()>, BoxError> {
+    ) -> Result<Self, BoxError> {
         TcpListenerBuilder::default().bind(interface).await
     }
 }

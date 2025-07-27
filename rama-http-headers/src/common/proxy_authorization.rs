@@ -33,7 +33,7 @@ impl<C: Credentials> Header for ProxyAuthorization<C> {
     }
 
     fn decode<'i, I: Iterator<Item = &'i HeaderValue>>(values: &mut I) -> Result<Self, Error> {
-        Authorization::decode(values).map(|auth| ProxyAuthorization(auth.0))
+        Authorization::decode(values).map(|auth| Self(auth.0))
     }
 
     fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {

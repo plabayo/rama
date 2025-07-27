@@ -178,6 +178,7 @@ impl<S, State> TowerAdapterService<S, State> {
     /// Reference to the inner [`rama::Service`].
     ///
     /// [`rama::Service`]: rama_core::Service
+    #[must_use]
     pub fn inner(&self) -> &S {
         self.inner.as_ref()
     }

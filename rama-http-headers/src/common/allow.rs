@@ -61,6 +61,6 @@ impl FromIterator<Method> for Allow {
                     .expect("Method is a valid HeaderValue")
             })
             .collect();
-        Allow(flat)
+        Self(flat)
     }
 }

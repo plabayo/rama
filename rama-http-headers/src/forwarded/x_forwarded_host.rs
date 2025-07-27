@@ -34,7 +34,7 @@ impl Header for XForwardedHost {
     }
 
     fn decode<'i, I: Iterator<Item = &'i HeaderValue>>(values: &mut I) -> Result<Self, Error> {
-        Ok(XForwardedHost(
+        Ok(Self(
             values
                 .next()
                 .and_then(|value| value.to_str().ok().and_then(|s| s.parse().ok()))
@@ -51,22 +51,26 @@ impl Header for XForwardedHost {
 impl XForwardedHost {
     #[inline]
     /// Get a reference to the [`Host`] of this [`XForwardedHost`].
+    #[must_use]
     pub fn host(&self) -> &Host {
         self.0.host()
     }
 
     #[inline]
     /// Get a copy of the `port` of this [`XForwardedHost`] if it is set.
+    #[must_use]
     pub fn port(&self) -> Option<u16> {
         self.0.port()
     }
 
     /// Return a reference to the inner data of this [`Header`].
+    #[must_use]
     pub fn inner(&self) -> &ForwardedAuthority {
         &self.0
     }
 
     /// Consume this [`Header`] into its inner data.
+    #[must_use]
     pub fn into_inner(self) -> ForwardedAuthority {
         self.0
     }
@@ -88,7 +92,7 @@ impl super::ForwardHeader for XForwardedHost {
     {
         let el = input.into_iter().next()?;
         let host = el.ref_forwarded_host().cloned()?;
-        Some(XForwardedHost(host))
+        Some(Self(host))
     }
 }
 

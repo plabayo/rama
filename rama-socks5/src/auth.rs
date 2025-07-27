@@ -11,9 +11,10 @@ pub enum Socks5Auth {
 
 impl Socks5Auth {
     /// Return the [`SocksMethod`] linked to this authentication type.
+    #[must_use]
     pub fn socks5_method(&self) -> SocksMethod {
         match self {
-            Socks5Auth::UsernamePassword(_) => SocksMethod::UsernamePassword,
+            Self::UsernamePassword(_) => SocksMethod::UsernamePassword,
         }
     }
 }

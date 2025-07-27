@@ -61,7 +61,7 @@ impl CertificateCompressor for BrotliCertificateCompressor {
         loop {
             match reader.read(&mut buf[..]) {
                 Err(e) => {
-                    if let io::ErrorKind::Interrupted = e.kind() {
+                    if e.kind() == io::ErrorKind::Interrupted {
                         continue;
                     }
                     return Err(e);
@@ -106,7 +106,7 @@ impl CertificateCompressor for ZstdCertificateCompressor {
         loop {
             match reader.read(&mut buf[..]) {
                 Err(e) => {
-                    if let io::ErrorKind::Interrupted = e.kind() {
+                    if e.kind() == io::ErrorKind::Interrupted {
                         continue;
                     }
                     return Err(e);

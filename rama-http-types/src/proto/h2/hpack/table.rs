@@ -73,9 +73,9 @@ macro_rules! probe_loop {
 }
 
 impl Table {
-    pub(super) fn new(max_size: usize, capacity: usize) -> Table {
+    pub(super) fn new(max_size: usize, capacity: usize) -> Self {
         if capacity == 0 {
-            Table {
+            Self {
                 mask: 0,
                 indices: vec![],
                 slots: VecDeque::new(),
@@ -86,7 +86,7 @@ impl Table {
         } else {
             let capacity = cmp::max(to_raw_capacity(capacity).next_power_of_two(), 8);
 
-            Table {
+            Self {
                 mask: capacity.wrapping_sub(1),
                 indices: vec![None; capacity],
                 slots: VecDeque::with_capacity(usable_capacity(capacity)),
@@ -109,19 +109,15 @@ impl Table {
     /// Gets the header stored in the table
     pub(super) fn resolve<'a>(&'a self, index: &'a Index) -> &'a Header {
         match *index {
-            Index::Indexed(_, ref h) => h,
-            Index::Name(_, ref h) => h,
-            Index::Inserted(idx) => &self.slots[idx].header,
-            Index::InsertedValue(_, idx) => &self.slots[idx].header,
-            Index::NotIndexed(ref h) => h,
+            Index::Indexed(_, ref h) | Index::Name(_, ref h) | Index::NotIndexed(ref h) => h,
+            Index::Inserted(idx) | Index::InsertedValue(_, idx) => &self.slots[idx].header,
         }
     }
 
     #[allow(clippy::unused_self)]
     pub(super) fn resolve_idx(&self, index: &Index) -> usize {
         match *index {
-            Index::Indexed(idx, ..) => idx,
-            Index::Name(idx, ..) => idx,
+            Index::Indexed(idx, ..) | Index::Name(idx, ..) => idx,
             Index::Inserted(idx) => idx + DYN_OFFSET,
             Index::InsertedValue(_name_idx, slot_idx) => slot_idx + DYN_OFFSET,
             Index::NotIndexed(_) => panic!("cannot resolve index"),
@@ -632,11 +628,11 @@ impl Table {
 }
 
 impl Index {
-    fn new(v: Option<(usize, bool)>, e: Header) -> Index {
+    fn new(v: Option<(usize, bool)>, e: Header) -> Self {
         match v {
-            None => Index::NotIndexed(e),
-            Some((n, true)) => Index::Indexed(n, e),
-            Some((n, false)) => Index::Name(n, e),
+            None => Self::NotIndexed(e),
+            Some((n, true)) => Self::Indexed(n, e),
+            Some((n, false)) => Self::Name(n, e),
         }
     }
 }

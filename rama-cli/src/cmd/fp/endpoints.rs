@@ -43,10 +43,12 @@ fn html<T: Into<String>>(inner: T) -> Html {
 //------------------------------------------
 
 pub(super) async fn get_consent() -> impl IntoResponse {
-    ([("Set-Cookie", "rama-fp=ready; Max-Age=60; path=/")], render_page(
-        "🕵️ Fingerprint Consent",
-        String::new(),
-        r##"<div class="consent">
+    (
+        [("Set-Cookie", "rama-fp=ready; Max-Age=60; path=/")],
+        render_page(
+            "🕵️ Fingerprint Consent",
+            "",
+            r##"<div class="consent">
             <div class="controls">
                 <a class="button" href="/report">Get Fingerprint Report</a>
             </div>
@@ -86,8 +88,9 @@ pub(super) async fn get_consent() -> impl IntoResponse {
                     <a href="https://fly.io">fly.io</a>.
                 </p>
             </div>
-        </div>"##.to_owned()
-    ))
+        </div>"##,
+        ),
+    )
 }
 
 pub(super) async fn get_report(
@@ -123,7 +126,7 @@ pub(super) async fn get_report(
     .await
     .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
 
-    let head = r#"<script src="/assets/script.js"></script>"#.to_owned();
+    let head = r#"<script src="/assets/script.js"></script>"#;
 
     let mut tables = vec![
         ctx.state().data_source.clone().into(),
@@ -562,7 +565,7 @@ pub(super) async fn form(mut ctx: Context<Arc<State>>, req: Request) -> Result<H
 
     Ok(render_report(
         "🕵️ Fingerprint Report » Form",
-        String::new(),
+        "",
         content,
         tables,
     ))
@@ -654,7 +657,7 @@ pub(super) async fn get_assets_script() -> Response {
 // render utilities
 //------------------------------------------
 
-fn render_report(title: &'static str, head: String, mut html: String, tables: Vec<Table>) -> Html {
+fn render_report(title: &'static str, head: &str, mut html: String, tables: Vec<Table>) -> Html {
     html.push_str(r##"<div class="report">"##);
     for table in tables {
         html.push_str(&format!("<h2>{}</h2>", table.title));
@@ -667,10 +670,10 @@ fn render_report(title: &'static str, head: String, mut html: String, tables: Ve
         html.push_str("</table>");
     }
     html.push_str("</div>");
-    render_page(title, head, html)
+    render_page(title, head, &html)
 }
 
-fn render_page(title: &'static str, head: String, content: String) -> Html {
+fn render_page(title: &'static str, head: &str, content: &str) -> Html {
     html(format!(
         r#"
         <!DOCTYPE html>
@@ -728,7 +731,7 @@ fn render_page(title: &'static str, head: String, content: String) -> Html {
 
 impl From<TlsDisplayInfo> for Vec<Table> {
     fn from(info: TlsDisplayInfo) -> Self {
-        let mut vec = Vec::with_capacity(info.extensions.len() + 3);
+        let mut vec = Self::with_capacity(info.extensions.len() + 3);
         vec.push(Table {
             title: "🆔 Ja4".to_owned(),
             rows: vec![

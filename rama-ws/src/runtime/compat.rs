@@ -10,6 +10,7 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 use crate::ProtocolError;
 
+#[derive(Debug, Clone, Copy)]
 pub(crate) enum ContextWaker {
     Read,
     Write,

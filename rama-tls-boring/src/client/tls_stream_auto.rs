@@ -57,8 +57,8 @@ pin_project! {
 impl<S: fmt::Debug> fmt::Debug for AutoTlsStreamData<S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            AutoTlsStreamData::Secure { inner } => f.debug_tuple("Secure").field(inner).finish(),
-            AutoTlsStreamData::Plain { inner } => f.debug_tuple("Plain").field(inner).finish(),
+            Self::Secure { inner } => f.debug_tuple("Secure").field(inner).finish(),
+            Self::Plain { inner } => f.debug_tuple("Plain").field(inner).finish(),
         }
     }
 }

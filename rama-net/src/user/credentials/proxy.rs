@@ -26,8 +26,8 @@ impl From<Bearer> for ProxyCredential {
 impl fmt::Display for ProxyCredential {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ProxyCredential::Basic(basic) => basic.fmt(f),
-            ProxyCredential::Bearer(bearer) => bearer.fmt(f),
+            Self::Basic(basic) => basic.fmt(f),
+            Self::Bearer(bearer) => bearer.fmt(f),
         }
     }
 }

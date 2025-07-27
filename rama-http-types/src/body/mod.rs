@@ -66,6 +66,7 @@ impl Body {
     }
 
     /// Create an empty body.
+    #[must_use]
     pub fn empty() -> Self {
         Self::new(http_body_util::Empty::new())
     }
@@ -83,6 +84,7 @@ impl Body {
     }
 
     /// Create a new [`Body`] from a [`Stream`] with a maximum size limit.
+    #[must_use]
     pub fn limited(self, limit: usize) -> Self {
         Self::new(crate::dep::http_body_util::Limited::new(self.0, limit))
     }
@@ -93,6 +95,7 @@ impl Body {
     /// you need a [`Stream`] of all frame types.
     ///
     /// [`http_body_util::BodyStream`]: https://docs.rs/http-body-util/latest/http_body_util/struct.BodyStream.html
+    #[must_use]
     pub fn into_data_stream(self) -> BodyDataStream {
         BodyDataStream { inner: self }
     }
@@ -100,6 +103,7 @@ impl Body {
     /// Convert the body into a [`Stream`] of [`sse::Event`]s.
     ///
     /// <https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events/Using_server-sent_events>.
+    #[must_use]
     pub fn into_event_stream<T: EventDataRead>(self) -> EventStream<BodyDataStream, T> {
         EventStream::new(self.into_data_stream())
     }
@@ -107,6 +111,7 @@ impl Body {
     /// Convert the body into a [`Stream`] of [`sse::Event`]s with optional string data.
     ///
     /// <https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events/Using_server-sent_events>.
+    #[must_use]
     pub fn into_string_data_event_stream(self) -> EventStream<BodyDataStream> {
         EventStream::new(self.into_data_stream())
     }

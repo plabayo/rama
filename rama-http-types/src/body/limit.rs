@@ -13,6 +13,7 @@ enum BodyLimitKind {
 
 impl BodyLimit {
     /// Create a new [`BodyLimit`], with the given limit to be applied to the request only.
+    #[must_use]
     pub fn request_only(limit: usize) -> Self {
         Self {
             kind: if limit == 0 {
@@ -24,6 +25,7 @@ impl BodyLimit {
     }
 
     /// Create a new [`BodyLimit`], with the given limit to be applied to the response only.
+    #[must_use]
     pub fn response_only(limit: usize) -> Self {
         Self {
             kind: if limit == 0 {
@@ -35,6 +37,7 @@ impl BodyLimit {
     }
 
     /// Create a new [`BodyLimit`], with the given limit to be applied to both the request and response bodies.
+    #[must_use]
     pub fn symmetric(limit: usize) -> Self {
         Self {
             kind: if limit == 0 {
@@ -47,6 +50,7 @@ impl BodyLimit {
 
     /// Create a new [`BodyLimit`], with the given limits
     /// respectively to be applied to the request and response bodies.
+    #[must_use]
     pub fn asymmetric(request: usize, response: usize) -> Self {
         match (request, response) {
             (0, 0) => Self { kind: None },
@@ -63,6 +67,7 @@ impl BodyLimit {
     }
 
     /// Get the limit for the request body, if any.
+    #[must_use]
     pub fn request(&self) -> Option<usize> {
         match self.kind {
             Some(BodyLimitKind::Request(limit)) => Some(limit),
@@ -72,6 +77,7 @@ impl BodyLimit {
     }
 
     /// Get the limit for the response body, if any.
+    #[must_use]
     pub fn response(&self) -> Option<usize> {
         match self.kind {
             Some(BodyLimitKind::Response(limit)) => Some(limit),

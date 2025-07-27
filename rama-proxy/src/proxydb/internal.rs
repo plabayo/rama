@@ -84,6 +84,7 @@ fn proxydb_insert_validator(proxy: &Proxy) -> bool {
 
 impl Proxy {
     /// Check if the proxy is a match for the given[`ProxyContext`] and [`ProxyFilter`].
+    #[must_use]
     pub fn is_match(&self, ctx: &ProxyContext, filter: &ProxyFilter) -> bool {
         if let Some(id) = &filter.id
             && id != &self.id

@@ -84,8 +84,8 @@ pub(crate) struct Config {
 }
 
 impl Default for Config {
-    fn default() -> Config {
-        Config {
+    fn default() -> Self {
+        Self {
             adaptive_window: false,
             initial_conn_window_size: DEFAULT_CONN_WINDOW,
             initial_stream_window_size: DEFAULT_STREAM_WINDOW,
@@ -198,7 +198,7 @@ where
 
     let (conn, ping) = if ping_config.is_enabled() {
         let pp = conn.ping_pong().expect("conn.ping_pong");
-        let (recorder, ponger) = ping::channel(pp, ping_config);
+        let (recorder, ponger) = ping::channel(pp, &ping_config);
 
         let conn: Conn<_, B> = Conn::new(ponger, conn);
         (Either::A(conn), recorder)
@@ -260,7 +260,7 @@ where
     T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     fn new(ponger: Ponger, conn: Connection<T, SendBuf<<B as Body>::Data>>) -> Self {
-        Conn { ponger, conn }
+        Self { ponger, conn }
     }
 }
 
@@ -550,6 +550,7 @@ where
     B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
     T: AsyncRead + AsyncWrite + Send + Unpin,
 {
+    #[allow(clippy::needless_pass_by_ref_mut)]
     fn poll_pipe(&mut self, f: FutCtx<B>, cx: &mut Context<'_>) {
         let ping = self.ping.clone();
 

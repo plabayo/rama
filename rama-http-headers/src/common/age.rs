@@ -45,11 +45,13 @@ derive_header! {
 
 impl Age {
     /// Creates a new `Age` header from the specified number of whole seconds.
+    #[must_use]
     pub fn from_secs(secs: u64) -> Self {
         Self(Seconds::from_secs(secs))
     }
 
     /// Returns the number of seconds for this `Age` header.
+    #[must_use]
     pub fn as_secs(&self) -> u64 {
         self.0.as_u64()
     }
@@ -57,7 +59,7 @@ impl Age {
 
 impl From<Duration> for Age {
     fn from(dur: Duration) -> Self {
-        Age(Seconds::from(dur))
+        Self(Seconds::from(dur))
     }
 }
 

@@ -56,7 +56,7 @@ where
 
 impl<S> Compression<S, DefaultPredicate> {
     /// Creates a new `Compression` wrapping the `service`.
-    pub fn new(service: S) -> Compression<S, DefaultPredicate> {
+    pub fn new(service: S) -> Self {
         Self {
             inner: service,
             accept: AcceptEncoding::default(),
@@ -70,6 +70,7 @@ impl<S, P> Compression<S, P> {
     define_inner_service_accessors!();
 
     /// Sets whether to enable the gzip encoding.
+    #[must_use]
     pub fn gzip(mut self, enable: bool) -> Self {
         self.accept.set_gzip(enable);
         self
@@ -82,6 +83,7 @@ impl<S, P> Compression<S, P> {
     }
 
     /// Sets whether to enable the Deflate encoding.
+    #[must_use]
     pub fn deflate(mut self, enable: bool) -> Self {
         self.accept.set_deflate(enable);
         self
@@ -94,6 +96,7 @@ impl<S, P> Compression<S, P> {
     }
 
     /// Sets whether to enable the Brotli encoding.
+    #[must_use]
     pub fn br(mut self, enable: bool) -> Self {
         self.accept.set_br(enable);
         self
@@ -106,6 +109,7 @@ impl<S, P> Compression<S, P> {
     }
 
     /// Sets whether to enable the Zstd encoding.
+    #[must_use]
     pub fn zstd(mut self, enable: bool) -> Self {
         self.accept.set_zstd(enable);
         self
@@ -118,6 +122,7 @@ impl<S, P> Compression<S, P> {
     }
 
     /// Sets the compression quality.
+    #[must_use]
     pub fn quality(mut self, quality: CompressionLevel) -> Self {
         self.quality = quality;
         self
@@ -164,6 +169,7 @@ impl<S, P> Compression<S, P> {
     ///
     /// Responses that are already compressed (ie have a `content-encoding` header) will _never_ be
     /// recompressed, regardless what they predicate says.
+    #[must_use]
     pub fn compress_when<C>(self, predicate: C) -> Compression<S, C>
     where
         C: Predicate,

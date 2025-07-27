@@ -18,17 +18,24 @@ pub struct Redirect<ResBody> {
 }
 
 impl<ResBody> Redirect<ResBody> {
+    /// Create a new [`Redirect`] that uses a [`302 TFound`][mdn] status code.
+    ///
+    /// [mdn]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/302
+    pub fn found(uri: &Uri) -> Self {
+        Self::with_status_code(StatusCode::FOUND, uri)
+    }
+
     /// Create a new [`Redirect`] that uses a [`307 Temporary Redirect`][mdn] status code.
     ///
     /// [mdn]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/307
-    pub fn temporary(uri: Uri) -> Self {
+    pub fn temporary(uri: &Uri) -> Self {
         Self::with_status_code(StatusCode::TEMPORARY_REDIRECT, uri)
     }
 
     /// Create a new [`Redirect`] that uses a [`308 Permanent Redirect`][mdn] status code.
     ///
     /// [mdn]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/308
-    pub fn permanent(uri: Uri) -> Self {
+    pub fn permanent(uri: &Uri) -> Self {
         Self::with_status_code(StatusCode::PERMANENT_REDIRECT, uri)
     }
 
@@ -40,7 +47,7 @@ impl<ResBody> Redirect<ResBody> {
     /// - If `uri` isn't a valid [`HeaderValue`].
     ///
     /// [mdn]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status#redirection_messages
-    pub fn with_status_code(status_code: StatusCode, uri: Uri) -> Self {
+    pub fn with_status_code(status_code: StatusCode, uri: &Uri) -> Self {
         assert!(
             status_code.is_redirection(),
             "not a redirection status code"

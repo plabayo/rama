@@ -9,9 +9,9 @@ pub struct KeyLogFile(KeyLogFileHandle);
 
 impl KeyLogFile {
     /// Makes a new [`KeyLogFile`].
-    pub fn new(path: String) -> Result<Self, OpaqueError> {
+    pub fn new(path: &str) -> Result<Self, OpaqueError> {
         let handle = new_key_log_file_handle(path)?;
-        Ok(KeyLogFile(handle))
+        Ok(Self(handle))
     }
 }
 

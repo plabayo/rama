@@ -54,8 +54,9 @@ enum Kind {
 
 impl Error {
     /// Create an 'invalid' Error.
-    pub fn invalid() -> Error {
-        Error {
+    #[must_use]
+    pub fn invalid() -> Self {
+        Self {
             kind: Kind::Invalid,
         }
     }

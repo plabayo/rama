@@ -76,7 +76,7 @@ where
     Bs: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     pub(crate) fn new(dispatch: D, conn: Conn<I, Bs::Data, T>) -> Self {
-        Dispatcher {
+        Self {
             conn,
             dispatch,
             body_tx: None,
@@ -267,13 +267,11 @@ where
 
     fn poll_read_head(&mut self, cx: &mut Context<'_>) -> Poll<crate::Result<()>> {
         // can dispatch receive, or does it still care about other incoming message?
-        match ready!(self.dispatch.poll_ready(cx)) {
-            Ok(()) => (),
-            Err(()) => {
-                trace!("dispatch no longer receiving messages");
-                self.close();
-                return Poll::Ready(Ok(()));
-            }
+        if ready!(self.dispatch.poll_ready(cx)) == Ok(()) {
+        } else {
+            trace!("dispatch no longer receiving messages");
+            self.close();
+            return Poll::Ready(Ok(()));
         }
 
         // dispatch is ready for a message, try to read one
@@ -498,8 +496,8 @@ impl<
     B: Body<Data: Send + 'static, Error: Into<BoxError> + Send + 'static + Unpin>,
 > Server<S, B>
 {
-    pub(crate) fn new(service: S) -> Server<S, B> {
-        Server {
+    pub(crate) fn new(service: S) -> Self {
+        Self {
             in_flight: None,
             service,
             _phantom: PhantomData,
@@ -586,8 +584,8 @@ where
 use std::convert::Infallible;
 
 impl<B> Client<B> {
-    pub(crate) fn new(rx: ClientRx<B>) -> Client<B> {
-        Client {
+    pub(crate) fn new(rx: ClientRx<B>) -> Self {
+        Self {
             callback: None,
             rx,
             rx_closed: false,

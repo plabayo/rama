@@ -41,8 +41,8 @@ derive_header! {
 
 impl ETag {
     #[cfg(test)]
-    pub(crate) fn from_static(src: &'static str) -> ETag {
-        ETag(EntityTag::from_static(src))
+    pub(crate) fn from_static(src: &'static str) -> Self {
+        Self(EntityTag::from_static(src))
     }
 }
 

@@ -15,7 +15,7 @@ impl Redirect {
     ///
     /// This function panics if the `loc` argument contains invalid header value characters.
     pub fn temporary(loc: impl AsRef<str>) -> Self {
-        Redirect {
+        Self {
             loc: HeaderValue::from_str(loc.as_ref()).unwrap(),
             status: StatusCode::TEMPORARY_REDIRECT,
         }
@@ -27,7 +27,7 @@ impl Redirect {
     ///
     /// This function panics if the `loc` argument contains invalid header value characters.
     pub fn permanent(loc: impl AsRef<str>) -> Self {
-        Redirect {
+        Self {
             loc: HeaderValue::from_str(loc.as_ref()).unwrap(),
             status: StatusCode::PERMANENT_REDIRECT,
         }

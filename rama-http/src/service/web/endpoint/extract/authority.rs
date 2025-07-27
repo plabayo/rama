@@ -32,12 +32,13 @@ where
         ctx: &Context<S>,
         parts: &Parts,
     ) -> Result<Self, Self::Rejection> {
-        Ok(Authority(match ctx.get::<RequestContext>() {
+        Ok(Self(match ctx.get::<RequestContext>() {
             Some(ctx) => ctx.authority.clone(),
-            None => RequestContext::try_from((ctx, parts))
-                .map_err(|_| MissingAuthority)?
-                .authority
-                .clone(),
+            None => {
+                RequestContext::try_from((ctx, parts))
+                    .map_err(|_| MissingAuthority)?
+                    .authority
+            }
         }))
     }
 }

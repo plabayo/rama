@@ -81,8 +81,8 @@ pub enum HeaderValueErr {
 impl std::fmt::Display for HeaderValueErr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            HeaderValueErr::HeaderMissing(key) => write!(f, "header missing: {key}"),
-            HeaderValueErr::HeaderInvalid(key) => write!(f, "header invalid: {key}"),
+            Self::HeaderMissing(key) => write!(f, "header missing: {key}"),
+            Self::HeaderInvalid(key) => write!(f, "header invalid: {key}"),
         }
     }
 }

@@ -106,7 +106,7 @@ impl Ja4H {
             return Err(Ja4HComputeError::MissingHeaders);
         }
 
-        Ok(Ja4H {
+        Ok(Self {
             req_method,
             version,
             has_cookie_header,
@@ -118,6 +118,7 @@ impl Ja4H {
     }
 
     #[inline]
+    #[must_use]
     pub fn to_human_string(&self) -> String {
         format!("{self:?}")
     }
@@ -234,10 +235,10 @@ pub enum Ja4HComputeError {
 impl fmt::Display for Ja4HComputeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Ja4HComputeError::InvalidHttpVersion => {
+            Self::InvalidHttpVersion => {
                 write!(f, "Ja4H Compute Error: unexpected http request version")
             }
-            Ja4HComputeError::MissingHeaders => {
+            Self::MissingHeaders => {
                 write!(f, "Ja4H Compute Error: missing http headers")
             }
         }
@@ -307,10 +308,10 @@ impl TryFrom<Version> for HttpVersion {
 
     fn try_from(value: Version) -> Result<Self, Self::Error> {
         match value {
-            Version::HTTP_10 => Ok(HttpVersion::Http1_0),
-            Version::HTTP_11 => Ok(HttpVersion::Http1_1),
-            Version::HTTP_2 => Ok(HttpVersion::Http2),
-            Version::HTTP_3 => Ok(HttpVersion::Http3),
+            Version::HTTP_10 => Ok(Self::Http1_0),
+            Version::HTTP_11 => Ok(Self::Http1_1),
+            Version::HTTP_2 => Ok(Self::Http2),
+            Version::HTTP_3 => Ok(Self::Http3),
             _ => Err(Ja4HComputeError::InvalidHttpVersion),
         }
     }

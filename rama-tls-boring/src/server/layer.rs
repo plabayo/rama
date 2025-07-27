@@ -11,6 +11,7 @@ pub struct TlsAcceptorLayer {
 impl TlsAcceptorLayer {
     /// Creates a new [`TlsAcceptorLayer`] using the given [`TlsAcceptorData`],
     /// which is used to configure the inner TLS acceptor.
+    #[must_use]
     pub const fn new(data: TlsAcceptorData) -> Self {
         Self {
             data,
@@ -19,6 +20,7 @@ impl TlsAcceptorLayer {
     }
 
     /// Set that the client hello should be stored
+    #[must_use]
     pub const fn with_store_client_hello(mut self, store: bool) -> Self {
         self.store_client_hello = store;
         self

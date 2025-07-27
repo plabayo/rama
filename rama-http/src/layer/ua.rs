@@ -29,7 +29,7 @@
 //!
 //! let _ = service
 //!     .get("http://www.example.com")
-//!     .typed_header(rama_http::headers::UserAgent::from_static(UA))
+//!     .typed_header(&rama_http::headers::UserAgent::from_static(UA))
 //!     .send(Context::default())
 //!     .await
 //!     .unwrap();
@@ -165,6 +165,7 @@ pub struct UserAgentClassifierLayer {
 
 impl UserAgentClassifierLayer {
     /// Create a new [`UserAgentClassifierLayer`].
+    #[must_use]
     pub const fn new() -> Self {
         Self {
             overwrite_header: None,
@@ -173,6 +174,7 @@ impl UserAgentClassifierLayer {
 
     /// Define a custom header to allow overwriting certain
     /// [`UserAgent`] information.
+    #[must_use]
     pub fn overwrite_header(mut self, header: HeaderName) -> Self {
         self.overwrite_header = Some(header);
         self
@@ -257,7 +259,7 @@ mod tests {
 
         let _ = service
             .get("http://www.example.com")
-            .typed_header(headers::UserAgent::from_static(UA))
+            .typed_header(&headers::UserAgent::from_static(UA))
             .send(Context::default())
             .await
             .unwrap();
@@ -283,7 +285,7 @@ mod tests {
 
         let _ = service
             .get("http://www.example.com")
-            .typed_header(headers::UserAgent::from_static(UA))
+            .typed_header(&headers::UserAgent::from_static(UA))
             .send(Context::default())
             .await
             .unwrap();

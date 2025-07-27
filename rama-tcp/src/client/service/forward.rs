@@ -61,6 +61,7 @@ impl DefaultForwarder {
     }
 
     /// Create a new dynamic forwarder, which will fetch the target from the [`Context`]
+    #[must_use]
     pub fn ctx() -> Self {
         Self {
             kind: ForwarderKind::Dynamic,

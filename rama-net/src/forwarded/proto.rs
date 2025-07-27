@@ -27,12 +27,13 @@ const HTTPS_STR: &str = "https";
 
 impl ForwardedProtocol {
     /// `HTTP` protocol.
-    pub const HTTP: ForwardedProtocol = ForwardedProtocol(ProtocolKind::Http);
+    pub const HTTP: Self = Self(ProtocolKind::Http);
 
     /// `HTTPS` protocol.
-    pub const HTTPS: ForwardedProtocol = ForwardedProtocol(ProtocolKind::Https);
+    pub const HTTPS: Self = Self(ProtocolKind::Https);
 
     /// Returns `true` if this protocol is http(s).
+    #[must_use]
     pub fn is_http(&self) -> bool {
         match &self.0 {
             ProtocolKind::Http | ProtocolKind::Https => true,
@@ -40,6 +41,7 @@ impl ForwardedProtocol {
     }
 
     /// Returns `true` if this protocol is "secure" by itself.
+    #[must_use]
     pub fn is_secure(&self) -> bool {
         match self.0 {
             ProtocolKind::Https => true,
@@ -48,6 +50,7 @@ impl ForwardedProtocol {
     }
 
     /// Returns the scheme str for this protocol.
+    #[must_use]
     pub fn as_scheme(&self) -> &str {
         match &self.0 {
             ProtocolKind::Https => HTTPS_STR,
@@ -57,11 +60,13 @@ impl ForwardedProtocol {
 
     #[inline]
     /// Consumes the protocol and returns a [`Protocol`].
+    #[must_use]
     pub fn into_protocol(self) -> Protocol {
         self.into()
     }
 
     /// Returns the [`ForwardedProtocol`] as a string.
+    #[must_use]
     pub fn as_str(&self) -> &str {
         match &self.0 {
             ProtocolKind::Https => HTTPS_STR,
@@ -73,8 +78,8 @@ impl ForwardedProtocol {
 impl From<ForwardedProtocol> for Protocol {
     fn from(p: ForwardedProtocol) -> Self {
         match p.0 {
-            ProtocolKind::Https => Protocol::HTTPS,
-            ProtocolKind::Http => Protocol::HTTP,
+            ProtocolKind::Https => Self::HTTPS,
+            ProtocolKind::Http => Self::HTTP,
         }
     }
 }
@@ -90,9 +95,9 @@ impl TryFrom<Protocol> for ForwardedProtocol {
     fn try_from(p: Protocol) -> Result<Self, Self::Error> {
         if p.is_http() {
             if p.is_secure() {
-                Ok(ForwardedProtocol(ProtocolKind::Https))
+                Ok(Self(ProtocolKind::Https))
             } else {
-                Ok(ForwardedProtocol(ProtocolKind::Http))
+                Ok(Self(ProtocolKind::Http))
             }
         } else {
             Err(UnknownProtocol)
@@ -106,9 +111,9 @@ impl TryFrom<&Protocol> for ForwardedProtocol {
     fn try_from(p: &Protocol) -> Result<Self, Self::Error> {
         if p.is_http() {
             if p.is_secure() {
-                Ok(ForwardedProtocol(ProtocolKind::Https))
+                Ok(Self(ProtocolKind::Https))
             } else {
-                Ok(ForwardedProtocol(ProtocolKind::Http))
+                Ok(Self(ProtocolKind::Http))
             }
         } else {
             Err(UnknownProtocol)
@@ -126,9 +131,9 @@ impl TryFrom<&str> for ForwardedProtocol {
 
     fn try_from(s: &str) -> Result<Self, Self::Error> {
         if eq_ignore_ascii_case!(s, HTTP_STR) {
-            Ok(ForwardedProtocol(ProtocolKind::Http))
+            Ok(Self(ProtocolKind::Http))
         } else if eq_ignore_ascii_case!(s, HTTPS_STR) {
-            Ok(ForwardedProtocol(ProtocolKind::Https))
+            Ok(Self(ProtocolKind::Https))
         } else {
             Err(InvalidProtocolStr)
         }

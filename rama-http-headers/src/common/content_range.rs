@@ -55,7 +55,7 @@ impl ContentRange {
     pub fn bytes(
         range: impl RangeBounds<u64>,
         complete_length: impl Into<Option<u64>>,
-    ) -> Result<ContentRange, InvalidContentRange> {
+    ) -> Result<Self, InvalidContentRange> {
         let complete_length = complete_length.into();
 
         let start = match range.start_bound() {
@@ -73,7 +73,7 @@ impl ContentRange {
             },
         };
 
-        Ok(ContentRange {
+        Ok(Self {
             range: Some((start, end)),
             complete_length,
         })
@@ -82,8 +82,9 @@ impl ContentRange {
     /// Create a new `ContentRange` stating the range could not be satisfied.
     ///
     /// The passed argument is the complete length of the entity.
+    #[must_use]
     pub fn unsatisfied_bytes(complete_length: u64) -> Self {
-        ContentRange {
+        Self {
             range: None,
             complete_length: Some(complete_length),
         }
@@ -92,11 +93,13 @@ impl ContentRange {
     /// Get the byte range if satisified.
     ///
     /// Note that these byte ranges are inclusive on both ends.
+    #[must_use]
     pub fn bytes_range(&self) -> Option<(u64, u64)> {
         self.range
     }
 
     /// Get the bytes complete length if available.
+    #[must_use]
     pub fn bytes_len(&self) -> Option<u64> {
         self.complete_length
     }
@@ -138,7 +141,7 @@ impl Header for ContentRange {
                     Some((first_byte, last_byte))
                 };
 
-                Some(ContentRange {
+                Some(Self {
                     range,
                     complete_length,
                 })

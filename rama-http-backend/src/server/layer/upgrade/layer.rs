@@ -26,6 +26,7 @@ impl<S, O> UpgradeLayer<S, O> {
     }
 
     /// Add an extra upgrade handler to the layer.
+    #[must_use]
     pub fn on<M, R, H>(mut self, matcher: M, responder: R, handler: H) -> Self
     where
         M: Matcher<S, Request>,

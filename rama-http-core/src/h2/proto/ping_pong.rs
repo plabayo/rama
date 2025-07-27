@@ -63,7 +63,7 @@ const USER_STATE_CLOSED: usize = 4;
 
 impl PingPong {
     pub(crate) fn new() -> Self {
-        PingPong {
+        Self {
             pending_ping: None,
             pending_pong: None,
             user_pings: None,

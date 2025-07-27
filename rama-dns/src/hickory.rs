@@ -37,12 +37,14 @@ impl HickoryDns {
     #[inline]
     /// Construct a [`HickoryDnsBuilder`] used to build
     /// a custom [`HickoryDns`] instead of the default [`HickoryDns::new`].
+    #[must_use]
     pub fn builder() -> HickoryDnsBuilder {
         HickoryDnsBuilder::default()
     }
 
     #[inline]
     /// Construct a new [`HickoryDns`] instance with the [`Default`] setup.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -125,12 +127,14 @@ pub struct HickoryDnsBuilder {
 
 impl HickoryDnsBuilder {
     /// Replace `self` with a hickory [`ResolverConfig`][`config::ResolverConfig`] defined.
+    #[must_use]
     pub fn with_config(mut self, config: config::ResolverConfig) -> Self {
         self.config = Some(config);
         self
     }
 
     /// Replace `self` with an [`Option`]al hickory [`ResolverConfig`][`config::ResolverConfig`] defined.
+    #[must_use]
     pub fn maybe_with_config(mut self, config: Option<config::ResolverConfig>) -> Self {
         self.config = config;
         self
@@ -143,12 +147,14 @@ impl HickoryDnsBuilder {
     }
 
     /// Replace `self` with a hickory [`ResolverOpts`][`config::ResolverOpts`] defined.
+    #[must_use]
     pub fn with_options(mut self, options: config::ResolverOpts) -> Self {
         self.options = Some(options);
         self
     }
 
     /// Replace `self` with an [`Option`]al hickory [`ResolverOpts`][`config::ResolverOpts`] defined.
+    #[must_use]
     pub fn maybe_with_options(mut self, options: Option<config::ResolverOpts>) -> Self {
         self.options = options;
         self

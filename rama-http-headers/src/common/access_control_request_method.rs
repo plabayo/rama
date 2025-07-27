@@ -60,13 +60,13 @@ impl Header for AccessControlRequestMethod {
 }
 
 impl From<Method> for AccessControlRequestMethod {
-    fn from(method: Method) -> AccessControlRequestMethod {
-        AccessControlRequestMethod(method)
+    fn from(method: Method) -> Self {
+        Self(method)
     }
 }
 
 impl From<AccessControlRequestMethod> for Method {
-    fn from(method: AccessControlRequestMethod) -> Method {
+    fn from(method: AccessControlRequestMethod) -> Self {
         method.0
     }
 }

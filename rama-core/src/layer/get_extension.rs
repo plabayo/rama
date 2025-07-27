@@ -45,7 +45,7 @@ where
 {
     /// Create a new [`GetExtensionLayer`].
     pub const fn new(callback: F) -> Self {
-        GetExtensionLayer {
+        Self {
             callback,
             _phantom: PhantomData,
         }

@@ -44,6 +44,7 @@ impl Socks5ProxyConnectorLayer {
     ///
     /// [`Context`]: rama_core::Context
     /// [`ProxyAddress`]: rama_net::address::ProxyAddress
+    #[must_use]
     pub fn optional() -> Self {
         Self {
             required: false,
@@ -58,6 +59,7 @@ impl Socks5ProxyConnectorLayer {
     ///
     /// [`Context`]: rama_core::Context
     /// [`ProxyAddress`]: rama_net::address::ProxyAddress
+    #[must_use]
     pub fn required() -> Self {
         Self {
             required: true,
@@ -398,18 +400,15 @@ where
                 })?;
 
         // return early in case we did not use a proxy
-        let proxy_address = match address {
-            Some(address) => address,
-            None => {
-                return if self.required {
-                    Err("socks5 proxy required but none is defined".into())
-                } else {
-                    tracing::trace!(
-                        "socks5 proxy connector: no proxy required or set: proceed with direct connection"
-                    );
-                    return Ok(established_conn);
-                };
-            }
+        let Some(proxy_address) = address else {
+            return if self.required {
+                Err("socks5 proxy required but none is defined".into())
+            } else {
+                tracing::trace!(
+                    "socks5 proxy connector: no proxy required or set: proceed with direct connection"
+                );
+                return Ok(established_conn);
+            };
         };
         // and do the handshake otherwise...
 

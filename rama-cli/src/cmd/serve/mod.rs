@@ -84,17 +84,14 @@ pub async fn run(cfg: CliCommandServe) -> Result<(), BoxError> {
     crate::trace::init_tracing(LevelFilter::INFO);
 
     let maybe_tls_server_config = cfg.secure.then(|| {
-        let tls_key_pem_raw = match std::env::var("RAMA_TLS_KEY") {
-            Ok(raw) => raw,
-            Err(_) => {
-                return ServerConfig {
-                    application_layer_protocol_negotiation: Some(vec![
-                        ApplicationProtocol::HTTP_2,
-                        ApplicationProtocol::HTTP_11,
-                    ]),
-                    ..ServerConfig::new(ServerAuth::SelfSigned(SelfSignedData::default()))
-                };
-            }
+        let Ok(tls_key_pem_raw) = std::env::var("RAMA_TLS_KEY") else {
+            return ServerConfig {
+                application_layer_protocol_negotiation: Some(vec![
+                    ApplicationProtocol::HTTP_2,
+                    ApplicationProtocol::HTTP_11,
+                ]),
+                ..ServerConfig::new(ServerAuth::SelfSigned(SelfSignedData::default()))
+            };
         };
         let tls_key_pem_raw = std::str::from_utf8(
             &ENGINE

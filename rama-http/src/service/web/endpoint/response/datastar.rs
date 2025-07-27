@@ -20,6 +20,7 @@ impl Default for DatastarScript {
 impl DatastarScript {
     #[inline]
     /// Create a new [`DatastarScript`] ready to be served.
+    #[must_use]
     pub fn new() -> Self {
         Default::default()
     }

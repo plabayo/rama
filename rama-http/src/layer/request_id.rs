@@ -142,7 +142,7 @@ impl<M> SetRequestIdLayer<M> {
     where
         M: MakeRequestId,
     {
-        SetRequestIdLayer {
+        Self {
             header_name,
             make_request_id,
         }
@@ -153,7 +153,7 @@ impl<M> SetRequestIdLayer<M> {
     where
         M: MakeRequestId,
     {
-        SetRequestIdLayer::new(REQUEST_ID, make_request_id)
+        Self::new(REQUEST_ID, make_request_id)
     }
 
     /// Create a new `SetRequestIdLayer` that uses `x-request-id` as the header name.
@@ -161,7 +161,7 @@ impl<M> SetRequestIdLayer<M> {
     where
         M: MakeRequestId,
     {
-        SetRequestIdLayer::new(X_REQUEST_ID, make_request_id)
+        Self::new(X_REQUEST_ID, make_request_id)
     }
 }
 
@@ -211,7 +211,7 @@ impl<S: fmt::Debug, M: fmt::Debug> fmt::Debug for SetRequestId<S, M> {
 
 impl<S: Clone, M: Clone> Clone for SetRequestId<S, M> {
     fn clone(&self) -> Self {
-        SetRequestId {
+        Self {
             inner: self.inner.clone(),
             header_name: self.header_name.clone(),
             make_request_id: self.make_request_id.clone(),
@@ -295,7 +295,7 @@ pub struct PropagateRequestIdLayer {
 impl PropagateRequestIdLayer {
     /// Create a new `PropagateRequestIdLayer`.
     pub const fn new(header_name: HeaderName) -> Self {
-        PropagateRequestIdLayer { header_name }
+        Self { header_name }
     }
 
     /// Create a new `PropagateRequestIdLayer` that uses `request-id` as the header name.
@@ -358,7 +358,7 @@ impl<S: fmt::Debug> fmt::Debug for PropagateRequestId<S> {
 
 impl<S: Clone> Clone for PropagateRequestId<S> {
     fn clone(&self) -> Self {
-        PropagateRequestId {
+        Self {
             inner: self.inner.clone(),
             header_name: self.header_name.clone(),
         }

@@ -160,7 +160,7 @@ where
         &self,
         ctx: Context<S>,
         req: Request<B>,
-    ) -> impl Future<Output = (Context<S>, Request<B>, Option<HeaderValue>)> + Send + '_ {
+    ) -> impl Future<Output = (Context<S>, Request<B>, Option<Self>)> + Send + '_ {
         ready((ctx, req, Some(self.clone())))
     }
 }
@@ -174,7 +174,7 @@ where
         &self,
         ctx: Context<S>,
         req: Request<B>,
-    ) -> impl Future<Output = (Context<S>, Request<B>, Option<HeaderValue>)> + Send + '_ {
+    ) -> impl Future<Output = (Context<S>, Request<B>, Self)> + Send + '_ {
         ready((ctx, req, self.clone()))
     }
 }
@@ -199,14 +199,14 @@ impl InsertHeaderMode {
         M: MakeHeaderValue<S, B>,
     {
         match self {
-            InsertHeaderMode::Override => {
+            Self::Override => {
                 let (ctx, mut req, maybe_value) = make.make_header_value(ctx, req).await;
                 if let Some(value) = maybe_value {
                     req.headers_mut().insert(header_name.clone(), value);
                 }
                 (ctx, req)
             }
-            InsertHeaderMode::IfNotPresent => {
+            Self::IfNotPresent => {
                 if !req.headers().contains_key(header_name) {
                     let (ctx, mut req, maybe_value) = make.make_header_value(ctx, req).await;
                     if let Some(value) = maybe_value {
@@ -217,7 +217,7 @@ impl InsertHeaderMode {
                     (ctx, req)
                 }
             }
-            InsertHeaderMode::Append => {
+            Self::Append => {
                 let (ctx, mut req, maybe_value) = make.make_header_value(ctx, req).await;
                 if let Some(value) = maybe_value {
                     req.headers_mut().append(header_name.clone(), value);

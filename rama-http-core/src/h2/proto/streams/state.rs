@@ -289,12 +289,10 @@ impl State {
 
     /// Handle a connection-level error.
     pub(super) fn handle_error(&mut self, err: &proto::Error) {
-        match self.inner {
-            Inner::Closed(..) => {}
-            _ => {
-                tracing::trace!("handle_error; err={:?}", err);
-                self.inner = Inner::Closed(Cause::Error(err.clone()));
-            }
+        if let Inner::Closed(..) = self.inner {
+        } else {
+            tracing::trace!("handle_error; err={:?}", err);
+            self.inner = Inner::Closed(Cause::Error(err.clone()));
         }
     }
 
@@ -472,7 +470,7 @@ impl State {
 }
 
 impl Default for State {
-    fn default() -> State {
-        State { inner: Inner::Idle }
+    fn default() -> Self {
+        Self { inner: Inner::Idle }
     }
 }

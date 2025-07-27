@@ -167,7 +167,7 @@ where
     }
 
     #[inline]
-    fn boxed(self) -> BoxService<S, Request, Response, Error> {
+    fn boxed(self) -> Self {
         self
     }
 }
@@ -212,7 +212,7 @@ pub struct RejectService<R = (), E = RejectError> {
 
 impl Default for RejectService {
     fn default() -> Self {
-        RejectService {
+        Self {
             error: RejectError,
             _phantom: PhantomData,
         }

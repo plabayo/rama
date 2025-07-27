@@ -110,13 +110,13 @@ where
         version @ (Version::HTTP_10 | Version::HTTP_11) => service
             .get(uri)
             .version(version)
-            .typed_header(headers::Upgrade::websocket())
-            .typed_header(headers::Connection::upgrade()),
+            .typed_header(&headers::Upgrade::websocket())
+            .typed_header(&headers::Connection::upgrade()),
         Version::HTTP_2 => service.connect(uri).version(Version::HTTP_2),
         _ => unreachable!("bug"),
     };
 
-    builder.typed_header(headers::SecWebsocketVersion::V13)
+    builder.typed_header(&headers::SecWebsocketVersion::V13)
 }
 
 fn new_ws_request_builder_from_request<'a, S, Body, State, RequestBody>(
@@ -140,8 +140,9 @@ where
                     .typed_insert(headers::Connection::upgrade());
             }
         }
-        Version::HTTP_2 => (), // NOTHING TO DO
-        _ => (),               // this will error downstream due to invalid version
+        // - for h2: nothing to do
+        // - else: this will error downstream due to invalid version
+        _ => (),
     }
     service.build_from_request(request)
 }
@@ -168,22 +169,22 @@ pub enum HandshakeError {
 impl fmt::Display for ResponseValidateError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ResponseValidateError::UnexpectedStatusCode(status_code) => {
+            Self::UnexpectedStatusCode(status_code) => {
                 write!(f, "unexpected HTTP status code: {status_code}")
             }
-            ResponseValidateError::UnexpectedHttpVersion(version) => {
+            Self::UnexpectedHttpVersion(version) => {
                 write!(f, "unexpected HTTP version: {version:?}")
             }
-            ResponseValidateError::MissingUpgradeWebSocketHeader => {
+            Self::MissingUpgradeWebSocketHeader => {
                 write!(f, "missing upgrade WebSocket header")
             }
-            ResponseValidateError::MissingConnectionUpgradeHeader => {
+            Self::MissingConnectionUpgradeHeader => {
                 write!(f, "missing connection upgrade header")
             }
-            ResponseValidateError::SecWebSocketAcceptKeyMismatch => {
+            Self::SecWebSocketAcceptKeyMismatch => {
                 write!(f, "key mismatch for sec-websocket-accept header")
             }
-            ResponseValidateError::SubProtocolMismatch(header_value) => {
+            Self::SubProtocolMismatch(header_value) => {
                 write!(f, "sub protocol mismatch: {header_value:?}")
             }
         }
@@ -195,13 +196,13 @@ impl std::error::Error for ResponseValidateError {}
 impl fmt::Display for HandshakeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            HandshakeError::ValidationError(error) => {
+            Self::ValidationError(error) => {
                 write!(f, "response validation failed: {error}")
             }
-            HandshakeError::HttpRequestError(error) => {
+            Self::HttpRequestError(error) => {
                 write!(f, "http request error: {error}")
             }
-            HandshakeError::HttpUpgradeError(error) => {
+            Self::HttpUpgradeError(error) => {
                 write!(f, "http upgrade error: {error}")
             }
         }
@@ -211,10 +212,8 @@ impl fmt::Display for HandshakeError {
 impl std::error::Error for HandshakeError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            HandshakeError::ValidationError(error) => Some(error as &dyn std::error::Error),
-            HandshakeError::HttpRequestError(error) | HandshakeError::HttpUpgradeError(error) => {
-                error.source()
-            }
+            Self::ValidationError(error) => Some(error as &dyn std::error::Error),
+            Self::HttpRequestError(error) | Self::HttpUpgradeError(error) => error.source(),
         }
     }
 }
@@ -369,6 +368,7 @@ impl WebsocketRequestBuilder<request::Builder> {
     }
 
     /// Set a custom http header
+    #[must_use]
     pub fn with_header<K, V>(self, name: K, value: V) -> Self
     where
         K: TryInto<http::HeaderName, Error: Into<http::Error>>,
@@ -382,6 +382,7 @@ impl WebsocketRequestBuilder<request::Builder> {
     }
 
     /// Set a custom typed http header
+    #[must_use]
     pub fn with_typed_header<H>(self, header: H) -> Self
     where
         H: headers::Header,
@@ -501,6 +502,7 @@ where
     }
 
     /// Set a custom http header
+    #[must_use]
     pub fn with_header<K, V>(self, name: K, value: V) -> Self
     where
         K: IntoHeaderName,
@@ -517,6 +519,7 @@ where
     }
 
     /// Overwrite a custom http header
+    #[must_use]
     pub fn with_header_overwrite<K, V>(self, name: K, value: V) -> Self
     where
         K: IntoHeaderName,
@@ -533,7 +536,8 @@ where
     }
 
     /// Set a custom typed http header
-    pub fn with_typed_header<H>(self, header: H) -> Self
+    #[must_use]
+    pub fn with_typed_header<H>(self, header: &H) -> Self
     where
         H: headers::Header,
     {
@@ -548,7 +552,8 @@ where
     }
 
     /// Overwrite a custom typed http header
-    pub fn with_typed_header_overwrite<H>(self, header: H) -> Self
+    #[must_use]
+    pub fn with_typed_header_overwrite<H>(self, header: &H) -> Self
     where
         H: headers::Header,
     {
@@ -592,7 +597,7 @@ where
 
             let k = self.key.unwrap_or_else(headers::SecWebsocketKey::random);
             key = Some(k.clone());
-            builder.overwrite_typed_header(k)
+            builder.overwrite_typed_header(&k)
         } else {
             ctx.insert(TargetHttpVersion(Version::HTTP_2));
 
@@ -666,12 +671,9 @@ impl<B> WebsocketRequestBuilder<B> {
         /// Add the WebSocket sub protocols, appending it to any existing sub protocol(s).
         pub fn additional_sub_protocols(mut self, protocols: impl IntoIterator<Item = impl Into<SmolStr>>) -> Self {
             let protocols = protocols.into_iter();
-            self.sub_protocols = match self.sub_protocols.take() {
-                Some(existing_protocols) => Some(existing_protocols.with_additional_sub_protocols(protocols)),
-                None => {
-                    let protocols: SmallVec<_> = protocols.into_iter().map(Into::into).collect();
-                    (!protocols.is_empty()).then_some(SubProtocols(protocols))
-                }
+            self.sub_protocols = if let Some(existing_protocols) = self.sub_protocols.take() { Some(existing_protocols.with_additional_sub_protocols(protocols)) } else {
+                let protocols: SmallVec<_> = protocols.into_iter().map(Into::into).collect();
+                (!protocols.is_empty()).then_some(SubProtocols(protocols))
             };
             self
         }

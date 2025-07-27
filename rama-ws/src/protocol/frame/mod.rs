@@ -33,7 +33,7 @@ pub struct FrameSocket<Stream> {
 impl<Stream> FrameSocket<Stream> {
     /// Create a new frame socket.
     pub fn new(stream: Stream) -> Self {
-        FrameSocket {
+        Self {
             stream,
             codec: FrameCodec::new(READ_BUF_LEN),
         }
@@ -41,7 +41,7 @@ impl<Stream> FrameSocket<Stream> {
 
     /// Create a new frame socket from partially read data.
     pub fn from_partially_read(stream: Stream, part: Vec<u8>) -> Self {
-        FrameSocket {
+        Self {
             stream,
             codec: FrameCodec::from_partially_read(part, READ_BUF_LEN),
         }

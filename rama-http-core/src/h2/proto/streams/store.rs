@@ -82,14 +82,14 @@ pub(super) trait Resolve {
 
 impl Store {
     pub(super) fn new() -> Self {
-        Store {
+        Self {
             slab: slab::Slab::new(),
             ids: IndexMap::new(),
         }
     }
 
-    pub(super) fn find_mut(&mut self, id: &StreamId) -> Option<Ptr> {
-        let index = match self.ids.get(id) {
+    pub(super) fn find_mut(&mut self, id: StreamId) -> Option<Ptr> {
+        let index = match self.ids.get(&id) {
             Some(key) => *key,
             None => return None,
         };
@@ -97,7 +97,7 @@ impl Store {
         Some(Ptr {
             key: Key {
                 index,
-                stream_id: *id,
+                stream_id: id,
             },
             store: self,
         })
@@ -240,14 +240,14 @@ where
     N: Next,
 {
     pub(super) fn new() -> Self {
-        Queue {
+        Self {
             indices: None,
             _p: PhantomData,
         }
     }
 
     pub(super) fn take(&mut self) -> Self {
-        Queue {
+        Self {
             indices: self.indices.take(),
             _p: PhantomData,
         }
@@ -270,24 +270,21 @@ where
         debug_assert!(N::next(stream).is_none());
 
         // Queue the stream
-        match self.indices {
-            Some(ref mut idxs) => {
-                tracing::trace!(" -> existing entries");
+        if let Some(ref mut idxs) = self.indices {
+            tracing::trace!(" -> existing entries");
 
-                // Update the current tail node to point to `stream`
-                let key = stream.key();
-                N::set_next(&mut stream.resolve(idxs.tail), Some(key));
+            // Update the current tail node to point to `stream`
+            let key = stream.key();
+            N::set_next(&mut stream.resolve(idxs.tail), Some(key));
 
-                // Update the tail pointer
-                idxs.tail = stream.key();
-            }
-            None => {
-                tracing::trace!(" -> first entry");
-                self.indices = Some(store::Indices {
-                    head: stream.key(),
-                    tail: stream.key(),
-                });
-            }
+            // Update the tail pointer
+            idxs.tail = stream.key();
+        } else {
+            tracing::trace!(" -> first entry");
+            self.indices = Some(store::Indices {
+                head: stream.key(),
+                tail: stream.key(),
+            });
         }
 
         true
@@ -310,24 +307,21 @@ where
         debug_assert!(N::next(stream).is_none());
 
         // Queue the stream
-        match self.indices {
-            Some(ref mut idxs) => {
-                tracing::trace!(" -> existing entries");
+        if let Some(ref mut idxs) = self.indices {
+            tracing::trace!(" -> existing entries");
 
-                // Update the provided stream to point to the head node
-                let head_key = stream.resolve(idxs.head).key();
-                N::set_next(stream, Some(head_key));
+            // Update the provided stream to point to the head node
+            let head_key = stream.resolve(idxs.head).key();
+            N::set_next(stream, Some(head_key));
 
-                // Update the head pointer
-                idxs.head = stream.key();
-            }
-            None => {
-                tracing::trace!(" -> first entry");
-                self.indices = Some(store::Indices {
-                    head: stream.key(),
-                    tail: stream.key(),
-                });
-            }
+            // Update the head pointer
+            idxs.head = stream.key();
+        } else {
+            tracing::trace!(" -> first entry");
+            self.indices = Some(store::Indices {
+                head: stream.key(),
+                tail: stream.key(),
+            });
         }
 
         true

@@ -101,6 +101,7 @@ impl Default for GetForwardedHeaderLayer {
 
 impl<T> GetForwardedHeaderLayer<T> {
     /// Create a new `GetForwardedHeaderLayer` for the specified headers `T`.
+    #[must_use]
     pub const fn new() -> Self {
         Self {
             _headers: PhantomData,
@@ -111,6 +112,7 @@ impl<T> GetForwardedHeaderLayer<T> {
 impl GetForwardedHeaderLayer {
     #[inline]
     /// Create a new `GetForwardedHeaderLayer` for the standard [`Forwarded`] header.
+    #[must_use]
     pub fn forwarded() -> Self {
         Self::new()
     }
@@ -119,6 +121,7 @@ impl GetForwardedHeaderLayer {
 impl GetForwardedHeaderLayer<Via> {
     #[inline]
     /// Create a new `GetForwardedHeaderLayer` for the canonical [`Via`] header.
+    #[must_use]
     pub fn via() -> Self {
         Self::new()
     }
@@ -127,6 +130,7 @@ impl GetForwardedHeaderLayer<Via> {
 impl GetForwardedHeaderLayer<XForwardedFor> {
     #[inline]
     /// Create a new `GetForwardedHeaderLayer` for the canonical [`X-Forwarded-For`] header.
+    #[must_use]
     pub fn x_forwarded_for() -> Self {
         Self::new()
     }
@@ -135,6 +139,7 @@ impl GetForwardedHeaderLayer<XForwardedFor> {
 impl GetForwardedHeaderLayer<XForwardedHost> {
     #[inline]
     /// Create a new `GetForwardedHeaderLayer` for the canonical [`X-Forwarded-Host`] header.
+    #[must_use]
     pub fn x_forwarded_host() -> Self {
         Self::new()
     }
@@ -143,6 +148,7 @@ impl GetForwardedHeaderLayer<XForwardedHost> {
 impl GetForwardedHeaderLayer<XForwardedProto> {
     #[inline]
     /// Create a new `GetForwardedHeaderLayer` for the canonical [`X-Forwarded-Proto`] header.
+    #[must_use]
     pub fn x_forwarded_proto() -> Self {
         Self::new()
     }
@@ -178,7 +184,7 @@ impl<S: fmt::Debug, T> fmt::Debug for GetForwardedHeaderService<S, T> {
 
 impl<S: Clone, T> Clone for GetForwardedHeaderService<S, T> {
     fn clone(&self) -> Self {
-        GetForwardedHeaderService {
+        Self {
             inner: self.inner.clone(),
             _headers: PhantomData,
         }
@@ -257,16 +263,13 @@ where
         }
 
         if !forwarded_elements.is_empty() {
-            match ctx.get_mut::<Forwarded>() {
-                Some(ref mut f) => {
-                    f.extend(forwarded_elements);
-                }
-                None => {
-                    let mut it = forwarded_elements.into_iter();
-                    let mut forwarded = rama_net::forwarded::Forwarded::new(it.next().unwrap());
-                    forwarded.extend(it);
-                    ctx.insert(forwarded);
-                }
+            if let Some(ref mut f) = ctx.get_mut::<Forwarded>() {
+                f.extend(forwarded_elements);
+            } else {
+                let mut it = forwarded_elements.into_iter();
+                let mut forwarded = rama_net::forwarded::Forwarded::new(it.next().unwrap());
+                forwarded.extend(it);
+                ctx.insert(forwarded);
             }
         }
 

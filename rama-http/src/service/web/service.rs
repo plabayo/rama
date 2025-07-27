@@ -57,6 +57,7 @@ where
     }
 
     /// add a GET route to the web service, using the given service.
+    #[must_use]
     pub fn get<I, T>(self, path: &str, service: I) -> Self
     where
         I: IntoEndpointService<State, T>,
@@ -66,6 +67,7 @@ where
     }
 
     /// add a POST route to the web service, using the given service.
+    #[must_use]
     pub fn post<I, T>(self, path: &str, service: I) -> Self
     where
         I: IntoEndpointService<State, T>,
@@ -75,6 +77,7 @@ where
     }
 
     /// add a PUT route to the web service, using the given service.
+    #[must_use]
     pub fn put<I, T>(self, path: &str, service: I) -> Self
     where
         I: IntoEndpointService<State, T>,
@@ -84,6 +87,7 @@ where
     }
 
     /// add a DELETE route to the web service, using the given service.
+    #[must_use]
     pub fn delete<I, T>(self, path: &str, service: I) -> Self
     where
         I: IntoEndpointService<State, T>,
@@ -93,6 +97,7 @@ where
     }
 
     /// add a PATCH route to the web service, using the given service.
+    #[must_use]
     pub fn patch<I, T>(self, path: &str, service: I) -> Self
     where
         I: IntoEndpointService<State, T>,
@@ -102,6 +107,7 @@ where
     }
 
     /// add a HEAD route to the web service, using the given service.
+    #[must_use]
     pub fn head<I, T>(self, path: &str, service: I) -> Self
     where
         I: IntoEndpointService<State, T>,
@@ -111,6 +117,7 @@ where
     }
 
     /// add a OPTIONS route to the web service, using the given service.
+    #[must_use]
     pub fn options<I, T>(self, path: &str, service: I) -> Self
     where
         I: IntoEndpointService<State, T>,
@@ -120,6 +127,7 @@ where
     }
 
     /// add a TRACE route to the web service, using the given service.
+    #[must_use]
     pub fn trace<I, T>(self, path: &str, service: I) -> Self
     where
         I: IntoEndpointService<State, T>,
@@ -131,6 +139,7 @@ where
     /// nest a web service under the given path.
     ///
     /// The nested service will receive a request with the path prefix removed.
+    #[must_use]
     pub fn nest<I, T>(self, prefix: &str, service: I) -> Self
     where
         I: IntoEndpointService<State, T>,
@@ -142,12 +151,14 @@ where
     }
 
     /// serve the given directory under the given path.
+    #[must_use]
     pub fn dir(self, prefix: &str, dir: &str) -> Self {
         let service = ServeDir::new(dir).fallback(self.not_found.clone());
         self.nest(prefix, service)
     }
 
     /// add a route to the web service which matches the given matcher, using the given service.
+    #[must_use]
     pub fn on<I, T>(mut self, matcher: HttpMatcher<State, Body>, service: I) -> Self
     where
         I: IntoEndpointService<State, T>,
@@ -161,6 +172,7 @@ where
     }
 
     /// use the given service in case no match could be found.
+    #[must_use]
     pub fn not_found<I, T>(mut self, service: I) -> Self
     where
         I: IntoEndpointService<State, T>,
@@ -180,7 +192,7 @@ impl<S: fmt::Debug> fmt::Debug for NestedService<S> {
 
 impl<S: Clone> Clone for NestedService<S> {
     fn clone(&self) -> Self {
-        NestedService(self.0.clone())
+        Self(self.0.clone())
     }
 }
 

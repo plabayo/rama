@@ -18,6 +18,7 @@ pub struct PreserveHeaderUserAgent;
 impl PreserveHeaderUserAgent {
     #[inline]
     /// Create a new [`PreserveHeaderUserAgent`].
+    #[must_use]
     pub fn new() -> Self {
         Default::default()
     }
@@ -58,13 +59,14 @@ pub enum RequestInitiator {
 
 impl RequestInitiator {
     /// Get the string representation of the request initiator.
+    #[must_use]
     pub fn as_str(&self) -> &'static str {
         match self {
-            RequestInitiator::Navigate => "navigate",
-            RequestInitiator::Form => "form",
-            RequestInitiator::Xhr => "xhr",
-            RequestInitiator::Fetch => "fetch",
-            RequestInitiator::Ws => "ws",
+            Self::Navigate => "navigate",
+            Self::Form => "form",
+            Self::Xhr => "xhr",
+            Self::Fetch => "fetch",
+            Self::Ws => "ws",
         }
     }
 }
@@ -85,13 +87,12 @@ impl Serialize for RequestInitiator {
 }
 
 impl<'de> Deserialize<'de> for RequestInitiator {
-    fn deserialize<D>(deserializer: D) -> Result<RequestInitiator, D::Error>
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
         let s = <std::borrow::Cow<'de, str>>::deserialize(deserializer)?;
-        s.parse::<RequestInitiator>()
-            .map_err(serde::de::Error::custom)
+        s.parse::<Self>().map_err(serde::de::Error::custom)
     }
 }
 
@@ -101,10 +102,10 @@ impl FromStr for RequestInitiator {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match_ignore_ascii_case_str! {
             match (s) {
-                "navigate" => Ok(RequestInitiator::Navigate),
-                "form" => Ok(RequestInitiator::Form),
-                "xhr" => Ok(RequestInitiator::Xhr),
-                "fetch" => Ok(RequestInitiator::Fetch),
+                "navigate" => Ok(Self::Navigate),
+                "form" => Ok(Self::Form),
+                "xhr" => Ok(Self::Xhr),
+                "fetch" => Ok(Self::Fetch),
                 _ => Err(OpaqueError::from_display(format!("invalid request initiator: {s}"))),
             }
         }

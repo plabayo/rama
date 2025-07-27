@@ -44,20 +44,23 @@ derive_header! {
 impl ContentEncoding {
     /// A constructor to easily create a `Content-Encoding: gzip` header.
     #[inline]
-    pub fn gzip() -> ContentEncoding {
-        ContentEncoding(HeaderValue::from_static("gzip").into())
+    #[must_use]
+    pub fn gzip() -> Self {
+        Self(HeaderValue::from_static("gzip").into())
     }
 
     /// A constructor to easily create a `Content-Encoding: br` header.
     #[inline]
-    pub fn brotli() -> ContentEncoding {
-        ContentEncoding(HeaderValue::from_static("br").into())
+    #[must_use]
+    pub fn brotli() -> Self {
+        Self(HeaderValue::from_static("br").into())
     }
 
     /// A constructor to easily create a `Content-Encoding: zstd` header.
     #[inline]
-    pub fn zstd() -> ContentEncoding {
-        ContentEncoding(HeaderValue::from_static("zstd").into())
+    #[must_use]
+    pub fn zstd() -> Self {
+        Self(HeaderValue::from_static("zstd").into())
     }
 
     /// Check if this header contains a given "coding".
@@ -76,6 +79,7 @@ impl ContentEncoding {
     /// assert!(content_enc.contains("gzip"));
     /// assert!(!content_enc.contains("br"));
     /// ```
+    #[allow(clippy::needless_pass_by_value)]
     pub fn contains(&self, coding: impl AsCoding) -> bool {
         let s = coding.as_coding();
         self.0.iter().any(|opt| opt == s)

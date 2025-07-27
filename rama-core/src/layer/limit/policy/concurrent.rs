@@ -51,7 +51,7 @@ where
     C: Clone,
 {
     fn clone(&self) -> Self {
-        ConcurrentPolicy {
+        Self {
             tracker: self.tracker.clone(),
             backoff: self.backoff.clone(),
         }
@@ -64,14 +64,14 @@ impl<B, C> ConcurrentPolicy<B, C> {
     ///
     /// The [`Backoff`] policy is used to backoff when the concurrent request limit is reached.
     pub fn with_backoff(backoff: B, tracker: C) -> Self {
-        ConcurrentPolicy { tracker, backoff }
+        Self { tracker, backoff }
     }
 }
 
 impl<C> ConcurrentPolicy<(), C> {
     /// Create a new [`ConcurrentPolicy`], using the given [`ConcurrentTracker`].
     pub const fn new(tracker: C) -> Self {
-        ConcurrentPolicy {
+        Self {
             tracker,
             backoff: (),
         }
@@ -81,8 +81,9 @@ impl<C> ConcurrentPolicy<(), C> {
 impl ConcurrentPolicy<(), ConcurrentCounter> {
     /// Create a new concurrent policy,
     /// which aborts the request if the `max` limit is reached.
+    #[must_use]
     pub fn max(max: usize) -> Self {
-        ConcurrentPolicy {
+        Self {
             tracker: ConcurrentCounter::new(max),
             backoff: (),
         }
@@ -94,7 +95,7 @@ impl<B> ConcurrentPolicy<B, ConcurrentCounter> {
     /// which backs off if the limit is reached,
     /// using the given backoff policy.
     pub fn max_with_backoff(max: usize, backoff: B) -> Self {
-        ConcurrentPolicy {
+        Self {
             tracker: ConcurrentCounter::new(max),
             backoff,
         }
@@ -176,8 +177,9 @@ pub struct ConcurrentCounter {
 
 impl ConcurrentCounter {
     /// Create a new concurrent counter with the given maximum limit.
+    #[must_use]
     pub fn new(max: usize) -> Self {
-        ConcurrentCounter {
+        Self {
             max,
             current: Arc::new(Mutex::new(0)),
         }
@@ -225,7 +227,7 @@ mod tests {
         }
     }
 
-    fn assert_abort<S, R, G, E>(result: PolicyResult<S, R, G, E>) {
+    fn assert_abort<S, R, G, E>(result: &PolicyResult<S, R, G, E>) {
         match result.output {
             PolicyOutput::Abort(_) => (),
             _ => panic!("unexpected output, expected abort"),
@@ -238,7 +240,7 @@ mod tests {
         // bit of a contrived example, but possible
 
         let policy = ConcurrentPolicy::max(0);
-        assert_abort(policy.check(Context::default(), ()).await);
+        assert_abort(&policy.check(Context::default(), ()).await);
     }
 
     #[tokio::test]
@@ -248,12 +250,12 @@ mod tests {
         let guard_1 = assert_ready(policy.check(Context::default(), ()).await);
         let guard_2 = assert_ready(policy.check(Context::default(), ()).await);
 
-        assert_abort(policy.check(Context::default(), ()).await);
+        assert_abort(&policy.check(Context::default(), ()).await);
 
         drop(guard_1);
         let _guard_3 = assert_ready(policy.check(Context::default(), ()).await);
 
-        assert_abort(policy.check(Context::default(), ()).await);
+        assert_abort(&policy.check(Context::default(), ()).await);
 
         drop(guard_2);
         assert_ready(policy.check(Context::default(), ()).await);
@@ -267,7 +269,7 @@ mod tests {
         let guard_1 = assert_ready(policy.check(Context::default(), ()).await);
         let _guard_2 = assert_ready(policy_clone.check(Context::default(), ()).await);
 
-        assert_abort(policy.check(Context::default(), ()).await);
+        assert_abort(&policy.check(Context::default(), ()).await);
 
         drop(guard_1);
         assert_ready(policy.check(Context::default(), ()).await);

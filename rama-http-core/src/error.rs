@@ -116,11 +116,13 @@ pub(super) struct TimedOut;
 
 impl Error {
     /// Returns true if this was an HTTP parse error.
+    #[must_use]
     pub fn is_parse(&self) -> bool {
         matches!(self.inner.kind, Kind::Parse(_))
     }
 
     /// Returns true if this was an HTTP parse error caused by a message that was too large.
+    #[must_use]
     pub fn is_parse_too_large(&self) -> bool {
         matches!(
             self.inner.kind,
@@ -130,36 +132,43 @@ impl Error {
 
     /// Returns true if this was an HTTP parse error caused by an invalid response status code or
     /// reason phrase.
+    #[must_use]
     pub fn is_parse_status(&self) -> bool {
         matches!(self.inner.kind, Kind::Parse(Parse::Status))
     }
 
     /// Returns true if this error was caused by user code.
+    #[must_use]
     pub fn is_user(&self) -> bool {
         matches!(self.inner.kind, Kind::User(_))
     }
 
     /// Returns true if this was about a `Request` that was canceled.
+    #[must_use]
     pub fn is_canceled(&self) -> bool {
         matches!(self.inner.kind, Kind::Canceled)
     }
 
     /// Returns true if a sender's channel is closed.
+    #[must_use]
     pub fn is_closed(&self) -> bool {
         matches!(self.inner.kind, Kind::ChannelClosed)
     }
 
     /// Returns true if the connection closed before a message could complete.
+    #[must_use]
     pub fn is_incomplete_message(&self) -> bool {
         matches!(self.inner.kind, Kind::IncompleteMessage)
     }
 
     /// Returns true if the body write was aborted.
+    #[must_use]
     pub fn is_body_write_aborted(&self) -> bool {
         matches!(self.inner.kind, Kind::User(User::BodyWriteAborted))
     }
 
     /// Returns true if the error was caused while calling `AsyncWrite::shutdown()`.
+    #[must_use]
     pub fn is_shutdown(&self) -> bool {
         if matches!(self.inner.kind, Kind::Shutdown) {
             return true;
@@ -168,6 +177,7 @@ impl Error {
     }
 
     /// Returns true if the error was caused by a timeout.
+    #[must_use]
     pub fn is_timeout(&self) -> bool {
         if matches!(self.inner.kind, Kind::HeaderTimeout) {
             return true;
@@ -175,13 +185,13 @@ impl Error {
         self.find_source::<TimedOut>().is_some()
     }
 
-    pub(super) fn new(kind: Kind) -> Error {
-        Error {
+    pub(super) fn new(kind: Kind) -> Self {
+        Self {
             inner: Box::new(ErrorImpl { kind, cause: None }),
         }
     }
 
-    pub(super) fn with<C: Into<Cause>>(mut self, cause: C) -> Error {
+    pub(super) fn with<C: Into<Cause>>(mut self, cause: C) -> Self {
         self.inner.cause = Some(cause.into());
         self
     }
@@ -211,83 +221,83 @@ impl Error {
             .unwrap_or(h2::Reason::INTERNAL_ERROR)
     }
 
-    pub(super) fn new_canceled() -> Error {
-        Error::new(Kind::Canceled)
+    pub(super) fn new_canceled() -> Self {
+        Self::new(Kind::Canceled)
     }
 
-    pub(super) fn new_incomplete() -> Error {
-        Error::new(Kind::IncompleteMessage)
+    pub(super) fn new_incomplete() -> Self {
+        Self::new(Kind::IncompleteMessage)
     }
 
-    pub(super) fn new_too_large() -> Error {
-        Error::new(Kind::Parse(Parse::TooLarge))
+    pub(super) fn new_too_large() -> Self {
+        Self::new(Kind::Parse(Parse::TooLarge))
     }
 
-    pub(super) fn new_version_h2() -> Error {
-        Error::new(Kind::Parse(Parse::VersionH2))
+    pub(super) fn new_version_h2() -> Self {
+        Self::new(Kind::Parse(Parse::VersionH2))
     }
 
-    pub(super) fn new_unexpected_message() -> Error {
-        Error::new(Kind::UnexpectedMessage)
+    pub(super) fn new_unexpected_message() -> Self {
+        Self::new(Kind::UnexpectedMessage)
     }
 
-    pub(super) fn new_io(cause: std::io::Error) -> Error {
-        Error::new(Kind::Io).with(cause)
+    pub(super) fn new_io(cause: std::io::Error) -> Self {
+        Self::new(Kind::Io).with(cause)
     }
 
-    pub(super) fn new_closed() -> Error {
-        Error::new(Kind::ChannelClosed)
+    pub(super) fn new_closed() -> Self {
+        Self::new(Kind::ChannelClosed)
     }
 
-    pub(super) fn new_body<E: Into<Cause>>(cause: E) -> Error {
-        Error::new(Kind::Body).with(cause)
+    pub(super) fn new_body<E: Into<Cause>>(cause: E) -> Self {
+        Self::new(Kind::Body).with(cause)
     }
 
-    pub(super) fn new_body_write<E: Into<Cause>>(cause: E) -> Error {
-        Error::new(Kind::BodyWrite).with(cause)
+    pub(super) fn new_body_write<E: Into<Cause>>(cause: E) -> Self {
+        Self::new(Kind::BodyWrite).with(cause)
     }
 
-    pub(super) fn new_body_write_aborted() -> Error {
-        Error::new(Kind::User(User::BodyWriteAborted))
+    pub(super) fn new_body_write_aborted() -> Self {
+        Self::new(Kind::User(User::BodyWriteAborted))
     }
 
-    fn new_user(user: User) -> Error {
-        Error::new(Kind::User(user))
+    fn new_user(user: User) -> Self {
+        Self::new(Kind::User(user))
     }
 
-    pub(super) fn new_user_header() -> Error {
-        Error::new_user(User::UnexpectedHeader)
+    pub(super) fn new_user_header() -> Self {
+        Self::new_user(User::UnexpectedHeader)
     }
 
-    pub(super) fn new_header_timeout() -> Error {
-        Error::new(Kind::HeaderTimeout)
+    pub(super) fn new_header_timeout() -> Self {
+        Self::new(Kind::HeaderTimeout)
     }
 
-    pub(super) fn new_user_unsupported_status_code() -> Error {
-        Error::new_user(User::UnsupportedStatusCode)
+    pub(super) fn new_user_unsupported_status_code() -> Self {
+        Self::new_user(User::UnsupportedStatusCode)
     }
 
-    pub(super) fn new_user_service<E: Into<Cause>>(cause: E) -> Error {
-        Error::new_user(User::Service).with(cause)
+    pub(super) fn new_user_service<E: Into<Cause>>(cause: E) -> Self {
+        Self::new_user(User::Service).with(cause)
     }
 
-    pub(super) fn new_user_body<E: Into<Cause>>(cause: E) -> Error {
-        Error::new_user(User::Body).with(cause)
+    pub(super) fn new_user_body<E: Into<Cause>>(cause: E) -> Self {
+        Self::new_user(User::Body).with(cause)
     }
 
-    pub(super) fn new_shutdown(cause: std::io::Error) -> Error {
-        Error::new(Kind::Shutdown).with(cause)
+    pub(super) fn new_shutdown(cause: std::io::Error) -> Self {
+        Self::new(Kind::Shutdown).with(cause)
     }
 
-    pub(super) fn new_user_dispatch_gone() -> Error {
-        Error::new(Kind::User(User::DispatchGone))
+    pub(super) fn new_user_dispatch_gone() -> Self {
+        Self::new(Kind::User(User::DispatchGone))
     }
 
-    pub(super) fn new_h2(cause: h2::Error) -> Error {
+    pub(super) fn new_h2(cause: h2::Error) -> Self {
         if cause.is_io() {
-            Error::new_io(cause.into_io().expect("h2::Error::is_io"))
+            Self::new_io(cause.into_io().expect("h2::Error::is_io"))
         } else {
-            Error::new(Kind::Http2).with(cause)
+            Self::new(Kind::Http2).with(cause)
         }
     }
 
@@ -363,60 +373,60 @@ impl StdError for Error {
 
 #[doc(hidden)]
 impl From<Parse> for Error {
-    fn from(err: Parse) -> Error {
-        Error::new(Kind::Parse(err))
+    fn from(err: Parse) -> Self {
+        Self::new(Kind::Parse(err))
     }
 }
 
 impl Parse {
     pub(crate) fn content_length_invalid() -> Self {
-        Parse::Header(Header::ContentLengthInvalid)
+        Self::Header(Header::ContentLengthInvalid)
     }
 
     pub(crate) fn transfer_encoding_invalid() -> Self {
-        Parse::Header(Header::TransferEncodingInvalid)
+        Self::Header(Header::TransferEncodingInvalid)
     }
 
     pub(crate) fn transfer_encoding_unexpected() -> Self {
-        Parse::Header(Header::TransferEncodingUnexpected)
+        Self::Header(Header::TransferEncodingUnexpected)
     }
 }
 
 impl From<httparse::Error> for Parse {
-    fn from(err: httparse::Error) -> Parse {
+    fn from(err: httparse::Error) -> Self {
         match err {
             httparse::Error::HeaderName
             | httparse::Error::HeaderValue
             | httparse::Error::NewLine
-            | httparse::Error::Token => Parse::Header(Header::Token),
-            httparse::Error::Status => Parse::Status,
-            httparse::Error::TooManyHeaders => Parse::TooLarge,
-            httparse::Error::Version => Parse::Version,
+            | httparse::Error::Token => Self::Header(Header::Token),
+            httparse::Error::Status => Self::Status,
+            httparse::Error::TooManyHeaders => Self::TooLarge,
+            httparse::Error::Version => Self::Version,
         }
     }
 }
 
 impl From<http::method::InvalidMethod> for Parse {
-    fn from(_: http::method::InvalidMethod) -> Parse {
-        Parse::Method
+    fn from(_: http::method::InvalidMethod) -> Self {
+        Self::Method
     }
 }
 
 impl From<http::status::InvalidStatusCode> for Parse {
-    fn from(_: http::status::InvalidStatusCode) -> Parse {
-        Parse::Status
+    fn from(_: http::status::InvalidStatusCode) -> Self {
+        Self::Status
     }
 }
 
 impl From<http::uri::InvalidUri> for Parse {
-    fn from(_: http::uri::InvalidUri) -> Parse {
-        Parse::Uri
+    fn from(_: http::uri::InvalidUri) -> Self {
+        Self::Uri
     }
 }
 
 impl From<http::uri::InvalidUriParts> for Parse {
-    fn from(_: http::uri::InvalidUriParts) -> Parse {
-        Parse::Uri
+    fn from(_: http::uri::InvalidUriParts) -> Self {
+        Self::Uri
     }
 }
 

@@ -187,23 +187,23 @@ pub struct PingPong {
 /// Sent via [`PingPong`][] to send a PING frame to a peer.
 ///
 /// [`PingPong`]: struct.PingPong.html
-pub struct Ping {
-    _p: (),
-}
+#[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
+pub struct Ping;
 
 /// Received via [`PingPong`][] when a peer acknowledges a [`Ping`][].
 ///
 /// [`PingPong`]: struct.PingPong.html
 /// [`Ping`]: struct.Ping.html
-pub struct Pong {
-    _p: (),
-}
+#[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
+pub struct Pong;
 
 // ===== impl SendStream =====
 
 impl<B: Buf> SendStream<B> {
     pub(crate) fn new(inner: proto::StreamRef<B>) -> Self {
-        SendStream { inner }
+        Self { inner }
     }
 
     /// Requests capacity to send data.
@@ -273,6 +273,7 @@ impl<B: Buf> SendStream<B> {
     ///
     /// This allows the caller to check the current amount of available capacity
     /// before sending data.
+    #[must_use]
     pub fn capacity(&self) -> usize {
         self.inner.capacity() as usize
     }
@@ -368,6 +369,7 @@ impl<B: Buf> SendStream<B> {
     /// # Panics
     ///
     /// If the lock on the stream store has been poisoned.
+    #[must_use]
     pub fn stream_id(&self) -> StreamId {
         self.inner.stream_id()
     }
@@ -377,7 +379,7 @@ impl<B: Buf> SendStream<B> {
 
 impl RecvStream {
     pub(crate) fn new(inner: FlowControl) -> Self {
-        RecvStream { inner }
+        Self { inner }
     }
 
     /// Get the next data frame.
@@ -414,6 +416,7 @@ impl RecvStream {
     ///
     /// A return value of `true` means that calls to `poll` and `poll_trailers`
     /// will both return `None`.
+    #[must_use]
     pub fn is_end_stream(&self) -> bool {
         self.inner.inner.is_end_stream()
     }
@@ -430,6 +433,7 @@ impl RecvStream {
     /// # Panics
     ///
     /// If the lock on the stream store has been poisoned.
+    #[must_use]
     pub fn stream_id(&self) -> StreamId {
         self.inner.stream_id()
     }
@@ -466,16 +470,18 @@ impl Drop for RecvStream {
 
 impl FlowControl {
     pub(crate) fn new(inner: proto::OpaqueStreamRef) -> Self {
-        FlowControl { inner }
+        Self { inner }
     }
 
     /// Returns the stream ID of the stream whose capacity will
     /// be released by this `FlowControl`.
+    #[must_use]
     pub fn stream_id(&self) -> StreamId {
         self.inner.stream_id()
     }
 
     /// Get the current available capacity of data this stream *could* receive.
+    #[must_use]
     pub fn available_capacity(&self) -> isize {
         self.inner.available_recv_capacity()
     }
@@ -483,6 +489,7 @@ impl FlowControl {
     /// Get the currently *used* capacity for this stream.
     ///
     /// This is the amount of bytes that can be released back to the remote.
+    #[must_use]
     pub fn used_capacity(&self) -> usize {
         self.inner.used_recv_capacity() as usize
     }
@@ -517,7 +524,7 @@ impl FlowControl {
 
 impl PingPong {
     pub(crate) fn new(inner: proto::UserPings) -> Self {
-        PingPong { inner }
+        Self { inner }
     }
 
     /// Send a PING frame and wait for the peer to send the pong.
@@ -542,7 +549,7 @@ impl PingPong {
     #[doc(hidden)]
     pub fn poll_pong(&mut self, cx: &mut Context) -> Poll<Result<Pong, crate::h2::Error>> {
         ready!(self.inner.poll_pong(cx))?;
-        Poll::Ready(Ok(Pong { _p: () }))
+        Poll::Ready(Ok(Pong))
     }
 }
 
@@ -560,21 +567,8 @@ impl Ping {
     /// The payload is "opaque", such that it shouldn't be depended on.
     ///
     /// [`PingPong`]: struct.PingPong.html
-    pub fn opaque() -> Ping {
-        Ping { _p: () }
-    }
-}
-
-impl fmt::Debug for Ping {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
-        fmt.debug_struct("Ping").finish()
-    }
-}
-
-// ===== impl Pong =====
-
-impl fmt::Debug for Pong {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
-        fmt.debug_struct("Pong").finish()
+    #[must_use]
+    pub fn opaque() -> Self {
+        Self
     }
 }

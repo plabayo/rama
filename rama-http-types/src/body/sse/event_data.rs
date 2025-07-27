@@ -62,9 +62,8 @@ impl EventDataLineReader for EventDataStringReader {
     }
 
     fn data(&mut self, _event: Option<&str>) -> Result<Option<Self::Data>, OpaqueError> {
-        let mut data = match self.buf.take() {
-            Some(data) => data,
-            None => return Ok(None),
+        let Some(mut data) = self.buf.take() else {
+            return Ok(None);
         };
 
         if data.chars().next_back().map(is_lf).unwrap_or_default() {

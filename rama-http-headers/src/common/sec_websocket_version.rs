@@ -8,7 +8,7 @@ pub struct SecWebsocketVersion(u8);
 
 impl SecWebsocketVersion {
     /// `Sec-Websocket-Version: 13`
-    pub const V13: SecWebsocketVersion = SecWebsocketVersion(13);
+    pub const V13: Self = Self(13);
 }
 
 impl Header for SecWebsocketVersion {
@@ -19,13 +19,7 @@ impl Header for SecWebsocketVersion {
     fn decode<'i, I: Iterator<Item = &'i HeaderValue>>(values: &mut I) -> Result<Self, Error> {
         values
             .next()
-            .and_then(|value| {
-                if value == "13" {
-                    Some(SecWebsocketVersion::V13)
-                } else {
-                    None
-                }
-            })
+            .and_then(|value| if value == "13" { Some(Self::V13) } else { None })
             .ok_or_else(Error::invalid)
     }
 

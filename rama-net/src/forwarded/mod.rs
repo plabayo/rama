@@ -48,6 +48,7 @@ pub struct Forwarded {
 impl Forwarded {
     /// Create a new [`Forwarded`] extension for the given [`ForwardedElement`]
     /// as the client Element (the first element).
+    #[must_use]
     pub const fn new(element: ForwardedElement) -> Self {
         Self {
             first: element,
@@ -60,6 +61,7 @@ impl Forwarded {
     ///
     /// It is assumed that only the first element can be
     /// described as client information.
+    #[must_use]
     pub fn client_host(&self) -> Option<&ForwardedAuthority> {
         self.first.ref_forwarded_host()
     }
@@ -69,6 +71,7 @@ impl Forwarded {
     ///
     /// You can try to fallback to [`Self::client_ip`],
     /// in case this method returns `None`.
+    #[must_use]
     pub fn client_socket_addr(&self) -> Option<SocketAddr> {
         self.first
             .ref_forwarded_for()
@@ -80,6 +83,7 @@ impl Forwarded {
 
     /// Return the client port of this [`Forwarded`] context,
     /// if there is one defined.
+    #[must_use]
     pub fn client_port(&self) -> Option<u16> {
         self.first.ref_forwarded_for().and_then(|node| node.port())
     }
@@ -92,18 +96,21 @@ impl Forwarded {
     ///
     /// It is assumed that only the first element can be
     /// described as client information.
+    #[must_use]
     pub fn client_ip(&self) -> Option<IpAddr> {
         self.first.ref_forwarded_for().and_then(|node| node.ip())
     }
 
     /// Return the client protocol of this [`Forwarded`] context,
     /// if there is one defined.
+    #[must_use]
     pub fn client_proto(&self) -> Option<ForwardedProtocol> {
         self.first.ref_forwarded_proto()
     }
 
     /// Return the client protocol version of this [`Forwarded`] context,
     /// if there is one defined.
+    #[must_use]
     pub fn client_version(&self) -> Option<ForwardedVersion> {
         self.first.ref_forwarded_version()
     }
@@ -159,7 +166,7 @@ impl std::str::FromStr for Forwarded {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let (first, others) = element::parse_one_plus_forwarded_elements(s.as_bytes())?;
-        Ok(Forwarded { first, others })
+        Ok(Self { first, others })
     }
 }
 
@@ -168,7 +175,7 @@ impl TryFrom<String> for Forwarded {
 
     fn try_from(s: String) -> Result<Self, Self::Error> {
         let (first, others) = element::parse_one_plus_forwarded_elements(s.as_bytes())?;
-        Ok(Forwarded { first, others })
+        Ok(Self { first, others })
     }
 }
 
@@ -177,7 +184,7 @@ impl TryFrom<&str> for Forwarded {
 
     fn try_from(s: &str) -> Result<Self, Self::Error> {
         let (first, others) = element::parse_one_plus_forwarded_elements(s.as_bytes())?;
-        Ok(Forwarded { first, others })
+        Ok(Self { first, others })
     }
 }
 
@@ -187,7 +194,7 @@ impl TryFrom<HeaderValue> for Forwarded {
 
     fn try_from(header: HeaderValue) -> Result<Self, Self::Error> {
         let (first, others) = element::parse_one_plus_forwarded_elements(header.as_bytes())?;
-        Ok(Forwarded { first, others })
+        Ok(Self { first, others })
     }
 }
 
@@ -197,7 +204,7 @@ impl TryFrom<&HeaderValue> for Forwarded {
 
     fn try_from(header: &HeaderValue) -> Result<Self, Self::Error> {
         let (first, others) = element::parse_one_plus_forwarded_elements(header.as_bytes())?;
-        Ok(Forwarded { first, others })
+        Ok(Self { first, others })
     }
 }
 
@@ -206,7 +213,7 @@ impl TryFrom<Vec<u8>> for Forwarded {
 
     fn try_from(bytes: Vec<u8>) -> Result<Self, Self::Error> {
         let (first, others) = element::parse_one_plus_forwarded_elements(bytes.as_ref())?;
-        Ok(Forwarded { first, others })
+        Ok(Self { first, others })
     }
 }
 
@@ -215,7 +222,7 @@ impl TryFrom<&[u8]> for Forwarded {
 
     fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
         let (first, others) = element::parse_one_plus_forwarded_elements(bytes)?;
-        Ok(Forwarded { first, others })
+        Ok(Self { first, others })
     }
 }
 

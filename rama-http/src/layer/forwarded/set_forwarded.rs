@@ -113,6 +113,7 @@ impl<T> SetForwardedHeaderLayer<T> {
     /// Set the given [`NodeId`] as the "by" property, identifying this proxy.
     ///
     /// Default of `None` will be set to `rama` otherwise.
+    #[must_use]
     pub fn forward_by(mut self, node_id: impl Into<NodeId>) -> Self {
         self.by_node = node_id.into();
         self
@@ -129,6 +130,7 @@ impl<T> SetForwardedHeaderLayer<T> {
 
 impl<T> SetForwardedHeaderLayer<T> {
     /// Create a new `SetForwardedHeaderLayer` for the specified headers `T`.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             by_node: Domain::from_static("rama").into(),
@@ -146,6 +148,7 @@ impl Default for SetForwardedHeaderLayer {
 impl SetForwardedHeaderLayer {
     #[inline]
     /// Create a new `SetForwardedHeaderLayer` for the standard [`Forwarded`] header.
+    #[must_use]
     pub fn forwarded() -> Self {
         Self::new()
     }
@@ -154,6 +157,7 @@ impl SetForwardedHeaderLayer {
 impl SetForwardedHeaderLayer<Via> {
     #[inline]
     /// Create a new `SetForwardedHeaderLayer` for the canonical [`Via`] header.
+    #[must_use]
     pub fn via() -> Self {
         Self::new()
     }
@@ -162,6 +166,7 @@ impl SetForwardedHeaderLayer<Via> {
 impl SetForwardedHeaderLayer<XForwardedFor> {
     #[inline]
     /// Create a new `SetForwardedHeaderLayer` for the canonical [`X-Forwarded-For`] header.
+    #[must_use]
     pub fn x_forwarded_for() -> Self {
         Self::new()
     }
@@ -170,6 +175,7 @@ impl SetForwardedHeaderLayer<XForwardedFor> {
 impl SetForwardedHeaderLayer<XForwardedHost> {
     #[inline]
     /// Create a new `SetForwardedHeaderLayer` for the canonical [`X-Forwarded-Host`] header.
+    #[must_use]
     pub fn x_forwarded_host() -> Self {
         Self::new()
     }
@@ -178,6 +184,7 @@ impl SetForwardedHeaderLayer<XForwardedHost> {
 impl SetForwardedHeaderLayer<XForwardedProto> {
     #[inline]
     /// Create a new `SetForwardedHeaderLayer` for the canonical [`X-Forwarded-Proto`] header.
+    #[must_use]
     pub fn x_forwarded_proto() -> Self {
         Self::new()
     }
@@ -228,7 +235,7 @@ impl<S: fmt::Debug, T> fmt::Debug for SetForwardedHeaderService<S, T> {
 
 impl<S: Clone, T> Clone for SetForwardedHeaderService<S, T> {
     fn clone(&self) -> Self {
-        SetForwardedHeaderService {
+        Self {
             inner: self.inner.clone(),
             by_node: self.by_node.clone(),
             _headers: PhantomData,
@@ -240,6 +247,7 @@ impl<S, T> SetForwardedHeaderService<S, T> {
     /// Set the given [`NodeId`] as the "by" property, identifying this proxy.
     ///
     /// Default of `None` will be set to `rama` otherwise.
+    #[must_use]
     pub fn forward_by(mut self, node_id: impl Into<NodeId>) -> Self {
         self.by_node = node_id.into();
         self

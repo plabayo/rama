@@ -17,20 +17,23 @@ impl NonEmptyString {
     /// # Panics
     ///
     /// This function panics at **compile time** when the static string is empty.
-    pub const fn from_static(src: &'static str) -> NonEmptyString {
+    #[must_use]
+    pub const fn from_static(src: &'static str) -> Self {
         if src.is_empty() {
             panic!("empty static string");
         }
 
-        NonEmptyString(Cow::Borrowed(src))
+        Self(Cow::Borrowed(src))
     }
 
     /// Views this [`NonEmptyString`] as a string slice.
+    #[must_use]
     pub fn as_str(&self) -> &str {
         self.0.as_ref()
     }
 
     /// Views this [`NonEmptyString`] as a bytes slice.
+    #[must_use]
     pub fn as_bytes(&self) -> &[u8] {
         self.0.as_ref().as_bytes()
     }

@@ -21,7 +21,7 @@ pub(crate) struct HeaderValueString {
 impl HeaderValueString {
     pub(crate) fn from_val(val: &HeaderValue) -> Result<Self, Error> {
         if val.to_str().is_ok() {
-            Ok(HeaderValueString { value: val.clone() })
+            Ok(Self { value: val.clone() })
         } else {
             Err(Error::invalid())
         }
@@ -33,12 +33,12 @@ impl HeaderValueString {
         let bytes = Bytes::from(src);
         HeaderValue::from_maybe_shared(bytes)
             .ok()
-            .map(|value| HeaderValueString { value })
+            .map(|value| Self { value })
     }
 
-    pub(crate) const fn from_static(src: &'static str) -> HeaderValueString {
+    pub(crate) const fn from_static(src: &'static str) -> Self {
         // A valid `str` (the argument)...
-        HeaderValueString {
+        Self {
             value: HeaderValue::from_static(src),
         }
     }
@@ -69,13 +69,13 @@ impl super::TryFromValues for HeaderValueString {
     {
         values
             .just_one()
-            .map(HeaderValueString::from_val)
+            .map(Self::from_val)
             .unwrap_or_else(|| Err(Error::invalid()))
     }
 }
 
 impl<'a> From<&'a HeaderValueString> for HeaderValue {
-    fn from(src: &'a HeaderValueString) -> HeaderValue {
+    fn from(src: &'a HeaderValueString) -> Self {
         src.value.clone()
     }
 }
@@ -89,7 +89,7 @@ impl FromStr for HeaderValueString {
     fn from_str(src: &str) -> Result<Self, Self::Err> {
         // A valid `str` (the argument)...
         src.parse()
-            .map(|value| HeaderValueString { value })
+            .map(|value| Self { value })
             .map_err(|_| FromStrError(()))
     }
 }

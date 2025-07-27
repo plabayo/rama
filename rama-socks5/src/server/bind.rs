@@ -154,6 +154,7 @@ impl<A, S> Binder<A, S> {
     ///
     /// By default it will use the client's requested bind address,
     /// which is in many cases not what you want.
+    #[must_use]
     pub fn with_bind_interface(mut self, interface: impl Into<Interface>) -> Self {
         self.bind_interface = Some(interface.into());
         self
@@ -163,6 +164,7 @@ impl<A, S> Binder<A, S> {
     ///
     /// By default it will use the client's requested bind address,
     /// which is in many cases not what you want.
+    #[must_use]
     pub fn with_default_bind_interface(mut self) -> Self {
         self.bind_interface = Some(SocketAddress::default_ipv4(0).into());
         self
@@ -234,12 +236,12 @@ where
     type Stream = TcpStream;
 
     fn local_addr(&self) -> io::Result<SocketAddress> {
-        TcpListener::local_addr(self).map(Into::into)
+        Self::local_addr(self).map(Into::into)
     }
 
     #[inline]
     async fn accept(self) -> Result<(Self::Stream, SocketAddress), Error> {
-        let (stream, addr) = TcpListener::accept(&self).await.map_err(Error::io)?;
+        let (stream, addr) = Self::accept(&self).await.map_err(Error::io)?;
         tracing::trace!(
             network.peer.port = %addr.port(),
             network.peer.address = %addr.ip_addr(),
@@ -295,19 +297,16 @@ where
         };
         let requested_interface = SocketAddress::new(requested_addr, requested_port);
 
-        let bind_interface = match self.bind_interface.clone() {
-            Some(bind_interface) => {
-                tracing::trace!(
-                    "socks5 server: bind: use server-defined bind interface: {bind_interface}"
-                );
-                bind_interface
-            }
-            None => {
-                tracing::debug!(
-                    "socks5 server: bind: no server-defined bind interface: use requested client interface @ {requested_interface}"
-                );
-                requested_interface.into()
-            }
+        let bind_interface = if let Some(bind_interface) = self.bind_interface.clone() {
+            tracing::trace!(
+                "socks5 server: bind: use server-defined bind interface: {bind_interface}"
+            );
+            bind_interface
+        } else {
+            tracing::debug!(
+                "socks5 server: bind: no server-defined bind interface: use requested client interface @ {requested_interface}"
+            );
+            requested_interface.into()
         };
 
         let (acceptor, ctx) = match self.acceptor.bind(ctx, bind_interface.clone()).await {

@@ -653,8 +653,9 @@ impl Builder {
     /// #
     /// # pub fn main() {}
     /// ```
-    pub fn new() -> Builder {
-        Builder {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
             reset_stream_duration: Duration::from_secs(proto::DEFAULT_RESET_STREAM_SECS),
             reset_stream_max: proto::DEFAULT_RESET_STREAM_MAX,
             pending_accept_reset_stream_max: proto::DEFAULT_REMOTE_RESET_STREAM_MAX,
@@ -1100,8 +1101,8 @@ impl Builder {
 }
 
 impl Default for Builder {
-    fn default() -> Builder {
-        Builder::new()
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -1147,7 +1148,7 @@ impl<B: Buf> SendResponse<B> {
         self.inner
             .send_push_promise(request)
             .map(|inner| SendPushedResponse {
-                inner: SendResponse { inner },
+                inner: Self { inner },
             })
             .map_err(Into::into)
     }
@@ -1192,6 +1193,7 @@ impl<B: Buf> SendResponse<B> {
     /// # Panics
     ///
     /// If the lock on the stream store has been poisoned.
+    #[must_use]
     pub fn stream_id(&self) -> StreamId {
         self.inner.stream_id()
     }
@@ -1264,6 +1266,7 @@ impl<B: Buf> SendPushedResponse<B> {
     /// # Panics
     ///
     /// If the lock on the stream store has been poisoned.
+    #[must_use]
     pub fn stream_id(&self) -> StreamId {
         self.inner.stream_id()
     }
@@ -1273,7 +1276,7 @@ impl<B: Buf> SendPushedResponse<B> {
 
 impl<T, B: Buf> Flush<T, B> {
     fn new(codec: Codec<T, B>) -> Self {
-        Flush { codec: Some(codec) }
+        Self { codec: Some(codec) }
     }
 }
 
@@ -1295,7 +1298,7 @@ where
 
 impl<T, B: Buf> ReadPreface<T, B> {
     fn new(codec: Codec<T, B>) -> Self {
-        ReadPreface {
+        Self {
             codec: Some(codec),
             pos: 0,
         }
@@ -1674,9 +1677,9 @@ where
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
         match *self {
-            Handshaking::Flushing(_) => f.write_str("Flushing(_)"),
-            Handshaking::ReadingPreface(_) => f.write_str("ReadingPreface(_)"),
-            Handshaking::Done => f.write_str("Done"),
+            Self::Flushing(_) => f.write_str("Flushing(_)"),
+            Self::ReadingPreface(_) => f.write_str("ReadingPreface(_)"),
+            Self::Done => f.write_str("Done"),
         }
     }
 }

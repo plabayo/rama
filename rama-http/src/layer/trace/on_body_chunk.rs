@@ -48,6 +48,7 @@ pub struct DefaultOnBodyChunk {
 
 impl DefaultOnBodyChunk {
     /// Create a new `DefaultOnBodyChunk`.
+    #[must_use]
     pub const fn new() -> Self {
         Self { _priv: () }
     }

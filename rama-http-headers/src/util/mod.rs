@@ -59,7 +59,7 @@ pub(crate) trait TryFromValues: Sized {
 impl TryFromValues for HeaderValue {
     fn try_from_values<'i, I>(values: &mut I) -> Result<Self, Error>
     where
-        I: Iterator<Item = &'i HeaderValue>,
+        I: Iterator<Item = &'i Self>,
     {
         values.next().cloned().ok_or_else(Error::invalid)
     }

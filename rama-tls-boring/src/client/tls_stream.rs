@@ -19,6 +19,7 @@ impl<S> TlsStream<S> {
         Self { inner }
     }
 
+    #[must_use]
     pub fn ssl_ref(&self) -> &SslRef {
         self.inner.ssl()
     }

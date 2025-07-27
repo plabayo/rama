@@ -75,15 +75,11 @@ pub trait FromRequest: Sized + Send + 'static {
 }
 
 fn has_any_content_type(headers: &HeaderMap, expected_content_types: &[&mime::Mime]) -> bool {
-    let content_type = if let Some(content_type) = headers.get(header::CONTENT_TYPE) {
-        content_type
-    } else {
+    let Some(content_type) = headers.get(header::CONTENT_TYPE) else {
         return false;
     };
 
-    let content_type = if let Ok(content_type) = content_type.to_str() {
-        content_type
-    } else {
+    let Ok(content_type) = content_type.to_str() else {
         return false;
     };
 

@@ -211,9 +211,9 @@ enum TestMatchers {
 impl<State> Matcher<State, u8> for TestMatchers {
     fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context<State>, req: &u8) -> bool {
         match self {
-            TestMatchers::Const(m) => m.matches(ext, ctx, req),
-            TestMatchers::Even(m) => m.matches(ext, ctx, req),
-            TestMatchers::Odd(m) => m.matches(ext, ctx, req),
+            Self::Const(m) => m.matches(ext, ctx, req),
+            Self::Even(m) => m.matches(ext, ctx, req),
+            Self::Odd(m) => m.matches(ext, ctx, req),
         }
     }
 }

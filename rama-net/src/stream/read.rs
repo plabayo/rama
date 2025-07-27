@@ -19,6 +19,7 @@ pin_project! {
 
 impl HeapReader {
     /// Creates a new `HeapReader` with the specified bytes data.
+    #[must_use]
     pub const fn new(data: Vec<u8>) -> Self {
         Self {
             inner: Cursor::new(data),
@@ -26,11 +27,13 @@ impl HeapReader {
     }
 
     /// How many bytes are there remaining
+    #[must_use]
     pub fn remaining(&self) -> usize {
         self.inner.remaining()
     }
 
     /// Returns true if there are any more bytes to consume
+    #[must_use]
     pub fn has_remaining(&self) -> bool {
         self.inner.has_remaining()
     }
@@ -102,6 +105,7 @@ pub struct StackReader<const N: usize> {
 
 impl<const N: usize> StackReader<N> {
     /// Creates a new `StackReader` with the specified bytes data.
+    #[must_use]
     pub const fn new(data: [u8; N]) -> Self {
         Self { data, offset: 0 }
     }
@@ -112,11 +116,13 @@ impl<const N: usize> StackReader<N> {
     }
 
     /// How many bytes are there remaining
+    #[must_use]
     pub fn remaining(&self) -> usize {
         N - self.offset
     }
 
     /// Returns true if there are any more bytes to consume
+    #[must_use]
     pub fn has_remaining(&self) -> bool {
         self.remaining() == 0
     }
@@ -229,6 +235,7 @@ where
     /// Care should be taken to avoid modifying the internal I/O state of the
     /// underlying readers as doing so may corrupt the internal state of this
     /// `ChainReader`.
+    #[must_use]
     pub fn get_pin_mut(self: Pin<&mut Self>) -> (Pin<&mut T>, Pin<&mut U>) {
         let me = self.project();
         (me.first, me.second)

@@ -104,6 +104,7 @@ impl<S, P> UserAgentEmulateService<S, P> {
     /// When no user agent profile was found it will
     /// fail the request unless optional is true. In case of
     /// the latter the service will do nothing.
+    #[must_use]
     pub fn optional(mut self, optional: bool) -> Self {
         self.optional = optional;
         self
@@ -117,6 +118,7 @@ impl<S, P> UserAgentEmulateService<S, P> {
 
     /// If true, the service will try to auto-detect the user agent from the request,
     /// but only in case that info is not yet found in the context.
+    #[must_use]
     pub fn try_auto_detect_user_agent(mut self, try_auto_detect_user_agent: bool) -> Self {
         self.try_auto_detect_user_agent = try_auto_detect_user_agent;
         self
@@ -142,6 +144,7 @@ impl<S, P> UserAgentEmulateService<S, P> {
     /// and/or order of the headers taken together. Using this metadata allows you to
     /// communicate this data through anyway. If however your http client does respect
     /// casing and order, or you don't care about some of it, you might not need it.
+    #[must_use]
     pub fn input_header_order(mut self, name: HeaderName) -> Self {
         self.input_header_order = Some(name);
         self
@@ -155,6 +158,7 @@ impl<S, P> UserAgentEmulateService<S, P> {
 
     /// Choose what to do in case no profile could be selected
     /// using the regular pre-conditions as specified by the provider.
+    #[must_use]
     pub fn select_fallback(mut self, fb: UserAgentSelectFallback) -> Self {
         self.select_fallback = Some(fb);
         self
@@ -208,18 +212,15 @@ where
             }
         }
 
-        let profile = match self.provider.select_user_agent_profile(&ctx) {
-            Some(profile) => profile,
-            None => {
-                return if self.optional {
-                    Ok(self.inner.serve(ctx, req).await.map_err(Into::into)?)
-                } else {
-                    Err(OpaqueError::from_display(
-                        "requirement not fulfilled: user agent profile could not be selected",
-                    )
-                    .into_boxed())
-                };
-            }
+        let Some(profile) = self.provider.select_user_agent_profile(&ctx) else {
+            return if self.optional {
+                Ok(self.inner.serve(ctx, req).await.map_err(Into::into)?)
+            } else {
+                Err(OpaqueError::from_display(
+                    "requirement not fulfilled: user agent profile could not be selected",
+                )
+                .into_boxed())
+            };
         };
 
         tracing::debug!(
@@ -312,6 +313,7 @@ pub struct UserAgentEmulateHttpConnectModifier;
 impl UserAgentEmulateHttpConnectModifier {
     #[inline]
     /// Create a new (default) [`UserAgentEmulateHttpConnectModifier`].
+    #[must_use]
     pub fn new() -> Self {
         Self
     }
@@ -397,6 +399,7 @@ pub struct UserAgentEmulateHttpRequestModifier;
 impl UserAgentEmulateHttpRequestModifier {
     #[inline]
     /// Create a new (default) [`UserAgentEmulateHttpRequestModifier`].
+    #[must_use]
     pub fn new() -> Self {
         Self
     }
@@ -479,7 +482,7 @@ where
                         "user agent emulation: insert h2 pseudo headers into request extensions: {pseudo_headers:?}"
                     );
 
-                    if let Some(pseudo_headers) = pseudo_headers.clone() {
+                    if let Some(pseudo_headers) = pseudo_headers {
                         req.extensions_mut().insert(pseudo_headers);
                     }
                 }
@@ -621,7 +624,7 @@ fn get_base_http_headers_from_req_init(
 
 const SEC_FETCH_SITE: HeaderName = HeaderName::from_static("sec-fetch-site");
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::needless_pass_by_value)]
 fn merge_http_headers<'a>(
     base_http_headers: &Http1HeaderMap,
     original_http_header_order: Option<OriginalHttp1Headers>,
@@ -765,57 +768,51 @@ fn compute_sec_fetch_site_value(
                     let maybe_authority = uri
                         .host()
                         .and_then(|h| Host::try_from(h).ok().and_then(|h| {
-                            match default_port {
-                                Some(default_port) => {
-                                    tracing::trace!(url.full = %uri, "detected host {h} from (abs) referer uri");
-                                    Some(Authority::new(h, default_port))
-                                },
-                                None => {
-                                    tracing::trace!(url.full = %uri, "detected host {h} from (abs) referer uri: but no port available");
-                                    None
-                                },
+                            if let Some(default_port) = default_port {
+                                tracing::trace!(url.full = %uri, "detected host {h} from (abs) referer uri");
+                                Some(Authority::new(h, default_port))
+                            } else {
+                                tracing::trace!(url.full = %uri, "detected host {h} from (abs) referer uri: but no port available");
+                                None
                             }
                         }));
 
-                    match maybe_authority {
-                        Some(authority) => {
-                            if referer_protocol.as_ref() == protocol {
-                                if Some(&authority) == request_authority {
-                                    HeaderValue::from_static("same-origin")
-                                } else if let Some(request_host) =
-                                    request_authority.as_ref().map(|a| a.host())
-                                {
-                                    let is_same_registrable_domain =
-                                        match (authority.host(), request_host) {
-                                            (Host::Name(a), Host::Name(b)) => {
-                                                a.have_same_registrable_domain(b)
-                                            }
-                                            (Host::Address(a), Host::Address(b)) => a == b,
-                                            _ => false,
-                                        };
-                                    if is_same_registrable_domain {
-                                        HeaderValue::from_static("same-site")
-                                    } else {
-                                        HeaderValue::from_static("cross-site")
-                                    }
+                    if let Some(authority) = maybe_authority {
+                        if referer_protocol.as_ref() == protocol {
+                            if Some(&authority) == request_authority {
+                                HeaderValue::from_static("same-origin")
+                            } else if let Some(request_host) =
+                                request_authority.as_ref().map(|a| a.host())
+                            {
+                                let is_same_registrable_domain =
+                                    match (authority.host(), request_host) {
+                                        (Host::Name(a), Host::Name(b)) => {
+                                            a.have_same_registrable_domain(b)
+                                        }
+                                        (Host::Address(a), Host::Address(b)) => a == b,
+                                        _ => false,
+                                    };
+                                if is_same_registrable_domain {
+                                    HeaderValue::from_static("same-site")
                                 } else {
-                                    tracing::debug!(
-                                        http.request.header.referer = ?referer_value,
-                                        "missing request authority, returning none as default",
-                                    );
-                                    HeaderValue::from_static("none")
+                                    HeaderValue::from_static("cross-site")
                                 }
                             } else {
-                                HeaderValue::from_static("cross-site")
+                                tracing::debug!(
+                                    http.request.header.referer = ?referer_value,
+                                    "missing request authority, returning none as default",
+                                );
+                                HeaderValue::from_static("none")
                             }
+                        } else {
+                            HeaderValue::from_static("cross-site")
                         }
-                        None => {
-                            tracing::debug!(
-                                http.request.header.referer = ?referer_value,
-                                "invalid referer value (failed to extract authority from uri value)",
-                            );
-                            HeaderValue::from_static("none")
-                        }
+                    } else {
+                        tracing::debug!(
+                            http.request.header.referer = ?referer_value,
+                            "invalid referer value (failed to extract authority from uri value)",
+                        );
+                        HeaderValue::from_static("none")
                     }
                 }
                 Err(err) => {

@@ -12,6 +12,7 @@ pub struct DenyAllDns;
 impl DenyAllDns {
     #[inline]
     /// Create a new [`Default`] [`DenyAllDns`].
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }

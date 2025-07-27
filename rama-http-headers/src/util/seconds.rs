@@ -32,26 +32,26 @@ impl super::TryFromValues for Seconds {
     {
         values
             .just_one()
-            .and_then(Seconds::from_val)
+            .and_then(Self::from_val)
             .ok_or_else(Error::invalid)
     }
 }
 
 impl<'a> From<&'a Seconds> for HeaderValue {
-    fn from(secs: &'a Seconds) -> HeaderValue {
+    fn from(secs: &'a Seconds) -> Self {
         secs.0.as_secs().into()
     }
 }
 
 impl From<Duration> for Seconds {
-    fn from(dur: Duration) -> Seconds {
+    fn from(dur: Duration) -> Self {
         debug_assert!(dur.subsec_nanos() == 0);
-        Seconds(dur)
+        Self(dur)
     }
 }
 
 impl From<Seconds> for Duration {
-    fn from(secs: Seconds) -> Duration {
+    fn from(secs: Seconds) -> Self {
         secs.0
     }
 }

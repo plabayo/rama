@@ -26,7 +26,7 @@ pub struct Expect(());
 
 impl Expect {
     /// "100-continue"
-    pub const CONTINUE: Expect = Expect(());
+    pub const CONTINUE: Self = Self(());
 }
 
 impl Header for Expect {
@@ -39,7 +39,7 @@ impl Header for Expect {
             .just_one()
             .and_then(|value| {
                 if value == "100-continue" {
-                    Some(Expect::CONTINUE)
+                    Some(Self::CONTINUE)
                 } else {
                     None
                 }

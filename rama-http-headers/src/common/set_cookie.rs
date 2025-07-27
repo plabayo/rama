@@ -67,7 +67,7 @@ impl Header for SetCookie {
         let vec = values.cloned().collect::<Vec<_>>();
 
         if !vec.is_empty() {
-            Ok(SetCookie(vec))
+            Ok(Self(vec))
         } else {
             Err(Error::invalid())
         }

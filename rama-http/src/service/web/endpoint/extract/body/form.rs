@@ -65,10 +65,10 @@ where
                 Ok(value) => value,
                 Err(err) => return Err(FailedToDeserializeForm::from_err(err).into()),
             };
-            Ok(Form(value))
+            Ok(Self(value))
         } else {
             let b = extract_form_body_bytes(req).await?;
-            Ok(Form(match serde_html_form::from_bytes(&b) {
+            Ok(Self(match serde_html_form::from_bytes(&b) {
                 Ok(value) => value,
                 Err(err) => return Err(FailedToDeserializeForm::from_err(err).into()),
             }))

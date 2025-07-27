@@ -45,6 +45,7 @@ pub struct WebSocketMatcher;
 impl WebSocketMatcher {
     #[inline]
     /// Create a new default [`WebSocketMatcher`].
+    #[must_use]
     pub fn new() -> Self {
         Default::default()
     }
@@ -142,31 +143,31 @@ pub enum RequestValidateError {
 impl fmt::Display for RequestValidateError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            RequestValidateError::UnexpectedHttpMethod(method) => {
+            Self::UnexpectedHttpMethod(method) => {
                 write!(f, "unexpected HTTP method: {method:?}")
             }
-            RequestValidateError::UnexpectedHttpVersion(version) => {
+            Self::UnexpectedHttpVersion(version) => {
                 write!(f, "unexpected HTTP version: {version:?}")
             }
-            RequestValidateError::UnexpectedPseudoProtocolHeader(maybe_protocol) => {
+            Self::UnexpectedPseudoProtocolHeader(maybe_protocol) => {
                 write!(
                     f,
                     "missing or invalid pseudo h2 protocol header: {maybe_protocol:?}"
                 )
             }
-            RequestValidateError::MissingUpgradeWebSocketHeader => {
+            Self::MissingUpgradeWebSocketHeader => {
                 write!(f, "missing upgrade WebSocket header")
             }
-            RequestValidateError::MissingConnectionUpgradeHeader => {
+            Self::MissingConnectionUpgradeHeader => {
                 write!(f, "missing connection upgrade header")
             }
-            RequestValidateError::InvalidSecWebSocketVersionHeader => {
+            Self::InvalidSecWebSocketVersionHeader => {
                 write!(f, "missing or invalid sec-websocket-version header")
             }
-            RequestValidateError::InvalidSecWebSocketKeyHeader => {
+            Self::InvalidSecWebSocketKeyHeader => {
                 write!(f, "missing or invalid sec-websocket-key header")
             }
-            RequestValidateError::InvalidSecWebSocketProtocolHeader(err) => {
+            Self::InvalidSecWebSocketProtocolHeader(err) => {
                 write!(f, "invalid sec-websocket-protocol header: {err}")
             }
         }
@@ -287,6 +288,7 @@ pub struct WebSocketAcceptor {
 impl WebSocketAcceptor {
     #[inline]
     /// Create a new default [`WebSocketAcceptor`].
+    #[must_use]
     pub fn new() -> Self {
         Default::default()
     }
@@ -352,12 +354,9 @@ impl WebSocketAcceptor {
         /// sub protocols to be defined.
         pub fn additional_sub_protocols(mut self, protocols: impl IntoIterator<Item = impl Into<SmolStr>>) -> Self {
             let protocols = protocols.into_iter();
-            self.sub_protocols = match self.sub_protocols.take() {
-                Some(existing_protocols) => Some(existing_protocols.with_additional_sub_protocols(protocols)),
-                None => {
-                    let protocols: SmallVec<_> = protocols.into_iter().map(Into::into).collect();
-                    (!protocols.is_empty()).then_some(SubProtocols(protocols))
-                }
+            self.sub_protocols = if let Some(existing_protocols) = self.sub_protocols.take() { Some(existing_protocols.with_additional_sub_protocols(protocols)) } else {
+                let protocols: SmallVec<_> = protocols.into_iter().map(Into::into).collect();
+                (!protocols.is_empty()).then_some(SubProtocols(protocols))
             };
             self
         }
@@ -377,6 +376,7 @@ impl WebSocketAcceptor {
     }
 
     /// Turn this [`WebSocketAcceptor`] into an echo [`WebSocketAcceptorService`]].
+    #[must_use]
     pub fn into_echo_service(mut self) -> WebSocketAcceptorService<WebSocketEchoService> {
         if self.sub_protocols.is_none() {
             self.sub_protocols_flex = true;
@@ -427,17 +427,16 @@ where
                         Some(found_protocols.accept_first_protocol())
                     }
                     (_, Some(found_protocols), Some(expected_protocols)) => {
-                        match found_protocols
+                        if let Some(protocol) = found_protocols
                             .iter()
                             .find_map(|p| expected_protocols.contains(p))
                         {
-                            Some(protocol) => Some(protocol),
-                            None => {
-                                tracing::debug!(
-                                    "WebSocketAcceptor: no sub-protocols from found protocol ({found_protocols}) matched for expected protocols: {expected_protocols}"
-                                );
-                                return Err(StatusCode::BAD_REQUEST.into_response());
-                            }
+                            Some(protocol)
+                        } else {
+                            tracing::debug!(
+                                "WebSocketAcceptor: no sub-protocols from found protocol ({found_protocols}) matched for expected protocols: {expected_protocols}"
+                            );
+                            return Err(StatusCode::BAD_REQUEST.into_response());
                         }
                     }
                 };
@@ -544,7 +543,7 @@ impl<S: fmt::Debug> fmt::Debug for WebSocketAcceptorService<S> {
 
 impl<S: Clone> Clone for WebSocketAcceptorService<S> {
     fn clone(&self) -> Self {
-        WebSocketAcceptorService {
+        Self {
             acceptor: self.acceptor.clone(),
             config: self.config,
             service: self.service.clone(),
@@ -684,6 +683,7 @@ pub struct WebSocketEchoService;
 
 impl WebSocketEchoService {
     /// Create a new [`EchoWebSocketService`].
+    #[must_use]
     pub fn new() -> Self {
         Self
     }
@@ -708,7 +708,7 @@ where
         let transformer = if protocol.eq_ignore_ascii_case(ECHO_SERVICE_SUB_PROTOCOL_LOWER) {
             |msg: Message| {
                 std::future::ready(Ok(match msg {
-                    Message::Text(original) => Some(original.to_lowercase().to_string().into()),
+                    Message::Text(original) => Some(original.to_lowercase().into()),
                     msg @ Message::Binary(_) => Some(msg),
                     Message::Ping(_) | Message::Pong(_) | Message::Close(_) | Message::Frame(_) => {
                         None
@@ -718,7 +718,7 @@ where
         } else if protocol.eq_ignore_ascii_case(ECHO_SERVICE_SUB_PROTOCOL_UPPER) {
             |msg: Message| {
                 std::future::ready(Ok(match msg {
-                    Message::Text(original) => Some(original.to_uppercase().to_string().into()),
+                    Message::Text(original) => Some(original.to_uppercase().into()),
                     msg @ Message::Binary(_) => Some(msg),
                     Message::Ping(_) | Message::Pong(_) | Message::Close(_) | Message::Frame(_) => {
                         None
@@ -936,23 +936,20 @@ mod tests {
             .headers()
             .get(SEC_WEBSOCKET_PROTOCOL)
             .map(|v| v.to_str().unwrap());
-        match expected_accepted_protocol {
-            Some(expected_accepted_protocol) => {
-                assert_eq!(
-                    protocol,
-                    Some(expected_accepted_protocol.as_str().trim()),
-                    "request = {req:?}"
-                );
-                assert_eq!(
-                    ctx.get::<AcceptedSubProtocol>(),
-                    Some(&expected_accepted_protocol),
-                    "request = {req:?}"
-                );
-            }
-            None => {
-                assert!(protocol.is_none());
-                assert!(ctx.get::<AcceptedSubProtocol>().is_none());
-            }
+        if let Some(expected_accepted_protocol) = expected_accepted_protocol {
+            assert_eq!(
+                protocol,
+                Some(expected_accepted_protocol.as_str().trim()),
+                "request = {req:?}"
+            );
+            assert_eq!(
+                ctx.get::<AcceptedSubProtocol>(),
+                Some(&expected_accepted_protocol),
+                "request = {req:?}"
+            );
+        } else {
+            assert!(protocol.is_none());
+            assert!(ctx.get::<AcceptedSubProtocol>().is_none());
         }
     }
 

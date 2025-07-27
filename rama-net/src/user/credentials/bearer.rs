@@ -38,6 +38,7 @@ impl Bearer {
     /// # Panic
     ///
     /// Panics in case the token contains non-visible ASCII chars.
+    #[must_use]
     pub fn new_static(s: &'static str) -> Self {
         if s.is_empty() {
             panic!("empty str cannot be used as Bearer");
@@ -54,6 +55,7 @@ impl Bearer {
     }
 
     /// View the token part as a `&str`.
+    #[must_use]
     pub fn token(&self) -> &str {
         &self.0
     }
@@ -61,7 +63,8 @@ impl Bearer {
     /// Turn itself into a [`StaticAuthorizer`], so it can be used to authorize.
     ///
     /// Just a shortcut, QoL.
-    pub fn into_authorizer(self) -> StaticAuthorizer<Bearer> {
+    #[must_use]
+    pub fn into_authorizer(self) -> StaticAuthorizer<Self> {
         StaticAuthorizer::new(self)
     }
 }

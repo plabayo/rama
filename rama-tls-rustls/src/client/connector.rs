@@ -45,6 +45,7 @@ impl<K: Clone> Clone for TlsConnectorLayer<K> {
 impl<K> TlsConnectorLayer<K> {
     /// Attach [`TlsConnectorData`] to this [`TlsConnectorLayer`],
     /// to be used instead of a globally shared [`TlsConnectorData::default`].
+    #[must_use]
     pub fn with_connector_data(mut self, connector_data: TlsConnectorData) -> Self {
         self.connector_data = Some(connector_data);
         self
@@ -52,6 +53,7 @@ impl<K> TlsConnectorLayer<K> {
 
     /// Maybe attach [`TlsConnectorData`] to this [`TlsConnectorLayer`],
     /// to be used if `Some` instead of a globally shared [`TlsConnectorData::default`].
+    #[must_use]
     pub fn maybe_with_connector_data(mut self, connector_data: Option<TlsConnectorData>) -> Self {
         self.connector_data = connector_data;
         self
@@ -69,6 +71,7 @@ impl TlsConnectorLayer<ConnectorKindAuto> {
     /// Creates a new [`TlsConnectorLayer`] which will establish
     /// a secure connection if the request demands it,
     /// otherwise it will forward the pre-established inner connection.
+    #[must_use]
     pub fn auto() -> Self {
         Self {
             connector_data: None,
@@ -80,6 +83,7 @@ impl TlsConnectorLayer<ConnectorKindAuto> {
 impl TlsConnectorLayer<ConnectorKindSecure> {
     /// Creates a new [`TlsConnectorLayer`] which will always
     /// establish a secure connection regardless of the request it is for.
+    #[must_use]
     pub fn secure() -> Self {
         Self {
             connector_data: None,
@@ -91,6 +95,7 @@ impl TlsConnectorLayer<ConnectorKindSecure> {
 impl TlsConnectorLayer<ConnectorKindTunnel> {
     /// Creates a new [`TlsConnectorLayer`] which will establish
     /// a secure connection if the request is to be tunneled.
+    #[must_use]
     pub fn tunnel(host: Option<Host>) -> Self {
         Self {
             connector_data: None,
@@ -176,6 +181,7 @@ impl<S, K> TlsConnector<S, K> {
     ///
     /// E.g. if you create an auto client, you want to make sure your ALPN can handle all.
     /// It will be then also be the [`TlsConnector`] that sets the request http version correctly.
+    #[must_use]
     pub fn with_connector_data(mut self, connector_data: TlsConnectorData) -> Self {
         self.connector_data = Some(connector_data);
         self
@@ -183,6 +189,7 @@ impl<S, K> TlsConnector<S, K> {
 
     /// Maybe attach [`TlsConnectorData`] to this [`TlsConnector`],
     /// to be used if `Some` instead of a globally shared [`TlsConnectorData::default`].
+    #[must_use]
     pub fn maybe_with_connector_data(mut self, connector_data: Option<TlsConnectorData>) -> Self {
         self.connector_data = connector_data;
         self
@@ -357,25 +364,24 @@ where
         let EstablishedClientConnection { mut ctx, req, conn } =
             self.inner.connect(ctx, req).await.map_err(Into::into)?;
 
-        let server_host = match ctx
+        let server_host = if let Some(host) = ctx
             .get::<TlsTunnel>()
             .as_ref()
             .map(|t| &t.server_host)
             .or(self.kind.host.as_ref())
         {
-            Some(host) => host.clone(),
-            None => {
-                tracing::trace!(
-                    "TlsConnector(tunnel): return inner connection: no Tls tunnel is requested"
-                );
-                return Ok(EstablishedClientConnection {
-                    ctx,
-                    req,
-                    conn: AutoTlsStream {
-                        inner: AutoTlsStreamData::Plain { inner: conn },
-                    },
-                });
-            }
+            host.clone()
+        } else {
+            tracing::trace!(
+                "TlsConnector(tunnel): return inner connection: no Tls tunnel is requested"
+            );
+            return Ok(EstablishedClientConnection {
+                ctx,
+                req,
+                conn: AutoTlsStream {
+                    inner: AutoTlsStreamData::Plain { inner: conn },
+                },
+            });
         };
 
         let connector_data = ctx.get::<TlsConnectorData>().cloned();
@@ -468,8 +474,8 @@ pin_project! {
 impl<S: fmt::Debug> fmt::Debug for AutoTlsStreamData<S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            AutoTlsStreamData::Secure { inner } => f.debug_tuple("Secure").field(inner).finish(),
-            AutoTlsStreamData::Plain { inner } => f.debug_tuple("Plain").field(inner).finish(),
+            Self::Secure { inner } => f.debug_tuple("Secure").field(inner).finish(),
+            Self::Plain { inner } => f.debug_tuple("Plain").field(inner).finish(),
         }
     }
 }

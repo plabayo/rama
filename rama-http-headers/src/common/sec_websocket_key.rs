@@ -6,6 +6,7 @@ use rama_http_types::HeaderValue;
 pub struct SecWebsocketKey(pub(super) HeaderValue);
 
 impl SecWebsocketKey {
+    #[must_use]
     pub fn random() -> Self {
         let r: [u8; 16] = rand::random();
         r.into()

@@ -65,7 +65,7 @@ impl Range {
             _ => return Err(InvalidRange),
         };
 
-        Ok(Range(HeaderValue::try_from(v).unwrap()))
+        Ok(Self(HeaderValue::try_from(v).unwrap()))
     }
 
     /// Iterate the range sets as a tuple of bounds, if valid with length.
@@ -88,7 +88,7 @@ impl Range {
 
             // Unbounded ranges in HTTP are actually a suffix
             // For example, `-100` means the last 100 bytes.
-            if let Bound::Unbounded = start {
+            if start == Bound::Unbounded {
                 if let Bound::Included(end) = end {
                     if len < end {
                         // Last N bytes is larger than available!
@@ -122,7 +122,7 @@ impl Header for Range {
             .next()
             .and_then(|val| {
                 if val.to_str().ok()?.starts_with("bytes=") {
-                    Some(Range(val.clone()))
+                    Some(Self(val.clone()))
                 } else {
                     None
                 }

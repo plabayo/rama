@@ -60,27 +60,27 @@ enum BufKind<B> {
 }
 
 impl Encoder {
-    fn new(kind: Kind) -> Encoder {
-        Encoder {
+    fn new(kind: Kind) -> Self {
+        Self {
             kind,
             is_last: false,
         }
     }
-    pub(crate) fn chunked() -> Encoder {
-        Encoder::new(Kind::Chunked(None))
+    pub(crate) fn chunked() -> Self {
+        Self::new(Kind::Chunked(None))
     }
 
-    pub(crate) fn length(len: u64) -> Encoder {
-        Encoder::new(Kind::Length(len))
+    pub(crate) fn length(len: u64) -> Self {
+        Self::new(Kind::Length(len))
     }
 
-    pub(crate) fn close_delimited() -> Encoder {
-        Encoder::new(Kind::CloseDelimited)
+    pub(crate) fn close_delimited() -> Self {
+        Self::new(Kind::CloseDelimited)
     }
 
-    pub(crate) fn into_chunked_with_trailing_fields(self, trailers: Vec<HeaderValue>) -> Encoder {
+    pub(crate) fn into_chunked_with_trailing_fields(self, trailers: Vec<HeaderValue>) -> Self {
         match self.kind {
-            Kind::Chunked(_) => Encoder {
+            Kind::Chunked(_) => Self {
                 kind: Kind::Chunked(Some(trailers)),
                 is_last: self.is_last,
             },
@@ -111,11 +111,10 @@ impl Encoder {
 
     pub(crate) fn end<B>(&self) -> Result<Option<EncodedBuf<B>>, NotEof> {
         match self.kind {
-            Kind::Length(0) => Ok(None),
+            Kind::CloseDelimited | Kind::Length(0) => Ok(None),
             Kind::Chunked(_) => Ok(Some(EncodedBuf {
                 kind: BufKind::ChunkedEnd(b"0\r\n\r\n"),
             })),
-            Kind::CloseDelimited => Ok(None),
             Kind::Length(n) => Err(NotEof(n)),
         }
     }
@@ -354,9 +353,9 @@ struct ChunkSize {
 }
 
 impl ChunkSize {
-    fn new(len: usize) -> ChunkSize {
+    fn new(len: usize) -> Self {
         use std::fmt::Write;
-        let mut size = ChunkSize {
+        let mut size = Self {
             bytes: [0; CHUNK_SIZE_MAX_BYTES + 2],
             pos: 0,
             len: 0,
@@ -406,7 +405,7 @@ impl fmt::Write for ChunkSize {
 
 impl<B: Buf> From<B> for EncodedBuf<B> {
     fn from(buf: B) -> Self {
-        EncodedBuf {
+        Self {
             kind: BufKind::Exact(buf),
         }
     }
@@ -414,7 +413,7 @@ impl<B: Buf> From<B> for EncodedBuf<B> {
 
 impl<B: Buf> From<Take<B>> for EncodedBuf<B> {
     fn from(buf: Take<B>) -> Self {
-        EncodedBuf {
+        Self {
             kind: BufKind::Limited(buf),
         }
     }
@@ -422,7 +421,7 @@ impl<B: Buf> From<Take<B>> for EncodedBuf<B> {
 
 impl<B: Buf> From<Chain<Chain<ChunkSize, B>, StaticBuf>> for EncodedBuf<B> {
     fn from(buf: Chain<Chain<ChunkSize, B>, StaticBuf>) -> Self {
-        EncodedBuf {
+        Self {
             kind: BufKind::Chunked(buf),
         }
     }

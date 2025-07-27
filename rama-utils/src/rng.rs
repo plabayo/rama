@@ -75,21 +75,22 @@ pub struct HasherRng<H = RandomState> {
 
 impl HasherRng {
     /// Create a new default [`HasherRng`].
+    #[must_use]
     pub fn new() -> Self {
-        HasherRng::default()
+        Self::default()
     }
 }
 
 impl Default for HasherRng {
     fn default() -> Self {
-        HasherRng::with_hasher(RandomState::default())
+        Self::with_hasher(RandomState::default())
     }
 }
 
 impl<H> HasherRng<H> {
     /// Create a new [`HasherRng`] with the provided hasher.
     pub fn with_hasher(hasher: H) -> Self {
-        HasherRng { hasher, counter: 0 }
+        Self { hasher, counter: 0 }
     }
 }
 

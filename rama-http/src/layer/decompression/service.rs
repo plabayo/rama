@@ -34,6 +34,7 @@ impl<S> Decompression<S> {
     define_inner_service_accessors!();
 
     /// Sets whether to request the gzip encoding.
+    #[must_use]
     pub fn gzip(mut self, enable: bool) -> Self {
         self.accept.set_gzip(enable);
         self
@@ -46,6 +47,7 @@ impl<S> Decompression<S> {
     }
 
     /// Sets whether to request the Deflate encoding.
+    #[must_use]
     pub fn deflate(mut self, enable: bool) -> Self {
         self.accept.set_deflate(enable);
         self
@@ -58,6 +60,7 @@ impl<S> Decompression<S> {
     }
 
     /// Sets whether to request the Brotli encoding.
+    #[must_use]
     pub fn br(mut self, enable: bool) -> Self {
         self.accept.set_br(enable);
         self
@@ -70,6 +73,7 @@ impl<S> Decompression<S> {
     }
 
     /// Sets whether to request the Zstd encoding.
+    #[must_use]
     pub fn zstd(mut self, enable: bool) -> Self {
         self.accept.set_zstd(enable);
         self
@@ -93,7 +97,7 @@ impl<S: fmt::Debug> fmt::Debug for Decompression<S> {
 
 impl<S: Clone> Clone for Decompression<S> {
     fn clone(&self) -> Self {
-        Decompression {
+        Self {
             inner: self.inner.clone(),
             accept: self.accept,
         }

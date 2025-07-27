@@ -270,6 +270,7 @@ pub struct HttpConnectorLayer<I1 = (), I2 = ()> {
 
 impl HttpConnectorLayer {
     /// Create a new [`HttpConnectorLayer`].
+    #[must_use]
     pub const fn new() -> Self {
         Self {
             http_req_inspector_jit: (),
