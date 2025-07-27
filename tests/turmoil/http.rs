@@ -6,12 +6,17 @@ use rama::{
     },
     net::address::SocketAddress,
 };
+use rama_http_backend::client::EasyHttpWebClientBuilder;
 use tracing_subscriber::{
     EnvFilter, filter::LevelFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt,
 };
-use turmoil::Builder;
+use turmoil::{net::TcpListener, Builder};
 
 const ADDRESS: SocketAddress = SocketAddress::default_ipv4(62004);
+
+
+struct TurmoilTcpConnector;
+
 
 fn setup_tracing() {
     tracing_subscriber::registry()
@@ -38,6 +43,9 @@ async fn start_server(
 
 async fn run_client(address: impl Into<SocketAddress>) -> Result<(), Box<dyn std::error::Error>> {
     let client = TraceLayer::new_for_http().into_layer(EasyHttpWebClient::default());
+
+
+    let client = EasyHttpWebClientBuilder::default().with_custom_transport_connector(connector)
     let resp = client
         .serve(
             Context::default(),
