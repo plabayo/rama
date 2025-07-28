@@ -48,7 +48,7 @@ macro_rules! headers_into_response_parts {
                     ,
                 )) = self;
                 $(
-                    res.headers_mut().typed_insert($ty);
+                    res.headers_mut().typed_insert(&$ty);
                 )+
                 Ok(res)
             }

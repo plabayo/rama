@@ -84,13 +84,13 @@ where
                             .unwrap_or_default()
                         {
                             tracing::trace!("inserted proxy Basic credentials into (http) request");
-                            req.headers_mut().typed_insert(ProxyAuthorization(basic))
+                            req.headers_mut().typed_insert(&ProxyAuthorization(basic))
                         }
                     }
                     ProxyCredential::Bearer(bearer) => {
                         // Bearer tokens always need to be inserted, as there's no uri support for these
                         tracing::trace!("inserted proxy Bearer credentials into (http) request");
-                        req.headers_mut().typed_insert(ProxyAuthorization(bearer))
+                        req.headers_mut().typed_insert(&ProxyAuthorization(bearer))
                     }
                 }
             }

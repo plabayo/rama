@@ -72,7 +72,7 @@ impl InnerHttpProxyConnector {
     }
 
     /// Add a typed header to the request.
-    pub(super) fn with_typed_header(&mut self, header: impl Header) -> &mut Self {
+    pub(super) fn with_typed_header(&mut self, header: &impl Header) -> &mut Self {
         self.req.headers_mut().typed_insert(header);
         self
     }

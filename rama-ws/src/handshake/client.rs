@@ -132,12 +132,12 @@ where
             if request.headers().get(header::UPGRADE).is_none() {
                 request
                     .headers_mut()
-                    .typed_insert(headers::Upgrade::websocket());
+                    .typed_insert(&headers::Upgrade::websocket());
             }
             if request.headers().get(header::CONNECTION).is_none() {
                 request
                     .headers_mut()
-                    .typed_insert(headers::Connection::upgrade());
+                    .typed_insert(&headers::Connection::upgrade());
             }
         }
         // - for h2: nothing to do
@@ -412,8 +412,8 @@ impl WebsocketRequestBuilder<request::Builder> {
         let mut key = None;
         if request.version() != Version::HTTP_2 {
             let k = self.key.unwrap_or_else(headers::SecWebsocketKey::random);
-            key = Some(k.clone());
-            request.headers_mut().typed_insert(k);
+            request.headers_mut().typed_insert(&k);
+            key = Some(k);
         }
 
         // only required for h2, but we might upgrade from h1 to h2 based on layers such as tls

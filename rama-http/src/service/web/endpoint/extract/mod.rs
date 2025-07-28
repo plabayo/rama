@@ -44,6 +44,9 @@ pub use option::{OptionalFromRequest, OptionalFromRequestContextRefPair};
 ///
 /// If your extractor needs to consume the request body then you should implement [`FromRequest`]
 /// and not [`FromRequestParts`].
+#[diagnostic::on_unimplemented(
+    note = "Function argument is not a valid web endpoint extractor. \nSee `https://ramaproxy.org/docs/rama/http/service/web/extract/index.html` for details"
+)]
 pub trait FromRequestContextRefPair<S>: Sized + Send + Sync + 'static {
     /// If the extractor fails it'll use this "rejection" type. A rejection is
     /// a kind of error that can be converted into a response.
@@ -63,6 +66,9 @@ pub trait FromRequestContextRefPair<S>: Sized + Send + Sync + 'static {
 ///
 /// If your extractor doesn't need to consume the request body then you should implement
 /// [`FromRequestParts`] and not [`FromRequest`].
+#[diagnostic::on_unimplemented(
+    note = "Function argument is not a valid web endpoint extractor. \nSee `https://ramaproxy.org/docs/rama/http/service/web/extract/index.html` for details"
+)]
 pub trait FromRequest: Sized + Send + 'static {
     /// If the extractor fails it'll use this "rejection" type. A rejection is
     /// a kind of error that can be converted into a response.

@@ -42,7 +42,7 @@ fn qitem(mime: Mime) -> QualityValue<Mime> {
 /// let mut headers = rama_http_types::HeaderMap::new();
 ///
 /// headers.typed_insert(
-///     Accept::from_iter(vec![
+///     &Accept::from_iter(vec![
 ///         QualityValue::new(mime::TEXT_HTML, Default::default()),
 ///     ])
 /// );
@@ -55,7 +55,7 @@ fn qitem(mime: Mime) -> QualityValue<Mime> {
 ///
 /// let mut headers = rama_http_types::HeaderMap::new();
 /// headers.typed_insert(
-///     Accept::from_iter(vec![
+///     &Accept::from_iter(vec![
 ///         QualityValue::new(mime::APPLICATION_JSON, Default::default()),
 ///     ])
 /// );
@@ -68,7 +68,7 @@ fn qitem(mime: Mime) -> QualityValue<Mime> {
 /// let mut headers = rama_http_types::HeaderMap::new();
 ///
 /// headers.typed_insert(
-///     Accept::from_iter(vec![
+///     &Accept::from_iter(vec![
 ///         QualityValue::from(mime::TEXT_HTML),
 ///         QualityValue::from("application/xhtml+xml".parse::<mime::Mime>().unwrap()),
 ///         QualityValue::new(

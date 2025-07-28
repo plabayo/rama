@@ -45,6 +45,7 @@ where
 }
 
 /// The body type used in rama requests and responses.
+#[must_use]
 #[derive(Debug)]
 pub struct Body(BoxBody);
 
@@ -66,7 +67,6 @@ impl Body {
     }
 
     /// Create an empty body.
-    #[must_use]
     pub fn empty() -> Self {
         Self::new(http_body_util::Empty::new())
     }
@@ -84,7 +84,6 @@ impl Body {
     }
 
     /// Create a new [`Body`] from a [`Stream`] with a maximum size limit.
-    #[must_use]
     pub fn limited(self, limit: usize) -> Self {
         Self::new(crate::dep::http_body_util::Limited::new(self.0, limit))
     }
@@ -95,7 +94,6 @@ impl Body {
     /// you need a [`Stream`] of all frame types.
     ///
     /// [`http_body_util::BodyStream`]: https://docs.rs/http-body-util/latest/http_body_util/struct.BodyStream.html
-    #[must_use]
     pub fn into_data_stream(self) -> BodyDataStream {
         BodyDataStream { inner: self }
     }
@@ -196,6 +194,7 @@ impl http_body::Body for Body {
 ///
 /// Created with [`Body::into_data_stream`].
 #[derive(Debug)]
+#[must_use]
 pub struct BodyDataStream {
     inner: Body,
 }

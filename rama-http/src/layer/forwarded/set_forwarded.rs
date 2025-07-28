@@ -354,7 +354,7 @@ where
 
         if let Some(forwarded) = forwarded {
             if let Some(header) = H::try_from_forwarded(forwarded.iter()) {
-                req.headers_mut().typed_insert(header);
+                req.headers_mut().typed_insert(&header);
             }
         }
 

@@ -1,62 +1,58 @@
 //! Service that redirects all requests.
 
 use crate::Request;
-use crate::{HeaderValue, Response, StatusCode, Uri, header};
+use crate::service::web::response;
+use crate::{Response, header};
 use rama_core::{Context, Service};
-use std::{
-    convert::{Infallible, TryFrom},
-    fmt,
-    marker::PhantomData,
-};
+use std::{convert::Infallible, fmt, marker::PhantomData};
 
 /// Service that redirects all requests.
 pub struct Redirect<ResBody> {
-    status_code: StatusCode,
-    location: HeaderValue,
+    resp: response::Redirect,
     // Covariant over ResBody, no dropping of ResBody
     _marker: PhantomData<fn() -> ResBody>,
 }
 
 impl<ResBody> Redirect<ResBody> {
-    /// Create a new [`Redirect`] that uses a [`302 TFound`][mdn] status code.
+    /// Create a new [`Redirect`] that uses a [`303 See Other`][mdn] status code.
     ///
-    /// [mdn]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/302
-    pub fn found(uri: &Uri) -> Self {
-        Self::with_status_code(StatusCode::FOUND, uri)
-    }
-
-    /// Create a new [`Redirect`] that uses a [`307 Temporary Redirect`][mdn] status code.
+    /// This redirect instructs the client to change the method to GET for the subsequent request
+    /// to the given location, which is useful after successful form submission, file upload or when
+    /// you generally don't want the redirected-to page to observe the original request method and
+    /// body (if non-empty). If you want to preserve the request method and body,
+    /// [`Redirect::temporary`] should be used instead.
     ///
-    /// [mdn]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/307
-    pub fn temporary(uri: &Uri) -> Self {
-        Self::with_status_code(StatusCode::TEMPORARY_REDIRECT, uri)
-    }
-
-    /// Create a new [`Redirect`] that uses a [`308 Permanent Redirect`][mdn] status code.
-    ///
-    /// [mdn]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/308
-    pub fn permanent(uri: &Uri) -> Self {
-        Self::with_status_code(StatusCode::PERMANENT_REDIRECT, uri)
-    }
-
-    /// Create a new [`Redirect`] that uses the given status code.
-    ///
-    /// # Panics
-    ///
-    /// - If `status_code` isn't a [redirection status code][mdn] (3xx).
-    /// - If `uri` isn't a valid [`HeaderValue`].
-    ///
-    /// [mdn]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status#redirection_messages
-    pub fn with_status_code(status_code: StatusCode, uri: &Uri) -> Self {
-        assert!(
-            status_code.is_redirection(),
-            "not a redirection status code"
-        );
-
+    /// [mdn]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/303
+    pub fn to(loc: impl response::redirect::IntoRedirectLoc) -> Self {
         Self {
-            status_code,
-            location: HeaderValue::try_from(uri.to_string())
-                .expect("URI isn't a valid header value"),
+            resp: response::Redirect::to(loc),
+            _marker: PhantomData,
+        }
+    }
+
+    /// Create a new found (302) redirect.
+    ///
+    /// Can be useful in flows where the resource was legit and found,
+    /// but a pre-requirement such as authentication wasn't met.
+    pub fn found(loc: impl response::redirect::IntoRedirectLoc) -> Self {
+        Self {
+            resp: response::Redirect::found(loc),
+            _marker: PhantomData,
+        }
+    }
+
+    /// Create a new temporary (307) redirect.
+    pub fn temporary(loc: impl response::redirect::IntoRedirectLoc) -> Self {
+        Self {
+            resp: response::Redirect::temporary(loc),
+            _marker: PhantomData,
+        }
+    }
+
+    /// Create a new permanent (308) redirect.
+    pub fn permanent(loc: impl response::redirect::IntoRedirectLoc) -> Self {
+        Self {
+            resp: response::Redirect::permanent(loc),
             _marker: PhantomData,
         }
     }
@@ -77,9 +73,9 @@ where
         _req: Request<Body>,
     ) -> Result<Self::Response, Self::Error> {
         let mut res = Response::default();
-        *res.status_mut() = self.status_code;
+        *res.status_mut() = self.resp.status_code();
         res.headers_mut()
-            .insert(header::LOCATION, self.location.clone());
+            .insert(&header::LOCATION, self.resp.location().clone());
         Ok(res)
     }
 }
@@ -87,8 +83,7 @@ where
 impl<ResBody> fmt::Debug for Redirect<ResBody> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Redirect")
-            .field("status_code", &self.status_code)
-            .field("location", &self.location)
+            .field("response", &self.resp)
             .finish()
     }
 }
@@ -96,8 +91,7 @@ impl<ResBody> fmt::Debug for Redirect<ResBody> {
 impl<ResBody> Clone for Redirect<ResBody> {
     fn clone(&self) -> Self {
         Self {
-            status_code: self.status_code,
-            location: self.location.clone(),
+            resp: self.resp.clone(),
             _marker: PhantomData,
         }
     }
