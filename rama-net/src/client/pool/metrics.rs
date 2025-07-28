@@ -52,19 +52,21 @@ fn get_versioned_meter() -> Meter {
 }
 
 impl PoolMetrics {
+    #[must_use]
     pub fn new(opts: MeterOptions) -> Self {
-        Self::new_with_meter(get_versioned_meter(), opts)
+        Self::new_with_meter(&get_versioned_meter(), opts)
     }
 
-    pub fn new_with_meter(meter: Meter, opts: MeterOptions) -> Self {
+    #[must_use]
+    pub fn new_with_meter(meter: &Meter, opts: MeterOptions) -> Self {
         let service_info = opts.service.unwrap_or_else(|| ServiceInfo {
             name: rama_utils::info::NAME.to_owned(),
             version: rama_utils::info::VERSION.to_owned(),
         });
 
         let mut attributes = opts.attributes.unwrap_or_else(|| Vec::with_capacity(2));
-        attributes.push(KeyValue::new(SERVICE_NAME, service_info.name.clone()));
-        attributes.push(KeyValue::new(SERVICE_VERSION, service_info.version.clone()));
+        attributes.push(KeyValue::new(SERVICE_NAME, service_info.name));
+        attributes.push(KeyValue::new(SERVICE_VERSION, service_info.version));
 
         let prefix = opts.metric_prefix.as_deref();
 
