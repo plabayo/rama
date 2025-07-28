@@ -1,8 +1,12 @@
+use crate::dep::core::bytes::Bytes;
+use crate::dep::http::request::Parts as ReqParts;
+use rama_http_types::dep::http_body;
+use rama_http_types::{Request as RamaRequest, Version as HttpVersion};
 use serde::{Deserialize, Serialize};
 
 macro_rules! har_data {
     ($name:ident, { $($field:tt)* }) => {
-        #[derive(Debug, Clone, Serialize, Deserialize)]
+        #[derive(Debug, Default, Clone, Serialize, Deserialize)]
         pub struct $name {
             $($field)*
         }
@@ -70,6 +74,76 @@ har_data!(Request, {
     pub body_size: i64,
     pub comment: Option<String>,
 });
+
+impl Request {
+    pub fn from_rama_request<B>(req: &RamaRequest<B>) -> Self
+    where
+        B: http_body::Body<Data = Bytes> + Clone + Send + 'static,
+    {
+        let (parts, _body) = req.clone().into_parts();
+        // body could be used for computing body_size?
+
+        Self {
+            method: parts.method.to_string(),
+            url: parts.uri.to_string(),
+            http_version: Self::into_string_version(parts.version),
+            cookies: vec![],
+            headers: Self::into_har_headers(&parts),
+            query_string: Self::into_har_query_string(&parts),
+            post_data: None,
+            headers_size: 0,
+            body_size: -1,
+            comment: None,
+        }
+    }
+
+    // this needs to be refactored somewhere else as
+    // it's widely used across the codebase
+    fn into_string_version(v: HttpVersion) -> String {
+        match v {
+            HttpVersion::HTTP_09 => String::from("0.9"),
+            HttpVersion::HTTP_10 => String::from("1.0"),
+            HttpVersion::HTTP_11 => String::from("1.1"),
+            HttpVersion::HTTP_2 => String::from("2"),
+            HttpVersion::HTTP_3 => String::from("3"),
+            _ => panic!("WTF!!"),
+        }
+    }
+
+    fn into_har_query_string(parts: &ReqParts) -> Vec<QueryString> {
+        parts
+            .uri
+            .query()
+            .map(|qs| {
+                qs.split('&')
+                    .filter_map(|kv| {
+                        let mut split = kv.split('=');
+                        let (name, value) =
+                            (split.next().unwrap_or(""), split.next().unwrap_or(""));
+                        Some(QueryString {
+                            name: name.to_string(),
+                            value: value.to_string(),
+                            comment: None,
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    }
+
+    fn into_har_headers(parts: &ReqParts) -> Vec<Header> {
+        parts
+            .headers
+            .clone()
+            .into_iter()
+            .map(|(name, value)| Header {
+                name: name.unwrap().to_string(),
+                value: value.to_str().unwrap_or_default().to_string(),
+                comment: None,
+            })
+            .collect::<Vec<_>>()
+    }
+}
 
 har_data!(Response, {
     pub status: u16,

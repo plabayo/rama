@@ -1,11 +1,12 @@
-use std::future::Future;
+use std::future::{Future, ready};
 
 pub mod layer;
 pub mod service;
 pub mod spec;
 
 pub trait Toggle {
-    fn toggle(&self) -> impl Future<Output = bool> + Send + '_;
+    fn toggle(&mut self) -> impl Future<Output = bool> + Send + '_;
+    fn is_recording_on(&self) -> bool;
 }
 
 #[derive(Clone)]
@@ -20,8 +21,30 @@ pub enum ExportMode {
     SomeOther,
 }
 
-pub struct HARExport<S, T: Toggle> {
-    toggle: T,
-    data: Vec<spec::Log>,
-    service: S,
+impl Default for ExportMode {
+    fn default() -> Self {
+        ExportMode::Override
+    }
+}
+
+#[derive(Clone)]
+pub struct StaticToggle {
+    value: bool,
+}
+
+impl StaticToggle {
+    pub fn new(value: bool) -> Self {
+        Self { value }
+    }
+}
+
+impl Toggle for StaticToggle {
+    fn is_recording_on(&self) -> bool {
+        self.value
+    }
+
+    fn toggle(&mut self) -> impl std::future::Future<Output = bool> + Send + '_ {
+        self.value = !self.value;
+        ready(self.value)
+    }
 }
