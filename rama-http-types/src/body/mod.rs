@@ -22,6 +22,9 @@ pub use ext::BodyExtractExt;
 
 pub mod sse;
 
+mod infinite;
+pub use infinite::InfiniteReader;
+
 type BoxBody = http_body_util::combinators::BoxBody<Bytes, BoxError>;
 
 fn boxed<B>(body: B) -> BoxBody

@@ -538,6 +538,10 @@ name = "http_web_router"
 required-features = ["http-full"]
 
 [[example]]
+name = "http_anti_bot_infinite_resource"
+required-features = ["http-full"]
+
+[[example]]
 name = "http_web_service_dir_and_api"
 required-features = ["http-full"]
 

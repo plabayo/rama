@@ -10,6 +10,13 @@ pub use ::rama_http::{
     opentelemetry, proto, service, sse,
 };
 
+pub mod anti_bot {
+    //! Anti-Bot http utilities
+
+    #[doc(inline)]
+    pub use ::rama_http::InfiniteReader;
+}
+
 #[cfg(feature = "http-full")]
 #[doc(inline)]
 pub use ::rama_http_core as core;
