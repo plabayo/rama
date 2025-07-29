@@ -1,6 +1,6 @@
 use rama_http_types::{HeaderName, HeaderValue};
 
-use crate::{Error, Header};
+use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
 
 /// The `Sec-Websocket-Version` header.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -11,18 +11,22 @@ impl SecWebsocketVersion {
     pub const V13: Self = Self(13);
 }
 
-impl Header for SecWebsocketVersion {
+impl TypedHeader for SecWebsocketVersion {
     fn name() -> &'static HeaderName {
         &::rama_http_types::header::SEC_WEBSOCKET_VERSION
     }
+}
 
+impl HeaderDecode for SecWebsocketVersion {
     fn decode<'i, I: Iterator<Item = &'i HeaderValue>>(values: &mut I) -> Result<Self, Error> {
         values
             .next()
             .and_then(|value| if value == "13" { Some(Self::V13) } else { None })
             .ok_or_else(Error::invalid)
     }
+}
 
+impl HeaderEncode for SecWebsocketVersion {
     fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
         debug_assert_eq!(self.0, 13);
 

@@ -2,7 +2,7 @@ use std::ops::{Bound, RangeBounds};
 
 use rama_http_types::{HeaderName, HeaderValue};
 
-use crate::{Error, Header};
+use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
 
 /// `Range` header, defined in [RFC7233](https://tools.ietf.org/html/rfc7233#section-3.1)
 ///
@@ -112,11 +112,13 @@ fn parse_bound(s: &str) -> Option<Bound<u64>> {
     s.parse().ok().map(Bound::Included)
 }
 
-impl Header for Range {
+impl TypedHeader for Range {
     fn name() -> &'static HeaderName {
         &::rama_http_types::header::RANGE
     }
+}
 
+impl HeaderDecode for Range {
     fn decode<'i, I: Iterator<Item = &'i HeaderValue>>(values: &mut I) -> Result<Self, Error> {
         values
             .next()
@@ -129,7 +131,9 @@ impl Header for Range {
             })
             .ok_or_else(Error::invalid)
     }
+}
 
+impl HeaderEncode for Range {
     fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
         values.extend(::std::iter::once(self.0.clone()));
     }

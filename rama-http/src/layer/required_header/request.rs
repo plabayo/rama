@@ -208,7 +208,7 @@ where
                     server.address = %host,
                     "add missing host from authority as host header",
                 );
-                req.headers_mut().typed_insert(&Host::from(host));
+                req.headers_mut().typed_insert(Host::from(host));
             } else {
                 let authority = request_ctx.authority.clone();
                 tracing::trace!(
@@ -216,7 +216,7 @@ where
                     server.port = %authority.port(),
                     "add missing authority as host header"
                 );
-                req.headers_mut().typed_insert(&Host::from(authority));
+                req.headers_mut().typed_insert(Host::from(authority));
             }
         }
 

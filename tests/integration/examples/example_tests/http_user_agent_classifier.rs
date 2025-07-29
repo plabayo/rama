@@ -42,7 +42,7 @@ async fn test_http_user_agent_classifier() {
 
     let ua_chrome: UserAgentInfo = runner
         .get("http://127.0.0.1:62015")
-        .typed_header(&headers::UserAgent::from_static(UA))
+        .typed_header(headers::UserAgent::from_static(UA))
         .send(Context::default())
         .await
         .unwrap()
@@ -60,7 +60,7 @@ async fn test_http_user_agent_classifier() {
 
     let ua_app: UserAgentInfo = runner
         .get("http://127.0.0.1:62015")
-        .typed_header(&headers::UserAgent::from_static(UA))
+        .typed_header(headers::UserAgent::from_static(UA))
         .header(
             "x-proxy-ua",
             serde_html_form::to_string(&UserAgentOverwrites {

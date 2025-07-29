@@ -80,7 +80,7 @@
 //! # }
 //! ```
 
-use crate::{HeaderValue, Request, Response, header::HeaderName, headers::Header};
+use crate::{HeaderValue, Request, Response, header::HeaderName, headers::HeaderEncode};
 use rama_core::{Context, Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
@@ -143,24 +143,24 @@ impl<M> SetRequestHeaderLayer<M> {
 }
 
 impl SetRequestHeaderLayer<HeaderValue> {
-    /// Create a new [`SetRequestHeaderLayer`] from a typed [`Header`].
+    /// Create a new [`SetRequestHeaderLayer`] from a typed [`HeaderEncode`].
     ///
     /// See [`SetRequestHeaderLayer::overriding`] for more details.
-    pub fn overriding_typed<H: Header>(header: &H) -> Self {
+    pub fn overriding_typed<H: HeaderEncode>(header: H) -> Self {
         Self::overriding(H::name().clone(), header.encode_to_value())
     }
 
-    /// Create a new [`SetRequestHeaderLayer`] from a typed [`Header`].
+    /// Create a new [`SetRequestHeaderLayer`] from a typed [`HeaderEncode`].
     ///
     /// See [`SetRequestHeaderLayer::appending`] for more details.
-    pub fn appending_typed<H: Header>(header: &H) -> Self {
+    pub fn appending_typed<H: HeaderEncode>(header: H) -> Self {
         Self::appending(H::name().clone(), header.encode_to_value())
     }
 
-    /// Create a new [`SetRequestHeaderLayer`] from a typed [`Header`].
+    /// Create a new [`SetRequestHeaderLayer`] from a typed [`HeaderEncode`].
     ///
     /// See [`SetRequestHeaderLayer::if_not_present`] for more details.
-    pub fn if_not_present_typed<H: Header>(header: &H) -> Self {
+    pub fn if_not_present_typed<H: HeaderEncode>(header: H) -> Self {
         Self::if_not_present(H::name().clone(), header.encode_to_value())
     }
 }

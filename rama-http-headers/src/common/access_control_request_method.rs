@@ -1,6 +1,6 @@
 use rama_http_types::{HeaderName, HeaderValue, Method};
 
-use crate::{Error, Header};
+use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
 
 /// `Access-Control-Request-Method` header, part of
 /// [CORS](http://www.w3.org/TR/cors/#access-control-request-method-request-header)
@@ -27,11 +27,13 @@ use crate::{Error, Header};
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct AccessControlRequestMethod(Method);
 
-impl Header for AccessControlRequestMethod {
+impl TypedHeader for AccessControlRequestMethod {
     fn name() -> &'static HeaderName {
         &::rama_http_types::header::ACCESS_CONTROL_REQUEST_METHOD
     }
+}
 
+impl HeaderDecode for AccessControlRequestMethod {
     fn decode<'i, I: Iterator<Item = &'i HeaderValue>>(values: &mut I) -> Result<Self, Error> {
         values
             .next()
@@ -39,7 +41,9 @@ impl Header for AccessControlRequestMethod {
             .map(AccessControlRequestMethod)
             .ok_or_else(Error::invalid)
     }
+}
 
+impl HeaderEncode for AccessControlRequestMethod {
     fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
         // For the more common methods, try to use a static string.
         let s = match self.0 {

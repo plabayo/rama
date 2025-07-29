@@ -204,11 +204,11 @@ fn sanitize_client_req_header<S, B>(
                     if request_ctx.authority_has_default_port() {
                         let host = request_ctx.authority.host().clone();
                         tracing::trace!("add missing host {host} from authority as host header");
-                        parts.headers.typed_insert(&Host::from(host));
+                        parts.headers.typed_insert(Host::from(host));
                     } else {
                         let authority = request_ctx.authority.clone();
                         tracing::trace!("add missing authority {authority} as host header");
-                        parts.headers.typed_insert(&Host::from(authority));
+                        parts.headers.typed_insert(Host::from(authority));
                     }
                 }
 
@@ -225,14 +225,14 @@ fn sanitize_client_req_header<S, B>(
                         server.port = %authority.port(),
                         "add host from authority as HOST header to req (was missing it)",
                     );
-                    req.headers_mut().typed_insert(&Host::from(authority));
+                    req.headers_mut().typed_insert(Host::from(authority));
                 } else {
                     let host = request_ctx.authority.host().clone();
                     tracing::trace!(
                         url.full = %req.uri(),
                         "add {host} as HOST header to req (was missing it)",
                     );
-                    req.headers_mut().typed_insert(&Host::from(host));
+                    req.headers_mut().typed_insert(Host::from(host));
                 }
 
                 req

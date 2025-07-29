@@ -1,12 +1,12 @@
 use super::{IntoResponse, IntoResponseParts, ResponseParts};
 use crate::Response;
-use crate::headers::{Header, HeaderMapExt};
+use crate::headers::{HeaderEncode, HeaderMapExt};
 use rama_utils::macros::all_the_tuples_no_last_special_case;
 
-/// Use typed [`Header`]s i a response.
+/// Use typed headers in a response.
 pub struct Headers<T>(pub T);
 
-impl<H: Header> Headers<(H,)> {
+impl<H: HeaderEncode> Headers<(H,)> {
     /// Create a Header singleton tuple.
     pub fn single(h: H) -> Self {
         Self((h,))
@@ -19,7 +19,7 @@ macro_rules! headers_into_response {
         impl<$($ty),+> IntoResponse for Headers<($($ty),+,)>
         where
             $(
-                $ty: $crate::headers::Header,
+                $ty: HeaderEncode,
             )+
         {
             fn into_response(self) -> Response {
@@ -37,7 +37,7 @@ macro_rules! headers_into_response_parts {
         impl<$($ty),+> IntoResponseParts for Headers<($($ty),+,)>
         where
             $(
-                $ty: $crate::headers::Header,
+                $ty: HeaderEncode,
             )+
         {
             type Error = std::convert::Infallible;
@@ -48,7 +48,7 @@ macro_rules! headers_into_response_parts {
                     ,
                 )) = self;
                 $(
-                    res.headers_mut().typed_insert(&$ty);
+                    res.headers_mut().typed_insert($ty);
                 )+
                 Ok(res)
             }

@@ -110,13 +110,13 @@ where
         version @ (Version::HTTP_10 | Version::HTTP_11) => service
             .get(uri)
             .version(version)
-            .typed_header(&headers::Upgrade::websocket())
-            .typed_header(&headers::Connection::upgrade()),
+            .typed_header(headers::Upgrade::websocket())
+            .typed_header(headers::Connection::upgrade()),
         Version::HTTP_2 => service.connect(uri).version(Version::HTTP_2),
         _ => unreachable!("bug"),
     };
 
-    builder.typed_header(&headers::SecWebsocketVersion::V13)
+    builder.typed_header(headers::SecWebsocketVersion::V13)
 }
 
 fn new_ws_request_builder_from_request<'a, S, Body, State, RequestBody>(
@@ -132,12 +132,12 @@ where
             if request.headers().get(header::UPGRADE).is_none() {
                 request
                     .headers_mut()
-                    .typed_insert(&headers::Upgrade::websocket());
+                    .typed_insert(headers::Upgrade::websocket());
             }
             if request.headers().get(header::CONNECTION).is_none() {
                 request
                     .headers_mut()
-                    .typed_insert(&headers::Connection::upgrade());
+                    .typed_insert(headers::Connection::upgrade());
             }
         }
         // - for h2: nothing to do
@@ -385,7 +385,7 @@ impl WebsocketRequestBuilder<request::Builder> {
     #[must_use]
     pub fn with_typed_header<H>(self, header: H) -> Self
     where
-        H: headers::Header,
+        H: headers::HeaderEncode,
     {
         Self {
             inner: self.inner.typed_header(header),
@@ -537,9 +537,9 @@ where
 
     /// Set a custom typed http header
     #[must_use]
-    pub fn with_typed_header<H>(self, header: &H) -> Self
+    pub fn with_typed_header<H>(self, header: H) -> Self
     where
-        H: headers::Header,
+        H: headers::HeaderEncode,
     {
         Self {
             inner: WithService {
@@ -553,9 +553,9 @@ where
 
     /// Overwrite a custom typed http header
     #[must_use]
-    pub fn with_typed_header_overwrite<H>(self, header: &H) -> Self
+    pub fn with_typed_header_overwrite<H>(self, header: H) -> Self
     where
-        H: headers::Header,
+        H: headers::HeaderEncode,
     {
         Self {
             inner: WithService {
@@ -596,8 +596,9 @@ where
             ctx.insert(TargetHttpVersion(Version::HTTP_11));
 
             let k = self.key.unwrap_or_else(headers::SecWebsocketKey::random);
-            key = Some(k.clone());
-            builder.overwrite_typed_header(&k)
+            let builder = builder.overwrite_typed_header(&k);
+            key = Some(k);
+            builder
         } else {
             ctx.insert(TargetHttpVersion(Version::HTTP_2));
 

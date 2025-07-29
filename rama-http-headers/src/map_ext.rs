@@ -1,29 +1,31 @@
 use rama_http_types::{HeaderValue, header};
 
-use super::{Error, Header};
+use crate::{HeaderDecode, HeaderEncode};
+
+use super::Error;
 
 /// An extension trait adding "typed" methods to `http::HeaderMap`.
 pub trait HeaderMapExt: self::sealed::Sealed {
-    /// Inserts the typed [`Header`] into this `HeaderMap`.
-    fn typed_insert<H>(&mut self, header: &H)
+    /// Inserts the typed header into this `HeaderMap`.
+    fn typed_insert<H>(&mut self, header: H)
     where
-        H: Header;
+        H: HeaderEncode;
 
     /// Tries to find the header by name, and then decode it into `H`.
     fn typed_get<H>(&self) -> Option<H>
     where
-        H: Header;
+        H: HeaderDecode;
 
     /// Tries to find the header by name, and then decode it into `H`.
     fn typed_try_get<H>(&self) -> Result<Option<H>, Error>
     where
-        H: Header;
+        H: HeaderDecode;
 }
 
 impl HeaderMapExt for rama_http_types::HeaderMap {
-    fn typed_insert<H>(&mut self, header: &H)
+    fn typed_insert<H>(&mut self, header: H)
     where
-        H: Header,
+        H: HeaderEncode,
     {
         let entry = self.entry(H::name());
         let mut values = ToValues {
@@ -34,14 +36,14 @@ impl HeaderMapExt for rama_http_types::HeaderMap {
 
     fn typed_get<H>(&self) -> Option<H>
     where
-        H: Header,
+        H: HeaderDecode,
     {
         HeaderMapExt::typed_try_get(self).unwrap_or(None)
     }
 
     fn typed_try_get<H>(&self) -> Result<Option<H>, Error>
     where
-        H: Header,
+        H: HeaderDecode,
     {
         let mut values = self.get_all(H::name()).iter();
         if values.size_hint() == (0, Some(0)) {

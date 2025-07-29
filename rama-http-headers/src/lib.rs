@@ -21,15 +21,17 @@
 //!
 //! ```
 //! use rama_http_types::{HeaderName, HeaderValue};
-//! use rama_http_headers::Header;
+//! use rama_http_headers::{TypedHeader, HeaderEncode, HeaderDecode};
 //!
 //! struct Dnt(bool);
 //!
-//! impl Header for Dnt {
+//! impl TypedHeader for Dnt {
 //!     fn name() -> &'static HeaderName {
 //!          &rama_http_types::header::DNT
 //!     }
+//! }
 //!
+//! impl HeaderDecode for Dnt {
 //!     fn decode<'i, I>(values: &mut I) -> Result<Self, rama_http_headers::Error>
 //!     where
 //!         I: Iterator<Item = &'i HeaderValue>,
@@ -46,7 +48,9 @@
 //!             Err(rama_http_headers::Error::invalid())
 //!         }
 //!     }
+//! }
 //!
+//! impl HeaderEncode for Dnt {
 //!     fn encode<E>(&self, values: &mut E)
 //!     where
 //!         E: Extend<HeaderValue>,
@@ -83,7 +87,7 @@
 
 mod header;
 #[doc(inline)]
-pub use header::{Error, Header};
+pub use header::{Error, HeaderDecode, HeaderEncode, TypedHeader};
 
 pub use mime::Mime;
 

@@ -3,7 +3,7 @@ use std::fmt;
 use mime::Mime;
 use rama_http_types::{HeaderName, HeaderValue};
 
-use crate::{Error, Header};
+use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
 
 /// `Content-Type` header, defined in
 /// [RFC7231](https://datatracker.ietf.org/doc/html/rfc7231#section-3.1.1.5)
@@ -173,11 +173,13 @@ impl ContentType {
     }
 }
 
-impl Header for ContentType {
+impl TypedHeader for ContentType {
     fn name() -> &'static HeaderName {
         &::rama_http_types::header::CONTENT_TYPE
     }
+}
 
+impl HeaderDecode for ContentType {
     fn decode<'i, I: Iterator<Item = &'i HeaderValue>>(values: &mut I) -> Result<Self, Error> {
         values
             .next()
@@ -185,7 +187,9 @@ impl Header for ContentType {
             .map(ContentType)
             .ok_or_else(Error::invalid)
     }
+}
 
+impl HeaderEncode for ContentType {
     fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
         let value = self
             .0

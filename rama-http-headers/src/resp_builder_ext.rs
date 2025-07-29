@@ -1,20 +1,20 @@
 use rama_http_types::dep::http::response;
 
-use super::Header;
+use crate::HeaderEncode;
 
 /// An extension trait adding "typed" methods to `http::response::Builder`.
 pub trait HttpResponseBuilderExt: self::sealed::Sealed {
-    /// Inserts the typed [`Header`] into this `http::response::Builder`.
+    /// Inserts the typed header into this `http::response::Builder`.
     #[must_use]
     fn typed_header<H>(self, header: H) -> Self
     where
-        H: Header;
+        H: HeaderEncode;
 }
 
 impl HttpResponseBuilderExt for response::Builder {
     fn typed_header<H>(self, header: H) -> Self
     where
-        H: Header,
+        H: HeaderEncode,
     {
         self.header(H::name(), header.encode_to_value())
     }

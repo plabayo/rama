@@ -9,7 +9,7 @@ use rama_core::telemetry::tracing;
 use rama_http::io::upgrade;
 use rama_http_core::body::Incoming;
 use rama_http_core::client::conn::{http1, http2};
-use rama_http_headers::{Header, HeaderMapExt};
+use rama_http_headers::{HeaderEncode, HeaderMapExt};
 use rama_http_types::Response;
 use rama_http_types::{
     Body, HeaderName, HeaderValue, Method, Request, StatusCode, Version,
@@ -72,7 +72,7 @@ impl InnerHttpProxyConnector {
     }
 
     /// Add a typed header to the request.
-    pub(super) fn with_typed_header(&mut self, header: &impl Header) -> &mut Self {
+    pub(super) fn with_typed_header(&mut self, header: impl HeaderEncode) -> &mut Self {
         self.req.headers_mut().typed_insert(header);
         self
     }

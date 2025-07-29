@@ -1,6 +1,6 @@
 use rama_http_types::{HeaderName, HeaderValue};
 
-use crate::{Error, Header};
+use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
 
 /// `Set-Cookie` header, defined [RFC6265](https://datatracker.ietf.org/doc/html/rfc6265#section-4.1)
 ///
@@ -58,11 +58,13 @@ use crate::{Error, Header};
 #[derive(Clone, Debug)]
 pub struct SetCookie(Vec<HeaderValue>);
 
-impl Header for SetCookie {
+impl TypedHeader for SetCookie {
     fn name() -> &'static HeaderName {
         &::rama_http_types::header::SET_COOKIE
     }
+}
 
+impl HeaderDecode for SetCookie {
     fn decode<'i, I: Iterator<Item = &'i HeaderValue>>(values: &mut I) -> Result<Self, Error> {
         let vec = values.cloned().collect::<Vec<_>>();
 
@@ -72,7 +74,9 @@ impl Header for SetCookie {
             Err(Error::invalid())
         }
     }
+}
 
+impl HeaderEncode for SetCookie {
     fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
         values.extend(self.0.iter().cloned());
     }

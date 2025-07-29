@@ -4,7 +4,7 @@ use std::time::Duration;
 use rama_http_types::{HeaderName, HeaderValue};
 
 use crate::util::{self, IterExt, Seconds};
-use crate::{Error, Header};
+use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
 
 /// `StrictTransportSecurity` header, defined in [RFC6797](https://tools.ietf.org/html/rfc6797)
 ///
@@ -135,11 +135,13 @@ fn from_str(s: &str) -> Result<StrictTransportSecurity, Error> {
         .ok_or_else(Error::invalid)
 }
 
-impl Header for StrictTransportSecurity {
+impl TypedHeader for StrictTransportSecurity {
     fn name() -> &'static HeaderName {
         &::rama_http_types::header::STRICT_TRANSPORT_SECURITY
     }
+}
 
+impl HeaderDecode for StrictTransportSecurity {
     fn decode<'i, I: Iterator<Item = &'i HeaderValue>>(values: &mut I) -> Result<Self, Error> {
         values
             .just_one()
@@ -147,7 +149,9 @@ impl Header for StrictTransportSecurity {
             .map(from_str)
             .unwrap_or_else(|| Err(Error::invalid()))
     }
+}
 
+impl HeaderEncode for StrictTransportSecurity {
     fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
         struct Adapter<'a>(&'a StrictTransportSecurity);
 

@@ -237,10 +237,10 @@ where
         if let Some(credential) = address.credential.clone() {
             match credential {
                 ProxyCredential::Basic(basic) => {
-                    connector.with_typed_header(&ProxyAuthorization(basic));
+                    connector.with_typed_header(ProxyAuthorization(basic));
                 }
                 ProxyCredential::Bearer(bearer) => {
-                    connector.with_typed_header(&ProxyAuthorization(bearer));
+                    connector.with_typed_header(ProxyAuthorization(bearer));
                 }
             }
         }

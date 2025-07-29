@@ -29,7 +29,7 @@
 //!
 //! let _ = service
 //!     .get("http://www.example.com")
-//!     .typed_header(&rama_http::headers::UserAgent::from_static(UA))
+//!     .typed_header(rama_http::headers::UserAgent::from_static(UA))
 //!     .send(Context::default())
 //!     .await
 //!     .unwrap();
@@ -259,7 +259,7 @@ mod tests {
 
         let _ = service
             .get("http://www.example.com")
-            .typed_header(&headers::UserAgent::from_static(UA))
+            .typed_header(headers::UserAgent::from_static(UA))
             .send(Context::default())
             .await
             .unwrap();
@@ -285,7 +285,7 @@ mod tests {
 
         let _ = service
             .get("http://www.example.com")
-            .typed_header(&headers::UserAgent::from_static(UA))
+            .typed_header(headers::UserAgent::from_static(UA))
             .send(Context::default())
             .await
             .unwrap();

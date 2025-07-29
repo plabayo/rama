@@ -1,4 +1,4 @@
-use crate::{Header, util};
+use crate::{HeaderDecode, HeaderEncode, TypedHeader, util};
 use rama_core::error::{ErrorContext, OpaqueError};
 use rama_http_types::{HeaderName, HeaderValue, header};
 use rama_net::forwarded::{ForwardedElement, ForwardedProtocol, ForwardedVersion, NodeId};
@@ -48,17 +48,21 @@ impl From<ViaElement> for ForwardedElement {
     }
 }
 
-impl Header for Via {
+impl TypedHeader for Via {
     fn name() -> &'static HeaderName {
         &header::VIA
     }
+}
 
+impl HeaderDecode for Via {
     fn decode<'i, I: Iterator<Item = &'i HeaderValue>>(
         values: &mut I,
     ) -> Result<Self, crate::Error> {
         util::csv::from_comma_delimited(values).map(Via)
     }
+}
 
+impl HeaderEncode for Via {
     fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
         use std::fmt;
         struct Format<F>(F);

@@ -461,13 +461,13 @@ where
         }
     }
 
-    /// Add a typed [`Header`] to this [`Request`].
+    /// Add a typed [`HeaderEncode`] to this [`Request`].
     ///
-    /// [`Header`]: crate::headers::Header
+    /// [`HeaderEncode`]: crate::headers::HeaderEncode
     #[must_use]
-    pub fn typed_header<H>(self, header: &H) -> Self
+    pub fn typed_header<H>(self, header: H) -> Self
     where
-        H: crate::headers::Header,
+        H: crate::headers::HeaderEncode,
     {
         self.header(H::name().clone(), header.encode_to_value())
     }
@@ -540,13 +540,13 @@ where
         }
     }
 
-    /// Overwrite a typed [`Header`] to this [`Request`].
+    /// Overwrite a typed [`HeaderEncode`] to this [`Request`].
     ///
-    /// [`Header`]: crate::headers::Header
+    /// [`HeaderEncode`]: crate::headers::HeaderEncode
     #[must_use]
-    pub fn overwrite_typed_header<H>(self, header: &H) -> Self
+    pub fn overwrite_typed_header<H>(self, header: H) -> Self
     where
-        H: crate::headers::Header,
+        H: crate::headers::HeaderEncode,
     {
         self.overwrite_header(H::name().clone(), header.encode_to_value())
     }
@@ -555,7 +555,7 @@ where
     #[must_use]
     pub fn auth(self, credentials: impl Credentials) -> Self {
         let header = crate::headers::Authorization::new(credentials);
-        self.typed_header(&header)
+        self.typed_header(header)
     }
 
     /// Adds an extension to this builder

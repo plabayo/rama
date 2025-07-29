@@ -70,7 +70,7 @@ pub use self::vary::Vary;
 //pub use self::warning::Warning;
 
 #[cfg(test)]
-fn test_decode<T: crate::Header>(values: &[&str]) -> Option<T> {
+fn test_decode<T: crate::HeaderDecode>(values: &[&str]) -> Option<T> {
     use crate::HeaderMapExt;
     let mut map = ::rama_http_types::HeaderMap::new();
     for val in values {
@@ -81,10 +81,10 @@ fn test_decode<T: crate::Header>(values: &[&str]) -> Option<T> {
 
 #[cfg(test)]
 #[allow(clippy::needless_pass_by_value)]
-fn test_encode<T: crate::Header>(header: T) -> ::rama_http_types::HeaderMap {
+fn test_encode<T: crate::HeaderEncode>(header: T) -> ::rama_http_types::HeaderMap {
     use crate::HeaderMapExt;
     let mut map = ::rama_http_types::HeaderMap::new();
-    map.typed_insert(&header);
+    map.typed_insert(header);
     map
 }
 

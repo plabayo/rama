@@ -1,6 +1,6 @@
 use crate::dep::mime::{self, Mime};
 use crate::specifier::QualityValue;
-use crate::{Error, Header, util};
+use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader, util};
 use rama_http_types::{HeaderName, HeaderValue, header};
 use std::iter::FromIterator;
 
@@ -42,7 +42,7 @@ fn qitem(mime: Mime) -> QualityValue<Mime> {
 /// let mut headers = rama_http_types::HeaderMap::new();
 ///
 /// headers.typed_insert(
-///     &Accept::from_iter(vec![
+///     Accept::from_iter(vec![
 ///         QualityValue::new(mime::TEXT_HTML, Default::default()),
 ///     ])
 /// );
@@ -55,7 +55,7 @@ fn qitem(mime: Mime) -> QualityValue<Mime> {
 ///
 /// let mut headers = rama_http_types::HeaderMap::new();
 /// headers.typed_insert(
-///     &Accept::from_iter(vec![
+///     Accept::from_iter(vec![
 ///         QualityValue::new(mime::APPLICATION_JSON, Default::default()),
 ///     ])
 /// );
@@ -68,7 +68,7 @@ fn qitem(mime: Mime) -> QualityValue<Mime> {
 /// let mut headers = rama_http_types::HeaderMap::new();
 ///
 /// headers.typed_insert(
-///     &Accept::from_iter(vec![
+///     Accept::from_iter(vec![
 ///         QualityValue::from(mime::TEXT_HTML),
 ///         QualityValue::from("application/xhtml+xml".parse::<mime::Mime>().unwrap()),
 ///         QualityValue::new(
@@ -86,15 +86,19 @@ fn qitem(mime: Mime) -> QualityValue<Mime> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Accept(Vec<QualityValue<Mime>>);
 
-impl Header for Accept {
+impl TypedHeader for Accept {
     fn name() -> &'static HeaderName {
         &header::ACCEPT
     }
+}
 
+impl HeaderDecode for Accept {
     fn decode<'i, I: Iterator<Item = &'i HeaderValue>>(values: &mut I) -> Result<Self, Error> {
         util::csv::from_comma_delimited(values).map(Accept)
     }
+}
 
+impl HeaderEncode for Accept {
     fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
         use std::fmt;
         struct Format<F>(F);

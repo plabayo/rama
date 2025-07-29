@@ -210,7 +210,7 @@ where
 
         if self.overwrite || !resp.headers().contains_key(DATE) {
             resp.headers_mut()
-                .typed_insert(&Date::from(SystemTime::now()));
+                .typed_insert(Date::from(SystemTime::now()));
         }
 
         Ok(resp)

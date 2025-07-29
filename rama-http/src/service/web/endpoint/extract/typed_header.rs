@@ -3,7 +3,7 @@
 use super::IntoResponse;
 use super::{FromRequestContextRefPair, OptionalFromRequestContextRefPair};
 use crate::dep::http::request::Parts;
-use crate::headers::{self, Header};
+use crate::headers::{self, HeaderDecode};
 use crate::{HeaderName, Response};
 use rama_core::Context;
 use std::ops::Deref;
@@ -26,7 +26,7 @@ impl<H: Clone> Clone for TypedHeader<H> {
 impl<S, H> FromRequestContextRefPair<S> for TypedHeader<H>
 where
     S: Clone + Send + Sync + 'static,
-    H: Header + Send + Sync + 'static,
+    H: HeaderDecode + Send + Sync + 'static,
 {
     type Rejection = TypedHeaderRejection;
 
@@ -53,7 +53,7 @@ where
 impl<S, H> OptionalFromRequestContextRefPair<S> for TypedHeader<H>
 where
     S: Clone + Send + Sync + 'static,
-    H: Header + Send + Sync + 'static,
+    H: HeaderDecode + Send + Sync + 'static,
 {
     type Rejection = TypedHeaderRejection;
 

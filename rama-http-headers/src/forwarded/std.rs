@@ -4,12 +4,12 @@ use rama_core::telemetry::tracing;
 use rama_http_types::{HeaderName, HeaderValue, header::FORWARDED};
 use rama_net::forwarded::ForwardedElement;
 
-use crate::{Error, Header};
+use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
 
 use super::ForwardHeader;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-/// typed [`Header`] wrapper for [`rama_net::forwarded::Forwarded`];
+/// Typed header wrapper for [`rama_net::forwarded::Forwarded`];
 pub struct Forwarded(rama_net::forwarded::Forwarded);
 
 impl Deref for Forwarded {
@@ -49,11 +49,13 @@ impl From<Forwarded> for rama_net::forwarded::Forwarded {
     }
 }
 
-impl Header for Forwarded {
+impl TypedHeader for Forwarded {
     fn name() -> &'static HeaderName {
         &FORWARDED
     }
+}
 
+impl HeaderDecode for Forwarded {
     fn decode<'i, I>(values: &mut I) -> Result<Self, Error>
     where
         Self: Sized,
@@ -83,7 +85,9 @@ impl Header for Forwarded {
 
         Ok(Self(forwarded))
     }
+}
 
+impl HeaderEncode for Forwarded {
     fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
         let s = self.0.to_string();
 

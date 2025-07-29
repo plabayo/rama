@@ -3,20 +3,33 @@ use rama_http_types::{HeaderName, HeaderValue};
 use std::error;
 use std::fmt::{self, Display, Formatter};
 
-/// A trait for any object that will represent a header field and value.
+/// Base trait for a typed header.
 ///
-/// This trait represents the construction and identification of headers,
-/// and contains trait-object unsafe methods.
-pub trait Header {
+/// To be implemented as part of being able to
+/// implement [`HeaderEncode`] and/or [`HeaderDecode`].
+pub trait TypedHeader {
     /// The name of this header.
     fn name() -> &'static HeaderName;
+}
 
+impl<H: TypedHeader> TypedHeader for &H {
+    #[inline]
+    fn name() -> &'static HeaderName {
+        H::name()
+    }
+}
+
+/// A typed header which can be decoded from one or multiple headers.
+pub trait HeaderDecode: TypedHeader {
     /// Decode this type from an iterator of [`HeaderValue`]s.
     fn decode<'i, I>(values: &mut I) -> Result<Self, Error>
     where
         Self: Sized,
         I: Iterator<Item = &'i HeaderValue>;
+}
 
+/// A typed header which can be encoded into one or multiple headers.
+pub trait HeaderEncode: TypedHeader {
     /// Encode this type to a [`HeaderValue`], and add it to a container
     /// which has [`HeaderValue`] type as each element.
     ///
@@ -25,11 +38,23 @@ pub trait Header {
     /// this value.
     fn encode<E: Extend<HeaderValue>>(&self, values: &mut E);
 
-    /// Encode this [`Header`] to [`HeaderValue`].
+    /// Encode this header to [`HeaderValue`].
     fn encode_to_value(&self) -> HeaderValue {
         let mut container = ExtendOnce(None);
         self.encode(&mut container);
         container.0.unwrap()
+    }
+}
+
+impl<H: HeaderEncode> HeaderEncode for &H {
+    #[inline]
+    fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
+        (*self).encode(values);
+    }
+
+    #[inline]
+    fn encode_to_value(&self) -> HeaderValue {
+        (*self).encode_to_value()
     }
 }
 

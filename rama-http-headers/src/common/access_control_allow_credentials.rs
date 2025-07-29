@@ -1,6 +1,6 @@
 use rama_http_types::{HeaderName, HeaderValue};
 
-use crate::{Error, Header};
+use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
 
 /// `Access-Control-Allow-Credentials` header, part of
 /// [CORS](http://www.w3.org/TR/cors/#access-control-allow-headers-response-header)
@@ -34,18 +34,22 @@ use crate::{Error, Header};
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct AccessControlAllowCredentials;
 
-impl Header for AccessControlAllowCredentials {
+impl TypedHeader for AccessControlAllowCredentials {
     fn name() -> &'static HeaderName {
         &::rama_http_types::header::ACCESS_CONTROL_ALLOW_CREDENTIALS
     }
+}
 
+impl HeaderDecode for AccessControlAllowCredentials {
     fn decode<'i, I: Iterator<Item = &'i HeaderValue>>(values: &mut I) -> Result<Self, Error> {
         values
             .next()
             .and_then(|value| if value == "true" { Some(Self) } else { None })
             .ok_or_else(Error::invalid)
     }
+}
 
+impl HeaderEncode for AccessControlAllowCredentials {
     fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
         values.extend(::std::iter::once(HeaderValue::from_static("true")));
     }

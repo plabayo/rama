@@ -27,7 +27,7 @@ use crate::util::FlatCsv;
 ///
 /// let mut headers = HeaderMap::new();
 ///
-/// headers.typed_insert(&AcceptRanges::bytes());
+/// headers.typed_insert(AcceptRanges::bytes());
 /// ```
 #[derive(Clone, Debug, PartialEq)]
 pub struct AcceptRanges(FlatCsv);

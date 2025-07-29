@@ -1,4 +1,4 @@
-use crate::{Error, Header, util};
+use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader, util};
 use rama_http_types::header;
 use rama_http_types::{HeaderName, HeaderValue};
 use rama_net::forwarded::ForwardedElement;
@@ -26,15 +26,19 @@ use std::net::IpAddr;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct XForwardedFor(Vec<IpAddr>);
 
-impl Header for XForwardedFor {
+impl TypedHeader for XForwardedFor {
     fn name() -> &'static HeaderName {
         &header::X_FORWARDED_FOR
     }
+}
 
+impl HeaderDecode for XForwardedFor {
     fn decode<'i, I: Iterator<Item = &'i HeaderValue>>(values: &mut I) -> Result<Self, Error> {
         util::csv::from_comma_delimited(values).map(XForwardedFor)
     }
+}
 
+impl HeaderEncode for XForwardedFor {
     fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
         use std::fmt;
         struct Format<F>(F);

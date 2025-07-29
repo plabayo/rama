@@ -1,6 +1,8 @@
 use base64::{Engine, engine::general_purpose::STANDARD};
 use rama_http_types::HeaderValue;
 
+use crate::{HeaderDecode, HeaderEncode, TypedHeader};
+
 /// The `Sec-Websocket-Key` header.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct SecWebsocketKey(pub(super) HeaderValue);
@@ -13,11 +15,13 @@ impl SecWebsocketKey {
     }
 }
 
-impl crate::Header for SecWebsocketKey {
+impl TypedHeader for SecWebsocketKey {
     fn name() -> &'static ::rama_http_types::header::HeaderName {
         &::rama_http_types::header::SEC_WEBSOCKET_KEY
     }
+}
 
+impl HeaderDecode for SecWebsocketKey {
     fn decode<'i, I>(values: &mut I) -> Result<Self, crate::Error>
     where
         I: Iterator<Item = &'i ::rama_http_types::header::HeaderValue>,
@@ -30,7 +34,9 @@ impl crate::Header for SecWebsocketKey {
             Ok(value)
         }
     }
+}
 
+impl HeaderEncode for SecWebsocketKey {
     fn encode<E: Extend<::rama_http_types::HeaderValue>>(&self, values: &mut E) {
         values.extend(::std::iter::once((&self.0).into()));
     }

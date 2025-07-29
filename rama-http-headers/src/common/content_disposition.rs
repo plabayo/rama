@@ -8,7 +8,7 @@
 
 use rama_http_types::{HeaderName, HeaderValue};
 
-use crate::{Error, Header};
+use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
 
 /// A `Content-Disposition` header, (re)defined in [RFC6266](https://tools.ietf.org/html/rfc6266).
 ///
@@ -93,11 +93,13 @@ impl ContentDisposition {
     }
 }
 
-impl Header for ContentDisposition {
+impl TypedHeader for ContentDisposition {
     fn name() -> &'static HeaderName {
         &::rama_http_types::header::CONTENT_DISPOSITION
     }
+}
 
+impl HeaderDecode for ContentDisposition {
     fn decode<'i, I: Iterator<Item = &'i HeaderValue>>(values: &mut I) -> Result<Self, Error> {
         //TODO: parse harder
         values
@@ -106,7 +108,9 @@ impl Header for ContentDisposition {
             .map(ContentDisposition)
             .ok_or_else(Error::invalid)
     }
+}
 
+impl HeaderEncode for ContentDisposition {
     fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
         values.extend(::std::iter::once(self.0.clone()));
     }

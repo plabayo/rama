@@ -28,18 +28,22 @@ mod value_string;
 
 macro_rules! derive_header {
     ($type:ident(_), name: $name:ident) => {
-        impl crate::Header for $type {
+        impl crate::TypedHeader for $type {
             fn name() -> &'static ::rama_http_types::header::HeaderName {
                 &::rama_http_types::header::$name
             }
+        }
 
+        impl crate::HeaderDecode for $type {
             fn decode<'i, I>(values: &mut I) -> Result<Self, crate::Error>
             where
                 I: Iterator<Item = &'i ::rama_http_types::header::HeaderValue>,
             {
                 crate::util::TryFromValues::try_from_values(values).map($type)
             }
+        }
 
+        impl crate::HeaderEncode for $type {
             fn encode<E: Extend<::rama_http_types::HeaderValue>>(&self, values: &mut E) {
                 values.extend(::std::iter::once((&self.0).into()));
             }

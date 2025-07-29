@@ -7,7 +7,7 @@ use rama_http_types::dep::http::uri;
 use rama_http_types::{HeaderName, HeaderValue};
 use rama_net::address;
 
-use crate::{Error, Header};
+use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
 
 /// The `Host` header.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd)]
@@ -36,11 +36,13 @@ impl Host {
     }
 }
 
-impl Header for Host {
+impl TypedHeader for Host {
     fn name() -> &'static HeaderName {
         &::rama_http_types::header::HOST
     }
+}
 
+impl HeaderDecode for Host {
     fn decode<'i, I: Iterator<Item = &'i HeaderValue>>(values: &mut I) -> Result<Self, Error> {
         let auth = values
             .next()
@@ -50,7 +52,9 @@ impl Header for Host {
         let port = auth.port_u16();
         Ok(Self { host, port })
     }
+}
 
+impl HeaderEncode for Host {
     fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
         let s = self.to_string();
         let bytes = Bytes::from_owner(s);

@@ -3,7 +3,7 @@ use std::ops::{Bound, RangeBounds};
 
 use rama_http_types::{HeaderName, HeaderValue};
 
-use crate::{Error, Header, util};
+use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader, util};
 
 /// Content-Range, described in [RFC7233](https://tools.ietf.org/html/rfc7233#section-4.2)
 ///
@@ -105,11 +105,13 @@ impl ContentRange {
     }
 }
 
-impl Header for ContentRange {
+impl TypedHeader for ContentRange {
     fn name() -> &'static HeaderName {
         &::rama_http_types::header::CONTENT_RANGE
     }
+}
 
+impl HeaderDecode for ContentRange {
     fn decode<'i, I: Iterator<Item = &'i HeaderValue>>(values: &mut I) -> Result<Self, Error> {
         values
             .next()
@@ -148,7 +150,9 @@ impl Header for ContentRange {
             })
             .ok_or_else(Error::invalid)
     }
+}
 
+impl HeaderEncode for ContentRange {
     fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
         struct Adapter<'a>(&'a ContentRange);
 
