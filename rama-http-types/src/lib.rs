@@ -23,6 +23,9 @@ pub use body::{Body, BodyDataStream, BodyExtractExt, BodyLimit, InfiniteReader, 
 mod request;
 pub use request::{HttpRequestParts, HttpRequestPartsMut, Request};
 
+pub mod curl;
+pub use curl::request_headers_to_curl_command;
+
 /// Type alias for [`http::Response`] whose body type defaults to [`Body`], the most common body
 /// type used with rama.
 pub type Response<T = Body> = http::Response<T>;
