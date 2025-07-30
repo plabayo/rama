@@ -511,7 +511,7 @@ impl JWS {
 
     /// Decode this [`JWS`] to a [`DecodedJWS`] by decoding all values and checking with [`Verifier`]
     /// if all signatures are correct
-    pub fn decode(self, verifier: &impl Verifier) -> Result<DecodedJWS, OpaqueError> {
+    pub fn decode<V: Verifier>(self, verifier: &V) -> Result<(DecodedJWS, V::Output), OpaqueError> {
         let mut signatures = Vec::with_capacity(self.signatures.len());
 
         for signature in self.signatures.into_iter() {
@@ -539,7 +539,7 @@ impl JWS {
             .decode(&self.payload)
             .context("decode payload")?;
 
-        verifier
+        let verifier_output = verifier
             .verify(&payload, &signatures)
             .map_err(|err| OpaqueError::from_boxed(err.into()))
             .context("signer verify signatures")?;
@@ -549,10 +549,13 @@ impl JWS {
             .map(|sig| sig.decoded_signature)
             .collect();
 
-        Ok(DecodedJWS {
-            signatures,
-            payload,
-        })
+        Ok((
+            DecodedJWS {
+                signatures,
+                payload,
+            },
+            verifier_output,
+        ))
     }
 }
 
@@ -590,7 +593,10 @@ impl JWSFlattened {
 
     /// Decode this [`JWS`] to a [`DecodedJWS`] by decoding all values and checking with [`Verifier`]
     /// if the provided signature is correct
-    pub fn decode(self, verifier: &impl Verifier) -> Result<DecodedJWSFlattened, OpaqueError> {
+    pub fn decode<V: Verifier>(
+        self,
+        verifier: &V,
+    ) -> Result<(DecodedJWSFlattened, V::Output), OpaqueError> {
         let protected = BASE64_URL_SAFE_NO_PAD
             .decode(&self.signature.protected)
             .context("decode protected header")?;
@@ -613,14 +619,14 @@ impl JWSFlattened {
             .decode(&self.payload)
             .context("decode payload")?;
 
-        verifier
+        let verify_output = verifier
             .verify(&payload, std::slice::from_ref(&to_verify))
             .map_err(|err| OpaqueError::from_boxed(err.into()))
             .context("signer verify signature")?;
 
         let signature = to_verify.decoded_signature;
 
-        Ok(DecodedJWSFlattened { signature, payload })
+        Ok((DecodedJWSFlattened { signature, payload }, verify_output))
     }
 }
 
@@ -777,8 +783,14 @@ impl DecodedJWSFlattened {
 /// so in those cases make sure that [`Verifier`] can handle this.
 pub trait Verifier {
     type Error: Into<BoxError>;
+    type Output;
+
     /// Verify if data is valid
-    fn verify(&self, payload: &[u8], signatures: &[ToVerifySignature]) -> Result<(), Self::Error>;
+    fn verify(
+        &self,
+        payload: &[u8],
+        signatures: &[ToVerifySignature],
+    ) -> Result<Self::Output, Self::Error>;
 }
 
 #[cfg(test)]
@@ -822,6 +834,7 @@ mod tests {
 
     impl Verifier for DummyKey {
         type Error = OpaqueError;
+        type Output = ();
         fn verify(
             &self,
             _payload: &[u8],
@@ -888,7 +901,7 @@ mod tests {
         );
         assert_eq!(jws.payload, jws_received.payload);
 
-        let decoded_jws = jws_received.decode(&signer_and_verifier).unwrap();
+        let (decoded_jws, _) = jws_received.decode(&signer_and_verifier).unwrap();
 
         let received_payload = String::from_utf8(decoded_jws.payload().to_vec()).unwrap();
         let received_protected = decoded_jws
@@ -988,7 +1001,7 @@ mod tests {
 
         let serialized = serde_json::to_string(&jws).unwrap();
         let received = serde_json::from_str::<JWS>(&serialized).unwrap();
-        let decoded = received.decode(&signer_and_verifier).unwrap();
+        let (decoded, _) = received.decode(&signer_and_verifier).unwrap();
         let decoded_payload = String::from_utf8(decoded.payload().to_vec()).unwrap();
 
         assert_eq!(payload, decoded_payload);
@@ -1060,6 +1073,7 @@ mod tests {
 
         impl Verifier for MultiVerifier {
             type Error = OpaqueError;
+            type Output = ();
             fn verify(
                 &self,
                 payload: &[u8],
@@ -1086,7 +1100,7 @@ mod tests {
         };
 
         let received = serde_json::from_str::<JWS>(&serialized).unwrap();
-        let decoded = received.decode(&multi_verifier).unwrap();
+        let (decoded, _) = received.decode(&multi_verifier).unwrap();
         let decoded_payload = String::from_utf8(decoded.payload().to_vec()).unwrap();
         assert_eq!(payload, decoded_payload);
     }
