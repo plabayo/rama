@@ -522,9 +522,13 @@ impl JWS {
             let protected = serde_json::from_slice::<Headers>(&protected)
                 .context("deserialize protected headers")?;
 
+            let decoded_signature = BASE64_URL_SAFE_NO_PAD
+                .decode(signature.signature)
+                .context("decode signature")?;
+
             let decoded_signature = DecodedSignature {
                 protected,
-                signature: signature.signature,
+                signature: decoded_signature,
                 unprotected: signature.unprotected,
             };
 
@@ -606,9 +610,13 @@ impl JWSFlattened {
         let protected = serde_json::from_slice::<Headers>(&protected)
             .context("deserialize protected headers")?;
 
+        let decoded_signature = BASE64_URL_SAFE_NO_PAD
+            .decode(self.signature.signature)
+            .context("decode signature")?;
+
         let decoded_signature = DecodedSignature {
             protected,
-            signature: self.signature.signature,
+            signature: decoded_signature,
             unprotected: self.signature.unprotected,
         };
 
@@ -660,7 +668,7 @@ pub struct DecodedJWS {
 pub struct DecodedSignature {
     protected: Headers,
     unprotected: Headers,
-    signature: String,
+    signature: Vec<u8>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -715,10 +723,10 @@ impl DecodedSignature {
         self.unprotected.decode()
     }
 
-    /// Str signature which was provided for the encoded signature
+    /// Signature which was provided for the encoded signature in decoded format
     #[must_use]
-    pub fn signature(&self) -> &str {
-        &self.signature
+    pub fn signature(&self) -> &[u8] {
+        self.signature.as_slice()
     }
 }
 
@@ -763,9 +771,9 @@ impl DecodedJWSFlattened {
         self.signature.decode_unprotected_headers()
     }
 
-    /// Str signature which was provided for the encoded signature
+    /// Signature which was provided for the encoded signature in decoded format
     #[must_use]
-    pub fn signature(&self) -> &str {
+    pub fn signature(&self) -> &[u8] {
         self.signature.signature()
     }
 
@@ -845,9 +853,7 @@ mod tests {
             let to_verify = &to_verify_sigs[0];
             let original = to_verify.signed_data.as_bytes();
 
-            let signature = BASE64_URL_SAFE_NO_PAD
-                .decode(to_verify.decoded_signature.signature())
-                .context("decode signature")?;
+            let signature = to_verify.decoded_signature.signature();
 
             if original.len() + 1 != signature.len() {
                 Err(OpaqueError::from_display(
