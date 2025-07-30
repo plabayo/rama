@@ -226,6 +226,7 @@ venndb = "0.5"
 walkdir = "2.5"
 want = "0.3"
 webpki-roots = "1.0"
+zip = "4.3"
 zstd = "0.13"
 
 [workspace.lints.rust]
@@ -539,6 +540,10 @@ required-features = ["http-full"]
 
 [[example]]
 name = "http_anti_bot_infinite_resource"
+required-features = ["http-full"]
+
+[[example]]
+name = "http_anti_bot_zip_bomb"
 required-features = ["http-full"]
 
 [[example]]

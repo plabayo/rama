@@ -31,6 +31,7 @@ This directory contains example implementations demonstrating various features a
 ### Anti-Bot examples
 
 - [`http_anti_bot_infinite_resource.rs`](./http_anti_bot_infinite_resource.rs) - example demonstrating how to serve an infinite resource
+- [`http_anti_bot_zip_bomb.rs`](./http_anti_bot_zip_bomb.rs) - example demonstrating how to serve a zip bomb
 
 ## HTTP Clients
 - [`http_high_level_client.rs`](./http_high_level_client.rs) - High-level HTTP client implementation

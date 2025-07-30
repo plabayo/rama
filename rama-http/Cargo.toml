@@ -20,7 +20,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 [features]
 opentelemetry = ["rama-core/opentelemetry", "rama-net/opentelemetry", "dep:opentelemetry-http"]
 default = []
-compression = ["dep:async-compression"]
+compression = ["dep:async-compression", "dep:zip"]
 tls = ["rama-net/tls"]
 
 [dependencies]
@@ -60,6 +60,7 @@ smol_str = { workspace = true }
 tokio = { workspace = true, features = ["macros", "fs", "io-std"] }
 tokio-util = { workspace = true, features = ["io"] }
 uuid = { workspace = true, features = ["v4"] }
+zip = { workspace = true, optional = true }
 
 [dev-dependencies]
 brotli = { workspace = true }
