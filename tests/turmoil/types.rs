@@ -3,7 +3,7 @@ use rama_net::{client::EstablishedClientConnection, transport::TryRefIntoTranspo
 
 #[derive(Debug)]
 struct TurmoilHttpStream {
-    _inner: turmoil::net::TcpStream,
+    inner: turmoil::net::TcpStream,
 }
 
 impl<State, Request> Service<State, Request> for TurmoilHttpStream
@@ -44,10 +44,25 @@ where
 
     async fn serve(
         &self,
-        _ctx: rama::Context<State>,
-        _req: Request,
+        ctx: rama::Context<State>,
+        req: Request,
     ) -> Result<Self::Response, Self::Error> {
-        todo!()
+        let transport_context = req.try_ref_into_transport_ctx(&ctx).map_err(Into::into)?;
+        //let protocol = &transport_context.app_protocol.unwrap_or("http");
+        let authority = &transport_context.authority;
+        let host = authority.host();
+        let port = authority.port();
+        let address = format!("http://{host}:{port}");
+
+        let conn = turmoil::net::TcpStream::connect(address)
+            .await
+            .map_err(BoxError::from)?;
+
+        Ok(EstablishedClientConnection {
+            ctx,
+            req,
+            conn: TurmoilHttpStream { inner: conn },
+        })
     }
 }
 
