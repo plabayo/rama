@@ -8,46 +8,23 @@ use crate::layer::traffic_writer::RequestWriter;
 use rama_core::{Context, Service, bytes::Bytes, error::BoxError};
 use rama_http_types::dep::http_body;
 use rama_http_types::{Request, Response};
-use std::sync::Arc;
-use tokio::sync::Mutex;
 
-#[derive(Default)]
-pub struct Recorder {
-    data: Vec<HarLog>,
+pub trait Recorder: Clone + Send + Sync + 'static {
+    fn record(&self, line: HarLog);
+    fn data(&self) -> Vec<HarLog>;
 }
 
-impl Recorder {
-    pub fn push_new_line(&mut self, line: HarLog) {
-        self.data.push(line);
-    }
-    // might be overkill -v-
-
-    // pub fn record_request<B>(&mut self, req: &Request<B>, entry: &mut Entry) -> Result<(), BoxError>
-    // where
-    //     B: http_body::Body<Data = Bytes> + Send + 'static,
-    // {
-    //     Ok(())
-    // }
-
-    // pub fn record_response<B>(&mut self, _res: &Response<B>, entry: &mut Entry) -> Result<(), BoxError>
-    // where
-    //     B: http_body::Body<Data = Bytes> + Send + 'static,
-    // {
-    //     entry.response = HarRequest::from_rama_response(req);
-    //     Ok(())
-    // }
-}
-
-pub struct HARExportService<S, T> {
+pub struct HARExportService<R, S, T> {
     pub(crate) inner: S,
-    // tokio Signal instead?
     pub(crate) toggle: T,
-    pub(crate) recorder: Arc<Mutex<Recorder>>,
+    pub(crate) recorder: R,
 }
 
-impl<State, S, W, ReqBody, ResBody> Service<State, Request<ReqBody>> for HARExportService<S, W>
+impl<State, R, S, W, ReqBody, ResBody> Service<State, Request<ReqBody>>
+    for HARExportService<R, S, W>
 where
     State: Clone + Send + Sync + 'static,
+    R: Recorder,
     S: Service<State, Request<ReqBody>, Response = Response<ResBody>>,
     S::Error: Into<BoxError> + Send + Sync + std::error::Error + 'static,
     W: RequestWriter + Toggle,
@@ -67,18 +44,14 @@ where
         if self.toggle.is_recording_on() {
             let mut entry = Entry::default();
             let mut log_line = HarLog::default();
-            entry.request = HarRequest::from_rama_request(&req);
+            entry.request = HarRequest::from_rama_request::<ReqBody>(&req)?;
             // TODO
             // entry.response = HarResponse::from_rama_response(req);
 
             // NOTE: This assumes that there is only ever one pair of request/response
             // might need more customization on how entries are pushed/composed
             log_line.entries = vec![entry];
-
-            {
-                let mut guard = self.recorder.lock().await;
-                guard.push_new_line(log_line)
-            }
+            self.recorder.record(log_line);
         }
 
         Ok(response)
