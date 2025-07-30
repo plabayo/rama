@@ -100,9 +100,7 @@ where
                 %n,
                 "move socks5 peek buffer cursor due to reading not enough"
             );
-            for i in (0..n).rev() {
-                peek_buf[i + offset] = peek_buf[i];
-            }
+            peek_buf.copy_within(0..n, offset);
         }
 
         let mut peek = StackReader::new(peek_buf);

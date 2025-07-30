@@ -107,9 +107,7 @@ where
                 tracing::trace!(
                     "move tls peek buffer cursor due to reading not enough (read: {n})"
                 );
-                for i in (0..n).rev() {
-                    peek_buf[i + offset] = peek_buf[i];
-                }
+                peek_buf.copy_within(0..n, offset);
             }
 
             let mut peek = StackReader::new(peek_buf);
