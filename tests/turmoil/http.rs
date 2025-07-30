@@ -1,22 +1,17 @@
 use rama::{
-    Context, Layer, Service,
     http::{
-        Body, BodyExtractExt, Request, client::EasyHttpWebClient, layer::trace::TraceLayer,
-        server::HttpServer, service::web::WebService,
+        client::EasyHttpWebClient, layer::trace::TraceLayer, server::HttpServer,
+        service::web::WebService, Body, BodyExtractExt, Request,
     },
     net::address::SocketAddress,
+    Context, Layer, Service,
 };
-use rama_http_backend::client::EasyHttpWebClientBuilder;
 use tracing_subscriber::{
-    EnvFilter, filter::LevelFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt,
+    filter::LevelFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter,
 };
-use turmoil::{net::TcpListener, Builder};
+use turmoil::Builder;
 
 const ADDRESS: SocketAddress = SocketAddress::default_ipv4(62004);
-
-
-struct TurmoilTcpConnector;
-
 
 fn setup_tracing() {
     tracing_subscriber::registry()
@@ -44,8 +39,7 @@ async fn start_server(
 async fn run_client(address: impl Into<SocketAddress>) -> Result<(), Box<dyn std::error::Error>> {
     let client = TraceLayer::new_for_http().into_layer(EasyHttpWebClient::default());
 
-
-    let client = EasyHttpWebClientBuilder::default().with_custom_transport_connector(connector)
+    //let client = EasyHttpWebClientBuilder::default().with_custom_transport_connector(connector)
     let resp = client
         .serve(
             Context::default(),
