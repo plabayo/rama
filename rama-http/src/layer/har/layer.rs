@@ -1,12 +1,11 @@
 use crate::layer::har::service::{HARExportService, Recorder};
-use crate::layer::har::{Comment, ExportMode, StaticToggle, Toggle};
+use crate::layer::har::{Comment, StaticToggle, Toggle};
 use rama_core::Layer;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
 #[derive(Clone, Default)]
 pub struct HARExportLayer<T> {
-    pub mode: ExportMode,
     pub comments: Vec<Comment>,
     pub toggle: T,
 }
@@ -14,7 +13,6 @@ pub struct HARExportLayer<T> {
 impl HARExportLayer<StaticToggle> {
     pub fn new() -> Self {
         Self {
-            mode: ExportMode::default(),
             comments: vec![],
             toggle: StaticToggle::new(true),
         }

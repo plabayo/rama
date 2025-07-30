@@ -15,18 +15,6 @@ pub struct Comment {
     pub text: String,
 }
 
-#[derive(Debug, Clone, Copy)]
-pub enum ExportMode {
-    Override,
-    SomeOther,
-}
-
-impl Default for ExportMode {
-    fn default() -> Self {
-        ExportMode::Override
-    }
-}
-
 #[derive(Clone)]
 pub struct StaticToggle {
     value: bool,
