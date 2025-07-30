@@ -466,6 +466,18 @@ required-features = ["full"]
 harness = false
 
 [[example]]
+name = "acme_http_challenge"
+required-features = ["http-full", "boring", "acme"]
+
+[[example]]
+name = "acme_tls_challenge_using_boring"
+required-features = ["http-full", "boring", "acme"]
+
+[[example]]
+name = "acme_tls_challenge_using_rustls"
+required-features = ["http-full", "rustls", "acme"]
+
+[[example]]
 name = "http_conn_state"
 required-features = ["http-full"]
 

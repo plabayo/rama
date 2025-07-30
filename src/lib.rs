@@ -274,6 +274,14 @@
 //!   a web service example showcasing demonstrating how to create a web router, which is excellent for the typical path-centric routing,
 //!   and an approach you'll recognise from most other web frameworks out there.
 //!
+//! The following examples show how you can integrate ACME into you webservices (ACME is currently still under heavy development)
+// ! - [/examples/acme_http_challenge.rs](https://github.com/plabayo/rama/tree/main/examples/http_key_value_store.rs):
+// !   Authenticate to an acme server using a http challenge
+// ! - [/examples/acme_tls_challenge_using_boring.rs](https://github.com/plabayo/rama/tree/main/examples/http_key_value_store.rs):
+// !   Authenticate to an acme server using a tls challenge using boringssl
+// ! - [/examples/acme_tls_challenge_using_rustls.rs](https://github.com/plabayo/rama/tree/main/examples/http_key_value_store.rs):
+// !   Authenticate to an acme server using a tls challenge using rustls
+//!
 //! For a production-like example of a web service you can also read the [`rama-fp` source code](https://github.com/plabayo/rama/tree/main/rama-fp/src).
 //! This is the webservice behind the Rama fingerprinting service, which is used by the maintainers of 🦙 Rama (ラマ) to generate
 //! the UA emulation data for the Http and TLS layers. It is not meant to fingerprint humans or users. Instead it is meant to help
