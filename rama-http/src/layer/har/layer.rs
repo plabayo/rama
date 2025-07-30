@@ -1,5 +1,6 @@
-use crate::layer::har::service::{HARExportService, Recorder};
-use crate::layer::har::{Comment, Toggle};
+use crate::layer::har::default::{InMemoryRecorder, StaticToggle};
+use crate::layer::har::service::HARExportService;
+use crate::layer::har::{Comment, Recorder, Toggle};
 use rama_core::Layer;
 
 pub struct HARExportLayer<R, T> {
@@ -8,9 +9,20 @@ pub struct HARExportLayer<R, T> {
     pub toggle: T,
 }
 
+// not needed for the moment - should it be used in examples only?
+impl Default for HARExportLayer<InMemoryRecorder, StaticToggle> {
+    fn default() -> Self {
+        Self {
+            recorder: InMemoryRecorder::new(),
+            comments: vec![],
+            toggle: StaticToggle::new(false),
+        }
+    }
+}
+
 impl<R: Recorder, T: Clone> Clone for HARExportLayer<R, T> {
     fn clone(&self) -> Self {
-        HARExportLayer {
+        Self {
             recorder: self.recorder.clone(),
             comments: self.comments.clone(),
             toggle: self.toggle.clone(),
@@ -25,17 +37,17 @@ where
 {
     type Service = HARExportService<R, S, T>;
 
-    fn layer(&self, inner: S) -> Self::Service {
+    fn layer(&self, service: S) -> Self::Service {
         HARExportService {
-            inner,
+            service,
             toggle: self.toggle.clone(),
             recorder: self.recorder.clone(),
         }
     }
 
-    fn into_layer(self, inner: S) -> Self::Service {
+    fn into_layer(self, service: S) -> Self::Service {
         HARExportService {
-            inner,
+            service,
             toggle: self.toggle,
             recorder: self.recorder,
         }
