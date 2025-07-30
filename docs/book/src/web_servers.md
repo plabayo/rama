@@ -94,6 +94,9 @@ Rama provides a rich set of examples demonstrating its web service capabilities.
 - [/examples/http_health_check.rs](https://github.com/plabayo/rama/blob/main/examples/http_health_check.rs): A health check service
 - [/examples/http_service_hello.rs](https://github.com/plabayo/rama/blob/main/examples/http_service_hello.rs): Demonstrates transport layer control
 
+### Anti-Bot Examples
+- [/examples/http_anti_bot_infinite_resource.rs`](https://github.com/plabayo/rama/blob/main/examples/http_anti_bot_infinite_resource.rs): example demonstrating how to serve an infinite resource
+
 ### Production-Ready Examples
 - [/examples/http_k8s_health.rs](https://github.com/plabayo/rama/tree/main/examples/http_k8s_health.rs): A production-ready Kubernetes health service
 - [/examples/http_key_value_store.rs](https://github.com/plabayo/rama/tree/main/examples/http_key_value_store.rs): A key-value store API

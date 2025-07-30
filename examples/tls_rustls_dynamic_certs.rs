@@ -158,7 +158,7 @@ impl DynamicIssuer {
         );
 
         Self {
-            example_data: example_data.clone(),
+            example_data,
             second_example_data,
         }
     }

@@ -62,7 +62,7 @@ impl Serialize for JWKType {
     {
         // Order here is important as this output will be used to generate jwk thumb
         match &self {
-            JWKType::EC { crv, x, y } => {
+            Self::EC { crv, x, y } => {
                 let mut state = serializer.serialize_struct("JWKType", 4)?;
                 state.serialize_field("crv", crv)?;
                 state.serialize_field("kty", "EC")?;
@@ -70,14 +70,14 @@ impl Serialize for JWKType {
                 state.serialize_field("y", y)?;
                 state.end()
             }
-            JWKType::RSA { n, e } => {
+            Self::RSA { n, e } => {
                 let mut state = serializer.serialize_struct("JWKType", 3)?;
                 state.serialize_field("e", e)?;
                 state.serialize_field("kty", "RSA")?;
                 state.serialize_field("n", n)?;
                 state.end()
             }
-            JWKType::OCT { k } => {
+            Self::OCT { k } => {
                 let mut state = serializer.serialize_struct("JWKType", 2)?;
                 state.serialize_field("k", k)?;
                 state.serialize_field("kty", "OCT")?;
@@ -228,11 +228,13 @@ impl EcdsaKey {
     }
 
     /// Create a [`JWK`] for this [`EcdsaKey`]
+    #[must_use]
     pub fn create_jwk(&self) -> JWK {
         // `expect` because `new_for_escdsa_keypair`` can only fail if curve is not elliptic but we already check that in `new`
         JWK::new_from_escdsa_keypair(&self.inner, self.alg).expect("create JWK from escdsa keypair")
     }
 
+    #[must_use]
     pub fn rng(&self) -> &SystemRandom {
         &self.rng
     }

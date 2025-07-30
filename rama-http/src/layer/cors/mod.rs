@@ -577,6 +577,7 @@ impl<S> Cors<S> {
     /// See [`CorsLayer::allow_credentials`] for more details.
     ///
     /// [mdn]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Access-Control-Allow-Credentials
+    #[must_use]
     pub fn allow_credentials<T>(self, allow_credentials: T) -> Self
     where
         T: Into<AllowCredentials>,
@@ -589,6 +590,7 @@ impl<S> Cors<S> {
     /// See [`CorsLayer::allow_headers`] for more details.
     ///
     /// [mdn]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Access-Control-Allow-Headers
+    #[must_use]
     pub fn allow_headers<T>(self, headers: T) -> Self
     where
         T: Into<AllowHeaders>,
@@ -601,6 +603,7 @@ impl<S> Cors<S> {
     /// See [`CorsLayer::max_age`] for more details.
     ///
     /// [mdn]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Access-Control-Max-Age
+    #[must_use]
     pub fn max_age<T>(self, max_age: T) -> Self
     where
         T: Into<MaxAge>,
@@ -613,6 +616,7 @@ impl<S> Cors<S> {
     /// See [`CorsLayer::allow_methods`] for more details.
     ///
     /// [mdn]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Access-Control-Allow-Methods
+    #[must_use]
     pub fn allow_methods<T>(self, methods: T) -> Self
     where
         T: Into<AllowMethods>,
@@ -625,6 +629,7 @@ impl<S> Cors<S> {
     /// See [`CorsLayer::allow_origin`] for more details.
     ///
     /// [mdn]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Access-Control-Allow-Origin
+    #[must_use]
     pub fn allow_origin<T>(self, origin: T) -> Self
     where
         T: Into<AllowOrigin>,
@@ -637,6 +642,7 @@ impl<S> Cors<S> {
     /// See [`CorsLayer::expose_headers`] for more details.
     ///
     /// [mdn]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Access-Control-Expose-Headers
+    #[must_use]
     pub fn expose_headers<T>(self, headers: T) -> Self
     where
         T: Into<ExposeHeaders>,
@@ -649,6 +655,7 @@ impl<S> Cors<S> {
     /// See [`CorsLayer::allow_private_network`] for more details.
     ///
     /// [wicg]: https://wicg.github.io/private-network-access/
+    #[must_use]
     pub fn allow_private_network<T>(self, allow_private_network: T) -> Self
     where
         T: Into<AllowPrivateNetwork>,
@@ -656,6 +663,7 @@ impl<S> Cors<S> {
         self.map_layer(|layer| layer.allow_private_network(allow_private_network))
     }
 
+    #[must_use]
     fn map_layer<F>(mut self, f: F) -> Self
     where
         F: FnOnce(CorsLayer) -> CorsLayer,

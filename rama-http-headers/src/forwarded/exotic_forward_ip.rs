@@ -1,4 +1,3 @@
-use crate::Header;
 use rama_core::error::{ErrorContext, OpaqueError};
 use rama_http_types::header::{
     CF_CONNECTING_IP, CLIENT_IP, TRUE_CLIENT_IP, X_CLIENT_IP, X_REAL_IP,
@@ -34,7 +33,7 @@ impl std::str::FromStr for ClientAddr {
         if let Ok(ip) = s.parse() {
             // first try host alone, as it is most common,
             // and also prevents IPv6 to be seen by default with port
-            return Ok(ClientAddr { ip, port: None });
+            return Ok(Self { ip, port: None });
         }
 
         let (s, port) = try_to_split_num_port_from_str(s);
@@ -44,7 +43,7 @@ impl std::str::FromStr for ClientAddr {
             IpAddr::V6(_) if port.is_some() && !s.starts_with('[') => Err(
                 OpaqueError::from_display("missing brackets for IPv6 address with port"),
             ),
-            _ => Ok(ClientAddr { ip, port }),
+            _ => Ok(Self { ip, port }),
         }
     }
 }
@@ -86,11 +85,13 @@ macro_rules! exotic_forward_ip_headers {
             $(#[$outer])*
             pub struct $name(ClientAddr);
 
-            impl Header for $name {
+            impl $crate::TypedHeader for $name {
                 fn name() -> &'static HeaderName {
                     &$header
                 }
+            }
 
+            impl $crate::HeaderDecode for $name {
                 fn decode<'i, I: Iterator<Item = &'i HeaderValue>>(
                     values: &mut I,
                 ) -> Result<Self, crate::Error> {
@@ -101,7 +102,9 @@ macro_rules! exotic_forward_ip_headers {
                             .ok_or_else(crate::Error::invalid)?,
                     ))
                 }
+            }
 
+            impl $crate::HeaderEncode for $name {
                 fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
                     let s = self.0.to_string();
                     values.extend(Some(HeaderValue::try_from(s).unwrap()))
@@ -178,6 +181,7 @@ exotic_forward_ip_headers! {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{HeaderDecode, HeaderEncode};
 
     macro_rules! test_headers {
         ($($ty: ident),+ ; $name: ident, $input: expr, $expected: literal) => {

@@ -60,7 +60,7 @@ impl FromIterator<Method> for AccessControlAllowMethods {
             })
             .collect();
 
-        AccessControlAllowMethods(methods)
+        Self(methods)
     }
 }
 

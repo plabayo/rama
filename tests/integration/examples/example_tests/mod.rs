@@ -3,6 +3,8 @@ mod utils;
 #[cfg(all(feature = "haproxy", feature = "http-full"))]
 mod haproxy_client_ip;
 #[cfg(feature = "http-full")]
+mod http_anti_bot_infinite_resource;
+#[cfg(feature = "http-full")]
 mod http_conn_state;
 #[cfg(feature = "http-full")]
 mod http_connect_proxy;

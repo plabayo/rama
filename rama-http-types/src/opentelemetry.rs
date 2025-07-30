@@ -5,6 +5,7 @@ use crate::Version;
 /// Return the [`Version`] as the OTEL `network.protocol.version`.
 ///
 /// Reference: <https://opentelemetry.io/docs/specs/semconv/registry/attributes/network/>
+#[must_use]
 pub fn version_as_protocol_version(version: Version) -> &'static str {
     match version {
         Version::HTTP_09 => "0.9",

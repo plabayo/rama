@@ -94,6 +94,7 @@ where
 
 impl Builder {
     /// Create a new connection builder.
+    #[must_use]
     pub fn new(exec: Executor) -> Self {
         Self {
             exec,

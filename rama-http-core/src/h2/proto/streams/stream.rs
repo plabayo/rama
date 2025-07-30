@@ -189,7 +189,7 @@ impl Stream {
         id: StreamId,
         init_send_window: WindowSize,
         init_recv_window: WindowSize,
-    ) -> Stream {
+    ) -> Self {
         let mut send_flow = FlowControl::new();
         let mut recv_flow = FlowControl::new();
 
@@ -204,7 +204,7 @@ impl Stream {
             .inc_window(init_send_window)
             .expect("invalid initial send window size");
 
-        Stream {
+        Self {
             id,
             state: State::default(),
             ref_count: 0,

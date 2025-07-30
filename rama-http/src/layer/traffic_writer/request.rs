@@ -25,6 +25,7 @@ pub struct DoNotWriteRequest;
 
 impl DoNotWriteRequest {
     /// Create a new [`DoNotWriteRequest`] marker.
+    #[must_use]
     pub const fn new() -> Self {
         Self
     }
@@ -98,12 +99,14 @@ impl RequestWriterInspector<UnboundedSender<Request>> {
 
     /// Create a new [`RequestWriterInspector`] that prints requests to stdout
     /// over an unbounded channel.
+    #[must_use]
     pub fn stdout_unbounded(executor: &Executor, mode: Option<WriterMode>) -> Self {
         Self::writer_unbounded(executor, stdout(), mode)
     }
 
     /// Create a new [`RequestWriterInspector`] that prints requests to stderr
     /// over an unbounded channel.
+    #[must_use]
     pub fn stderr_unbounded(executor: &Executor, mode: Option<WriterMode>) -> Self {
         Self::writer_unbounded(executor, stderr(), mode)
     }
@@ -152,12 +155,14 @@ impl RequestWriterInspector<Sender<Request>> {
 
     /// Create a new [`RequestWriterInspector`] that prints requests to stdout
     /// over a bounded channel with a fixed buffer size.
+    #[must_use]
     pub fn stdout(executor: &Executor, buffer_size: usize, mode: Option<WriterMode>) -> Self {
         Self::writer(executor, stdout(), buffer_size, mode)
     }
 
     /// Create a new [`RequestWriterInspector`] that prints requests to stderr
     /// over a bounded channel with a fixed buffer size.
+    #[must_use]
     pub fn stderr(executor: &Executor, buffer_size: usize, mode: Option<WriterMode>) -> Self {
         Self::writer(executor, stderr(), buffer_size, mode)
     }
@@ -177,22 +182,21 @@ where
         ctx: Context<State>,
         req: Request<ReqBody>,
     ) -> Result<(Context<State>, Request), Self::Error> {
-        let req = match ctx.get::<DoNotWriteRequest>() {
-            Some(_) => req.map(Body::new),
-            None => {
-                let (parts, body) = req.into_parts();
-                let body_bytes = body
-                    .collect()
-                    .await
-                    .map_err(|err| {
-                        OpaqueError::from_boxed(err.into())
-                            .context("printer prepare: collect request body")
-                    })?
-                    .to_bytes();
-                let req = Request::from_parts(parts.clone(), Body::from(body_bytes.clone()));
-                self.writer.write_request(req).await;
-                Request::from_parts(parts, Body::from(body_bytes))
-            }
+        let req = if ctx.get::<DoNotWriteRequest>().is_some() {
+            req.map(Body::new)
+        } else {
+            let (parts, body) = req.into_parts();
+            let body_bytes = body
+                .collect()
+                .await
+                .map_err(|err| {
+                    OpaqueError::from_boxed(err.into())
+                        .context("printer prepare: collect request body")
+                })?
+                .to_bytes();
+            let req = Request::from_parts(parts.clone(), Body::from(body_bytes.clone()));
+            self.writer.write_request(req).await;
+            Request::from_parts(parts, Body::from(body_bytes))
         };
         Ok((ctx, req))
     }

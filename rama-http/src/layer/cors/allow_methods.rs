@@ -33,7 +33,7 @@ impl AllowMethods {
     /// See [`CorsLayer::allow_methods`] for more details.
     ///
     /// [`CorsLayer::allow_methods`]: super::CorsLayer::allow_methods
-    pub fn exact(method: Method) -> Self {
+    pub fn exact(method: &Method) -> Self {
         Self(AllowMethodsInner::Const(Some(
             HeaderValue::from_str(method.as_str()).unwrap(),
         )))
@@ -102,6 +102,12 @@ impl From<Any> for AllowMethods {
 
 impl From<Method> for AllowMethods {
     fn from(method: Method) -> Self {
+        Self::exact(&method)
+    }
+}
+
+impl From<&Method> for AllowMethods {
+    fn from(method: &Method) -> Self {
         Self::exact(method)
     }
 }

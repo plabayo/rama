@@ -20,6 +20,7 @@ impl Domain {
     /// # Panics
     ///
     /// This function panics at **compile time** when the static string is not a valid domain.
+    #[must_use]
     pub const fn from_static(s: &'static str) -> Self {
         if !is_valid_name(s.as_bytes()) {
             panic!("static str is an invalid domain");
@@ -28,6 +29,7 @@ impl Domain {
     }
 
     /// Creates the example [`Domain].
+    #[must_use]
     pub fn example() -> Self {
         Self::from_static("example.com")
     }
@@ -38,21 +40,25 @@ impl Domain {
     /// <https://itp.cdn.icann.org/en/files/security-and-stability-advisory-committee-ssac-reports/sac-113-en.pdf>.
     ///
     /// In specific this means that it will match on any domain with the TLD `.internal`.
+    #[must_use]
     pub fn tld_private() -> Self {
         Self::from_static("internal")
     }
 
     /// Creates the localhost [`Domain`].
+    #[must_use]
     pub fn tld_localhost() -> Self {
         Self::from_static("localhost")
     }
 
     /// Consumes the domain as a host.
+    #[must_use]
     pub fn into_host(self) -> Host {
         Host::Name(self)
     }
 
     /// Returns `true` if this domain is a Fully Qualified Domain Name.
+    #[must_use]
     pub fn is_fqdn(&self) -> bool {
         self.0.ends_with('.')
     }
@@ -60,7 +66,8 @@ impl Domain {
     /// Returns `true` if this [`Domain`] is a parent of the other.
     ///
     /// Note that a [`Domain`] is a sub of itself.
-    pub fn is_sub_of(&self, other: &Domain) -> bool {
+    #[must_use]
+    pub fn is_sub_of(&self, other: &Self) -> bool {
         let a = self.as_ref().trim_matches('.');
         let b = other.as_ref().trim_matches('.');
         match a.len().cmp(&b.len()) {
@@ -79,7 +86,8 @@ impl Domain {
     /// Returns `true` if this [`Domain`] is a subdomain of the other.
     ///
     /// Note that a [`Domain`] is a sub of itself.
-    pub fn is_parent_of(&self, other: &Domain) -> bool {
+    #[must_use]
+    pub fn is_parent_of(&self, other: &Self) -> bool {
         other.is_sub_of(self)
     }
 
@@ -102,7 +110,8 @@ impl Domain {
     /// assert!(Domain::from_static("example.com")
     ///     .have_same_registrable_domain(&Domain::from_static("example.com")));
     /// ```
-    pub fn have_same_registrable_domain(&self, other: &Domain) -> bool {
+    #[must_use]
+    pub fn have_same_registrable_domain(&self, other: &Self) -> bool {
         let this_rd = psl::domain_str(self.as_str());
         let other_rd = psl::domain_str(other.as_str());
         this_rd == other_rd
@@ -118,17 +127,20 @@ impl Domain {
     /// assert_eq!(Some("com"), Domain::from_static("www.example.com").suffix());
     /// assert_eq!(Some("co.uk"), Domain::from_static("site.co.uk").suffix());
     /// ```
+    #[must_use]
     pub fn suffix(&self) -> Option<&str> {
         psl::suffix_str(self.as_str())
     }
 
     /// Gets the length of domain
     #[allow(clippy::len_without_is_empty)]
+    #[must_use]
     pub fn len(&self) -> usize {
         self.0.len()
     }
 
     /// Gets the domain name as reference.
+    #[must_use]
     pub fn as_str(&self) -> &str {
         self.as_ref()
     }
@@ -168,7 +180,7 @@ impl std::str::FromStr for Domain {
     type Err = OpaqueError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Domain::try_from(s.to_owned())
+        Self::try_from(s.to_owned())
     }
 }
 
@@ -235,8 +247,8 @@ fn cmp_domain(a: impl AsRef<str>, b: impl AsRef<str>) -> Ordering {
         .unwrap() // should always be possible to find given we are in an infinite zip :)
 }
 
-impl PartialOrd<Domain> for Domain {
-    fn partial_cmp(&self, other: &Domain) -> Option<Ordering> {
+impl PartialOrd<Self> for Domain {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
@@ -293,8 +305,8 @@ fn partial_eq_domain(a: impl AsRef<str>, b: impl AsRef<str>) -> bool {
     a.eq_ignore_ascii_case(b)
 }
 
-impl PartialEq<Domain> for Domain {
-    fn eq(&self, other: &Domain) -> bool {
+impl PartialEq<Self> for Domain {
+    fn eq(&self, other: &Self) -> bool {
         partial_eq_domain(self, other)
     }
 }

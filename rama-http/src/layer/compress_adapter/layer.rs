@@ -25,11 +25,13 @@ impl<S> Layer<S> for CompressAdaptLayer {
 
 impl CompressAdaptLayer {
     /// Creates a new [`CompressAdaptLayer`].
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Sets the compression quality.
+    #[must_use]
     pub fn quality(mut self, quality: CompressionLevel) -> Self {
         self.quality = quality;
         self

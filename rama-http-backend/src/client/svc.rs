@@ -27,8 +27,8 @@ impl<Body: fmt::Debug> fmt::Debug for SendRequest<Body> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut f = f.debug_tuple("SendRequest");
         match self {
-            SendRequest::Http1(send_request) => f.field(send_request).finish(),
-            SendRequest::Http2(send_request) => f.field(send_request).finish(),
+            Self::Http1(send_request) => f.field(send_request).finish(),
+            Self::Http2(send_request) => f.field(send_request).finish(),
         }
     }
 }
@@ -62,8 +62,8 @@ where
         // Check if this http connection can actually be used for TargetHttpVersion
         if let Some(target_version) = ctx.get::<TargetHttpVersion>() {
             match (&self.sender, target_version.0) {
-                (SendRequest::Http1(_), Version::HTTP_10 | Version::HTTP_11) => (),
-                (SendRequest::Http2(_), Version::HTTP_2) => (),
+                (SendRequest::Http1(_), Version::HTTP_10 | Version::HTTP_11)
+                | (SendRequest::Http2(_), Version::HTTP_2) => (),
                 (SendRequest::Http1(_), version) => Err(OpaqueError::from_display(format!(
                     "Http1 connector cannot send TargetHttpVersion {version:?}"
                 ))
@@ -92,20 +92,19 @@ where
                     req.switch_version(Version::HTTP_11)?;
                 }
             },
-            SendRequest::Http2(_) => match original_http_version {
-                Version::HTTP_2 => {
+            SendRequest::Http2(_) => {
+                if original_http_version == Version::HTTP_2 {
                     tracing::trace!(
                         "request version {original_http_version:?} is already h2 compatible, it will remain unchanged",
                     );
-                }
-                _ => {
+                } else {
                     tracing::debug!(
                         "modify request version {original_http_version:?} to compatible h2 connection version: {:?}",
                         Version::HTTP_2,
                     );
                     req.switch_version(Version::HTTP_2)?;
                 }
-            },
+            }
         }
 
         let (mut ctx, req) = self

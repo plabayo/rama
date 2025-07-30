@@ -31,7 +31,7 @@ derive_header! {
 }
 
 impl From<SecWebsocketKey> for SecWebsocketAccept {
-    fn from(key: SecWebsocketKey) -> SecWebsocketAccept {
+    fn from(key: SecWebsocketKey) -> Self {
         sign(key.0.as_bytes())
     }
 }

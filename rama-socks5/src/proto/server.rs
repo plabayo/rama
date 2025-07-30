@@ -31,6 +31,7 @@ pub struct Header {
 
 impl Header {
     /// Create a new server [`Header`].
+    #[must_use]
     pub fn new(method: SocksMethod) -> Self {
         Self {
             version: ProtocolVersion::Socks5,
@@ -125,6 +126,7 @@ impl Reply {
     }
 
     /// [`Reply`] with an error.
+    #[must_use]
     pub fn error_reply(kind: ReplyKind) -> Self {
         Self {
             version: ProtocolVersion::Socks5,
@@ -157,7 +159,7 @@ impl Reply {
 
         let bind_address = read_authority(r).await?;
 
-        Ok(Reply {
+        Ok(Self {
             version,
             reply,
             bind_address,
@@ -259,6 +261,7 @@ pub struct UsernamePasswordResponse {
 
 impl UsernamePasswordResponse {
     /// Create a new [`UsernamePasswordResponse`] to indicate success.
+    #[must_use]
     pub fn new_success() -> Self {
         Self {
             version: UsernamePasswordSubnegotiationVersion::One,
@@ -268,6 +271,7 @@ impl UsernamePasswordResponse {
 
     /// Create a new failure [`UsernamePasswordResponse`] to indicate
     /// the received credentials are partial or invalid otherwise.
+    #[must_use]
     pub fn new_invalid_credentails() -> Self {
         Self {
             version: UsernamePasswordSubnegotiationVersion::One,
@@ -277,6 +281,7 @@ impl UsernamePasswordResponse {
 
     /// Create a new failure [`UsernamePasswordResponse`] to indicate
     /// no user cound be found for the given credentials.
+    #[must_use]
     pub fn new_user_not_found() -> Self {
         Self {
             version: UsernamePasswordSubnegotiationVersion::One,
@@ -287,6 +292,7 @@ impl UsernamePasswordResponse {
     /// Create a new [`UsernamePasswordResponse`]
     /// to indicate the user couldn't be authorized
     /// as the authorization used by the server is unavailable.
+    #[must_use]
     pub fn new_auth_system_unavailable() -> Self {
         Self {
             version: UsernamePasswordSubnegotiationVersion::One,
@@ -295,6 +301,7 @@ impl UsernamePasswordResponse {
     }
 
     /// Indicates if the (auth) response from the server indicates success.
+    #[must_use]
     pub fn success(&self) -> bool {
         self.status == 0
     }
@@ -318,7 +325,7 @@ impl UsernamePasswordResponse {
 
         let status = r.read_u8().await?;
 
-        Ok(UsernamePasswordResponse { version, status })
+        Ok(Self { version, status })
     }
 
     /// Write the server [`UsernamePasswordResponse`] in binary format as specified by [RFC 1928] into the writer.

@@ -46,6 +46,7 @@ pub struct BodyLimitLayer {
 
 impl BodyLimitLayer {
     /// Create a new [`BodyLimitLayer`].
+    #[must_use]
     pub const fn new(size: usize) -> Self {
         Self { size }
     }

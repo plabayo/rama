@@ -69,7 +69,7 @@ where
     fn make_header_value(
         self,
         response: Response<B>,
-    ) -> impl Future<Output = (Response<B>, Option<HeaderValue>)> + Send {
+    ) -> impl Future<Output = (Response<B>, Option<Self>)> + Send {
         ready((response, Some(self)))
     }
 }
@@ -413,14 +413,14 @@ impl InsertHeaderMode {
         M: MakeHeaderValue<B>,
     {
         match self {
-            InsertHeaderMode::Override => {
+            Self::Override => {
                 let (mut response, maybe_value) = make.make_header_value(response).await;
                 if let Some(value) = maybe_value {
                     response.headers_mut().insert(header_name.clone(), value);
                 }
                 response
             }
-            InsertHeaderMode::IfNotPresent => {
+            Self::IfNotPresent => {
                 if !response.headers().contains_key(header_name) {
                     let (mut response, maybe_value) = make.make_header_value(response).await;
                     if let Some(value) = maybe_value {
@@ -431,7 +431,7 @@ impl InsertHeaderMode {
                     response
                 }
             }
-            InsertHeaderMode::Append => {
+            Self::Append => {
                 let (mut response, maybe_value) = make.make_header_value(response).await;
                 if let Some(value) = maybe_value {
                     response.headers_mut().append(header_name.clone(), value);

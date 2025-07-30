@@ -72,8 +72,8 @@ enum AuthKind<A> {
 impl<A: fmt::Debug> fmt::Debug for AuthKind<A> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            AuthKind::NoAuth(auth) => write!(f, "AuthKind::NoAuth({auth:?})"),
-            AuthKind::WithAuth(auth) => write!(f, "AuthKind::WithAuth({auth:?})"),
+            Self::NoAuth(auth) => write!(f, "AuthKind::NoAuth({auth:?})"),
+            Self::WithAuth(auth) => write!(f, "AuthKind::WithAuth({auth:?})"),
         }
     }
 }
@@ -81,8 +81,8 @@ impl<A: fmt::Debug> fmt::Debug for AuthKind<A> {
 impl<A: Clone> Clone for AuthKind<A> {
     fn clone(&self) -> Self {
         match self {
-            AuthKind::NoAuth(auth) => AuthKind::NoAuth(auth.clone()),
-            AuthKind::WithAuth(auth) => AuthKind::WithAuth(auth.clone()),
+            Self::NoAuth(auth) => Self::NoAuth(auth.clone()),
+            Self::WithAuth(auth) => Self::WithAuth(auth.clone()),
         }
     }
 }
@@ -92,6 +92,7 @@ impl Socks5Acceptor<(), (), (), ()> {
     ///
     /// Use [`Socks5Acceptor::default`] instead if you wish to create a default
     /// [`Socks5Acceptor`] which can be used as a simple and honest byte-byte proxy.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             connector: (),
@@ -258,13 +259,13 @@ enum ErrorContext {
 
 impl From<&'static str> for ErrorContext {
     fn from(value: &'static str) -> Self {
-        ErrorContext::Message(value)
+        Self::Message(value)
     }
 }
 
 impl From<ReplyKind> for ErrorContext {
     fn from(value: ReplyKind) -> Self {
-        ErrorContext::ReplyKind(value)
+        Self::ReplyKind(value)
     }
 }
 
@@ -323,9 +324,9 @@ enum ErrorKind {
 impl fmt::Display for ErrorContext {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ErrorContext::Message(message) => write!(f, "{message}"),
-            ErrorContext::ReplyKind(kind) => write!(f, "reply: {kind}"),
-            ErrorContext::None => write!(f, "no context"),
+            Self::Message(message) => write!(f, "{message}"),
+            Self::ReplyKind(kind) => write!(f, "reply: {kind}"),
+            Self::None => write!(f, "no context"),
         }
     }
 }

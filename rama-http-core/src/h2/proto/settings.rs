@@ -31,7 +31,7 @@ enum Local {
 
 impl Settings {
     pub(crate) fn new(local: frame::Settings) -> Self {
-        Settings {
+        Self {
             // We assume the initial local SETTINGS were flushed during
             // the handshake process.
             local: Local::WaitingAck(local),
@@ -69,7 +69,7 @@ impl Settings {
                         codec.set_recv_header_table_size(val as usize);
                     }
 
-                    streams.apply_local_settings(local, frame)?;
+                    streams.apply_local_settings(local, &frame)?;
                     self.local = Local::Synced;
                     Ok(())
                 }

@@ -44,21 +44,25 @@ pub struct ForwardedAuthority {
 
 impl ForwardedAuthority {
     /// Create a new [`ForwardedAuthority`]
+    #[must_use]
     pub const fn new(host: Host, port: Option<u16>) -> Self {
         Self { host, port }
     }
 
     /// Get a reference to the [`Host`] of this [`ForwardedAuthority`].
+    #[must_use]
     pub fn host(&self) -> &Host {
         &self.host
     }
 
     /// Get a copy of the `port` of this [`ForwardedAuthority`] if it is set.
+    #[must_use]
     pub fn port(&self) -> Option<u16> {
         self.port
     }
 
     /// Consume self and return the inner [`Host`] and `port` if it is set.
+    #[must_use]
     pub fn into_parts(self) -> (Host, Option<u16>) {
         (self.host, self.port)
     }
@@ -94,7 +98,7 @@ impl From<Authority> for ForwardedAuthority {
 
 impl ForwardedElement {
     /// Merge the properties of another [`ForwardedElement`] into this one.
-    pub fn merge(&mut self, other: ForwardedElement) -> &mut Self {
+    pub fn merge(&mut self, other: Self) -> &mut Self {
         if let Some(by_node) = other.by_node {
             self.by_node = Some(by_node);
         }
@@ -121,6 +125,7 @@ impl ForwardedElement {
     }
 
     /// Return the host if one is defined.
+    #[must_use]
     pub fn authority(&self) -> Option<(Host, Option<u16>)> {
         self.authority
             .as_ref()
@@ -148,6 +153,7 @@ impl ForwardedElement {
     }
 
     /// Get a reference to the "host" parameter if it is set.
+    #[must_use]
     pub fn ref_forwarded_host(&self) -> Option<&ForwardedAuthority> {
         self.authority.as_ref()
     }
@@ -174,6 +180,7 @@ impl ForwardedElement {
     }
 
     /// Get a reference to the "for" parameter if it is set.
+    #[must_use]
     pub fn ref_forwarded_for(&self) -> Option<&NodeId> {
         self.for_node.as_ref()
     }
@@ -200,12 +207,14 @@ impl ForwardedElement {
     }
 
     /// Get a reference to the "by" parameter if it is set.
+    #[must_use]
     pub fn ref_forwarded_by(&self) -> Option<&NodeId> {
         self.by_node.as_ref()
     }
 
     /// Create a new [`ForwardedElement`] with the "proto" parameter
     /// set to the given valid/recognised [`ForwardedProtocol`]
+    #[must_use]
     pub fn forwarded_proto(protocol: ForwardedProtocol) -> Self {
         Self {
             by_node: None,
@@ -224,12 +233,14 @@ impl ForwardedElement {
     }
 
     /// Get a reference to the "proto" parameter if it is set.
+    #[must_use]
     pub fn ref_forwarded_proto(&self) -> Option<ForwardedProtocol> {
         self.proto.clone()
     }
 
     /// Create a new [`ForwardedElement`] with the "version" parameter
     /// set to the given valid/recognised [`ForwardedVersion`].
+    #[must_use]
     pub fn forwarded_version(version: ForwardedVersion) -> Self {
         Self {
             by_node: None,
@@ -248,6 +259,7 @@ impl ForwardedElement {
     }
 
     /// Get a copy of the "version" parameter, if it is set.
+    #[must_use]
     pub fn ref_forwarded_version(&self) -> Option<ForwardedVersion> {
         self.proto_version
     }
@@ -379,7 +391,7 @@ impl std::str::FromStr for ForwardedAuthority {
         if let Ok(host) = Host::try_from(s) {
             // first try host alone, as it is most common,
             // and also prevents IPv6 to be seen by default with port
-            return Ok(ForwardedAuthority { host, port: None });
+            return Ok(Self { host, port: None });
         }
 
         let (s, port) = try_to_split_num_port_from_str(s);
@@ -389,7 +401,7 @@ impl std::str::FromStr for ForwardedAuthority {
             Host::Address(IpAddr::V6(_)) if port.is_some() && !s.starts_with('[') => Err(
                 OpaqueError::from_display("missing brackets for host IPv6 address with port"),
             ),
-            _ => Ok(ForwardedAuthority { host, port }),
+            _ => Ok(Self { host, port }),
         }
     }
 }

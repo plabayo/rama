@@ -4,6 +4,7 @@ use std::io;
 
 /// Check if the error is a connection error,
 /// in which case the error can be ignored.
+#[must_use]
 pub fn is_connection_error(e: &io::Error) -> bool {
     matches!(
         e.kind(),

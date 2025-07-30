@@ -39,14 +39,14 @@ impl PartialResult for v1::ParseError {
     fn is_incomplete(&self) -> bool {
         matches!(
             self,
-            v1::ParseError::Partial
-                | v1::ParseError::MissingPrefix
-                | v1::ParseError::MissingProtocol
-                | v1::ParseError::MissingSourceAddress
-                | v1::ParseError::MissingDestinationAddress
-                | v1::ParseError::MissingSourcePort
-                | v1::ParseError::MissingDestinationPort
-                | v1::ParseError::MissingNewLine
+            Self::Partial
+                | Self::MissingPrefix
+                | Self::MissingProtocol
+                | Self::MissingSourceAddress
+                | Self::MissingDestinationAddress
+                | Self::MissingSourcePort
+                | Self::MissingDestinationPort
+                | Self::MissingNewLine
         )
     }
 }
@@ -54,18 +54,15 @@ impl PartialResult for v1::ParseError {
 impl PartialResult for v1::BinaryParseError {
     fn is_incomplete(&self) -> bool {
         match self {
-            v1::BinaryParseError::Parse(error) => error.is_incomplete(),
-            v1::BinaryParseError::InvalidUtf8(_) => false,
+            Self::Parse(error) => error.is_incomplete(),
+            Self::InvalidUtf8(_) => false,
         }
     }
 }
 
 impl PartialResult for v2::ParseError {
     fn is_incomplete(&self) -> bool {
-        matches!(
-            self,
-            v2::ParseError::Incomplete(..) | v2::ParseError::Partial(..)
-        )
+        matches!(self, Self::Incomplete(..) | Self::Partial(..))
     }
 }
 
@@ -114,7 +111,7 @@ impl PartialResult for HeaderResult<'_> {
 impl<'a> HeaderResult<'a> {
     /// Parses a PROXY protocol version 2 `Header`.
     /// If the input is not a valid version 2 `Header`, attempts to parse a version 1 `Header`.
-    pub fn parse(input: &'a [u8]) -> HeaderResult<'a> {
+    pub fn parse(input: &'a [u8]) -> Self {
         let header = v2::Header::try_from(input);
 
         if header.is_complete() && header.is_err() {

@@ -88,51 +88,51 @@ impl From<io::Error> for ProtocolError {
 impl fmt::Display for ProtocolError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ProtocolError::Utf8(err) => write!(f, "UTF-8 error: {err:?}"),
-            ProtocolError::Io(err) => write!(f, "I/O error: {err:?}"),
-            ProtocolError::InvalidOpcode(code) => write!(f, "Encountered invalid opcode: {code}"),
-            ProtocolError::InvalidCloseSequence => write!(f, "Invalid close sequence"),
-            ProtocolError::MessageTooLong { size, max_size } => {
+            Self::Utf8(err) => write!(f, "UTF-8 error: {err:?}"),
+            Self::Io(err) => write!(f, "I/O error: {err:?}"),
+            Self::InvalidOpcode(code) => write!(f, "Encountered invalid opcode: {code}"),
+            Self::InvalidCloseSequence => write!(f, "Invalid close sequence"),
+            Self::MessageTooLong { size, max_size } => {
                 write!(f, "Message too long: {size} > {max_size}")
             }
-            ProtocolError::UnmaskedFrameFromClient => {
+            Self::UnmaskedFrameFromClient => {
                 write!(f, "Received an unmasked frame from client")
             }
-            ProtocolError::WriteBufferFull(_) => write!(f, "Write buffer is full"),
-            ProtocolError::SendAfterClosing => {
+            Self::WriteBufferFull(_) => write!(f, "Write buffer is full"),
+            Self::SendAfterClosing => {
                 write!(f, "Sending after closing is not allowed")
             }
-            ProtocolError::ReceivedAfterClosing => {
+            Self::ReceivedAfterClosing => {
                 write!(f, "Remote sent after having closed")
             }
-            ProtocolError::NonZeroReservedBits => {
+            Self::NonZeroReservedBits => {
                 write!(f, "Reserved bits are non-zero")
             }
-            ProtocolError::MaskedFrameFromServer => {
+            Self::MaskedFrameFromServer => {
                 write!(f, "Received a masked frame from server")
             }
-            ProtocolError::FragmentedControlFrame => {
+            Self::FragmentedControlFrame => {
                 write!(f, "Fragmented control frame")
             }
-            ProtocolError::ControlFrameTooBig => {
+            Self::ControlFrameTooBig => {
                 write!(
                     f,
                     "Control frame too big (payload must be 125 bytes or less)"
                 )
             }
-            ProtocolError::UnknownControlFrameType(t) => {
+            Self::UnknownControlFrameType(t) => {
                 write!(f, "Unknown control frame type: {t}")
             }
-            ProtocolError::ResetWithoutClosingHandshake => {
+            Self::ResetWithoutClosingHandshake => {
                 write!(f, "Connection reset without closing handshake")
             }
-            ProtocolError::UnexpectedContinueFrame => {
+            Self::UnexpectedContinueFrame => {
                 write!(f, "Continue frame but nothing to continue")
             }
-            ProtocolError::ExpectedFragment(data) => {
+            Self::ExpectedFragment(data) => {
                 write!(f, "While waiting for more fragments received: {data}")
             }
-            ProtocolError::UnknownDataFrameType(t) => {
+            Self::UnknownDataFrameType(t) => {
                 write!(f, "Unknown data frame type: {t}")
             }
         }
@@ -142,24 +142,24 @@ impl fmt::Display for ProtocolError {
 impl error::Error for ProtocolError {
     fn source(&self) -> Option<&(dyn error::Error + 'static)> {
         match self {
-            ProtocolError::Utf8(err) => Some(err as &(dyn error::Error + 'static)),
-            ProtocolError::Io(err) => Some(err as &(dyn std::error::Error + 'static)),
-            ProtocolError::InvalidOpcode(_)
-            | ProtocolError::InvalidCloseSequence
-            | ProtocolError::MessageTooLong { .. }
-            | ProtocolError::UnmaskedFrameFromClient
-            | ProtocolError::WriteBufferFull(_)
-            | ProtocolError::SendAfterClosing
-            | ProtocolError::ReceivedAfterClosing
-            | ProtocolError::NonZeroReservedBits
-            | ProtocolError::MaskedFrameFromServer
-            | ProtocolError::FragmentedControlFrame
-            | ProtocolError::ControlFrameTooBig
-            | ProtocolError::UnknownControlFrameType(_)
-            | ProtocolError::ResetWithoutClosingHandshake
-            | ProtocolError::UnexpectedContinueFrame
-            | ProtocolError::ExpectedFragment(_)
-            | ProtocolError::UnknownDataFrameType(_) => None,
+            Self::Utf8(err) => Some(err as &(dyn error::Error + 'static)),
+            Self::Io(err) => Some(err as &(dyn std::error::Error + 'static)),
+            Self::InvalidOpcode(_)
+            | Self::InvalidCloseSequence
+            | Self::MessageTooLong { .. }
+            | Self::UnmaskedFrameFromClient
+            | Self::WriteBufferFull(_)
+            | Self::SendAfterClosing
+            | Self::ReceivedAfterClosing
+            | Self::NonZeroReservedBits
+            | Self::MaskedFrameFromServer
+            | Self::FragmentedControlFrame
+            | Self::ControlFrameTooBig
+            | Self::UnknownControlFrameType(_)
+            | Self::ResetWithoutClosingHandshake
+            | Self::UnexpectedContinueFrame
+            | Self::ExpectedFragment(_)
+            | Self::UnknownDataFrameType(_) => None,
         }
     }
 }

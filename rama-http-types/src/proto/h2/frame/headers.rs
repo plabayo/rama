@@ -175,7 +175,7 @@ impl Headers {
         field_order: OriginalHttp1Headers,
         stream_dep: Option<StreamDependency>,
     ) -> Self {
-        Headers {
+        Self {
             stream_id,
             stream_dep,
             header_block: HeaderBlock {
@@ -189,6 +189,7 @@ impl Headers {
         }
     }
 
+    #[must_use]
     pub fn trailers(
         stream_id: StreamId,
         fields: HeaderMap,
@@ -197,7 +198,7 @@ impl Headers {
         let mut flags = HeadersFlag::default();
         flags.set_end_stream();
 
-        Headers {
+        Self {
             stream_id,
             stream_dep: None,
             header_block: HeaderBlock {
@@ -263,7 +264,7 @@ impl Headers {
             src.truncate(len);
         }
 
-        let headers = Headers {
+        let headers = Self {
             stream_id: head.stream_id(),
             stream_dep,
             header_block: HeaderBlock {
@@ -354,7 +355,7 @@ impl Headers {
 
         self.header_block
             .into_encoding(encoder)
-            .encode(&head, dst, |_| {})
+            .encode(head, dst, |_| {})
     }
 
     fn head(&self) -> Head {
@@ -364,7 +365,7 @@ impl Headers {
 
 impl<T> From<Headers> for Frame<T> {
     fn from(src: Headers) -> Self {
-        Frame::Headers(src)
+        Self::Headers(src)
     }
 }
 
@@ -429,7 +430,7 @@ impl PushPromise {
         fields: HeaderMap,
         field_order: OriginalHttp1Headers,
     ) -> Self {
-        PushPromise {
+        Self {
             flags: PushPromiseFlag::default(),
             header_block: HeaderBlock {
                 field_size: calculate_headermap_size(&fields),
@@ -519,7 +520,7 @@ impl PushPromise {
             src.truncate(len);
         }
 
-        let frame = PushPromise {
+        let frame = Self {
             flags,
             header_block: HeaderBlock {
                 fields: HeaderMap::new(),
@@ -576,7 +577,7 @@ impl PushPromise {
 
         self.header_block
             .into_encoding(encoder)
-            .encode(&head, dst, |dst| {
+            .encode(head, dst, |dst| {
                 dst.put_u32(promised_id.into());
             })
     }
@@ -597,7 +598,7 @@ impl PushPromise {
 
 impl<T> From<PushPromise> for Frame<T> {
     fn from(src: PushPromise) -> Self {
-        Frame::PushPromise(src)
+        Self::PushPromise(src)
     }
 }
 
@@ -619,11 +620,10 @@ impl Continuation {
         Head::new(Kind::Continuation, END_HEADERS, self.stream_id)
     }
 
-    pub fn encode(self, dst: &mut EncodeBuf<'_>) -> Option<Continuation> {
+    pub fn encode(self, dst: &mut EncodeBuf<'_>) -> Option<Self> {
         // Get the CONTINUATION frame head
         let head = self.head();
-
-        self.header_block.encode(&head, dst, |_| {})
+        self.header_block.encode(head, dst, |_| {})
     }
 }
 
@@ -652,7 +652,7 @@ impl Pseudo {
             (parts.scheme, Some(path))
         };
 
-        let mut pseudo = Pseudo {
+        let mut pseudo = Self {
             method: Some(method),
             scheme: None,
             authority: None,
@@ -663,7 +663,7 @@ impl Pseudo {
         };
 
         // If the URI includes a scheme component, add it to the pseudo headers
-        if let Some(scheme) = scheme {
+        if let Some(ref scheme) = scheme {
             pseudo.set_scheme(scheme);
         }
 
@@ -676,8 +676,9 @@ impl Pseudo {
         pseudo
     }
 
+    #[must_use]
     pub fn response(status: StatusCode) -> Self {
-        Pseudo {
+        Self {
             method: None,
             scheme: None,
             authority: None,
@@ -692,7 +693,7 @@ impl Pseudo {
         self.status = Some(value);
     }
 
-    pub fn set_scheme(&mut self, scheme: uri::Scheme) {
+    pub fn set_scheme(&mut self, scheme: &uri::Scheme) {
         let bytes_str = match scheme.as_str() {
             "http" => BytesStr::from_static("http"),
             "https" => BytesStr::from_static("https"),
@@ -718,7 +719,7 @@ impl Pseudo {
 // ===== impl EncodingHeaderBlock =====
 
 impl EncodingHeaderBlock {
-    fn encode<F>(mut self, head: &Head, dst: &mut EncodeBuf<'_>, f: F) -> Option<Continuation>
+    fn encode<F>(mut self, head: Head, dst: &mut EncodeBuf<'_>, f: F) -> Option<Continuation>
     where
         F: FnOnce(&mut EncodeBuf<'_>),
     {
@@ -848,15 +849,15 @@ impl Iterator for Iter {
 // ===== impl HeadersFlag =====
 
 impl HeadersFlag {
-    pub fn empty() -> HeadersFlag {
-        HeadersFlag(0)
+    pub fn empty() -> Self {
+        Self(0)
     }
 
-    pub fn load(bits: u8) -> HeadersFlag {
-        HeadersFlag(bits & ALL)
+    pub fn load(bits: u8) -> Self {
+        Self(bits & ALL)
     }
 
-    pub fn is_end_stream(&self) -> bool {
+    pub fn is_end_stream(self) -> bool {
         self.0 & END_STREAM == END_STREAM
     }
 
@@ -864,7 +865,7 @@ impl HeadersFlag {
         self.0 |= END_STREAM;
     }
 
-    pub fn is_end_headers(&self) -> bool {
+    pub fn is_end_headers(self) -> bool {
         self.0 & END_HEADERS == END_HEADERS
     }
 
@@ -872,11 +873,11 @@ impl HeadersFlag {
         self.0 |= END_HEADERS;
     }
 
-    pub fn is_padded(&self) -> bool {
+    pub fn is_padded(self) -> bool {
         self.0 & PADDED == PADDED
     }
 
-    pub fn is_priority(&self) -> bool {
+    pub fn is_priority(self) -> bool {
         self.0 & PRIORITY == PRIORITY
     }
 }
@@ -884,12 +885,12 @@ impl HeadersFlag {
 impl Default for HeadersFlag {
     /// Returns a `HeadersFlag` value with `END_HEADERS` set.
     fn default() -> Self {
-        HeadersFlag(END_HEADERS)
+        Self(END_HEADERS)
     }
 }
 
 impl From<HeadersFlag> for u8 {
-    fn from(src: HeadersFlag) -> u8 {
+    fn from(src: HeadersFlag) -> Self {
         src.0
     }
 }
@@ -908,15 +909,15 @@ impl fmt::Debug for HeadersFlag {
 // ===== impl PushPromiseFlag =====
 
 impl PushPromiseFlag {
-    pub fn empty() -> PushPromiseFlag {
-        PushPromiseFlag(0)
+    pub fn empty() -> Self {
+        Self(0)
     }
 
-    pub fn load(bits: u8) -> PushPromiseFlag {
-        PushPromiseFlag(bits & ALL)
+    pub fn load(bits: u8) -> Self {
+        Self(bits & ALL)
     }
 
-    pub fn is_end_headers(&self) -> bool {
+    pub fn is_end_headers(self) -> bool {
         self.0 & END_HEADERS == END_HEADERS
     }
 
@@ -924,7 +925,7 @@ impl PushPromiseFlag {
         self.0 |= END_HEADERS;
     }
 
-    pub fn is_padded(&self) -> bool {
+    pub fn is_padded(self) -> bool {
         self.0 & PADDED == PADDED
     }
 }
@@ -932,12 +933,12 @@ impl PushPromiseFlag {
 impl Default for PushPromiseFlag {
     /// Returns a `PushPromiseFlag` value with `END_HEADERS` set.
     fn default() -> Self {
-        PushPromiseFlag(END_HEADERS)
+        Self(END_HEADERS)
     }
 }
 
 impl From<PushPromiseFlag> for u8 {
-    fn from(src: PushPromiseFlag) -> u8 {
+    fn from(src: PushPromiseFlag) -> Self {
         src.0
     }
 }

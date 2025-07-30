@@ -14,6 +14,7 @@ pub struct HttpsAlpnModifier;
 
 impl HttpsAlpnModifier {
     #[inline]
+    #[must_use]
     pub fn new() -> Self {
         Self
     }

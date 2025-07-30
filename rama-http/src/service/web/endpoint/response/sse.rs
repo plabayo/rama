@@ -30,7 +30,7 @@ impl<S> Sse<S> {
         S::Error: Into<BoxError>,
         T: EventDataWrite,
     {
-        Sse { stream }
+        Self { stream }
     }
 
     /// Configure the interval between keep-alive messages.

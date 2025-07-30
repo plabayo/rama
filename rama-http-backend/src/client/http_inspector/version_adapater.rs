@@ -16,6 +16,7 @@ pub struct HttpVersionAdapater {
 }
 
 impl HttpVersionAdapater {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             default_version: None,

@@ -60,6 +60,7 @@ impl HttpProfile {
     ///
     /// As specified by <https://blog.foxio.io/ja4%2B-network-fingerprinting>
     /// and reference implementations found at <https://github.com/FoxIO-LLC/ja4>.
+    #[must_use]
     pub fn ja4h_h1_fetch(&self, method: Option<Method>) -> Option<Result<Ja4H, Ja4HComputeError>> {
         self.h1.headers.fetch.clone().map(|header_map| {
             Ja4H::compute(HttpRequestInput {
@@ -74,6 +75,7 @@ impl HttpProfile {
     ///
     /// As specified by <https://blog.foxio.io/ja4%2B-network-fingerprinting>
     /// and reference implementations found at <https://github.com/FoxIO-LLC/ja4>.
+    #[must_use]
     pub fn ja4h_h1_xhr(&self, method: Option<Method>) -> Option<Result<Ja4H, Ja4HComputeError>> {
         self.h1.headers.xhr.clone().map(|header_map| {
             Ja4H::compute(HttpRequestInput {
@@ -88,6 +90,7 @@ impl HttpProfile {
     ///
     /// As specified by <https://blog.foxio.io/ja4%2B-network-fingerprinting>
     /// and reference implementations found at <https://github.com/FoxIO-LLC/ja4>.
+    #[must_use]
     pub fn ja4h_h1_form(&self, method: Option<Method>) -> Option<Result<Ja4H, Ja4HComputeError>> {
         self.h1.headers.form.clone().map(|header_map| {
             Ja4H::compute(HttpRequestInput {
@@ -114,6 +117,7 @@ impl HttpProfile {
     ///
     /// As specified by <https://blog.foxio.io/ja4%2B-network-fingerprinting>
     /// and reference implementations found at <https://github.com/FoxIO-LLC/ja4>.
+    #[must_use]
     pub fn ja4h_h2_fetch(&self, method: Option<Method>) -> Option<Result<Ja4H, Ja4HComputeError>> {
         self.h2.headers.fetch.clone().map(|header_map| {
             Ja4H::compute(HttpRequestInput {
@@ -128,6 +132,7 @@ impl HttpProfile {
     ///
     /// As specified by <https://blog.foxio.io/ja4%2B-network-fingerprinting>
     /// and reference implementations found at <https://github.com/FoxIO-LLC/ja4>.
+    #[must_use]
     pub fn ja4h_h2_xhr(&self, method: Option<Method>) -> Option<Result<Ja4H, Ja4HComputeError>> {
         self.h2.headers.xhr.clone().map(|header_map| {
             Ja4H::compute(HttpRequestInput {
@@ -142,6 +147,7 @@ impl HttpProfile {
     ///
     /// As specified by <https://blog.foxio.io/ja4%2B-network-fingerprinting>
     /// and reference implementations found at <https://github.com/FoxIO-LLC/ja4>.
+    #[must_use]
     pub fn ja4h_h2_form(&self, method: Option<Method>) -> Option<Result<Ja4H, Ja4HComputeError>> {
         self.h2.headers.form.clone().map(|header_map| {
             Ja4H::compute(HttpRequestInput {

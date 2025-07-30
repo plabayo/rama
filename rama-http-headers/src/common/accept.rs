@@ -1,6 +1,6 @@
 use crate::dep::mime::{self, Mime};
 use crate::specifier::QualityValue;
-use crate::{Error, Header, util};
+use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader, util};
 use rama_http_types::{HeaderName, HeaderValue, header};
 use std::iter::FromIterator;
 
@@ -86,15 +86,19 @@ fn qitem(mime: Mime) -> QualityValue<Mime> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Accept(Vec<QualityValue<Mime>>);
 
-impl Header for Accept {
+impl TypedHeader for Accept {
     fn name() -> &'static HeaderName {
         &header::ACCEPT
     }
+}
 
+impl HeaderDecode for Accept {
     fn decode<'i, I: Iterator<Item = &'i HeaderValue>>(values: &mut I) -> Result<Self, Error> {
         util::csv::from_comma_delimited(values).map(Accept)
     }
+}
 
+impl HeaderEncode for Accept {
     fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
         use std::fmt;
         struct Format<F>(F);
@@ -121,29 +125,33 @@ impl FromIterator<QualityValue<Mime>> for Accept {
     where
         T: IntoIterator<Item = QualityValue<Mime>>,
     {
-        Accept(iter.into_iter().collect())
+        Self(iter.into_iter().collect())
     }
 }
 
 impl Accept {
     /// A constructor to easily create `Accept: */*`.
-    pub fn star() -> Accept {
-        Accept(vec![qitem(mime::STAR_STAR)])
+    #[must_use]
+    pub fn star() -> Self {
+        Self(vec![qitem(mime::STAR_STAR)])
     }
 
     /// A constructor to easily create `Accept: application/json`.
-    pub fn json() -> Accept {
-        Accept(vec![qitem(mime::APPLICATION_JSON)])
+    #[must_use]
+    pub fn json() -> Self {
+        Self(vec![qitem(mime::APPLICATION_JSON)])
     }
 
     /// A constructor to easily create `Accept: text/*`.
-    pub fn text() -> Accept {
-        Accept(vec![qitem(mime::TEXT_STAR)])
+    #[must_use]
+    pub fn text() -> Self {
+        Self(vec![qitem(mime::TEXT_STAR)])
     }
 
     /// A constructor to easily create `Accept: image/*`.
-    pub fn image() -> Accept {
-        Accept(vec![qitem(mime::IMAGE_STAR)])
+    #[must_use]
+    pub fn image() -> Self {
+        Self(vec![qitem(mime::IMAGE_STAR)])
     }
 
     /// Returns an iterator over the quality values

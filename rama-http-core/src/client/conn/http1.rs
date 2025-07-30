@@ -301,8 +301,9 @@ impl Default for Builder {
 impl Builder {
     /// Creates a new connection builder.
     #[inline]
-    pub fn new() -> Builder {
-        Builder {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
             h09_responses: false,
             h1_writev: None,
             h1_read_buf_exact_size: None,
@@ -316,7 +317,7 @@ impl Builder {
     /// Set whether HTTP/0.9 responses should be tolerated.
     ///
     /// Default is false.
-    pub fn http09_responses(&mut self, enabled: bool) -> &mut Builder {
+    pub fn http09_responses(&mut self, enabled: bool) -> &mut Self {
         self.h09_responses = enabled;
         self
     }
@@ -338,7 +339,7 @@ impl Builder {
     /// Default is false.
     ///
     /// [RFC 7230 Section 3.2.4.]: https://tools.ietf.org/html/rfc7230#section-3.2.4
-    pub fn allow_spaces_after_header_name_in_responses(&mut self, enabled: bool) -> &mut Builder {
+    pub fn allow_spaces_after_header_name_in_responses(&mut self, enabled: bool) -> &mut Self {
         self.h1_parser_config
             .allow_spaces_after_header_name_in_responses(enabled);
         self
@@ -376,7 +377,7 @@ impl Builder {
     /// Default is false.
     ///
     /// [RFC 7230 Section 3.2.4.]: https://tools.ietf.org/html/rfc7230#section-3.2.4
-    pub fn allow_obsolete_multiline_headers_in_responses(&mut self, enabled: bool) -> &mut Builder {
+    pub fn allow_obsolete_multiline_headers_in_responses(&mut self, enabled: bool) -> &mut Self {
         self.h1_parser_config
             .allow_obsolete_multiline_headers_in_responses(enabled);
         self
@@ -389,7 +390,7 @@ impl Builder {
     /// and no error will be reported.
     ///
     /// Default is false.
-    pub fn ignore_invalid_headers(&mut self, enabled: bool) -> &mut Builder {
+    pub fn ignore_invalid_headers(&mut self, enabled: bool) -> &mut Self {
         self.h1_parser_config
             .ignore_invalid_headers_in_responses(enabled);
         self
@@ -407,7 +408,7 @@ impl Builder {
     ///
     /// Default is `auto`. In this mode rama_http_core will try to guess which
     /// mode to use
-    pub fn writev(&mut self, enabled: bool) -> &mut Builder {
+    pub fn writev(&mut self, enabled: bool) -> &mut Self {
         self.h1_writev = Some(enabled);
         self
     }
@@ -416,7 +417,7 @@ impl Builder {
     /// the socket level.
     ///
     /// Default is false.
-    pub fn title_case_headers(&mut self, enabled: bool) -> &mut Builder {
+    pub fn title_case_headers(&mut self, enabled: bool) -> &mut Self {
         self.h1_title_case_headers = enabled;
         self
     }
@@ -444,7 +445,7 @@ impl Builder {
     /// Note that setting this option unsets the `max_buf_size` option.
     ///
     /// Default is an adaptive read buffer.
-    pub fn read_buf_exact_size(&mut self, sz: Option<usize>) -> &mut Builder {
+    pub fn read_buf_exact_size(&mut self, sz: Option<usize>) -> &mut Self {
         self.h1_read_buf_exact_size = sz;
         self.h1_max_buf_size = None;
         self

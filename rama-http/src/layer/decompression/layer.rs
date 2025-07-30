@@ -26,11 +26,13 @@ impl<S> Layer<S> for DecompressionLayer {
 
 impl DecompressionLayer {
     /// Creates a new `DecompressionLayer`.
+    #[must_use]
     pub fn new() -> Self {
         Default::default()
     }
 
     /// Sets whether to request the gzip encoding.
+    #[must_use]
     pub fn gzip(mut self, enable: bool) -> Self {
         self.accept.set_gzip(enable);
         self
@@ -43,6 +45,7 @@ impl DecompressionLayer {
     }
 
     /// Sets whether to request the Deflate encoding.
+    #[must_use]
     pub fn deflate(mut self, enable: bool) -> Self {
         self.accept.set_deflate(enable);
         self
@@ -55,6 +58,7 @@ impl DecompressionLayer {
     }
 
     /// Sets whether to request the Brotli encoding.
+    #[must_use]
     pub fn br(mut self, enable: bool) -> Self {
         self.accept.set_br(enable);
         self
@@ -67,6 +71,7 @@ impl DecompressionLayer {
     }
 
     /// Sets whether to request the Zstd encoding.
+    #[must_use]
     pub fn zstd(mut self, enable: bool) -> Self {
         self.accept.set_zstd(enable);
         self

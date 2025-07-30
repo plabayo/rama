@@ -28,6 +28,10 @@ This directory contains example implementations demonstrating various features a
 - [`http_sse_datastar_hello`](./http_sse_datastar_hello.rs) - a hello world example for datastar (featuring DIY `CQRS` in action);
 - [`http_sse_datastar_test_suite`](./http_sse_datastar_test_suite.rs) - datastar sdk test suite server
 
+### Anti-Bot examples
+
+- [`http_anti_bot_infinite_resource.rs`](./http_anti_bot_infinite_resource.rs) - example demonstrating how to serve an infinite resource
+
 ## HTTP Clients
 - [`http_high_level_client.rs`](./http_high_level_client.rs) - High-level HTTP client implementation
 - [`http_pooled_client.rs`](./http_pooled_client.rs) - Connection pooling client

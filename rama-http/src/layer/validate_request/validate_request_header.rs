@@ -50,6 +50,7 @@ impl<ResBody> ValidateRequestHeaderLayer<AcceptHeader<ResBody>> {
     /// ```
     ///
     /// [`Accept`]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Accept
+    #[must_use]
     pub fn accept(value: &str) -> Self
     where
         ResBody: Default,

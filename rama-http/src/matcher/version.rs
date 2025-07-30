@@ -22,7 +22,7 @@ impl VersionMatcher {
     /// A matcher that matches HTTP/3.0 (h3) requests.
     pub const HTTP_3: Self = Self::from_bits(0b0_0010_0000);
 
-    const fn bits(&self) -> u16 {
+    const fn bits(self) -> u16 {
         let bits = self;
         bits.0
     }
@@ -31,11 +31,12 @@ impl VersionMatcher {
         Self(bits)
     }
 
-    pub(crate) const fn contains(&self, other: Self) -> bool {
+    pub(crate) const fn contains(self, other: Self) -> bool {
         self.bits() & other.bits() == other.bits()
     }
 
     /// Performs the OR operation between the [`VersionMatcher`] in `self` with `other`.
+    #[must_use]
     pub const fn or(self, other: Self) -> Self {
         Self(self.0 | other.0)
     }
@@ -49,7 +50,7 @@ impl<State, Body> rama_core::matcher::Matcher<State, Request<Body>> for VersionM
         _ctx: &Context<State>,
         req: &Request<Body>,
     ) -> bool {
-        VersionMatcher::try_from(req.version())
+        Self::try_from(req.version())
             .ok()
             .map(|version| self.contains(version))
             .unwrap_or_default()
@@ -82,11 +83,11 @@ impl TryFrom<Version> for VersionMatcher {
 
     fn try_from(m: Version) -> Result<Self, Self::Error> {
         match m {
-            Version::HTTP_09 => Ok(VersionMatcher::HTTP_09),
-            Version::HTTP_10 => Ok(VersionMatcher::HTTP_10),
-            Version::HTTP_11 => Ok(VersionMatcher::HTTP_11),
-            Version::HTTP_2 => Ok(VersionMatcher::HTTP_2),
-            Version::HTTP_3 => Ok(VersionMatcher::HTTP_3),
+            Version::HTTP_09 => Ok(Self::HTTP_09),
+            Version::HTTP_10 => Ok(Self::HTTP_10),
+            Version::HTTP_11 => Ok(Self::HTTP_11),
+            Version::HTTP_2 => Ok(Self::HTTP_2),
+            Version::HTTP_3 => Ok(Self::HTTP_3),
             other => Err(Self::Error { version: other }),
         }
     }

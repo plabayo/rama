@@ -35,6 +35,7 @@ impl<S> MockConnectorService<S> {
     }
 
     /// [`MockConnectorService`] with `max_buffer_size` that will be used when creating DuplexStream
+    #[must_use]
     pub fn with_max_buffer_size(self, size: usize) -> Self {
         Self {
             max_buffer_size: size,

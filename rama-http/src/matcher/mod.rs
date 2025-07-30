@@ -130,6 +130,7 @@ impl<State, Body> HttpMatcher<State, Body> {
     /// Create a new matcher that matches one or more HTTP methods.
     ///
     /// See [`MethodMatcher`] for more information.
+    #[must_use]
     pub fn method(method: MethodMatcher) -> Self {
         Self {
             kind: HttpMatcherKind::Method(method),
@@ -140,6 +141,7 @@ impl<State, Body> HttpMatcher<State, Body> {
     /// Create a matcher that also matches one or more HTTP methods on top of the existing [`HttpMatcher`] matchers.
     ///
     /// See [`MethodMatcher`] for more information.
+    #[must_use]
     pub fn and_method(self, method: MethodMatcher) -> Self {
         self.and(Self::method(method))
     }
@@ -147,6 +149,7 @@ impl<State, Body> HttpMatcher<State, Body> {
     /// Create a matcher that can also match one or more HTTP methods as an alternative to the existing [`HttpMatcher`] matchers.
     ///
     /// See [`MethodMatcher`] for more information.
+    #[must_use]
     pub fn or_method(self, method: MethodMatcher) -> Self {
         self.or(Self::method(method))
     }
@@ -154,6 +157,7 @@ impl<State, Body> HttpMatcher<State, Body> {
     /// Create a new matcher that matches [`MethodMatcher::DELETE`] requests.
     ///
     /// See [`MethodMatcher`] for more information.
+    #[must_use]
     pub fn method_delete() -> Self {
         Self {
             kind: HttpMatcherKind::Method(MethodMatcher::DELETE),
@@ -164,6 +168,7 @@ impl<State, Body> HttpMatcher<State, Body> {
     /// Add a new matcher that also matches [`MethodMatcher::DELETE`] on top of the existing [`HttpMatcher`] matchers.
     ///
     /// See [`MethodMatcher`] for more information.
+    #[must_use]
     pub fn and_method_delete(self) -> Self {
         self.and(Self::method_delete())
     }
@@ -172,6 +177,7 @@ impl<State, Body> HttpMatcher<State, Body> {
     /// as an alternative tothe existing [`HttpMatcher`] matchers.
     ///
     /// See [`MethodMatcher`] for more information.
+    #[must_use]
     pub fn or_method_delete(self) -> Self {
         self.or(Self::method_delete())
     }
@@ -179,6 +185,7 @@ impl<State, Body> HttpMatcher<State, Body> {
     /// Create a new matcher that matches [`MethodMatcher::GET`] requests.
     ///
     /// See [`MethodMatcher`] for more information.
+    #[must_use]
     pub fn method_get() -> Self {
         Self {
             kind: HttpMatcherKind::Method(MethodMatcher::GET),
@@ -189,6 +196,7 @@ impl<State, Body> HttpMatcher<State, Body> {
     /// Add a new matcher that also matches [`MethodMatcher::GET`] on top of the existing [`HttpMatcher`] matchers.
     ///
     /// See [`MethodMatcher`] for more information.
+    #[must_use]
     pub fn and_method_get(self) -> Self {
         self.and(Self::method_get())
     }
@@ -197,6 +205,7 @@ impl<State, Body> HttpMatcher<State, Body> {
     /// as an alternative tothe existing [`HttpMatcher`] matchers.
     ///
     /// See [`MethodMatcher`] for more information.
+    #[must_use]
     pub fn or_method_get(self) -> Self {
         self.or(Self::method_get())
     }
@@ -204,6 +213,7 @@ impl<State, Body> HttpMatcher<State, Body> {
     /// Create a new matcher that matches [`MethodMatcher::HEAD`] requests.
     ///
     /// See [`MethodMatcher`] for more information.
+    #[must_use]
     pub fn method_head() -> Self {
         Self {
             kind: HttpMatcherKind::Method(MethodMatcher::HEAD),
@@ -214,6 +224,7 @@ impl<State, Body> HttpMatcher<State, Body> {
     /// Add a new matcher that also matches [`MethodMatcher::HEAD`] on top of the existing [`HttpMatcher`] matchers.
     ///
     /// See [`MethodMatcher`] for more information.
+    #[must_use]
     pub fn and_method_head(self) -> Self {
         self.and(Self::method_head())
     }
@@ -222,6 +233,7 @@ impl<State, Body> HttpMatcher<State, Body> {
     /// as an alternative tothe existing [`HttpMatcher`] matchers.
     ///
     /// See [`MethodMatcher`] for more information.
+    #[must_use]
     pub fn or_method_head(self) -> Self {
         self.or(Self::method_head())
     }
@@ -229,6 +241,7 @@ impl<State, Body> HttpMatcher<State, Body> {
     /// Create a new matcher that matches [`MethodMatcher::OPTIONS`] requests.
     ///
     /// See [`MethodMatcher`] for more information.
+    #[must_use]
     pub fn method_options() -> Self {
         Self {
             kind: HttpMatcherKind::Method(MethodMatcher::OPTIONS),
@@ -239,6 +252,7 @@ impl<State, Body> HttpMatcher<State, Body> {
     /// Add a new matcher that also matches [`MethodMatcher::OPTIONS`] on top of the existing [`HttpMatcher`] matchers.
     ///
     /// See [`MethodMatcher`] for more information.
+    #[must_use]
     pub fn and_method_options(self) -> Self {
         self.and(Self::method_options())
     }
@@ -247,6 +261,7 @@ impl<State, Body> HttpMatcher<State, Body> {
     /// as an alternative tothe existing [`HttpMatcher`] matchers.
     ///
     /// See [`MethodMatcher`] for more information.
+    #[must_use]
     pub fn or_method_options(self) -> Self {
         self.or(Self::method_options())
     }
@@ -254,6 +269,7 @@ impl<State, Body> HttpMatcher<State, Body> {
     /// Create a new matcher that matches [`MethodMatcher::PATCH`] requests.
     ///
     /// See [`MethodMatcher`] for more information.
+    #[must_use]
     pub fn method_patch() -> Self {
         Self {
             kind: HttpMatcherKind::Method(MethodMatcher::PATCH),
@@ -264,6 +280,7 @@ impl<State, Body> HttpMatcher<State, Body> {
     /// Add a new matcher that also matches [`MethodMatcher::PATCH`] on top of the existing [`HttpMatcher`] matchers.
     ///
     /// See [`MethodMatcher`] for more information.
+    #[must_use]
     pub fn and_method_patch(self) -> Self {
         self.and(Self::method_patch())
     }
@@ -272,6 +289,7 @@ impl<State, Body> HttpMatcher<State, Body> {
     /// as an alternative tothe existing [`HttpMatcher`] matchers.
     ///
     /// See [`MethodMatcher`] for more information.
+    #[must_use]
     pub fn or_method_patch(self) -> Self {
         self.or(Self::method_patch())
     }
@@ -279,6 +297,7 @@ impl<State, Body> HttpMatcher<State, Body> {
     /// Create a new matcher that matches [`MethodMatcher::POST`] requests.
     ///
     /// See [`MethodMatcher`] for more information.
+    #[must_use]
     pub fn method_post() -> Self {
         Self {
             kind: HttpMatcherKind::Method(MethodMatcher::POST),
@@ -289,6 +308,7 @@ impl<State, Body> HttpMatcher<State, Body> {
     /// Add a new matcher that also matches [`MethodMatcher::POST`] on top of the existing [`HttpMatcher`] matchers.
     ///
     /// See [`MethodMatcher`] for more information.
+    #[must_use]
     pub fn and_method_post(self) -> Self {
         self.and(Self::method_post())
     }
@@ -297,6 +317,7 @@ impl<State, Body> HttpMatcher<State, Body> {
     /// as an alternative tothe existing [`HttpMatcher`] matchers.
     ///
     /// See [`MethodMatcher`] for more information.
+    #[must_use]
     pub fn or_method_post(self) -> Self {
         self.or(Self::method_post())
     }
@@ -304,6 +325,7 @@ impl<State, Body> HttpMatcher<State, Body> {
     /// Create a new matcher that matches [`MethodMatcher::PUT`] requests.
     ///
     /// See [`MethodMatcher`] for more information.
+    #[must_use]
     pub fn method_put() -> Self {
         Self {
             kind: HttpMatcherKind::Method(MethodMatcher::PUT),
@@ -314,6 +336,7 @@ impl<State, Body> HttpMatcher<State, Body> {
     /// Add a new matcher that also matches [`MethodMatcher::PUT`] on top of the existing [`HttpMatcher`] matchers.
     ///
     /// See [`MethodMatcher`] for more information.
+    #[must_use]
     pub fn and_method_put(self) -> Self {
         self.and(Self::method_put())
     }
@@ -322,6 +345,7 @@ impl<State, Body> HttpMatcher<State, Body> {
     /// as an alternative tothe existing [`HttpMatcher`] matchers.
     ///
     /// See [`MethodMatcher`] for more information.
+    #[must_use]
     pub fn or_method_put(self) -> Self {
         self.or(Self::method_put())
     }
@@ -329,6 +353,7 @@ impl<State, Body> HttpMatcher<State, Body> {
     /// Create a new matcher that matches [`MethodMatcher::TRACE`] requests.
     ///
     /// See [`MethodMatcher`] for more information.
+    #[must_use]
     pub fn method_trace() -> Self {
         Self {
             kind: HttpMatcherKind::Method(MethodMatcher::TRACE),
@@ -339,6 +364,7 @@ impl<State, Body> HttpMatcher<State, Body> {
     /// Add a new matcher that also matches [`MethodMatcher::TRACE`] on top of the existing [`HttpMatcher`] matchers.
     ///
     /// See [`MethodMatcher`] for more information.
+    #[must_use]
     pub fn and_method_trace(self) -> Self {
         self.and(Self::method_trace())
     }
@@ -347,6 +373,7 @@ impl<State, Body> HttpMatcher<State, Body> {
     /// as an alternative tothe existing [`HttpMatcher`] matchers.
     ///
     /// See [`MethodMatcher`] for more information.
+    #[must_use]
     pub fn or_method_trace(self) -> Self {
         self.or(Self::method_trace())
     }
@@ -354,6 +381,7 @@ impl<State, Body> HttpMatcher<State, Body> {
     /// Create a new matcher that matches [`MethodMatcher::CONNECT`] requests.
     ///
     /// See [`MethodMatcher`] for more information.
+    #[must_use]
     pub fn method_connect() -> Self {
         Self {
             kind: HttpMatcherKind::Method(MethodMatcher::CONNECT),
@@ -364,6 +392,7 @@ impl<State, Body> HttpMatcher<State, Body> {
     /// Add a new matcher that also matches [`MethodMatcher::CONNECT`] on top of the existing [`HttpMatcher`] matchers.
     ///
     /// See [`MethodMatcher`] for more information.
+    #[must_use]
     pub fn and_method_connect(self) -> Self {
         self.and(Self::method_connect())
     }
@@ -372,11 +401,13 @@ impl<State, Body> HttpMatcher<State, Body> {
     /// as an alternative tothe existing [`HttpMatcher`] matchers.
     ///
     /// See [`MethodMatcher`] for more information.
+    #[must_use]
     pub fn or_method_connect(self) -> Self {
         self.or(Self::method_connect())
     }
 
     /// Create a [`DomainMatcher`] matcher, matching on the exact given [`Domain`].
+    #[must_use]
     pub fn domain(domain: Domain) -> Self {
         Self {
             kind: HttpMatcherKind::Domain(DomainMatcher::exact(domain)),
@@ -386,6 +417,7 @@ impl<State, Body> HttpMatcher<State, Body> {
 
     /// Create a [`DomainMatcher`] matcher, matching on the exact given [`Domain`]
     /// or a subdomain of it.
+    #[must_use]
     pub fn subdomain(domain: Domain) -> Self {
         Self {
             kind: HttpMatcherKind::Domain(DomainMatcher::sub(domain)),
@@ -396,6 +428,7 @@ impl<State, Body> HttpMatcher<State, Body> {
     /// Create a [`DomainMatcher`] matcher to also match on top of the existing set of [`HttpMatcher`] matchers.
     ///
     /// See [`Self::domain`] for more information.
+    #[must_use]
     pub fn and_domain(self, domain: Domain) -> Self {
         self.and(Self::domain(domain))
     }
@@ -403,6 +436,7 @@ impl<State, Body> HttpMatcher<State, Body> {
     /// Create a sub [`DomainMatcher`] matcher to also match on top of the existing set of [`HttpMatcher`] matchers.
     ///
     /// See [`Self::subdomain`] for more information.
+    #[must_use]
     pub fn and_subdomain(self, domain: Domain) -> Self {
         self.and(Self::subdomain(domain))
     }
@@ -410,6 +444,7 @@ impl<State, Body> HttpMatcher<State, Body> {
     /// Create a [`DomainMatcher`] matcher to match as an alternative to the existing set of [`HttpMatcher`] matchers.
     ///
     /// See [`Self::domain`] for more information.
+    #[must_use]
     pub fn or_domain(self, domain: Domain) -> Self {
         self.or(Self::domain(domain))
     }
@@ -417,11 +452,13 @@ impl<State, Body> HttpMatcher<State, Body> {
     /// Create a sub [`DomainMatcher`] matcher to match as an alternative to the existing set of [`HttpMatcher`] matchers.
     ///
     /// See [`Self::subdomain`] for more information.
+    #[must_use]
     pub fn or_subdomain(self, domain: Domain) -> Self {
         self.or(Self::subdomain(domain))
     }
 
     /// Create a [`VersionMatcher`] matcher.
+    #[must_use]
     pub fn version(version: VersionMatcher) -> Self {
         Self {
             kind: HttpMatcherKind::Version(version),
@@ -432,6 +469,7 @@ impl<State, Body> HttpMatcher<State, Body> {
     /// Add a [`VersionMatcher`] matcher to matcher on top of the existing set of [`HttpMatcher`] matchers.
     ///
     /// See [`VersionMatcher`] for more information.
+    #[must_use]
     pub fn and_version(self, version: VersionMatcher) -> Self {
         self.and(Self::version(version))
     }
@@ -439,11 +477,13 @@ impl<State, Body> HttpMatcher<State, Body> {
     /// Create a [`VersionMatcher`] matcher to match as an alternative to the existing set of [`HttpMatcher`] matchers.
     ///
     /// See [`VersionMatcher`] for more information.
+    #[must_use]
     pub fn or_version(self, version: VersionMatcher) -> Self {
         self.or(Self::version(version))
     }
 
     /// Create a [`UriMatcher`] matcher.
+    #[must_use]
     pub fn uri(re: impl AsRef<str>) -> Self {
         Self {
             kind: HttpMatcherKind::Uri(UriMatcher::new(re)),
@@ -454,6 +494,7 @@ impl<State, Body> HttpMatcher<State, Body> {
     /// Create a [`UriMatcher`] matcher to match on top of the existing set of [`HttpMatcher`] matchers.
     ///
     /// See [`UriMatcher`] for more information.
+    #[must_use]
     pub fn and_uri(self, re: impl AsRef<str>) -> Self {
         self.and(Self::uri(re))
     }
@@ -461,11 +502,13 @@ impl<State, Body> HttpMatcher<State, Body> {
     /// Create a [`UriMatcher`] matcher to match as an alternative to the existing set of [`HttpMatcher`] matchers.
     ///
     /// See [`UriMatcher`] for more information.
+    #[must_use]
     pub fn or_uri(self, re: impl AsRef<str>) -> Self {
         self.or(Self::uri(re))
     }
 
     /// Create a [`PathMatcher`] matcher.
+    #[must_use]
     pub fn path(path: impl AsRef<str>) -> Self {
         Self {
             kind: HttpMatcherKind::Path(PathMatcher::new(path)),
@@ -476,6 +519,7 @@ impl<State, Body> HttpMatcher<State, Body> {
     /// Add a [`PathMatcher`] to match on top of the existing set of [`HttpMatcher`] matchers.
     ///
     /// See [`PathMatcher`] for more information.
+    #[must_use]
     pub fn and_path(self, path: impl AsRef<str>) -> Self {
         self.and(Self::path(path))
     }
@@ -483,11 +527,13 @@ impl<State, Body> HttpMatcher<State, Body> {
     /// Create a [`PathMatcher`] matcher to match as an alternative to the existing set of [`HttpMatcher`] matchers.
     ///
     /// See [`PathMatcher`] for more information.
+    #[must_use]
     pub fn or_path(self, path: impl AsRef<str>) -> Self {
         self.or(Self::path(path))
     }
 
     /// Create a [`HeaderMatcher`] matcher.
+    #[must_use]
     pub fn header(
         name: rama_http_types::header::HeaderName,
         value: rama_http_types::header::HeaderValue,
@@ -501,6 +547,7 @@ impl<State, Body> HttpMatcher<State, Body> {
     /// Add a [`HeaderMatcher`] to match on top of the existing set of [`HttpMatcher`] matchers.
     ///
     /// See [`HeaderMatcher`] for more information.
+    #[must_use]
     pub fn and_header(
         self,
         name: rama_http_types::header::HeaderName,
@@ -512,6 +559,7 @@ impl<State, Body> HttpMatcher<State, Body> {
     /// Create a [`HeaderMatcher`] matcher to match as an alternative to the existing set of [`HttpMatcher`] matchers.
     ///
     /// See [`HeaderMatcher`] for more information.
+    #[must_use]
     pub fn or_header(
         self,
         name: rama_http_types::header::HeaderName,
@@ -522,6 +570,7 @@ impl<State, Body> HttpMatcher<State, Body> {
 
     /// Create a [`HeaderMatcher`] matcher when the given header exists
     /// to match on the existence of a header.
+    #[must_use]
     pub fn header_exists(name: rama_http_types::header::HeaderName) -> Self {
         Self {
             kind: HttpMatcherKind::Header(HeaderMatcher::exists(name)),
@@ -533,6 +582,7 @@ impl<State, Body> HttpMatcher<State, Body> {
     /// on top of the existing set of [`HttpMatcher`] matchers.
     ///
     /// See [`HeaderMatcher`] for more information.
+    #[must_use]
     pub fn and_header_exists(self, name: rama_http_types::header::HeaderName) -> Self {
         self.and(Self::header_exists(name))
     }
@@ -541,11 +591,13 @@ impl<State, Body> HttpMatcher<State, Body> {
     /// as an alternative to the existing set of [`HttpMatcher`] matchers.
     ///
     /// See [`HeaderMatcher`] for more information.
+    #[must_use]
     pub fn or_header_exists(self, name: rama_http_types::header::HeaderName) -> Self {
         self.or(Self::header_exists(name))
     }
 
     /// Create a [`HeaderMatcher`] matcher to match on it containing the given value.
+    #[must_use]
     pub fn header_contains(
         name: rama_http_types::header::HeaderName,
         value: rama_http_types::header::HeaderValue,
@@ -560,6 +612,7 @@ impl<State, Body> HttpMatcher<State, Body> {
     /// on top of the existing set of [`HttpMatcher`] matchers.
     ///
     /// See [`HeaderMatcher`] for more information.
+    #[must_use]
     pub fn and_header_contains(
         self,
         name: rama_http_types::header::HeaderName,
@@ -572,6 +625,7 @@ impl<State, Body> HttpMatcher<State, Body> {
     /// as an alternative to the existing set of [`HttpMatcher`] matchers.
     ///
     /// See [`HeaderMatcher`] for more information.
+    #[must_use]
     pub fn or_header_contains(
         self,
         name: rama_http_types::header::HeaderName,
@@ -581,6 +635,7 @@ impl<State, Body> HttpMatcher<State, Body> {
     }
 
     /// Create a [`SocketMatcher`] matcher.
+    #[must_use]
     pub fn socket(socket: SocketMatcher<State, Request<Body>>) -> Self {
         Self {
             kind: HttpMatcherKind::Socket(socket),
@@ -591,6 +646,7 @@ impl<State, Body> HttpMatcher<State, Body> {
     /// Add a [`SocketMatcher`] matcher to match on top of the existing set of [`HttpMatcher`] matchers.
     ///
     /// See [`SocketMatcher`] for more information.
+    #[must_use]
     pub fn and_socket(self, socket: SocketMatcher<State, Request<Body>>) -> Self {
         self.and(Self::socket(socket))
     }
@@ -598,11 +654,13 @@ impl<State, Body> HttpMatcher<State, Body> {
     /// Create a [`SocketMatcher`] matcher to match as an alternative to the existing set of [`HttpMatcher`] matchers.
     ///
     /// See [`SocketMatcher`] for more information.
+    #[must_use]
     pub fn or_socket(self, socket: SocketMatcher<State, Request<Body>>) -> Self {
         self.or(Self::socket(socket))
     }
 
     /// Create a [`PathMatcher`] matcher to match for a GET request.
+    #[must_use]
     pub fn get(path: impl AsRef<str>) -> Self {
         Self::method_get().and_path(path)
     }
@@ -610,6 +668,7 @@ impl<State, Body> HttpMatcher<State, Body> {
     /// Create a matcher that matches according to a custom predicate.
     ///
     /// See [`rama_core::matcher::Matcher`] for more information.
+    #[must_use]
     pub fn custom<M>(matcher: M) -> Self
     where
         M: rama_core::matcher::Matcher<State, Request<Body>>,
@@ -623,6 +682,7 @@ impl<State, Body> HttpMatcher<State, Body> {
     /// Add a custom matcher to match on top of the existing set of [`HttpMatcher`] matchers.
     ///
     /// See [`rama_core::matcher::Matcher`] for more information.
+    #[must_use]
     pub fn and_custom<M>(self, matcher: M) -> Self
     where
         M: rama_core::matcher::Matcher<State, Request<Body>>,
@@ -633,6 +693,7 @@ impl<State, Body> HttpMatcher<State, Body> {
     /// Create a custom matcher to match as an alternative to the existing set of [`HttpMatcher`] matchers.
     ///
     /// See [`rama_core::matcher::Matcher`] for more information.
+    #[must_use]
     pub fn or_custom<M>(self, matcher: M) -> Self
     where
         M: rama_core::matcher::Matcher<State, Request<Body>>,
@@ -643,12 +704,13 @@ impl<State, Body> HttpMatcher<State, Body> {
     /// Create a [`SubdomainTrieMatcher`] matcher that matches if the request domain is a subdomain of the provided domains.
     ///
     /// See [`SubdomainTrieMatcher`] for more information.
+    #[must_use]
     pub fn any_subdomain<I, S>(domains: I) -> Self
     where
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        HttpMatcher {
+        Self {
             kind: HttpMatcherKind::SubdomainTrie(SubdomainTrieMatcher::new(domains)),
             negate: false,
         }
@@ -657,6 +719,7 @@ impl<State, Body> HttpMatcher<State, Body> {
     /// Add a [`SubdomainTrieMatcher`] matcher that matches if the request domain is a subdomain of the provided domains on top of the existing set of [`HttpMatcher`] matchers.
     ///
     /// See [`SubdomainTrieMatcher`] for more information.
+    #[must_use]
     pub fn and_any_subdomain<I, S>(self, domains: I) -> Self
     where
         I: IntoIterator<Item = S>,
@@ -668,6 +731,7 @@ impl<State, Body> HttpMatcher<State, Body> {
     /// Create a [`SubdomainTrieMatcher`] matcher that matches if the request domain is a subdomain of the provided domains as an alternative to the existing set of [`HttpMatcher`] matchers.
     ///
     /// See [`SubdomainTrieMatcher`] for more information.
+    #[must_use]
     pub fn or_any_subdomain<I, S>(self, domains: I) -> Self
     where
         I: IntoIterator<Item = S>,
@@ -677,67 +741,78 @@ impl<State, Body> HttpMatcher<State, Body> {
     }
 
     /// Create a [`PathMatcher`] matcher to match for a POST request.
+    #[must_use]
     pub fn post(path: impl AsRef<str>) -> Self {
         Self::method_post().and_path(path)
     }
 
     /// Create a [`PathMatcher`] matcher to match for a PUT request.
+    #[must_use]
     pub fn put(path: impl AsRef<str>) -> Self {
         Self::method_put().and_path(path)
     }
 
     /// Create a [`PathMatcher`] matcher to match for a DELETE request.
+    #[must_use]
     pub fn delete(path: impl AsRef<str>) -> Self {
         Self::method_delete().and_path(path)
     }
 
     /// Create a [`PathMatcher`] matcher to match for a PATCH request.
+    #[must_use]
     pub fn patch(path: impl AsRef<str>) -> Self {
         Self::method_patch().and_path(path)
     }
 
     /// Create a [`PathMatcher`] matcher to match for a HEAD request.
+    #[must_use]
     pub fn head(path: impl AsRef<str>) -> Self {
         Self::method_head().and_path(path)
     }
 
     /// Create a [`PathMatcher`] matcher to match for a OPTIONS request.
+    #[must_use]
     pub fn options(path: impl AsRef<str>) -> Self {
         Self::method_options().and_path(path)
     }
 
     /// Create a [`PathMatcher`] matcher to match for a TRACE request.
+    #[must_use]
     pub fn trace(path: impl AsRef<str>) -> Self {
         Self::method_trace().and_path(path)
     }
 
     /// Create a [`PathMatcher`] matcher to match for a CONNECT request.
+    #[must_use]
     pub fn connect(path: impl AsRef<str>) -> Self {
         Self::method_connect().and_path(path)
     }
 
     /// Add a [`HttpMatcher`] to match on top of the existing set of [`HttpMatcher`] matchers.
-    pub fn and(mut self, matcher: HttpMatcher<State, Body>) -> Self {
+    #[must_use]
+    pub fn and(mut self, matcher: Self) -> Self {
         match (self.negate, &mut self.kind) {
             (false, HttpMatcherKind::All(v)) => {
                 v.push(matcher);
                 self
             }
-            _ => HttpMatcher {
+            _ => Self {
                 kind: HttpMatcherKind::All(vec![self, matcher]),
                 negate: false,
             },
         }
     }
 
-    /// Create a [`HttpMatcher`] matcher to match as an alternative to the existing set of [`HttpMatcher`] matchers.
-    pub fn or(mut self, matcher: HttpMatcher<State, Body>) -> Self {
+    /// Create a [`HttpMatcher`] matcher to match
+    /// as an alternative to the existing set of [`HttpMatcher`] matchers.
+    #[must_use]
+    pub fn or(mut self, matcher: Self) -> Self {
         match (self.negate, &mut self.kind) {
             (false, HttpMatcherKind::Any(v)) => {
                 v.push(matcher);
                 self
             }
-            _ => HttpMatcher {
+            _ => Self {
                 kind: HttpMatcherKind::Any(vec![self, matcher]),
                 negate: false,
             },
@@ -745,6 +820,7 @@ impl<State, Body> HttpMatcher<State, Body> {
     }
 
     /// Negate the current matcher
+    #[must_use]
     pub fn negate(self) -> Self {
         Self {
             kind: self.kind,
@@ -781,17 +857,17 @@ where
         req: &Request<Body>,
     ) -> bool {
         match self {
-            HttpMatcherKind::All(all) => all.iter().matches_and(ext, ctx, req),
-            HttpMatcherKind::Method(method) => method.matches(ext, ctx, req),
-            HttpMatcherKind::Path(path) => path.matches(ext, ctx, req),
-            HttpMatcherKind::Domain(domain) => domain.matches(ext, ctx, req),
-            HttpMatcherKind::Version(version) => version.matches(ext, ctx, req),
-            HttpMatcherKind::Uri(uri) => uri.matches(ext, ctx, req),
-            HttpMatcherKind::Header(header) => header.matches(ext, ctx, req),
-            HttpMatcherKind::Socket(socket) => socket.matches(ext, ctx, req),
-            HttpMatcherKind::Any(all) => all.iter().matches_or(ext, ctx, req),
-            HttpMatcherKind::SubdomainTrie(subdomain_trie) => subdomain_trie.matches(ext, ctx, req),
-            HttpMatcherKind::Custom(matcher) => matcher.matches(ext, ctx, req),
+            Self::All(all) => all.iter().matches_and(ext, ctx, req),
+            Self::Method(method) => method.matches(ext, ctx, req),
+            Self::Path(path) => path.matches(ext, ctx, req),
+            Self::Domain(domain) => domain.matches(ext, ctx, req),
+            Self::Version(version) => version.matches(ext, ctx, req),
+            Self::Uri(uri) => uri.matches(ext, ctx, req),
+            Self::Header(header) => header.matches(ext, ctx, req),
+            Self::Socket(socket) => socket.matches(ext, ctx, req),
+            Self::Any(all) => all.iter().matches_or(ext, ctx, req),
+            Self::SubdomainTrie(subdomain_trie) => subdomain_trie.matches(ext, ctx, req),
+            Self::Custom(matcher) => matcher.matches(ext, ctx, req),
         }
     }
 }

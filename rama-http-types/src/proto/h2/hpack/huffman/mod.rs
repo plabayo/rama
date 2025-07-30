@@ -66,8 +66,8 @@ pub(crate) fn encode(src: &[u8], dst: &mut BytesMut) {
 }
 
 impl Decoder {
-    fn new() -> Decoder {
-        Decoder {
+    fn new() -> Self {
+        Self {
             state: 0,
             maybe_eos: false,
         }

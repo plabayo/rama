@@ -154,24 +154,18 @@ pub(crate) fn paste(segments: &[Segment]) -> Result<String> {
                 is_lifetime = true;
             }
             Segment::Env(var) => {
-                let resolved = match std::env::var(&var.value) {
-                    Ok(resolved) => resolved,
-                    Err(_) => {
-                        return Err(Error::new(
-                            var.span,
-                            &format!("no such env var: {:?}", var.value),
-                        ));
-                    }
+                let Ok(resolved) = std::env::var(&var.value) else {
+                    return Err(Error::new(
+                        var.span,
+                        &format!("no such env var: {:?}", var.value),
+                    ));
                 };
                 let resolved = resolved.replace('-', "_");
                 evaluated.push(resolved);
             }
             Segment::Modifier(colon, ident) => {
-                let last = match evaluated.pop() {
-                    Some(last) => last,
-                    None => {
-                        return Err(Error::new2(colon.span, ident.span(), "unexpected modifier"));
-                    }
+                let Some(last) = evaluated.pop() else {
+                    return Err(Error::new2(colon.span, ident.span(), "unexpected modifier"));
                 };
                 match ident.to_string().as_str() {
                     "lower" => {

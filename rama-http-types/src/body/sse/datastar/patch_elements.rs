@@ -48,7 +48,8 @@ impl PatchElements {
     }
 
     /// Consume `self` as an [`Event`].
-    pub fn into_sse_event(self) -> Event<PatchElements> {
+    #[must_use]
+    pub fn into_sse_event(self) -> Event<Self> {
         Event::new()
             .try_with_event(Self::TYPE.as_smol_str())
             .unwrap()
@@ -56,6 +57,7 @@ impl PatchElements {
     }
 
     /// Consume `self` as a [`super::DatastarEvent`].
+    #[must_use]
     pub fn into_datastar_event<T>(self) -> super::DatastarEvent<T> {
         Event::new()
             .try_with_event(Self::TYPE.as_smol_str())
@@ -202,9 +204,8 @@ impl EventDataLineReader for PatchElementsReader {
     }
 
     fn data(&mut self, event: Option<&str>) -> Result<Option<Self::Data>, OpaqueError> {
-        let mut patch_elements = match self.0.take() {
-            Some(elements) => elements,
-            None => return Ok(None),
+        let Some(mut patch_elements) = self.0.take() else {
+            return Ok(None);
         };
 
         if !event

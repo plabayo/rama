@@ -211,8 +211,9 @@ pub struct UnlimitedPolicy;
 
 impl UnlimitedPolicy {
     /// Create a new [`UnlimitedPolicy`].
+    #[must_use]
     pub const fn new() -> Self {
-        UnlimitedPolicy
+        Self
     }
 }
 

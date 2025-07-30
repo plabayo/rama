@@ -15,7 +15,7 @@ impl Error {
     }
 
     pub(super) fn new2(begin: Span, end: Span, msg: &str) -> Self {
-        Error {
+        Self {
             begin,
             end,
             msg: msg.to_owned(),

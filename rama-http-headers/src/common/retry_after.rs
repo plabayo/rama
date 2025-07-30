@@ -43,13 +43,15 @@ enum After {
 
 impl RetryAfter {
     /// Create an `RetryAfter` header with a date value.
-    pub fn date(time: SystemTime) -> RetryAfter {
-        RetryAfter(After::DateTime(time.into()))
+    #[must_use]
+    pub fn date(time: SystemTime) -> Self {
+        Self(After::DateTime(time.into()))
     }
 
     /// Create an `RetryAfter` header with a date value.
-    pub fn delay(dur: Duration) -> RetryAfter {
-        RetryAfter(After::Delay(dur.into()))
+    #[must_use]
+    pub fn delay(dur: Duration) -> Self {
+        Self(After::Delay(dur.into()))
     }
 }
 
@@ -62,18 +64,18 @@ impl TryFromValues for After {
             .next()
             .and_then(|val| {
                 if let Some(delay) = Seconds::from_val(val) {
-                    return Some(After::Delay(delay));
+                    return Some(Self::Delay(delay));
                 }
 
                 let date = HttpDate::from_val(val)?;
-                Some(After::DateTime(date))
+                Some(Self::DateTime(date))
             })
             .ok_or_else(Error::invalid)
     }
 }
 
 impl<'a> From<&'a After> for HeaderValue {
-    fn from(after: &'a After) -> HeaderValue {
+    fn from(after: &'a After) -> Self {
         match *after {
             After::Delay(ref delay) => delay.into(),
             After::DateTime(ref date) => date.into(),

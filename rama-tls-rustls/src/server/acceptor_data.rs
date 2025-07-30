@@ -149,7 +149,7 @@ impl TlsAcceptorDataBuilder {
     /// If [`KeyLogIntent::Environment`] is set to a path, create a key logger that will write to that path
     /// and set it in the current config
     pub fn set_env_key_logger(&mut self) -> Result<&mut Self, OpaqueError> {
-        if let Some(path) = KeyLogIntent::Environment.file_path() {
+        if let Some(path) = KeyLogIntent::Environment.file_path().as_deref() {
             let key_logger = Arc::new(KeyLogFile::new(path)?);
             self.server_config.key_log = key_logger;
         };
@@ -173,6 +173,7 @@ impl TlsAcceptorDataBuilder {
     }
 
     /// Same as [`Self::set_alpn_protocols`] but consuming self
+    #[must_use]
     pub fn with_alpn_protocols(mut self, protos: &[ApplicationProtocol]) -> Self {
         self.set_alpn_protocols(protos);
         self
@@ -185,12 +186,14 @@ impl TlsAcceptorDataBuilder {
     }
 
     /// Same as [`Self::set_alpn_protocols_http_auto`] but consuming self
+    #[must_use]
     pub fn with_alpn_protocols_http_auto(mut self) -> Self {
         self.set_alpn_protocols_http_auto();
         self
     }
 
     /// Build [`TlsAcceptorData`] from the current config
+    #[must_use]
     pub fn build(self) -> TlsAcceptorData {
         self.server_config.into()
     }
@@ -199,6 +202,7 @@ impl TlsAcceptorDataBuilder {
     ///
     /// Useful if you want to use some utilities this builder provides and
     /// then continue on directly with a native rustls config
+    #[must_use]
     pub fn into_rustls_config(self) -> rustls::ServerConfig {
         self.server_config
     }

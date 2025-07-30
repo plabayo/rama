@@ -29,6 +29,7 @@ pub struct AddRequiredRequestHeadersLayer {
 
 impl AddRequiredRequestHeadersLayer {
     /// Create a new [`AddRequiredRequestHeadersLayer`].
+    #[must_use]
     pub const fn new() -> Self {
         Self {
             overwrite: false,
@@ -40,6 +41,7 @@ impl AddRequiredRequestHeadersLayer {
     /// If set to `true`, the headers will be overwritten.
     ///
     /// Default is `false`.
+    #[must_use]
     pub const fn overwrite(mut self, overwrite: bool) -> Self {
         self.overwrite = overwrite;
         self
@@ -57,6 +59,7 @@ impl AddRequiredRequestHeadersLayer {
     /// Set a custom [`USER_AGENT`] header value.
     ///
     /// By default a versioned `rama` value is used.
+    #[must_use]
     pub fn user_agent_header_value(mut self, value: HeaderValue) -> Self {
         self.user_agent_header_value = Some(value);
         self
@@ -65,6 +68,7 @@ impl AddRequiredRequestHeadersLayer {
     /// Maybe set a custom [`USER_AGENT`] header value.
     ///
     /// By default a versioned `rama` value is used.
+    #[must_use]
     pub fn maybe_user_agent_header_value(mut self, value: Option<HeaderValue>) -> Self {
         self.user_agent_header_value = value;
         self
@@ -121,6 +125,7 @@ impl<S> AddRequiredRequestHeaders<S> {
     /// If set to `true`, the headers will be overwritten.
     ///
     /// Default is `false`.
+    #[must_use]
     pub const fn overwrite(mut self, overwrite: bool) -> Self {
         self.overwrite = overwrite;
         self
@@ -138,6 +143,7 @@ impl<S> AddRequiredRequestHeaders<S> {
     /// Set a custom [`USER_AGENT`] header value.
     ///
     /// By default a versioned `rama` value is used.
+    #[must_use]
     pub fn user_agent_header_value(mut self, value: HeaderValue) -> Self {
         self.user_agent_header_value = Some(value);
         self
@@ -146,6 +152,7 @@ impl<S> AddRequiredRequestHeaders<S> {
     /// Maybe set a custom [`USER_AGENT`] header value.
     ///
     /// By default a versioned `rama` value is used.
+    #[must_use]
     pub fn maybe_user_agent_header_value(mut self, value: Option<HeaderValue>) -> Self {
         self.user_agent_header_value = value;
         self

@@ -120,36 +120,42 @@ impl Default for WebSocketConfig {
 
 impl WebSocketConfig {
     /// Set [`Self::read_buffer_size`].
+    #[must_use]
     pub fn read_buffer_size(mut self, read_buffer_size: usize) -> Self {
         self.read_buffer_size = read_buffer_size;
         self
     }
 
     /// Set [`Self::write_buffer_size`].
+    #[must_use]
     pub fn write_buffer_size(mut self, write_buffer_size: usize) -> Self {
         self.write_buffer_size = write_buffer_size;
         self
     }
 
     /// Set [`Self::max_write_buffer_size`].
+    #[must_use]
     pub fn max_write_buffer_size(mut self, max_write_buffer_size: usize) -> Self {
         self.max_write_buffer_size = max_write_buffer_size;
         self
     }
 
     /// Set [`Self::max_message_size`].
+    #[must_use]
     pub fn max_message_size(mut self, max_message_size: Option<usize>) -> Self {
         self.max_message_size = max_message_size;
         self
     }
 
     /// Set [`Self::max_frame_size`].
+    #[must_use]
     pub fn max_frame_size(mut self, max_frame_size: Option<usize>) -> Self {
         self.max_frame_size = max_frame_size;
         self
     }
 
     /// Set [`Self::accept_unmasked_frames`].
+    #[must_use]
     pub fn accept_unmasked_frames(mut self, accept_unmasked_frames: bool) -> Self {
         self.accept_unmasked_frames = accept_unmasked_frames;
         self
@@ -193,7 +199,7 @@ impl<Stream> WebSocket<Stream> {
     /// # Panics
     /// Panics if config is invalid e.g. `max_write_buffer_size <= write_buffer_size`.
     pub fn from_raw_socket(stream: Stream, role: Role, config: Option<WebSocketConfig>) -> Self {
-        WebSocket {
+        Self {
             socket: stream,
             context: WebSocketContext::new(role, config),
         }
@@ -209,7 +215,7 @@ impl<Stream> WebSocket<Stream> {
         role: Role,
         config: Option<WebSocketConfig>,
     ) -> Self {
-        WebSocket {
+        Self {
             socket: stream,
             context: WebSocketContext::from_partially_read(part, role, config),
         }
@@ -375,6 +381,7 @@ impl WebSocketContext {
     ///
     /// # Panics
     /// Panics if config is invalid e.g. `max_write_buffer_size <= write_buffer_size`.
+    #[must_use]
     pub fn new(role: Role, config: Option<WebSocketConfig>) -> Self {
         let conf = config.unwrap_or_default();
         Self::_new(role, FrameCodec::new(conf.read_buffer_size), conf)
@@ -384,6 +391,7 @@ impl WebSocketContext {
     ///
     /// # Panics
     /// Panics if config is invalid e.g. `max_write_buffer_size <= write_buffer_size`.
+    #[must_use]
     pub fn from_partially_read(part: Vec<u8>, role: Role, config: Option<WebSocketConfig>) -> Self {
         let conf = config.unwrap_or_default();
         Self::_new(
@@ -611,7 +619,7 @@ impl WebSocketContext {
     where
         Stream: Read + Write,
     {
-        if let WebSocketState::Active = self.state {
+        if self.state == WebSocketState::Active {
             self.state = WebSocketState::ClosedByUs;
             let frame = Frame::close(code);
             self._write(stream, Some(frame))?;
@@ -828,20 +836,20 @@ enum WebSocketState {
 impl WebSocketState {
     /// Tell if we're allowed to process normal messages.
     fn is_active(self) -> bool {
-        matches!(self, WebSocketState::Active)
+        matches!(self, Self::Active)
     }
 
     /// Tell if we should process incoming data. Note that if we send a close frame
     /// but the remote hasn't confirmed, they might have sent data before they receive our
     /// close frame, so we should still pass those to client code, hence ClosedByUs is valid.
     fn can_read(self) -> bool {
-        matches!(self, WebSocketState::Active | WebSocketState::ClosedByUs)
+        matches!(self, Self::Active | Self::ClosedByUs)
     }
 
     /// Check if the state is active, return error if not.
     fn check_not_terminated(self) -> Result<(), ProtocolError> {
         match self {
-            WebSocketState::Terminated => Err(ProtocolError::Io(io::Error::new(
+            Self::Terminated => Err(ProtocolError::Io(io::Error::new(
                 io::ErrorKind::NotConnected,
                 OpaqueError::from_display("Trying to work with closed connection"),
             ))),

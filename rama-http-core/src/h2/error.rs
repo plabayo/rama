@@ -80,7 +80,7 @@ impl Error {
     }
 
     pub(crate) fn from_io(err: io::Error) -> Self {
-        Error {
+        Self {
             kind: Kind::Io(err),
         }
     }
@@ -117,8 +117,8 @@ impl Error {
 }
 
 impl From<proto::Error> for Error {
-    fn from(src: proto::Error) -> Error {
-        Error {
+    fn from(src: proto::Error) -> Self {
+        Self {
             kind: match src {
                 proto::Error::Reset(stream_id, reason, initiator) => {
                     Kind::Reset(stream_id, reason, initiator)
@@ -136,15 +136,15 @@ impl From<proto::Error> for Error {
 }
 
 impl From<Reason> for Error {
-    fn from(src: Reason) -> Error {
-        Error {
+    fn from(src: Reason) -> Self {
+        Self {
             kind: Kind::Reason(src),
         }
     }
 }
 
 impl From<SendError> for Error {
-    fn from(src: SendError) -> Error {
+    fn from(src: SendError) -> Self {
         match src {
             SendError::User(e) => e.into(),
             SendError::Connection(e) => e.into(),
@@ -153,8 +153,8 @@ impl From<SendError> for Error {
 }
 
 impl From<UserError> for Error {
-    fn from(src: UserError) -> Error {
-        Error {
+    fn from(src: UserError) -> Self {
+        Self {
             kind: Kind::User(src),
         }
     }

@@ -54,6 +54,7 @@ pub struct DoNotWriteResponse;
 
 impl DoNotWriteResponse {
     /// Create a new [`DoNotWriteResponse`] marker.
+    #[must_use]
     pub const fn new() -> Self {
         Self
     }
@@ -95,12 +96,14 @@ impl ResponseWriterLayer<UnboundedSender<Response>> {
 
     /// Create a new [`ResponseWriterLayer`] that prints responses to stdout
     /// over an unbounded channel.
+    #[must_use]
     pub fn stdout_unbounded(executor: &Executor, mode: Option<WriterMode>) -> Self {
         Self::writer_unbounded(executor, stdout(), mode)
     }
 
     /// Create a new [`ResponseWriterLayer`] that prints responses to stderr
     /// over an unbounded channel.
+    #[must_use]
     pub fn stderr_unbounded(executor: &Executor, mode: Option<WriterMode>) -> Self {
         Self::writer_unbounded(executor, stderr(), mode)
     }
@@ -146,12 +149,14 @@ impl ResponseWriterLayer<Sender<Response>> {
 
     /// Create a new [`ResponseWriterLayer`] that prints responses to stdout
     /// over a bounded channel with a fixed buffer size.
+    #[must_use]
     pub fn stdout(executor: &Executor, buffer_size: usize, mode: Option<WriterMode>) -> Self {
         Self::writer(executor, stdout(), buffer_size, mode)
     }
 
     /// Create a new [`ResponseWriterLayer`] that prints responses to stderr
     /// over a bounded channel with a fixed buffer size.
+    #[must_use]
     pub fn stderr(executor: &Executor, buffer_size: usize, mode: Option<WriterMode>) -> Self {
         Self::writer(executor, stderr(), buffer_size, mode)
     }
@@ -299,21 +304,20 @@ where
     ) -> Result<Self::Response, Self::Error> {
         let do_not_print_response: Option<DoNotWriteResponse> = ctx.get().cloned();
         let resp = self.inner.serve(ctx, req).await.map_err(Into::into)?;
-        let resp = match do_not_print_response {
-            Some(_) => resp.map(Body::new),
-            None => {
-                let (parts, body) = resp.into_parts();
-                let body_bytes = body
-                    .collect()
-                    .await
-                    .map_err(|err| OpaqueError::from_boxed(err.into()))
-                    .context("printer prepare: collect response body")?
-                    .to_bytes();
-                let resp: rama_http_types::Response<Body> =
-                    Response::from_parts(parts.clone(), Body::from(body_bytes.clone()));
-                self.writer.write_response(resp).await;
-                Response::from_parts(parts, Body::from(body_bytes))
-            }
+        let resp = if do_not_print_response.is_some() {
+            resp.map(Body::new)
+        } else {
+            let (parts, body) = resp.into_parts();
+            let body_bytes = body
+                .collect()
+                .await
+                .map_err(|err| OpaqueError::from_boxed(err.into()))
+                .context("printer prepare: collect response body")?
+                .to_bytes();
+            let resp: rama_http_types::Response<Body> =
+                Response::from_parts(parts.clone(), Body::from(body_bytes.clone()));
+            self.writer.write_response(resp).await;
+            Response::from_parts(parts, Body::from(body_bytes))
         };
         Ok(resp)
     }

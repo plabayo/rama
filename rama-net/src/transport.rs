@@ -54,13 +54,12 @@ pub trait TryRefIntoTransportContext<State> {
 impl<T: HttpRequestParts, State> TryFrom<(&Context<State>, &T)> for TransportContext {
     type Error = OpaqueError;
 
-    fn try_from((ctx, req): (&Context<State>, &T)) -> Result<TransportContext, Self::Error> {
-        Ok(match ctx.get::<RequestContext>() {
-            Some(req_ctx) => req_ctx.into(),
-            None => {
-                let req_ctx = RequestContext::try_from((ctx, req))?;
-                req_ctx.into()
-            }
+    fn try_from((ctx, req): (&Context<State>, &T)) -> Result<Self, Self::Error> {
+        Ok(if let Some(req_ctx) = ctx.get::<RequestContext>() {
+            req_ctx.into()
+        } else {
+            let req_ctx = RequestContext::try_from((ctx, req))?;
+            req_ctx.into()
         })
     }
 }

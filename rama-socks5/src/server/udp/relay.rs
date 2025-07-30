@@ -189,48 +189,46 @@ impl UdpSocketRelay {
         }
     }
 
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub(super) async fn send_to_south(
         &mut self,
         data: Option<Bytes>,
         server_address: SocketAddress,
     ) -> Result<(), BoxError> {
-        let result = match data {
-            Some(data) => {
+        let result = if let Some(data) = data {
+            tracing::trace!(
+                network.peer.address = %self.client_address.ip_addr(),
+                network.peer.port = %self.client_address.port(),
+                server.address = %server_address.ip_addr(),
+                server.port = %server_address.port(),
+                "send packet south: data from input (len = {})",
+                data.len()
+            );
+            if data.len() > self.south_max_size {
                 tracing::trace!(
                     network.peer.address = %self.client_address.ip_addr(),
                     network.peer.port = %self.client_address.port(),
                     server.address = %server_address.ip_addr(),
                     server.port = %server_address.port(),
-                    "send packet south: data from input (len = {})",
-                    data.len()
+                    "drop packet south: length is too large for defined limit (len = {}; max len = {})",
+                    data.len(),
+                    self.south_max_size,
                 );
-                if data.len() > self.south_max_size {
-                    tracing::trace!(
-                        network.peer.address = %self.client_address.ip_addr(),
-                        network.peer.port = %self.client_address.port(),
-                        server.address = %server_address.ip_addr(),
-                        server.port = %server_address.port(),
-                        "drop packet south: length is too large for defined limit (len = {}; max len = {})",
-                        data.len(),
-                        self.south_max_size,
-                    );
-                    return Ok(());
-                }
-                self.south.send_to(&data, server_address).await
+                return Ok(());
             }
-            None => {
-                tracing::trace!(
-                    network.peer.address = %self.client_address.ip_addr(),
-                    network.peer.port = %self.client_address.port(),
-                    server.address = %server_address.ip_addr(),
-                    server.port = %server_address.port(),
-                    "send packet south: data from north socket (len = {})",
-                    self.north_read_buf.len(),
-                );
-                self.south
-                    .send_to(&self.north_read_buf, server_address)
-                    .await
-            }
+            self.south.send_to(&data, server_address).await
+        } else {
+            tracing::trace!(
+                network.peer.address = %self.client_address.ip_addr(),
+                network.peer.port = %self.client_address.port(),
+                server.address = %server_address.ip_addr(),
+                server.port = %server_address.port(),
+                "send packet south: data from north socket (len = {})",
+                self.north_read_buf.len(),
+            );
+            self.south
+                .send_to(&self.north_read_buf, server_address)
+                .await
         };
 
         match result {
@@ -282,47 +280,44 @@ impl UdpSocketRelay {
 
         self.north_write_buf.truncate(0);
 
-        match data {
-            Some(data) => {
+        if let Some(data) = data {
+            tracing::trace!(
+                network.peer.address = %self.client_address.ip_addr(),
+                network.peer.port = %self.client_address.port(),
+                server.address = %server_address.ip_addr(),
+                server.port = %server_address.port(),
+                "send packet north: data from input (len = {})",
+                data.len(),
+            );
+
+            if data.len() > self.north_max_size {
                 tracing::trace!(
                     network.peer.address = %self.client_address.ip_addr(),
                     network.peer.port = %self.client_address.port(),
                     server.address = %server_address.ip_addr(),
                     server.port = %server_address.port(),
-                    "send packet north: data from input (len = {})",
+                    "drop packet north: length is too large for defined limit (len = {}; max len = {})",
                     data.len(),
+                    self.north_max_size,
                 );
-
-                if data.len() > self.north_max_size {
-                    tracing::trace!(
-                        network.peer.address = %self.client_address.ip_addr(),
-                        network.peer.port = %self.client_address.port(),
-                        server.address = %server_address.ip_addr(),
-                        server.port = %server_address.port(),
-                        "drop packet north: length is too large for defined limit (len = {}; max len = {})",
-                        data.len(),
-                        self.north_max_size,
-                    );
-                    return Ok(());
-                }
-
-                header.write_to_buf(&mut self.north_write_buf);
-                self.north_write_buf.extend_from_slice(&data);
+                return Ok(());
             }
-            None => {
-                tracing::trace!(
-                    network.peer.address = %self.client_address.ip_addr(),
-                    network.peer.port = %self.client_address.port(),
-                    server.address = %server_address.ip_addr(),
-                    server.port = %server_address.port(),
-                    "send packet north: data from south socket (len = {})",
-                    self.north_read_buf.len(),
-                );
-                self.north_write_buf
-                    .resize(self.south_read_buf.len() + header.serialized_len(), 0);
-                header.write_to_buf(&mut self.north_write_buf);
-                self.north_write_buf.extend_from_slice(&self.south_read_buf);
-            }
+
+            header.write_to_buf(&mut self.north_write_buf);
+            self.north_write_buf.extend_from_slice(&data);
+        } else {
+            tracing::trace!(
+                network.peer.address = %self.client_address.ip_addr(),
+                network.peer.port = %self.client_address.port(),
+                server.address = %server_address.ip_addr(),
+                server.port = %server_address.port(),
+                "send packet north: data from south socket (len = {})",
+                self.north_read_buf.len(),
+            );
+            self.north_write_buf
+                .resize(self.south_read_buf.len() + header.serialized_len(), 0);
+            header.write_to_buf(&mut self.north_write_buf);
+            self.north_write_buf.extend_from_slice(&self.south_read_buf);
         };
 
         match self

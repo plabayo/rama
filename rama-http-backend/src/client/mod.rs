@@ -54,6 +54,7 @@ impl<State, BodyIn, ConnResponse> Clone for EasyHttpWebClient<State, BodyIn, Con
 
 impl EasyHttpWebClient<(), (), ()> {
     /// Create a [`EasyHttpWebClientBuilder`] to easily create a [`EasyHttpWebClient`]
+    #[must_use]
     pub fn builder() -> EasyHttpWebClientBuilder {
         EasyHttpWebClientBuilder::new()
     }
@@ -108,11 +109,13 @@ where
 
 impl<State, BodyIn, ConnResponse> EasyHttpWebClient<State, BodyIn, ConnResponse> {
     /// Create a new [`EasyHttpWebClient`] using the provided connector
+    #[must_use]
     pub fn new(connector: BoxService<State, Request<BodyIn>, ConnResponse, BoxError>) -> Self {
         Self { connector }
     }
 
     /// Set the [`Connector`] that this [`EasyHttpWebClient`] will use
+    #[must_use]
     pub fn with_connector<BodyInNew, ConnResponseNew>(
         self,
         connector: BoxService<State, Request<BodyInNew>, ConnResponseNew, BoxError>,
@@ -207,10 +210,12 @@ mod easy_connector {
     pub struct PoolStage;
 
     impl EasyHttpWebClientBuilder {
+        #[must_use]
         pub fn new() -> Self {
-            EasyHttpWebClientBuilder::default()
+            Self::default()
         }
 
+        #[must_use]
         pub fn with_default_transport_connector(
             self,
         ) -> EasyHttpWebClientBuilder<TcpConnector, TransportStage> {

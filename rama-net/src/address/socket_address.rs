@@ -15,8 +15,9 @@ pub struct SocketAddress {
 
 impl SocketAddress {
     /// creates a new [`SocketAddress`]
+    #[must_use]
     pub const fn new(ip_addr: IpAddr, port: u16) -> Self {
-        SocketAddress { ip_addr, port }
+        Self { ip_addr, port }
     }
 
     /// creates a new local ipv4 [`SocketAddress`] for the given port
@@ -29,8 +30,9 @@ impl SocketAddress {
     /// let addr = SocketAddress::local_ipv4(8080);
     /// assert_eq!("127.0.0.1:8080", addr.to_string());
     /// ```
+    #[must_use]
     pub const fn local_ipv4(port: u16) -> Self {
-        SocketAddress {
+        Self {
             ip_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
             port,
         }
@@ -46,8 +48,9 @@ impl SocketAddress {
     /// let addr = SocketAddress::local_ipv6(8080);
     /// assert_eq!("[::1]:8080", addr.to_string());
     /// ```
+    #[must_use]
     pub const fn local_ipv6(port: u16) -> Self {
-        SocketAddress {
+        Self {
             ip_addr: IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1)),
             port,
         }
@@ -63,8 +66,9 @@ impl SocketAddress {
     /// let addr = SocketAddress::default_ipv4(8080);
     /// assert_eq!("0.0.0.0:8080", addr.to_string());
     /// ```
+    #[must_use]
     pub const fn default_ipv4(port: u16) -> Self {
-        SocketAddress {
+        Self {
             ip_addr: IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
             port,
         }
@@ -80,8 +84,9 @@ impl SocketAddress {
     /// let addr = SocketAddress::default_ipv6(8080);
     /// assert_eq!("[::]:8080", addr.to_string());
     /// ```
+    #[must_use]
     pub const fn default_ipv6(port: u16) -> Self {
-        SocketAddress {
+        Self {
             ip_addr: IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0)),
             port,
         }
@@ -97,24 +102,28 @@ impl SocketAddress {
     /// let addr = SocketAddress::broadcast_ipv4(8080);
     /// assert_eq!("255.255.255.255:8080", addr.to_string());
     /// ```
+    #[must_use]
     pub const fn broadcast_ipv4(port: u16) -> Self {
-        SocketAddress {
+        Self {
             ip_addr: IpAddr::V4(Ipv4Addr::new(255, 255, 255, 255)),
             port,
         }
     }
 
     /// Gets the [`IpAddr`] reference.
+    #[must_use]
     pub fn ip_addr(&self) -> IpAddr {
         self.ip_addr
     }
 
     /// Gets the port
+    #[must_use]
     pub fn port(&self) -> u16 {
         self.port
     }
 
     /// Consume self into its parts: `(ip_addr, port)`
+    #[must_use]
     pub fn into_parts(self) -> (IpAddr, u16) {
         (self.ip_addr, self.port)
     }
@@ -138,7 +147,7 @@ impl From<&SocketAddress> for crate::socket::core::SockAddr {
 
 impl From<SocketAddr> for SocketAddress {
     fn from(addr: SocketAddr) -> Self {
-        SocketAddress {
+        Self {
             ip_addr: addr.ip(),
             port: addr.port(),
         }
@@ -147,7 +156,7 @@ impl From<SocketAddr> for SocketAddress {
 
 impl From<&SocketAddr> for SocketAddress {
     fn from(addr: &SocketAddr) -> Self {
-        SocketAddress {
+        Self {
             ip_addr: addr.ip(),
             port: addr.port(),
         }
@@ -156,7 +165,7 @@ impl From<&SocketAddr> for SocketAddress {
 
 impl From<SocketAddrV4> for SocketAddress {
     fn from(value: SocketAddrV4) -> Self {
-        SocketAddress {
+        Self {
             ip_addr: (*value.ip()).into(),
             port: value.port(),
         }
@@ -165,7 +174,7 @@ impl From<SocketAddrV4> for SocketAddress {
 
 impl From<SocketAddrV6> for SocketAddress {
     fn from(value: SocketAddrV6) -> Self {
-        SocketAddress {
+        Self {
             ip_addr: (*value.ip()).into(),
             port: value.port(),
         }
@@ -174,7 +183,7 @@ impl From<SocketAddrV6> for SocketAddress {
 
 impl From<SocketAddress> for SocketAddr {
     fn from(addr: SocketAddress) -> Self {
-        SocketAddr::new(addr.ip_addr, addr.port)
+        Self::new(addr.ip_addr, addr.port)
     }
 }
 
@@ -234,7 +243,7 @@ impl FromStr for SocketAddress {
     type Err = OpaqueError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        SocketAddress::try_from(s)
+        Self::try_from(s)
     }
 }
 
@@ -265,7 +274,7 @@ impl TryFrom<&str> for SocketAddress {
             IpAddr::V6(_) if !s.starts_with('[') => Err(OpaqueError::from_display(
                 "missing brackets for IPv6 address with port",
             )),
-            _ => Ok(SocketAddress { ip_addr, port }),
+            _ => Ok(Self { ip_addr, port }),
         }
     }
 }

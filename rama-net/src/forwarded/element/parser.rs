@@ -82,23 +82,20 @@ fn parse_next_forwarded_element(
     };
 
     loop {
-        let separator_index = match bytes.iter().position(|b| *b == b'=') {
-            Some(index) => index,
-            None => {
-                bytes = trim_left(bytes);
-                // finished parsing
-                break;
-            }
+        let Some(separator_index) = bytes.iter().position(|b| *b == b'=') else {
+            bytes = trim_left(bytes);
+            // finished parsing
+            break;
         };
 
         let key = parse_value(trim(&bytes[..separator_index]))?;
         bytes = trim_left(&bytes[separator_index + 1..]);
 
-        let (value, quoted) = match bytes
+        let (value, quoted) = if let Some(index) = bytes
             .iter()
             .position(|b| *b == b'"' || *b == b';' || *b == b',')
         {
-            Some(index) => match bytes[index] {
+            match bytes[index] {
                 b'"' => {
                     if index != 0 {
                         return Err(OpaqueError::from_display("dangling quote string quote"));
@@ -121,12 +118,11 @@ fn parse_next_forwarded_element(
                 _ => {
                     unreachable!("we should only ever find a quote or semicolon at this point")
                 }
-            },
-            None => {
-                let value = bytes;
-                bytes = &bytes[bytes.len()..];
-                (value, false)
             }
+        } else {
+            let value = bytes;
+            bytes = &bytes[bytes.len()..];
+            (value, false)
         };
 
         let value = parse_value(value)?;

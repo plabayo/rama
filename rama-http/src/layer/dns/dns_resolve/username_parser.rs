@@ -21,6 +21,7 @@ pub struct DnsResolveModeUsernameParser {
 
 impl DnsResolveModeUsernameParser {
     /// Create a new [`DnsResolveModeUsernameParser`].
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }

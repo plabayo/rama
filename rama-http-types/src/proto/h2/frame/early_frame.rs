@@ -13,11 +13,12 @@ pub enum EarlyFrame {
 
 impl EarlyFrame {
     /// returns true if this early frame applies to a stream already created
+    #[must_use]
     pub fn stream_created(&self, next_stream_id: StreamId) -> bool {
         match self {
-            EarlyFrame::Priority(priority) => next_stream_id > priority.stream_id,
-            EarlyFrame::Settings(_) => true,
-            EarlyFrame::WindowUpdate(window_update) => next_stream_id > window_update.stream_id,
+            Self::Priority(priority) => next_stream_id > priority.stream_id,
+            Self::Settings(_) => true,
+            Self::WindowUpdate(window_update) => next_stream_id > window_update.stream_id,
         }
     }
 }
@@ -25,9 +26,9 @@ impl EarlyFrame {
 impl<T> From<EarlyFrame> for Frame<T> {
     fn from(value: EarlyFrame) -> Self {
         match value {
-            EarlyFrame::Priority(priority) => Frame::Priority(priority),
-            EarlyFrame::Settings(settings) => Frame::Settings(settings),
-            EarlyFrame::WindowUpdate(window_update) => Frame::WindowUpdate(window_update),
+            EarlyFrame::Priority(priority) => Self::Priority(priority),
+            EarlyFrame::Settings(settings) => Self::Settings(settings),
+            EarlyFrame::WindowUpdate(window_update) => Self::WindowUpdate(window_update),
         }
     }
 }
@@ -38,12 +39,14 @@ pub struct EarlyFrameStreamContext {
 }
 
 impl EarlyFrameStreamContext {
+    #[must_use]
     pub fn new_nop() -> Self {
         Self {
             kind: EarlyFrameKind::Nop,
         }
     }
 
+    #[must_use]
     pub fn new_recorder() -> Self {
         Self {
             kind: EarlyFrameKind::Recorder(EarlyFrameRecorder {
@@ -53,6 +56,7 @@ impl EarlyFrameStreamContext {
         }
     }
 
+    #[must_use]
     pub fn new_replayer(mut frames: Vec<EarlyFrame>) -> (Self, Option<Settings>) {
         frames.reverse();
         let settings = match frames.pop() {
@@ -96,7 +100,7 @@ impl EarlyFrameStreamContext {
         }
     }
 
-    pub fn record_windows_update_frame(&mut self, frame: &WindowUpdate) {
+    pub fn record_windows_update_frame(&mut self, frame: WindowUpdate) {
         tracing::trace!("record windows update frame: {frame:?}");
         if let EarlyFrameKind::Recorder(ref mut recorder) = self.kind {
             recorder.record_windows_update_frame(frame);
@@ -160,6 +164,7 @@ struct EarlyFrameRecorder {
 pub struct EarlyFrameCapture(Arc<Vec<EarlyFrame>>);
 
 impl EarlyFrameCapture {
+    #[must_use]
     pub fn as_slice(&self) -> &[EarlyFrame] {
         &self.0
     }
@@ -209,9 +214,9 @@ impl EarlyFrameRecorder {
         }
     }
 
-    fn record_windows_update_frame(&mut self, frame: &WindowUpdate) {
+    fn record_windows_update_frame(&mut self, frame: WindowUpdate) {
         if let Some(ref mut c) = self.recording {
-            c.push(EarlyFrame::WindowUpdate(*frame));
+            c.push(EarlyFrame::WindowUpdate(frame));
             if c.len() >= Self::MAX_FRAMES {
                 self.frozen = Some(self.recording.take().unwrap().into());
             }

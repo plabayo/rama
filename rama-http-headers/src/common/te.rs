@@ -37,7 +37,8 @@ derive_header! {
 
 impl Te {
     /// Create a `TE: trailers` header.
+    #[must_use]
     pub fn trailers() -> Self {
-        Te(HeaderValue::from_static("trailers").into())
+        Self(HeaderValue::from_static("trailers").into())
     }
 }

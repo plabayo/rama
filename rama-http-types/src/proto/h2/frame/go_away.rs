@@ -14,8 +14,9 @@ pub struct GoAway {
 }
 
 impl GoAway {
+    #[must_use]
     pub fn new(last_stream_id: StreamId, reason: Reason) -> Self {
-        GoAway {
+        Self {
             last_stream_id,
             error_code: reason,
             debug_data: Bytes::new(),
@@ -42,7 +43,7 @@ impl GoAway {
         &self.debug_data
     }
 
-    pub fn load(payload: &[u8]) -> Result<GoAway, Error> {
+    pub fn load(payload: &[u8]) -> Result<Self, Error> {
         if payload.len() < 8 {
             return Err(Error::BadFrameSize);
         }
@@ -51,7 +52,7 @@ impl GoAway {
         let error_code = unpack_octets_as_u32(payload, 4);
         let debug_data = Bytes::copy_from_slice(&payload[8..]);
 
-        Ok(GoAway {
+        Ok(Self {
             last_stream_id,
             error_code: error_code.into(),
             debug_data,
@@ -70,7 +71,7 @@ impl GoAway {
 
 impl<B> From<GoAway> for Frame<B> {
     fn from(src: GoAway) -> Self {
-        Frame::GoAway(src)
+        Self::GoAway(src)
     }
 }
 

@@ -209,23 +209,24 @@ where
     let client = EasyHttpWebClient::default();
     match client.serve(ctx, req).await {
         Ok(resp) => {
-            match resp
+            if let Some(client_socket_info) = resp
                 .extensions()
                 .get::<RequestContextExt>()
                 .and_then(|ext| ext.get::<ClientSocketInfo>())
             {
-                Some(client_socket_info) => tracing::info!(
+                tracing::info!(
                     http.response.status_code = %resp.status(),
                     network.local.port = client_socket_info.local_addr().map(|addr| addr.port().to_string()).unwrap_or_default(),
                     network.local.address = client_socket_info.local_addr().map(|addr| addr.ip().to_string()).unwrap_or_default(),
                     network.peer.port = %client_socket_info.peer_addr().port(),
                     network.peer.address = %client_socket_info.peer_addr().ip(),
                     "http plain text proxy received response",
-                ),
-                None => tracing::info!(
+                )
+            } else {
+                tracing::info!(
                     http.response.status_code = %resp.status(),
                     "http plain text proxy received response, IP info unknown",
-                ),
+                )
             };
             Ok(resp)
         }

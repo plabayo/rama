@@ -38,8 +38,9 @@ derive_header! {
 
 impl Vary {
     /// Create a new `Very: *` header.
-    pub fn any() -> Vary {
-        Vary(HeaderValue::from_static("*").into())
+    #[must_use]
+    pub fn any() -> Self {
+        Self(HeaderValue::from_static("*").into())
     }
 
     /// Check if this includes `*`.
@@ -55,7 +56,7 @@ impl Vary {
 
 impl From<HeaderName> for Vary {
     fn from(name: HeaderName) -> Self {
-        Vary(HeaderValue::from(name).into())
+        Self(HeaderValue::from(name).into())
     }
 }
 

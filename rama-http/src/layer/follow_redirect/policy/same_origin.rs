@@ -10,6 +10,7 @@ pub struct SameOrigin {
 
 impl SameOrigin {
     /// Create a new [`SameOrigin`].
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }

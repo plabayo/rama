@@ -22,6 +22,7 @@ pub struct AddRequiredResponseHeadersLayer {
 
 impl AddRequiredResponseHeadersLayer {
     /// Create a new [`AddRequiredResponseHeadersLayer`].
+    #[must_use]
     pub const fn new() -> Self {
         Self {
             overwrite: false,
@@ -33,6 +34,7 @@ impl AddRequiredResponseHeadersLayer {
     /// If set to `true`, the headers will be overwritten.
     ///
     /// Default is `false`.
+    #[must_use]
     pub const fn overwrite(mut self, overwrite: bool) -> Self {
         self.overwrite = overwrite;
         self
@@ -50,6 +52,7 @@ impl AddRequiredResponseHeadersLayer {
     /// Set a custom [`SERVER`] header value.
     ///
     /// By default a versioned `rama` value is used.
+    #[must_use]
     pub fn server_header_value(mut self, value: HeaderValue) -> Self {
         self.server_header_value = Some(value);
         self
@@ -58,6 +61,7 @@ impl AddRequiredResponseHeadersLayer {
     /// Maybe set a custom [`SERVER`] header value.
     ///
     /// By default a versioned `rama` value is used.
+    #[must_use]
     pub fn maybe_server_header_value(mut self, value: Option<HeaderValue>) -> Self {
         self.server_header_value = value;
         self
@@ -114,6 +118,7 @@ impl<S> AddRequiredResponseHeaders<S> {
     /// If set to `true`, the headers will be overwritten.
     ///
     /// Default is `false`.
+    #[must_use]
     pub const fn overwrite(mut self, overwrite: bool) -> Self {
         self.overwrite = overwrite;
         self
@@ -131,6 +136,7 @@ impl<S> AddRequiredResponseHeaders<S> {
     /// Set a custom [`SERVER`] header value.
     ///
     /// By default a versioned `rama` value is used.
+    #[must_use]
     pub fn server_header_value(mut self, value: HeaderValue) -> Self {
         self.server_header_value = Some(value);
         self
@@ -139,6 +145,7 @@ impl<S> AddRequiredResponseHeaders<S> {
     /// Maybe set a custom [`SERVER`] header value.
     ///
     /// By default a versioned `rama` value is used.
+    #[must_use]
     pub fn maybe_server_header_value(mut self, value: Option<HeaderValue>) -> Self {
         self.server_header_value = value;
         self

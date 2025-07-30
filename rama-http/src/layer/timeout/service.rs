@@ -15,8 +15,9 @@ pub struct TimeoutLayer {
 
 impl TimeoutLayer {
     /// Creates a new [`TimeoutLayer`].
+    #[must_use]
     pub const fn new(timeout: Duration) -> Self {
-        TimeoutLayer { timeout }
+        Self { timeout }
     }
 }
 
@@ -59,7 +60,7 @@ impl<S: fmt::Debug> fmt::Debug for Timeout<S> {
 
 impl<S: Clone> Clone for Timeout<S> {
     fn clone(&self) -> Self {
-        Timeout {
+        Self {
             inner: self.inner.clone(),
             timeout: self.timeout,
         }
@@ -102,6 +103,7 @@ pub struct RequestBodyTimeoutLayer {
 
 impl RequestBodyTimeoutLayer {
     /// Creates a new [`RequestBodyTimeoutLayer`].
+    #[must_use]
     pub fn new(timeout: Duration) -> Self {
         Self { timeout }
     }
@@ -134,6 +136,7 @@ impl<S> RequestBodyTimeout<S> {
     /// Returns a new [`Layer`] that wraps services with a [`RequestBodyTimeoutLayer`] middleware.
     ///
     /// [`Layer`]: tower_layer::Layer
+    #[must_use]
     pub fn layer(timeout: Duration) -> RequestBodyTimeoutLayer {
         RequestBodyTimeoutLayer::new(timeout)
     }
@@ -168,6 +171,7 @@ pub struct ResponseBodyTimeoutLayer {
 
 impl ResponseBodyTimeoutLayer {
     /// Creates a new [`ResponseBodyTimeoutLayer`].
+    #[must_use]
     pub fn new(timeout: Duration) -> Self {
         Self { timeout }
     }
@@ -221,6 +225,7 @@ impl<S> ResponseBodyTimeout<S> {
     /// Returns a new [`Layer`] that wraps services with a [`ResponseBodyTimeoutLayer`] middleware.
     ///
     /// [`Layer`]: tower_layer::Layer
+    #[must_use]
     pub fn layer(timeout: Duration) -> ResponseBodyTimeoutLayer {
         ResponseBodyTimeoutLayer::new(timeout)
     }

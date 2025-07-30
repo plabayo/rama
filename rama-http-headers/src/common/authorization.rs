@@ -11,7 +11,7 @@ use rama_core::username::{UsernameLabelParser, parse_username};
 use rama_http_types::{HeaderName, HeaderValue};
 use rama_net::user::{Basic, Bearer, UserId};
 
-use crate::{Error, Header};
+use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
 
 /// `Authorization` header, defined in [RFC7235](https://tools.ietf.org/html/rfc7235#section-4.2)
 ///
@@ -47,7 +47,7 @@ pub struct Authorization<C>(pub C);
 impl<C> Authorization<C> {
     /// Create a new authorization header.
     pub fn new(credentials: C) -> Self {
-        Authorization(credentials)
+        Self(credentials)
     }
 
     pub fn credentials(&self) -> &C {
@@ -79,11 +79,13 @@ impl<C> DerefMut for Authorization<C> {
     }
 }
 
-impl<C: Credentials> Header for Authorization<C> {
+impl<C: Credentials> TypedHeader for Authorization<C> {
     fn name() -> &'static HeaderName {
         &::rama_http_types::header::AUTHORIZATION
     }
+}
 
+impl<C: Credentials> HeaderDecode for Authorization<C> {
     fn decode<'i, I: Iterator<Item = &'i HeaderValue>>(values: &mut I) -> Result<Self, Error> {
         values
             .next()
@@ -100,7 +102,9 @@ impl<C: Credentials> Header for Authorization<C> {
             })
             .ok_or_else(Error::invalid)
     }
+}
 
+impl<C: Credentials> HeaderEncode for Authorization<C> {
     fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
         let mut value = self.0.encode();
         value.set_sensitive(true);
@@ -152,14 +156,11 @@ impl Credentials for Basic {
         }
 
         let bytes = &value[Self::SCHEME.len() + 1..];
-        let non_space_pos = match bytes.iter().position(|b| *b != b' ') {
-            Some(pos) => pos,
-            None => {
-                tracing::trace!(
-                    "Basic credentials failed to decode: missing space separator in basic str"
-                );
-                return None;
-            }
+        let Some(non_space_pos) = bytes.iter().position(|b| *b != b' ') else {
+            tracing::trace!(
+                "Basic credentials failed to decode: missing space separator in basic str"
+            );
+            return None;
         };
 
         let bytes = &bytes[non_space_pos..];
@@ -209,12 +210,9 @@ impl Credentials for Bearer {
 
         let bytes = &value[Self::SCHEME.len() + 1..];
 
-        let non_space_pos = match bytes.iter().position(|b| *b != b' ') {
-            Some(pos) => pos,
-            None => {
-                tracing::trace!("Bearer credentials failed to decode: no token found");
-                return None;
-            }
+        let Some(non_space_pos) = bytes.iter().position(|b| *b != b' ') else {
+            tracing::trace!("Bearer credentials failed to decode: no token found");
+            return None;
         };
 
         let bytes = &bytes[non_space_pos..];
@@ -267,8 +265,8 @@ where
     }
 }
 
-impl<T: UsernameLabelParser> AuthoritySync<Basic, T> for Basic {
-    fn authorized(&self, ext: &mut Extensions, credentials: &Basic) -> bool {
+impl<T: UsernameLabelParser> AuthoritySync<Self, T> for Basic {
+    fn authorized(&self, ext: &mut Extensions, credentials: &Self) -> bool {
         let username = credentials.username();
         let password = credentials.password();
 
@@ -351,7 +349,7 @@ mod tests {
     fn basic_roundtrip() {
         let auth = Authorization::new(Basic::new_static("Aladdin", "open sesame"));
         let mut h = HeaderMap::new();
-        h.typed_insert(auth.clone());
+        h.typed_insert(&auth);
         assert_eq!(h.typed_get(), Some(auth));
     }
 

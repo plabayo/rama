@@ -63,6 +63,7 @@ pub struct Builder {
 impl Writer {
     /// Consumes this `Writer` and returns the buffer holding the proxy protocol header payloads.
     /// The returned bytes are not guaranteed to be a valid proxy protocol header.
+    #[must_use]
     pub fn finish(self) -> Vec<u8> {
         self.bytes
     }
@@ -70,7 +71,7 @@ impl Writer {
 
 impl From<Vec<u8>> for Writer {
     fn from(bytes: Vec<u8>) -> Self {
-        Writer { bytes }
+        Self { bytes }
     }
 }
 
@@ -109,20 +110,20 @@ pub trait WriteToHeader {
 impl WriteToHeader for Addresses {
     fn write_to(&self, writer: &mut Writer) -> io::Result<usize> {
         match self {
-            Addresses::Unspecified => (),
-            Addresses::IPv4(a) => {
+            Self::Unspecified => (),
+            Self::IPv4(a) => {
                 writer.write_all(a.source_address.octets().as_slice())?;
                 writer.write_all(a.destination_address.octets().as_slice())?;
                 writer.write_all(a.source_port.to_be_bytes().as_slice())?;
                 writer.write_all(a.destination_port.to_be_bytes().as_slice())?;
             }
-            Addresses::IPv6(a) => {
+            Self::IPv6(a) => {
                 writer.write_all(a.source_address.octets().as_slice())?;
                 writer.write_all(a.destination_address.octets().as_slice())?;
                 writer.write_all(a.source_port.to_be_bytes().as_slice())?;
                 writer.write_all(a.destination_port.to_be_bytes().as_slice())?;
             }
-            Addresses::Unix(a) => {
+            Self::Unix(a) => {
                 writer.write_all(a.source.as_slice())?;
                 writer.write_all(a.destination.as_slice())?;
             }
@@ -231,8 +232,9 @@ impl Builder {
     /// Creates an instance of a `Builder` with the given header bytes.
     /// No guarantee is made that any address bytes written as a payload will match the header's address family.
     /// The length is determined on `build` unless `set_length` is called to set an explicit value.
+    #[must_use]
     pub const fn new(version_command: u8, address_family_protocol: u8) -> Self {
-        Builder {
+        Self {
             header: None,
             version_command,
             address_family_protocol,
@@ -252,7 +254,7 @@ impl Builder {
     ) -> Self {
         let addresses = addresses.into();
 
-        Builder {
+        Self {
             header: None,
             version_command,
             address_family_protocol: addresses.address_family() | protocol,
@@ -265,6 +267,7 @@ impl Builder {
     /// Reserves the requested additional capacity in the underlying buffer.
     /// Helps to prevent resizing the underlying buffer when called before `write_payload`, `write_payloads`.
     /// When called after `write_payload`, `write_payloads`, useful as a hint on how to resize the buffer.
+    #[must_use]
     pub fn reserve_capacity(mut self, capacity: usize) -> Self {
         match self.header {
             None => self.additional_capacity += capacity,
@@ -288,6 +291,7 @@ impl Builder {
 
     /// Overrides the length in the header.
     /// When set to `Some` value, the length may be smaller or larger than the actual payload in the buffer.
+    #[must_use]
     pub fn set_length<T: Into<Option<u16>>>(mut self, length: T) -> Self {
         self.length = length.into();
         self

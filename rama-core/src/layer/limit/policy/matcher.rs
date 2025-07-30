@@ -99,7 +99,7 @@ mod tests {
         }
     }
 
-    fn assert_abort<S, R, G, E>(result: PolicyResult<S, R, G, E>) {
+    fn assert_abort<S, R, G, E>(result: &PolicyResult<S, R, G, E>) {
         match result.output {
             PolicyOutput::Abort(_) => (),
             _ => panic!("unexpected output, expected abort"),
@@ -124,12 +124,12 @@ mod tests {
         let guard_1 = assert_ready(policy.check(Context::default(), ()).await);
         let guard_2 = assert_ready(policy.check(Context::default(), ()).await);
 
-        assert_abort(policy.check(Context::default(), ()).await);
+        assert_abort(&policy.check(Context::default(), ()).await);
 
         drop(guard_1);
         let _guard_3 = assert_ready(policy.check(Context::default(), ()).await);
 
-        assert_abort(policy.check(Context::default(), ()).await);
+        assert_abort(&policy.check(Context::default(), ()).await);
 
         drop(guard_2);
         assert_ready(policy.check(Context::default(), ()).await);
@@ -144,8 +144,8 @@ mod tests {
     impl<State> Matcher<State, u8> for TestMatchers {
         fn matches(&self, _ext: Option<&mut Extensions>, _ctx: &Context<State>, req: &u8) -> bool {
             match self {
-                TestMatchers::Const(n) => *n == *req,
-                TestMatchers::Odd => *req % 2 == 1,
+                Self::Const(n) => *n == *req,
+                Self::Odd => *req % 2 == 1,
             }
         }
     }
@@ -169,8 +169,8 @@ mod tests {
         let odd_guard_2 = assert_ready(policy.check(Context::default(), 3).await);
 
         // both the odd and 42 limit is reached
-        assert_abort(policy.check(Context::default(), 5).await);
-        assert_abort(policy.check(Context::default(), 42).await);
+        assert_abort(&policy.check(Context::default(), 5).await);
+        assert_abort(&policy.check(Context::default(), 42).await);
 
         // even numbers except 42 will match nothing and thus have no limit
         for i in 1..10 {
@@ -183,12 +183,12 @@ mod tests {
 
         // only once we drop the current 42 guard can we get a new guard,
         // as the limit is 1 for 42
-        assert_abort(policy.check(Context::default(), 42).await);
+        assert_abort(&policy.check(Context::default(), 42).await);
         drop(const_guard_1);
         assert_ready(policy.check(Context::default(), 42).await);
 
         // odd limit reached again so no luck here
-        assert_abort(policy.check(Context::default(), 11).await);
+        assert_abort(&policy.check(Context::default(), 11).await);
 
         // dropping another odd guard makes room for a new odd request
         drop(odd_guard_2);

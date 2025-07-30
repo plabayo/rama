@@ -148,6 +148,7 @@ pub struct EmulateTlsProfileLayer {
 }
 
 impl EmulateTlsProfileLayer {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             builder_overwrites: None,

@@ -26,6 +26,7 @@ impl Default for RequestArgsBuilder {
 
 impl RequestArgsBuilder {
     /// Create a new [`RequestArgsBuilder`], which auto-detects the content type.
+    #[must_use]
     pub const fn new() -> Self {
         Self {
             state: BuilderState::MethodOrUrl { content_type: None },
@@ -33,8 +34,9 @@ impl RequestArgsBuilder {
     }
 
     /// Create a new [`RequestArgsBuilder`], which expects JSON data.
-    pub const fn new_json() -> RequestArgsBuilder {
-        RequestArgsBuilder {
+    #[must_use]
+    pub const fn new_json() -> Self {
+        Self {
             state: BuilderState::MethodOrUrl {
                 content_type: Some(ContentType::Json),
             },
@@ -42,8 +44,9 @@ impl RequestArgsBuilder {
     }
 
     /// Create a new [`RequestArgsBuilder`], which expects Form data.
-    pub const fn new_form() -> RequestArgsBuilder {
-        RequestArgsBuilder {
+    #[must_use]
+    pub const fn new_form() -> Self {
+        Self {
             state: BuilderState::MethodOrUrl {
                 content_type: Some(ContentType::Form),
             },
@@ -87,7 +90,7 @@ impl RequestArgsBuilder {
                 headers,
                 body,
                 ..
-            } => match parse_arg_as_data(arg, query, headers, body) {
+            } => match parse_arg_as_data(&arg, query, headers, body) {
                 Ok(_) => None,
                 Err(msg) => Some(BuilderState::Error {
                     message: msg,
@@ -138,41 +141,37 @@ impl RequestArgsBuilder {
                     req = req.uri(url);
                 } else {
                     let mut uri_parts = uri.into_parts();
-                    uri_parts.path_and_query = Some(match uri_parts.path_and_query {
-                        Some(pq) => match pq.query() {
-                            Some(q) => {
-                                let mut existing_query: HashMap<String, Vec<String>> =
-                                    serde_html_form::from_str(q)
-                                        .map_err(OpaqueError::from_std)
-                                        .context("parse existing query")?;
-                                for (k, v) in query {
-                                    existing_query.entry(k).or_default().extend(v);
-                                }
-                                let query = serde_html_form::to_string(&existing_query)
+                    uri_parts.path_and_query = Some(if let Some(pq) = uri_parts.path_and_query {
+                        if let Some(q) = pq.query() {
+                            let mut existing_query: HashMap<String, Vec<String>> =
+                                serde_html_form::from_str(q)
                                     .map_err(OpaqueError::from_std)
-                                    .context("serialize extended query")?;
-                                format!("{}?{}", pq.path(), query)
-                                    .parse()
-                                    .map_err(OpaqueError::from_std)
-                                    .context("create new path+query from extended query")?
+                                    .context("parse existing query")?;
+                            for (k, v) in query {
+                                existing_query.entry(k).or_default().extend(v);
                             }
-                            None => {
-                                let query = serde_html_form::to_string(&query)
-                                    .map_err(OpaqueError::from_std)
-                                    .context("serialize new and only query params")?;
-                                format!("{}?{}", pq.path(), query)
-                                    .parse()
-                                    .map_err(OpaqueError::from_std)
-                                    .context("create path+query from given query params")?
-                            }
-                        },
-                        None => {
-                            let query = serde_html_form::to_string(&query)
-                                .map_err(OpaqueError::from_std)?;
-                            format!("/?{query}")
+                            let query = serde_html_form::to_string(&existing_query)
+                                .map_err(OpaqueError::from_std)
+                                .context("serialize extended query")?;
+                            format!("{}?{}", pq.path(), query)
                                 .parse()
-                                .map_err(OpaqueError::from_std)?
+                                .map_err(OpaqueError::from_std)
+                                .context("create new path+query from extended query")?
+                        } else {
+                            let query = serde_html_form::to_string(&query)
+                                .map_err(OpaqueError::from_std)
+                                .context("serialize new and only query params")?;
+                            format!("{}?{}", pq.path(), query)
+                                .parse()
+                                .map_err(OpaqueError::from_std)
+                                .context("create path+query from given query params")?
                         }
+                    } else {
+                        let query =
+                            serde_html_form::to_string(&query).map_err(OpaqueError::from_std)?;
+                        format!("/?{query}")
+                            .parse()
+                            .map_err(OpaqueError::from_std)?
                     });
                     req = req.uri(Uri::from_parts(uri_parts).map_err(OpaqueError::from_std)?);
                 }
@@ -277,7 +276,7 @@ impl RequestArgsBuilder {
 }
 
 fn parse_arg_as_data(
-    arg: String,
+    arg: &str,
     query: &mut HashMap<String, Vec<String>>,
     headers: &mut Vec<(String, String)>,
     body: &mut HashMap<String, Value>,
@@ -370,7 +369,7 @@ fn expand_url(url: String) -> String {
     } else if !url.contains("://") {
         format!("http://{url}")
     } else {
-        url.to_string()
+        url
     }
 }
 
@@ -388,10 +387,10 @@ enum ContentType {
 }
 
 impl ContentType {
-    fn header_value(&self) -> HeaderValue {
+    fn header_value(self) -> HeaderValue {
         HeaderValue::from_static(match self {
-            ContentType::Json => "application/json",
-            ContentType::Form => "application/x-www-form-urlencoded",
+            Self::Json => "application/json",
+            Self::Form => "application/x-www-form-urlencoded",
         })
     }
 }

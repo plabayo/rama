@@ -23,25 +23,26 @@ pub struct Protocol(ProtocolKind);
 
 impl Protocol {
     #[cfg(feature = "http")]
+    #[must_use]
     pub fn maybe_from_uri_scheme_str_and_method(
         s: Option<&Scheme>,
         method: Option<&Method>,
     ) -> Option<Self> {
         s.map(|s| {
             trace!("detected protocol from scheme");
-            let protocol: Protocol = s.into();
+            let protocol: Self = s.into();
             if method == Some(&Method::CONNECT) {
                 match protocol {
-                    Protocol::HTTP => {
+                    Self::HTTP => {
                         trace!("CONNECT request: upgrade HTTP => HTTPS");
-                        Protocol::HTTPS
+                        Self::HTTPS
                     }
-                    Protocol::HTTPS => Protocol::HTTPS,
-                    Protocol::WS => {
+                    Self::HTTPS => Self::HTTPS,
+                    Self::WS => {
                         trace!("CONNECT request: upgrade WS => WSS");
-                        Protocol::WSS
+                        Self::WSS
                     }
-                    Protocol::WSS => Protocol::WSS,
+                    Self::WSS => Self::WSS,
                     other => {
                         warn!("CONNECT request: unexpected protocol: {other}");
                         other
@@ -94,22 +95,22 @@ const SCHEME_WSS: &str = "wss";
 
 impl Protocol {
     /// `HTTP` protocol.
-    pub const HTTP: Self = Protocol(ProtocolKind::Http);
+    pub const HTTP: Self = Self(ProtocolKind::Http);
 
     /// `HTTPS` protocol.
-    pub const HTTPS: Self = Protocol(ProtocolKind::Https);
+    pub const HTTPS: Self = Self(ProtocolKind::Https);
 
     /// `WS` protocol.
-    pub const WS: Self = Protocol(ProtocolKind::Ws);
+    pub const WS: Self = Self(ProtocolKind::Ws);
 
     /// `WSS` protocol.
-    pub const WSS: Self = Protocol(ProtocolKind::Wss);
+    pub const WSS: Self = Self(ProtocolKind::Wss);
 
     /// `SOCKS5` protocol.
-    pub const SOCKS5: Self = Protocol(ProtocolKind::Socks5);
+    pub const SOCKS5: Self = Self(ProtocolKind::Socks5);
 
     /// `SOCKS5H` protocol.
-    pub const SOCKS5H: Self = Protocol(ProtocolKind::Socks5h);
+    pub const SOCKS5H: Self = Self(ProtocolKind::Socks5h);
 
     /// Creates a Protocol from a str a compile time.
     ///
@@ -122,11 +123,12 @@ impl Protocol {
     /// # Panics
     ///
     /// This function panics at **compile time** when the static string is not a valid protocol.
+    #[must_use]
     pub const fn from_static(s: &'static str) -> Self {
         // NOTE: once unwrapping is possible in const we can piggy back on
         // `try_to_convert_str_to_non_custom_protocol`
 
-        Protocol(if eq_ignore_ascii_case!(s, SCHEME_HTTPS) {
+        Self(if eq_ignore_ascii_case!(s, SCHEME_HTTPS) {
             ProtocolKind::Https
         } else if s.is_empty() || eq_ignore_ascii_case!(s, SCHEME_HTTP) {
             ProtocolKind::Http
@@ -146,6 +148,7 @@ impl Protocol {
     }
 
     /// Returns `true` if this protocol is http(s).
+    #[must_use]
     pub fn is_http(&self) -> bool {
         match &self.0 {
             ProtocolKind::Http | ProtocolKind::Https => true,
@@ -158,6 +161,7 @@ impl Protocol {
     }
 
     /// Returns `true` if this protocol is ws(s).
+    #[must_use]
     pub fn is_ws(&self) -> bool {
         match &self.0 {
             ProtocolKind::Ws | ProtocolKind::Wss => true,
@@ -170,6 +174,7 @@ impl Protocol {
     }
 
     /// Returns `true` if this protocol is socks5.
+    #[must_use]
     pub fn is_socks5(&self) -> bool {
         match &self.0 {
             ProtocolKind::Socks5 | ProtocolKind::Socks5h => true,
@@ -182,6 +187,7 @@ impl Protocol {
     }
 
     /// Returns `true` if this protocol is "secure" by itself.
+    #[must_use]
     pub fn is_secure(&self) -> bool {
         match &self.0 {
             ProtocolKind::Https | ProtocolKind::Wss => true,
@@ -194,6 +200,7 @@ impl Protocol {
     }
 
     /// Returns the default port for this [`Protocol`]
+    #[must_use]
     pub fn default_port(&self) -> Option<u16> {
         match &self.0 {
             ProtocolKind::Https | ProtocolKind::Wss => Some(443),
@@ -204,6 +211,7 @@ impl Protocol {
     }
 
     /// Returns the [`Protocol`] as a string.
+    #[must_use]
     pub fn as_str(&self) -> &str {
         match &self.0 {
             ProtocolKind::Http => "http",
@@ -249,7 +257,7 @@ impl TryFrom<&str> for Protocol {
 
     fn try_from(s: &str) -> Result<Self, Self::Error> {
         Ok(try_to_convert_str_to_non_custom_protocol(s)?
-            .unwrap_or_else(|| Protocol(ProtocolKind::Custom(SmolStr::new_inline(s)))))
+            .unwrap_or_else(|| Self(ProtocolKind::Custom(SmolStr::new_inline(s)))))
     }
 }
 
@@ -258,7 +266,7 @@ impl TryFrom<String> for Protocol {
 
     fn try_from(s: String) -> Result<Self, Self::Error> {
         Ok(try_to_convert_str_to_non_custom_protocol(&s)?
-            .unwrap_or(Protocol(ProtocolKind::Custom(SmolStr::new(s)))))
+            .unwrap_or(Self(ProtocolKind::Custom(SmolStr::new(s)))))
     }
 }
 
@@ -267,7 +275,7 @@ impl TryFrom<&String> for Protocol {
 
     fn try_from(s: &String) -> Result<Self, Self::Error> {
         Ok(try_to_convert_str_to_non_custom_protocol(s)?
-            .unwrap_or_else(|| Protocol(ProtocolKind::Custom(SmolStr::new(s)))))
+            .unwrap_or_else(|| Self(ProtocolKind::Custom(SmolStr::new(s)))))
     }
 }
 

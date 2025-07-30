@@ -155,8 +155,9 @@ struct StringMarker {
 
 impl Decoder {
     /// Creates a new `Decoder` with all settings set to default values.
-    pub fn new(size: usize) -> Decoder {
-        Decoder {
+    #[must_use]
+    pub fn new(size: usize) -> Self {
+        Self {
             max_size_update: None,
             last_max_update: size,
             table: Table::new(size),
@@ -293,7 +294,7 @@ impl Decoder {
             // Read the name as a literal
             let name = name_marker.consume(buf);
             let value = value_marker.consume(buf);
-            Header::new(name, value)
+            Header::new(&name, value)
         } else {
             let e = self.table.get(table_idx)?;
             let value = self.decode_string(buf)?;
@@ -359,15 +360,15 @@ impl Decoder {
 }
 
 impl Default for Decoder {
-    fn default() -> Decoder {
-        Decoder::new(4096)
+    fn default() -> Self {
+        Self::new(4096)
     }
 }
 
 // ===== impl Representation =====
 
 impl Representation {
-    fn load(byte: u8) -> Result<Representation, DecoderError> {
+    fn load(byte: u8) -> Result<Self, DecoderError> {
         const INDEXED: u8 = 0b1000_0000;
         const LITERAL_WITH_INDEXING: u8 = 0b0100_0000;
         const LITERAL_WITHOUT_INDEXING: u8 = 0b1111_0000;
@@ -378,15 +379,15 @@ impl Representation {
         // TODO: What did I even write here?
 
         if byte & INDEXED == INDEXED {
-            Ok(Representation::Indexed)
+            Ok(Self::Indexed)
         } else if byte & LITERAL_WITH_INDEXING == LITERAL_WITH_INDEXING {
-            Ok(Representation::LiteralWithIndexing)
+            Ok(Self::LiteralWithIndexing)
         } else if byte & LITERAL_WITHOUT_INDEXING == 0 {
-            Ok(Representation::LiteralWithoutIndexing)
+            Ok(Self::LiteralWithoutIndexing)
         } else if byte & LITERAL_WITHOUT_INDEXING == LITERAL_NEVER_INDEXED {
-            Ok(Representation::LiteralNeverIndexed)
+            Ok(Self::LiteralNeverIndexed)
         } else if byte & SIZE_UPDATE_MASK == SIZE_UPDATE {
-            Ok(Representation::SizeUpdate)
+            Ok(Self::SizeUpdate)
         } else {
             Err(DecoderError::InvalidRepresentation)
         }
@@ -491,8 +492,8 @@ fn consume(buf: &mut Cursor<&mut BytesMut>) {
 // ===== impl Table =====
 
 impl Table {
-    fn new(max_size: usize) -> Table {
-        Table {
+    fn new(max_size: usize) -> Self {
+        Self {
             entries: VecDeque::new(),
             size: 0,
             max_size,
@@ -560,13 +561,10 @@ impl Table {
     fn consolidate(&mut self) {
         while self.size > self.max_size {
             {
-                let last = match self.entries.back() {
-                    Some(x) => x,
-                    None => {
-                        // Can never happen as the size of the table must reach
-                        // 0 by the time we've exhausted all elements.
-                        panic!("Size of table != 0, but no headers left!");
-                    }
+                let Some(last) = self.entries.back() else {
+                    // Can never happen as the size of the table must reach
+                    // 0 by the time we've exhausted all elements.
+                    panic!("Size of table != 0, but no headers left!");
                 };
 
                 self.size -= last.len();
@@ -580,43 +578,43 @@ impl Table {
 // ===== impl DecoderError =====
 
 impl From<Utf8Error> for DecoderError {
-    fn from(_: Utf8Error) -> DecoderError {
+    fn from(_: Utf8Error) -> Self {
         // TODO: Better error?
-        DecoderError::InvalidUtf8
+        Self::InvalidUtf8
     }
 }
 
 impl From<header::InvalidHeaderValue> for DecoderError {
-    fn from(_: header::InvalidHeaderValue) -> DecoderError {
+    fn from(_: header::InvalidHeaderValue) -> Self {
         // TODO: Better error?
-        DecoderError::InvalidUtf8
+        Self::InvalidUtf8
     }
 }
 
 impl From<header::InvalidHeaderName> for DecoderError {
-    fn from(_: header::InvalidHeaderName) -> DecoderError {
+    fn from(_: header::InvalidHeaderName) -> Self {
         // TODO: Better error
-        DecoderError::InvalidUtf8
+        Self::InvalidUtf8
     }
 }
 
 impl From<method::InvalidMethod> for DecoderError {
-    fn from(_: method::InvalidMethod) -> DecoderError {
+    fn from(_: method::InvalidMethod) -> Self {
         // TODO: Better error
-        DecoderError::InvalidUtf8
+        Self::InvalidUtf8
     }
 }
 
 impl From<status::InvalidStatusCode> for DecoderError {
-    fn from(_: status::InvalidStatusCode) -> DecoderError {
+    fn from(_: status::InvalidStatusCode) -> Self {
         // TODO: Better error
-        DecoderError::InvalidUtf8
+        Self::InvalidUtf8
     }
 }
 
 impl From<DecoderError> for frame::Error {
     fn from(src: DecoderError) -> Self {
-        frame::Error::Hpack(src)
+        Self::Hpack(src)
     }
 }
 
@@ -878,15 +876,15 @@ mod test {
         assert_eq!(res.len(), 1);
         assert_eq!(de.table.size(), 0);
 
-        match res[0] {
-            Header::Field {
-                ref name,
-                ref value,
-            } => {
-                assert_eq!(name, "foo");
-                assert_eq!(value, "bar");
-            }
-            _ => panic!(),
+        if let Header::Field {
+            ref name,
+            ref value,
+        } = res[0]
+        {
+            assert_eq!(name, "foo");
+            assert_eq!(value, "bar");
+        } else {
+            panic!()
         }
     }
 
@@ -927,15 +925,15 @@ mod test {
         assert_eq!(res.len(), 1);
         assert_eq!(de.table.size(), 0);
 
-        match res[0] {
-            Header::Field {
-                ref name,
-                ref value,
-            } => {
-                assert_eq!(name, "foo");
-                assert_eq!(value, "bar");
-            }
-            _ => panic!(),
+        if let Header::Field {
+            ref name,
+            ref value,
+        } = res[0]
+        {
+            assert_eq!(name, "foo");
+            assert_eq!(value, "bar");
+        } else {
+            panic!()
         }
     }
 }

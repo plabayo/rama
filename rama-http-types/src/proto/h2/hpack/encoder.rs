@@ -19,8 +19,9 @@ enum SizeUpdate {
 }
 
 impl Encoder {
-    pub fn new(max_size: usize, capacity: usize) -> Encoder {
-        Encoder {
+    #[must_use]
+    pub fn new(max_size: usize, capacity: usize) -> Self {
+        Self {
             table: Table::new(max_size, capacity),
             size_update: None,
         }
@@ -114,7 +115,7 @@ impl Encoder {
         }
     }
 
-    fn encode_header(&mut self, index: &Index, dst: &mut BytesMut) {
+    fn encode_header(&self, index: &Index, dst: &mut BytesMut) {
         match *index {
             Index::Indexed(idx, _) => {
                 encode_int(idx, 7, 0x80, dst);
@@ -155,12 +156,7 @@ impl Encoder {
         }
     }
 
-    fn encode_header_without_name(
-        &mut self,
-        last: &Index,
-        value: &HeaderValue,
-        dst: &mut BytesMut,
-    ) {
+    fn encode_header_without_name(&self, last: &Index, value: &HeaderValue, dst: &mut BytesMut) {
         match *last {
             Index::Indexed(..)
             | Index::Name(..)
@@ -185,8 +181,8 @@ impl Encoder {
 }
 
 impl Default for Encoder {
-    fn default() -> Encoder {
-        Encoder::new(4096, 0)
+    fn default() -> Self {
+        Self::new(4096, 0)
     }
 }
 

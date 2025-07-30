@@ -107,7 +107,7 @@ where
     P: Peer,
     B: Buf,
 {
-    pub(crate) fn new(codec: Codec<T, Prioritized<B>>, config: Config) -> Connection<T, P, B> {
+    pub(crate) fn new(codec: Codec<T, Prioritized<B>>, config: Config) -> Self {
         fn streams_config(config: &Config) -> streams::Config {
             streams::Config {
                 initial_max_send_streams: config.initial_max_send_streams,
@@ -132,7 +132,7 @@ where
             }
         }
         let streams = Streams::new(streams_config(&config));
-        Connection {
+        Self {
             codec,
             inner: ConnectionInner {
                 state: State::Open,
@@ -390,7 +390,7 @@ where
     B: Buf,
 {
     fn as_dyn(&mut self) -> DynConnection<'_, B> {
-        let ConnectionInner {
+        let Self {
             state,
             go_away,
             streams,
@@ -581,7 +581,7 @@ where
             }
             Some(Frame::Priority(frame)) => {
                 tracing::trace!("recv PRIORITY: {frame:?}");
-                self.streams.recv_priority(frame)?;
+                self.streams.recv_priority(&frame)?;
             }
             None => {
                 tracing::trace!("codec closed");

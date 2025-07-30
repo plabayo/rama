@@ -299,6 +299,7 @@ impl<S> Context<S> {
     }
 
     /// Set a new [`Executor`] to the [`Context`].
+    #[must_use]
     pub fn with_executor(mut self, exec: Executor) -> Self {
         self.executor = exec;
         self

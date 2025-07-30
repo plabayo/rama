@@ -111,6 +111,7 @@ impl<'a> Header<'a> {
     }
 
     /// Creates an owned clone of this [`Header`].
+    #[must_use]
     pub fn to_owned(&self) -> Header<'static> {
         Header {
             header: Cow::Owned::<'static>(self.header.to_string()),
@@ -119,11 +120,13 @@ impl<'a> Header<'a> {
     }
 
     /// The protocol portion of this `Header`.
+    #[must_use]
     pub fn protocol(&self) -> &str {
         self.addresses.protocol()
     }
 
     /// The source and destination addresses portion of this `Header`.
+    #[must_use]
     pub fn addresses_str(&self) -> &str {
         let start = PROTOCOL_PREFIX.len() + SEPARATOR.len_utf8() + self.protocol().len();
         let end = self.header.len() - PROTOCOL_SUFFIX.len();
@@ -217,7 +220,7 @@ impl Addresses {
         source_port: u16,
         destination_port: u16,
     ) -> Self {
-        Addresses::Tcp4(IPv4 {
+        Self::Tcp4(IPv4 {
             source_address: source_address.into(),
             source_port,
             destination_address: destination_address.into(),
@@ -232,7 +235,7 @@ impl Addresses {
         source_port: u16,
         destination_port: u16,
     ) -> Self {
-        Addresses::Tcp6(IPv6 {
+        Self::Tcp6(IPv6 {
             source_address: source_address.into(),
             source_port,
             destination_address: destination_address.into(),
@@ -241,11 +244,12 @@ impl Addresses {
     }
 
     /// The protocol portion of this `Addresses`.
+    #[must_use]
     pub fn protocol(&self) -> &str {
         match self {
-            Addresses::Tcp4(..) => TCP4,
-            Addresses::Tcp6(..) => TCP6,
-            Addresses::Unknown => UNKNOWN,
+            Self::Tcp4(..) => TCP4,
+            Self::Tcp6(..) => TCP6,
+            Self::Unknown => UNKNOWN,
         }
     }
 }
@@ -253,32 +257,32 @@ impl Addresses {
 impl From<(SocketAddr, SocketAddr)> for Addresses {
     fn from(addresses: (SocketAddr, SocketAddr)) -> Self {
         match addresses {
-            (SocketAddr::V4(source), SocketAddr::V4(destination)) => Addresses::Tcp4(IPv4::new(
+            (SocketAddr::V4(source), SocketAddr::V4(destination)) => Self::Tcp4(IPv4::new(
                 *source.ip(),
                 *destination.ip(),
                 source.port(),
                 destination.port(),
             )),
-            (SocketAddr::V6(source), SocketAddr::V6(destination)) => Addresses::Tcp6(IPv6::new(
+            (SocketAddr::V6(source), SocketAddr::V6(destination)) => Self::Tcp6(IPv6::new(
                 *source.ip(),
                 *destination.ip(),
                 source.port(),
                 destination.port(),
             )),
-            _ => Addresses::Unknown,
+            _ => Self::Unknown,
         }
     }
 }
 
 impl From<IPv4> for Addresses {
     fn from(addresses: IPv4) -> Self {
-        Addresses::Tcp4(addresses)
+        Self::Tcp4(addresses)
     }
 }
 
 impl From<IPv6> for Addresses {
     fn from(addresses: IPv6) -> Self {
-        Addresses::Tcp6(addresses)
+        Self::Tcp6(addresses)
     }
 }
 

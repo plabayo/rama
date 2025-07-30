@@ -123,6 +123,7 @@ pub struct FollowRedirectLayer<P = Standard> {
 
 impl FollowRedirectLayer {
     /// Create a new [`FollowRedirectLayer`] with a [`Standard`] redirection policy.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -130,7 +131,7 @@ impl FollowRedirectLayer {
 
 impl Default for FollowRedirectLayer {
     fn default() -> Self {
-        FollowRedirectLayer {
+        Self {
             policy: Standard::default(),
         }
     }
@@ -147,7 +148,7 @@ impl<P: fmt::Debug> fmt::Debug for FollowRedirectLayer<P> {
 impl<P> FollowRedirectLayer<P> {
     /// Create a new [`FollowRedirectLayer`] with the given redirection [`Policy`].
     pub fn with_policy(policy: P) -> Self {
-        FollowRedirectLayer { policy }
+        Self { policy }
     }
 }
 
@@ -217,7 +218,7 @@ where
 impl<S, P> FollowRedirect<S, P> {
     /// Create a new [`FollowRedirect`] with the given redirection [`Policy`].
     pub fn with_policy(inner: S, policy: P) -> Self {
-        FollowRedirect { inner, policy }
+        Self { inner, policy }
     }
 
     define_inner_service_accessors!();
@@ -290,9 +291,7 @@ where
                     _ => return Ok(res),
                 };
 
-                let taken_body = if let Some(body) = body.take() {
-                    body
-                } else {
+                let Some(taken_body) = body.take() else {
                     return Ok(res);
                 };
 
@@ -300,9 +299,7 @@ where
                     .headers()
                     .get(&LOCATION)
                     .and_then(|loc| resolve_uri(std::str::from_utf8(loc.as_bytes()).ok()?, &uri));
-                let location = if let Some(loc) = location {
-                    loc
-                } else {
+                let Some(location) = location else {
                     return Ok(res);
                 };
 
@@ -350,13 +347,13 @@ where
     B: Body + Default,
 {
     fn take(&mut self) -> Option<B> {
-        match std::mem::replace(self, BodyRepr::None) {
-            BodyRepr::Some(body) => Some(body),
-            BodyRepr::Empty => {
-                *self = BodyRepr::Empty;
+        match std::mem::replace(self, Self::None) {
+            Self::Some(body) => Some(body),
+            Self::Empty => {
+                *self = Self::Empty;
                 Some(B::default())
             }
-            BodyRepr::None => None,
+            Self::None => None,
         }
     }
 
@@ -365,10 +362,10 @@ where
         P: Policy<S, B, E>,
     {
         match self {
-            BodyRepr::Some(_) | BodyRepr::Empty => {}
-            BodyRepr::None => {
+            Self::Some(_) | Self::Empty => {}
+            Self::None => {
                 if let Some(body) = clone_body(ctx, policy, body) {
-                    *self = BodyRepr::Some(body);
+                    *self = Self::Some(body);
                 }
             }
         }

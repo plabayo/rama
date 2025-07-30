@@ -112,6 +112,7 @@ impl Default for EchoServiceBuilder<()> {
 
 impl EchoServiceBuilder<()> {
     /// Create a new [`EchoServiceBuilder`].
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }

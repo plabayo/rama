@@ -17,11 +17,11 @@ async fn test_tls_sni_router() {
     let mut ctx = Context::default();
     let mut mem_dns = InMemoryDns::new();
     mem_dns.insert_address(
-        Domain::from_static("foo.local"),
+        &Domain::from_static("foo.local"),
         IpAddr::V4([127, 0, 0, 1].into()),
     );
     mem_dns.insert_address(
-        Domain::from_static("bar.local"),
+        &Domain::from_static("bar.local"),
         IpAddr::V4([127, 0, 0, 1].into()),
     );
     ctx.insert(DnsOverwrite::from(mem_dns));

@@ -241,6 +241,7 @@ pub struct UsernameOpaqueLabelParser {
 
 impl UsernameOpaqueLabelParser {
     /// Create a new [`UsernameOpaqueLabelParser`].
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }

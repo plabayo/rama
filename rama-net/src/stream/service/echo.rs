@@ -28,6 +28,7 @@ pub struct EchoService {
 
 impl EchoService {
     /// Creates a new [`EchoService`],
+    #[must_use]
     pub const fn new() -> Self {
         Self { _phantom: () }
     }

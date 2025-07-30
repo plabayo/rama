@@ -47,30 +47,30 @@ impl super::TryFromValues for HttpDate {
     {
         values
             .just_one()
-            .and_then(HttpDate::from_val)
+            .and_then(Self::from_val)
             .ok_or_else(crate::Error::invalid)
     }
 }
 
 impl From<HttpDate> for HeaderValue {
-    fn from(date: HttpDate) -> HeaderValue {
+    fn from(date: HttpDate) -> Self {
         (&date).into()
     }
 }
 
 impl<'a> From<&'a HttpDate> for HeaderValue {
-    fn from(date: &'a HttpDate) -> HeaderValue {
+    fn from(date: &'a HttpDate) -> Self {
         // TODO: could be just BytesMut instead of String
         let s = date.to_string();
         let bytes = Bytes::from(s);
-        HeaderValue::from_maybe_shared(bytes).expect("HttpDate always is a valid value")
+        Self::from_maybe_shared(bytes).expect("HttpDate always is a valid value")
     }
 }
 
 impl FromStr for HttpDate {
     type Err = OpaqueError;
-    fn from_str(s: &str) -> Result<HttpDate, OpaqueError> {
-        Ok(HttpDate(s.parse().map_err(|_| {
+    fn from_str(s: &str) -> Result<Self, OpaqueError> {
+        Ok(Self(s.parse().map_err(|_| {
             OpaqueError::from_display("invalid http date")
         })?))
     }
@@ -89,14 +89,14 @@ impl fmt::Display for HttpDate {
 }
 
 impl From<SystemTime> for HttpDate {
-    fn from(sys: SystemTime) -> HttpDate {
-        HttpDate(sys.into())
+    fn from(sys: SystemTime) -> Self {
+        Self(sys.into())
     }
 }
 
 impl From<HttpDate> for SystemTime {
-    fn from(date: HttpDate) -> SystemTime {
-        SystemTime::from(date.0)
+    fn from(date: HttpDate) -> Self {
+        Self::from(date.0)
     }
 }
 

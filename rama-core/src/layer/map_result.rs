@@ -84,7 +84,7 @@ where
 impl<S, F> MapResult<S, F> {
     /// Creates a new [`MapResult`] service.
     pub const fn new(inner: S, f: F) -> Self {
-        MapResult { f, inner }
+        Self { f, inner }
     }
 
     define_inner_service_accessors!();
@@ -119,7 +119,7 @@ where
 impl<F> MapResultLayer<F> {
     /// Creates a new [`MapResultLayer`] layer.
     pub const fn new(f: F) -> Self {
-        MapResultLayer { f }
+        Self { f }
     }
 }
 

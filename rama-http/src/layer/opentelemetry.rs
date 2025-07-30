@@ -47,7 +47,8 @@ struct Metrics {
 
 impl Metrics {
     /// Create a new [`RequestMetrics`]
-    fn new(meter: Meter, prefix: Option<String>) -> Self {
+    #[must_use]
+    fn new(meter: &Meter, prefix: Option<&str>) -> Self {
         let http_server_duration = meter
             .f64_histogram(match &prefix {
                 Some(prefix) => Cow::Owned(format!("{prefix}.{HTTP_SERVER_DURATION}")),
@@ -83,7 +84,7 @@ impl Metrics {
             )
             .build();
 
-        Metrics {
+        Self {
             http_server_total_requests,
             http_server_total_responses,
             http_server_total_failures,
@@ -111,7 +112,7 @@ impl<F: fmt::Debug> fmt::Debug for RequestMetricsLayer<F> {
 
 impl<F: Clone> Clone for RequestMetricsLayer<F> {
     fn clone(&self) -> Self {
-        RequestMetricsLayer {
+        Self {
             metrics: self.metrics.clone(),
             base_attributes: self.base_attributes.clone(),
             attributes_factory: self.attributes_factory.clone(),
@@ -122,12 +123,14 @@ impl<F: Clone> Clone for RequestMetricsLayer<F> {
 impl RequestMetricsLayer<()> {
     /// Create a new [`RequestMetricsLayer`] using the global [`Meter`] provider,
     /// with the default name and version.
+    #[must_use]
     pub fn new() -> Self {
         Self::custom(MeterOptions::default())
     }
 
     /// Create a new [`RequestMetricsLayer`] using the global [`Meter`] provider,
     /// with a custom name and version.
+    #[must_use]
     pub fn custom(opts: MeterOptions) -> Self {
         let service_info = opts.service.unwrap_or_else(|| ServiceInfo {
             name: rama_utils::info::NAME.to_owned(),
@@ -136,10 +139,10 @@ impl RequestMetricsLayer<()> {
 
         let mut attributes = opts.attributes.unwrap_or_else(|| Vec::with_capacity(2));
         attributes.push(KeyValue::new(SERVICE_NAME, service_info.name.clone()));
-        attributes.push(KeyValue::new(SERVICE_VERSION, service_info.version.clone()));
+        attributes.push(KeyValue::new(SERVICE_VERSION, service_info.version));
 
         let meter = get_versioned_meter();
-        let metrics = Metrics::new(meter, opts.metric_prefix);
+        let metrics = Metrics::new(&meter, opts.metric_prefix.as_deref());
 
         Self {
             metrics: Arc::new(metrics),

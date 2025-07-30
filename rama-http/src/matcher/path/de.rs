@@ -136,9 +136,9 @@ pub(crate) enum ErrorKind {
 impl fmt::Display for ErrorKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ErrorKind::NoParams => write!(f, "No parameters found"),
-            ErrorKind::Message(error) => error.fmt(f),
-            ErrorKind::WrongNumberOfParameters { got, expected } => {
+            Self::NoParams => write!(f, "No parameters found"),
+            Self::Message(error) => error.fmt(f),
+            Self::WrongNumberOfParameters { got, expected } => {
                 write!(
                     f,
                     "Wrong number of path arguments for `Path`. Expected {expected} but got {got}"
@@ -153,8 +153,8 @@ impl fmt::Display for ErrorKind {
 
                 Ok(())
             }
-            ErrorKind::UnsupportedType { name } => write!(f, "Unsupported type `{name}`"),
-            ErrorKind::ParseErrorAtKey {
+            Self::UnsupportedType { name } => write!(f, "Unsupported type `{name}`"),
+            Self::ParseErrorAtKey {
                 key,
                 value,
                 expected_type,
@@ -162,11 +162,11 @@ impl fmt::Display for ErrorKind {
                 f,
                 "Cannot parse `{key}` with value `{value:?}` to a `{expected_type}`"
             ),
-            ErrorKind::ParseError {
+            Self::ParseError {
                 value,
                 expected_type,
             } => write!(f, "Cannot parse `{value:?}` to a `{expected_type}`"),
-            ErrorKind::ParseErrorAtIndex {
+            Self::ParseErrorAtIndex {
                 index,
                 value,
                 expected_type,

@@ -1,4 +1,4 @@
-use crate::{Error, Header};
+use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
 use rama_http_types::{HeaderName, HeaderValue, header};
 use rama_net::forwarded::{ForwardedElement, ForwardedProtocol};
 
@@ -26,20 +26,24 @@ use rama_net::forwarded::{ForwardedElement, ForwardedProtocol};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct XForwardedProto(ForwardedProtocol);
 
-impl Header for XForwardedProto {
+impl TypedHeader for XForwardedProto {
     fn name() -> &'static HeaderName {
         &header::X_FORWARDED_PROTO
     }
+}
 
+impl HeaderDecode for XForwardedProto {
     fn decode<'i, I: Iterator<Item = &'i HeaderValue>>(values: &mut I) -> Result<Self, Error> {
-        Ok(XForwardedProto(
+        Ok(Self(
             values
                 .next()
                 .and_then(|value| value.to_str().ok().and_then(|s| s.parse().ok()))
                 .ok_or_else(Error::invalid)?,
         ))
     }
+}
 
+impl HeaderEncode for XForwardedProto {
     fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
         let s = self.0.to_string();
         values.extend(Some(HeaderValue::try_from(s).unwrap()))
@@ -48,11 +52,13 @@ impl Header for XForwardedProto {
 
 impl XForwardedProto {
     /// Get a reference to the [`ForwardedProtocol`] of this [`XForwardedProto`].
+    #[must_use]
     pub fn protocol(&self) -> &ForwardedProtocol {
         &self.0
     }
 
-    /// Consume this [`Header`] into the inner data ([`ForwardedProtocol`]).
+    /// Consume this header into the inner data ([`ForwardedProtocol`]).
+    #[must_use]
     pub fn into_protocol(self) -> ForwardedProtocol {
         self.0
     }
@@ -73,7 +79,7 @@ impl super::ForwardHeader for XForwardedProto {
         I: IntoIterator<Item = &'a ForwardedElement>,
     {
         let proto = input.into_iter().next()?.ref_forwarded_proto()?;
-        Some(XForwardedProto(proto))
+        Some(Self(proto))
     }
 }
 

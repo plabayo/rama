@@ -12,26 +12,31 @@ pub struct DomainAddress {
 
 impl DomainAddress {
     /// Creates a new [`DomainAddress`].
+    #[must_use]
     pub const fn new(domain: Domain, port: u16) -> Self {
         Self { domain, port }
     }
 
     /// Gets the [`Domain`] reference.
+    #[must_use]
     pub fn domain(&self) -> &Domain {
         &self.domain
     }
 
     /// Consumes the [`DomainAddress`] and returns the [`Domain`].
+    #[must_use]
     pub fn into_domain(self) -> Domain {
         self.domain
     }
 
     /// Gets the port.
+    #[must_use]
     pub fn port(&self) -> u16 {
         self.port
     }
 
     /// Consume self into its parts: `(Domain, port)`
+    #[must_use]
     pub fn into_parts(self) -> (Domain, u16) {
         (self.domain, self.port)
     }
@@ -118,6 +123,7 @@ impl<'de> serde::Deserialize<'de> for DomainAddress {
 mod tests {
     use super::*;
 
+    #[allow(clippy::needless_pass_by_value)]
     fn assert_eq(s: &str, domain_address: DomainAddress, domain: &str, port: u16) {
         assert_eq!(domain_address.domain().as_str(), domain, "parsing: {s}");
         assert_eq!(domain_address.port(), port, "parsing: {s}");

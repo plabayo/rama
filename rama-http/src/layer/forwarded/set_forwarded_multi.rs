@@ -54,6 +54,7 @@ impl<T> Default for SetForwardedHeadersLayer<T> {
 
 impl<T> SetForwardedHeadersLayer<T> {
     /// Create a new `SetForwardedHeadersLayer` for the specified headers `T`.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             by_node: Domain::from_static("rama").into(),
@@ -107,7 +108,7 @@ impl<S: fmt::Debug, T> fmt::Debug for SetForwardedHeadersService<S, T> {
 
 impl<S: Clone, T> Clone for SetForwardedHeadersService<S, T> {
     fn clone(&self) -> Self {
-        SetForwardedHeadersService {
+        Self {
             inner: self.inner.clone(),
             by_node: self.by_node.clone(),
             _headers: PhantomData,

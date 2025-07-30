@@ -14,14 +14,14 @@ pub struct Rewind<T> {
 impl<T> Rewind<T> {
     #[cfg(test)]
     pub fn new(io: T) -> Self {
-        Rewind {
+        Self {
             pre: None,
             inner: io,
         }
     }
 
     pub fn new_buffered(io: T, buf: Bytes) -> Self {
-        Rewind {
+        Self {
             pre: Some(buf),
             inner: io,
         }

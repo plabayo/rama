@@ -72,7 +72,7 @@ impl UdpSocket {
     /// The returned socket is ready for accepting connections and connecting to others.
     pub async fn bind_device<N: TryInto<DeviceName, Error: Into<BoxError>> + Send + 'static>(
         name: N,
-    ) -> Result<UdpSocket, BoxError> {
+    ) -> Result<Self, BoxError> {
         tokio::task::spawn_blocking(|| {
             let name = name.try_into().map_err(Into::<BoxError>::into)?;
             let socket = SocketOptions {
@@ -94,14 +94,14 @@ impl UdpSocket {
         interface: I,
     ) -> Result<Self, BoxError> {
         match interface.try_into().map_err(Into::<BoxError>::into)? {
-            Interface::Address(addr) => UdpSocket::bind_address(addr).await,
+            Interface::Address(addr) => Self::bind_address(addr).await,
             #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
-            Interface::Device(name) => UdpSocket::bind_device(name).await,
+            Interface::Device(name) => Self::bind_device(name).await,
             Interface::Socket(opts) => {
                 let socket = opts
                     .try_build_socket()
                     .context("build udp socket from options")?;
-                UdpSocket::bind_socket(socket).await
+                Self::bind_socket(socket).await
             }
         }
     }
@@ -139,7 +139,7 @@ impl UdpSocket {
     /// # }
     /// ```
     #[inline]
-    pub fn from_std(socket: std::net::UdpSocket) -> io::Result<UdpSocket> {
+    pub fn from_std(socket: std::net::UdpSocket) -> io::Result<Self> {
         socket.set_nonblocking(true)?;
         Ok(TokioUdpSocket::from_std(socket)?.into())
     }

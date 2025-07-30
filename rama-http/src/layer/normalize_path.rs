@@ -73,8 +73,9 @@ impl NormalizePathLayer {
     ///
     /// Any trailing slashes from request paths will be removed. For example, a request with `/foo/`
     /// will be changed to `/foo` before reaching the inner service.
+    #[must_use]
     pub fn trim_trailing_slash() -> Self {
-        NormalizePathLayer {
+        Self {
             mode: NormalizeMode::Trim,
         }
     }
@@ -83,8 +84,9 @@ impl NormalizePathLayer {
     ///
     /// Request paths without trailing slash will be appended with a trailing slash. For example, a request with `/foo`
     /// will be changed to `/foo/` before reaching the inner service.
+    #[must_use]
     pub fn append_trailing_slash() -> Self {
-        NormalizePathLayer {
+        Self {
             mode: NormalizeMode::Append,
         }
     }

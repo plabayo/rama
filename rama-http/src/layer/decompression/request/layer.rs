@@ -33,11 +33,13 @@ impl<S> Layer<S> for RequestDecompressionLayer {
 
 impl RequestDecompressionLayer {
     /// Creates a new `RequestDecompressionLayer`.
+    #[must_use]
     pub fn new() -> Self {
         Default::default()
     }
 
     /// Sets whether to support gzip encoding.
+    #[must_use]
     pub fn gzip(mut self, enable: bool) -> Self {
         self.accept.set_gzip(enable);
         self
@@ -50,6 +52,7 @@ impl RequestDecompressionLayer {
     }
 
     /// Sets whether to support Deflate encoding.
+    #[must_use]
     pub fn deflate(mut self, enable: bool) -> Self {
         self.accept.set_deflate(enable);
         self
@@ -62,6 +65,7 @@ impl RequestDecompressionLayer {
     }
 
     /// Sets whether to support Brotli encoding.
+    #[must_use]
     pub fn br(mut self, enable: bool) -> Self {
         self.accept.set_br(enable);
         self
@@ -74,6 +78,7 @@ impl RequestDecompressionLayer {
     }
 
     /// Sets whether to support Zstd encoding.
+    #[must_use]
     pub fn zstd(mut self, enable: bool) -> Self {
         self.accept.set_zstd(enable);
         self
@@ -86,6 +91,7 @@ impl RequestDecompressionLayer {
     }
 
     /// Sets whether to pass through the request even when the encoding is not supported.
+    #[must_use]
     pub fn pass_through_unaccepted(mut self, enable: bool) -> Self {
         self.pass_through_unaccepted = enable;
         self

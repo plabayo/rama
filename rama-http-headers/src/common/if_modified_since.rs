@@ -38,19 +38,20 @@ derive_header! {
 
 impl IfModifiedSince {
     /// Check if the supplied time means the resource has been modified.
+    #[must_use]
     pub fn is_modified(&self, last_modified: SystemTime) -> bool {
         self.0 < last_modified.into()
     }
 }
 
 impl From<SystemTime> for IfModifiedSince {
-    fn from(time: SystemTime) -> IfModifiedSince {
-        IfModifiedSince(time.into())
+    fn from(time: SystemTime) -> Self {
+        Self(time.into())
     }
 }
 
 impl From<IfModifiedSince> for SystemTime {
-    fn from(date: IfModifiedSince) -> SystemTime {
+    fn from(date: IfModifiedSince) -> Self {
         date.0.into()
     }
 }

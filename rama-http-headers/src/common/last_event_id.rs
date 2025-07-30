@@ -39,8 +39,9 @@ impl LastEventId {
     /// # Panic
     ///
     /// Panics if the string is not a legal header value.
-    pub fn from_static(s: &'static str) -> LastEventId {
-        LastEventId(HeaderValueString::from_static(s))
+    #[must_use]
+    pub fn from_static(s: &'static str) -> Self {
+        Self(HeaderValueString::from_static(s))
     }
 }
 

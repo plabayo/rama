@@ -37,7 +37,7 @@ impl<S: fmt::Debug> fmt::Debug for DnsResolveModeService<S> {
 
 impl<S: Clone> Clone for DnsResolveModeService<S> {
     fn clone(&self) -> Self {
-        DnsResolveModeService {
+        Self {
             inner: self.inner.clone(),
             header_name: self.header_name.clone(),
         }

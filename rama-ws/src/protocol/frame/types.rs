@@ -53,7 +53,7 @@ pub struct FrameHeader {
 
 impl Default for FrameHeader {
     fn default() -> Self {
-        FrameHeader {
+        Self {
             is_final: true,
             rsv1: false,
             rsv2: false,
@@ -87,6 +87,7 @@ impl FrameHeader {
 
     /// Get the size of the header formatted with given payload length.
     #[allow(clippy::len_without_is_empty)]
+    #[must_use]
     pub fn len(&self, length: u64) -> usize {
         2 + LengthFormat::for_length(length).extra_bytes() + if self.mask.is_some() { 4 } else { 0 }
     }
@@ -198,7 +199,7 @@ impl FrameHeader {
             _ => (),
         }
 
-        let hdr = FrameHeader {
+        let hdr = Self {
             is_final,
             rsv1,
             rsv2,
@@ -300,12 +301,12 @@ impl Frame {
 
     /// Create a new data frame.
     #[inline]
-    pub fn message(data: impl Into<Bytes>, opcode: OpCode, is_final: bool) -> Frame {
+    pub fn message(data: impl Into<Bytes>, opcode: OpCode, is_final: bool) -> Self {
         debug_assert!(
             matches!(opcode, OpCode::Data(_)),
             "Invalid opcode for data frame."
         );
-        Frame {
+        Self {
             header: FrameHeader {
                 is_final,
                 opcode,
@@ -317,8 +318,8 @@ impl Frame {
 
     /// Create a new Pong control frame.
     #[inline]
-    pub fn pong(data: impl Into<Bytes>) -> Frame {
-        Frame {
+    pub fn pong(data: impl Into<Bytes>) -> Self {
+        Self {
             header: FrameHeader {
                 opcode: OpCode::Control(OpCodeControl::Pong),
                 ..FrameHeader::default()
@@ -329,8 +330,8 @@ impl Frame {
 
     /// Create a new Ping control frame.
     #[inline]
-    pub fn ping(data: impl Into<Bytes>) -> Frame {
-        Frame {
+    pub fn ping(data: impl Into<Bytes>) -> Self {
+        Self {
             header: FrameHeader {
                 opcode: OpCode::Control(OpCodeControl::Ping),
                 ..FrameHeader::default()
@@ -341,7 +342,7 @@ impl Frame {
 
     /// Create a new Close control frame.
     #[inline]
-    pub fn close(msg: Option<CloseFrame>) -> Frame {
+    pub fn close(msg: Option<CloseFrame>) -> Self {
         let payload = if let Some(CloseFrame { code, reason }) = msg {
             let mut p = BytesMut::with_capacity(reason.len() + 2);
             p.extend(u16::from(code).to_be_bytes());
@@ -351,7 +352,7 @@ impl Frame {
             <_>::default()
         };
 
-        Frame {
+        Self {
             header: FrameHeader::default(),
             payload: payload.into(),
         }
@@ -359,7 +360,7 @@ impl Frame {
 
     /// Create a frame from given header and data.
     pub fn from_payload(header: FrameHeader, payload: Bytes) -> Self {
-        Frame { header, payload }
+        Self { header, payload }
     }
 
     /// Write a frame out to a buffer
@@ -434,11 +435,11 @@ impl LengthFormat {
     #[inline]
     fn for_length(length: u64) -> Self {
         if length < 126 {
-            LengthFormat::U8(length as u8)
+            Self::U8(length as u8)
         } else if length < 65536 {
-            LengthFormat::U16
+            Self::U16
         } else {
-            LengthFormat::U64
+            Self::U64
         }
     }
 
@@ -446,9 +447,9 @@ impl LengthFormat {
     #[inline]
     fn extra_bytes(&self) -> usize {
         match *self {
-            LengthFormat::U8(_) => 0,
-            LengthFormat::U16 => 2,
-            LengthFormat::U64 => 8,
+            Self::U8(_) => 0,
+            Self::U16 => 2,
+            Self::U64 => 8,
         }
     }
 
@@ -456,9 +457,9 @@ impl LengthFormat {
     #[inline]
     fn length_byte(&self) -> u8 {
         match *self {
-            LengthFormat::U8(b) => b,
-            LengthFormat::U16 => 126,
-            LengthFormat::U64 => 127,
+            Self::U8(b) => b,
+            Self::U16 => 126,
+            Self::U64 => 127,
         }
     }
 
@@ -466,9 +467,9 @@ impl LengthFormat {
     #[inline]
     fn for_byte(byte: u8) -> Self {
         match byte & 0x7F {
-            126 => LengthFormat::U16,
-            127 => LengthFormat::U64,
-            b => LengthFormat::U8(b),
+            126 => Self::U16,
+            127 => Self::U64,
+            b => Self::U8(b),
         }
     }
 }

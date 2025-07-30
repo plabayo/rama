@@ -86,6 +86,7 @@ impl ServeDir<DefaultServeDirFallback> {
 
 impl<F> ServeDir<F> {
     /// Set the [`DirectoryServeMode`].
+    #[must_use]
     pub fn with_directory_serve_mode(mut self, mode: DirectoryServeMode) -> Self {
         match &mut self.variant {
             ServeVariant::Directory { serve_mode } => {
@@ -110,6 +111,7 @@ impl<F> ServeDir<F> {
     /// Set a specific read buffer chunk size.
     ///
     /// The default capacity is 64kb.
+    #[must_use]
     pub fn with_buf_chunk_size(mut self, chunk_size: usize) -> Self {
         self.buf_chunk_size = chunk_size;
         self
@@ -133,6 +135,7 @@ impl<F> ServeDir<F> {
     /// the uncompressed version will be served instead.
     /// Both the precompressed version and the uncompressed version are expected
     /// to be present in the directory. Different precompressed variants can be combined.
+    #[must_use]
     pub fn precompressed_gzip(mut self) -> Self {
         self.precompressed_variants
             .get_or_insert(Default::default())
@@ -167,6 +170,7 @@ impl<F> ServeDir<F> {
     /// the uncompressed version will be served instead.
     /// Both the precompressed version and the uncompressed version are expected
     /// to be present in the directory. Different precompressed variants can be combined.
+    #[must_use]
     pub fn precompressed_br(mut self) -> Self {
         self.precompressed_variants
             .get_or_insert(Default::default())
@@ -201,6 +205,7 @@ impl<F> ServeDir<F> {
     /// the uncompressed version will be served instead.
     /// Both the precompressed version and the uncompressed version are expected
     /// to be present in the directory. Different precompressed variants can be combined.
+    #[must_use]
     pub fn precompressed_deflate(mut self) -> Self {
         self.precompressed_variants
             .get_or_insert(Default::default())
@@ -235,6 +240,7 @@ impl<F> ServeDir<F> {
     /// the uncompressed version will be served instead.
     /// Both the precompressed version and the uncompressed version are expected
     /// to be present in the directory. Different precompressed variants can be combined.
+    #[must_use]
     pub fn precompressed_zstd(mut self) -> Self {
         self.precompressed_variants
             .get_or_insert(Default::default())
@@ -279,6 +285,7 @@ impl<F> ServeDir<F> {
     /// Set the fallback service and override the fallback's status code to `404 Not Found`.
     ///
     /// This service will be called if there is no file at the path of the request.
+    #[must_use]
     pub fn not_found_service<F2>(self, new_fallback: F2) -> ServeDir<SetStatus<F2>> {
         self.fallback(SetStatus::new(new_fallback, StatusCode::NOT_FOUND))
     }
@@ -286,6 +293,7 @@ impl<F> ServeDir<F> {
     /// Customize whether or not to call the fallback for requests that aren't `GET` or `HEAD`.
     ///
     /// Defaults to not calling the fallback and instead returning `405 Method Not Allowed`.
+    #[must_use]
     pub fn call_fallback_on_method_not_allowed(mut self, call_fallback: bool) -> Self {
         self.call_fallback_on_method_not_allowed = call_fallback;
         self
@@ -349,18 +357,15 @@ impl<F> ServeDir<F> {
             (fallback, ctx, fallback_req)
         });
 
-        let path_to_file = match self
+        let Some(path_to_file) = self
             .variant
             .build_and_validate_path(&self.base, req.uri().path())
-        {
-            Some(path_to_file) => path_to_file,
-            None => {
-                return if let Some((fallback, ctx, request)) = fallback_and_request {
-                    future::serve_fallback(fallback, ctx, request).await
-                } else {
-                    Ok(future::not_found())
-                };
-            }
+        else {
+            return if let Some((fallback, ctx, request)) = fallback_and_request {
+                future::serve_fallback(fallback, ctx, request).await
+            } else {
+                Ok(future::not_found())
+            };
         };
 
         let buf_chunk_size = self.buf_chunk_size;
@@ -441,9 +446,9 @@ impl fmt::Display for DirectoryServeMode {
             f,
             "{}",
             match self {
-                DirectoryServeMode::AppendIndexHtml => "append-index",
-                DirectoryServeMode::NotFound => "not-found",
-                DirectoryServeMode::HtmlFileList => "html-file-list",
+                Self::AppendIndexHtml => "append-index",
+                Self::NotFound => "not-found",
+                Self::HtmlFileList => "html-file-list",
             }
         )
     }
@@ -484,7 +489,7 @@ enum ServeVariant {
 impl ServeVariant {
     fn build_and_validate_path(&self, base_path: &Path, requested_path: &str) -> Option<PathBuf> {
         match self {
-            ServeVariant::Directory { serve_mode: _ } => {
+            Self::Directory { serve_mode: _ } => {
                 let path = requested_path.trim_start_matches('/');
 
                 let path_decoded = percent_decode(path.as_ref()).decode_utf8().ok()?;
@@ -512,7 +517,7 @@ impl ServeVariant {
                 }
                 Some(path_to_file)
             }
-            ServeVariant::SingleFile { mime: _ } => Some(base_path.to_path_buf()),
+            Self::SingleFile { mime: _ } => Some(base_path.to_path_buf()),
         }
     }
 }

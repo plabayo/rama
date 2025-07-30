@@ -7,8 +7,15 @@
 pub use ::rama_http::{
     Body, BodyDataStream, BodyExtractExt, BodyLimit, HeaderMap, HeaderName, HeaderValue, Method,
     Request, Response, Scheme, StatusCode, Uri, Version, conn, dep, header, headers, io, matcher,
-    opentelemetry, proto, service, sse,
+    opentelemetry, proto, service, sse, utils,
 };
+
+pub mod anti_bot {
+    //! Anti-Bot http utilities
+
+    #[doc(inline)]
+    pub use ::rama_http::InfiniteReader;
+}
 
 #[cfg(feature = "http-full")]
 #[doc(inline)]

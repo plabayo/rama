@@ -74,6 +74,7 @@ pub struct IncomingBytesTrackerLayer;
 
 impl IncomingBytesTrackerLayer {
     /// Create a new [`IncomingBytesTrackerLayer`].
+    #[must_use]
     pub const fn new() -> Self {
         Self
     }

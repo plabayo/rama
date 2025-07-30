@@ -177,7 +177,7 @@ where
     /// Create a new `UnixDatagramFramed` backed by the given socket and codec.
     ///
     /// See struct level documentation for more details.
-    pub fn new(socket: T, codec: C) -> UnixDatagramFramed<C, T> {
+    pub fn new(socket: T, codec: C) -> Self {
         Self {
             socket,
             codec,

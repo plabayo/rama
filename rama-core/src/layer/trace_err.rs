@@ -49,7 +49,7 @@ impl<S> TraceErr<S> {
 
     /// Crates a new [`TraceErr`] service with the given [`tracing::Level`].
     pub const fn with_level(inner: S, level: tracing::Level) -> Self {
-        TraceErr { inner, level }
+        Self { inner, level }
     }
 
     define_inner_service_accessors!();
@@ -87,13 +87,15 @@ where
 
 impl TraceErrLayer {
     /// Creates a new [`TraceErrLayer`].
+    #[must_use]
     pub const fn new() -> Self {
         Self::with_level(tracing::Level::ERROR)
     }
 
     /// Creates a new [`TraceErrLayer`] with the given [`tracing::Level`].
+    #[must_use]
     pub const fn with_level(level: tracing::Level) -> Self {
-        TraceErrLayer { level }
+        Self { level }
     }
 }
 

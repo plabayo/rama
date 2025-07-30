@@ -72,6 +72,7 @@ impl RemoveResponseHeaderLayer {
     ///
     /// Removes all hop-by-hop response headers as specified in [RFC 2616](https://datatracker.ietf.org/doc/html/rfc2616#section-13.5.1).
     /// This does not support other hop-by-hop headers defined in [section-14.10](https://datatracker.ietf.org/doc/html/rfc2616#section-14.10).
+    #[must_use]
     pub fn hop_by_hop() -> Self {
         Self {
             mode: RemoveResponseHeaderMode::Hop,
@@ -140,7 +141,7 @@ impl<S: fmt::Debug> fmt::Debug for RemoveResponseHeader<S> {
 
 impl<S: Clone> Clone for RemoveResponseHeader<S> {
     fn clone(&self) -> Self {
-        RemoveResponseHeader {
+        Self {
             inner: self.inner.clone(),
             mode: self.mode.clone(),
         }

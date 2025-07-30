@@ -28,7 +28,7 @@ impl<T> Data<T> {
     pub fn new(stream_id: StreamId, payload: T) -> Self {
         assert!(!stream_id.is_zero());
 
-        Data {
+        Self {
             stream_id,
             data: payload,
             flags: DataFlags::default(),
@@ -130,7 +130,7 @@ impl Data<Bytes> {
             None
         };
 
-        Ok(Data {
+        Ok(Self {
             stream_id: head.stream_id(),
             data: payload,
             flags,
@@ -157,7 +157,7 @@ impl<T: Buf> Data<T> {
 
 impl<T> From<Data<T>> for Frame<T> {
     fn from(src: Data<T>) -> Self {
-        Frame::Data(src)
+        Self::Data(src)
     }
 }
 
@@ -179,15 +179,15 @@ impl<T> fmt::Debug for Data<T> {
 // ===== impl DataFlags =====
 
 impl DataFlags {
-    fn load(bits: u8) -> DataFlags {
-        DataFlags(bits & ALL)
+    fn load(bits: u8) -> Self {
+        Self(bits & ALL)
     }
 
-    fn is_empty(&self) -> bool {
+    fn is_empty(self) -> bool {
         self.0 == 0
     }
 
-    fn is_end_stream(&self) -> bool {
+    fn is_end_stream(self) -> bool {
         self.0 & END_STREAM == END_STREAM
     }
 
@@ -199,7 +199,7 @@ impl DataFlags {
         self.0 &= !END_STREAM
     }
 
-    fn is_padded(&self) -> bool {
+    fn is_padded(self) -> bool {
         self.0 & PADDED == PADDED
     }
 
@@ -209,7 +209,7 @@ impl DataFlags {
 }
 
 impl From<DataFlags> for u8 {
-    fn from(src: DataFlags) -> u8 {
+    fn from(src: DataFlags) -> Self {
         src.0
     }
 }

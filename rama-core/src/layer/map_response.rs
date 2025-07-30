@@ -19,7 +19,7 @@ where
     F: Clone,
 {
     fn clone(&self) -> Self {
-        MapResponse {
+        Self {
             inner: self.inner.clone(),
             f: self.f.clone(),
         }
@@ -50,7 +50,7 @@ where
     F: Clone,
 {
     fn clone(&self) -> Self {
-        MapResponseLayer { f: self.f.clone() }
+        Self { f: self.f.clone() }
     }
 }
 
@@ -68,7 +68,7 @@ where
 impl<S, F> MapResponse<S, F> {
     /// Creates a new `MapResponse` service.
     pub const fn new(inner: S, f: F) -> Self {
-        MapResponse { f, inner }
+        Self { f, inner }
     }
 
     define_inner_service_accessors!();
@@ -100,7 +100,7 @@ where
 impl<F> MapResponseLayer<F> {
     /// Creates a new [`MapResponseLayer`] layer.
     pub const fn new(f: F) -> Self {
-        MapResponseLayer { f }
+        Self { f }
     }
 }
 

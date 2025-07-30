@@ -51,6 +51,7 @@ impl NodeId {
 
     #[inline]
     /// Converts a vector of bytes to a [`NodeId`], converting invalid characters to underscore.
+    #[must_use]
     pub fn from_bytes_lossy(vec: &[u8]) -> Self {
         let s = String::from_utf8_lossy(vec);
         Self::from_str_lossy(&s)
@@ -61,7 +62,7 @@ impl NodeId {
         let s_original = s;
 
         if s.eq_ignore_ascii_case(UNKNOWN_STR) {
-            return NodeId {
+            return Self {
                 name: NodeName::Unknown,
                 port: None,
             };
@@ -70,7 +71,7 @@ impl NodeId {
         if let Ok(ip) = try_to_parse_str_to_ip(s) {
             // early return to prevent stuff like `::1` to
             // be interpreted as node { name = obf(:), port = num(1) }
-            return NodeId {
+            return Self {
                 name: NodeName::Ip(ip),
                 port: None,
             };
@@ -82,15 +83,16 @@ impl NodeId {
             .unwrap_or_else(|_| NodeName::Obf(ObfNode::from_str_lossy(s)));
 
         match name {
-            NodeName::Ip(IpAddr::V6(_)) if port.is_some() && !s.starts_with('[') => NodeId {
+            NodeName::Ip(IpAddr::V6(_)) if port.is_some() && !s.starts_with('[') => Self {
                 name: NodeName::Obf(ObfNode::from_str_lossy(s_original)),
                 port: None,
             },
-            _ => NodeId { name, port },
+            _ => Self { name, port },
         }
     }
 
     /// Return the [`IpAddr`] if one was defined for this [`NodeId`].
+    #[must_use]
     pub fn ip(&self) -> Option<IpAddr> {
         match &self.name {
             NodeName::Ip(addr) => Some(*addr),
@@ -100,11 +102,13 @@ impl NodeId {
 
     /// Return true if this [`NodeId`] has a any kind of port defined,
     /// even if obfuscated.
+    #[must_use]
     pub fn has_any_port(&self) -> bool {
         self.port.is_some()
     }
 
     /// Return the numeric port if one was defined for this [`NodeId`].
+    #[must_use]
     pub fn port(&self) -> Option<u16> {
         if let Some(NodePort::Num(n)) = self.port {
             Some(n)
@@ -115,6 +119,7 @@ impl NodeId {
 
     /// Return the [`Authority`] if this [`NodeId`] has either
     /// an [`IpAddr`] or [`Domain`] defined, as well as a numeric port.
+    #[must_use]
     pub fn authority(&self) -> Option<Authority> {
         match (&self.name, self.port()) {
             (NodeName::Ip(ip), Some(port)) => Some((*ip, port).into()),
@@ -134,7 +139,7 @@ impl NodePort {
     fn from_str_lossy(s: &str) -> Self {
         s.parse::<u16>()
             .map(NodePort::Num)
-            .unwrap_or_else(|_| NodePort::Obf(ObfPort::from_str_lossy(s)))
+            .unwrap_or_else(|_| Self::Obf(ObfPort::from_str_lossy(s)))
     }
 }
 
@@ -154,7 +159,7 @@ impl From<(IpAddr, u16)> for NodeId {
 
 impl From<(IpAddr, Option<u16>)> for NodeId {
     fn from((ip, port): (IpAddr, Option<u16>)) -> Self {
-        NodeId {
+        Self {
             name: NodeName::Ip(ip),
             port: port.map(NodePort::Num),
         }
@@ -177,7 +182,7 @@ impl From<(Domain, u16)> for NodeId {
 
 impl From<(Domain, Option<u16>)> for NodeId {
     fn from((domain, port): (Domain, Option<u16>)) -> Self {
-        NodeId {
+        Self {
             // NOTE: this assumes all domains are valid obf nodes,
             // which should be ok given the validation rules for domains are more strict!
             name: NodeName::Obf(ObfNode::from_inner(domain.into_inner())),
@@ -198,7 +203,7 @@ impl From<Authority> for NodeId {
 
 impl From<SocketAddr> for NodeId {
     fn from(addr: SocketAddr) -> Self {
-        NodeId {
+        Self {
             name: NodeName::Ip(addr.ip()),
             port: Some(NodePort::Num(addr.port())),
         }
@@ -207,7 +212,7 @@ impl From<SocketAddr> for NodeId {
 
 impl From<&SocketAddr> for NodeId {
     fn from(addr: &SocketAddr) -> Self {
-        NodeId {
+        Self {
             name: NodeName::Ip(addr.ip()),
             port: Some(NodePort::Num(addr.port())),
         }
@@ -238,8 +243,8 @@ impl fmt::Display for NodeId {
 impl fmt::Display for NodePort {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            NodePort::Num(num) => num.fmt(f),
-            NodePort::Obf(s) => s.fmt(f),
+            Self::Num(num) => num.fmt(f),
+            Self::Obf(s) => s.fmt(f),
         }
     }
 }
@@ -248,7 +253,7 @@ impl std::str::FromStr for NodeId {
     type Err = OpaqueError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        NodeId::try_from(s)
+        Self::try_from(s)
     }
 }
 
@@ -265,7 +270,7 @@ impl TryFrom<&str> for NodeId {
 
     fn try_from(s: &str) -> Result<Self, Self::Error> {
         if s.eq_ignore_ascii_case(UNKNOWN_STR) {
-            return Ok(NodeId {
+            return Ok(Self {
                 name: NodeName::Unknown,
                 port: None,
             });
@@ -274,7 +279,7 @@ impl TryFrom<&str> for NodeId {
         if let Ok(ip) = try_to_parse_str_to_ip(s) {
             // early return to prevent stuff like `::1` to
             // be interpreted as node { name = obf(:), port = num(1) }
-            return Ok(NodeId {
+            return Ok(Self {
                 name: NodeName::Ip(ip),
                 port: None,
             });
@@ -290,7 +295,7 @@ impl TryFrom<&str> for NodeId {
             NodeName::Ip(IpAddr::V6(_)) if port.is_some() && !s.starts_with('[') => Err(
                 OpaqueError::from_display("missing brackets for node IPv6 address with port"),
             ),
-            _ => Ok(NodeId { name, port }),
+            _ => Ok(Self { name, port }),
         }
     }
 }

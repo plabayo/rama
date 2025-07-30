@@ -225,6 +225,7 @@ impl<M, MakeSpan, OnRequest, OnResponse, OnBodyChunk, OnEos, OnFailure>
 impl TraceLayer<HttpMakeClassifier> {
     /// Create a new [`TraceLayer`] using [`ServerErrorsAsFailures`] which supports classifying
     /// regular HTTP responses based on the status code.
+    #[must_use]
     pub fn new_for_http() -> Self {
         Self {
             make_classifier: SharedClassifier::new(ServerErrorsAsFailures::default()),
@@ -241,6 +242,7 @@ impl TraceLayer<HttpMakeClassifier> {
 impl TraceLayer<GrpcMakeClassifier> {
     /// Create a new [`TraceLayer`] using [`GrpcErrorsAsFailures`] which supports classifying
     /// gRPC responses and streams based on the `grpc-status` header.
+    #[must_use]
     pub fn new_for_grpc() -> Self {
         Self {
             make_classifier: SharedClassifier::new(GrpcErrorsAsFailures::default()),

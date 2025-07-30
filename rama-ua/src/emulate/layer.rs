@@ -64,6 +64,7 @@ impl<P> UserAgentEmulateLayer<P> {
     /// When no user agent profile was found it will
     /// fail the request unless optional is true. In case of
     /// the latter the service will do nothing.
+    #[must_use]
     pub fn optional(mut self, optional: bool) -> Self {
         self.optional = optional;
         self
@@ -77,6 +78,7 @@ impl<P> UserAgentEmulateLayer<P> {
 
     /// If true, the layer will try to auto-detect the user agent from the request,
     /// but only in case that info is not yet found in the context.
+    #[must_use]
     pub fn try_auto_detect_user_agent(mut self, try_auto_detect_user_agent: bool) -> Self {
         self.try_auto_detect_user_agent = try_auto_detect_user_agent;
         self
@@ -102,6 +104,7 @@ impl<P> UserAgentEmulateLayer<P> {
     /// and/or order of the headers taken together. Using this metadata allows you to
     /// communicate this data through anyway. If however your http client does respect
     /// casing and order, or you don't care about some of it, you might not need it.
+    #[must_use]
     pub fn input_header_order(mut self, name: HeaderName) -> Self {
         self.input_header_order = Some(name);
         self
@@ -115,6 +118,7 @@ impl<P> UserAgentEmulateLayer<P> {
 
     /// Choose what to do in case no profile could be selected
     /// using the regular pre-conditions as specified by the provider.
+    #[must_use]
     pub fn select_fallback(mut self, fb: UserAgentSelectFallback) -> Self {
         self.select_fallback = Some(fb);
         self

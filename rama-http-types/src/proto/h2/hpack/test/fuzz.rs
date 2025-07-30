@@ -47,7 +47,7 @@ struct HeaderFrame {
 }
 
 impl FuzzHpack {
-    fn new(seed: [u8; 32]) -> FuzzHpack {
+    fn new(seed: [u8; 32]) -> Self {
         // Seed the RNG
         let mut rng = StdRng::from_seed(seed);
 
@@ -119,7 +119,7 @@ impl FuzzHpack {
             frames.push(frame);
         }
 
-        FuzzHpack { frames }
+        Self { frames }
     }
 
     fn run(self) {
@@ -179,7 +179,7 @@ impl FuzzHpack {
 
 impl Arbitrary for FuzzHpack {
     fn arbitrary(_: &mut Gen) -> Self {
-        FuzzHpack::new(rng().random())
+        Self::new(rng().random())
     }
 }
 
@@ -190,7 +190,7 @@ fn gen_header(g: &mut StdRng) -> Header<Option<HeaderName>> {
         match g.random_range(0u32..5) {
             0 => {
                 let value = gen_string(g, 4, 20);
-                Header::Authority(to_shared(value))
+                Header::Authority(to_shared(&value))
             }
             1 => {
                 let method = match g.random_range(0u32..6) {
@@ -219,7 +219,7 @@ fn gen_header(g: &mut StdRng) -> Header<Option<HeaderName>> {
                     _ => unreachable!(),
                 };
 
-                Header::Scheme(to_shared(value.to_owned()))
+                Header::Scheme(to_shared(value))
             }
             3 => {
                 let value = match g.random_range(0u32..100) {
@@ -228,7 +228,7 @@ fn gen_header(g: &mut StdRng) -> Header<Option<HeaderName>> {
                     _ => gen_string(g, 2, 20),
                 };
 
-                Header::Path(to_shared(value))
+                Header::Path(to_shared(&value))
             }
             4 => {
                 let status = (g.random::<u16>() % 500) + 100;
@@ -359,6 +359,6 @@ fn gen_string(g: &mut StdRng, min: usize, max: usize) -> String {
     String::from_utf8(bytes).unwrap()
 }
 
-fn to_shared(src: String) -> crate::proto::h2::hpack::BytesStr {
-    crate::proto::h2::hpack::BytesStr::from(src.as_str())
+fn to_shared(src: &str) -> crate::proto::h2::hpack::BytesStr {
+    crate::proto::h2::hpack::BytesStr::from(src)
 }

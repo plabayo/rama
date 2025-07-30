@@ -41,7 +41,7 @@ enum OriginOrNull {
 
 impl Origin {
     /// The literal `null` Origin header.
-    pub const NULL: Origin = Origin(OriginOrNull::Null);
+    pub const NULL: Self = Self(OriginOrNull::Null);
 
     /// Checks if `Origin` is `null`.
     #[inline]
@@ -128,7 +128,7 @@ rama_utils::macros::error::static_str_error! {
 impl OriginOrNull {
     fn try_from_value(value: &HeaderValue) -> Option<Self> {
         if value == "null" {
-            return Some(OriginOrNull::Null);
+            return Some(Self::Null);
         }
 
         let uri = Uri::try_from(value.as_bytes()).ok()?;
@@ -151,7 +151,7 @@ impl OriginOrNull {
             }
         };
 
-        Some(OriginOrNull::Origin(scheme, auth))
+        Some(Self::Origin(scheme, auth))
     }
 }
 
@@ -162,23 +162,23 @@ impl TryFromValues for OriginOrNull {
     {
         values
             .just_one()
-            .and_then(OriginOrNull::try_from_value)
+            .and_then(Self::try_from_value)
             .ok_or_else(Error::invalid)
     }
 }
 
 impl<'a> From<&'a OriginOrNull> for HeaderValue {
-    fn from(origin: &'a OriginOrNull) -> HeaderValue {
+    fn from(origin: &'a OriginOrNull) -> Self {
         match origin {
             OriginOrNull::Origin(scheme, auth) => {
                 let s = format!("{scheme}://{auth}");
                 let bytes = Bytes::from(s);
-                HeaderValue::from_maybe_shared(bytes)
+                Self::from_maybe_shared(bytes)
                     .expect("Scheme and Authority are valid header values")
             }
             // Serialized as "null" per ASCII serialization of an origin
             // https://html.spec.whatwg.org/multipage/browsers.html#ascii-serialisation-of-an-origin
-            OriginOrNull::Null => HeaderValue::from_static("null"),
+            OriginOrNull::Null => Self::from_static("null"),
         }
     }
 }

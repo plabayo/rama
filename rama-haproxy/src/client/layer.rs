@@ -32,8 +32,9 @@ impl HaProxyLayer {
     /// - TCP4 (for IPv4, v1)
     /// - TCP6 (for IPv6, v1)
     /// - Stream (v2)
+    #[must_use]
     pub fn tcp() -> Self {
-        HaProxyLayer {
+        Self {
             version: Default::default(),
             _phantom: PhantomData,
         }
@@ -61,8 +62,9 @@ impl HaProxyLayer<protocol::Udp> {
     /// This is in the PROXY spec referred to as:
     ///
     /// - Datagram (v2)
+    #[must_use]
     pub fn udp() -> Self {
-        HaProxyLayer {
+        Self {
             version: Default::default(),
             _phantom: PhantomData,
         }
@@ -123,7 +125,7 @@ impl<S> HaProxyService<S> {
     /// - TCP6 (for IPv6, v1)
     /// - Stream (v2)
     pub fn tcp(inner: S) -> Self {
-        HaProxyService {
+        Self {
             inner,
             version: Default::default(),
             _phantom: PhantomData,
@@ -154,7 +156,7 @@ impl<S> HaProxyService<S, protocol::Udp> {
     ///
     /// - Datagram (v2)
     pub fn udp(inner: S) -> Self {
-        HaProxyService {
+        Self {
             inner,
             version: Default::default(),
             _phantom: PhantomData,
@@ -191,7 +193,7 @@ impl<S: fmt::Debug, P, V: fmt::Debug> fmt::Debug for HaProxyService<S, P, V> {
 
 impl<S: Clone, P, V: Clone> Clone for HaProxyService<S, P, V> {
     fn clone(&self) -> Self {
-        HaProxyService {
+        Self {
             inner: self.inner.clone(),
             version: self.version.clone(),
             _phantom: PhantomData,

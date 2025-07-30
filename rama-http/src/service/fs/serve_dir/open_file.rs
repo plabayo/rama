@@ -316,7 +316,7 @@ async fn maybe_serve_directory(
                 } else {
                     mime_guess::from_path(file_name_str.as_ref()).first()
                 };
-                let emoji = emoji_for_mime(mime, is_dir);
+                let emoji = emoji_for_mime(mime.as_ref(), is_dir);
 
                 let hs = if metadata.is_dir() {
                     HumanSize::None
@@ -408,12 +408,12 @@ enum HumanSize {
 impl fmt::Display for HumanSize {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            HumanSize::None => write!(f, "--"),
-            HumanSize::Bytes(n) => write!(f, "{n}B"),
-            HumanSize::KiloBytes(d) => write!(f, "{d:.1}KB"),
-            HumanSize::MegaBytes(d) => write!(f, "{d:.1}MB"),
-            HumanSize::GigaBytes(d) => write!(f, "{d:.1}GB"),
-            HumanSize::TeraBytes(d) => write!(f, "{d:.1}TB"),
+            Self::None => write!(f, "--"),
+            Self::Bytes(n) => write!(f, "{n}B"),
+            Self::KiloBytes(d) => write!(f, "{d:.1}KB"),
+            Self::MegaBytes(d) => write!(f, "{d:.1}MB"),
+            Self::GigaBytes(d) => write!(f, "{d:.1}GB"),
+            Self::TeraBytes(d) => write!(f, "{d:.1}TB"),
         }
     }
 }
@@ -437,17 +437,13 @@ fn format_size(bytes: u64) -> HumanSize {
     }
 }
 
-fn emoji_for_mime(mime: Option<mime::Mime>, is_dir: bool) -> &'static str {
+fn emoji_for_mime(mime: Option<&mime::Mime>, is_dir: bool) -> &'static str {
     if is_dir {
         return "📁";
     }
 
-    match mime
-        .as_ref()
-        .map(|m| (m.type_().as_str(), m.subtype().as_str()))
-    {
+    match mime.map(|m| (m.type_().as_str(), m.subtype().as_str())) {
         Some(("text", "css")) => "🎨",
-        Some(("text", _)) => "📄",
         Some(("image", _)) => "🖼️",
         Some(("audio", _)) => "🎵",
         Some(("video", _)) => "🎬",
@@ -570,7 +566,7 @@ mod test {
         ];
 
         for case in cases {
-            let actual = emoji_for_mime(case.mime.clone(), case.is_dir);
+            let actual = emoji_for_mime(case.mime.as_ref(), case.is_dir);
             assert_eq!(actual, case.expected, "Failed on case: {:?}", case.mime);
         }
     }

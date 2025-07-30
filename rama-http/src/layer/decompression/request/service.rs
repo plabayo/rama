@@ -43,7 +43,7 @@ impl<S: fmt::Debug> fmt::Debug for RequestDecompression<S> {
 
 impl<S: Clone> Clone for RequestDecompression<S> {
     fn clone(&self) -> Self {
-        RequestDecompression {
+        Self {
             inner: self.inner.clone(),
             accept: self.accept,
             pass_through_unaccepted: self.pass_through_unaccepted,
@@ -148,6 +148,7 @@ impl<S> RequestDecompression<S> {
     /// Passes through the request even when the encoding is not supported.
     ///
     /// By default pass-through is disabled.
+    #[must_use]
     pub fn pass_through_unaccepted(mut self, enabled: bool) -> Self {
         self.pass_through_unaccepted = enabled;
         self
@@ -162,6 +163,7 @@ impl<S> RequestDecompression<S> {
     }
 
     /// Sets whether to support gzip encoding.
+    #[must_use]
     pub fn gzip(mut self, enable: bool) -> Self {
         self.accept.set_gzip(enable);
         self
@@ -174,6 +176,7 @@ impl<S> RequestDecompression<S> {
     }
 
     /// Sets whether to support Deflate encoding.
+    #[must_use]
     pub fn deflate(mut self, enable: bool) -> Self {
         self.accept.set_deflate(enable);
         self
@@ -186,6 +189,7 @@ impl<S> RequestDecompression<S> {
     }
 
     /// Sets whether to support Brotli encoding.
+    #[must_use]
     pub fn br(mut self, enable: bool) -> Self {
         self.accept.set_br(enable);
         self
@@ -198,6 +202,7 @@ impl<S> RequestDecompression<S> {
     }
 
     /// Sets whether to support Zstd encoding.
+    #[must_use]
     pub fn zstd(mut self, enable: bool) -> Self {
         self.accept.set_zstd(enable);
         self

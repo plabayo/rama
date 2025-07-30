@@ -87,6 +87,7 @@ impl Default for ServeServiceBuilder<()> {
 
 impl ServeServiceBuilder<()> {
     /// Create a new [`ServeServiceBuilder`].
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -96,6 +97,7 @@ impl<H> ServeServiceBuilder<H> {
     /// set the number of concurrent connections to allow
     ///
     /// (0 = no limit)
+    #[must_use]
     pub fn concurrent(mut self, limit: usize) -> Self {
         self.concurrent_limit = limit;
         self
@@ -110,6 +112,7 @@ impl<H> ServeServiceBuilder<H> {
     }
 
     /// set the body limit in bytes for each request
+    #[must_use]
     pub fn body_limit(mut self, limit: usize) -> Self {
         self.body_limit = limit;
         self
@@ -124,6 +127,7 @@ impl<H> ServeServiceBuilder<H> {
     /// set the timeout in seconds for each connection
     ///
     /// (0 = no timeout)
+    #[must_use]
     pub fn timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
         self
@@ -148,6 +152,7 @@ impl<H> ServeServiceBuilder<H> {
     /// CF-Connecting-IP, True-Client-IP
     ///
     /// Or using HaProxy protocol.
+    #[must_use]
     pub fn forward(self, kind: ForwardKind) -> Self {
         self.maybe_forward(Some(kind))
     }
@@ -163,6 +168,7 @@ impl<H> ServeServiceBuilder<H> {
     /// maybe enable support for one of the following "forward" headers or protocols.
     ///
     /// See [`Self::forward`] for more information.
+    #[must_use]
     pub fn maybe_forward(mut self, maybe_kind: Option<ForwardKind>) -> Self {
         self.forward = maybe_kind;
         self
@@ -171,6 +177,7 @@ impl<H> ServeServiceBuilder<H> {
     #[cfg(any(feature = "rustls", feature = "boring"))]
     /// define a tls server cert config to be used for tls terminaton
     /// by the serve service.
+    #[must_use]
     pub fn tls_server_config(mut self, cfg: TlsConfig) -> Self {
         self.tls_server_config = Some(cfg);
         self
@@ -187,18 +194,21 @@ impl<H> ServeServiceBuilder<H> {
     #[cfg(any(feature = "rustls", feature = "boring"))]
     /// define a tls server cert config to be used for tls terminaton
     /// by the serve service.
+    #[must_use]
     pub fn maybe_tls_server_config(mut self, cfg: Option<TlsConfig>) -> Self {
         self.tls_server_config = cfg;
         self
     }
 
     /// set the http version to use for the http server (auto by default)
+    #[must_use]
     pub fn http_version(mut self, version: Version) -> Self {
         self.http_version = Some(version);
         self
     }
 
     /// maybe set the http version to use for the http server (auto by default)
+    #[must_use]
     pub fn maybe_http_version(mut self, version: Option<Version>) -> Self {
         self.http_version = version;
         self
@@ -211,6 +221,7 @@ impl<H> ServeServiceBuilder<H> {
     }
 
     /// add a custom http layer which will be applied to the existing http layers
+    #[must_use]
     pub fn http_layer<H2>(self, layer: H2) -> ServeServiceBuilder<(H, H2)> {
         ServeServiceBuilder {
             concurrent_limit: self.concurrent_limit,
@@ -231,12 +242,14 @@ impl<H> ServeServiceBuilder<H> {
     }
 
     /// Set the content path to serve (by default it will serve the rama homepage).
+    #[must_use]
     pub fn content_path(mut self, path: impl Into<PathBuf>) -> Self {
         self.content_path = Some(path.into());
         self
     }
 
     /// Maybe set the content path to serve (by default it will serve the rama homepage).
+    #[must_use]
     pub fn maybe_content_path(mut self, path: Option<PathBuf>) -> Self {
         self.content_path = path;
         self
@@ -252,8 +265,10 @@ impl<H> ServeServiceBuilder<H> {
     ///
     /// By default it will use [`DirectoryServeMode::HtmlFileList`].
     ///
-    /// Note that this is only used in case the content path is defined (e.g. using [`Self::content_path`])
+    /// Note that this is only used in case the content path is defined
+    /// (e.g. using [`Self::content_path`])
     /// and that path points to a valid directory.
+    #[must_use]
     pub fn directory_serve_mode(mut self, mode: DirectoryServeMode) -> Self {
         self.dir_serve_mode = mode;
         self

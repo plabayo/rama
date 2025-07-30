@@ -38,13 +38,13 @@ derive_header! {
 }
 
 impl From<SystemTime> for LastModified {
-    fn from(time: SystemTime) -> LastModified {
-        LastModified(time.into())
+    fn from(time: SystemTime) -> Self {
+        Self(time.into())
     }
 }
 
 impl From<LastModified> for SystemTime {
-    fn from(date: LastModified) -> SystemTime {
+    fn from(date: LastModified) -> Self {
         date.0.into()
     }
 }

@@ -18,7 +18,7 @@ impl<A, B> And<A, B> {
         A: Policy<S, Bd, E>,
         B: Policy<S, Bd, E>,
     {
-        And { a, b }
+        Self { a, b }
     }
 }
 
@@ -41,7 +41,7 @@ where
     B: Default,
 {
     fn default() -> Self {
-        And {
+        Self {
             a: Default::default(),
             b: Default::default(),
         }
@@ -84,7 +84,7 @@ mod tests {
 
     impl<P> Taint<P> {
         fn new(policy: P) -> Self {
-            Taint {
+            Self {
                 policy,
                 used: false,
             }

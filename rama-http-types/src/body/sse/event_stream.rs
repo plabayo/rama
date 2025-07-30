@@ -65,12 +65,12 @@ impl<T: EventDataRead> EventBuilder<T> {
     ///
     /// -> Otherwise
     ///    The field is ignored.
-    fn add(&mut self, line: RawEventLine) -> Result<(), OpaqueError> {
+    fn add(&mut self, line: &RawEventLine) -> Result<(), OpaqueError> {
         match line {
-            RawEventLine::Field(field, val) => match field {
+            RawEventLine::Field(field, val) => match *field {
                 "event" => {
                     if let Some(val) = val {
-                        self.event.try_set_event(val).unwrap();
+                        self.event.try_set_event(*val).unwrap();
                     }
                 }
                 "data" => {
@@ -80,7 +80,7 @@ impl<T: EventDataRead> EventBuilder<T> {
                     if let Some(val) = val
                         && !val.contains('\u{0000}')
                     {
-                        self.event.try_set_id(val).unwrap();
+                        self.event.try_set_id(*val).unwrap();
                     }
                 }
                 "retry" => {
@@ -93,7 +93,7 @@ impl<T: EventDataRead> EventBuilder<T> {
                 }
             },
             RawEventLine::Comment(comment) => {
-                self.event.try_set_comment(comment).unwrap();
+                self.event.try_set_comment(*comment).unwrap();
             }
             RawEventLine::Empty => self.is_complete = true,
         }
@@ -201,7 +201,7 @@ fn parse_event<T: EventDataRead>(
     loop {
         match line(buffer.as_ref()) {
             Ok((rem, next_line)) => {
-                builder.add(next_line)?;
+                builder.add(&next_line)?;
                 let consumed = buffer.len() - rem.len();
                 let rem = buffer.split_off(consumed);
                 *buffer = rem;

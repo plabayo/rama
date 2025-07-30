@@ -11,29 +11,32 @@ pub struct Reset {
 }
 
 impl Reset {
-    pub fn new(stream_id: StreamId, error: Reason) -> Reset {
-        Reset {
+    #[must_use]
+    pub fn new(stream_id: StreamId, error: Reason) -> Self {
+        Self {
             stream_id,
             error_code: error,
         }
     }
 
+    #[must_use]
     pub fn stream_id(&self) -> StreamId {
         self.stream_id
     }
 
+    #[must_use]
     pub fn reason(&self) -> Reason {
         self.error_code
     }
 
-    pub fn load(head: Head, payload: &[u8]) -> Result<Reset, Error> {
+    pub fn load(head: Head, payload: &[u8]) -> Result<Self, Error> {
         if payload.len() != 4 {
             return Err(Error::InvalidPayloadLength);
         }
 
         let error_code = unpack_octets_as_u32(payload, 0);
 
-        Ok(Reset {
+        Ok(Self {
             stream_id: head.stream_id(),
             error_code: error_code.into(),
         })
@@ -53,6 +56,6 @@ impl Reset {
 
 impl<B> From<Reset> for Frame<B> {
     fn from(src: Reset) -> Self {
-        Frame::Reset(src)
+        Self::Reset(src)
     }
 }

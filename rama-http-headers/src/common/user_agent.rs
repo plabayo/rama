@@ -52,8 +52,9 @@ impl UserAgent {
     /// # Panic
     ///
     /// Panics if the static string is not a legal header value.
-    pub const fn from_static(src: &'static str) -> UserAgent {
-        UserAgent(HeaderValueString::from_static(src))
+    #[must_use]
+    pub const fn from_static(src: &'static str) -> Self {
+        Self(HeaderValueString::from_static(src))
     }
 
     /// View this `UserAgent` as a `&str`.

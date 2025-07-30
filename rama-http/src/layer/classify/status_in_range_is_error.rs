@@ -18,6 +18,7 @@ impl StatusInRangeAsFailures {
     /// [`StatusCode::from_u16`].
     ///
     /// [`StatusCode::from_u16`]: https://docs.rs/http/latest/http/status/struct.StatusCode.html#method.from_u16
+    #[must_use]
     pub fn new(range: RangeInclusive<u16>) -> Self {
         assert!(
             StatusCode::from_u16(*range.start()).is_ok(),
@@ -35,6 +36,7 @@ impl StatusInRangeAsFailures {
     /// failures.
     ///
     /// This is a convenience for `StatusInRangeAsFailures::new(400..=599)`.
+    #[must_use]
     pub fn new_for_client_and_server_errors() -> Self {
         Self::new(400..=599)
     }
@@ -42,6 +44,7 @@ impl StatusInRangeAsFailures {
     /// Convert this `StatusInRangeAsFailures` into a [`MakeClassifier`].
     ///
     /// [`MakeClassifier`]: super::MakeClassifier
+    #[must_use]
     pub fn into_make_classifier(self) -> SharedClassifier<Self> {
         SharedClassifier::new(self)
     }

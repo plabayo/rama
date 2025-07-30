@@ -57,7 +57,7 @@ impl TryFrom<&str> for ProxyAddress {
                     })
                     .context("parse proxy authority from address")?;
 
-                return Ok(ProxyAddress {
+                return Ok(Self {
                     protocol,
                     authority,
                     credential: Some(ProxyCredential::Basic(credential)),
@@ -80,7 +80,7 @@ impl TryFrom<&str> for ProxyAddress {
                 })
             })
             .context("parse proxy authority from address")?;
-        Ok(ProxyAddress {
+        Ok(Self {
             protocol,
             authority,
             credential: None,

@@ -50,7 +50,7 @@ where
     S: Clone,
 {
     fn clone(&self) -> Self {
-        Retry {
+        Self {
             policy: self.policy.clone(),
             inner: self.inner.clone(),
         }
@@ -62,7 +62,7 @@ where
 impl<P, S> Retry<P, S> {
     /// Retry the inner service depending on this [`Policy`].
     pub const fn new(policy: P, service: S) -> Self {
-        Retry {
+        Self {
             policy,
             inner: service,
         }
@@ -96,8 +96,8 @@ impl std::fmt::Display for RetryError {
 impl std::fmt::Display for RetryErrorKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            RetryErrorKind::BodyConsume => write!(f, "failed to consume body"),
-            RetryErrorKind::Service => write!(f, "service error"),
+            Self::BodyConsume => write!(f, "failed to consume body"),
+            Self::Service => write!(f, "service error"),
         }
     }
 }
@@ -204,23 +204,20 @@ mod test {
                 panic!("unexpected retry: should be disabled");
             }
 
-            match result {
-                Ok(ref res) => {
-                    if res.status().is_server_error() {
-                        ctx.state()
-                            .retry_counter
-                            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-                        (ctx, result, true)
-                    } else {
-                        (ctx, result, false)
-                    }
-                }
-                Err(_) => {
+            if let Ok(ref res) = result {
+                if res.status().is_server_error() {
                     ctx.state()
                         .retry_counter
-                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
                     (ctx, result, true)
+                } else {
+                    (ctx, result, false)
                 }
+            } else {
+                ctx.state()
+                    .retry_counter
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                (ctx, result, true)
             }
         }
 

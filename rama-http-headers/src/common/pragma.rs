@@ -32,8 +32,9 @@ derive_header! {
 
 impl Pragma {
     /// Construct the literal `no-cache` Pragma header.
-    pub fn no_cache() -> Pragma {
-        Pragma(HeaderValue::from_static("no-cache"))
+    #[must_use]
+    pub fn no_cache() -> Self {
+        Self(HeaderValue::from_static("no-cache"))
     }
 
     /// Return whether this pragma is `no-cache`.

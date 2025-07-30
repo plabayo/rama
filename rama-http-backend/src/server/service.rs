@@ -58,6 +58,7 @@ where
 
 impl HttpServer<Http1ConnBuilder> {
     /// Create a new http/1.1 `Builder` with default settings.
+    #[must_use]
     pub fn http1() -> Self {
         Self {
             builder: Http1ConnBuilder::new(),
@@ -67,6 +68,7 @@ impl HttpServer<Http1ConnBuilder> {
 
     /// Set the guard that can be used by the [`HttpServer`]
     /// in case it is turned into an http1 listener.
+    #[must_use]
     pub fn with_guard(mut self, guard: ShutdownGuard) -> Self {
         self.guard = Some(guard);
         self
@@ -74,6 +76,7 @@ impl HttpServer<Http1ConnBuilder> {
 
     /// Maybe set the guard that can be used by the [`HttpServer`]
     /// in case it is turned into an http1 listener.
+    #[must_use]
     pub fn maybe_with_guard(mut self, guard: Option<ShutdownGuard>) -> Self {
         self.guard = guard;
         self
@@ -96,6 +99,7 @@ impl HttpServer<Http1ConnBuilder> {
 
 impl HttpServer<H2ConnBuilder> {
     /// Create a new h2 `Builder` with default settings.
+    #[must_use]
     pub fn h2(exec: Executor) -> Self {
         let guard = exec.guard().cloned();
         Self {
@@ -114,6 +118,7 @@ impl HttpServer<H2ConnBuilder> {
 
 impl HttpServer<AutoConnBuilder> {
     /// Create a new dual http/1.1 + h2 `Builder` with default settings.
+    #[must_use]
     pub fn auto(exec: Executor) -> Self {
         let guard = exec.guard().cloned();
         Self {

@@ -120,6 +120,7 @@ pub struct DefaultPredicate(
 
 impl DefaultPredicate {
     /// Create a new `DefaultPredicate`.
+    #[must_use]
     pub fn new() -> Self {
         let inner = SizeAbove::new(SizeAbove::DEFAULT_MIN_SIZE)
             .and(NotForContentType::GRPC)
@@ -156,6 +157,7 @@ impl SizeAbove {
     ///
     /// The response will be compressed if the exact size cannot be determined through either the
     /// `content-length` header or [`Body::size_hint`].
+    #[must_use]
     pub const fn new(min_size_bytes: u16) -> Self {
         Self(min_size_bytes)
     }
@@ -208,6 +210,7 @@ impl NotForContentType {
     pub const SSE: Self = Self::const_new("text/event-stream");
 
     /// Create a new `NotForContentType`.
+    #[must_use]
     pub fn new(content_type: &str) -> Self {
         Self {
             content_type: Str::Shared(content_type.into()),
@@ -216,6 +219,7 @@ impl NotForContentType {
     }
 
     /// Create a new `NotForContentType` from a static string.
+    #[must_use]
     pub const fn const_new(content_type: &'static str) -> Self {
         Self {
             content_type: Str::Static(content_type),
@@ -248,8 +252,8 @@ enum Str {
 impl Str {
     fn as_str(&self) -> &str {
         match self {
-            Str::Static(s) => s,
-            Str::Shared(s) => s,
+            Self::Static(s) => s,
+            Self::Shared(s) => s,
         }
     }
 }

@@ -42,10 +42,10 @@ pub enum OpCodeControl {
 impl fmt::Display for OpCodeData {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
-            OpCodeData::Continue => write!(f, "CONTINUE"),
-            OpCodeData::Text => write!(f, "TEXT"),
-            OpCodeData::Binary => write!(f, "BINARY"),
-            OpCodeData::Reserved(x) => write!(f, "RESERVED_DATA_{x}"),
+            Self::Continue => write!(f, "CONTINUE"),
+            Self::Text => write!(f, "TEXT"),
+            Self::Binary => write!(f, "BINARY"),
+            Self::Reserved(x) => write!(f, "RESERVED_DATA_{x}"),
         }
     }
 }
@@ -53,10 +53,10 @@ impl fmt::Display for OpCodeData {
 impl fmt::Display for OpCodeControl {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
-            OpCodeControl::Close => write!(f, "CLOSE"),
-            OpCodeControl::Ping => write!(f, "PING"),
-            OpCodeControl::Pong => write!(f, "PONG"),
-            OpCodeControl::Reserved(x) => write!(f, "RESERVED_CONTROL_{x}"),
+            Self::Close => write!(f, "CLOSE"),
+            Self::Ping => write!(f, "PING"),
+            Self::Pong => write!(f, "PONG"),
+            Self::Reserved(x) => write!(f, "RESERVED_CONTROL_{x}"),
         }
     }
 }
@@ -64,8 +64,8 @@ impl fmt::Display for OpCodeControl {
 impl fmt::Display for OpCode {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
-            OpCode::Data(d) => d.fmt(f),
-            OpCode::Control(c) => c.fmt(f),
+            Self::Data(d) => d.fmt(f),
+            Self::Control(c) => c.fmt(f),
         }
     }
 }
@@ -80,31 +80,32 @@ impl From<OpCode> for u8 {
             OpCode::Data(Continue) => 0,
             OpCode::Data(Text) => 1,
             OpCode::Data(Binary) => 2,
-            OpCode::Data(self::OpCodeData::Reserved(i)) => i,
 
             OpCode::Control(Close) => 8,
             OpCode::Control(Ping) => 9,
             OpCode::Control(Pong) => 10,
-            OpCode::Control(self::OpCodeControl::Reserved(i)) => i,
+
+            OpCode::Data(self::OpCodeData::Reserved(i))
+            | OpCode::Control(self::OpCodeControl::Reserved(i)) => i,
         }
     }
 }
 
 impl From<u8> for OpCode {
-    fn from(byte: u8) -> OpCode {
+    fn from(byte: u8) -> Self {
         use self::{
             OpCodeControl::{Close, Ping, Pong},
             OpCodeData::{Binary, Continue, Text},
         };
         match byte {
-            0 => OpCode::Data(Continue),
-            1 => OpCode::Data(Text),
-            2 => OpCode::Data(Binary),
-            i @ 3..=7 => OpCode::Data(self::OpCodeData::Reserved(i)),
-            8 => OpCode::Control(Close),
-            9 => OpCode::Control(Ping),
-            10 => OpCode::Control(Pong),
-            i @ 11..=15 => OpCode::Control(self::OpCodeControl::Reserved(i)),
+            0 => Self::Data(Continue),
+            1 => Self::Data(Text),
+            2 => Self::Data(Binary),
+            i @ 3..=7 => Self::Data(self::OpCodeData::Reserved(i)),
+            8 => Self::Control(Close),
+            9 => Self::Control(Ping),
+            10 => Self::Control(Pong),
+            i @ 11..=15 => Self::Control(self::OpCodeControl::Reserved(i)),
             _ => panic!("Bug: OpCode out of range"),
         }
     }
@@ -112,6 +113,7 @@ impl From<u8> for OpCode {
 
 /// Status code used to indicate why an endpoint is closing the WebSocket connection.
 #[derive(Debug, Eq, PartialEq, Clone, Copy)]
+#[allow(clippy::manual_non_exhaustive)]
 pub enum CloseCode {
     /// Indicates a normal closure, meaning that the purpose for
     /// which the connection was established has been fulfilled.
@@ -185,14 +187,11 @@ pub enum CloseCode {
 
 impl CloseCode {
     /// Check if this CloseCode is allowed.
+    #[must_use]
     pub fn is_allowed(self) -> bool {
         !matches!(
             self,
-            CloseCode::Bad(_)
-                | CloseCode::Reserved(_)
-                | CloseCode::Status
-                | CloseCode::Abnormal
-                | CloseCode::Tls
+            Self::Bad(_) | Self::Reserved(_) | Self::Status | Self::Abnormal | Self::Tls
         )
     }
 }
@@ -205,7 +204,7 @@ impl fmt::Display for CloseCode {
 }
 
 impl From<CloseCode> for u16 {
-    fn from(code: CloseCode) -> u16 {
+    fn from(code: CloseCode) -> Self {
         match code {
             CloseCode::Normal => 1000,
             CloseCode::Away => 1001,
@@ -221,42 +220,41 @@ impl From<CloseCode> for u16 {
             CloseCode::Restart => 1012,
             CloseCode::Again => 1013,
             CloseCode::Tls => 1015,
-            CloseCode::Reserved(code) => code,
-            CloseCode::Iana(code) => code,
-            CloseCode::Library(code) => code,
-            CloseCode::Bad(code) => code,
+            CloseCode::Reserved(code)
+            | CloseCode::Iana(code)
+            | CloseCode::Library(code)
+            | CloseCode::Bad(code) => code,
         }
     }
 }
 
 impl<'t> From<&'t CloseCode> for u16 {
-    fn from(code: &'t CloseCode) -> u16 {
+    fn from(code: &'t CloseCode) -> Self {
         (*code).into()
     }
 }
 
 impl From<u16> for CloseCode {
-    fn from(code: u16) -> CloseCode {
+    fn from(code: u16) -> Self {
         match code {
-            1000 => CloseCode::Normal,
-            1001 => CloseCode::Away,
-            1002 => CloseCode::Protocol,
-            1003 => CloseCode::Unsupported,
-            1005 => CloseCode::Status,
-            1006 => CloseCode::Abnormal,
-            1007 => CloseCode::Invalid,
-            1008 => CloseCode::Policy,
-            1009 => CloseCode::Size,
-            1010 => CloseCode::Extension,
-            1011 => CloseCode::Error,
-            1012 => CloseCode::Restart,
-            1013 => CloseCode::Again,
-            1015 => CloseCode::Tls,
-            1..=999 => CloseCode::Bad(code),
-            1016..=2999 => CloseCode::Reserved(code),
-            3000..=3999 => CloseCode::Iana(code),
-            4000..=4999 => CloseCode::Library(code),
-            _ => CloseCode::Bad(code),
+            1000 => Self::Normal,
+            1001 => Self::Away,
+            1002 => Self::Protocol,
+            1003 => Self::Unsupported,
+            1005 => Self::Status,
+            1006 => Self::Abnormal,
+            1007 => Self::Invalid,
+            1008 => Self::Policy,
+            1009 => Self::Size,
+            1010 => Self::Extension,
+            1011 => Self::Error,
+            1012 => Self::Restart,
+            1013 => Self::Again,
+            1015 => Self::Tls,
+            1016..=2999 => Self::Reserved(code),
+            3000..=3999 => Self::Iana(code),
+            4000..=4999 => Self::Library(code),
+            _ => Self::Bad(code),
         }
     }
 }

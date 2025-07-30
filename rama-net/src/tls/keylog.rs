@@ -22,7 +22,7 @@ use std::{
 ///
 /// Paths are case-sensitive by default for rama, as utf-8 compatible.
 /// Normalize yourself prior to passing a path to this function if you're concerned.
-pub fn new_key_log_file_handle(path: String) -> Result<KeyLogFileHandle, OpaqueError> {
+pub fn new_key_log_file_handle(path: &str) -> Result<KeyLogFileHandle, OpaqueError> {
     let path: PathBuf = path
         .parse()
         .with_context(|| format!("parse path str as Path: {path}"))?;
@@ -51,6 +51,7 @@ pub fn new_key_log_file_handle(path: String) -> Result<KeyLogFileHandle, OpaqueE
 
 // copied from
 // <https://github.com/rust-lang/cargo/blob/fede83ccf973457de319ba6fa0e36ead454d2e20/src/cargo/util/paths.rs#L61>
+#[must_use]
 pub fn normalize_path(path: &Path) -> PathBuf {
     let mut components = path.components().peekable();
     let mut ret = if let Some(c @ Component::Prefix(..)) = components.peek().cloned() {

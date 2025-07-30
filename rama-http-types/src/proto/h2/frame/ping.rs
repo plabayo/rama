@@ -23,31 +23,36 @@ impl Ping {
     pub const SHUTDOWN: Payload = SHUTDOWN_PAYLOAD;
     pub const USER: Payload = USER_PAYLOAD;
 
-    pub fn new(payload: Payload) -> Ping {
-        Ping {
+    #[must_use]
+    pub fn new(payload: Payload) -> Self {
+        Self {
             ack: false,
             payload,
         }
     }
 
-    pub fn pong(payload: Payload) -> Ping {
-        Ping { ack: true, payload }
+    #[must_use]
+    pub fn pong(payload: Payload) -> Self {
+        Self { ack: true, payload }
     }
 
+    #[must_use]
     pub fn is_ack(&self) -> bool {
         self.ack
     }
 
+    #[must_use]
     pub fn payload(&self) -> &Payload {
         &self.payload
     }
 
+    #[must_use]
     pub fn into_payload(self) -> Payload {
         self.payload
     }
 
     /// Builds a `Ping` frame from a raw frame.
-    pub fn load(head: Head, bytes: &[u8]) -> Result<Ping, Error> {
+    pub fn load(head: Head, bytes: &[u8]) -> Result<Self, Error> {
         debug_assert_eq!(head.kind(), crate::proto::h2::frame::Kind::Ping);
 
         // PING frames are not associated with any individual stream. If a PING
@@ -74,7 +79,7 @@ impl Ping {
         //    endpoint MUST NOT respond to PING frames containing this flag.
         let ack = head.flag() & ACK_FLAG != 0;
 
-        Ok(Ping { ack, payload })
+        Ok(Self { ack, payload })
     }
 
     pub fn encode<B: BufMut>(&self, dst: &mut B) {
@@ -90,7 +95,7 @@ impl Ping {
 }
 
 impl<T> From<Ping> for Frame<T> {
-    fn from(src: Ping) -> Frame<T> {
-        Frame::Ping(src)
+    fn from(src: Ping) -> Self {
+        Self::Ping(src)
     }
 }

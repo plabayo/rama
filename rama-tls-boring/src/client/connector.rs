@@ -69,6 +69,7 @@ impl TlsConnectorLayer<ConnectorKindAuto> {
     /// Creates a new [`TlsConnectorLayer`] which will establish
     /// a secure connection if the request demands it,
     /// otherwise it will forward the pre-established inner connection.
+    #[must_use]
     pub fn auto() -> Self {
         Self {
             connector_data: None,
@@ -80,6 +81,7 @@ impl TlsConnectorLayer<ConnectorKindAuto> {
 impl TlsConnectorLayer<ConnectorKindSecure> {
     /// Creates a new [`TlsConnectorLayer`] which will always
     /// establish a secure connection regardless of the request it is for.
+    #[must_use]
     pub fn secure() -> Self {
         Self {
             connector_data: None,
@@ -91,6 +93,7 @@ impl TlsConnectorLayer<ConnectorKindSecure> {
 impl TlsConnectorLayer<ConnectorKindTunnel> {
     /// Creates a new [`TlsConnectorLayer`] which will establish
     /// a secure connection if the request is to be tunneled.
+    #[must_use]
     pub fn tunnel(host: Option<Host>) -> Self {
         Self {
             connector_data: None,
@@ -340,23 +343,22 @@ where
         let EstablishedClientConnection { mut ctx, req, conn } =
             self.inner.connect(ctx, req).await.map_err(Into::into)?;
 
-        let host = match ctx
+        let host = if let Some(host) = ctx
             .get::<TlsTunnel>()
             .as_ref()
             .map(|t| &t.server_host)
             .or(self.kind.host.as_ref())
         {
-            Some(host) => host.clone(),
-            None => {
-                tracing::trace!(
-                    "TlsConnector(tunnel): return inner connection: no Tls tunnel is requested"
-                );
-                return Ok(EstablishedClientConnection {
-                    ctx,
-                    req,
-                    conn: AutoTlsStream::plain(conn),
-                });
-            }
+            host.clone()
+        } else {
+            tracing::trace!(
+                "TlsConnector(tunnel): return inner connection: no Tls tunnel is requested"
+            );
+            return Ok(EstablishedClientConnection {
+                ctx,
+                req,
+                conn: AutoTlsStream::plain(conn),
+            });
         };
 
         let connector_data = self.connector_data(&mut ctx)?;

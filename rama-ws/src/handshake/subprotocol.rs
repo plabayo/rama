@@ -45,6 +45,7 @@ impl SubProtocols {
     }
 
     /// Return the first protocol in this [`SubProtocols`] as the [`AcceptedSubProtocol`].
+    #[must_use]
     pub fn accept_first_protocol(&self) -> AcceptedSubProtocol {
         AcceptedSubProtocol(self.0.first().unwrap().clone())
     }
@@ -88,7 +89,7 @@ pub struct AcceptedSubProtocol(SmolStr);
 impl AcceptedSubProtocol {
     /// Create a new [`AcceptedSubProtocol`]
     pub fn new(s: impl Into<SmolStr>) -> Self {
-        AcceptedSubProtocol(s.into())
+        Self(s.into())
     }
 }
 
@@ -100,6 +101,7 @@ impl fmt::Display for AcceptedSubProtocol {
 
 impl AcceptedSubProtocol {
     /// View the [`AcceptedSubProtocol`] as a `str` reference.
+    #[must_use]
     pub fn as_str(&self) -> &str {
         self.0.as_ref()
     }

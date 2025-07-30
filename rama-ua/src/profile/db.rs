@@ -32,6 +32,7 @@ impl UserAgentDatabase {
     ///
     /// This function is only available if the `embed-profiles` feature is enabled.
     #[cfg(feature = "embed-profiles")]
+    #[must_use]
     pub fn embedded() -> Self {
         let profiles = crate::profile::load_embedded_profiles();
         Self::from_iter(profiles)
@@ -42,6 +43,7 @@ impl UserAgentDatabase {
     /// containing no match (not even a platform or device), that it the database
     /// will return `None` instead of returning a global-random (market-based)
     /// [`UserAgentProfile`], which it would do by default.
+    #[must_use]
     pub fn disable_unknown_user_agent_data(mut self, disable: bool) -> Self {
         self.disable_unknown_user_agent_data = disable;
         self
@@ -55,12 +57,14 @@ impl UserAgentDatabase {
 
     #[inline]
     /// Get the number of profiles in the database.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.profiles.len()
     }
 
     #[inline]
     /// Check if the database is empty.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.profiles.is_empty()
     }
@@ -119,6 +123,7 @@ impl UserAgentDatabase {
     /// Select a random [`UserAgentProfile`] from the database.
     ///
     /// It makes use of global market share data to select a random profile.
+    #[must_use]
     pub fn rnd(&self) -> Option<&UserAgentProfile> {
         let ua_kind = self.market_rnd_ua_kind();
         self.map_ua_kind
@@ -128,6 +133,7 @@ impl UserAgentDatabase {
     }
 
     /// Get a [`UserAgentProfile`] from the database by an [`UserAgent`] header string
+    #[must_use]
     pub fn get_exact_header_str(&self, ua: &str) -> Option<&UserAgentProfile> {
         self.map_ua_string
             .get(ua)
@@ -139,6 +145,7 @@ impl UserAgentDatabase {
     /// It first tries to find the profile by User-Agent header value string,
     /// if not found it then makes use of [`UserAgentKind`], [`PlatformKind`] and [`DeviceKind`]
     /// to find a profile.
+    #[must_use]
     pub fn get(&self, ua: &UserAgent) -> Option<&UserAgentProfile> {
         if let Some(profile) = self
             .map_ua_string
@@ -244,7 +251,7 @@ impl FromIterator<UserAgentProfile> for UserAgentDatabase {
         let (lb, _) = iter.size_hint();
         assert!(lb < usize::MAX);
 
-        let mut db = UserAgentDatabase {
+        let mut db = Self {
             profiles: Vec::with_capacity(lb),
             ..Default::default()
         };

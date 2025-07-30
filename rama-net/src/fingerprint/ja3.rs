@@ -44,6 +44,7 @@ impl Ja3 {
     ///
     /// [`ClientHello`]: crate::tls::client::ClientHello
     /// [`ClientConfig`]: crate::tls::client::ClientConfig
+    #[allow(clippy::needless_pass_by_value)]
     pub fn compute_from_client_hello(
         client_hello: impl ClientHelloProvider,
         negotiated_tls_version: Option<ProtocolVersion>,
@@ -102,6 +103,7 @@ impl Ja3 {
 
     #[inline]
     /// compute the "ja3" hash from this [`Ja3`] data structure as a String.
+    #[must_use]
     pub fn hash(&self) -> String {
         format!("{self:x}")
     }
@@ -216,10 +218,10 @@ pub enum Ja3ComputeError {
 impl fmt::Display for Ja3ComputeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Ja3ComputeError::MissingClientHello => {
+            Self::MissingClientHello => {
                 write!(f, "Ja3 Compute Error: missing client hello")
             }
-            Ja3ComputeError::EmptyCipherSuites => {
+            Self::EmptyCipherSuites => {
                 write!(f, "Ja3 Compute Error: empty cipher suites")
             }
         }

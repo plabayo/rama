@@ -28,7 +28,7 @@ impl FromStr for Http1HeaderName {
 
     #[inline]
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Http1HeaderName::try_copy_from_str(s)
+        Self::try_copy_from_str(s)
     }
 }
 

@@ -165,6 +165,7 @@ pub struct UserAgentClassifierLayer {
 
 impl UserAgentClassifierLayer {
     /// Create a new [`UserAgentClassifierLayer`].
+    #[must_use]
     pub const fn new() -> Self {
         Self {
             overwrite_header: None,
@@ -173,6 +174,7 @@ impl UserAgentClassifierLayer {
 
     /// Define a custom header to allow overwriting certain
     /// [`UserAgent`] information.
+    #[must_use]
     pub fn overwrite_header(mut self, header: HeaderName) -> Self {
         self.overwrite_header = Some(header);
         self

@@ -154,7 +154,7 @@ pub enum ReuseStrategy {
 
 impl ReuseStrategy {
     fn get_conn<C, ID: PartialEq>(
-        &self,
+        self,
         storage: &mut VecDeque<PooledConnection<C, ID>>,
         id: &ID,
     ) -> Option<(usize, PooledConnection<C, ID>)> {
@@ -590,8 +590,8 @@ pub struct PooledConnector<S, P, R> {
 }
 
 impl<S, P, R> PooledConnector<S, P, R> {
-    pub fn new(inner: S, pool: P, req_to_conn_id: R) -> PooledConnector<S, P, R> {
-        PooledConnector {
+    pub fn new(inner: S, pool: P, req_to_conn_id: R) -> Self {
+        Self {
             inner,
             pool,
             req_to_conn_id,
@@ -632,15 +632,12 @@ where
         // Try to get connection from pool, if no connection is found, we will have to create a new
         // one using the returned create permit
         let create_permit = {
-            let pool = match ctx.get::<P>() {
-                Some(pool) => {
-                    trace!("pooled connector: using pool from ctx");
-                    pool
-                }
-                None => {
-                    trace!("pooled connector: using pool from connector");
-                    &self.pool
-                }
+            let pool = if let Some(pool) = ctx.get::<P>() {
+                trace!("pooled connector: using pool from ctx");
+                pool
+            } else {
+                trace!("pooled connector: using pool from connector");
+                &self.pool
             };
 
             let pool_result = if let Some(duration) = self.wait_for_pool_timeout {

@@ -6,7 +6,7 @@ pub(super) struct LastModified(pub(super) HttpDate);
 
 impl From<SystemTime> for LastModified {
     fn from(time: SystemTime) -> Self {
-        LastModified(time.into())
+        Self(time.into())
     }
 }
 
@@ -19,11 +19,11 @@ impl IfModifiedSince {
     }
 
     /// convert a header value into a IfModifiedSince, invalid values are silently ignored
-    pub(super) fn from_header_value(value: &HeaderValue) -> Option<IfModifiedSince> {
+    pub(super) fn from_header_value(value: &HeaderValue) -> Option<Self> {
         std::str::from_utf8(value.as_bytes())
             .ok()
             .and_then(|value| httpdate::parse_http_date(value).ok())
-            .map(|time| IfModifiedSince(time.into()))
+            .map(|time| Self(time.into()))
     }
 }
 
@@ -36,10 +36,10 @@ impl IfUnmodifiedSince {
     }
 
     /// Convert a header value into a IfModifiedSince, invalid values are silently ignored
-    pub(super) fn from_header_value(value: &HeaderValue) -> Option<IfUnmodifiedSince> {
+    pub(super) fn from_header_value(value: &HeaderValue) -> Option<Self> {
         std::str::from_utf8(value.as_bytes())
             .ok()
             .and_then(|value| httpdate::parse_http_date(value).ok())
-            .map(|time| IfUnmodifiedSince(time.into()))
+            .map(|time| Self(time.into()))
     }
 }

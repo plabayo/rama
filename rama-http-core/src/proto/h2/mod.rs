@@ -94,8 +94,8 @@ impl<S> PipeToSendStream<S>
 where
     S: Body,
 {
-    fn new(stream: S, tx: SendStream<SendBuf<S::Data>>) -> PipeToSendStream<S> {
-        PipeToSendStream {
+    fn new(stream: S, tx: SendStream<SendBuf<S::Data>>) -> Self {
+        Self {
             body_tx: tx,
             data_done: false,
             stream,

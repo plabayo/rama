@@ -68,6 +68,7 @@ impl<S> HttpProxyConnector<S> {
     /// Set the HTTP version to use for the CONNECT request.
     ///
     /// By default this is set to HTTP/1.1.
+    #[must_use]
     pub fn with_version(mut self, version: Version) -> Self {
         self.version = Some(version);
         self
@@ -80,6 +81,7 @@ impl<S> HttpProxyConnector<S> {
     }
 
     /// Set the HTTP version to auto detect for the CONNECT request.
+    #[must_use]
     pub fn with_auto_version(mut self) -> Self {
         self.version = None;
         self
@@ -94,6 +96,7 @@ impl<S> HttpProxyConnector<S> {
     /// Create a new [`HttpProxyConnector`]
     /// which will only connect via an http proxy in case the [`ProxyAddress`] is available
     /// in the [`Context`].
+    #[must_use]
     pub fn optional(inner: S) -> Self {
         Self::new(inner, false)
     }
@@ -101,6 +104,7 @@ impl<S> HttpProxyConnector<S> {
     /// Create a new [`HttpProxyConnector`]
     /// which will always connect via an http proxy, but fail in case the [`ProxyAddress`] is
     /// not available in the [`Context`].
+    #[must_use]
     pub fn required(inner: S) -> Self {
         Self::new(inner, true)
     }
@@ -183,23 +187,20 @@ where
                 })?;
 
         // return early in case we did not use a proxy
-        let address = match address {
-            Some(address) => address,
-            None => {
-                return if self.required {
-                    Err("http proxy required but none is defined".into())
-                } else {
-                    tracing::trace!(
-                        "http proxy connector: no proxy required or set: proceed with direct connection"
-                    );
-                    let EstablishedClientConnection { ctx, req, conn } = established_conn;
-                    return Ok(EstablishedClientConnection {
-                        ctx,
-                        req,
-                        conn: Either::A(conn),
-                    });
-                };
-            }
+        let Some(address) = address else {
+            return if self.required {
+                Err("http proxy required but none is defined".into())
+            } else {
+                tracing::trace!(
+                    "http proxy connector: no proxy required or set: proceed with direct connection"
+                );
+                let EstablishedClientConnection { ctx, req, conn } = established_conn;
+                return Ok(EstablishedClientConnection {
+                    ctx,
+                    req,
+                    conn: Either::A(conn),
+                });
+            };
         };
         // and do the handshake otherwise...
 
@@ -227,7 +228,7 @@ where
             });
         }
 
-        let mut connector = InnerHttpProxyConnector::new(transport_ctx.authority.clone())?;
+        let mut connector = InnerHttpProxyConnector::new(&transport_ctx.authority)?;
         match self.version {
             Some(version) => connector.set_version(version),
             None => connector.set_auto_version(),

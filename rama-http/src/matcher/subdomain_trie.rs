@@ -53,24 +53,23 @@ impl<State, Body> Matcher<State, Request<Body>> for SubdomainTrieMatcher {
             }
         };
 
-        match ctx.get() {
-            Some(req_ctx) => match_authority(req_ctx),
-            None => {
-                let req_ctx: RequestContext = match (ctx, req).try_into() {
-                    Ok(rc) => rc,
-                    Err(err) => {
-                        tracing::debug!(
-                            "SubdomainTrieMatcher: failed to extract request context: {err:?}",
-                        );
-                        return false;
-                    }
-                };
-                let is_match = match_authority(&req_ctx);
-                if let Some(ext) = ext {
-                    ext.insert(req_ctx);
+        if let Some(req_ctx) = ctx.get() {
+            match_authority(req_ctx)
+        } else {
+            let req_ctx: RequestContext = match (ctx, req).try_into() {
+                Ok(rc) => rc,
+                Err(err) => {
+                    tracing::debug!(
+                        "SubdomainTrieMatcher: failed to extract request context: {err:?}",
+                    );
+                    return false;
                 }
-                is_match
+            };
+            let is_match = match_authority(&req_ctx);
+            if let Some(ext) = ext {
+                ext.insert(req_ctx);
             }
+            is_match
         }
     }
 }
@@ -81,7 +80,7 @@ where
 {
     #[inline]
     fn from_iter<I: IntoIterator<Item = S>>(iter: I) -> Self {
-        SubdomainTrieMatcher::new(iter)
+        Self::new(iter)
     }
 }
 

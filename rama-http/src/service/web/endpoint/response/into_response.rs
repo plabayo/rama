@@ -1,6 +1,7 @@
 use super::{IntoResponseParts, ResponseParts};
 use crate::dep::http_body::{Frame, SizeHint};
 use crate::dep::mime;
+use crate::service::web::response::Headers;
 use crate::{Body, Response};
 use crate::{
     StatusCode,
@@ -9,6 +10,8 @@ use crate::{
 };
 use rama_core::bytes::{Buf, Bytes, BytesMut, buf::Chain};
 use rama_core::error::BoxError;
+use rama_http_headers::{ContentDisposition, ContentType};
+use rama_http_types::InfiniteReader;
 use rama_http_types::dep::{http, http_body};
 use rama_utils::macros::all_the_tuples_no_last_special_case;
 use std::{
@@ -153,6 +156,16 @@ impl IntoResponse for Bytes {
 impl IntoResponse for BytesMut {
     fn into_response(self) -> Response {
         self.freeze().into_response()
+    }
+}
+
+impl IntoResponse for InfiniteReader {
+    fn into_response(self) -> Response {
+        (
+            Headers((ContentDisposition::inline(), ContentType::octet_stream())),
+            self.into_body(),
+        )
+            .into_response()
     }
 }
 

@@ -32,7 +32,7 @@ where
         ctx: &Context<S>,
         parts: &Parts,
     ) -> Result<Self, Self::Rejection> {
-        Ok(Host(match ctx.get::<RequestContext>() {
+        Ok(Self(match ctx.get::<RequestContext>() {
             Some(ctx) => ctx.authority.host().clone(),
             None => RequestContext::try_from((ctx, parts))
                 .map_err(|_| MissingHost)?

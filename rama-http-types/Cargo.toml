@@ -33,12 +33,14 @@ rama-core = { workspace = true }
 rama-error = { workspace = true }
 rama-macros = { workspace = true }
 rama-utils = { workspace = true }
+rand = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 smallvec = { workspace = true }
 smol_str = { workspace = true }
 sync_wrapper = { workspace = true }
 tokio = { workspace = true, features = ["macros", "io-std"] }
+tokio-util = { workspace = true, features = ["io"] }
 
 [dev-dependencies]
 futures = { workspace = true }

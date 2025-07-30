@@ -42,8 +42,9 @@ const ACCEPT_RANGES_NONE: &str = "none";
 
 impl AcceptRanges {
     /// A constructor to easily create the common `Accept-Ranges: bytes` header.
+    #[must_use]
     pub fn bytes() -> Self {
-        AcceptRanges(HeaderValue::from_static(ACCEPT_RANGES_BYTES).into())
+        Self(HeaderValue::from_static(ACCEPT_RANGES_BYTES).into())
     }
 
     /// Check if the unit is `bytes`.
@@ -52,8 +53,9 @@ impl AcceptRanges {
     }
 
     /// A constructor to easily create the common `Accept-Ranges: none` header.
+    #[must_use]
     pub fn none() -> Self {
-        AcceptRanges(HeaderValue::from_static(ACCEPT_RANGES_NONE).into())
+        Self(HeaderValue::from_static(ACCEPT_RANGES_NONE).into())
     }
 
     /// Check if the unit is `none`.

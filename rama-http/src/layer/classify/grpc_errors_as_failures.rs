@@ -144,6 +144,7 @@ impl Default for GrpcErrorsAsFailures {
 
 impl GrpcErrorsAsFailures {
     /// Create a new [`GrpcErrorsAsFailures`].
+    #[must_use]
     pub const fn new() -> Self {
         Self {
             success_codes: GrpcCodeBitmask::OK,
@@ -168,6 +169,7 @@ impl GrpcErrorsAsFailures {
     ///     .with_success(GrpcCode::InvalidArgument)
     ///     .with_success(GrpcCode::NotFound);
     /// ```
+    #[must_use]
     pub fn with_success(mut self, code: GrpcCode) -> Self {
         self.success_codes |= code.into_bitmask();
         self
@@ -184,6 +186,7 @@ impl GrpcErrorsAsFailures {
     /// Returns a [`MakeClassifier`](super::MakeClassifier) that produces `GrpcErrorsAsFailures`.
     ///
     /// This is a convenience function that simply calls `SharedClassifier::new`.
+    #[must_use]
     pub fn make_classifier() -> SharedClassifier<Self> {
         SharedClassifier::new(Self::new())
     }

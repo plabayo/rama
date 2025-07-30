@@ -137,13 +137,14 @@ where
     pub(crate) fn new(config: Config) -> Self {
         let peer = P::r#dyn();
 
-        Streams {
+        Self {
             inner: Inner::new(peer, config),
             send_buffer: Arc::new(SendBuffer::new()),
             _p: ::std::marker::PhantomData,
         }
     }
 
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub(crate) fn set_target_connection_window_size(
         &mut self,
         size: WindowSize,
@@ -156,6 +157,7 @@ where
             .set_target_connection_window(size, &mut me.actions.task)
     }
 
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub(crate) fn next_incoming(&mut self) -> Option<StreamRef<B>> {
         let mut me = self.inner.lock().unwrap();
         let me = &mut *me;
@@ -182,6 +184,7 @@ where
         })
     }
 
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub(crate) fn send_pending<T>(
         &mut self,
         cx: &mut Context,
@@ -217,6 +220,7 @@ where
         }
     }
 
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub(crate) fn clear_expired_reset_streams(&mut self) {
         let mut me = self.inner.lock().unwrap();
         let me = &mut *me;
@@ -225,6 +229,7 @@ where
             .clear_expired_reset_streams(&mut me.store, &mut me.counts);
     }
 
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub(crate) fn poll_complete<T>(
         &mut self,
         cx: &mut Context,
@@ -237,6 +242,7 @@ where
         me.poll_complete(&self.send_buffer, cx, dst)
     }
 
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub(crate) fn apply_remote_settings(
         &mut self,
         frame: &frame::Settings,
@@ -261,25 +267,28 @@ where
         Ok(())
     }
 
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub(crate) fn record_remote_settings(&mut self, frame: &frame::Settings) {
         let mut me = self.inner.lock().unwrap();
         me.early_frame_ctx.record_settings_frame(frame);
     }
 
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub(crate) fn apply_local_settings(
         &mut self,
         frame: &frame::Settings,
-        ack: frame::Settings,
+        ack: &frame::Settings,
     ) -> Result<(), Error> {
         let mut me = self.inner.lock().unwrap();
 
-        me.early_frame_ctx.record_settings_frame(&ack);
+        me.early_frame_ctx.record_settings_frame(ack);
 
         let me = &mut *me;
 
         me.actions.recv.apply_local_settings(frame, &mut me.store)
     }
 
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub(crate) fn send_request(
         &mut self,
         mut request: Request<()>,
@@ -412,16 +421,19 @@ impl<B> DynStreams<'_, B> {
         self.peer.is_server()
     }
 
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub(crate) fn recv_headers(&mut self, frame: frame::Headers) -> Result<(), Error> {
         let mut me = self.inner.lock().unwrap();
         me.recv_headers(self.peer, self.send_buffer, frame)
     }
 
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub(crate) fn recv_data(&mut self, frame: frame::Data) -> Result<(), Error> {
         let mut me = self.inner.lock().unwrap();
         me.recv_data(self.peer, self.send_buffer, frame)
     }
 
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub(crate) fn recv_reset(&mut self, frame: frame::Reset) -> Result<(), Error> {
         let mut me = self.inner.lock().unwrap();
 
@@ -429,11 +441,13 @@ impl<B> DynStreams<'_, B> {
     }
 
     /// Notify all streams that a connection-level error happened.
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub(crate) fn handle_error(&mut self, err: proto::Error) -> StreamId {
         let mut me = self.inner.lock().unwrap();
         me.handle_error(self.send_buffer, err)
     }
 
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub(crate) fn recv_go_away(&mut self, frame: &frame::GoAway) -> Result<(), Error> {
         let mut me = self.inner.lock().unwrap();
         me.recv_go_away(self.send_buffer, frame)
@@ -443,28 +457,33 @@ impl<B> DynStreams<'_, B> {
         self.inner.lock().unwrap().actions.recv.last_processed_id()
     }
 
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub(crate) fn recv_window_update(&mut self, frame: frame::WindowUpdate) -> Result<(), Error> {
         let mut me = self.inner.lock().unwrap();
-        me.early_frame_ctx.record_windows_update_frame(&frame);
+        me.early_frame_ctx.record_windows_update_frame(frame);
         me.recv_window_update(self.send_buffer, frame)
     }
 
-    pub(crate) fn recv_priority(&mut self, frame: frame::Priority) -> Result<(), Error> {
+    #[allow(clippy::needless_pass_by_ref_mut)]
+    pub(crate) fn recv_priority(&mut self, frame: &frame::Priority) -> Result<(), Error> {
         let mut me = self.inner.lock().unwrap();
-        me.early_frame_ctx.record_priority_frame(&frame);
+        me.early_frame_ctx.record_priority_frame(frame);
         Ok(())
     }
 
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub(crate) fn recv_push_promise(&mut self, frame: frame::PushPromise) -> Result<(), Error> {
         let mut me = self.inner.lock().unwrap();
         me.recv_push_promise(self.send_buffer, frame)
     }
 
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub(crate) fn recv_eof(&mut self, clear_pending_accept: bool) -> Result<(), ()> {
         let mut me = self.inner.lock().map_err(|_| ())?;
         me.recv_eof(self.send_buffer, clear_pending_accept)
     }
 
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub(crate) fn send_reset(
         &mut self,
         id: StreamId,
@@ -474,6 +493,7 @@ impl<B> DynStreams<'_, B> {
         me.send_reset(self.send_buffer, id, reason)
     }
 
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub(crate) fn send_go_away(&mut self, last_processed_id: StreamId) {
         let mut me = self.inner.lock().unwrap();
         me.actions.recv.go_away(last_processed_id);
@@ -482,7 +502,7 @@ impl<B> DynStreams<'_, B> {
 
 impl Inner {
     fn new(peer: peer::Dyn, config: Config) -> Arc<Mutex<Self>> {
-        Arc::new(Mutex::new(Inner {
+        Arc::new(Mutex::new(Self {
             counts: Counts::new(peer, &config),
             actions: Actions {
                 recv: Recv::new(peer, &config),
@@ -497,6 +517,7 @@ impl Inner {
         }))
     }
 
+    #[allow(clippy::needless_pass_by_ref_mut)]
     fn recv_headers<B>(
         &mut self,
         peer: peer::Dyn,
@@ -536,11 +557,7 @@ impl Inner {
                     }
                 }
 
-                match self
-                    .actions
-                    .recv
-                    .open(id, Open::Headers, &mut self.counts)?
-                {
+                match self.actions.recv.open(id, Open::Headers, &self.counts)? {
                     Some(stream_id) => {
                         let stream = Stream::new(
                             stream_id,
@@ -615,6 +632,7 @@ impl Inner {
         })
     }
 
+    #[allow(clippy::needless_pass_by_ref_mut)]
     fn recv_data<B>(
         &mut self,
         peer: peer::Dyn,
@@ -623,36 +641,33 @@ impl Inner {
     ) -> Result<(), Error> {
         let id = frame.stream_id();
 
-        let stream = match self.store.find_mut(&id) {
-            Some(stream) => stream,
-            None => {
-                // The GOAWAY process has begun. All streams with a greater ID
-                // than specified as part of GOAWAY should be ignored.
-                if id > self.actions.recv.max_stream_id() {
-                    tracing::trace!(
-                        "id ({:?}) > max_stream_id ({:?}), ignoring DATA",
-                        id,
-                        self.actions.recv.max_stream_id()
-                    );
-                    return Ok(());
-                }
-
-                if self.actions.may_have_forgotten_stream(peer, id) {
-                    tracing::debug!("recv_data for old stream={:?}, sending STREAM_CLOSED", id,);
-
-                    let sz = frame.payload().len();
-                    // This should have been enforced at the codec::FramedRead layer, so
-                    // this is just a sanity check.
-                    assert!(sz <= super::MAX_WINDOW_SIZE as usize);
-                    let sz = sz as WindowSize;
-
-                    self.actions.recv.ignore_data(sz)?;
-                    return Err(Error::library_reset(id, Reason::STREAM_CLOSED));
-                }
-
-                proto_err!(conn: "recv_data: stream not found; id={:?}", id);
-                return Err(Error::library_go_away(Reason::PROTOCOL_ERROR));
+        let Some(stream) = self.store.find_mut(id) else {
+            // The GOAWAY process has begun. All streams with a greater ID
+            // than specified as part of GOAWAY should be ignored.
+            if id > self.actions.recv.max_stream_id() {
+                tracing::trace!(
+                    "id ({:?}) > max_stream_id ({:?}), ignoring DATA",
+                    id,
+                    self.actions.recv.max_stream_id()
+                );
+                return Ok(());
             }
+
+            if self.actions.may_have_forgotten_stream(peer, id) {
+                tracing::debug!("recv_data for old stream={:?}, sending STREAM_CLOSED", id,);
+
+                let sz = frame.payload().len();
+                // This should have been enforced at the codec::FramedRead layer, so
+                // this is just a sanity check.
+                assert!(sz <= super::MAX_WINDOW_SIZE as usize);
+                let sz = sz as WindowSize;
+
+                self.actions.recv.ignore_data(sz)?;
+                return Err(Error::library_reset(id, Reason::STREAM_CLOSED));
+            }
+
+            proto_err!(conn: "recv_data: stream not found; id={:?}", id);
+            return Err(Error::library_go_away(Reason::PROTOCOL_ERROR));
         };
 
         let actions = &mut self.actions;
@@ -675,6 +690,7 @@ impl Inner {
         })
     }
 
+    #[allow(clippy::needless_pass_by_ref_mut)]
     fn recv_reset<B>(
         &mut self,
         send_buffer: &SendBuffer<B>,
@@ -698,16 +714,13 @@ impl Inner {
             return Ok(());
         }
 
-        let stream = match self.store.find_mut(&id) {
-            Some(stream) => stream,
-            None => {
-                // TODO: Are there other error cases?
-                self.actions
-                    .ensure_not_idle(self.counts.peer(), id)
-                    .map_err(Error::library_go_away)?;
+        let Some(stream) = self.store.find_mut(id) else {
+            // TODO: Are there other error cases?
+            self.actions
+                .ensure_not_idle(self.counts.peer(), id)
+                .map_err(Error::library_go_away)?;
 
-                return Ok(());
-            }
+            return Ok(());
         };
 
         let mut send_buffer = send_buffer.inner.lock().unwrap();
@@ -723,6 +736,7 @@ impl Inner {
         })
     }
 
+    #[allow(clippy::needless_pass_by_ref_mut)]
     fn recv_window_update<B>(
         &mut self,
         send_buffer: &SendBuffer<B>,
@@ -741,7 +755,7 @@ impl Inner {
         } else {
             // The remote may send window updates for streams that the local now
             // considers closed. It's ok...
-            if let Some(mut stream) = self.store.find_mut(&id) {
+            if let Some(mut stream) = self.store.find_mut(id) {
                 let res = self
                     .actions
                     .send
@@ -770,6 +784,7 @@ impl Inner {
         Ok(())
     }
 
+    #[allow(clippy::needless_pass_by_ref_mut)]
     fn handle_error<B>(&mut self, send_buffer: &SendBuffer<B>, err: proto::Error) -> StreamId {
         let actions = &mut self.actions;
         let counts = &mut self.counts;
@@ -790,6 +805,7 @@ impl Inner {
         last_processed_id
     }
 
+    #[allow(clippy::needless_pass_by_ref_mut)]
     fn recv_go_away<B>(
         &mut self,
         send_buffer: &SendBuffer<B>,
@@ -820,6 +836,7 @@ impl Inner {
         Ok(())
     }
 
+    #[allow(clippy::needless_pass_by_ref_mut)]
     fn recv_push_promise<B>(
         &mut self,
         send_buffer: &SendBuffer<B>,
@@ -829,31 +846,28 @@ impl Inner {
         let promised_id = frame.promised_id();
 
         // First, ensure that the initiating stream is still in a valid state.
-        let parent_key = match self.store.find_mut(&id) {
-            Some(stream) => {
-                // The GOAWAY process has begun. All streams with a greater ID
-                // than specified as part of GOAWAY should be ignored.
-                if id > self.actions.recv.max_stream_id() {
-                    tracing::trace!(
-                        "id ({:?}) > max_stream_id ({:?}), ignoring PUSH_PROMISE",
-                        id,
-                        self.actions.recv.max_stream_id()
-                    );
-                    return Ok(());
-                }
-
-                // The stream must be receive open
-                if !stream.state.ensure_recv_open()? {
-                    proto_err!(conn: "recv_push_promise: initiating stream is not opened");
-                    return Err(Error::library_go_away(Reason::PROTOCOL_ERROR));
-                }
-
-                stream.key()
+        let parent_key = if let Some(stream) = self.store.find_mut(id) {
+            // The GOAWAY process has begun. All streams with a greater ID
+            // than specified as part of GOAWAY should be ignored.
+            if id > self.actions.recv.max_stream_id() {
+                tracing::trace!(
+                    "id ({:?}) > max_stream_id ({:?}), ignoring PUSH_PROMISE",
+                    id,
+                    self.actions.recv.max_stream_id()
+                );
+                return Ok(());
             }
-            None => {
-                proto_err!(conn: "recv_push_promise: initiating stream is in an invalid state");
+
+            // The stream must be receive open
+            if !stream.state.ensure_recv_open()? {
+                proto_err!(conn: "recv_push_promise: initiating stream is not opened");
                 return Err(Error::library_go_away(Reason::PROTOCOL_ERROR));
             }
+
+            stream.key()
+        } else {
+            proto_err!(conn: "recv_push_promise: initiating stream is in an invalid state");
+            return Err(Error::library_go_away(Reason::PROTOCOL_ERROR));
         };
 
         // TODO: Streams in the reserved states do not count towards the concurrency
@@ -870,7 +884,7 @@ impl Inner {
         if self
             .actions
             .recv
-            .open(promised_id, Open::PushPromise, &mut self.counts)?
+            .open(promised_id, Open::PushPromise, &self.counts)?
             .is_none()
         {
             return Ok(());
@@ -893,19 +907,13 @@ impl Inner {
             self.counts.transition(stream, |counts, stream| {
                 let stream_valid = actions.recv.recv_push_promise(frame, stream);
 
-                match stream_valid {
-                    Ok(()) => Ok(Some(stream.key())),
-                    _ => {
-                        let mut send_buffer = send_buffer.inner.lock().unwrap();
-                        actions
-                            .reset_on_recv_stream_err(
-                                &mut *send_buffer,
-                                stream,
-                                counts,
-                                stream_valid,
-                            )
-                            .map(|()| None)
-                    }
+                if matches!(stream_valid, Ok(())) {
+                    Ok(Some(stream.key()))
+                } else {
+                    let mut send_buffer = send_buffer.inner.lock().unwrap();
+                    actions
+                        .reset_on_recv_stream_err(&mut *send_buffer, stream, counts, stream_valid)
+                        .map(|()| None)
                 }
             })?
         };
@@ -958,6 +966,7 @@ impl Inner {
         Ok(())
     }
 
+    #[allow(clippy::needless_pass_by_ref_mut)]
     fn poll_complete<T, B>(
         &mut self,
         send_buffer: &SendBuffer<B>,
@@ -996,6 +1005,7 @@ impl Inner {
         Poll::Ready(Ok(()))
     }
 
+    #[allow(clippy::needless_pass_by_ref_mut)]
     fn send_reset<B>(
         &mut self,
         send_buffer: &SendBuffer<B>,
@@ -1050,6 +1060,7 @@ impl<B> Streams<B, client::Peer>
 where
     B: Buf,
 {
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub(crate) fn poll_pending_open(
         &mut self,
         cx: &Context,
@@ -1093,6 +1104,7 @@ where
     /// This function is safe to call multiple times.
     ///
     /// A `Result` is returned to avoid panicking if the mutex is poisoned.
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub(crate) fn recv_eof(&mut self, clear_pending_accept: bool) -> Result<(), ()> {
         self.as_dyn().recv_eof(clear_pending_accept)
     }
@@ -1135,7 +1147,7 @@ where
 {
     fn clone(&self) -> Self {
         self.inner.lock().unwrap().refs += 1;
-        Streams {
+        Self {
             inner: self.inner.clone(),
             send_buffer: self.send_buffer.clone(),
             _p: ::std::marker::PhantomData,
@@ -1162,6 +1174,7 @@ where
 // ===== impl StreamRef =====
 
 impl<B> StreamRef<B> {
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub(crate) fn send_data(&mut self, data: B, end_stream: bool) -> Result<(), UserError>
     where
         B: Buf,
@@ -1186,6 +1199,7 @@ impl<B> StreamRef<B> {
         })
     }
 
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub(crate) fn send_trailers(
         &mut self,
         trailers: HeaderMap,
@@ -1210,6 +1224,7 @@ impl<B> StreamRef<B> {
         })
     }
 
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub(crate) fn send_reset(&mut self, reason: Reason) {
         let mut me = self.opaque.inner.lock().unwrap();
         let me = &mut *me;
@@ -1234,6 +1249,7 @@ impl<B> StreamRef<B> {
         }
     }
 
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub(crate) fn send_response(
         &mut self,
         mut response: Response<()>,
@@ -1258,10 +1274,11 @@ impl<B> StreamRef<B> {
         })
     }
 
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub(crate) fn send_push_promise(
         &mut self,
         mut request: Request<()>,
-    ) -> Result<StreamRef<B>, UserError> {
+    ) -> Result<Self, UserError> {
         // Clear before taking lock, incase extensions contain a StreamRef.
         clear_extensions_safely(request.extensions_mut());
         let mut me = self.opaque.inner.lock().unwrap();
@@ -1309,7 +1326,7 @@ impl<B> StreamRef<B> {
         let opaque =
             OpaqueStreamRef::new(self.opaque.inner.clone(), &mut me.store.resolve(child_key));
 
-        Ok(StreamRef {
+        Ok(Self {
             opaque,
             send_buffer: self.send_buffer.clone(),
         })
@@ -1341,6 +1358,7 @@ impl<B> StreamRef<B> {
     }
 
     /// Request capacity to send data
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub(crate) fn reserve_capacity(&mut self, capacity: WindowSize) {
         let mut me = self.opaque.inner.lock().unwrap();
         let me = &mut *me;
@@ -1363,6 +1381,7 @@ impl<B> StreamRef<B> {
     }
 
     /// Request to be notified when the stream's capacity increases
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub(crate) fn poll_capacity(
         &mut self,
         cx: &Context,
@@ -1376,6 +1395,7 @@ impl<B> StreamRef<B> {
     }
 
     /// Request to be notified for if a `RST_STREAM` is received for this stream.
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub(crate) fn poll_reset(
         &mut self,
         cx: &Context,
@@ -1400,7 +1420,7 @@ impl<B> StreamRef<B> {
 
 impl<B> Clone for StreamRef<B> {
     fn clone(&self) -> Self {
-        StreamRef {
+        Self {
             opaque: self.opaque.clone(),
             send_buffer: self.send_buffer.clone(),
         }
@@ -1410,14 +1430,15 @@ impl<B> Clone for StreamRef<B> {
 // ===== impl OpaqueStreamRef =====
 
 impl OpaqueStreamRef {
-    fn new(inner: Arc<Mutex<Inner>>, stream: &mut store::Ptr) -> OpaqueStreamRef {
+    fn new(inner: Arc<Mutex<Inner>>, stream: &mut store::Ptr) -> Self {
         stream.ref_inc();
-        OpaqueStreamRef {
+        Self {
             inner,
             key: stream.key(),
         }
     }
     /// Called by a client to check for a received response.
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub(crate) fn poll_response(
         &mut self,
         cx: &Context,
@@ -1429,11 +1450,13 @@ impl OpaqueStreamRef {
 
         me.actions.recv.poll_response(cx, &mut stream)
     }
+
     /// Called by a client to check for a pushed request.
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub(crate) fn poll_pushed(
         &mut self,
         cx: &Context,
-    ) -> Poll<Option<Result<(Request<()>, OpaqueStreamRef), proto::Error>>> {
+    ) -> Poll<Option<Result<(Request<()>, Self), proto::Error>>> {
         let mut me = self.inner.lock().unwrap();
         let me = &mut *me;
 
@@ -1443,8 +1466,7 @@ impl OpaqueStreamRef {
             .poll_pushed(cx, &mut stream)
             .map_ok(|(h, key)| {
                 me.refs += 1;
-                let opaque_ref =
-                    OpaqueStreamRef::new(self.inner.clone(), &mut me.store.resolve(key));
+                let opaque_ref = Self::new(self.inner.clone(), &mut me.store.resolve(key));
                 (h, opaque_ref)
             })
     }
@@ -1458,6 +1480,7 @@ impl OpaqueStreamRef {
         me.actions.recv.is_end_stream(&stream)
     }
 
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub(crate) fn poll_data(&mut self, cx: &Context) -> Poll<Option<Result<Bytes, proto::Error>>> {
         let mut me = self.inner.lock().unwrap();
         let me = &mut *me;
@@ -1467,6 +1490,7 @@ impl OpaqueStreamRef {
         me.actions.recv.poll_data(cx, &mut stream)
     }
 
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub(crate) fn poll_trailers(
         &mut self,
         cx: &Context,
@@ -1497,6 +1521,7 @@ impl OpaqueStreamRef {
 
     /// Releases recv capacity back to the peer. This may result in sending
     /// WINDOW_UPDATE frames on both the stream and connection.
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub(crate) fn release_capacity(&mut self, capacity: WindowSize) -> Result<(), UserError> {
         let mut me = self.inner.lock().unwrap();
         let me = &mut *me;
@@ -1509,6 +1534,7 @@ impl OpaqueStreamRef {
     }
 
     /// Clear the receive queue and set the status to no longer receive data frames.
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub(crate) fn clear_recv_buffer(&mut self) {
         let mut me = self.inner.lock().unwrap();
         let me = &mut *me;
@@ -1552,7 +1578,7 @@ impl Clone for OpaqueStreamRef {
         inner.store.resolve(self.key).ref_inc();
         inner.refs += 1;
 
-        OpaqueStreamRef {
+        Self {
             inner: self.inner.clone(),
             key: self.key,
         }
@@ -1567,15 +1593,12 @@ impl Drop for OpaqueStreamRef {
 
 // TODO: Move back in fn above
 fn drop_stream_ref(inner: &Mutex<Inner>, key: store::Key) {
-    let mut me = match inner.lock() {
-        Ok(inner) => inner,
-        Err(_) => {
-            if ::std::thread::panicking() {
-                tracing::trace!("StreamRef::drop; mutex poisoned");
-                return;
-            } else {
-                panic!("StreamRef::drop; mutex poisoned");
-            }
+    let Ok(mut me) = inner.lock() else {
+        if ::std::thread::panicking() {
+            tracing::trace!("StreamRef::drop; mutex poisoned");
+            return;
+        } else {
+            panic!("StreamRef::drop; mutex poisoned");
         }
     };
 
@@ -1647,7 +1670,7 @@ fn maybe_cancel(stream: &mut store::Ptr, actions: &mut Actions, counts: &mut Cou
 impl<B> SendBuffer<B> {
     fn new() -> Self {
         let inner = Mutex::new(Buffer::new());
-        SendBuffer { inner }
+        Self { inner }
     }
 
     pub(crate) fn is_empty(&self) -> bool {
@@ -1734,6 +1757,7 @@ impl Actions {
         }
     }
 
+    #[allow(clippy::needless_pass_by_ref_mut)]
     fn ensure_not_idle(&mut self, peer: peer::Dyn, id: StreamId) -> Result<(), Reason> {
         if peer.is_local_init(id) {
             self.send.ensure_not_idle(id)
@@ -1770,6 +1794,7 @@ impl Actions {
         }
     }
 
+    #[allow(clippy::needless_pass_by_ref_mut)]
     fn clear_queues(&mut self, clear_pending_accept: bool, store: &mut Store, counts: &mut Counts) {
         self.recv.clear_queues(clear_pending_accept, store, counts);
         self.send.clear_queues(store, counts);

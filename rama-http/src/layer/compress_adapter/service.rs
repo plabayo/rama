@@ -54,7 +54,7 @@ where
 
 impl<S> CompressAdaptService<S> {
     /// Creates a new `CompressAdaptService` wrapping the `service`.
-    pub fn new(service: S) -> CompressAdaptService<S> {
+    pub fn new(service: S) -> Self {
         Self {
             inner: service,
             quality: CompressionLevel::default(),
@@ -66,6 +66,7 @@ impl<S> CompressAdaptService<S> {
     define_inner_service_accessors!();
 
     /// Sets the compression quality.
+    #[must_use]
     pub fn quality(mut self, quality: CompressionLevel) -> Self {
         self.quality = quality;
         self

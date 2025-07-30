@@ -132,7 +132,7 @@ impl<F, R> ExponentialBackoff<F, R> {
             return Err(InvalidBackoff("jitter must be finite"));
         }
 
-        Ok(ExponentialBackoff {
+        Ok(Self {
             min,
             max,
             jitter,
@@ -190,12 +190,9 @@ where
 {
     async fn next_backoff(&self) -> bool {
         let base = self.base();
-        let jitter = match self.jitter(base) {
-            Some(jitter) => jitter,
-            None => {
-                self.reset().await;
-                return false;
-            }
+        let Some(jitter) = self.jitter(base) else {
+            self.reset().await;
+            return false;
         };
 
         let next = base + jitter;
@@ -213,7 +210,7 @@ where
 
 impl Default for ExponentialBackoff<(), HasherRng> {
     fn default() -> Self {
-        ExponentialBackoff::new_inner(
+        Self::new_inner(
             Duration::from_millis(50),
             Duration::from_secs(3),
             0.99,

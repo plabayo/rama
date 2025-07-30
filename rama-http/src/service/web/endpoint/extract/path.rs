@@ -55,7 +55,7 @@ where
         match ctx.get::<UriParams>() {
             Some(params) => {
                 let params = params.deserialize::<T>()?;
-                Ok(Path(params))
+                Ok(Self(params))
             }
             None => Err(MissingPathParams.into()),
         }

@@ -4,7 +4,7 @@ use std::time::Duration;
 use rama_http_types::{HeaderName, HeaderValue};
 
 use crate::util::{self, IterExt, Seconds};
-use crate::{Error, Header};
+use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
 
 /// `StrictTransportSecurity` header, defined in [RFC6797](https://tools.ietf.org/html/rfc6797)
 ///
@@ -58,16 +58,18 @@ impl StrictTransportSecurity {
     // incorrect assumption about a default.
 
     /// Create an STS header that includes subdomains
-    pub fn including_subdomains(max_age: Duration) -> StrictTransportSecurity {
-        StrictTransportSecurity {
+    #[must_use]
+    pub fn including_subdomains(max_age: Duration) -> Self {
+        Self {
             max_age: max_age.into(),
             include_subdomains: true,
         }
     }
 
     /// Create an STS header that excludes subdomains
-    pub fn excluding_subdomains(max_age: Duration) -> StrictTransportSecurity {
-        StrictTransportSecurity {
+    #[must_use]
+    pub fn excluding_subdomains(max_age: Duration) -> Self {
+        Self {
             max_age: max_age.into(),
             include_subdomains: false,
         }
@@ -76,11 +78,13 @@ impl StrictTransportSecurity {
     // getters
 
     /// Get whether this should include subdomains.
+    #[must_use]
     pub fn include_subdomains(&self) -> bool {
         self.include_subdomains
     }
 
     /// Get the max-age.
+    #[must_use]
     pub fn max_age(&self) -> Duration {
         self.max_age.into()
     }
@@ -131,11 +135,13 @@ fn from_str(s: &str) -> Result<StrictTransportSecurity, Error> {
         .ok_or_else(Error::invalid)
 }
 
-impl Header for StrictTransportSecurity {
+impl TypedHeader for StrictTransportSecurity {
     fn name() -> &'static HeaderName {
         &::rama_http_types::header::STRICT_TRANSPORT_SECURITY
     }
+}
 
+impl HeaderDecode for StrictTransportSecurity {
     fn decode<'i, I: Iterator<Item = &'i HeaderValue>>(values: &mut I) -> Result<Self, Error> {
         values
             .just_one()
@@ -143,7 +149,9 @@ impl Header for StrictTransportSecurity {
             .map(from_str)
             .unwrap_or_else(|| Err(Error::invalid()))
     }
+}
 
+impl HeaderEncode for StrictTransportSecurity {
     fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
         struct Adapter<'a>(&'a StrictTransportSecurity);
 

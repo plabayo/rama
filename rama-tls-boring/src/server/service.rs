@@ -115,7 +115,7 @@ where
         let mut acceptor_builder = tls_config
             .cert_source
             .clone()
-            .issue_certs(acceptor_builder, server_domain, &maybe_client_hello)
+            .issue_certs(acceptor_builder, server_domain, maybe_client_hello.as_ref())
             .await?;
 
         if let Some(min_ver) = tls_config.protocol_versions.iter().flatten().min() {
@@ -175,7 +175,7 @@ where
             );
         }
 
-        if let Some(keylog_filename) = tls_config.keylog_intent.file_path() {
+        if let Some(keylog_filename) = tls_config.keylog_intent.file_path().as_deref() {
             let handle = new_key_log_file_handle(keylog_filename)?;
             acceptor_builder.set_keylog_callback(move |_, line| {
                 let line = format!("{line}\n");

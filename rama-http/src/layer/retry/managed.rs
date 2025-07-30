@@ -96,7 +96,7 @@ where
     R: Clone,
 {
     fn clone(&self) -> Self {
-        ManagedPolicy {
+        Self {
             backoff: self.backoff.clone(),
             clone: self.clone.clone(),
             retry: self.retry.clone(),
@@ -106,7 +106,7 @@ where
 
 impl Default for ManagedPolicy<Undefined, Undefined, Undefined> {
     fn default() -> Self {
-        ManagedPolicy {
+        Self {
             backoff: Undefined,
             clone: Undefined,
             retry: Undefined,
