@@ -562,11 +562,13 @@ impl JWS {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 struct Signature {
     #[serde(skip_serializing_if = "String::is_empty")]
+    #[serde(default = "Default::default")]
     protected: String,
     #[serde(skip_serializing_if = "Headers::is_none")]
-    #[serde(rename = "name")]
+    #[serde(rename = "headers", default = "Default::default")]
     unprotected: Headers,
     #[serde(skip_serializing_if = "String::is_empty")]
+    #[serde(default = "Default::default")]
     signature: String,
 }
 
