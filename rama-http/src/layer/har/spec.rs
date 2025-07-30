@@ -78,7 +78,7 @@ har_data!(Request, {
 });
 
 #[derive(Debug)]
-struct UnsupportedHttpVersionError;
+pub struct UnsupportedHttpVersionError;
 
 impl fmt::Display for UnsupportedHttpVersionError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -89,17 +89,19 @@ impl fmt::Display for UnsupportedHttpVersionError {
 impl Error for UnsupportedHttpVersionError {}
 
 impl Request {
-    pub fn from_rama_request<B>(req: &RamaRequest<B>) -> Self
+    pub fn from_rama_request<B>(req: &RamaRequest<B>) -> Result<Self, UnsupportedHttpVersionError>
     where
         B: http_body::Body<Data = Bytes> + Clone + Send + 'static,
     {
         let (parts, _body) = req.clone().into_parts();
         // body could be used for computing body_size?
 
-        Self {
+        let http_version = Self::into_string_version(parts.version)?;
+
+        Ok(Self {
             method: parts.method.to_string(),
             url: parts.uri.to_string(),
-            http_version: Self::into_string_version(parts.version),
+            http_version,
             cookies: vec![],
             headers: Self::into_har_headers(&parts),
             query_string: Self::into_har_query_string(&parts),
@@ -107,12 +109,12 @@ impl Request {
             headers_size: 0,
             body_size: -1,
             comment: None,
-        }
+        })
     }
 
     // this needs to be refactored somewhere else as
     // it's widely used across the codebase
-    fn into_string_version(v: HttpVersion) -> String {
+    fn into_string_version(v: HttpVersion) -> Result<String, UnsupportedHttpVersionError> {
         match v {
             HttpVersion::HTTP_09 => Ok(String::from("0.9")),
             HttpVersion::HTTP_10 => Ok(String::from("1.0")),

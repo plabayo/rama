@@ -15,6 +15,7 @@ pub struct Comment {
     pub text: String,
 }
 
+// example implementation
 #[derive(Clone)]
 pub struct StaticToggle {
     value: bool,
