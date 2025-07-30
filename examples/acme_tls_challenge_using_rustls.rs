@@ -139,7 +139,7 @@ async fn main() {
         .await
         .unwrap();
 
-    let cert = order.download_certificate().await.unwrap();
+    let _cert = order.download_certificate().await.unwrap();
 }
 
 #[derive(Debug)]
