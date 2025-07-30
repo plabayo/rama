@@ -4,14 +4,22 @@ use rama_core::Layer;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-#[derive(Clone, Default)]
 pub struct HARExportLayer<T> {
     pub comments: Vec<Comment>,
     pub toggle: T,
 }
 
-impl HARExportLayer<StaticToggle> {
-    pub fn new() -> Self {
+impl<T: Clone> Clone for HARExportLayer<T> {
+    fn clone(&self) -> Self {
+        HARExportLayer {
+            comments: self.comments.clone(),
+            toggle: self.toggle.clone(),
+        }
+    }
+}
+
+impl Default for HARExportLayer<StaticToggle> {
+    fn default() -> Self {
         Self {
             comments: vec![],
             toggle: StaticToggle::new(true),

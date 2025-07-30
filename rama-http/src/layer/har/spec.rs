@@ -171,6 +171,8 @@ har_data!(Response, {
     pub comment: Option<String>,
 });
 
+// TODO: https://github.com/plabayo/rama/issues/44
+// For now this will have to be manually parsed. Needs an http-cookie logic
 har_data!(Cookie, {
     pub name: String,
     pub value: String,
