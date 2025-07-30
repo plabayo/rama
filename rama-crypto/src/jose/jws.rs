@@ -479,7 +479,7 @@ pub struct JWSCompact(String);
 ///
 /// [`rfc7515, section 7.2.2`]: https://datatracker.ietf.org/doc/html/rfc7515#section-7.2.2
 pub struct JWSFlattened {
-    #[serde(skip_serializing_if = "String::is_empty")]
+    #[serde(default = "Default::default")]
     payload: String,
     #[serde(flatten)]
     signature: Signature,
