@@ -19,20 +19,20 @@ use crate::jose::{JWA, Signer};
 /// [`rfc7517`]: https://datatracker.ietf.org/doc/html/rfc7517
 pub struct JWK {
     /// Intended algorithm to be used with this key
-    alg: JWA,
+    pub alg: JWA,
     #[serde(flatten)]
-    key_type: JWKType,
+    pub key_type: JWKType,
     #[serde(skip_serializing_if = "Option::is_none")]
-    r#use: Option<JWKUse>,
+    pub r#use: Option<JWKUse>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    key_ops: Option<Vec<String>>,
+    pub key_ops: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    x5c: Option<Vec<String>>,
+    pub x5c: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    x5t: Option<String>,
+    pub x5t: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "x5t#S256")]
-    x5t_sha256: Option<String>,
+    pub x5t_sha256: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
