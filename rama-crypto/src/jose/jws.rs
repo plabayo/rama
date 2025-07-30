@@ -5,8 +5,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
-/// When used with serde this will serialize to null
-pub struct Empty;
+/// When used with serde this will serialize to empty struct
+pub struct Empty {}
+
+pub const NO_PAYLOAD: Option<&'static Empty> = None;
+pub const EMPTY_PAYLOAD: Option<&'static Empty> = Some(&Empty {});
 
 #[derive(Default, Debug, Clone, PartialEq, Eq)]
 /// [`JWSBuilder`] should be used when manually creating a [`JWS`], [`JWSCompact`] or [`JWSFlattened`]
@@ -916,13 +919,13 @@ mod tests {
         assert_eq!(jws.payload, "".to_owned());
 
         let jws = JWSFlattened::builder()
-            .with_payload(serde_json::to_vec(&Empty).unwrap())
+            .with_payload(serde_json::to_vec(&EMPTY_PAYLOAD).unwrap())
             .try_with_protected_headers(protected.clone())
             .unwrap()
             .build_flattened(&signer)
             .unwrap();
 
-        assert_eq!(jws.payload, "bnVsbA".to_owned());
+        assert_eq!(jws.payload, "e30".to_owned());
     }
 
     #[test]
