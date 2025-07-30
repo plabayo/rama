@@ -1,23 +1,18 @@
-use crate::layer::har::Toggle;
 use crate::layer::har::spec::{
     Entry,
     Log as HarLog,
     Request as HarRequest, //Response as HarResponse,
 };
+use crate::layer::har::{Recorder, Toggle};
 use crate::layer::traffic_writer::RequestWriter;
 use rama_core::{Context, Service, bytes::Bytes, error::BoxError};
 use rama_http_types::dep::http_body;
 use rama_http_types::{Request, Response};
 
-pub trait Recorder: Clone + Send + Sync + 'static {
-    fn record(&self, line: HarLog);
-    fn data(&self) -> Vec<HarLog>;
-}
-
 pub struct HARExportService<R, S, T> {
-    pub(crate) inner: S,
-    pub(crate) toggle: T,
     pub(crate) recorder: R,
+    pub(crate) service: S,
+    pub(crate) toggle: T,
 }
 
 impl<State, R, S, W, ReqBody, ResBody> Service<State, Request<ReqBody>>
@@ -39,7 +34,7 @@ where
         ctx: Context<State>,
         req: Request<ReqBody>,
     ) -> Result<Self::Response, Self::Error> {
-        let response = self.inner.serve(ctx, req.clone()).await?;
+        let response = self.service.serve(ctx, req.clone()).await?;
 
         if self.toggle.is_recording_on() {
             let mut entry = Entry::default();
@@ -51,7 +46,7 @@ where
             // NOTE: This assumes that there is only ever one pair of request/response
             // might need more customization on how entries are pushed/composed
             log_line.entries = vec![entry];
-            self.recorder.record(log_line);
+            self.recorder.record(log_line).await;
         }
 
         Ok(response)
