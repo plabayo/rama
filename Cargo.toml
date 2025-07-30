@@ -41,6 +41,7 @@ members = [
     "rama-proxy",
     "rama-socks5",
     "rama-tcp",
+    "rama-tls-acme",
     "rama-tls-boring",
     "rama-tls-rustls",
     "rama-tower",
@@ -165,6 +166,7 @@ rama-net = { version = "0.3.0-alpha.2", path = "./rama-net" }
 rama-proxy = { version = "0.3.0-alpha.2", path = "./rama-proxy" }
 rama-socks5 = { version = "0.3.0-alpha.2", path = "./rama-socks5" }
 rama-tcp = { version = "0.3.0-alpha.2", path = "./rama-tcp" }
+rama-tls-acme = { version = "0.3.0-alpha.2", path = "./rama-tls-acme" }
 rama-tls-boring = { version = "0.3.0-alpha.2", path = "./rama-tls-boring" }
 rama-tls-rustls = { version = "0.3.0-alpha.2", path = "./rama-tls-rustls" }
 rama-tower = { version = "0.3.0-alpha.2", path = "./rama-tower" }
@@ -312,6 +314,7 @@ dns = ["net", "dep:rama-dns", "rama-socks5?/dns"]
 tcp = ["dns", "dep:rama-tcp"]
 udp = ["net", "dep:rama-udp"]
 ws = ["dep:rama-ws", "http"]
+acme = ["dep:rama-tls-acme"]
 http = [
     "net",
     "dep:rama-http",
@@ -363,6 +366,7 @@ rama-net = { workspace = true, optional = true }
 rama-proxy = { workspace = true, optional = true }
 rama-socks5 = { workspace = true, optional = true }
 rama-tcp = { workspace = true, optional = true }
+rama-tls-acme = { workspace = true, optional = true }
 rama-tls-boring = { workspace = true, optional = true }
 rama-tls-rustls = { workspace = true, optional = true }
 rama-tower = { workspace = true, optional = true }
