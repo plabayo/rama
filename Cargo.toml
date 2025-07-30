@@ -228,6 +228,7 @@ venndb = "0.5"
 walkdir = "2.5"
 want = "0.3"
 webpki-roots = "1.0"
+x509-parser = { version = "0.17.0" }
 zstd = "0.13"
 
 [workspace.lints.rust]
@@ -333,7 +334,6 @@ http-full = [
     "dep:rama-http-core",
     "ua-embed-profiles",
     "compression",
-
 ]
 proxy = ["dep:rama-proxy"]
 haproxy = ["dep:rama-haproxy"]

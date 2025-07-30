@@ -26,8 +26,13 @@ base64 = { workspace = true }
 rama-core = { workspace = true }
 rama-utils = { workspace = true }
 rcgen = { workspace = true }
+rustls-pki-types = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+tokio = { workspace = true, features = ["macros", "net"] }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+x509-parser = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }

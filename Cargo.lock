@@ -2501,7 +2501,6 @@ dependencies = [
  "itoa",
  "opentelemetry-otlp",
  "opentelemetry_sdk",
- "parking_lot",
  "pin-project-lite",
  "rama-core",
  "rama-crypto",
