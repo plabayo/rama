@@ -64,7 +64,7 @@ async fn main() {
 
     let mut order = account
         .new_order(NewOrderPayload {
-            identifiers: vec![Identifier::Dns("test.dev".into())],
+            identifiers: vec![Identifier::Dns("example.com".into())],
             ..Default::default()
         })
         .await
@@ -154,7 +154,7 @@ struct ChallengeState {
 fn create_csr() -> CertificateSigningRequest {
     let key_pair = rcgen::KeyPair::generate().unwrap();
 
-    let params = CertificateParams::new(vec!["test.dev".to_owned()]).unwrap();
+    let params = CertificateParams::new(vec!["example.com".to_owned()]).unwrap();
 
     let mut distinguished_name = DistinguishedName::new();
     distinguished_name.push(DnType::CountryName, "US");
