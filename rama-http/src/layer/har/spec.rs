@@ -3,6 +3,8 @@ use crate::dep::http::request::Parts as ReqParts;
 use rama_http_types::dep::http_body;
 use rama_http_types::{Request as RamaRequest, Version as HttpVersion};
 use serde::{Deserialize, Serialize};
+use std::error::Error;
+use std::fmt;
 
 macro_rules! har_data {
     ($name:ident, { $($field:tt)* }) => {
@@ -75,6 +77,17 @@ har_data!(Request, {
     pub comment: Option<String>,
 });
 
+#[derive(Debug)]
+struct UnsupportedHttpVersionError;
+
+impl fmt::Display for UnsupportedHttpVersionError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "Unsupported HTTP version")
+    }
+}
+
+impl Error for UnsupportedHttpVersionError {}
+
 impl Request {
     pub fn from_rama_request<B>(req: &RamaRequest<B>) -> Self
     where
@@ -101,12 +114,12 @@ impl Request {
     // it's widely used across the codebase
     fn into_string_version(v: HttpVersion) -> String {
         match v {
-            HttpVersion::HTTP_09 => String::from("0.9"),
-            HttpVersion::HTTP_10 => String::from("1.0"),
-            HttpVersion::HTTP_11 => String::from("1.1"),
-            HttpVersion::HTTP_2 => String::from("2"),
-            HttpVersion::HTTP_3 => String::from("3"),
-            _ => panic!("WTF!!"),
+            HttpVersion::HTTP_09 => Ok(String::from("0.9")),
+            HttpVersion::HTTP_10 => Ok(String::from("1.0")),
+            HttpVersion::HTTP_11 => Ok(String::from("1.1")),
+            HttpVersion::HTTP_2 => Ok(String::from("2")),
+            HttpVersion::HTTP_3 => Ok(String::from("3")),
+            _ => Err(UnsupportedHttpVersionError),
         }
     }
 
