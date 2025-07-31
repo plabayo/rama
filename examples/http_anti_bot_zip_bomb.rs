@@ -27,13 +27,15 @@ use rama::{
     Layer,
     http::{
         StatusCode,
+        body::ZipBomb,
         headers::UserAgent,
-        layer::required_header::AddRequiredResponseHeadersLayer,
-        layer::trace::TraceLayer,
+        layer::{required_header::AddRequiredResponseHeadersLayer, trace::TraceLayer},
         server::HttpServer,
-        service::web::extract::{Path, TypedHeader},
-        service::web::response::{IntoResponse, ZipBomb},
-        service::web::{Router, response::Html},
+        service::web::{
+            Router,
+            extract::{Path, TypedHeader},
+            response::{Html, IntoResponse},
+        },
     },
     net::address::SocketAddress,
     rt::Executor,
@@ -99,7 +101,16 @@ async fn api_rates_csv(
         // NOTE: in a real product you'll want to do actual Fingerprinting,
         // based on TCP, TLS, HTTP and application+platform signals
         // ... for this example this will do however
-        ZipBomb::new(format!("rates_{year}.csv")).into_response()
+        match ZipBomb::new(format!("rates_{year}.csv"))
+            .try_into_generate_response()
+            .await
+        {
+            Ok(resp) => resp,
+            Err(err) => {
+                tracing::debug!("failed to generate zip bomb for ua {ua}: {err}");
+                StatusCode::NOT_FOUND.into_response()
+            }
+        }
     } else {
         // assume real user
         if year == 2024 {

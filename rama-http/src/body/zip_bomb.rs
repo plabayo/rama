@@ -1,18 +1,12 @@
 use crate::service::web::response::IntoResponse;
-use rama_core::futures::{Stream, StreamExt};
-use rama_core::{bytes::Bytes, telemetry::tracing};
+use rama_core::telemetry::tracing;
 use rama_error::{ErrorContext, OpaqueError};
-use rama_http_types::{Body, HeaderValue, StatusCode};
+use rama_http_types::{Body, HeaderValue, Response};
 use rama_utils::macros::generate_set_and_with;
 use std::{
     borrow::Cow,
-    fmt,
     io::{self, Cursor, Read, Write},
-    pin::Pin,
-    task::{Context, Poll},
 };
-use tokio::io::{AsyncRead, BufReader};
-use tokio_util::io::ReaderStream;
 
 #[derive(Debug, Clone)]
 /// A minimal in-memory ZIP archive that acts as
@@ -102,72 +96,56 @@ impl ZipBomb {
         }
     }
 
-    /// Turn the [`ZipBomb`] into a body
-    pub fn into_body(self) -> Body {
-        let stream = RecursiveZipBomb::new(&self.filename, self.depth, self.fanout, self.file_size);
-        Body::from_stream(stream)
-    }
-}
-
-impl IntoResponse for ZipBomb {
-    fn into_response(self) -> rama_http_types::Response {
-        (
-            [
-                ("Robots", HeaderValue::from_static("none")),
-                (
-                    "X-Robots-Tag",
-                    HeaderValue::from_static("noindex, nofollow"),
-                ),
-                ("Content-Type", HeaderValue::from_static("application/zip")),
-                (
-                    "Content-Disposition",
-                    match format!("attachment; filename={}.zip", self.filename).parse() {
-                        Ok(v) => v,
-                        Err(err) => {
-                            tracing::debug!(
-                                "failed to format ZipBomb's Content-Disposition header: {err}"
-                            );
-                            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-                        }
-                    },
-                ),
-            ],
-            self.into_body(),
-        )
-            .into_response()
-    }
-}
-
-struct RecursiveZipBomb {
-    depth: usize,
-    fanout: usize,
-    file_size: usize,
-    base: Vec<u8>,
-    emitted: bool,
-    stream: Option<ReaderStream<BufReader<Box<dyn AsyncRead + Unpin + Send>>>>,
-}
-
-impl fmt::Debug for RecursiveZipBomb {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("RecursiveZipBomb")
-            .field("depth", &self.depth)
-            .field("fanout", &self.fanout)
-            .field("file_size", &self.file_size)
-            .finish()
-    }
-}
-
-impl RecursiveZipBomb {
-    fn new(filename: &str, depth: usize, fanout: usize, file_size: usize) -> Self {
-        let base = generate_recursive_base_zip(filename, depth, fanout, file_size);
-        Self {
+    /// Try to generate a [`ZipBomb`] as a [`Body`]
+    pub async fn try_generate_body(&self) -> Result<Body, OpaqueError> {
+        let Self {
+            filename,
             depth,
             fanout,
             file_size,
-            base,
-            emitted: false,
-            stream: None,
-        }
+        } = self.clone();
+        let body = tokio::task::spawn_blocking(move || {
+            generate_recursive_base_zip(&filename, depth, fanout, file_size)
+        })
+        .await
+        .context("generate recursive zip bomb")?;
+        Ok(Body::from(body))
+    }
+
+    /// Try to turn the [`ZipBomb`] into a [`Body`]
+    pub async fn try_into_generate_body(self) -> Result<Body, OpaqueError> {
+        let Self {
+            filename,
+            depth,
+            fanout,
+            file_size,
+        } = self;
+        let body = tokio::task::spawn_blocking(move || {
+            generate_recursive_base_zip(&filename, depth, fanout, file_size)
+        })
+        .await
+        .context("generate recursive zip bomb")?;
+        Ok(Body::from(body))
+    }
+
+    /// Try to turn the [`ZipBomb`] into a [`Response`]
+    pub async fn try_into_generate_response(self) -> Result<Response, OpaqueError> {
+        let headers = [
+            ("Robots", HeaderValue::from_static("none")),
+            (
+                "X-Robots-Tag",
+                HeaderValue::from_static("noindex, nofollow"),
+            ),
+            ("Content-Type", HeaderValue::from_static("application/zip")),
+            (
+                "Content-Disposition",
+                format!("attachment; filename={}.zip", self.filename)
+                    .parse()
+                    .context("format ZipBomb's Content-Disposition header")?,
+            ),
+        ];
+        let body = self.try_into_generate_body().await?;
+        Ok((headers, body).into_response())
     }
 }
 
@@ -262,37 +240,5 @@ impl Read for ZeroReader {
         }
         self.0 -= len;
         Ok(len)
-    }
-}
-
-impl Stream for RecursiveZipBomb {
-    type Item = Result<Bytes, std::convert::Infallible>;
-
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        if self.emitted {
-            return Poll::Ready(None);
-        }
-
-        match self.stream.as_mut() {
-            None => {
-                let reader: Box<dyn AsyncRead + Unpin + Send> =
-                    Box::new(Cursor::new(self.base.clone()));
-                self.stream = Some(ReaderStream::new(BufReader::new(reader)));
-                self.poll_next(cx)
-            }
-            Some(stream) => match stream.poll_next_unpin(cx) {
-                Poll::Ready(Some(Ok(chunk))) => Poll::Ready(Some(Ok(chunk))),
-                Poll::Ready(Some(Err(err))) => {
-                    self.emitted = true;
-                    tracing::debug!("stream error: {err}");
-                    Poll::Ready(Some(Ok(Bytes::from_static(b"<stream error>"))))
-                }
-                Poll::Ready(None) => {
-                    self.emitted = true;
-                    Poll::Ready(None)
-                }
-                Poll::Pending => Poll::Pending,
-            },
-        }
     }
 }

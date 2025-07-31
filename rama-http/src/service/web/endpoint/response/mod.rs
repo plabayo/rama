@@ -52,11 +52,6 @@ pub use redirect::Redirect;
 pub mod sse;
 pub use sse::Sse;
 
-#[cfg(feature = "compression")]
-mod zip_bomb;
-#[cfg(feature = "compression")]
-pub use zip_bomb::ZipBomb;
-
 /// An [`IntoResponse`]-based result type that uses [`ErrorResponse`] as the error type.
 ///
 /// All types which implement [`IntoResponse`] can be converted to an [`ErrorResponse`]. This makes
