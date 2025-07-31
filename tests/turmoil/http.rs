@@ -6,10 +6,13 @@ use rama::{
     net::address::SocketAddress,
     Context, Layer, Service,
 };
+use rama_http_backend::client::EasyHttpWebClientBuilder;
 use tracing_subscriber::{
     filter::LevelFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter,
 };
 use turmoil::Builder;
+
+use crate::types::TurmoilTcpConnector;
 
 const ADDRESS: SocketAddress = SocketAddress::default_ipv4(62004);
 
@@ -27,17 +30,34 @@ fn setup_tracing() {
 async fn start_server(
     address: impl Into<SocketAddress>,
 ) -> Result<(), Box<dyn std::error::Error + 'static>> {
-    HttpServer::http1()
-        .listen(
-            address.into(),
+    let s: SocketAddress = address.into();
+    let addr = s.to_string();
+
+    let listener = turmoil::net::TcpListener::bind(addr).await?;
+
+    let (conn, _) = listener.accept().await?;
+
+    let server = HttpServer::http1();
+    server
+        .serve(
+            Context::default(),
+            conn,
             TraceLayer::new_for_http().into_layer(WebService::default().get("/", "Hello, World")),
         )
         .await
-        .map_err(|e| e as Box<dyn std::error::Error + 'static>)
+        .unwrap();
+    Ok(())
 }
 
 async fn run_client(address: impl Into<SocketAddress>) -> Result<(), Box<dyn std::error::Error>> {
-    let client = TraceLayer::new_for_http().into_layer(EasyHttpWebClient::default());
+    let client = TraceLayer::new_for_http().into_layer(
+        EasyHttpWebClientBuilder::default()
+            .with_custom_transport_connector(TurmoilTcpConnector)
+            .without_tls_proxy_support()
+            .without_proxy_support()
+            .without_tls_support()
+            .build(),
+    );
 
     //let client = EasyHttpWebClientBuilder::default().with_custom_transport_connector(connector)
     let resp = client

@@ -1,37 +1,30 @@
-use rama::{error::BoxError, Service};
+use rama::{error::BoxError, Context, Service};
+use rama_http::Request;
 use rama_net::{client::EstablishedClientConnection, transport::TryRefIntoTransportContext};
+use tokio::io::AsyncWriteExt;
 
 #[derive(Debug)]
 struct TurmoilHttpStream {
     inner: turmoil::net::TcpStream,
 }
 
-impl<State, Request> Service<State, Request> for TurmoilHttpStream
-where
-    State: Clone + Send + Sync + 'static,
-    Request: rama_http_core::body::Body<Data: Clone + Send + Sync + 'static, Error: Into<BoxError>>
-        + Unpin
-        + Send
-        + 'static,
-{
-    type Response = rama_http::Response;
-    type Error = BoxError;
-
-    async fn serve(
-        &self,
-        _ctx: rama::Context<State>,
-        _req: Request,
-    ) -> Result<Self::Response, Self::Error> {
-        todo!()
-        //Ok(http::response::Builder::default()
-        //    .status(200)
-        //    .body(rama_http::Body::empty())
-        //    .unwrap())
-    }
-}
+// TODO:: investigate decoupling rama_tcp::client::tcp_connect from tokio::net::TcpStream
+///// Establish a [`TcpStream`] connection for the given [`Authority`].
+//pub async fn tcp_connect<State, Dns, Connector>(
+//    ctx: &Context<State>,
+//    authority: Authority,
+//    dns: Dns,
+//    connector: Connector,
+//) -> Result<(TcpStream, SocketAddr), OpaqueError>
+//where
+//    State: Clone + Send + Sync + 'static,
+//    Dns: DnsResolver + Clone,
+//    Connector: TcpStreamConnector<Error: Into<BoxError> + Send + 'static> + Clone,
+//{
+//
 
 #[derive(Debug, Clone)]
-struct TurmoilTcpConnector;
+pub struct TurmoilTcpConnector;
 
 impl<State, Request> Service<State, Request> for TurmoilTcpConnector
 where
@@ -39,20 +32,20 @@ where
     Request: TryRefIntoTransportContext<State> + Send + 'static,
     Request::Error: Into<BoxError> + Send + Sync + 'static,
 {
-    type Response = EstablishedClientConnection<TurmoilHttpStream, State, Request>;
+    // Return the raw turmoil::net::TcpStream directly
+    type Response = EstablishedClientConnection<turmoil::net::TcpStream, State, Request>;
     type Error = BoxError;
 
     async fn serve(
         &self,
-        ctx: rama::Context<State>,
+        ctx: Context<State>,
         req: Request,
     ) -> Result<Self::Response, Self::Error> {
         let transport_context = req.try_ref_into_transport_ctx(&ctx).map_err(Into::into)?;
-        //let protocol = &transport_context.app_protocol.unwrap_or("http");
         let authority = &transport_context.authority;
         let host = authority.host();
         let port = authority.port();
-        let address = format!("http://{host}:{port}");
+        let address = format!("{host}:{port}");
 
         let conn = turmoil::net::TcpStream::connect(address)
             .await
@@ -61,7 +54,7 @@ where
         Ok(EstablishedClientConnection {
             ctx,
             req,
-            conn: TurmoilHttpStream { inner: conn },
+            conn, // Raw turmoil::net::TcpStream
         })
     }
 }
@@ -80,16 +73,12 @@ mod discover_interface_tests {
     async fn discover_interface_for_established_client_connection(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let connector = TurmoilTcpConnector;
-        let client: EasyHttpWebClient<
-            (),
-            Body,
-            rama_net::client::EstablishedClientConnection<
-                crate::types::TurmoilHttpStream,
-                _,
-                http::Request<_>,
-            >,
-        > = EasyHttpWebClientBuilder::default()
+
+        let client = EasyHttpWebClientBuilder::default()
             .with_custom_transport_connector(connector)
+            .without_tls_proxy_support()
+            .without_proxy_support()
+            .without_tls_support()
             .build();
         let _resp = client
             .serve(
