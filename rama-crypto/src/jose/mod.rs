@@ -33,7 +33,7 @@ mod jwa;
 pub use jwa::JWA;
 
 mod jwk;
-pub use jwk::{EcdsaKey, JWK, JWKEllipticCurves, JWKType, JWKUse};
+pub use jwk::{EcdsaKey, JWK, JWKEllipticCurves, JWKType, JWKUse, RsaKey};
 
 mod jws;
 pub use jws::{
