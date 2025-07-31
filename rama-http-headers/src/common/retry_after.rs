@@ -25,7 +25,7 @@ use crate::util::{HttpDate, Seconds, TryFromValues};
 /// ```
 ///
 /// Retry-After header, defined in [RFC7231](https://datatracker.ietf.org/doc/html/rfc7231#section-7.1.3)
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct RetryAfter(After);
 
 derive_header! {
@@ -33,8 +33,8 @@ derive_header! {
     name: RETRY_AFTER
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum After {
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum After {
     /// Retry after the given DateTime
     DateTime(HttpDate),
     /// Retry after this duration has elapsed
@@ -48,10 +48,14 @@ impl RetryAfter {
         Self(After::DateTime(time.into()))
     }
 
-    /// Create an `RetryAfter` header with a date value.
+    /// Create an `RetryAfter` header with a delay value (in seconds).
     #[must_use]
     pub fn delay(dur: Duration) -> Self {
         Self(After::Delay(dur.into()))
+    }
+
+    pub fn after(&self) -> After {
+        self.0
     }
 }
 

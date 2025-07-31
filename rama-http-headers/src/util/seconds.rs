@@ -7,7 +7,7 @@ use crate::Error;
 use crate::util::IterExt;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct Seconds(Duration);
+pub struct Seconds(Duration);
 
 impl Seconds {
     pub(crate) fn from_val(val: &HeaderValue) -> Option<Self> {

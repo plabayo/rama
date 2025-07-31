@@ -1,4 +1,4 @@
-use std::fmt;
+use std::{fmt, str::FromStr};
 
 use mime::Mime;
 use rama_http_types::{HeaderName, HeaderValue};
@@ -158,6 +158,13 @@ impl ContentType {
     #[must_use]
     pub fn javascript_utf8() -> Self {
         Self(mime::APPLICATION_JAVASCRIPT_UTF_8)
+    }
+
+    /// A constructor to easily create a `Content-Type: application/jose+json` header.
+    #[inline]
+    #[must_use]
+    pub fn jose_json() -> Self {
+        Self(mime::Mime::from_str("application/jose+json").unwrap())
     }
 
     /// Reference to the internal [`Mime`].
