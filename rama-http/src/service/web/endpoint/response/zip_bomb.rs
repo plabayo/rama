@@ -1,6 +1,7 @@
 use crate::service::web::response::IntoResponse;
 use rama_core::futures::{Stream, StreamExt};
 use rama_core::{bytes::Bytes, telemetry::tracing};
+use rama_error::{ErrorContext, OpaqueError};
 use rama_http_types::{Body, HeaderValue, StatusCode};
 use rama_utils::macros::generate_set_and_with;
 use std::{
@@ -170,6 +171,50 @@ impl RecursiveZipBomb {
     }
 }
 
+fn write_nested_zip(
+    index: usize,
+    filename: &str,
+    zip: &mut rawzip::ZipArchiveWriter<&mut Cursor<Vec<u8>>>,
+    data: &[u8],
+) -> Result<(), OpaqueError> {
+    let mut file = zip
+        .new_file(&format!("{filename}_batch_{index}.zip"))
+        .compression_method(rawzip::CompressionMethod::Deflate)
+        .create()
+        .context("create fanout zip batch")?;
+
+    let encoder = flate2::write::DeflateEncoder::new(&mut file, flate2::Compression::default());
+    let mut writer = rawzip::ZipDataWriter::new(encoder);
+    writer
+        .write_all(data)
+        .context("compress and write data into archive")?;
+    let (_, descriptor) = writer.finish().context("finalize data descriptor")?;
+    let _ = file.finish(descriptor).context("write descriptor")?;
+    Ok(())
+}
+
+fn write_fake_binary_data(
+    filename: &str,
+    zip: &mut rawzip::ZipArchiveWriter<&mut Cursor<Vec<u8>>>,
+    file_size: usize,
+) -> Result<(), OpaqueError> {
+    let mut file = zip
+        .new_file(&format!("{filename}.enc.bin"))
+        .compression_method(rawzip::CompressionMethod::Deflate)
+        .create()
+        .context("create fanout zip batch")?;
+
+    let encoder = flate2::write::DeflateEncoder::new(&mut file, flate2::Compression::default());
+    let mut writer = rawzip::ZipDataWriter::new(encoder);
+
+    let mut zero_reader = ZeroReader(file_size);
+    io::copy(&mut zero_reader, &mut writer).context("write fake zero data")?;
+
+    let (_, descriptor) = writer.finish().context("finalize data descriptor")?;
+    let _ = file.finish(descriptor).context("write descriptor")?;
+    Ok(())
+}
+
 fn generate_recursive_base_zip(
     filename: &str,
     depth: usize,
@@ -177,26 +222,30 @@ fn generate_recursive_base_zip(
     file_size: usize,
 ) -> Vec<u8> {
     let mut buffer = Cursor::new(Vec::new());
-    let mut zip = zip::ZipWriter::new(&mut buffer);
-    let options = zip::write::SimpleFileOptions::default()
-        .compression_method(zip::CompressionMethod::Deflated)
-        .large_file(true);
+    let mut zip = rawzip::ZipArchiveWriter::new(&mut buffer);
 
     if depth == 0 {
-        zip.start_file(format!("{filename}.enc.bin"), options)
-            .unwrap();
-        let mut zero_reader = ZeroReader(file_size);
-        io::copy(&mut zero_reader, &mut zip).unwrap();
+        if let Err(err) = write_fake_binary_data(filename, &mut zip, file_size) {
+            tracing::debug!(
+                "failed to create 0-byte enc bin (leaf node is corrupted, but returned): {err}"
+            );
+            return buffer.into_inner();
+        }
     } else {
         let nested = generate_recursive_base_zip(filename, depth - 1, fanout, file_size);
         for i in 0..fanout {
-            let filename = format!("{filename}_batch_{i}.zip");
-            zip.start_file(&filename, options).unwrap();
-            zip.write_all(&nested).unwrap();
+            if let Err(err) = write_nested_zip(i, filename, &mut zip, &nested) {
+                tracing::debug!(
+                    "failed to create fanout zip batch (nested zip is corrupted, but returned): {err}"
+                );
+                return buffer.into_inner();
+            }
         }
     }
 
-    zip.finish().unwrap();
+    if let Err(err) = zip.finish() {
+        tracing::debug!("failed to finish archive (output is corrupted, but returned): {err}");
+    }
     buffer.into_inner()
 }
 
@@ -224,24 +273,26 @@ impl Stream for RecursiveZipBomb {
             return Poll::Ready(None);
         }
 
-        if self.stream.is_none() {
-            let reader: Box<dyn AsyncRead + Unpin + Send> =
-                Box::new(Cursor::new(self.base.clone()));
-            self.stream = Some(ReaderStream::new(BufReader::new(reader)));
-        }
-
-        match self.stream.as_mut().unwrap().poll_next_unpin(cx) {
-            Poll::Ready(Some(Ok(chunk))) => Poll::Ready(Some(Ok(chunk))),
-            Poll::Ready(Some(Err(err))) => {
-                self.emitted = true;
-                tracing::debug!("stream error: {err}");
-                Poll::Ready(Some(Ok(Bytes::from_static(b"<stream error>"))))
+        match self.stream.as_mut() {
+            None => {
+                let reader: Box<dyn AsyncRead + Unpin + Send> =
+                    Box::new(Cursor::new(self.base.clone()));
+                self.stream = Some(ReaderStream::new(BufReader::new(reader)));
+                return self.poll_next(cx);
             }
-            Poll::Ready(None) => {
-                self.emitted = true;
-                Poll::Ready(None)
-            }
-            Poll::Pending => Poll::Pending,
+            Some(stream) => match stream.poll_next_unpin(cx) {
+                Poll::Ready(Some(Ok(chunk))) => Poll::Ready(Some(Ok(chunk))),
+                Poll::Ready(Some(Err(err))) => {
+                    self.emitted = true;
+                    tracing::debug!("stream error: {err}");
+                    Poll::Ready(Some(Ok(Bytes::from_static(b"<stream error>"))))
+                }
+                Poll::Ready(None) => {
+                    self.emitted = true;
+                    Poll::Ready(None)
+                }
+                Poll::Pending => Poll::Pending,
+            },
         }
     }
 }

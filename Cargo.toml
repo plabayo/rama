@@ -175,6 +175,7 @@ rama-utils = { version = "0.3.0-alpha.2", path = "./rama-utils" }
 rama-ws = { version = "0.3.0-alpha.2", path = "./rama-ws" }
 rand = "0.9"
 ratatui = "0.29"
+rawzip = { version = "0.3" }
 rcgen = { version = "0.14", default-features = false, features = ["pem", "aws_lc_rs", "x509-parser"] }
 regex = "1.11"
 rustls = { version = "0.23", default-features = false, features = [
@@ -226,7 +227,6 @@ venndb = "0.5"
 walkdir = "2.5"
 want = "0.3"
 webpki-roots = "1.0"
-zip = "4.3"
 zstd = "0.13"
 
 [workspace.lints.rust]
