@@ -167,7 +167,6 @@ impl DynamicCertIssuer for TlsAcmeIssue {
         _client_hello: ClientHello,
         _server_name: Option<Host>,
     ) -> Result<ServerAuthData, OpaqueError> {
-        // TODO checks
         Ok(self.0.clone())
     }
 }

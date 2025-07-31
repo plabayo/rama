@@ -1,11 +1,11 @@
-use crate::proto::common::ProtectedHeaderAcme;
+use crate::proto::common::{ProtectedHeaderAcme, ProtectedHeaderCrypto, ProtectedHeaderKey};
 
 use super::proto::{
     client::FinalizePayload,
     client::{CreateAccountOptions, KeyAuthorization, NewOrderPayload},
     common::{self},
+    server::REPLAY_NONCE_HEADER,
     server::{self, Problem},
-    server::{LOCATION_HEADER, REPLAY_NONCE_HEADER},
 };
 
 use base64::{Engine as _, prelude::BASE64_URL_SAFE_NO_PAD};
@@ -23,11 +23,17 @@ use rama_crypto::{
     jose::{EMPTY_PAYLOAD, EcdsaKey, Empty, Headers, JWSBuilder, NO_PAYLOAD, Signer},
 };
 use rama_http::{
-    BodyExtractExt, Request, Response, dep::http_body_util::BodyExt,
-    service::client::HttpClientExt, utils::HeaderValueGetter,
+    BodyExtractExt, Request, Response,
+    dep::http_body_util::BodyExt,
+    headers::{ContentType, HeaderMapExt, Location, RetryAfter, TypedHeader, UserAgent},
+    service::client::HttpClientExt,
+    utils::HeaderValueGetter,
 };
 use serde::Serialize;
-use std::{borrow::Cow, time::Duration};
+use std::{
+    borrow::Cow,
+    time::{Duration, SystemTime},
+};
 use tokio::time::{sleep, timeout};
 
 /// Acme client that will used for all acme operations
@@ -38,7 +44,7 @@ pub struct AcmeClient {
 }
 
 /// Alias for http client used by acme client
-type AcmeHttpsClient = BoxService<(), Request, Response, OpaqueError>;
+pub type AcmeHttpsClient = BoxService<(), Request, Response, OpaqueError>;
 
 impl AcmeClient {
     /// Create a new acme [`AcmeClient`] for the given directory url and using the provided https client
@@ -60,7 +66,7 @@ impl AcmeClient {
         })
     }
 
-    /// Create a new acme [`AcmeClient`] for the given acme provider and using the provided https client
+    /// Create a new acme [`AcmeClient`] for the given [`AcmeProvider`] and using the provided https client
     pub async fn new_for_provider(
         provider: &AcmeProvider,
         https_client: AcmeHttpsClient,
@@ -106,7 +112,10 @@ impl AcmeClient {
                 .await
                 .context("create account request")?;
 
-            let location: String = response.header_str(LOCATION_HEADER).unwrap().into();
+            let location: String = response
+                .header_str(Location::name())
+                .context("get location header")?
+                .into();
 
             let account = parse_response::<server::Account>(response).await?;
             Ok((location, account))
@@ -144,8 +153,8 @@ impl AcmeClient {
         let request = self
             .https_client
             .post(url)
-            .header("content-type", "application/jose+json")
-            .header("user-agent", "rama")
+            .typed_header(UserAgent::from_static("rama-tls-acme"))
+            .typed_header(ContentType::jose_json())
             .json(&jws);
 
         let response = request.send(Context::default()).await?;
@@ -186,6 +195,7 @@ impl AcmeProvider {
     }
 }
 
+/// Wrapped [`AcmeClient`] with account info
 pub struct Account<'a> {
     client: &'a AcmeClient,
     credentials: AccountCredentials,
@@ -199,17 +209,22 @@ struct AccountCredentials {
 
 impl<'a> Account<'a> {
     #[must_use]
+    /// Get (local) account state
     pub fn state(&self) -> &server::Account {
         &self.inner
     }
 
+    /// Place a new [`Order`] using this [`Account`]
     pub async fn new_order(&self, new_order: NewOrderPayload) -> Result<Order, ClientError> {
         let do_request = async || {
             let response = self
                 .post(&self.client.directory.new_order, Some(&new_order))
                 .await?;
 
-            let location: String = response.header_str(LOCATION_HEADER).unwrap().into();
+            let location: String = response
+                .header_str(Location::name())
+                .context("read location header")?
+                .into();
             let order = parse_response::<server::Order>(response).await?;
             Ok((location, order))
         };
@@ -223,6 +238,7 @@ impl<'a> Account<'a> {
         })
     }
 
+    /// Get a list of all the order urls, associated to this [`Account`]
     pub async fn orders(&self) -> Result<server::OrdersList, ClientError> {
         let do_request = async || {
             let response = self.post(&self.inner.orders, NO_PAYLOAD).await?;
@@ -235,11 +251,15 @@ impl<'a> Account<'a> {
         Ok(orders)
     }
 
+    /// Get [`Order`] which is stored on the given url
     pub async fn get_order(&self, order_url: &str) -> Result<Order, ClientError> {
         let do_request = async || {
             let response = self.post(order_url, NO_PAYLOAD).await?;
 
-            let location: String = response.header_str(LOCATION_HEADER).unwrap().into();
+            let location: String = response
+                .header_str(Location::name())
+                .context("read location header")?
+                .into();
 
             let order = parse_response::<server::Order>(response).await?;
             Ok((location, order))
@@ -262,6 +282,7 @@ impl<'a> Account<'a> {
     }
 }
 
+/// Wrapped [`Account`] with order info
 pub struct Order<'a> {
     account: &'a Account<'a>,
     url: String,
@@ -277,8 +298,10 @@ impl Signer for AccountCredentials {
         protected_headers: &mut Headers,
         _unprotected_headers: &mut Headers,
     ) -> Result<(), Self::Error> {
-        protected_headers.try_set_header("alg", self.key.alg())?;
-        protected_headers.try_set_header("kid", &self.kid)?;
+        protected_headers.try_set_headers(ProtectedHeaderCrypto {
+            alg: self.key.alg(),
+            key: ProtectedHeaderKey::KeyID(Cow::Borrowed(&self.kid)),
+        })?;
         Ok(())
     }
 
@@ -289,27 +312,34 @@ impl Signer for AccountCredentials {
 
 impl<'a> Order<'a> {
     #[must_use]
+    /// Get (local) order state
     pub fn state(&self) -> &server::Order {
         &self.inner
     }
 
     #[must_use]
+    /// Get reference to [`Account`] linked to this [`Order`]
     pub fn account(&self) -> &'a Account<'a> {
         self.account
     }
 
-    pub async fn refresh(&mut self) -> Result<&server::Order, ClientError> {
+    /// Refresh [`Order`] state, and return it (and potential retry-after delay in case we want to refresh again)
+    ///
+    /// This also returns a duration which the server has requested to wait before calling this again if any
+    pub async fn refresh(&mut self) -> Result<(&server::Order, Option<Duration>), ClientError> {
         let do_request = async || {
             let response = self.account.post(&self.url, NO_PAYLOAD).await?;
-
+            let retry_after = get_retry_after_duration(&response);
             let order = parse_response::<server::Order>(response).await?;
-            Ok(order)
+            Ok((order, retry_after))
         };
-        self.inner = retry_bad_nonce(do_request).await?;
+        let result = retry_bad_nonce(do_request).await?;
+        self.inner = result.0;
 
-        Ok(&self.inner)
+        Ok((&self.inner, result.1))
     }
 
+    /// Get list of [`server::Authorization`]s linked to this [`Order`]
     pub async fn get_authorizations(&self) -> Result<Vec<server::Authorization>, ClientError> {
         let mut authz: Vec<server::Authorization> =
             Vec::with_capacity(self.inner.authorizations.len());
@@ -322,6 +352,7 @@ impl<'a> Order<'a> {
         Ok(authz)
     }
 
+    /// Get [`server::Authorization`] which is stored on the given url
     pub async fn get_authorization(
         &self,
         authorization_url: &str,
@@ -338,6 +369,77 @@ impl<'a> Order<'a> {
         Ok(authorization)
     }
 
+    /// Notify ACME server that the given challenge is ready
+    ///
+    /// Server will now try to verify this and we should keep polling the server
+    /// with [`Self::poll_until_challenge_finished()`] to wait for the result.
+    pub async fn notify_challenge_ready(
+        &self,
+        challenge: &server::Challenge,
+    ) -> Result<(), ClientError> {
+        let do_request = async || {
+            let response = self.post(&challenge.url, EMPTY_PAYLOAD).await?;
+
+            parse_response::<Empty>(response).await?;
+            Ok(())
+        };
+
+        retry_bad_nonce(do_request).await?;
+
+        Ok(())
+    }
+
+    /// Referesh the given challenge
+    ///
+    /// This returns a duration which the server has requested to wait before calling this again if any
+    pub async fn refresh_challenge(
+        &self,
+        challenge: &mut server::Challenge,
+    ) -> Result<Option<Duration>, ClientError> {
+        let do_request = async || {
+            let response = self
+                .post(&challenge.url, NO_PAYLOAD)
+                .await
+                .context("refresh challenge request")?;
+
+            let retry = get_retry_after_duration(&response);
+            let challenge = parse_response::<server::Challenge>(response).await?;
+            Ok((retry, challenge))
+        };
+
+        let (retry, new) = retry_bad_nonce(do_request).await?;
+        *challenge = new;
+        Ok(retry)
+    }
+
+    /// Poll until the challenge is finished (challenge.status == server::ChallengeStatus::Valid | server::ChallengeStatus::Invalid)
+    pub async fn poll_until_challenge_finished(
+        &self,
+        challenge: &mut server::Challenge,
+        timeout_duration: Duration,
+    ) -> Result<(), ClientError> {
+        timeout(timeout_duration, async {
+            loop {
+                let retry_wait = self.refresh_challenge(challenge).await?;
+
+                if challenge.status == server::ChallengeStatus::Valid
+                    || challenge.status == server::ChallengeStatus::Invalid
+                {
+                    break;
+                }
+
+                sleep(retry_wait.unwrap_or(Duration::from_millis(1000))).await;
+            }
+
+            Ok(())
+        })
+        .await
+        .context("poll until challenge ready")?
+    }
+
+    /// Keep polling until all [`server::Authorization`]s have finished
+    ///
+    /// Note for this to work each [`server::Authorization`] needs to have one valid challenge
     pub async fn poll_until_all_authorizations_finished(
         &mut self,
         timeout_duration: Duration,
@@ -346,14 +448,9 @@ impl<'a> Order<'a> {
             .await
     }
 
-    pub async fn poll_until_certificate_ready(
-        &mut self,
-        timeout_duration: Duration,
-    ) -> Result<&server::Order, ClientError> {
-        self.poll_until_status(timeout_duration, server::OrderStatus::Valid)
-            .await
-    }
-
+    /// Finalize the order and request ACME server to generate a certifcate from the provided certificate params
+    ///
+    /// Note: for this to work all [`server::Authorization`]s need to have finished (order.status == server::OrderStatus::Ready)
     pub async fn finalize<T: AsRef<[u8]>>(
         &mut self,
         csr_der: T,
@@ -376,14 +473,28 @@ impl<'a> Order<'a> {
         Ok(&self.inner)
     }
 
+    /// Keep polling until the certificate is ready (order.status == server::OrderStatus::Valid)
+    pub async fn poll_until_certificate_ready(
+        &mut self,
+        timeout_duration: Duration,
+    ) -> Result<&server::Order, ClientError> {
+        self.poll_until_status(timeout_duration, server::OrderStatus::Valid)
+            .await
+    }
+
+    /// Download the certificate generated by the server
+    ///
+    /// Note: for this to work the certificate needs to be ready (order.status == server::OrderStatus::Valid)
     pub async fn download_certificate(&self) -> Result<String, OpaqueError> {
-        let response = self
-            .account
-            .post(self.inner.certificate.as_ref().unwrap(), NO_PAYLOAD)
-            .await?;
+        let certificate_url = self
+            .inner
+            .certificate
+            .as_ref()
+            .context("read stored certificate url")?;
+        let response = self.account.post(certificate_url, NO_PAYLOAD).await?;
 
         let body = response.into_body();
-        let bytes = body.collect().await.unwrap().to_bytes();
+        let bytes = body.collect().await.context("collect body")?.to_bytes();
         let certificate = str::from_utf8(bytes.as_ref())
             .context("parse response to pem")?
             .to_owned();
@@ -391,6 +502,7 @@ impl<'a> Order<'a> {
         Ok(certificate)
     }
 
+    /// Keep polling until the order has reached the given status
     pub async fn poll_until_status(
         &mut self,
         timeout_duration: Duration,
@@ -398,55 +510,24 @@ impl<'a> Order<'a> {
     ) -> Result<&server::Order, ClientError> {
         timeout(timeout_duration, async {
             loop {
-                self.refresh().await?;
+                let (_, retry_wait) = self.refresh().await?;
                 if self.inner.status == status {
                     break Ok::<_, ClientError>(());
                 }
                 if self.inner.status == server::OrderStatus::Invalid {
                     break Err(OpaqueError::from_display("Order is invalid state").into());
                 }
-                // TODO use retry header
-                sleep(Duration::from_millis(1000)).await;
+
+                sleep(retry_wait.unwrap_or(Duration::from_millis(1000))).await;
             }
         })
         .await
-        .context("poll until status ")??;
+        .context(format!("poll until status {status:?}"))??;
 
         Ok(&self.inner)
     }
 
-    pub async fn refresh_challenge(
-        &self,
-        challenge: &mut server::Challenge,
-    ) -> Result<(), ClientError> {
-        let do_request = async || {
-            let response = self.post(&challenge.url, NO_PAYLOAD).await.unwrap();
-
-            let challenge = parse_response::<server::Challenge>(response).await?;
-            Ok(challenge)
-        };
-
-        *challenge = retry_bad_nonce(do_request).await?;
-
-        Ok(())
-    }
-
-    pub async fn notify_challenge_ready(
-        &self,
-        challenge: &server::Challenge,
-    ) -> Result<(), ClientError> {
-        let do_request = async || {
-            let response = self.post(&challenge.url, EMPTY_PAYLOAD).await?;
-
-            parse_response::<Empty>(response).await?;
-            Ok(())
-        };
-
-        retry_bad_nonce(do_request).await?;
-
-        Ok(())
-    }
-
+    /// Create [`KeyAuthorization`] for the given challenge
     pub fn create_key_authorization(
         &self,
         challenge: &server::Challenge,
@@ -454,8 +535,10 @@ impl<'a> Order<'a> {
         KeyAuthorization::new(&challenge.token, &self.account.credentials.key.create_jwk())
     }
 
-    // TODO boring variants
-
+    /// Create challenge data need for tls-alpn challenge
+    ///
+    /// This function returns a private private key and certificate which a TLS
+    /// backend should expose on port 443 (on the configured domain)
     pub fn create_tls_challenge_data(
         &self,
         challenge: &server::Challenge,
@@ -463,45 +546,21 @@ impl<'a> Order<'a> {
     ) -> Result<(PrivatePkcs8KeyDer<'_>, Certificate), OpaqueError> {
         let key_authz = self.create_key_authorization(challenge)?;
 
-        let mut cert_params =
-            rcgen::CertificateParams::new(vec![identifier.clone().into()]).unwrap();
+        let mut cert_params = rcgen::CertificateParams::new(vec![identifier.clone().into()])
+            .context("create certificate params")?;
         cert_params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
         cert_params.custom_extensions = vec![rcgen::CustomExtension::new_acme_identifier(
             key_authz.digest().as_ref(),
         )];
 
-        let key_pair = rcgen::KeyPair::generate().unwrap();
+        let key_pair = rcgen::KeyPair::generate().context("generate temporary keypair")?;
         let key_der = key_pair.serialize_der();
 
-        let cert = cert_params.self_signed(&key_pair).unwrap();
+        let cert = cert_params
+            .self_signed(&key_pair)
+            .context("sign certificate params")?;
         let pk = PrivatePkcs8KeyDer::from(key_der);
         Ok((pk, cert))
-    }
-
-    /// Poll until the challenge is finished, or timeout is reached
-    pub async fn poll_until_challenge_finished(
-        &self,
-        challenge: &mut server::Challenge,
-        timeout_duration: Duration,
-    ) -> Result<(), ClientError> {
-        timeout(timeout_duration, async {
-            loop {
-                self.refresh_challenge(challenge).await?;
-
-                if challenge.status == server::ChallengeStatus::Valid
-                    || challenge.status == server::ChallengeStatus::Invalid
-                {
-                    break;
-                }
-
-                // TODO use retry after header
-                sleep(Duration::from_millis(1000)).await;
-            }
-
-            Ok(())
-        })
-        .await
-        .context("poll until challenge ready")?
     }
 
     async fn post(
@@ -517,7 +576,7 @@ async fn parse_response<T: serde::de::DeserializeOwned + Send + 'static>(
     response: Response,
 ) -> Result<T, ClientError> {
     let body = response.into_body();
-    let bytes = body.collect().await.unwrap().to_bytes();
+    let bytes = body.collect().await.context("collect body")?.to_bytes();
 
     let result = serde_json::from_slice::<T>(&bytes);
     match result {
@@ -530,6 +589,18 @@ async fn parse_response<T: serde::de::DeserializeOwned + Send + 'static>(
             }
         }
     }
+}
+
+fn get_retry_after_duration(response: &Response) -> Option<Duration> {
+    response
+        .headers()
+        .typed_get::<RetryAfter>()
+        .and_then(|after| match after.after() {
+            rama_http::headers::After::DateTime(http_date) => SystemTime::from(http_date)
+                .duration_since(SystemTime::now())
+                .ok(),
+            rama_http::headers::After::Delay(seconds) => Some(Duration::from(seconds)),
+        })
 }
 
 async fn retry_bad_nonce<F, Fut, T>(do_request: F) -> Result<T, ClientError>
@@ -545,10 +616,11 @@ where
     }
 }
 
+/// Error type which can be returned by the [`AcmeClient`]
 pub enum ClientError {
     /// Normal [`OpaqueError`] like we use everywhere else
     OpaqueError(OpaqueError),
-    /// Error return by the acme server
+    /// Error returned by the acme server
     Problem(Problem),
 }
 

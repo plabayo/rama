@@ -122,7 +122,6 @@ pub enum OrderStatus {
 }
 
 // 7.1.4 Authorization Objects
-// TODO test parse 30
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 /// All info about a specific [`Authorization`], defined in [rfc8555 section 7.1.4]
@@ -133,7 +132,6 @@ pub struct Authorization {
     pub status: AuthorizationStatus,
     // Required for valid status
     pub expires: Option<String>,
-    // TODO type
     pub challenges: Vec<Challenge>,
     pub wildcard: Option<bool>,
 }

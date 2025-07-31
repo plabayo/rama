@@ -9,4 +9,4 @@ pub mod proto;
 
 mod client;
 #[doc(inline)]
-pub use client::{Account, AcmeClient, AcmeProvider, ClientError, Order};
+pub use client::{Account, AcmeClient, AcmeHttpsClient, AcmeProvider, ClientError, Order};

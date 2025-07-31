@@ -19,28 +19,33 @@ impl From<Identifier> for String {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct ProtectedHeader<'a> {
+/// JWS protected header for acme requests, such as defined in [rfc8555 section 6.2]
+///
+/// [rfc8555 section 6.2]: https://datatracker.ietf.org/doc/html/rfc8555/#section-6.2
+pub struct ProtectedHeader<'a> {
     #[serde(flatten)]
-    pub(crate) crypto: ProtectedHeaderCrypto,
+    pub crypto: ProtectedHeaderCrypto<'a>,
     #[serde(flatten)]
-    pub(crate) acme: ProtectedHeaderAcme<'a>,
+    pub acme: ProtectedHeaderAcme<'a>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct ProtectedHeaderCrypto {
+/// Cryptographic part of the [`ProtectedHeader`]
+pub struct ProtectedHeaderCrypto<'a> {
     /// Algorithm that was used to sign the JWS
-    pub(crate) alg: JWA,
+    pub alg: JWA,
     #[serde(flatten)]
     /// JWK or KeyId which is used to identify this request
-    pub(crate) key: ProtectedHeaderKey,
+    pub key: ProtectedHeaderKey<'a>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct ProtectedHeaderAcme<'a> {
+/// Acme specific part of the [`ProtectedHeader`]
+pub struct ProtectedHeaderAcme<'a> {
     /// Previous nonce that was given by the server to use
-    pub(crate) nonce: Cow<'a, str>,
+    pub nonce: Cow<'a, str>,
     /// Url of the acme endpoint for which we are making a request
-    pub(crate) url: Cow<'a, str>,
+    pub url: Cow<'a, str>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -48,9 +53,9 @@ pub(crate) struct ProtectedHeaderAcme<'a> {
 ///
 /// `JWK` is used for the first request to create an account, once we
 /// have an account we use the `KeyID` instead
-pub(crate) enum ProtectedHeaderKey {
+pub enum ProtectedHeaderKey<'a> {
     #[serde(rename = "jwk")]
-    Jwk(JWK),
+    Jwk(Cow<'a, JWK>),
     #[serde(rename = "kid")]
-    KeyID(String),
+    KeyID(Cow<'a, str>),
 }
