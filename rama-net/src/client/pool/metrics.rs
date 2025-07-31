@@ -91,7 +91,10 @@ impl PoolMetrics {
             reused_connection_pos: meter
                 .u64_histogram(prefix_metric(prefix, CONNPOOL_REUSED_CONNECTION_POS))
                 .with_description("Connection pool reused connection position in pool")
-                .with_boundaries(vec![0_f64, 1_f64, 2_f64, 3_f64, 4_f64, 5_f64, 6_f64])
+                .with_boundaries(vec![
+                    0_f64, 1_f64, 2_f64, 4_f64, 8_f64, 16_f64, 32_f64, 64_f64, 128_f64, 256_f64,
+                    512_f64, 1024_f64, 2048_f64, 4096_f64, 8192_f64, 16384_f64,
+                ])
                 .build(),
             // TODO: migrate to exponentional histogram once fully supported in otel (probably once version 1 is release)
             // https://github.com/open-telemetry/opentelemetry-rust/issues/2111
