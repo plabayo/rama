@@ -101,16 +101,15 @@ async fn api_rates_csv(
         // NOTE: in a real product you'll want to do actual Fingerprinting,
         // based on TCP, TLS, HTTP and application+platform signals
         // ... for this example this will do however
-        match ZipBomb::new(format!("rates_{year}.csv"))
-            .try_into_generate_response()
-            .await
-        {
-            Ok(resp) => resp,
-            Err(err) => {
-                tracing::debug!("failed to generate zip bomb for ua {ua}: {err}");
-                StatusCode::NOT_FOUND.into_response()
-            }
-        }
+        // ... and of course you want to combine this with other measures:
+        // - rate limit
+        // - hard blocks
+        // - other mechanisms
+        // ... because zip bombs do use some resources from your server as well,
+        // at least when generating them on the fly like this... You could of course
+        // cache them based on input, so adding a caching layer in front of this endpoint
+        // service specific would do a lot already
+        ZipBomb::new(format!("rates_{year}.csv")).into_response()
     } else {
         // assume real user
         if year == 2024 {

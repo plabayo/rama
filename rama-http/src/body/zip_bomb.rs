@@ -1,12 +1,20 @@
 use crate::service::web::response::IntoResponse;
+use flate2::write::DeflateEncoder;
 use rama_core::telemetry::tracing;
+use rama_core::{bytes::Bytes, futures::Stream};
 use rama_error::{ErrorContext, OpaqueError};
 use rama_http_types::{Body, HeaderValue, Response};
 use rama_utils::macros::generate_set_and_with;
+use rawzip::{CompressionMethod, ZipArchiveWriter, ZipDataWriter};
+use std::fmt;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 use std::{
     borrow::Cow,
     io::{self, Cursor, Read, Write},
 };
+use tokio::io::{BufReader, duplex};
+use tokio_util::io::{ReaderStream, SyncIoBridge};
 
 #[derive(Debug, Clone)]
 /// A minimal in-memory ZIP archive that acts as
@@ -97,24 +105,20 @@ impl ZipBomb {
     }
 
     /// Try to generate a [`ZipBomb`] as a [`Body`]
-    pub async fn try_generate_body(&self) -> Result<Body, OpaqueError> {
+    pub fn generate_body(&self) -> Body {
         let Self {
             filename,
             depth,
             fanout,
             file_size,
         } = self.clone();
-        let body = tokio::task::spawn_blocking(move || {
-            generate_recursive_base_zip(&filename, depth, fanout, file_size)
-        })
-        .await
-        .context("generate recursive zip bomb")?;
-        Ok(Body::from(body))
+
+        let stream = RecursiveZipBomb::new(filename.clone(), depth, fanout, file_size);
+        Body::from_stream(stream)
     }
 
-    /// Try to generate a [`Response`] from the [`ZipBomb`].
-    pub async fn try_generate_response(&self) -> Result<Response, OpaqueError> {
-        let headers = [
+    fn generate_response_headers(&self) -> [(&'static str, HeaderValue); 4] {
+        [
             ("Robots", HeaderValue::from_static("none")),
             (
                 "X-Robots-Tag",
@@ -125,126 +129,199 @@ impl ZipBomb {
                 "Content-Disposition",
                 format!("attachment; filename={}.zip", self.filename)
                     .parse()
-                    .context("format ZipBomb's Content-Disposition header")?,
+                    .unwrap_or_else(|err| {
+                        tracing::debug!("failed to format ZipBomb's Content-Disposition header: fall back to default: {err}");
+                        HeaderValue::from_static("attachment; filename=data.zip")
+                    }),
             ),
-        ];
-        let body = self.try_generate_body().await?;
-        Ok((headers, body).into_response())
+        ]
     }
 
-    /// Try to turn the [`ZipBomb`] into a [`Body`]
-    pub async fn try_into_generate_body(self) -> Result<Body, OpaqueError> {
+    /// Generate a [`Response`] from the [`ZipBomb`].
+    #[must_use]
+    pub fn generate_response(&self) -> Response {
+        let headers = self.generate_response_headers();
+        let body = self.generate_body();
+        (headers, body).into_response()
+    }
+
+    /// Turn the [`ZipBomb`] into a [`Body`]
+    pub fn into_generate_body(self) -> Body {
         let Self {
             filename,
             depth,
             fanout,
             file_size,
         } = self;
-        let body = tokio::task::spawn_blocking(move || {
-            generate_recursive_base_zip(&filename, depth, fanout, file_size)
-        })
-        .await
-        .context("generate recursive zip bomb")?;
-        Ok(Body::from(body))
+
+        let stream = RecursiveZipBomb::new(filename.clone(), depth, fanout, file_size);
+        Body::from_stream(stream)
     }
 
-    /// Try to turn the [`ZipBomb`] into a [`Response`]
-    pub async fn try_into_generate_response(self) -> Result<Response, OpaqueError> {
-        let headers = [
-            ("Robots", HeaderValue::from_static("none")),
-            (
-                "X-Robots-Tag",
-                HeaderValue::from_static("noindex, nofollow"),
-            ),
-            ("Content-Type", HeaderValue::from_static("application/zip")),
-            (
-                "Content-Disposition",
-                format!("attachment; filename={}.zip", self.filename)
-                    .parse()
-                    .context("format ZipBomb's Content-Disposition header")?,
-            ),
-        ];
-        let body = self.try_into_generate_body().await?;
-        Ok((headers, body).into_response())
+    /// Turn the [`ZipBomb`] into a [`Response`]
+    #[must_use]
+    pub fn into_generate_response(self) -> Response {
+        let headers = self.generate_response_headers();
+        let body = self.into_generate_body();
+        (headers, body).into_response()
     }
 }
 
-fn write_nested_zip(
+impl IntoResponse for ZipBomb {
+    #[inline]
+    fn into_response(self) -> rama_http_types::Response {
+        self.into_generate_response()
+    }
+}
+
+impl From<ZipBomb> for Body {
+    #[inline]
+    fn from(value: ZipBomb) -> Self {
+        value.into_generate_body()
+    }
+}
+
+pin_project_lite::pin_project! {
+    pub struct RecursiveZipBomb {
+        depth: usize,
+        fanout: usize,
+        file_size: usize,
+        #[pin]
+        stream: ReaderStream<BufReader<tokio::io::DuplexStream>>,
+    }
+}
+
+impl fmt::Debug for RecursiveZipBomb {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RecursiveZipBomb")
+            .field("depth", &self.depth)
+            .field("fanout", &self.fanout)
+            .field("file_size", &self.file_size)
+            .finish()
+    }
+}
+
+impl RecursiveZipBomb {
+    fn new(filename: Cow<'static, str>, depth: usize, fanout: usize, file_size: usize) -> Self {
+        let (writer, reader) = duplex(64 * 1024);
+
+        tokio::task::spawn_blocking(move || {
+            let mut writer = SyncIoBridge::new(writer);
+            let mut zip = ZipArchiveWriter::new(&mut writer);
+
+            fn write_nested_zip<W: io::Write>(
+                depth: usize,
+                fanout: usize,
+                file_size: usize,
+                filename: &str,
+                zip: &mut ZipArchiveWriter<W>,
+            ) {
+                if depth == 0 {
+                    let _ = write_fake_binary_data(filename, zip, file_size);
+                } else {
+                    let mut buffer = Cursor::new(Vec::default());
+                    generate_recursive_base_zip(
+                        &mut buffer,
+                        filename,
+                        depth - 1,
+                        fanout,
+                        file_size,
+                    );
+                    let buffer = buffer.into_inner();
+                    for i in 0..fanout {
+                        let _ = write_nested_zip_file(i, filename, zip, &buffer);
+                    }
+                }
+            }
+
+            write_nested_zip(depth, fanout, file_size, &filename, &mut zip);
+            let _ = zip.finish();
+        });
+
+        let stream = ReaderStream::new(BufReader::new(reader));
+
+        Self {
+            depth,
+            fanout,
+            file_size,
+            stream,
+        }
+    }
+}
+
+fn write_nested_zip_file<W: io::Write>(
     index: usize,
     filename: &str,
-    zip: &mut rawzip::ZipArchiveWriter<&mut Cursor<Vec<u8>>>,
+    zip: &mut ZipArchiveWriter<W>,
     data: &[u8],
 ) -> Result<(), OpaqueError> {
     let mut file = zip
         .new_file(&format!("{filename}_batch_{index}.zip"))
-        .compression_method(rawzip::CompressionMethod::Deflate)
+        .compression_method(CompressionMethod::Deflate)
         .create()
-        .context("create fanout zip batch")?;
+        .context("create batch zip file entry")?;
 
-    let encoder = flate2::write::DeflateEncoder::new(&mut file, flate2::Compression::default());
-    let mut writer = rawzip::ZipDataWriter::new(encoder);
-    writer
-        .write_all(data)
-        .context("compress and write data into archive")?;
-    let (_, descriptor) = writer.finish().context("finalize data descriptor")?;
-    let _ = file.finish(descriptor).context("write descriptor")?;
+    let encoder = DeflateEncoder::new(&mut file, flate2::Compression::default());
+    let mut writer = ZipDataWriter::new(encoder);
+    writer.write_all(data).context("write nested ZIP data")?;
+    let (_, descriptor) = writer.finish().context("finish ZIP entry descriptor")?;
+    file.finish(descriptor).context("finish ZIP entry")?;
     Ok(())
 }
 
-fn write_fake_binary_data(
+fn write_fake_binary_data<W: io::Write>(
     filename: &str,
-    zip: &mut rawzip::ZipArchiveWriter<&mut Cursor<Vec<u8>>>,
+    zip: &mut ZipArchiveWriter<W>,
     file_size: usize,
 ) -> Result<(), OpaqueError> {
     let mut file = zip
         .new_file(&format!("{filename}.enc.bin"))
-        .compression_method(rawzip::CompressionMethod::Deflate)
+        .compression_method(CompressionMethod::Deflate)
         .create()
-        .context("create fanout zip batch")?;
+        .context("write leaf binary payload")?;
 
-    let encoder = flate2::write::DeflateEncoder::new(&mut file, flate2::Compression::default());
-    let mut writer = rawzip::ZipDataWriter::new(encoder);
-
+    let encoder = DeflateEncoder::new(&mut file, flate2::Compression::default());
+    let mut writer = ZipDataWriter::new(encoder);
     let mut zero_reader = ZeroReader(file_size);
-    io::copy(&mut zero_reader, &mut writer).context("write fake zero data")?;
-
-    let (_, descriptor) = writer.finish().context("finalize data descriptor")?;
-    let _ = file.finish(descriptor).context("write descriptor")?;
+    io::copy(&mut zero_reader, &mut writer).context("write zero data")?;
+    let (_, descriptor) = writer.finish().context("finish leaf entry desciptor")?;
+    file.finish(descriptor).context("finish leaf entry")?;
     Ok(())
 }
 
 fn generate_recursive_base_zip(
+    buffer: &mut Cursor<Vec<u8>>,
     filename: &str,
     depth: usize,
     fanout: usize,
     file_size: usize,
-) -> Vec<u8> {
-    let mut buffer = Cursor::new(Vec::new());
-    let mut zip = rawzip::ZipArchiveWriter::new(&mut buffer);
+) {
+    let mut zip = ZipArchiveWriter::new(buffer);
 
     if depth == 0 {
         if let Err(err) = write_fake_binary_data(filename, &mut zip, file_size) {
             tracing::debug!(
-                "failed to create 0-byte enc bin (leaf node is corrupted, but returned): {err}"
+                "failed to create fake binary data (return corrupted data early): {err}"
             );
-            return buffer.into_inner();
+            return;
         }
     } else {
-        let nested = generate_recursive_base_zip(filename, depth - 1, fanout, file_size);
+        let mut nested_buffer = Cursor::new(Vec::default());
+        generate_recursive_base_zip(&mut nested_buffer, filename, depth - 1, fanout, file_size);
+        let nested_buffer = nested_buffer.into_inner();
         for i in 0..fanout {
-            if let Err(err) = write_nested_zip(i, filename, &mut zip, &nested) {
+            if let Err(err) = write_nested_zip_file(i, filename, &mut zip, &nested_buffer) {
                 tracing::debug!(
-                    "failed to create fanout zip batch (nested zip is corrupted, but returned): {err}"
+                    "failed to write nested zip file {i} (return corrupted data early): {err}"
                 );
-                return buffer.into_inner();
+                return;
             }
         }
     }
 
     if let Err(err) = zip.finish() {
-        tracing::debug!("failed to finish archive (output is corrupted, but returned): {err}");
+        tracing::debug!("failed to finalize zip data might be corrupted): {err}");
     }
-    buffer.into_inner()
 }
 
 struct ZeroReader(usize);
@@ -260,5 +337,14 @@ impl Read for ZeroReader {
         }
         self.0 -= len;
         Ok(len)
+    }
+}
+
+impl Stream for RecursiveZipBomb {
+    type Item = Result<Bytes, std::io::Error>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.project();
+        this.stream.poll_next(cx)
     }
 }

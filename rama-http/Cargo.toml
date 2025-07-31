@@ -60,7 +60,7 @@ serde_html_form = { workspace = true }
 serde_json = { workspace = true }
 smol_str = { workspace = true }
 tokio = { workspace = true, features = ["macros", "fs", "io-std"] }
-tokio-util = { workspace = true, features = ["io"] }
+tokio-util = { workspace = true, features = ["io", "io-util"] }
 uuid = { workspace = true, features = ["v4"] }
 
 [dev-dependencies]
