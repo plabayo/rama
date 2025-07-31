@@ -46,9 +46,9 @@ impl Default for ZipBomb {
 }
 
 impl ZipBomb {
-    const DEFAULT_DEPTH: usize = 6;
-    const DEFAULT_FANOUT: usize = 16;
-    const DEFAULT_FILE_SIZE: usize = 4 * 1024 * 1024 * 1024;
+    const DEFAULT_DEPTH: usize = 8;
+    const DEFAULT_FANOUT: usize = 32;
+    const DEFAULT_FILE_SIZE: usize = 512 * 1024 * 1024;
 
     #[must_use]
     /// Create a new [`ZipBomb`].
@@ -203,39 +203,21 @@ impl fmt::Debug for RecursiveZipBomb {
 
 impl RecursiveZipBomb {
     fn new(filename: Cow<'static, str>, depth: usize, fanout: usize, file_size: usize) -> Self {
-        let (writer, reader) = duplex(64 * 1024);
+        let mut buffer_size = 64 * 1024;
+        buffer_size += fanout * 32 * 1024;
+        buffer_size += file_size.min(4 * 1024 * 1024);
+        buffer_size += depth * 16 * 1024;
+
+        let (writer, reader) = duplex(buffer_size.min(8 * 1024 * 1024));
 
         tokio::task::spawn_blocking(move || {
-            let mut writer = SyncIoBridge::new(writer);
-            let mut zip = ZipArchiveWriter::new(&mut writer);
-
-            fn write_nested_zip<W: io::Write>(
-                depth: usize,
-                fanout: usize,
-                file_size: usize,
-                filename: &str,
-                zip: &mut ZipArchiveWriter<W>,
-            ) {
-                if depth == 0 {
-                    let _ = write_fake_binary_data(filename, zip, file_size);
-                } else {
-                    let mut buffer = Cursor::new(Vec::default());
-                    generate_recursive_base_zip(
-                        &mut buffer,
-                        filename,
-                        depth - 1,
-                        fanout,
-                        file_size,
-                    );
-                    let buffer = buffer.into_inner();
-                    for i in 0..fanout {
-                        let _ = write_nested_zip_file(i, filename, zip, &buffer);
-                    }
-                }
-            }
-
-            write_nested_zip(depth, fanout, file_size, &filename, &mut zip);
-            let _ = zip.finish();
+            generate_recursive_base_zip(
+                SyncIoBridge::new(writer),
+                &filename,
+                depth,
+                fanout,
+                file_size,
+            )
         });
 
         let stream = ReaderStream::new(BufReader::new(reader));
@@ -274,6 +256,7 @@ fn write_fake_binary_data<W: io::Write>(
     zip: &mut ZipArchiveWriter<W>,
     file_size: usize,
 ) -> Result<(), OpaqueError> {
+    tracing::trace!("generate fake binary data for {filename}: file_size={file_size}");
     let mut file = zip
         .new_file(&format!("{filename}.enc.bin"))
         .compression_method(CompressionMethod::Deflate)
@@ -289,13 +272,17 @@ fn write_fake_binary_data<W: io::Write>(
     Ok(())
 }
 
-fn generate_recursive_base_zip(
-    buffer: &mut Cursor<Vec<u8>>,
+fn generate_recursive_base_zip<W: io::Write>(
+    buffer: W,
     filename: &str,
     depth: usize,
     fanout: usize,
     file_size: usize,
 ) {
+    tracing::trace!(
+        "generate recursive zip for {filename}: depth={depth}, fanout={fanout}, file_size={file_size}"
+    );
+
     let mut zip = ZipArchiveWriter::new(buffer);
 
     if depth == 0 {
@@ -310,6 +297,7 @@ fn generate_recursive_base_zip(
         generate_recursive_base_zip(&mut nested_buffer, filename, depth - 1, fanout, file_size);
         let nested_buffer = nested_buffer.into_inner();
         for i in 0..fanout {
+            tracing::trace!("write nested zip file #{i} for {filename}");
             if let Err(err) = write_nested_zip_file(i, filename, &mut zip, &nested_buffer) {
                 tracing::debug!(
                     "failed to write nested zip file {i} (return corrupted data early): {err}"
