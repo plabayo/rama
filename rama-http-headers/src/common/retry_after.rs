@@ -54,6 +54,7 @@ impl RetryAfter {
         Self(After::Delay(dur.into()))
     }
 
+    #[must_use]
     pub fn after(&self) -> After {
         self.0
     }
