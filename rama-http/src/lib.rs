@@ -24,7 +24,6 @@ pub use ::rama_http_types::{
     opentelemetry, proto, sse,
 };
 
-#[cfg(feature = "compression")]
 pub mod body;
 
 pub use ::rama_http_headers as headers;
