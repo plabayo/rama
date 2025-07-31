@@ -112,6 +112,26 @@ impl ZipBomb {
         Ok(Body::from(body))
     }
 
+    /// Try to generate a [`Response`] from the [`ZipBomb`].
+    pub async fn try_generate_response(&self) -> Result<Response, OpaqueError> {
+        let headers = [
+            ("Robots", HeaderValue::from_static("none")),
+            (
+                "X-Robots-Tag",
+                HeaderValue::from_static("noindex, nofollow"),
+            ),
+            ("Content-Type", HeaderValue::from_static("application/zip")),
+            (
+                "Content-Disposition",
+                format!("attachment; filename={}.zip", self.filename)
+                    .parse()
+                    .context("format ZipBomb's Content-Disposition header")?,
+            ),
+        ];
+        let body = self.try_generate_body().await?;
+        Ok((headers, body).into_response())
+    }
+
     /// Try to turn the [`ZipBomb`] into a [`Body`]
     pub async fn try_into_generate_body(self) -> Result<Body, OpaqueError> {
         let Self {
