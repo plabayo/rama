@@ -278,7 +278,7 @@ impl Stream for RecursiveZipBomb {
                 let reader: Box<dyn AsyncRead + Unpin + Send> =
                     Box::new(Cursor::new(self.base.clone()));
                 self.stream = Some(ReaderStream::new(BufReader::new(reader)));
-                return self.poll_next(cx);
+                self.poll_next(cx)
             }
             Some(stream) => match stream.poll_next_unpin(cx) {
                 Poll::Ready(Some(Ok(chunk))) => Poll::Ready(Some(Ok(chunk))),
