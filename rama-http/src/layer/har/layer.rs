@@ -1,4 +1,4 @@
-use crate::layer::har::default::{InMemoryRecorder, StaticToggle};
+use crate::layer::har::default::InMemoryRecorder;
 use crate::layer::har::service::HARExportService;
 use crate::layer::har::toggle::Toggle;
 use crate::layer::har::{Comment, Recorder};
@@ -11,12 +11,12 @@ pub struct HARExportLayer<R, T> {
 }
 
 // not needed for the moment - should it be used in examples only?
-impl Default for HARExportLayer<InMemoryRecorder, StaticToggle> {
+impl Default for HARExportLayer<InMemoryRecorder, bool> {
     fn default() -> Self {
         Self {
             recorder: InMemoryRecorder::new(),
             comments: vec![],
-            toggle: StaticToggle::new(false),
+            toggle: false,
         }
     }
 }
