@@ -5,15 +5,12 @@ pub mod default;
 pub mod layer;
 pub mod service;
 pub mod spec;
+pub mod toggle;
 
 #[derive(Clone)]
 pub struct Comment {
     pub author: String,
     pub text: String,
-}
-
-pub trait Toggle: Clone + Send + Sync + 'static {
-    fn status(&self) -> impl Future<Output = bool> + Send + '_;
 }
 
 pub trait Recorder: Clone + Send + Sync + 'static {
