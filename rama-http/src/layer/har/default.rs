@@ -21,8 +21,4 @@ impl Recorder for InMemoryRecorder {
         let mut lock = self.data.lock().unwrap();
         lock.push(line);
     }
-
-    fn data(&self) -> Vec<HarLog> {
-        self.data.lock().unwrap().clone()
-    }
 }
