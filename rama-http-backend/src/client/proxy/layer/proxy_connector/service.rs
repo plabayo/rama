@@ -18,7 +18,7 @@ use rama_net::{
     user::ProxyCredential,
 };
 use rama_utils::macros::define_inner_service_accessors;
-use std::{fmt, sync::Arc};
+use std::{fmt, ops, sync::Arc};
 
 #[cfg(feature = "tls")]
 use rama_net::tls::TlsTunnel;
@@ -251,7 +251,7 @@ where
             .map_err(|err| OpaqueError::from_std(err).context("http proxy handshake"))?;
 
         tracing::warn!("inserting HttpProxyHeaders in context");
-        ctx.insert(HttpProxyHeaders::new(headers));
+        ctx.insert(HttpProxyConnectResponseHeaders::new(headers));
 
         tracing::trace!(
             server.address = %transport_ctx.authority.host(),
@@ -266,20 +266,37 @@ where
     }
 }
 
-#[derive(Clone)]
-pub struct HttpProxyHeaders {
-    headers: Arc<HeaderMap>,
+#[derive(Clone, Debug)]
+pub struct HttpProxyConnectResponseHeaders(Arc<HeaderMap>);
+
+impl HttpProxyConnectResponseHeaders {
+    fn new(headers: HeaderMap) -> Self {
+        Self(Arc::new(headers))
+    }
 }
 
-impl HttpProxyHeaders {
-    fn new(headers: HeaderMap) -> Self {
-        Self {
-            headers: Arc::new(headers),
-        }
+impl AsRef<HeaderMap> for HttpProxyConnectResponseHeaders {
+    fn as_ref(&self) -> &HeaderMap {
+        &self.0
     }
+}
 
-    #[must_use]
-    pub fn headers(&self) -> &HeaderMap {
-        &self.headers
+impl AsMut<HeaderMap> for HttpProxyConnectResponseHeaders {
+    fn as_mut(&mut self) -> &mut HeaderMap {
+        Arc::make_mut(&mut self.0)
+    }
+}
+
+impl ops::Deref for HttpProxyConnectResponseHeaders {
+    type Target = HeaderMap;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl ops::DerefMut for HttpProxyConnectResponseHeaders {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        Arc::make_mut(&mut self.0)
     }
 }
