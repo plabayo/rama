@@ -267,6 +267,11 @@ where
 }
 
 #[derive(Clone, Debug)]
+/// Extension added to the [`Context`] by [`HttpProxyConnector`] to record the
+/// headers from a successful CONNECT response.
+///
+/// This can be used, for example, to copy headers from the CONNECT response to
+/// proxied responses.
 pub struct HttpProxyConnectResponseHeaders(Arc<HeaderMap>);
 
 impl HttpProxyConnectResponseHeaders {
