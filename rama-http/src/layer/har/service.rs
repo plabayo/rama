@@ -22,7 +22,7 @@ where
     State: Clone + Send + Sync + 'static,
     R: Recorder,
     S: Service<State, Request<ReqBody>, Response = Response<ResBody>>,
-    S::Error: Into<BoxError> + Send + Sync + std::error::Error + 'static,
+    S::Error: Into<BoxError> + Send + Sync + 'static,
     W: Toggle,
     ReqBody: http_body::Body<Data = Bytes, Error: Into<BoxError>> + Clone + Send + Sync + 'static,
     ResBody: http_body::Body<Data = Bytes, Error: Into<BoxError>> + Send + 'static,
@@ -35,7 +35,11 @@ where
         ctx: Context<State>,
         req: Request<ReqBody>,
     ) -> Result<Self::Response, Self::Error> {
-        let response = self.service.serve(ctx, req.clone()).await?;
+        let response = self
+            .service
+            .serve(ctx, req.clone())
+            .await
+            .map_err(Into::into)?;
 
         if self.toggle.status().await {
             let mut entry = Entry::default();

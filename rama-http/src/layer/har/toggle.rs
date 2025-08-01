@@ -35,9 +35,9 @@ impl Toggle for Arc<AtomicBool> {
 
 impl<L: Toggle, R: Toggle> Toggle for Either<L, R> {
     async fn status(&self) -> bool {
-         match self {
+        match self {
             Either::Left(l) => l.status().await,
-           Either::Right(r) => r.status().await,
+            Either::Right(r) => r.status().await,
         }
     }
 }
