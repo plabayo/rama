@@ -166,7 +166,7 @@ impl PoolMetricsOpts {
         /// Calculate exponentially-spaced bounds for the `reused_connection_pos` metric.
         pub fn reused_connection_pos_parametrized_bounds(mut self, max: f64, nbounds: usize) -> Self {
             self.reused_connection_pos_bounds = (0..nbounds)
-                .map(|i| (i as f64 / ((nbounds - 1) as f64) * max.log2()).exp2())
+                .map(|i| max.powf(i as f64 / (nbounds - 1) as f64).round())
                 .collect();
             self
         }
@@ -184,7 +184,7 @@ impl PoolMetricsOpts {
         /// Calculate exponentially-spaced bounds for the `active_connection_delay_nanoseconds` metric.
         pub fn active_connection_delay_nanoseconds_parametrized_bounds(mut self, max: f64, nbounds: usize) -> Self {
             self.active_connection_delay_nanoseconds_bounds = (0..nbounds)
-                .map(|i| 10f64.powf(i as f64 / ((nbounds - 1) as f64) * max.log10()))
+                .map(|i| max.powf(i as f64 / (nbounds - 1) as f64).round())
                 .collect();
             self
         }
