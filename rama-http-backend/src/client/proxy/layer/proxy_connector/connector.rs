@@ -83,7 +83,7 @@ impl InnerHttpProxyConnector {
         self,
         stream: S,
     ) -> Result<(HeaderMap, upgrade::Upgraded), HttpProxyError> {
-        let response = match self.version {
+        let mut response = match self.version {
             Some(Version::HTTP_10 | Version::HTTP_11) => {
                 Self::handshake_h1(self.req, stream).await?
             }
@@ -104,12 +104,13 @@ impl InnerHttpProxyConnector {
             }
         };
 
-        let headers = response.headers().clone();
-
         match response.status() {
-            StatusCode::OK => upgrade::on(response)
+            StatusCode::OK => upgrade::on(&mut response)
                 .await
-                .map(|upgraded| (headers, upgraded))
+                .map(|upgraded| {
+                    let (parts, _) = response.into_parts();
+                    (parts.headers, upgraded)
+                })
                 .map_err(|err| HttpProxyError::Transport(OpaqueError::from_std(err).into_boxed())),
             StatusCode::PROXY_AUTHENTICATION_REQUIRED => Err(HttpProxyError::AuthRequired),
             StatusCode::SERVICE_UNAVAILABLE => Err(HttpProxyError::Unavailable),
