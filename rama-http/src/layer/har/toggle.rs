@@ -1,6 +1,6 @@
+use crate::dep::core::futures::future::Either;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use crate::dep::core::futures::future::Either;
 
 pub trait Toggle: Clone + Send + Sync + 'static {
     fn status(&self) -> impl Future<Output = bool> + Send + '_;
