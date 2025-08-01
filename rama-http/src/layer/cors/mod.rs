@@ -207,10 +207,13 @@ impl CorsLayer {
     /// let client = get_api_client();
     ///
     /// let layer = CorsLayer::new().allow_origin(AllowOrigin::async_predicate(
-    ///     |origin: HeaderValue, _request_parts: &RequestParts| async move {
-    ///         // fetch list of origins that are allowed
-    ///         let origins = client.fetch_allowed_origins().await;
-    ///         origins.contains(&origin)
+    ///     move |origin: HeaderValue, _request_parts: &RequestParts| {
+    ///         let client = client.clone();
+    ///         async move {
+    ///             // fetch list of origins that are allowed
+    ///             let origins = client.fetch_allowed_origins().await;
+    ///             origins.contains(&origin)
+    ///         }
     ///     },
     /// ));
     ///
@@ -219,7 +222,8 @@ impl CorsLayer {
     /// // if using &RequestParts, make sure all the values are owned
     /// // before passing into the future
     /// let layer = CorsLayer::new().allow_origin(AllowOrigin::async_predicate(
-    ///     |origin: HeaderValue, parts: &RequestParts| {
+    ///     move |origin: HeaderValue, parts: &RequestParts| {
+    ///         let client = client.clone();
     ///         let path = parts.uri.path().to_owned();
     ///
     ///         async move {
