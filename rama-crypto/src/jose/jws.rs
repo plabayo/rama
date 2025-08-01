@@ -33,7 +33,7 @@ impl Headers {
         /// to get access to the underlying header map
         pub fn header(
             mut self,
-            name: impl Into<String>,
+            name: String,
             value: impl Serialize,
         ) -> Result<Self, OpaqueError> {
             let headers = self.0.get_or_insert_default();
