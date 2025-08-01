@@ -1,5 +1,5 @@
-use crate::layer::har::{HarLog, Recorder};
 use crate::layer::har::toggle::Toggle;
+use crate::layer::har::{HarLog, Recorder};
 use std::future::{Future, ready};
 use std::sync::{Arc, Mutex};
 
