@@ -36,7 +36,7 @@ where
     ) -> Result<Self::Response, Self::Error> {
         let response = self.service.serve(ctx, req.clone()).await?;
 
-        if self.toggle.is_recording_on() {
+        if self.toggle.status().await {
             let mut entry = Entry::default();
             let mut log_line = HarLog::default();
             entry.request = HarRequest::from_rama_request::<ReqBody>(&req)?;

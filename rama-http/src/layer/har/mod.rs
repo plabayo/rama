@@ -12,9 +12,8 @@ pub struct Comment {
     pub text: String,
 }
 
-pub trait Toggle {
-    fn toggle(&mut self) -> impl Future<Output = bool> + Send + '_;
-    fn is_recording_on(&self) -> bool;
+pub trait Toggle: Clone + Send + Sync + 'static {
+    fn status(&self) -> impl Future<Output = bool> + Send + '_;
 }
 
 pub trait Recorder: Clone + Send + Sync + 'static {
