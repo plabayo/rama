@@ -86,7 +86,7 @@ impl<S> ConsumeErr<S, Trace, DefaulResponse> {
 impl<S, F, State, Request> Service<State, Request> for ConsumeErr<S, F, DefaulResponse>
 where
     S: Service<State, Request, Response: Default>,
-    F: FnOnce(S::Error) + Clone + Send + Sync + 'static,
+    F: Fn(S::Error) + Send + Sync + 'static,
     State: Clone + Send + Sync + 'static,
     Request: Send + 'static,
 {
@@ -101,7 +101,7 @@ where
         match self.inner.serve(ctx, req).await {
             Ok(resp) => Ok(resp),
             Err(err) => {
-                (self.f.clone())(err);
+                (self.f)(err);
                 Ok(S::Response::default())
             }
         }
@@ -111,7 +111,7 @@ where
 impl<S, F, State, Request, R> Service<State, Request> for ConsumeErr<S, F, StaticResponse<R>>
 where
     S: Service<State, Request>,
-    F: FnOnce(S::Error) + Clone + Send + Sync + 'static,
+    F: Fn(S::Error) + Send + Sync + 'static,
     R: Into<S::Response> + Clone + Send + Sync + 'static,
     State: Clone + Send + Sync + 'static,
     Request: Send + 'static,
@@ -127,7 +127,7 @@ where
         match self.inner.serve(ctx, req).await {
             Ok(resp) => Ok(resp),
             Err(err) => {
-                (self.f.clone())(err);
+                (self.f)(err);
                 Ok(self.response.0.clone().into())
             }
         }

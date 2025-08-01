@@ -132,7 +132,7 @@ fn tcp_connect_with_socket_opts(
 
 impl<ConnectFn, ConnectFnFut, ConnectFnErr> TcpStreamConnector for ConnectFn
 where
-    ConnectFn: FnOnce(SocketAddr) -> ConnectFnFut + Clone + Send + Sync + 'static,
+    ConnectFn: Fn(SocketAddr) -> ConnectFnFut + Clone + Send + Sync + 'static,
     ConnectFnFut: Future<Output = Result<TcpStream, ConnectFnErr>> + Send + 'static,
     ConnectFnErr: Into<BoxError> + Send + 'static,
 {
@@ -142,7 +142,7 @@ where
         &self,
         addr: SocketAddr,
     ) -> impl Future<Output = Result<TcpStream, Self::Error>> + Send + '_ {
-        (self.clone())(addr)
+        (self)(addr)
     }
 }
 
