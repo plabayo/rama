@@ -6,7 +6,6 @@ use crate::layer::har::spec::{
     //Response as HarResponse,
 };
 use crate::layer::har::toggle::Toggle;
-use crate::layer::traffic_writer::RequestWriter;
 use rama_core::{Context, Service, bytes::Bytes, error::BoxError};
 use rama_http_types::dep::http_body;
 use rama_http_types::{Request, Response};
@@ -24,7 +23,7 @@ where
     R: Recorder,
     S: Service<State, Request<ReqBody>, Response = Response<ResBody>>,
     S::Error: Into<BoxError> + Send + Sync + std::error::Error + 'static,
-    W: RequestWriter + Toggle,
+    W: Toggle,
     ReqBody: http_body::Body<Data = Bytes, Error: Into<BoxError>> + Clone + Send + Sync + 'static,
     ResBody: http_body::Body<Data = Bytes, Error: Into<BoxError>> + Send + 'static,
 {
