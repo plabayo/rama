@@ -1,6 +1,4 @@
-use crate::layer::har::toggle::Toggle;
 use crate::layer::har::{HarLog, Recorder};
-use std::future::{Future, ready};
 use std::sync::{Arc, Mutex};
 
 // TODO probably to be moved to examples at some point
@@ -26,22 +24,5 @@ impl Recorder for InMemoryRecorder {
 
     fn data(&self) -> Vec<HarLog> {
         self.data.lock().unwrap().clone()
-    }
-}
-
-#[derive(Clone)]
-pub struct StaticToggle {
-    value: bool,
-}
-
-impl StaticToggle {
-    pub fn new(value: bool) -> Self {
-        Self { value }
-    }
-}
-
-impl Toggle for StaticToggle {
-    fn status(&self) -> impl Future<Output = bool> + Send + '_ {
-        ready(self.value)
     }
 }
