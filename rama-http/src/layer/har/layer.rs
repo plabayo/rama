@@ -1,6 +1,7 @@
 use crate::layer::har::default::{InMemoryRecorder, StaticToggle};
 use crate::layer::har::service::HARExportService;
-use crate::layer::har::{Comment, Recorder, Toggle};
+use crate::layer::har::toggle::Toggle;
+use crate::layer::har::{Comment, Recorder};
 use rama_core::Layer;
 
 pub struct HARExportLayer<R, T> {

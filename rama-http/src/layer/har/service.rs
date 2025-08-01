@@ -3,7 +3,8 @@ use crate::layer::har::spec::{
     Log as HarLog,
     Request as HarRequest, //Response as HarResponse,
 };
-use crate::layer::har::{Recorder, Toggle};
+use crate::layer::har::Recorder;
+use crate::layer::har::toggle::Toggle;
 use crate::layer::traffic_writer::RequestWriter;
 use rama_core::{Context, Service, bytes::Bytes, error::BoxError};
 use rama_http_types::dep::http_body;
