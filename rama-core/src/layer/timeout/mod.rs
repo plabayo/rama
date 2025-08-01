@@ -83,7 +83,7 @@ impl<S, F> Timeout<S, LayerErrorFn<F>> {
     /// function.
     pub fn with_error_fn<E>(inner: S, timeout: Duration, error_fn: F) -> Self
     where
-        F: FnOnce() -> E + Clone + Send + Sync + 'static,
+        F: Fn() -> E + Send + Sync + 'static,
         E: Send + 'static,
     {
         Self {

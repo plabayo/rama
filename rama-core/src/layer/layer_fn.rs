@@ -23,12 +23,12 @@ pub struct LayerFn<F> {
 
 impl<F, S, Out> Layer<S> for LayerFn<F>
 where
-    F: FnOnce(S) -> Out + Clone,
+    F: Fn(S) -> Out,
 {
     type Service = Out;
 
     fn layer(&self, inner: S) -> Self::Service {
-        (self.f.clone())(inner)
+        (self.f)(inner)
     }
 
     fn into_layer(self, inner: S) -> Self::Service {

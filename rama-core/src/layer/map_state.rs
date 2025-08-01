@@ -44,7 +44,7 @@ where
     S: Service<W, Request>,
     State: Clone + Send + Sync + 'static,
     W: Send + Sync + 'static,
-    F: FnOnce(State) -> W + Clone + Send + Sync + 'static,
+    F: Fn(State) -> W + Send + Sync + 'static,
     Request: Send + 'static,
 {
     type Response = S::Response;
@@ -56,7 +56,7 @@ where
         ctx: Context<State>,
         req: Request,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
-        let ctx = ctx.map_state(self.f.clone());
+        let ctx = ctx.map_state(&self.f);
         self.inner.serve(ctx, req)
     }
 }

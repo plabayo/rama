@@ -40,7 +40,7 @@ where
 
 impl<T, Fut, F> GetExtensionLayer<T, Fut, F>
 where
-    F: FnOnce(T) -> Fut + Clone + Send + Sync + 'static,
+    F: Fn(T) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = ()> + Send + 'static,
 {
     /// Create a new [`GetExtensionLayer`].
@@ -115,7 +115,7 @@ impl<S, T, Fut, F> GetExtension<S, T, Fut, F> {
     /// Create a new [`GetExtension`].
     pub const fn new(inner: S, callback: F) -> Self
     where
-        F: FnOnce(T) -> Fut + Clone + Send + Sync + 'static,
+        F: Fn(T) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = ()> + Send + 'static,
     {
         Self {
@@ -134,7 +134,7 @@ where
     Request: Send + 'static,
     S: Service<State, Request>,
     T: Clone + Send + Sync + 'static,
-    F: FnOnce(T) -> Fut + Clone + Send + Sync + 'static,
+    F: Fn(T) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = ()> + Send + 'static,
 {
     type Response = S::Response;
@@ -147,7 +147,7 @@ where
     ) -> Result<Self::Response, Self::Error> {
         if let Some(value) = ctx.get::<T>() {
             let value = value.clone();
-            (self.callback.clone())(value).await;
+            (self.callback)(value).await;
         }
         self.inner.serve(ctx, req).await
     }
@@ -167,8 +167,11 @@ mod tests {
         let value = Arc::new(std::sync::atomic::AtomicI32::new(0));
 
         let cloned_value = value.clone();
-        let svc = GetExtensionLayer::new(async move |state: State| {
-            cloned_value.store(state.0, std::sync::atomic::Ordering::Release);
+        let svc = GetExtensionLayer::new(move |state: State| {
+            let cloned_value = cloned_value.clone();
+            async move {
+                cloned_value.store(state.0, std::sync::atomic::Ordering::Release);
+            }
         })
         .into_layer(service_fn(async |ctx: Context<()>, _req: ()| {
             let state = ctx.get::<State>().unwrap();

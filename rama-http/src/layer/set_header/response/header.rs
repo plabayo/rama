@@ -358,7 +358,7 @@ where
     S: Clone + Send + Sync + 'static,
     ReqBody: Send + 'static,
     ResBody: Send + 'static,
-    F: FnOnce() -> Fut + Clone + Send + Sync + 'static,
+    F: Fn() -> Fut + Clone + Send + Sync + 'static,
     Fut: Future<Output = Option<HeaderValue>> + Send + 'static,
 {
     type Maker = BoxMakeHeaderValueFn<F, ()>;
@@ -379,7 +379,7 @@ where
     S: Clone + Send + Sync + 'static,
     ReqBody: Send + 'static,
     ResBody: Send + 'static,
-    F: FnOnce(Response<ResBody>) -> Fut + Clone + Send + Sync + 'static,
+    F: Fn(Response<ResBody>) -> Fut + Clone + Send + Sync + 'static,
     Fut: Future<Output = (Response<ResBody>, Option<HeaderValue>)> + Send + 'static,
 {
     type Maker = BoxMakeHeaderValueFn<F, Response<ResBody>>;
