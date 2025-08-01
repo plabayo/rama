@@ -253,7 +253,6 @@ struct EcdsaKeySigningHeaders<'a> {
 
 impl Signer for EcdsaKey {
     type Signature = Signature;
-
     type Error = OpaqueError;
 
     fn set_headers(

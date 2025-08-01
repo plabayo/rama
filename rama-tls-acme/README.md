@@ -15,7 +15,7 @@
 [crates-badge]: https://img.shields.io/crates/v/rama-tls-acme.svg
 [crates-url]: https://crates.io/crates/rama-tls-acme
 [docs-badge]: https://img.shields.io/docsrs/rama-tls-acme/latest
-[docs-url]: https://docs.rs/rama-tls-acme/latest/rama_http/index.html
+[docs-url]: https://docs.rs/rama-tls-acme/latest/rama_tls_acme/index.html
 [license-mit-badge]: https://img.shields.io/badge/license-MIT-blue.svg
 [license-mit-url]: https://github.com/plabayo/rama/blob/main/LICENSE-MIT
 [license-apache-badge]: https://img.shields.io/badge/license-APACHE-blue.svg
@@ -41,7 +41,7 @@ The reasons behind the creation of rama can be read in [the "Why Rama" chapter](
 
 ACME support for rama.
 
-Crate used by the end-user `rama` crate and `rama` "http" crate authors alike.
+Crate used by the end-user `rama` crate.
 
 Learn more about `rama`:
 

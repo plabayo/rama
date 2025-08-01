@@ -5,7 +5,7 @@ use rama::{
     },
     graceful,
     http::{
-        Body, HeaderValue,
+        Body,
         client::EasyHttpWebClient,
         layer::{compression::CompressionLayer, trace::TraceLayer},
         server::HttpServer,
@@ -26,6 +26,7 @@ use rama::{
         boring::client::TlsConnectorDataBuilder,
     },
 };
+use rama_http::headers::{ContentType, HeaderMapExt};
 
 use std::{sync::Arc, time::Duration};
 use tokio::time::sleep;
@@ -50,17 +51,17 @@ async fn main() {
         .build()
         .boxed();
 
-    let client = AcmeClient::new(TEST_DIRECTORY_URL, client).await.unwrap();
+    let client = AcmeClient::new(TEST_DIRECTORY_URL, client)
+        .await
+        .expect("create acme client");
 
     let account = client
         .create_account(CreateAccountOptions {
             terms_of_service_agreed: Some(true),
-            contact: None,
-            external_account_binding: None,
-            only_return_existing: None,
+            ..Default::default()
         })
         .await
-        .unwrap();
+        .expect("create account");
 
     let mut order = account
         .new_order(NewOrderPayload {
@@ -68,100 +69,110 @@ async fn main() {
             ..Default::default()
         })
         .await
-        .unwrap();
+        .expect("create order");
 
-    let authz = order.get_authorizations().await.unwrap();
+    let authz = order
+        .get_authorizations()
+        .await
+        .expect("get order authorizations");
 
     let auth = &authz[0];
     let mut challenge = auth
         .challenges
         .iter()
         .find(|challenge| challenge.r#type == ChallengeType::Http01)
-        .unwrap()
+        .expect("find http challenge")
         .to_owned();
 
-    let key_authz = order.create_key_authorization(&challenge).unwrap();
+    let key_authorization = order
+        .create_key_authorization(&challenge)
+        .expect("create key authorization");
 
     let path = format!(".well-known/acme-challenge/{}", challenge.token);
 
     tracing::info!("running service at: {ADDR}");
 
     let state = Arc::new(ChallengeState {
-        key_authz: key_authz.clone(),
+        key_authorization: key_authorization.clone(),
     });
 
     let graceful = graceful::Shutdown::default();
 
-    graceful.spawn_task_fn(|guard| async move {
+    graceful.spawn_task_fn(async move |guard| {
         let exec = Executor::graceful(guard.clone());
         HttpServer::auto(exec)
             .listen_with_state(
                 state,
                 ADDR,
-                (TraceLayer::new_for_http(), CompressionLayer::new()).layer(
+                (TraceLayer::new_for_http(), CompressionLayer::new()).into_layer(
                     WebService::default().get(
                         &path,
-                        |ctx: Context<Arc<ChallengeState>>| async move {
+                        async move |ctx: Context<Arc<ChallengeState>>| {
                             let mut response = http::Response::new(Body::from(
-                                ctx.state().key_authz.as_str().to_owned(),
+                                ctx.state().key_authorization.as_str().to_owned(),
                             ));
                             let headers = response.headers_mut();
-                            headers.append(
-                                "content-type",
-                                HeaderValue::from_str("application/octet-stream").unwrap(),
-                            );
+                            headers.typed_insert(ContentType::octet_stream());
                             response
                         },
                     ),
                 ),
             )
             .await
-            .unwrap();
+            .expect("http server");
     });
 
     sleep(Duration::from_millis(1000)).await;
 
-    order.notify_challenge_ready(&challenge).await.unwrap();
+    order
+        .notify_challenge_ready(&challenge)
+        .await
+        .expect("notify challenge is ready");
 
     order
         .poll_until_challenge_finished(&mut challenge, Duration::from_secs(30))
         .await
-        .unwrap();
+        .expect("wait until challenge is finished");
 
     let state = order
         .poll_until_all_authorizations_finished(Duration::from_secs(3))
         .await
-        .unwrap();
+        .expect("wait until authorizations are finished");
 
     assert_eq!(state.status, OrderStatus::Ready);
 
     let csr = create_csr();
-    order.finalize(csr.der()).await.unwrap();
+    order.finalize(csr.der()).await.expect("finalize order");
 
     order
         .poll_until_certificate_ready(Duration::from_secs(3))
         .await
-        .unwrap();
+        .expect("wait until certificate is ready");
 
-    let _cert = order.download_certificate().await.unwrap();
+    let _cert = order
+        .download_certificate()
+        .await
+        .expect("download certificate");
 }
 
 #[derive(Debug)]
 struct ChallengeState {
-    key_authz: KeyAuthorization,
+    key_authorization: KeyAuthorization,
 }
 
 fn create_csr() -> CertificateSigningRequest {
-    let key_pair = rcgen::KeyPair::generate().unwrap();
+    let key_pair = rcgen::KeyPair::generate().expect("create keypair");
 
-    let params = CertificateParams::new(vec!["example.com".to_owned()]).unwrap();
+    let params =
+        CertificateParams::new(vec!["example.com".to_owned()]).expect("create certificate params");
 
     let mut distinguished_name = DistinguishedName::new();
-    distinguished_name.push(DnType::CountryName, "US");
-    distinguished_name.push(DnType::StateOrProvinceName, "California");
-    distinguished_name.push(DnType::LocalityName, "San Francisco");
-    distinguished_name.push(DnType::OrganizationName, "ACME Corporation");
+    distinguished_name.push(DnType::CountryName, "BE");
+    distinguished_name.push(DnType::LocalityName, "Ghent");
+    distinguished_name.push(DnType::OrganizationName, "Plabayo");
     distinguished_name.push(DnType::CommonName, "example.com");
 
-    params.serialize_request(&key_pair).unwrap()
+    params
+        .serialize_request(&key_pair)
+        .expect("create certificate signing request")
 }

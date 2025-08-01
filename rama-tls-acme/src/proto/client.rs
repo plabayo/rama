@@ -6,7 +6,7 @@ use rama_crypto::jose::JWK;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Default, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 /// Options used to create a new account, or request an identifier for an existing account, defined in [rfc8555 section 7.3]
 ///

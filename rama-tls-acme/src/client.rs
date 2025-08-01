@@ -11,7 +11,7 @@ use super::proto::{
 use base64::{Engine as _, prelude::BASE64_URL_SAFE_NO_PAD};
 use parking_lot::Mutex;
 use rama_core::{
-    Context,
+    Context, Service,
     error::{ErrorContext, ErrorExt, OpaqueError},
     service::BoxService,
 };
@@ -38,20 +38,19 @@ use tokio::time::{sleep, timeout};
 
 /// Acme client that will used for all acme operations
 pub struct AcmeClient {
-    https_client: AcmeHttpsClient,
+    https_client: BoxService<(), Request, Response, OpaqueError>,
     directory: server::Directory,
     nonce: Mutex<Option<String>>,
 }
 
-/// Alias for http client used by acme client
-pub type AcmeHttpsClient = BoxService<(), Request, Response, OpaqueError>;
-
 impl AcmeClient {
     /// Create a new acme [`AcmeClient`] for the given directory url and using the provided https client
-    pub async fn new(
-        directory_url: &str,
-        https_client: AcmeHttpsClient,
-    ) -> Result<Self, OpaqueError> {
+    pub async fn new<S>(directory_url: &str, https_client: S) -> Result<Self, OpaqueError>
+    where
+        S: Service<(), Request, Response = Response, Error = OpaqueError>,
+    {
+        let https_client = https_client.boxed();
+
         let directory = https_client
             .get(directory_url)
             .send(Context::default())
@@ -67,10 +66,13 @@ impl AcmeClient {
     }
 
     /// Create a new acme [`AcmeClient`] for the given [`AcmeProvider`] and using the provided https client
-    pub async fn new_for_provider(
+    pub async fn new_for_provider<S>(
         provider: &AcmeProvider,
-        https_client: AcmeHttpsClient,
-    ) -> Result<Self, OpaqueError> {
+        https_client: S,
+    ) -> Result<Self, OpaqueError>
+    where
+        S: Service<(), Request, Response = Response, Error = OpaqueError>,
+    {
         Self::new(provider.as_str(), https_client).await
     }
 
@@ -544,13 +546,13 @@ impl<'a> Order<'a> {
         challenge: &server::Challenge,
         identifier: &common::Identifier,
     ) -> Result<(PrivatePkcs8KeyDer<'_>, Certificate), OpaqueError> {
-        let key_authz = self.create_key_authorization(challenge)?;
+        let key_authorization = self.create_key_authorization(challenge)?;
 
         let mut cert_params = rcgen::CertificateParams::new(vec![identifier.clone().into()])
             .context("create certificate params")?;
         cert_params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
         cert_params.custom_extensions = vec![rcgen::CustomExtension::new_acme_identifier(
-            key_authz.digest().as_ref(),
+            key_authorization.digest().as_ref(),
         )];
 
         let key_pair = rcgen::KeyPair::generate().context("generate temporary keypair")?;
@@ -618,16 +620,16 @@ where
 
 /// Error type which can be returned by the [`AcmeClient`]
 pub enum ClientError {
-    /// Normal [`OpaqueError`] like we use everywhere else
-    OpaqueError(OpaqueError),
     /// Error returned by the acme server
     Problem(Problem),
+    /// Normal [`OpaqueError`] like we use everywhere else
+    Other(OpaqueError),
 }
 
 impl std::fmt::Debug for ClientError {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
-            Self::OpaqueError(opaque_error) => write!(f, "opaque error: {opaque_error:?}"),
+            Self::Other(opaque_error) => write!(f, "opaque error: {opaque_error:?}"),
             Self::Problem(problem) => write!(f, "problem: {problem:?}"),
         }
     }
@@ -636,7 +638,7 @@ impl std::fmt::Debug for ClientError {
 impl std::fmt::Display for ClientError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::OpaqueError(opaque_error) => write!(f, "opaque error: {opaque_error}"),
+            Self::Other(opaque_error) => write!(f, "opaque error: {opaque_error}"),
             Self::Problem(problem) => write!(f, "problem: {problem}"),
         }
     }
@@ -645,7 +647,7 @@ impl std::fmt::Display for ClientError {
 impl std::error::Error for ClientError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::OpaqueError(opaque_error) => opaque_error.source(),
+            Self::Other(opaque_error) => opaque_error.source(),
             Self::Problem(problem) => problem.source(),
         }
     }
@@ -653,7 +655,7 @@ impl std::error::Error for ClientError {
 
 impl From<OpaqueError> for ClientError {
     fn from(value: OpaqueError) -> Self {
-        Self::OpaqueError(value)
+        Self::Other(value)
     }
 }
 

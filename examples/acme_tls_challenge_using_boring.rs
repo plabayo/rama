@@ -42,7 +42,7 @@ use tokio::time::sleep;
 // Default directory url of pebble
 const TEST_DIRECTORY_URL: &str = "https://localhost:14000/dir";
 // Addr on which server will bind to do acme challenge
-const ADDR: &str = "0.0.0.0:5002";
+const ADDR: &str = "0.0.0.0:5003";
 
 #[tokio::main]
 async fn main() {
@@ -60,16 +60,16 @@ async fn main() {
         .build()
         .boxed();
 
-    let client = AcmeClient::new(TEST_DIRECTORY_URL, client).await.unwrap();
+    let client = AcmeClient::new(TEST_DIRECTORY_URL, client)
+        .await
+        .expect("create acme client");
     let account = client
         .create_account(CreateAccountOptions {
             terms_of_service_agreed: Some(true),
-            contact: None,
-            external_account_binding: None,
-            only_return_existing: None,
+            ..Default::default()
         })
         .await
-        .unwrap();
+        .expect("create account");
 
     let mut order = account
         .new_order(NewOrderPayload {
@@ -77,9 +77,12 @@ async fn main() {
             ..Default::default()
         })
         .await
-        .unwrap();
+        .expect("create order");
 
-    let mut authz = order.get_authorizations().await.unwrap();
+    let mut authz = order
+        .get_authorizations()
+        .await
+        .expect("get order authorizations");
     let auth = &mut authz[0];
 
     tracing::info!("running service at: {ADDR}");
@@ -90,11 +93,11 @@ async fn main() {
         .challenges
         .iter_mut()
         .find(|challenge| challenge.r#type == ChallengeType::TlsAlpn01)
-        .unwrap();
+        .expect("find tls challenge");
 
     let (pk, cert) = order
         .create_tls_challenge_data(challenge, &auth.identifier)
-        .unwrap();
+        .expect("create tls challenge data");
 
     let auth_data = ServerAuthData {
         private_key: DataEncoding::Der(pk.secret_pkcs8_der().into()),
@@ -112,16 +115,16 @@ async fn main() {
         application_layer_protocol_negotiation: Some(vec![
             rama_net::tls::ApplicationProtocol::ACME_TLS,
         ]),
-        client_verify_mode: rama_net::tls::server::ClientVerifyMode::Disable,
-        expose_server_cert: false,
-        key_logger: rama_net::tls::KeyLogIntent::Environment,
-        protocol_versions: None,
-        store_client_certificate_chain: false,
+        client_verify_mode: Default::default(),
+        expose_server_cert: Default::default(),
+        key_logger: Default::default(),
+        protocol_versions: Default::default(),
+        store_client_certificate_chain: Default::default(),
     };
 
     let acceptor_data = TlsAcceptorData::try_from(tls_server_config).expect("create acceptor data");
 
-    graceful.spawn_task_fn(|guard| async move {
+    graceful.spawn_task_fn(async move |guard| {
         let tcp_service =
             TlsAcceptorLayer::new(acceptor_data).layer(service_fn(internal_tcp_service_fn));
 
@@ -134,29 +137,35 @@ async fn main() {
 
     sleep(Duration::from_millis(1000)).await;
 
-    order.notify_challenge_ready(challenge).await.unwrap();
+    order
+        .notify_challenge_ready(challenge)
+        .await
+        .expect("notify challenge ready");
 
     order
         .poll_until_challenge_finished(challenge, Duration::from_secs(30))
         .await
-        .unwrap();
+        .expect("wait until challenge is finished");
 
     order
         .poll_until_all_authorizations_finished(Duration::from_secs(3))
         .await
-        .unwrap();
+        .expect("wait until all authorizations are finished");
 
     assert_eq!(order.state().status, OrderStatus::Ready);
 
     let csr = create_csr();
-    order.finalize(csr.der()).await.unwrap();
+    order.finalize(csr.der()).await.expect("finalize order");
 
     order
         .poll_until_certificate_ready(Duration::from_secs(3))
         .await
-        .unwrap();
+        .expect("wait until certificate is ready");
 
-    let _cert = order.download_certificate().await.unwrap();
+    let _cert = order
+        .download_certificate()
+        .await
+        .expect("download certificate");
 }
 
 struct TlsAcmeIssue(ServerAuthData);
@@ -176,16 +185,18 @@ async fn internal_tcp_service_fn<S>(_ctx: Context<()>, _stream: S) -> Result<(),
 }
 
 fn create_csr() -> CertificateSigningRequest {
-    let key_pair = rcgen::KeyPair::generate().unwrap();
+    let key_pair = rcgen::KeyPair::generate().expect("create keypair");
 
-    let params = CertificateParams::new(vec!["example.com".to_owned()]).unwrap();
+    let params =
+        CertificateParams::new(vec!["example.com".to_owned()]).expect("create certificate paramas");
 
     let mut distinguished_name = DistinguishedName::new();
-    distinguished_name.push(DnType::CountryName, "US");
-    distinguished_name.push(DnType::StateOrProvinceName, "California");
-    distinguished_name.push(DnType::LocalityName, "San Francisco");
-    distinguished_name.push(DnType::OrganizationName, "ACME Corporation");
+    distinguished_name.push(DnType::CountryName, "BE");
+    distinguished_name.push(DnType::LocalityName, "Ghent");
+    distinguished_name.push(DnType::OrganizationName, "Plabayo");
     distinguished_name.push(DnType::CommonName, "example.com");
 
-    params.serialize_request(&key_pair).unwrap()
+    params
+        .serialize_request(&key_pair)
+        .expect("create certificate signing request")
 }

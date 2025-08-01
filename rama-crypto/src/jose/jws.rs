@@ -845,6 +845,7 @@ mod tests {
     impl Verifier for DummyKey {
         type Error = OpaqueError;
         type Output = ();
+
         fn verify(
             &self,
             _payload: &[u8],
