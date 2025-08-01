@@ -6,5 +6,5 @@ mod tls_alpn;
 #[cfg(any(feature = "rustls", feature = "boring"))]
 pub use tls_alpn::HttpsAlpnModifier;
 
-mod version_adapater;
-pub use version_adapater::HttpVersionAdapater;
+mod version_adapter;
+pub use version_adapter::HttpVersionAdapter;

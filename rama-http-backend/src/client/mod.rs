@@ -169,7 +169,7 @@ pub use easy_connector::EasyHttpWebClientBuilder;
 
 mod easy_connector {
     use super::{
-        HttpConnector, http_inspector::HttpVersionAdapater, proxy::layer::HttpProxyConnector,
+        HttpConnector, http_inspector::HttpVersionAdapter, proxy::layer::HttpProxyConnector,
     };
     use rama_core::{
         Layer, Service,
@@ -414,7 +414,7 @@ mod easy_connector {
         /// This will also add the [`HttpsAlpnModifier`] request inspector as that one is
         /// crucial to make tls alpn work and set the correct [`TargetHttpVersion`]
         ///
-        /// And a [`HttpVersionAdapater`] that will adapt the request version to the configured
+        /// And a [`HttpVersionAdapter`] that will adapt the request version to the configured
         /// [`TargetHttpVersion`]
         ///
         /// If you don't want any of these inspector you can use [`Self::with_advanced_jit_req_inspector`]
@@ -426,7 +426,7 @@ mod easy_connector {
             self,
             connector_layer: L,
         ) -> EasyHttpWebClientBuilder<
-            HttpConnector<L::Service, (HttpsAlpnModifier, HttpVersionAdapater)>,
+            HttpConnector<L::Service, (HttpsAlpnModifier, HttpVersionAdapter)>,
             HttpStage,
         >
         where
@@ -436,7 +436,7 @@ mod easy_connector {
 
             let connector = HttpConnector::new(connector).with_jit_req_inspector((
                 HttpsAlpnModifier::default(),
-                HttpVersionAdapater::default(),
+                HttpVersionAdapter::default(),
             ));
 
             EasyHttpWebClientBuilder {
@@ -451,7 +451,7 @@ mod easy_connector {
         /// This will also add the [`HttpsAlpnModifier`] request inspector as that one is
         /// crucial to make tls alpn work and set the correct [`TargetHttpVersion`]
         ///
-        /// And a [`HttpVersionAdapater`] that will adapt the request version to the configured
+        /// And a [`HttpVersionAdapter`] that will adapt the request version to the configured
         /// [`TargetHttpVersion`]
         ///
         /// If you don't want any of these inspector you can use [`Self::with_advanced_jit_req_inspector`]
@@ -463,7 +463,7 @@ mod easy_connector {
             self,
             config: Option<Arc<boring_client::TlsConnectorDataBuilder>>,
         ) -> EasyHttpWebClientBuilder<
-            HttpConnector<boring_client::TlsConnector<T>, (HttpsAlpnModifier, HttpVersionAdapater)>,
+            HttpConnector<boring_client::TlsConnector<T>, (HttpsAlpnModifier, HttpVersionAdapter)>,
             HttpStage,
         > {
             let connector =
@@ -471,7 +471,7 @@ mod easy_connector {
 
             let connector = HttpConnector::new(connector).with_jit_req_inspector((
                 HttpsAlpnModifier::default(),
-                HttpVersionAdapater::default(),
+                HttpVersionAdapter::default(),
             ));
 
             EasyHttpWebClientBuilder {
@@ -486,7 +486,7 @@ mod easy_connector {
         /// This will also add the [`HttpsAlpnModifier`] request inspector as that one is
         /// crucial to make tls alpn work and set the correct [`TargetHttpVersion`]
         ///
-        /// And a [`HttpVersionAdapater`] that will adapt the request version to the configured
+        /// And a [`HttpVersionAdapter`] that will adapt the request version to the configured
         /// [`TargetHttpVersion`]
         ///
         /// If you don't want any of these inspector you can use [`Self::with_advanced_jit_req_inspector`]
@@ -498,7 +498,7 @@ mod easy_connector {
             self,
             config: Option<rustls_client::TlsConnectorData>,
         ) -> EasyHttpWebClientBuilder<
-            HttpConnector<rustls_client::TlsConnector<T>, (HttpsAlpnModifier, HttpVersionAdapater)>,
+            HttpConnector<rustls_client::TlsConnector<T>, (HttpsAlpnModifier, HttpVersionAdapter)>,
             HttpStage,
         > {
             let connector =
@@ -506,7 +506,7 @@ mod easy_connector {
 
             let connector = HttpConnector::new(connector).with_jit_req_inspector((
                 HttpsAlpnModifier::default(),
-                HttpVersionAdapater::default(),
+                HttpVersionAdapter::default(),
             ));
 
             EasyHttpWebClientBuilder {
@@ -517,7 +517,7 @@ mod easy_connector {
 
         /// Dont support https on this connector
         ///
-        /// This will also add the [`HttpVersionAdapater`] that will adapt the request version to
+        /// This will also add the [`HttpVersionAdapter`] that will adapt the request version to
         /// the configured [`TargetHttpVersion`]
         ///
         /// If you don't want any of these inspector you can use [`Self::with_advanced_jit_req_inspector`]
@@ -527,9 +527,9 @@ mod easy_connector {
         /// [`TargetHttpVersion`]: rama_http::conn::TargetHttpVersion;
         pub fn without_tls_support(
             self,
-        ) -> EasyHttpWebClientBuilder<HttpConnector<T, HttpVersionAdapater>, HttpStage> {
+        ) -> EasyHttpWebClientBuilder<HttpConnector<T, HttpVersionAdapter>, HttpStage> {
             let connector = HttpConnector::new(self.connector)
-                .with_jit_req_inspector(HttpVersionAdapater::default());
+                .with_jit_req_inspector(HttpVersionAdapter::default());
 
             EasyHttpWebClientBuilder {
                 connector,
@@ -573,7 +573,7 @@ mod easy_connector {
         /// This will also add the [`HttpsAlpnModifier`] request inspector as that one is
         /// crucial to make tls alpn work and set the correct [`TargetHttpVersion`]
         ///
-        /// And a [`HttpVersionAdapater`] that will adapt the request version to the configured
+        /// And a [`HttpVersionAdapter`] that will adapt the request version to the configured
         /// [`TargetHttpVersion`]
         ///
         /// If you don't want any of these inspector you can use [`Self::with_advanced_jit_req_inspector`]
@@ -584,13 +584,13 @@ mod easy_connector {
             self,
             http_req_inspector: I,
         ) -> EasyHttpWebClientBuilder<
-            HttpConnector<T, (HttpsAlpnModifier, HttpVersionAdapater, I), I2>,
+            HttpConnector<T, (HttpsAlpnModifier, HttpVersionAdapter, I), I2>,
             HttpStage,
         > {
             EasyHttpWebClientBuilder {
                 connector: self.connector.with_jit_req_inspector((
                     HttpsAlpnModifier::default(),
-                    HttpVersionAdapater::default(),
+                    HttpVersionAdapter::default(),
                     http_req_inspector,
                 )),
                 _phantom: PhantomData,
@@ -601,7 +601,7 @@ mod easy_connector {
         /// Add a http request inspector that will run just after the inner http connector
         /// has finished but before the http handshake
         ///
-        /// This will also add the [`HttpVersionAdapater`] that will adapt the request version to
+        /// This will also add the [`HttpVersionAdapter`] that will adapt the request version to
         /// the configured [`TargetHttpVersion`]
         ///
         /// If you don't want any of these inspector you can use [`Self::with_advanced_jit_req_inspector`]
@@ -611,12 +611,12 @@ mod easy_connector {
         pub fn with_jit_req_inspector<I>(
             self,
             http_req_inspector: I,
-        ) -> EasyHttpWebClientBuilder<HttpConnector<T, (HttpVersionAdapater, I), I2>, HttpStage>
+        ) -> EasyHttpWebClientBuilder<HttpConnector<T, (HttpVersionAdapter, I), I2>, HttpStage>
         {
             EasyHttpWebClientBuilder {
                 connector: self
                     .connector
-                    .with_jit_req_inspector((HttpVersionAdapater::default(), http_req_inspector)),
+                    .with_jit_req_inspector((HttpVersionAdapter::default(), http_req_inspector)),
                 _phantom: PhantomData,
             }
         }
