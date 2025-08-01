@@ -131,15 +131,15 @@ impl Request {
             .query()
             .map(|qs| {
                 qs.split('&')
-                    .filter_map(|kv| {
+                    .map(|kv| {
                         let mut split = kv.split('=');
                         let (name, value) =
                             (split.next().unwrap_or(""), split.next().unwrap_or(""));
-                        Some(QueryString {
-                            name: name.to_string(),
-                            value: value.to_string(),
+                        QueryString {
+                            name: name.to_owned(),
+                            value: value.to_owned(),
                             comment: None,
-                        })
+                        }
                     })
                     .collect::<Vec<_>>()
             })
@@ -153,7 +153,7 @@ impl Request {
             .into_iter()
             .map(|(name, value)| Header {
                 name: name.unwrap().to_string(),
-                value: value.to_str().unwrap_or_default().to_string(),
+                value: value.to_str().unwrap_or_default().to_owned(),
                 comment: None,
             })
             .collect::<Vec<_>>()
