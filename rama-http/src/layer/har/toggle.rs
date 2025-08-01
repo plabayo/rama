@@ -13,12 +13,10 @@ impl Toggle for bool {
 }
 
 impl<T: Toggle> Toggle for Option<T> {
-    fn status(&self) -> impl Future<Output = bool> + Send + '_ {
-        async move {
-            match self {
-                Some(inner) => inner.status().await,
-                None => false,
-            }
+    async fn status(&self) -> bool {
+        match self {
+            Some(inner) => inner.status().await,
+            None => false,
         }
     }
 }
@@ -36,12 +34,10 @@ impl Toggle for Arc<AtomicBool> {
 }
 
 impl<L: Toggle, R: Toggle> Toggle for Either<L, R> {
-    fn status(&self) -> impl Future<Output = bool> + Send + '_ {
-        async move {
-            match self {
-                Either::Left(l) => l.status().await,
-                Either::Right(r) => r.status().await,
-            }
+    async fn status(&self) -> bool {
+         match self {
+            Either::Left(l) => l.status().await,
+           Either::Right(r) => r.status().await,
         }
     }
 }

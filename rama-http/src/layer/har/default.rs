@@ -16,6 +16,12 @@ impl InMemoryRecorder {
     }
 }
 
+impl Default for InMemoryRecorder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Recorder for InMemoryRecorder {
     async fn record(&self, line: HarLog) {
         let mut lock = self.data.lock().unwrap();
