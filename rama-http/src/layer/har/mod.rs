@@ -15,5 +15,4 @@ pub struct Comment {
 
 pub trait Recorder: Clone + Send + Sync + 'static {
     fn record(&self, line: HarLog) -> impl Future<Output = ()> + Send + '_;
-    fn data(&self) -> Vec<HarLog>;
 }
