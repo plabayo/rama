@@ -1,6 +1,6 @@
 use rama::http::Request;
 use rama::http::client::HttpConnector;
-use rama::http::client::http_inspector::{HttpVersionAdapater, HttpsAlpnModifier};
+use rama::http::client::http_inspector::{HttpVersionAdapter, HttpsAlpnModifier};
 use rama::http::proto::h1::Http1HeaderMap;
 use rama::http::server::HttpServer;
 use rama::http::{Body, Response};
@@ -312,7 +312,7 @@ async fn test_ua_emulation() {
                 ))
                 .with_jit_req_inspector((
                     HttpsAlpnModifier::default(),
-                    HttpVersionAdapater::default(),
+                    HttpVersionAdapter::default(),
                     UserAgentEmulateHttpConnectModifier::default(),
                 ))
                 .with_svc_req_inspector(UserAgentEmulateHttpRequestModifier::default());
@@ -386,7 +386,7 @@ async fn test_ua_embedded_profiles_are_all_resulting_in_correct_traffic_flow() {
                     ))
                     .with_jit_req_inspector((
                         HttpsAlpnModifier::default(),
-                        HttpVersionAdapater::default(),
+                        HttpVersionAdapter::default(),
                         UserAgentEmulateHttpConnectModifier::default(),
                     ))
                     .with_svc_req_inspector(UserAgentEmulateHttpRequestModifier::default());

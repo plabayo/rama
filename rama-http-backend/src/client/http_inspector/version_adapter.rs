@@ -11,11 +11,11 @@ use rama_utils::macros::generate_set_and_with;
 ///
 /// [`TargetHttpVersion`] can be set manually on the context
 /// or by layers such as tls alpn
-pub struct HttpVersionAdapater {
+pub struct HttpVersionAdapter {
     default_version: Option<Version>,
 }
 
-impl HttpVersionAdapater {
+impl HttpVersionAdapter {
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -31,7 +31,7 @@ impl HttpVersionAdapater {
     }
 }
 
-impl<State, ReqBody> Service<State, Request<ReqBody>> for HttpVersionAdapater
+impl<State, ReqBody> Service<State, Request<ReqBody>> for HttpVersionAdapter
 where
     State: Clone + Send + Sync + 'static,
     ReqBody: Send + 'static,
@@ -80,7 +80,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_should_change_if_needed() {
-        let adapter = HttpVersionAdapater::new();
+        let adapter = HttpVersionAdapter::new();
         let req = Request::new(Body::empty());
         let mut ctx = Context::default();
 
@@ -101,7 +101,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_default_fallback() {
-        let adapter = HttpVersionAdapater::new().with_default_version(Version::HTTP_11);
+        let adapter = HttpVersionAdapter::new().with_default_version(Version::HTTP_11);
         let mut req = Request::new(Body::empty());
         *req.version_mut() = Version::HTTP_2;
 
