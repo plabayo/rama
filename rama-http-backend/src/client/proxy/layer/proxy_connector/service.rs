@@ -286,22 +286,10 @@ impl AsRef<HeaderMap> for HttpProxyConnectResponseHeaders {
     }
 }
 
-impl AsMut<HeaderMap> for HttpProxyConnectResponseHeaders {
-    fn as_mut(&mut self) -> &mut HeaderMap {
-        Arc::make_mut(&mut self.0)
-    }
-}
-
 impl ops::Deref for HttpProxyConnectResponseHeaders {
     type Target = HeaderMap;
 
     fn deref(&self) -> &Self::Target {
         &self.0
-    }
-}
-
-impl ops::DerefMut for HttpProxyConnectResponseHeaders {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        Arc::make_mut(&mut self.0)
     }
 }
