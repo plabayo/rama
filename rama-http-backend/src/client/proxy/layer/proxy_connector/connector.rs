@@ -6,6 +6,7 @@ use super::HttpProxyError;
 use rama_core::error::{ErrorContext, OpaqueError};
 use rama_core::rt::Executor;
 use rama_core::telemetry::tracing;
+use rama_http::HeaderMap;
 use rama_http::io::upgrade;
 use rama_http_core::body::Incoming;
 use rama_http_core::client::conn::{http1, http2};
@@ -81,8 +82,8 @@ impl InnerHttpProxyConnector {
     pub(super) async fn handshake<S: Stream + Unpin>(
         self,
         stream: S,
-    ) -> Result<upgrade::Upgraded, HttpProxyError> {
-        let response = match self.version {
+    ) -> Result<(HeaderMap, upgrade::Upgraded), HttpProxyError> {
+        let mut response = match self.version {
             Some(Version::HTTP_10 | Version::HTTP_11) => {
                 Self::handshake_h1(self.req, stream).await?
             }
@@ -104,8 +105,12 @@ impl InnerHttpProxyConnector {
         };
 
         match response.status() {
-            StatusCode::OK => upgrade::on(response)
+            StatusCode::OK => upgrade::on(&mut response)
                 .await
+                .map(|upgraded| {
+                    let (parts, _) = response.into_parts();
+                    (parts.headers, upgraded)
+                })
                 .map_err(|err| HttpProxyError::Transport(OpaqueError::from_std(err).into_boxed())),
             StatusCode::PROXY_AUTHENTICATION_REQUIRED => Err(HttpProxyError::AuthRequired),
             StatusCode::SERVICE_UNAVAILABLE => Err(HttpProxyError::Unavailable),
