@@ -32,7 +32,7 @@ use super::IterExt;
 //   HTTP-date, the sender MUST generate those timestamps in the
 //   IMF-fixdate format.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct HttpDate(httpdate::HttpDate);
+pub struct HttpDate(httpdate::HttpDate);
 
 impl HttpDate {
     pub(crate) fn from_val(val: &HeaderValue) -> Option<Self> {
