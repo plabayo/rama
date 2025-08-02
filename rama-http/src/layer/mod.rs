@@ -26,6 +26,7 @@ pub mod dns;
 pub mod error_handling;
 pub mod follow_redirect;
 pub mod forwarded;
+pub mod har;
 pub mod header_config;
 pub mod header_from_str_config;
 pub mod header_option_value;
