@@ -1,6 +1,6 @@
 use std::future::ready;
-use std::sync::Arc;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub trait Toggle: Send + Sync + 'static {
