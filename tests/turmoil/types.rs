@@ -1,4 +1,4 @@
-use rama::{error::BoxError, telemetry::tracing, Context, Service};
+use rama::{Context, Service, error::BoxError, telemetry::tracing};
 use rama_net::{
     client::EstablishedClientConnection,
     stream::{ClientSocketInfo, SocketInfo},

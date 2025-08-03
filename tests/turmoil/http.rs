@@ -2,16 +2,16 @@ use std::time::Duration;
 
 use http::Version;
 use rama::{
+    Context, Layer, Service,
     http::{
-        layer::trace::TraceLayer, server::HttpServer, service::web::WebService, Body,
-        BodyExtractExt, Request,
+        Body, BodyExtractExt, Request, layer::trace::TraceLayer, server::HttpServer,
+        service::web::WebService,
     },
     net::address::SocketAddress,
-    Context, Layer, Service,
 };
 use rama_http_backend::client::EasyHttpWebClientBuilder;
 use tracing_subscriber::{
-    filter::LevelFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter,
+    EnvFilter, filter::LevelFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt,
 };
 use turmoil::{Builder, ToSocketAddrs};
 
