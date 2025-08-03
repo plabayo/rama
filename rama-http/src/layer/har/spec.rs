@@ -2,6 +2,7 @@ use crate::dep::core::bytes::Bytes;
 use crate::dep::http::request::Parts as ReqParts;
 use rama_error::OpaqueError;
 use rama_http_types::dep::http_body;
+use rama_http_types::proto::h1::Http1HeaderMap;
 use rama_http_types::{Request as RamaRequest, Version as HttpVersion};
 use serde::{Deserialize, Serialize};
 
@@ -135,16 +136,23 @@ impl Request {
     }
 
     fn into_har_headers(parts: &ReqParts) -> Vec<Header> {
-        parts
-            .headers
-            .clone()
+        let header_map = Http1HeaderMap::new(parts.headers.clone(), None);
+
+        header_map
             .into_iter()
-            .map(|(name, value)| Header {
-                name: name.unwrap().to_string(),
-                value: value.to_str().unwrap_or_default().to_owned(),
-                comment: None,
+            .map(|(name, value)| match parts.version {
+                rama_http_types::Version::HTTP_2 | rama_http_types::Version::HTTP_3 => Header {
+                    name: name.header_name().as_str().to_owned(),
+                    value: value.to_str().unwrap_or_default().to_owned(),
+                    comment: None,
+                },
+                _ => Header {
+                    name: name.to_string(),
+                    value: value.to_str().unwrap_or_default().to_owned(),
+                    comment: None,
+                },
             })
-            .collect::<Vec<_>>()
+            .collect()
     }
 }
 
