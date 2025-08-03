@@ -1,3 +1,34 @@
+//! An example showcasing how to complete an ACME TLS-ALPN-01 challenge using Rama with rustls and Pebble.
+//!
+//! This sets up a minimal TLS server that responds with a special certificate required
+//! to prove domain ownership over an encrypted connection. This method is useful when
+//! port 80 is blocked or not preferred, and certificate validation must occur over port 443.
+//!
+//! The example uses Pebble (a local ACME test server) as the certificate authority and disables
+//! TLS verification for simplicity.
+//!
+//! # Prerequisites
+//!
+//! - Run Pebble locally (https://github.com/letsencrypt/pebble)
+//! - Make sure Pebble is listening on `https://localhost:14000/dir`
+//! - Ensure `example.com` resolves to `127.0.0.1` in your `/etc/hosts`
+//!
+//! # Run the example
+//!
+//! ```sh
+//! cargo run --example acme_tls_challenge_using_rustls --features=http-full,acme,rustls
+//! ```
+//!
+//! # Expected Output
+//!
+//! The example:
+//! - Registers an ACME account
+//! - Creates a new order for `example.com`
+//! - Serves a TLS certificate over port `5004` with ALPN set to `acme-tls/1`
+//! - Completes the TLS-ALPN-01 challenge and downloads a certificate
+//!
+//! You should see log output indicating progress through each ACME step,
+//! and finally the certificate download will complete successfully.
 use rama::{
     Context, Layer, Service,
     crypto::dep::{
@@ -8,7 +39,7 @@ use rama::{
     http::client::EasyHttpWebClient,
     service::service_fn,
     tcp::server::TcpListener,
-    telemetry::tracing,
+    telemetry::tracing::{self, level_filters::LevelFilter},
     tls::{
         acme::{
             AcmeClient,
@@ -32,6 +63,7 @@ use rama::{
 
 use std::{convert::Infallible, sync::Arc, time::Duration};
 use tokio::time::sleep;
+use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 // Default directory url of pebble
 const TEST_DIRECTORY_URL: &str = "https://localhost:14000/dir";
@@ -40,6 +72,15 @@ const ADDR: &str = "0.0.0.0:5004";
 
 #[tokio::main]
 async fn main() {
+    tracing_subscriber::registry()
+        .with(fmt::layer())
+        .with(
+            EnvFilter::builder()
+                .with_default_directive(LevelFilter::DEBUG.into())
+                .from_env_lossy(),
+        )
+        .init();
+
     let tls_config = rama_tls_rustls::client::TlsConnectorDataBuilder::new()
         .with_env_key_logger()
         .expect("add env keylogger")
@@ -123,17 +164,12 @@ async fn main() {
     sleep(Duration::from_millis(1000)).await;
 
     order
-        .notify_challenge_ready(challenge)
+        .finish_challenge(challenge)
         .await
-        .expect("notify challenge ready");
+        .expect("finish challenge");
 
     order
-        .poll_until_challenge_finished(challenge, Duration::from_secs(30))
-        .await
-        .expect("wait until challenge is finished");
-
-    order
-        .poll_until_all_authorizations_finished(Duration::from_secs(3))
+        .wait_until_all_authorizations_finished()
         .await
         .expect("wait until all authorizations are finished");
 
@@ -142,15 +178,12 @@ async fn main() {
     let csr = create_csr();
     order.finalize(csr.der()).await.expect("finalize order");
 
-    order
-        .poll_until_certificate_ready(Duration::from_secs(3))
-        .await
-        .expect("wait until certificate is ready");
-
-    let _cert = order
+    let cert = order
         .download_certificate()
         .await
         .expect("download certificate");
+
+    tracing::info!(?cert, "received certificiate")
 }
 
 #[derive(Debug)]

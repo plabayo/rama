@@ -1,4 +1,4 @@
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 use rama_http_types::HeaderValue;
 
@@ -48,10 +48,10 @@ impl RetryAfter {
         Self(After::DateTime(time.into()))
     }
 
-    /// Create an `RetryAfter` header with a delay value (in seconds).
+    /// Create an `RetryAfter` header with a delay value in seconds
     #[must_use]
-    pub fn delay(dur: Duration) -> Self {
-        Self(After::Delay(dur.into()))
+    pub fn delay(seconds: Seconds) -> Self {
+        Self(After::Delay(seconds))
     }
 
     #[must_use]
@@ -90,16 +90,14 @@ impl<'a> From<&'a After> for HeaderValue {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
     use super::super::test_decode;
-    use super::RetryAfter;
+    use super::{RetryAfter, Seconds};
     use crate::util::HttpDate;
 
     #[test]
     fn delay_decode() {
         let r: RetryAfter = test_decode(&["1234"]).unwrap();
-        assert_eq!(r, RetryAfter::delay(Duration::from_secs(1234)),);
+        assert_eq!(r, RetryAfter::delay(Seconds::new(1234)));
     }
 
     macro_rules! test_retry_after_datetime {

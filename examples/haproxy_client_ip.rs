@@ -25,15 +25,17 @@
 use rama::{
     Context, Layer,
     error::ErrorContext,
-    http::{StatusCode, server::HttpServer, service::web::Router},
+    http::{
+        StatusCode, layer::required_header::AddRequiredResponseHeaders, server::HttpServer,
+        service::web::Router,
+    },
     net::{forwarded::Forwarded, stream::SocketInfo},
     proxy::haproxy::server::HaProxyLayer,
     rt::Executor,
     tcp::server::TcpListener,
+    telemetry::tracing::level_filters::LevelFilter,
 };
-use rama_http::layer::required_header::AddRequiredResponseHeaders;
 
-use rama_core::telemetry::tracing::level_filters::LevelFilter;
 use std::time::Duration;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 

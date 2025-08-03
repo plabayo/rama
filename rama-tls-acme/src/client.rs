@@ -34,7 +34,7 @@ use std::{
     borrow::Cow,
     time::{Duration, SystemTime},
 };
-use tokio::time::{sleep, timeout};
+use tokio::time::sleep;
 
 /// Acme client that will used for all acme operations
 pub struct AcmeClient {
@@ -169,30 +169,28 @@ impl AcmeClient {
 #[derive(Clone, Debug)]
 /// Enum of popular acme providers and their directory url
 pub enum AcmeProvider {
-    LetsEncrypt(&'static str),
-    ZeroSsl(&'static str),
-    GoogleTrustServices(&'static str),
+    LetsEncryptProduction,
+    LetsEncryptStaging,
+    ZeroSslProduction,
+    GoogleTrustServicesProduction,
+    GoogleTrustServicesStaging,
 }
 
 impl AcmeProvider {
-    pub const LETSENCRYPT_PRODUCTION: Self =
-        Self::LetsEncrypt("https://acme-v01.api.letsencrypt.org/directory");
-
-    pub const LETSENCRYPT_STAGING: Self =
-        Self::LetsEncrypt("https://acme-staging-v02.api.letsencrypt.org/directory");
-
-    pub const ZERO_SSL_PRODUCTION: Self = Self::ZeroSsl("https://acme.zerossl.com/v2/DV90");
-
-    pub const GOOGLE_TRUST_SERVICES_PRODUCTION: Self =
-        Self::GoogleTrustServices("https://dv.acme-v02.api.pki.goog/directory");
-
-    pub const GOOGLE_TRUST_SERVICES_STAGING: Self =
-        Self::GoogleTrustServices("https://dv.acme-v02.test-api.pki.goog/directory");
-
     #[must_use]
     pub fn as_str(&self) -> &str {
         match self {
-            Self::LetsEncrypt(url) | Self::ZeroSsl(url) | Self::GoogleTrustServices(url) => url,
+            AcmeProvider::LetsEncryptProduction => "https://acme-v01.api.letsencrypt.org/directory",
+            AcmeProvider::LetsEncryptStaging => {
+                "https://acme-staging-v02.api.letsencrypt.org/directory"
+            }
+            AcmeProvider::ZeroSslProduction => "https://acme.zerossl.com/v2/DV90",
+            AcmeProvider::GoogleTrustServicesProduction => {
+                "https://dv.acme-v02.api.pki.goog/directory"
+            }
+            AcmeProvider::GoogleTrustServicesStaging => {
+                "https://dv.acme-v02.test-api.pki.goog/directory"
+            }
         }
     }
 }
@@ -371,10 +369,23 @@ impl<'a> Order<'a> {
         Ok(authorization)
     }
 
+    /// Finish the current challenge
+    ///
+    /// This does two things behind the scene
+    /// 1. Notify acme server that challenge is ready and should be verified by the server ([`Self::notify_challenge_ready`])
+    /// 2. Polls the acme server until the server has verified this challenge and has updated its internal status ([`Self::wait_until_challenge_finished`])
+    pub async fn finish_challenge(
+        &self,
+        challenge: &mut server::Challenge,
+    ) -> Result<(), ClientError> {
+        self.notify_challenge_ready(challenge).await?;
+        self.wait_until_challenge_finished(challenge).await
+    }
+
     /// Notify ACME server that the given challenge is ready
     ///
     /// Server will now try to verify this and we should keep polling the server
-    /// with [`Self::poll_until_challenge_finished()`] to wait for the result.
+    /// with [`Self::wait_until_challenge_finished()`] to wait for the result.
     pub async fn notify_challenge_ready(
         &self,
         challenge: &server::Challenge,
@@ -414,40 +425,35 @@ impl<'a> Order<'a> {
         Ok(retry)
     }
 
-    /// Poll until the challenge is finished (challenge.status == server::ChallengeStatus::Valid | server::ChallengeStatus::Invalid)
-    pub async fn poll_until_challenge_finished(
+    /// Poll acme server until the challenge is finished (challenge.status == server::ChallengeStatus::Valid | server::ChallengeStatus::Invalid)
+    pub async fn wait_until_challenge_finished(
         &self,
         challenge: &mut server::Challenge,
-        timeout_duration: Duration,
     ) -> Result<(), ClientError> {
-        timeout(timeout_duration, async {
-            loop {
-                let retry_wait = self.refresh_challenge(challenge).await?;
+        loop {
+            let retry_wait = self.refresh_challenge(challenge).await?;
 
-                if challenge.status == server::ChallengeStatus::Valid
-                    || challenge.status == server::ChallengeStatus::Invalid
-                {
-                    break;
+            match challenge.status {
+                server::ChallengeStatus::Pending | server::ChallengeStatus::Processing => (),
+                server::ChallengeStatus::Valid => return Ok(()),
+                server::ChallengeStatus::Invalid => {
+                    return Err(
+                        OpaqueError::from_display("challenge is detected as invalid").into(),
+                    );
                 }
-
-                sleep(retry_wait.unwrap_or(Duration::from_millis(1000))).await;
             }
 
-            Ok(())
-        })
-        .await
-        .context("poll until challenge ready")?
+            sleep(retry_wait.unwrap_or(Duration::from_millis(1000))).await;
+        }
     }
 
-    /// Keep polling until all [`server::Authorization`]s have finished
+    /// Keep polling acme server until all [`server::Authorization`]s have finished
     ///
     /// Note for this to work each [`server::Authorization`] needs to have one valid challenge
-    pub async fn poll_until_all_authorizations_finished(
+    pub async fn wait_until_all_authorizations_finished(
         &mut self,
-        timeout_duration: Duration,
     ) -> Result<&server::Order, ClientError> {
-        self.poll_until_status(timeout_duration, server::OrderStatus::Ready)
-            .await
+        self.wait_until_status(server::OrderStatus::Ready).await
     }
 
     /// Finalize the order and request ACME server to generate a certifcate from the provided certificate params
@@ -475,19 +481,16 @@ impl<'a> Order<'a> {
         Ok(&self.inner)
     }
 
-    /// Keep polling until the certificate is ready (order.status == server::OrderStatus::Valid)
-    pub async fn poll_until_certificate_ready(
-        &mut self,
-        timeout_duration: Duration,
-    ) -> Result<&server::Order, ClientError> {
-        self.poll_until_status(timeout_duration, server::OrderStatus::Valid)
-            .await
+    /// Keep polling acme server until the certificate is ready (order.status == server::OrderStatus::Valid)
+    pub async fn wait_until_certificate_ready(&mut self) -> Result<&server::Order, ClientError> {
+        self.wait_until_status(server::OrderStatus::Valid).await
     }
 
     /// Download the certificate generated by the server
     ///
-    /// Note: for this to work the certificate needs to be ready (order.status == server::OrderStatus::Valid)
-    pub async fn download_certificate(&self) -> Result<String, OpaqueError> {
+    /// Note: for this to work the certificate needs to be ready (order.status == server::OrderStatus::Valid).
+    /// Use [`Self::download_certificate`] instead to also wait for this correct status before downloading.
+    pub async fn download_certificate_no_checks(&self) -> Result<String, ClientError> {
         let certificate_url = self
             .inner
             .certificate
@@ -504,29 +507,31 @@ impl<'a> Order<'a> {
         Ok(certificate)
     }
 
+    /// Wait until certificate is ready and then download it
+    ///
+    /// To directly download the certificate without waiting for the correct status
+    /// use [`Self::download_certificate_no_checks`] instead
+    pub async fn download_certificate(&mut self) -> Result<String, ClientError> {
+        self.wait_until_certificate_ready().await?;
+        self.download_certificate_no_checks().await
+    }
+
     /// Keep polling until the order has reached the given status
-    pub async fn poll_until_status(
+    pub async fn wait_until_status(
         &mut self,
-        timeout_duration: Duration,
         status: server::OrderStatus,
     ) -> Result<&server::Order, ClientError> {
-        timeout(timeout_duration, async {
-            loop {
-                let (_, retry_wait) = self.refresh().await?;
-                if self.inner.status == status {
-                    break Ok::<_, ClientError>(());
-                }
-                if self.inner.status == server::OrderStatus::Invalid {
-                    break Err(OpaqueError::from_display("Order is invalid state").into());
-                }
-
-                sleep(retry_wait.unwrap_or(Duration::from_millis(1000))).await;
+        loop {
+            let (_, retry_wait) = self.refresh().await?;
+            if self.inner.status == status {
+                return Ok::<_, ClientError>(&self.inner);
             }
-        })
-        .await
-        .context(format!("poll until status {status:?}"))??;
+            if self.inner.status == server::OrderStatus::Invalid {
+                return Err(OpaqueError::from_display("Order is invalid state").into());
+            }
 
-        Ok(&self.inner)
+            sleep(retry_wait.unwrap_or(Duration::from_millis(1000))).await;
+        }
     }
 
     /// Create [`KeyAuthorization`] for the given challenge

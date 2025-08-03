@@ -12,10 +12,13 @@ use std::fmt::Debug;
 ///
 /// [rfc8555 section 7.3]: https://datatracker.ietf.org/doc/html/rfc8555/#section-7.3
 pub struct CreateAccountOptions {
+    /// Contact URLs for the account (e.g., "mailto:")
     pub contact: Option<Vec<String>>,
+    /// Indicates agreement with the terms of service
     pub terms_of_service_agreed: Option<bool>,
+    /// If true, only return an existing account; do not create a new one
     pub only_return_existing: Option<bool>,
-    /// TODO support binding external accounts to acme account
+    /// Placeholder for external account binding (not yet supported)
     pub external_account_binding: Option<()>,
 }
 

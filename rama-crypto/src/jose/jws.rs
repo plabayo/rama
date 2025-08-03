@@ -5,10 +5,18 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
-/// When used with serde this will serialize to empty struct
+/// When used with serde this will serialize to an empty JSON object (`{}`)
+///
+/// Some remarks about this struct:
+/// - We use Empty {} and not Empty, because they serialize differently `{}` vs explicit `null`
+/// - We don't make this `non_exhaustive` since we will never add fields to it, and using `Empty {}`
+///   makes a a bit more clear that we are making an empty struct (object)
+/// - In most cases you don't want to use this struct directly but instead you want to use [`NO_PAYLOAD`] or [`EMPTY_PAYLOAD`]
 pub struct Empty {}
 
+/// Serializes to a JSON null value
 pub const NO_PAYLOAD: Option<&'static Empty> = None;
+/// Serializes to a JSON empty object `{}`
 pub const EMPTY_PAYLOAD: Option<&'static Empty> = Some(&Empty {});
 
 #[derive(Default, Debug, Clone, PartialEq, Eq)]

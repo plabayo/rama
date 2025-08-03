@@ -7,16 +7,27 @@ pub const LOCATION_HEADER: &str = "location";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-/// Directy contain all endpoints needed by an acme client, defined in [rfc8555 section 7.1.1]
+/// Directory containing all endpoints needed by an acme client, defined in [rfc8555 section 7.1.1]
+///
+/// The directory is a JSON object that lists the URLs of the ACME server’s key endpoints.
+/// This directory allows clients to dynamically discover where to send their requests,
+/// enabling interoperability and flexibility without hardcoded URLs.
 ///
 /// [rfc8555 section 7.1.1]: https://datatracker.ietf.org/doc/html/rfc8555/#section-7.1.1
 pub struct Directory {
+    /// URL for requesting a new nonce
     pub new_nonce: String,
+    /// URL for creating a new account
     pub new_account: String,
+    /// URL for creating a new order
     pub new_order: String,
+    /// Optional URL for creating new authorization objects (not required by all CAs)
     pub new_authz: Option<String>,
+    /// URL for revoking a certificate
     pub revoke_cert: String,
+    /// URL for submitting a key change request
     pub key_change: String,
+    /// Optional metadata provided by the CA
     pub meta: Option<DirectoryMeta>,
 }
 
@@ -24,10 +35,14 @@ pub struct Directory {
 #[serde(rename_all = "camelCase")]
 /// Extra metadata that acme server can return
 pub struct DirectoryMeta {
-    terms_of_service: Option<String>,
-    website: Option<String>,
-    caa_identities: Option<Vec<String>>,
-    external_account_required: Option<bool>,
+    /// URL to the CA’s terms of service, if any
+    pub terms_of_service: Option<String>,
+    /// URL to the CA’s website, if any
+    pub website: Option<String>,
+    /// List of CAA (Certification Authority Authorization) identities supported by the CA
+    pub caa_identities: Option<Vec<String>>,
+    /// Whether the CA requires external account binding
+    pub external_account_required: Option<bool>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

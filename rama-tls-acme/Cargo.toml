@@ -1,6 +1,6 @@
 [package]
 name = "rama-tls-acme"
-description = "ACME support for rama (RFC 8555)"
+description = "ACME support for rama"
 version = { workspace = true }
 license = { workspace = true }
 edition = { workspace = true }
