@@ -29,6 +29,9 @@
 //!
 //! You should see log output indicating progress through each ACME step,
 //! and finally the certificate download will complete successfully.
+//!
+//! TODO: once Rama has an ACME server implementation (https://github.com/plabayo/rama/issues/649) migrate
+//! this example to use that instead of Pebble so we can test everything automatically
 use rama::{
     Context, Layer, Service,
     crypto::dep::{
