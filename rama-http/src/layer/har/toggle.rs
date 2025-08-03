@@ -1,4 +1,5 @@
 use crate::dep::core::futures::future::Either;
+use std::future::ready;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -8,7 +9,7 @@ pub trait Toggle: Clone + Send + Sync + 'static {
 
 impl Toggle for bool {
     fn status(&self) -> impl Future<Output = bool> + Send + '_ {
-        std::future::ready(*self)
+        ready(*self)
     }
 }
 
@@ -21,15 +22,21 @@ impl<T: Toggle> Toggle for Option<T> {
     }
 }
 
+impl Toggle for Arc<AtomicBool> {
+    fn status(&self) -> impl Future<Output = bool> + Send + '_ {
+        ready(self.load(Ordering::SeqCst))
+    }
+}
+
 impl<T: Toggle> Toggle for Arc<T> {
     fn status(&self) -> impl Future<Output = bool> + Send + '_ {
         (**self).status()
     }
 }
 
-impl Toggle for Arc<AtomicBool> {
+impl<T: Toggle, F: Fn() -> T + Clone + Send + Sync + 'static> Toggle for F {
     fn status(&self) -> impl Future<Output = bool> + Send + '_ {
-        std::future::ready(self.load(Ordering::SeqCst))
+        async { (self)().status().await }
     }
 }
 

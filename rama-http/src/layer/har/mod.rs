@@ -1,4 +1,6 @@
 use crate::layer::har::spec::Log as HarLog;
+
+use std::borrow::Cow;
 use std::future::Future;
 
 pub mod default;
@@ -9,8 +11,8 @@ pub mod toggle;
 
 #[derive(Clone)]
 pub struct Comment {
-    pub author: String,
-    pub text: String,
+    pub author: Cow<'static, str>,
+    pub text: Cow<'static, str>,
 }
 
 pub trait Recorder: Clone + Send + Sync + 'static {
