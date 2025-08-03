@@ -118,14 +118,12 @@ impl Request {
 
     fn into_har_query_string(parts: &ReqParts) -> Vec<QueryString> {
         let query_str = parts.uri.query().unwrap_or("");
-        let query = Query::parse_query_str(query_str);
+        let query = Query::<HashMap<String, String>>::parse_query_str(query_str);
 
-        let query_map: Query<HashMap<String, String>> = match query {
-            Ok(q) => q,
-            Err(_) => return vec![],
-        };
-
-        query_map.0.into_iter().map(Into::into).collect()
+        match query {
+            Ok(q) => q.0.into_iter().map(Into::into).collect(),
+            Err(_) => vec![]
+        }
     }
 
     fn into_har_headers(parts: &ReqParts) -> Vec<Header> {
