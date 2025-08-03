@@ -2,17 +2,15 @@ use std::time::Duration;
 
 use http::Version;
 use rama::{
-    Context, Layer, Service,
     http::{
-        Body, BodyExtractExt, Request, layer::trace::TraceLayer, server::HttpServer,
-        service::web::WebService,
+        layer::trace::TraceLayer, server::HttpServer, service::web::WebService, Body,
+        BodyExtractExt, Request,
     },
     net::address::SocketAddress,
+    Context, Layer, Service,
 };
 use rama_http_backend::client::EasyHttpWebClientBuilder;
-use tracing_subscriber::{
-    EnvFilter, filter::LevelFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt,
-};
+use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 use turmoil::{Builder, ToSocketAddrs};
 
 use crate::types::TurmoilTcpConnector;
@@ -21,11 +19,10 @@ const ADDRESS: SocketAddress = SocketAddress::default_ipv4(62004);
 
 fn setup_tracing() {
     tracing_subscriber::registry()
-        .with(fmt::layer())
+        .with(fmt::layer().with_test_writer())
         .with(
-            EnvFilter::builder()
-                .with_default_directive(LevelFilter::DEBUG.into())
-                .from_env_lossy(),
+            EnvFilter::try_from_env("RUST_LOG")
+                .unwrap_or_else(|_| EnvFilter::new("turmoil=trace,info")),
         )
         .init();
 }
