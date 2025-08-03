@@ -148,17 +148,28 @@ impl Request {
 }
 
 har_data!(Response, {
+    /// Response status.
     pub status: u16,
+    /// Response status description.
     pub status_text: String,
+    /// Response HTTP Version.
     pub http_version: String,
+    /// List of cookie objects.
     pub cookies: Vec<Cookie>,
+    /// List of header objects.
     pub headers: Vec<Header>,
+    /// Details about the response body.
     pub content: Content,
+    /// Redirection target URL from the Location response header.
     pub redirect_url: String,
+    /// Total number of bytes from the start of the HTTP response message until (and including) the double CRLF before the body. Set to -1 if the info is not available.
     pub headers_size: i64,
+    /// Size of the received response body in bytes. Set to zero in case of responses coming from the cache (304). Set to -1 if the info is not available.
     pub body_size: i64,
+    /// A comment provided by the user or the application.
     pub comment: Option<String>,
 });
+
 
 // TODO: https://github.com/plabayo/rama/issues/44
 // For now this will have to be manually parsed. Needs an http-cookie logic
