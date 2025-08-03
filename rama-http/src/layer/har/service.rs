@@ -40,7 +40,7 @@ where
         if self.toggle.status().await {
             let mut entry = Entry::default();
             let mut log_line = HarLog::default();
-            entry.request = HarRequest::from_rama_request::<ReqBody>(&req)?;
+            entry.request = HarRequest::from_rama_request::<ReqBody>(&req).await?;
 
             if let Ok(ref _response) = result {
                 // TODO

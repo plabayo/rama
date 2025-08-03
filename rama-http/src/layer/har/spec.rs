@@ -1,12 +1,20 @@
+use std::collections::HashMap;
+use std::fmt::Debug;
+use std::fmt::Write;
+
 use crate::dep::core::bytes::Bytes;
 use crate::dep::http::request::Parts as ReqParts;
 use crate::service::web::extract::Query;
+use rama_http_types::dep::http_body_util::BodyExt;
+
 use rama_error::OpaqueError;
-use rama_http_types::dep::http_body;
-use rama_http_types::proto::h1::Http1HeaderMap;
-use rama_http_types::{Request as RamaRequest, Version as HttpVersion};
+use rama_http_types::dep::http_body::Body as RamaBody;
+use rama_http_types::{
+    HeaderMap, Request as RamaRequest, Version as HttpVersion, header::CONTENT_TYPE,
+    proto::h1::Http1HeaderMap,
+};
+
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
 macro_rules! har_data {
     ($name:ident, { $($field:tt)* }) => {
@@ -80,25 +88,87 @@ har_data!(Request, {
 });
 
 impl Request {
-    pub fn from_rama_request<B>(req: &RamaRequest<B>) -> Result<Self, OpaqueError>
+    /// Compute the total number of bytes from the start of the HTTP request
+    /// until (and including) the double CRLF before the body.
+    pub fn headers_size_from_request<B>(req: &RamaRequest<B>) -> i64
     where
-        B: http_body::Body<Data = Bytes> + Clone + Send + 'static,
+        B: RamaBody<Data = Bytes> + Clone + Send + 'static,
     {
-        let (parts, _body) = req.clone().into_parts();
-        // body could be used for computing body_size?
+        let mut raw = String::new();
+
+        // Write the request line: METHOD URI VERSION\r\n
+        let method = req.method();
+        let uri = req.uri();
+        let version = match req.version() {
+            HttpVersion::HTTP_11 => "HTTP/1.1",
+            HttpVersion::HTTP_10 => "HTTP/1.0",
+            HttpVersion::HTTP_2 => "HTTP/2.0",
+            HttpVersion::HTTP_3 => "HTTP/3.0",
+            _ => "HTTP/1.1",
+        };
+        writeln!(raw, "{method} {uri} {version}\r").unwrap();
+
+        // Format: Header-Name: value\r\n
+        for (name, value) in req.headers() {
+            let value_str = value.to_str().unwrap_or_default();
+            writeln!(raw, "{name}: {value_str}\r").unwrap();
+        }
+
+        // Final CRLF (the empty line between headers and body)
+        raw.push_str("\r\n");
+
+        raw.len() as i64
+    }
+
+    fn get_content_type(headers: HeaderMap) -> String {
+        if headers.contains_key(CONTENT_TYPE) {
+            headers
+                .get(CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+                .to_owned()
+        } else {
+            // TODO should we set a default?
+            String::new()
+        }
+    }
+
+    pub async fn from_rama_request<B>(req: &RamaRequest<B>) -> Result<Self, OpaqueError>
+    where
+        B: RamaBody<Data = Bytes> + Clone + Send + 'static,
+    {
+        let (parts, body) = req.clone().into_parts();
+
+        let body_bytes = body
+            .collect()
+            .await
+            .map_err(|_| OpaqueError::from_display("Failed to read body"))?
+            .to_bytes();
 
         let http_version = Self::into_string_version(parts.version)?;
+
+        let post_data = if parts.method == "POST" {
+            Some(PostData {
+                mime_type: Self::get_content_type(parts.headers.clone()),
+                // TODO params
+                params: None,
+                text: Some(String::from_utf8_lossy(&body_bytes).to_string()),
+                comment: None,
+            })
+        } else {
+            None
+        };
 
         Ok(Self {
             method: parts.method.to_string(),
             url: parts.uri.to_string(),
             http_version,
             cookies: vec![],
-            headers: Self::into_har_headers(&parts),
+            headers: Self::into_har_headers(parts.headers.clone(), parts.version),
             query_string: Self::into_har_query_string(&parts),
-            post_data: None,
-            headers_size: 0,
-            body_size: -1,
+            post_data,
+            headers_size: Self::headers_size_from_request(req),
+            body_size: body_bytes.len() as i64,
             comment: None,
         })
     }
@@ -122,17 +192,17 @@ impl Request {
 
         match query {
             Ok(q) => q.0.into_iter().map(Into::into).collect(),
-            Err(_) => vec![]
+            Err(_) => vec![],
         }
     }
 
-    fn into_har_headers(parts: &ReqParts) -> Vec<Header> {
-        let header_map = Http1HeaderMap::new(parts.headers.clone(), None);
+    fn into_har_headers(headers: HeaderMap, version: HttpVersion) -> Vec<Header> {
+        let header_map = Http1HeaderMap::new(headers, None);
 
         header_map
             .into_iter()
-            .map(|(name, value)| match parts.version {
-                rama_http_types::Version::HTTP_2 | rama_http_types::Version::HTTP_3 => Header {
+            .map(|(name, value)| match version {
+                HttpVersion::HTTP_2 | HttpVersion::HTTP_3 => Header {
                     name: name.header_name().as_str().to_owned(),
                     value: value.to_str().unwrap_or_default().to_owned(),
                     comment: None,
@@ -169,7 +239,6 @@ har_data!(Response, {
     /// A comment provided by the user or the application.
     pub comment: Option<String>,
 });
-
 
 // TODO: https://github.com/plabayo/rama/issues/44
 // For now this will have to be manually parsed. Needs an http-cookie logic
