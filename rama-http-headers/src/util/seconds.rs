@@ -10,24 +10,29 @@ use crate::util::IterExt;
 pub struct Seconds(u64);
 
 impl Seconds {
+    #[must_use]
     pub fn new(seconds: u64) -> Self {
         Self(seconds)
     }
 
+    #[must_use]
     pub fn from_val(val: &HeaderValue) -> Option<Self> {
         let secs = val.to_str().ok()?.parse().ok()?;
 
         Some(Self::new(secs))
     }
 
+    #[must_use]
     pub fn from_duration(duration: Duration) -> Self {
         Self::new(duration.as_secs())
     }
 
+    #[must_use]
     pub fn seconds(self) -> u64 {
         self.0
     }
 
+    #[must_use]
     pub fn as_duration(self) -> Duration {
         Duration::from_secs(self.0)
     }
