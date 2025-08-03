@@ -93,11 +93,7 @@ impl<S, F> MapResult<S, F> {
 impl<S, F, State, Request, Response, Error> Service<State, Request> for MapResult<S, F>
 where
     S: Service<State, Request>,
-    F: FnOnce(Result<S::Response, S::Error>) -> Result<Response, Error>
-        + Clone
-        + Send
-        + Sync
-        + 'static,
+    F: Fn(Result<S::Response, S::Error>) -> Result<Response, Error> + Send + Sync + 'static,
     State: Clone + Send + Sync + 'static,
     Request: Send + 'static,
     Response: Send + 'static,
@@ -112,7 +108,7 @@ where
         req: Request,
     ) -> Result<Self::Response, Self::Error> {
         let result = self.inner.serve(ctx, req).await;
-        (self.f.clone())(result)
+        (self.f)(result)
     }
 }
 

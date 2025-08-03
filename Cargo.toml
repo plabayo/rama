@@ -175,6 +175,7 @@ rama-utils = { version = "0.3.0-alpha.2", path = "./rama-utils" }
 rama-ws = { version = "0.3.0-alpha.2", path = "./rama-ws" }
 rand = "0.9"
 ratatui = "0.29"
+rawzip = { version = "0.3" }
 rcgen = { version = "0.14", default-features = false, features = ["pem", "aws_lc_rs", "x509-parser"] }
 regex = "1.11"
 rustls = { version = "0.23", default-features = false, features = [
@@ -540,6 +541,10 @@ required-features = ["http-full"]
 
 [[example]]
 name = "http_anti_bot_infinite_resource"
+required-features = ["http-full"]
+
+[[example]]
+name = "http_anti_bot_zip_bomb"
 required-features = ["http-full"]
 
 [[example]]

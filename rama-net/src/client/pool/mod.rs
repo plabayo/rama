@@ -17,6 +17,11 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::time::timeout;
 
+#[cfg(feature = "http")]
+pub mod http;
+#[cfg(feature = "opentelemetry")]
+pub mod metrics;
+
 /// [`PoolStorage`] implements the storage part of a connection pool. This storage
 /// also decides which connection it returns for a given ID or when the caller asks to
 /// remove one, this results in the storage deciding which mode we use for connection
@@ -142,6 +147,8 @@ pub struct LruDropPool<C, ID> {
     idle_timeout: Option<Duration>,
     returner: ConnReturner<C, ID>,
     reuse_strategy: ReuseStrategy,
+    #[cfg(feature = "opentelemetry")]
+    metrics: Option<Arc<metrics::PoolMetrics>>,
 }
 
 #[non_exhaustive]
@@ -201,6 +208,8 @@ impl<C, ID> Clone for LruDropPool<C, ID> {
             returner: self.returner.clone(),
             idle_timeout: self.idle_timeout,
             reuse_strategy: self.reuse_strategy,
+            #[cfg(feature = "opentelemetry")]
+            metrics: self.metrics.clone(),
         }
     }
 }
@@ -226,6 +235,8 @@ impl<C, ID> LruDropPool<C, ID> {
             active_slots: Arc::new(Semaphore::const_new(max_active)),
             idle_timeout: None,
             reuse_strategy: ReuseStrategy::default(),
+            #[cfg(feature = "opentelemetry")]
+            metrics: None,
         })
     }
 
@@ -247,12 +258,20 @@ impl<C, ID> LruDropPool<C, ID> {
             self
         }
     }
+
+    #[cfg(feature = "opentelemetry")]
+    generate_set_and_with! {
+        pub fn metrics(mut self, metrics: Option<Arc<metrics::PoolMetrics>>) -> Self {
+            self.metrics = metrics;
+            self
+        }
+    }
 }
 
 impl<C, ID> Pool<C, ID> for LruDropPool<C, ID>
 where
     C: Send + 'static,
-    ID: Clone + Send + Sync + PartialEq + Debug + 'static,
+    ID: ConnID,
 {
     type Connection = LeasedConnection<C, ID>;
     type CreatePermit = (ActiveSlot, PoolSlot);
@@ -261,6 +280,14 @@ where
         &self,
         id: &ID,
     ) -> Result<ConnectionResult<Self::Connection, Self::CreatePermit>, OpaqueError> {
+        #[cfg(feature = "opentelemetry")]
+        let metrics = self
+            .metrics
+            .as_ref()
+            .map(|metrics| (metrics, metrics.attributes(id)));
+
+        #[cfg(feature = "opentelemetry")]
+        let start = Instant::now();
         let active_slot = ActiveSlot(
             self.active_slots
                 .clone()
@@ -268,6 +295,14 @@ where
                 .await
                 .context("get active pool slot")?,
         );
+
+        #[cfg(feature = "opentelemetry")]
+        if let Some((metrics, metric_attrs)) = &metrics {
+            let active_connection_delay_nanoseconds = start.elapsed().as_nanos() as f64;
+            metrics
+                .active_connection_delay_nanoseconds
+                .record(active_connection_delay_nanoseconds, metric_attrs);
+        };
 
         let mut storage = self.storage.lock();
 
@@ -293,6 +328,16 @@ where
 
         if let Some((idx, pooled_conn)) = self.reuse_strategy.get_conn(&mut storage, id) {
             trace!("LRU connection pool: connection #{idx} found for given id {id:?}");
+
+            #[cfg(feature = "opentelemetry")]
+            if let Some((metrics, metric_attrs)) = &metrics {
+                metrics.total_connections.add(1, metric_attrs);
+                metrics.reused_connections.add(1, metric_attrs);
+                metrics
+                    .reused_connection_pos
+                    .record(idx as u64, metric_attrs);
+            }
+
             return Ok(ConnectionResult::Connection(LeasedConnection {
                 active_slot,
                 pooled_conn: Some(pooled_conn),
@@ -309,6 +354,10 @@ where
                     error = %err,
                     "LRU connection pool: evicting lru connection (#{id:?}) to create a new one"
                 );
+                #[cfg(feature = "opentelemetry")]
+                if let Some((metrics, metric_attrs)) = &metrics {
+                    metrics.evicted_connections.add(1, metric_attrs);
+                }
                 storage
                     .pop_back()
                     .context("get least recently used connection from storage")?
@@ -325,6 +374,14 @@ where
     async fn create(&self, id: ID, conn: C, permit: Self::CreatePermit) -> Self::Connection {
         trace!("adding new connection (w/ id {id:?}) to pool");
         let (active_slot, pool_slot) = permit;
+
+        #[cfg(feature = "opentelemetry")]
+        if let Some(metrics) = &self.metrics.as_ref() {
+            let metric_attrs = metrics.attributes(&id);
+            metrics.total_connections.add(1, &metric_attrs);
+            metrics.created_connections.add(1, &metric_attrs);
+        }
+
         LeasedConnection {
             active_slot,
             returner: self.returner.clone(),
@@ -560,20 +617,33 @@ impl<C, ID: Debug> Debug for LruDropPool<C, ID> {
     }
 }
 
-/// [`ReqToConnID`] is used to convert a `Request` to a connection ID. These IDs are
-/// not unique and multiple connections can have the same ID. IDs are used to filter
-/// which connections can be used for a specific Request in a way that is indepent of
-/// what a Request is.
+/// [`ReqToConnID`] is used to convert a `Request` to a connection ID. These IDs
+/// are not unique and multiple connections can have the same ID. IDs are used
+/// to filter which connections can be used for a specific Request in a way that
+/// is independent of what a Request is.
 pub trait ReqToConnID<State, Request>: Sized + Clone + Send + Sync + 'static {
-    type ID: Send + Sync + PartialEq + Clone + Debug + 'static;
+    type ID: ConnID;
 
     fn id(&self, ctx: &Context<State>, request: &Request) -> Result<Self::ID, OpaqueError>;
+}
+
+/// [`ConnID`] is used to identify a connection in a connection pool. These IDs
+/// are not unique and multiple connections can have the same ID. IDs are used
+/// to filter which connections can be used for a specific Request in a way that
+/// is independent of what a Request is.
+pub trait ConnID: Send + Sync + PartialEq + Clone + Debug + 'static {
+    #[cfg(feature = "opentelemetry")]
+    /// Returns a list of attributes to add to metrics generated by the
+    /// connection pool.
+    fn attributes(&self) -> impl Iterator<Item = rama_core::telemetry::opentelemetry::KeyValue> {
+        std::iter::empty()
+    }
 }
 
 impl<State, Request, ID, F> ReqToConnID<State, Request> for F
 where
     F: Fn(&Context<State>, &Request) -> Result<ID, OpaqueError> + Clone + Send + Sync + 'static,
-    ID: Send + Sync + PartialEq + Clone + Debug + 'static,
+    ID: ConnID,
 {
     type ID = ID;
 
@@ -718,86 +788,6 @@ impl<S, P: Clone, R: Clone> Layer<S> for PooledConnectorLayer<P, R> {
     }
 }
 
-#[cfg(feature = "http")]
-pub mod http {
-    use super::{LruDropPool, PooledConnector, ReqToConnID};
-    use crate::{Protocol, address::Authority, client::pool::OpaqueError, http::RequestContext};
-    use rama_core::Context;
-    use rama_http_types::Request;
-    use std::time::Duration;
-
-    #[derive(Clone, Debug, Default)]
-    #[non_exhaustive]
-    /// [`BasicHttpConnIdentifier`] can be used together with a [`super::Pool`] to create a basic http connection pool
-    pub struct BasicHttpConnIdentifier;
-
-    pub type BasicHttpConId = (Protocol, Authority);
-
-    impl<State, Body> ReqToConnID<State, Request<Body>> for BasicHttpConnIdentifier {
-        type ID = BasicHttpConId;
-
-        fn id(&self, ctx: &Context<State>, req: &Request<Body>) -> Result<Self::ID, OpaqueError> {
-            let req_ctx = match ctx.get::<RequestContext>() {
-                Some(ctx) => ctx,
-                None => &RequestContext::try_from((ctx, req))?,
-            };
-
-            Ok((req_ctx.protocol.clone(), req_ctx.authority.clone()))
-        }
-    }
-
-    #[derive(Clone)]
-    /// Config used to create the default http connection pool
-    pub struct HttpPooledConnectorConfig {
-        /// Set the max amount of connections that this connection pool will contain
-        ///
-        /// This is the sum of active connections and idle connections. When this limit
-        /// is hit idle connections will be replaced with new ones.
-        pub max_total: usize,
-        /// Set the max amount of connections that can actively be used
-        ///
-        /// Requesting a connection from the pool will block until the pool
-        /// is below max capacity again.
-        pub max_active: usize,
-        /// If connections have been idle for longer then the provided timeout they
-        /// will be dropped and removed from the pool
-        ///
-        /// Note: timeout is only checked when a connection is requested from the pool,
-        /// it is not something that is done periodically
-        pub idle_timeout: Option<Duration>,
-        /// When a pool is operating at max active capacity wait for this duration
-        /// to get a connection from the pool before the connector raises a timeout error
-        pub wait_for_pool_timeout: Option<Duration>,
-    }
-
-    impl Default for HttpPooledConnectorConfig {
-        fn default() -> Self {
-            Self {
-                max_total: 50,
-                max_active: 20,
-                wait_for_pool_timeout: Some(Duration::from_secs(120)),
-                idle_timeout: Some(Duration::from_secs(300)),
-            }
-        }
-    }
-
-    impl HttpPooledConnectorConfig {
-        pub fn build_connector<C, S>(
-            self,
-            inner: S,
-        ) -> Result<
-            PooledConnector<S, LruDropPool<C, BasicHttpConId>, BasicHttpConnIdentifier>,
-            OpaqueError,
-        > {
-            let pool = LruDropPool::new(self.max_active, self.max_total)?
-                .maybe_with_idle_timeout(self.idle_timeout);
-
-            Ok(PooledConnector::new(inner, pool, BasicHttpConnIdentifier)
-                .maybe_with_wait_for_pool_timeout(self.wait_for_pool_timeout))
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -853,6 +843,9 @@ mod tests {
             Ok(req.chars().count())
         }
     }
+
+    impl ConnID for usize {}
+    impl ConnID for () {}
 
     #[tokio::test]
     async fn test_should_reuse_connections() {

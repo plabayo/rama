@@ -96,6 +96,7 @@ Rama provides a rich set of examples demonstrating its web service capabilities.
 
 ### Anti-Bot Examples
 - [/examples/http_anti_bot_infinite_resource.rs`](https://github.com/plabayo/rama/blob/main/examples/http_anti_bot_infinite_resource.rs): example demonstrating how to serve an infinite resource
+- [/examples/http_anti_bot_zip_bomb.rs`](https://github.com/plabayo/rama/blob/main/examples/http_anti_bot_zip_bomb.rs): example demonstrating how to serve a zip bomb
 
 ### Production-Ready Examples
 - [/examples/http_k8s_health.rs](https://github.com/plabayo/rama/tree/main/examples/http_k8s_health.rs): A production-ready Kubernetes health service

@@ -252,8 +252,7 @@ pub trait UdpInspector<State>: Send + Sync + 'static {
 
 impl<F, E, State> UdpInspector<State> for F
 where
-    F: FnOnce(&Context<State>, RelayDirection, SocketAddress, &[u8]) -> Result<UdpInspectAction, E>
-        + Clone
+    F: Fn(&Context<State>, RelayDirection, SocketAddress, &[u8]) -> Result<UdpInspectAction, E>
         + Send
         + Sync
         + 'static,
@@ -268,7 +267,7 @@ where
         server_address: SocketAddress,
         payload: &[u8],
     ) -> Result<UdpInspectAction, Self::Error> {
-        (self.clone())(ctx, direction, server_address, payload)
+        (self)(ctx, direction, server_address, payload)
     }
 }
 

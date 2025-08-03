@@ -54,7 +54,7 @@ impl<S, F> MapErr<S, F> {
 impl<S, F, State, Request, Error> Service<State, Request> for MapErr<S, F>
 where
     S: Service<State, Request>,
-    F: FnOnce(S::Error) -> Error + Clone + Send + Sync + 'static,
+    F: Fn(S::Error) -> Error + Send + Sync + 'static,
     State: Clone + Send + Sync + 'static,
     Request: Send + 'static,
     Error: Send + 'static,
@@ -69,7 +69,7 @@ where
     ) -> Result<Self::Response, Self::Error> {
         match self.inner.serve(ctx, req).await {
             Ok(resp) => Ok(resp),
-            Err(err) => Err((self.f.clone())(err)),
+            Err(err) => Err((self.f)(err)),
         }
     }
 }

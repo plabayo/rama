@@ -2,6 +2,7 @@ use rama_http_types::{HeaderName, HeaderValue};
 
 use std::error;
 use std::fmt::{self, Display, Formatter};
+use std::sync::Arc;
 
 /// Base trait for a typed header.
 ///
@@ -13,6 +14,13 @@ pub trait TypedHeader {
 }
 
 impl<H: TypedHeader> TypedHeader for &H {
+    #[inline]
+    fn name() -> &'static HeaderName {
+        H::name()
+    }
+}
+
+impl<H: TypedHeader> TypedHeader for Arc<H> {
     #[inline]
     fn name() -> &'static HeaderName {
         H::name()
@@ -55,6 +63,18 @@ impl<H: HeaderEncode> HeaderEncode for &H {
     #[inline]
     fn encode_to_value(&self) -> HeaderValue {
         (*self).encode_to_value()
+    }
+}
+
+impl<H: HeaderEncode> HeaderEncode for Arc<H> {
+    #[inline]
+    fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
+        self.as_ref().encode(values);
+    }
+
+    #[inline]
+    fn encode_to_value(&self) -> HeaderValue {
+        self.as_ref().encode_to_value()
     }
 }
 

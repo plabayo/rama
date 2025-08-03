@@ -31,13 +31,16 @@ use rama::{
     Context, Layer, Service,
     error::{BoxError, OpaqueError},
     http::{
-        StatusCode,
-        anti_bot::InfiniteReader,
+        InfiniteReader, StatusCode,
+        headers::ContentType,
         layer::required_header::AddRequiredResponseHeadersLayer,
         layer::trace::TraceLayer,
         server::HttpServer,
-        service::web::{Router, response::Html},
-        service::web::{extract::Query, response::IntoResponse},
+        service::web::{
+            Router,
+            extract::Query,
+            response::{Headers, Html, IntoResponse},
+        },
     },
     layer::ConsumeErrLayer,
     net::{address::SocketAddress, stream::SocketInfo},
@@ -90,7 +93,7 @@ async fn main() {
         .await
         .expect("bind tcp server");
 
-    graceful.spawn_task(tcp_server.serve(tcp_svc));
+    graceful.spawn_task_fn(|guard| tcp_server.serve_graceful(guard, tcp_svc));
 
     graceful
         .shutdown_with_limit(Duration::from_secs(8))
@@ -129,9 +132,13 @@ async fn infinite_resource(
         parameters._test_limit
     );
 
-    InfiniteReader::new()
-        .maybe_with_size_limit(parameters._test_limit)
-        .with_throttle(Duration::from_secs(2))
+    (
+        Headers::single(ContentType::csv()),
+        [("X-Robots-Tag", "noindex, nofollow")],
+        InfiniteReader::new()
+            .maybe_with_size_limit(parameters._test_limit)
+            .with_throttle(Duration::from_secs(2)),
+    )
         .into_response()
 }
 

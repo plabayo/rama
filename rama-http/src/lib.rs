@@ -24,6 +24,8 @@ pub use ::rama_http_types::{
     opentelemetry, proto, sse,
 };
 
+pub mod body;
+
 pub use ::rama_http_headers as headers;
 
 pub mod matcher;
