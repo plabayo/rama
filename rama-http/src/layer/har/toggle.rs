@@ -34,8 +34,8 @@ impl<T: Toggle> Toggle for Arc<T> {
 }
 
 impl<T: Toggle, F: Fn() -> T + Clone + Send + Sync + 'static> Toggle for F {
-    fn status(&self) -> impl Future<Output = bool> + Send + '_ {
-        async { (self)().status().await }
+    async fn status(&self) -> bool {
+        (self)().status().await
     }
 }
 
