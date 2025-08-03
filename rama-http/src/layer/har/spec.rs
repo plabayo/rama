@@ -1,10 +1,12 @@
 use crate::dep::core::bytes::Bytes;
 use crate::dep::http::request::Parts as ReqParts;
+use crate::service::web::extract::Query;
 use rama_error::OpaqueError;
 use rama_http_types::dep::http_body;
 use rama_http_types::proto::h1::Http1HeaderMap;
 use rama_http_types::{Request as RamaRequest, Version as HttpVersion};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 macro_rules! har_data {
     ($name:ident, { $($field:tt)* }) => {
@@ -115,24 +117,15 @@ impl Request {
     }
 
     fn into_har_query_string(parts: &ReqParts) -> Vec<QueryString> {
-        parts
-            .uri
-            .query()
-            .map(|qs| {
-                qs.split('&')
-                    .map(|kv| {
-                        let mut split = kv.split('=');
-                        let (name, value) =
-                            (split.next().unwrap_or(""), split.next().unwrap_or(""));
-                        QueryString {
-                            name: name.to_owned(),
-                            value: value.to_owned(),
-                            comment: None,
-                        }
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default()
+        let query_str = parts.uri.query().unwrap_or("");
+        let query = Query::parse_query_str(query_str);
+
+        let query_map: Query<HashMap<String, String>> = match query {
+            Ok(q) => q,
+            Err(_) => return vec![],
+        };
+
+        query_map.0.into_iter().map(Into::into).collect()
     }
 
     fn into_har_headers(parts: &ReqParts) -> Vec<Header> {
@@ -193,6 +186,16 @@ har_data!(QueryString, {
     pub value: String,
     pub comment: Option<String>,
 });
+
+impl From<(String, String)> for QueryString {
+    fn from((name, value): (String, String)) -> Self {
+        Self {
+            name,
+            value,
+            comment: None,
+        }
+    }
+}
 
 har_data!(PostData, {
     pub mime_type: String,
