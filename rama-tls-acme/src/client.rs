@@ -37,23 +37,31 @@ use std::{
 use tokio::time::sleep;
 
 /// Acme client that will used for all acme operations
-pub struct AcmeClient {
-    https_client: BoxService<(), Request, Response, OpaqueError>,
+pub struct AcmeClient<State> {
+    https_client: BoxService<State, Request, Response, OpaqueError>,
+    ctx: Context<State>,
     directory: server::Directory,
     nonce: Mutex<Option<String>>,
 }
 
-impl AcmeClient {
+impl<State> AcmeClient<State>
+where
+    State: Send + Sync + Clone + 'static,
+{
     /// Create a new acme [`AcmeClient`] for the given directory url and using the provided https client
-    pub async fn new<S>(directory_url: &str, https_client: S) -> Result<Self, OpaqueError>
+    pub async fn new<S>(
+        directory_url: &str,
+        https_client: S,
+        ctx: Context<State>,
+    ) -> Result<Self, OpaqueError>
     where
-        S: Service<(), Request, Response = Response, Error = OpaqueError>,
+        S: Service<State, Request, Response = Response, Error = OpaqueError>,
     {
         let https_client = https_client.boxed();
 
         let directory = https_client
             .get(directory_url)
-            .send(Context::default())
+            .send(ctx.clone())
             .await?
             .try_into_json::<server::Directory>()
             .await?;
@@ -61,6 +69,7 @@ impl AcmeClient {
         Ok(Self {
             https_client,
             directory,
+            ctx,
             nonce: Mutex::new(None),
         })
     }
@@ -69,11 +78,12 @@ impl AcmeClient {
     pub async fn new_for_provider<S>(
         provider: &AcmeProvider,
         https_client: S,
+        ctx: Context<State>,
     ) -> Result<Self, OpaqueError>
     where
-        S: Service<(), Request, Response = Response, Error = OpaqueError>,
+        S: Service<State, Request, Response = Response, Error = OpaqueError>,
     {
-        Self::new(provider.as_str(), https_client).await
+        Self::new(provider.as_str(), https_client, ctx).await
     }
 
     /// Get a nonce for making requests, if no nonce from a previous request is
@@ -86,7 +96,7 @@ impl AcmeClient {
         let response = self
             .https_client
             .head(&self.directory.new_nonce)
-            .send(Context::default())
+            .send(self.ctx.clone())
             .await
             .context("fetch new nonce")?;
 
@@ -105,7 +115,7 @@ impl AcmeClient {
     pub async fn create_account(
         &self,
         options: CreateAccountOptions,
-    ) -> Result<Account, ClientError> {
+    ) -> Result<Account<State>, ClientError> {
         let key = EcdsaKey::generate().context("generate key for account")?;
 
         let do_request = async || {
@@ -159,7 +169,7 @@ impl AcmeClient {
             .typed_header(ContentType::jose_json())
             .json(&jws);
 
-        let response = request.send(Context::default()).await?;
+        let response = request.send(self.ctx.clone()).await?;
 
         *self.nonce.lock() = Some(Self::get_nonce_from_response(&response)?);
         Ok(response)
@@ -196,8 +206,8 @@ impl AcmeProvider {
 }
 
 /// Wrapped [`AcmeClient`] with account info
-pub struct Account<'a> {
-    client: &'a AcmeClient,
+pub struct Account<'a, State> {
+    client: &'a AcmeClient<State>,
     credentials: AccountCredentials,
     inner: server::Account,
 }
@@ -207,7 +217,10 @@ struct AccountCredentials {
     kid: String,
 }
 
-impl<'a> Account<'a> {
+impl<'a, State> Account<'a, State>
+where
+    State: Send + Sync + Clone + 'static,
+{
     #[must_use]
     /// Get (local) account state
     pub fn state(&self) -> &server::Account {
@@ -215,7 +228,7 @@ impl<'a> Account<'a> {
     }
 
     /// Place a new [`Order`] using this [`Account`]
-    pub async fn new_order(&self, new_order: NewOrderPayload) -> Result<Order, ClientError> {
+    pub async fn new_order(&self, new_order: NewOrderPayload) -> Result<Order<State>, ClientError> {
         let do_request = async || {
             let response = self
                 .post(&self.client.directory.new_order, Some(&new_order))
@@ -252,7 +265,7 @@ impl<'a> Account<'a> {
     }
 
     /// Get [`Order`] which is stored on the given url
-    pub async fn get_order(&self, order_url: &str) -> Result<Order, ClientError> {
+    pub async fn get_order(&self, order_url: &str) -> Result<Order<State>, ClientError> {
         let do_request = async || {
             let response = self.post(order_url, NO_PAYLOAD).await?;
 
@@ -283,8 +296,8 @@ impl<'a> Account<'a> {
 }
 
 /// Wrapped [`Account`] with order info
-pub struct Order<'a> {
-    account: &'a Account<'a>,
+pub struct Order<'a, State> {
+    account: &'a Account<'a, State>,
     url: String,
     inner: server::Order,
 }
@@ -310,7 +323,10 @@ impl Signer for AccountCredentials {
     }
 }
 
-impl<'a> Order<'a> {
+impl<'a, State> Order<'a, State>
+where
+    State: Send + Sync + Clone + 'static,
+{
     #[must_use]
     /// Get (local) order state
     pub fn state(&self) -> &server::Order {
@@ -319,7 +335,7 @@ impl<'a> Order<'a> {
 
     #[must_use]
     /// Get reference to [`Account`] linked to this [`Order`]
-    pub fn account(&self) -> &'a Account<'a> {
+    pub fn account(&self) -> &'a Account<'a, State> {
         self.account
     }
 

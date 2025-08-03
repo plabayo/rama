@@ -96,7 +96,9 @@ async fn main() {
         .build()
         .boxed();
 
-    let client = AcmeClient::new(TEST_DIRECTORY_URL, client).await.expect("");
+    let client = AcmeClient::new(TEST_DIRECTORY_URL, client, Context::default())
+        .await
+        .expect("");
     let account = client
         .create_account(CreateAccountOptions {
             terms_of_service_agreed: Some(true),
