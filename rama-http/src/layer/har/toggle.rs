@@ -1,5 +1,4 @@
 use std::future::ready;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -42,15 +41,14 @@ impl<T: Toggle, F: Fn() -> T + Clone + Send + Sync + 'static> Toggle for F {
 
 macro_rules! impl_toggle_either {
     ($id:ident, $($variant:ident),+ $(,)?) => {
-        #[allow(refining_impl_trait)]
         impl<$($variant),+> Toggle for rama_core::combinators::$id<$($variant),+>
         where
             $($variant: Toggle),+
         {
-            fn status(&self) -> Pin<Box<dyn Future<Output = bool> + Send + '_>> {
+            async fn status(&self) -> bool {
                 match self {
                     $(
-                        rama_core::combinators::$id::$variant(inner) => Box::pin(inner.status()),
+                        rama_core::combinators::$id::$variant(inner) => inner.status().await,
                     )+
                 }
             }
