@@ -190,17 +190,11 @@ impl AcmeProvider {
     #[must_use]
     pub fn as_str(&self) -> &str {
         match self {
-            AcmeProvider::LetsEncryptProduction => "https://acme-v01.api.letsencrypt.org/directory",
-            AcmeProvider::LetsEncryptStaging => {
-                "https://acme-staging-v02.api.letsencrypt.org/directory"
-            }
-            AcmeProvider::ZeroSslProduction => "https://acme.zerossl.com/v2/DV90",
-            AcmeProvider::GoogleTrustServicesProduction => {
-                "https://dv.acme-v02.api.pki.goog/directory"
-            }
-            AcmeProvider::GoogleTrustServicesStaging => {
-                "https://dv.acme-v02.test-api.pki.goog/directory"
-            }
+            Self::LetsEncryptProduction => "https://acme-v01.api.letsencrypt.org/directory",
+            Self::LetsEncryptStaging => "https://acme-staging-v02.api.letsencrypt.org/directory",
+            Self::ZeroSslProduction => "https://acme.zerossl.com/v2/DV90",
+            Self::GoogleTrustServicesProduction => "https://dv.acme-v02.api.pki.goog/directory",
+            Self::GoogleTrustServicesStaging => "https://dv.acme-v02.test-api.pki.goog/directory",
         }
     }
 }

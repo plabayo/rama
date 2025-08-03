@@ -24,11 +24,11 @@ impl Seconds {
         Self::new(duration.as_secs())
     }
 
-    pub fn seconds(&self) -> u64 {
+    pub fn seconds(self) -> u64 {
         self.0
     }
 
-    pub fn as_duration(&self) -> Duration {
+    pub fn as_duration(self) -> Duration {
         Duration::from_secs(self.0)
     }
 }
