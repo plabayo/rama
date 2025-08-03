@@ -35,25 +35,23 @@ where
         ctx: Context<State>,
         req: Request<ReqBody>,
     ) -> Result<Self::Response, Self::Error> {
-        let response = self
-            .service
-            .serve(ctx, req.clone())
-            .await
-            .map_err(Into::into)?;
+        let result = self.service.serve(ctx, req.clone()).await;
 
         if self.toggle.status().await {
             let mut entry = Entry::default();
             let mut log_line = HarLog::default();
             entry.request = HarRequest::from_rama_request::<ReqBody>(&req)?;
-            // TODO
-            // entry.response = HarResponse::from_rama_response(req);
 
-            // NOTE: This assumes that there is only ever one pair of request/response
-            // might need more customization on how entries are pushed/composed
+            if let Ok(ref _response) = result {
+                // TODO
+                // entry.response = HarResponse::from_rama_response(response);
+            }
+
+            // Push the entry into the log even on service error
             log_line.entries = vec![entry];
             self.recorder.record(log_line).await;
         }
 
-        Ok(response)
+        result.map_err(Into::into)
     }
 }
