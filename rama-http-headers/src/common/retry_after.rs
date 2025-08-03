@@ -17,10 +17,10 @@ use crate::util::{HttpDate, Seconds, TryFromValues};
 ///
 /// # Examples
 /// ```
-/// use std::time::{Duration, SystemTime};
-/// use rama_http_headers::RetryAfter;
+/// use std::time::{SystemTime};
+/// use rama_http_headers::{RetryAfter, util::Seconds};
 ///
-/// let delay = RetryAfter::delay(Duration::from_secs(300));
+/// let delay = RetryAfter::delay(Seconds::new(300));
 /// let date = RetryAfter::date(SystemTime::now());
 /// ```
 ///
