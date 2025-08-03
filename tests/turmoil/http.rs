@@ -1,7 +1,10 @@
+use std::time::Duration;
+
+use http::Version;
 use rama::{
     http::{
-        client::EasyHttpWebClient, layer::trace::TraceLayer, server::HttpServer,
-        service::web::WebService, Body, BodyExtractExt, Request,
+        layer::trace::TraceLayer, server::HttpServer, service::web::WebService, Body,
+        BodyExtractExt, Request,
     },
     net::address::SocketAddress,
     Context, Layer, Service,
@@ -10,7 +13,7 @@ use rama_http_backend::client::EasyHttpWebClientBuilder;
 use tracing_subscriber::{
     filter::LevelFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter,
 };
-use turmoil::Builder;
+use turmoil::{Builder, ToSocketAddrs};
 
 use crate::types::TurmoilTcpConnector;
 
@@ -28,14 +31,15 @@ fn setup_tracing() {
 }
 
 async fn start_server(
-    address: impl Into<SocketAddress>,
+    address: impl ToSocketAddrs,
 ) -> Result<(), Box<dyn std::error::Error + 'static>> {
-    let s: SocketAddress = address.into();
-    let addr = s.to_string();
+    let listener = turmoil::net::TcpListener::bind(address).await?;
 
-    let listener = turmoil::net::TcpListener::bind(addr).await?;
+    let conn_result = tokio::time::timeout(Duration::from_secs(1), listener.accept())
+        .await
+        .map_err(|_| "accept timeout")?;
 
-    let (conn, _) = listener.accept().await?;
+    let (conn, _) = conn_result?;
 
     let server = HttpServer::http1();
     server
@@ -45,7 +49,7 @@ async fn start_server(
             TraceLayer::new_for_http().into_layer(WebService::default().get("/", "Hello, World")),
         )
         .await
-        .unwrap();
+        .expect("serving endpoint");
     Ok(())
 }
 
@@ -59,7 +63,6 @@ async fn run_client(address: impl Into<SocketAddress>) -> Result<(), Box<dyn std
             .build(),
     );
 
-    //let client = EasyHttpWebClientBuilder::default().with_custom_transport_connector(connector)
     let resp = client
         .serve(
             Context::default(),
@@ -70,6 +73,8 @@ async fn run_client(address: impl Into<SocketAddress>) -> Result<(), Box<dyn std
                 .unwrap(),
         )
         .await?;
+    assert!(resp.status().is_success());
+    assert_eq!(resp.version(), Version::HTTP_11);
     let body = resp.try_into_string().await.unwrap();
     assert_eq!(body, "Hello, World");
     Ok(())
@@ -81,7 +86,7 @@ fn http_1_client_server_it() {
 
     let mut sim = Builder::new().enable_tokio_io().build();
 
-    sim.host(ADDRESS.ip_addr(), || start_server(ADDRESS));
+    sim.host(ADDRESS.ip_addr(), || start_server(ADDRESS.to_string()));
 
     sim.client("client", run_client(ADDRESS));
 
