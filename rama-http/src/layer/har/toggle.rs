@@ -1,9 +1,9 @@
-use crate::dep::core::futures::future::Either;
 use std::future::ready;
 use std::sync::Arc;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-pub trait Toggle: Clone + Send + Sync + 'static {
+pub trait Toggle: Send + Sync + 'static {
     fn status(&self) -> impl Future<Output = bool> + Send + '_;
 }
 
@@ -22,7 +22,7 @@ impl<T: Toggle> Toggle for Option<T> {
     }
 }
 
-impl Toggle for Arc<AtomicBool> {
+impl Toggle for AtomicBool {
     fn status(&self) -> impl Future<Output = bool> + Send + '_ {
         ready(self.load(Ordering::SeqCst))
     }
@@ -40,11 +40,22 @@ impl<T: Toggle, F: Fn() -> T + Clone + Send + Sync + 'static> Toggle for F {
     }
 }
 
-impl<L: Toggle, R: Toggle> Toggle for Either<L, R> {
-    async fn status(&self) -> bool {
-        match self {
-            Either::Left(l) => l.status().await,
-            Either::Right(r) => r.status().await,
+macro_rules! impl_toggle_either {
+    ($id:ident, $($variant:ident),+ $(,)?) => {
+        #[allow(refining_impl_trait)]
+        impl<$($variant),+> Toggle for rama_core::combinators::$id<$($variant),+>
+        where
+            $($variant: Toggle),+
+        {
+            fn status(&self) -> Pin<Box<dyn Future<Output = bool> + Send + '_>> {
+                match self {
+                    $(
+                        rama_core::combinators::$id::$variant(inner) => Box::pin(inner.status()),
+                    )+
+                }
+            }
         }
-    }
+    };
 }
+
+rama_core::combinators::impl_either!(impl_toggle_either);
