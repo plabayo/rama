@@ -270,8 +270,8 @@ where
 /// Extension added to the [`Context`] by [`HttpProxyConnector`] to record the
 /// headers from a successful CONNECT response.
 ///
-/// This can be used, for example, to copy headers from the CONNECT response to
-/// proxied responses.
+/// This can be useful, for example, when the upstream proxy provider exposes
+/// information in these headers about the connection to the final destination.
 pub struct HttpProxyConnectResponseHeaders(Arc<HeaderMap>);
 
 impl HttpProxyConnectResponseHeaders {
