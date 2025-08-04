@@ -22,6 +22,9 @@ pub struct Directory {
     /// URL for creating a new order
     pub new_order: String,
     /// Optional URL for creating new authorization objects (not required by all CAs)
+    ///
+    /// new_authz is short for new authorization. We use the shorter name so we use
+    /// the same naming as in the rfc
     pub new_authz: Option<String>,
     /// URL for revoking a certificate
     pub revoke_cert: String,

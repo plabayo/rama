@@ -233,5 +233,5 @@ fn create_csr() -> CertificateSigningRequest {
     distinguished_name.push(DnType::OrganizationName, "Plabayo");
     distinguished_name.push(DnType::CommonName, "example.com");
 
-    params.serialize_request(&key_pair).expect("")
+    params.serialize_request(&key_pair).expect("serialize csr")
 }

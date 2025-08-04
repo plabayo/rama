@@ -83,7 +83,7 @@ where
     where
         S: Service<State, Request, Response = Response, Error = OpaqueError>,
     {
-        Self::new(provider.as_str(), https_client, ctx).await
+        Self::new(provider.as_directory_url(), https_client, ctx).await
     }
 
     generate_set_and_with! {
@@ -200,7 +200,7 @@ pub enum AcmeProvider {
 
 impl AcmeProvider {
     #[must_use]
-    pub fn as_str(&self) -> &str {
+    pub fn as_directory_url(&self) -> &str {
         match self {
             Self::LetsEncryptProduction => "https://acme-v01.api.letsencrypt.org/directory",
             Self::LetsEncryptStaging => "https://acme-staging-v02.api.letsencrypt.org/directory",
