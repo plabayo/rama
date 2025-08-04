@@ -40,9 +40,9 @@ This directory contains example implementations demonstrating various features a
 
 ### ACME
 The following examples show how you can integrate ACME into you webservices (ACME support in Rama is currently still under heavy development)
-- [/examples/acme_http_challenge.rs](./acme_http_challenge.rs): Authenticate to an acme server using a http challenge
-- [/examples/acme_tls_challenge_using_boring.rs](./acme_tls_challenge_using_boring.rs): Authenticate to an acme server using a tls challenge backed by boringssl
-- [/examples/acme_tls_challenge_using_rustls.rs](./acme_tls_challenge_using_rustls.rs): Authenticate to an acme server using a tls challenge backed by rustls
+- [`acme_http_challenge.rs`](./acme_http_challenge.rs): Authenticate to an acme server using a http challenge
+- [`acme_tls_challenge_using_boring.rs`](./acme_tls_challenge_using_boring.rs): Authenticate to an acme server using a tls challenge backed by boringssl
+- [`acme_tls_challenge_using_rustls.rs`](./acme_tls_challenge_using_rustls.rs): Authenticate to an acme server using a tls challenge backed by rustls
 
 ## Proxies
 

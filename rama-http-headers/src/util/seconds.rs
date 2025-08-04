@@ -28,13 +28,13 @@ impl Seconds {
     }
 
     #[must_use]
-    pub fn seconds(self) -> u64 {
-        self.0
+    pub fn as_duration(self) -> Duration {
+        Duration::from_secs(self.0)
     }
 
     #[must_use]
-    pub fn as_duration(self) -> Duration {
-        Duration::from_secs(self.0)
+    pub fn as_u64(self) -> u64 {
+        self.0
     }
 }
 
@@ -52,7 +52,7 @@ impl super::TryFromValues for Seconds {
 
 impl<'a> From<&'a Seconds> for HeaderValue {
     fn from(secs: &'a Seconds) -> Self {
-        secs.seconds().into()
+        secs.as_u64().into()
     }
 }
 
@@ -69,14 +69,20 @@ impl From<Seconds> for Duration {
     }
 }
 
+impl From<Seconds> for u64 {
+    fn from(secs: Seconds) -> Self {
+        secs.as_u64()
+    }
+}
+
 impl fmt::Debug for Seconds {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}s", self.seconds())
+        write!(f, "{}s", self.as_u64())
     }
 }
 
 impl fmt::Display for Seconds {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        fmt::Display::fmt(&self.seconds(), f)
+        fmt::Display::fmt(&self.as_u64(), f)
     }
 }

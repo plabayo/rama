@@ -53,7 +53,7 @@ impl Age {
     /// Returns the number of seconds for this `Age` header.
     #[must_use]
     pub fn as_secs(&self) -> u64 {
-        self.0.seconds()
+        self.0.into()
     }
 }
 

@@ -107,23 +107,29 @@ async fn main() {
         .await
         .expect("create acme client");
     let account = client
-        .create_account(CreateAccountOptions {
-            terms_of_service_agreed: Some(true),
-            ..Default::default()
-        })
+        .create_account(
+            Context::default(),
+            CreateAccountOptions {
+                terms_of_service_agreed: Some(true),
+                ..Default::default()
+            },
+        )
         .await
         .expect("create account");
 
     let mut order = account
-        .new_order(NewOrderPayload {
-            identifiers: vec![Identifier::Dns("example.com".into())],
-            ..Default::default()
-        })
+        .new_order(
+            Context::default(),
+            NewOrderPayload {
+                identifiers: vec![Identifier::Dns("example.com".into())],
+                ..Default::default()
+            },
+        )
         .await
         .expect("create order");
 
     let mut authz = order
-        .get_authorizations()
+        .get_authorizations(Context::default())
         .await
         .expect("get order authorizations");
     let auth = &mut authz[0];
@@ -181,22 +187,25 @@ async fn main() {
     sleep(Duration::from_millis(1000)).await;
 
     order
-        .finish_challenge(challenge)
+        .finish_challenge(Context::default(), challenge)
         .await
         .expect("finish challenge");
 
     order
-        .wait_until_all_authorizations_finished()
+        .wait_until_all_authorizations_finished(Context::default())
         .await
         .expect("wait until all authorizations are finished");
 
     assert_eq!(order.state().status, OrderStatus::Ready);
 
     let csr = create_csr();
-    order.finalize(csr.der()).await.expect("finalize order");
+    order
+        .finalize(Context::default(), csr.der())
+        .await
+        .expect("finalize order");
 
     let cert = order
-        .download_certificate()
+        .download_certificate(Context::default())
         .await
         .expect("download certificate");
 

@@ -378,19 +378,19 @@ impl fmt::Display for Fmt<'_> {
             self.0
                 .max_age
                 .as_ref()
-                .map(|s| Directive::MaxAge(s.seconds())),
+                .map(|s| Directive::MaxAge(s.as_u64())),
             self.0
                 .max_stale
                 .as_ref()
-                .map(|s| Directive::MaxStale(s.seconds())),
+                .map(|s| Directive::MaxStale(s.as_u64())),
             self.0
                 .min_fresh
                 .as_ref()
-                .map(|s| Directive::MinFresh(s.seconds())),
+                .map(|s| Directive::MinFresh(s.as_u64())),
             self.0
                 .s_max_age
                 .as_ref()
-                .map(|s| Directive::SMaxAge(s.seconds())),
+                .map(|s| Directive::SMaxAge(s.as_u64())),
         ];
 
         let iter = slice.iter().filter_map(|o| *o);
