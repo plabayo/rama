@@ -7,7 +7,7 @@ use rama_core::{
     error::{BoxError, ErrorExt, OpaqueError},
     telemetry::tracing,
 };
-use rama_http::io::upgrade;
+use rama_http::{HeaderMap, io::upgrade};
 use rama_http_headers::ProxyAuthorization;
 use rama_http_types::Version;
 use rama_net::{
@@ -18,7 +18,7 @@ use rama_net::{
     user::ProxyCredential,
 };
 use rama_utils::macros::define_inner_service_accessors;
-use std::fmt;
+use std::{fmt, ops, sync::Arc};
 
 #[cfg(feature = "tls")]
 use rama_net::tls::TlsTunnel;
@@ -204,7 +204,7 @@ where
         };
         // and do the handshake otherwise...
 
-        let EstablishedClientConnection { ctx, req, conn } = established_conn;
+        let EstablishedClientConnection { mut ctx, req, conn } = established_conn;
 
         tracing::trace!(
             server.address = %transport_ctx.authority.host(),
@@ -245,10 +245,13 @@ where
             }
         }
 
-        let conn = connector
+        let (headers, conn) = connector
             .handshake(conn)
             .await
             .map_err(|err| OpaqueError::from_std(err).context("http proxy handshake"))?;
+
+        tracing::warn!("inserting HttpProxyHeaders in context");
+        ctx.insert(HttpProxyConnectResponseHeaders::new(headers));
 
         tracing::trace!(
             server.address = %transport_ctx.authority.host(),
@@ -260,5 +263,33 @@ where
             req,
             conn: Either::B(conn),
         })
+    }
+}
+
+#[derive(Clone, Debug)]
+/// Extension added to the [`Context`] by [`HttpProxyConnector`] to record the
+/// headers from a successful CONNECT response.
+///
+/// This can be useful, for example, when the upstream proxy provider exposes
+/// information in these headers about the connection to the final destination.
+pub struct HttpProxyConnectResponseHeaders(Arc<HeaderMap>);
+
+impl HttpProxyConnectResponseHeaders {
+    fn new(headers: HeaderMap) -> Self {
+        Self(Arc::new(headers))
+    }
+}
+
+impl AsRef<HeaderMap> for HttpProxyConnectResponseHeaders {
+    fn as_ref(&self) -> &HeaderMap {
+        &self.0
+    }
+}
+
+impl ops::Deref for HttpProxyConnectResponseHeaders {
+    type Target = HeaderMap;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }
