@@ -23,7 +23,12 @@
 use rama::{
     Context, Service,
     http::{
-        Body, BodyExtractExt, Request, client::HttpConnector, server::HttpServer,
+        Body, BodyExtractExt, Request,
+        client::{
+            HttpConnector,
+            http_inspector::{HttpVersionAdapter, HttpsAlpnModifier},
+        },
+        server::HttpServer,
         service::web::Router,
     },
     net::{
@@ -75,7 +80,8 @@ async fn main() {
 
     let client = HttpConnector::new(Socks5ProxyConnector::required(
         TlsConnector::secure(TcpConnector::new()).with_connector_data(tls_conn_data),
-    ));
+    ))
+    .with_jit_req_inspector((HttpsAlpnModifier::default(), HttpVersionAdapter::default()));
 
     let mut ctx = Context::default();
     ctx.insert(ProxyAddress {
