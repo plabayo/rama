@@ -250,7 +250,7 @@ where
             .await
             .map_err(|err| OpaqueError::from_std(err).context("http proxy handshake"))?;
 
-        tracing::warn!("inserting HttpProxyHeaders in context");
+        tracing::trace!("inserting HttpProxyHeaders in context");
         ctx.insert(HttpProxyConnectResponseHeaders::new(headers));
 
         tracing::trace!(
