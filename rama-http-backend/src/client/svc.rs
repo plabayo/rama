@@ -14,7 +14,7 @@ use rama_http_types::{
     dep::{http::uri::PathAndQuery, http_body},
     header::{CONNECTION, HOST, KEEP_ALIVE, PROXY_CONNECTION, TRANSFER_ENCODING, UPGRADE},
 };
-use rama_net::{address::ProxyAddress, http::RequestContext};
+use rama_net::http::RequestContext;
 use std::fmt;
 use tokio::sync::Mutex;
 
@@ -166,7 +166,6 @@ fn sanitize_client_req_header<S, B>(
         return Err(OpaqueError::from_display("missing host in CONNECT request").into());
     }
 
-    let is_request_proxied = ctx.contains::<ProxyAddress>();
     let request_ctx = ctx
         .get_or_try_insert_with_ctx::<RequestContext, _>(|ctx| (ctx, &req).try_into())
         .context("fetch request context")?;
@@ -176,7 +175,7 @@ fn sanitize_client_req_header<S, B>(
         Version::HTTP_09 | Version::HTTP_10 | Version::HTTP_11 => {
             // remove authority and scheme for non-connect requests
             // cfr: <https://datatracker.ietf.org/doc/html/rfc2616#section-5.1.2>
-            if !is_request_proxied && req.uri().host().is_some() {
+            if req.method() != Method::CONNECT && req.uri().host().is_some() {
                 tracing::trace!(
                     "remove authority and scheme from non-connect direct http(~1) request"
                 );
