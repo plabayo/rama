@@ -6,7 +6,7 @@ use rama_core::{
     telemetry::tracing,
 };
 use rama_http::{
-    Scheme, conn::TargetHttpVersion, header::SEC_WEBSOCKET_KEY, utils::RequestSwitchVersionExt,
+    conn::TargetHttpVersion, header::SEC_WEBSOCKET_KEY, utils::RequestSwitchVersionExt,
 };
 use rama_http_headers::{HeaderMapExt, Host};
 use rama_http_types::{
@@ -14,7 +14,7 @@ use rama_http_types::{
     dep::{http::uri::PathAndQuery, http_body},
     header::{CONNECTION, HOST, KEEP_ALIVE, PROXY_CONNECTION, TRANSFER_ENCODING, UPGRADE},
 };
-use rama_net::{address::ProxyAddress, http::RequestContext};
+use rama_net::{Protocol, address::ProxyAddress, http::RequestContext};
 use std::fmt;
 use tokio::sync::Mutex;
 
@@ -166,17 +166,25 @@ fn sanitize_client_req_header<S, B>(
         return Err(OpaqueError::from_display("missing host in CONNECT request").into());
     }
 
-    let is_insecure_request_over_http_proxy = is_insecure_request_over_http_proxy(ctx, &req);
+    let is_http_proxy = ctx
+        .get::<ProxyAddress>()
+        .and_then(|proxy| proxy.protocol.as_ref())
+        .map(|protocol| protocol.is_http())
+        .unwrap_or_default();
+
     let request_ctx = ctx
         .get_or_try_insert_with_ctx::<RequestContext, _>(|ctx| (ctx, &req).try_into())
         .context("fetch request context")?;
+
+    let is_insecure_request_over_http_proxy =
+        (request_ctx.protocol == Protocol::HTTP) && is_http_proxy;
 
     // logic specific to http versions
     Ok(match req.version() {
         Version::HTTP_09 | Version::HTTP_10 | Version::HTTP_11 => {
             // remove authority and scheme for non-connect requests
             // cfr: <https://datatracker.ietf.org/doc/html/rfc2616#section-5.1.2>
-            // Unless we are using a http(s) proxy for an insecure request
+            // Unless we are sending an insecure request over a http(s) proxy
             if req.method() != Method::CONNECT
                 && !is_insecure_request_over_http_proxy
                 && req.uri().host().is_some()
@@ -332,29 +340,10 @@ fn sanitize_client_req_header<S, B>(
     })
 }
 
-fn is_insecure_request_over_http_proxy<State, Body>(
-    ctx: &Context<State>,
-    req: &Request<Body>,
-) -> bool {
-    let is_http_proxy = ctx
-        .get::<ProxyAddress>()
-        .and_then(|proxy| proxy.protocol.as_ref())
-        .map(|protocol| protocol.is_http())
-        .unwrap_or_default();
-
-    let is_insecure_request = req
-        .uri()
-        .scheme()
-        .map(|scheme| *scheme == Scheme::HTTP)
-        .unwrap_or_default();
-
-    is_http_proxy && is_insecure_request
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rama_http::{Uri, dep::http::uri::Authority};
+    use rama_http::{Scheme, Uri, dep::http::uri::Authority};
     use rama_net::{
         Protocol,
         address::{Domain, Host},
