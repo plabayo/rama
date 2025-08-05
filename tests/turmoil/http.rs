@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use http::Version;
 use rama::{
+    error::ErrorContext,
     http::{
         client::EasyHttpWebClientBuilder, layer::trace::TraceLayer, server::HttpServer,
         service::web::WebService, Body, BodyExtractExt, Request,
@@ -33,7 +34,7 @@ async fn start_server(
 
     let conn_result = tokio::time::timeout(Duration::from_secs(1), listener.accept())
         .await
-        .map_err(|_| "accept timeout")?;
+        .context("accept timeout")?;
 
     let (conn, _) = conn_result?;
 
