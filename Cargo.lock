@@ -2513,6 +2513,7 @@ dependencies = [
  "rama-proxy",
  "rama-socks5",
  "rama-tcp",
+ "rama-tls-acme",
  "rama-tls-boring",
  "rama-tls-rustls",
  "rama-tower",
@@ -2625,10 +2626,13 @@ dependencies = [
  "rama-core",
  "rama-utils",
  "rcgen",
+ "rustls-pki-types",
  "serde",
  "serde_json",
  "tokio",
  "tokio-test",
+ "tokio-util",
+ "x509-parser",
 ]
 
 [[package]]
@@ -2913,6 +2917,22 @@ dependencies = [
  "rama-net",
  "rama-utils",
  "rand 0.9.2",
+ "tokio",
+]
+
+[[package]]
+name = "rama-tls-acme"
+version = "0.3.0-alpha.2"
+dependencies = [
+ "base64",
+ "parking_lot",
+ "rama-core",
+ "rama-crypto",
+ "rama-http",
+ "rama-net",
+ "rama-utils",
+ "serde",
+ "serde_json",
  "tokio",
 ]
 

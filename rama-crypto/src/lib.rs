@@ -47,4 +47,22 @@ pub mod dep {
         #[doc(inline)]
         pub use rcgen::*;
     }
+
+    pub mod pki_types {
+        //! Re-export of the [`rustls-pki-types`] crate.
+        //!
+        //! [`rustls_pki_types`]: https://docs.rs/rustls-pki-types
+
+        #[doc(inline)]
+        pub use rustls_pki_types::*;
+    }
+
+    pub mod x509_parser {
+        //! Re-export of the [`x509_parser`] crate.
+        //!
+        //! [`x509_parser`]: https://docs.rs/x509_parser
+
+        #[doc(inline)]
+        pub use x509_parser::*;
+    }
 }

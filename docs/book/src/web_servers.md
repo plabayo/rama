@@ -103,6 +103,12 @@ Rama provides a rich set of examples demonstrating its web service capabilities.
 - [/examples/http_key_value_store.rs](https://github.com/plabayo/rama/tree/main/examples/http_key_value_store.rs): A key-value store API
 - [/examples/http_web_service_dir_and_api.rs](https://github.com/plabayo/rama/tree/main/examples/http_web_service_dir_and_api.rs): A full web application with API
 
+### ACME to get server certificates
+The following examples show how you can integrate ACME into you webservices (ACME support in Rama is currently still under heavy development)
+- [/examples/acme_http_challenge.rs](https://github.com/plabayo/rama/tree/main/examples/acme_http_challenge.rs): Authenticate to an acme server using a http challenge
+- [/examples/acme_tls_challenge_using_boring.rs](https://github.com/plabayo/rama/tree/main/examples/acme_tls_challenge_using_boring.rs): Authenticate to an acme server using a tls challenge backed by boringssl
+- [/examples/acme_tls_challenge_using_rustls.rs](https://github.com/plabayo/rama/tree/main/examples/acme_tls_challenge_using_rustls.rs): Authenticate to an acme server using a tls challenge backed by rustls
+
 ### More Examples
 - [/examples/http_web_router.rs](https://github.com/plabayo/rama/tree/main/examples/http_web_router.rs): Path-based routing, something you are probably already familiar with
 - [/examples/http_form.rs](https://github.com/plabayo/rama/tree/main/examples/http_form.rs): Form handling

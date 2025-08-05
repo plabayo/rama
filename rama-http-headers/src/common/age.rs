@@ -47,13 +47,13 @@ impl Age {
     /// Creates a new `Age` header from the specified number of whole seconds.
     #[must_use]
     pub fn from_secs(secs: u64) -> Self {
-        Self(Seconds::from_secs(secs))
+        Self(Seconds::new(secs))
     }
 
     /// Returns the number of seconds for this `Age` header.
     #[must_use]
     pub fn as_secs(&self) -> u64 {
-        self.0.as_u64()
+        self.0.into()
     }
 }
 

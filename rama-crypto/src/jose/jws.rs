@@ -5,8 +5,19 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
-/// When used with serde this will serialize to null
-pub struct Empty;
+/// When used with serde this will serialize to an empty JSON object (`{}`)
+///
+/// Some remarks about this struct:
+/// - We use Empty {} and not Empty, because they serialize differently `{}` vs explicit `null`
+/// - We don't make this `non_exhaustive` since we will never add fields to it, and using `Empty {}`
+///   makes a a bit more clear that we are making an empty struct (object)
+/// - In most cases you don't want to use this struct directly but instead you want to use [`NO_PAYLOAD`] or [`EMPTY_PAYLOAD`]
+pub struct Empty {}
+
+/// Serializes to a JSON null value
+pub const NO_PAYLOAD: Option<&'static Empty> = None;
+/// Serializes to a JSON empty object `{}`
+pub const EMPTY_PAYLOAD: Option<&'static Empty> = Some(&Empty {});
 
 #[derive(Default, Debug, Clone, PartialEq, Eq)]
 /// [`JWSBuilder`] should be used when manually creating a [`JWS`], [`JWSCompact`] or [`JWSFlattened`]
@@ -476,7 +487,7 @@ pub struct JWSCompact(String);
 ///
 /// [`rfc7515, section 7.2.2`]: https://datatracker.ietf.org/doc/html/rfc7515#section-7.2.2
 pub struct JWSFlattened {
-    #[serde(skip_serializing_if = "String::is_empty")]
+    #[serde(default = "Default::default")]
     payload: String,
     #[serde(flatten)]
     signature: Signature,
@@ -508,7 +519,7 @@ impl JWS {
 
     /// Decode this [`JWS`] to a [`DecodedJWS`] by decoding all values and checking with [`Verifier`]
     /// if all signatures are correct
-    pub fn decode(self, verifier: &impl Verifier) -> Result<DecodedJWS, OpaqueError> {
+    pub fn decode<V: Verifier>(self, verifier: &V) -> Result<(DecodedJWS, V::Output), OpaqueError> {
         let mut signatures = Vec::with_capacity(self.signatures.len());
 
         for signature in self.signatures.into_iter() {
@@ -519,9 +530,13 @@ impl JWS {
             let protected = serde_json::from_slice::<Headers>(&protected)
                 .context("deserialize protected headers")?;
 
+            let decoded_signature = BASE64_URL_SAFE_NO_PAD
+                .decode(signature.signature)
+                .context("decode signature")?;
+
             let decoded_signature = DecodedSignature {
                 protected,
-                signature: signature.signature,
+                signature: decoded_signature,
                 unprotected: signature.unprotected,
             };
 
@@ -536,7 +551,7 @@ impl JWS {
             .decode(&self.payload)
             .context("decode payload")?;
 
-        verifier
+        let verifier_output = verifier
             .verify(&payload, &signatures)
             .map_err(|err| OpaqueError::from_boxed(err.into()))
             .context("signer verify signatures")?;
@@ -546,21 +561,26 @@ impl JWS {
             .map(|sig| sig.decoded_signature)
             .collect();
 
-        Ok(DecodedJWS {
-            signatures,
-            payload,
-        })
+        Ok((
+            DecodedJWS {
+                signatures,
+                payload,
+            },
+            verifier_output,
+        ))
     }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 struct Signature {
     #[serde(skip_serializing_if = "String::is_empty")]
+    #[serde(default = "Default::default")]
     protected: String,
     #[serde(skip_serializing_if = "Headers::is_none")]
-    #[serde(rename = "name")]
+    #[serde(rename = "headers", default = "Default::default")]
     unprotected: Headers,
     #[serde(skip_serializing_if = "String::is_empty")]
+    #[serde(default = "Default::default")]
     signature: String,
 }
 
@@ -587,7 +607,10 @@ impl JWSFlattened {
 
     /// Decode this [`JWS`] to a [`DecodedJWS`] by decoding all values and checking with [`Verifier`]
     /// if the provided signature is correct
-    pub fn decode(self, verifier: &impl Verifier) -> Result<DecodedJWSFlattened, OpaqueError> {
+    pub fn decode<V: Verifier>(
+        self,
+        verifier: &V,
+    ) -> Result<(DecodedJWSFlattened, V::Output), OpaqueError> {
         let protected = BASE64_URL_SAFE_NO_PAD
             .decode(&self.signature.protected)
             .context("decode protected header")?;
@@ -595,9 +618,13 @@ impl JWSFlattened {
         let protected = serde_json::from_slice::<Headers>(&protected)
             .context("deserialize protected headers")?;
 
+        let decoded_signature = BASE64_URL_SAFE_NO_PAD
+            .decode(self.signature.signature)
+            .context("decode signature")?;
+
         let decoded_signature = DecodedSignature {
             protected,
-            signature: self.signature.signature,
+            signature: decoded_signature,
             unprotected: self.signature.unprotected,
         };
 
@@ -610,14 +637,14 @@ impl JWSFlattened {
             .decode(&self.payload)
             .context("decode payload")?;
 
-        verifier
+        let verify_output = verifier
             .verify(&payload, std::slice::from_ref(&to_verify))
             .map_err(|err| OpaqueError::from_boxed(err.into()))
             .context("signer verify signature")?;
 
         let signature = to_verify.decoded_signature;
 
-        Ok(DecodedJWSFlattened { signature, payload })
+        Ok((DecodedJWSFlattened { signature, payload }, verify_output))
     }
 }
 
@@ -649,7 +676,7 @@ pub struct DecodedJWS {
 pub struct DecodedSignature {
     protected: Headers,
     unprotected: Headers,
-    signature: String,
+    signature: Vec<u8>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -704,10 +731,10 @@ impl DecodedSignature {
         self.unprotected.decode()
     }
 
-    /// Str signature which was provided for the encoded signature
+    /// Signature which was provided for the encoded signature in decoded format
     #[must_use]
-    pub fn signature(&self) -> &str {
-        &self.signature
+    pub fn signature(&self) -> &[u8] {
+        self.signature.as_slice()
     }
 }
 
@@ -752,9 +779,9 @@ impl DecodedJWSFlattened {
         self.signature.decode_unprotected_headers()
     }
 
-    /// Str signature which was provided for the encoded signature
+    /// Signature which was provided for the encoded signature in decoded format
     #[must_use]
-    pub fn signature(&self) -> &str {
+    pub fn signature(&self) -> &[u8] {
         self.signature.signature()
     }
 
@@ -774,8 +801,14 @@ impl DecodedJWSFlattened {
 /// so in those cases make sure that [`Verifier`] can handle this.
 pub trait Verifier {
     type Error: Into<BoxError>;
+    type Output;
+
     /// Verify if data is valid
-    fn verify(&self, payload: &[u8], signatures: &[ToVerifySignature]) -> Result<(), Self::Error>;
+    fn verify(
+        &self,
+        payload: &[u8],
+        signatures: &[ToVerifySignature],
+    ) -> Result<Self::Output, Self::Error>;
 }
 
 #[cfg(test)]
@@ -819,6 +852,8 @@ mod tests {
 
     impl Verifier for DummyKey {
         type Error = OpaqueError;
+        type Output = ();
+
         fn verify(
             &self,
             _payload: &[u8],
@@ -827,9 +862,7 @@ mod tests {
             let to_verify = &to_verify_sigs[0];
             let original = to_verify.signed_data.as_bytes();
 
-            let signature = BASE64_URL_SAFE_NO_PAD
-                .decode(to_verify.decoded_signature.signature())
-                .context("decode signature")?;
+            let signature = to_verify.decoded_signature.signature();
 
             if original.len() + 1 != signature.len() {
                 Err(OpaqueError::from_display(
@@ -885,7 +918,7 @@ mod tests {
         );
         assert_eq!(jws.payload, jws_received.payload);
 
-        let decoded_jws = jws_received.decode(&signer_and_verifier).unwrap();
+        let (decoded_jws, _) = jws_received.decode(&signer_and_verifier).unwrap();
 
         let received_payload = String::from_utf8(decoded_jws.payload().to_vec()).unwrap();
         let received_protected = decoded_jws
@@ -916,13 +949,13 @@ mod tests {
         assert_eq!(jws.payload, "".to_owned());
 
         let jws = JWSFlattened::builder()
-            .with_payload(serde_json::to_vec(&Empty).unwrap())
+            .with_payload(serde_json::to_vec(&EMPTY_PAYLOAD).unwrap())
             .try_with_protected_headers(protected.clone())
             .unwrap()
             .build_flattened(&signer)
             .unwrap();
 
-        assert_eq!(jws.payload, "bnVsbA".to_owned());
+        assert_eq!(jws.payload, "e30".to_owned());
     }
 
     #[test]
@@ -985,7 +1018,7 @@ mod tests {
 
         let serialized = serde_json::to_string(&jws).unwrap();
         let received = serde_json::from_str::<JWS>(&serialized).unwrap();
-        let decoded = received.decode(&signer_and_verifier).unwrap();
+        let (decoded, _) = received.decode(&signer_and_verifier).unwrap();
         let decoded_payload = String::from_utf8(decoded.payload().to_vec()).unwrap();
 
         assert_eq!(payload, decoded_payload);
@@ -1057,6 +1090,7 @@ mod tests {
 
         impl Verifier for MultiVerifier {
             type Error = OpaqueError;
+            type Output = ();
             fn verify(
                 &self,
                 payload: &[u8],
@@ -1083,7 +1117,7 @@ mod tests {
         };
 
         let received = serde_json::from_str::<JWS>(&serialized).unwrap();
-        let decoded = received.decode(&multi_verifier).unwrap();
+        let (decoded, _) = received.decode(&multi_verifier).unwrap();
         let decoded_payload = String::from_utf8(decoded.payload().to_vec()).unwrap();
         assert_eq!(payload, decoded_payload);
     }

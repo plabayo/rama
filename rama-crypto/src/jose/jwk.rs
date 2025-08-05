@@ -4,35 +4,41 @@ use aws_lc_rs::{
     rand::SystemRandom,
     signature::{
         self, ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair, EcdsaSigningAlgorithm,
-        EcdsaVerificationAlgorithm, KeyPair,
+        EcdsaVerificationAlgorithm, KeyPair, Signature,
     },
 };
 use base64::{Engine as _, prelude::BASE64_URL_SAFE_NO_PAD};
 use rama_core::error::{ErrorContext, OpaqueError};
 use serde::{Deserialize, Serialize, Serializer, ser::SerializeStruct};
 
-use crate::jose::JWA;
+use crate::jose::{JWA, Signer};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 /// [`JWK`] or JSON Web Key as defined in [`rfc7517`]
 ///
 /// [`rfc7517`]: https://datatracker.ietf.org/doc/html/rfc7517
 pub struct JWK {
-    /// Intended algorithm to be used with this key
-    alg: JWA,
+    /// Algorithm intended for use with this key
+    pub alg: JWA,
     #[serde(flatten)]
-    key_type: JWKType,
+    /// Key type (e.g., RSA, EC, oct)
+    pub key_type: JWKType,
     #[serde(skip_serializing_if = "Option::is_none")]
-    r#use: Option<JWKUse>,
+    /// Intended use (e.g., "sig" for signature, "enc" for encryption)
+    pub r#use: Option<JWKUse>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    key_ops: Option<Vec<String>>,
+    /// Operations this key supports (e.g., ["sign", "verify"])
+    pub key_ops: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    x5c: Option<Vec<String>>,
+    /// X.509 certificate chain
+    pub x5c: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    x5t: Option<String>,
+    /// X.509 certificate SHA-1 thumbprint (base64url-encoded)
+    pub x5t: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "x5t#S256")]
-    x5t_sha256: Option<String>,
+    /// X.509 certificate SHA-256 thumbprint (base64url-encoded)
+    pub x5t_sha256: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
@@ -237,6 +243,44 @@ impl EcdsaKey {
     #[must_use]
     pub fn rng(&self) -> &SystemRandom {
         &self.rng
+    }
+
+    #[must_use]
+    pub fn alg(&self) -> JWA {
+        self.alg
+    }
+}
+
+#[derive(Serialize)]
+struct EcdsaKeySigningHeaders<'a> {
+    alg: JWA,
+    jwk: &'a JWK,
+}
+
+impl Signer for EcdsaKey {
+    type Signature = Signature;
+    type Error = OpaqueError;
+
+    fn set_headers(
+        &self,
+        protected_headers: &mut super::jws::Headers,
+        _unprotected_headers: &mut super::jws::Headers,
+    ) -> Result<(), Self::Error> {
+        let jwk = self.create_jwk();
+        protected_headers.try_set_headers(EcdsaKeySigningHeaders {
+            alg: jwk.alg,
+            jwk: &jwk,
+        })?;
+        Ok(())
+    }
+
+    fn sign(&self, data: &str) -> Result<Self::Signature, Self::Error> {
+        let sig = self
+            .inner
+            .sign(self.rng(), data.as_bytes())
+            .context("sign protected data")?;
+
+        Ok(sig)
     }
 }
 

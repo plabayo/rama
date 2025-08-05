@@ -7,21 +7,34 @@ use crate::Error;
 use crate::util::IterExt;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct Seconds(Duration);
+pub struct Seconds(u64);
 
 impl Seconds {
-    pub(crate) fn from_val(val: &HeaderValue) -> Option<Self> {
+    #[must_use]
+    pub fn new(seconds: u64) -> Self {
+        Self(seconds)
+    }
+
+    #[must_use]
+    pub fn from_val(val: &HeaderValue) -> Option<Self> {
         let secs = val.to_str().ok()?.parse().ok()?;
 
-        Some(Self::from_secs(secs))
+        Some(Self::new(secs))
     }
 
-    pub(crate) fn from_secs(secs: u64) -> Self {
-        Self::from(Duration::from_secs(secs))
+    #[must_use]
+    pub fn from_duration(duration: Duration) -> Self {
+        Self::new(duration.as_secs())
     }
 
-    pub(crate) fn as_u64(&self) -> u64 {
-        self.0.as_secs()
+    #[must_use]
+    pub fn as_duration(self) -> Duration {
+        Duration::from_secs(self.0)
+    }
+
+    #[must_use]
+    pub fn as_u64(self) -> u64 {
+        self.0
     }
 }
 
@@ -39,31 +52,37 @@ impl super::TryFromValues for Seconds {
 
 impl<'a> From<&'a Seconds> for HeaderValue {
     fn from(secs: &'a Seconds) -> Self {
-        secs.0.as_secs().into()
+        secs.as_u64().into()
     }
 }
 
 impl From<Duration> for Seconds {
     fn from(dur: Duration) -> Self {
         debug_assert!(dur.subsec_nanos() == 0);
-        Self(dur)
+        Self::from_duration(dur)
     }
 }
 
 impl From<Seconds> for Duration {
     fn from(secs: Seconds) -> Self {
-        secs.0
+        secs.as_duration()
+    }
+}
+
+impl From<Seconds> for u64 {
+    fn from(secs: Seconds) -> Self {
+        secs.as_u64()
     }
 }
 
 impl fmt::Debug for Seconds {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}s", self.0.as_secs())
+        write!(f, "{}s", self.as_u64())
     }
 }
 
 impl fmt::Display for Seconds {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        fmt::Display::fmt(&self.0.as_secs(), f)
+        fmt::Display::fmt(&self.as_u64(), f)
     }
 }
