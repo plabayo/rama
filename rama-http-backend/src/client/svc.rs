@@ -166,7 +166,7 @@ fn sanitize_client_req_header<S, B>(
         return Err(OpaqueError::from_display("missing host in CONNECT request").into());
     }
 
-    let is_http_proxy = ctx
+    let uses_http_proxy = ctx
         .get::<ProxyAddress>()
         .and_then(|proxy| proxy.protocol.as_ref())
         .map(|protocol| protocol.is_http())
@@ -177,7 +177,7 @@ fn sanitize_client_req_header<S, B>(
         .context("fetch request context")?;
 
     let is_insecure_request_over_http_proxy =
-        (request_ctx.protocol == Protocol::HTTP) && is_http_proxy;
+        (request_ctx.protocol == Protocol::HTTP) && uses_http_proxy;
 
     // logic specific to http versions
     Ok(match req.version() {
