@@ -6,7 +6,7 @@ use rama_core::{
     telemetry::tracing,
 };
 use rama_http::{
-    conn::TargetHttpVersion, header::SEC_WEBSOCKET_KEY, utils::RequestSwitchVersionExt,
+    Scheme, conn::TargetHttpVersion, header::SEC_WEBSOCKET_KEY, utils::RequestSwitchVersionExt,
 };
 use rama_http_headers::{HeaderMapExt, Host};
 use rama_http_types::{
@@ -14,7 +14,7 @@ use rama_http_types::{
     dep::{http::uri::PathAndQuery, http_body},
     header::{CONNECTION, HOST, KEEP_ALIVE, PROXY_CONNECTION, TRANSFER_ENCODING, UPGRADE},
 };
-use rama_net::http::RequestContext;
+use rama_net::{address::ProxyAddress, http::RequestContext};
 use std::fmt;
 use tokio::sync::Mutex;
 
@@ -166,6 +166,7 @@ fn sanitize_client_req_header<S, B>(
         return Err(OpaqueError::from_display("missing host in CONNECT request").into());
     }
 
+    let is_insecure_request_over_http_proxy = is_insecure_request_over_http_proxy(ctx, &req);
     let request_ctx = ctx
         .get_or_try_insert_with_ctx::<RequestContext, _>(|ctx| (ctx, &req).try_into())
         .context("fetch request context")?;
@@ -175,7 +176,11 @@ fn sanitize_client_req_header<S, B>(
         Version::HTTP_09 | Version::HTTP_10 | Version::HTTP_11 => {
             // remove authority and scheme for non-connect requests
             // cfr: <https://datatracker.ietf.org/doc/html/rfc2616#section-5.1.2>
-            if req.method() != Method::CONNECT && req.uri().host().is_some() {
+            // Unless we are using a http(s) proxy for an insecure request
+            if req.method() != Method::CONNECT
+                && !is_insecure_request_over_http_proxy
+                && req.uri().host().is_some()
+            {
                 tracing::trace!(
                     "remove authority and scheme from non-connect direct http(~1) request"
                 );
@@ -325,4 +330,171 @@ fn sanitize_client_req_header<S, B>(
             req
         }
     })
+}
+
+fn is_insecure_request_over_http_proxy<State, Body>(
+    ctx: &Context<State>,
+    req: &Request<Body>,
+) -> bool {
+    let is_http_proxy = ctx
+        .get::<ProxyAddress>()
+        .and_then(|proxy| proxy.protocol.as_ref())
+        .map(|protocol| protocol.is_http())
+        .unwrap_or_default();
+
+    let is_insecure_request = req
+        .uri()
+        .scheme()
+        .map(|scheme| *scheme == Scheme::HTTP)
+        .unwrap_or_default();
+
+    is_http_proxy && is_insecure_request
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rama_http::{Uri, dep::http::uri::Authority};
+    use rama_net::{
+        Protocol,
+        address::{Domain, Host},
+    };
+
+    #[test]
+    fn should_sanitize_http1_except_connect() {
+        for method in [
+            Method::DELETE,
+            Method::GET,
+            Method::HEAD,
+            Method::OPTIONS,
+            Method::PATCH,
+            Method::POST,
+            Method::PUT,
+            Method::TRACE,
+        ]
+        .into_iter()
+        {
+            let uri = Uri::builder()
+                .authority("example.com")
+                .scheme(Scheme::HTTPS)
+                .path_and_query("/test")
+                .build()
+                .unwrap();
+
+            let req = Request::builder().uri(uri).method(method).body(()).unwrap();
+            let mut ctx = Context::default();
+            let req = sanitize_client_req_header(&mut ctx, req).unwrap();
+
+            let (parts, _) = req.into_parts();
+            let uri = parts.uri.into_parts();
+
+            assert_eq!(uri.scheme, None);
+            assert_eq!(uri.authority, None);
+        }
+    }
+
+    #[test]
+    fn should_not_sanitize_http1_connect() {
+        let uri = Uri::builder()
+            .authority("example.com")
+            .scheme("https")
+            .path_and_query("/test")
+            .build()
+            .unwrap();
+
+        let req = Request::builder()
+            .method(Method::CONNECT)
+            .uri(uri)
+            .body(())
+            .unwrap();
+        let mut ctx = Context::default();
+        let req = sanitize_client_req_header(&mut ctx, req).unwrap();
+
+        let (parts, _) = req.into_parts();
+        let uri = parts.uri.into_parts();
+
+        assert_eq!(uri.scheme, Some(Scheme::HTTPS));
+        assert_eq!(uri.authority, Some(Authority::from_static("example.com")));
+    }
+
+    #[test]
+    fn should_not_sanitize_insecure_http1_request_over_http_proxy() {
+        let uri = Uri::builder()
+            .authority("example.com")
+            .scheme(Scheme::HTTP)
+            .path_and_query("/test")
+            .build()
+            .unwrap();
+
+        let req = Request::builder().uri(uri).body(()).unwrap();
+
+        let mut ctx = Context::default();
+        ctx.insert(ProxyAddress {
+            authority: rama_net::address::Authority::new(Host::Name(Domain::example()), 80),
+            credential: None,
+            protocol: Some(Protocol::HTTP),
+        });
+
+        let req = sanitize_client_req_header(&mut ctx, req).unwrap();
+
+        let (parts, _) = req.into_parts();
+        let uri = parts.uri.into_parts();
+
+        assert_eq!(uri.scheme, Some(Scheme::HTTP));
+        assert_eq!(uri.authority, Some(Authority::from_static("example.com")));
+    }
+
+    #[test]
+    fn should_sanitize_secure_http1_request_over_http_proxy() {
+        let uri = Uri::builder()
+            .authority("example.com")
+            .scheme(Scheme::HTTPS)
+            .path_and_query("/test")
+            .build()
+            .unwrap();
+
+        let req = Request::builder().uri(uri).body(()).unwrap();
+
+        let mut ctx = Context::default();
+        ctx.insert(ProxyAddress {
+            authority: rama_net::address::Authority::new(Host::Name(Domain::example()), 80),
+            credential: None,
+            protocol: Some(Protocol::HTTP),
+        });
+
+        let req = sanitize_client_req_header(&mut ctx, req).unwrap();
+
+        let (parts, _) = req.into_parts();
+        let uri = parts.uri.into_parts();
+
+        assert_eq!(uri.scheme, None);
+        assert_eq!(uri.authority, None);
+    }
+
+    #[test]
+    fn should_sanitize_insecure_http1_request_over_socks_proxy() {
+        let uri = Uri::builder()
+            .authority("example.com")
+            .scheme(Scheme::HTTP)
+            .path_and_query("/test")
+            .build()
+            .unwrap();
+
+        let req = Request::builder().uri(uri).body(()).unwrap();
+
+        let mut ctx = Context::default();
+        ctx.insert(ProxyAddress {
+            authority: rama_net::address::Authority::new(Host::Name(Domain::example()), 80),
+            credential: None,
+            protocol: Some(Protocol::SOCKS5),
+        });
+
+        let req = sanitize_client_req_header(&mut ctx, req).unwrap();
+
+        let (parts, _) = req.into_parts();
+        let uri = parts.uri.into_parts();
+
+        assert_eq!(uri.scheme, None);
+        assert_eq!(uri.authority, None);
+    }
 }
