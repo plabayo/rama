@@ -29,8 +29,6 @@ rcgen = { workspace = true }
 rustls-pki-types = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-tokio = { workspace = true, features = ["macros", "net"] }
-tokio-util = { workspace = true }
 x509-parser = { workspace = true }
 
 [dev-dependencies]
