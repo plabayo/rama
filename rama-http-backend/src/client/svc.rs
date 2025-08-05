@@ -14,7 +14,7 @@ use rama_http_types::{
     dep::{http::uri::PathAndQuery, http_body},
     header::{CONNECTION, HOST, KEEP_ALIVE, PROXY_CONNECTION, TRANSFER_ENCODING, UPGRADE},
 };
-use rama_net::{Protocol, address::ProxyAddress, http::RequestContext};
+use rama_net::{address::ProxyAddress, http::RequestContext};
 use std::fmt;
 use tokio::sync::Mutex;
 
@@ -176,8 +176,7 @@ fn sanitize_client_req_header<S, B>(
         .get_or_try_insert_with_ctx::<RequestContext, _>(|ctx| (ctx, &req).try_into())
         .context("fetch request context")?;
 
-    let is_insecure_request_over_http_proxy =
-        (request_ctx.protocol == Protocol::HTTP) && uses_http_proxy;
+    let is_insecure_request_over_http_proxy = !request_ctx.protocol.is_secure() && uses_http_proxy;
 
     // logic specific to http versions
     Ok(match req.version() {
