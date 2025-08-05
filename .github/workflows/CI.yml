@@ -245,19 +245,19 @@ jobs:
       - name: Run tests
         run: cargo test --features=cli,compression,rustls --workspace -- --ignored
 
-  test-ignored-beta:
-    needs: [check, check-msrv, check-all-features]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{env.RUST_TOOLCHAIN_BETA}}
-      - uses: Swatinem/rust-cache@v2
-        with:
-          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN_BETA}}"
-      - name: Run tests
-        run: cargo test --features=cli,compression,rustls --workspace -- --ignored
+  # test-ignored-beta:
+  #   needs: [check, check-msrv, check-all-features]
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: dtolnay/rust-toolchain@master
+  #       with:
+  #         toolchain: ${{env.RUST_TOOLCHAIN_BETA}}
+  #     - uses: Swatinem/rust-cache@v2
+  #       with:
+  #         env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN_BETA}}"
+  #     - name: Run tests
+  #       run: cargo test --features=cli,compression,rustls --workspace -- --ignored
 
   test-ignored:
     needs: [check, check-msrv, check-all-features]
@@ -520,10 +520,13 @@ jobs:
       # - test-msrv
       - test-beta
       - test-examples-msrv
-      - test-examples-beta
+      # - test-examples-beta
       - test-ignored
       - test-ignored-msrv
-      - test-ignored-beta
+      # currently broken because warning output format
+      # is gonna change in next version (currently breaking)
+      # which is breaking the UI tests for paste...
+      # - test-ignored-beta
       - test-docs
       - cargo-hack
       - cargo-deny
