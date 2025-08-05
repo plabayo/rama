@@ -2,15 +2,15 @@ use std::time::Duration;
 
 use http::Version;
 use rama::{
+    Context, Layer, Service,
     error::ErrorContext,
     http::{
-        client::EasyHttpWebClientBuilder, layer::trace::TraceLayer, server::HttpServer,
-        service::web::WebService, Body, BodyExtractExt, Request,
+        Body, BodyExtractExt, Request, client::EasyHttpWebClientBuilder, layer::trace::TraceLayer,
+        server::HttpServer, service::web::WebService,
     },
     net::address::SocketAddress,
-    Context, Layer, Service,
 };
-use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 use turmoil::{Builder, ToSocketAddrs};
 
 use crate::types::TurmoilTcpConnector;
