@@ -1,4 +1,5 @@
 use std::fmt::{Debug, Write};
+use std::net::SocketAddr;
 
 use crate::dep::core::bytes::Bytes;
 use crate::dep::http::request::Parts as ReqParts;
@@ -163,7 +164,7 @@ har_data!(Entry, {
     pub response: Option<Response>,
     pub cache: Cache,
     pub timings: Timings,
-    pub server_ip_address: Option<String>,
+    pub server_ip_address: Option<SocketAddr>,
     pub connection: Option<String>,
     pub comment: Option<String>,
 });
@@ -176,6 +177,7 @@ impl Entry {
         response: Option<Response>,
         cache: Cache,
         timings: Timings,
+        server_ip_address: Option<SocketAddr>,
     ) -> Self {
         Self {
             pageref: None,
@@ -185,7 +187,7 @@ impl Entry {
             response,
             cache,
             timings,
-            server_ip_address: None,
+            server_ip_address,
             connection: None,
             comment: None,
         }

@@ -6,6 +6,7 @@ use crate::layer::har::toggle::Toggle;
 use rama_core::{Context, Service, bytes::Bytes, error::BoxError};
 use rama_http_types::dep::http_body;
 use rama_http_types::{Request, Response};
+use rama_net::stream::SocketInfo;
 
 pub struct HARExportService<R, S, T> {
     pub(crate) recorder: R,
@@ -32,7 +33,7 @@ where
         ctx: Context<State>,
         req: Request<ReqBody>,
     ) -> Result<Self::Response, Self::Error> {
-        let result = self.service.serve(ctx, req.clone()).await;
+        let result = self.service.serve(ctx.clone(), req.clone()).await;
 
         if self.toggle.status().await {
             let mut log_line = HarLog::default();
@@ -62,6 +63,8 @@ where
                 comment: None,
             };
 
+            let server_ip_address = ctx.get::<SocketInfo>().map(|socket| *socket.peer_addr());
+
             let entry = Entry::new(
                 "started_date_time".to_owned(),
                 0, // time elapsed
@@ -69,6 +72,7 @@ where
                 response,
                 cache,
                 timings,
+                server_ip_address,
             );
 
             // Push the entry into the log even on service error
