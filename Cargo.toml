@@ -149,8 +149,8 @@ psl = "2"
 quickcheck = "1.0"
 quote = "1.0"
 radix_trie = "0.2"
-rama-boring = "0.3.1"
-rama-boring-tokio = "0.3.1"
+rama-boring = "0.4.0"
+rama-boring-tokio = "0.4.0"
 rama-core = { version = "0.3.0-alpha.2", path = "./rama-core" }
 rama-crypto = { version = "0.3.0-alpha.2", path = "./rama-crypto" }
 rama-dns = { version = "0.3.0-alpha.2", path = "./rama-dns" }

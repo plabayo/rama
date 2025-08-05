@@ -57,7 +57,6 @@ macro_rules! try_from_mapping {
 
 try_from_mapping! {
     type SupportedGroup = SslCurve;
-    let SECP224R1 = SECP224R1;
     let SECP256R1 = SECP256R1;
     let SECP384R1 = SECP384R1;
     let SECP521R1 = SECP521R1;
