@@ -5,8 +5,9 @@ use crate::dep::http::request::Parts as ReqParts;
 use crate::service::web::extract::Query;
 
 use mime::Mime;
-use rama_error::OpaqueError;
 
+use rama_core::telemetry::tracing;
+use rama_error::OpaqueError;
 use rama_http_types::{
     HeaderMap, HeaderName, Request as RamaRequest, Response as RamaResponse,
     Version as HttpVersion,
@@ -14,10 +15,20 @@ use rama_http_types::{
     header::{CONTENT_TYPE, LOCATION},
     proto::h1::Http1HeaderMap,
 };
+use serde::{Deserialize, Serialize};
 
 macro_rules! har_data {
     ($name:ident, { $($field:tt)* }) => {
         #[derive(Debug, Clone)]
+        pub struct $name {
+            $($field)*
+        }
+    };
+}
+
+macro_rules! har_data_with_serde {
+    ($name:ident, { $($field:tt)* }) => {
+        #[derive(Debug, Clone, Serialize, Deserialize)]
         pub struct $name {
             $($field)*
         }
@@ -37,9 +48,15 @@ fn into_string_version(v: HttpVersion) -> Result<String, OpaqueError> {
     }
 }
 
-fn into_query_string(parts: &ReqParts) -> Query<String> {
+fn into_query_string(parts: &ReqParts) -> Vec<QueryStringPair> {
     let query_str = parts.uri.query().unwrap_or("?");
-    Query::parse_query_str(query_str).unwrap()
+    match Query::parse_query_str(query_str) {
+        Ok(q) => q.0,
+        Err(err) => {
+            tracing::trace!("Failure to parse query string: {err:?}");
+            vec![]
+        }
+    }
 }
 
 fn get_mime(headers: HeaderMap) -> Mime {
@@ -180,7 +197,7 @@ har_data!(Request, {
     pub http_version: String,
     pub cookies: Vec<Cookie>,
     pub headers: Vec<Header>,
-    pub query_string: Query<String>,
+    pub query_string: Vec<QueryStringPair>,
     pub post_data: Option<PostData>,
     pub headers_size: i64,
     pub body_size: i64,
@@ -342,22 +359,11 @@ har_data!(Header, {
     pub comment: Option<String>,
 });
 
-// #[derive(serde::Deserialize)]
-// har_data!(QueryString, {
-//     pub name: String,
-//     pub value: String,
-//     pub comment: Option<String>,
-// });
-
-// impl From<(String, String)> for QueryString {
-//     fn from((name, value): (String, String)) -> Self {
-//         Self {
-//             name,
-//             value,
-//             comment: None,
-//         }
-//     }
-// }
+har_data_with_serde!(QueryStringPair, {
+    pub name: String,
+    pub value: String,
+    pub comment: Option<String>,
+});
 
 har_data!(PostData, {
     pub mime_type: Mime,
