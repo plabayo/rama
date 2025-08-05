@@ -1,9 +1,6 @@
 use crate::layer::har::Recorder;
 use crate::layer::har::spec::{
-    Entry,
-    Log as HarLog,
-    Request as HarRequest,
-    //Response as HarResponse,
+    Cache, Entry, Log as HarLog, Request as HarRequest, Response as HarResponse, Timings,
 };
 use crate::layer::har::toggle::Toggle;
 use rama_core::{Context, Service, bytes::Bytes, error::BoxError};
@@ -25,7 +22,7 @@ where
     S::Error: Into<BoxError> + Send + Sync + 'static,
     W: Toggle,
     ReqBody: http_body::Body<Data = Bytes, Error: Into<BoxError>> + Clone + Send + Sync + 'static,
-    ResBody: http_body::Body<Data = Bytes, Error: Into<BoxError>> + Send + 'static,
+    ResBody: http_body::Body<Data = Bytes, Error: Into<BoxError>> + Clone + Send + Sync + 'static,
 {
     type Response = Response<ResBody>;
     type Error = BoxError;
@@ -38,14 +35,41 @@ where
         let result = self.service.serve(ctx, req.clone()).await;
 
         if self.toggle.status().await {
-            let mut entry = Entry::default();
             let mut log_line = HarLog::default();
-            entry.request = HarRequest::from_rama_request::<ReqBody>(&req).await?;
+            let request = HarRequest::from_rama_request::<ReqBody>(&req).await?;
+            let mut response: Option<HarResponse> = None;
 
-            if let Ok(ref _response) = result {
-                // TODO
-                // entry.response = HarResponse::from_rama_response(response);
+            if let Ok(ref resp) = result {
+                response = Some(HarResponse::from_rama_response::<ResBody>(resp).await?);
             }
+
+            // dummy information
+            let timings = Timings {
+                blocked: None,
+                dns: None,
+                connect: None,
+                send: 0,
+                wait: 0,
+                receive: 0,
+                ssl: None,
+                comment: None,
+            };
+
+            // dummy info
+            let cache = Cache {
+                before_request: None,
+                after_request: None,
+                comment: None,
+            };
+
+            let entry = Entry::new(
+                "started_date_time".to_owned(),
+                0, // time elapsed
+                request,
+                response,
+                cache,
+                timings,
+            );
 
             // Push the entry into the log even on service error
             log_line.entries = vec![entry];
