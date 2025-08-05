@@ -33,7 +33,12 @@ where
         ctx: Context<State>,
         req: Request<ReqBody>,
     ) -> Result<Self::Response, Self::Error> {
-        let result = self.service.serve(ctx.clone(), req.clone()).await;
+
+        let server_ip_address = ctx
+            .get::<SocketInfo>()
+            .and_then(|socket| socket.local_addr().copied());
+
+        let result = self.service.serve(ctx, req.clone()).await;
 
         if self.toggle.status().await {
             let mut log_line = HarLog::default();
@@ -62,8 +67,6 @@ where
                 after_request: None,
                 comment: None,
             };
-
-            let server_ip_address = ctx.get::<SocketInfo>().map(|socket| *socket.peer_addr());
 
             let entry = Entry::new(
                 "started_date_time".to_owned(),
