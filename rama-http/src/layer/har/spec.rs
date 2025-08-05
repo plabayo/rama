@@ -1,12 +1,11 @@
-use std::collections::HashMap;
-use std::fmt::Debug;
-use std::fmt::Write;
+use std::fmt::{Debug, Write};
 
 use crate::dep::core::bytes::Bytes;
 use crate::dep::http::request::Parts as ReqParts;
 use crate::service::web::extract::Query;
 use rama_http_types::dep::http_body_util::BodyExt;
 
+use rama_core::telemetry::tracing;
 use rama_error::OpaqueError;
 use rama_http_types::dep::http_body::Body as RamaBody;
 use rama_http_types::{
@@ -188,11 +187,12 @@ impl Request {
 
     fn into_har_query_string(parts: &ReqParts) -> Vec<QueryString> {
         let query_str = parts.uri.query().unwrap_or("");
-        let query = Query::<HashMap<String, String>>::parse_query_str(query_str);
-
-        match query {
-            Ok(q) => q.0.into_iter().map(Into::into).collect(),
-            Err(_) => vec![],
+        match Query::parse_query_str(query_str) {
+            Ok(q) => q.0,
+            Err(err) => {
+                tracing::trace!("Failure to parse query string: {err:?}");
+                vec![]
+            },
         }
     }
 
