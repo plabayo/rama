@@ -18,6 +18,7 @@ pub use builder::EasyHttpWebClientBuilder;
 
 #[cfg(feature = "socks5")]
 mod proxy_connector;
+#[cfg(feature = "socks5")]
 #[doc(inline)]
 pub use proxy_connector::{ProxyConnector, ProxyConnectorLayer};
 
@@ -112,7 +113,7 @@ impl<State, BodyIn, ConnResponse> EasyHttpWebClient<State, BodyIn, ConnResponse>
         Self { connector }
     }
 
-    /// Set the [`Connector`] that this [`EasyHttpWebClient`] will use
+    /// Set the connector that this [`EasyHttpWebClient`] will use
     #[must_use]
     pub fn with_connector<BodyInNew, ConnResponseNew>(
         self,

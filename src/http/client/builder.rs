@@ -305,7 +305,7 @@ impl<T> EasyHttpWebClientBuilder<T, ProxyStage> {
     /// to configure your own request inspectors or [`Self::without_jit_req_inspector`] to remove
     /// all the default request inspectors
     ///
-    /// [`TargetHttpVersion`]: rama_http::conn::TargetHttpVersion;
+    /// [`TargetHttpVersion`]: crate::http::conn::TargetHttpVersion
     pub fn with_custom_tls_connector<L>(
         self,
         connector_layer: L,
@@ -340,7 +340,7 @@ impl<T> EasyHttpWebClientBuilder<T, ProxyStage> {
     /// to configure your own request inspectors or [`Self::without_jit_req_inspector`] to remove
     /// all the default request inspectors
     ///
-    /// [`TargetHttpVersion`]: rama_http::conn::TargetHttpVersion;
+    /// [`TargetHttpVersion`]: crate::http::conn::TargetHttpVersion
     pub fn with_tls_support_using_boringssl(
         self,
         config: Option<std::sync::Arc<boring_client::TlsConnectorDataBuilder>>,
@@ -373,7 +373,7 @@ impl<T> EasyHttpWebClientBuilder<T, ProxyStage> {
     /// to configure your own request inspectors or [`Self::without_jit_req_inspector`] to remove
     /// all the default request inspectors
     ///
-    /// [`TargetHttpVersion`]: rama_http::conn::TargetHttpVersion;
+    /// [`TargetHttpVersion`]: crate::http::conn::TargetHttpVersion
     pub fn with_tls_support_using_rustls(
         self,
         config: Option<rustls_client::TlsConnectorData>,
@@ -402,7 +402,7 @@ impl<T> EasyHttpWebClientBuilder<T, ProxyStage> {
     /// to configure your own request inspectors or [`Self::without_jit_req_inspector`] to remove
     /// all the default request inspectors
     ///
-    /// [`TargetHttpVersion`]: rama_http::conn::TargetHttpVersion;
+    /// [`TargetHttpVersion`]: crate::http::conn::TargetHttpVersion
     pub fn without_tls_support(
         self,
     ) -> EasyHttpWebClientBuilder<HttpConnector<T, HttpVersionAdapter>, HttpStage> {
@@ -457,7 +457,7 @@ impl<T, I1, I2> EasyHttpWebClientBuilder<HttpConnector<T, I1, I2>, HttpStage> {
     /// If you don't want any of these inspector you can use [`Self::with_advanced_jit_req_inspector`]
     /// to configure your own request inspectors without any defaults
     ///
-    /// [`TargetHttpVersion`]: rama_http::conn::TargetHttpVersion;
+    /// [`TargetHttpVersion`]: crate::http::conn::TargetHttpVersion
     pub fn with_jit_req_inspector<I>(
         self,
         http_req_inspector: I,
@@ -485,7 +485,7 @@ impl<T, I1, I2> EasyHttpWebClientBuilder<HttpConnector<T, I1, I2>, HttpStage> {
     /// If you don't want any of these inspector you can use [`Self::with_advanced_jit_req_inspector`]
     /// to configure your own request inspectors without any defaults
     ///
-    /// [`TargetHttpVersion`]: rama_http::conn::TargetHttpVersion;
+    /// [`TargetHttpVersion`]: crate::http::conn::TargetHttpVersion
     pub fn with_jit_req_inspector<I>(
         self,
         http_req_inspector: I,
@@ -518,7 +518,7 @@ type DefaultConnectionPoolBuilder<T, C> = EasyHttpWebClientBuilder<
 impl<T> EasyHttpWebClientBuilder<T, HttpStage> {
     /// Use the default connection pool for this [`super::EasyHttpWebClient`]
     ///
-    /// This will create a [`FiFoReuseLruDropPool`] using the provided limits
+    /// This will create a [`LruDropPool`] using the provided limits
     /// and will use [`BasicHttpConnIdentifier`] to group connection on protocol
     /// and authority, which should cover most common use cases
     ///
