@@ -479,6 +479,10 @@ name = "acme_tls_challenge_using_rustls"
 required-features = ["http-full", "rustls", "acme"]
 
 [[example]]
+name = "autobahn_client"
+required = ["rama-ws", "http-full"]
+
+[[example]]
 name = "http_conn_state"
 required-features = ["http-full"]
 
