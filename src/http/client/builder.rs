@@ -248,7 +248,7 @@ impl<T> EasyHttpWebClientBuilder<T, ProxyTunnelStage> {
     ///
     /// [`ProxyAddress`]: rama_net::address::ProxyAddress
     pub fn with_proxy_support(self) -> EasyHttpWebClientBuilder<HttpProxyConnector<T>, ProxyStage> {
-        self.with_http_only_proxy_support()
+        self.with_http_proxy_support()
     }
 
     /// Add support for usage of a http(s) [`ProxyAddress`] to this client
