@@ -352,10 +352,10 @@ where
             }
         };
 
-        if let Some(forwarded) = forwarded {
-            if let Some(header) = H::try_from_forwarded(forwarded.iter()) {
-                req.headers_mut().typed_insert(header);
-            }
+        if let Some(forwarded) = forwarded
+            && let Some(header) = H::try_from_forwarded(forwarded.iter())
+        {
+            req.headers_mut().typed_insert(header);
         }
 
         self.inner.serve(ctx, req).await.map_err(Into::into)

@@ -400,8 +400,8 @@ impl Service<(), Request> for EchoService {
             .map(|ja4h| {
                 let mut profile_ja4h: Option<FingerprintProfileData> = None;
 
-                if let Some(uadb) = self.uadb.as_deref() {
-                    if let Some(profile) =
+                if let Some(uadb) = self.uadb.as_deref()
+                    && let Some(profile) =
                         ua_str.as_deref().and_then(|s| uadb.get_exact_header_str(s))
                     {
                         let matched_ja4h = match req.version() {
@@ -435,7 +435,6 @@ impl Service<(), Request> for EchoService {
                             });
                         }
                     }
-                }
 
                 json!({
                     "hash": format!("{ja4h}"),
@@ -472,29 +471,28 @@ impl Service<(), Request> for EchoService {
 
                 let mut profile_ja4: Option<FingerprintProfileData> = None;
 
-                if let Some(uadb) = self.uadb.as_deref() {
-                    if let Some(profile) =
+                if let Some(uadb) = self.uadb.as_deref()
+                    && let Some(profile) =
                         ua_str.as_deref().and_then(|s| uadb.get_exact_header_str(s))
-                    {
-                        let matched_ja4 = profile
-                            .tls
-                            .compute_ja4(
-                                ctx.get::<NegotiatedTlsParameters>()
-                                    .map(|param| param.protocol_version),
-                            )
-                            .inspect_err(|err| {
-                                tracing::trace!("ja4 computation of matched profile: {err:?}")
-                            })
-                            .ok();
-                        if let (Some(src), Some(tgt)) = (ja4.as_ref(), matched_ja4) {
-                            let hash = format!("{tgt}");
-                            let matched = format!("{src}") == hash;
-                            profile_ja4 = Some(FingerprintProfileData {
-                                hash,
-                                verbose: format!("{tgt:?}"),
-                                matched,
-                            });
-                        }
+                {
+                    let matched_ja4 = profile
+                        .tls
+                        .compute_ja4(
+                            ctx.get::<NegotiatedTlsParameters>()
+                                .map(|param| param.protocol_version),
+                        )
+                        .inspect_err(|err| {
+                            tracing::trace!("ja4 computation of matched profile: {err:?}")
+                        })
+                        .ok();
+                    if let (Some(src), Some(tgt)) = (ja4.as_ref(), matched_ja4) {
+                        let hash = format!("{tgt}");
+                        let matched = format!("{src}") == hash;
+                        profile_ja4 = Some(FingerprintProfileData {
+                            hash,
+                            verbose: format!("{tgt:?}"),
+                            matched,
+                        });
                     }
                 }
 
@@ -512,29 +510,28 @@ impl Service<(), Request> for EchoService {
 
                 let mut profile_ja3: Option<FingerprintProfileData> = None;
 
-                if let Some(uadb) = self.uadb.as_deref() {
-                    if let Some(profile) =
+                if let Some(uadb) = self.uadb.as_deref()
+                    && let Some(profile) =
                         ua_str.as_deref().and_then(|s| uadb.get_exact_header_str(s))
-                    {
-                        let matched_ja3 = profile
-                            .tls
-                            .compute_ja3(
-                                ctx.get::<NegotiatedTlsParameters>()
-                                    .map(|param| param.protocol_version),
-                            )
-                            .inspect_err(|err| {
-                                tracing::trace!("ja3 computation of matched profile: {err:?}")
-                            })
-                            .ok();
-                        if let (Some(src), Some(tgt)) = (ja3.as_ref(), matched_ja3) {
-                            let hash = format!("{tgt:x}");
-                            let matched = format!("{src:x}") == hash;
-                            profile_ja3 = Some(FingerprintProfileData {
-                                hash,
-                                verbose: format!("{tgt}"),
-                                matched,
-                            });
-                        }
+                {
+                    let matched_ja3 = profile
+                        .tls
+                        .compute_ja3(
+                            ctx.get::<NegotiatedTlsParameters>()
+                                .map(|param| param.protocol_version),
+                        )
+                        .inspect_err(|err| {
+                            tracing::trace!("ja3 computation of matched profile: {err:?}")
+                        })
+                        .ok();
+                    if let (Some(src), Some(tgt)) = (ja3.as_ref(), matched_ja3) {
+                        let hash = format!("{tgt:x}");
+                        let matched = format!("{src:x}") == hash;
+                        profile_ja3 = Some(FingerprintProfileData {
+                            hash,
+                            verbose: format!("{tgt}"),
+                            matched,
+                        });
                     }
                 }
 
@@ -552,26 +549,25 @@ impl Service<(), Request> for EchoService {
 
                 let mut profile_peet: Option<FingerprintProfileData> = None;
 
-                if let Some(uadb) = self.uadb.as_deref() {
-                    if let Some(profile) =
+                if let Some(uadb) = self.uadb.as_deref()
+                    && let Some(profile) =
                         ua_str.as_deref().and_then(|s| uadb.get_exact_header_str(s))
-                    {
-                        let matched_peet = profile
-                            .tls
-                            .compute_peet()
-                            .inspect_err(|err| {
-                                tracing::trace!("peetprint computation of matched profile: {err:?}")
-                            })
-                            .ok();
-                        if let (Some(src), Some(tgt)) = (peet.as_ref(), matched_peet) {
-                            let hash = format!("{tgt}");
-                            let matched = format!("{src}") == hash;
-                            profile_peet = Some(FingerprintProfileData {
-                                hash,
-                                verbose: format!("{tgt:?}"),
-                                matched,
-                            });
-                        }
+                {
+                    let matched_peet = profile
+                        .tls
+                        .compute_peet()
+                        .inspect_err(|err| {
+                            tracing::trace!("peetprint computation of matched profile: {err:?}")
+                        })
+                        .ok();
+                    if let (Some(src), Some(tgt)) = (peet.as_ref(), matched_peet) {
+                        let hash = format!("{tgt}");
+                        let matched = format!("{src}") == hash;
+                        profile_peet = Some(FingerprintProfileData {
+                            hash,
+                            verbose: format!("{tgt:?}"),
+                            matched,
+                        });
                     }
                 }
 

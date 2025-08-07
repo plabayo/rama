@@ -198,13 +198,12 @@ impl WsHandler {
                 } else {
                     error!("websocket connection failed with fatal error: {err}")
                 }
-                if let Some(name) = self.nickname.as_deref() {
-                    if let Err(err) = self
+                if let Some(name) = self.nickname.as_deref()
+                    && let Err(err) = self
                         .broadcast_tx
                         .send(BroadcastMessage::System(format!("{name} left the chat.")))
-                    {
-                        warn!("failed to broadcast exit message (nickname: {name}): {err}");
-                    }
+                {
+                    warn!("failed to broadcast exit message (nickname: {name}): {err}");
                 }
                 return true;
             }

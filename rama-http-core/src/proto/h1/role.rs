@@ -46,10 +46,10 @@ where
 
     let _entered = trace_span!("parse_headers");
 
-    if let Some(prev_len) = prev_len {
-        if !is_complete_fast(bytes, prev_len) {
-            return Ok(None);
-        }
+    if let Some(prev_len) = prev_len
+        && !is_complete_fast(bytes, prev_len)
+    {
+        return Ok(None);
     }
 
     T::parse(bytes, ctx)
@@ -558,13 +558,13 @@ impl Server {
                             // same to help developers find bugs.
                             #[cfg(debug_assertions)]
                             {
-                                if let Some(len) = headers::content_length_parse(&value) {
-                                    if msg.req_method != &Some(Method::HEAD) || known_len != 0 {
-                                        assert!(
-                                            len == known_len,
-                                            "payload claims content-length of {known_len}, custom content-length header claims {len}",
-                                        );
-                                    }
+                                if let Some(len) = headers::content_length_parse(&value)
+                                    && (msg.req_method != &Some(Method::HEAD) || known_len != 0)
+                                {
+                                    assert!(
+                                        len == known_len,
+                                        "payload claims content-length of {known_len}, custom content-length header claims {len}",
+                                    );
                                 }
                             }
 
@@ -781,10 +781,10 @@ impl Server {
             extend(dst, b"\r\n");
         }
 
-        if encoder.is_chunked() {
-            if let Some(allowed_trailer_fields) = allowed_trailer_fields {
-                encoder = encoder.into_chunked_with_trailing_fields(allowed_trailer_fields);
-            }
+        if encoder.is_chunked()
+            && let Some(allowed_trailer_fields) = allowed_trailer_fields
+        {
+            encoder = encoder.into_chunked_with_trailing_fields(allowed_trailer_fields);
         }
 
         Ok(encoder.set_last(is_last))
@@ -946,10 +946,10 @@ impl Http1Transaction for Client {
                 }));
             }
 
-            if head.subject.is_informational() {
-                if let Some(callback) = ctx.on_informational {
-                    callback.call(head.into_response(()));
-                }
+            if head.subject.is_informational()
+                && let Some(callback) = ctx.on_informational
+            {
+                callback.call(head.into_response(()));
             }
 
             // Parsing a 1xx response could have consumed the buffer, check if

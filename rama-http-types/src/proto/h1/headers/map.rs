@@ -318,21 +318,21 @@ impl Iterator for HeaderMapValueRemoverIntoIter {
     type Item = (Http1HeaderName, HeaderValue);
 
     fn next(&mut self) -> Option<Self::Item> {
-        if let Some(mut it) = self.cached_headers.take() {
-            if let Some(value) = it.next() {
-                match if it.peek().is_some() {
-                    self.cached_headers = Some(it);
-                    self.cached_header_name.clone()
-                } else {
-                    self.cached_header_name.take()
-                } {
-                    Some(name) => {
-                        return Some((name.into_http1_header_name(), value));
-                    }
-                    None => {
-                        if cfg!(debug_assertions) {
-                            panic!("no http header name found for multi-value header");
-                        }
+        if let Some(mut it) = self.cached_headers.take()
+            && let Some(value) = it.next()
+        {
+            match if it.peek().is_some() {
+                self.cached_headers = Some(it);
+                self.cached_header_name.clone()
+            } else {
+                self.cached_header_name.take()
+            } {
+                Some(name) => {
+                    return Some((name.into_http1_header_name(), value));
+                }
+                None => {
+                    if cfg!(debug_assertions) {
+                        panic!("no http header name found for multi-value header");
                     }
                 }
             }

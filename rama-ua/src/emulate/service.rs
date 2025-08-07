@@ -721,12 +721,11 @@ fn merge_http_headers<'a>(
     // respect original header order of original headers where possible
     for header_name in original_http_header_order.into_iter().flatten() {
         let std_header_name = header_name.header_name();
-        if let Some(value) = original_headers.remove(std_header_name) {
-            if is_header_allowed(header_name.header_name())
-                && ClientHint::match_header_name(std_header_name).is_none()
-            {
-                output_headers_a.push((header_name, value));
-            }
+        if let Some(value) = original_headers.remove(std_header_name)
+            && is_header_allowed(header_name.header_name())
+            && ClientHint::match_header_name(std_header_name).is_none()
+        {
+            output_headers_a.push((header_name, value));
         }
     }
 

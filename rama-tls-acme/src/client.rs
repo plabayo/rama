@@ -119,7 +119,7 @@ where
         &self,
         ctx: Context<State>,
         options: CreateAccountOptions,
-    ) -> Result<Account<State>, ClientError> {
+    ) -> Result<Account<'_, State>, ClientError> {
         let key = EcdsaKey::generate().context("generate key for account")?;
 
         let do_request = async || {
@@ -238,7 +238,7 @@ where
         &self,
         ctx: Context<State>,
         new_order: NewOrderPayload,
-    ) -> Result<Order<State>, ClientError> {
+    ) -> Result<Order<'_, State>, ClientError> {
         let do_request = async || {
             let ctx = ctx.clone();
             let response = self
@@ -281,7 +281,7 @@ where
         &self,
         ctx: Context<State>,
         order_url: &str,
-    ) -> Result<Order<State>, ClientError> {
+    ) -> Result<Order<'_, State>, ClientError> {
         let do_request = async || {
             let ctx = ctx.clone();
             let response = self.post(ctx, order_url, NO_PAYLOAD).await?;

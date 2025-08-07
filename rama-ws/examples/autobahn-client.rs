@@ -78,10 +78,10 @@ async fn main() {
     let total = get_case_count().await.expect("Error getting case count");
 
     for case in 1..=total {
-        if let Err(err) = run_test(case).await {
-            if err.downcast_ref::<ProtocolError>().is_none() {
-                error!("Testcase failed: {err}")
-            }
+        if let Err(err) = run_test(case).await
+            && err.downcast_ref::<ProtocolError>().is_none()
+        {
+            error!("Testcase failed: {err}")
         }
     }
 

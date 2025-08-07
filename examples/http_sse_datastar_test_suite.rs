@@ -180,11 +180,10 @@ pub mod handlers {
                                     }).collect()
                                 }),
                             }.into_datastar_event();
-                            if let Some(id) = event_id {
-                                if let Err(err) = event.try_set_id(id) {
+                            if let Some(id) = event_id
+                                && let Err(err) = event.try_set_id(id) {
                                     tracing::error!("failed to set id of event: {err}");
                                 }
-                            }
                             if let Some(retry) = retry_duration {
                                 event.set_retry(retry);
                             }
@@ -206,11 +205,10 @@ pub mod handlers {
                                 },
                                 use_view_transition: use_view_transition.unwrap_or_default(),
                             }.into_datastar_event();
-                            if let Some(id) = event_id {
-                                if let Err(err) = event.try_set_id(id) {
+                            if let Some(id) = event_id
+                                && let Err(err) = event.try_set_id(id) {
                                     tracing::error!("failed to set id of event: {err}");
                                 }
-                            }
                             if let Some(retry) = retry_duration {
                                 event.set_retry(retry);
                             }
@@ -221,11 +219,10 @@ pub mod handlers {
                                 signals: signals_raw.unwrap_or_else(|| signals.map(|signals| serde_json::to_string(&signals).unwrap_or_default()).unwrap_or_default()),
                                 only_if_missing: only_if_missing.unwrap_or_default(),
                             }.into_datastar_event();
-                            if let Some(id) = event_id {
-                                if let Err(err) = event.try_set_id(id) {
+                            if let Some(id) = event_id
+                                && let Err(err) = event.try_set_id(id) {
                                     tracing::error!("failed to set id of event: {err}");
                                 }
-                            }
                             if let Some(retry) = retry_duration {
                                 event.set_retry(retry);
                             }

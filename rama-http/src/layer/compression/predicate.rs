@@ -233,10 +233,10 @@ impl Predicate for NotForContentType {
     where
         B: Body,
     {
-        if let Some(except) = &self.exception {
-            if content_type(response) == except.as_str() {
-                return true;
-            }
+        if let Some(except) = &self.exception
+            && content_type(response) == except.as_str()
+        {
+            return true;
         }
 
         !content_type(response).starts_with(self.content_type.as_str())

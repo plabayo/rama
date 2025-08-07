@@ -1162,10 +1162,10 @@ where
     fn drop(&mut self) {
         if let Ok(mut inner) = self.inner.lock() {
             inner.refs -= 1;
-            if inner.refs == 1 {
-                if let Some(task) = inner.actions.task.take() {
-                    task.wake();
-                }
+            if inner.refs == 1
+                && let Some(task) = inner.actions.task.take()
+            {
+                task.wake();
             }
         }
     }
@@ -1617,10 +1617,11 @@ fn drop_stream_ref(inner: &Mutex<Inner>, key: store::Key) {
     // closed (does not have to go through logic below
     // of canceling the stream), we should notify the task
     // (connection) so that it can close properly
-    if stream.ref_count == 0 && stream.is_closed() {
-        if let Some(task) = actions.task.take() {
-            task.wake();
-        }
+    if stream.ref_count == 0
+        && stream.is_closed()
+        && let Some(task) = actions.task.take()
+    {
+        task.wake();
     }
 
     me.counts.transition(stream, |counts, stream| {
