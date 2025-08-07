@@ -216,11 +216,13 @@ impl<T> EasyHttpWebClientBuilder<T, ProxyTunnelStage> {
     }
 
     #[cfg(feature = "socks5")]
-    /// Add support for usage of a http or socks5 proxy to this client
+    /// Add support for usage of a http(s) and socks5(h) [`ProxyAddress`] to this client
     ///
     /// Note that a tls proxy is not needed to make a https connection
     /// to the final target. It only has an influence on the initial connection
     /// to the proxy itself
+    ///
+    /// [`ProxyAddress`]: rama_net::address::ProxyAddress
     pub fn with_proxy_support(
         self,
     ) -> EasyHttpWebClientBuilder<ProxyConnector<std::sync::Arc<T>>, ProxyStage> {
@@ -232,8 +234,6 @@ impl<T> EasyHttpWebClientBuilder<T, ProxyTunnelStage> {
             Socks5ProxyConnectorLayer::required(),
             HttpProxyConnectorLayer::required(),
         );
-        // let connector = HttpProxyConnector::optional(self.connector);
-        // let connector = Socks5ProxyConnector::optional(connector);
 
         EasyHttpWebClientBuilder {
             connector,
@@ -242,22 +242,26 @@ impl<T> EasyHttpWebClientBuilder<T, ProxyTunnelStage> {
     }
 
     #[cfg(not(feature = "socks5"))]
-    /// Add support for usage of a http proxy to this client
+    /// Add support for usage of a http(s) [`ProxyAddress`] to this client
     ///
     /// Note that a tls proxy is not needed to make a https connection
     /// to the final target. It only has an influence on the initial connection
     /// to the proxy itself
     ///
     /// Note to also enable socks proxy support enable feature `socks5`
+    ///
+    /// [`ProxyAddress`]: rama_net::address::ProxyAddress
     pub fn with_proxy_support(self) -> EasyHttpWebClientBuilder<HttpProxyConnector<T>, ProxyStage> {
         self.with_http_only_proxy_support()
     }
 
-    /// Add support for usage of a http proxy to this client
+    /// Add support for usage of a http(s) [`ProxyAddress`] to this client
     ///
     /// Note that a tls proxy is not needed to make a https connection
     /// to the final target. It only has an influence on the initial connection
     /// to the proxy itself
+    ///
+    /// [`ProxyAddress`]: rama_net::address::ProxyAddress
     pub fn with_http_only_proxy_support(
         self,
     ) -> EasyHttpWebClientBuilder<HttpProxyConnector<T>, ProxyStage> {
@@ -270,7 +274,9 @@ impl<T> EasyHttpWebClientBuilder<T, ProxyTunnelStage> {
     }
 
     #[cfg(feature = "socks5")]
-    /// Add support for usage of a socks proxy to this client
+    /// Add support for usage of a socks5(h) [`ProxyAddress`] to this client
+    ///
+    /// [`ProxyAddress`]: rama_net::address::ProxyAddress
     pub fn with_socks5_only_proxy_support(
         self,
     ) -> EasyHttpWebClientBuilder<Socks5ProxyConnector<T>, ProxyStage> {

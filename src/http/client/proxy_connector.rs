@@ -15,7 +15,10 @@ use rama_net::{
 };
 use rama_socks5::{Socks5ProxyConnector, Socks5ProxyConnectorLayer};
 
-/// Proxy connector which supports http(s) and socks5 proxy address
+/// Proxy connector which supports http(s) and socks5(h) proxy address
+///
+/// Connector will look at [`ProxyAddress`] to determine which proxy
+/// connector to use if one is configured
 pub struct ProxyConnector<S> {
     inner: S,
     socks: Socks5ProxyConnector<S>,
@@ -42,6 +45,8 @@ impl<S> ProxyConnector<S> {
 
     #[inline]
     /// Creates a new required [`ProxyConnector`].
+    ///
+    /// This connector will fail if no [`ProxyAddress`] is configured
     pub fn required(
         inner: S,
         socks_proxy_layer: Socks5ProxyConnectorLayer,
@@ -52,6 +57,8 @@ impl<S> ProxyConnector<S> {
 
     #[inline]
     /// Creates a new optional [`ProxyConnector`].
+    ///
+    /// This connector will forward to the inner connector if no [`ProxyAddress`] is configured
     pub fn optional(
         inner: S,
         socks_proxy_layer: Socks5ProxyConnectorLayer,
@@ -127,16 +134,21 @@ where
     }
 }
 
+/// Proxy connector layer which supports http(s) and socks5(h) proxy address
+///
+/// Connector will look at [`ProxyAddress`] to determine which proxy
+/// connector to use if one is configured
 pub struct ProxyConnectorLayer {
     socks_layer: Socks5ProxyConnectorLayer,
     http_layer: HttpProxyConnectorLayer,
     required: bool,
 }
 
-/// Proxy connector which supports http(s) and socks5 proxy address
 impl ProxyConnectorLayer {
     #[must_use]
     /// Creates a new required [`ProxyConnectorLayer`].
+    ///
+    /// This connector will fail if no [`ProxyAddress`] is configured
     pub fn required(
         socks_proxy_layer: Socks5ProxyConnectorLayer,
         http_proxy_layer: HttpProxyConnectorLayer,
@@ -150,6 +162,8 @@ impl ProxyConnectorLayer {
 
     #[must_use]
     /// Creates a new optional [`ProxyConnectorLayer`].
+    ///
+    /// This connector will forward to the inner connector if no [`ProxyAddress`] is configured
     pub fn optional(
         socks_proxy_layer: Socks5ProxyConnectorLayer,
         http_proxy_layer: HttpProxyConnectorLayer,

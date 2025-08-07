@@ -1,3 +1,8 @@
+//! rama http client support
+//!
+//! Contains re-exports from `rama-http-backend::client`
+//! and adds `EasyHttpWebClient`, an opiniated http web client which
+//! supports most common use cases and provides sensible defaults.
 use std::fmt;
 
 use crate::{
