@@ -1,4 +1,4 @@
-use std::io;
+use std::{fmt, io};
 
 use crate::h2::codec::UserError;
 use crate::h2::proto::{self, Error, Initiator, PollReset};
@@ -46,9 +46,16 @@ use rama_http_types::proto::h2::frame::{self, Reason, StreamId};
 ///        ES: END_STREAM flag
 ///        R:  RST_STREAM frame
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(super) struct State {
     inner: Inner,
+}
+
+// remove some noise for debug output
+impl fmt::Debug for State {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.inner.fmt(f)
+    }
 }
 
 #[derive(Debug, Clone)]

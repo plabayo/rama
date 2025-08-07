@@ -35,10 +35,18 @@ pub(crate) struct Key {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct SlabIndex(u32);
 
-#[derive(Debug)]
 pub(super) struct Queue<N> {
     indices: Option<store::Indices>,
     _p: PhantomData<N>,
+}
+
+impl<N> fmt::Debug for Queue<N> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("Queue")
+            .field("indices", &self.indices)
+            // skip phantom data
+            .finish()
+    }
 }
 
 pub(super) trait Next {
