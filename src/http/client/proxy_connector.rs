@@ -1,19 +1,18 @@
 use std::sync::Arc;
 
-use rama_core::{
+use crate::{
     Layer, Service,
     combinators::Either3,
     error::{BoxError, OpaqueError},
+    http::client::proxy::layer::{HttpProxyConnector, HttpProxyConnectorLayer},
+    net::{
+        address::ProxyAddress,
+        client::{ConnectorService, EstablishedClientConnection},
+        stream::Stream,
+        transport::TryRefIntoTransportContext,
+    },
+    proxy::socks5::{Socks5ProxyConnector, Socks5ProxyConnectorLayer},
 };
-use rama_http_backend::client::proxy::layer::{HttpProxyConnector, HttpProxyConnectorLayer};
-use rama_net::{
-    Protocol,
-    address::ProxyAddress,
-    client::{ConnectorService, EstablishedClientConnection},
-    stream::Stream,
-    transport::TryRefIntoTransportContext,
-};
-use rama_socks5::{Socks5ProxyConnector, Socks5ProxyConnectorLayer};
 
 /// Proxy connector which supports http(s) and socks5(h) proxy address
 ///
@@ -109,8 +108,8 @@ where
                     conn: Either3::A(conn),
                 })
             }
-            Some(proto) => match *proto {
-                Protocol::SOCKS5 | Protocol::SOCKS5H => {
+            Some(proto) => {
+                if proto.is_socks5() {
                     let EstablishedClientConnection { ctx, req, conn } =
                         self.socks.connect(ctx, req).await?;
                     Ok(EstablishedClientConnection {
@@ -118,8 +117,7 @@ where
                         req,
                         conn: Either3::B(conn),
                     })
-                }
-                Protocol::HTTP | Protocol::HTTPS => {
+                } else if proto.is_http() {
                     let EstablishedClientConnection { ctx, req, conn } =
                         self.http.connect(ctx, req).await?;
                     Ok(EstablishedClientConnection {
@@ -127,9 +125,10 @@ where
                         req,
                         conn: Either3::C(conn),
                     })
+                } else {
+                    Err(OpaqueError::from_display("diplay not").into())
                 }
-                _ => Err(OpaqueError::from_display("diplay not").into()),
-            },
+            }
         }
     }
 }

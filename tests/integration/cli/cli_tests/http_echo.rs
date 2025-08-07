@@ -1,6 +1,7 @@
-use rama::Context;
-use rama::http::client::EasyHttpWebClient;
-use rama_ws::handshake::client::HttpClientWebSocketExt;
+use rama::{
+    Context,
+    http::{client::EasyHttpWebClient, ws::handshake::client::HttpClientWebSocketExt},
+};
 
 use super::utils;
 

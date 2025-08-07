@@ -6,18 +6,12 @@ use rama::{
     Context, Service,
     error::{ErrorContext, OpaqueError},
     http::{
-        Body, BodyExtractExt, Request,
-        client::{
-            HttpConnector,
-            http_inspector::{HttpVersionAdapter, HttpsAlpnModifier},
-        },
-        server::HttpServer,
+        Body, BodyExtractExt, Request, client::EasyHttpWebClient, server::HttpServer,
         service::web::Router,
     },
     net::{
         Protocol,
         address::{ProxyAddress, SocketAddress},
-        client::{ConnectorService, EstablishedClientConnection},
         tls::{
             ApplicationProtocol,
             client::ServerVerifyMode,
@@ -25,12 +19,11 @@ use rama::{
         },
         user::{Basic, ProxyCredential},
     },
-    proxy::socks5::Socks5ProxyConnector,
     rt::Executor,
-    tcp::{client::service::TcpConnector, server::TcpListener},
+    tcp::server::TcpListener,
     telemetry::tracing,
     tls::boring::{
-        client::{TlsConnector, TlsConnectorDataBuilder},
+        client::TlsConnectorDataBuilder,
         server::{TlsAcceptorData, TlsAcceptorService},
     },
 };
@@ -104,20 +97,17 @@ async fn test_http_client_over_socks5_proxy_connect(
         proxy_socket_addr,
     );
 
-    // TODO: once we have socks5 support in Easy http web client
-    // we can probably simplify this by using the interactive runner client
-    // instead of having to do this manually...
-
     let tls_config = TlsConnectorDataBuilder::new_http_auto()
         .with_store_server_certificate_chain(true)
         .with_server_verify_mode(ServerVerifyMode::Disable)
         .into_shared_builder();
 
-    let client = HttpConnector::new(
-        TlsConnector::auto(Socks5ProxyConnector::required(TcpConnector::new()))
-            .with_connector_data(tls_config),
-    )
-    .with_jit_req_inspector((HttpsAlpnModifier::default(), HttpVersionAdapter::default()));
+    let client = EasyHttpWebClient::builder()
+        .with_default_transport_connector()
+        .without_tls_proxy_support()
+        .with_proxy_support()
+        .with_tls_support_using_boringssl(Some(tls_config))
+        .build();
 
     let mut ctx = Context::default();
     ctx.insert(ProxyAddress {
@@ -141,22 +131,13 @@ async fn test_http_client_over_socks5_proxy_connect(
             .body(Body::empty())
             .expect("build simple GET request");
 
-        let EstablishedClientConnection {
-            ctx,
-            req,
-            conn: http_service,
-        } = client
-            .connect(ctx.clone(), request)
-            .await
-            .expect("establish a proxied connection ready to make http(s) requests");
-
         tracing::info!(
             url.full = %uri,
             "try to make GET http(s) request and try to receive response text",
         );
 
-        let resp = http_service
-            .serve(ctx, req)
+        let resp = client
+            .serve(ctx.clone(), request)
             .await
             .expect("make http(s) request via socks5 proxy")
             .try_into_string()

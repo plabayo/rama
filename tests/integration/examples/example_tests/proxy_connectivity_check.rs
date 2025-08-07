@@ -2,15 +2,12 @@ use super::utils;
 
 use rama::{
     Context, Service,
-    http::{Body, BodyExtractExt, Request, client::HttpConnector},
+    http::{Body, BodyExtractExt, Request, client::EasyHttpWebClient},
     net::{
         Protocol,
         address::{ProxyAddress, SocketAddress},
-        client::{ConnectorService, EstablishedClientConnection},
         user::{Basic, ProxyCredential},
     },
-    proxy::socks5::Socks5ProxyConnector,
-    tcp::client::service::TcpConnector,
     telemetry::tracing,
 };
 
@@ -47,11 +44,7 @@ async fn test_http_client_over_socks5_proxy_connect() {
         "local servers up and running",
     );
 
-    // TODO: once we have socks5 support in Easy http web client
-    // we can probably simplify this by using the interactive runner client
-    // instead of having to do this manually...
-
-    let client = HttpConnector::new(Socks5ProxyConnector::required(TcpConnector::new()));
+    let client = EasyHttpWebClient::default();
 
     let mut ctx = Context::default();
     ctx.insert(ProxyAddress {
@@ -67,19 +60,10 @@ async fn test_http_client_over_socks5_proxy_connect() {
         .body(Body::empty())
         .expect("build simple GET request");
 
-    let EstablishedClientConnection {
-        ctx,
-        req,
-        conn: http_service,
-    } = client
-        .connect(ctx.clone(), request)
-        .await
-        .expect("establish a proxied connection ready to make http requests");
-
     tracing::info!("try to make GET http request and try to receive response text",);
 
-    let resp = http_service
-        .serve(ctx, req)
+    let resp = client
+        .serve(ctx, request)
         .await
         .expect("make http request via socks5 proxy")
         .try_into_string()

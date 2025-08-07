@@ -1,35 +1,31 @@
 use super::{HttpConnector, http_inspector::HttpVersionAdapter};
-use rama_core::{
+use crate::{
     Layer, Service,
+    dns::DnsResolver,
     error::{BoxError, OpaqueError},
-};
-use rama_dns::DnsResolver;
-use rama_http::{Request, dep::http_body};
-use rama_http_backend::client::proxy::layer::HttpProxyConnector;
-use rama_net::client::{
-    EstablishedClientConnection,
-    pool::{
-        LruDropPool, PooledConnector,
-        http::{BasicHttpConId, BasicHttpConnIdentifier, HttpPooledConnectorConfig},
+    http::{Request, client::proxy::layer::HttpProxyConnector, dep::http_body},
+    net::client::{
+        EstablishedClientConnection,
+        pool::{
+            LruDropPool, PooledConnector,
+            http::{BasicHttpConId, BasicHttpConnIdentifier, HttpPooledConnectorConfig},
+        },
     },
+    tcp::client::service::TcpConnector,
 };
-use rama_tcp::client::service::TcpConnector;
 use std::{marker::PhantomData, time::Duration};
 
 #[cfg(feature = "boring")]
-use ::rama_tls_boring::client as boring_client;
+use crate::tls::boring::client as boring_client;
 
 #[cfg(feature = "rustls")]
-use rama_tls_rustls::client as rustls_client;
+use crate::tls::rustls::client as rustls_client;
 
 #[cfg(any(feature = "rustls", feature = "boring"))]
-use super::http_inspector::HttpsAlpnModifier;
+use crate::http::client::http_inspector::HttpsAlpnModifier;
 
 #[cfg(feature = "socks5")]
-use crate::http::client::proxy_connector::ProxyConnector;
-
-#[cfg(feature = "socks5")]
-use rama_socks5::Socks5ProxyConnector;
+use crate::{http::client::proxy_connector::ProxyConnector, proxy::socks5::Socks5ProxyConnector};
 
 /// Builder that is designed to easily create a [`super::EasyHttpWebClient`] from most basic use cases
 #[derive(Default)]
@@ -262,7 +258,7 @@ impl<T> EasyHttpWebClientBuilder<T, ProxyTunnelStage> {
     /// to the proxy itself
     ///
     /// [`ProxyAddress`]: rama_net::address::ProxyAddress
-    pub fn with_http_only_proxy_support(
+    pub fn with_http_proxy_support(
         self,
     ) -> EasyHttpWebClientBuilder<HttpProxyConnector<T>, ProxyStage> {
         let connector = HttpProxyConnector::optional(self.connector);
@@ -277,7 +273,7 @@ impl<T> EasyHttpWebClientBuilder<T, ProxyTunnelStage> {
     /// Add support for usage of a socks5(h) [`ProxyAddress`] to this client
     ///
     /// [`ProxyAddress`]: rama_net::address::ProxyAddress
-    pub fn with_socks5_only_proxy_support(
+    pub fn with_socks5_proxy_support(
         self,
     ) -> EasyHttpWebClientBuilder<Socks5ProxyConnector<T>, ProxyStage> {
         let connector = Socks5ProxyConnector::optional(self.connector);
