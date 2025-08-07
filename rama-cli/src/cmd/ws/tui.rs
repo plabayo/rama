@@ -231,101 +231,101 @@ impl App {
             }
         }
 
-        if event::poll(Duration::from_millis(250)).context("event poll failed")? {
-            if let Event::Key(key) = event::read().context("event read failed")? {
-                if key.kind != KeyEventKind::Press {
-                    return Ok(false);
-                }
+        if event::poll(Duration::from_millis(250)).context("event poll failed")?
+            && let Event::Key(key) = event::read().context("event read failed")?
+        {
+            if key.kind != KeyEventKind::Press {
+                return Ok(false);
+            }
 
-                match self.screen {
-                    Screen::Chat(ChatMode::Insert) => match key.code {
-                        KeyCode::Esc => {
-                            self.screen = Screen::Chat(ChatMode::View);
+            match self.screen {
+                Screen::Chat(ChatMode::Insert) => match key.code {
+                    KeyCode::Esc => {
+                        self.screen = Screen::Chat(ChatMode::View);
+                    }
+                    KeyCode::Enter if !self.input_buffer.is_empty() => {
+                        let message = std::mem::take(&mut self.input_buffer);
+                        self.socket
+                            .send_message(message.clone().into())
+                            .await
+                            .context("send WS message")?;
+                        self.history.push_client_message(Utf8Bytes::from(message));
+                    }
+                    KeyCode::Backspace => {
+                        if let Some(char) = self.input_buffer.pop() {
+                            tracing::debug!("popped character from input buffer: {char}");
                         }
-                        KeyCode::Enter if !self.input_buffer.is_empty() => {
-                            let message = std::mem::take(&mut self.input_buffer);
-                            self.socket
-                                .send_message(message.clone().into())
-                                .await
-                                .context("send WS message")?;
-                            self.history.push_client_message(Utf8Bytes::from(message));
-                        }
-                        KeyCode::Backspace => {
-                            if let Some(char) = self.input_buffer.pop() {
-                                tracing::debug!("popped character from input buffer: {char}");
-                            }
-                        }
-                        KeyCode::Char(char) if char.is_ascii() => {
-                            self.input_buffer.push(char);
-                        }
-                        _ => (),
-                    },
-                    Screen::Chat(ChatMode::View) => match key.code {
-                        KeyCode::Char('q') => return Ok(true),
-                        KeyCode::Char('i') => {
-                            self.screen = Screen::Chat(ChatMode::Insert);
-                        }
-                        KeyCode::Char('t') => {
-                            self.screen = Screen::Logs;
-                        }
-                        _ => (),
-                    },
-                    Screen::Logs => match key.code {
-                        KeyCode::Char('q') => return Ok(true),
-                        KeyCode::Esc => {
-                            self.screen = Screen::Chat(ChatMode::View);
-                        }
-                        KeyCode::Char('h') => {
-                            self.tui_logger_state
-                                .transition(tui_logger::TuiWidgetEvent::HideKey);
-                        }
-                        KeyCode::Char('f') => {
-                            self.tui_logger_state
-                                .transition(tui_logger::TuiWidgetEvent::FocusKey);
-                        }
-                        KeyCode::Up => {
-                            self.tui_logger_state
-                                .transition(tui_logger::TuiWidgetEvent::UpKey);
-                        }
-                        KeyCode::Down => {
-                            self.tui_logger_state
-                                .transition(tui_logger::TuiWidgetEvent::DownKey);
-                        }
-                        KeyCode::Left => {
-                            self.tui_logger_state
-                                .transition(tui_logger::TuiWidgetEvent::LeftKey);
-                        }
-                        KeyCode::Right => {
-                            self.tui_logger_state
-                                .transition(tui_logger::TuiWidgetEvent::RightKey);
-                        }
-                        KeyCode::Char('-') => {
-                            self.tui_logger_state
-                                .transition(tui_logger::TuiWidgetEvent::MinusKey);
-                        }
-                        KeyCode::Char('+') => {
-                            self.tui_logger_state
-                                .transition(tui_logger::TuiWidgetEvent::PlusKey);
-                        }
-                        KeyCode::Char('k') => {
-                            self.tui_logger_state
-                                .transition(tui_logger::TuiWidgetEvent::PrevPageKey);
-                        }
-                        KeyCode::Char('j') => {
-                            self.tui_logger_state
-                                .transition(tui_logger::TuiWidgetEvent::NextPageKey);
-                        }
-                        KeyCode::Char('s') => {
-                            self.tui_logger_state
-                                .transition(tui_logger::TuiWidgetEvent::EscapeKey);
-                        }
-                        KeyCode::Char('t') => {
-                            self.tui_logger_state
-                                .transition(tui_logger::TuiWidgetEvent::SpaceKey);
-                        }
-                        _ => (),
-                    },
-                }
+                    }
+                    KeyCode::Char(char) if char.is_ascii() => {
+                        self.input_buffer.push(char);
+                    }
+                    _ => (),
+                },
+                Screen::Chat(ChatMode::View) => match key.code {
+                    KeyCode::Char('q') => return Ok(true),
+                    KeyCode::Char('i') => {
+                        self.screen = Screen::Chat(ChatMode::Insert);
+                    }
+                    KeyCode::Char('t') => {
+                        self.screen = Screen::Logs;
+                    }
+                    _ => (),
+                },
+                Screen::Logs => match key.code {
+                    KeyCode::Char('q') => return Ok(true),
+                    KeyCode::Esc => {
+                        self.screen = Screen::Chat(ChatMode::View);
+                    }
+                    KeyCode::Char('h') => {
+                        self.tui_logger_state
+                            .transition(tui_logger::TuiWidgetEvent::HideKey);
+                    }
+                    KeyCode::Char('f') => {
+                        self.tui_logger_state
+                            .transition(tui_logger::TuiWidgetEvent::FocusKey);
+                    }
+                    KeyCode::Up => {
+                        self.tui_logger_state
+                            .transition(tui_logger::TuiWidgetEvent::UpKey);
+                    }
+                    KeyCode::Down => {
+                        self.tui_logger_state
+                            .transition(tui_logger::TuiWidgetEvent::DownKey);
+                    }
+                    KeyCode::Left => {
+                        self.tui_logger_state
+                            .transition(tui_logger::TuiWidgetEvent::LeftKey);
+                    }
+                    KeyCode::Right => {
+                        self.tui_logger_state
+                            .transition(tui_logger::TuiWidgetEvent::RightKey);
+                    }
+                    KeyCode::Char('-') => {
+                        self.tui_logger_state
+                            .transition(tui_logger::TuiWidgetEvent::MinusKey);
+                    }
+                    KeyCode::Char('+') => {
+                        self.tui_logger_state
+                            .transition(tui_logger::TuiWidgetEvent::PlusKey);
+                    }
+                    KeyCode::Char('k') => {
+                        self.tui_logger_state
+                            .transition(tui_logger::TuiWidgetEvent::PrevPageKey);
+                    }
+                    KeyCode::Char('j') => {
+                        self.tui_logger_state
+                            .transition(tui_logger::TuiWidgetEvent::NextPageKey);
+                    }
+                    KeyCode::Char('s') => {
+                        self.tui_logger_state
+                            .transition(tui_logger::TuiWidgetEvent::EscapeKey);
+                    }
+                    KeyCode::Char('t') => {
+                        self.tui_logger_state
+                            .transition(tui_logger::TuiWidgetEvent::SpaceKey);
+                    }
+                    _ => (),
+                },
             }
         }
         Ok(false)

@@ -55,10 +55,10 @@ fn map_http_core_err_to_result(err: rama_http_core::Error) -> HttpServeResult {
             if h2_err.is_go_away() || h2_err.is_io() {
                 return Ok(());
             }
-        } else if let Some(io_err) = source_err.downcast_ref::<std::io::Error>() {
-            if is_connection_error(io_err) {
-                return Ok(());
-            }
+        } else if let Some(io_err) = source_err.downcast_ref::<std::io::Error>()
+            && is_connection_error(io_err)
+        {
+            return Ok(());
         }
     }
 

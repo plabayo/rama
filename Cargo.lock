@@ -76,9 +76,9 @@ dependencies = [
 
 [[package]]
 name = "anstream"
-version = "0.6.19"
+version = "0.6.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "301af1932e46185686725e0fad2f8f2aa7da69dd70bf6ecc44d6b703844a3933"
+checksum = "3ae563653d1938f79b1ab1b5e668c87c76a9930414574a6583a7b7e11a8e6192"
 dependencies = [
  "anstyle",
  "anstyle-parse",
@@ -106,22 +106,22 @@ dependencies = [
 
 [[package]]
 name = "anstyle-query"
-version = "1.1.3"
+version = "1.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6c8bdeb6047d8983be085bab0ba1472e6dc604e7041dbf6fcd5e71523014fae9"
+checksum = "9e231f6134f61b71076a3eab506c379d4f36122f2af15a9ff04415ea4c3339e2"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
 name = "anstyle-wincon"
-version = "3.0.9"
+version = "3.0.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "403f75924867bb1033c59fbf0797484329750cfbe3c4325cd33127941fabc882"
+checksum = "3e0633414522a32ffaac8ac6cc8f748e090c5717661fddeea04219e2344f5f2a"
 dependencies = [
  "anstyle",
  "once_cell_polyfill",
- "windows-sys 0.59.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -330,9 +330,9 @@ dependencies = [
 
 [[package]]
 name = "bindgen"
-version = "0.71.1"
+version = "0.72.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5f58bf3d7db68cfbac37cfc485a8d711e87e064c3d0fe0435b92f7a407f9d6b3"
+checksum = "4f72209734318d0b619a5e0f5129918b848c416e122a3c4ce054e03cb87b726f"
 dependencies = [
  "bitflags",
  "cexpr",
@@ -495,9 +495,9 @@ dependencies = [
 
 [[package]]
 name = "clap"
-version = "4.5.42"
+version = "4.5.43"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ed87a9d530bb41a67537289bafcac159cb3ee28460e0a4571123d2a778a6a882"
+checksum = "50fd97c9dc2399518aa331917ac6f274280ec5eb34e555dd291899745c48ec6f"
 dependencies = [
  "clap_builder",
  "clap_derive",
@@ -505,9 +505,9 @@ dependencies = [
 
 [[package]]
 name = "clap_builder"
-version = "4.5.42"
+version = "4.5.43"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "64f4f3f3c77c94aff3c7e9aac9a2ca1974a5adf392a8bb751e827d6d127ab966"
+checksum = "c35b5830294e1fa0462034af85cc95225a4cb07092c088c55bda3147cfcd8f65"
 dependencies = [
  "anstream",
  "anstyle",
@@ -1247,9 +1247,9 @@ checksum = "a8d1add55171497b4705a648c6b583acafb01d58050a51727785f0b2c8e0a2b2"
 
 [[package]]
 name = "h2"
-version = "0.4.11"
+version = "0.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "17da50a276f1e01e0ba6c029e47b7100754904ee8a278f886546e98575380785"
+checksum = "f3c0b69cfcb4e1b9f1bf2f53f95f766e4661169728ec61cd3fe5a0166f2d1386"
 dependencies = [
  "atomic-waker",
  "bytes",
@@ -1787,6 +1787,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "libm"
+version = "0.2.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f9fbbcab51052fe104eb5e5d351cf728d30a5be1fe14d9be8a3b097481fb97de"
+
+[[package]]
 name = "libmimalloc-sys"
 version = "0.1.43"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2060,6 +2066,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841"
 dependencies = [
  "autocfg",
+ "libm",
 ]
 
 [[package]]
@@ -2484,7 +2491,7 @@ dependencies = [
 
 [[package]]
 name = "rama"
-version = "0.3.0-alpha.2"
+version = "0.3.0-alpha.3"
 dependencies = [
  "base64",
  "bytes",
@@ -2531,13 +2538,14 @@ dependencies = [
  "tokio",
  "tokio-test",
  "tracing-subscriber",
+ "turmoil",
 ]
 
 [[package]]
 name = "rama-boring"
-version = "0.3.1"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "477c2786c6d332805856da39868fb26c9e9878a95914723aebb8e0c03b0a5e56"
+checksum = "c6c52217ff947d630f3807cde9f8fe4cc69005b17a1e81fc99fa432cb3fb9c78"
 dependencies = [
  "bitflags",
  "foreign-types",
@@ -2548,12 +2556,12 @@ dependencies = [
 
 [[package]]
 name = "rama-boring-sys"
-version = "0.3.1"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c1ef4ffb23eee3766621ba55c60e5299d4de98552509fca9ccf7bd6d57b1e6db"
+checksum = "1c7fd7057828ca9fa148c704f1bf0fff12f6367891212c9c0caad63ae17902a7"
 dependencies = [
  "autocfg",
- "bindgen 0.71.1",
+ "bindgen 0.72.0",
  "cmake",
  "fs_extra",
  "fslock",
@@ -2561,9 +2569,9 @@ dependencies = [
 
 [[package]]
 name = "rama-boring-tokio"
-version = "0.3.1"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bf9946ee3eecebeb9c2b3c4cf557dbd5a6aa185ef48362a013feb4fb8d962a75"
+checksum = "b07c71d66f9fa0b52b02055b94c779e98fc27d228e67105c6e528cfd1f19a7a4"
 dependencies = [
  "rama-boring",
  "rama-boring-sys",
@@ -2572,7 +2580,7 @@ dependencies = [
 
 [[package]]
 name = "rama-cli"
-version = "0.3.0-alpha.2"
+version = "0.3.0-alpha.3"
 dependencies = [
  "base64",
  "chrono",
@@ -2596,7 +2604,7 @@ dependencies = [
 
 [[package]]
 name = "rama-core"
-version = "0.3.0-alpha.2"
+version = "0.3.0-alpha.3"
 dependencies = [
  "async-stream",
  "bytes",
@@ -2619,7 +2627,7 @@ dependencies = [
 
 [[package]]
 name = "rama-crypto"
-version = "0.3.0-alpha.2"
+version = "0.3.0-alpha.3"
 dependencies = [
  "aws-lc-rs",
  "base64",
@@ -2636,7 +2644,7 @@ dependencies = [
 
 [[package]]
 name = "rama-dns"
-version = "0.3.0-alpha.2"
+version = "0.3.0-alpha.3"
 dependencies = [
  "hickory-resolver",
  "rama-core",
@@ -2649,7 +2657,7 @@ dependencies = [
 
 [[package]]
 name = "rama-error"
-version = "0.3.0-alpha.2"
+version = "0.3.0-alpha.3"
 
 [[package]]
 name = "rama-fuzz"
@@ -2665,7 +2673,7 @@ dependencies = [
 
 [[package]]
 name = "rama-haproxy"
-version = "0.3.0-alpha.2"
+version = "0.3.0-alpha.3"
 dependencies = [
  "rama-core",
  "rama-net",
@@ -2676,7 +2684,7 @@ dependencies = [
 
 [[package]]
 name = "rama-http"
-version = "0.3.0-alpha.2"
+version = "0.3.0-alpha.3"
 dependencies = [
  "async-compression",
  "bitflags",
@@ -2723,7 +2731,7 @@ dependencies = [
 
 [[package]]
 name = "rama-http-backend"
-version = "0.3.0-alpha.2"
+version = "0.3.0-alpha.3"
 dependencies = [
  "const_format",
  "futures",
@@ -2746,7 +2754,7 @@ dependencies = [
 
 [[package]]
 name = "rama-http-core"
-version = "0.3.0-alpha.2"
+version = "0.3.0-alpha.3"
 dependencies = [
  "atomic-waker",
  "env_logger 0.11.8",
@@ -2778,7 +2786,7 @@ dependencies = [
 
 [[package]]
 name = "rama-http-headers"
-version = "0.3.0-alpha.2"
+version = "0.3.0-alpha.3"
 dependencies = [
  "base64",
  "httpdate",
@@ -2798,7 +2806,7 @@ dependencies = [
 
 [[package]]
 name = "rama-http-types"
-version = "0.3.0-alpha.2"
+version = "0.3.0-alpha.3"
 dependencies = [
  "const_format",
  "fnv",
@@ -2831,7 +2839,7 @@ dependencies = [
 
 [[package]]
 name = "rama-macros"
-version = "0.3.0-alpha.2"
+version = "0.3.0-alpha.3"
 dependencies = [
  "paste-test-suite",
  "rustversion",
@@ -2840,7 +2848,7 @@ dependencies = [
 
 [[package]]
 name = "rama-net"
-version = "0.3.0-alpha.2"
+version = "0.3.0-alpha.3"
 dependencies = [
  "const_format",
  "flume",
@@ -2870,7 +2878,7 @@ dependencies = [
 
 [[package]]
 name = "rama-proxy"
-version = "0.3.0-alpha.2"
+version = "0.3.0-alpha.3"
 dependencies = [
  "arc-swap",
  "base64",
@@ -2891,7 +2899,7 @@ dependencies = [
 
 [[package]]
 name = "rama-socks5"
-version = "0.3.0-alpha.2"
+version = "0.3.0-alpha.3"
 dependencies = [
  "byteorder",
  "rama-core",
@@ -2908,7 +2916,7 @@ dependencies = [
 
 [[package]]
 name = "rama-tcp"
-version = "0.3.0-alpha.2"
+version = "0.3.0-alpha.3"
 dependencies = [
  "rama-core",
  "rama-dns",
@@ -2921,7 +2929,7 @@ dependencies = [
 
 [[package]]
 name = "rama-tls-acme"
-version = "0.3.0-alpha.2"
+version = "0.3.0-alpha.3"
 dependencies = [
  "base64",
  "parking_lot",
@@ -2936,7 +2944,7 @@ dependencies = [
 
 [[package]]
 name = "rama-tls-boring"
-version = "0.3.0-alpha.2"
+version = "0.3.0-alpha.3"
 dependencies = [
  "brotli",
  "flate2",
@@ -2958,7 +2966,7 @@ dependencies = [
 
 [[package]]
 name = "rama-tls-rustls"
-version = "0.3.0-alpha.2"
+version = "0.3.0-alpha.3"
 dependencies = [
  "pin-project-lite",
  "rama-core",
@@ -2976,7 +2984,7 @@ dependencies = [
 
 [[package]]
 name = "rama-tower"
-version = "0.3.0-alpha.2"
+version = "0.3.0-alpha.3"
 dependencies = [
  "rama-core",
  "rama-http-types",
@@ -2987,7 +2995,7 @@ dependencies = [
 
 [[package]]
 name = "rama-ua"
-version = "0.3.0-alpha.2"
+version = "0.3.0-alpha.3"
 dependencies = [
  "itertools 0.14.0",
  "rama-core",
@@ -3003,7 +3011,7 @@ dependencies = [
 
 [[package]]
 name = "rama-udp"
-version = "0.3.0-alpha.2"
+version = "0.3.0-alpha.3"
 dependencies = [
  "rama-core",
  "rama-net",
@@ -3013,7 +3021,7 @@ dependencies = [
 
 [[package]]
 name = "rama-unix"
-version = "0.3.0-alpha.2"
+version = "0.3.0-alpha.3"
 dependencies = [
  "rama-core",
  "rama-net",
@@ -3023,7 +3031,7 @@ dependencies = [
 
 [[package]]
 name = "rama-utils"
-version = "0.3.0-alpha.2"
+version = "0.3.0-alpha.3"
 dependencies = [
  "parking_lot",
  "pin-project-lite",
@@ -3038,7 +3046,7 @@ dependencies = [
 
 [[package]]
 name = "rama-ws"
-version = "0.3.0-alpha.2"
+version = "0.3.0-alpha.3"
 dependencies = [
  "pin-project-lite",
  "rama-core",
@@ -3110,6 +3118,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "99d9a13982dcf210057a8a78572b2217b667c3beacbf3a0d8b454f6f82837d38"
 dependencies = [
  "getrandom 0.3.3",
+]
+
+[[package]]
+name = "rand_distr"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32cb0b9bc82b0a0876c2dd994a7e7a2683d3e7390ca40e6886785ef0c7e3ee31"
+dependencies = [
+ "num-traits",
+ "rand 0.8.5",
 ]
 
 [[package]]
@@ -3395,9 +3413,9 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
 name = "security-framework"
-version = "3.2.0"
+version = "3.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "271720403f46ca04f7ba6f55d438f8bd878d6b8ca0a1046e8228c4145bcbb316"
+checksum = "80fb1d92c5028aa318b4b8bd7302a5bfcf48be96a37fc6fc790f806b0004ee0c"
 dependencies = [
  "bitflags",
  "core-foundation",
@@ -4207,6 +4225,21 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "unicode-segmentation",
+]
+
+[[package]]
+name = "turmoil"
+version = "0.6.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1f0d6c134ef37268c94d50fb74252af1c34c5c88389e2c1af85654da944ceb52"
+dependencies = [
+ "bytes",
+ "indexmap",
+ "rand 0.8.5",
+ "rand_distr",
+ "scoped-tls",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -5035,9 +5068,9 @@ dependencies = [
 
 [[package]]
 name = "zerovec"
-version = "0.11.3"
+version = "0.11.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bdbb9122ea75b11bf96e7492afb723e8a7fbe12c67417aa95e7e3d18144d37cd"
+checksum = "e7aa2bd55086f1ab526693ecbe444205da57e25f4489879da80635a46d90e73b"
 dependencies = [
  "yoke",
  "zerofrom",

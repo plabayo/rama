@@ -119,18 +119,17 @@ impl EarlyFrameStreamContext {
 
     pub fn replay_next_frame(&mut self, next_stream_id: Option<StreamId>) -> Option<EarlyFrame> {
         if let EarlyFrameKind::Replayer(ref mut v) = self.kind {
-            if let Some(next_stream_id) = next_stream_id {
-                if !v
+            if let Some(next_stream_id) = next_stream_id
+                && !v
                     .last()
                     .map(|f| f.stream_created(next_stream_id))
                     .unwrap_or_default()
-                {
-                    self.kind = EarlyFrameKind::Nop;
-                    tracing::trace!(
-                        "stop replayer early, the scenario has changed, we are beyond the existing streams now"
-                    );
-                    return None;
-                }
+            {
+                self.kind = EarlyFrameKind::Nop;
+                tracing::trace!(
+                    "stop replayer early, the scenario has changed, we are beyond the existing streams now"
+                );
+                return None;
             }
 
             let next = v.pop();

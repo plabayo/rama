@@ -54,6 +54,15 @@ impl Redirect {
         Self::with_status_code(StatusCode::SEE_OTHER, loc)
     }
 
+    /// Create a new found (301) redirect response.
+    ///
+    /// Used if a resource is permanently moved.
+    ///
+    /// Use [`Self::permanent`] in case you wish to respect the original HTTP Method.
+    pub fn moved(loc: impl IntoRedirectLoc) -> Self {
+        Self::with_status_code(StatusCode::MOVED_PERMANENTLY, loc)
+    }
+
     /// Create a new found (302) redirect response.
     ///
     /// Can be useful in flows where the resource was legit and found,

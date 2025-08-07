@@ -459,13 +459,11 @@ impl UdpSocketRelay {
                                         Ok(ips) => {
                                             if let Some(ip) =
                                                 ips.into_iter().choose(&mut rand::rng())
-                                            {
-                                                if let Err(err) = tx.send(IpAddr::V4(ip)) {
+                                                && let Err(err) = tx.send(IpAddr::V4(ip)) {
                                                     tracing::trace!(
                                                         "failed to send ipv4 lookup result for {ip}: {err:?}"
                                                     )
                                                 }
-                                            }
                                         }
                                         Err(err) => tracing::debug!(
                                             "failed to lookup ipv4 addresses for domain: {err:?}"
@@ -483,13 +481,11 @@ impl UdpSocketRelay {
                                         Ok(ips) => {
                                             if let Some(ip) =
                                                 ips.into_iter().choose(&mut rand::rng())
-                                            {
-                                                if let Err(err) = tx.send(IpAddr::V6(ip)) {
+                                                && let Err(err) = tx.send(IpAddr::V6(ip)) {
                                                     tracing::trace!(
                                                         "failed to send ipv6 lookup result for ip {ip}: {err:?}"
                                                     )
                                                 }
-                                            }
                                         }
                                         Err(err) => tracing::debug!(
                                             "failed to lookup ipv6 addresses for domain: {err:?}"

@@ -148,11 +148,11 @@ impl Body for Incoming {
             } => {
                 want_tx.send(WANT_READY);
 
-                if !data_rx.is_terminated() {
-                    if let Some(chunk) = ready!(Pin::new(data_rx).poll_next(cx)?) {
-                        len.sub_if(chunk.len() as u64);
-                        return Poll::Ready(Some(Ok(Frame::data(chunk))));
-                    }
+                if !data_rx.is_terminated()
+                    && let Some(chunk) = ready!(Pin::new(data_rx).poll_next(cx)?)
+                {
+                    len.sub_if(chunk.len() as u64);
+                    return Poll::Ready(Some(Ok(Frame::data(chunk))));
                 }
 
                 // check trailers after data is terminated

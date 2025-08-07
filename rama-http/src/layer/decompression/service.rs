@@ -119,10 +119,10 @@ where
         ctx: Context<State>,
         mut req: Request<ReqBody>,
     ) -> Result<Self::Response, Self::Error> {
-        if let header::Entry::Vacant(entry) = req.headers_mut().entry(ACCEPT_ENCODING) {
-            if let Some(accept) = self.accept.maybe_to_header_value() {
-                entry.insert(accept);
-            }
+        if let header::Entry::Vacant(entry) = req.headers_mut().entry(ACCEPT_ENCODING)
+            && let Some(accept) = self.accept.maybe_to_header_value()
+        {
+            entry.insert(accept);
         }
 
         let res = self.inner.serve(ctx, req).await?;

@@ -88,11 +88,11 @@ impl Send {
         {
             tracing::debug!("illegal connection-specific headers found");
             return Err(UserError::MalformedHeaders);
-        } else if let Some(te) = fields.get(rama_http_types::header::TE) {
-            if te != "trailers" {
-                tracing::debug!("illegal connection-specific headers found");
-                return Err(UserError::MalformedHeaders);
-            }
+        } else if let Some(te) = fields.get(rama_http_types::header::TE)
+            && te != "trailers"
+        {
+            tracing::debug!("illegal connection-specific headers found");
+            return Err(UserError::MalformedHeaders);
         }
         Ok(())
     }
@@ -160,10 +160,8 @@ impl Send {
 
         // Need to notify the connection when pushing onto pending_open since
         // queue_frame only notifies for pending_send.
-        if pending_open {
-            if let Some(task) = task.take() {
-                task.wake();
-            }
+        if pending_open && let Some(task) = task.take() {
+            task.wake();
         }
 
         Ok(())

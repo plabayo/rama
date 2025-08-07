@@ -30,6 +30,18 @@ impl<ResBody> Redirect<ResBody> {
         }
     }
 
+    /// Create a new found (301) redirect response.
+    ///
+    /// Used if a resource is permanently moved.
+    ///
+    /// Use [`Self::permanent`] in case you wish to respect the original HTTP Method.
+    pub fn moved(loc: impl response::redirect::IntoRedirectLoc) -> Self {
+        Self {
+            resp: response::Redirect::moved(loc),
+            _marker: PhantomData,
+        }
+    }
+
     /// Create a new found (302) redirect.
     ///
     /// Can be useful in flows where the resource was legit and found,

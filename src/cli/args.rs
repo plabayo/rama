@@ -236,11 +236,11 @@ impl RequestArgsBuilder {
                         entry.insert(ct.header_value());
                     }
 
-                    if ct == ContentType::Json {
-                        if let Entry::Vacant(entry) = headers.entry(ACCEPT) {
-                            header_order.push(ACCEPT.into());
-                            entry.insert(ct.header_value());
-                        }
+                    if ct == ContentType::Json
+                        && let Entry::Vacant(entry) = headers.entry(ACCEPT)
+                    {
+                        header_order.push(ACCEPT.into());
+                        entry.insert(ct.header_value());
                     }
 
                     req

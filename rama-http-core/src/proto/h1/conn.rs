@@ -179,20 +179,19 @@ where
         debug_assert!(self.can_read_head());
         trace!("Conn::read_head");
 
-        if !self.state.h1_header_read_timeout_running {
-            if let Some(h1_header_read_timeout) = self.state.h1_header_read_timeout {
-                let deadline = Instant::now() + h1_header_read_timeout;
-                self.state.h1_header_read_timeout_running = true;
-                if let Some(ref mut h1_header_read_timeout_fut) =
-                    self.state.h1_header_read_timeout_fut
-                {
-                    trace!("resetting h1 header read timeout timer");
-                    *h1_header_read_timeout_fut = Box::pin(tokio::time::sleep_until(deadline));
-                } else {
-                    trace!("setting h1 header read timeout timer");
-                    self.state.h1_header_read_timeout_fut =
-                        Some(Box::pin(tokio::time::sleep_until(deadline)));
-                }
+        if !self.state.h1_header_read_timeout_running
+            && let Some(h1_header_read_timeout) = self.state.h1_header_read_timeout
+        {
+            let deadline = Instant::now() + h1_header_read_timeout;
+            self.state.h1_header_read_timeout_running = true;
+            if let Some(ref mut h1_header_read_timeout_fut) = self.state.h1_header_read_timeout_fut
+            {
+                trace!("resetting h1 header read timeout timer");
+                *h1_header_read_timeout_fut = Box::pin(tokio::time::sleep_until(deadline));
+            } else {
+                trace!("setting h1 header read timeout timer");
+                self.state.h1_header_read_timeout_fut =
+                    Some(Box::pin(tokio::time::sleep_until(deadline)));
             }
         }
 
@@ -209,17 +208,15 @@ where
             Poll::Ready(Ok(msg)) => msg,
             Poll::Ready(Err(e)) => return self.on_read_head_error(e),
             Poll::Pending => {
-                if self.state.h1_header_read_timeout_running {
-                    if let Some(ref mut h1_header_read_timeout_fut) =
+                if self.state.h1_header_read_timeout_running
+                    && let Some(ref mut h1_header_read_timeout_fut) =
                         self.state.h1_header_read_timeout_fut
-                    {
-                        if Pin::new(h1_header_read_timeout_fut).poll(cx).is_ready() {
-                            self.state.h1_header_read_timeout_running = false;
+                    && Pin::new(h1_header_read_timeout_fut).poll(cx).is_ready()
+                {
+                    self.state.h1_header_read_timeout_running = false;
 
-                            warn!("read header from client timeout");
-                            return Poll::Ready(Some(Err(crate::Error::new_header_timeout())));
-                        }
-                    }
+                    warn!("read header from client timeout");
+                    return Poll::Ready(Some(Err(crate::Error::new_header_timeout())));
                 }
 
                 return Poll::Pending;

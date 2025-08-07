@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 # 0.3.0-alpha.1
 
+> Release date: `2025-08-05`
+
+### Added
+
+- ACME client support with `rama-acme` crate, including HTTP and TLS challenge examples (#603).
+- Initial `rama-crypto` crate with JOSE/JWK/JWA/JWS support (#611).
+- New connection pool implementation with metrics support and round-robin reuse (#636, #641).
+- TCP (client) connector pool (#637).
+- Support for WebSockets in fingerprinting service and `rama-ua` (#632).
+- Target HTTP version enforcement (incl ext data such as `TargetHttpVersion`) (#617).
+- Datastar SSE server: 100% test suite compliance (v1.0.0-RC.4)
+- First anti-bot HTTP examples: infinite resource and zip bomb
+- Save CONNECT (HTTP response) headers in `HttpProxyConnectResponseHeaders` (#652).
+
+### Changed
+
+- `HttpVersionAdapater` renamed to `HttpVersionAdapter` (#653).
+- `Header` trait split into `TypedHeader`, `HeaderEncode`, and `HeaderDecode` for better usability.
+- Socks example updated to correctly negotiate ALPN (#655).
+- User agent parsing improvements for Safari (fixes #633).
+- `HttpRequestParts` split into immutable and mutable parts (#635).
+
+### Fixed
+
+- Proper cleanup of idle connections before reusing in connection pool.
+
+### Removed
+
+- 32-bit Linux build (open for contributions).
+
+### Addendum
+
+- `rama-0.3.0-alpha.1` introduced a breaking change in HTTP version negotiation. If you're using a client that upgrades or downgrades HTTP versions automatically (such as when using TLS with ALPN), you must now explicitly use both `HttpsAlpnModifier` and `HttpVersionAdapter`. Refer to the examples for proper usage.
+
+# 0.3.0-alpha.1
+
 > Release date: `2025-07-07`
 
 Highlights:
