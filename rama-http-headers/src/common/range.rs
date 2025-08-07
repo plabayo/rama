@@ -88,16 +88,16 @@ impl Range {
 
             // Unbounded ranges in HTTP are actually a suffix
             // For example, `-100` means the last 100 bytes.
-            if start == Bound::Unbounded {
-                if let Bound::Included(end) = end {
-                    if len < end {
-                        // Last N bytes is larger than available!
-                        return None;
-                    }
-                    return Some((Bound::Included(len - end), Bound::Unbounded));
+            if start == Bound::Unbounded
+                && let Bound::Included(end) = end
+            {
+                if len < end {
+                    // Last N bytes is larger than available!
+                    return None;
                 }
-                // else fall through
+                return Some((Bound::Included(len - end), Bound::Unbounded));
             }
+            // else fall through
 
             Some((start, end))
         })

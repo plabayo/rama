@@ -295,12 +295,12 @@ impl Ponger {
                 debug!("pong error: {:?}", _e);
             }
             Poll::Pending => {
-                if let Some(ref mut ka) = self.keep_alive {
-                    if matches!(ka.maybe_timeout(cx), Err(KeepAliveTimedOut)) {
-                        self.keep_alive = None;
-                        locked.is_keep_alive_timed_out = true;
-                        return Poll::Ready(Ponged::KeepAliveTimedOut);
-                    }
+                if let Some(ref mut ka) = self.keep_alive
+                    && matches!(ka.maybe_timeout(cx), Err(KeepAliveTimedOut))
+                {
+                    self.keep_alive = None;
+                    locked.is_keep_alive_timed_out = true;
+                    return Poll::Ready(Ponged::KeepAliveTimedOut);
                 }
             }
         }

@@ -201,7 +201,7 @@ where
     pub(super) fn get(
         &self,
         url: impl IntoUrl,
-    ) -> RequestBuilder<ClientService<State>, State, Response> {
+    ) -> RequestBuilder<'_, ClientService<State>, State, Response> {
         self.client.get(url)
     }
 
@@ -210,7 +210,7 @@ where
     pub(super) fn head(
         &self,
         url: impl IntoUrl,
-    ) -> RequestBuilder<ClientService<State>, State, Response> {
+    ) -> RequestBuilder<'_, ClientService<State>, State, Response> {
         self.client.head(url)
     }
 
@@ -219,7 +219,7 @@ where
     pub(super) fn post(
         &self,
         url: impl IntoUrl,
-    ) -> RequestBuilder<ClientService<State>, State, Response> {
+    ) -> RequestBuilder<'_, ClientService<State>, State, Response> {
         self.client.post(url)
     }
 
@@ -228,7 +228,7 @@ where
     pub(super) fn delete(
         &self,
         url: impl IntoUrl,
-    ) -> RequestBuilder<ClientService<State>, State, Response> {
+    ) -> RequestBuilder<'_, ClientService<State>, State, Response> {
         self.client.delete(url)
     }
 
@@ -237,7 +237,7 @@ where
     pub(super) fn websocket(
         &self,
         url: impl IntoUrl,
-    ) -> WebsocketRequestBuilder<WithService<ClientService<State>, Body, State>> {
+    ) -> WebsocketRequestBuilder<WithService<'_, ClientService<State>, Body, State>> {
         self.client.websocket(url)
     }
 
@@ -246,7 +246,7 @@ where
     pub(super) fn websocket_h2(
         &self,
         url: impl IntoUrl,
-    ) -> WebsocketRequestBuilder<WithService<ClientService<State>, Body, State>> {
+    ) -> WebsocketRequestBuilder<WithService<'_, ClientService<State>, Body, State>> {
         self.client.websocket_h2(url)
     }
 }

@@ -504,7 +504,7 @@ impl<C, B, U, A: Authorizer<user::Basic, Error: fmt::Debug>> Socks5Acceptor<C, B
                             Error::io(err).with_context("write server reply: no auth required")
                         })?;
 
-                    return Ok((SocksMethod::NoAuthenticationRequired, None));
+                    Ok((SocksMethod::NoAuthenticationRequired, None))
                 } else {
                     Header::new(SocksMethod::NoAcceptableMethods)
                         .write_to(stream)

@@ -274,9 +274,8 @@ mod tests {
         fn backoff_base_first(min_ms: u64, max_ms: u64) -> TestResult {
             let min = time::Duration::from_millis(min_ms);
             let max = time::Duration::from_millis(max_ms);
-            let backoff = match ExponentialBackoff::new(min, max, 0.0, HasherRng::default) {
-                Err(_) => return TestResult::discard(),
-                Ok(backoff) => backoff,
+            let Ok(backoff) = ExponentialBackoff::new(min, max, 0.0, HasherRng::default) else {
+                return TestResult::discard();
             };
 
             let delay = backoff.base();
@@ -286,9 +285,8 @@ mod tests {
         fn backoff_base(min_ms: u64, max_ms: u64, iterations: u32) -> TestResult {
             let min = time::Duration::from_millis(min_ms);
             let max = time::Duration::from_millis(max_ms);
-            let backoff = match ExponentialBackoff::new(min, max, 0.0, HasherRng::default) {
-                Err(_) => return TestResult::discard(),
-                Ok(backoff) => backoff,
+            let Ok(backoff) = ExponentialBackoff::new(min, max, 0.0, HasherRng::default) else {
+                return TestResult::discard();
             };
 
             backoff.state.lock().iterations = iterations;
@@ -299,9 +297,8 @@ mod tests {
         fn backoff_jitter(base_ms: u64, max_ms: u64, jitter: f64) -> TestResult {
             let base = time::Duration::from_millis(base_ms);
             let max = time::Duration::from_millis(max_ms);
-            let backoff = match ExponentialBackoff::new(base, max, jitter, HasherRng::default) {
-                Err(_) => return TestResult::discard(),
-                Ok(backoff) => backoff,
+            let Ok(backoff) = ExponentialBackoff::new(base, max, jitter, HasherRng::default) else {
+                return TestResult::discard();
             };
 
             let j = backoff.jitter(base);

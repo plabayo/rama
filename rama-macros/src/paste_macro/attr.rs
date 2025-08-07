@@ -109,18 +109,18 @@ fn do_paste_name_value_attr(attr: TokenStream, span: Span, leading: usize) -> Re
     let mut segments = segment::parse(&mut tokens)?;
 
     for segment in &mut segments {
-        if let Segment::String(string) = segment {
-            if let Some(open_quote) = string.value.find('"') {
-                if open_quote == 0 {
-                    string.value.truncate(string.value.len() - 1);
-                    string.value.remove(0);
-                } else {
-                    let begin = open_quote + 1;
-                    let end = string.value.rfind('"').unwrap();
-                    let raw_string = mem::take(&mut string.value);
-                    for ch in raw_string[begin..end].chars() {
-                        string.value.extend(ch.escape_default());
-                    }
+        if let Segment::String(string) = segment
+            && let Some(open_quote) = string.value.find('"')
+        {
+            if open_quote == 0 {
+                string.value.truncate(string.value.len() - 1);
+                string.value.remove(0);
+            } else {
+                let begin = open_quote + 1;
+                let end = string.value.rfind('"').unwrap();
+                let raw_string = mem::take(&mut string.value);
+                for ch in raw_string[begin..end].chars() {
+                    string.value.extend(ch.escape_default());
                 }
             }
         }

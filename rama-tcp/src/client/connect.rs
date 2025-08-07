@@ -229,8 +229,8 @@ where
         }
     };
 
-    if let Some(dns_overwrite) = ctx.get::<DnsOverwrite>() {
-        if let Ok(tuple) = tcp_connect_inner(
+    if let Some(dns_overwrite) = ctx.get::<DnsOverwrite>()
+        && let Ok(tuple) = tcp_connect_inner(
             ctx,
             domain.clone(),
             port,
@@ -240,9 +240,8 @@ where
             ip_mode,
         )
         .await
-        {
-            return Ok(tuple);
-        }
+    {
+        return Ok(tuple);
     }
 
     //... otherwise we'll try to establish a connection,
