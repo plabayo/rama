@@ -1,13 +1,12 @@
 use std::{sync::Arc, time::Duration};
 
+use crate::examples::example_tests::utils::ExampleRunner;
+
 use super::utils;
 
 use rama::{
-    Context, Service,
-    http::{
-        Body, BodyExtractExt, Request, client::EasyHttpWebClient, server::HttpServer,
-        service::web::Router,
-    },
+    Context,
+    http::{BodyExtractExt, server::HttpServer, service::web::Router},
     net::{
         Protocol,
         address::{ProxyAddress, SocketAddress},
@@ -23,7 +22,7 @@ use rama::{
 async fn test_socks5_connect_proxy() {
     utils::init_tracing();
 
-    let _runner =
+    let runner =
         utils::ExampleRunner::<()>::interactive("socks5_connect_proxy", Some("socks5,dns"));
 
     // wait for example to run... this is dirty
@@ -31,10 +30,13 @@ async fn test_socks5_connect_proxy() {
 
     let http_socket_addr = spawn_http_server().await;
 
-    test_http_client_over_socks5_proxy_connect(http_socket_addr).await;
+    test_http_client_over_socks5_proxy_connect(http_socket_addr, runner).await;
 }
 
-async fn test_http_client_over_socks5_proxy_connect(http_socket_addr: SocketAddress) {
+async fn test_http_client_over_socks5_proxy_connect(
+    http_socket_addr: SocketAddress,
+    runner: ExampleRunner,
+) {
     let proxy_socket_addr = SocketAddress::local_ipv4(62021);
 
     tracing::info!(
@@ -42,8 +44,6 @@ async fn test_http_client_over_socks5_proxy_connect(http_socket_addr: SocketAddr
         proxy_socket_addr,
         http_socket_addr,
     );
-
-    let client = EasyHttpWebClient::default();
 
     let mut ctx = Context::default();
     ctx.insert(ProxyAddress {
@@ -58,18 +58,14 @@ async fn test_http_client_over_socks5_proxy_connect(http_socket_addr: SocketAddr
         "try to establish proxied connection over SOCKS5 within a TLS Tunnel",
     );
 
-    let request = Request::builder()
-        .uri(uri.clone())
-        .body(Body::empty())
-        .expect("build simple GET request");
-
     tracing::info!(
         url.full = %uri,
         "try to make GET http request and try to receive response text",
     );
 
-    let resp = client
-        .serve(ctx, request)
+    let resp = runner
+        .get(uri)
+        .send(ctx)
         .await
         .expect("make http request via socks5 proxy")
         .try_into_string()

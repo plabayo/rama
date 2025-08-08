@@ -1,20 +1,18 @@
 use std::{sync::Arc, time::Duration};
 
+use crate::examples::example_tests::utils::ExampleRunner;
+
 use super::utils;
 
 use rama::{
-    Context, Service,
+    Context,
     error::{ErrorContext, OpaqueError},
-    http::{
-        Body, BodyExtractExt, Request, client::EasyHttpWebClient, server::HttpServer,
-        service::web::Router,
-    },
+    http::{BodyExtractExt, server::HttpServer, service::web::Router},
     net::{
         Protocol,
         address::{ProxyAddress, SocketAddress},
         tls::{
             ApplicationProtocol,
-            client::ServerVerifyMode,
             server::{SelfSignedData, ServerAuth, ServerConfig},
         },
         user::{Basic, ProxyCredential},
@@ -22,10 +20,7 @@ use rama::{
     rt::Executor,
     tcp::server::TcpListener,
     telemetry::tracing,
-    tls::boring::{
-        client::TlsConnectorDataBuilder,
-        server::{TlsAcceptorData, TlsAcceptorService},
-    },
+    tls::boring::server::{TlsAcceptorData, TlsAcceptorService},
 };
 
 #[tokio::test]
@@ -33,7 +28,7 @@ use rama::{
 async fn test_socks5_connect_proxy_mitm_proxy() {
     utils::init_tracing();
 
-    let _runner = utils::ExampleRunner::<()>::interactive(
+    let runner = utils::ExampleRunner::<()>::interactive(
         "socks5_connect_proxy_mitm_proxy",
         Some("socks5,boring,dns"),
     );
@@ -44,13 +39,18 @@ async fn test_socks5_connect_proxy_mitm_proxy() {
     let http_socket_addr = spawn_http_server().await;
     let https_socket_addr = spawn_https_server().await;
 
-    test_http_client_over_socks5_proxy_connect_with_mitm_cap(http_socket_addr, https_socket_addr)
-        .await;
+    test_http_client_over_socks5_proxy_connect_with_mitm_cap(
+        http_socket_addr,
+        https_socket_addr,
+        runner,
+    )
+    .await;
 }
 
 async fn test_http_client_over_socks5_proxy_connect_with_mitm_cap(
     http_socket_addr: SocketAddress,
     https_socket_addr: SocketAddress,
+    runner: ExampleRunner,
 ) {
     let proxy_socket_addr = SocketAddress::local_ipv4(62022);
 
@@ -60,18 +60,6 @@ async fn test_http_client_over_socks5_proxy_connect_with_mitm_cap(
         http_socket_addr,
         https_socket_addr,
     );
-
-    let tls_config = TlsConnectorDataBuilder::new_http_auto()
-        .with_store_server_certificate_chain(true)
-        .with_server_verify_mode(ServerVerifyMode::Disable)
-        .into_shared_builder();
-
-    let client = EasyHttpWebClient::builder()
-        .with_default_transport_connector()
-        .without_tls_proxy_support()
-        .with_proxy_support()
-        .with_tls_support_using_boringssl(Some(tls_config))
-        .build();
 
     let mut ctx = Context::default();
     ctx.insert(ProxyAddress {
@@ -91,18 +79,14 @@ async fn test_http_client_over_socks5_proxy_connect_with_mitm_cap(
             "try to establish proxied connection over SOCKS5 MITM Proxy",
         );
 
-        let request = Request::builder()
-            .uri(uri.clone())
-            .body(Body::empty())
-            .expect("build simple GET request");
-
         tracing::info!(
             url.full = %uri,
             "try to make GET http(s) request and try to receive response text",
         );
 
-        let resp = client
-            .serve(ctx.clone(), request)
+        let resp = runner
+            .get(uri)
+            .send(ctx.clone())
             .await
             .expect("make http(s) request via socks5 proxy")
             .try_into_string()
