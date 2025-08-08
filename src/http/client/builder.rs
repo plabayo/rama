@@ -34,10 +34,20 @@ pub struct EasyHttpWebClientBuilder<C = (), S = ()> {
     _phantom: PhantomData<S>,
 }
 
+#[non_exhaustive]
+#[derive(Debug)]
 pub struct TransportStage;
+#[non_exhaustive]
+#[derive(Debug)]
 pub struct ProxyTunnelStage;
+#[non_exhaustive]
+#[derive(Debug)]
 pub struct ProxyStage;
+#[non_exhaustive]
+#[derive(Debug)]
 pub struct HttpStage;
+#[non_exhaustive]
+#[derive(Debug)]
 pub struct PoolStage;
 
 impl EasyHttpWebClientBuilder {
