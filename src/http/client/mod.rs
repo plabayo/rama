@@ -17,7 +17,7 @@ use crate::{
 #[doc(inline)]
 pub use ::rama_http_backend::client::*;
 
-mod builder;
+pub mod builder;
 #[doc(inline)]
 pub use builder::EasyHttpWebClientBuilder;
 
