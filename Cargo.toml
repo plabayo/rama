@@ -481,7 +481,7 @@ required-features = ["http-full", "rustls", "acme"]
 
 [[example]]
 name = "autobahn_client"
-required = ["rama-ws", "http-full"]
+required-features = ["http-full"]
 
 [[example]]
 name = "http_conn_state"
