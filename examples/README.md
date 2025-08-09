@@ -42,6 +42,7 @@ This directory contains example implementations demonstrating various features a
 - [`ws_chat_server.rs`](./ws_chat_server.rs) - WebSocket chat server
 - [`ws_tls_server.rs`](./ws_tls_server.rs) - Secure WebSocket server example (WSS)
 - [`ws_over_h2.rs`](./ws_over_h2.rs) - Secure WebSocket server example using h2.
+- [`autobahn_client.rs`](./autobahn_client.rs) - Run autobahn WebSocket test suite.
 
 ### ACME
 The following examples show how you can integrate ACME into you webservices (ACME support in Rama is currently still under heavy development)

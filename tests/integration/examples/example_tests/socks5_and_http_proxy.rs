@@ -1,22 +1,19 @@
+use crate::examples::example_tests::utils::ExampleRunner;
+
 use super::utils;
 
 use std::sync::Arc;
 
 use rama::{
-    Context, Service,
-    http::{
-        Body, BodyExtractExt, Request, client::HttpConnector, server::HttpServer,
-        service::web::Router,
-    },
+    Context,
+    http::{BodyExtractExt, server::HttpServer, service::web::Router},
     net::{
         Protocol,
         address::{ProxyAddress, SocketAddress},
-        client::{ConnectorService, EstablishedClientConnection},
         user::{Basic, ProxyCredential},
     },
-    proxy::socks5::Socks5ProxyConnector,
     rt::Executor,
-    tcp::{client::service::TcpConnector, server::TcpListener},
+    tcp::server::TcpListener,
     telemetry::tracing,
 };
 
@@ -46,10 +43,13 @@ async fn test_socks5_and_http_proxy() {
     assert_eq!("pong", result);
     tracing::info!("http ping-pong succeeded, bye now!");
 
-    test_http_client_over_socks5_proxy_connect(http_socket_addr).await;
+    test_http_client_over_socks5_proxy_connect(http_socket_addr, runner).await;
 }
 
-async fn test_http_client_over_socks5_proxy_connect(http_socket_addr: SocketAddress) {
+async fn test_http_client_over_socks5_proxy_connect(
+    http_socket_addr: SocketAddress,
+    runner: ExampleRunner,
+) {
     let proxy_socket_addr = SocketAddress::local_ipv4(62023);
 
     tracing::info!(
@@ -57,12 +57,6 @@ async fn test_http_client_over_socks5_proxy_connect(http_socket_addr: SocketAddr
         proxy_socket_addr,
         http_socket_addr,
     );
-
-    // TODO: once we have socks5 support in Easy http web client
-    // we can probably simplify this by using the interactive runner client
-    // instead of having to do this manually...
-
-    let client = HttpConnector::new(Socks5ProxyConnector::required(TcpConnector::new()));
 
     let mut ctx = Context::default();
     ctx.insert(ProxyAddress {
@@ -72,32 +66,15 @@ async fn test_http_client_over_socks5_proxy_connect(http_socket_addr: SocketAddr
     });
 
     let uri = format!("http://{http_socket_addr}/ping");
-    tracing::info!(
-        url.full = %uri,
-        "try to establish proxied connection over SOCKS5 within a TLS Tunnel",
-    );
-
-    let request = Request::builder()
-        .uri(uri.clone())
-        .body(Body::empty())
-        .expect("build simple GET request");
-
-    let EstablishedClientConnection {
-        ctx,
-        req,
-        conn: http_service,
-    } = client
-        .connect(ctx, request)
-        .await
-        .expect("establish a proxied connection ready to make http requests");
 
     tracing::info!(
         url.full = %uri,
         "try to make GET http request and try to receive response text",
     );
 
-    let resp = http_service
-        .serve(ctx, req)
+    let resp = runner
+        .get(uri)
+        .send(ctx)
         .await
         .expect("make http request via socks5 proxy")
         .try_into_string()

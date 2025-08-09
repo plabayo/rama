@@ -1,38 +1,26 @@
 use std::{sync::Arc, time::Duration};
 
+use crate::examples::example_tests::utils::ExampleRunner;
+
 use super::utils;
 
 use rama::{
-    Context, Service,
+    Context,
     error::{ErrorContext, OpaqueError},
-    http::{
-        Body, BodyExtractExt, Request,
-        client::{
-            HttpConnector,
-            http_inspector::{HttpVersionAdapter, HttpsAlpnModifier},
-        },
-        server::HttpServer,
-        service::web::Router,
-    },
+    http::{BodyExtractExt, server::HttpServer, service::web::Router},
     net::{
         Protocol,
         address::{ProxyAddress, SocketAddress},
-        client::{ConnectorService, EstablishedClientConnection},
         tls::{
             ApplicationProtocol,
-            client::ServerVerifyMode,
             server::{SelfSignedData, ServerAuth, ServerConfig},
         },
         user::{Basic, ProxyCredential},
     },
-    proxy::socks5::Socks5ProxyConnector,
     rt::Executor,
-    tcp::{client::service::TcpConnector, server::TcpListener},
+    tcp::server::TcpListener,
     telemetry::tracing,
-    tls::boring::{
-        client::{TlsConnector, TlsConnectorDataBuilder},
-        server::{TlsAcceptorData, TlsAcceptorService},
-    },
+    tls::boring::server::{TlsAcceptorData, TlsAcceptorService},
 };
 
 #[tokio::test]
@@ -40,7 +28,7 @@ use rama::{
 async fn test_socks5_connect_proxy_mitm_proxy() {
     utils::init_tracing();
 
-    let _runner = utils::ExampleRunner::<()>::interactive(
+    let runner = utils::ExampleRunner::<()>::interactive(
         "socks5_connect_proxy_mitm_proxy",
         Some("socks5,boring,dns"),
     );
@@ -51,13 +39,18 @@ async fn test_socks5_connect_proxy_mitm_proxy() {
     let http_socket_addr = spawn_http_server().await;
     let https_socket_addr = spawn_https_server().await;
 
-    test_http_client_over_socks5_proxy_connect_with_mitm_cap(http_socket_addr, https_socket_addr)
-        .await;
+    test_http_client_over_socks5_proxy_connect_with_mitm_cap(
+        http_socket_addr,
+        https_socket_addr,
+        runner,
+    )
+    .await;
 }
 
 async fn test_http_client_over_socks5_proxy_connect_with_mitm_cap(
     http_socket_addr: SocketAddress,
     https_socket_addr: SocketAddress,
+    runner: ExampleRunner,
 ) {
     let proxy_socket_addr = SocketAddress::local_ipv4(62022);
 
@@ -67,21 +60,6 @@ async fn test_http_client_over_socks5_proxy_connect_with_mitm_cap(
         http_socket_addr,
         https_socket_addr,
     );
-
-    // TODO: once we have socks5 support in Easy http web client
-    // we can probably simplify this by using the interactive runner client
-    // instead of having to do this manually...
-
-    let tls_config = TlsConnectorDataBuilder::new_http_auto()
-        .with_store_server_certificate_chain(true)
-        .with_server_verify_mode(ServerVerifyMode::Disable)
-        .into_shared_builder();
-
-    let client = HttpConnector::new(
-        TlsConnector::auto(Socks5ProxyConnector::required(TcpConnector::new()))
-            .with_connector_data(tls_config),
-    )
-    .with_jit_req_inspector((HttpsAlpnModifier::default(), HttpVersionAdapter::default()));
 
     let mut ctx = Context::default();
     ctx.insert(ProxyAddress {
@@ -101,27 +79,14 @@ async fn test_http_client_over_socks5_proxy_connect_with_mitm_cap(
             "try to establish proxied connection over SOCKS5 MITM Proxy",
         );
 
-        let request = Request::builder()
-            .uri(uri.clone())
-            .body(Body::empty())
-            .expect("build simple GET request");
-
-        let EstablishedClientConnection {
-            ctx,
-            req,
-            conn: http_service,
-        } = client
-            .connect(ctx.clone(), request)
-            .await
-            .expect("establish a proxied connection ready to make http(s) requests");
-
         tracing::info!(
             url.full = %uri,
             "try to make GET http(s) request and try to receive response text",
         );
 
-        let resp = http_service
-            .serve(ctx, req)
+        let resp = runner
+            .get(uri)
+            .send(ctx.clone())
             .await
             .expect("make http(s) request via socks5 proxy")
             .try_into_string()
