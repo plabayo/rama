@@ -109,7 +109,9 @@ pub(super) fn open_file_embedded(
 
     let maybe_encoding = preferred_encoding(&mut path_to_file, negotiated_encodings);
 
-    let Some(file) = base.get_file(&path_to_file) else { return Ok(OpenFileOutput::FileNotFound) };
+    let Some(file) = base.get_file(&path_to_file) else {
+        return Ok(OpenFileOutput::FileNotFound);
+    };
 
     let last_modified = file
         .metadata()

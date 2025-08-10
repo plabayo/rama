@@ -381,16 +381,16 @@ impl<F> ServeDir<F> {
 
         let Some(path_to_file) = self
             .variant
-            .build_and_validate_path(&self.base, req.uri().path()) else {
-                return if let Some((fallback, ctx, request)) = fallback_and_request {
-                    future::serve_fallback(fallback, ctx, request).await
-                } else {
-                    Ok(future::not_found())
-                };
+            .build_and_validate_path(&self.base, req.uri().path())
+        else {
+            return if let Some((fallback, ctx, request)) = fallback_and_request {
+                future::serve_fallback(fallback, ctx, request).await
+            } else {
+                Ok(future::not_found())
             };
+        };
 
         let buf_chunk_size = self.buf_chunk_size;
-        
         let negotiated_encodings: Vec<_> = parse_accept_encoding_headers(
             req.headers(),
             self.precompressed_variants.unwrap_or_default(),
@@ -422,7 +422,7 @@ impl<F> ServeDir<F> {
                     .get(header::RANGE)
                     .and_then(|value| value.to_str().ok())
                     .map(|s| s.to_owned());
-                    
+
                 open_file_embedded(
                     path,
                     path_to_file,
