@@ -107,6 +107,7 @@ http-body-util = "0.1"
 http-range-header = "0.4"
 httparse = "1.10"
 httpdate = "1.0"
+include_dir = { version = "0.7", features = ["metadata"] }
 indexmap = "2"
 ipnet = "2.11"
 iri-string = "0.7"
@@ -231,7 +232,6 @@ want = "0.3"
 webpki-roots = "1.0"
 x509-parser = { version = "0.17.0" }
 zstd = "0.13"
-include_dir = { version = "0.7", features = ["metadata"] }
 
 [workspace.lints.rust]
 unreachable_pub = "deny"
