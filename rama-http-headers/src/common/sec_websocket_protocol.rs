@@ -18,6 +18,13 @@ pub struct AcceptedWebsocketProtocol(Arc<str>);
 impl AcceptedWebsocketProtocol {
     #[inline]
     #[must_use]
+    /// consume this instance as a `Arc<str>`.
+    pub fn into_inner(self) -> Arc<str> {
+        self.0
+    }
+
+    #[inline]
+    #[must_use]
     /// consume this instance as a [`SecWebsocketProtocol`]
     ///
     /// Useful for servers to communicate back to clients.

@@ -368,13 +368,13 @@ where
                 ) {
                     (false, Some(protocols), None) => {
                         tracing::debug!(
-                            "WebSocketAcceptor: sub-protocols found while none were expected: {protocols:?}"
+                            "WebSocketAcceptor: protocols found while none were expected: {protocols:?}"
                         );
                         return Err(StatusCode::BAD_REQUEST.into_response());
                     }
                     (false, None, Some(protocols)) => {
                         tracing::debug!(
-                            "WebSocketAcceptor: no sub-protocols found while one of following was expected: {protocols:?}"
+                            "WebSocketAcceptor: no protocols found while one of following was expected: {protocols:?}"
                         );
                         return Err(StatusCode::BAD_REQUEST.into_response());
                     }
@@ -383,14 +383,13 @@ where
                         Some(found_protocols.accept_first_protocol())
                     }
                     (_, Some(found_protocols), Some(expected_protocols)) => {
-                        if let Some(protocol) = found_protocols
-                            .iter()
-                            .find_map(|p| expected_protocols.contains(p))
+                        if let Some(protocol) =
+                            found_protocols.contains_any(expected_protocols.iter())
                         {
                             Some(protocol)
                         } else {
                             tracing::debug!(
-                                "WebSocketAcceptor: no sub-protocols from found protocol ({found_protocols:?}) matched for expected protocols: {expected_protocols:?}"
+                                "WebSocketAcceptor: no protocols from found protocol ({found_protocols:?}) matched for expected protocols: {expected_protocols:?}"
                             );
                             return Err(StatusCode::BAD_REQUEST.into_response());
                         }

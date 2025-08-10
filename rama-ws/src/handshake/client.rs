@@ -2,6 +2,7 @@
 
 use std::fmt;
 use std::ops::{Deref, DerefMut};
+use std::sync::Arc;
 
 use rama_core::error::{BoxError, ErrorContext, OpaqueError};
 use rama_core::telemetry::tracing;
@@ -15,9 +16,7 @@ use rama_http::headers::{
 use rama_http::proto::h2::ext::Protocol;
 use rama_http::service::client::ext::{IntoHeaderName, IntoHeaderValue};
 use rama_http::service::client::{HttpClientExt, IntoUrl, RequestBuilder};
-use rama_http::{
-    Body, HeaderValue, Method, Request, Response, StatusCode, Version, header, headers,
-};
+use rama_http::{Body, Method, Request, Response, StatusCode, Version, header, headers};
 
 use crate::protocol::{Role, WebSocketConfig};
 use crate::runtime::AsyncWebSocket;
@@ -154,7 +153,7 @@ pub enum ResponseValidateError {
     MissingUpgradeWebSocketHeader,
     MissingConnectionUpgradeHeader,
     SecWebSocketAcceptKeyMismatch,
-    SubProtocolMismatch(Option<HeaderValue>),
+    SubProtocolMismatch(Option<Arc<str>>),
 }
 
 #[derive(Debug)]
@@ -311,7 +310,10 @@ pub fn validate_http_server_response<Body>(
     // the WebSocket Connection_. (RFC 6455)
     let mut accepted_protocol = None;
     match (
-        response.headers().get(header::SEC_WEBSOCKET_PROTOCOL),
+        response
+            .headers()
+            .typed_get::<SecWebsocketProtocol>()
+            .map(|h| h.accept_first_protocol()),
         protocols,
     ) {
         (None, None) => (),
@@ -320,18 +322,15 @@ pub fn validate_http_server_response<Body>(
         }
         (Some(header), None) => {
             return Err(ResponseValidateError::SubProtocolMismatch(Some(
-                header.clone(),
+                header.into_inner(),
             )));
         }
         (Some(protocol_header), Some(sub_protocols)) => {
-            let accepted_protocol_str = protocol_header
-                .to_str()
-                .map_err(|_| ResponseValidateError::SubProtocolMismatch(None))?;
-            match sub_protocols.contains(accepted_protocol_str) {
+            match sub_protocols.contains(&protocol_header) {
                 Some(protocol) => accepted_protocol = Some(protocol),
                 None => {
                     return Err(ResponseValidateError::SubProtocolMismatch(Some(
-                        protocol_header.clone(),
+                        protocol_header.into_inner(),
                     )));
                 }
             };
