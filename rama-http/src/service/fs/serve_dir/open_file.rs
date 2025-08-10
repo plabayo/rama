@@ -93,7 +93,7 @@ pub(super) fn open_file_embedded(
     mut path_to_file: PathBuf,
     req: &Request,
     negotiated_encodings: &[QualityValue<Encoding>],
-    range_header: Option<String>,
+    range_header: Option<&str>,
     buf_chunk_size: usize,
 ) -> io::Result<OpenFileOutput> {
     // Check if this is a directory request (empty path or directory path)
@@ -134,7 +134,7 @@ pub(super) fn open_file_embedded(
     }
 
     let content_length = file.contents().len() as u64;
-    let maybe_range = try_parse_range(range_header.as_deref(), content_length);
+    let maybe_range = try_parse_range(range_header, content_length);
 
     // Use appropriate extent based on request method
     let extent = if req.method() == Method::HEAD {
@@ -158,7 +158,7 @@ pub(super) async fn open_file(
     mut path_to_file: PathBuf,
     req: Request,
     negotiated_encodings: Vec<QualityValue<Encoding>>,
-    range_header: Option<String>,
+    range_header: Option<&str>,
     buf_chunk_size: usize,
 ) -> io::Result<OpenFileOutput> {
     let if_unmodified_since = req
@@ -206,7 +206,7 @@ pub(super) async fn open_file(
             return Ok(output);
         }
 
-        let maybe_range = try_parse_range(range_header.as_deref(), meta.len());
+        let maybe_range = try_parse_range(range_header, meta.len());
 
         Ok(OpenFileOutput::FileOpened(Box::new(FileOpened {
             extent: FileRequestExtent::Head(meta),
@@ -236,7 +236,7 @@ pub(super) async fn open_file(
             return Ok(output);
         }
 
-        let maybe_range = try_parse_range(range_header.as_deref(), meta.len());
+        let maybe_range = try_parse_range(range_header, meta.len());
         if let Some(Ok(ranges)) = maybe_range.as_ref()
             && ranges.len() == 1
         {

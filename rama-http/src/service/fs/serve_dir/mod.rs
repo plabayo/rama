@@ -390,12 +390,7 @@ impl<F> ServeDir<F> {
             };
 
         let buf_chunk_size = self.buf_chunk_size;
-        let range_header = req
-            .headers()
-            .get(header::RANGE)
-            .and_then(|value| value.to_str().ok())
-            .map(|s| s.to_owned());
-
+        
         let negotiated_encodings: Vec<_> = parse_accept_encoding_headers(
             req.headers(),
             self.precompressed_variants.unwrap_or_default(),
@@ -405,25 +400,38 @@ impl<F> ServeDir<F> {
         let open_file_result = match &self.base {
             DirSource::Filesystem(_) => {
                 let variant = self.variant.clone();
+                let range_header = req
+                    .headers()
+                    .get(header::RANGE)
+                    .and_then(|value| value.to_str().ok())
+                    .map(|s| s.to_owned());
 
                 open_file::open_file(
                     variant,
                     path_to_file,
                     req,
                     negotiated_encodings,
-                    range_header,
+                    range_header.as_deref(),
                     buf_chunk_size,
                 )
                 .await
             }
-            DirSource::Embedded(path) => open_file_embedded(
-                path,
-                path_to_file,
-                &req,
-                &negotiated_encodings,
-                range_header,
-                buf_chunk_size,
-            ),
+            DirSource::Embedded(path) => {
+                let range_header = req
+                    .headers()
+                    .get(header::RANGE)
+                    .and_then(|value| value.to_str().ok())
+                    .map(|s| s.to_owned());
+                    
+                open_file_embedded(
+                    path,
+                    path_to_file,
+                    &req,
+                    &negotiated_encodings,
+                    range_header.as_deref(),
+                    buf_chunk_size,
+                )
+            }
         };
 
         future::consume_open_file_result(open_file_result, fallback_and_request).await
