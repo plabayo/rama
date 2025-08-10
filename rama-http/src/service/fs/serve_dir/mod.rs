@@ -77,6 +77,7 @@ impl ServeDir<DefaultServeDirFallback> {
         }
     }
 
+    #[must_use]
     pub fn new_embedded(path: Dir<'static>) -> Self {
         Self {
             base: DirSource::Embedded(path),
@@ -378,19 +379,15 @@ impl<F> ServeDir<F> {
             (fallback, ctx, fallback_req)
         });
 
-        let path_to_file = match self
+        let Some(path_to_file) = self
             .variant
-            .build_and_validate_path(&self.base, req.uri().path())
-        {
-            Some(path_to_file) => path_to_file,
-            None => {
+            .build_and_validate_path(&self.base, req.uri().path()) else {
                 return if let Some((fallback, ctx, request)) = fallback_and_request {
                     future::serve_fallback(fallback, ctx, request).await
                 } else {
                     Ok(future::not_found())
                 };
-            }
-        };
+            };
 
         let buf_chunk_size = self.buf_chunk_size;
         let range_header = req
@@ -422,8 +419,8 @@ impl<F> ServeDir<F> {
             DirSource::Embedded(path) => open_file_embedded(
                 path,
                 path_to_file,
-                req,
-                negotiated_encodings,
+                &req,
+                &negotiated_encodings,
                 range_header,
                 buf_chunk_size,
             ),
@@ -564,8 +561,8 @@ impl ServeVariant {
                     }
                 }
             }
-            ServeVariant::SingleFile { mime: _ } => match source {
-                DirSource::Filesystem(base_path) => Some(base_path.to_path_buf()),
+            Self::SingleFile { mime: _ } => match source {
+                DirSource::Filesystem(base_path) => Some(base_path.clone()),
                 DirSource::Embedded(_) => {
                     unreachable!()
                 }

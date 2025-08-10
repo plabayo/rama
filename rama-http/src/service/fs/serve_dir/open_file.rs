@@ -81,9 +81,9 @@ impl FileRequestExtent {
 
     pub(super) fn get_size(&self) -> u64 {
         match self {
-            FileRequestExtent::Head(meta) | FileRequestExtent::Full(_, meta) => meta.len(),
-            FileRequestExtent::Embedded(content) => content.len() as u64,
-            FileRequestExtent::EmbeddedHead(size) => *size,
+            Self::Head(meta) | Self::Full(_, meta) => meta.len(),
+            Self::Embedded(content) => content.len() as u64,
+            Self::EmbeddedHead(size) => *size,
         }
     }
 }
@@ -91,8 +91,8 @@ impl FileRequestExtent {
 pub(super) fn open_file_embedded(
     base: &Dir,
     mut path_to_file: PathBuf,
-    req: Request,
-    negotiated_encodings: Vec<QualityValue<Encoding>>,
+    req: &Request,
+    negotiated_encodings: &[QualityValue<Encoding>],
     range_header: Option<String>,
     buf_chunk_size: usize,
 ) -> io::Result<OpenFileOutput> {
@@ -107,12 +107,9 @@ pub(super) fn open_file_embedded(
         .map(HeaderValue::from_static)
         .unwrap_or_else(|| HeaderValue::from_str(mime::APPLICATION_OCTET_STREAM.as_ref()).unwrap());
 
-    let maybe_encoding = preferred_encoding(&mut path_to_file, &negotiated_encodings);
+    let maybe_encoding = preferred_encoding(&mut path_to_file, negotiated_encodings);
 
-    let file = match base.get_file(&path_to_file) {
-        Some(file) => file,
-        None => return Ok(OpenFileOutput::FileNotFound),
-    };
+    let Some(file) = base.get_file(&path_to_file) else { return Ok(OpenFileOutput::FileNotFound) };
 
     let last_modified = file
         .metadata()
