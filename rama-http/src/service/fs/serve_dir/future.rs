@@ -148,7 +148,10 @@ fn build_response(output: FileOpened) -> Response {
                 } else {
                     let range_size = range.end() - range.start() + 1;
 
-                    let body = if let Some(reader) = output.extent.range_reader(range_size) {
+                    let body = if let Some(reader) = output
+                        .extent
+                        .range_reader_with_offset(*range.start(), range_size)
+                    {
                         Body::new(AsyncReadBody::with_capacity(reader, output.chunk_size).boxed())
                     } else {
                         empty_body()

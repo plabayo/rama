@@ -6,8 +6,8 @@ use crate::headers::{encoding::Encoding, specifier::QualityValue};
 use crate::{HeaderValue, Method, Request, Uri, header};
 use chrono::{DateTime, Local};
 use http_range_header::RangeUnsatisfiableError;
-use rama_core::telemetry::tracing;
 use include_dir::Dir;
+use rama_core::telemetry::tracing;
 use std::io::Cursor;
 use std::{
     ffi::OsStr,
@@ -46,25 +46,36 @@ pub(super) enum FileRequestExtent {
     Full(File, Metadata),
     Head(Metadata),
     Embedded(Vec<u8>),
+    EmbeddedHead(u64), // Content length for HEAD requests on embedded files
 }
 
 impl FileRequestExtent {
     pub(super) fn reader(self) -> Option<Box<dyn AsyncRead + Send + Sync + Unpin>> {
         match self {
-            Self::Head(_) => None,
+            Self::Head(_) | Self::EmbeddedHead(_) => None,
             Self::Full(file, _) => Some(Box::new(file)),
             Self::Embedded(content) => Some(Box::new(Cursor::new(content))),
         }
     }
 
-    pub(super) fn range_reader(
+    pub(super) fn range_reader_with_offset(
         self,
+        offset: u64,
         range_size: u64,
     ) -> Option<Box<dyn AsyncRead + Send + Sync + Unpin>> {
         match self {
-            Self::Head(_) => None,
-            Self::Full(file, _) => Some(Box::new(file.take(range_size))),
-            Self::Embedded(content) => Some(Box::new(Cursor::new(content).take(range_size))),
+            Self::Head(_) | Self::EmbeddedHead(_) => None,
+            Self::Full(file, _) => Some(Box::new(file.take(range_size))), // File is already seeked
+            Self::Embedded(content) => {
+                let start = offset as usize;
+                let end = (offset + range_size) as usize;
+                let slice = if start < content.len() {
+                    &content[start..end.min(content.len())]
+                } else {
+                    &[]
+                };
+                Some(Box::new(Cursor::new(slice.to_vec())))
+            }
         }
     }
 
@@ -72,6 +83,7 @@ impl FileRequestExtent {
         match self {
             FileRequestExtent::Head(meta) | FileRequestExtent::Full(_, meta) => meta.len(),
             FileRequestExtent::Embedded(content) => content.len() as u64,
+            FileRequestExtent::EmbeddedHead(size) => *size,
         }
     }
 }
@@ -84,6 +96,12 @@ pub(super) fn open_file_embedded(
     range_header: Option<String>,
     buf_chunk_size: usize,
 ) -> io::Result<OpenFileOutput> {
+    // Check if this is a directory request (empty path or directory path)
+    // If so, try to serve index.html
+    if path_to_file.as_os_str().is_empty() || path_to_file.to_str() == Some(".") {
+        path_to_file = PathBuf::from("index.html");
+    }
+
     let mime = mime_guess::from_path(&path_to_file)
         .first_raw()
         .map(HeaderValue::from_static)
@@ -91,7 +109,10 @@ pub(super) fn open_file_embedded(
 
     let maybe_encoding = preferred_encoding(&mut path_to_file, &negotiated_encodings);
 
-    let file = base.get_file(path_to_file).unwrap();
+    let file = match base.get_file(&path_to_file) {
+        Some(file) => file,
+        None => return Ok(OpenFileOutput::FileNotFound),
+    };
 
     let last_modified = file
         .metadata()
@@ -115,9 +136,18 @@ pub(super) fn open_file_embedded(
         return Ok(output);
     }
 
-    let maybe_range = try_parse_range(range_header.as_deref(), file.contents().len() as u64);
+    let content_length = file.contents().len() as u64;
+    let maybe_range = try_parse_range(range_header.as_deref(), content_length);
+
+    // Use appropriate extent based on request method
+    let extent = if req.method() == Method::HEAD {
+        FileRequestExtent::EmbeddedHead(content_length)
+    } else {
+        FileRequestExtent::Embedded(file.contents().to_vec())
+    };
+
     Ok(OpenFileOutput::FileOpened(Box::new(FileOpened {
-        extent: FileRequestExtent::Embedded(file.contents().to_vec()),
+        extent,
         chunk_size: buf_chunk_size,
         mime_header_value: mime,
         maybe_encoding,

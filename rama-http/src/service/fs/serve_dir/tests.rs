@@ -34,6 +34,26 @@ async fn basic() {
 }
 
 #[tokio::test]
+async fn basic_embedded() {
+    const EMBEDDED_FILES: include_dir::Dir = include_dir::include_dir!("test-files");
+    let svc = ServeDir::new_embedded(EMBEDDED_FILES);
+
+    let req = Request::builder()
+        .uri("/hello.txt")
+        .body(Body::empty())
+        .unwrap();
+    let res = svc.serve(Context::default(), req).await.unwrap();
+
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(res.headers()["content-type"], "text/plain");
+
+    let body = body_into_text(res.into_body()).await;
+
+    let contents = std::fs::read_to_string("../test-files/hello.txt").unwrap();
+    assert_eq!(body, contents);
+}
+
+#[tokio::test]
 async fn basic_with_index() {
     let svc = ServeDir::new("../test-files");
 
@@ -52,8 +72,49 @@ async fn basic_with_index() {
 }
 
 #[tokio::test]
+async fn basic_with_index_embedded() {
+    const EMBEDDED_FILES: include_dir::Dir = include_dir::include_dir!("test-files");
+    let svc = ServeDir::new_embedded(EMBEDDED_FILES);
+
+    let req = Request::new(Body::empty());
+    let res = svc.serve(Context::default(), req).await.unwrap();
+
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(res.headers()[header::CONTENT_TYPE], "text/html");
+
+    let body = body_into_text(res.into_body()).await;
+
+    #[cfg(target_os = "windows")]
+    assert_eq!(body, "<b>HTML!</b>\r\n");
+    #[cfg(not(target_os = "windows"))]
+    assert_eq!(body, "<b>HTML!</b>\n");
+}
+
+#[tokio::test]
 async fn head_request() {
     let svc = ServeDir::new("../test-files");
+
+    let req = Request::builder()
+        .uri("/precompressed.txt")
+        .method(Method::HEAD)
+        .body(Body::empty())
+        .unwrap();
+
+    let res = svc.serve(Context::default(), req).await.unwrap();
+
+    assert_eq!(res.headers()["content-type"], "text/plain");
+    #[cfg(target_os = "windows")]
+    assert_eq!(res.headers()["content-length"], "24");
+    #[cfg(not(target_os = "windows"))]
+    assert_eq!(res.headers()["content-length"], "23");
+
+    assert!(res.into_body().frame().await.is_none());
+}
+
+#[tokio::test]
+async fn head_request_embedded() {
+    const EMBEDDED_FILES: include_dir::Dir = include_dir::include_dir!("test-files");
+    let svc = ServeDir::new_embedded(EMBEDDED_FILES);
 
     let req = Request::builder()
         .uri("/precompressed.txt")
@@ -107,6 +168,26 @@ async fn with_custom_chunk_size() {
     let body = body_into_text(res.into_body()).await;
 
     let contents = std::fs::read_to_string("../README.md").unwrap();
+    assert_eq!(body, contents);
+}
+
+#[tokio::test]
+async fn with_custom_chunk_size_embedded() {
+    const EMBEDDED_FILES: include_dir::Dir = include_dir::include_dir!("test-files");
+    let svc = ServeDir::new_embedded(EMBEDDED_FILES).with_buf_chunk_size(1024 * 32);
+
+    let req = Request::builder()
+        .uri("/hello.txt")
+        .body(Body::empty())
+        .unwrap();
+    let res = svc.serve(Context::default(), req).await.unwrap();
+
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(res.headers()["content-type"], "text/plain");
+
+    let body = body_into_text(res.into_body()).await;
+
+    let contents = std::fs::read_to_string("../test-files/hello.txt").unwrap();
     assert_eq!(body, contents);
 }
 
@@ -288,8 +369,46 @@ async fn access_to_sub_dirs() {
 }
 
 #[tokio::test]
+async fn access_to_sub_dirs_embedded() {
+    const EMBEDDED_FILES: include_dir::Dir = include_dir::include_dir!("test-files");
+    let svc = ServeDir::new_embedded(EMBEDDED_FILES);
+
+    let req = Request::builder()
+        .uri("/examples/webservice/index.html")
+        .body(Body::empty())
+        .unwrap();
+    let res = svc.serve(Context::default(), req).await.unwrap();
+
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(res.headers()["content-type"], "text/html");
+
+    let body = body_into_text(res.into_body()).await;
+
+    let contents = std::fs::read_to_string("../test-files/examples/webservice/index.html").unwrap();
+    assert_eq!(body, contents);
+}
+
+#[tokio::test]
 async fn not_found() {
     let svc = ServeDir::new("..");
+
+    let req = Request::builder()
+        .uri("/not-found")
+        .body(Body::empty())
+        .unwrap();
+    let res = svc.serve(Context::default(), req).await.unwrap();
+
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    assert!(res.headers().get(header::CONTENT_TYPE).is_none());
+
+    let body = body_into_text(res.into_body()).await;
+    assert!(body.is_empty());
+}
+
+#[tokio::test]
+async fn not_found_embedded() {
+    const EMBEDDED_FILES: include_dir::Dir = include_dir::include_dir!("test-files");
+    let svc = ServeDir::new_embedded(EMBEDDED_FILES);
 
     let req = Request::builder()
         .uri("/not-found")
@@ -474,6 +593,24 @@ async fn access_cjk_percent_encoded_uri_path() {
 }
 
 #[tokio::test]
+async fn access_cjk_percent_encoded_uri_path_embedded() {
+    const EMBEDDED_FILES: include_dir::Dir = include_dir::include_dir!("test-files");
+    let svc = ServeDir::new_embedded(EMBEDDED_FILES);
+
+    // percent encoding present of 你好世界.txt
+    let cjk_filename_encoded = "%E4%BD%A0%E5%A5%BD%E4%B8%96%E7%95%8C.txt";
+
+    let req = Request::builder()
+        .uri(format!("/{cjk_filename_encoded}"))
+        .body(Body::empty())
+        .unwrap();
+    let res = svc.serve(Context::default(), req).await.unwrap();
+
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(res.headers()["content-type"], "text/plain");
+}
+
+#[tokio::test]
 async fn access_space_percent_encoded_uri_path() {
     let encoded_filename = "filename%20with%20space.txt";
 
@@ -490,8 +627,45 @@ async fn access_space_percent_encoded_uri_path() {
 }
 
 #[tokio::test]
+async fn access_space_percent_encoded_uri_path_embedded() {
+    const EMBEDDED_FILES: include_dir::Dir = include_dir::include_dir!("test-files");
+    let svc = ServeDir::new_embedded(EMBEDDED_FILES);
+
+    let encoded_filename = "filename%20with%20space.txt";
+
+    let req = Request::builder()
+        .uri(format!("/{encoded_filename}"))
+        .body(Body::empty())
+        .unwrap();
+    let res = svc.serve(Context::default(), req).await.unwrap();
+
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(res.headers()["content-type"], "text/plain");
+}
+
+#[tokio::test]
 async fn read_partial_empty() {
     let svc = ServeDir::new("../test-files");
+
+    let req = Request::builder()
+        .uri("/empty.txt")
+        .header("Range", "bytes=0-")
+        .body(Body::empty())
+        .unwrap();
+
+    let res = svc.serve(Context::default(), req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(res.headers()["content-length"], "0");
+    assert_eq!(res.headers()["content-range"], "bytes 0-0/0");
+
+    let body = res.into_body().collect().await.unwrap().to_bytes();
+    assert!(body.is_empty());
+}
+
+#[tokio::test]
+async fn read_partial_empty_embedded() {
+    const EMBEDDED_FILES: include_dir::Dir = include_dir::include_dir!("test-files");
+    let svc = ServeDir::new_embedded(EMBEDDED_FILES);
 
     let req = Request::builder()
         .uri("/empty.txt")
@@ -549,6 +723,47 @@ async fn read_partial_in_bounds() {
 }
 
 #[tokio::test]
+async fn read_partial_in_bounds_embedded() {
+    const EMBEDDED_FILES: include_dir::Dir = include_dir::include_dir!("test-files");
+    let svc = ServeDir::new_embedded(EMBEDDED_FILES);
+    let bytes_start_incl = 1;
+    let bytes_end_incl = 5;
+
+    let req = Request::builder()
+        .uri("/hello.txt")
+        .header(
+            "Range",
+            format!("bytes={bytes_start_incl}-{bytes_end_incl}"),
+        )
+        .body(Body::empty())
+        .unwrap();
+    let res = svc.serve(Context::default(), req).await.unwrap();
+
+    let file_contents = std::fs::read("../test-files/hello.txt").unwrap();
+    assert_eq!(res.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(
+        res.headers()["content-length"],
+        (bytes_end_incl - bytes_start_incl + 1).to_string()
+    );
+    assert!(
+        res.headers()["content-range"]
+            .to_str()
+            .unwrap()
+            .starts_with(&format!(
+                "bytes {}-{}/{}",
+                bytes_start_incl,
+                bytes_end_incl,
+                file_contents.len()
+            ))
+    );
+    assert_eq!(res.headers()["content-type"], "text/plain");
+
+    let body = res.into_body().collect().await.unwrap().to_bytes();
+    let source = Bytes::from(file_contents[bytes_start_incl..=bytes_end_incl].to_vec());
+    assert_eq!(body, source);
+}
+
+#[tokio::test]
 async fn read_partial_accepts_out_of_bounds_range() {
     let svc = ServeDir::new("..");
     let bytes_start_incl = 0;
@@ -578,6 +793,36 @@ async fn read_partial_accepts_out_of_bounds_range() {
 }
 
 #[tokio::test]
+async fn read_partial_accepts_out_of_bounds_range_embedded() {
+    const EMBEDDED_FILES: include_dir::Dir = include_dir::include_dir!("test-files");
+    let svc = ServeDir::new_embedded(EMBEDDED_FILES);
+    let bytes_start_incl = 0;
+    let bytes_end_excl = 9999999;
+    let requested_len = bytes_end_excl - bytes_start_incl;
+
+    let req = Request::builder()
+        .uri("/hello.txt")
+        .header(
+            "Range",
+            format!("bytes={}-{}", bytes_start_incl, requested_len - 1),
+        )
+        .body(Body::empty())
+        .unwrap();
+    let res = svc.serve(Context::default(), req).await.unwrap();
+
+    assert_eq!(res.status(), StatusCode::PARTIAL_CONTENT);
+    let file_contents = std::fs::read("../test-files/hello.txt").unwrap();
+    assert_eq!(
+        res.headers()["content-range"],
+        &format!(
+            "bytes 0-{}/{}",
+            file_contents.len() - 1,
+            file_contents.len()
+        )
+    )
+}
+
+#[tokio::test]
 async fn read_partial_errs_on_garbage_header() {
     let svc = ServeDir::new("..");
     let req = Request::builder()
@@ -588,6 +833,25 @@ async fn read_partial_errs_on_garbage_header() {
     let res = svc.serve(Context::default(), req).await.unwrap();
     assert_eq!(res.status(), StatusCode::RANGE_NOT_SATISFIABLE);
     let file_contents = std::fs::read("../README.md").unwrap();
+    assert_eq!(
+        res.headers()["content-range"],
+        &format!("bytes */{}", file_contents.len())
+    )
+}
+
+#[tokio::test]
+async fn read_partial_errs_on_garbage_header_embedded() {
+    const EMBEDDED_FILES: include_dir::Dir = include_dir::include_dir!("test-files");
+    let svc = ServeDir::new_embedded(EMBEDDED_FILES);
+
+    let req = Request::builder()
+        .uri("/hello.txt")
+        .header("Range", "bad_format")
+        .body(Body::empty())
+        .unwrap();
+    let res = svc.serve(Context::default(), req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::RANGE_NOT_SATISFIABLE);
+    let file_contents = std::fs::read("../test-files/hello.txt").unwrap();
     assert_eq!(
         res.headers()["content-range"],
         &format!("bytes */{}", file_contents.len())
@@ -612,10 +876,45 @@ async fn read_partial_errs_on_bad_range() {
 }
 
 #[tokio::test]
+async fn read_partial_errs_on_bad_range_embedded() {
+    const EMBEDDED_FILES: include_dir::Dir = include_dir::include_dir!("test-files");
+    let svc = ServeDir::new_embedded(EMBEDDED_FILES);
+
+    let req = Request::builder()
+        .uri("/hello.txt")
+        .header("Range", "bytes=-1-15")
+        .body(Body::empty())
+        .unwrap();
+    let res = svc.serve(Context::default(), req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::RANGE_NOT_SATISFIABLE);
+    let file_contents = std::fs::read("../test-files/hello.txt").unwrap();
+    assert_eq!(
+        res.headers()["content-range"],
+        &format!("bytes */{}", file_contents.len())
+    )
+}
+
+#[tokio::test]
 async fn accept_encoding_identity() {
     let svc = ServeDir::new("..");
     let req = Request::builder()
         .uri("/README.md")
+        .header("Accept-Encoding", "identity")
+        .body(Body::empty())
+        .unwrap();
+    let res = svc.serve(Context::default(), req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    // Identity encoding should not be included in the response headers
+    assert!(res.headers().get("content-encoding").is_none());
+}
+
+#[tokio::test]
+async fn accept_encoding_identity_embedded() {
+    const EMBEDDED_FILES: include_dir::Dir = include_dir::include_dir!("test-files");
+    let svc = ServeDir::new_embedded(EMBEDDED_FILES);
+
+    let req = Request::builder()
+        .uri("/hello.txt")
         .header("Accept-Encoding", "identity")
         .body(Body::empty())
         .unwrap();
@@ -693,6 +992,75 @@ async fn last_modified() {
 }
 
 #[tokio::test]
+async fn last_modified_embedded() {
+    const EMBEDDED_FILES: include_dir::Dir = include_dir::include_dir!("test-files");
+    let svc = ServeDir::new_embedded(EMBEDDED_FILES);
+
+    let req = Request::builder()
+        .uri("/hello.txt")
+        .body(Body::empty())
+        .unwrap();
+    let res = svc.serve(Context::default(), req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let last_modified = res
+        .headers()
+        .get(header::LAST_MODIFIED)
+        .expect("Missing last modified header!");
+
+    // -- If-Modified-Since
+
+    let svc = ServeDir::new_embedded(EMBEDDED_FILES);
+    let req = Request::builder()
+        .uri("/hello.txt")
+        .header(header::IF_MODIFIED_SINCE, last_modified)
+        .body(Body::empty())
+        .unwrap();
+
+    let res = svc.serve(Context::default(), req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::NOT_MODIFIED);
+    assert!(res.into_body().frame().await.is_none());
+
+    let svc = ServeDir::new_embedded(EMBEDDED_FILES);
+    let req = Request::builder()
+        .uri("/hello.txt")
+        .header(header::IF_MODIFIED_SINCE, "Fri, 09 Aug 1996 14:21:40 GMT")
+        .body(Body::empty())
+        .unwrap();
+
+    let res = svc.serve(Context::default(), req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let hello_content = std::fs::read("../test-files/hello.txt").unwrap();
+    let body = res.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(body.as_ref(), &hello_content);
+
+    // -- If-Unmodified-Since
+
+    let svc = ServeDir::new_embedded(EMBEDDED_FILES);
+    let req = Request::builder()
+        .uri("/hello.txt")
+        .header(header::IF_UNMODIFIED_SINCE, last_modified)
+        .body(Body::empty())
+        .unwrap();
+
+    let res = svc.serve(Context::default(), req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let body = res.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(body.as_ref(), &hello_content);
+
+    let svc = ServeDir::new_embedded(EMBEDDED_FILES);
+    let req = Request::builder()
+        .uri("/hello.txt")
+        .header(header::IF_UNMODIFIED_SINCE, "Fri, 09 Aug 1996 14:21:40 GMT")
+        .body(Body::empty())
+        .unwrap();
+
+    let res = svc.serve(Context::default(), req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::PRECONDITION_FAILED);
+    assert!(res.into_body().frame().await.is_none());
+}
+
+#[tokio::test]
 async fn with_fallback_svc() {
     async fn fallback(req: Request) -> Result<Response, Infallible> {
         Ok(Response::new(Body::from(format!(
@@ -702,6 +1070,30 @@ async fn with_fallback_svc() {
     }
 
     let svc = ServeDir::new("..").fallback(service_fn(fallback));
+
+    let req = Request::builder()
+        .uri("/doesnt-exist")
+        .body(Body::empty())
+        .unwrap();
+    let res = svc.serve(Context::default(), req).await.unwrap();
+
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let body = body_into_text(res.into_body()).await;
+    assert_eq!(body, "from fallback /doesnt-exist");
+}
+
+#[tokio::test]
+async fn with_fallback_svc_embedded() {
+    async fn fallback(req: Request) -> Result<Response, Infallible> {
+        Ok(Response::new(Body::from(format!(
+            "from fallback {}",
+            req.uri().path()
+        ))))
+    }
+
+    const EMBEDDED_FILES: include_dir::Dir = include_dir::include_dir!("test-files");
+    let svc = ServeDir::new_embedded(EMBEDDED_FILES).fallback(service_fn(fallback));
 
     let req = Request::builder()
         .uri("/doesnt-exist")
@@ -741,6 +1133,22 @@ async fn method_not_allowed() {
     let req = Request::builder()
         .method(Method::POST)
         .uri("/README.md")
+        .body(Body::empty())
+        .unwrap();
+    let res = svc.serve(Context::default(), req).await.unwrap();
+
+    assert_eq!(res.status(), StatusCode::METHOD_NOT_ALLOWED);
+    assert_eq!(res.headers()[ALLOW], "GET,HEAD");
+}
+
+#[tokio::test]
+async fn method_not_allowed_embedded() {
+    const EMBEDDED_FILES: include_dir::Dir = include_dir::include_dir!("test-files");
+    let svc = ServeDir::new_embedded(EMBEDDED_FILES);
+
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/hello.txt")
         .body(Body::empty())
         .unwrap();
     let res = svc.serve(Context::default(), req).await.unwrap();

@@ -378,7 +378,7 @@ impl<F> ServeDir<F> {
             (fallback, ctx, fallback_req)
         });
 
-        let Some(path_to_file) = self
+        let path_to_file = match self
             .variant
             .build_and_validate_path(&self.base, req.uri().path())
         {
@@ -557,9 +557,11 @@ impl ServeVariant {
                         }
                         Some(path)
                     }
-                    DirSource::Embedded(path) => path
-                        .get_file(path_decoded)
-                        .map(|file| file.path().to_path_buf()),
+                    DirSource::Embedded(_) => {
+                        // For embedded directories, return the decoded path
+                        // The actual file lookup will be handled in open_file_embedded
+                        Some(path_decoded.to_path_buf())
+                    }
                 }
             }
             ServeVariant::SingleFile { mime: _ } => match source {
