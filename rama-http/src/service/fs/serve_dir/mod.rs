@@ -1,6 +1,7 @@
 use crate::dep::http_body::{self, Body as HttpBody};
 use crate::headers::encoding::{SupportedEncodings, parse_accept_encoding_headers};
 use crate::layer::set_status::SetStatus;
+use crate::service::fs::serve_dir::open_file::open_file_embedded;
 use crate::{Body, HeaderValue, Method, Request, Response, StatusCode, header};
 use include_dir::Dir;
 use percent_encoding::percent_decode;
@@ -14,7 +15,6 @@ use std::{
     convert::Infallible,
     path::{Component, Path, PathBuf},
 };
-use crate::service::fs::serve_dir::open_file::open_file_embedded;
 
 pub(crate) mod future;
 mod headers;
@@ -22,7 +22,6 @@ mod open_file;
 
 #[cfg(test)]
 mod tests;
-
 
 #[derive(Clone, Debug)]
 enum DirSource {
@@ -99,9 +98,7 @@ impl ServeDir<DefaultServeDirFallback> {
             base: DirSource::Filesystem(path.as_ref().to_path_buf()),
             buf_chunk_size: DEFAULT_CAPACITY,
             precompressed_variants: None,
-            variant: ServeVariant::SingleFile {
-                mime,
-            },
+            variant: ServeVariant::SingleFile { mime },
             fallback: None,
             call_fallback_on_method_not_allowed: false,
         }
@@ -408,7 +405,7 @@ impl<F> ServeDir<F> {
         )
         .collect();
 
-        let open_file_result =  match &self.base {
+        let open_file_result = match &self.base {
             DirSource::Filesystem(_) => {
                 let variant = self.variant.clone();
 
@@ -419,19 +416,17 @@ impl<F> ServeDir<F> {
                     negotiated_encodings,
                     range_header,
                     buf_chunk_size,
-                ).await
-
-            },
-            DirSource::Embedded(path) => {
-                open_file_embedded(
-                    path,
-                    path_to_file,
-                    req,
-                    negotiated_encodings,
-                    range_header,
-                    buf_chunk_size,
                 )
+                .await
             }
+            DirSource::Embedded(path) => open_file_embedded(
+                path,
+                path_to_file,
+                req,
+                negotiated_encodings,
+                range_header,
+                buf_chunk_size,
+            ),
         };
 
         future::consume_open_file_result(open_file_result, fallback_and_request).await
@@ -553,31 +548,26 @@ impl ServeVariant {
                                     }
                                 }
                                 Component::CurDir => {}
-                                Component::Prefix(_) | Component::RootDir | Component::ParentDir => {
+                                Component::Prefix(_)
+                                | Component::RootDir
+                                | Component::ParentDir => {
                                     return None;
                                 }
                             }
                         }
                         Some(path)
                     }
-                    DirSource::Embedded(path) => {
-                        match path.get_file(path_decoded) {
-                            Some(file) => Some(file.path().to_path_buf()),
-                            None => None,
-                        }
-                    }
+                    DirSource::Embedded(path) => path
+                        .get_file(path_decoded)
+                        .map(|file| file.path().to_path_buf()),
                 }
             }
-            ServeVariant::SingleFile { mime: _ } => {
-                match source {
-                    DirSource::Filesystem(base_path) => {
-                        Some(base_path.to_path_buf())
-                    },
-                    DirSource::Embedded(_) => {
-                        unreachable!()
-                    }
+            ServeVariant::SingleFile { mime: _ } => match source {
+                DirSource::Filesystem(base_path) => Some(base_path.to_path_buf()),
+                DirSource::Embedded(_) => {
+                    unreachable!()
                 }
-            }
+            },
         }
     }
 }

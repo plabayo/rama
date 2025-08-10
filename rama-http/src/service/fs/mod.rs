@@ -9,7 +9,7 @@ use std::{
     pin::Pin,
     task::{Context, Poll},
 };
-use tokio::io::{AsyncRead};
+use tokio::io::AsyncRead;
 use tokio_util::io::ReaderStream;
 
 mod serve_dir;

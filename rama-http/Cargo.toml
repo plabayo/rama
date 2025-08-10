@@ -38,6 +38,7 @@ csv = { workspace = true }
 flate2 = { workspace = true, optional = true }
 http-range-header = { workspace = true }
 httpdate = { workspace = true }
+include_dir = { workspace = true }
 iri-string = { workspace = true }
 matchit = { workspace = true }
 mime = { workspace = true }
@@ -62,7 +63,6 @@ smol_str = { workspace = true }
 tokio = { workspace = true, features = ["macros", "fs", "io-std"] }
 tokio-util = { workspace = true, features = ["io", "io-util"] }
 uuid = { workspace = true, features = ["v4"] }
-include_dir = {workspace = true}
 
 [dev-dependencies]
 brotli = { workspace = true }
