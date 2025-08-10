@@ -182,7 +182,7 @@ mod retry_after;
 mod sec_websocket_accept;
 mod sec_websocket_extensions;
 mod sec_websocket_key;
-mod sec_websocket_protocol;
+pub mod sec_websocket_protocol;
 mod sec_websocket_version;
 mod server;
 mod set_cookie;

@@ -7,6 +7,7 @@ use rama::{
             EasyHttpWebClient,
             proxy::layer::{HttpProxyAddressLayer, SetProxyAuthHttpHeaderLayer},
         },
+        headers::SecWebsocketProtocol,
         layer::{
             auth::AddAuthorizationLayer,
             decompression::DecompressionLayer,
@@ -44,8 +45,12 @@ pub(super) async fn connect(cfg: super::CliCommandWs) -> Result<ClientWebSocket,
         HttpVersion::H2 => client.websocket_h2(cfg.uri),
     };
 
-    if let Some(protocols) = cfg.protocols {
-        builder.set_sub_protocols(protocols);
+    if let Some(mut protocols) = cfg.protocols.map(|p| p.into_iter())
+        && let Some(first_protocol) = protocols.next()
+    {
+        builder.set_protocols(
+            SecWebsocketProtocol::new(first_protocol).with_additional_protocols(protocols),
+        );
     }
 
     builder

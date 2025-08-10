@@ -14,20 +14,16 @@ use rama_core::{
     telemetry::tracing::{self, Instrument},
 };
 use rama_http::{
-    HeaderValue, Method, Request, Response, StatusCode, Version,
+    Method, Request, Response, StatusCode, Version,
     dep::http::request,
-    header::{self, SEC_WEBSOCKET_PROTOCOL},
     headers::{self, HeaderMapExt, HttpResponseBuilderExt},
     io::upgrade,
     proto::h2::ext::Protocol,
     service::web::response::{Headers, IntoResponse},
 };
-use smallvec::SmallVec;
-use smol_str::SmolStr;
 
 use crate::{
     Message,
-    handshake::{AcceptedSubProtocol, SubProtocols},
     protocol::{Role, WebSocketConfig},
     runtime::AsyncWebSocket,
 };
@@ -178,7 +174,13 @@ impl std::error::Error for RequestValidateError {}
 
 pub fn validate_http_client_request<Body>(
     request: &Request<Body>,
-) -> Result<(Option<headers::SecWebsocketAccept>, Option<SubProtocols>), RequestValidateError> {
+) -> Result<
+    (
+        Option<headers::SecWebsocketAccept>,
+        Option<headers::SecWebsocketProtocol>,
+    ),
+    RequestValidateError,
+> {
     tracing::trace!(
         http.version = ?request.version(),
         "validate http client request"
@@ -264,25 +266,16 @@ pub fn validate_http_client_request<Body>(
     // Optionally, a |Sec-WebSocket-Protocol| header field, with a list
     // of values indicating which protocols the client would like to
     // speak, ordered by preference.
-    let mut sub_protocols = None;
-    if let Some(header) = request.headers().get(SEC_WEBSOCKET_PROTOCOL) {
-        sub_protocols = Some(
-            header
-                .to_str()
-                .context("utf-8 decode sec-websocket-protocol header")
-                .and_then(|v| v.parse())
-                .map_err(RequestValidateError::InvalidSecWebSocketProtocolHeader)?,
-        );
-    }
+    let protocols_header = request.headers().typed_get();
 
-    Ok((accept_header, sub_protocols))
+    Ok((accept_header, protocols_header))
 }
 
 #[derive(Debug, Clone, Default)]
 /// An acceptor that can be used for upgrades os WebSockets on the server side.
 pub struct WebSocketAcceptor {
-    sub_protocols: Option<SubProtocols>,
-    sub_protocols_flex: bool,
+    protocols: Option<headers::SecWebsocketProtocol>,
+    protocols_flex: bool,
 }
 
 impl WebSocketAcceptor {
@@ -294,70 +287,26 @@ impl WebSocketAcceptor {
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Define if the sub protocol validation and actioning is flexible.
+        /// Define if the protocols validation and actioning is flexible.
         ///
-        /// - In case no sub protocols are defined by server it implies that
-        ///   the server will accept any incoming sub protocol instead of denying sub protocols.
-        /// - Or in case server did specify a sub protocol allow list it will also
-        ///   accept incoming requests which do not define a sub protocol.
-        pub fn sub_protocols_flex(mut self, flex: bool) -> Self {
-            self.sub_protocols_flex = flex;
+        /// - In case no protocols are defined by server it implies that
+        ///   the server will accept any incoming protocol instead of denying protocols.
+        /// - Or in case server did specify a protocol allow list it will also
+        ///   accept incoming requests which do not define a protocol.
+        pub fn protocols_flex(mut self, flexible: bool) -> Self {
+            self.protocols_flex = flexible;
             self
         }
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Set the WebSocket sub protocol, overwriting any existing sub protocol.
+        /// Define the WebSocket protocols.
         ///
-        /// The sub protocols defined by the server (matcher) act as an allow list.
-        /// You can make sub protocols optional in case you also wish to allow no
-        /// sub protocols to be defined.
-        pub fn sub_protocol(mut self, protocol: impl Into<SmolStr>) -> Self {
-            self.sub_protocols = Some(SubProtocols::new(protocol));
-            self
-        }
-    }
-
-    rama_utils::macros::generate_set_and_with! {
-        /// Add the WebSocket sub protocol, appending it to any existing sub protocol(s).
-        ///
-        /// The sub protocols defined by the server (matcher) act as an allow list.
-        /// You can make sub protocols optional in case you also wish to allow no
-        /// sub protocols to be defined.
-        pub fn additional_sub_protocol(mut self, protocol: impl Into<SmolStr>) -> Self {
-            self.sub_protocols = Some(match self.sub_protocols.take() {
-                Some(protocols) => protocols.with_additional_sub_protocol(protocol),
-                None => SubProtocols::new(protocol),
-            });
-            self
-        }
-    }
-
-    rama_utils::macros::generate_set_and_with! {
-        /// Set the WebSocket sub protocols, overwriting any existing sub protocol.
-        ///
-        /// The sub protocols defined by the server (matcher) act as an allow list.
-        /// You can make sub protocols optional in case you also wish to allow no
-        /// sub protocols to be defined.
-        pub fn sub_protocols(mut self, protocols: impl IntoIterator<Item = impl Into<SmolStr>>) -> Self {
-            let protocols: SmallVec<_> = protocols.into_iter().map(Into::into).collect();
-            self.sub_protocols = (!protocols.is_empty()).then_some(SubProtocols(protocols));
-            self
-        }
-    }
-
-    rama_utils::macros::generate_set_and_with! {
-        /// Add the WebSocket sub protocols, appending it to any existing sub protocol(s).
-        ///
-        /// The sub protocols defined by the server (matcher) act as an allow list.
-        /// You can make sub protocols optional in case you also wish to allow no
-        /// sub protocols to be defined.
-        pub fn additional_sub_protocols(mut self, protocols: impl IntoIterator<Item = impl Into<SmolStr>>) -> Self {
-            let protocols = protocols.into_iter();
-            self.sub_protocols = if let Some(existing_protocols) = self.sub_protocols.take() { Some(existing_protocols.with_additional_sub_protocols(protocols)) } else {
-                let protocols: SmallVec<_> = protocols.into_iter().map(Into::into).collect();
-                (!protocols.is_empty()).then_some(SubProtocols(protocols))
-            };
+        /// The protocols defined by the server (matcher) act as an allow list.
+        /// You can make protocols optional in case you also wish to allow no
+        /// protocols to be defined.
+        pub fn protocols(mut self, protocols: Option<headers::SecWebsocketProtocol>) -> Self {
+            self.protocols = protocols;
             self
         }
     }
@@ -378,10 +327,17 @@ impl WebSocketAcceptor {
     /// Turn this [`WebSocketAcceptor`] into an echo [`WebSocketAcceptorService`]].
     #[must_use]
     pub fn into_echo_service(mut self) -> WebSocketAcceptorService<WebSocketEchoService> {
-        if self.sub_protocols.is_none() {
-            self.sub_protocols_flex = true;
-            self.sub_protocols = Some(ECHO_SERVICE_SUB_PROTOCOLS);
+        if self.protocols.is_none() {
+            self.protocols_flex = true;
+            self.protocols = Some(
+                headers::SecWebsocketProtocol::new(ECHO_SERVICE_SUB_PROTOCOL_DEFAULT)
+                    .with_additional_protocols([
+                        ECHO_SERVICE_SUB_PROTOCOL_UPPER,
+                        ECHO_SERVICE_SUB_PROTOCOL_LOWER,
+                    ]),
+            );
         }
+
         WebSocketAcceptorService {
             acceptor: self,
             config: None,
@@ -404,21 +360,21 @@ where
         req: Request<Body>,
     ) -> Result<Self::Response, Self::Error> {
         match validate_http_client_request(&req) {
-            Ok((accept_header, maybe_sub_protocols)) => {
+            Ok((accept_header, maybe_protocols)) => {
                 let accepted_protocol = match (
-                    self.sub_protocols_flex,
-                    maybe_sub_protocols,
-                    self.sub_protocols.as_ref(),
+                    self.protocols_flex,
+                    maybe_protocols,
+                    self.protocols.as_ref(),
                 ) {
                     (false, Some(protocols), None) => {
                         tracing::debug!(
-                            "WebSocketAcceptor: sub-protocols found while none were expected: {protocols}"
+                            "WebSocketAcceptor: sub-protocols found while none were expected: {protocols:?}"
                         );
                         return Err(StatusCode::BAD_REQUEST.into_response());
                     }
                     (false, None, Some(protocols)) => {
                         tracing::debug!(
-                            "WebSocketAcceptor: no sub-protocols found while one of following was expected: {protocols}"
+                            "WebSocketAcceptor: no sub-protocols found while one of following was expected: {protocols:?}"
                         );
                         return Err(StatusCode::BAD_REQUEST.into_response());
                     }
@@ -434,27 +390,17 @@ where
                             Some(protocol)
                         } else {
                             tracing::debug!(
-                                "WebSocketAcceptor: no sub-protocols from found protocol ({found_protocols}) matched for expected protocols: {expected_protocols}"
+                                "WebSocketAcceptor: no sub-protocols from found protocol ({found_protocols:?}) matched for expected protocols: {expected_protocols:?}"
                             );
                             return Err(StatusCode::BAD_REQUEST.into_response());
                         }
                     }
                 };
 
-                ctx.extensions_mut().insert(accepted_protocol.clone());
-
-                let protocol_header_value: Option<HeaderValue> = match accepted_protocol {
+                let protocols_header = match accepted_protocol {
                     Some(p) => {
                         ctx.extensions_mut().insert(p.clone());
-                        match p.as_str().parse() {
-                            Ok(v) => Some(v),
-                            Err(err) => {
-                                tracing::debug!(
-                                    "WebSocketAcceptor: invalid accepted sub protocol {p}: {err}"
-                                );
-                                return Err(StatusCode::BAD_REQUEST.into_response());
-                            }
-                        }
+                        Some(p.into_header())
                     }
                     None => None,
                 };
@@ -474,10 +420,8 @@ where
                             .typed_header(headers::Connection::upgrade())
                             .body(rama_http::Body::empty())
                             .unwrap();
-                        if let Some(protocol) = protocol_header_value {
-                            response
-                                .headers_mut()
-                                .insert(header::SEC_WEBSOCKET_PROTOCOL, protocol);
+                        if let Some(protocols) = protocols_header {
+                            response.headers_mut().typed_insert(protocols);
                         }
                         Ok((response, ctx, req))
                     }
@@ -487,10 +431,8 @@ where
                             .version(Version::HTTP_2)
                             .body(rama_http::Body::empty())
                             .unwrap();
-                        if let Some(protocol) = protocol_header_value {
-                            response
-                                .headers_mut()
-                                .insert(header::SEC_WEBSOCKET_PROTOCOL, protocol);
+                        if let Some(protocols) = protocols_header {
+                            response.headers_mut().typed_insert(protocols);
                         }
                         Ok((response, ctx, req))
                     }
@@ -669,13 +611,6 @@ pub const ECHO_SERVICE_SUB_PROTOCOL_UPPER: &str = "echo-upper";
 /// Lowercase all characters as part of the echod response in [`WebSocketEchoService`].
 pub const ECHO_SERVICE_SUB_PROTOCOL_LOWER: &str = "echo-lower";
 
-/// The protocols supported by the [`WebSocketEchoService`].
-pub const ECHO_SERVICE_SUB_PROTOCOLS: SubProtocols = SubProtocols(SmallVec::from_const([
-    SmolStr::new_static(ECHO_SERVICE_SUB_PROTOCOL_DEFAULT),
-    SmolStr::new_static(ECHO_SERVICE_SUB_PROTOCOL_UPPER),
-    SmolStr::new_static(ECHO_SERVICE_SUB_PROTOCOL_LOWER),
-]));
-
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
 /// Create a service which echos all incoming messages.
@@ -702,7 +637,7 @@ where
         socket: AsyncWebSocket,
     ) -> Result<Self::Response, Self::Error> {
         let protocol = ctx
-            .get::<AcceptedSubProtocol>()
+            .get::<headers::sec_websocket_protocol::AcceptedWebsocketProtocol>()
             .map(|p| p.as_str())
             .unwrap_or(ECHO_SERVICE_SUB_PROTOCOL_DEFAULT);
         let transformer = if protocol.eq_ignore_ascii_case(ECHO_SERVICE_SUB_PROTOCOL_LOWER) {
@@ -781,10 +716,10 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::handshake::AcceptedSubProtocol;
+    use headers::sec_websocket_protocol::AcceptedWebsocketProtocol;
+    use rama_http::Body;
 
     use super::*;
-    use rama_http::Body;
 
     macro_rules! request {
         (
@@ -921,7 +856,7 @@ mod tests {
     async fn assert_websocket_acceptor_ok(
         request: Request,
         acceptor: &WebSocketAcceptor,
-        expected_accepted_protocol: Option<AcceptedSubProtocol>,
+        expected_accepted_protocol: Option<AcceptedWebsocketProtocol>,
     ) {
         let ctx = Context::default();
         let (resp, ctx, req) = acceptor.serve(ctx, request).await.unwrap();
@@ -932,24 +867,24 @@ mod tests {
             Version::HTTP_2 => assert_eq!(StatusCode::OK, resp.status()),
             _ => unreachable!(),
         }
-        let protocol = resp
+        let accepted_protocol = resp
             .headers()
-            .get(SEC_WEBSOCKET_PROTOCOL)
-            .map(|v| v.to_str().unwrap());
+            .typed_get::<headers::SecWebsocketProtocol>()
+            .map(|p| p.accept_first_protocol());
         if let Some(expected_accepted_protocol) = expected_accepted_protocol {
             assert_eq!(
-                protocol,
-                Some(expected_accepted_protocol.as_str().trim()),
+                accepted_protocol.as_ref(),
+                Some(&expected_accepted_protocol),
                 "request = {req:?}"
             );
             assert_eq!(
-                ctx.get::<AcceptedSubProtocol>(),
+                ctx.get::<AcceptedWebsocketProtocol>(),
                 Some(&expected_accepted_protocol),
                 "request = {req:?}"
             );
         } else {
-            assert!(protocol.is_none());
-            assert!(ctx.get::<AcceptedSubProtocol>().is_none());
+            assert!(accepted_protocol.is_none());
+            assert!(ctx.get::<AcceptedWebsocketProtocol>().is_none());
         }
     }
 
@@ -1125,8 +1060,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_websocket_accept_flex_sub_protocols() {
-        let acceptor = WebSocketAcceptor::default().with_sub_protocols_flex(true);
+    async fn test_websocket_accept_flex_protocols() {
+        let acceptor = WebSocketAcceptor::default().with_protocols_flex(true);
 
         // no protocols
 
@@ -1167,7 +1102,7 @@ mod tests {
                 "Sec-WebSocket-Protocol": "foo"
             },
             &acceptor,
-            Some(AcceptedSubProtocol::new("foo")),
+            Some(AcceptedWebsocketProtocol::new("foo")),
         )
         .await;
         assert_websocket_acceptor_ok(
@@ -1180,7 +1115,7 @@ mod tests {
                 ]
             },
             &acceptor,
-            Some(AcceptedSubProtocol::new("foo")),
+            Some(AcceptedWebsocketProtocol::new("foo")),
         )
         .await;
 
@@ -1196,7 +1131,7 @@ mod tests {
                 "Sec-WebSocket-Protocol": "foo, bar"
             },
             &acceptor,
-            Some(AcceptedSubProtocol::new("foo")),
+            Some(AcceptedWebsocketProtocol::new("foo")),
         )
         .await;
         assert_websocket_acceptor_ok(
@@ -1209,14 +1144,14 @@ mod tests {
                 ]
             },
             &acceptor,
-            Some(AcceptedSubProtocol::new("foo")),
+            Some(AcceptedWebsocketProtocol::new("foo")),
         )
         .await;
 
         // without protocols, even though we have allow list, fine due to it being optional,
         // but we still only accept allowed protocols if defined
 
-        let acceptor = acceptor.with_sub_protocol("foo");
+        let acceptor = acceptor.with_protocols(headers::SecWebsocketProtocol::new("foo"));
 
         assert_websocket_acceptor_ok(
             request! {
@@ -1246,10 +1181,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_websocket_accept_required_sub_protocols() {
-        let acceptor = WebSocketAcceptor::default()
-            .with_sub_protocol("foo")
-            .with_additional_sub_protocols(["a", "b"]);
+    async fn test_websocket_accept_required_protocols() {
+        let acceptor = WebSocketAcceptor::default().with_protocols(
+            headers::SecWebsocketProtocol::new("foo").with_additional_protocols(["a", "b"]),
+        );
 
         // no protocols, required so all bad
 
@@ -1288,7 +1223,7 @@ mod tests {
                 "Sec-WebSocket-Protocol": "foo"
             },
             &acceptor,
-            Some(AcceptedSubProtocol::new("foo")),
+            Some(AcceptedWebsocketProtocol::new("foo")),
         )
         .await;
         assert_websocket_acceptor_ok(
@@ -1301,7 +1236,7 @@ mod tests {
                 ]
             },
             &acceptor,
-            Some(AcceptedSubProtocol::new("b")),
+            Some(AcceptedWebsocketProtocol::new("b")),
         )
         .await;
 
@@ -1317,7 +1252,7 @@ mod tests {
                 "Sec-WebSocket-Protocol": "test, b"
             },
             &acceptor,
-            Some(AcceptedSubProtocol::new("b")),
+            Some(AcceptedWebsocketProtocol::new("b")),
         )
         .await;
         assert_websocket_acceptor_ok(
@@ -1330,7 +1265,7 @@ mod tests {
                 ]
             },
             &acceptor,
-            Some(AcceptedSubProtocol::new("a")),
+            Some(AcceptedWebsocketProtocol::new("a")),
         )
         .await;
 

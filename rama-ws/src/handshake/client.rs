@@ -8,7 +8,10 @@ use rama_core::telemetry::tracing;
 use rama_core::{Context, Service};
 use rama_http::conn::TargetHttpVersion;
 use rama_http::dep::http::{self, request, response};
-use rama_http::headers::{HeaderMapExt, HttpRequestBuilderExt as _, SecWebsocketKey};
+use rama_http::headers::sec_websocket_protocol::AcceptedWebsocketProtocol;
+use rama_http::headers::{
+    HeaderMapExt, HttpRequestBuilderExt as _, SecWebsocketKey, SecWebsocketProtocol,
+};
 use rama_http::proto::h2::ext::Protocol;
 use rama_http::service::client::ext::{IntoHeaderName, IntoHeaderValue};
 use rama_http::service::client::{HttpClientExt, IntoUrl, RequestBuilder};
@@ -16,17 +19,13 @@ use rama_http::{
     Body, HeaderValue, Method, Request, Response, StatusCode, Version, header, headers,
 };
 
-use smallvec::SmallVec;
-use smol_str::SmolStr;
-
-use crate::handshake::{AcceptedSubProtocol, SubProtocols};
 use crate::protocol::{Role, WebSocketConfig};
 use crate::runtime::AsyncWebSocket;
 
 /// Builder that can be used by clients to initiate the WebSocket handshake.
 pub struct WebsocketRequestBuilder<B> {
     inner: B,
-    sub_protocols: Option<SubProtocols>,
+    protocols: Option<SecWebsocketProtocol>,
     key: Option<SecWebsocketKey>,
 }
 
@@ -34,7 +33,7 @@ pub struct WebsocketRequestBuilder<B> {
 /// Request data to be used by an http client to initiate an http request.
 pub struct HandshakeRequest {
     pub request: Request,
-    pub sub_protocols: Option<SubProtocols>,
+    pub protocols: Option<SecWebsocketProtocol>,
     pub key: Option<SecWebsocketKey>,
 }
 
@@ -42,7 +41,7 @@ impl<B: fmt::Debug> fmt::Debug for WebsocketRequestBuilder<B> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("WebsocketRequestBuilder")
             .field("inner", &self.inner)
-            .field("protocols", &self.sub_protocols)
+            .field("protocols", &self.protocols)
             .field("key", &self.key)
             .finish()
     }
@@ -52,7 +51,7 @@ impl<B: Clone> Clone for WebsocketRequestBuilder<B> {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
-            sub_protocols: self.sub_protocols.clone(),
+            protocols: self.protocols.clone(),
             key: self.key.clone(),
         }
     }
@@ -223,8 +222,8 @@ impl std::error::Error for HandshakeError {
 pub fn validate_http_server_response<Body>(
     response: &Response<Body>,
     key: Option<headers::SecWebsocketKey>,
-    sub_protocols: Option<SubProtocols>,
-) -> Result<Option<AcceptedSubProtocol>, ResponseValidateError> {
+    protocols: Option<SecWebsocketProtocol>,
+) -> Result<Option<AcceptedWebsocketProtocol>, ResponseValidateError> {
     tracing::trace!(
         http.version = ?response.version(),
         http.response.status = ?response.status(),
@@ -313,7 +312,7 @@ pub fn validate_http_server_response<Body>(
     let mut accepted_protocol = None;
     match (
         response.headers().get(header::SEC_WEBSOCKET_PROTOCOL),
-        sub_protocols,
+        protocols,
     ) {
         (None, None) => (),
         (None, Some(_)) => {
@@ -350,7 +349,7 @@ impl WebsocketRequestBuilder<request::Builder> {
     {
         Self {
             inner: new_ws_request_builder_from_uri(uri, Version::HTTP_11),
-            sub_protocols: Default::default(),
+            protocols: Default::default(),
             key: Default::default(),
         }
     }
@@ -362,7 +361,7 @@ impl WebsocketRequestBuilder<request::Builder> {
     {
         Self {
             inner: new_ws_request_builder_from_uri(uri, Version::HTTP_2),
-            sub_protocols: Default::default(),
+            protocols: Default::default(),
             key: Default::default(),
         }
     }
@@ -376,7 +375,7 @@ impl WebsocketRequestBuilder<request::Builder> {
     {
         Self {
             inner: self.inner.header(name, value),
-            sub_protocols: self.sub_protocols,
+            protocols: self.protocols,
             key: self.key,
         }
     }
@@ -389,7 +388,7 @@ impl WebsocketRequestBuilder<request::Builder> {
     {
         Self {
             inner: self.inner.typed_header(header),
-            sub_protocols: self.sub_protocols,
+            protocols: self.protocols,
             key: self.key,
         }
     }
@@ -397,11 +396,8 @@ impl WebsocketRequestBuilder<request::Builder> {
     /// Build the handshake data
     /// to be used to initiate the WebSocket handshake using an http client.
     pub fn build_handshake(self) -> Result<HandshakeRequest, OpaqueError> {
-        let builder = match self.sub_protocols.as_ref() {
-            Some(protocols) => {
-                let s = protocols.to_string();
-                self.inner.header(header::SEC_WEBSOCKET_PROTOCOL, s)
-            }
+        let builder = match self.protocols.as_ref() {
+            Some(protocols) => self.inner.typed_header(protocols),
             None => self.inner,
         };
 
@@ -423,7 +419,7 @@ impl WebsocketRequestBuilder<request::Builder> {
 
         Ok(HandshakeRequest {
             request,
-            sub_protocols: self.sub_protocols,
+            protocols: self.protocols,
             key,
         })
     }
@@ -449,7 +445,7 @@ where
                 config: Default::default(),
                 is_h2: false,
             },
-            sub_protocols: Default::default(),
+            protocols: Default::default(),
             key: Default::default(),
         }
     }
@@ -469,7 +465,7 @@ where
                 config: Default::default(),
                 is_h2: true,
             },
-            sub_protocols: Default::default(),
+            protocols: Default::default(),
             key: Default::default(),
         }
     }
@@ -484,11 +480,7 @@ where
     {
         let key = request.headers().typed_get();
         let is_h2 = request.version() == Version::HTTP_2;
-
-        let mut sub_protocols = None;
-        if let Some(header) = request.headers().get(header::SEC_WEBSOCKET_PROTOCOL) {
-            sub_protocols = header.to_str().ok().and_then(|v| v.parse().ok());
-        }
+        let protocols = request.headers().typed_get();
 
         Self {
             inner: WithService {
@@ -496,7 +488,7 @@ where
                 config: Default::default(),
                 is_h2,
             },
-            sub_protocols,
+            protocols,
             key,
         }
     }
@@ -513,7 +505,7 @@ where
                 builder: self.inner.builder.header(name, value),
                 ..self.inner
             },
-            sub_protocols: self.sub_protocols,
+            protocols: self.protocols,
             key: self.key,
         }
     }
@@ -530,7 +522,7 @@ where
                 builder: self.inner.builder.overwrite_header(name, value),
                 ..self.inner
             },
-            sub_protocols: self.sub_protocols,
+            protocols: self.protocols,
             key: self.key,
         }
     }
@@ -546,7 +538,7 @@ where
                 builder: self.inner.builder.typed_header(header),
                 ..self.inner
             },
-            sub_protocols: self.sub_protocols,
+            protocols: self.protocols,
             key: self.key,
         }
     }
@@ -562,7 +554,7 @@ where
                 builder: self.inner.builder.overwrite_typed_header(header),
                 ..self.inner
             },
-            sub_protocols: self.sub_protocols,
+            protocols: self.protocols,
             key: self.key,
         }
     }
@@ -581,13 +573,8 @@ where
         self,
         mut ctx: Context<State>,
     ) -> Result<ClientWebSocket, HandshakeError> {
-        let builder = match self.sub_protocols.as_ref() {
-            Some(protocols) => {
-                let s = protocols.to_string();
-                self.inner
-                    .builder
-                    .overwrite_header(header::SEC_WEBSOCKET_PROTOCOL, s)
-            }
+        let builder = match self.protocols.as_ref() {
+            Some(protocols) => self.inner.builder.overwrite_typed_header(protocols),
             None => self.inner.builder,
         };
 
@@ -614,7 +601,7 @@ where
             .context("send initial websocket handshake request (upgrade)")
             .map_err(HandshakeError::HttpRequestError)?;
 
-        let accepted_protocol = validate_http_server_response(&response, key, self.sub_protocols)
+        let accepted_protocol = validate_http_server_response(&response, key, self.protocols)
             .map_err(HandshakeError::ValidationError)?;
 
         tracing::trace!(
@@ -641,41 +628,9 @@ where
 
 impl<B> WebsocketRequestBuilder<B> {
     rama_utils::macros::generate_set_and_with! {
-        /// Set the WebSocket sub protocol, overwriting any existing sub protocol.
-        pub fn sub_protocol(mut self, protocol: impl Into<SmolStr>) -> Self {
-            self.sub_protocols = Some(SubProtocols::new(protocol));
-            self
-        }
-    }
-
-    rama_utils::macros::generate_set_and_with! {
-        /// Add the WebSocket sub protocol, appending it to any existing sub protocol(s).
-        pub fn additional_sub_protocol(mut self, protocol: impl Into<SmolStr>) -> Self {
-            self.sub_protocols = Some(match self.sub_protocols.take() {
-                Some(protocols) => protocols.with_additional_sub_protocol(protocol),
-                None => SubProtocols::new(protocol),
-            });
-            self
-        }
-    }
-
-    rama_utils::macros::generate_set_and_with! {
-        /// Set the WebSocket sub protocols, overwriting any existing sub protocol.
-        pub fn sub_protocols(mut self, protocols: impl IntoIterator<Item = impl Into<SmolStr>>) -> Self {
-            let protocols: SmallVec<_> = protocols.into_iter().map(Into::into).collect();
-            self.sub_protocols = (!protocols.is_empty()).then_some(SubProtocols(protocols));
-            self
-        }
-    }
-
-    rama_utils::macros::generate_set_and_with! {
-        /// Add the WebSocket sub protocols, appending it to any existing sub protocol(s).
-        pub fn additional_sub_protocols(mut self, protocols: impl IntoIterator<Item = impl Into<SmolStr>>) -> Self {
-            let protocols = protocols.into_iter();
-            self.sub_protocols = if let Some(existing_protocols) = self.sub_protocols.take() { Some(existing_protocols.with_additional_sub_protocols(protocols)) } else {
-                let protocols: SmallVec<_> = protocols.into_iter().map(Into::into).collect();
-                (!protocols.is_empty()).then_some(SubProtocols(protocols))
-            };
+        /// Define the WebSocket protocols to be used.
+        pub fn protocols(mut self, protocols: Option<SecWebsocketProtocol>) -> Self {
+            self.protocols = protocols;
             self
         }
     }
@@ -698,7 +653,7 @@ impl<B> WebsocketRequestBuilder<B> {
 pub struct ClientWebSocket {
     socket: AsyncWebSocket,
     response: response::Parts,
-    accepted_protocol: Option<AcceptedSubProtocol>,
+    accepted_protocol: Option<AcceptedWebsocketProtocol>,
 }
 
 impl Deref for ClientWebSocket {
@@ -732,7 +687,13 @@ impl ClientWebSocket {
     }
 
     /// Consume `self` into its parts.
-    pub fn into_parts(self) -> (AsyncWebSocket, response::Parts, Option<AcceptedSubProtocol>) {
+    pub fn into_parts(
+        self,
+    ) -> (
+        AsyncWebSocket,
+        response::Parts,
+        Option<AcceptedWebsocketProtocol>,
+    ) {
         (self.socket, self.response, self.accepted_protocol)
     }
 }
