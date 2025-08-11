@@ -43,11 +43,11 @@ where
         if self.toggle.status().await {
             let mut log_line = HarLog::default();
             let request = HarRequest::from_rama_request::<ReqBody>(&req).await?;
-            let mut response: Option<HarResponse> = None;
 
-            if let Ok(ref resp) = result {
-                response = Some(HarResponse::from_rama_response::<ResBody>(resp).await?);
-            }
+            let response = match result {
+                Ok(ref resp) => Some(HarResponse::from_rama_response::<ResBody>(resp).await?),
+                _ => None,
+            };
 
             // dummy information
             let timings = Timings {
