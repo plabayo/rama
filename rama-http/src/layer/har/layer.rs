@@ -1,12 +1,11 @@
 use crate::layer::har::default::InMemoryRecorder;
 use crate::layer::har::service::HARExportService;
 use crate::layer::har::toggle::Toggle;
-use crate::layer::har::{Comment, Recorder};
+use crate::layer::har::Recorder;
 use rama_core::Layer;
 
 pub struct HARExportLayer<R, T> {
     pub recorder: R,
-    pub comments: Vec<Comment>,
     pub toggle: T,
 }
 
@@ -15,7 +14,6 @@ impl Default for HARExportLayer<InMemoryRecorder, bool> {
     fn default() -> Self {
         Self {
             recorder: InMemoryRecorder::new(),
-            comments: vec![],
             toggle: false,
         }
     }
@@ -25,7 +23,6 @@ impl<R: Recorder, T: Clone> Clone for HARExportLayer<R, T> {
     fn clone(&self) -> Self {
         Self {
             recorder: self.recorder.clone(),
-            comments: self.comments.clone(),
             toggle: self.toggle.clone(),
         }
     }
