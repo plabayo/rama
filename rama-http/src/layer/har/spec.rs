@@ -3,6 +3,7 @@ use std::net::SocketAddr;
 
 use crate::dep::core::bytes::Bytes;
 use crate::dep::http::request::Parts as ReqParts;
+use crate::layer::har::request_comment::RequestComment;
 use crate::service::web::extract::Query;
 
 use mime::Mime;
@@ -265,6 +266,12 @@ impl Request {
             None
         };
 
+        let comment = 
+            match parts.extensions.get::<RequestComment>() {
+                Some(req_comment) => Some(req_comment.comment.clone()),
+                None => None
+            };
+
         Ok(Self {
             method: parts.method.to_string(),
             url: parts.uri.to_string(),
@@ -275,7 +282,7 @@ impl Request {
             post_data,
             headers_size: Self::headers_size_from_request(req),
             body_size: body_bytes.len() as i64,
-            comment: None,
+            comment,
         })
     }
 }

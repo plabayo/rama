@@ -11,10 +11,11 @@ use rama::{
     graceful::Shutdown, 
     http::Request,
     http::layer::har::layer::HARExportLayer,
+    http::layer::har::request_comment::RequestComment,
     http::service::web::response::Html,
+    http::server::HttpServer, rt::Executor, tcp::server::TcpListener,
     service::service_fn,
     layer::TimeoutLayer,
-    http::server::HttpServer, rt::Executor, tcp::server::TcpListener,
 };
 
 use std::time::Duration;
@@ -22,6 +23,11 @@ use std::time::Duration;
 #[tokio::main]
 async fn main() {
     let graceful = Shutdown::default();
+
+    let req_comment = RequestComment::new("making a comment");
+
+    let mut ext = http::Extensions::new();
+    ext.insert(req_comment);
 
     graceful.spawn_task_fn(async |guard| {
         let exec = Executor::graceful(guard.clone());
