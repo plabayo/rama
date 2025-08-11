@@ -180,7 +180,7 @@ mod referer;
 mod referrer_policy;
 mod retry_after;
 mod sec_websocket_accept;
-mod sec_websocket_extensions;
+pub mod sec_websocket_extensions;
 mod sec_websocket_key;
 pub mod sec_websocket_protocol;
 mod sec_websocket_version;

@@ -3,7 +3,7 @@
 //! More information:
 //! <https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Sec-WebSocket-Extensions>
 
-use std::{fmt, str::FromStr};
+use std::{fmt, str::FromStr, sync::Arc};
 
 use rama_core::telemetry::tracing;
 use rama_error::OpaqueError;
@@ -59,6 +59,21 @@ impl SecWebsocketExtensions {
 }
 
 impl SecWebsocketExtensions {
+    #[must_use]
+    /// Return a reference to the first [`Extension`]
+    pub fn first(&self) -> &Extension {
+        // assumption is that vec is never empty, due
+        // to how we construct it!
+        &self.0[0]
+    }
+
+    #[must_use]
+    pub fn into_first(self) -> Extension {
+        // assumption is that vec is never empty, due
+        // to how we construct it!
+        self.into_iter().next().unwrap()
+    }
+
     pub fn iter(&self) -> impl Iterator<Item = &Extension> {
         self.0.iter()
     }
@@ -104,7 +119,22 @@ pub enum Extension {
     /// An extension unknown to this library.
     ///
     /// Up to the user to parse and handle it appropriately, if at all.
-    Unknown(String),
+    Unknown(Arc<str>),
+}
+
+impl Extension {
+    #[must_use]
+    /// Consume this instance into a [`SecWebsocketExtensions`]
+    /// with a single extension value.
+    pub fn into_header(self) -> SecWebsocketExtensions {
+        SecWebsocketExtensions::new(self)
+    }
+}
+
+impl From<Extension> for SecWebsocketExtensions {
+    fn from(value: Extension) -> Self {
+        Self::new(value)
+    }
 }
 
 impl From<PerMessageDeflateConfig> for Extension {
@@ -278,7 +308,7 @@ impl FromStr for Extension {
             tracing::trace!(
                 "received unknown extension with identifier: {identifier} (full: {s}); store as unkown"
             );
-            Ok(Self::Unknown(s.to_owned()))
+            Ok(Self::Unknown(s.into()))
         }
     }
 }
@@ -468,8 +498,8 @@ mod tests {
                     "permessage-deflate; server_max_window_bits=14",
                 ],
                 Some(
-                    SecWebsocketExtensions::new(Extension::Unknown("unknown-extension".to_owned()))
-                        .with_extra_extension(Extension::Unknown("another-one".to_owned()))
+                    SecWebsocketExtensions::new(Extension::Unknown("unknown-extension".into()))
+                        .with_extra_extension(Extension::Unknown("another-one".into()))
                         .with_extra_extension(Extension::PerMessageDeflate(
                             PerMessageDeflateConfig {
                                 server_max_window_bits: Some(14),
@@ -515,7 +545,7 @@ mod tests {
                 "unknown extension",
                 vec!["super-zip"],
                 Some(SecWebsocketExtensions::new(Extension::Unknown(
-                    "super-zip".to_owned(),
+                    "super-zip".into(),
                 ))),
             ),
             (
@@ -537,9 +567,8 @@ mod tests {
                 "malformed header with comma",
                 vec!["permessage-deflate, client_max_window_bits"],
                 Some(
-                    SecWebsocketExtensions::per_message_deflate().with_extra_extension(
-                        Extension::Unknown("client_max_window_bits".to_owned()),
-                    ),
+                    SecWebsocketExtensions::per_message_deflate()
+                        .with_extra_extension(Extension::Unknown("client_max_window_bits".into())),
                 ),
             ),
             (

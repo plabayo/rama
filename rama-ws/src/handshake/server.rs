@@ -16,7 +16,10 @@ use rama_core::{
 use rama_http::{
     Method, Request, Response, StatusCode, Version,
     dep::http::request,
-    headers::{self, HeaderMapExt, HttpResponseBuilderExt},
+    headers::{
+        self, HeaderMapExt, HttpResponseBuilderExt,
+        sec_websocket_extensions::{Extension, PerMessageDeflateConfig},
+    },
     io::upgrade,
     proto::h2::ext::Protocol,
     service::web::response::{Headers, IntoResponse},
@@ -59,11 +62,15 @@ where
         req: &Request<Body>,
     ) -> bool {
         match req.version() {
-            Version::HTTP_10 | Version::HTTP_11 => {
+            version @ (Version::HTTP_10 | Version::HTTP_11) => {
                 match req.method() {
                     &Method::GET => (),
                     method => {
-                        tracing::debug!(http.request.method = %method, "WebSocketMatcher: h1: unexpected method found: no match");
+                        tracing::debug!(
+                            http.version = ?version,
+                            http.request.method = %method,
+                            "WebSocketMatcher: h1: unexpected method found: no match",
+                        );
                         return false;
                     }
                 }
@@ -75,6 +82,7 @@ where
                     .unwrap_or_default()
                 {
                     tracing::trace!(
+                        http.version = ?version,
                         "WebSocketMatcher: h1: no websocket upgrade header found: no match"
                     );
                     return false;
@@ -87,16 +95,21 @@ where
                     .unwrap_or_default()
                 {
                     tracing::trace!(
-                        "WebSocketMatcher: h1: no connection upgrade header found: no match"
+                        http.version = ?version,
+                        "WebSocketMatcher: h1: no connection upgrade header found: no match",
                     );
                     return false;
                 }
             }
-            Version::HTTP_2 => {
+            version @ Version::HTTP_2 => {
                 match req.method() {
                     &Method::CONNECT => (),
                     method => {
-                        tracing::debug!(http.request.method = %method, "WebSocketMatcher: h2: unexpected method found: no match");
+                        tracing::debug!(
+                            http.version = ?version,
+                            http.request.method = %method,
+                            "WebSocketMatcher: h2: unexpected method found: no match",
+                        );
                         return false;
                     }
                 }
@@ -108,13 +121,17 @@ where
                     .unwrap_or_default()
                 {
                     tracing::trace!(
-                        "WebSocketMatcher: h2: no websocket protocol (pseudo ext) found"
+                        http.version = ?version,
+                        "WebSocketMatcher: h2: no websocket protocol (pseudo ext) found",
                     );
                     return false;
                 }
             }
             version => {
-                tracing::debug!(http.version = ?version, "WebSocketMatcher: unexpected http version found: no match");
+                tracing::debug!(
+                    http.version = ?version,
+                    "WebSocketMatcher: unexpected http version found: no match",
+                );
                 return false;
             }
         }
@@ -172,15 +189,16 @@ impl fmt::Display for RequestValidateError {
 
 impl std::error::Error for RequestValidateError {}
 
+#[derive(Debug)]
+pub struct ClientRequestData {
+    pub accept_header: Option<headers::SecWebsocketAccept>,
+    pub protocol: Option<headers::SecWebsocketProtocol>,
+    pub extensions: Option<headers::SecWebsocketExtensions>,
+}
+
 pub fn validate_http_client_request<Body>(
     request: &Request<Body>,
-) -> Result<
-    (
-        Option<headers::SecWebsocketAccept>,
-        Option<headers::SecWebsocketProtocol>,
-    ),
-    RequestValidateError,
-> {
+) -> Result<ClientRequestData, RequestValidateError> {
     tracing::trace!(
         http.version = ?request.version(),
         "validate http client request"
@@ -268,7 +286,16 @@ pub fn validate_http_client_request<Body>(
     // speak, ordered by preference.
     let protocols_header = request.headers().typed_get();
 
-    Ok((accept_header, protocols_header))
+    // Also optionally, a |Sec-WebSocket-Extensions| header field, with a list
+    // of values indicating which extensions the client would like to
+    // utilise, ordered by preference.
+    let extensions_header = request.headers().typed_get();
+
+    Ok(ClientRequestData {
+        accept_header,
+        protocol: protocols_header,
+        extensions: extensions_header,
+    })
 }
 
 #[derive(Debug, Clone, Default)]
@@ -276,6 +303,10 @@ pub fn validate_http_client_request<Body>(
 pub struct WebSocketAcceptor {
     protocols: Option<headers::SecWebsocketProtocol>,
     protocols_flex: bool,
+
+    // extensions are always flexible in context of what both
+    // client and server support... as such... extensions *_*
+    extensions: Option<headers::SecWebsocketExtensions>,
 }
 
 impl WebSocketAcceptor {
@@ -304,9 +335,17 @@ impl WebSocketAcceptor {
         ///
         /// The protocols defined by the server (matcher) act as an allow list.
         /// You can make protocols optional in case you also wish to allow no
-        /// protocols to be defined.
+        /// protocols to be defined by marking protocols as flexible.
         pub fn protocols(mut self, protocols: Option<headers::SecWebsocketProtocol>) -> Self {
             self.protocols = protocols;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Define the WebSocket extensions to be supported by the server.
+        pub fn extensions(mut self, extensions: Option<headers::SecWebsocketExtensions>) -> Self {
+            self.extensions = extensions;
             self
         }
     }
@@ -360,10 +399,10 @@ where
         req: Request<Body>,
     ) -> Result<Self::Response, Self::Error> {
         match validate_http_client_request(&req) {
-            Ok((accept_header, maybe_protocols)) => {
+            Ok(request_data) => {
                 let accepted_protocol = match (
                     self.protocols_flex,
-                    maybe_protocols,
+                    request_data.protocol,
                     self.protocols.as_ref(),
                 ) {
                     (false, Some(protocols), None) => {
@@ -396,6 +435,72 @@ where
                     }
                 };
 
+                let accepted_extension = match (request_data.extensions, self.extensions.as_ref()) {
+                    (None, _) | (_, None) => None,
+                    // TODO: feature gate this
+                    (Some(request_extensions), Some(allowed_extensions)) => {
+                        request_extensions.into_iter().find_map(|request_ext| {
+                            for allowed_ext in allowed_extensions.iter() {
+                                if let (
+                                    Extension::PerMessageDeflate(request_pmd),
+                                    Extension::PerMessageDeflate(allowed_pmd),
+                                ) = (&request_ext, allowed_ext)
+                                {
+                                    let mut resp = PerMessageDeflateConfig {
+                                        identifier: allowed_pmd.identifier.clone(),
+                                        client_no_context_takeover: request_pmd
+                                            .client_no_context_takeover
+                                            || allowed_pmd.client_no_context_takeover,
+                                        server_no_context_takeover: request_pmd
+                                            .server_no_context_takeover
+                                            || allowed_pmd.server_no_context_takeover,
+                                        ..Default::default()
+                                    };
+
+                                    // server_max_window_bits
+                                    // server may include this even if client did not offer it
+                                    let srv_cap = allowed_pmd
+                                        .server_max_window_bits
+                                        .unwrap_or(15)
+                                        .clamp(8, 15);
+                                    let cli_req_srv =
+                                        request_pmd.server_max_window_bits.map(|v| v.clamp(8, 15));
+                                    let chosen_srv_bits = match (cli_req_srv, Some(srv_cap)) {
+                                        (Some(client_bits), Some(cap)) => {
+                                            Some(client_bits.min(cap))
+                                        }
+                                        (None, Some(cap)) => Some(cap),
+                                        _ => None,
+                                    };
+                                    // include only if it actually constrains or was explicitly discussed
+                                    resp.server_max_window_bits = match chosen_srv_bits {
+                                        Some(bits) if bits < 15 || cli_req_srv.is_some() => {
+                                            Some(bits)
+                                        }
+                                        _ => None,
+                                    };
+
+                                    // client_max_window_bits
+                                    // server must not include unless client offered it
+                                    resp.client_max_window_bits = request_pmd
+                                        .client_max_window_bits
+                                        .map(|client_bits_offer| {
+                                            let offer = client_bits_offer.clamp(8, 15);
+                                            let cap = allowed_pmd
+                                                .client_max_window_bits
+                                                .unwrap_or(offer)
+                                                .clamp(8, 15);
+                                            offer.min(cap)
+                                        });
+
+                                    return Some(Extension::PerMessageDeflate(resp));
+                                }
+                            }
+                            None
+                        })
+                    }
+                };
+
                 let protocols_header = match accepted_protocol {
                     Some(p) => {
                         ctx.extensions_mut().insert(p.clone());
@@ -404,9 +509,17 @@ where
                     None => None,
                 };
 
+                let extensions_header = match accepted_extension {
+                    Some(ext) => {
+                        ctx.extensions_mut().insert(ext.clone());
+                        Some(ext.into_header())
+                    }
+                    None => None,
+                };
+
                 match req.version() {
                     version @ (Version::HTTP_10 | Version::HTTP_11) => {
-                        let accept_header = accept_header.ok_or_else(|| {
+                        let accept_header = request_data.accept_header.ok_or_else(|| {
                             tracing::debug!("WebSocketAcceptor: missing accept header (no key?)");
                             StatusCode::BAD_REQUEST.into_response()
                         })?;
@@ -422,6 +535,9 @@ where
                         if let Some(protocols) = protocols_header {
                             response.headers_mut().typed_insert(protocols);
                         }
+                        if let Some(extensions) = extensions_header {
+                            response.headers_mut().typed_insert(extensions);
+                        }
                         Ok((response, ctx, req))
                     }
                     Version::HTTP_2 => {
@@ -432,6 +548,9 @@ where
                             .unwrap();
                         if let Some(protocols) = protocols_header {
                             response.headers_mut().typed_insert(protocols);
+                        }
+                        if let Some(extensions) = extensions_header {
+                            response.headers_mut().typed_insert(extensions);
                         }
                         Ok((response, ctx, req))
                     }
@@ -577,9 +696,19 @@ where
                     async move {
                         match upgrade::on(&mut req).await {
                             Ok(upgraded) => {
+                                // TODO: feature gate this
+
+                                if let Some(Extension::PerMessageDeflate(pmd_cfg)) = ctx.get() {
+                                    tracing::trace!(
+                                        "apply accepted per-message-deflate cfg into WS server config: {pmd_cfg:?}"
+                                    )
+                                    // TODO: apply
+                                }
+
                                 let socket =
                                     AsyncWebSocket::from_raw_socket(upgraded, Role::Server, None)
                                         .await;
+
                                 let (parts, _) = req.into_parts();
 
                                 let server_socket = ServerWebSocket {
