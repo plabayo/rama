@@ -41,8 +41,8 @@ impl OpenFileOutput {
         maybe_encoding: Option<Encoding>,
         maybe_range: Option<Result<Vec<RangeInclusive<u64>>, RangeUnsatisfiableError>>,
         last_modified: Option<LastModified>,
-    ) -> OpenFileOutput {
-        OpenFileOutput::FileOpened(Box::new(FileOpened {
+    ) -> Self {
+        Self::FileOpened(Box::new(FileOpened {
             extent,
             chunk_size,
             mime_header_value: mime,
