@@ -65,22 +65,17 @@ impl ServeDir<DefaultServeDirFallback> {
         let mut base = PathBuf::from(".");
         base.push(path.as_ref());
 
-        Self {
-            base: DirSource::Filesystem(base),
-            buf_chunk_size: DEFAULT_CAPACITY,
-            precompressed_variants: None,
-            variant: ServeVariant::Directory {
-                serve_mode: Default::default(),
-            },
-            fallback: None,
-            call_fallback_on_method_not_allowed: false,
-        }
+        Self::new_with_base(DirSource::Filesystem(base))
     }
 
     #[must_use]
     pub fn new_embedded(path: Dir<'static>) -> Self {
+        Self::new_with_base(DirSource::Embedded(path))
+    }
+
+    fn new_with_base(base: DirSource) -> Self {
         Self {
-            base: DirSource::Embedded(path),
+            base,
             buf_chunk_size: DEFAULT_CAPACITY,
             precompressed_variants: None,
             variant: ServeVariant::Directory {
@@ -391,6 +386,11 @@ impl<F> ServeDir<F> {
         };
 
         let buf_chunk_size = self.buf_chunk_size;
+        let range_header = req
+            .headers()
+            .get(header::RANGE)
+            .and_then(|value| value.to_str().ok())
+            .map(|s| s.to_owned());
         let negotiated_encodings: Vec<_> = parse_accept_encoding_headers(
             req.headers(),
             self.precompressed_variants.unwrap_or_default(),
@@ -400,12 +400,6 @@ impl<F> ServeDir<F> {
         let open_file_result = match &self.base {
             DirSource::Filesystem(_) => {
                 let variant = self.variant.clone();
-                let range_header = req
-                    .headers()
-                    .get(header::RANGE)
-                    .and_then(|value| value.to_str().ok())
-                    .map(|s| s.to_owned());
-
                 open_file::open_file(
                     variant,
                     path_to_file,
@@ -417,12 +411,6 @@ impl<F> ServeDir<F> {
                 .await
             }
             DirSource::Embedded(path) => {
-                let range_header = req
-                    .headers()
-                    .get(header::RANGE)
-                    .and_then(|value| value.to_str().ok())
-                    .map(|s| s.to_owned());
-
                 open_file_embedded(
                     path,
                     path_to_file,

@@ -19,7 +19,6 @@ use std::{
     time::SystemTime,
 };
 use tokio::io::AsyncRead;
-use tokio::io::AsyncReadExt;
 use tokio::{fs::File, io::AsyncSeekExt};
 
 pub(super) enum OpenFileOutput {
@@ -45,7 +44,7 @@ pub(super) struct FileOpened {
 pub(super) enum FileRequestExtent {
     Full(File, Metadata),
     Head(Metadata),
-    Embedded(Vec<u8>),
+    Embedded(Vec<u8>, u64), // Content, original file size
     EmbeddedHead(u64), // Content length for HEAD requests on embedded files
 }
 
@@ -54,35 +53,14 @@ impl FileRequestExtent {
         match self {
             Self::Head(_) | Self::EmbeddedHead(_) => None,
             Self::Full(file, _) => Some(Box::new(file)),
-            Self::Embedded(content) => Some(Box::new(Cursor::new(content))),
-        }
-    }
-
-    pub(super) fn range_reader_with_offset(
-        self,
-        offset: u64,
-        range_size: u64,
-    ) -> Option<Box<dyn AsyncRead + Send + Sync + Unpin>> {
-        match self {
-            Self::Head(_) | Self::EmbeddedHead(_) => None,
-            Self::Full(file, _) => Some(Box::new(file.take(range_size))), // File is already seeked
-            Self::Embedded(content) => {
-                let start = offset as usize;
-                let end = (offset + range_size) as usize;
-                let slice = if start < content.len() {
-                    &content[start..end.min(content.len())]
-                } else {
-                    &[]
-                };
-                Some(Box::new(Cursor::new(slice.to_vec())))
-            }
+            Self::Embedded(content, _) => Some(Box::new(Cursor::new(content))),
         }
     }
 
     pub(super) fn get_size(&self) -> u64 {
         match self {
             Self::Head(meta) | Self::Full(_, meta) => meta.len(),
-            Self::Embedded(content) => content.len() as u64,
+            Self::Embedded(_, original_size) => *original_size,
             Self::EmbeddedHead(size) => *size,
         }
     }
@@ -142,7 +120,17 @@ pub(super) fn open_file_embedded(
     let extent = if req.method() == Method::HEAD {
         FileRequestExtent::EmbeddedHead(content_length)
     } else {
-        FileRequestExtent::Embedded(file.contents().to_vec())
+        let mut content = file.contents().to_vec();
+        
+        // Apply seek for range requests, similar to filesystem files
+        if let Some(Ok(ranges)) = maybe_range.as_ref()
+            && ranges.len() == 1
+        {
+            let start = *ranges[0].start() as usize;
+            content.drain(0..start.min(content.len()));
+        }
+        
+        FileRequestExtent::Embedded(content, content_length)
     };
 
     Ok(OpenFileOutput::FileOpened(Box::new(FileOpened {

@@ -9,7 +9,7 @@ use std::{
     pin::Pin,
     task::{Context, Poll},
 };
-use tokio::io::AsyncRead;
+use tokio::io::{AsyncRead, AsyncReadExt, Take};
 use tokio_util::io::ReaderStream;
 
 mod serve_dir;
@@ -50,6 +50,16 @@ where
     fn with_capacity(read: T, capacity: usize) -> Self {
         Self {
             reader: ReaderStream::with_capacity(read, capacity),
+        }
+    }
+
+    fn with_capacity_limited(
+        read: T,
+        capacity: usize,
+        max_read_bytes: u64,
+    ) -> AsyncReadBody<Take<T>> {
+        AsyncReadBody {
+            reader: ReaderStream::with_capacity(read.take(max_read_bytes), capacity),
         }
     }
 }

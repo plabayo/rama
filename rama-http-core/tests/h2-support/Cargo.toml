@@ -7,12 +7,12 @@ edition = "2024"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
-
-futures = { workspace = true }
-http = { workspace = true }
 rama-core = { workspace = true }
 rama-http-core = { workspace = true, features = ["unstable"] }
 rama-http-types = { workspace = true }
+
+futures = { workspace = true }
+http = { workspace = true }
 tokio = { workspace = true, features = ["time"] }
 tokio-test = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["fmt"] }
