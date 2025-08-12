@@ -7,6 +7,7 @@ use crate::{HeaderValue, Method, Request, Uri, header};
 use chrono::{DateTime, Local};
 use http_range_header::RangeUnsatisfiableError;
 use include_dir::Dir;
+use rama_core::combinators::Either;
 use rama_core::telemetry::tracing;
 use std::io::Cursor;
 use std::{
@@ -45,15 +46,15 @@ pub(super) enum FileRequestExtent {
     Full(File, Metadata),
     Head(Metadata),
     Embedded(Vec<u8>, u64), // Content, original file size
-    EmbeddedHead(u64), // Content length for HEAD requests on embedded files
+    EmbeddedHead(u64),      // Content length for HEAD requests on embedded files
 }
 
 impl FileRequestExtent {
-    pub(super) fn reader(self) -> Option<Box<dyn AsyncRead + Send + Sync + Unpin>> {
+    pub(super) fn reader(self) -> Option<impl AsyncRead + Send + Sync + Unpin> {
         match self {
             Self::Head(_) | Self::EmbeddedHead(_) => None,
-            Self::Full(file, _) => Some(Box::new(file)),
-            Self::Embedded(content, _) => Some(Box::new(Cursor::new(content))),
+            Self::Full(file, _) => Some(Either::A(file)),
+            Self::Embedded(content, _) => Some(Either::B(Cursor::new(content))),
         }
     }
 
@@ -121,7 +122,7 @@ pub(super) fn open_file_embedded(
         FileRequestExtent::EmbeddedHead(content_length)
     } else {
         let mut content = file.contents().to_vec();
-        
+
         // Apply seek for range requests, similar to filesystem files
         if let Some(Ok(ranges)) = maybe_range.as_ref()
             && ranges.len() == 1
@@ -129,7 +130,7 @@ pub(super) fn open_file_embedded(
             let start = *ranges[0].start() as usize;
             content.drain(0..start.min(content.len()));
         }
-        
+
         FileRequestExtent::Embedded(content, content_length)
     };
 

@@ -410,16 +410,14 @@ impl<F> ServeDir<F> {
                 )
                 .await
             }
-            DirSource::Embedded(path) => {
-                open_file_embedded(
-                    path,
-                    path_to_file,
-                    &req,
-                    &negotiated_encodings,
-                    range_header.as_deref(),
-                    buf_chunk_size,
-                )
-            }
+            DirSource::Embedded(path) => open_file_embedded(
+                path,
+                path_to_file,
+                &req,
+                &negotiated_encodings,
+                range_header.as_deref(),
+                buf_chunk_size,
+            ),
         };
 
         future::consume_open_file_result(open_file_result, fallback_and_request).await
