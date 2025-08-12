@@ -523,35 +523,11 @@ impl ServeVariant {
                 let path_decoded = Path::new(&*path_decoded);
 
                 match source {
-                    DirSource::Filesystem(path) => {
-                        let mut path = path.clone();
-                        for component in path_decoded.components() {
-                            match component {
-                                Component::Normal(comp) => {
-                                    // protect against paths like `/foo/c:/bar/baz` (#204)
-                                    if Path::new(&comp)
-                                        .components()
-                                        .all(|c| matches!(c, Component::Normal(_)))
-                                    {
-                                        path.push(comp)
-                                    } else {
-                                        return None;
-                                    }
-                                }
-                                Component::CurDir => {}
-                                Component::Prefix(_)
-                                | Component::RootDir
-                                | Component::ParentDir => {
-                                    return None;
-                                }
-                            }
-                        }
-                        Some(path)
+                    DirSource::Filesystem(base_path) => {
+                        Self::validate_path_components(base_path.clone(), path_decoded)
                     }
                     DirSource::Embedded(_) => {
-                        // For embedded directories, return the decoded path
-                        // The actual file lookup will be handled in open_file_embedded
-                        Some(path_decoded.to_path_buf())
+                        Self::validate_path_components(PathBuf::new(), path_decoded)
                     }
                 }
             }
@@ -562,6 +538,29 @@ impl ServeVariant {
                 }
             },
         }
+    }
+
+    fn validate_path_components(mut path: PathBuf, path_decoded: &Path) -> Option<PathBuf> {
+        for component in path_decoded.components() {
+            match component {
+                Component::Normal(comp) => {
+                    // protect against paths like `/foo/c:/bar/baz` (#204)
+                    if Path::new(&comp)
+                        .components()
+                        .all(|c| matches!(c, Component::Normal(_)))
+                    {
+                        path.push(comp)
+                    } else {
+                        return None;
+                    }
+                }
+                Component::CurDir => {}
+                Component::Prefix(_) | Component::RootDir | Component::ParentDir => {
+                    return None;
+                }
+            }
+        }
+        Some(path)
     }
 }
 
