@@ -179,12 +179,10 @@ where
     {
         let service = service.into_endpoint_service().boxed();
 
-        let mut path = path.trim().trim_end_matches('/');
-        if path.is_empty() {
-            path = "/"
-        }
+        let path = path.trim().trim_matches('/');
+        let path = format!("/{path}");
 
-        if let Ok(matched) = self.routes.at_mut(path) {
+        if let Ok(matched) = self.routes.at_mut(&path) {
             matched.value.push((matcher, service));
         } else {
             self.routes
@@ -397,19 +395,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_router() {
-        let router = Router::new()
-            .get("/", root_service())
-            .get("/users", get_users_service())
-            .post("/users", create_user_service())
-            .get("/users/{user_id}", get_user_service())
-            .delete("/users/{user_id}", delete_user_service())
-            .get(
-                "/users/{user_id}/orders/{order_id}",
-                get_user_order_service(),
-            )
-            .get("/assets/{*path}", serve_assets_service())
-            .not_found(not_found_service());
-
         let cases = vec![
             (Method::GET, "/", "Hello, World!", StatusCode::OK),
             (Method::GET, "/users", "List Users", StatusCode::OK),
@@ -447,41 +432,48 @@ mod tests {
             ),
         ];
 
-        for (method, path, expected_body, expected_status) in cases {
-            let req = match method {
-                Method::GET => Request::get(path),
-                Method::POST => Request::post(path),
-                Method::PUT => Request::put(path),
-                Method::DELETE => Request::delete(path),
-                _ => panic!("Unsupported HTTP method"),
-            }
-            .body(Body::empty())
-            .unwrap();
+        for prefix in ["/", ""] {
+            let router = Router::new()
+                .get(prefix, root_service())
+                .get(&format!("{prefix}users"), get_users_service())
+                .post(&format!("{prefix}users"), create_user_service())
+                .get(&format!("{prefix}users/{{user_id}}"), get_user_service())
+                .delete(&format!("{prefix}users/{{user_id}}"), delete_user_service())
+                .get(
+                    &format!("{prefix}users/{{user_id}}/orders/{{order_id}}"),
+                    get_user_order_service(),
+                )
+                .get(&format!("{prefix}assets/{{*path}}"), serve_assets_service())
+                .not_found(not_found_service());
 
-            let res = router.serve(Context::default(), req).await.unwrap();
-            assert_eq!(res.status(), expected_status);
-            let body = res.into_body().collect().await.unwrap().to_bytes();
-            assert_eq!(body, expected_body);
+            for (method, path, expected_body, expected_status) in cases.iter() {
+                let req = match *method {
+                    Method::GET => Request::get(*path),
+                    Method::POST => Request::post(*path),
+                    Method::PUT => Request::put(*path),
+                    Method::DELETE => Request::delete(*path),
+                    _ => panic!("Unsupported HTTP method"),
+                }
+                .body(Body::empty())
+                .unwrap();
+
+                let res = router.serve(Context::default(), req).await.unwrap();
+                assert_eq!(
+                    res.status(),
+                    *expected_status,
+                    "method: {method} ; path = {path}; prefix = {prefix}"
+                );
+                let body = res.into_body().collect().await.unwrap().to_bytes();
+                assert_eq!(
+                    body, expected_body,
+                    "method: {method} ; path = {path}; prefix = {prefix}"
+                );
+            }
         }
     }
 
     #[tokio::test]
     async fn test_router_nest() {
-        let api_router = Router::new()
-            .get("/users", get_users_service())
-            .post("/users", create_user_service())
-            .delete("/users/{user_id}", delete_user_service())
-            .sub(
-                "/users/{user_id}",
-                Router::new()
-                    .get("/", get_user_service())
-                    .get("/orders/{order_id}", get_user_order_service()),
-            );
-
-        let app = Router::new()
-            .sub("/api", api_router)
-            .get("/", root_service());
-
         let cases = vec![
             (Method::GET, "/", "Hello, World!", StatusCode::OK),
             (Method::GET, "/api/users", "List Users", StatusCode::OK),
@@ -506,24 +498,45 @@ mod tests {
             ),
         ];
 
-        for (method, path, expected_body, expected_status) in cases {
-            let req = match method {
-                Method::GET => Request::get(path),
-                Method::POST => Request::post(path),
-                Method::DELETE => Request::delete(path),
-                _ => panic!("Unsupported HTTP method"),
-            }
-            .body(Body::empty())
-            .unwrap();
+        for prefix in ["/", ""] {
+            let api_router = Router::new()
+                .get(&format!("{prefix}users"), get_users_service())
+                .post(&format!("{prefix}users"), create_user_service())
+                .delete(&format!("{prefix}users/{{user_id}}"), delete_user_service())
+                .sub(
+                    &format!("{prefix}users/{{user_id}}"),
+                    Router::new().get(prefix, get_user_service()).get(
+                        &format!("{prefix}orders/{{order_id}}"),
+                        get_user_order_service(),
+                    ),
+                );
 
-            let res = app.serve(Context::default(), req).await.unwrap();
-            assert_eq!(
-                res.status(),
-                expected_status,
-                "method: {method} ; path = {path}"
-            );
-            let body = res.into_body().collect().await.unwrap().to_bytes();
-            assert_eq!(body, expected_body, "method: {method} ; path = {path}");
+            let app = Router::new()
+                .sub(&format!("{prefix}api"), api_router)
+                .get(prefix, root_service());
+
+            for (method, path, expected_body, expected_status) in cases.iter() {
+                let req = match *method {
+                    Method::GET => Request::get(*path),
+                    Method::POST => Request::post(*path),
+                    Method::DELETE => Request::delete(*path),
+                    _ => panic!("Unsupported HTTP method"),
+                }
+                .body(Body::empty())
+                .unwrap();
+
+                let res = app.serve(Context::default(), req).await.unwrap();
+                assert_eq!(
+                    res.status(),
+                    *expected_status,
+                    "method: {method} ; path = {path}; prefix = {prefix}"
+                );
+                let body = res.into_body().collect().await.unwrap().to_bytes();
+                assert_eq!(
+                    body, expected_body,
+                    "method: {method} ; path = {path}; prefix = {prefix}"
+                );
+            }
         }
     }
 }
