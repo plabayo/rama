@@ -224,7 +224,7 @@ trybuild = "1.0"
 tui-logger = { version = "0.17", features = ["tracing-support"] }
 turmoil = "0.6"
 unicode-normalization = "0.1"
-uuid = "1.17"
+uuid = "1.18"
 venndb = "0.5"
 walkdir = "2.5"
 want = "0.3"
