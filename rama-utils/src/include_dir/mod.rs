@@ -43,3 +43,46 @@ mod metadata;
 pub use self::{dir::Dir, dir_entry::DirEntry, file::File, metadata::Metadata};
 
 pub use ::rama_macros::include_dir;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_relative_dir() {
+        static ASSETS: Dir = include_dir!("../../../test-files");
+
+        let entry = ASSETS.get_entry("index.html").unwrap();
+        let file = entry.as_file().unwrap();
+
+        assert!(file.contents_utf8().unwrap().contains("<b>HTML!</b>"));
+
+        let _ = file.metadata().unwrap();
+    }
+
+    #[test]
+    fn test_absolute_dir() {
+        static ASSETS: Dir = include_dir!("$CARGO_MANIFEST_DIR/src");
+
+        let entry = ASSETS.get_entry("include_dir/dir.rs").unwrap();
+        let file = entry.as_file().unwrap();
+        assert!(file.contents_utf8().unwrap().contains("fn get_entry"));
+
+        let _ = file.metadata().unwrap();
+
+        let entry = ASSETS.get_entry("macros").unwrap();
+        let _ = entry.as_dir().unwrap();
+    }
+
+    #[test]
+    fn test_absolute_with_relative_dir() {
+        static ASSETS: Dir = include_dir!("$CARGO_MANIFEST_DIR/../test-files");
+
+        let entry = ASSETS.get_entry("index.html").unwrap();
+        let file = entry.as_file().unwrap();
+
+        assert!(file.contents_utf8().unwrap().contains("<b>HTML!</b>"));
+
+        let _ = file.metadata().unwrap();
+    }
+}

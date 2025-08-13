@@ -154,7 +154,7 @@ fn is_invalid_filename_error(err: &io::Error) -> bool {
 
     // FIXME: Remove when MSRV >= 1.87.
     // `io::ErrorKind::InvalidFilename` is stabilized in v1.87
-    #[cfg(windows)]
+    #[cfg(target_os = "windows")]
     if let Some(raw_err) = err.raw_os_error()
         && (raw_err == 123 || raw_err == 161 || raw_err == 206)
     {

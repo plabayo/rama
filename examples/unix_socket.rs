@@ -19,7 +19,7 @@
 //!
 //! You should receive `olleh` back, which is "hello" reversed.
 
-#[cfg(unix)]
+#[cfg(target_family = "unix")]
 mod unix_example {
     use rama::{
         Context,
@@ -108,10 +108,10 @@ mod unix_example {
     }
 }
 
-#[cfg(unix)]
+#[cfg(target_family = "unix")]
 use unix_example::run;
 
-#[cfg(not(unix))]
+#[cfg(not(target_family = "unix"))]
 async fn run() {
     println!("unix_socket example is a unix-only example, bye now!");
 }

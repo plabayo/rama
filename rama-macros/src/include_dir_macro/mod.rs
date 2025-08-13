@@ -3,7 +3,8 @@
 //! You probably don't want to use this crate directly.
 
 use proc_macro::{TokenStream, TokenTree};
-use proc_macro2::Literal;
+use proc_macro_crate::{FoundCrate, crate_name};
+use proc_macro2::{Ident, Literal, Span};
 use quote::quote;
 use std::{
     error::Error,
@@ -20,9 +21,10 @@ pub(super) fn execute(input: TokenStream) -> TokenStream {
         _ => panic!("This macro only accepts a single, non-empty string argument"),
     };
 
-    let path = resolve_path(&path, get_env).unwrap();
+    let path = resolve_path_from_callee(&path, get_env).unwrap();
+    let root_crate = support_root_ts();
 
-    expand_dir(&path, &path).into()
+    expand_dir(&path, &path, &root_crate).into()
 }
 
 fn unwrap_string_literal(lit: &proc_macro::Literal) -> String {
@@ -34,10 +36,18 @@ fn unwrap_string_literal(lit: &proc_macro::Literal) -> String {
     repr.remove(0);
     repr.pop();
 
+    if repr.is_empty() {
+        panic!("This macro only accepts a single, non-empty string argument")
+    }
+
     repr
 }
 
-fn expand_dir(root: &Path, path: &Path) -> proc_macro2::TokenStream {
+fn expand_dir(
+    root: &Path,
+    path: &Path,
+    root_crate: &proc_macro2::TokenStream,
+) -> proc_macro2::TokenStream {
     let children = read_dir(path).unwrap_or_else(|e| {
         panic!(
             "Unable to read the entries in \"{}\": {}",
@@ -50,31 +60,34 @@ fn expand_dir(root: &Path, path: &Path) -> proc_macro2::TokenStream {
 
     for child in children {
         if child.is_dir() {
-            let tokens = expand_dir(root, &child);
+            let tokens = expand_dir(root, &child, root_crate);
             child_tokens.push(quote! {
-                include_dir::DirEntry::Dir(#tokens)
+                #root_crate::include_dir::DirEntry::Dir(#tokens)
             });
         } else if child.is_file() {
-            let tokens = expand_file(root, &child);
+            let tokens = expand_file(root, &child, root_crate);
             child_tokens.push(quote! {
-                include_dir::DirEntry::File(#tokens)
+                #root_crate::include_dir::DirEntry::File(#tokens)
             });
         } else {
             panic!("\"{}\" is neither a file nor a directory", child.display());
         }
     }
 
-    let path = normalize_path(root, path);
-
+    let normalized_path = normalize_path(root, path);
     quote! {
-        include_dir::Dir::new(#path, {
-            const ENTRIES: &'static [include_dir::DirEntry<'static>] = &[ #(#child_tokens),*];
+        #root_crate::include_dir::Dir::new(#normalized_path, {
+            const ENTRIES: &'static [#root_crate::include_dir::DirEntry<'static>] = &[ #(#child_tokens),*];
             ENTRIES
-    })
+        })
     }
 }
 
-fn expand_file(root: &Path, path: &Path) -> proc_macro2::TokenStream {
+fn expand_file(
+    root: &Path,
+    path: &Path,
+    root_crate: &proc_macro2::TokenStream,
+) -> proc_macro2::TokenStream {
     let abs = path
         .canonicalize()
         .unwrap_or_else(|e| panic!("failed to resolve \"{}\": {}", path.display(), e));
@@ -87,18 +100,20 @@ fn expand_file(root: &Path, path: &Path) -> proc_macro2::TokenStream {
     };
 
     let normalized_path = normalize_path(root, path);
-
     let tokens = quote! {
-        include_dir::File::new(#normalized_path, #literal)
+        #root_crate::include_dir::File::new(#normalized_path, #literal)
     };
 
-    match metadata(path) {
+    match metadata(path, root_crate) {
         Some(metadata) => quote!(#tokens.with_metadata(#metadata)),
         None => tokens,
     }
 }
 
-fn metadata(path: &Path) -> Option<proc_macro2::TokenStream> {
+fn metadata(
+    path: &Path,
+    root_crate: &proc_macro2::TokenStream,
+) -> Option<proc_macro2::TokenStream> {
     fn to_unix(t: SystemTime) -> u64 {
         t.duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs()
     }
@@ -109,7 +124,7 @@ fn metadata(path: &Path) -> Option<proc_macro2::TokenStream> {
     let modified = meta.modified().map(to_unix).ok()?;
 
     Some(quote! {
-        include_dir::Metadata::new(
+        #root_crate::include_dir::Metadata::new(
             std::time::Duration::from_secs(#accessed),
             std::time::Duration::from_secs(#created),
             std::time::Duration::from_secs(#modified),
@@ -117,15 +132,11 @@ fn metadata(path: &Path) -> Option<proc_macro2::TokenStream> {
     })
 }
 
-/// Make sure that paths use the same separator regardless of whether the host
-/// machine is Windows or Linux.
-fn normalize_path(root: &Path, path: &Path) -> String {
-    let stripped = path
-        .strip_prefix(root)
-        .expect("Should only ever be called using paths inside the root path");
-    let as_string = stripped.to_string_lossy();
-
-    as_string.replace('\\', "/")
+fn normalize_path<'a>(root: &Path, path: &'a Path) -> &'a str {
+    path.strip_prefix(root)
+        .expect("Should only ever be called using paths inside the root path")
+        .to_str()
+        .expect("path must be valid UTF-8; open a PR in rama if you know how to accept non UTF-8 in const contexts")
 }
 
 fn read_dir(dir: &Path) -> Result<Vec<PathBuf>, Box<dyn Error>> {
@@ -152,10 +163,36 @@ fn read_file(path: &Path) -> Vec<u8> {
     std::fs::read(path).unwrap_or_else(|e| panic!("Unable to read \"{}\": {}", path.display(), e))
 }
 
-fn resolve_path(
+fn resolve_path_from_callee(
     raw: &str,
     get_env: impl Fn(&str) -> Option<String>,
 ) -> Result<PathBuf, Box<dyn Error>> {
+    let resolved = resolve_path(raw, get_env)?;
+
+    #[cfg(target_os = "windows")]
+    let resolved = resolved.replace('/', "\\");
+    #[cfg(not(target_os = "windows"))]
+    let resolved = resolved.replace('\\', "/");
+
+    let resolved = PathBuf::from(resolved);
+
+    Ok(
+        if !resolved.is_absolute()
+            && let Some(parent) = proc_macro::Span::call_site()
+                .local_file()
+                .and_then(|f| f.parent().map(|p| p.to_owned()))
+        {
+            parent.join(resolved)
+        } else {
+            resolved
+        },
+    )
+}
+
+fn resolve_path(
+    raw: &str,
+    get_env: impl Fn(&str) -> Option<String>,
+) -> Result<String, Box<dyn Error>> {
     let mut unprocessed = raw;
     let mut resolved = String::new();
 
@@ -177,8 +214,7 @@ fn resolve_path(
         }
     }
     resolved.push_str(unprocessed);
-
-    Ok(PathBuf::from(resolved))
+    Ok(resolved)
 }
 
 #[derive(Debug, PartialEq)]
@@ -251,6 +287,35 @@ fn track_path(_path: &Path) {
     // proc_macro::tracked_path::path(_path.to_string_lossy());
 }
 
+fn support_root_ts() -> proc_macro2::TokenStream {
+    // Prefer the umbrella crate
+    if let Ok(found) = crate_name("rama") {
+        let ident = match found {
+            FoundCrate::Itself => Ident::new("rama", Span::call_site()),
+            FoundCrate::Name(name) => Ident::new(&name, Span::call_site()),
+        };
+        return quote!(::#ident::utils);
+    }
+
+    // Fall back to the utils crate directly
+    if let Ok(found) = crate_name("rama-utils") {
+        return match found {
+            FoundCrate::Itself => quote!(crate),
+            FoundCrate::Name(name) => {
+                let ident = Ident::new(&name, Span::call_site());
+                quote!(::#ident)
+            }
+        };
+    }
+
+    quote! {
+        { compile_error!(
+            "include_dir could not find support types. \
+             Add a dependency on `rama` or `rama-utils`."
+        ); }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -261,7 +326,7 @@ mod tests {
 
         let resolved = resolve_path(path, |_| unreachable!()).unwrap();
 
-        assert_eq!(resolved.to_str().unwrap(), path);
+        assert_eq!(resolved, path);
     }
 
     #[test]
@@ -274,7 +339,7 @@ mod tests {
         })
         .unwrap();
 
-        assert_eq!(resolved.to_str().unwrap(), "./file.txt");
+        assert_eq!(resolved, "./file.txt");
     }
 
     #[test]
@@ -288,7 +353,7 @@ mod tests {
         })
         .unwrap();
 
-        assert_eq!(resolved.to_str().unwrap(), "./$NESTED.txt");
+        assert_eq!(resolved, "./$NESTED.txt");
     }
 
     #[test]

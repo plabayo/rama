@@ -1,5 +1,8 @@
-fmt:
-	cargo fmt --all
+fmt *ARGS:
+	cargo fmt --all {{ARGS}}
+
+fmt-crate CRATE *ARGS:
+	cargo fmt --all -p {{CRATE}} {{ARGS}}
 
 sort:
 	@cargo install cargo-sort

@@ -53,13 +53,13 @@ where
         }
 
         Err(err) => {
-            #[cfg(unix)]
+            #[cfg(target_family = "unix")]
             // 20 = libc::ENOTDIR => "not a directory
             // when `io_error_more` landed, this can be changed
             // to checking for `io::ErrorKind::NotADirectory`.
             // https://github.com/rust-lang/rust/issues/86442
             let error_is_not_a_directory = err.raw_os_error() == Some(20);
-            #[cfg(not(unix))]
+            #[cfg(not(target_family = "unix"))]
             let error_is_not_a_directory = false;
 
             if matches!(
