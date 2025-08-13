@@ -78,7 +78,7 @@ impl FileRequestExtent {
         }
     }
 
-    pub(super) fn get_size(&self) -> u64 {
+    pub(super) fn file_size(&self) -> u64 {
         match self {
             Self::Head(meta) | Self::Full(_, meta) => meta.len(),
             Self::Embedded(_, original_size) => *original_size,
