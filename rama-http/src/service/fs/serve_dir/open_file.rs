@@ -70,7 +70,7 @@ pub(super) enum FileRequestExtent {
 }
 
 impl FileRequestExtent {
-    pub(super) fn reader(self) -> Option<impl AsyncRead + Send + Sync + Unpin> {
+    pub(super) fn into_reader(self) -> Option<impl AsyncRead + Send + Sync + Unpin> {
         match self {
             Self::Head(_) | Self::EmbeddedHead(_) => None,
             Self::Full(file, _) => Some(Either::A(file)),

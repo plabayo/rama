@@ -117,7 +117,7 @@ where
 }
 
 fn build_response(output: FileOpened) -> Response {
-    let size = output.extent.get_size();
+    let size = output.extent.file_size();
 
     let mut builder = Response::builder()
         .header(header::CONTENT_TYPE, output.mime_header_value)
