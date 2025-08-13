@@ -112,7 +112,7 @@ fn server_write_flush_behaviour() {
     let mut ws = WebSocket::from_raw_socket(
         WriteMoc::new(Cursor::new(Vec::default())),
         Role::Server,
-        Some(WebSocketConfig::default().write_buffer_size(WRITE_BUFFER_SIZE)),
+        Some(WebSocketConfig::default().with_write_buffer_size(WRITE_BUFFER_SIZE)),
     );
 
     assert_eq!(ws.get_ref().written_bytes, 0);

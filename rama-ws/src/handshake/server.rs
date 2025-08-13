@@ -27,7 +27,7 @@ use rama_http::{
 
 use crate::{
     Message,
-    protocol::{Role, WebSocketConfig},
+    protocol::{self, Role, WebSocketConfig},
     runtime::AsyncWebSocket,
 };
 
@@ -696,17 +696,26 @@ where
                     async move {
                         match upgrade::on(&mut req).await {
                             Ok(upgraded) => {
-                                // TODO: feature gate this
+                                let mut ws_cfg = None;
 
+                                // TODO: feature gate this
                                 if let Some(Extension::PerMessageDeflate(pmd_cfg)) = ctx.get() {
                                     tracing::trace!(
                                         "apply accepted per-message-deflate cfg into WS server config: {pmd_cfg:?}"
-                                    )
-                                    // TODO: apply
+                                    );
+                                    ws_cfg = Some(WebSocketConfig {
+                                        per_message_deflate: Some(protocol::PerMessageDeflateConfig {
+                                            server_no_context_takeover: pmd_cfg.server_no_context_takeover,
+                                            client_no_context_takeover: pmd_cfg.client_no_context_takeover,
+                                            server_max_window_bits: pmd_cfg.server_max_window_bits,
+                                            client_max_window_bits: pmd_cfg.client_max_window_bits,
+                                        }),
+                                        ..Default::default()
+                                    });
                                 }
 
                                 let socket =
-                                    AsyncWebSocket::from_raw_socket(upgraded, Role::Server, None)
+                                    AsyncWebSocket::from_raw_socket(upgraded, Role::Server, ws_cfg)
                                         .await;
 
                                 let (parts, _) = req.into_parts();

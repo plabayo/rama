@@ -6,7 +6,7 @@
 use std::{fmt, str::FromStr, sync::Arc};
 
 use rama_core::telemetry::tracing;
-use rama_error::OpaqueError;
+use rama_error::{ErrorExt, OpaqueError};
 use rama_http_types::{HeaderName, HeaderValue};
 
 use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader, util::csv};
@@ -274,33 +274,70 @@ impl FromStr for Extension {
                     config.client_max_window_bits = Some(0);
                 } else if let Some((k, v)) = part.split_once('=') {
                     let k = k.trim();
+
+                    // The value may be quoted (RFC7692)
+                    let v = v.trim();
+                    let v = v
+                        .strip_prefix('"')
+                        .and_then(|v| v.strip_suffix('"'))
+                        .unwrap_or(v);
+                    let v = v.trim();
+
                     if k.eq_ignore_ascii_case("server_max_window_bits") {
                         match v.trim().parse::<u8>() {
-                            Ok(v) => config.server_max_window_bits = Some(v),
+                            Ok(v) => {
+                                if !(8..=15).contains(&v) {
+                                    tracing::debug!(
+                                        "fail per-message-deflate config value for server max windows bits: {v} not in [8,15] range"
+                                    );
+                                    return Err(OpaqueError::from_display(
+                                        "invalid server max windows bits (OOB)",
+                                    ));
+                                }
+                                config.server_max_window_bits = Some(v)
+                            }
                             Err(err) => {
                                 tracing::debug!(
-                                    "ignore permessage-deflate config parameter with invalid value: {k} = {v}; err = {err}"
+                                    "fail per-message-deflate config with invalid value for server max windows bits: {k} = {v}; err = {err}"
                                 );
+                                return Err(err.context("invalid per-message-deflate config value for server max windows bits"));
                             }
                         }
                     } else if k.eq_ignore_ascii_case("client_max_window_bits") {
                         match v.trim().parse::<u8>() {
-                            Ok(v) => config.client_max_window_bits = Some(v),
+                            Ok(v) => {
+                                if !(8..=15).contains(&v) {
+                                    tracing::debug!(
+                                        "fail per-message-deflate config value for client max windows bits: {v} not in [8,15] range"
+                                    );
+                                    return Err(OpaqueError::from_display(
+                                        "invalid client max windows bits (OOB)",
+                                    ));
+                                }
+                                config.client_max_window_bits = Some(v)
+                            }
                             Err(err) => {
                                 tracing::debug!(
-                                    "ignore permessage-deflate config parameter with invalid value: {k} = {v}; err = {err}"
+                                    "fail per-message-deflate config with invalid value for client max windows bits: {k} = {v}; err = {err}"
                                 );
+                                return Err(err.context("invalid per-message-deflate config value for client max windows bits"));
                             }
                         }
                     } else {
                         tracing::debug!(
-                            "ignore unknown permessage-deflate config parameter: {k} = {v}"
+                            "fail per-message-deflate config with unknown permessage-deflate config parameter: {k} = {v}"
                         );
+                        return Err(OpaqueError::from_display(
+                            "unexpected value not expected for given key",
+                        ));
                     }
                 } else {
                     tracing::debug!(
                         "received unknown permessage-deflate config parameter part: {part}"
                     );
+                    return Err(OpaqueError::from_display(
+                        "unexpected key not expected for permessage-deflate config",
+                    ));
                 }
             }
             Ok(Self::PerMessageDeflate(config))
@@ -354,22 +391,23 @@ impl TypedHeader for SecWebsocketExtensions {
 
 impl HeaderDecode for SecWebsocketExtensions {
     fn decode<'i, I: Iterator<Item = &'i HeaderValue>>(values: &mut I) -> Result<Self, Error> {
-        let mut v: Vec<_> = values
+        let result: Result<Vec<_>, _> = values
             .flat_map(|value| {
                 value.to_str().into_iter().flat_map(|string| {
                     string.split(',').filter_map(|x| match x.trim() {
                         "" => None,
                         y => match y.parse::<Extension>() {
-                            Ok(ext) => Some(ext),
+                            Ok(ext) => Some(Ok(ext)),
                             Err(err) => {
-                                tracing::debug!("ignore extension '{y}' due to error: {err}");
-                                None
+                                tracing::debug!("fail extension '{y}' due to error: {err}");
+                                Some(Err(Error::invalid()))
                             }
                         },
                     })
                 })
             })
             .collect();
+        let mut v = result?;
         if v.is_empty() {
             v.push(Extension::Empty);
         }
@@ -508,6 +546,24 @@ mod tests {
                         )),
                 ),
             ),
+            // quoted value
+            (
+                "multiple headers, preserve unknown extensions",
+                vec![
+                    "unknown-extension, another-one",
+                    "permessage-deflate; server_max_window_bits=\"14\"",
+                ],
+                Some(
+                    SecWebsocketExtensions::new(Extension::Unknown("unknown-extension".into()))
+                        .with_extra_extension(Extension::Unknown("another-one".into()))
+                        .with_extra_extension(Extension::PerMessageDeflate(
+                            PerMessageDeflateConfig {
+                                server_max_window_bits: Some(14),
+                                ..Default::default()
+                            },
+                        )),
+                ),
+            ),
             // Robustness: Whitespace and Case-Insensitivity
             (
                 "leading/trailing whitespace",
@@ -551,17 +607,17 @@ mod tests {
             (
                 "invalid parameter format",
                 vec!["permessage-deflate; client_max_window_bits_15"],
-                Some(SecWebsocketExtensions::per_message_deflate()),
+                None,
             ),
             (
                 "invalid parameter value",
                 vec!["permessage-deflate; client_max_window_bits=abc"],
-                Some(SecWebsocketExtensions::per_message_deflate()),
+                None,
             ),
             (
                 "parameter with empty value",
                 vec!["permessage-deflate; client_max_window_bits="],
-                Some(SecWebsocketExtensions::per_message_deflate()),
+                None,
             ),
             (
                 "malformed header with comma",

@@ -20,7 +20,7 @@ use rama_http::service::client::ext::{IntoHeaderName, IntoHeaderValue};
 use rama_http::service::client::{HttpClientExt, IntoUrl, RequestBuilder};
 use rama_http::{Body, Method, Request, Response, StatusCode, Version, header, headers};
 
-use crate::protocol::{Role, WebSocketConfig};
+use crate::protocol::{self, Role, WebSocketConfig};
 use crate::runtime::AsyncWebSocket;
 
 /// Builder that can be used by clients to initiate the WebSocket handshake.
@@ -726,14 +726,23 @@ where
 
         // TODO: feature gate this
 
+        let mut ws_cfg = self.inner.config.unwrap_or_default();
+
         if let Some(Extension::PerMessageDeflate(pmd_cfg)) = accepted_data.extension {
             tracing::trace!(
                 "apply accepted per-message-deflate cfg into WS client config: {pmd_cfg:?}"
-            )
-            // TODO: apply
+            );
+            ws_cfg.per_message_deflate = Some(protocol::PerMessageDeflateConfig {
+                server_no_context_takeover: pmd_cfg.server_no_context_takeover,
+                client_no_context_takeover: pmd_cfg.client_no_context_takeover,
+                server_max_window_bits: pmd_cfg.server_max_window_bits,
+                client_max_window_bits: pmd_cfg.client_max_window_bits,
+            });
+        } else {
+            ws_cfg.per_message_deflate = None;
         }
 
-        let socket = AsyncWebSocket::from_raw_socket(stream, Role::Client, self.inner.config).await;
+        let socket = AsyncWebSocket::from_raw_socket(stream, Role::Client, Some(ws_cfg)).await;
 
         Ok(ClientWebSocket {
             socket,
