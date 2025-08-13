@@ -2852,6 +2852,8 @@ name = "rama-macros"
 version = "0.3.0-alpha.3"
 dependencies = [
  "paste-test-suite",
+ "proc-macro2",
+ "quote",
  "rustversion",
  "trybuild",
 ]
