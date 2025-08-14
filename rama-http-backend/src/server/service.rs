@@ -20,7 +20,7 @@ use std::convert::Infallible;
 use std::fmt;
 use std::sync::Arc;
 
-#[cfg(unix)]
+#[cfg(target_family = "unix")]
 use ::{rama_unix::server::UnixListener, std::path::Path};
 
 /// A builder for configuring and listening over HTTP using a [`Service`].
@@ -186,7 +186,7 @@ where
         Ok(())
     }
 
-    #[cfg(unix)]
+    #[cfg(target_family = "unix")]
     /// Listen for connections on the given [`Path`], using a unix (domain) socket, serving HTTP connections.
     ///
     /// It's a shortcut in case you don't need to operate on the unix transport layer directly.
@@ -232,7 +232,7 @@ where
         Ok(())
     }
 
-    #[cfg(unix)]
+    #[cfg(target_family = "unix")]
     /// Listen for connections on the given [`Path`], using a unix (domain) socket, serving HTTP connections.
     ///
     /// Same as [`Self::listen`], but including the given state in the [`Service`]'s [`Context`].

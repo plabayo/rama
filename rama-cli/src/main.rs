@@ -15,11 +15,11 @@ pub mod error;
 pub mod trace;
 pub mod utils;
 
-#[cfg(unix)]
+#[cfg(target_family = "unix")]
 #[global_allocator]
 static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
 
-#[cfg(windows)]
+#[cfg(target_os = "windows")]
 #[global_allocator]
 static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
 

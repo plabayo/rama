@@ -1,0 +1,7 @@
+error: proc macro panicked
+ --> tests/include_dir_no_compile/absolute_dir_not_found.rs:3:23
+  |
+3 | static _ASSETS: Dir = include_dir!("/bar/rama");
+  |                       ^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = help: message: "/bar/rama" is not a directory

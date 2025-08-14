@@ -25,6 +25,8 @@
 #[macro_use]
 pub mod macros;
 
+pub mod include_dir;
+
 pub mod backoff;
 pub mod info;
 pub mod latency;

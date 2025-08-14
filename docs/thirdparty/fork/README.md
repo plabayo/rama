@@ -90,3 +90,9 @@ as a distant relative.
     - Original: <https://github.com/snapview/tokio-tungstenite/blob/25b544e43fe979bca951f085ee1b66e9c1cc3113/LICENSE>
     - Type: MIT
     - Copy: [./licenses/tokio-tungstenite](./licenses/tokio-tungstenite)
+- <https://github.com/Michael-F-Bryan/include_dir/tree/d742c6fffce99ee89da91b934e7ce6fb2a82680c>
+  - it was more or less unmaintained and missing features due to being behind in rust versions
+  - License:
+    - Original: <https://github.com/Michael-F-Bryan/include_dir/blob/d742c6fffce99ee89da91b934e7ce6fb2a82680c/LICENSE>
+    - Type: MIT
+    - Copy: [./licenses/include_dir](./licenses/include_dir)
