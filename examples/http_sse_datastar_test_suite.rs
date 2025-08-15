@@ -1,7 +1,7 @@
 //! Rama's implementation of the Datastar SDK Test suite,
 //! used to verify if the rama datastar module is datastar-spec compliant.
 //!
-//! Learn more at <https://github.com/starfederation/datastar/tree/release-candidate/sdk/test>.
+//! Learn more at <https://github.com/starfederation/datastar/tree/main/sdk/test>.
 //!
 //! ```sh
 //! cargo run --example http_sse_datastar_test_suite --features=http-full
