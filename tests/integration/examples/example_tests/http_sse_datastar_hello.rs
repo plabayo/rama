@@ -43,7 +43,7 @@ async fn test_http_sse_datastar_hello() {
             .unwrap_or_default()
     );
     let index_content = index_response.try_into_string().await.unwrap();
-    assert!(index_content.contains(r##"<h1>🦙💬 "hello 🚀 data-*"</h1>"##));
+    assert!(index_content.contains(r##"<h1>🦙💬 "hello 🚀 datastar"</h1>"##));
 
     let script_rsponse = runner
         .get("http://127.0.0.1:62031/assets/datastar.js")
