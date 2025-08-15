@@ -2,7 +2,7 @@ rama_utils::macros::enums::enum_builder! {
     #[derive(Default)]
     /// The mode in which elements are patched into the DOM.
     ///
-    /// Spec: <https://github.com/starfederation/datastar/blob/release-candidate/sdk/README.md#elementpatchmode>
+    /// Spec: <https://github.com/starfederation/datastar/blob/main/sdk/ADR.md#elementpatchmode>
     @String
     pub enum ElementPatchMode {
         #[default]
@@ -52,7 +52,7 @@ rama_utils::macros::enums::enum_builder! {
     /// The type protocol on top of SSE which allows for core
     /// pushed based communication between the server and the client.
     ///
-    /// Spec: <https://github.com/starfederation/datastar/blob/release-candidate/sdk/README.md#eventtype>
+    /// Spec: <https://github.com/starfederation/datastar/blob/main/sdk/ADR.md#eventtype>
     @String
     pub enum EventType {
         /// Patches HTML elements into the DOM

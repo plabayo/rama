@@ -63,6 +63,34 @@ async fn test_http_sse_datastar_hello() {
 
     let start_ts = Instant::now();
 
+    // test the hotreload dev-only feature
+
+    let mut hotreload_stream = runner
+        .get("http://127.0.0.1:62031/hotreload")
+        .send(Context::default())
+        .await
+        .unwrap()
+        .into_body()
+        .into_event_stream();
+
+    let hotreload_event: DatastarEvent = hotreload_stream
+        .next()
+        .await
+        .expect("one event")
+        .expect("valid datastar event");
+
+    let hotreload_execute_script = hotreload_event
+        .into_data()
+        .unwrap()
+        .into_patch_elements()
+        .unwrap();
+    assert!(
+        hotreload_execute_script
+            .elements
+            .unwrap()
+            .contains("window.location.reload()")
+    );
+
     // test the actual stream content
 
     let mut expected_events: Vec<TestEvent> = vec![
