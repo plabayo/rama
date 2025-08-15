@@ -91,16 +91,6 @@ impl<T> EventData<T> {
         }
     }
 
-    /// Consume `self` as [`ExecuteScript`].
-    ///
-    /// returning itself as an error if it is of a different type.
-    pub fn into_execute_script(self) -> Result<ExecuteScript, Self> {
-        match self {
-            Self::PatchElements(_) | Self::PatchSignals(_) => Err(self),
-            Self::ExecuteScript(data) => Ok(data),
-        }
-    }
-
     /// Return the [`EventType`] for the current data
     pub fn event_type(&self) -> EventType {
         match self {
