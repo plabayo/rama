@@ -1,5 +1,8 @@
-fmt:
-	cargo fmt --all
+fmt *ARGS:
+	cargo fmt --all {{ARGS}}
+
+fmt-crate CRATE *ARGS:
+	cargo fmt --all -p {{CRATE}} {{ARGS}}
 
 sort:
 	@cargo install cargo-sort
@@ -10,14 +13,23 @@ lint: fmt sort
 check:
 	RUSTFLAGS='-D warnings' cargo check --workspace --all-targets --all-features
 
+check-crate CRATE:
+	RUSTFLAGS='-D warnings' cargo check -p {{CRATE}} --all-targets --all-features
+
 check-links:
     lychee .
 
 clippy:
 	RUSTFLAGS='-D warnings' cargo clippy --workspace --all-targets --all-features
 
+clippy-crate CRATE:
+	RUSTFLAGS='-D warnings' cargo clippy -p {{CRATE}} --all-targets --all-features
+
 clippy-fix *ARGS:
 	cargo clippy --workspace --all-targets --all-features --fix {{ARGS}}
+
+clippy-fix-crate CRATE *ARGS:
+	cargo clippy -p {{CRATE}} --all-targets --all-features --fix {{ARGS}}
 
 typos:
 	typos -w
@@ -28,6 +40,9 @@ extra-checks:
 doc:
 	RUSTDOCFLAGS="-D rustdoc::broken-intra-doc-links" cargo doc --all-features --no-deps
 
+doc-crate CRATE:
+	RUSTDOCFLAGS="-D rustdoc::broken-intra-doc-links" cargo doc --all-features --no-deps -p {{CRATE}}
+
 doc-open:
 	RUSTDOCFLAGS="-D rustdoc::broken-intra-doc-links" cargo doc --all-features --no-deps --open
 
@@ -37,6 +52,9 @@ hack:
 
 test:
 	cargo test --all-features --workspace
+
+test-crate CRATE:
+	cargo test --all-features -p {{CRATE}}
 
 test-spec-h2 *ARGS:
     bash rama-http-core/ci/h2spec.sh {{ARGS}}
@@ -49,6 +67,12 @@ test-ignored:
 qq: lint check clippy doc extra-checks
 
 qa: qq test
+
+qa-crate CRATE:
+    just check-crate {{CRATE}}
+    just clippy-crate {{CRATE}}
+    just doc-crate {{CRATE}}
+    just test-crate {{CRATE}}
 
 qa-full: qa hack test-ignored fuzz-60s check-links
 

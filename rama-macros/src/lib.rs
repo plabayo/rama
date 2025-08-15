@@ -147,6 +147,7 @@
 
 use proc_macro::TokenStream;
 
+mod include_dir_macro;
 mod paste_macro;
 
 #[proc_macro]
@@ -167,4 +168,10 @@ pub fn paste(input: TokenStream) -> TokenStream {
         }
         Err(err) => err.to_compile_error(),
     }
+}
+
+/// Embed the contents of a directory in your crate.
+#[proc_macro]
+pub fn include_dir(input: TokenStream) -> TokenStream {
+    include_dir_macro::execute(input)
 }

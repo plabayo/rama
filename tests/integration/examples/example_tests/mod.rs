@@ -44,6 +44,8 @@ mod http_service_fs;
 #[cfg(feature = "http-full")]
 mod http_service_hello;
 #[cfg(feature = "http-full")]
+mod http_service_include_dir;
+#[cfg(feature = "http-full")]
 mod http_service_match;
 #[cfg(feature = "http-full")]
 mod http_sse;

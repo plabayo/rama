@@ -17,9 +17,9 @@
 #![cfg_attr(test, allow(clippy::float_cmp))]
 #![cfg_attr(not(test), warn(clippy::print_stdout, clippy::dbg_macro))]
 
-#[cfg(unix)]
+#[cfg(target_family = "unix")]
 mod unix;
 
-#[cfg(unix)]
+#[cfg(target_family = "unix")]
 #[doc(inline)]
 pub use unix::*;

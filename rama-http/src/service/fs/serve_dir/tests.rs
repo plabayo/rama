@@ -304,7 +304,7 @@ async fn not_found() {
     assert!(body.is_empty());
 }
 
-#[cfg(unix)]
+#[cfg(target_family = "unix")]
 #[tokio::test]
 async fn not_found_when_not_a_directory() {
     let svc = ServeDir::new("../test-files");

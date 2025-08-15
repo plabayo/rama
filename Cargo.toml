@@ -143,6 +143,7 @@ opentelemetry_sdk = { version = "0.30", default-features = false, features = [
 parking_lot = "0.12"
 percent-encoding = "2.3"
 pin-project-lite = "0.2"
+proc-macro-crate = "3.3"
 proc-macro2 = "1.0"
 psl = "2"
 quickcheck = "1.0"
@@ -533,6 +534,10 @@ required-features = ["http-full"]
 
 [[example]]
 name = "http_service_fs"
+required-features = ["http-full"]
+
+[[example]]
+name = "http_service_include_dir"
 required-features = ["http-full"]
 
 [[example]]

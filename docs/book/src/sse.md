@@ -121,3 +121,13 @@ With Rama you can:
 Since Rama’s stream model is async and composable, you can easily wrap event producers or consumers with middlewares that:
 - Filter or enrich events
 - Buffer or debounce messages
+
+## Compression
+
+As with other HTTP-based streaming protocols do not apply compression (`Accept-Encoding`)
+on your body when using a streaming payload such as `SSE`. It breaks the streaming flow
+by introducing hicups while waiting for the next "flush".
+
+If you do need compression you are best to do it on a per-message base (e.g. compress
+the data property within an SSE event), which is also an extension that is possible
+in WebSockets.

@@ -971,7 +971,7 @@ impl From<UdpSocket> for TokioUdpSocket {
     }
 }
 
-#[cfg(unix)]
+#[cfg(target_family = "unix")]
 mod sys {
     use super::UdpSocket;
     use std::os::unix::prelude::*;
@@ -991,7 +991,7 @@ mod sys {
     }
 }
 
-#[cfg(windows)]
+#[cfg(target_os = "windows")]
 mod sys {
     use super::UdpSocket;
     use std::os::windows::prelude::*;
