@@ -383,7 +383,7 @@ pub fn validate_http_server_response<Body>(
                                 }
                             },
                             server_no_context_takeover: server_cfg.server_no_context_takeover,
-                            client_no_context_takeover: server_cfg.client_no_context_takeover,
+                            client_no_context_takeover: client_cfg.client_no_context_takeover,
                             identifier: server_cfg.identifier.clone(),
                         })));
                     }

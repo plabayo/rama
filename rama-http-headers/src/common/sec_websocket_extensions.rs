@@ -265,13 +265,29 @@ impl FromStr for Extension {
             };
             for part in parts {
                 if part.eq_ignore_ascii_case("server_no_context_takeover") {
-                    config.server_no_context_takeover = true;
+                    if std::mem::replace(&mut config.server_no_context_takeover, true) {
+                        return Err(OpaqueError::from_display(
+                            "duplicate extension param: server_no_context_takeover",
+                        ));
+                    }
                 } else if part.eq_ignore_ascii_case("client_no_context_takeover") {
-                    config.client_no_context_takeover = true;
+                    if std::mem::replace(&mut config.client_no_context_takeover, true) {
+                        return Err(OpaqueError::from_display(
+                            "duplicate extension param: client_no_context_takeover",
+                        ));
+                    }
                 } else if part.eq_ignore_ascii_case("server_max_window_bits") {
-                    config.server_max_window_bits = Some(0);
+                    if config.server_max_window_bits.replace(0).is_some() {
+                        return Err(OpaqueError::from_display(
+                            "duplicate extension param: server_max_window_bits",
+                        ));
+                    }
                 } else if part.eq_ignore_ascii_case("client_max_window_bits") {
-                    config.client_max_window_bits = Some(0);
+                    if config.client_max_window_bits.replace(0).is_some() {
+                        return Err(OpaqueError::from_display(
+                            "duplicate extension param: client_max_window_bits",
+                        ));
+                    }
                 } else if let Some((k, v)) = part.split_once('=') {
                     let k = k.trim();
 
@@ -294,7 +310,11 @@ impl FromStr for Extension {
                                         "invalid server max windows bits (OOB)",
                                     ));
                                 }
-                                config.server_max_window_bits = Some(v)
+                                if config.server_max_window_bits.replace(v).is_some() {
+                                    return Err(OpaqueError::from_display(
+                                        "duplicate extension param: server_max_window_bits",
+                                    ));
+                                }
                             }
                             Err(err) => {
                                 tracing::debug!(
@@ -314,7 +334,11 @@ impl FromStr for Extension {
                                         "invalid client max windows bits (OOB)",
                                     ));
                                 }
-                                config.client_max_window_bits = Some(v)
+                                if config.client_max_window_bits.replace(v).is_some() {
+                                    return Err(OpaqueError::from_display(
+                                        "duplicate extension param: client_max_window_bits",
+                                    ));
+                                }
                             }
                             Err(err) => {
                                 tracing::debug!(
@@ -586,7 +610,42 @@ mod tests {
                     },
                 )),
             ),
-            // Weird edge cases, none the less handled gracefully
+            // invalid duplicate extension parameters
+            (
+                "invalid duplicate client_max_window_bits",
+                vec!["permessage-deflate; client_max_window_bits=15; client_max_window_bits=14"],
+                None,
+            ),
+            (
+                "invalid duplicate server_max_window_bits",
+                vec!["permessage-deflate; server_max_window_bits=15; server_max_window_bits=14"],
+                None,
+            ),
+            (
+                "invalid duplicate client_max_window_bits w/o value",
+                vec!["permessage-deflate; client_max_window_bits=15; client_max_window_bits"],
+                None,
+            ),
+            (
+                "invalid duplicate server_max_window_bits w/o value",
+                vec!["permessage-deflate; server_max_window_bits=15; server_max_window_bits"],
+                None,
+            ),
+            (
+                "invalid duplicate server_no_context_takeover",
+                vec![
+                    "permessage-deflate; server_no_context_takeover; client_no_context_takeover; server_no_context_takeover",
+                ],
+                None,
+            ),
+            (
+                "invalid duplicate client_no_context_takeover",
+                vec![
+                    "permessage-deflate; client_no_context_takeover; server_no_context_takeover; client_no_context_takeover",
+                ],
+                None,
+            ),
+            // weird edge cases: handled gracefully
             (
                 "empty header",
                 vec![""],
@@ -604,6 +663,27 @@ mod tests {
                     "super-zip".into(),
                 ))),
             ),
+            // edge cases invalid
+            (
+                "windows bits OOB: client: underflow",
+                vec!["permessage-deflate; client_max_window_bits=7"],
+                None,
+            ),
+            (
+                "windows bits OOB: client: overflow",
+                vec!["permessage-deflate; client_max_window_bits=16"],
+                None,
+            ),
+            (
+                "windows bits OOB: server: underflow",
+                vec!["permessage-deflate; server_max_window_bits=7"],
+                None,
+            ),
+            (
+                "windows bits OOB: server: overflow",
+                vec!["permessage-deflate; server_max_window_bits=16"],
+                None,
+            ),
             (
                 "invalid parameter format",
                 vec!["permessage-deflate; client_max_window_bits_15"],
@@ -619,6 +699,7 @@ mod tests {
                 vec!["permessage-deflate; client_max_window_bits="],
                 None,
             ),
+            // handled, but only due to a side effect, not something sensible
             (
                 "malformed header with comma",
                 vec!["permessage-deflate, client_max_window_bits"],

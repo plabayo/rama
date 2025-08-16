@@ -450,10 +450,9 @@ where
                                         identifier: allowed_pmd.identifier.clone(),
                                         client_no_context_takeover: request_pmd
                                             .client_no_context_takeover
-                                            || allowed_pmd.client_no_context_takeover,
-                                        server_no_context_takeover: request_pmd
-                                            .server_no_context_takeover
-                                            || allowed_pmd.server_no_context_takeover,
+                                            && allowed_pmd.client_no_context_takeover,
+                                        server_no_context_takeover: allowed_pmd
+                                            .server_no_context_takeover,
                                         ..Default::default()
                                     };
 
