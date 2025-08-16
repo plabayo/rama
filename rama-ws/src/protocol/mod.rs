@@ -2,7 +2,7 @@
 
 use rama_core::{
     error::OpaqueError,
-    telemetry::tracing::{debug, trace},
+    telemetry::tracing::{debug, trace, warn},
 };
 use std::{
     fmt,
@@ -15,6 +15,8 @@ pub mod frame;
 mod error;
 mod message;
 
+mod per_message_deflate;
+
 pub use error::ProtocolError;
 
 #[cfg(test)]
@@ -26,6 +28,7 @@ use crate::protocol::{
         coding::{CloseCode, OpCode, OpCodeControl, OpCodeData},
     },
     message::{IncompleteMessage, IncompleteMessageType},
+    per_message_deflate::PerMessageDeflateState,
 };
 
 pub use self::{frame::CloseFrame, message::Message};
@@ -484,6 +487,9 @@ pub struct WebSocketContext {
     frame: FrameCodec,
     /// The state of processing, either "active" or "closing".
     state: WebSocketState,
+    /// The state used in function per-message compression,
+    /// only set in case the extension is enabled.
+    per_message_deflate_state: Option<PerMessageDeflateState>,
     /// Receive: an incomplete message being processed.
     incomplete: Option<IncompleteMessage>,
     /// Send in addition to regular messages E.g. "pong" or "close".
@@ -528,6 +534,9 @@ impl WebSocketContext {
             role,
             frame,
             state: WebSocketState::Active,
+            per_message_deflate_state: config
+                .per_message_deflate
+                .map(|cfg| PerMessageDeflateState::new(role, cfg)),
             incomplete: None,
             additional_send: None,
             unflushed_additional: false,
@@ -634,8 +643,30 @@ impl WebSocketContext {
         }
 
         let frame = match message {
-            Message::Text(data) => Frame::message(data, OpCode::Data(OpCodeData::Text), true),
-            Message::Binary(data) => Frame::message(data, OpCode::Data(OpCodeData::Binary), true),
+            Message::Text(data) => match self.per_message_deflate_state.as_mut() {
+                Some(deflate_state) => {
+                    let data = match deflate_state.encoder.encode(data.as_bytes()) {
+                        Ok(data) => data,
+                        Err(err) => return Err(ProtocolError::DeflateError(err)),
+                    };
+                    let mut msg = Frame::message(data, OpCode::Data(OpCodeData::Text), true);
+                    msg.header_mut().rsv1 = true;
+                    msg
+                }
+                None => Frame::message(data, OpCode::Data(OpCodeData::Text), true),
+            },
+            Message::Binary(data) => match self.per_message_deflate_state.as_mut() {
+                Some(deflate_state) => {
+                    let data = match deflate_state.encoder.encode(data.as_ref()) {
+                        Ok(data) => data,
+                        Err(err) => return Err(ProtocolError::DeflateError(err)),
+                    };
+                    let mut msg = Frame::message(data, OpCode::Data(OpCodeData::Binary), true);
+                    msg.header_mut().rsv1 = true;
+                    msg
+                }
+                None => Frame::message(data, OpCode::Data(OpCodeData::Binary), true),
+            },
             Message::Ping(data) => Frame::ping(data),
             Message::Pong(data) => {
                 self.set_additional(Frame::pong(data));
@@ -760,6 +791,11 @@ impl WebSocketContext {
             if !self.state.can_read() {
                 return Err(ProtocolError::ReceivedAfterClosing);
             }
+
+            // to ensure that this is valid in later branches,
+            // as this is not always true despite an extension active that supports it
+            let mut rsv1_set = false;
+
             // MUST be 0 unless an extension is negotiated that defines meanings
             // for non-zero values.  If a nonzero value is received and none of
             // the negotiated extensions defines the meaning of such a nonzero
@@ -767,7 +803,12 @@ impl WebSocketContext {
             // Connection_.
             {
                 let hdr = frame.header();
-                if hdr.rsv1 || hdr.rsv2 || hdr.rsv3 {
+                if hdr.rsv1 {
+                    rsv1_set = true;
+                    if self.per_message_deflate_state.is_none() {
+                        return Err(ProtocolError::NonZeroReservedBits);
+                    }
+                } else if hdr.rsv2 || hdr.rsv3 {
                     return Err(ProtocolError::NonZeroReservedBits);
                 }
             }
@@ -779,6 +820,10 @@ impl WebSocketContext {
 
             match frame.header().opcode {
                 OpCode::Control(ctl) => {
+                    if rsv1_set {
+                        return Err(ProtocolError::NonZeroReservedBits);
+                    }
+
                     match ctl {
                         // All control frames MUST have a payload length of 125 bytes or less
                         // and MUST NOT be fragmented. (RFC 6455)
@@ -806,29 +851,104 @@ impl WebSocketContext {
                     let fin = frame.header().is_final;
                     match data {
                         OpCodeData::Continue => {
+                            if rsv1_set {
+                                return Err(ProtocolError::NonZeroReservedBits);
+                            }
+
                             if let Some(ref mut msg) = self.incomplete {
                                 msg.extend(frame.into_payload(), self.config.max_message_size)?;
                             } else {
                                 return Err(ProtocolError::UnexpectedContinueFrame);
                             }
+
                             if fin {
-                                Ok(Some(self.incomplete.take().unwrap().complete()?))
+                                let incomplete_msg = self.incomplete.take().unwrap();
+                                if let Some(deflate_state) = self.per_message_deflate_state.as_mut()
+                                    && deflate_state.decompress_next_incomplete_msg
+                                {
+                                    deflate_state.decompress_next_incomplete_msg = false;
+                                    let msg_is_text = std::mem::replace(
+                                        &mut deflate_state.decompress_next_incomplete_msg_as_txt,
+                                        false,
+                                    );
+                                    if let Ok(Message::Binary(compressed_data)) =
+                                        incomplete_msg.complete()
+                                    {
+                                        match deflate_state.decoder.decode(compressed_data.as_ref())
+                                        {
+                                            Ok(raw_data) => {
+                                                if msg_is_text {
+                                                    Ok(Some(Message::Text(Utf8Bytes::try_from(
+                                                        raw_data,
+                                                    )?)))
+                                                } else {
+                                                    Ok(Some(Message::Binary(raw_data.into())))
+                                                }
+                                            }
+                                            Err(err) => Err(ProtocolError::DeflateError(err)),
+                                        }
+                                    } else {
+                                        warn!(
+                                            "unexpected msg completion: expected binary due to compression"
+                                        );
+                                        Err(ProtocolError::UnexpectedContinueFrame)
+                                    }
+                                } else {
+                                    Ok(Some(incomplete_msg.complete()?))
+                                }
                             } else {
                                 Ok(None)
                             }
                         }
+
                         c if self.incomplete.is_some() => Err(ProtocolError::ExpectedFragment(c)),
                         OpCodeData::Text if fin => {
                             check_max_size(frame.payload().len(), self.config.max_message_size)?;
-                            Ok(Some(Message::Text(frame.into_text()?)))
+                            if rsv1_set
+                                && let Some(deflate_state) = self.per_message_deflate_state.as_mut()
+                            {
+                                let compressed_data = frame.into_payload();
+                                let raw_data = deflate_state
+                                    .decoder
+                                    .decode(&compressed_data)
+                                    .map_err(ProtocolError::DeflateError)?;
+                                Ok(Some(Message::Text(Utf8Bytes::try_from(raw_data)?)))
+                            } else {
+                                Ok(Some(Message::Text(frame.into_text()?)))
+                            }
                         }
                         OpCodeData::Binary if fin => {
                             check_max_size(frame.payload().len(), self.config.max_message_size)?;
-                            Ok(Some(Message::Binary(frame.into_payload())))
+                            if rsv1_set
+                                && let Some(deflate_state) = self.per_message_deflate_state.as_mut()
+                            {
+                                let compressed_data = frame.into_payload();
+                                let raw_data = deflate_state
+                                    .decoder
+                                    .decode(&compressed_data)
+                                    .map_err(ProtocolError::DeflateError)?;
+                                Ok(Some(Message::Binary(raw_data.into())))
+                            } else {
+                                Ok(Some(Message::Binary(frame.into_payload())))
+                            }
                         }
                         OpCodeData::Text | OpCodeData::Binary => {
+                            if let Some(deflate_state) = self.per_message_deflate_state.as_mut() {
+                                // so it is known for fin CONTINUE frame
+                                deflate_state.decompress_next_incomplete_msg = rsv1_set;
+                                deflate_state.decompress_next_incomplete_msg_as_txt =
+                                    data == OpCodeData::Text;
+                            }
+
                             let message_type = match data {
-                                OpCodeData::Text => IncompleteMessageType::Text,
+                                OpCodeData::Text => {
+                                    if rsv1_set && self.per_message_deflate_state.is_some() {
+                                        // text, but as it's compressed this will be binary data anyway..
+                                        IncompleteMessageType::Binary
+                                    } else {
+                                        IncompleteMessageType::Text
+                                    }
+                                }
                                 OpCodeData::Binary => IncompleteMessageType::Binary,
                                 _ => unreachable!("Bug: message is not text nor binary"),
                             };

@@ -53,6 +53,8 @@ pub enum ProtocolError {
     ExpectedFragment(OpCodeData),
     /// Type of data frame not recognised.
     UnknownDataFrameType(u8),
+    /// Error while applying the deflate extension
+    DeflateError(OpaqueError),
 }
 
 impl ProtocolError {
@@ -135,6 +137,7 @@ impl fmt::Display for ProtocolError {
             Self::UnknownDataFrameType(t) => {
                 write!(f, "Unknown data frame type: {t}")
             }
+            Self::DeflateError(err) => write!(f, "Deflate error: {err:?}"),
         }
     }
 }
@@ -160,6 +163,7 @@ impl error::Error for ProtocolError {
             | Self::UnexpectedContinueFrame
             | Self::ExpectedFragment(_)
             | Self::UnknownDataFrameType(_) => None,
+            Self::DeflateError(err) => Some(err as &(dyn std::error::Error + 'static)),
         }
     }
 }

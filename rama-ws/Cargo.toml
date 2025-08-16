@@ -18,6 +18,7 @@ all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
+flate2 = { workspace = true, features = ["zlib"] }
 rama-core = { workspace = true }
 rama-http = { workspace = true }
 rama-net = { workspace = true }
