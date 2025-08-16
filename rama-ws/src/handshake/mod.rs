@@ -2,7 +2,3 @@
 
 pub mod client;
 pub mod server;
-
-mod subprotocol;
-#[doc(inline)]
-pub use subprotocol::{AcceptedSubProtocol, SubProtocols};

@@ -128,6 +128,7 @@ function connectWebSocket() {
   return new Promise((completed, reject) => {
     const socket = new WebSocket(
       `ws${location.protocol === "https:" ? "s" : ""}://${location.host}/api/ws`,
+      ["a", "b"],
     );
 
     socket.onmessage = function (event) {

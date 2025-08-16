@@ -40,6 +40,9 @@ pub struct FrameHeader {
     /// Indicates that the frame is the last one of a possibly fragmented message.
     pub is_final: bool,
     /// Reserved for protocol extensions.
+    ///
+    /// E.g. for per-message-deflate compression (RFC 7692)
+    /// it is used to indicate whether or not the message is "compressed".
     pub rsv1: bool,
     /// Reserved for protocol extensions.
     pub rsv2: bool,

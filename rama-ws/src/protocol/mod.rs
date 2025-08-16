@@ -46,8 +46,8 @@ pub enum Role {
 /// # use rama_ws::protocol::WebSocketConfig;
 ///
 /// let conf = WebSocketConfig::default()
-///     .read_buffer_size(256 * 1024)
-///     .write_buffer_size(256 * 1024);
+///     .with_read_buffer_size(256 * 1024)
+///     .with_write_buffer_size(256 * 1024);
 /// ```
 #[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
@@ -103,6 +103,103 @@ pub struct WebSocketConfig {
     /// some popular libraries that are sending unmasked frames, ignoring the RFC.
     /// By default this option is set to `false`, i.e. according to RFC 6455.
     pub accept_unmasked_frames: bool,
+
+    /// Per-message-deflate configuration, specify it
+    /// to enable per-message (de)compression using the Deflate algorithm
+    /// as specified by [`RFC7692`].
+    ///
+    /// [`RFC7692`]: https://datatracker.ietf.org/doc/html/rfc7692
+    pub per_message_deflate: Option<PerMessageDeflateConfig>,
+}
+
+/// Per-message-deflate configuration as specified in [`RFC7692`]
+///
+/// [`RFC7692`]: https://datatracker.ietf.org/doc/html/rfc7692
+#[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
+pub struct PerMessageDeflateConfig {
+    /// Prevents Server Context Takeover
+    ///
+    /// This extension parameter enables a client to request that
+    /// the server forgo context takeover, thereby eliminating
+    /// the client's need to retain memory for the LZ77 sliding window between messages.
+    ///
+    /// A client's omission of this parameter indicates its capability to decompress messages
+    /// even if the server utilizes context takeover.
+    ///
+    /// Servers should support this parameter and confirm acceptance by
+    /// including it in their response;
+    /// they may even include it if not explicitly requested by the client.
+    pub server_no_context_takeover: bool,
+
+    /// Manages Client Context Takeover
+    ///
+    /// This extension parameter allows a client to indicate to
+    /// the server its intent not to use context takeover,
+    /// even if the server doesn't explicitly respond with the same parameter.
+    ///
+    /// When a server receives this, it can either ignore it or include
+    /// `client_no_context_takeover` in its response,
+    /// which prevents the client from using context
+    /// takeover and helps the server conserve memory.
+    /// If the server's response omits this parameter,
+    /// it signals its ability to decompress messages where
+    /// the client does use context takeover.
+    ///
+    /// Clients are required to support this parameter in a server's response.
+    pub client_no_context_takeover: bool,
+
+    /// Limits Server Window Size
+    ///
+    /// This extension parameter allows a client to propose
+    /// a maximum LZ77 sliding window size for the server
+    /// to use when compressing messages, specified as a base-2 logarithm (8-15).
+    ///
+    /// This helps the client reduce its memory requirements.
+    /// If a client omits this parameter,
+    /// it signals its capacity to handle messages compressed with a window up to 32,768 bytes.
+    ///
+    /// A server accepts by echoing the parameter with an equal or smaller value;
+    /// otherwise, it declines. Notably, a server may suggest a window size
+    /// even if the client didn't initially propose one.
+    pub server_max_window_bits: Option<u8>,
+
+    /// Adjusts Client Window Size
+    ///
+    /// This extension parameter allows a client to propose,
+    /// optionally with a value between 8 and 15 (base-2 logarithm),
+    /// the maximum LZ77 sliding window size it will use for compression.
+    ///
+    /// This signals to the server that the client supports this parameter in responses and,
+    /// if a value is provided, hints that the client won't exceed that window size
+    /// for its own compression, regardless of the server's response.
+    ///
+    /// A server can then include client_max_window_bits in its response
+    /// with an equal or smaller value, thereby limiting the client's window size
+    /// and reducing its own memory overhead for decompression.
+    ///
+    /// If the server's response omits this parameter,
+    /// it signifies its ability to decompress messages compressed with a client window
+    /// up to 32,768 bytes.
+    ///
+    /// Servers must not include this parameter in their response
+    /// if the client's initial offer didn't contain it.
+    pub client_max_window_bits: Option<u8>,
+}
+
+#[allow(clippy::derivable_impls)]
+impl Default for PerMessageDeflateConfig {
+    fn default() -> Self {
+        Self {
+            // By default, allow context takeover in both directions
+            server_no_context_takeover: false,
+            client_no_context_takeover: false,
+
+            // No limit: means default 15-bit window (32768 bytes)
+            server_max_window_bits: None,
+            client_max_window_bits: None,
+        }
+    }
 }
 
 impl Default for WebSocketConfig {
@@ -114,51 +211,73 @@ impl Default for WebSocketConfig {
             max_message_size: Some(64 << 20),
             max_frame_size: Some(16 << 20),
             accept_unmasked_frames: false,
+            per_message_deflate: None,
         }
     }
 }
 
 impl WebSocketConfig {
-    /// Set [`Self::read_buffer_size`].
-    #[must_use]
-    pub fn read_buffer_size(mut self, read_buffer_size: usize) -> Self {
-        self.read_buffer_size = read_buffer_size;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set [`Self::read_buffer_size`].
+        #[must_use]
+        pub fn read_buffer_size(mut self, read_buffer_size: usize) -> Self {
+            self.read_buffer_size = read_buffer_size;
+            self
+        }
     }
 
-    /// Set [`Self::write_buffer_size`].
-    #[must_use]
-    pub fn write_buffer_size(mut self, write_buffer_size: usize) -> Self {
-        self.write_buffer_size = write_buffer_size;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set [`Self::write_buffer_size`].
+        #[must_use]
+        pub fn write_buffer_size(mut self, write_buffer_size: usize) -> Self {
+            self.write_buffer_size = write_buffer_size;
+            self
+        }
     }
 
-    /// Set [`Self::max_write_buffer_size`].
-    #[must_use]
-    pub fn max_write_buffer_size(mut self, max_write_buffer_size: usize) -> Self {
-        self.max_write_buffer_size = max_write_buffer_size;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set [`Self::max_write_buffer_size`].
+        #[must_use]
+        pub fn max_write_buffer_size(mut self, max_write_buffer_size: usize) -> Self {
+            self.max_write_buffer_size = max_write_buffer_size;
+            self
+        }
     }
 
-    /// Set [`Self::max_message_size`].
-    #[must_use]
-    pub fn max_message_size(mut self, max_message_size: Option<usize>) -> Self {
-        self.max_message_size = max_message_size;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set [`Self::max_message_size`].
+        #[must_use]
+        pub fn max_message_size(mut self, max_message_size: Option<usize>) -> Self {
+            self.max_message_size = max_message_size;
+            self
+        }
     }
 
-    /// Set [`Self::max_frame_size`].
-    #[must_use]
-    pub fn max_frame_size(mut self, max_frame_size: Option<usize>) -> Self {
-        self.max_frame_size = max_frame_size;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set [`Self::max_frame_size`].
+        #[must_use]
+        pub fn max_frame_size(mut self, max_frame_size: Option<usize>) -> Self {
+            self.max_frame_size = max_frame_size;
+            self
+        }
     }
 
-    /// Set [`Self::accept_unmasked_frames`].
-    #[must_use]
-    pub fn accept_unmasked_frames(mut self, accept_unmasked_frames: bool) -> Self {
-        self.accept_unmasked_frames = accept_unmasked_frames;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set [`Self::accept_unmasked_frames`].
+        #[must_use]
+        pub fn accept_unmasked_frames(mut self, accept_unmasked_frames: bool) -> Self {
+            self.accept_unmasked_frames = accept_unmasked_frames;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set [`Self::per_message_deflate`].
+        #[must_use]
+        pub fn per_message_deflate(mut self, per_message_deflate: Option<PerMessageDeflateConfig>) -> Self {
+            self.per_message_deflate = per_message_deflate;
+            self
+        }
     }
 
     /// Panic if values are invalid.

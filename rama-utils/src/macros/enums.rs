@@ -364,6 +364,17 @@ macro_rules! __enum_builder {
             }
         }
 
+        impl $enum_name {
+            /// Same as `FromStr` or `From<&str>` but returning
+            /// `None` for unknown values
+            pub fn strict_parse(s: &str) -> Option<Self> {
+                $crate::macros::match_ignore_ascii_case_str!(match(s) {
+                    $($enum_val => Some($enum_name::$enum_var)),*
+                    , _ => None,
+                })
+            }
+        }
+
         impl From<String> for $enum_name {
             fn from(s: String) -> Self {
                 match s.as_str() {

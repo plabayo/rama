@@ -332,7 +332,7 @@ where
             self.ws_support.then(|| {
                 UpgradeLayer::new(
                     WebSocketMatcher::default(),
-                    WebSocketAcceptor::default().with_sub_protocols_flex(true),
+                    WebSocketAcceptor::default().with_protocols_flex(true),
                     ConsumeErrLayer::trace(tracing::Level::DEBUG)
                         .into_layer(WebSocketEchoService::default()),
                 )

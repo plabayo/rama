@@ -13,7 +13,7 @@ use rama::{
         HeaderName, HeaderValue, Request,
         header::COOKIE,
         headers::{
-            Cookie, HeaderMapExt, all_client_hint_header_name_strings,
+            Cookie, HeaderMapExt, SecWebsocketProtocol, all_client_hint_header_name_strings,
             forwarded::{CFConnectingIp, ClientIp, TrueClientIp, XClientIp, XRealIp},
         },
         layer::{
@@ -241,8 +241,8 @@ pub async fn run(cfg: CliCommandFingerprint) -> Result<(), BoxError> {
 
     graceful.spawn_task_fn(async move |guard|  {
         let ws_service = ConsumeErrLayer::default().into_layer(WebSocketAcceptor::new()
-            .with_sub_protocols(["a", "b"])
-            .with_sub_protocols_flex(true)
+            .with_protocols(SecWebsocketProtocol::new("a").with_additional_protocol("b"))
+            .with_protocols_flex(true)
             .into_service(service_fn(endpoints::ws_api)));
 
         let inner_http_service = HijackLayer::new(
