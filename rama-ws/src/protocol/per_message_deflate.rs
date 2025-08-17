@@ -2,7 +2,10 @@
 //! <https://github.com/graphform/ratchet/blob/ef05a54eeec533f8fdf308053f65e5a1f5bd34ff/ratchet_deflate/src/lib.rs>
 //! Original code was Apache licensed by Swim Inc.
 
-use crate::protocol::{PerMessageDeflateConfig, Role};
+use crate::{
+    ProtocolError,
+    protocol::{IncompleteMessageType, PerMessageDeflateConfig, Role},
+};
 use flate2::{
     Compress, CompressError, Compression, Decompress, DecompressError, FlushCompress,
     FlushDecompress, Status,
@@ -12,8 +15,7 @@ use std::slice;
 
 #[derive(Debug)]
 pub(super) struct PerMessageDeflateState {
-    pub(super) decompress_next_incomplete_msg: bool,
-    pub(super) decompress_next_incomplete_msg_as_txt: bool,
+    pub(super) decompress_incomplete_msg: IncompleteCompressedMessage,
     pub(super) encoder: DeflateEncoder,
     pub(super) decoder: DeflateDecoder,
 }
@@ -22,8 +24,7 @@ impl PerMessageDeflateState {
     pub(super) fn new(role: Role, cfg: PerMessageDeflateConfig) -> Self {
         match role {
             Role::Server => Self {
-                decompress_next_incomplete_msg: false,
-                decompress_next_incomplete_msg_as_txt: false,
+                decompress_incomplete_msg: Default::default(),
 
                 // server -> client
                 encoder: DeflateEncoder::new(
@@ -38,8 +39,7 @@ impl PerMessageDeflateState {
                 ),
             },
             Role::Client => Self {
-                decompress_next_incomplete_msg: false,
-                decompress_next_incomplete_msg_as_txt: false,
+                decompress_incomplete_msg: Default::default(),
 
                 // client -> server
                 encoder: DeflateEncoder::new(
@@ -64,6 +64,55 @@ const DEFLATE_TRAILER: [u8; 4] = [0, 0, 255, 255];
 pub(super) struct DeflateEncoder {
     compress: Compress,
     compress_reset: bool,
+}
+
+#[derive(Debug, Default)]
+pub(super) struct IncompleteCompressedMessage {
+    pub(super) buffer: Vec<u8>,
+    pub(super) msg_type: Option<IncompleteMessageType>,
+}
+
+impl IncompleteCompressedMessage {
+    pub(super) fn reset(&mut self, r#type: IncompleteMessageType) {
+        self.buffer.clear();
+        self.msg_type = Some(r#type);
+    }
+
+    pub(super) fn fin_buffer(
+        &mut self,
+        tail: impl AsRef<[u8]>,
+        size_limit: Option<usize>,
+    ) -> Result<(&[u8], IncompleteMessageType), ProtocolError> {
+        match self.msg_type.take() {
+            Some(t) => {
+                self.extend(tail, size_limit)?;
+                Ok((&self.buffer, t))
+            }
+            None => Err(ProtocolError::UnexpectedContinueFrame),
+        }
+    }
+
+    /// Add more data to an existing message.
+    pub(super) fn extend<T: AsRef<[u8]>>(
+        &mut self,
+        tail: T,
+        size_limit: Option<usize>,
+    ) -> Result<(), ProtocolError> {
+        // Always have a max size. This ensures an error in case of concatenating two buffers
+        // of more than `usize::max_value()` bytes in total.
+        let max_size = size_limit.unwrap_or_else(usize::max_value);
+        let my_size = self.buffer.len();
+        let portion_size = tail.as_ref().len();
+        // Be careful about integer overflows here.
+        if my_size > max_size || portion_size > max_size - my_size {
+            return Err(ProtocolError::MessageTooLong {
+                size: my_size + portion_size,
+                max_size,
+            });
+        }
+        self.buffer.extend(tail.as_ref());
+        Ok(())
+    }
 }
 
 impl DeflateEncoder {
