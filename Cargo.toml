@@ -220,6 +220,7 @@ tower-service = "0.3"
 tracing = "0.1"
 tracing-opentelemetry = "0.31"
 tracing-subscriber = "0.3"
+tracing-test = "0.2"
 tracing-tree = "0.4"
 trybuild = "1.0"
 tui-logger = { version = "0.17", features = ["tracing-support"] }
