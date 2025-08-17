@@ -694,6 +694,10 @@ name = "ws_echo_server"
 required-features = ["http-full"]
 
 [[example]]
+name = "ws_echo_server_with_compression"
+required-features = ["http-full", "compression"]
+
+[[example]]
 name = "ws_chat_server"
 required-features = ["http-full"]
 

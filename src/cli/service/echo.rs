@@ -49,7 +49,10 @@ use crate::{
     net::tls::server::ServerConfig,
     tls::boring::server::{TlsAcceptorData, TlsAcceptorLayer},
 };
-use rama_http::service::web::{extract::Json, response::IntoResponse};
+use rama_http::{
+    headers::SecWebsocketExtensions,
+    service::web::{extract::Json, response::IntoResponse},
+};
 use rama_http_backend::server::layer::upgrade::UpgradeLayer;
 use rama_http_core::h2::frame::EarlyFrameCapture;
 use rama_ws::handshake::server::{WebSocketAcceptor, WebSocketEchoService, WebSocketMatcher};
@@ -332,7 +335,10 @@ where
             self.ws_support.then(|| {
                 UpgradeLayer::new(
                     WebSocketMatcher::default(),
-                    WebSocketAcceptor::default().with_protocols_flex(true),
+                    WebSocketAcceptor::default()
+                        .with_protocols_flex(true)
+                        // TODO: only when compression is enabled
+                        .with_extensions(SecWebsocketExtensions::per_message_deflate()),
                     ConsumeErrLayer::trace(tracing::Level::DEBUG)
                         .into_layer(WebSocketEchoService::default()),
                 )

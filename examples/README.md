@@ -40,6 +40,7 @@ This directory contains example implementations demonstrating various features a
 
 ### WebSocket
 - [`ws_echo_server.rs`](./ws_echo_server.rs) - WebSocket server which echos all messages back
+- [`ws_echo_server_with_compression.rs`](./ws_echo_server_with_compression.rs) - WebSocket server which echos all messages back, with per message deflate compression enabled and supported
 - [`ws_chat_server.rs`](./ws_chat_server.rs) - WebSocket chat server
 - [`ws_tls_server.rs`](./ws_tls_server.rs) - Secure WebSocket server example (WSS)
 - [`ws_over_h2.rs`](./ws_over_h2.rs) - Secure WebSocket server example using h2.

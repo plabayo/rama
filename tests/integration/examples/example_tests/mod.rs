@@ -81,6 +81,8 @@ mod udp_codec;
 mod ws_chat_server;
 #[cfg(feature = "http-full")]
 mod ws_echo_server;
+#[cfg(all(feature = "http-full", feature = "compression"))]
+mod ws_echo_server_with_compression;
 #[cfg(all(feature = "http-full", feature = "boring"))]
 mod ws_over_h2;
 #[cfg(all(feature = "http-full", feature = "boring"))]
