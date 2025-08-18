@@ -44,17 +44,6 @@ pub mod dep {
 
     pub use rama_core as core;
 
-    pub mod include_dir {
-        //! Re-export of the [`include_dir`] crate.
-        //!
-        //! A library to include a directory tree at compile time.
-        //!
-        //! [`include_dir`]: https://docs.rs/include_dir
-
-        #[doc(inline)]
-        pub use include_dir::*;
-    }
-
     #[doc(inline)]
     pub use ::rama_http_types::dep::{http, http_body, http_body_util, mime, mime_guess};
 }

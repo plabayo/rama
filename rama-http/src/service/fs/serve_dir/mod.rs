@@ -3,12 +3,12 @@ use crate::headers::encoding::{SupportedEncodings, parse_accept_encoding_headers
 use crate::layer::set_status::SetStatus;
 use crate::service::fs::serve_dir::open_file::open_file_embedded;
 use crate::{Body, HeaderValue, Method, Request, Response, StatusCode, header};
-use include_dir::Dir;
 use percent_encoding::percent_decode;
 use rama_core::bytes::Bytes;
 use rama_core::error::{BoxError, OpaqueError};
 use rama_core::telemetry::tracing;
 use rama_core::{Context, Service};
+use rama_utils::include_dir::Dir;
 use std::fmt;
 use std::str::FromStr;
 use std::{

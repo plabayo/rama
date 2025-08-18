@@ -117,7 +117,7 @@ where
 }
 
 fn build_response(output: FileOpened) -> Response {
-    let size = output.extent.get_size();
+    let size = output.extent.file_size();
 
     let mut builder = Response::builder()
         .header(header::CONTENT_TYPE, output.mime_header_value)
@@ -147,7 +147,7 @@ fn build_response(output: FileOpened) -> Response {
                         .unwrap()
                 } else {
                     let range_size = range.end() - range.start() + 1;
-                    let body = if let Some(reader) = output.extent.reader() {
+                    let body = if let Some(reader) = output.extent.into_reader() {
                         Body::new(
                             AsyncReadBody::with_capacity_limited(
                                 reader,
@@ -195,7 +195,7 @@ fn build_response(output: FileOpened) -> Response {
 
         // Not a range request
         None => {
-            let body = if let Some(reader) = output.extent.reader() {
+            let body = if let Some(reader) = output.extent.into_reader() {
                 Body::new(AsyncReadBody::with_capacity(reader, output.chunk_size).boxed())
             } else {
                 empty_body()

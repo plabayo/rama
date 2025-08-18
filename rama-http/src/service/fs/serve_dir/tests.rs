@@ -11,6 +11,7 @@ use rama_core::bytes::Bytes;
 use rama_core::service::service_fn;
 use rama_core::{Context, Service};
 use rama_http_types::BodyExtractExt;
+use rama_utils::include_dir::{Dir, include_dir};
 use std::convert::Infallible;
 use std::io::Read;
 
@@ -22,7 +23,7 @@ async fn basic() {
 
 #[tokio::test]
 async fn basic_embedded() {
-    let svc = ServeDir::new_embedded(include_dir::include_dir!("rama-http"));
+    let svc = ServeDir::new_embedded(include_dir!("rama-http"));
     test_basic(svc).await;
 }
 
@@ -50,7 +51,7 @@ async fn basic_with_index() {
 
 #[tokio::test]
 async fn basic_with_index_embedded() {
-    const EMBEDDED_FILES: include_dir::Dir = include_dir::include_dir!("test-files");
+    const EMBEDDED_FILES: Dir = include_dir!("test-files");
     let svc = ServeDir::new_embedded(EMBEDDED_FILES);
     test_basic_with_index(svc).await;
 }
@@ -78,7 +79,7 @@ async fn head_request() {
 
 #[tokio::test]
 async fn head_request_embedded() {
-    const EMBEDDED_FILES: include_dir::Dir = include_dir::include_dir!("test-files");
+    const EMBEDDED_FILES: Dir = include_dir!("test-files");
     let svc = ServeDir::new_embedded(EMBEDDED_FILES);
     test_head_request(svc).await;
 }
@@ -128,7 +129,7 @@ async fn with_custom_chunk_size() {
 
 #[tokio::test]
 async fn with_custom_chunk_size_embedded() {
-    const EMBEDDED_FILES: include_dir::Dir = include_dir::include_dir!("rama-http");
+    const EMBEDDED_FILES: Dir = include_dir!("rama-http");
     let svc = ServeDir::new_embedded(EMBEDDED_FILES).with_buf_chunk_size(1024 * 32);
     test_with_custom_chunk_size(svc).await;
 }
@@ -315,7 +316,7 @@ async fn access_to_sub_dirs() {
 
 #[tokio::test]
 async fn access_to_sub_dirs_embedded() {
-    const EMBEDDED_FILES: include_dir::Dir = include_dir::include_dir!("rama-http");
+    const EMBEDDED_FILES: Dir = include_dir!("rama-http");
     let svc = ServeDir::new_embedded(EMBEDDED_FILES);
     test_access_to_sub_dirs(svc).await;
 }
@@ -344,7 +345,7 @@ async fn not_found() {
 
 #[tokio::test]
 async fn not_found_embedded() {
-    const EMBEDDED_FILES: include_dir::Dir = include_dir::include_dir!("test-files");
+    const EMBEDDED_FILES: Dir = include_dir!("test-files");
     let svc = ServeDir::new_embedded(EMBEDDED_FILES);
     test_not_found(svc).await;
 }
@@ -523,7 +524,7 @@ async fn access_cjk_percent_encoded_uri_path() {
 
 #[tokio::test]
 async fn access_cjk_percent_encoded_uri_path_embedded() {
-    const EMBEDDED_FILES: include_dir::Dir = include_dir::include_dir!("test-files");
+    const EMBEDDED_FILES: Dir = include_dir!("test-files");
     let svc = ServeDir::new_embedded(EMBEDDED_FILES);
     test_access_cjk_percent_encoded_uri_path(svc).await;
 }
@@ -550,7 +551,7 @@ async fn access_space_percent_encoded_uri_path() {
 
 #[tokio::test]
 async fn access_space_percent_encoded_uri_path_embedded() {
-    const EMBEDDED_FILES: include_dir::Dir = include_dir::include_dir!("test-files");
+    const EMBEDDED_FILES: Dir = include_dir!("test-files");
     let svc = ServeDir::new_embedded(EMBEDDED_FILES);
     test_access_space_percent_encoded_uri_path(svc).await;
 }
@@ -576,7 +577,7 @@ async fn read_partial_empty() {
 
 #[tokio::test]
 async fn read_partial_empty_embedded() {
-    const EMBEDDED_FILES: include_dir::Dir = include_dir::include_dir!("test-files");
+    const EMBEDDED_FILES: Dir = include_dir!("test-files");
     let svc = ServeDir::new_embedded(EMBEDDED_FILES);
     test_read_partial_empty(svc).await;
 }
@@ -605,7 +606,7 @@ async fn read_partial_in_bounds() {
 
 #[tokio::test]
 async fn read_partial_in_bounds_embedded() {
-    const EMBEDDED_FILES: include_dir::Dir = include_dir::include_dir!("rama-http");
+    const EMBEDDED_FILES: Dir = include_dir!("rama-http");
     let svc = ServeDir::new_embedded(EMBEDDED_FILES);
     test_read_partial_in_bounds(svc).await;
 }
@@ -656,7 +657,7 @@ async fn read_partial_accepts_out_of_bounds_range() {
 
 #[tokio::test]
 async fn read_partial_accepts_out_of_bounds_range_embedded() {
-    const EMBEDDED_FILES: include_dir::Dir = include_dir::include_dir!("rama-http");
+    const EMBEDDED_FILES: Dir = include_dir!("rama-http");
     let svc = ServeDir::new_embedded(EMBEDDED_FILES);
     test_read_partial_accepts_out_of_bounds_range(svc).await;
 }
@@ -696,7 +697,7 @@ async fn read_partial_errs_on_garbage_header() {
 
 #[tokio::test]
 async fn read_partial_errs_on_garbage_header_embedded() {
-    const EMBEDDED_FILES: include_dir::Dir = include_dir::include_dir!("rama-http");
+    const EMBEDDED_FILES: Dir = include_dir!("rama-http");
     let svc = ServeDir::new_embedded(EMBEDDED_FILES);
     test_read_partial_errs_on_garbage_header(svc).await;
 }
@@ -724,7 +725,7 @@ async fn read_partial_errs_on_bad_range() {
 
 #[tokio::test]
 async fn read_partial_errs_on_bad_range_embedded() {
-    const EMBEDDED_FILES: include_dir::Dir = include_dir::include_dir!("rama-http");
+    const EMBEDDED_FILES: Dir = include_dir!("rama-http");
     let svc = ServeDir::new_embedded(EMBEDDED_FILES);
     test_read_partial_errs_on_bad_range(svc).await;
 }
@@ -752,7 +753,7 @@ async fn accept_encoding_identity() {
 
 #[tokio::test]
 async fn accept_encoding_identity_embedded() {
-    const EMBEDDED_FILES: include_dir::Dir = include_dir::include_dir!("rama-http");
+    const EMBEDDED_FILES: Dir = include_dir!("rama-http");
     let svc = ServeDir::new_embedded(EMBEDDED_FILES);
     test_accept_encoding_identity(svc).await;
 }
@@ -777,7 +778,7 @@ async fn last_modified() {
 
 #[tokio::test]
 async fn last_modified_embedded() {
-    const EMBEDDED_FILES: include_dir::Dir = include_dir::include_dir!("rama-http");
+    const EMBEDDED_FILES: Dir = include_dir!("rama-http");
     let svc = ServeDir::new_embedded(EMBEDDED_FILES);
     test_last_modified(svc).await;
 }
@@ -854,7 +855,7 @@ async fn with_fallback_svc() {
 
 #[tokio::test]
 async fn with_fallback_svc_embedded() {
-    const EMBEDDED_FILES: include_dir::Dir = include_dir::include_dir!("test-files");
+    const EMBEDDED_FILES: Dir = include_dir!("test-files");
     let svc = ServeDir::new_embedded(EMBEDDED_FILES);
     test_with_fallback_svc(svc).await;
 }
@@ -908,7 +909,7 @@ async fn method_not_allowed() {
 
 #[tokio::test]
 async fn method_not_allowed_embedded() {
-    const EMBEDDED_FILES: include_dir::Dir = include_dir::include_dir!("rama-http");
+    const EMBEDDED_FILES: Dir = include_dir!("rama-http");
     let svc = ServeDir::new_embedded(EMBEDDED_FILES);
     test_method_not_allowed(svc).await;
 }

@@ -38,7 +38,6 @@ csv = { workspace = true }
 flate2 = { workspace = true, optional = true }
 http-range-header = { workspace = true }
 httpdate = { workspace = true }
-include_dir = { workspace = true }
 iri-string = { workspace = true }
 matchit = { workspace = true }
 mime = { workspace = true }

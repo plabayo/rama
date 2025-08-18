@@ -6,9 +6,9 @@ use crate::headers::{encoding::Encoding, specifier::QualityValue};
 use crate::{HeaderValue, Method, Request, Uri, header};
 use chrono::{DateTime, Local};
 use http_range_header::RangeUnsatisfiableError;
-use include_dir::Dir;
 use rama_core::combinators::Either;
 use rama_core::telemetry::tracing;
+use rama_utils::include_dir::Dir;
 use std::io::Cursor;
 use std::{
     ffi::OsStr,
@@ -70,7 +70,7 @@ pub(super) enum FileRequestExtent {
 }
 
 impl FileRequestExtent {
-    pub(super) fn reader(self) -> Option<impl AsyncRead + Send + Sync + Unpin> {
+    pub(super) fn into_reader(self) -> Option<impl AsyncRead + Send + Sync + Unpin> {
         match self {
             Self::Head(_) | Self::EmbeddedHead(_) => None,
             Self::Full(file, _) => Some(Either::A(file)),
@@ -78,7 +78,7 @@ impl FileRequestExtent {
         }
     }
 
-    pub(super) fn get_size(&self) -> u64 {
+    pub(super) fn file_size(&self) -> u64 {
         match self {
             Self::Head(meta) | Self::Full(_, meta) => meta.len(),
             Self::Embedded(_, original_size) => *original_size,
