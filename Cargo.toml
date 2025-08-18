@@ -306,8 +306,8 @@ tls = [
     "rama-http-backend?/tls",
     "rama-ua?/tls",
 ]
-rustls = ["tls", "dep:rama-tls-rustls", "rama-http-backend?/rustls"]
-boring = ["tls", "dep:rama-tls-boring", "rama-http-backend?/boring"]
+rustls = ["tls", "dep:rama-tls-rustls"]
+boring = ["tls", "dep:rama-tls-boring"]
 cli = [
     "dep:base64",
     "dep:bytes",

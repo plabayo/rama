@@ -28,8 +28,6 @@ rama-http = { workspace = true }
 rama-net = { workspace = true }
 rama-utils = { workspace = true }
 rand = { workspace = true }
-smallvec = { workspace = true }
-smol_str = { workspace = true }
 tokio = { workspace = true, features = ["time", "macros"] }
 
 [dev-dependencies]
