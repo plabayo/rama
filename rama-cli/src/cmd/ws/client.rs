@@ -15,7 +15,10 @@ use rama::{
             required_header::AddRequiredRequestHeadersLayer,
             timeout::TimeoutLayer,
         },
-        ws::handshake::client::{ClientWebSocket, HttpClientWebSocketExt},
+        ws::{
+            handshake::client::{ClientWebSocket, HttpClientWebSocketExt},
+            protocol::{PerMessageDeflateConfig, WebSocketConfig},
+        },
     },
     layer::MapResultLayer,
     net::{
@@ -54,6 +57,9 @@ pub(super) async fn connect(cfg: super::CliCommandWs) -> Result<ClientWebSocket,
     }
 
     builder
+        .with_config(
+            WebSocketConfig::default().with_per_message_deflate(PerMessageDeflateConfig::default()),
+        )
         .handshake(Context::default())
         .await
         .context("establish WS(S) connection")

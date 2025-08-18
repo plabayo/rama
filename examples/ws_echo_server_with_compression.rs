@@ -14,6 +14,7 @@
 use rama::{
     Layer,
     http::{
+        headers::SecWebsocketExtensions,
         server::HttpServer,
         service::web::{Router, response::Html},
         ws::handshake::server::WebSocketAcceptor,
@@ -22,7 +23,6 @@ use rama::{
     tcp::server::TcpListener,
     telemetry::tracing::{Level, info, level_filters::LevelFilter},
 };
-use rama_http::headers::SecWebsocketExtensions;
 
 use std::time::Duration;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};

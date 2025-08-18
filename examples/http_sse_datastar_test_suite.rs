@@ -17,6 +17,7 @@ use rama::{
     futures::async_stream::stream,
     http::{
         layer::trace::TraceLayer,
+        matcher::HttpMatcher,
         server::HttpServer,
         service::web::{
             Router,
@@ -33,7 +34,6 @@ use rama::{
     tcp::server::TcpListener,
     telemetry::tracing::{self, level_filters::LevelFilter},
 };
-use rama_http::matcher::HttpMatcher;
 
 use std::{convert::Infallible, sync::Arc, time::Duration};
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};

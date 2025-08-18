@@ -15,6 +15,7 @@ use rama::{
         headers::{
             Cookie, HeaderMapExt, SecWebsocketProtocol, all_client_hint_header_name_strings,
             forwarded::{CFConnectingIp, ClientIp, TrueClientIp, XClientIp, XRealIp},
+            sec_websocket_extensions,
         },
         layer::{
             catch_panic::CatchPanicLayer, compression::CompressionLayer,
@@ -243,6 +244,7 @@ pub async fn run(cfg: CliCommandFingerprint) -> Result<(), BoxError> {
         let ws_service = ConsumeErrLayer::default().into_layer(WebSocketAcceptor::new()
             .with_protocols(SecWebsocketProtocol::new("a").with_additional_protocol("b"))
             .with_protocols_flex(true)
+            .with_extensions(sec_websocket_extensions::SecWebsocketExtensions::per_message_deflate())
             .into_service(service_fn(endpoints::ws_api)));
 
         let inner_http_service = HijackLayer::new(
