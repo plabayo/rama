@@ -23,6 +23,12 @@
 //! cargo run --example http_sse_datastar_hello --features=http-full
 //! ```
 //!
+//! Or if you want to see the dev-only hotreload in action:
+//!
+//! ```sh
+//! RUST_LOG=debug cargo watch -x 'run --example http_sse_datastar_hello --features=http-full'
+//! ```
+//!
 //! # Expected output
 //!
 //! The server will start and listen on `:62031`. You open the url in your browser to easily interact:
@@ -100,13 +106,16 @@ async fn main() {
     graceful.spawn_task_fn(async move |guard| {
         let exec = Executor::graceful(guard.clone());
 
-        let router = Arc::new(
-            Router::new()
-                .get("/", handlers::index)
-                .post("/start", handlers::start)
-                .get("/hello-world", handlers::hello_world)
-                .get("/assets/datastar.js", DatastarScript::default()),
-        );
+        let app = Router::new()
+            .get("/", handlers::index)
+            .post("/start", handlers::start)
+            .get("/hello-world", handlers::hello_world)
+            .get("/assets/datastar.js", DatastarScript::default());
+
+        #[cfg(debug_assertions)]
+        let app = app.get("/hotreload", handlers::hotreload);
+
+        let router = Arc::new(app);
         let graceful_router = GracefulRouter(router);
 
         let app = (TraceLayer::new_for_http()).into_layer(graceful_router);
@@ -152,6 +161,32 @@ pub mod handlers {
         Html(content)
     }
 
+    #[cfg(debug_assertions)]
+    pub async fn hotreload() -> impl IntoResponse {
+        use rama::http::sse::datastar::ExecuteScript;
+        use std::sync::atomic;
+
+        // NOTE
+        // This only works if you develop with a single tab open only,
+        // in case you are testing with multiple UA's / Tabs at once
+        // you will need to expand this implementation by for example
+        // tracking against a date or version stored in a cookie
+        // or by some other means.
+
+        static ONCE: atomic::AtomicBool = atomic::AtomicBool::new(false);
+
+        Sse::new(KeepAliveStream::new(
+            KeepAlive::new(),
+            stream! {
+                if !ONCE.swap(true, atomic::Ordering::SeqCst) {
+                    let script = ExecuteScript::new("window.location.reload()");
+                    yield Ok::<_, Infallible>(script.into_sse_event());
+                }
+                std::future::pending().await
+            },
+        ))
+    }
+
     pub async fn start(
         ctx: Context<Controller>,
         ReadSignals(Signals { delay }): ReadSignals<Signals>,
@@ -188,8 +223,8 @@ pub mod controller {
     use super::*;
 
     use rama::futures::Stream;
+    use rama::http::sse::datastar::ExecuteScript;
     use rama::http::sse::datastar::{ElementPatchMode, PatchElements};
-    use rama_http::sse::datastar::ExecuteScript;
     use serde::{Deserialize, Serialize};
     use std::pin::Pin;
 
@@ -336,6 +371,16 @@ pub mod controller {
             let anim_index = self.anim_index.load(Ordering::Acquire);
             let progress = (anim_index as f64) / (Self::MESSAGE.len() as f64) * 100f64;
             let text = &Self::MESSAGE[..anim_index];
+
+            #[cfg(not(debug_assertions))]
+            const HOT_RELOAD: &str = "";
+            #[cfg(debug_assertions)]
+            const HOT_RELOAD: &str = r##"
+                <div
+                    id="hotreload"
+                    data-on-load="@get('/hotreload', {retryMaxCount: 1000,retryInterval:20, retryMaxWaitMs:200})"
+                ></div>
+            "##;
 
             tracing::debug!(
                 %delay,
@@ -489,10 +534,11 @@ pub mod controller {
     </style>
 </head>
 <body data-on-load="@get('/hello-world')">
+    {HOT_RELOAD}
     <div id="server-warning" style="display: none"></div>
     <div data-signals-delay="{delay}" class="card">
         <div class="card-header">
-            <h1>🦙💬 "hello 🚀 data-*"</h1>
+            <h1>🦙💬 "hello 🚀 datastar"</h1>
             <div id="sse-status">🔴</div>
         </div>
 

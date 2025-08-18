@@ -1,4 +1,4 @@
-#[cfg(not(windows))]
+#[cfg(not(target_os = "windows"))]
 mod test {
     use rama_core::futures::Stream;
     use rama_core::futures::future;
@@ -142,6 +142,6 @@ mod test {
 }
 
 fn main() {
-    #[cfg(not(windows))]
+    #[cfg(not(target_os = "windows"))]
     test::main()
 }

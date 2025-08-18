@@ -8,6 +8,7 @@ This directory contains example implementations demonstrating various features a
 - [`http_service_hello.rs`](./http_service_hello.rs) - A simple HTTP service that returns "Hello, World!"
 - [`http_listener_hello.rs`](./http_listener_hello.rs) - Basic HTTP listener example
 - [`http_service_fs.rs`](./http_service_fs.rs) - File system service for serving static files
+- [`http_service_include_dir.rs`](./http_service_include_dir.rs) - File system service for serving embedded files
 - [`http_web_service_dir_and_api.rs`](./http_web_service_dir_and_api.rs) - Combined directory and API service
 - [`http_web_router.rs`](./http_web_router.rs) - HTTP router implementation
 - [`http_service_match.rs`](./http_service_match.rs) - Service matching example

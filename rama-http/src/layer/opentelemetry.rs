@@ -2,8 +2,15 @@
 //!
 //! [`Layer`]: rama_core::Layer
 
+use crate::dep::http_body;
 use crate::service::web::response::IntoResponse;
 use crate::{Request, Response};
+use pin_project_lite::pin_project;
+use rama_core::bytes::Bytes;
+use rama_core::telemetry::opentelemetry::metrics::UpDownCounter;
+use rama_core::telemetry::opentelemetry::semantic_conventions::metric::{
+    HTTP_SERVER_ACTIVE_REQUESTS, HTTP_SERVER_REQUEST_BODY_SIZE,
+};
 use rama_core::telemetry::opentelemetry::{
     AttributesFactory, InstrumentationScope, KeyValue, MeterOptions, ServiceInfo, global,
     metrics::{Counter, Histogram, Meter},
@@ -13,8 +20,10 @@ use rama_core::telemetry::opentelemetry::{
     },
 };
 use rama_core::{Context, Layer, Service};
+use rama_error::BoxError;
 use rama_net::http::RequestContext;
 use rama_utils::macros::define_inner_service_accessors;
+use std::sync::atomic::{self, AtomicUsize};
 use std::{borrow::Cow, fmt, sync::Arc, time::SystemTime};
 
 // Follows the experimental semantic conventions for HTTP metrics:
@@ -43,6 +52,8 @@ struct Metrics {
     http_server_total_requests: Counter<u64>,
     http_server_total_responses: Counter<u64>,
     http_server_total_failures: Counter<u64>,
+    http_server_active_requests: UpDownCounter<i64>,
+    http_server_request_body_size: Histogram<u64>,
 }
 
 impl Metrics {
@@ -84,11 +95,30 @@ impl Metrics {
             )
             .build();
 
+        let http_server_active_requests = meter
+            .i64_up_down_counter(match &prefix {
+                Some(prefix) => Cow::Owned(format!("{prefix}.{HTTP_SERVER_ACTIVE_REQUESTS}")),
+                None => Cow::Borrowed(HTTP_SERVER_ACTIVE_REQUESTS),
+            })
+            .with_description("Measures the number of active HTTP server requests.")
+            .build();
+
+        let http_server_request_body_size = meter
+            .u64_histogram(match &prefix {
+                Some(prefix) => Cow::Owned(format!("{prefix}.{HTTP_SERVER_REQUEST_BODY_SIZE}")),
+                None => Cow::Borrowed(HTTP_SERVER_REQUEST_BODY_SIZE),
+            })
+            .with_description("Measures the HTTP request body size.")
+            .with_unit("B")
+            .build();
+
         Self {
             http_server_total_requests,
             http_server_total_responses,
             http_server_total_failures,
             http_server_duration,
+            http_server_active_requests,
+            http_server_request_body_size,
         }
     }
 }
@@ -290,10 +320,10 @@ impl<S, F> RequestMetricsService<S, F> {
 
 impl<S, F, State, Body> Service<State, Request<Body>> for RequestMetricsService<S, F>
 where
-    S: Service<State, Request<Body>, Response: IntoResponse>,
+    S: Service<State, Request, Response: IntoResponse>,
     F: AttributesFactory<State>,
     State: Clone + Send + Sync + 'static,
-    Body: Send + 'static,
+    Body: http_body::Body<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
 {
     type Response = Response;
     type Error = S::Error;
@@ -306,11 +336,28 @@ where
         let mut attributes: Vec<KeyValue> = self.compute_attributes(&mut ctx, &req);
 
         self.metrics.http_server_total_requests.add(1, &attributes);
+        self.metrics.http_server_active_requests.add(1, &attributes);
 
         // used to compute the duration of the request
         let timer = SystemTime::now();
 
+        let polled_body_size: Arc<AtomicUsize> = Default::default();
+        let req = req.map(|body| {
+            crate::Body::new(BodyTracker {
+                inner: body,
+                polled_size: polled_body_size.clone(),
+            })
+        });
+
         let result = self.inner.serve(ctx, req).await;
+
+        self.metrics
+            .http_server_active_requests
+            .add(-1, &attributes);
+        self.metrics.http_server_request_body_size.record(
+            polled_body_size.load(atomic::Ordering::Relaxed) as u64,
+            &attributes,
+        );
 
         match result {
             Ok(res) => {
@@ -335,6 +382,60 @@ where
                 Err(err)
             }
         }
+    }
+}
+
+pin_project! {
+    /// Wrapper around the incoming Request body used
+    /// to track the request body size.
+    pub struct BodyTracker<B> {
+        #[pin]
+        inner: B,
+        polled_size: Arc<AtomicUsize>,
+    }
+}
+
+impl<B: fmt::Debug> fmt::Debug for BodyTracker<B> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("BodyTracker")
+            .field("inner", &self.inner)
+            .field("polled_size", &self.polled_size)
+            .finish()
+    }
+}
+
+impl<B> http_body::Body for BodyTracker<B>
+where
+    B: http_body::Body<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
+{
+    type Data = B::Data;
+    type Error = B::Error;
+
+    fn poll_frame(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
+        let this = self.project();
+        match this.inner.poll_frame(cx) {
+            std::task::Poll::Ready(opt) => {
+                if let Some(Ok(frame)) = &opt
+                    && let Some(data) = frame.data_ref()
+                {
+                    this.polled_size
+                        .fetch_add(data.len(), atomic::Ordering::Relaxed);
+                }
+                std::task::Poll::Ready(opt)
+            }
+            std::task::Poll::Pending => std::task::Poll::Pending,
+        }
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.inner.is_end_stream()
+    }
+
+    fn size_hint(&self) -> http_body::SizeHint {
+        self.inner.size_hint()
     }
 }
 
