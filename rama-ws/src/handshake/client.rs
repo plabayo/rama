@@ -334,7 +334,6 @@ pub fn validate_http_server_response<Body>(
                 "server selected no WS extensions despite client supporting some (valid, move on without)",
             );
         }
-        // TODO: feature gate this
         (Some(Extension::PerMessageDeflate(server_cfg)), Some(client_extensions)) => {
             accepted_extension = client_extensions
                 .iter()
@@ -724,25 +723,43 @@ where
 
         let (parts, _) = response.into_parts();
 
-        // TODO: feature gate this
+        #[cfg(feature = "compression")]
+        let maybe_ws_cfg = {
+            let mut ws_cfg = self.inner.config.unwrap_or_default();
 
-        let mut ws_cfg = self.inner.config.unwrap_or_default();
+            if let Some(Extension::PerMessageDeflate(pmd_cfg)) = accepted_data.extension {
+                tracing::trace!(
+                    "apply accepted per-message-deflate cfg into WS client config: {pmd_cfg:?}"
+                );
+                ws_cfg.per_message_deflate = Some(protocol::PerMessageDeflateConfig {
+                    server_no_context_takeover: pmd_cfg.server_no_context_takeover,
+                    client_no_context_takeover: pmd_cfg.client_no_context_takeover,
+                    server_max_window_bits: pmd_cfg.server_max_window_bits,
+                    client_max_window_bits: pmd_cfg.client_max_window_bits,
+                });
+            } else {
+                ws_cfg.per_message_deflate = None;
+            }
 
-        if let Some(Extension::PerMessageDeflate(pmd_cfg)) = accepted_data.extension {
-            tracing::trace!(
-                "apply accepted per-message-deflate cfg into WS client config: {pmd_cfg:?}"
-            );
-            ws_cfg.per_message_deflate = Some(protocol::PerMessageDeflateConfig {
-                server_no_context_takeover: pmd_cfg.server_no_context_takeover,
-                client_no_context_takeover: pmd_cfg.client_no_context_takeover,
-                server_max_window_bits: pmd_cfg.server_max_window_bits,
-                client_max_window_bits: pmd_cfg.client_max_window_bits,
-            });
-        } else {
-            ws_cfg.per_message_deflate = None;
-        }
+            Some(ws_cfg)
+        };
 
-        let socket = AsyncWebSocket::from_raw_socket(stream, Role::Client, Some(ws_cfg)).await;
+        #[cfg(not(feature = "compression"))]
+        let maybe_ws_cfg = {
+            if let Some(Extension::PerMessageDeflate(pmd_cfg)) = accepted_data.extension {
+                tracing::error!(
+                    "per-message-deflate is used but compression feature is disabled. Enable it if you wish to use this extension."
+                );
+                return Err(HandshakeError::ValidationError(
+                    ResponseValidateError::ExtensionMismatch(Some(Extension::PerMessageDeflate(
+                        pmd_cfg,
+                    ))),
+                ));
+            }
+            None
+        };
+
+        let socket = AsyncWebSocket::from_raw_socket(stream, Role::Client, maybe_ws_cfg).await;
 
         Ok(ClientWebSocket {
             socket,

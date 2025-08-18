@@ -335,10 +335,17 @@ where
             self.ws_support.then(|| {
                 UpgradeLayer::new(
                     WebSocketMatcher::default(),
-                    WebSocketAcceptor::default()
-                        .with_protocols_flex(true)
-                        // TODO: only when compression is enabled
-                        .with_extensions(SecWebsocketExtensions::per_message_deflate()),
+                    {
+                        let acceptor = WebSocketAcceptor::default().with_protocols_flex(true);
+                        #[cfg(feature = "compression")]
+                        {
+                            acceptor.with_extensions(SecWebsocketExtensions::per_message_deflate())
+                        }
+                        #[cfg(not(feature = "compression"))]
+                        {
+                            acceptor
+                        }
+                    },
                     ConsumeErrLayer::trace(tracing::Level::DEBUG)
                         .into_layer(WebSocketEchoService::default()),
                 )

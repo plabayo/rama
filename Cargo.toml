@@ -293,7 +293,12 @@ full = [
     "tower",
     "opentelemetry",
 ]
-compression = ["http", "rama-http?/compression", "rama-tls-boring?/compression"]
+compression = [
+    "http",
+    "rama-http?/compression",
+    "rama-tls-boring?/compression",
+    "rama-ws?/compression",
+]
 tls = [
     "net",
     "rama-net?/tls",

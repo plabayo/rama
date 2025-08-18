@@ -15,6 +15,7 @@ pub mod frame;
 mod error;
 mod message;
 
+#[cfg(feature = "compression")]
 mod per_message_deflate;
 
 pub use error::ProtocolError;
@@ -28,8 +29,10 @@ use crate::protocol::{
         coding::{CloseCode, OpCode, OpCodeControl, OpCodeData},
     },
     message::{IncompleteMessage, IncompleteMessageType},
-    per_message_deflate::PerMessageDeflateState,
 };
+
+#[cfg(feature = "compression")]
+use self::per_message_deflate::PerMessageDeflateState;
 
 pub use self::{frame::CloseFrame, message::Message};
 
@@ -107,6 +110,7 @@ pub struct WebSocketConfig {
     /// By default this option is set to `false`, i.e. according to RFC 6455.
     pub accept_unmasked_frames: bool,
 
+    #[cfg(feature = "compression")]
     /// Per-message-deflate configuration, specify it
     /// to enable per-message (de)compression using the Deflate algorithm
     /// as specified by [`RFC7692`].
@@ -115,6 +119,7 @@ pub struct WebSocketConfig {
     pub per_message_deflate: Option<PerMessageDeflateConfig>,
 }
 
+#[cfg(feature = "compression")]
 /// Per-message-deflate configuration as specified in [`RFC7692`]
 ///
 /// [`RFC7692`]: https://datatracker.ietf.org/doc/html/rfc7692
@@ -190,6 +195,7 @@ pub struct PerMessageDeflateConfig {
     pub client_max_window_bits: Option<u8>,
 }
 
+#[cfg(feature = "compression")]
 #[allow(clippy::derivable_impls)]
 impl Default for PerMessageDeflateConfig {
     fn default() -> Self {
@@ -214,6 +220,7 @@ impl Default for WebSocketConfig {
             max_message_size: Some(64 << 20),
             max_frame_size: Some(16 << 20),
             accept_unmasked_frames: false,
+            #[cfg(feature = "compression")]
             per_message_deflate: None,
         }
     }
@@ -274,6 +281,7 @@ impl WebSocketConfig {
         }
     }
 
+    #[cfg(feature = "compression")]
     rama_utils::macros::generate_set_and_with! {
         /// Set [`Self::per_message_deflate`].
         #[must_use]
@@ -487,6 +495,7 @@ pub struct WebSocketContext {
     frame: FrameCodec,
     /// The state of processing, either "active" or "closing".
     state: WebSocketState,
+    #[cfg(feature = "compression")]
     /// The state used in function per-message compression,
     /// only set in case the extension is enabled.
     per_message_deflate_state: Option<PerMessageDeflateState>,
@@ -534,6 +543,7 @@ impl WebSocketContext {
             role,
             frame,
             state: WebSocketState::Active,
+            #[cfg(feature = "compression")]
             per_message_deflate_state: config
                 .per_message_deflate
                 .map(|cfg| PerMessageDeflateState::new(role, cfg)),
@@ -643,30 +653,40 @@ impl WebSocketContext {
         }
 
         let frame = match message {
-            Message::Text(data) => match self.per_message_deflate_state.as_mut() {
-                Some(deflate_state) => {
-                    let data = match deflate_state.encoder.encode(data.as_bytes()) {
-                        Ok(data) => data,
-                        Err(err) => return Err(ProtocolError::DeflateError(err)),
-                    };
-                    let mut msg = Frame::message(data, OpCode::Data(OpCodeData::Text), true);
-                    msg.header_mut().rsv1 = true;
-                    msg
+            Message::Text(data) => {
+                #[cfg(feature = "compression")]
+                match self.per_message_deflate_state.as_mut() {
+                    Some(deflate_state) => {
+                        let data = match deflate_state.encoder.encode(data.as_bytes()) {
+                            Ok(data) => data,
+                            Err(err) => return Err(ProtocolError::DeflateError(err)),
+                        };
+                        let mut msg = Frame::message(data, OpCode::Data(OpCodeData::Text), true);
+                        msg.header_mut().rsv1 = true;
+                        msg
+                    }
+                    None => Frame::message(data, OpCode::Data(OpCodeData::Text), true),
                 }
-                None => Frame::message(data, OpCode::Data(OpCodeData::Text), true),
-            },
-            Message::Binary(data) => match self.per_message_deflate_state.as_mut() {
-                Some(deflate_state) => {
-                    let data = match deflate_state.encoder.encode(data.as_ref()) {
-                        Ok(data) => data,
-                        Err(err) => return Err(ProtocolError::DeflateError(err)),
-                    };
-                    let mut msg = Frame::message(data, OpCode::Data(OpCodeData::Binary), true);
-                    msg.header_mut().rsv1 = true;
-                    msg
+                #[cfg(not(feature = "compression"))]
+                Frame::message(data, OpCode::Data(OpCodeData::Text), true)
+            }
+            Message::Binary(data) => {
+                #[cfg(feature = "compression")]
+                match self.per_message_deflate_state.as_mut() {
+                    Some(deflate_state) => {
+                        let data = match deflate_state.encoder.encode(data.as_ref()) {
+                            Ok(data) => data,
+                            Err(err) => return Err(ProtocolError::DeflateError(err)),
+                        };
+                        let mut msg = Frame::message(data, OpCode::Data(OpCodeData::Binary), true);
+                        msg.header_mut().rsv1 = true;
+                        msg
+                    }
+                    None => Frame::message(data, OpCode::Data(OpCodeData::Binary), true),
                 }
-                None => Frame::message(data, OpCode::Data(OpCodeData::Binary), true),
-            },
+                #[cfg(not(feature = "compression"))]
+                Frame::message(data, OpCode::Data(OpCodeData::Binary), true)
+            }
             Message::Ping(data) => Frame::ping(data),
             Message::Pong(data) => {
                 self.set_additional(Frame::pong(data));
@@ -792,6 +812,7 @@ impl WebSocketContext {
                 return Err(ProtocolError::ReceivedAfterClosing);
             }
 
+            #[cfg(feature = "compression")]
             // to ensure that this is valid in later branches,
             // as this is not always true despite an extension active that supports it
             let mut rsv1_set = false;
@@ -804,10 +825,15 @@ impl WebSocketContext {
             {
                 let hdr = frame.header();
                 if hdr.rsv1 {
-                    rsv1_set = true;
-                    if self.per_message_deflate_state.is_none() {
-                        return Err(ProtocolError::NonZeroReservedBits);
+                    #[cfg(feature = "compression")]
+                    {
+                        rsv1_set = true;
+                        if self.per_message_deflate_state.is_none() {
+                            return Err(ProtocolError::NonZeroReservedBits);
+                        }
                     }
+                    #[cfg(not(feature = "compression"))]
+                    return Err(ProtocolError::NonZeroReservedBits);
                 } else if hdr.rsv2 || hdr.rsv3 {
                     return Err(ProtocolError::NonZeroReservedBits);
                 }
@@ -820,6 +846,7 @@ impl WebSocketContext {
 
             match frame.header().opcode {
                 OpCode::Control(ctl) => {
+                    #[cfg(feature = "compression")]
                     if rsv1_set {
                         return Err(ProtocolError::NonZeroReservedBits);
                     }
@@ -852,6 +879,7 @@ impl WebSocketContext {
 
                     match data {
                         OpCodeData::Continue => {
+                            #[cfg(feature = "compression")]
                             if rsv1_set {
                                 return Err(ProtocolError::NonZeroReservedBits);
                             }
@@ -862,36 +890,41 @@ impl WebSocketContext {
                                     let incomplete_msg = self.incomplete.take().unwrap();
                                     return Ok(Some(incomplete_msg.complete()?));
                                 }
-                            } else if let Some(deflate_state) =
-                                self.per_message_deflate_state.as_mut()
-                            {
-                                if fin {
-                                    let (compressed_data, msg_type) =
-                                        deflate_state.decompress_incomplete_msg.fin_buffer(
+                            } else {
+                                #[cfg(feature = "compression")]
+                                if let Some(deflate_state) = self.per_message_deflate_state.as_mut()
+                                {
+                                    if fin {
+                                        let (compressed_data, msg_type) =
+                                            deflate_state.decompress_incomplete_msg.fin_buffer(
+                                                frame.into_payload(),
+                                                self.config.max_message_size,
+                                            )?;
+                                        return match deflate_state
+                                            .decoder
+                                            .decode(compressed_data.as_ref())
+                                        {
+                                            Ok(raw_data) => match msg_type {
+                                                IncompleteMessageType::Text => Ok(Some(
+                                                    Message::Text(Utf8Bytes::try_from(raw_data)?),
+                                                )),
+                                                IncompleteMessageType::Binary => {
+                                                    Ok(Some(Message::Binary(raw_data.into())))
+                                                }
+                                            },
+                                            Err(err) => Err(ProtocolError::DeflateError(err)),
+                                        };
+                                    } else {
+                                        deflate_state.decompress_incomplete_msg.extend(
                                             frame.into_payload(),
                                             self.config.max_message_size,
                                         )?;
-                                    return match deflate_state
-                                        .decoder
-                                        .decode(compressed_data.as_ref())
-                                    {
-                                        Ok(raw_data) => match msg_type {
-                                            IncompleteMessageType::Text => Ok(Some(Message::Text(
-                                                Utf8Bytes::try_from(raw_data)?,
-                                            ))),
-                                            IncompleteMessageType::Binary => {
-                                                Ok(Some(Message::Binary(raw_data.into())))
-                                            }
-                                        },
-                                        Err(err) => Err(ProtocolError::DeflateError(err)),
-                                    };
+                                    }
                                 } else {
-                                    deflate_state.decompress_incomplete_msg.extend(
-                                        frame.into_payload(),
-                                        self.config.max_message_size,
-                                    )?;
+                                    return Err(ProtocolError::UnexpectedContinueFrame);
                                 }
-                            } else {
+
+                                #[cfg(not(feature = "compression"))]
                                 return Err(ProtocolError::UnexpectedContinueFrame);
                             }
 
@@ -901,6 +934,7 @@ impl WebSocketContext {
                         c if self.incomplete.is_some() => Err(ProtocolError::ExpectedFragment(c)),
                         OpCodeData::Text if fin => {
                             check_max_size(frame.payload().len(), self.config.max_message_size)?;
+                            #[cfg(feature = "compression")]
                             if rsv1_set {
                                 if let Some(deflate_state) = self.per_message_deflate_state.as_mut()
                                 {
@@ -916,10 +950,13 @@ impl WebSocketContext {
                             } else {
                                 Ok(Some(Message::Text(frame.into_text()?)))
                             }
+                            #[cfg(not(feature = "compression"))]
+                            Ok(Some(Message::Text(frame.into_text()?)))
                         }
 
                         OpCodeData::Binary if fin => {
                             check_max_size(frame.payload().len(), self.config.max_message_size)?;
+                            #[cfg(feature = "compression")]
                             if rsv1_set {
                                 if let Some(deflate_state) = self.per_message_deflate_state.as_mut()
                                 {
@@ -935,9 +972,12 @@ impl WebSocketContext {
                             } else {
                                 Ok(Some(Message::Binary(frame.into_payload())))
                             }
+                            #[cfg(not(feature = "compression"))]
+                            Ok(Some(Message::Binary(frame.into_payload())))
                         }
 
                         OpCodeData::Text | OpCodeData::Binary => {
+                            #[cfg(feature = "compression")]
                             if rsv1_set {
                                 if let Some(deflate_state) = self.per_message_deflate_state.as_mut()
                                 {
@@ -957,6 +997,19 @@ impl WebSocketContext {
                                     Err(ProtocolError::NonZeroReservedBits)
                                 }
                             } else {
+                                let message_type = match data {
+                                    OpCodeData::Text => IncompleteMessageType::Text,
+                                    OpCodeData::Binary => IncompleteMessageType::Binary,
+                                    _ => unreachable!("Bug: message is not text nor binary"),
+                                };
+                                let mut incomplete = IncompleteMessage::new(message_type);
+                                incomplete
+                                    .extend(frame.into_payload(), self.config.max_message_size)?;
+                                self.incomplete = Some(incomplete);
+                                Ok(None)
+                            }
+                            #[cfg(not(feature = "compression"))]
+                            {
                                 let message_type = match data {
                                     OpCodeData::Text => IncompleteMessageType::Text,
                                     OpCodeData::Binary => IncompleteMessageType::Binary,

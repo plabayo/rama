@@ -437,7 +437,6 @@ where
 
                 let accepted_extension = match (request_data.extensions, self.extensions.as_ref()) {
                     (None, _) | (_, None) => None,
-                    // TODO: feature gate this
                     (Some(request_extensions), Some(allowed_extensions)) => {
                         request_extensions.into_iter().find_map(|request_ext| {
                             for allowed_ext in allowed_extensions.iter() {
@@ -678,6 +677,14 @@ where
     ) -> Result<Self::Response, Self::Error> {
         match self.acceptor.serve(ctx, req).await {
             Ok((resp, ctx, mut req)) => {
+                #[cfg(not(feature = "compression"))]
+                if let Some(Extension::PerMessageDeflate(_)) = ctx.get() {
+                    tracing::error!(
+                        "per-message-deflate is used but compression feature is disabled. Enable it if you wish to use this extension."
+                    );
+                    return Ok(StatusCode::INTERNAL_SERVER_ERROR.into_response());
+                }
+
                 let handler = self.service.clone();
                 let span = tracing::trace_root_span!(
                     "ws::serve",
@@ -695,26 +702,33 @@ where
                     async move {
                         match upgrade::on(&mut req).await {
                             Ok(upgraded) => {
-                                let mut ws_cfg = None;
+                                #[cfg(feature = "compression")]
+                                let maybe_ws_config = {
+                                    let mut ws_cfg = None;
 
-                                // TODO: feature gate this
-                                if let Some(Extension::PerMessageDeflate(pmd_cfg)) = ctx.get() {
-                                    tracing::trace!(
-                                        "apply accepted per-message-deflate cfg into WS server config: {pmd_cfg:?}"
-                                    );
-                                    ws_cfg = Some(WebSocketConfig {
-                                        per_message_deflate: Some(protocol::PerMessageDeflateConfig {
-                                            server_no_context_takeover: pmd_cfg.server_no_context_takeover,
-                                            client_no_context_takeover: pmd_cfg.client_no_context_takeover,
-                                            server_max_window_bits: pmd_cfg.server_max_window_bits,
-                                            client_max_window_bits: pmd_cfg.client_max_window_bits,
-                                        }),
-                                        ..Default::default()
-                                    });
-                                }
+                                    if let Some(Extension::PerMessageDeflate(pmd_cfg)) = ctx.get() {
+                                        tracing::trace!(
+                                            "apply accepted per-message-deflate cfg into WS server config: {pmd_cfg:?}"
+                                        );
+                                        ws_cfg = Some(WebSocketConfig {
+                                            per_message_deflate: Some(protocol::PerMessageDeflateConfig {
+                                                server_no_context_takeover: pmd_cfg.server_no_context_takeover,
+                                                client_no_context_takeover: pmd_cfg.client_no_context_takeover,
+                                                server_max_window_bits: pmd_cfg.server_max_window_bits,
+                                                client_max_window_bits: pmd_cfg.client_max_window_bits,
+                                            }),
+                                            ..Default::default()
+                                        });
+                                    }
+
+                                    ws_cfg
+                                };
+
+                                #[cfg(not(feature = "compression"))]
+                                let maybe_ws_config = None;
 
                                 let socket =
-                                    AsyncWebSocket::from_raw_socket(upgraded, Role::Server, ws_cfg)
+                                    AsyncWebSocket::from_raw_socket(upgraded, Role::Server, maybe_ws_config)
                                         .await;
 
                                 let (parts, _) = req.into_parts();
