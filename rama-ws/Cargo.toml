@@ -17,7 +17,12 @@ allowed = []
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
+[features]
+default = []
+compression = ["dep:flate2"]
+
 [dependencies]
+flate2 = { workspace = true, features = ["zlib"], optional = true }
 rama-core = { workspace = true }
 rama-http = { workspace = true }
 rama-net = { workspace = true }
@@ -31,6 +36,7 @@ tokio = { workspace = true, features = ["time", "macros"] }
 pin-project-lite = { workspace = true }
 rama-http-backend = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
+tracing-test = { workspace = true }
 
 [lints]
 workspace = true

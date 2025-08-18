@@ -220,6 +220,7 @@ tower-service = "0.3"
 tracing = "0.1"
 tracing-opentelemetry = "0.31"
 tracing-subscriber = "0.3"
+tracing-test = "0.2"
 tracing-tree = "0.4"
 trybuild = "1.0"
 tui-logger = { version = "0.17", features = ["tracing-support"] }
@@ -292,7 +293,12 @@ full = [
     "tower",
     "opentelemetry",
 ]
-compression = ["http", "rama-http?/compression", "rama-tls-boring?/compression"]
+compression = [
+    "http",
+    "rama-http?/compression",
+    "rama-tls-boring?/compression",
+    "rama-ws?/compression",
+]
 tls = [
     "net",
     "rama-net?/tls",
@@ -691,6 +697,10 @@ required-features = ["net"]
 [[example]]
 name = "ws_echo_server"
 required-features = ["http-full"]
+
+[[example]]
+name = "ws_echo_server_with_compression"
+required-features = ["http-full", "compression"]
 
 [[example]]
 name = "ws_chat_server"

@@ -82,7 +82,7 @@ async fn main() {
 
     let tls_config = TlsConnectorDataBuilder::new_http_auto()
         .with_server_verify_mode(ServerVerifyMode::Disable)
-        .with_keylog_intent(rama_net::tls::KeyLogIntent::Environment)
+        .with_keylog_intent(rama::net::tls::KeyLogIntent::Environment)
         .into_shared_builder();
 
     let client = EasyHttpWebClient::builder()

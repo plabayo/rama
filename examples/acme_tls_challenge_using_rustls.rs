@@ -84,7 +84,7 @@ async fn main() {
         )
         .init();
 
-    let tls_config = rama_tls_rustls::client::TlsConnectorDataBuilder::new()
+    let tls_config = rama::tls::rustls::client::TlsConnectorDataBuilder::new()
         .with_env_key_logger()
         .expect("add env keylogger")
         .with_alpn_protocols_http_auto()
@@ -157,7 +157,7 @@ async fn main() {
         .with_no_client_auth()
         .with_cert_resolver(cert_resolver);
 
-    server_config.alpn_protocols = vec![rama_net::tls::ApplicationProtocol::ACME_TLS.into()];
+    server_config.alpn_protocols = vec![rama::net::tls::ApplicationProtocol::ACME_TLS.into()];
 
     let acceptor_data = TlsAcceptorData::from(server_config);
 

@@ -92,7 +92,7 @@ async fn main() {
     let tls_config = TlsConnectorDataBuilder::new_http_auto()
         .with_server_verify_mode(ServerVerifyMode::Disable)
         .with_store_server_certificate_chain(true)
-        .with_keylog_intent(rama_net::tls::KeyLogIntent::Environment)
+        .with_keylog_intent(rama::net::tls::KeyLogIntent::Environment)
         .into_shared_builder();
 
     let client = EasyHttpWebClient::builder()
@@ -162,7 +162,7 @@ async fn main() {
             cache_kind: CacheKind::Disabled,
         }),
         application_layer_protocol_negotiation: Some(vec![
-            rama_net::tls::ApplicationProtocol::ACME_TLS,
+            rama::net::tls::ApplicationProtocol::ACME_TLS,
         ]),
         client_verify_mode: Default::default(),
         expose_server_cert: Default::default(),

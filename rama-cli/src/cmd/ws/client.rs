@@ -7,6 +7,7 @@ use rama::{
             EasyHttpWebClient,
             proxy::layer::{HttpProxyAddressLayer, SetProxyAuthHttpHeaderLayer},
         },
+        headers::SecWebsocketProtocol,
         layer::{
             auth::AddAuthorizationLayer,
             decompression::DecompressionLayer,
@@ -14,7 +15,10 @@ use rama::{
             required_header::AddRequiredRequestHeadersLayer,
             timeout::TimeoutLayer,
         },
-        ws::handshake::client::{ClientWebSocket, HttpClientWebSocketExt},
+        ws::{
+            handshake::client::{ClientWebSocket, HttpClientWebSocketExt},
+            protocol::{PerMessageDeflateConfig, WebSocketConfig},
+        },
     },
     layer::MapResultLayer,
     net::{
@@ -44,11 +48,18 @@ pub(super) async fn connect(cfg: super::CliCommandWs) -> Result<ClientWebSocket,
         HttpVersion::H2 => client.websocket_h2(cfg.uri),
     };
 
-    if let Some(protocols) = cfg.protocols {
-        builder.set_sub_protocols(protocols);
+    if let Some(mut protocols) = cfg.protocols.map(|p| p.into_iter())
+        && let Some(first_protocol) = protocols.next()
+    {
+        builder.set_protocols(
+            SecWebsocketProtocol::new(first_protocol).with_additional_protocols(protocols),
+        );
     }
 
     builder
+        .with_config(
+            WebSocketConfig::default().with_per_message_deflate(PerMessageDeflateConfig::default()),
+        )
         .handshake(Context::default())
         .await
         .context("establish WS(S) connection")

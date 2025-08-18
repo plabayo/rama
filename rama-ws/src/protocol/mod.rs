@@ -15,6 +15,9 @@ pub mod frame;
 mod error;
 mod message;
 
+#[cfg(feature = "compression")]
+mod per_message_deflate;
+
 pub use error::ProtocolError;
 
 #[cfg(test)]
@@ -27,6 +30,9 @@ use crate::protocol::{
     },
     message::{IncompleteMessage, IncompleteMessageType},
 };
+
+#[cfg(feature = "compression")]
+use self::per_message_deflate::PerMessageDeflateState;
 
 pub use self::{frame::CloseFrame, message::Message};
 
@@ -46,8 +52,8 @@ pub enum Role {
 /// # use rama_ws::protocol::WebSocketConfig;
 ///
 /// let conf = WebSocketConfig::default()
-///     .read_buffer_size(256 * 1024)
-///     .write_buffer_size(256 * 1024);
+///     .with_read_buffer_size(256 * 1024)
+///     .with_write_buffer_size(256 * 1024);
 /// ```
 #[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
@@ -103,6 +109,106 @@ pub struct WebSocketConfig {
     /// some popular libraries that are sending unmasked frames, ignoring the RFC.
     /// By default this option is set to `false`, i.e. according to RFC 6455.
     pub accept_unmasked_frames: bool,
+
+    #[cfg(feature = "compression")]
+    /// Per-message-deflate configuration, specify it
+    /// to enable per-message (de)compression using the Deflate algorithm
+    /// as specified by [`RFC7692`].
+    ///
+    /// [`RFC7692`]: https://datatracker.ietf.org/doc/html/rfc7692
+    pub per_message_deflate: Option<PerMessageDeflateConfig>,
+}
+
+#[cfg(feature = "compression")]
+/// Per-message-deflate configuration as specified in [`RFC7692`]
+///
+/// [`RFC7692`]: https://datatracker.ietf.org/doc/html/rfc7692
+#[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
+pub struct PerMessageDeflateConfig {
+    /// Prevents Server Context Takeover
+    ///
+    /// This extension parameter enables a client to request that
+    /// the server forgo context takeover, thereby eliminating
+    /// the client's need to retain memory for the LZ77 sliding window between messages.
+    ///
+    /// A client's omission of this parameter indicates its capability to decompress messages
+    /// even if the server utilizes context takeover.
+    ///
+    /// Servers should support this parameter and confirm acceptance by
+    /// including it in their response;
+    /// they may even include it if not explicitly requested by the client.
+    pub server_no_context_takeover: bool,
+
+    /// Manages Client Context Takeover
+    ///
+    /// This extension parameter allows a client to indicate to
+    /// the server its intent not to use context takeover,
+    /// even if the server doesn't explicitly respond with the same parameter.
+    ///
+    /// When a server receives this, it can either ignore it or include
+    /// `client_no_context_takeover` in its response,
+    /// which prevents the client from using context
+    /// takeover and helps the server conserve memory.
+    /// If the server's response omits this parameter,
+    /// it signals its ability to decompress messages where
+    /// the client does use context takeover.
+    ///
+    /// Clients are required to support this parameter in a server's response.
+    pub client_no_context_takeover: bool,
+
+    /// Limits Server Window Size
+    ///
+    /// This extension parameter allows a client to propose
+    /// a maximum LZ77 sliding window size for the server
+    /// to use when compressing messages, specified as a base-2 logarithm (8-15).
+    ///
+    /// This helps the client reduce its memory requirements.
+    /// If a client omits this parameter,
+    /// it signals its capacity to handle messages compressed with a window up to 32,768 bytes.
+    ///
+    /// A server accepts by echoing the parameter with an equal or smaller value;
+    /// otherwise, it declines. Notably, a server may suggest a window size
+    /// even if the client didn't initially propose one.
+    pub server_max_window_bits: Option<u8>,
+
+    /// Adjusts Client Window Size
+    ///
+    /// This extension parameter allows a client to propose,
+    /// optionally with a value between 8 and 15 (base-2 logarithm),
+    /// the maximum LZ77 sliding window size it will use for compression.
+    ///
+    /// This signals to the server that the client supports this parameter in responses and,
+    /// if a value is provided, hints that the client won't exceed that window size
+    /// for its own compression, regardless of the server's response.
+    ///
+    /// A server can then include client_max_window_bits in its response
+    /// with an equal or smaller value, thereby limiting the client's window size
+    /// and reducing its own memory overhead for decompression.
+    ///
+    /// If the server's response omits this parameter,
+    /// it signifies its ability to decompress messages compressed with a client window
+    /// up to 32,768 bytes.
+    ///
+    /// Servers must not include this parameter in their response
+    /// if the client's initial offer didn't contain it.
+    pub client_max_window_bits: Option<u8>,
+}
+
+#[cfg(feature = "compression")]
+#[allow(clippy::derivable_impls)]
+impl Default for PerMessageDeflateConfig {
+    fn default() -> Self {
+        Self {
+            // By default, allow context takeover in both directions
+            server_no_context_takeover: false,
+            client_no_context_takeover: false,
+
+            // No limit: means default 15-bit window (32768 bytes)
+            server_max_window_bits: None,
+            client_max_window_bits: None,
+        }
+    }
 }
 
 impl Default for WebSocketConfig {
@@ -114,51 +220,75 @@ impl Default for WebSocketConfig {
             max_message_size: Some(64 << 20),
             max_frame_size: Some(16 << 20),
             accept_unmasked_frames: false,
+            #[cfg(feature = "compression")]
+            per_message_deflate: None,
         }
     }
 }
 
 impl WebSocketConfig {
-    /// Set [`Self::read_buffer_size`].
-    #[must_use]
-    pub fn read_buffer_size(mut self, read_buffer_size: usize) -> Self {
-        self.read_buffer_size = read_buffer_size;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set [`Self::read_buffer_size`].
+        #[must_use]
+        pub fn read_buffer_size(mut self, read_buffer_size: usize) -> Self {
+            self.read_buffer_size = read_buffer_size;
+            self
+        }
     }
 
-    /// Set [`Self::write_buffer_size`].
-    #[must_use]
-    pub fn write_buffer_size(mut self, write_buffer_size: usize) -> Self {
-        self.write_buffer_size = write_buffer_size;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set [`Self::write_buffer_size`].
+        #[must_use]
+        pub fn write_buffer_size(mut self, write_buffer_size: usize) -> Self {
+            self.write_buffer_size = write_buffer_size;
+            self
+        }
     }
 
-    /// Set [`Self::max_write_buffer_size`].
-    #[must_use]
-    pub fn max_write_buffer_size(mut self, max_write_buffer_size: usize) -> Self {
-        self.max_write_buffer_size = max_write_buffer_size;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set [`Self::max_write_buffer_size`].
+        #[must_use]
+        pub fn max_write_buffer_size(mut self, max_write_buffer_size: usize) -> Self {
+            self.max_write_buffer_size = max_write_buffer_size;
+            self
+        }
     }
 
-    /// Set [`Self::max_message_size`].
-    #[must_use]
-    pub fn max_message_size(mut self, max_message_size: Option<usize>) -> Self {
-        self.max_message_size = max_message_size;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set [`Self::max_message_size`].
+        #[must_use]
+        pub fn max_message_size(mut self, max_message_size: Option<usize>) -> Self {
+            self.max_message_size = max_message_size;
+            self
+        }
     }
 
-    /// Set [`Self::max_frame_size`].
-    #[must_use]
-    pub fn max_frame_size(mut self, max_frame_size: Option<usize>) -> Self {
-        self.max_frame_size = max_frame_size;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set [`Self::max_frame_size`].
+        #[must_use]
+        pub fn max_frame_size(mut self, max_frame_size: Option<usize>) -> Self {
+            self.max_frame_size = max_frame_size;
+            self
+        }
     }
 
-    /// Set [`Self::accept_unmasked_frames`].
-    #[must_use]
-    pub fn accept_unmasked_frames(mut self, accept_unmasked_frames: bool) -> Self {
-        self.accept_unmasked_frames = accept_unmasked_frames;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set [`Self::accept_unmasked_frames`].
+        #[must_use]
+        pub fn accept_unmasked_frames(mut self, accept_unmasked_frames: bool) -> Self {
+            self.accept_unmasked_frames = accept_unmasked_frames;
+            self
+        }
+    }
+
+    #[cfg(feature = "compression")]
+    rama_utils::macros::generate_set_and_with! {
+        /// Set [`Self::per_message_deflate`].
+        #[must_use]
+        pub fn per_message_deflate(mut self, per_message_deflate: Option<PerMessageDeflateConfig>) -> Self {
+            self.per_message_deflate = per_message_deflate;
+            self
+        }
     }
 
     /// Panic if values are invalid.
@@ -365,6 +495,10 @@ pub struct WebSocketContext {
     frame: FrameCodec,
     /// The state of processing, either "active" or "closing".
     state: WebSocketState,
+    #[cfg(feature = "compression")]
+    /// The state used in function per-message compression,
+    /// only set in case the extension is enabled.
+    per_message_deflate_state: Option<PerMessageDeflateState>,
     /// Receive: an incomplete message being processed.
     incomplete: Option<IncompleteMessage>,
     /// Send in addition to regular messages E.g. "pong" or "close".
@@ -409,6 +543,10 @@ impl WebSocketContext {
             role,
             frame,
             state: WebSocketState::Active,
+            #[cfg(feature = "compression")]
+            per_message_deflate_state: config
+                .per_message_deflate
+                .map(|cfg| PerMessageDeflateState::new(role, cfg)),
             incomplete: None,
             additional_send: None,
             unflushed_additional: false,
@@ -515,8 +653,40 @@ impl WebSocketContext {
         }
 
         let frame = match message {
-            Message::Text(data) => Frame::message(data, OpCode::Data(OpCodeData::Text), true),
-            Message::Binary(data) => Frame::message(data, OpCode::Data(OpCodeData::Binary), true),
+            Message::Text(data) => {
+                #[cfg(feature = "compression")]
+                match self.per_message_deflate_state.as_mut() {
+                    Some(deflate_state) => {
+                        let data = match deflate_state.encoder.encode(data.as_bytes()) {
+                            Ok(data) => data,
+                            Err(err) => return Err(ProtocolError::DeflateError(err)),
+                        };
+                        let mut msg = Frame::message(data, OpCode::Data(OpCodeData::Text), true);
+                        msg.header_mut().rsv1 = true;
+                        msg
+                    }
+                    None => Frame::message(data, OpCode::Data(OpCodeData::Text), true),
+                }
+                #[cfg(not(feature = "compression"))]
+                Frame::message(data, OpCode::Data(OpCodeData::Text), true)
+            }
+            Message::Binary(data) => {
+                #[cfg(feature = "compression")]
+                match self.per_message_deflate_state.as_mut() {
+                    Some(deflate_state) => {
+                        let data = match deflate_state.encoder.encode(data.as_ref()) {
+                            Ok(data) => data,
+                            Err(err) => return Err(ProtocolError::DeflateError(err)),
+                        };
+                        let mut msg = Frame::message(data, OpCode::Data(OpCodeData::Binary), true);
+                        msg.header_mut().rsv1 = true;
+                        msg
+                    }
+                    None => Frame::message(data, OpCode::Data(OpCodeData::Binary), true),
+                }
+                #[cfg(not(feature = "compression"))]
+                Frame::message(data, OpCode::Data(OpCodeData::Binary), true)
+            }
             Message::Ping(data) => Frame::ping(data),
             Message::Pong(data) => {
                 self.set_additional(Frame::pong(data));
@@ -641,6 +811,12 @@ impl WebSocketContext {
             if !self.state.can_read() {
                 return Err(ProtocolError::ReceivedAfterClosing);
             }
+
+            #[cfg(feature = "compression")]
+            // to ensure that this is valid in later branches,
+            // as this is not always true despite an extension active that supports it
+            let mut rsv1_set = false;
+
             // MUST be 0 unless an extension is negotiated that defines meanings
             // for non-zero values.  If a nonzero value is received and none of
             // the negotiated extensions defines the meaning of such a nonzero
@@ -648,7 +824,17 @@ impl WebSocketContext {
             // Connection_.
             {
                 let hdr = frame.header();
-                if hdr.rsv1 || hdr.rsv2 || hdr.rsv3 {
+                if hdr.rsv1 {
+                    #[cfg(feature = "compression")]
+                    {
+                        rsv1_set = true;
+                        if self.per_message_deflate_state.is_none() {
+                            return Err(ProtocolError::NonZeroReservedBits);
+                        }
+                    }
+                    #[cfg(not(feature = "compression"))]
+                    return Err(ProtocolError::NonZeroReservedBits);
+                } else if hdr.rsv2 || hdr.rsv3 {
                     return Err(ProtocolError::NonZeroReservedBits);
                 }
             }
@@ -660,6 +846,11 @@ impl WebSocketContext {
 
             match frame.header().opcode {
                 OpCode::Control(ctl) => {
+                    #[cfg(feature = "compression")]
+                    if rsv1_set {
+                        return Err(ProtocolError::NonZeroReservedBits);
+                    }
+
                     match ctl {
                         // All control frames MUST have a payload length of 125 bytes or less
                         // and MUST NOT be fragmented. (RFC 6455)
@@ -685,39 +876,151 @@ impl WebSocketContext {
 
                 OpCode::Data(data) => {
                     let fin = frame.header().is_final;
+
                     match data {
                         OpCodeData::Continue => {
+                            #[cfg(feature = "compression")]
+                            if rsv1_set {
+                                return Err(ProtocolError::NonZeroReservedBits);
+                            }
+
                             if let Some(ref mut msg) = self.incomplete {
                                 msg.extend(frame.into_payload(), self.config.max_message_size)?;
+                                if fin {
+                                    let incomplete_msg = self.incomplete.take().unwrap();
+                                    return Ok(Some(incomplete_msg.complete()?));
+                                }
                             } else {
+                                #[cfg(feature = "compression")]
+                                if let Some(deflate_state) = self.per_message_deflate_state.as_mut()
+                                {
+                                    if fin {
+                                        let (compressed_data, msg_type) =
+                                            deflate_state.decompress_incomplete_msg.fin_buffer(
+                                                frame.into_payload(),
+                                                self.config.max_message_size,
+                                            )?;
+                                        return match deflate_state
+                                            .decoder
+                                            .decode(compressed_data.as_ref())
+                                        {
+                                            Ok(raw_data) => match msg_type {
+                                                IncompleteMessageType::Text => Ok(Some(
+                                                    Message::Text(Utf8Bytes::try_from(raw_data)?),
+                                                )),
+                                                IncompleteMessageType::Binary => {
+                                                    Ok(Some(Message::Binary(raw_data.into())))
+                                                }
+                                            },
+                                            Err(err) => Err(ProtocolError::DeflateError(err)),
+                                        };
+                                    } else {
+                                        deflate_state.decompress_incomplete_msg.extend(
+                                            frame.into_payload(),
+                                            self.config.max_message_size,
+                                        )?;
+                                    }
+                                } else {
+                                    return Err(ProtocolError::UnexpectedContinueFrame);
+                                }
+
+                                #[cfg(not(feature = "compression"))]
                                 return Err(ProtocolError::UnexpectedContinueFrame);
                             }
-                            if fin {
-                                Ok(Some(self.incomplete.take().unwrap().complete()?))
-                            } else {
-                                Ok(None)
-                            }
+
+                            Ok(None)
                         }
+
                         c if self.incomplete.is_some() => Err(ProtocolError::ExpectedFragment(c)),
                         OpCodeData::Text if fin => {
                             check_max_size(frame.payload().len(), self.config.max_message_size)?;
+                            #[cfg(feature = "compression")]
+                            if rsv1_set {
+                                if let Some(deflate_state) = self.per_message_deflate_state.as_mut()
+                                {
+                                    let compressed_data = frame.into_payload();
+                                    let raw_data = deflate_state
+                                        .decoder
+                                        .decode(&compressed_data)
+                                        .map_err(ProtocolError::DeflateError)?;
+                                    Ok(Some(Message::Text(Utf8Bytes::try_from(raw_data)?)))
+                                } else {
+                                    Err(ProtocolError::NonZeroReservedBits)
+                                }
+                            } else {
+                                Ok(Some(Message::Text(frame.into_text()?)))
+                            }
+                            #[cfg(not(feature = "compression"))]
                             Ok(Some(Message::Text(frame.into_text()?)))
                         }
+
                         OpCodeData::Binary if fin => {
                             check_max_size(frame.payload().len(), self.config.max_message_size)?;
+                            #[cfg(feature = "compression")]
+                            if rsv1_set {
+                                if let Some(deflate_state) = self.per_message_deflate_state.as_mut()
+                                {
+                                    let compressed_data = frame.into_payload();
+                                    let raw_data = deflate_state
+                                        .decoder
+                                        .decode(&compressed_data)
+                                        .map_err(ProtocolError::DeflateError)?;
+                                    Ok(Some(Message::Binary(raw_data.into())))
+                                } else {
+                                    Err(ProtocolError::NonZeroReservedBits)
+                                }
+                            } else {
+                                Ok(Some(Message::Binary(frame.into_payload())))
+                            }
+                            #[cfg(not(feature = "compression"))]
                             Ok(Some(Message::Binary(frame.into_payload())))
                         }
+
                         OpCodeData::Text | OpCodeData::Binary => {
-                            let message_type = match data {
-                                OpCodeData::Text => IncompleteMessageType::Text,
-                                OpCodeData::Binary => IncompleteMessageType::Binary,
-                                _ => unreachable!("Bug: message is not text nor binary"),
-                            };
-                            let mut incomplete = IncompleteMessage::new(message_type);
-                            incomplete
-                                .extend(frame.into_payload(), self.config.max_message_size)?;
-                            self.incomplete = Some(incomplete);
-                            Ok(None)
+                            #[cfg(feature = "compression")]
+                            if rsv1_set {
+                                if let Some(deflate_state) = self.per_message_deflate_state.as_mut()
+                                {
+                                    deflate_state.decompress_incomplete_msg.reset(match data {
+                                        OpCodeData::Text => IncompleteMessageType::Text,
+                                        OpCodeData::Binary => IncompleteMessageType::Binary,
+                                        _ => unreachable!(
+                                            "Bug: compressed message is not text nor binary"
+                                        ),
+                                    });
+                                    deflate_state.decompress_incomplete_msg.extend(
+                                        frame.into_payload(),
+                                        self.config.max_message_size,
+                                    )?;
+                                    Ok(None)
+                                } else {
+                                    Err(ProtocolError::NonZeroReservedBits)
+                                }
+                            } else {
+                                let message_type = match data {
+                                    OpCodeData::Text => IncompleteMessageType::Text,
+                                    OpCodeData::Binary => IncompleteMessageType::Binary,
+                                    _ => unreachable!("Bug: message is not text nor binary"),
+                                };
+                                let mut incomplete = IncompleteMessage::new(message_type);
+                                incomplete
+                                    .extend(frame.into_payload(), self.config.max_message_size)?;
+                                self.incomplete = Some(incomplete);
+                                Ok(None)
+                            }
+                            #[cfg(not(feature = "compression"))]
+                            {
+                                let message_type = match data {
+                                    OpCodeData::Text => IncompleteMessageType::Text,
+                                    OpCodeData::Binary => IncompleteMessageType::Binary,
+                                    _ => unreachable!("Bug: message is not text nor binary"),
+                                };
+                                let mut incomplete = IncompleteMessage::new(message_type);
+                                incomplete
+                                    .extend(frame.into_payload(), self.config.max_message_size)?;
+                                self.incomplete = Some(incomplete);
+                                Ok(None)
+                            }
                         }
                         OpCodeData::Reserved(i) => Err(ProtocolError::UnknownDataFrameType(i)),
                     }

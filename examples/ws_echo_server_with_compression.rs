@@ -1,31 +1,27 @@
-//! A minimal WebSocket example similar to the `ws_echo_server` example
-//! with the only difference that it goes over TLS, and as such is reached via
-//! the `wss://` scheme instead of the plain text `ws://` one.
+//! Example clone of `ws_echo_server.rs` but with compression enabled and supported.
 //!
 //! # Run the example
 //!
 //! ```sh
-//! cargo run --example ws_tls_server --features=http-full,boring
+//! cargo run --example ws_echo_server_with_compression --features=http-full,compression
 //! ```
 //!
 //! # Expected output
 //!
-//! The server will start and listen on `:62034`.
+//! The server will start and listen on `:62038`.
 //! Open it in the browser to see it in action or use `rama ws` cli client to test it.
 
 use rama::{
     Layer,
     http::{
+        headers::SecWebsocketExtensions,
         server::HttpServer,
         service::web::{Router, response::Html},
         ws::handshake::server::WebSocketAcceptor,
     },
     layer::ConsumeErrLayer,
-    net::tls::ApplicationProtocol,
-    net::tls::server::{SelfSignedData, ServerAuth, ServerConfig},
     tcp::server::TcpListener,
     telemetry::tracing::{Level, info, level_filters::LevelFilter},
-    tls::boring::server::{TlsAcceptorData, TlsAcceptorLayer},
 };
 
 use std::time::Duration;
@@ -44,29 +40,23 @@ async fn main() {
 
     let graceful = rama::graceful::Shutdown::default();
 
-    let tls_server_config = ServerConfig {
-        application_layer_protocol_negotiation: Some(vec![ApplicationProtocol::HTTP_11]),
-        ..ServerConfig::new(ServerAuth::SelfSigned(SelfSignedData::default()))
-    };
-    let acceptor_data = TlsAcceptorData::try_from(tls_server_config).expect("create acceptor data");
-
     graceful.spawn_task_fn(async |guard| {
         let server = HttpServer::http1().service(
             Router::new().get("/", Html(INDEX)).get(
                 "/echo",
-                ConsumeErrLayer::trace(Level::DEBUG)
-                    .into_layer(WebSocketAcceptor::new().into_echo_service()),
+                ConsumeErrLayer::trace(Level::DEBUG).into_layer(
+                    WebSocketAcceptor::new()
+                        .with_extensions(SecWebsocketExtensions::per_message_deflate())
+                        .into_echo_service(),
+                ),
             ),
         );
-
-        let tls_server = TlsAcceptorLayer::new(acceptor_data).into_layer(server);
-
-        info!("open web echo chat @ https://127.0.0.1:62034");
-        info!("or connect directly to wss://127.0.0.1:62034/echo (via 'rama ws')");
-        TcpListener::bind("127.0.0.1:62034")
+        info!("open web echo chat @ http://127.0.0.1:62038");
+        info!("or connect directly to ws://127.0.0.1:62038/echo (via 'rama ws')");
+        TcpListener::bind("127.0.0.1:62038")
             .await
             .expect("bind TCP Listener")
-            .serve_graceful(guard, tls_server)
+            .serve_graceful(guard, server)
             .await;
     });
 
