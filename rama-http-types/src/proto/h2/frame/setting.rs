@@ -213,10 +213,9 @@ impl SettingOrder {
         if self.mask & mask_id == 0 {
             self.mask |= mask_id;
             self.ids.push(id);
+        } else {
+            tracing::trace!("ignore duplicate setting id: {id:?}")
         }
-        // else {
-        //     tracing::trace!("ignore duplicate setting id: {id:?}")
-        // }
     }
 
     pub fn extend(&mut self, iter: impl IntoIterator<Item = SettingId>) {
