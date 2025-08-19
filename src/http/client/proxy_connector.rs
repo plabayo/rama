@@ -3,9 +3,10 @@ use std::sync::Arc;
 use crate::{
     Layer, Service,
     combinators::Either3,
-    error::BoxError,
+    error::{BoxError, OpaqueError},
     http::client::proxy::layer::{HttpProxyConnector, HttpProxyConnectorLayer},
     net::{
+        Protocol,
         address::ProxyAddress,
         client::{ConnectorService, EstablishedClientConnection},
         stream::Stream,
@@ -112,9 +113,12 @@ where
                 let protocol = proxy.protocol.as_ref();
                 tracing::trace!(?protocol, "proxy detected in ctx");
 
-                if let Some(protocol) = protocol
-                    && protocol.is_socks5()
-                {
+                let protocol = protocol.unwrap_or_else(|| {
+                    tracing::trace!("no protocol detected, using http as protocol");
+                    &Protocol::HTTP
+                });
+
+                if protocol.is_socks5() {
                     tracing::trace!("using socks proxy connector");
                     let EstablishedClientConnection { ctx, req, conn } =
                         self.socks.connect(ctx, req).await?;
@@ -123,7 +127,7 @@ where
                         req,
                         conn: Either3::B(conn),
                     })
-                } else {
+                } else if protocol.is_http() {
                     tracing::trace!("using http proxy connector");
                     let EstablishedClientConnection { ctx, req, conn } =
                         self.http.connect(ctx, req).await?;
@@ -132,6 +136,11 @@ where
                         req,
                         conn: Either3::C(conn),
                     })
+                } else {
+                    Err(OpaqueError::from_display(format!(
+                        "received unsupport proxy protocol {protocol:?}"
+                    ))
+                    .into_boxed())
                 }
             }
         }
