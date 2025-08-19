@@ -1,27 +1,32 @@
-use std::fmt::{Debug, Write};
+use std::fmt::Debug;
 use std::net::SocketAddr;
 
-use crate::dep::core::bytes::Bytes;
 use crate::dep::http::request::Parts as ReqParts;
 use crate::layer::har::request_comment::RequestComment;
 use crate::service::web::extract::Query;
 
 use mime::Mime;
 
+use rama_core::Context;
 use rama_core::telemetry::tracing;
 use rama_error::OpaqueError;
-use rama_http_types::{
-    HeaderMap, HeaderName, Request as RamaRequest, Response as RamaResponse,
-    Version as HttpVersion,
-    dep::{http_body::Body as RamaBody, http_body_util::BodyExt},
-    header::{CONTENT_TYPE, LOCATION},
-    proto::h1::Http1HeaderMap,
-};
+use rama_http_headers::{ContentType, Header as _, HeaderMapExt, Location};
+use rama_http_types::dep::http;
+use rama_http_types::{HeaderMap, Version as HttpVersion, proto::h1::Http1HeaderMap};
 use serde::{Deserialize, Serialize};
 
 macro_rules! har_data {
     ($name:ident, { $($field:tt)* }) => {
         #[derive(Debug, Clone)]
+        pub struct $name {
+            $($field)*
+        }
+    };
+}
+
+macro_rules! har_data_with_default {
+    ($name:ident, { $($field:tt)* }) => {
+        #[derive(Debug, Clone, Default)]
         pub struct $name {
             $($field)*
         }
@@ -61,34 +66,19 @@ fn into_query_string(parts: &ReqParts) -> Vec<QueryStringPair> {
     }
 }
 
-fn get_mime(headers: HeaderMap) -> Mime {
-    headers
-        .get(CONTENT_TYPE)
-        .and_then(|content_type| content_type.to_str().ok())
-        .and_then(|content_type| content_type.parse::<mime::Mime>().ok())
-        .unwrap()
-}
-
-fn get_header(headers: HeaderMap, header_name: HeaderName) -> String {
-    if headers.contains_key(&header_name) {
-        headers
-            .get(header_name)
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .to_owned()
-    } else {
-        // TODO should we set a default?
-        String::new()
-    }
+fn get_mime(headers: &HeaderMap) -> Option<Mime> {
+    headers.typed_get::<ContentType>().map(|ct| ct.into_mime())
 }
 
 fn into_har_headers(headers: HeaderMap, version: HttpVersion) -> Vec<Header> {
+    // TODO fill in extensions from original value using `Http1HeaderMap::from_parts` so that you do not need to clone entire extensions
     let header_map = Http1HeaderMap::new(headers, None);
 
     header_map
         .into_iter()
         .map(|(name, value)| match version {
+            // why the difference? also please do not do this as we do not respect original order like this,
+            // like I said you really need the original context (Context) to get this correct
             HttpVersion::HTTP_2 | HttpVersion::HTTP_3 => Header {
                 name: name.header_name().as_str().to_owned(),
                 value: value.to_str().unwrap_or_default().to_owned(),
@@ -208,80 +198,56 @@ har_data!(Request, {
 });
 
 impl Request {
-    /// Compute the total number of bytes from the start of the HTTP request
-    /// until (and including) the double CRLF before the body.
-    pub fn headers_size_from_request<B>(req: &RamaRequest<B>) -> i64
+    pub fn from_rama_request_parts<State>(
+        ctx: &Context<State>,
+        parts: http::request::Parts,
+        payload: &[u8],
+    ) -> Result<Self, OpaqueError>
     where
-        B: RamaBody<Data = Bytes> + Clone + Send + 'static,
+        State: Clone + Send + Sync + 'static,
     {
-        let mut raw = String::new();
-
-        // Write the request line: METHOD URI VERSION\r\n
-        let method = req.method();
-        let uri = req.uri();
-        let version = match req.version() {
-            HttpVersion::HTTP_11 => "HTTP/1.1",
-            HttpVersion::HTTP_10 => "HTTP/1.0",
-            HttpVersion::HTTP_2 => "HTTP/2.0",
-            HttpVersion::HTTP_3 => "HTTP/3.0",
-            _ => "HTTP/1.1",
-        };
-        writeln!(raw, "{method} {uri} {version}\r").unwrap();
-
-        // Format: Header-Name: value\r\n
-        for (name, value) in req.headers() {
-            let value_str = value.to_str().unwrap_or_default();
-            writeln!(raw, "{name}: {value_str}\r").unwrap();
-        }
-
-        // Final CRLF (the empty line between headers and body)
-        raw.push_str("\r\n");
-
-        raw.len() as i64
-    }
-
-    pub async fn from_rama_request<B>(req: &RamaRequest<B>) -> Result<Self, OpaqueError>
-    where
-        B: RamaBody<Data = Bytes> + Clone + Send + 'static,
-    {
-        let (parts, body) = req.clone().into_parts();
-
-        let body_bytes = body
-            .collect()
-            .await
-            .map_err(|_| OpaqueError::from_display("Failed to read body"))?
-            .to_bytes();
-
         let http_version = into_string_version(parts.version)?;
 
         let post_data = if parts.method == "POST" {
+            let mime_type = get_mime(&parts.headers);
+            let params = match mime_type {
+                None => None,
+                Some(ref ct) => {
+                    if ct.subtype() == "x-www-form-urlencoded" {
+                        serde_html_form::from_bytes(payload)
+                            .map_err(OpaqueError::from_std)
+                            .ok()
+                    } else {
+                        None
+                    }
+                }
+            };
+
             Some(PostData {
-                mime_type: get_mime(req.headers().clone()),
-                // TODO params
-                params: None,
-                text: Some(String::from_utf8_lossy(&body_bytes).to_string()),
+                mime_type,
+                params,
+                text: (!payload.is_empty()).then(|| String::from_utf8_lossy(payload).to_string()),
                 comment: None,
             })
         } else {
             None
         };
 
-        let comment = 
-            match parts.extensions.get::<RequestComment>() {
-                Some(req_comment) => Some(req_comment.comment.clone()),
-                None => None
-            };
+        let comment = parts
+            .extensions
+            .get::<RequestComment>()
+            .map(|req_comment| req_comment.comment.clone());
 
         Ok(Self {
             method: parts.method.to_string(),
             url: parts.uri.to_string(),
             http_version,
-            cookies: vec![],
+            cookies: vec![], // TODO (use Cookie typed header ;))
             headers: into_har_headers(parts.headers.clone(), parts.version),
             query_string: into_query_string(&parts),
             post_data,
-            headers_size: Self::headers_size_from_request(req),
-            body_size: body_bytes.len() as i64,
+            headers_size: 0, // TOOD: your thing would break down once you go h2 etc... please create an issue with feature request and link to the HAR Issue. I need to expose this information in the request context as I anyway have the exact original amount somewhere in http-core, just need to track it and expose it
+            body_size: payload.len() as i64,
             comment,
         })
     }
@@ -301,7 +267,7 @@ har_data!(Response, {
     /// Details about the response body.
     pub content: Content,
     /// Redirection target URL from the Location response header.
-    pub redirect_url: String,
+    pub redirect_url: Option<String>,
     /// Total number of bytes from the start of the HTTP response message until (and including) the double CRLF before the body. Set to -1 if the info is not available.
     pub headers_size: i64,
     /// Size of the received response body in bytes. Set to zero in case of responses coming from the cache (304). Set to -1 if the info is not available.
@@ -311,39 +277,36 @@ har_data!(Response, {
 });
 
 impl Response {
-    pub async fn from_rama_response<B>(resp: &RamaResponse<B>) -> Result<Self, OpaqueError>
-    where
-        B: RamaBody<Data = Bytes> + Clone + Send + 'static,
-    {
-        let (parts, body) = resp.clone().into_parts();
-
-        let body_bytes = body
-            .collect()
-            .await
-            .map_err(|_| OpaqueError::from_display("Failed to read body"))?
-            .to_bytes();
-
-        let http_version = into_string_version(parts.version)?;
+    pub fn from_rama_response_parts(
+        resp_parts: http::response::Parts,
+        payload: &[u8],
+    ) -> Result<Self, OpaqueError> {
+        let http_version = into_string_version(resp_parts.version)?;
 
         let content = Content {
-            size: body_bytes.len() as i64,
+            size: payload.len() as i64,
             compression: None,
-            mime_type: get_mime(resp.headers().clone()),
-            text: Some(String::from_utf8_lossy(&body_bytes).to_string()),
+            mime_type: get_mime(&resp_parts.headers),
+            text: (!payload.is_empty()).then(|| String::from_utf8_lossy(payload).to_string()),
             encoding: None,
             comment: None,
         };
+
+        let redirect_url = resp_parts
+            .headers
+            .typed_get::<Location>()
+            .and_then(|loc| loc.encode_to_value().to_str().ok().map(|s| s.to_owned()));
 
         Ok(Self {
             status: 0,
             status_text: String::new(),
             http_version,
-            cookies: vec![],
-            headers: into_har_headers(parts.headers.clone(), parts.version),
+            cookies: vec![], // TODO: use Cookie typed header
+            headers: into_har_headers(resp_parts.headers, resp_parts.version),
             content,
-            redirect_url: get_header(parts.headers.clone(), LOCATION),
+            redirect_url,
             headers_size: -1,
-            body_size: body_bytes.len() as i64,
+            body_size: payload.len() as i64,
             comment: None,
         })
     }
@@ -375,13 +338,13 @@ har_data_with_serde!(QueryStringPair, {
 });
 
 har_data!(PostData, {
-    pub mime_type: Mime,
+    pub mime_type: Option<Mime>,
     pub params: Option<Vec<PostParam>>,
     pub text: Option<String>,
     pub comment: Option<String>,
 });
 
-har_data!(PostParam, {
+har_data_with_serde!(PostParam, {
     pub name: String,
     pub value: Option<String>,
     pub file_name: Option<String>,
@@ -392,7 +355,7 @@ har_data!(PostParam, {
 har_data!(Content, {
     pub size: i64,
     pub compression: Option<i64>,
-    pub mime_type: Mime,
+    pub mime_type: Option<Mime>,
     pub text: Option<String>,
     /// Encoding used for response text field e.g "base64".
     /// Leave out this field if the text field is HTTP decoded (decompressed & unchunked),
@@ -401,7 +364,7 @@ har_data!(Content, {
     pub comment: Option<String>,
 });
 
-har_data!(Cache, {
+har_data_with_default!(Cache, {
     pub before_request: Option<CacheState>,
     pub after_request: Option<CacheState>,
     pub comment: Option<String>,
@@ -415,7 +378,7 @@ har_data!(CacheState, {
     pub comment: Option<String>,
 });
 
-har_data!(Timings, {
+har_data_with_default!(Timings, {
     pub blocked: Option<u64>,
     pub dns: Option<u64>,
     pub connect: Option<u64>,

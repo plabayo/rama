@@ -1,11 +1,14 @@
+use crate::dep::http_body;
+use crate::dep::http_body_util::BodyExt;
 use crate::layer::har::Recorder;
 use crate::layer::har::spec::{
     Cache, Entry, Log as HarLog, Request as HarRequest, Response as HarResponse, Timings,
 };
 use crate::layer::har::toggle::Toggle;
+use crate::{Body, Request, Response};
+use rama_core::telemetry::tracing;
 use rama_core::{Context, Service, bytes::Bytes, error::BoxError};
-use rama_http_types::dep::http_body;
-use rama_http_types::{Request, Response};
+use rama_error::{ErrorExt, OpaqueError};
 use rama_net::stream::SocketInfo;
 
 pub struct HARExportService<R, S, T> {
@@ -19,13 +22,13 @@ impl<State, R, S, W, ReqBody, ResBody> Service<State, Request<ReqBody>>
 where
     State: Clone + Send + Sync + 'static,
     R: Recorder,
-    S: Service<State, Request<ReqBody>, Response = Response<ResBody>>,
+    S: Service<State, Request, Response = Response<ResBody>>,
     S::Error: Into<BoxError> + Send + Sync + 'static,
     W: Toggle,
-    ReqBody: http_body::Body<Data = Bytes, Error: Into<BoxError>> + Clone + Send + Sync + 'static,
-    ResBody: http_body::Body<Data = Bytes, Error: Into<BoxError>> + Clone + Send + Sync + 'static,
+    ReqBody: http_body::Body<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
+    ResBody: http_body::Body<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
 {
-    type Response = Response<ResBody>;
+    type Response = Response;
     type Error = BoxError;
 
     async fn serve(
@@ -33,40 +36,77 @@ where
         ctx: Context<State>,
         req: Request<ReqBody>,
     ) -> Result<Self::Response, Self::Error> {
-
         let server_ip_address = ctx
             .get::<SocketInfo>()
             .and_then(|socket| socket.local_addr().copied());
 
-        let result = self.service.serve(ctx, req.clone()).await;
+        // need to collect it first as bodies are (potentially) streaming
+        let (req_parts, req_body) = req.into_parts();
+        let req_body_bytes = req_body
+            .collect()
+            .await
+            .map_err(|err| {
+                OpaqueError::from_boxed(err.into())
+                    .context("collect request body for HAR recording and inner svc")
+            })?
+            .to_bytes();
 
-        if self.toggle.status().await {
-            let mut log_line = HarLog::default();
-            let request = HarRequest::from_rama_request::<ReqBody>(&req).await?;
+        let request = if self.toggle.status().await {
+            // TODO: pass in ctx as you need it for stuff such as original header order, comments, etc...
+            match HarRequest::from_rama_request_parts(&ctx, req_parts.clone(), &req_body_bytes) {
+                Err(err) => {
+                    tracing::debug!(
+                        "failed to create HAR request from incoming HTTP Request: {err}"
+                    );
+                    None
+                }
+                Ok(request) => Some(request),
+            }
+        } else {
+            None
+        };
 
-            let response = match result {
-                Ok(ref resp) => Some(HarResponse::from_rama_response::<ResBody>(resp).await?),
-                _ => None,
+        let svc_req = Request::from_parts(req_parts.clone(), Body::from(req_body_bytes));
+        let result = self.service.serve(ctx, svc_req).await;
+
+        if let Some(request) = request {
+            let (result, response) = match result {
+                Ok(resp) => {
+                    let (resp_parts, resp_body) = resp.into_parts();
+                    let resp_body_bytes = resp_body
+                        .collect()
+                        .await
+                        .map_err(|err| {
+                            OpaqueError::from_boxed(err.into())
+                                .context("collect response body for HAR recording and return value")
+                        })?
+                        .to_bytes();
+
+                    let maybe_response = match HarResponse::from_rama_response_parts(
+                        resp_parts.clone(),
+                        &resp_body_bytes,
+                    ) {
+                        Err(err) => {
+                            tracing::debug!(
+                                "failed to create HAR response from returned HTTP Response: {err}"
+                            );
+                            None
+                        }
+                        Ok(resp) => Some(resp),
+                    };
+
+                    let result = Ok(Response::from_parts(
+                        resp_parts,
+                        Body::from(resp_body_bytes),
+                    ));
+
+                    (result, maybe_response)
+                }
+                Err(err) => (Err(err.into()), None),
             };
 
-            // dummy information
-            let timings = Timings {
-                blocked: None,
-                dns: None,
-                connect: None,
-                send: 0,
-                wait: 0,
-                receive: 0,
-                ssl: None,
-                comment: None,
-            };
-
-            // dummy info
-            let cache = Cache {
-                before_request: None,
-                after_request: None,
-                comment: None,
-            };
+            let timings = Timings::default();
+            let cache = Cache::default();
 
             let entry = Entry::new(
                 "started_date_time".to_owned(),
@@ -78,11 +118,19 @@ where
                 server_ip_address,
             );
 
-            // Push the entry into the log even on service error
-            log_line.entries = vec![entry];
+            let log_line = HarLog {
+                entries: vec![entry],
+                ..Default::default()
+            };
+
             self.recorder.record(log_line).await;
+
+            return result;
         }
 
-        result.map_err(Into::into)
+        match result {
+            Ok(response) => Ok(response.map(Body::new)),
+            Err(err) => Err(err.into()),
+        }
     }
 }

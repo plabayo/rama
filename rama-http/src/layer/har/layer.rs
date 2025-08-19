@@ -1,7 +1,7 @@
+use crate::layer::har::Recorder;
 use crate::layer::har::default::InMemoryRecorder;
 use crate::layer::har::service::HARExportService;
 use crate::layer::har::toggle::Toggle;
-use crate::layer::har::Recorder;
 use rama_core::Layer;
 
 pub struct HARExportLayer<R, T> {
