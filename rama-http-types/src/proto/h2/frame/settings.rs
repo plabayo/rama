@@ -318,11 +318,6 @@ impl fmt::Debug for Settings {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let mut builder = f.debug_struct("Settings");
         builder.field("flags", &self.flags);
-        builder.field("setting_order", &self.config.setting_order);
-        builder.field(
-            "setting_order defaults (appended if not present)",
-            &SettingOrder::default_settings(),
-        );
         builder.field("config", &self.config);
         builder.finish()
     }
