@@ -13,6 +13,7 @@ use rama_error::OpaqueError;
 use rama_http_headers::{ContentType, Header as _, HeaderMapExt, Location};
 use rama_http_types::dep::http;
 use rama_http_types::{HeaderMap, Version as HttpVersion, proto::h1::Http1HeaderMap};
+use rama_http_types::proto::h1::headers::original::OriginalHttp1Headers;
 use serde::{Deserialize, Serialize};
 
 macro_rules! har_data {
@@ -70,17 +71,14 @@ fn get_mime(headers: &HeaderMap) -> Option<Mime> {
     headers.typed_get::<ContentType>().map(|ct| ct.into_mime())
 }
 
-fn into_har_headers(headers: HeaderMap, version: HttpVersion) -> Vec<Header> {
-    // TODO fill in extensions from original value using `Http1HeaderMap::from_parts` so that you do not need to clone entire extensions
-    let header_map = Http1HeaderMap::new(headers, None);
-
+fn into_har_headers(header_map: &HeaderMap, version: HttpVersion) -> Vec<Header> {
     header_map
-        .into_iter()
+        .iter()
         .map(|(name, value)| match version {
             // why the difference? also please do not do this as we do not respect original order like this,
             // like I said you really need the original context (Context) to get this correct
             HttpVersion::HTTP_2 | HttpVersion::HTTP_3 => Header {
-                name: name.header_name().as_str().to_owned(),
+                name: name.as_str().to_owned(),
                 value: value.to_str().unwrap_or_default().to_owned(),
                 comment: None,
             },
@@ -199,7 +197,7 @@ har_data!(Request, {
 
 impl Request {
     pub fn from_rama_request_parts<State>(
-        ctx: &Context<State>,
+        _ctx: &Context<State>,
         parts: http::request::Parts,
         payload: &[u8],
     ) -> Result<Self, OpaqueError>
@@ -223,10 +221,12 @@ impl Request {
                 }
             };
 
+            let text = (!payload.is_empty()).then(|| String::from_utf8_lossy(payload).to_string());
+
             Some(PostData {
                 mime_type,
                 params,
-                text: (!payload.is_empty()).then(|| String::from_utf8_lossy(payload).to_string()),
+                text,
                 comment: None,
             })
         } else {
@@ -238,15 +238,21 @@ impl Request {
             .get::<RequestComment>()
             .map(|req_comment| req_comment.comment.clone());
 
+
+        let query_string = into_query_string(&parts);
+        let mut ext = parts.extensions;
+        let headers_order: OriginalHttp1Headers = ext.remove().expect("Original order");
+        let header_map = Http1HeaderMap::from_parts(parts.headers.clone(), headers_order).into_headers();
+
         Ok(Self {
             method: parts.method.to_string(),
             url: parts.uri.to_string(),
             http_version,
             cookies: vec![], // TODO (use Cookie typed header ;))
-            headers: into_har_headers(parts.headers.clone(), parts.version),
-            query_string: into_query_string(&parts),
+            headers: into_har_headers(&header_map, parts.version),
+            query_string,
             post_data,
-            headers_size: 0, // TOOD: your thing would break down once you go h2 etc... please create an issue with feature request and link to the HAR Issue. I need to expose this information in the request context as I anyway have the exact original amount somewhere in http-core, just need to track it and expose it
+            headers_size: 0, // TODO: your thing would break down once you go h2 etc... please create an issue with feature request and link to the HAR Issue. I need to expose this information in the request context as I anyway have the exact original amount somewhere in http-core, just need to track it and expose it
             body_size: payload.len() as i64,
             comment,
         })
@@ -297,12 +303,16 @@ impl Response {
             .typed_get::<Location>()
             .and_then(|loc| loc.encode_to_value().to_str().ok().map(|s| s.to_owned()));
 
+        let mut ext = resp_parts.extensions;
+        let headers_order: OriginalHttp1Headers = ext.remove().expect("Original order");
+        let header_map = Http1HeaderMap::from_parts(resp_parts.headers.clone(), headers_order).into_headers();
+
         Ok(Self {
             status: 0,
             status_text: String::new(),
             http_version,
             cookies: vec![], // TODO: use Cookie typed header
-            headers: into_har_headers(resp_parts.headers, resp_parts.version),
+            headers: into_har_headers(&header_map, resp_parts.version),
             content,
             redirect_url,
             headers_size: -1,
