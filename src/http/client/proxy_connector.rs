@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::{
     Layer, Service,
     combinators::Either3,
-    error::{BoxError, OpaqueError},
+    error::BoxError,
     http::client::proxy::layer::{HttpProxyConnector, HttpProxyConnectorLayer},
     net::{
         address::ProxyAddress,
@@ -12,6 +12,7 @@ use crate::{
         transport::TryRefIntoTransportContext,
     },
     proxy::socks5::{Socks5ProxyConnector, Socks5ProxyConnectorLayer},
+    telemetry::tracing,
 };
 
 /// Proxy connector which supports http(s) and socks5(h) proxy address
@@ -91,15 +92,14 @@ where
         ctx: rama_core::Context<State>,
         req: Request,
     ) -> Result<Self::Response, Self::Error> {
-        let proxy = ctx
-            .get::<ProxyAddress>()
-            .and_then(|proxy| proxy.protocol.as_ref());
+        let proxy = ctx.get::<ProxyAddress>();
 
         match proxy {
             None => {
                 if self.required {
                     return Err("proxy required but none is defined".into());
                 }
+                tracing::trace!("no proxy detected in ctx, using inner connector");
                 let EstablishedClientConnection { ctx, req, conn } =
                     self.inner.connect(ctx, req).await.map_err(Into::into)?;
                 Ok(EstablishedClientConnection {
@@ -108,8 +108,14 @@ where
                     conn: Either3::A(conn),
                 })
             }
-            Some(proto) => {
-                if proto.is_socks5() {
+            Some(proxy) => {
+                let protocol = proxy.protocol.as_ref();
+                tracing::trace!(?protocol, "proxy detected in ctx");
+
+                if let Some(protocol) = protocol
+                    && protocol.is_socks5()
+                {
+                    tracing::trace!("using socks proxy connector");
                     let EstablishedClientConnection { ctx, req, conn } =
                         self.socks.connect(ctx, req).await?;
                     Ok(EstablishedClientConnection {
@@ -117,7 +123,8 @@ where
                         req,
                         conn: Either3::B(conn),
                     })
-                } else if proto.is_http() {
+                } else {
+                    tracing::trace!("using http proxy connector");
                     let EstablishedClientConnection { ctx, req, conn } =
                         self.http.connect(ctx, req).await?;
                     Ok(EstablishedClientConnection {
@@ -125,8 +132,6 @@ where
                         req,
                         conn: Either3::C(conn),
                     })
-                } else {
-                    Err(OpaqueError::from_display("diplay not").into())
                 }
             }
         }
