@@ -25,7 +25,7 @@ pub use builder::EasyHttpWebClientBuilder;
 mod proxy_connector;
 #[cfg(feature = "socks5")]
 #[doc(inline)]
-pub use proxy_connector::{ProxyConnector, ProxyConnectorLayer};
+pub use proxy_connector::{MaybeProxiedConnection, ProxyConnector, ProxyConnectorLayer};
 
 /// An opiniated http client that can be used to serve HTTP requests.
 ///

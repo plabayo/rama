@@ -363,6 +363,7 @@ opentelemetry = [
 base64 = { workspace = true, optional = true }
 bytes = { workspace = true, optional = true }
 hex = { workspace = true, optional = true }
+pin-project-lite = { workspace = true }
 rama-core = { workspace = true }
 rama-crypto = { workspace = true }
 rama-dns = { workspace = true, optional = true }

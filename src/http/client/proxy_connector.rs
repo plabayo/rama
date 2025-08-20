@@ -1,8 +1,5 @@
-use std::sync::Arc;
-
 use crate::{
     Layer, Service,
-    combinators::Either3,
     error::{BoxError, OpaqueError},
     http::client::proxy::layer::{HttpProxyConnector, HttpProxyConnectorLayer},
     net::{
@@ -15,6 +12,15 @@ use crate::{
     proxy::socks5::{Socks5ProxyConnector, Socks5ProxyConnectorLayer},
     telemetry::tracing,
 };
+use pin_project_lite::pin_project;
+use rama_core::combinators::Either;
+use std::{
+    fmt::Debug,
+    pin::Pin,
+    sync::Arc,
+    task::{self, Poll},
+};
+use tokio::io::{AsyncRead, AsyncWrite};
 
 /// Proxy connector which supports http(s) and socks5(h) proxy address
 ///
@@ -76,15 +82,8 @@ where
     Request:
         TryRefIntoTransportContext<State, Error: Into<BoxError> + Send + 'static> + Send + 'static,
 {
-    type Response = EstablishedClientConnection<
-        Either3<
-            S::Connection,
-            <Socks5ProxyConnector<S> as ConnectorService<State, Request>>::Connection,
-            <HttpProxyConnector<S> as ConnectorService<State, Request>>::Connection,
-        >,
-        State,
-        Request,
-    >;
+    type Response =
+        EstablishedClientConnection<MaybeProxiedConnection<S::Connection>, State, Request>;
 
     type Error = BoxError;
 
@@ -106,7 +105,9 @@ where
                 Ok(EstablishedClientConnection {
                     ctx,
                     req,
-                    conn: Either3::A(conn),
+                    conn: MaybeProxiedConnection {
+                        inner: Connection::Direct { conn },
+                    },
                 })
             }
             Some(proxy) => {
@@ -125,7 +126,9 @@ where
                     Ok(EstablishedClientConnection {
                         ctx,
                         req,
-                        conn: Either3::B(conn),
+                        conn: MaybeProxiedConnection {
+                            inner: Connection::Socks { conn },
+                        },
                     })
                 } else if protocol.is_http() {
                     tracing::trace!("using http proxy connector");
@@ -134,7 +137,9 @@ where
                     Ok(EstablishedClientConnection {
                         ctx,
                         req,
-                        conn: Either3::C(conn),
+                        conn: MaybeProxiedConnection {
+                            inner: Connection::Http { conn },
+                        },
                     })
                 } else {
                     Err(OpaqueError::from_display(format!(
@@ -143,6 +148,114 @@ where
                     .into_boxed())
                 }
             }
+        }
+    }
+}
+
+pin_project! {
+    /// A connection which will be proxied if a [`ProxyAddress`] was configured
+    pub struct MaybeProxiedConnection<S> {
+        #[pin]
+        inner: Connection<S>,
+    }
+}
+
+impl<S: Debug> Debug for MaybeProxiedConnection<S> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MaybeProxiedConnection")
+            .field("inner", &self.inner)
+            .finish()
+    }
+}
+
+pin_project! {
+    #[project = ConnectionProj]
+    enum Connection<S> {
+        Direct{ #[pin] conn: S },
+        Socks{ #[pin] conn: S },
+        Http{ #[pin] conn: Either<S, rama_http::io::upgrade::Upgraded> },
+
+    }
+}
+
+impl<S: Debug> Debug for Connection<S> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Direct { conn } => f.debug_struct("Direct").field("conn", conn).finish(),
+            Self::Socks { conn } => f.debug_struct("Socks").field("conn", conn).finish(),
+            Self::Http { conn } => f.debug_struct("Http").field("conn", conn).finish(),
+        }
+    }
+}
+
+impl<Conn: AsyncWrite> AsyncWrite for MaybeProxiedConnection<Conn> {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut task::Context<'_>,
+        buf: &[u8],
+    ) -> Poll<Result<usize, std::io::Error>> {
+        match self.project().inner.project() {
+            ConnectionProj::Direct { conn } | ConnectionProj::Socks { conn } => {
+                conn.poll_write(cx, buf)
+            }
+            ConnectionProj::Http { conn } => conn.poll_write(cx, buf),
+        }
+    }
+
+    fn poll_flush(
+        self: Pin<&mut Self>,
+        cx: &mut task::Context<'_>,
+    ) -> Poll<Result<(), std::io::Error>> {
+        match self.project().inner.project() {
+            ConnectionProj::Direct { conn } | ConnectionProj::Socks { conn } => conn.poll_flush(cx),
+            ConnectionProj::Http { conn } => conn.poll_flush(cx),
+        }
+    }
+
+    fn poll_shutdown(
+        self: Pin<&mut Self>,
+        cx: &mut task::Context<'_>,
+    ) -> Poll<Result<(), std::io::Error>> {
+        match self.project().inner.project() {
+            ConnectionProj::Direct { conn } | ConnectionProj::Socks { conn } => {
+                conn.poll_shutdown(cx)
+            }
+            ConnectionProj::Http { conn } => conn.poll_shutdown(cx),
+        }
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        match &self.inner {
+            Connection::Direct { conn } | Connection::Socks { conn } => conn.is_write_vectored(),
+            Connection::Http { conn } => conn.is_write_vectored(),
+        }
+    }
+
+    fn poll_write_vectored(
+        self: Pin<&mut Self>,
+        cx: &mut task::Context<'_>,
+        bufs: &[std::io::IoSlice<'_>],
+    ) -> Poll<Result<usize, std::io::Error>> {
+        match self.project().inner.project() {
+            ConnectionProj::Direct { conn } | ConnectionProj::Socks { conn } => {
+                conn.poll_write_vectored(cx, bufs)
+            }
+            ConnectionProj::Http { conn } => conn.poll_write_vectored(cx, bufs),
+        }
+    }
+}
+
+impl<Conn: AsyncRead> AsyncRead for MaybeProxiedConnection<Conn> {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        match self.project().inner.project() {
+            ConnectionProj::Direct { conn } | ConnectionProj::Socks { conn } => {
+                conn.poll_read(cx, buf)
+            }
+            ConnectionProj::Http { conn } => conn.poll_read(cx, buf),
         }
     }
 }
