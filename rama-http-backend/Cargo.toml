@@ -30,6 +30,7 @@ tls = ["rama-net/tls"]
 const_format = { workspace = true }
 futures = { workspace = true }
 h2 = { workspace = true }
+pin-project-lite = { workspace = true }
 rama-core = { workspace = true }
 rama-http = { workspace = true }
 rama-http-core = { workspace = true }
