@@ -4,6 +4,9 @@
 //!
 //! Direct copy of [tower-layer](https://docs.rs/tower-layer/0.3.0/tower_layer/trait.Layer.html).
 
+use rama_error::BoxError;
+use std::fmt::Debug;
+
 /// A layer that produces a Layered service (middleware(inner service)).
 pub trait Layer<S>: Sized {
     /// The service produced by the layer.
@@ -43,19 +46,103 @@ impl<L, S> Layer<S> for Option<L>
 where
     L: Layer<S>,
 {
-    type Service = crate::combinators::Either<L::Service, S>;
+    type Service = MaybeLayeredService<S, L>;
 
     fn layer(&self, inner: S) -> Self::Service {
         match self {
-            Some(layer) => crate::combinators::Either::A(layer.layer(inner)),
-            None => crate::combinators::Either::B(inner),
+            Some(layer) => MaybeLayeredService(MaybeLayeredSvc::Enabled(layer.layer(inner))),
+            None => MaybeLayeredService(MaybeLayeredSvc::Disabled(inner)),
         }
     }
 
     fn into_layer(self, inner: S) -> Self::Service {
         match self {
-            Some(layer) => crate::combinators::Either::A(layer.into_layer(inner)),
-            None => crate::combinators::Either::B(inner),
+            Some(layer) => MaybeLayeredService(MaybeLayeredSvc::Enabled(layer.into_layer(inner))),
+            None => MaybeLayeredService(MaybeLayeredSvc::Disabled(inner)),
+        }
+    }
+}
+
+/// [`MaybeLayeredService`] is [`Service`] which is created by using an [`Option<Layer>`]
+pub struct MaybeLayeredService<S, L: Layer<S>>(MaybeLayeredSvc<S, L>);
+
+impl<S, L> Debug for MaybeLayeredService<S, L>
+where
+    S: Debug,
+    L: Layer<S>,
+    L::Service: Debug,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("MaybeLayeredService").field(&self.0).finish()
+    }
+}
+
+impl<S, L> Clone for MaybeLayeredService<S, L>
+where
+    S: Clone,
+    L: Layer<S>,
+    L::Service: Clone,
+{
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+enum MaybeLayeredSvc<S, L>
+where
+    L: Layer<S>,
+{
+    Enabled(L::Service),
+    Disabled(S),
+}
+
+impl<S, L> Debug for MaybeLayeredSvc<S, L>
+where
+    S: Debug,
+    L: Layer<S>,
+    L::Service: Debug,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Enabled(service) => f.debug_tuple("Enabled").field(service).finish(),
+            Self::Disabled(service) => f.debug_tuple("Disabled").field(service).finish(),
+        }
+    }
+}
+
+impl<S, L> Clone for MaybeLayeredSvc<S, L>
+where
+    S: Clone,
+    L: Layer<S>,
+    L::Service: Clone,
+{
+    fn clone(&self) -> Self {
+        match self {
+            Self::Enabled(svc) => Self::Enabled(svc.clone()),
+            Self::Disabled(inner) => Self::Disabled(inner.clone()),
+        }
+    }
+}
+
+impl<S, L, State, Request> Service<State, Request> for MaybeLayeredService<S, L>
+where
+    S: Service<State, Request, Error: Into<BoxError>>,
+    L: Layer<S> + 'static,
+    L::Service: Service<State, Request, Response = S::Response, Error: Into<BoxError>>,
+    State: Clone + Send + Sync + 'static,
+    Request: Send + 'static,
+{
+    type Error = BoxError;
+    type Response = S::Response;
+
+    async fn serve(
+        &self,
+        ctx: Context<State>,
+        req: Request,
+    ) -> Result<Self::Response, Self::Error> {
+        match &self.0 {
+            MaybeLayeredSvc::Enabled(svc) => svc.serve(ctx, req).await.map_err(Into::into),
+            MaybeLayeredSvc::Disabled(inner) => inner.serve(ctx, req).await.map_err(Into::into),
         }
     }
 }
@@ -872,6 +959,8 @@ pub use add_extension::{AddExtension, AddExtensionLayer};
 pub mod get_extension;
 pub use get_extension::{GetExtension, GetExtensionLayer};
 
+use crate::{Context, Service};
+
 macro_rules! impl_layer_either {
     ($id:ident, $($param:ident),+ $(,)?) => {
         impl<$($param),+, S> Layer<S> for crate::combinators::$id<$($param),+>
@@ -900,3 +989,32 @@ macro_rules! impl_layer_either {
 }
 
 crate::combinators::impl_either!(impl_layer_either);
+
+#[cfg(test)]
+mod tests {
+    use rama_error::OpaqueError;
+
+    use crate::{Context, service::service_fn};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn simple_layer() {
+        let svc = (GetExtensionLayer::new(async |_: String| {})).into_layer(service_fn(
+            async |_: Context<()>, _: ()| Ok::<_, OpaqueError>(()),
+        ));
+
+        svc.serve(Context::default(), ()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn simple_optional_layer() {
+        let maybe_layer = Some(GetExtensionLayer::new(async |_: String| {}));
+
+        let svc = (maybe_layer).into_layer(service_fn(async |_: Context<()>, _: ()| {
+            Ok::<_, OpaqueError>(())
+        }));
+
+        svc.serve(Context::default(), ()).await.unwrap();
+    }
+}
