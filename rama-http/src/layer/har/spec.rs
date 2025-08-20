@@ -10,10 +10,10 @@ use mime::Mime;
 use rama_core::Context;
 use rama_core::telemetry::tracing;
 use rama_error::OpaqueError;
-use rama_http_headers::{ContentType, Header as _, HeaderMapExt, Location};
+use rama_http_headers::{ContentType, Cookie as RamaCookie, Header as _, HeaderMapExt, Location};
 use rama_http_types::dep::http;
-use rama_http_types::{HeaderMap, Version as HttpVersion, proto::h1::Http1HeaderMap};
 use rama_http_types::proto::h1::headers::original::OriginalHttp1Headers;
+use rama_http_types::{HeaderMap, Version as HttpVersion, proto::h1::Http1HeaderMap};
 use serde::{Deserialize, Serialize};
 
 macro_rules! har_data {
@@ -69,6 +69,26 @@ fn into_query_string(parts: &ReqParts) -> Vec<QueryStringPair> {
 
 fn get_mime(headers: &HeaderMap) -> Option<Mime> {
     headers.typed_get::<ContentType>().map(|ct| ct.into_mime())
+}
+
+fn parse_cookies(input: &str) -> Vec<Cookie> {
+    input
+        .split(';') // split by semicolon
+        .filter_map(|part| {
+            let trimmed = part.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+            let mut split = trimmed.splitn(2, '=');
+            let name = split.next()?.trim().to_owned();
+            let value = split.next()?.trim().to_owned();
+            Some(Cookie {
+                name,
+                value,
+                ..Default::default()
+            })
+        })
+        .collect()
 }
 
 fn into_har_headers(header_map: &HeaderMap, version: HttpVersion) -> Vec<Header> {
@@ -238,20 +258,29 @@ impl Request {
             .get::<RequestComment>()
             .map(|req_comment| req_comment.comment.clone());
 
+        let cookies = parts
+            .headers
+            .typed_get::<RamaCookie>()
+            .map(|h| h.encode_to_value())
+            .and_then(|hv| hv.to_str().ok().map(String::from))
+            .as_deref()
+            .map_or_else(Vec::new, parse_cookies);
 
         let query_string = into_query_string(&parts);
         let mut ext = parts.extensions;
         let headers_order: OriginalHttp1Headers = ext.remove().expect("Original order");
-        let header_map = Http1HeaderMap::from_parts(parts.headers.clone(), headers_order).into_headers();
+        let header_map =
+            Http1HeaderMap::from_parts(parts.headers.clone(), headers_order).into_headers();
 
         Ok(Self {
             method: parts.method.to_string(),
             url: parts.uri.to_string(),
             http_version,
-            cookies: vec![], // TODO (use Cookie typed header ;))
+            cookies,
             headers: into_har_headers(&header_map, parts.version),
             query_string,
             post_data,
+            // TODO: https://github.com/plabayo/rama/issues/669
             headers_size: -1,
             body_size: payload.len() as i64,
             comment,
@@ -301,17 +330,26 @@ impl Response {
         let redirect_url = resp_parts
             .headers
             .typed_get::<Location>()
-            .and_then(|loc| loc.encode_to_value().to_str().ok().map(|s| s.to_owned()));
+            .and_then(|h| h.encode_to_value().to_str().ok().map(String::from));
+
+        let cookies = resp_parts
+            .headers
+            .typed_get::<RamaCookie>()
+            .map(|h| h.encode_to_value())
+            .and_then(|hv| hv.to_str().ok().map(String::from))
+            .as_deref()
+            .map_or_else(Vec::new, parse_cookies);
 
         let mut ext = resp_parts.extensions;
         let headers_order: OriginalHttp1Headers = ext.remove().expect("Original order");
-        let header_map = Http1HeaderMap::from_parts(resp_parts.headers.clone(), headers_order).into_headers();
+        let header_map =
+            Http1HeaderMap::from_parts(resp_parts.headers.clone(), headers_order).into_headers();
 
         Ok(Self {
             status: 0,
             status_text: String::new(),
             http_version,
-            cookies: vec![], // TODO: use Cookie typed header
+            cookies,
             headers: into_har_headers(&header_map, resp_parts.version),
             content,
             redirect_url,
@@ -324,7 +362,7 @@ impl Response {
 
 // TODO: https://github.com/plabayo/rama/issues/44
 // For now this will have to be manually parsed. Needs an http-cookie logic
-har_data!(Cookie, {
+har_data_with_default!(Cookie, {
     pub name: String,
     pub value: String,
     pub path: Option<String>,
@@ -398,3 +436,25 @@ har_data_with_default!(Timings, {
     pub ssl: Option<u64>,
     pub comment: Option<String>,
 });
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_cookies() {
+        let input = "name=value; name2=value2; name3=value3";
+        let cookies = parse_cookies(input);
+
+        assert_eq!(cookies.len(), 3);
+
+        assert_eq!(cookies[0].name, "name");
+        assert_eq!(cookies[0].value, "value");
+
+        assert_eq!(cookies[1].name, "name2");
+        assert_eq!(cookies[1].value, "value2");
+
+        assert_eq!(cookies[2].name, "name3");
+        assert_eq!(cookies[2].value, "value3");
+    }
+}
