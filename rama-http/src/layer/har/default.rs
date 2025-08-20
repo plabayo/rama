@@ -1,8 +1,6 @@
 use crate::layer::har::{HarLog, Recorder};
 use std::sync::{Arc, Mutex};
 
-// TODO probably to be moved to examples at some point
-
 #[derive(Clone)]
 pub struct InMemoryRecorder {
     data: Arc<Mutex<Vec<HarLog>>>,
