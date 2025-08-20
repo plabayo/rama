@@ -252,7 +252,7 @@ impl Request {
             headers: into_har_headers(&header_map, parts.version),
             query_string,
             post_data,
-            headers_size: 0, // TODO: your thing would break down once you go h2 etc... please create an issue with feature request and link to the HAR Issue. I need to expose this information in the request context as I anyway have the exact original amount somewhere in http-core, just need to track it and expose it
+            headers_size: -1,
             body_size: payload.len() as i64,
             comment,
         })
