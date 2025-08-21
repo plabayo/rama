@@ -114,6 +114,7 @@ use rama::{
 };
 
 use itertools::Itertools;
+use rama_http::proto::{RequestExtensions, RequestHeaders};
 use std::{convert::Infallible, sync::Arc, time::Duration};
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -378,11 +379,20 @@ where
         }
     };
 
-    // TODO: adapt extensions based on actual request headers,
-    // as things like UA emulation can freak it up
-
-    // TODO: remove this hardcode once we adapt correctly based on orig reuqest
-    handshake.extensions = Some(SecWebSocketExtensions::per_message_deflate());
+    if let Some(orig_req_headers) = handshake
+        .response
+        .extensions()
+        .get::<RequestExtensions>()
+        .and_then(|ext| ext.get::<RequestHeaders>())
+    {
+        let req_extensions = orig_req_headers
+            .headers()
+            .typed_get::<SecWebSocketExtensions>();
+        tracing::debug!(
+            "apply original req WS extensions (perhaps after UA Emulation) as handshake exts: {req_extensions:?}"
+        );
+        handshake.extensions = req_extensions;
+    }
 
     let egress_socket = match handshake.complete().await {
         Ok(socket) => socket,

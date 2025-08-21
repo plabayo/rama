@@ -365,7 +365,7 @@ pub fn validate_http_server_response<Body>(
                                 (Some(their_bits), maybe_our_bits) => {
                                     if !(8..=15).contains(&their_bits)
                                         || maybe_our_bits
-                                            .map(|our_bits| their_bits > our_bits)
+                                            .map(|our_bits| our_bits != 0 && their_bits > our_bits)
                                             .unwrap_or_default()
                                     {
                                         tracing::debug!("server offered invalid server_max_window_bits (pmd)... ext mismatch!");

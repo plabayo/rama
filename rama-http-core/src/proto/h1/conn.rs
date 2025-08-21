@@ -8,6 +8,7 @@ use std::time::Duration;
 use httparse::ParserConfig;
 use rama_core::bytes::{Buf, Bytes};
 use rama_core::telemetry::tracing::{debug, error, trace, warn};
+use rama_http::dep::http;
 use rama_http::io::upgrade;
 use rama_http_types::dep::http_body::Frame;
 use rama_http_types::header::{CONNECTION, TE};
@@ -63,6 +64,7 @@ where
                 notify_read: false,
                 reading: Reading::Init,
                 writing: Writing::Init,
+                encoded_request_extensions: None,
                 upgrade: None,
                 // We assume a modern world where the remote speaks HTTP/1.1.
                 // If they tell us otherwise, we'll downgrade in `read_head`.
@@ -203,6 +205,7 @@ where
                 h1_max_headers: self.state.h1_max_headers,
                 h09_responses: self.state.h09_responses,
                 on_informational: &mut self.state.on_informational,
+                encoded_request_extensions: &mut self.state.encoded_request_extensions,
             },
         ) {
             Poll::Ready(Ok(msg)) => msg,
@@ -581,8 +584,11 @@ where
             buf,
         ) {
             Ok(encoder) => {
-                self.state.on_informational =
-                    head.extensions.remove::<crate::ext::OnInformational>();
+                self.state.on_informational = head
+                    .extensions
+                    .get::<crate::ext::OnInformational>()
+                    .cloned();
+                self.state.encoded_request_extensions = Some(head.extensions);
                 Some(encoder)
             }
             Err(err) => {
@@ -876,6 +882,8 @@ struct State {
     reading: Reading,
     /// State of allowed writes
     writing: Writing,
+    /// Last known request extensions encoded
+    encoded_request_extensions: Option<http::Extensions>,
     /// An expected pending HTTP upgrade.
     upgrade: Option<upgrade::Pending>,
     /// Either HTTP/1.0 or 1.1 connection

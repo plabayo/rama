@@ -520,12 +520,15 @@ where
 
                                     // server_max_window_bits
                                     // server may include this even if client did not offer it
-                                    let srv_cap = allowed_pmd
+                                    let srv_cap = allowed_pmd.server_max_window_bits.unwrap_or(15);
+                                    let srv_cap = if srv_cap == 0 {
+                                        15
+                                    } else {
+                                        srv_cap.clamp(8, 15)
+                                    };
+                                    let cli_req_srv = request_pmd
                                         .server_max_window_bits
-                                        .unwrap_or(15)
-                                        .clamp(8, 15);
-                                    let cli_req_srv =
-                                        request_pmd.server_max_window_bits.map(|v| v.clamp(8, 15));
+                                        .map(|v| if v == 0 { 15 } else { v.clamp(8, 15) });
                                     let chosen_srv_bits = match (cli_req_srv, Some(srv_cap)) {
                                         (Some(client_bits), Some(cap)) => {
                                             Some(client_bits.min(cap))
@@ -546,12 +549,18 @@ where
                                     resp.client_max_window_bits = request_pmd
                                         .client_max_window_bits
                                         .map(|client_bits_offer| {
-                                            let offer = client_bits_offer.clamp(8, 15);
-                                            let cap = allowed_pmd
-                                                .client_max_window_bits
-                                                .unwrap_or(offer)
-                                                .clamp(8, 15);
-                                            offer.min(cap)
+                                            let offer = if client_bits_offer == 0 {
+                                                15
+                                            } else {
+                                                client_bits_offer.clamp(8, 15)
+                                            };
+                                            let cap =
+                                                allowed_pmd.client_max_window_bits.unwrap_or(offer);
+                                            if cap == 0 {
+                                                offer
+                                            } else {
+                                                offer.min(cap.clamp(8, 15))
+                                            }
                                         });
 
                                     tracing::trace!(

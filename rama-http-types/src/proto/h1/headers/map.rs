@@ -76,6 +76,11 @@ impl Http1HeaderMap {
     }
 
     #[must_use]
+    pub fn headers(&self) -> &HeaderMap {
+        &self.headers
+    }
+
+    #[must_use]
     pub fn into_headers(self) -> HeaderMap {
         self.headers
     }
