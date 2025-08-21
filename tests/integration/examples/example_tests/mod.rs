@@ -32,8 +32,6 @@ mod http_listener_hello;
 #[cfg(all(
     feature = "http-full",
     feature = "rustls",
-    feature = "ua",
-    feature = "compression"
 ))]
 mod http_mitm_proxy_boring;
 #[cfg(all(feature = "http-full", feature = "rustls"))]
