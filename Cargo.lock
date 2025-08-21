@@ -2767,6 +2767,7 @@ dependencies = [
  "const_format",
  "futures",
  "h2",
+ "pin-project-lite",
  "rama-core",
  "rama-http",
  "rama-http-core",

@@ -12,4 +12,6 @@ pub use layer::HttpProxyConnectorLayer;
 
 mod service;
 #[doc(inline)]
-pub use service::{HttpProxyConnectResponseHeaders, HttpProxyConnector};
+pub use service::{
+    HttpProxyConnectResponseHeaders, HttpProxyConnector, MaybeHttpProxiedConnection,
+};
