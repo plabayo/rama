@@ -51,7 +51,6 @@
 //!     --protocols echo-upper wss://echo.ramaproxy.org
 //! ```
 
-use http::header::SEC_WEBSOCKET_EXTENSIONS;
 use rama::{
     Layer, Service,
     error::{BoxError, ErrorContext, OpaqueError},
@@ -60,7 +59,10 @@ use rama::{
     http::{
         Body, Request, Response, StatusCode,
         client::EasyHttpWebClient,
-        headers::SecWebSocketExtensions,
+        headers::{
+            HeaderEncode, HeaderMapExt as _, SecWebSocketExtensions, TypedHeader,
+            sec_websocket_extensions::Extension,
+        },
         io::upgrade,
         layer::{
             compress_adapter::CompressAdaptLayer,
@@ -78,7 +80,7 @@ use rama::{
         ws::{
             AsyncWebSocket, Message, ProtocolError,
             handshake::{client::HttpClientWebSocketExt, server::WebSocketMatcher},
-            protocol::Role,
+            protocol::{Role, WebSocketConfig},
         },
     },
     layer::ConsumeErrLayer,
@@ -112,8 +114,6 @@ use rama::{
 };
 
 use itertools::Itertools;
-use rama_http::headers::{HeaderEncode, HeaderMapExt as _, sec_websocket_extensions::Extension};
-use rama_ws::protocol::WebSocketConfig;
 use std::{convert::Infallible, sync::Arc, time::Duration};
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -394,7 +394,7 @@ where
 
     let (egress_socket, mut response_parts, _) = egress_socket.into_parts();
 
-    let mut ingress_socket_cfg = WebSocketConfig::default();
+    let mut ingress_socket_cfg: WebSocketConfig = Default::default();
     if let Some(ingress_header) = parts_copy.headers.typed_get::<SecWebSocketExtensions>() {
         tracing::debug!("ingress request contains sec-websocket-extensions header");
         if let Some(accept_pmd_cfg) = ingress_header.iter().find_map(|ext| {
@@ -407,7 +407,7 @@ where
             tracing::debug!("use deflate ext for ingress ws cfg: {accept_pmd_cfg:?}");
             ingress_socket_cfg.per_message_deflate = Some((&accept_pmd_cfg).into());
             let _ = response_parts.headers.insert(
-                SEC_WEBSOCKET_EXTENSIONS,
+                SecWebSocketExtensions::name(),
                 SecWebSocketExtensions::per_message_deflate_with_config(accept_pmd_cfg)
                     .encode_to_value(),
             );
@@ -415,7 +415,9 @@ where
             tracing::debug!(
                 "remove sec-websocket-extensions header if it exts: no ext was requested by ingress client"
             );
-            let _ = response_parts.headers.remove(SEC_WEBSOCKET_EXTENSIONS);
+            let _ = response_parts
+                .headers
+                .remove(SecWebSocketExtensions::name());
         }
     } else {
         tracing::debug!("ingress request does not contain sec-websocket-extensions header");

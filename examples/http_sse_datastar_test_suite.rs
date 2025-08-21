@@ -85,7 +85,7 @@ async fn main() {
 
 pub mod handlers {
     use indexmap::IndexMap;
-    use rama_http::sse::datastar::{
+    use rama::http::sse::datastar::{
         ElementPatchMode, ExecuteScript, PatchElements,
         execute_script::{ScriptAttribute, ScriptType},
     };
