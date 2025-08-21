@@ -8,10 +8,10 @@
 //!
 //! # Expected output
 //!
-//! The server will start and listen on `:62035`. You can use your browser to interact with the service:
+//! The server will start and listen on `:62039`. You can use your browser to interact with the service:
 //!
 //! ```sh
-//! open http://127.0.0.1:62035
+//! open http://127.0.0.1:62039
 //! ```
 //!
 //! Will return a greeting for humans.
@@ -19,9 +19,9 @@
 //! Here are the other resources:
 //!
 //! ```sh
-//! curl -v http://127.0.0.1:62035/robots.txt  # robots.txt
-//! curl -v http://127.0.0.1:62035/internal/clients.csv  # honeypot file
-//! curl -v http://127.0.0.1:62035/internal/clients.csv?_test_limit=42  # make it finite (42 bytes, not a hard limit)
+//! curl -v http://127.0.0.1:62039/robots.txt  # robots.txt
+//! curl -v http://127.0.0.1:62039/internal/clients.csv  # honeypot file
+//! curl -v http://127.0.0.1:62039/internal/clients.csv?_test_limit=42  # make it finite (42 bytes, not a hard limit)
 //! ```
 //!
 //! Once you hit the file once you will also be blocked (IP wise).
@@ -86,7 +86,7 @@ async fn main() {
 
     let tcp_svc = (ConsumeErrLayer::default(), IpFirewall).into_layer(app);
 
-    let address = SocketAddress::local_ipv4(62035);
+    let address = SocketAddress::local_ipv4(62039);
     tracing::info!("running service at: {address}");
     let tcp_server = TcpListener::build_with_state(State::default())
         .bind(address)

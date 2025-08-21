@@ -13,6 +13,8 @@ use rama_core::{
     matcher::Matcher,
     telemetry::tracing::{self, Instrument},
 };
+#[cfg(feature = "compression")]
+use rama_http::headers::sec_websocket_extensions;
 use rama_http::{
     Method, Request, Response, StatusCode, Version,
     dep::http::request,
@@ -343,9 +345,70 @@ impl WebSocketAcceptor {
     }
 
     rama_utils::macros::generate_set_and_with! {
+        /// Define the WebSocket rama echo protocols.
+        pub fn echo_protocols(mut self) -> Self {
+            self.protocols = Some(headers::SecWebsocketProtocol::new(ECHO_SERVICE_SUB_PROTOCOL_DEFAULT)
+                .with_additional_protocols([
+                    ECHO_SERVICE_SUB_PROTOCOL_UPPER,
+                    ECHO_SERVICE_SUB_PROTOCOL_LOWER,
+                ]));
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
         /// Define the WebSocket extensions to be supported by the server.
         pub fn extensions(mut self, extensions: Option<headers::SecWebsocketExtensions>) -> Self {
             self.extensions = extensions;
+            self
+        }
+    }
+
+    #[cfg(feature = "compression")]
+    rama_utils::macros::generate_set_and_with! {
+        /// Set or add the deflate WebSocket extension with the default config
+        pub fn per_message_deflate(mut self) -> Self {
+            self.extensions = match self.extensions.take() {
+                Some(ext) => {
+                    Some(ext.with_extra_extension(Extension::PerMessageDeflate(Default::default())))
+                },
+                None => Some(headers::SecWebsocketExtensions::per_message_deflate()),
+            };
+            self
+        }
+    }
+
+    #[cfg(feature = "compression")]
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the deflate WebSocket extension with the default config,
+        /// erasing existing if it already exists.
+        pub fn per_message_deflate_overwrite_extensions(mut self) -> Self {
+            self.extensions = Some(headers::SecWebsocketExtensions::per_message_deflate());
+            self
+        }
+    }
+
+    #[cfg(feature = "compression")]
+    rama_utils::macros::generate_set_and_with! {
+        /// Set or add the deflate WebSocket extension with the given config,
+        /// erasing existing if it already exists.
+        pub fn per_message_deflate_with_config(mut self, config: impl Into<sec_websocket_extensions::PerMessageDeflateConfig>) -> Self {
+            self.extensions = match self.extensions.take() {
+                Some(ext) => {
+                    Some(ext.with_extra_extension(Extension::PerMessageDeflate(config.into())))
+                },
+                None => Some(headers::SecWebsocketExtensions::per_message_deflate_with_config(config.into())),
+            };
+            self
+        }
+    }
+
+    #[cfg(feature = "compression")]
+    rama_utils::macros::generate_set_and_with! {
+        /// Set or add the deflate WebSocket extension with the given config,
+        /// erasing existing if it already exists.
+        pub fn per_message_deflate_with_config_overwrite_extensions(mut self, config: impl Into<sec_websocket_extensions::PerMessageDeflateConfig>) -> Self {
+            self.extensions = Some(headers::SecWebsocketExtensions::per_message_deflate_with_config(config.into()));
             self
         }
     }
@@ -505,7 +568,7 @@ where
 
                 let protocols_header = match accepted_protocol {
                     Some(p) => {
-                        tracing::debug!("inject accepted ws protocol in cfg: {p:?}");
+                        tracing::trace!("inject accepted ws protocol in cfg: {p:?}");
                         ctx.insert(p.clone());
                         Some(p.into_header())
                     }
@@ -514,7 +577,7 @@ where
 
                 let extensions_header = match accepted_extension {
                     Some(ext) => {
-                        tracing::debug!("inject accepted ws extension in cfg: {ext:?}");
+                        tracing::trace!("inject accepted ws extension in cfg: {ext:?}");
                         ctx.insert(ext.clone());
                         Some(ext.into_header())
                     }
@@ -712,10 +775,10 @@ where
                                 let maybe_ws_config = {
                                     let mut ws_cfg = None;
 
-                                    tracing::debug!("check if pmd settings have to be applied to WS cfg...");
+                                    tracing::trace!("check if pmd settings have to be applied to WS cfg...");
 
                                     if let Some(Extension::PerMessageDeflate(pmd_cfg)) = ctx.get() {
-                                        tracing::debug!(
+                                        tracing::trace!(
                                             "apply accepted per-message-deflate cfg into WS server config: {pmd_cfg:?}"
                                         );
                                         ws_cfg = Some(WebSocketConfig {

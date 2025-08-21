@@ -14,7 +14,6 @@
 use rama::{
     Layer,
     http::{
-        headers::SecWebsocketExtensions,
         server::HttpServer,
         service::web::{Router, response::Html},
         ws::handshake::server::WebSocketAcceptor,
@@ -46,7 +45,7 @@ async fn main() {
                 "/echo",
                 ConsumeErrLayer::trace(Level::DEBUG).into_layer(
                     WebSocketAcceptor::new()
-                        .with_extensions(SecWebsocketExtensions::per_message_deflate())
+                        .with_per_message_deflate_overwrite_extensions()
                         .into_echo_service(),
                 ),
             ),

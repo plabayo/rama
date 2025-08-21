@@ -197,6 +197,7 @@ pub struct PerMessageDeflateConfig {
     pub client_max_window_bits: Option<u8>,
 }
 
+#[cfg(feature = "compression")]
 impl From<&sec_websocket_extensions::PerMessageDeflateConfig> for PerMessageDeflateConfig {
     fn from(value: &sec_websocket_extensions::PerMessageDeflateConfig) -> Self {
         Self {
@@ -208,6 +209,7 @@ impl From<&sec_websocket_extensions::PerMessageDeflateConfig> for PerMessageDefl
     }
 }
 
+#[cfg(feature = "compression")]
 impl From<sec_websocket_extensions::PerMessageDeflateConfig> for PerMessageDeflateConfig {
     #[inline]
     fn from(value: sec_websocket_extensions::PerMessageDeflateConfig) -> Self {
@@ -215,6 +217,7 @@ impl From<sec_websocket_extensions::PerMessageDeflateConfig> for PerMessageDefla
     }
 }
 
+#[cfg(feature = "compression")]
 impl From<&PerMessageDeflateConfig> for sec_websocket_extensions::PerMessageDeflateConfig {
     fn from(value: &PerMessageDeflateConfig) -> Self {
         Self {
@@ -227,6 +230,7 @@ impl From<&PerMessageDeflateConfig> for sec_websocket_extensions::PerMessageDefl
     }
 }
 
+#[cfg(feature = "compression")]
 impl From<PerMessageDeflateConfig> for sec_websocket_extensions::PerMessageDeflateConfig {
     #[inline]
     fn from(value: PerMessageDeflateConfig) -> Self {
@@ -316,6 +320,16 @@ impl WebSocketConfig {
         #[must_use]
         pub fn accept_unmasked_frames(mut self, accept_unmasked_frames: bool) -> Self {
             self.accept_unmasked_frames = accept_unmasked_frames;
+            self
+        }
+    }
+
+    #[cfg(feature = "compression")]
+    rama_utils::macros::generate_set_and_with! {
+        /// Set [`Self::per_message_deflate`] with the default config..
+        #[must_use]
+        pub fn per_message_deflate_default(mut self) -> Self {
+            self.per_message_deflate = Some(Default::default());
             self
         }
     }
@@ -1100,7 +1114,7 @@ impl WebSocketContext {
     /// Received a close frame. Tells if we need to return a close frame to the user.
     #[allow(clippy::option_option)]
     fn do_close(&mut self, close: Option<CloseFrame>) -> Option<Option<CloseFrame>> {
-        rama_core::telemetry::tracing::debug!("Received close frame: {close:?}");
+        rama_core::telemetry::tracing::trace!("Received close frame: {close:?}");
         match self.state {
             WebSocketState::Active => {
                 self.state = WebSocketState::ClosedByPeer;

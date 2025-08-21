@@ -662,13 +662,85 @@ where
         }
     }
 
+    #[cfg(feature = "compression")]
+    rama_utils::macros::generate_set_and_with! {
+        /// Set/add deflate ext and also apply it to the [`WebSocketConfig`],
+        /// using the default [`crate::protocol::PerMessageDeflateConfig`].
+        #[must_use]
+        pub fn per_message_deflate(mut self) -> Self {
+            self.extensions = match self.extensions.take() {
+                Some(ext) => {
+                    Some(ext.with_extra_extension(Extension::PerMessageDeflate(Default::default())))
+                },
+                None => Some(SecWebsocketExtensions::per_message_deflate()),
+            };
+            self.inner.config = Some(self.inner.config.take().unwrap_or_default().with_per_message_deflate_default());
+            self
+        }
+    }
+
+    #[cfg(feature = "compression")]
+    rama_utils::macros::generate_set_and_with! {
+        /// Set/add deflate ext and also apply it to the [`WebSocketConfig`],
+        /// using the default [`crate::protocol::PerMessageDeflateConfig`].
+        ///
+        /// Overwrites existing extensions if already existed.
+        #[must_use]
+        pub fn per_message_deflate_overwrite_extensions(mut self) -> Self {
+            self.extensions = Some(SecWebsocketExtensions::per_message_deflate());
+            self.inner.config = Some(self.inner.config.take().unwrap_or_default().with_per_message_deflate_default());
+            self
+        }
+    }
+
+    #[cfg(feature = "compression")]
+    rama_utils::macros::generate_set_and_with! {
+        /// Set/add deflate ext and also apply it to the [`WebSocketConfig`],
+        /// using the default [`crate::protocol::PerMessageDeflateConfig`].
+        #[must_use]
+        pub fn per_message_deflate_with_config(mut self, config: impl Into<crate::protocol::PerMessageDeflateConfig>) -> Self {
+            let config = config.into();
+            self.extensions = match self.extensions.take() {
+                Some(ext) => {
+                    Some(ext.with_extra_extension(Extension::PerMessageDeflate((&config).into())))
+                }
+                None => Some(SecWebsocketExtensions::per_message_deflate_with_config((&config).into())),
+            };
+            self.inner.config = Some(
+                self.inner
+                    .config
+                    .take()
+                    .unwrap_or_default()
+                    .with_per_message_deflate(config),
+            );
+            self
+        }
+    }
+
+    #[cfg(feature = "compression")]
+    rama_utils::macros::generate_set_and_with! {
+        /// Set/add deflate ext and also apply it to the [`WebSocketConfig`],
+        /// using the default [`crate::protocol::PerMessageDeflateConfig`].
+        ///
+        /// Overwrites existing extensions if already existed.
+        #[must_use]
+        pub fn per_message_deflate_with_config_overwrite_extensions(mut self, config: impl Into<crate::protocol::PerMessageDeflateConfig>) -> Self {
+            let config = config.into();
+            self.extensions = Some(SecWebsocketExtensions::per_message_deflate_with_config((&config).into()));
+            self.inner.config = Some(
+                self.inner
+                    .config
+                    .take()
+                    .unwrap_or_default()
+                    .with_per_message_deflate(config),
+            );
+            self
+        }
+    }
+
     rama_utils::macros::generate_set_and_with! {
         /// Set the [`WebSocketConfig`], overwriting the previous config if already set.
         pub fn config(mut self, cfg: Option<WebSocketConfig>) -> Self {
-            if let Some(cfg) = &cfg && let Some(pmd_cfg) = cfg.per_message_deflate && self.extensions.is_none() {
-                // ensure to set it in case this was forgotten
-                self.extensions = Some(SecWebsocketExtensions::per_message_deflate_with_config(pmd_cfg.into()));
-            }
             self.inner.config = cfg;
             self
         }
