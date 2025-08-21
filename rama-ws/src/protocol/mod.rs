@@ -1,9 +1,11 @@
 //! Generic WebSocket message stream.
 
+use rama_core::telemetry::tracing;
 use rama_core::{
     error::OpaqueError,
     telemetry::tracing::{debug, trace},
 };
+use rama_http::headers::sec_websocket_extensions;
 use std::{
     fmt,
     io::{self, Read, Write},
@@ -193,6 +195,43 @@ pub struct PerMessageDeflateConfig {
     /// Servers must not include this parameter in their response
     /// if the client's initial offer didn't contain it.
     pub client_max_window_bits: Option<u8>,
+}
+
+impl From<&sec_websocket_extensions::PerMessageDeflateConfig> for PerMessageDeflateConfig {
+    fn from(value: &sec_websocket_extensions::PerMessageDeflateConfig) -> Self {
+        Self {
+            server_no_context_takeover: value.server_no_context_takeover,
+            client_no_context_takeover: value.client_no_context_takeover,
+            server_max_window_bits: value.server_max_window_bits,
+            client_max_window_bits: value.client_max_window_bits,
+        }
+    }
+}
+
+impl From<sec_websocket_extensions::PerMessageDeflateConfig> for PerMessageDeflateConfig {
+    #[inline]
+    fn from(value: sec_websocket_extensions::PerMessageDeflateConfig) -> Self {
+        Self::from(&value)
+    }
+}
+
+impl From<&PerMessageDeflateConfig> for sec_websocket_extensions::PerMessageDeflateConfig {
+    fn from(value: &PerMessageDeflateConfig) -> Self {
+        Self {
+            server_no_context_takeover: value.server_no_context_takeover,
+            client_no_context_takeover: value.client_no_context_takeover,
+            server_max_window_bits: value.server_max_window_bits,
+            client_max_window_bits: value.client_max_window_bits,
+            ..Default::default()
+        }
+    }
+}
+
+impl From<PerMessageDeflateConfig> for sec_websocket_extensions::PerMessageDeflateConfig {
+    #[inline]
+    fn from(value: PerMessageDeflateConfig) -> Self {
+        Self::from(&value)
+    }
 }
 
 #[cfg(feature = "compression")]
@@ -829,12 +868,19 @@ impl WebSocketContext {
                     {
                         rsv1_set = true;
                         if self.per_message_deflate_state.is_none() {
+                            tracing::debug!(
+                                "rsv1 bit is set but PMD state is none: no use case for it"
+                            );
                             return Err(ProtocolError::NonZeroReservedBits);
                         }
                     }
                     #[cfg(not(feature = "compression"))]
-                    return Err(ProtocolError::NonZeroReservedBits);
+                    {
+                        tracing::debug!("rsv1 bit is set but compression feature no enabled");
+                        return Err(ProtocolError::NonZeroReservedBits);
+                    }
                 } else if hdr.rsv2 || hdr.rsv3 {
+                    tracing::debug!("rsv2 or rsv3 bit set: not expected ever");
                     return Err(ProtocolError::NonZeroReservedBits);
                 }
             }
@@ -848,6 +894,7 @@ impl WebSocketContext {
                 OpCode::Control(ctl) => {
                     #[cfg(feature = "compression")]
                     if rsv1_set {
+                        tracing::debug!("rsv1 bit set in control frame: not expected");
                         return Err(ProtocolError::NonZeroReservedBits);
                     }
 
@@ -881,6 +928,7 @@ impl WebSocketContext {
                         OpCodeData::Continue => {
                             #[cfg(feature = "compression")]
                             if rsv1_set {
+                                tracing::debug!("rsv1 bit set in CONTINUE frame: not expected");
                                 return Err(ProtocolError::NonZeroReservedBits);
                             }
 
@@ -945,6 +993,9 @@ impl WebSocketContext {
                                         .map_err(ProtocolError::DeflateError)?;
                                     Ok(Some(Message::Text(Utf8Bytes::try_from(raw_data)?)))
                                 } else {
+                                    tracing::debug!(
+                                        "rsv1 bit set in text frame but deflate state is none"
+                                    );
                                     Err(ProtocolError::NonZeroReservedBits)
                                 }
                             } else {
@@ -967,6 +1018,9 @@ impl WebSocketContext {
                                         .map_err(ProtocolError::DeflateError)?;
                                     Ok(Some(Message::Binary(raw_data.into())))
                                 } else {
+                                    tracing::debug!(
+                                        "rsv1 bit set in binary frame but deflate state is none"
+                                    );
                                     Err(ProtocolError::NonZeroReservedBits)
                                 }
                             } else {
@@ -994,6 +1048,9 @@ impl WebSocketContext {
                                     )?;
                                     Ok(None)
                                 } else {
+                                    tracing::debug!(
+                                        "rsv1 bit set in non-fin bin/text frame but deflate state is none"
+                                    );
                                     Err(ProtocolError::NonZeroReservedBits)
                                 }
                             } else {

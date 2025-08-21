@@ -5,6 +5,7 @@ use std::fmt::{self, Write as _};
 use rama_core::bytes::Bytes;
 use rama_core::bytes::BytesMut;
 use rama_core::telemetry::tracing::{debug, error, trace, trace_span, warn};
+use rama_http::proto::HeaderByteLength;
 use rama_http_types::dep::http;
 use rama_http_types::header::Entry;
 use rama_http_types::header::{self, HeaderMap, HeaderValue};
@@ -279,6 +280,8 @@ impl Http1Transaction for Server {
         let headers = headers.consume(&mut extensions);
 
         *ctx.req_method = Some(subject.0.clone());
+
+        extensions.insert(HeaderByteLength(len));
 
         Ok(Some(ParsedMessage {
             head: MessageHead {
@@ -927,6 +930,8 @@ impl Http1Transaction for Client {
                 let reason = crate::ext::ReasonPhrase::from_bytes_unchecked(reason);
                 extensions.insert(reason);
             }
+
+            extensions.insert(HeaderByteLength(len));
 
             let head = MessageHead {
                 version,

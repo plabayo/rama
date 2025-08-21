@@ -3,7 +3,7 @@
 //! # Run the example
 //!
 //! ```sh
-//! cargo run --example ws_echo_server_with_compression --features=http-full,compression
+//! cargo run --example ws_echo_server_with_compression --features=http-full
 //! ```
 //!
 //! # Expected output

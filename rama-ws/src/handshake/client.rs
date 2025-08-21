@@ -20,7 +20,7 @@ use rama_http::service::client::ext::{IntoHeaderName, IntoHeaderValue};
 use rama_http::service::client::{HttpClientExt, IntoUrl, RequestBuilder};
 use rama_http::{Body, Method, Request, Response, StatusCode, Version, header, headers};
 
-use crate::protocol::{self, Role, WebSocketConfig};
+use crate::protocol::{Role, WebSocketConfig};
 use crate::runtime::AsyncWebSocket;
 
 /// Builder that can be used by clients to initiate the WebSocket handshake.
@@ -345,13 +345,9 @@ pub fn validate_http_server_response<Body>(
                                 client_cfg.client_max_window_bits,
                             ) {
                                 (None, None | Some(_)) => None,
-                                (Some(_), None) => {
-                                    return Some(Err(ResponseValidateError::ExtensionMismatch(
-                                        Some(Extension::PerMessageDeflate(server_cfg.clone())),
-                                    )));
-                                }
-                                (Some(srv), Some(offered)) => {
-                                    if !(8..=15).contains(&srv) || srv > offered {
+                                (Some(srv), maybe_offered) => {
+                                    if !(8..=15).contains(&srv) || maybe_offered.map(|offered| srv > offered).unwrap_or_default() {
+                                        tracing::debug!("server offered invaoid client_max_window_bits (pmd)... ext mismatch!");
                                         return Some(Err(
                                             ResponseValidateError::ExtensionMismatch(Some(
                                                 Extension::PerMessageDeflate(server_cfg.clone()),
@@ -372,6 +368,7 @@ pub fn validate_http_server_response<Body>(
                                             .map(|our_bits| their_bits > our_bits)
                                             .unwrap_or_default()
                                     {
+                                        tracing::debug!("server offered invalid server_max_window_bits (pmd)... ext mismatch!");
                                         return Some(Err(
                                             ResponseValidateError::ExtensionMismatch(Some(
                                                 Extension::PerMessageDeflate(server_cfg.clone()),
@@ -391,6 +388,7 @@ pub fn validate_http_server_response<Body>(
                 .transpose()?;
         }
         (Some(server_ext), _) => {
+            tracing::debug!("server offered ext, but client (we) not!");
             return Err(ResponseValidateError::ExtensionMismatch(Some(server_ext)));
         }
         (None, None) => (),
@@ -667,20 +665,37 @@ where
     rama_utils::macros::generate_set_and_with! {
         /// Set the [`WebSocketConfig`], overwriting the previous config if already set.
         pub fn config(mut self, cfg: Option<WebSocketConfig>) -> Self {
+            if let Some(cfg) = &cfg && let Some(pmd_cfg) = cfg.per_message_deflate && self.extensions.is_none() {
+                // ensure to set it in case this was forgotten
+                self.extensions = Some(SecWebsocketExtensions::per_message_deflate_with_config(pmd_cfg.into()));
+            }
             self.inner.config = cfg;
             self
         }
     }
 
-    /// Establish a client [`WebSocket`], consuming this [`WebsocketRequestBuilder`],
-    /// by doing the http-handshake, including validation and returning the socket if all is good.
-    pub async fn handshake(
+    /// Initiate the handshake by preparing the http request, sending it
+    /// and receiving the http response.
+    ///
+    /// This consumes this [`WebsocketRequestBuilder`]. Fulfill
+    /// the handshake by calling [`NegotiatedHandshakeRequest::complete`].
+    ///
+    /// In most cases you have however no need for this intermediate result,
+    /// and are better of calling [`Self::handshake`] directly. Only in cases
+    /// such as MITM proxies or edge-case purposes you might require access
+    /// to [`NegotiatedHandshakeRequest`].
+    pub async fn initiate_handshake(
         self,
         mut ctx: Context<State>,
-    ) -> Result<ClientWebSocket, HandshakeError> {
+    ) -> Result<NegotiatedHandshakeRequest<Body>, HandshakeError> {
         let builder = match self.protocols.as_ref() {
             Some(protocols) => self.inner.builder.overwrite_typed_header(protocols),
             None => self.inner.builder,
+        };
+
+        let builder = match self.extensions.as_ref() {
+            Some(extensions) => builder.typed_header(extensions),
+            None => builder,
         };
 
         let mut key = None;
@@ -700,15 +715,72 @@ where
         // only required in h1, but because of layers such as tls we might anyway turn from h1 into h2
         let builder = builder.extension(Protocol::from_static("websocket"));
 
-        let mut response = builder
+        let response = builder
             .send(ctx)
             .await
             .context("send initial websocket handshake request (upgrade)")
             .map_err(HandshakeError::HttpRequestError)?;
 
-        let accepted_data =
-            validate_http_server_response(&response, key, self.protocols, self.extensions)
-                .map_err(HandshakeError::ValidationError)?;
+        Ok(NegotiatedHandshakeRequest {
+            protocols: self.protocols,
+            extensions: self.extensions,
+            config: self.inner.config,
+            key,
+            response,
+        })
+    }
+
+    /// Establish a client [`WebSocket`], consuming this [`WebsocketRequestBuilder`],
+    /// by doing the http-handshake, including validation and returning the socket if all is good.
+    pub async fn handshake(self, ctx: Context<State>) -> Result<ClientWebSocket, HandshakeError> {
+        let handshake = self.initiate_handshake(ctx).await?;
+        handshake.complete().await
+    }
+}
+
+impl<B> WebsocketRequestBuilder<B> {
+    rama_utils::macros::generate_set_and_with! {
+        /// Define the WebSocket protocols to be used.
+        pub fn protocols(mut self, protocols: Option<SecWebsocketProtocol>) -> Self {
+            self.protocols = protocols;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the WebSocket key (a random one will be generated if not defined).
+        ///
+        /// Only touch this property if you have a good reason to do so.
+        pub fn key(mut self, key: Option<headers::SecWebsocketKey>) -> Self {
+            self.key = key;
+            self
+        }
+    }
+}
+
+/// Intermediate websocket handshake created by
+/// [`WebsocketRequestBuilder::initiate_handshake`].
+///
+/// Useful in case you require access to some of the data
+/// prior to validation and WS upgrading.
+pub struct NegotiatedHandshakeRequest<Body> {
+    pub protocols: Option<SecWebsocketProtocol>,
+    pub extensions: Option<SecWebsocketExtensions>,
+    pub config: Option<WebSocketConfig>,
+    pub key: Option<SecWebsocketKey>,
+    pub response: Response<Body>,
+}
+
+impl<Body> NegotiatedHandshakeRequest<Body> {
+    /// Fulfill the websocket handshake and return the upgraded [`ClientWebSocket`].
+    pub async fn complete(mut self) -> Result<ClientWebSocket, HandshakeError> {
+        let accepted_data = validate_http_server_response(
+            &self.response,
+            self.key,
+            self.protocols,
+            self.extensions,
+        )
+        .map_err(HandshakeError::ValidationError)?;
 
         tracing::trace!(
             websocket.protocol = ?accepted_data.protocol,
@@ -716,27 +788,22 @@ where
             "websocket handshake http response is valid",
         );
 
-        let stream = rama_http::io::upgrade::on(&mut response)
+        let stream = rama_http::io::upgrade::on(&mut self.response)
             .await
             .context("upgrade http connection into a raw web socket")
             .map_err(HandshakeError::HttpUpgradeError)?;
 
-        let (parts, _) = response.into_parts();
+        let (parts, _) = self.response.into_parts();
 
         #[cfg(feature = "compression")]
         let maybe_ws_cfg = {
-            let mut ws_cfg = self.inner.config.unwrap_or_default();
+            let mut ws_cfg = self.config.unwrap_or_default();
 
             if let Some(Extension::PerMessageDeflate(pmd_cfg)) = accepted_data.extension {
                 tracing::trace!(
                     "apply accepted per-message-deflate cfg into WS client config: {pmd_cfg:?}"
                 );
-                ws_cfg.per_message_deflate = Some(protocol::PerMessageDeflateConfig {
-                    server_no_context_takeover: pmd_cfg.server_no_context_takeover,
-                    client_no_context_takeover: pmd_cfg.client_no_context_takeover,
-                    server_max_window_bits: pmd_cfg.server_max_window_bits,
-                    client_max_window_bits: pmd_cfg.client_max_window_bits,
-                });
+                ws_cfg.per_message_deflate = Some(pmd_cfg.into());
             } else {
                 ws_cfg.per_message_deflate = None;
             }
@@ -766,26 +833,6 @@ where
             response: parts,
             accepted_protocol: accepted_data.protocol,
         })
-    }
-}
-
-impl<B> WebsocketRequestBuilder<B> {
-    rama_utils::macros::generate_set_and_with! {
-        /// Define the WebSocket protocols to be used.
-        pub fn protocols(mut self, protocols: Option<SecWebsocketProtocol>) -> Self {
-            self.protocols = protocols;
-            self
-        }
-    }
-
-    rama_utils::macros::generate_set_and_with! {
-        /// Set the WebSocket key (a random one will be generated if not defined).
-        ///
-        /// Only touch this property if you have a good reason to do so.
-        pub fn key(mut self, key: Option<headers::SecWebsocketKey>) -> Self {
-            self.key = key;
-            self
-        }
     }
 }
 

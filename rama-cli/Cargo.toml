@@ -25,7 +25,6 @@ itertools = { workspace = true }
 mimalloc = { workspace = true, optional = true }
 opentelemetry-otlp = { workspace = true }
 rama = { version = "0.3.0-alpha.3", path = "..", features = [
-    "compression",
     "boring",
     "cli",
     "tcp",

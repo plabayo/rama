@@ -89,7 +89,7 @@ where
     ) -> Self {
         let child = escargot::CargoBuild::new()
             .arg(format!(
-                "--features=cli,compression,tcp,http-full,proxy-full,{}",
+                "--features=cli,tcp,http-full,proxy-full,{}",
                 extra_features.unwrap_or_default()
             ))
             .example(example_name.as_ref())

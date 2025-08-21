@@ -674,16 +674,19 @@ fn merge_http_headers<'a>(
         let base_header_name = base_name.header_name();
         let original_value = original_headers.remove(base_header_name);
         match base_header_name {
-            &ACCEPT
-            | &ACCEPT_LANGUAGE
-            | &SEC_WEBSOCKET_KEY
-            | &SEC_WEBSOCKET_EXTENSIONS
-            | &SEC_WEBSOCKET_PROTOCOL => {
+            &ACCEPT | &ACCEPT_LANGUAGE | &SEC_WEBSOCKET_EXTENSIONS => {
                 let value = original_value.unwrap_or(base_value);
                 output_headers_ref.push((base_name, value));
             }
-            &REFERER | &COOKIE | &AUTHORIZATION | &HOST | &ORIGIN | &CONTENT_LENGTH
-            | &CONTENT_TYPE => {
+            &REFERER
+            | &COOKIE
+            | &AUTHORIZATION
+            | &HOST
+            | &ORIGIN
+            | &CONTENT_LENGTH
+            | &CONTENT_TYPE
+            | &SEC_WEBSOCKET_PROTOCOL
+            | &SEC_WEBSOCKET_KEY => {
                 if let Some(value) = original_value {
                     output_headers_ref.push((base_name, value));
                 }

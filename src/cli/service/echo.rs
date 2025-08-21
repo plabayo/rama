@@ -50,12 +50,15 @@ use crate::{
     tls::boring::server::{TlsAcceptorData, TlsAcceptorLayer},
 };
 use rama_http::{
-    headers::SecWebsocketExtensions,
+    headers::{SecWebsocketExtensions, SecWebsocketProtocol},
     service::web::{extract::Json, response::IntoResponse},
 };
 use rama_http_backend::server::layer::upgrade::UpgradeLayer;
 use rama_http_core::h2::frame::EarlyFrameCapture;
-use rama_ws::handshake::server::{WebSocketAcceptor, WebSocketEchoService, WebSocketMatcher};
+use rama_ws::handshake::server::{
+    ECHO_SERVICE_SUB_PROTOCOL_DEFAULT, ECHO_SERVICE_SUB_PROTOCOL_LOWER,
+    ECHO_SERVICE_SUB_PROTOCOL_UPPER, WebSocketAcceptor, WebSocketEchoService, WebSocketMatcher,
+};
 use serde::Serialize;
 use serde_json::json;
 use std::{convert::Infallible, time::Duration};
@@ -336,7 +339,15 @@ where
                 UpgradeLayer::new(
                     WebSocketMatcher::default(),
                     {
-                        let acceptor = WebSocketAcceptor::default().with_protocols_flex(true);
+                        let acceptor = WebSocketAcceptor::default()
+                            .with_protocols_flex(true)
+                            .with_protocols(
+                                SecWebsocketProtocol::new(ECHO_SERVICE_SUB_PROTOCOL_DEFAULT)
+                                    .with_additional_protocols([
+                                        ECHO_SERVICE_SUB_PROTOCOL_UPPER,
+                                        ECHO_SERVICE_SUB_PROTOCOL_LOWER,
+                                    ]),
+                            );
                         #[cfg(feature = "compression")]
                         {
                             acceptor.with_extensions(SecWebsocketExtensions::per_message_deflate())

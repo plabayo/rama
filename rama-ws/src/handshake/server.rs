@@ -27,7 +27,7 @@ use rama_http::{
 
 use crate::{
     Message,
-    protocol::{self, Role, WebSocketConfig},
+    protocol::{Role, WebSocketConfig},
     runtime::AsyncWebSocket,
 };
 
@@ -491,6 +491,10 @@ where
                                             offer.min(cap)
                                         });
 
+                                    tracing::trace!(
+                                        "accept and use ws deflate ext w/ config: {resp:?}"
+                                    );
+
                                     return Some(Extension::PerMessageDeflate(resp));
                                 }
                             }
@@ -501,7 +505,8 @@ where
 
                 let protocols_header = match accepted_protocol {
                     Some(p) => {
-                        ctx.extensions_mut().insert(p.clone());
+                        tracing::debug!("inject accepted ws protocol in cfg: {p:?}");
+                        ctx.insert(p.clone());
                         Some(p.into_header())
                     }
                     None => None,
@@ -509,7 +514,8 @@ where
 
                 let extensions_header = match accepted_extension {
                     Some(ext) => {
-                        ctx.extensions_mut().insert(ext.clone());
+                        tracing::debug!("inject accepted ws extension in cfg: {ext:?}");
+                        ctx.insert(ext.clone());
                         Some(ext.into_header())
                     }
                     None => None,
@@ -706,17 +712,14 @@ where
                                 let maybe_ws_config = {
                                     let mut ws_cfg = None;
 
+                                    tracing::debug!("check if pmd settings have to be applied to WS cfg...");
+
                                     if let Some(Extension::PerMessageDeflate(pmd_cfg)) = ctx.get() {
-                                        tracing::trace!(
+                                        tracing::debug!(
                                             "apply accepted per-message-deflate cfg into WS server config: {pmd_cfg:?}"
                                         );
                                         ws_cfg = Some(WebSocketConfig {
-                                            per_message_deflate: Some(protocol::PerMessageDeflateConfig {
-                                                server_no_context_takeover: pmd_cfg.server_no_context_takeover,
-                                                client_no_context_takeover: pmd_cfg.client_no_context_takeover,
-                                                server_max_window_bits: pmd_cfg.server_max_window_bits,
-                                                client_max_window_bits: pmd_cfg.client_max_window_bits,
-                                            }),
+                                            per_message_deflate: Some(pmd_cfg.into()),
                                             ..Default::default()
                                         });
                                     }
@@ -859,7 +862,36 @@ where
         ctx: Context<State>,
         io: upgrade::Upgraded,
     ) -> Result<Self::Response, Self::Error> {
-        let socket = AsyncWebSocket::from_raw_socket(io, Role::Server, None).await;
+        #[cfg(not(feature = "compression"))]
+        let maybe_ws_config = {
+            if let Some(Extension::PerMessageDeflate(_)) = ctx.get() {
+                return Err(OpaqueError::from_display(
+                    "per-message-deflate is used but compression feature is disabled. Enable it if you wish to use this extension.",
+                ));
+            }
+            None
+        };
+
+        #[cfg(feature = "compression")]
+        let maybe_ws_config = {
+            let mut ws_cfg = None;
+
+            tracing::debug!("check if pmd settings have to be applied to WS cfg...");
+
+            if let Some(Extension::PerMessageDeflate(pmd_cfg)) = ctx.get() {
+                tracing::debug!(
+                    "apply accepted per-message-deflate cfg into WS server config: {pmd_cfg:?}"
+                );
+                ws_cfg = Some(WebSocketConfig {
+                    per_message_deflate: Some(pmd_cfg.into()),
+                    ..Default::default()
+                });
+            }
+
+            ws_cfg
+        };
+
+        let socket = AsyncWebSocket::from_raw_socket(io, Role::Server, maybe_ws_config).await;
         self.serve(ctx, socket).await
     }
 }
