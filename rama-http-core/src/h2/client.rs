@@ -140,6 +140,7 @@ use crate::h2::{FlowControl, PingPong, RecvStream, SendStream};
 
 use rama_core::bytes::{Buf, Bytes};
 use rama_core::telemetry::tracing::{self, Instrument};
+use rama_http::proto::HeaderByteLength;
 use rama_http::proto::h2::frame::{EarlyFrame, EarlyFrameStreamContext};
 use rama_http_types::dep::http::{request, uri};
 use rama_http_types::proto::h1::headers::original::OriginalHttp1Headers;
@@ -1795,6 +1796,7 @@ impl proto::Peer for Peer {
         pseudo: Pseudo,
         fields: HeaderMap,
         field_order: OriginalHttp1Headers,
+        header_size: usize,
         stream_id: StreamId,
     ) -> Result<Self::Poll, Error> {
         let mut b = Response::builder();
@@ -1818,6 +1820,10 @@ impl proto::Peer for Peer {
         if !field_order.is_empty() {
             response.extensions_mut().insert(field_order);
         }
+
+        response
+            .extensions_mut()
+            .insert(HeaderByteLength(header_size));
 
         *response.headers_mut() = fields;
 

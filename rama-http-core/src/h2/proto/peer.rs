@@ -21,6 +21,7 @@ pub(crate) trait Peer {
         pseudo: Pseudo,
         fields: HeaderMap,
         field_order: OriginalHttp1Headers,
+        header_size: usize,
         stream_id: StreamId,
     ) -> Result<Self::Poll, Error>;
 
@@ -64,14 +65,27 @@ impl Dyn {
         pseudo: Pseudo,
         fields: HeaderMap,
         field_order: OriginalHttp1Headers,
+        header_size: usize,
         stream_id: StreamId,
     ) -> Result<PollMessage, Error> {
         if self.is_server() {
-            crate::h2::server::Peer::convert_poll_message(pseudo, fields, field_order, stream_id)
-                .map(PollMessage::Server)
+            crate::h2::server::Peer::convert_poll_message(
+                pseudo,
+                fields,
+                field_order,
+                header_size,
+                stream_id,
+            )
+            .map(PollMessage::Server)
         } else {
-            crate::h2::client::Peer::convert_poll_message(pseudo, fields, field_order, stream_id)
-                .map(PollMessage::Client)
+            crate::h2::client::Peer::convert_poll_message(
+                pseudo,
+                fields,
+                field_order,
+                header_size,
+                stream_id,
+            )
+            .map(PollMessage::Client)
         }
     }
 

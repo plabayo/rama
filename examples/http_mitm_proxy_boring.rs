@@ -75,6 +75,7 @@ use rama::{
             upgrade::{UpgradeLayer, Upgraded},
         },
         matcher::MethodMatcher,
+        proto::RequestHeaders,
         server::HttpServer,
         service::web::response::IntoResponse,
         ws::{
@@ -114,7 +115,6 @@ use rama::{
 };
 
 use itertools::Itertools;
-use rama_http::proto::{RequestExtensions, RequestHeaders};
 use std::{convert::Infallible, sync::Arc, time::Duration};
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -379,12 +379,7 @@ where
         }
     };
 
-    if let Some(orig_req_headers) = handshake
-        .response
-        .extensions()
-        .get::<RequestExtensions>()
-        .and_then(|ext| ext.get::<RequestHeaders>())
-    {
+    if let Some(orig_req_headers) = handshake.response.extensions().get::<RequestHeaders>() {
         let req_extensions = orig_req_headers
             .headers()
             .typed_get::<SecWebSocketExtensions>();
