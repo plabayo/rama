@@ -4,18 +4,18 @@ use std::{fmt, sync::Arc};
 
 use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader, util::csv};
 
-/// The `Sec-Websocket-Protocol` header, containing one or multiple protocols.
+/// The `Sec-WebSocket-Protocol` header, containing one or multiple protocols.
 ///
 /// Sub protocols are advertised by the client,
 /// and the server has to match it if defined.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SecWebsocketProtocol(Vec<Arc<str>>);
+pub struct SecWebSocketProtocol(Vec<Arc<str>>);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-/// Utility type containing the accepted [`SecWebsocketProtocol`].
-pub struct AcceptedWebsocketProtocol(Arc<str>);
+/// Utility type containing the accepted [`SecWebSocketProtocol`].
+pub struct AcceptedWebSocketProtocol(Arc<str>);
 
-impl AcceptedWebsocketProtocol {
+impl AcceptedWebSocketProtocol {
     #[inline]
     #[must_use]
     /// consume this instance as a `Arc<str>`.
@@ -25,27 +25,27 @@ impl AcceptedWebsocketProtocol {
 
     #[inline]
     #[must_use]
-    /// consume this instance as a [`SecWebsocketProtocol`]
+    /// consume this instance as a [`SecWebSocketProtocol`]
     ///
     /// Useful for servers to communicate back to clients.
-    pub fn into_header(self) -> SecWebsocketProtocol {
+    pub fn into_header(self) -> SecWebSocketProtocol {
         self.into()
     }
 }
 
-impl From<AcceptedWebsocketProtocol> for SecWebsocketProtocol {
-    fn from(value: AcceptedWebsocketProtocol) -> Self {
+impl From<AcceptedWebSocketProtocol> for SecWebSocketProtocol {
+    fn from(value: AcceptedWebSocketProtocol) -> Self {
         Self::new(value.0)
     }
 }
 
-impl TypedHeader for SecWebsocketProtocol {
+impl TypedHeader for SecWebSocketProtocol {
     fn name() -> &'static HeaderName {
         &::rama_http_types::header::SEC_WEBSOCKET_PROTOCOL
     }
 }
 
-impl HeaderDecode for SecWebsocketProtocol {
+impl HeaderDecode for SecWebSocketProtocol {
     fn decode<'i, I: Iterator<Item = &'i HeaderValue>>(values: &mut I) -> Result<Self, Error> {
         let mut iter = values.flat_map(|value| {
             value.to_str().into_iter().flat_map(|string| {
@@ -68,7 +68,7 @@ impl HeaderDecode for SecWebsocketProtocol {
     }
 }
 
-impl HeaderEncode for SecWebsocketProtocol {
+impl HeaderEncode for SecWebSocketProtocol {
     fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
         struct Format<F>(F);
         impl<F> fmt::Display for Format<F>
@@ -87,7 +87,7 @@ impl HeaderEncode for SecWebsocketProtocol {
     }
 }
 
-impl SecWebsocketProtocol {
+impl SecWebSocketProtocol {
     #[inline]
     /// Create a new [`SecWebSocketProtocol`] header from the given protocol
     pub fn new(protocol: impl Into<Arc<str>>) -> Self {
@@ -96,19 +96,19 @@ impl SecWebsocketProtocol {
 
     #[must_use]
     /// Return the first protocol in this [`SecWebSocketProtocol`] as the [`AcceptedWebSocketProtocol`].
-    pub fn accept_first_protocol(&self) -> AcceptedWebsocketProtocol {
+    pub fn accept_first_protocol(&self) -> AcceptedWebSocketProtocol {
         // assumption: we always have at least one item
-        AcceptedWebsocketProtocol(self.0[0].clone())
+        AcceptedWebSocketProtocol(self.0[0].clone())
     }
 
     /// returns true if the given protocol is found in this [`SubProtocols`]
-    pub fn contains(&self, protocol: impl AsRef<str>) -> Option<AcceptedWebsocketProtocol> {
+    pub fn contains(&self, protocol: impl AsRef<str>) -> Option<AcceptedWebSocketProtocol> {
         let protocol = protocol.as_ref().trim();
         self.0.iter().find_map(|candidate| {
             candidate
                 .trim()
                 .eq_ignore_ascii_case(protocol)
-                .then(|| AcceptedWebsocketProtocol(candidate.clone()))
+                .then(|| AcceptedWebSocketProtocol(candidate.clone()))
         })
     }
 
@@ -118,7 +118,7 @@ impl SecWebsocketProtocol {
     pub fn contains_any(
         &self,
         protocols: impl IntoIterator<Item: AsRef<str>>,
-    ) -> Option<AcceptedWebsocketProtocol> {
+    ) -> Option<AcceptedWebSocketProtocol> {
         protocols
             .into_iter()
             .find_map(|protocol| self.contains(protocol))
@@ -149,7 +149,7 @@ impl SecWebsocketProtocol {
     }
 }
 
-impl IntoIterator for SecWebsocketProtocol {
+impl IntoIterator for SecWebSocketProtocol {
     type Item = Arc<str>;
     type IntoIter = std::vec::IntoIter<Arc<str>>;
 
@@ -158,14 +158,14 @@ impl IntoIterator for SecWebsocketProtocol {
     }
 }
 
-impl AcceptedWebsocketProtocol {
+impl AcceptedWebSocketProtocol {
     /// Create a new [`AcceptedWebSocketProtocol`]
     pub fn new(s: impl Into<Arc<str>>) -> Self {
         Self(s.into())
     }
 }
 
-impl AcceptedWebsocketProtocol {
+impl AcceptedWebSocketProtocol {
     #[must_use]
     /// View the [`AcceptedSubProtocol`] as a `str` reference.
     pub fn as_str(&self) -> &str {
@@ -173,31 +173,31 @@ impl AcceptedWebsocketProtocol {
     }
 }
 
-impl AsRef<str> for AcceptedWebsocketProtocol {
+impl AsRef<str> for AcceptedWebSocketProtocol {
     fn as_ref(&self) -> &str {
         self.0.as_ref().trim()
     }
 }
 
-impl PartialEq<str> for AcceptedWebsocketProtocol {
+impl PartialEq<str> for AcceptedWebSocketProtocol {
     fn eq(&self, other: &str) -> bool {
         self.as_str().eq_ignore_ascii_case(other.trim())
     }
 }
-impl PartialEq<&str> for AcceptedWebsocketProtocol {
+impl PartialEq<&str> for AcceptedWebSocketProtocol {
     fn eq(&self, other: &&str) -> bool {
         self.as_str().eq_ignore_ascii_case(other.trim())
     }
 }
 
-impl PartialEq<AcceptedWebsocketProtocol> for str {
-    fn eq(&self, other: &AcceptedWebsocketProtocol) -> bool {
+impl PartialEq<AcceptedWebSocketProtocol> for str {
+    fn eq(&self, other: &AcceptedWebSocketProtocol) -> bool {
         self.trim().eq_ignore_ascii_case(other.as_str())
     }
 }
 
-impl PartialEq<AcceptedWebsocketProtocol> for &str {
-    fn eq(&self, other: &AcceptedWebsocketProtocol) -> bool {
+impl PartialEq<AcceptedWebSocketProtocol> for &str {
+    fn eq(&self, other: &AcceptedWebSocketProtocol) -> bool {
         self.trim().eq_ignore_ascii_case(other.as_str())
     }
 }
@@ -210,7 +210,7 @@ mod tests {
     #[test]
     fn protocols_reflective_str_single() {
         fn assert_encode_decode_eq(s: &str, equal: bool) {
-            let header: SecWebsocketProtocol = test_decode(&[s]).unwrap();
+            let header: SecWebSocketProtocol = test_decode(&[s]).unwrap();
             let headers = test_encode(header);
             let output = &headers["sec-websocket-protocol"];
             if equal {
@@ -229,7 +229,7 @@ mod tests {
     #[test]
     fn protocols_reflective_str_multiple() {
         fn assert_encode_decode_eq(s: &[&'static str], equal: bool) {
-            let header: SecWebsocketProtocol = test_decode(s).unwrap();
+            let header: SecWebSocketProtocol = test_decode(s).unwrap();
             let headers = test_encode(header);
             let output = &headers["sec-websocket-protocol"];
             if equal {
@@ -254,7 +254,7 @@ mod tests {
 
     #[test]
     fn test_accept_first_protocol() {
-        let header: SecWebsocketProtocol = test_decode(&["a, b"]).unwrap();
+        let header: SecWebSocketProtocol = test_decode(&["a, b"]).unwrap();
         assert_eq!("a", header.accept_first_protocol());
     }
 
@@ -271,7 +271,7 @@ mod tests {
             ("a, b", " B ", Some("b")),
             ("a, b", " c ", None),
         ] {
-            let header: SecWebsocketProtocol = test_decode(&[input]).unwrap();
+            let header: SecWebSocketProtocol = test_decode(&[input]).unwrap();
             assert_eq!(
                 expected,
                 header.contains(protocol).as_ref().map(|p| p.as_str()),
@@ -312,7 +312,7 @@ mod tests {
             Case::new("a", &["c", "d"], None),
             Case::new("d", &["c", "d"], Some("d")),
         ] {
-            let header: SecWebsocketProtocol = test_decode(&[case.input]).unwrap();
+            let header: SecWebSocketProtocol = test_decode(&[case.input]).unwrap();
             assert_eq!(
                 case.expected,
                 header

@@ -1,4 +1,4 @@
-//! Async runtime for Rama Websockets
+//! Async runtime for Rama WebSockets
 //!
 //! Forked from tokio-tungstenite.
 

@@ -7,7 +7,7 @@ use rama::{
             EasyHttpWebClient,
             proxy::layer::{HttpProxyAddressLayer, SetProxyAuthHttpHeaderLayer},
         },
-        headers::SecWebsocketProtocol,
+        headers::SecWebSocketProtocol,
         layer::{
             auth::AddAuthorizationLayer,
             decompression::DecompressionLayer,
@@ -49,7 +49,7 @@ pub(super) async fn connect(cfg: super::CliCommandWs) -> Result<ClientWebSocket,
         && let Some(first_protocol) = protocols.next()
     {
         builder.set_protocols(
-            SecWebsocketProtocol::new(first_protocol).with_additional_protocols(protocols),
+            SecWebSocketProtocol::new(first_protocol).with_additional_protocols(protocols),
         );
     }
 

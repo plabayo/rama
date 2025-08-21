@@ -60,7 +60,7 @@ use rama::{
     http::{
         Body, Request, Response, StatusCode,
         client::EasyHttpWebClient,
-        headers::SecWebsocketExtensions,
+        headers::SecWebSocketExtensions,
         io::upgrade,
         layer::{
             compress_adapter::CompressAdaptLayer,
@@ -382,7 +382,7 @@ where
     // as things like UA emulation can freak it up
 
     // TODO: remove this hardcode once we adapt correctly based on orig reuqest
-    handshake.extensions = Some(SecWebsocketExtensions::per_message_deflate());
+    handshake.extensions = Some(SecWebSocketExtensions::per_message_deflate());
 
     let egress_socket = match handshake.complete().await {
         Ok(socket) => socket,
@@ -395,7 +395,7 @@ where
     let (egress_socket, mut response_parts, _) = egress_socket.into_parts();
 
     let mut ingress_socket_cfg = WebSocketConfig::default();
-    if let Some(ingress_header) = parts_copy.headers.typed_get::<SecWebsocketExtensions>() {
+    if let Some(ingress_header) = parts_copy.headers.typed_get::<SecWebSocketExtensions>() {
         tracing::debug!("ingress request contains sec-websocket-extensions header");
         if let Some(accept_pmd_cfg) = ingress_header.iter().find_map(|ext| {
             if let Extension::PerMessageDeflate(cfg) = ext {
@@ -408,7 +408,7 @@ where
             ingress_socket_cfg.per_message_deflate = Some((&accept_pmd_cfg).into());
             let _ = response_parts.headers.insert(
                 SEC_WEBSOCKET_EXTENSIONS,
-                SecWebsocketExtensions::per_message_deflate_with_config(accept_pmd_cfg)
+                SecWebSocketExtensions::per_message_deflate_with_config(accept_pmd_cfg)
                     .encode_to_value(),
             );
         } else {

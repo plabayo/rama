@@ -17,7 +17,7 @@ use rama::{
     http::Body,
     http::client::proxy::layer::SetProxyAuthHttpHeaderLayer,
     http::service::client::{HttpClientExt, IntoUrl, RequestBuilder},
-    http::ws::handshake::client::{HttpClientWebSocketExt, WebsocketRequestBuilder, WithService},
+    http::ws::handshake::client::{HttpClientWebSocketExt, WebSocketRequestBuilder, WithService},
     http::{
         Request, Response,
         client::EasyHttpWebClient,
@@ -237,7 +237,7 @@ where
     pub(super) fn websocket(
         &self,
         url: impl IntoUrl,
-    ) -> WebsocketRequestBuilder<WithService<'_, ClientService<State>, Body, State>> {
+    ) -> WebSocketRequestBuilder<WithService<'_, ClientService<State>, Body, State>> {
         self.client.websocket(url)
     }
 
@@ -246,7 +246,7 @@ where
     pub(super) fn websocket_h2(
         &self,
         url: impl IntoUrl,
-    ) -> WebsocketRequestBuilder<WithService<'_, ClientService<State>, Body, State>> {
+    ) -> WebSocketRequestBuilder<WithService<'_, ClientService<State>, Body, State>> {
         self.client.websocket_h2(url)
     }
 }
