@@ -461,28 +461,14 @@ We also make use of [`cargo vet`](https://github.com/mozilla/cargo-vet) to [audi
 
 ### Tier 1 Platforms
 
-Rama (ラマ) is developed mostly on MacOS M-Series machines and run in production
-on a variety of Linux systems. These are tier 1 platofrms.
+Rama (ラマ) is developed mostly on MacOS M-Series and Windows 11 x64 machines.
+Most organisations running rama in production do so on a variety of Linux systems. These are tier 1 platforms.
 
 | platform | tested | test platform |
 |----------|--------|---------------|
 | MacOS    | ✅     | MacOS Apple Silicon (developer laptop) and macos-12 Intel ([GitHub Action](https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners/about-github-hosted-runners)) |
 | Linux    | ✅     | Ubuntu 22.04 ([GitHub Action](https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners/about-github-hosted-runners)) |
-
-### Tier 2 platforms
-
-These platforms we do not run ourselves but do have basic support, meaning:
-
-* the code compiles and checks;
-* unit tests pass
-
-As we do not use this platform ourselves and neither do we run integration tests on them,
-we can however not promise that there are no issues with these builds. Neither do
-we provide binary builds for this platform.
-
-| platform | tested | test platform |
-|----------|--------|---------------|
-| Windows    | ✅     | Windows latest (x64) ([GitHub Action](https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners/about-github-hosted-runners)) |
+| Windows  | ✅     | Win11 on Beelink SER9 Pro AMD Ryzen 7 H 255 and Windows latest (x64) ([GitHub Action](https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners/about-github-hosted-runners)) |
 
 ### Other Platforms
 
