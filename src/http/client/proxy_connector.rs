@@ -1,7 +1,9 @@
 use crate::{
     Layer, Service,
     error::{BoxError, OpaqueError},
-    http::client::proxy::layer::{HttpProxyConnector, HttpProxyConnectorLayer},
+    http::client::proxy::layer::{
+        HttpProxyConnector, HttpProxyConnectorLayer, MaybeHttpProxiedConnection,
+    },
     net::{
         Protocol,
         address::ProxyAddress,
@@ -13,7 +15,6 @@ use crate::{
     telemetry::tracing,
 };
 use pin_project_lite::pin_project;
-use rama_core::combinators::Either;
 use std::{
     fmt::Debug,
     pin::Pin,
@@ -173,7 +174,7 @@ pin_project! {
     enum Connection<S> {
         Direct{ #[pin] conn: S },
         Socks{ #[pin] conn: S },
-        Http{ #[pin] conn: Either<S, rama_http::io::upgrade::Upgraded> },
+        Http{ #[pin] conn: MaybeHttpProxiedConnection<S> },
 
     }
 }

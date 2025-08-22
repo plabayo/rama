@@ -59,6 +59,10 @@ use rama::{
     http::{
         Body, Request, Response, StatusCode,
         client::EasyHttpWebClient,
+        headers::{
+            HeaderEncode, HeaderMapExt as _, SecWebSocketExtensions, TypedHeader,
+            sec_websocket_extensions::Extension,
+        },
         io::upgrade,
         layer::{
             compress_adapter::CompressAdaptLayer,
@@ -71,12 +75,13 @@ use rama::{
             upgrade::{UpgradeLayer, Upgraded},
         },
         matcher::MethodMatcher,
+        proto::RequestHeaders,
         server::HttpServer,
         service::web::response::IntoResponse,
         ws::{
             AsyncWebSocket, Message, ProtocolError,
             handshake::{client::HttpClientWebSocketExt, server::WebSocketMatcher},
-            protocol::Role,
+            protocol::{Role, WebSocketConfig},
         },
     },
     layer::ConsumeErrLayer,
@@ -362,22 +367,77 @@ where
     tracing::debug!("forcing egress http connection as {target_version:?} to ensure WS upgrade");
     ctx.insert(TargetHttpVersion(target_version));
 
-    let egress_socket = match client.websocket_with_request(req).handshake(ctx).await {
+    let mut handshake = match client
+        .websocket_with_request(req)
+        .initiate_handshake(ctx)
+        .await
+    {
         Ok(socket) => socket,
         Err(err) => {
-            tracing::error!("failed to create egress websocket: {err:?}");
+            tracing::error!("failed to create initiate egress websocket handshake: {err:?}");
             return StatusCode::BAD_GATEWAY.into_response();
         }
     };
 
-    let (egress_socket, response_parts, _) = egress_socket.into_parts();
+    if let Some(orig_req_headers) = handshake.response.extensions().get::<RequestHeaders>() {
+        let req_extensions = orig_req_headers
+            .headers()
+            .typed_get::<SecWebSocketExtensions>();
+        tracing::debug!(
+            "apply original req WS extensions (perhaps after UA Emulation) as handshake exts: {req_extensions:?}"
+        );
+        handshake.extensions = req_extensions;
+    }
+
+    let egress_socket = match handshake.complete().await {
+        Ok(socket) => socket,
+        Err(err) => {
+            tracing::error!("failed to complete WS handshake and create egress websocket: {err:?}");
+            return StatusCode::BAD_GATEWAY.into_response();
+        }
+    };
+
+    let (egress_socket, mut response_parts, _) = egress_socket.into_parts();
+
+    let mut ingress_socket_cfg: WebSocketConfig = Default::default();
+    if let Some(ingress_header) = parts_copy.headers.typed_get::<SecWebSocketExtensions>() {
+        tracing::debug!("ingress request contains sec-websocket-extensions header");
+        if let Some(accept_pmd_cfg) = ingress_header.iter().find_map(|ext| {
+            if let Extension::PerMessageDeflate(cfg) = ext {
+                Some(cfg.clone())
+            } else {
+                None
+            }
+        }) {
+            tracing::debug!("use deflate ext for ingress ws cfg: {accept_pmd_cfg:?}");
+            ingress_socket_cfg.per_message_deflate = Some((&accept_pmd_cfg).into());
+            let _ = response_parts.headers.insert(
+                SecWebSocketExtensions::name(),
+                SecWebSocketExtensions::per_message_deflate_with_config(accept_pmd_cfg)
+                    .encode_to_value(),
+            );
+        } else {
+            tracing::debug!(
+                "remove sec-websocket-extensions header if it exts: no ext was requested by ingress client"
+            );
+            let _ = response_parts
+                .headers
+                .remove(SecWebSocketExtensions::name());
+        }
+    } else {
+        tracing::debug!("ingress request does not contain sec-websocket-extensions header");
+    }
+
     let response = Response::from_parts(response_parts, Body::empty());
 
     tokio::spawn(async move {
         tracing::debug!("egresss websocket active: starting ingress WS upgrade...");
         let request = Request::from_parts(parts_copy, Body::empty());
         let ingress_socket = match upgrade::on(request).await {
-            Ok(upgraded) => AsyncWebSocket::from_raw_socket(upgraded, Role::Server, None).await,
+            Ok(upgraded) => {
+                AsyncWebSocket::from_raw_socket(upgraded, Role::Server, Some(ingress_socket_cfg))
+                    .await
+            }
             Err(err) => {
                 tracing::error!("error in upgrading ingress websocket: {err:?}");
                 return;

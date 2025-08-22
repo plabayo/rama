@@ -17,7 +17,7 @@ use rama::{
     http::Body,
     http::client::proxy::layer::SetProxyAuthHttpHeaderLayer,
     http::service::client::{HttpClientExt, IntoUrl, RequestBuilder},
-    http::ws::handshake::client::{HttpClientWebSocketExt, WebsocketRequestBuilder, WithService},
+    http::ws::handshake::client::{HttpClientWebSocketExt, WebSocketRequestBuilder, WithService},
     http::{
         Request, Response,
         client::EasyHttpWebClient,
@@ -89,7 +89,7 @@ where
     ) -> Self {
         let child = escargot::CargoBuild::new()
             .arg(format!(
-                "--features=cli,compression,tcp,http-full,proxy-full,{}",
+                "--features=cli,tcp,http-full,proxy-full,{}",
                 extra_features.unwrap_or_default()
             ))
             .example(example_name.as_ref())
@@ -237,7 +237,7 @@ where
     pub(super) fn websocket(
         &self,
         url: impl IntoUrl,
-    ) -> WebsocketRequestBuilder<WithService<'_, ClientService<State>, Body, State>> {
+    ) -> WebSocketRequestBuilder<WithService<'_, ClientService<State>, Body, State>> {
         self.client.websocket(url)
     }
 
@@ -246,7 +246,7 @@ where
     pub(super) fn websocket_h2(
         &self,
         url: impl IntoUrl,
-    ) -> WebsocketRequestBuilder<WithService<'_, ClientService<State>, Body, State>> {
+    ) -> WebSocketRequestBuilder<WithService<'_, ClientService<State>, Body, State>> {
         self.client.websocket_h2(url)
     }
 }

@@ -30,6 +30,10 @@ use crate::utils::http::HttpVersion;
 #[derive(Debug, Args)]
 /// rama echo service (echos the http request and tls client config)
 pub struct CliCommandEcho {
+    /// enable debug logs for tracing
+    #[arg(long, default_value_t = false)]
+    verbose: bool,
+
     /// the interface to bind to
     #[arg(long, default_value = "127.0.0.1:8080")]
     bind: Interface,
@@ -75,7 +79,11 @@ pub struct CliCommandEcho {
 
 /// run the rama echo service
 pub async fn run(cfg: CliCommandEcho) -> Result<(), BoxError> {
-    crate::trace::init_tracing(LevelFilter::INFO);
+    crate::trace::init_tracing(if cfg.verbose {
+        LevelFilter::DEBUG
+    } else {
+        LevelFilter::INFO
+    });
 
     let maybe_tls_server_config = cfg.secure.then(|| {
         let Ok(tls_key_pem_raw) = std::env::var("RAMA_TLS_KEY") else {

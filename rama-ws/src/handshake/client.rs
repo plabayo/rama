@@ -10,39 +10,39 @@ use rama_core::{Context, Service};
 use rama_http::conn::TargetHttpVersion;
 use rama_http::dep::http::{self, request, response};
 use rama_http::headers::sec_websocket_extensions::{Extension, PerMessageDeflateConfig};
-use rama_http::headers::sec_websocket_protocol::AcceptedWebsocketProtocol;
+use rama_http::headers::sec_websocket_protocol::AcceptedWebSocketProtocol;
 use rama_http::headers::{
-    HeaderMapExt, HttpRequestBuilderExt as _, SecWebsocketExtensions, SecWebsocketKey,
-    SecWebsocketProtocol,
+    HeaderMapExt, HttpRequestBuilderExt as _, SecWebSocketExtensions, SecWebSocketKey,
+    SecWebSocketProtocol,
 };
 use rama_http::proto::h2::ext::Protocol;
 use rama_http::service::client::ext::{IntoHeaderName, IntoHeaderValue};
 use rama_http::service::client::{HttpClientExt, IntoUrl, RequestBuilder};
 use rama_http::{Body, Method, Request, Response, StatusCode, Version, header, headers};
 
-use crate::protocol::{self, Role, WebSocketConfig};
+use crate::protocol::{Role, WebSocketConfig};
 use crate::runtime::AsyncWebSocket;
 
 /// Builder that can be used by clients to initiate the WebSocket handshake.
-pub struct WebsocketRequestBuilder<B> {
+pub struct WebSocketRequestBuilder<B> {
     inner: B,
-    protocols: Option<SecWebsocketProtocol>,
-    extensions: Option<SecWebsocketExtensions>,
-    key: Option<SecWebsocketKey>,
+    protocols: Option<SecWebSocketProtocol>,
+    extensions: Option<SecWebSocketExtensions>,
+    key: Option<SecWebSocketKey>,
 }
 
 #[derive(Debug)]
 /// Request data to be used by an http client to initiate an http request.
 pub struct HandshakeRequest {
     pub request: Request,
-    pub protocols: Option<SecWebsocketProtocol>,
-    pub extensions: Option<SecWebsocketExtensions>,
-    pub key: Option<SecWebsocketKey>,
+    pub protocols: Option<SecWebSocketProtocol>,
+    pub extensions: Option<SecWebSocketExtensions>,
+    pub key: Option<SecWebSocketKey>,
 }
 
-impl<B: fmt::Debug> fmt::Debug for WebsocketRequestBuilder<B> {
+impl<B: fmt::Debug> fmt::Debug for WebSocketRequestBuilder<B> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("WebsocketRequestBuilder")
+        f.debug_struct("WebSocketRequestBuilder")
             .field("inner", &self.inner)
             .field("protocols", &self.protocols)
             .field("extensions", &self.extensions)
@@ -51,7 +51,7 @@ impl<B: fmt::Debug> fmt::Debug for WebsocketRequestBuilder<B> {
     }
 }
 
-impl<B: Clone> Clone for WebsocketRequestBuilder<B> {
+impl<B: Clone> Clone for WebSocketRequestBuilder<B> {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
@@ -62,7 +62,7 @@ impl<B: Clone> Clone for WebsocketRequestBuilder<B> {
     }
 }
 
-/// [`WebsocketRequestBuilder`] inner wrapper type used for a builder,
+/// [`WebSocketRequestBuilder`] inner wrapper type used for a builder,
 /// which includes a service, and thus is there to actually send the request as well and
 /// even follow up.
 pub struct WithService<'a, S, Body, State> {
@@ -88,7 +88,7 @@ where
     let builder = Request::builder()
         .version(version)
         .uri(uri)
-        .typed_header(headers::SecWebsocketVersion::V13);
+        .typed_header(headers::SecWebSocketVersion::V13);
 
     match version {
         version @ (Version::HTTP_10 | Version::HTTP_11) => builder
@@ -120,7 +120,7 @@ where
         _ => unreachable!("bug"),
     };
 
-    builder.typed_header(headers::SecWebsocketVersion::V13)
+    builder.typed_header(headers::SecWebSocketVersion::V13)
 }
 
 fn new_ws_request_builder_from_request<'a, S, Body, State, RequestBody>(
@@ -227,8 +227,8 @@ impl std::error::Error for HandshakeError {
 }
 
 #[derive(Default, Debug)]
-pub struct AcceptedWebsocketData {
-    pub protocol: Option<AcceptedWebsocketProtocol>,
+pub struct AcceptedWebSocketData {
+    pub protocol: Option<AcceptedWebSocketProtocol>,
     pub extension: Option<Extension>,
 }
 
@@ -236,10 +236,10 @@ pub struct AcceptedWebsocketData {
 /// with whom the client is trying to establish a WebSocket connection.
 pub fn validate_http_server_response<Body>(
     response: &Response<Body>,
-    key: Option<headers::SecWebsocketKey>,
-    protocols: Option<SecWebsocketProtocol>,
-    extensions: Option<SecWebsocketExtensions>,
-) -> Result<AcceptedWebsocketData, ResponseValidateError> {
+    key: Option<headers::SecWebSocketKey>,
+    protocols: Option<SecWebSocketProtocol>,
+    extensions: Option<SecWebSocketExtensions>,
+) -> Result<AcceptedWebSocketData, ResponseValidateError> {
     tracing::trace!(
         http.version = ?response.version(),
         http.response.status = ?response.status(),
@@ -294,8 +294,8 @@ pub fn validate_http_server_response<Body>(
             if let Some(key) = key {
                 let sec_websocket_accept_header = response
                     .headers()
-                    .typed_get::<headers::SecWebsocketAccept>();
-                let expected_accept = Some(headers::SecWebsocketAccept::from(key));
+                    .typed_get::<headers::SecWebSocketAccept>();
+                let expected_accept = Some(headers::SecWebSocketAccept::from(key));
                 if sec_websocket_accept_header != expected_accept {
                     tracing::trace!(
                         "unexpected websocket accept key: {sec_websocket_accept_header:?} (expected: {expected_accept:?})"
@@ -324,7 +324,7 @@ pub fn validate_http_server_response<Body>(
     match (
         response
             .headers()
-            .typed_get::<SecWebsocketExtensions>()
+            .typed_get::<SecWebSocketExtensions>()
             .map(|ext| ext.into_first()),
         extensions,
     ) {
@@ -345,13 +345,9 @@ pub fn validate_http_server_response<Body>(
                                 client_cfg.client_max_window_bits,
                             ) {
                                 (None, None | Some(_)) => None,
-                                (Some(_), None) => {
-                                    return Some(Err(ResponseValidateError::ExtensionMismatch(
-                                        Some(Extension::PerMessageDeflate(server_cfg.clone())),
-                                    )));
-                                }
-                                (Some(srv), Some(offered)) => {
-                                    if !(8..=15).contains(&srv) || srv > offered {
+                                (Some(srv), maybe_offered) => {
+                                    if !(8..=15).contains(&srv) || maybe_offered.map(|offered| srv > offered).unwrap_or_default() {
+                                        tracing::debug!("server offered invaoid client_max_window_bits (pmd)... ext mismatch!");
                                         return Some(Err(
                                             ResponseValidateError::ExtensionMismatch(Some(
                                                 Extension::PerMessageDeflate(server_cfg.clone()),
@@ -369,9 +365,10 @@ pub fn validate_http_server_response<Body>(
                                 (Some(their_bits), maybe_our_bits) => {
                                     if !(8..=15).contains(&their_bits)
                                         || maybe_our_bits
-                                            .map(|our_bits| their_bits > our_bits)
+                                            .map(|our_bits| our_bits != 0 && their_bits > our_bits)
                                             .unwrap_or_default()
                                     {
+                                        tracing::debug!("server offered invalid server_max_window_bits (pmd)... ext mismatch!");
                                         return Some(Err(
                                             ResponseValidateError::ExtensionMismatch(Some(
                                                 Extension::PerMessageDeflate(server_cfg.clone()),
@@ -391,6 +388,7 @@ pub fn validate_http_server_response<Body>(
                 .transpose()?;
         }
         (Some(server_ext), _) => {
+            tracing::debug!("server offered ext, but client (we) not!");
             return Err(ResponseValidateError::ExtensionMismatch(Some(server_ext)));
         }
         (None, None) => (),
@@ -405,7 +403,7 @@ pub fn validate_http_server_response<Body>(
     match (
         response
             .headers()
-            .typed_get::<SecWebsocketProtocol>()
+            .typed_get::<SecWebSocketProtocol>()
             .map(|h| h.accept_first_protocol()),
         protocols,
     ) {
@@ -430,13 +428,13 @@ pub fn validate_http_server_response<Body>(
         }
     }
 
-    Ok(AcceptedWebsocketData {
+    Ok(AcceptedWebSocketData {
         protocol: accepted_protocol,
         extension: accepted_extension,
     })
 }
 
-impl WebsocketRequestBuilder<request::Builder> {
+impl WebSocketRequestBuilder<request::Builder> {
     /// Create a new `http/1.1` WebSocket [`Request`] builder.
     pub fn new<T>(uri: T) -> Self
     where
@@ -513,7 +511,7 @@ impl WebsocketRequestBuilder<request::Builder> {
 
         let mut key = None;
         if request.version() != Version::HTTP_2 {
-            let k = self.key.unwrap_or_else(headers::SecWebsocketKey::random);
+            let k = self.key.unwrap_or_else(headers::SecWebSocketKey::random);
             request.headers_mut().typed_insert(&k);
             key = Some(k);
         }
@@ -532,7 +530,7 @@ impl WebsocketRequestBuilder<request::Builder> {
     }
 }
 
-impl<'a, S, State, Body> WebsocketRequestBuilder<WithService<'a, S, Body, State>>
+impl<'a, S, State, Body> WebSocketRequestBuilder<WithService<'a, S, Body, State>>
 where
     S: Service<State, Request, Response = Response<Body>, Error: Into<BoxError>>,
     State: Clone + Send + Sync + 'static,
@@ -664,6 +662,82 @@ where
         }
     }
 
+    #[cfg(feature = "compression")]
+    rama_utils::macros::generate_set_and_with! {
+        /// Set/add deflate ext and also apply it to the [`WebSocketConfig`],
+        /// using the default [`crate::protocol::PerMessageDeflateConfig`].
+        #[must_use]
+        pub fn per_message_deflate(mut self) -> Self {
+            self.extensions = match self.extensions.take() {
+                Some(ext) => {
+                    Some(ext.with_extra_extension(Extension::PerMessageDeflate(Default::default())))
+                },
+                None => Some(SecWebSocketExtensions::per_message_deflate()),
+            };
+            self.inner.config = Some(self.inner.config.take().unwrap_or_default().with_per_message_deflate_default());
+            self
+        }
+    }
+
+    #[cfg(feature = "compression")]
+    rama_utils::macros::generate_set_and_with! {
+        /// Set/add deflate ext and also apply it to the [`WebSocketConfig`],
+        /// using the default [`crate::protocol::PerMessageDeflateConfig`].
+        ///
+        /// Overwrites existing extensions if already existed.
+        #[must_use]
+        pub fn per_message_deflate_overwrite_extensions(mut self) -> Self {
+            self.extensions = Some(SecWebSocketExtensions::per_message_deflate());
+            self.inner.config = Some(self.inner.config.take().unwrap_or_default().with_per_message_deflate_default());
+            self
+        }
+    }
+
+    #[cfg(feature = "compression")]
+    rama_utils::macros::generate_set_and_with! {
+        /// Set/add deflate ext and also apply it to the [`WebSocketConfig`],
+        /// using the default [`crate::protocol::PerMessageDeflateConfig`].
+        #[must_use]
+        pub fn per_message_deflate_with_config(mut self, config: impl Into<crate::protocol::PerMessageDeflateConfig>) -> Self {
+            let config = config.into();
+            self.extensions = match self.extensions.take() {
+                Some(ext) => {
+                    Some(ext.with_extra_extension(Extension::PerMessageDeflate((&config).into())))
+                }
+                None => Some(SecWebSocketExtensions::per_message_deflate_with_config((&config).into())),
+            };
+            self.inner.config = Some(
+                self.inner
+                    .config
+                    .take()
+                    .unwrap_or_default()
+                    .with_per_message_deflate(config),
+            );
+            self
+        }
+    }
+
+    #[cfg(feature = "compression")]
+    rama_utils::macros::generate_set_and_with! {
+        /// Set/add deflate ext and also apply it to the [`WebSocketConfig`],
+        /// using the default [`crate::protocol::PerMessageDeflateConfig`].
+        ///
+        /// Overwrites existing extensions if already existed.
+        #[must_use]
+        pub fn per_message_deflate_with_config_overwrite_extensions(mut self, config: impl Into<crate::protocol::PerMessageDeflateConfig>) -> Self {
+            let config = config.into();
+            self.extensions = Some(SecWebSocketExtensions::per_message_deflate_with_config((&config).into()));
+            self.inner.config = Some(
+                self.inner
+                    .config
+                    .take()
+                    .unwrap_or_default()
+                    .with_per_message_deflate(config),
+            );
+            self
+        }
+    }
+
     rama_utils::macros::generate_set_and_with! {
         /// Set the [`WebSocketConfig`], overwriting the previous config if already set.
         pub fn config(mut self, cfg: Option<WebSocketConfig>) -> Self {
@@ -672,22 +746,35 @@ where
         }
     }
 
-    /// Establish a client [`WebSocket`], consuming this [`WebsocketRequestBuilder`],
-    /// by doing the http-handshake, including validation and returning the socket if all is good.
-    pub async fn handshake(
+    /// Initiate the handshake by preparing the http request, sending it
+    /// and receiving the http response.
+    ///
+    /// This consumes this [`WebSocketRequestBuilder`]. Fulfill
+    /// the handshake by calling [`NegotiatedHandshakeRequest::complete`].
+    ///
+    /// In most cases you have however no need for this intermediate result,
+    /// and are better of calling [`Self::handshake`] directly. Only in cases
+    /// such as MITM proxies or edge-case purposes you might require access
+    /// to [`NegotiatedHandshakeRequest`].
+    pub async fn initiate_handshake(
         self,
         mut ctx: Context<State>,
-    ) -> Result<ClientWebSocket, HandshakeError> {
+    ) -> Result<NegotiatedHandshakeRequest<Body>, HandshakeError> {
         let builder = match self.protocols.as_ref() {
             Some(protocols) => self.inner.builder.overwrite_typed_header(protocols),
             None => self.inner.builder,
+        };
+
+        let builder = match self.extensions.as_ref() {
+            Some(extensions) => builder.typed_header(extensions),
+            None => builder,
         };
 
         let mut key = None;
         let builder = if !self.inner.is_h2 {
             ctx.insert(TargetHttpVersion(Version::HTTP_11));
 
-            let k = self.key.unwrap_or_else(headers::SecWebsocketKey::random);
+            let k = self.key.unwrap_or_else(headers::SecWebSocketKey::random);
             let builder = builder.overwrite_typed_header(&k);
             key = Some(k);
             builder
@@ -700,15 +787,72 @@ where
         // only required in h1, but because of layers such as tls we might anyway turn from h1 into h2
         let builder = builder.extension(Protocol::from_static("websocket"));
 
-        let mut response = builder
+        let response = builder
             .send(ctx)
             .await
             .context("send initial websocket handshake request (upgrade)")
             .map_err(HandshakeError::HttpRequestError)?;
 
-        let accepted_data =
-            validate_http_server_response(&response, key, self.protocols, self.extensions)
-                .map_err(HandshakeError::ValidationError)?;
+        Ok(NegotiatedHandshakeRequest {
+            protocols: self.protocols,
+            extensions: self.extensions,
+            config: self.inner.config,
+            key,
+            response,
+        })
+    }
+
+    /// Establish a client [`WebSocket`], consuming this [`WebSocketRequestBuilder`],
+    /// by doing the http-handshake, including validation and returning the socket if all is good.
+    pub async fn handshake(self, ctx: Context<State>) -> Result<ClientWebSocket, HandshakeError> {
+        let handshake = self.initiate_handshake(ctx).await?;
+        handshake.complete().await
+    }
+}
+
+impl<B> WebSocketRequestBuilder<B> {
+    rama_utils::macros::generate_set_and_with! {
+        /// Define the WebSocket protocols to be used.
+        pub fn protocols(mut self, protocols: Option<SecWebSocketProtocol>) -> Self {
+            self.protocols = protocols;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the WebSocket key (a random one will be generated if not defined).
+        ///
+        /// Only touch this property if you have a good reason to do so.
+        pub fn key(mut self, key: Option<headers::SecWebSocketKey>) -> Self {
+            self.key = key;
+            self
+        }
+    }
+}
+
+/// Intermediate websocket handshake created by
+/// [`WebSocketRequestBuilder::initiate_handshake`].
+///
+/// Useful in case you require access to some of the data
+/// prior to validation and WS upgrading.
+pub struct NegotiatedHandshakeRequest<Body> {
+    pub protocols: Option<SecWebSocketProtocol>,
+    pub extensions: Option<SecWebSocketExtensions>,
+    pub config: Option<WebSocketConfig>,
+    pub key: Option<SecWebSocketKey>,
+    pub response: Response<Body>,
+}
+
+impl<Body> NegotiatedHandshakeRequest<Body> {
+    /// Fulfill the websocket handshake and return the upgraded [`ClientWebSocket`].
+    pub async fn complete(mut self) -> Result<ClientWebSocket, HandshakeError> {
+        let accepted_data = validate_http_server_response(
+            &self.response,
+            self.key,
+            self.protocols,
+            self.extensions,
+        )
+        .map_err(HandshakeError::ValidationError)?;
 
         tracing::trace!(
             websocket.protocol = ?accepted_data.protocol,
@@ -716,27 +860,22 @@ where
             "websocket handshake http response is valid",
         );
 
-        let stream = rama_http::io::upgrade::on(&mut response)
+        let stream = rama_http::io::upgrade::on(&mut self.response)
             .await
             .context("upgrade http connection into a raw web socket")
             .map_err(HandshakeError::HttpUpgradeError)?;
 
-        let (parts, _) = response.into_parts();
+        let (parts, _) = self.response.into_parts();
 
         #[cfg(feature = "compression")]
         let maybe_ws_cfg = {
-            let mut ws_cfg = self.inner.config.unwrap_or_default();
+            let mut ws_cfg = self.config.unwrap_or_default();
 
             if let Some(Extension::PerMessageDeflate(pmd_cfg)) = accepted_data.extension {
                 tracing::trace!(
                     "apply accepted per-message-deflate cfg into WS client config: {pmd_cfg:?}"
                 );
-                ws_cfg.per_message_deflate = Some(protocol::PerMessageDeflateConfig {
-                    server_no_context_takeover: pmd_cfg.server_no_context_takeover,
-                    client_no_context_takeover: pmd_cfg.client_no_context_takeover,
-                    server_max_window_bits: pmd_cfg.server_max_window_bits,
-                    client_max_window_bits: pmd_cfg.client_max_window_bits,
-                });
+                ws_cfg.per_message_deflate = Some(pmd_cfg.into());
             } else {
                 ws_cfg.per_message_deflate = None;
             }
@@ -769,34 +908,14 @@ where
     }
 }
 
-impl<B> WebsocketRequestBuilder<B> {
-    rama_utils::macros::generate_set_and_with! {
-        /// Define the WebSocket protocols to be used.
-        pub fn protocols(mut self, protocols: Option<SecWebsocketProtocol>) -> Self {
-            self.protocols = protocols;
-            self
-        }
-    }
-
-    rama_utils::macros::generate_set_and_with! {
-        /// Set the WebSocket key (a random one will be generated if not defined).
-        ///
-        /// Only touch this property if you have a good reason to do so.
-        pub fn key(mut self, key: Option<headers::SecWebsocketKey>) -> Self {
-            self.key = key;
-            self
-        }
-    }
-}
-
 #[derive(Debug)]
 /// Client [`WebSocket`], used as input-output stream.
 ///
-/// Utility type created via [`WebsocketRequestBuilder::handshake`].
+/// Utility type created via [`WebSocketRequestBuilder::handshake`].
 pub struct ClientWebSocket {
     socket: AsyncWebSocket,
     response: response::Parts,
-    accepted_protocol: Option<AcceptedWebsocketProtocol>,
+    accepted_protocol: Option<AcceptedWebSocketProtocol>,
 }
 
 impl Deref for ClientWebSocket {
@@ -835,7 +954,7 @@ impl ClientWebSocket {
     ) -> (
         AsyncWebSocket,
         response::Parts,
-        Option<AcceptedWebsocketProtocol>,
+        Option<AcceptedWebSocketProtocol>,
     ) {
         (self.socket, self.response, self.accepted_protocol)
     }
@@ -845,26 +964,26 @@ impl ClientWebSocket {
 pub trait HttpClientWebSocketExt<Body, State>:
     private::HttpClientWebSocketExtSealed<Body, State> + Sized + Send + Sync + 'static
 {
-    /// Create a new [`WebsocketRequestBuilder`]] to be used to establish a WebSocket connection over http/1.1.
+    /// Create a new [`WebSocketRequestBuilder`]] to be used to establish a WebSocket connection over http/1.1.
     fn websocket(
         &self,
         url: impl IntoUrl,
-    ) -> WebsocketRequestBuilder<WithService<'_, Self, Body, State>>;
+    ) -> WebSocketRequestBuilder<WithService<'_, Self, Body, State>>;
 
-    /// Create a new [`WebsocketRequestBuilder`] to be used to establish a WebSocket connection over h2.
+    /// Create a new [`WebSocketRequestBuilder`] to be used to establish a WebSocket connection over h2.
     fn websocket_h2(
         &self,
         url: impl IntoUrl,
-    ) -> WebsocketRequestBuilder<WithService<'_, Self, Body, State>>;
+    ) -> WebSocketRequestBuilder<WithService<'_, Self, Body, State>>;
 
-    /// Create a new [`WebsocketRequestBuilder`] starting from the given request.
+    /// Create a new [`WebSocketRequestBuilder`] starting from the given request.
     ///
     /// This is useful in cases where you already have a request that you wish to use,
     /// for example in the case of a proxied reuqest.
     fn websocket_with_request<RequestBody: Into<rama_http::Body>>(
         &self,
         req: Request<RequestBody>,
-    ) -> WebsocketRequestBuilder<WithService<'_, Self, Body, State>>;
+    ) -> WebSocketRequestBuilder<WithService<'_, Self, Body, State>>;
 }
 
 impl<State, S, Body> HttpClientWebSocketExt<Body, State> for S
@@ -875,22 +994,22 @@ where
     fn websocket(
         &self,
         url: impl IntoUrl,
-    ) -> WebsocketRequestBuilder<WithService<'_, Self, Body, State>> {
-        WebsocketRequestBuilder::new_with_service(self, url)
+    ) -> WebSocketRequestBuilder<WithService<'_, Self, Body, State>> {
+        WebSocketRequestBuilder::new_with_service(self, url)
     }
 
     fn websocket_h2(
         &self,
         url: impl IntoUrl,
-    ) -> WebsocketRequestBuilder<WithService<'_, Self, Body, State>> {
-        WebsocketRequestBuilder::new_h2_with_service(self, url)
+    ) -> WebSocketRequestBuilder<WithService<'_, Self, Body, State>> {
+        WebSocketRequestBuilder::new_h2_with_service(self, url)
     }
 
     fn websocket_with_request<RequestBody: Into<rama_http::Body>>(
         &self,
         req: Request<RequestBody>,
-    ) -> WebsocketRequestBuilder<WithService<'_, Self, Body, State>> {
-        WebsocketRequestBuilder::new_with_service_and_request(self, req)
+    ) -> WebSocketRequestBuilder<WithService<'_, Self, Body, State>> {
+        WebSocketRequestBuilder::new_with_service_and_request(self, req)
     }
 }
 

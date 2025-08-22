@@ -63,12 +63,12 @@ enum ProtocolKind {
     Https,
     /// The `ws` protocol.
     ///
-    /// (Websocket over HTTP)
+    /// (WebSocket over HTTP)
     /// <https://datatracker.ietf.org/doc/html/rfc6455>
     Ws,
     /// The `wss` protocol.
     ///
-    /// (Websocket over HTTPS)
+    /// (WebSocket over HTTPS)
     /// <https://datatracker.ietf.org/doc/html/rfc6455>
     Wss,
     /// The `socks5` protocol.

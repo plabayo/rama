@@ -35,7 +35,7 @@ pub(super) enum FetchMode {
     Navigate,
     NoCors,
     SameOrigin,
-    Websocket,
+    WebSocket,
 }
 
 impl std::fmt::Display for FetchMode {
@@ -45,7 +45,7 @@ impl std::fmt::Display for FetchMode {
             Self::Navigate => write!(f, "navigate"),
             Self::NoCors => write!(f, "no-cors"),
             Self::SameOrigin => write!(f, "same-origin"),
-            Self::Websocket => write!(f, "websocket"),
+            Self::WebSocket => write!(f, "websocket"),
         }
     }
 }
@@ -59,7 +59,7 @@ impl FromStr for FetchMode {
             "navigate" => Ok(Self::Navigate),
             "no-cors" => Ok(Self::NoCors),
             "same-origin" => Ok(Self::SameOrigin),
-            "websocket" => Ok(Self::Websocket),
+            "websocket" => Ok(Self::WebSocket),
             _ => Err(s.to_owned()),
         }
     }

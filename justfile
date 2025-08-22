@@ -62,7 +62,7 @@ test-spec-h2 *ARGS:
 test-spec: test-spec-h2
 
 test-ignored:
-	cargo test --features=cli,compression,http-full,proxy-full,tcp,rustls --workspace -- --ignored
+	cargo test --features=cli,http-full,proxy-full,tcp,rustls --workspace -- --ignored
 
 qq: lint check clippy doc extra-checks
 

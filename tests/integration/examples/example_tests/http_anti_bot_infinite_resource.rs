@@ -7,7 +7,7 @@ use rama::{
     http::{BodyExtractExt, StatusCode},
 };
 
-const ADDRESS: &str = "127.0.0.1:62035";
+const ADDRESS: &str = "127.0.0.1:62039";
 
 #[tokio::test]
 #[ignore]

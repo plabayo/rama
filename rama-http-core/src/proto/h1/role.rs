@@ -5,6 +5,7 @@ use std::fmt::{self, Write as _};
 use rama_core::bytes::Bytes;
 use rama_core::bytes::BytesMut;
 use rama_core::telemetry::tracing::{debug, error, trace, trace_span, warn};
+use rama_http::proto::{HeaderByteLength, RequestExtensions, RequestHeaders};
 use rama_http_types::dep::http;
 use rama_http_types::header::Entry;
 use rama_http_types::header::{self, HeaderMap, HeaderValue};
@@ -279,6 +280,8 @@ impl Http1Transaction for Server {
         let headers = headers.consume(&mut extensions);
 
         *ctx.req_method = Some(subject.0.clone());
+
+        extensions.insert(HeaderByteLength(len));
 
         Ok(Some(ParsedMessage {
             head: MessageHead {
@@ -928,6 +931,15 @@ impl Http1Transaction for Client {
                 extensions.insert(reason);
             }
 
+            extensions.insert(HeaderByteLength(len));
+
+            if let Some(mut request_ext) = ctx.encoded_request_extensions.take() {
+                if let Some(request_headers) = request_ext.remove::<RequestHeaders>() {
+                    extensions.insert(request_headers);
+                }
+                extensions.insert(RequestExtensions::from(request_ext));
+            }
+
             let head = MessageHead {
                 version,
                 subject: status,
@@ -989,12 +1001,16 @@ impl Http1Transaction for Client {
         }
         extend(dst, b"\r\n");
 
-        write_h1_headers(
+        let orig_headers = write_h1_headers(
             msg.head.headers,
             msg.title_case_headers,
             msg.head.extensions,
             dst,
         );
+
+        msg.head
+            .extensions
+            .insert(RequestHeaders::from(orig_headers));
 
         extend(dst, b"\r\n");
 
@@ -1364,7 +1380,8 @@ fn write_h1_headers(
     title_case_headers: bool,
     ext: &mut http::Extensions,
     dst: &mut Vec<u8>,
-) {
+) -> Http1HeaderMap {
+    let mut out_h1_headers = Http1HeaderMap::with_capacity(headers.len());
     let h1_headers = Http1HeaderMap::new(headers, Some(ext));
     for (name, value) in h1_headers {
         if title_case_headers {
@@ -1381,7 +1398,9 @@ fn write_h1_headers(
             extend(dst, value.as_bytes());
             extend(dst, b"\r\n");
         }
+        out_h1_headers.append(name, value);
     }
+    out_h1_headers
 }
 
 struct FastWrite<'a>(&'a mut Vec<u8>);
@@ -1423,6 +1442,7 @@ mod tests {
                 h1_max_headers: None,
                 h09_responses: false,
                 on_informational: &mut None,
+                encoded_request_extensions: &mut None,
             },
         )
         .unwrap()
@@ -1445,6 +1465,7 @@ mod tests {
             h1_max_headers: None,
             h09_responses: false,
             on_informational: &mut None,
+            encoded_request_extensions: &mut None,
         };
         let msg = Client::parse(&mut raw, ctx).unwrap().unwrap();
         assert_eq!(raw.len(), 0);
@@ -1463,6 +1484,7 @@ mod tests {
             h1_max_headers: None,
             h09_responses: false,
             on_informational: &mut None,
+            encoded_request_extensions: &mut None,
         };
         Server::parse(&mut raw, ctx).unwrap_err();
     }
@@ -1478,6 +1500,7 @@ mod tests {
             h1_max_headers: None,
             h09_responses: true,
             on_informational: &mut None,
+            encoded_request_extensions: &mut None,
         };
         let msg = Client::parse(&mut raw, ctx).unwrap().unwrap();
         assert_eq!(raw, H09_RESPONSE);
@@ -1495,6 +1518,7 @@ mod tests {
             h1_max_headers: None,
             h09_responses: false,
             on_informational: &mut None,
+            encoded_request_extensions: &mut None,
         };
         Client::parse(&mut raw, ctx).unwrap_err();
         assert_eq!(raw, H09_RESPONSE);
@@ -1516,6 +1540,7 @@ mod tests {
             h1_max_headers: None,
             h09_responses: false,
             on_informational: &mut None,
+            encoded_request_extensions: &mut None,
         };
         let msg = Client::parse(&mut raw, ctx).unwrap().unwrap();
         assert_eq!(raw.len(), 0);
@@ -1534,6 +1559,7 @@ mod tests {
             h1_max_headers: None,
             h09_responses: false,
             on_informational: &mut None,
+            encoded_request_extensions: &mut None,
         };
         Client::parse(&mut raw, ctx).unwrap_err();
     }
@@ -1548,6 +1574,7 @@ mod tests {
             h1_max_headers: None,
             h09_responses: false,
             on_informational: &mut None,
+            encoded_request_extensions: &mut None,
         };
         let parsed_message = Server::parse(&mut raw, ctx).unwrap().unwrap();
         let mut orig_headers = parsed_message
@@ -1573,6 +1600,7 @@ mod tests {
                     h1_max_headers: None,
                     h09_responses: false,
                     on_informational: &mut None,
+                    encoded_request_extensions: &mut None,
                 },
             )
             .expect("parse ok")
@@ -1589,6 +1617,7 @@ mod tests {
                     h1_max_headers: None,
                     h09_responses: false,
                     on_informational: &mut None,
+                    encoded_request_extensions: &mut None,
                 },
             )
             .expect_err(comment)
@@ -1799,9 +1828,50 @@ mod tests {
     }
 
     #[test]
+    fn test_decoder_response_request_extensions() {
+        let mut request_exts = http::Extensions::new();
+
+        request_exts.insert(42u64);
+
+        let mut bytes = BytesMut::from(
+            "\
+         HTTP/1.1 200 OK\r\n\
+         \r\n\
+         ",
+        );
+        let msg = Client::parse(
+            &mut bytes,
+            ParseContext {
+                req_method: &mut Some(Method::GET),
+                h1_parser_config: Default::default(),
+                h1_max_headers: None,
+                h09_responses: false,
+                on_informational: &mut None,
+                encoded_request_extensions: &mut Some(request_exts),
+            },
+        )
+        .expect("parse ok")
+        .expect("parse complete");
+
+        assert_eq!(
+            42u64,
+            msg.head
+                .extensions
+                .get::<RequestExtensions>()
+                .unwrap()
+                .get::<u64>()
+                .copied()
+                .unwrap()
+        );
+    }
+
+    #[test]
     fn test_decoder_response() {
         fn parse(s: &str) -> ParsedMessage<StatusCode> {
-            parse_with_method(s, Method::GET)
+            let msg = parse_with_method(s, Method::GET);
+            let size = msg.head.extensions.get::<HeaderByteLength>().unwrap().0;
+            assert_eq!(size, s.len(), "parsed header: {s}");
+            msg
         }
 
         fn parse_ignores(s: &str) {
@@ -1815,6 +1885,7 @@ mod tests {
                         h1_max_headers: None,
                         h09_responses: false,
                         on_informational: &mut None,
+                        encoded_request_extensions: &mut None,
                     }
                 )
                 .expect("parse ok")
@@ -1832,6 +1903,7 @@ mod tests {
                     h1_max_headers: None,
                     h09_responses: false,
                     on_informational: &mut None,
+                    encoded_request_extensions: &mut None,
                 },
             )
             .expect("parse ok")
@@ -1848,6 +1920,7 @@ mod tests {
                     h1_max_headers: None,
                     h09_responses: false,
                     on_informational: &mut None,
+                    encoded_request_extensions: &mut None,
                 },
             )
             .expect_err("parse should err")
@@ -2441,6 +2514,7 @@ mod tests {
                 h1_max_headers: None,
                 h09_responses: false,
                 on_informational: &mut None,
+                encoded_request_extensions: &mut None,
             },
         )
         .expect("parse ok")
@@ -2479,6 +2553,7 @@ mod tests {
                         h1_max_headers: max_headers,
                         h09_responses: false,
                         on_informational: &mut None,
+                        encoded_request_extensions: &mut None,
                     },
                 );
                 if should_success {
@@ -2498,6 +2573,7 @@ mod tests {
                         h1_max_headers: max_headers,
                         h09_responses: false,
                         on_informational: &mut None,
+                        encoded_request_extensions: &mut None,
                     },
                 );
                 if should_success {
@@ -2603,7 +2679,8 @@ mod tests {
 
         let mut dst = Vec::new();
 
-        super::write_h1_headers(headers, false, &mut ext, &mut dst);
+        let headers = super::write_h1_headers(headers, false, &mut ext, &mut dst);
+        assert!(headers.get("x-empty").unwrap().is_empty());
 
         assert_eq!(
             dst, b"X-EmptY:\r\n",
@@ -2627,7 +2704,13 @@ mod tests {
 
         let mut dst = Vec::new();
 
-        super::write_h1_headers(headers, false, &mut ext, &mut dst);
+        let headers = super::write_h1_headers(headers, false, &mut ext, &mut dst);
+
+        assert_eq!("a", headers.get("x-empty").unwrap().to_str().unwrap());
+        let mut values = headers.headers().get_all("x-empty").iter();
+        assert_eq!("a", values.next().unwrap().to_str().unwrap());
+        assert_eq!("b", values.next().unwrap().to_str().unwrap());
+        assert!(values.next().is_none());
 
         assert_eq!(dst, b"X-Empty: a\r\nX-EMPTY: b\r\n");
     }
