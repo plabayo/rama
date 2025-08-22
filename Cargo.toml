@@ -342,6 +342,7 @@ http-full = [
     "dep:rama-http-core",
     "ua-embed-profiles",
     "compression",
+    "dep:tokio",
 ]
 proxy = ["dep:rama-proxy"]
 haproxy = ["dep:rama-haproxy"]
