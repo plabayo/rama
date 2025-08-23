@@ -40,6 +40,9 @@ rama-utils = { workspace = true }
 tokio = { workspace = true, features = ["macros", "io-std"] }
 zstd = { workspace = true, optional = true }
 
+[target.'cfg(target_os = "windows")'.dependencies]
+schannel = { workspace = true }
+
 [dev-dependencies]
 
 [lints]
