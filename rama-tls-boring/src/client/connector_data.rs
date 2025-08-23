@@ -469,29 +469,29 @@ impl TlsConnectorDataBuilder {
                 // this code path is there to set it anyway
                 static WINDOWS_ROOT_CA: std::sync::LazyLock<Result<X509Store, OpaqueError>> =
                     std::sync::LazyLock::new(|| {
+                        trace!("boring connector: windows: load root certs for current user");
+
                         // Trusted Root Certification Authorities
-                        let user_root = schannel::CertStore::open_current_user("ROOT")
+                        let user_root = schannel::cert_store::CertStore::open_current_user("ROOT")
                             .context("open (root) cert store for current user")?;
-                        let mach_root = schannel::CertStore::open_local_machine("ROOT")
-                            .context("open (root) cert store for current machine")?;
 
-                        let mut builder = rama_boring::x509::store::X509StoreBuilder::new()?;
+                        let mut builder = rama_boring::x509::store::X509StoreBuilder::new().context("build x509 store builder")?;
 
-                        for store in [user_root, mach_root] {
-                            for cert in store.certs() {
-                                // Convert the Windows cert to DER, then to BoringSSL X509
-                                if let Ok(der) = cert.to_der() {
-                                    if let Ok(x509) = X509::from_der(&der) {
-                                        let _ = builder.add_cert(x509);
-                                    }
-                                }
+                        for cert in user_root.certs() {
+                            // Convert the Windows cert to DER, then to BoringSSL X509
+                            if let Ok(x509) = X509::from_der(cert.to_der()) {
+                                let _ = builder.add_cert(x509);
                             }
                         }
 
                         Ok(builder.build())
                     });
 
-                let store = WINDOWS_ROOT_CA?.clone();
+                let store = WINDOWS_ROOT_CA
+                    .as_ref()
+                    .context("create windows root CA")?
+                    .clone();
+
                 cfg_builder
                     .set_verify_cert_store(store)
                     .context("set default windows verify cert store")?;
