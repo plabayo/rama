@@ -5,7 +5,7 @@ use rama_core::{bytes::Bytes, futures::Stream};
 use rama_error::{ErrorContext, OpaqueError};
 use rama_http_types::{Body, HeaderValue, Response};
 use rama_utils::macros::generate_set_and_with;
-use rawzip::{CompressionMethod, ZipArchiveWriter, ZipDataWriter};
+use rawzip::{CompressionMethod, ZipArchiveWriter};
 use std::fmt;
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -237,14 +237,14 @@ fn write_nested_zip_file<W: io::Write>(
     zip: &mut ZipArchiveWriter<W>,
     data: &[u8],
 ) -> Result<(), OpaqueError> {
-    let mut file = zip
+    let (mut file, builder) = zip
         .new_file(&format!("{filename}_batch_{index}.zip"))
         .compression_method(CompressionMethod::Deflate)
-        .create()
+        .start()
         .context("create batch zip file entry")?;
 
     let encoder = DeflateEncoder::new(&mut file, flate2::Compression::default());
-    let mut writer = ZipDataWriter::new(encoder);
+    let mut writer = builder.wrap(encoder);
     writer.write_all(data).context("write nested ZIP data")?;
     let (_, descriptor) = writer.finish().context("finish ZIP entry descriptor")?;
     file.finish(descriptor).context("finish ZIP entry")?;
@@ -257,14 +257,14 @@ fn write_fake_binary_data<W: io::Write>(
     file_size: usize,
 ) -> Result<(), OpaqueError> {
     tracing::trace!("generate fake binary data for {filename}: file_size={file_size}");
-    let mut file = zip
+    let (mut file, builder) = zip
         .new_file(&format!("{filename}.enc.bin"))
         .compression_method(CompressionMethod::Deflate)
-        .create()
+        .start()
         .context("write leaf binary payload")?;
 
     let encoder = DeflateEncoder::new(&mut file, flate2::Compression::default());
-    let mut writer = ZipDataWriter::new(encoder);
+    let mut writer = builder.wrap(encoder);
     let mut zero_reader = ZeroReader(file_size);
     io::copy(&mut zero_reader, &mut writer).context("write zero data")?;
     let (_, descriptor) = writer.finish().context("finish leaf entry desciptor")?;

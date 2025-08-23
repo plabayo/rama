@@ -17,6 +17,7 @@ resolver = "3"
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
+
 [workspace]
 members = [
     ".",
@@ -177,7 +178,7 @@ rama-utils = { version = "0.3.0-alpha.3", path = "./rama-utils" }
 rama-ws = { version = "0.3.0-alpha.3", path = "./rama-ws" }
 rand = "0.9"
 ratatui = "0.29"
-rawzip = { version = "0.3" }
+rawzip = { version = "0.4" }
 rcgen = { version = "0.14", default-features = false, features = ["pem", "aws_lc_rs", "x509-parser"] }
 regex = "1.11"
 rustls = { version = "0.23", default-features = false, features = [
@@ -227,7 +228,7 @@ tui-logger = { version = "0.17", features = ["tracing-support"] }
 turmoil = "0.6"
 unicode-normalization = "0.1"
 uuid = "1.18"
-venndb = "0.5"
+venndb = "0.6"
 walkdir = "2.5"
 want = "0.3"
 webpki-roots = "1.0"
