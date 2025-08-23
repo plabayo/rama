@@ -475,7 +475,8 @@ impl TlsConnectorDataBuilder {
                         let user_root = schannel::cert_store::CertStore::open_current_user("ROOT")
                             .context("open (root) cert store for current user")?;
 
-                        let mut builder = rama_boring::x509::store::X509StoreBuilder::new().context("build x509 store builder")?;
+                        let mut builder = rama_boring::x509::store::X509StoreBuilder::new()
+                            .context("build x509 store builder")?;
 
                         for cert in user_root.certs() {
                             // Convert the Windows cert to DER, then to BoringSSL X509
