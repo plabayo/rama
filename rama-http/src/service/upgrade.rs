@@ -5,11 +5,25 @@ use crate::{Response, header};
 use crate::service::web::response::IntoResponse;
 use crate::StatusCode;
 use rama_core::{Context, Service, telemetry::tracing};
-use rama_net::http::RequestContext; 
-use std::{convert::Infallible, fmt};
+use rama_net::{Protocol, http::RequestContext}; 
+use rama_utils::macros::generate_set_and_with;
+use std::{convert::Infallible};
 
 /// Service that redirects all HTTP requests to HTTPS
-pub struct Upgrade;
+#[derive(Debug, Clone)]
+pub struct Upgrade {
+    status_code: StatusCode
+}
+
+impl Upgrade {
+    generate_set_and_with! {
+        /// Set status_code in the Upgrade struct
+        pub fn status_code(mut self, status_code: StatusCode) -> Self {
+            self.status_code = status_code;
+            self
+        }
+    }
+}
 
 impl<State, Body> Service<State, Request<Body>> for Upgrade
 where
@@ -35,26 +49,33 @@ where
                 }
             };
         let host = &req_ctx.authority.host();
+        let upgraded_protocol =
+            match &req_ctx.protocol {
+                &Protocol::HTTP => Protocol::HTTPS.as_str(),
+                &Protocol::WS => Protocol::WSS.as_str(),
+                _ => {
+                    tracing::error!(
+                        "unexpected protocol: {}",
+                        req_ctx.protocol
+                    );
+                    return Ok(StatusCode::BAD_GATEWAY.into_response()); 
+                }
+            };
         let paq = req
             .uri()
             .path_and_query()
             .map(|paq| paq.as_str())
             .unwrap_or("/");
-        let loc = format!("https://{host}{paq}");
+        let loc = format!("{upgraded_protocol}://{host}{paq}");
 
-        Ok(([(header::LOCATION, loc)], StatusCode::PERMANENT_REDIRECT).into_response())
+        Ok(([(header::LOCATION, loc)], self.status_code).into_response())
     }
 }
 
-impl fmt::Debug for Upgrade {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Upgrade")
-            .finish()
-    }
-}
-
-impl Clone for Upgrade {
-    fn clone(&self) -> Self {
-        Self
+impl Default for Upgrade {
+    fn default() -> Self {
+        Self {
+            status_code: StatusCode::PERMANENT_REDIRECT
+        }
     }
 }
