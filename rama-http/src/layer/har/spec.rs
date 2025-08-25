@@ -16,33 +16,6 @@ use rama_http_types::proto::h1::headers::original::OriginalHttp1Headers;
 use rama_http_types::{HeaderMap, Version as HttpVersion, proto::h1::Http1HeaderMap};
 use serde::{Deserialize, Serialize};
 
-macro_rules! har_data {
-    ($name:ident, { $($field:tt)* }) => {
-        #[derive(Debug, Clone)]
-        pub struct $name {
-            $($field)*
-        }
-    };
-}
-
-macro_rules! har_data_with_default {
-    ($name:ident, { $($field:tt)* }) => {
-        #[derive(Debug, Clone, Default)]
-        pub struct $name {
-            $($field)*
-        }
-    };
-}
-
-macro_rules! har_data_with_serde {
-    ($name:ident, { $($field:tt)* }) => {
-        #[derive(Debug, Clone, Serialize, Deserialize)]
-        pub struct $name {
-            $($field)*
-        }
-    };
-}
-
 // this needs to be refactored somewhere else as
 // it's widely used across the codebase
 fn into_string_version(v: HttpVersion) -> Result<String, OpaqueError> {
@@ -61,7 +34,7 @@ fn into_query_string(parts: &ReqParts) -> Vec<QueryStringPair> {
     match Query::parse_query_str(query_str) {
         Ok(q) => q.0,
         Err(err) => {
-            tracing::trace!("Failure to parse query string: {err:?}");
+            tracing::debug!("Failure to parse query string: {err:?}");
             vec![]
         }
     }
@@ -111,14 +84,15 @@ fn into_har_headers(header_map: &HeaderMap, version: HttpVersion) -> Vec<Header>
         .collect()
 }
 
-har_data!(Log, {
+#[derive(Debug, Clone)]
+pub struct Log {
     pub version: String,
     pub creator: Creator,
     pub browser: Option<Browser>,
     pub pages: Vec<Page>,
     pub entries: Vec<Entry>,
     pub comment: Option<String>,
-});
+}
 
 impl Default for Log {
     fn default() -> Self {
@@ -137,33 +111,38 @@ impl Default for Log {
     }
 }
 
-har_data!(Creator, {
+#[derive(Debug, Clone)]
+pub struct Creator {
     pub name: String,
     pub version: String,
     pub comment: Option<String>,
-});
+}
 
-har_data!(Browser, {
+#[derive(Debug, Clone)]
+pub struct Browser {
     pub name: String,
     pub version: String,
     pub comment: Option<String>,
-});
+}
 
-har_data!(Page, {
+#[derive(Debug, Clone)]
+pub struct Page {
     pub started_date_time: String,
     pub id: String,
     pub title: String,
     pub page_timings: PageTimings,
     pub comment: Option<String>,
-});
+}
 
-har_data!(PageTimings, {
+#[derive(Debug, Clone)]
+pub struct PageTimings {
     pub on_content_load: Option<f64>,
     pub on_load: Option<f64>,
     pub comment: Option<String>,
-});
+}
 
-har_data!(Entry, {
+#[derive(Debug, Clone)]
+pub struct Entry {
     pub pageref: Option<String>,
     pub started_date_time: String,
     /// milliseconds
@@ -176,7 +155,7 @@ har_data!(Entry, {
     pub server_ip_address: Option<SocketAddr>,
     pub connection: Option<String>,
     pub comment: Option<String>,
-});
+}
 
 impl Entry {
     pub fn new(
@@ -202,7 +181,9 @@ impl Entry {
         }
     }
 }
-har_data!(Request, {
+
+#[derive(Debug, Clone)]
+pub struct Request {
     pub method: String,
     pub url: String,
     pub http_version: String,
@@ -213,7 +194,7 @@ har_data!(Request, {
     pub headers_size: i64,
     pub body_size: i64,
     pub comment: Option<String>,
-});
+}
 
 impl Request {
     pub fn from_rama_request_parts<State>(
@@ -256,7 +237,7 @@ impl Request {
         let comment = parts
             .extensions
             .get::<RequestComment>()
-            .map(|req_comment| req_comment.comment.clone());
+            .map(|req_comment| req_comment.0.clone());
 
         let cookies = parts
             .headers
@@ -288,7 +269,9 @@ impl Request {
     }
 }
 
-har_data!(Response, {
+
+#[derive(Debug, Clone)]
+pub struct Response {
     /// Response status.
     pub status: u16,
     /// Response status description.
@@ -309,7 +292,7 @@ har_data!(Response, {
     pub body_size: i64,
     /// A comment provided by the user or the application.
     pub comment: Option<String>,
-});
+}
 
 impl Response {
     pub fn from_rama_response_parts(
@@ -362,7 +345,8 @@ impl Response {
 
 // TODO: https://github.com/plabayo/rama/issues/44
 // For now this will have to be manually parsed. Needs an http-cookie logic
-har_data_with_default!(Cookie, {
+#[derive(Debug, Clone, Default)]
+pub struct Cookie {
     pub name: String,
     pub value: String,
     pub path: Option<String>,
@@ -371,36 +355,42 @@ har_data_with_default!(Cookie, {
     pub http_only: Option<bool>,
     pub secure: Option<bool>,
     pub comment: Option<String>,
-});
+}
 
-har_data!(Header, {
+
+#[derive(Debug, Clone)]
+pub struct Header {
     pub name: String,
     pub value: String,
     pub comment: Option<String>,
-});
+}
 
-har_data_with_serde!(QueryStringPair, {
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QueryStringPair {
     pub name: String,
     pub value: String,
     pub comment: Option<String>,
-});
+}
 
-har_data!(PostData, {
+#[derive(Debug, Clone)]
+pub struct PostData {
     pub mime_type: Option<Mime>,
     pub params: Option<Vec<PostParam>>,
     pub text: Option<String>,
     pub comment: Option<String>,
-});
+}
 
-har_data_with_serde!(PostParam, {
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PostParam {
     pub name: String,
     pub value: Option<String>,
     pub file_name: Option<String>,
     pub content_type: Option<String>,
     pub comment: Option<String>,
-});
+}
 
-har_data!(Content, {
+#[derive(Debug, Clone)]
+pub struct Content {
     pub size: i64,
     pub compression: Option<i64>,
     pub mime_type: Option<Mime>,
@@ -410,23 +400,26 @@ har_data!(Content, {
     /// than trans-coded from its original character set into UTF-8.
     pub encoding: Option<String>,
     pub comment: Option<String>,
-});
+}
 
-har_data_with_default!(Cache, {
+#[derive(Debug, Clone, Default)]
+pub struct Cache {
     pub before_request: Option<CacheState>,
     pub after_request: Option<CacheState>,
     pub comment: Option<String>,
-});
+}
 
-har_data!(CacheState, {
+#[derive(Debug, Clone)]
+pub struct CacheState {
     pub expires: Option<String>,
     pub last_access: Option<String>,
     pub e_tag: Option<String>,
     pub hit_count: Option<i64>,
     pub comment: Option<String>,
-});
+}
 
-har_data_with_default!(Timings, {
+#[derive(Debug, Clone, Default)]
+pub struct Timings {
     pub blocked: Option<u64>,
     pub dns: Option<u64>,
     pub connect: Option<u64>,
@@ -435,7 +428,7 @@ har_data_with_default!(Timings, {
     pub receive: u64,
     pub ssl: Option<u64>,
     pub comment: Option<String>,
-});
+}
 
 #[cfg(test)]
 mod tests {

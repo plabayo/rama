@@ -1,12 +1,8 @@
-#[derive(Clone)]
-pub struct RequestComment {
-    pub comment: String,
-}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RequestComment(pub String);
 
 impl RequestComment {
     pub fn new(comment: &str) -> Self {
-        Self {
-            comment: comment.to_owned(),
-        }
+        Self(comment.to_owned())
     }
 }

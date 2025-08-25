@@ -52,7 +52,6 @@ where
             .to_bytes();
 
         let request = if self.toggle.status().await {
-            // TODO: pass in ctx as you need it for stuff such as original header order, comments, etc...
             match HarRequest::from_rama_request_parts(&ctx, req_parts.clone(), &req_body_bytes) {
                 Err(err) => {
                     tracing::debug!(
