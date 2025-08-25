@@ -9,7 +9,6 @@ pub struct HARExportLayer<R, T> {
     pub toggle: T,
 }
 
-// not needed for the moment - should it be used in examples only?
 impl Default for HARExportLayer<InMemoryRecorder, bool> {
     fn default() -> Self {
         Self {
