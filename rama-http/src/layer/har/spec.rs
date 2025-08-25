@@ -4,17 +4,19 @@ use std::net::SocketAddr;
 use crate::dep::http::request::Parts as ReqParts;
 use crate::layer::har::request_comment::RequestComment;
 use crate::service::web::extract::Query;
+use crate::proto::HeaderByteLength;
 
 use mime::Mime;
 
 use rama_core::Context;
 use rama_core::telemetry::tracing;
 use rama_error::OpaqueError;
-use rama_http_headers::{ContentType, Cookie as RamaCookie, Header as _, HeaderMapExt, Location};
+use rama_http_headers::{ContentType, Cookie as RamaCookie, HeaderMapExt, Location};
 use rama_http_types::dep::http;
 use rama_http_types::proto::h1::headers::original::OriginalHttp1Headers;
 use rama_http_types::{HeaderMap, Version as HttpVersion, proto::h1::Http1HeaderMap};
 use serde::{Deserialize, Serialize};
+use rama_http_headers::HeaderEncode;
 
 // this needs to be refactored somewhere else as
 // it's widely used across the codebase
@@ -253,6 +255,9 @@ impl Request {
         let header_map =
             Http1HeaderMap::from_parts(parts.headers.clone(), headers_order).into_headers();
 
+        let headers_size_ext = ext.get::<HeaderByteLength>();
+        let headers_size = headers_size_ext.map(|v| v.0 as i64).unwrap_or(-1);
+
         Ok(Self {
             method: parts.method.to_string(),
             url: parts.uri.to_string(),
@@ -261,8 +266,7 @@ impl Request {
             headers: into_har_headers(&header_map, parts.version),
             query_string,
             post_data,
-            // TODO: https://github.com/plabayo/rama/issues/669
-            headers_size: -1,
+            headers_size,
             body_size: payload.len() as i64,
             comment,
         })
@@ -328,6 +332,9 @@ impl Response {
         let header_map =
             Http1HeaderMap::from_parts(resp_parts.headers.clone(), headers_order).into_headers();
 
+        let headers_size_ext = ext.get::<HeaderByteLength>();
+        let headers_size = headers_size_ext.map(|v| v.0 as i64).unwrap_or(-1);
+
         Ok(Self {
             status: 0,
             status_text: String::new(),
@@ -336,7 +343,7 @@ impl Response {
             headers: into_har_headers(&header_map, resp_parts.version),
             content,
             redirect_url,
-            headers_size: -1,
+            headers_size,
             body_size: payload.len() as i64,
             comment: None,
         })
