@@ -635,5 +635,5 @@ Available at <https://ramaproxy.org/book/faq.html>.
 
 [![original (OG) rama logo](./docs/book/src/img/old_logo.png)](https://ramaproxy.org/)
 
-📚 Want to know why we built Rama?  
-Check out the [NetstackFM podcast →](docs/netstackfm.md)
+📚 Want to know why we built Rama?
+Check out [the NetstackFM podcast](https://ramaproxy.org/book/netstackfm.html).

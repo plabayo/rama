@@ -8,6 +8,6 @@ In this first episode, we discuss:
 - What’s broken in traditional networking
 - What CTOs and developers can expect from Rama
 
-🔗 All episodes: https://netstack.fm
+🔗 All episodes: <https://netstack.fm>
 
 Brought to you by the creators of Rama.

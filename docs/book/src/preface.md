@@ -1,5 +1,3 @@
-🎧 **New! Listen to [Netstack.FM Episode 1](https://netstack.fm/#episode-1)** — the podcast about building Rama and rethinking networking with Rust.
-
 ![rama banner](https://raw.githubusercontent.com/plabayo/rama/main/docs/img/rama_banner.jpeg)
 
 [![Crates.io][crates-badge]][crates-url]
@@ -29,6 +27,9 @@
 [paypal-url]: https://www.paypal.com/donate/?hosted_button_id=P3KCGT2ACBVFE
 
 🦙 Rama (ラマ) is a modular service framework for the 🦀 Rust language to move and transform your network packets.
+
+> 🎧 **New! Listen to [Netstack.FM Episode 1](https://netstack.fm/#episode-1)**
+> — the podcast about rethinking networking with Rust and building with Rama.
 
 This framework is designed for developers who need fine-grained, programmable control over how packets are handled across
 the network stack. Whether you're intercepting traffic for security analysis, emulating clients with custom user agents,
