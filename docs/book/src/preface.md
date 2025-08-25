@@ -1,3 +1,5 @@
+🎧 **New! Listen to [Netstack.FM Episode 1](https://netstack.fm/#episode-1)** — the podcast about building Rama and rethinking networking with Rust.
+
 ![rama banner](https://raw.githubusercontent.com/plabayo/rama/main/docs/img/rama_banner.jpeg)
 
 [![Crates.io][crates-badge]][crates-url]
