@@ -18,7 +18,7 @@ impl Default for HARExportLayer<InMemoryRecorder, bool> {
     }
 }
 
-impl<R: Recorder, T: Clone> Clone for HARExportLayer<R, T> {
+impl<R: Recorder + Clone, T: Clone> Clone for HARExportLayer<R, T> {
     fn clone(&self) -> Self {
         Self {
             recorder: self.recorder.clone(),

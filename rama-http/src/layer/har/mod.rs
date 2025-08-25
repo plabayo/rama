@@ -9,6 +9,6 @@ pub mod service;
 pub mod spec;
 pub mod toggle;
 
-pub trait Recorder: Clone + Send + Sync + 'static {
+pub trait Recorder: Send + Sync + 'static {
     fn record(&self, line: HarLog) -> impl Future<Output = ()> + Send + '_;
 }
