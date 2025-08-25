@@ -1,18 +1,18 @@
 //! Service that redirects all HTTP requests to HTTPS
 
 use crate::Request;
-use crate::{Response, header};
-use crate::service::web::response::IntoResponse;
 use crate::StatusCode;
+use crate::service::web::response::IntoResponse;
+use crate::{Response, header};
 use rama_core::{Context, Service, telemetry::tracing};
-use rama_net::{Protocol, http::RequestContext}; 
+use rama_net::{Protocol, http::RequestContext};
 use rama_utils::macros::generate_set_and_with;
-use std::{convert::Infallible};
+use std::convert::Infallible;
 
 /// Service that redirects all HTTP requests to HTTPS
 #[derive(Debug, Clone)]
 pub struct Upgrade {
-    status_code: StatusCode
+    status_code: StatusCode,
 }
 
 impl Upgrade {
@@ -38,29 +38,24 @@ where
         mut ctx: Context<State>,
         req: Request<Body>,
     ) -> Result<Self::Response, Self::Error> {
-        let req_ctx: &mut RequestContext =
-            match ctx.get_or_try_insert_with_ctx(|ctx| (ctx, &req).try_into()) {
-                Ok(req_ctx) => req_ctx,
-                Err(err) => {
-                    tracing::error!(
-                        "failed to get RequestContext for insecure incoming req: {err}"
-                    );
-                    return Ok(StatusCode::BAD_GATEWAY.into_response());
-                }
-            };
+        let req_ctx: &mut RequestContext = match ctx
+            .get_or_try_insert_with_ctx(|ctx| (ctx, &req).try_into())
+        {
+            Ok(req_ctx) => req_ctx,
+            Err(err) => {
+                tracing::error!("failed to get RequestContext for insecure incoming req: {err}");
+                return Ok(StatusCode::BAD_GATEWAY.into_response());
+            }
+        };
         let host = &req_ctx.authority.host();
-        let upgraded_protocol =
-            match &req_ctx.protocol {
-                &Protocol::HTTP => Protocol::HTTPS.as_str(),
-                &Protocol::WS => Protocol::WSS.as_str(),
-                _ => {
-                    tracing::error!(
-                        "unexpected protocol: {}",
-                        req_ctx.protocol
-                    );
-                    return Ok(StatusCode::BAD_GATEWAY.into_response()); 
-                }
-            };
+        let upgraded_protocol = match req_ctx.protocol {
+            Protocol::HTTP => Protocol::HTTPS.as_str(),
+            Protocol::WS => Protocol::WSS.as_str(),
+            _ => {
+                tracing::error!("unexpected protocol: {}", req_ctx.protocol);
+                return Ok(StatusCode::BAD_GATEWAY.into_response());
+            }
+        };
         let paq = req
             .uri()
             .path_and_query()
@@ -75,7 +70,7 @@ where
 impl Default for Upgrade {
     fn default() -> Self {
         Self {
-            status_code: StatusCode::PERMANENT_REDIRECT
+            status_code: StatusCode::PERMANENT_REDIRECT,
         }
     }
 }
