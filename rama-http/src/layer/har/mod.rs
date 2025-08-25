@@ -6,6 +6,7 @@ pub mod default;
 pub mod layer;
 pub mod request_comment;
 pub mod service;
+pub mod signal;
 pub mod spec;
 pub mod toggle;
 
