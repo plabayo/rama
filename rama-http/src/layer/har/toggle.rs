@@ -1,6 +1,9 @@
 use std::future::ready;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use tokio::sync::{Mutex, mpsc};
+
+use rama_core::telemetry::tracing;
 
 pub trait Toggle: Send + Sync + 'static {
     fn status(&self) -> impl Future<Output = bool> + Send + '_;
@@ -24,6 +27,19 @@ impl<T: Toggle> Toggle for Option<T> {
 impl Toggle for AtomicBool {
     fn status(&self) -> impl Future<Output = bool> + Send + '_ {
         ready(self.load(Ordering::Acquire))
+    }
+}
+
+impl Toggle for Arc<Mutex<mpsc::Receiver<bool>>> {
+    async fn status(&self) -> bool {
+        let mut rx = self.lock().await;
+        match rx.try_recv() {
+            Ok(val) => val,
+            Err(err) => {
+                tracing::debug!("error receiving: {:?}", err);
+                false
+            }
+        }
     }
 }
 
