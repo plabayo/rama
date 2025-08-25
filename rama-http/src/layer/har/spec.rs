@@ -1,22 +1,23 @@
+use std::borrow::Cow;
 use std::fmt::Debug;
 use std::net::SocketAddr;
 
 use crate::dep::http::request::Parts as ReqParts;
 use crate::layer::har::request_comment::RequestComment;
-use crate::service::web::extract::Query;
 use crate::proto::HeaderByteLength;
+use crate::service::web::extract::Query;
 
 use mime::Mime;
 
 use rama_core::Context;
 use rama_core::telemetry::tracing;
 use rama_error::OpaqueError;
+use rama_http_headers::HeaderEncode;
 use rama_http_headers::{ContentType, Cookie as RamaCookie, HeaderMapExt, Location};
 use rama_http_types::dep::http;
 use rama_http_types::proto::h1::headers::original::OriginalHttp1Headers;
 use rama_http_types::{HeaderMap, Version as HttpVersion, proto::h1::Http1HeaderMap};
 use serde::{Deserialize, Serialize};
-use rama_http_headers::HeaderEncode;
 
 // this needs to be refactored somewhere else as
 // it's widely used across the codebase
@@ -88,7 +89,7 @@ fn into_har_headers(header_map: &HeaderMap, version: HttpVersion) -> Vec<Header>
 
 #[derive(Debug, Clone)]
 pub struct Log {
-    pub version: String,
+    pub version: Cow<'static, str>,
     pub creator: Creator,
     pub browser: Option<Browser>,
     pub pages: Vec<Page>,
@@ -99,10 +100,10 @@ pub struct Log {
 impl Default for Log {
     fn default() -> Self {
         Self {
-            version: "1.0".to_owned(),
+            version: std::borrow::Cow::Borrowed("1.0"),
             creator: Creator {
                 name: "har generator".to_owned(),
-                version: "1.0".to_owned(),
+                version: std::borrow::Cow::Borrowed("1.0"),
                 comment: None,
             },
             browser: None,
@@ -116,14 +117,14 @@ impl Default for Log {
 #[derive(Debug, Clone)]
 pub struct Creator {
     pub name: String,
-    pub version: String,
+    pub version: Cow<'static, str>,
     pub comment: Option<String>,
 }
 
 #[derive(Debug, Clone)]
 pub struct Browser {
     pub name: String,
-    pub version: String,
+    pub version: Cow<'static, str>,
     pub comment: Option<String>,
 }
 
@@ -273,7 +274,6 @@ impl Request {
     }
 }
 
-
 #[derive(Debug, Clone)]
 pub struct Response {
     /// Response status.
@@ -363,7 +363,6 @@ pub struct Cookie {
     pub secure: Option<bool>,
     pub comment: Option<String>,
 }
-
 
 #[derive(Debug, Clone)]
 pub struct Header {
