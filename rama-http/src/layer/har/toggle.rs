@@ -23,7 +23,7 @@ impl<T: Toggle> Toggle for Option<T> {
 
 impl Toggle for AtomicBool {
     fn status(&self) -> impl Future<Output = bool> + Send + '_ {
-        ready(self.load(Ordering::SeqCst))
+        ready(self.load(Ordering::Acquire))
     }
 }
 
