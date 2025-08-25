@@ -67,22 +67,13 @@ fn parse_cookies(input: &str) -> Vec<Cookie> {
         .collect()
 }
 
-fn into_har_headers(header_map: &HeaderMap, version: HttpVersion) -> Vec<Header> {
+fn into_har_headers(header_map: &HeaderMap) -> Vec<Header> {
     header_map
         .iter()
-        .map(|(name, value)| match version {
-            // why the difference? also please do not do this as we do not respect original order like this,
-            // like I said you really need the original context (Context) to get this correct
-            HttpVersion::HTTP_2 | HttpVersion::HTTP_3 => Header {
-                name: name.as_str().to_owned(),
-                value: value.to_str().unwrap_or_default().to_owned(),
-                comment: None,
-            },
-            _ => Header {
-                name: name.to_string(),
-                value: value.to_str().unwrap_or_default().to_owned(),
-                comment: None,
-            },
+        .map(|(name, value)| Header {
+            name: name.to_string(),
+            value: value.to_str().unwrap_or_default().to_owned(),
+            comment: None,
         })
         .collect()
 }
@@ -264,7 +255,7 @@ impl Request {
             url: parts.uri.to_string(),
             http_version,
             cookies,
-            headers: into_har_headers(&header_map, parts.version),
+            headers: into_har_headers(&header_map),
             query_string,
             post_data,
             headers_size,
@@ -340,7 +331,7 @@ impl Response {
             status_text: String::new(),
             http_version,
             cookies,
-            headers: into_har_headers(&header_map, resp_parts.version),
+            headers: into_har_headers(&header_map),
             content,
             redirect_url,
             headers_size,
