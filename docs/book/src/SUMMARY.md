@@ -50,5 +50,6 @@
 # Appendices
 
 - [📣 Ecosystem](./ecosystem.md)
+- [🎧 Netstack.FM](./netstackfm.md)
 - [❓ FAQ](./faq.md)
 - [💖 Sponsor](./sponsor.md)
