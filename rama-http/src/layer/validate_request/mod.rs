@@ -68,9 +68,9 @@
 //!
 //!     async fn validate(
 //!         &self,
-//!         ctx: Context<S>,
+//!         ctx: Context,
 //!         req: Request<B>,
-//!     ) -> Result<(Context<S>, Request<B>), Response<Self::ResponseBody>> {
+//!     ) -> Result<(Context, Request<B>), Response<Self::ResponseBody>> {
 //!         // validate the request...
 //!         # Ok::<_, Response>((ctx, req))
 //!     }

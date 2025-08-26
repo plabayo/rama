@@ -30,11 +30,11 @@ impl SubdomainTrieMatcher {
     }
 }
 
-impl<State, Body> Matcher<State, Request<Body>> for SubdomainTrieMatcher {
+impl< Body> Matcher<Request<Body>> for SubdomainTrieMatcher {
     fn matches(
         &self,
         ext: Option<&mut Extensions>,
-        ctx: &Context<State>,
+        ctx: &Context,
         req: &Request<Body>,
     ) -> bool {
         let match_authority = |ctx: &RequestContext| match ctx.authority.host() {

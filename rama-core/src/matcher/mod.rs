@@ -45,34 +45,34 @@ pub use ext::ExtensionMatcher;
 
 /// A condition to decide whether `Request` within the given [`Context`] matches for
 /// router or other middleware purposes.
-pub trait Matcher<State, Request>: Send + Sync + 'static {
+pub trait Matcher<Request>: Send + Sync + 'static {
     /// returns true on a match, false otherwise
     ///
     /// `ext` is None in case the callee is not interested in collecting potential
     /// match metadata gathered during the matching process. An example of this
     /// path parameters for an http Uri matcher.
-    fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context<State>, req: &Request) -> bool;
+    fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context, req: &Request) -> bool;
 
     /// Provide an alternative matcher to match if the current one does not match.
-    fn or<M>(self, other: M) -> impl Matcher<State, Request>
+    fn or<M>(self, other: M) -> impl Matcher<Request>
     where
         Self: Sized,
-        M: Matcher<State, Request>,
+        M: Matcher<Request>,
     {
         Or::new((self, other))
     }
 
     /// Add another condition to match on top of the current one.
-    fn and<M>(self, other: M) -> impl Matcher<State, Request>
+    fn and<M>(self, other: M) -> impl Matcher<Request>
     where
         Self: Sized,
-        M: Matcher<State, Request>,
+        M: Matcher<Request>,
     {
         And::new((self, other))
     }
 
     /// Negate the current condition.
-    fn not(self) -> impl Matcher<State, Request>
+    fn not(self) -> impl Matcher<Request>
     where
         Self: Sized,
     {
@@ -80,29 +80,29 @@ pub trait Matcher<State, Request>: Send + Sync + 'static {
     }
 }
 
-impl<State, Request, T> Matcher<State, Request> for Arc<T>
+impl<Request, T> Matcher<Request> for Arc<T>
 where
-    T: Matcher<State, Request>,
+    T: Matcher<Request>,
 {
-    fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context<State>, req: &Request) -> bool {
+    fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context, req: &Request) -> bool {
         (**self).matches(ext, ctx, req)
     }
 }
 
-impl<State, Request, T> Matcher<State, Request> for &'static T
+impl<Request, T> Matcher<Request> for &'static T
 where
-    T: Matcher<State, Request>,
+    T: Matcher<Request>,
 {
-    fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context<State>, req: &Request) -> bool {
+    fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context, req: &Request) -> bool {
         (**self).matches(ext, ctx, req)
     }
 }
 
-impl<State, Request, T> Matcher<State, Request> for Option<T>
+impl<Request, T> Matcher<Request> for Option<T>
 where
-    T: Matcher<State, Request>,
+    T: Matcher<Request>,
 {
-    fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context<State>, req: &Request) -> bool {
+    fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context, req: &Request) -> bool {
         match self {
             Some(inner) => inner.matches(ext, ctx, req),
             None => false,
@@ -110,43 +110,42 @@ where
     }
 }
 
-impl<State, Request, T> Matcher<State, Request> for Box<T>
+impl<Request, T> Matcher<Request> for Box<T>
 where
-    T: Matcher<State, Request>,
+    T: Matcher<Request>,
 {
-    fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context<State>, req: &Request) -> bool {
+    fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context, req: &Request) -> bool {
         (**self).matches(ext, ctx, req)
     }
 }
 
-impl<State, Request> Matcher<State, Request> for Box<dyn Matcher<State, Request> + 'static>
+impl<Request> Matcher<Request> for Box<dyn Matcher<Request> + 'static>
 where
-    State: Clone + Send + Sync + 'static,
     Request: Send + 'static,
 {
-    fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context<State>, req: &Request) -> bool {
+    fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context, req: &Request) -> bool {
         (**self).matches(ext, ctx, req)
     }
 }
 
-impl<State, Request> Matcher<State, Request> for bool {
-    fn matches(&self, _: Option<&mut Extensions>, _: &Context<State>, _: &Request) -> bool {
+impl<Request> Matcher<Request> for bool {
+    fn matches(&self, _: Option<&mut Extensions>, _: &Context, _: &Request) -> bool {
         *self
     }
 }
 
 macro_rules! impl_matcher_either {
     ($id:ident, $($param:ident),+ $(,)?) => {
-        impl<$($param),+, State, Request> Matcher<State, Request> for crate::combinators::$id<$($param),+>
+        impl<$($param),+, Request> Matcher<Request> for crate::combinators::$id<$($param),+>
         where
-            $($param: Matcher<State, Request>),+,
+            $($param: Matcher<Request>),+,
             Request: Send + 'static,
-            State: Clone + Send + Sync + 'static,
+
         {
             fn matches(
                 &self,
                 ext: Option<&mut Extensions>,
-                ctx: &Context<State>,
+                ctx: &Context,
                 req: &Request
             ) -> bool{
                 match self {
@@ -182,16 +181,16 @@ macro_rules! impl_matcher_service_tuple {
         paste!{
             #[allow(non_camel_case_types)]
             #[allow(non_snake_case)]
-            impl<State, $([<M_ $T>], $T),+, S, Request, Response, Error> Service<State, Request> for MatcherRouter<($(([<M_ $T>], $T)),+, S)>
+            impl<$([<M_ $T>], $T),+, S, Request, Response, Error> Service<Request> for MatcherRouter<($(([<M_ $T>], $T)),+, S)>
             where
-                State: Clone + Send + Sync + 'static,
+
                 Request: Send + 'static,
                 Response: Send + 'static,
                 $(
-                    [<M_ $T>]: Matcher<State, Request>,
-                    $T: Service<State, Request, Response = Response, Error = Error>,
+                    [<M_ $T>]: Matcher<Request>,
+                    $T: Service<Request, Response = Response, Error = Error>,
                 )+
-                S: Service<State, Request, Response = Response, Error = Error>,
+                S: Service<Request, Response = Response, Error = Error>,
                 Error: Send + 'static,
             {
                 type Response = Response;
@@ -199,7 +198,7 @@ macro_rules! impl_matcher_service_tuple {
 
                 async fn serve(
                     &self,
-                    mut ctx: Context<State>,
+                    mut ctx: Context,
                     req: Request,
                 ) -> Result<Self::Response, Self::Error> {
                     let ($(([<M_ $T>], $T)),+, S) = &self.0;

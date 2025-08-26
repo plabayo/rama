@@ -143,147 +143,42 @@ impl DerefMut for RequestContextExt {
     }
 }
 
+#[derive(Debug, Default, Clone)]
 /// Context passed to and between services as input.
 ///
 /// See [`crate::context`] for more information.
-pub struct Context<S> {
-    state: S,
+pub struct Context {
     executor: Executor,
     extensions: Extensions,
 }
 
-impl<S: fmt::Debug> fmt::Debug for Context<S> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Context")
-            .field("state", &self.state)
-            .field("executor", &self.executor)
-            .field("extensions", &self.extensions)
-            .finish()
-    }
-}
-
+#[derive(Debug)]
 /// Component parts of [`Context`].
-pub struct Parts<S> {
-    pub state: S,
+pub struct Parts {
     pub executor: Executor,
     pub extensions: Extensions,
 }
 
-impl<S: fmt::Debug> fmt::Debug for Parts<S> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Parts")
-            .field("state", &self.state)
-            .field("executor", &self.executor)
-            .field("extensions", &self.extensions)
-            .finish()
-    }
-}
-
-impl Default for Context<()> {
-    fn default() -> Self {
-        Self::new((), Executor::default())
-    }
-}
-
-impl<S: Clone> Clone for Context<S> {
-    fn clone(&self) -> Self {
-        Self {
-            state: self.state.clone(),
-            executor: self.executor.clone(),
-            extensions: self.extensions.clone(),
-        }
-    }
-}
-
-impl<S> Context<S> {
+impl Context {
     /// Create a new [`Context`] with the given state.
-    pub fn new(state: S, executor: Executor) -> Self {
+    pub fn new(executor: Executor) -> Self {
         Self {
-            state,
             executor,
             extensions: Extensions::new(),
         }
     }
 
-    pub fn from_parts(parts: Parts<S>) -> Self {
+    pub fn from_parts(parts: Parts) -> Self {
         Self {
-            state: parts.state,
             executor: parts.executor,
             extensions: parts.extensions,
         }
     }
 
-    pub fn into_parts(self) -> Parts<S> {
+    pub fn into_parts(self) -> Parts {
         Parts {
-            state: self.state,
             executor: self.executor,
             extensions: self.extensions,
-        }
-    }
-
-    /// Create a new [`Context`] with the given state and default extension.
-    pub fn with_state(state: S) -> Self {
-        Self::new(state, Executor::default())
-    }
-
-    /// Get a reference to the state.
-    pub fn state(&self) -> &S {
-        &self.state
-    }
-
-    /// Get an exclusive reference to the state.
-    pub fn state_mut(&mut self) -> &mut S {
-        &mut self.state
-    }
-
-    /// Map the state from one type to another.
-    pub fn map_state<F, W>(self, f: F) -> Context<W>
-    where
-        F: FnOnce(S) -> W,
-    {
-        Context {
-            state: f(self.state),
-            executor: self.executor,
-            extensions: self.extensions,
-        }
-    }
-
-    /// Swap the state from one type to another,
-    /// returning the new object as well as the previously defined state.
-    pub fn swap_state<W>(self, state: W) -> (Context<W>, S) {
-        (
-            Context {
-                state,
-                executor: self.executor,
-                extensions: self.extensions,
-            },
-            self.state,
-        )
-    }
-
-    /// Clones the internals of this [`Context`]
-    /// to provide a new context, but while mapping the state
-    /// into a new state.
-    pub fn clone_map_state<F, W>(&self, f: F) -> Context<W>
-    where
-        S: Clone,
-        F: FnOnce(S) -> W,
-    {
-        Context {
-            state: f(self.state.clone()),
-            executor: self.executor.clone(),
-            extensions: self.extensions.clone(),
-        }
-    }
-
-    /// Clones the internals of this [`Context`]
-    /// to provide a new context, but using the given state, instead of
-    /// the one defined in the current [`Context`].
-    pub fn clone_with_state<W>(&self, state: W) -> Context<W> {
-        Context {
-            state,
-            executor: self.executor.clone(),
-            extensions: self.extensions.clone(),
         }
     }
 
@@ -605,12 +500,5 @@ impl<S> Context<S> {
     /// if and only if the context was created within a graceful environment.
     pub fn guard(&self) -> Option<&ShutdownGuard> {
         self.executor.guard()
-    }
-}
-
-impl<S: Clone> Context<S> {
-    /// Get a cloned reference to the state.
-    pub fn state_clone(&self) -> S {
-        self.state.clone()
     }
 }

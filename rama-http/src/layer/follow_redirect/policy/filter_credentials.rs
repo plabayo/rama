@@ -118,14 +118,14 @@ impl Clone for FilterCredentials {
     }
 }
 
-impl<S, B, E> Policy<S, B, E> for FilterCredentials {
-    fn redirect(&mut self, _: &Context<S>, attempt: &Attempt<'_>) -> Result<Action, E> {
+impl<B, E> Policy<B, E> for FilterCredentials {
+    fn redirect(&mut self, _: &Context, attempt: &Attempt<'_>) -> Result<Action, E> {
         self.blocked = self.block_any
             || (self.block_cross_origin && !eq_origin(attempt.previous(), attempt.location()));
         Ok(Action::Follow)
     }
 
-    fn on_request(&mut self, _: &mut Context<S>, request: &mut Request<B>) {
+    fn on_request(&mut self, _: &mut Context, request: &mut Request<B>) {
         if self.blocked {
             let headers = request.headers_mut();
             if self.remove_all {
@@ -159,7 +159,7 @@ mod tests {
             .header(header::COOKIE, "42")
             .body(())
             .unwrap();
-        Policy::<(), (), ()>::on_request(&mut policy, &mut ctx, &mut request);
+        Policy::<(), ()>::on_request(&mut policy, &mut ctx, &mut request);
         assert!(request.headers().contains_key(header::COOKIE));
 
         let attempt = Attempt {
@@ -168,7 +168,7 @@ mod tests {
             previous: request.uri(),
         };
         assert!(
-            Policy::<(), (), ()>::redirect(&mut policy, &ctx, &attempt)
+            Policy::<(), ()>::redirect(&mut policy, &ctx, &attempt)
                 .unwrap()
                 .is_follow()
         );
@@ -178,7 +178,7 @@ mod tests {
             .header(header::COOKIE, "42")
             .body(())
             .unwrap();
-        Policy::<(), (), ()>::on_request(&mut policy, &mut ctx, &mut request);
+        Policy::<(), ()>::on_request(&mut policy, &mut ctx, &mut request);
         assert!(request.headers().contains_key(header::COOKIE));
 
         let attempt = Attempt {
@@ -187,7 +187,7 @@ mod tests {
             previous: request.uri(),
         };
         assert!(
-            Policy::<(), (), ()>::redirect(&mut policy, &ctx, &attempt)
+            Policy::<(), ()>::redirect(&mut policy, &ctx, &attempt)
                 .unwrap()
                 .is_follow()
         );
@@ -197,7 +197,7 @@ mod tests {
             .header(header::COOKIE, "42")
             .body(())
             .unwrap();
-        Policy::<(), (), ()>::on_request(&mut policy, &mut ctx, &mut request);
+        Policy::<(), ()>::on_request(&mut policy, &mut ctx, &mut request);
         assert!(!request.headers().contains_key(header::COOKIE));
     }
 }

@@ -121,11 +121,11 @@ impl Default for PrivateIpNetMatcher {
 }
 
 #[cfg(feature = "http")]
-impl<State, Body> rama_core::matcher::Matcher<State, Request<Body>> for PrivateIpNetMatcher {
+impl< Body> rama_core::matcher::Matcher<Request<Body>> for PrivateIpNetMatcher {
     fn matches(
         &self,
         _ext: Option<&mut Extensions>,
-        ctx: &Context<State>,
+        ctx: &Context,
         _req: &Request<Body>,
     ) -> bool {
         ctx.get::<SocketInfo>()
@@ -137,14 +137,14 @@ impl<State, Body> rama_core::matcher::Matcher<State, Request<Body>> for PrivateI
     }
 }
 
-impl<State, Socket> rama_core::matcher::Matcher<State, Socket> for PrivateIpNetMatcher
+impl< Socket> rama_core::matcher::Matcher< Socket> for PrivateIpNetMatcher
 where
     Socket: crate::stream::Socket,
 {
     fn matches(
         &self,
         _ext: Option<&mut Extensions>,
-        _ctx: &Context<State>,
+        _ctx: &Context,
         stream: &Socket,
     ) -> bool {
         stream

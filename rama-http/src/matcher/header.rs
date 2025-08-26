@@ -43,11 +43,11 @@ impl HeaderMatcher {
     }
 }
 
-impl<State, Body> Matcher<State, Request<Body>> for HeaderMatcher {
+impl< Body> Matcher<Request<Body>> for HeaderMatcher {
     fn matches(
         &self,
         _ext: Option<&mut Extensions>,
-        _ctx: &Context<State>,
+        _ctx: &Context,
         req: &Request<Body>,
     ) -> bool {
         let headers = req.headers();

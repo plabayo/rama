@@ -42,12 +42,12 @@ impl VersionMatcher {
     }
 }
 
-impl<State, Body> rama_core::matcher::Matcher<State, Request<Body>> for VersionMatcher {
+impl< Body> rama_core::matcher::Matcher<Request<Body>> for VersionMatcher {
     /// returns true on a match, false otherwise
     fn matches(
         &self,
         _ext: Option<&mut Extensions>,
-        _ctx: &Context<State>,
+        _ctx: &Context,
         req: &Request<Body>,
     ) -> bool {
         Self::try_from(req.version())

@@ -79,24 +79,18 @@ where {
     }
 }
 
-impl<State, Request, ConnectorFactory> Service<State, Request> for UnixConnector<ConnectorFactory>
+impl<Request, ConnectorFactory> Service<Request> for UnixConnector<ConnectorFactory>
 where
-    State: Clone + Send + Sync + 'static,
     Request: Send + 'static,
     ConnectorFactory: UnixStreamConnectorFactory<
-            State,
             Connector: UnixStreamConnector<Error: Into<BoxError> + Send + 'static>,
             Error: Into<BoxError> + Send + 'static,
         > + Clone,
 {
-    type Response = EstablishedClientConnection<UnixStream, State, Request>;
+    type Response = EstablishedClientConnection<UnixStream, Request>;
     type Error = BoxError;
 
-    async fn serve(
-        &self,
-        ctx: Context<State>,
-        req: Request,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
         let CreatedUnixStreamConnector { mut ctx, connector } = self
             .connector_factory
             .make_connector(ctx)
@@ -187,14 +181,13 @@ macro_rules! impl_stream_connector_either {
 
 /// Contains a `Connector` created by a [`UnixStreamConnectorFactory`],
 /// together with the [`Context`] used to create it in relation to.
-pub struct CreatedUnixStreamConnector<State, Connector> {
-    pub ctx: Context<State>,
+pub struct CreatedUnixStreamConnector<Connector> {
+    pub ctx: Context,
     pub connector: Connector,
 }
 
-impl<State, Connector> std::fmt::Debug for CreatedUnixStreamConnector<State, Connector>
+impl<Connector> std::fmt::Debug for CreatedUnixStreamConnector<Connector>
 where
-    State: std::fmt::Debug,
     Connector: std::fmt::Debug,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -205,9 +198,8 @@ where
     }
 }
 
-impl<State, Connector> Clone for CreatedUnixStreamConnector<State, Connector>
+impl<Connector> Clone for CreatedUnixStreamConnector<Connector>
 where
-    State: Clone,
     Connector: Clone,
 {
     fn clone(&self) -> Self {
@@ -225,7 +217,7 @@ where
 /// to use a [`Clone`]able [`UnixStreamConnectorCloneFactory`], but in more
 /// advanced cases you can use variants of [`UnixStreamConnector`] specific
 /// to the given contexts.
-pub trait UnixStreamConnectorFactory<State>: Send + Sync + 'static {
+pub trait UnixStreamConnectorFactory: Send + Sync + 'static {
     /// `UnixStreamConnector` created by this [`UnixStreamConnectorFactory`]
     type Connector: UnixStreamConnector;
     /// Error returned in case [`UnixStreamConnectorFactory`] was
@@ -235,24 +227,19 @@ pub trait UnixStreamConnectorFactory<State>: Send + Sync + 'static {
     /// Try to create a [`UnixStreamConnector`], and return an error or otherwise.
     fn make_connector(
         &self,
-        ctx: Context<State>,
-    ) -> impl Future<
-        Output = Result<CreatedUnixStreamConnector<State, Self::Connector>, Self::Error>,
-    > + Send
-    + '_;
+        ctx: Context,
+    ) -> impl Future<Output = Result<CreatedUnixStreamConnector<Self::Connector>, Self::Error>> + Send + '_;
 }
 
-impl<State: Send + Sync + 'static> UnixStreamConnectorFactory<State> for () {
+impl UnixStreamConnectorFactory for () {
     type Connector = ();
     type Error = Infallible;
 
     fn make_connector(
         &self,
-        ctx: Context<State>,
-    ) -> impl Future<
-        Output = Result<CreatedUnixStreamConnector<State, Self::Connector>, Self::Error>,
-    > + Send
-    + '_ {
+        ctx: Context,
+    ) -> impl Future<Output = Result<CreatedUnixStreamConnector<Self::Connector>, Self::Error>> + Send + '_
+    {
         std::future::ready(Ok(CreatedUnixStreamConnector { ctx, connector: () }))
     }
 }
@@ -285,21 +272,18 @@ where
     }
 }
 
-impl<State, C> UnixStreamConnectorFactory<State> for UnixStreamConnectorCloneFactory<C>
+impl<C> UnixStreamConnectorFactory for UnixStreamConnectorCloneFactory<C>
 where
     C: UnixStreamConnector + Clone,
-    State: Send + Sync + 'static,
 {
     type Connector = C;
     type Error = Infallible;
 
     fn make_connector(
         &self,
-        ctx: Context<State>,
-    ) -> impl Future<
-        Output = Result<CreatedUnixStreamConnector<State, Self::Connector>, Self::Error>,
-    > + Send
-    + '_ {
+        ctx: Context,
+    ) -> impl Future<Output = Result<CreatedUnixStreamConnector<Self::Connector>, Self::Error>> + Send + '_
+    {
         std::future::ready(Ok(CreatedUnixStreamConnector {
             ctx,
             connector: self.0.clone(),
@@ -307,32 +291,29 @@ where
     }
 }
 
-impl<State, F> UnixStreamConnectorFactory<State> for Arc<F>
+impl<F> UnixStreamConnectorFactory for Arc<F>
 where
-    F: UnixStreamConnectorFactory<State>,
-    State: Send + Sync + 'static,
+    F: UnixStreamConnectorFactory,
 {
     type Connector = F::Connector;
     type Error = F::Error;
 
     fn make_connector(
         &self,
-        ctx: Context<State>,
-    ) -> impl Future<
-        Output = Result<CreatedUnixStreamConnector<State, Self::Connector>, Self::Error>,
-    > + Send
-    + '_ {
+        ctx: Context,
+    ) -> impl Future<Output = Result<CreatedUnixStreamConnector<Self::Connector>, Self::Error>> + Send + '_
+    {
         (**self).make_connector(ctx)
     }
 }
 
 macro_rules! impl_stream_connector_factory_either {
     ($id:ident, $($param:ident),+ $(,)?) => {
-        impl<State, $($param),+> UnixStreamConnectorFactory<State> for ::rama_core::combinators::$id<$($param),+>
+        impl< $($param),+> UnixStreamConnectorFactory for ::rama_core::combinators::$id<$($param),+>
         where
-            State: Send + Sync + 'static,
+
             $(
-                $param: UnixStreamConnectorFactory<State, Connector: UnixStreamConnector<Error: Into<BoxError>>, Error: Into<BoxError>>,
+                $param: UnixStreamConnectorFactory< Connector: UnixStreamConnector<Error: Into<BoxError>>, Error: Into<BoxError>>,
             )+
         {
             type Connector = ::rama_core::combinators::$id<$($param::Connector),+>;
@@ -340,8 +321,8 @@ macro_rules! impl_stream_connector_factory_either {
 
             async fn make_connector(
                 &self,
-                ctx: Context<State>,
-            ) -> Result<CreatedUnixStreamConnector<State, Self::Connector>, Self::Error> {
+                ctx: Context,
+            ) -> Result<CreatedUnixStreamConnector< Self::Connector>, Self::Error> {
                 match self {
                     $(
                         ::rama_core::combinators::$id::$param(s) => match s.make_connector(ctx).await {

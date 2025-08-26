@@ -173,21 +173,21 @@ impl<T: fmt::Debug, F: fmt::Debug> fmt::Debug for HttpPeekRouter<T, F> {
     }
 }
 
-impl<State, Stream, Response, T, F> Service<State, Stream>
+impl< Stream, Response, T, F> Service< Stream>
     for HttpPeekRouter<HttpAutoAcceptor<T>, F>
 where
-    State: Clone + Send + Sync + 'static,
+    
     Stream: crate::stream::Stream + Unpin,
     Response: Send + 'static,
-    T: Service<State, HttpPeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
-    F: Service<State, HttpPeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
+    T: Service< HttpPeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
+    F: Service< HttpPeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
 {
     type Response = Response;
     type Error = BoxError;
 
     async fn serve(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         stream: Stream,
     ) -> Result<Self::Response, Self::Error> {
         let (version, stream) = peek_http_stream(stream).await?;
@@ -205,20 +205,20 @@ where
     }
 }
 
-impl<State, Stream, Response, T, F> Service<State, Stream> for HttpPeekRouter<Http1Acceptor<T>, F>
+impl< Stream, Response, T, F> Service< Stream> for HttpPeekRouter<Http1Acceptor<T>, F>
 where
-    State: Clone + Send + Sync + 'static,
+    
     Stream: crate::stream::Stream + Unpin,
     Response: Send + 'static,
-    T: Service<State, HttpPeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
-    F: Service<State, HttpPeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
+    T: Service< HttpPeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
+    F: Service< HttpPeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
 {
     type Response = Response;
     type Error = BoxError;
 
     async fn serve(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         stream: Stream,
     ) -> Result<Self::Response, Self::Error> {
         let (version, stream) = peek_http_stream(stream).await?;
@@ -236,20 +236,20 @@ where
     }
 }
 
-impl<State, Stream, Response, T, F> Service<State, Stream> for HttpPeekRouter<H2Acceptor<T>, F>
+impl< Stream, Response, T, F> Service< Stream> for HttpPeekRouter<H2Acceptor<T>, F>
 where
-    State: Clone + Send + Sync + 'static,
+    
     Stream: crate::stream::Stream + Unpin,
     Response: Send + 'static,
-    T: Service<State, HttpPeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
-    F: Service<State, HttpPeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
+    T: Service< HttpPeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
+    F: Service< HttpPeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
 {
     type Response = Response;
     type Error = BoxError;
 
     async fn serve(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         stream: Stream,
     ) -> Result<Self::Response, Self::Error> {
         let (version, stream) = peek_http_stream(stream).await?;
@@ -267,22 +267,22 @@ where
     }
 }
 
-impl<State, Stream, Response, T, U, F> Service<State, Stream>
+impl< Stream, Response, T, U, F> Service< Stream>
     for HttpPeekRouter<HttpDualAcceptor<T, U>, F>
 where
-    State: Clone + Send + Sync + 'static,
+    
     Stream: crate::stream::Stream + Unpin,
     Response: Send + 'static,
-    T: Service<State, HttpPeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
-    U: Service<State, HttpPeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
-    F: Service<State, HttpPeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
+    T: Service< HttpPeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
+    U: Service< HttpPeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
+    F: Service< HttpPeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
 {
     type Response = Response;
     type Error = BoxError;
 
     async fn serve(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         stream: Stream,
     ) -> Result<Self::Response, Self::Error> {
         let (version, stream) = peek_http_stream(stream).await?;

@@ -47,11 +47,11 @@ impl PortMatcher {
 }
 
 #[cfg(feature = "http")]
-impl<State, Body> rama_core::matcher::Matcher<State, Request<Body>> for PortMatcher {
+impl< Body> rama_core::matcher::Matcher<Request<Body>> for PortMatcher {
     fn matches(
         &self,
         _ext: Option<&mut Extensions>,
-        ctx: &Context<State>,
+        ctx: &Context,
         _req: &Request<Body>,
     ) -> bool {
         ctx.get::<SocketInfo>()
@@ -60,14 +60,14 @@ impl<State, Body> rama_core::matcher::Matcher<State, Request<Body>> for PortMatc
     }
 }
 
-impl<State, Socket> rama_core::matcher::Matcher<State, Socket> for PortMatcher
+impl< Socket> rama_core::matcher::Matcher< Socket> for PortMatcher
 where
     Socket: crate::stream::Socket,
 {
     fn matches(
         &self,
         _ext: Option<&mut Extensions>,
-        _ctx: &Context<State>,
+        _ctx: &Context,
         stream: &Socket,
     ) -> bool {
         stream

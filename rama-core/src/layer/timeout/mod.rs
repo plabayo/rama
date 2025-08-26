@@ -109,22 +109,17 @@ where
     }
 }
 
-impl<T, F, S, Request, E> Service<S, Request> for Timeout<T, F>
+impl<T, F, Request, E> Service<Request> for Timeout<T, F>
 where
     Request: Send + 'static,
-    S: Clone + Send + Sync + 'static,
     F: MakeLayerError<Error = E>,
     E: Into<T::Error> + Send + 'static,
-    T: Service<S, Request>,
+    T: Service<Request>,
 {
     type Response = T::Response;
     type Error = T::Error;
 
-    async fn serve(
-        &self,
-        ctx: Context<S>,
-        request: Request,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, ctx: Context, request: Request) -> Result<Self::Response, Self::Error> {
         tokio::select! {
             res = self.inner.serve(ctx, request) => res,
             _ = tokio::time::sleep(self.timeout) => Err(self.into_error.make_layer_error().into()),

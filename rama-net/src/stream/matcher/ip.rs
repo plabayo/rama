@@ -45,11 +45,11 @@ impl IpNetMatcher {
 }
 
 #[cfg(feature = "http")]
-impl<State, Body> rama_core::matcher::Matcher<State, Request<Body>> for IpNetMatcher {
+impl< Body> rama_core::matcher::Matcher<Request<Body>> for IpNetMatcher {
     fn matches(
         &self,
         _ext: Option<&mut Extensions>,
-        ctx: &Context<State>,
+        ctx: &Context,
         _req: &Request<Body>,
     ) -> bool {
         ctx.get::<SocketInfo>()
@@ -58,14 +58,14 @@ impl<State, Body> rama_core::matcher::Matcher<State, Request<Body>> for IpNetMat
     }
 }
 
-impl<State, Socket> rama_core::matcher::Matcher<State, Socket> for IpNetMatcher
+impl< Socket> rama_core::matcher::Matcher< Socket> for IpNetMatcher
 where
     Socket: crate::stream::Socket,
 {
     fn matches(
         &self,
         _ext: Option<&mut Extensions>,
-        _ctx: &Context<State>,
+        _ctx: &Context,
         stream: &Socket,
     ) -> bool {
         stream

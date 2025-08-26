@@ -96,9 +96,9 @@ async fn main() {
 }
 
 async fn http_connect_accept<S>(
-    mut ctx: Context<S>,
+    mut ctx: Context,
     req: Request,
-) -> Result<(Response, Context<S>, Request), Response>
+) -> Result<(Response, Context, Request), Response>
 where
     S: Clone + Send + Sync + 'static,
 {
@@ -123,7 +123,7 @@ where
     Ok((StatusCode::OK.into_response(), ctx, req))
 }
 
-async fn http_plain_proxy<S>(ctx: Context<S>, req: Request) -> Result<Response, Infallible>
+async fn http_plain_proxy<S>(ctx: Context, req: Request) -> Result<Response, Infallible>
 where
     S: Clone + Send + Sync + 'static,
 {

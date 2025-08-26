@@ -118,20 +118,15 @@ impl<S> BodyLimitService<S> {
     }
 }
 
-impl<S, State, IO> Service<State, IO> for BodyLimitService<S>
+impl<S, IO> Service<IO> for BodyLimitService<S>
 where
-    S: Service<State, IO>,
-    State: Clone + Send + Sync + 'static,
+    S: Service<IO>,
     IO: Stream,
 {
     type Response = S::Response;
     type Error = S::Error;
 
-    async fn serve(
-        &self,
-        mut ctx: Context<State>,
-        stream: IO,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut ctx: Context, stream: IO) -> Result<Self::Response, Self::Error> {
         ctx.insert(self.limit);
         self.inner.serve(ctx, stream).await
     }

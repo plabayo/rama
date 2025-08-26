@@ -59,7 +59,7 @@ use std::{convert::Infallible, time::Duration};
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 type State = ();
-type Context = rama::Context<State>;
+type Context = rama::Context;
 
 #[tokio::main]
 async fn main() {
@@ -100,7 +100,7 @@ async fn main() {
         .expect("graceful shutdown");
 }
 
-fn new_http_mitm_proxy() -> impl Service<State, Request, Response = Response, Error = Infallible> {
+fn new_http_mitm_proxy() -> impl Service<Request, Response = Response, Error = Infallible> {
     (
         MapResponseBodyLayer::new(Body::new),
         TraceLayer::new_for_http(),

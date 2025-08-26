@@ -259,7 +259,7 @@ async fn test_ua_emulation() {
             description: &'static str,
         }
 
-        async fn server_svc_fn(ctx: Context<State>, req: Request) -> Result<Response, Infallible> {
+        async fn server_svc_fn(ctx: Context, req: Request) -> Result<Response, Infallible> {
             let expected = ctx.state().expected;
             let description = ctx.state().description;
 
@@ -301,7 +301,7 @@ async fn test_ua_emulation() {
             UserAgentEmulateLayer::new(Arc::new(profile)),
             EmulateTlsProfileLayer::new(),
         )
-            .into_layer(service_fn(async |mut ctx: Context<State>, req: Request| {
+            .into_layer(service_fn(async |mut ctx: Context, req: Request| {
                 // We can edit our current builder directly or create a new one if needed
                 let builder = ctx.get_or_insert_default::<TlsConnectorDataBuilder>();
                 builder.set_server_verify_mode(ServerVerifyMode::Disable);
@@ -358,7 +358,7 @@ async fn test_ua_embedded_profiles_are_all_resulting_in_correct_traffic_flow() {
             }
 
             async fn server_svc_fn(
-                ctx: Context<State>,
+                ctx: Context,
                 _req: Request,
             ) -> Result<Response, Infallible> {
                 ctx.state()
@@ -378,7 +378,7 @@ async fn test_ua_embedded_profiles_are_all_resulting_in_correct_traffic_flow() {
                 UserAgentEmulateLayer::new(profile.clone()),
                 EmulateTlsProfileLayer::new().with_builder_overwrites(tls_config),
             )
-                .into_layer(service_fn(async |ctx: Context<State>, req: Request| {
+                .into_layer(service_fn(async |ctx: Context, req: Request| {
                     // We dont set base emulator data here since we always use EmulateTlsProfileLayer, but we could
                     // set a base config here in case EmulateTlsProfileLayer would not always set a config.
                     let connector = HttpConnector::new(TlsConnector::secure(
@@ -445,17 +445,17 @@ impl<S> MockConnectorService<S> {
     }
 }
 
-impl<State, S> Service<State, Request> for MockConnectorService<S>
+impl< S> Service<Request> for MockConnectorService<S>
 where
-    S: Service<State, Request, Response = Response, Error = Infallible> + Clone,
-    State: Clone + Send + Sync + 'static,
+    S: Service<Request, Response = Response, Error = Infallible> + Clone,
+    
 {
     type Error = S::Error;
-    type Response = EstablishedClientConnection<MockSocket, State, Request>;
+    type Response = EstablishedClientConnection<MockSocket, Request>;
 
     async fn serve(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         req: Request,
     ) -> Result<Self::Response, Self::Error> {
         let (client_socket, server_socket) = new_mock_sockets();

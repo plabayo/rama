@@ -5,7 +5,7 @@ To recap, a `Service::serve` method has the following signature:
 ```rust,noplayground
 fn serve(
     &self,
-    ctx: Context<State>,
+    ctx: Context,
     req: Request,
 ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_;
 ```
@@ -13,10 +13,10 @@ fn serve(
 - `&self` allows services to access shared `Send + Sync + 'static` state internal and specific to that `Service`;
 - `Request` is the input used to produce a `Result`.
 
-`Context<State>` is what this chapter is about,
+`Context` is what this chapter is about,
 and its documemtation can be consumed at <https://ramaproxy.org/docs/rama/context/struct.Context.html>.
 
-`Context<State>` is used to:
+`Context` is used to:
 
 - access shared typesafe `State` defined by the code location instantiating the `Service` on its own or part of a _stack_.
 - access `Extensions` that can be used to dynamically get and set extra (optional) data, to be passed for usage by inner service(s).

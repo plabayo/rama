@@ -55,11 +55,11 @@ impl<S> TraceErr<S> {
     define_inner_service_accessors!();
 }
 
-impl<S, State, Request> Service<State, Request> for TraceErr<S>
+impl<S, Request> Service<Request> for TraceErr<S>
 where
     Request: Send + 'static,
-    S: Service<State, Request, Error: std::fmt::Display + Send + Sync + 'static>,
-    State: Clone + Send + Sync + 'static,
+    S: Service<Request, Error: std::fmt::Display + Send + Sync + 'static>,
+    
 {
     type Response = S::Response;
     type Error = S::Error;
@@ -67,7 +67,7 @@ where
     #[inline]
     async fn serve(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         req: Request,
     ) -> Result<Self::Response, Self::Error> {
         let level = self.level;

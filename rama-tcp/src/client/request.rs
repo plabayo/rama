@@ -169,23 +169,23 @@ impl From<Parts> for TransportContext {
     }
 }
 
-impl<State> TryRefIntoTransportContext<State> for Request {
+impl TryRefIntoTransportContext for Request {
     type Error = Infallible;
 
     fn try_ref_into_transport_ctx(
         &self,
-        _ctx: &Context<State>,
+        _ctx: &Context,
     ) -> Result<TransportContext, Self::Error> {
         Ok(self.into())
     }
 }
 
-impl<State> TryRefIntoTransportContext<State> for Parts {
+impl TryRefIntoTransportContext for Parts {
     type Error = Infallible;
 
     fn try_ref_into_transport_ctx(
         &self,
-        _ctx: &Context<State>,
+        _ctx: &Context,
     ) -> Result<TransportContext, Self::Error> {
         Ok(self.into())
     }

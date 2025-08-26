@@ -17,7 +17,7 @@ impl<S, O> UpgradeLayer<S, O> {
     pub fn new<M, R, H>(matcher: M, responder: R, handler: H) -> Self
     where
         M: Matcher<S, Request>,
-        R: Service<S, Request, Response = (O, Context<S>, Request), Error = O> + Clone,
+        R: Service<S, Request, Response = (O, Context, Request), Error = O> + Clone,
         H: Service<S, Upgraded, Response = (), Error = Infallible> + Clone,
     {
         Self {
@@ -30,7 +30,7 @@ impl<S, O> UpgradeLayer<S, O> {
     pub fn on<M, R, H>(mut self, matcher: M, responder: R, handler: H) -> Self
     where
         M: Matcher<S, Request>,
-        R: Service<S, Request, Response = (O, Context<S>, Request), Error = O> + Clone,
+        R: Service<S, Request, Response = (O, Context, Request), Error = O> + Clone,
         H: Service<S, Upgraded, Response = (), Error = Infallible> + Clone,
     {
         self.handlers
@@ -55,8 +55,8 @@ impl<S, O> Clone for UpgradeLayer<S, O> {
     }
 }
 
-impl<S, State, O> Layer<S> for UpgradeLayer<State, O> {
-    type Service = UpgradeService<S, State, O>;
+impl<S, O> Layer<S> for UpgradeLayer< O> {
+    type Service = UpgradeService<S, O>;
 
     fn layer(&self, inner: S) -> Self::Service {
         UpgradeService::new(self.handlers.clone(), inner)

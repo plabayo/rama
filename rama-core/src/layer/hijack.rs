@@ -58,12 +58,12 @@ impl<S, H, M> HijackService<S, H, M> {
     define_inner_service_accessors!();
 }
 
-impl<S, H, M, State, Request> Service<State, Request> for HijackService<S, H, M>
+impl<S, H, M, Request> Service<Request> for HijackService<S, H, M>
 where
-    S: Service<State, Request>,
-    H: Service<State, Request, Response: Into<S::Response>, Error: Into<S::Error>>,
-    M: Matcher<State, Request>,
-    State: Clone + Send + Sync + 'static,
+    S: Service<Request>,
+    H: Service<Request, Response: Into<S::Response>, Error: Into<S::Error>>,
+    M: Matcher<Request>,
+    
     Request: Send + 'static,
 {
     type Response = S::Response;
@@ -71,7 +71,7 @@ where
 
     async fn serve(
         &self,
-        mut ctx: Context<State>,
+        mut ctx: Context,
         req: Request,
     ) -> Result<Self::Response, Self::Error> {
         let mut ext = Extensions::new();

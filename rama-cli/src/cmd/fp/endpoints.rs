@@ -94,7 +94,7 @@ pub(super) async fn get_consent() -> impl IntoResponse {
 }
 
 pub(super) async fn get_report(
-    mut ctx: Context<Arc<State>>,
+    mut ctx: Context<Arc>,
     req: Request,
 ) -> Result<Html, Response> {
     let ja4h = get_ja4h_info(&req);
@@ -309,7 +309,7 @@ pub(super) struct AcmeChallengeParams {
 
 pub(super) async fn get_acme_challenge(
     Path(params): Path<AcmeChallengeParams>,
-    ctx: Context<Arc<State>>,
+    ctx: Context<Arc>,
 ) -> Response {
     match ctx.state().acme.get_challenge(params.token) {
         Some(challenge) => Response::builder()
@@ -344,7 +344,7 @@ pub(super) struct APINumberRequest {
 
 pub(super) async fn post_api_fetch_number(
     Path(params): Path<APINumberParams>,
-    mut ctx: Context<Arc<State>>,
+    mut ctx: Context<Arc>,
     req: Request,
 ) -> Result<Json<serde_json::Value>, Response> {
     let ja4h = get_ja4h_info(&req);
@@ -426,7 +426,7 @@ pub(super) async fn post_api_fetch_number(
 
 pub(super) async fn post_api_xml_http_request_number(
     Path(params): Path<APINumberParams>,
-    mut ctx: Context<Arc<State>>,
+    mut ctx: Context<Arc>,
     req: Request,
 ) -> Result<Json<serde_json::Value>, Response> {
     let ja4h = get_ja4h_info(&req);
@@ -481,7 +481,7 @@ pub(super) async fn post_api_xml_http_request_number(
 // endpoints: form
 //------------------------------------------
 
-pub(super) async fn form(mut ctx: Context<Arc<State>>, req: Request) -> Result<Html, Response> {
+pub(super) async fn form(mut ctx: Context<Arc>, req: Request) -> Result<Html, Response> {
     let ja4h = get_ja4h_info(&req);
 
     let (mut parts, _) = req.into_parts();
@@ -576,7 +576,7 @@ pub(super) async fn form(mut ctx: Context<Arc<State>>, req: Request) -> Result<H
 //------------------------------------------
 
 pub(super) async fn ws_api(
-    ctx: Context<Arc<State>>,
+    ctx: Context<Arc>,
     ws: ServerWebSocket,
 ) -> Result<(), OpaqueError> {
     tracing::debug!("ws api called");

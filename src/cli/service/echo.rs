@@ -370,7 +370,7 @@ impl Service<(), Request> for EchoService {
 
     async fn serve(
         &self,
-        mut ctx: Context<()>,
+        mut ctx: Context,
         req: Request,
     ) -> Result<Self::Response, Self::Error> {
         let user_agent_info = ctx

@@ -92,7 +92,7 @@ where
     }
 }
 
-impl<S, I1, I2, State, BodyIn, BodyOut> Service<State, Request<BodyIn>> for HttpConnector<S, I1, I2>
+impl<S, I1, I2, BodyIn, BodyOut> Service<Request<BodyIn>> for HttpConnector<S, I1, I2>
 where
     I1: RequestInspector<
             State,
@@ -107,8 +107,8 @@ where
             Error: Into<BoxError>,
             RequestOut = Request<BodyOut>,
         > + Clone,
-    S: ConnectorService<State, Request<BodyIn>, Connection: Stream + Unpin, Error: Into<BoxError>>,
-    State: Clone + Send + Sync + 'static,
+    S: ConnectorService<Request<BodyIn>, Connection: Stream + Unpin, Error: Into<BoxError>>,
+    
     BodyIn: http_body::Body<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
     BodyOut: http_body::Body<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
 {
@@ -118,7 +118,7 @@ where
 
     async fn serve(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         req: Request<BodyIn>,
     ) -> Result<Self::Response, Self::Error> {
         let EstablishedClientConnection { ctx, req, conn } =

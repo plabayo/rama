@@ -21,26 +21,18 @@ use super::IntoEndpointService;
 /// This router uses `matchit::Router` to efficiently match incoming requests
 /// to predefined routes. Each route is associated with an `HttpMatcher`
 /// and a corresponding service handler.
-pub struct Router<State> {
-    routes: MatchitRouter<
-        Vec<(
-            HttpMatcher<State, Body>,
-            BoxService<State, Request, Response, Infallible>,
-        )>,
-    >,
-    not_found: Option<BoxService<State, Request, Response, Infallible>>,
+pub struct Router {
+    routes: MatchitRouter<Vec<(HttpMatcher<Body>, BoxService<Request, Response, Infallible>)>>,
+    not_found: Option<BoxService<Request, Response, Infallible>>,
 }
 
-impl<State> std::fmt::Debug for Router<State> {
+impl std::fmt::Debug for Router {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Router").finish()
     }
 }
 
-impl<State> Router<State>
-where
-    State: Clone + Send + Sync + 'static,
-{
+impl Router {
     /// create a new router.
     #[must_use]
     pub fn new() -> Self {
@@ -56,7 +48,7 @@ where
     #[must_use]
     pub fn get<I, T>(self, path: &str, service: I) -> Self
     where
-        I: IntoEndpointService<State, T>,
+        I: IntoEndpointService<T>,
     {
         let matcher = HttpMatcher::method(MethodMatcher::GET);
         self.match_route(path, matcher, service)
@@ -66,7 +58,7 @@ where
     #[must_use]
     pub fn post<I, T>(self, path: &str, service: I) -> Self
     where
-        I: IntoEndpointService<State, T>,
+        I: IntoEndpointService<T>,
     {
         let matcher = HttpMatcher::method(MethodMatcher::POST);
         self.match_route(path, matcher, service)
@@ -76,7 +68,7 @@ where
     #[must_use]
     pub fn put<I, T>(self, path: &str, service: I) -> Self
     where
-        I: IntoEndpointService<State, T>,
+        I: IntoEndpointService<T>,
     {
         let matcher = HttpMatcher::method(MethodMatcher::PUT);
         self.match_route(path, matcher, service)
@@ -86,7 +78,7 @@ where
     #[must_use]
     pub fn delete<I, T>(self, path: &str, service: I) -> Self
     where
-        I: IntoEndpointService<State, T>,
+        I: IntoEndpointService<T>,
     {
         let matcher = HttpMatcher::method(MethodMatcher::DELETE);
         self.match_route(path, matcher, service)
@@ -96,7 +88,7 @@ where
     #[must_use]
     pub fn patch<I, T>(self, path: &str, service: I) -> Self
     where
-        I: IntoEndpointService<State, T>,
+        I: IntoEndpointService<T>,
     {
         let matcher = HttpMatcher::method(MethodMatcher::PATCH);
         self.match_route(path, matcher, service)
@@ -106,7 +98,7 @@ where
     #[must_use]
     pub fn head<I, T>(self, path: &str, service: I) -> Self
     where
-        I: IntoEndpointService<State, T>,
+        I: IntoEndpointService<T>,
     {
         let matcher = HttpMatcher::method(MethodMatcher::HEAD);
         self.match_route(path, matcher, service)
@@ -116,7 +108,7 @@ where
     #[must_use]
     pub fn options<I, T>(self, path: &str, service: I) -> Self
     where
-        I: IntoEndpointService<State, T>,
+        I: IntoEndpointService<T>,
     {
         let matcher = HttpMatcher::method(MethodMatcher::OPTIONS);
         self.match_route(path, matcher, service)
@@ -126,7 +118,7 @@ where
     #[must_use]
     pub fn trace<I, T>(self, path: &str, service: I) -> Self
     where
-        I: IntoEndpointService<State, T>,
+        I: IntoEndpointService<T>,
     {
         let matcher = HttpMatcher::method(MethodMatcher::TRACE);
         self.match_route(path, matcher, service)
@@ -136,7 +128,7 @@ where
     #[must_use]
     pub fn connect<I, T>(self, path: &str, service: I) -> Self
     where
-        I: IntoEndpointService<State, T>,
+        I: IntoEndpointService<T>,
     {
         let matcher = HttpMatcher::method(MethodMatcher::CONNECT);
         self.match_route(path, matcher, service)
@@ -148,7 +140,7 @@ where
     #[must_use]
     pub fn sub<I, T>(self, prefix: &str, service: I) -> Self
     where
-        I: IntoEndpointService<State, T>,
+        I: IntoEndpointService<T>,
     {
         let path = format!("{}/{}", prefix.trim().trim_end_matches(['/']), "{*nest}");
         let nested = Arc::new(service.into_endpoint_service().boxed());
@@ -168,14 +160,9 @@ where
 
     /// add a route to the router with it's matcher and service.
     #[must_use]
-    pub fn match_route<I, T>(
-        mut self,
-        path: &str,
-        matcher: HttpMatcher<State, Body>,
-        service: I,
-    ) -> Self
+    pub fn match_route<I, T>(mut self, path: &str, matcher: HttpMatcher<Body>, service: I) -> Self
     where
-        I: IntoEndpointService<State, T>,
+        I: IntoEndpointService<T>,
     {
         let service = service.into_endpoint_service().boxed();
 
@@ -197,7 +184,7 @@ where
     #[must_use]
     pub fn not_found<I, T>(mut self, service: I) -> Self
     where
-        I: IntoEndpointService<State, T>,
+        I: IntoEndpointService<T>,
     {
         self.not_found = Some(service.into_endpoint_service().boxed());
         self
@@ -205,22 +192,19 @@ where
 }
 
 #[derive(Debug, Clone)]
-struct NestedRouterService<State> {
+struct NestedRouterService {
     #[expect(unused)]
     prefix: Arc<str>,
-    nested: Arc<BoxService<State, Request, Response, Infallible>>,
+    nested: Arc<BoxService<Request, Response, Infallible>>,
 }
 
-impl<State> Service<State, Request> for NestedRouterService<State>
-where
-    State: Clone + Send + Sync + 'static,
-{
+impl Service<Request> for NestedRouterService {
     type Response = Response;
     type Error = Infallible;
 
     async fn serve(
         &self,
-        mut ctx: Context<State>,
+        mut ctx: Context,
         mut req: Request,
     ) -> Result<Self::Response, Self::Error> {
         let params: UriParams = match ctx.remove::<UriParams>() {
@@ -245,27 +229,17 @@ where
     }
 }
 
-impl<State> Default for Router<State>
-where
-    State: Clone + Send + Sync + 'static,
-{
+impl Default for Router {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<State> Service<State, Request> for Router<State>
-where
-    State: Clone + Send + Sync + 'static,
-{
+impl Service<Request> for Router {
     type Response = Response;
     type Error = Infallible;
 
-    async fn serve(
-        &self,
-        mut ctx: Context<State>,
-        req: Request,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
         let mut ext = Extensions::new();
 
         if let Ok(matched) = self.routes.at(req.uri().path()) {
@@ -308,7 +282,7 @@ mod tests {
     use rama_core::service::service_fn;
     use rama_http_types::{Body, Method, Request, StatusCode, dep::http_body_util::BodyExt};
 
-    fn root_service() -> impl Service<(), Request, Response = Response, Error = Infallible> {
+    fn root_service() -> impl Service<Request, Response = Response, Error = Infallible> {
         service_fn(|_ctx, _req| async {
             Ok(Response::builder()
                 .status(200)
@@ -317,7 +291,7 @@ mod tests {
         })
     }
 
-    fn create_user_service() -> impl Service<(), Request, Response = Response, Error = Infallible> {
+    fn create_user_service() -> impl Service<Request, Response = Response, Error = Infallible> {
         service_fn(|_ctx, _req| async {
             Ok(Response::builder()
                 .status(200)
@@ -326,7 +300,7 @@ mod tests {
         })
     }
 
-    fn get_users_service() -> impl Service<(), Request, Response = Response, Error = Infallible> {
+    fn get_users_service() -> impl Service<Request, Response = Response, Error = Infallible> {
         service_fn(|_ctx, _req| async {
             Ok(Response::builder()
                 .status(200)
@@ -335,8 +309,8 @@ mod tests {
         })
     }
 
-    fn get_user_service() -> impl Service<(), Request, Response = Response, Error = Infallible> {
-        service_fn(|ctx: Context<()>, _req| async move {
+    fn get_user_service() -> impl Service<Request, Response = Response, Error = Infallible> {
+        service_fn(|ctx: Context, _req| async move {
             let uri_params = ctx.get::<UriParams>().unwrap();
             let id = uri_params.get("user_id").unwrap();
             Ok(Response::builder()
@@ -346,8 +320,8 @@ mod tests {
         })
     }
 
-    fn delete_user_service() -> impl Service<(), Request, Response = Response, Error = Infallible> {
-        service_fn(|ctx: Context<()>, _req| async move {
+    fn delete_user_service() -> impl Service<Request, Response = Response, Error = Infallible> {
+        service_fn(|ctx: Context, _req| async move {
             let uri_params = ctx.get::<UriParams>().unwrap();
             let id = uri_params.get("user_id").unwrap();
             Ok(Response::builder()
@@ -357,9 +331,8 @@ mod tests {
         })
     }
 
-    fn serve_assets_service() -> impl Service<(), Request, Response = Response, Error = Infallible>
-    {
-        service_fn(|ctx: Context<()>, _req| async move {
+    fn serve_assets_service() -> impl Service<Request, Response = Response, Error = Infallible> {
+        service_fn(|ctx: Context, _req| async move {
             let uri_params = ctx.get::<UriParams>().unwrap();
             let path = uri_params.get("path").unwrap();
             Ok(Response::builder()
@@ -369,7 +342,7 @@ mod tests {
         })
     }
 
-    fn not_found_service() -> impl Service<(), Request, Response = Response, Error = Infallible> {
+    fn not_found_service() -> impl Service<Request, Response = Response, Error = Infallible> {
         service_fn(|_ctx, _req| async {
             Ok(Response::builder()
                 .status(StatusCode::NOT_FOUND)
@@ -378,9 +351,8 @@ mod tests {
         })
     }
 
-    fn get_user_order_service() -> impl Service<(), Request, Response = Response, Error = Infallible>
-    {
-        service_fn(|ctx: Context<()>, _req| async move {
+    fn get_user_order_service() -> impl Service<Request, Response = Response, Error = Infallible> {
+        service_fn(|ctx: Context, _req| async move {
             let uri_params = ctx.get::<UriParams>().unwrap();
             let user_id = uri_params.get("user_id").unwrap();
             let order_id = uri_params.get("order_id").unwrap();

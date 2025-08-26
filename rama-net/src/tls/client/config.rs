@@ -100,8 +100,8 @@ impl ClientConfigChainRefData<'_> {
     }
 }
 
-pub fn extract_client_config_from_ctx<State>(
-    ctx: &Context<State>,
+pub fn extract_client_config_from_ctx(
+    ctx: &Context,
 ) -> Option<ClientConfigChainRef<'_>> {
     match ctx.get::<ClientConfigChain>() {
         Some(chain) => Some(ClientConfigChainRef {
@@ -115,8 +115,8 @@ pub fn extract_client_config_from_ctx<State>(
     }
 }
 
-pub fn append_client_config_to_ctx<State>(
-    ctx: &mut Context<State>,
+pub fn append_client_config_to_ctx(
+    ctx: &mut Context,
     cfg: impl Into<Arc<ClientConfig>>,
 ) {
     match ctx.get_mut::<ClientConfigChain>() {
@@ -136,8 +136,8 @@ pub fn append_client_config_to_ctx<State>(
     }
 }
 
-pub fn append_all_client_configs_to_ctx<State>(
-    ctx: &mut Context<State>,
+pub fn append_all_client_configs_to_ctx(
+    ctx: &mut Context,
     cfg_it: impl IntoIterator<Item: Into<Arc<ClientConfig>>>,
 ) {
     let cfg_it = cfg_it.into_iter();

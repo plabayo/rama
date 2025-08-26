@@ -118,7 +118,7 @@ struct InfiniteResourceParameters {
 
 async fn infinite_resource(
     Query(parameters): Query<InfiniteResourceParameters>,
-    ctx: Context<State>,
+    ctx: Context,
 ) -> impl IntoResponse {
     let Some(socket_info) = ctx.get::<SocketInfo>() else {
         tracing::error!("failed to fetch IP from SocketInfo; fail request with 500");
@@ -155,16 +155,16 @@ impl<S> Layer<S> for IpFirewall {
     }
 }
 
-impl<S> Service<State, TcpStream> for IpFirewallService<S>
+impl<S> Service< TcpStream> for IpFirewallService<S>
 where
-    S: Service<State, TcpStream, Error: Into<BoxError>>,
+    S: Service< TcpStream, Error: Into<BoxError>>,
 {
     type Response = S::Response;
     type Error = BoxError;
 
     async fn serve(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         stream: TcpStream,
     ) -> Result<Self::Response, Self::Error> {
         let ip_addr = ctx

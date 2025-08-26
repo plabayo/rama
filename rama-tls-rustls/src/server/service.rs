@@ -59,16 +59,15 @@ where
     }
 }
 
-impl<T, S, IO> Service<T, IO> for TlsAcceptorService<S>
+impl<S, IO> Service<IO> for TlsAcceptorService<S>
 where
-    T: Send + Sync + 'static,
     IO: Stream + Unpin + 'static,
-    S: Service<T, TlsStream<IO>, Error: Into<BoxError>>,
+    S: Service<TlsStream<IO>, Error: Into<BoxError>>,
 {
     type Response = S::Response;
     type Error = BoxError;
 
-    async fn serve(&self, mut ctx: Context<T>, stream: IO) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut ctx: Context, stream: IO) -> Result<Self::Response, Self::Error> {
         let acceptor = LazyConfigAcceptor::new(Acceptor::default(), stream);
 
         let start = acceptor.await?;

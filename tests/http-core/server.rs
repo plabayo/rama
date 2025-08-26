@@ -3102,7 +3102,7 @@ impl Service<(), Request> for TestService {
 
     fn serve(
         &self,
-        _ctx: rama::Context<()>,
+        _ctx: rama::Context,
         mut req: Request,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
         let tx = self.tx.clone();
@@ -3176,7 +3176,7 @@ impl Service<(), Request> for HelloWorld {
 
     fn serve(
         &self,
-        _ctx: rama::Context<()>,
+        _ctx: rama::Context,
         _req: Request,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
         let response = Response::new(rama::http::Body::from(HELLO));

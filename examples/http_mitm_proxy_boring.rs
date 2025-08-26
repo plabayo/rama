@@ -124,7 +124,7 @@ struct State {
     ua_db: Arc<UserAgentDatabase>,
 }
 
-type Context = rama::Context<State>;
+type Context = rama::Context;
 
 #[tokio::main]
 async fn main() -> Result<(), BoxError> {
@@ -248,7 +248,7 @@ async fn http_connect_proxy(ctx: Context, upgraded: Upgraded) -> Result<(), Infa
 
 fn new_http_mitm_proxy(
     ctx: &Context,
-) -> impl Service<State, Request, Response = Response, Error = Infallible> {
+) -> impl Service<Request, Response = Response, Error = Infallible> {
     (
         MapResponseBodyLayer::new(Body::new),
         TraceLayer::new_for_http(),
@@ -347,7 +347,7 @@ fn new_mitm_tls_service_data() -> Result<TlsAcceptorData, OpaqueError> {
 
 async fn mitm_websocket<S>(client: &S, mut ctx: Context, req: Request) -> Response
 where
-    S: Service<State, Request, Response = Response, Error = OpaqueError>,
+    S: Service<Request, Response = Response, Error = OpaqueError>,
 {
     tracing::debug!("detected websocket request: starting MITM WS upgrade...");
 

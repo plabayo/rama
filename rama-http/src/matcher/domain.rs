@@ -29,11 +29,11 @@ impl DomainMatcher {
     }
 }
 
-impl<State, Body> rama_core::matcher::Matcher<State, Request<Body>> for DomainMatcher {
+impl< Body> rama_core::matcher::Matcher<Request<Body>> for DomainMatcher {
     fn matches(
         &self,
         ext: Option<&mut Extensions>,
-        ctx: &Context<State>,
+        ctx: &Context,
         req: &Request<Body>,
     ) -> bool {
         let host = if let Some(req_ctx) = ctx.get::<RequestContext>() {

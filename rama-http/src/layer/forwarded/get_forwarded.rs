@@ -52,7 +52,7 @@ use std::marker::PhantomData;
 /// #[tokio::main]
 /// async fn main() {
 ///     let service = GetForwardedHeaderLayer::x_forwarded_for()
-///         .into_layer(service_fn(async |ctx: Context<()>, _| {
+///         .into_layer(service_fn(async |ctx: Context, _| {
 ///             let forwarded = ctx.get::<rama_net::forwarded::Forwarded>().unwrap();
 ///             assert_eq!(forwarded.client_ip(), Some(IpAddr::from([12, 23, 34, 45])));
 ///             assert!(forwarded.client_proto().is_none());
@@ -241,19 +241,18 @@ impl<S> GetForwardedHeaderService<S, XForwardedProto> {
     }
 }
 
-impl<H, S, State, Body> Service<State, Request<Body>> for GetForwardedHeaderService<S, H>
+impl<H, S, Body> Service<Request<Body>> for GetForwardedHeaderService<S, H>
 where
     H: ForwardHeader + Send + Sync + 'static,
-    S: Service<State, Request<Body>>,
+    S: Service<Request<Body>>,
     Body: Send + 'static,
-    State: Clone + Send + Sync + 'static,
 {
     type Response = S::Response;
     type Error = S::Error;
 
     fn serve(
         &self,
-        mut ctx: Context<State>,
+        mut ctx: Context,
         req: Request<Body>,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
         let mut forwarded_elements: Vec<ForwardedElement> = Vec::with_capacity(1);
@@ -286,7 +285,7 @@ mod tests {
     use rama_net::forwarded::{ForwardedProtocol, ForwardedVersion};
     use std::{convert::Infallible, net::IpAddr};
 
-    fn assert_is_service<T: Service<(), Request<()>>>(_: T) {}
+    fn assert_is_service<T: Service<Request<()>>>(_: T) {}
 
     async fn dummy_service_fn() -> Result<Response, OpaqueError> {
         Ok(StatusCode::OK.into_response())
@@ -321,14 +320,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_forwarded_header_forwarded() {
-        let service = GetForwardedHeaderLayer::forwarded().into_layer(service_fn(
-            async |ctx: Context<()>, _| {
+        let service =
+            GetForwardedHeaderLayer::forwarded().into_layer(service_fn(async |ctx: Context, _| {
                 let forwarded = ctx.get::<rama_net::forwarded::Forwarded>().unwrap();
                 assert_eq!(forwarded.client_ip(), Some(IpAddr::from([12, 23, 34, 45])));
                 assert_eq!(forwarded.client_proto(), Some(ForwardedProtocol::HTTP));
                 Ok::<_, Infallible>(())
-            },
-        ));
+            }));
 
         let req = Request::builder()
             .header("Forwarded", "for=\"12.23.34.45:5000\";proto=http")
@@ -341,7 +339,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_forwarded_header_via() {
         let service =
-            GetForwardedHeaderLayer::via().into_layer(service_fn(async |ctx: Context<()>, _| {
+            GetForwardedHeaderLayer::via().into_layer(service_fn(async |ctx: Context, _| {
                 let forwarded = ctx.get::<rama_net::forwarded::Forwarded>().unwrap();
                 assert!(forwarded.client_ip().is_none());
                 assert_eq!(
@@ -364,7 +362,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_forwarded_header_x_forwarded_for() {
         let service = GetForwardedHeaderLayer::x_forwarded_for().into_layer(service_fn(
-            async |ctx: Context<()>, _| {
+            async |ctx: Context, _| {
                 let forwarded = ctx.get::<rama_net::forwarded::Forwarded>().unwrap();
                 assert_eq!(forwarded.client_ip(), Some(IpAddr::from([12, 23, 34, 45])));
                 assert!(forwarded.client_proto().is_none());

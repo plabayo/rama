@@ -402,17 +402,17 @@ impl<S: std::fmt::Debug> std::fmt::Debug for StorageAuthService<S> {
     }
 }
 
-impl<S, Body> Service<Arc<State>, Request<Body>> for StorageAuthService<S>
+impl<S, Body> Service<Arc, Request<Body>> for StorageAuthService<S>
 where
     Body: Send + 'static,
-    S: Service<Arc<State>, Request<Body>>,
+    S: Service<Arc, Request<Body>>,
 {
     type Response = S::Response;
     type Error = S::Error;
 
     async fn serve(
         &self,
-        mut ctx: Context<Arc<State>>,
+        mut ctx: Context<Arc>,
         mut req: Request<Body>,
     ) -> Result<Self::Response, Self::Error> {
         if let Some(cookie) = req.headers().typed_get::<Cookie>() {

@@ -1,4 +1,4 @@
-//! `async fn serve(&self, Context<S>, Request) -> Result<Response, Error>`
+//! `async fn serve(&self, Context, Request) -> Result<Response, Error>`
 //!
 //! Crate used by the end-user `rama` crate and `rama` crate authors alike.
 //!

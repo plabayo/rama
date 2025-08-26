@@ -209,9 +209,9 @@ impl<S: Clone, F: Clone> Clone for NetworkMetricsService<S, F> {
 }
 
 impl<S, F> NetworkMetricsService<S, F> {
-    fn compute_attributes<State>(&self, ctx: &Context<State>) -> Vec<KeyValue>
+    fn compute_attributes(&self, ctx: &Context) -> Vec<KeyValue>
     where
-        F: AttributesFactory<State>,
+        F: AttributesFactory,
     {
         let mut attributes = self
             .attributes_factory
@@ -237,21 +237,16 @@ impl<S, F> NetworkMetricsService<S, F> {
     }
 }
 
-impl<S, F, State, Stream> Service<State, Stream> for NetworkMetricsService<S, F>
+impl<S, F, Stream> Service<Stream> for NetworkMetricsService<S, F>
 where
-    S: Service<State, Stream>,
-    F: AttributesFactory<State>,
-    State: Clone + Send + Sync + 'static,
+    S: Service<Stream>,
+    F: AttributesFactory,
     Stream: crate::stream::Stream,
 {
     type Response = S::Response;
     type Error = S::Error;
 
-    async fn serve(
-        &self,
-        ctx: Context<State>,
-        stream: Stream,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, ctx: Context, stream: Stream) -> Result<Self::Response, Self::Error> {
         let attributes: Vec<KeyValue> = self.compute_attributes(&ctx);
 
         self.metrics.network_total_connections.add(1, &attributes);
@@ -375,7 +370,7 @@ mod tests {
             metric_prefix: Some("foo".to_owned()),
             ..Default::default()
         })
-        .with_attributes(|size_hint: usize, _ctx: &Context<()>| {
+        .with_attributes(|size_hint: usize, _ctx: &Context| {
             let mut attributes = Vec::with_capacity(size_hint + 1);
             attributes.push(KeyValue::new("test", "attribute_fn"));
             attributes

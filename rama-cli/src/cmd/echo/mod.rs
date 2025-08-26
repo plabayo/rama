@@ -196,7 +196,7 @@ impl Service<(), Request> for AcmeService {
 
     async fn serve(
         &self,
-        _ctx: rama::Context<()>,
+        _ctx: rama::Context,
         _req: Request,
     ) -> Result<Self::Response, Self::Error> {
         Ok(self.0.clone().into_response())

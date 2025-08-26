@@ -77,7 +77,7 @@ struct ConnState {
     conn_metrics: Arc<ConnMetrics>,
 }
 
-async fn handle_index<S>(ctx: Context<S>, _: Request) -> Result<Html<String>, Infallible>
+async fn handle_index<S>(ctx: Context, _: Request) -> Result<Html<String>, Infallible>
 where
     // NOTE: This example is a bit silly, and only serves to show how one can use `AsRef`
     // trait bounds regardless of how deep the state properties are "nested". In a production

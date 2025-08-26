@@ -49,11 +49,11 @@ impl Default for LoopbackMatcher {
 }
 
 #[cfg(feature = "http")]
-impl<State, Body> rama_core::matcher::Matcher<State, Request<Body>> for LoopbackMatcher {
+impl< Body> rama_core::matcher::Matcher<Request<Body>> for LoopbackMatcher {
     fn matches(
         &self,
         _ext: Option<&mut Extensions>,
-        ctx: &Context<State>,
+        ctx: &Context,
         _req: &Request<Body>,
     ) -> bool {
         ctx.get::<SocketInfo>()
@@ -62,14 +62,14 @@ impl<State, Body> rama_core::matcher::Matcher<State, Request<Body>> for Loopback
     }
 }
 
-impl<State, Socket> rama_core::matcher::Matcher<State, Socket> for LoopbackMatcher
+impl< Socket> rama_core::matcher::Matcher< Socket> for LoopbackMatcher
 where
     Socket: crate::stream::Socket,
 {
     fn matches(
         &self,
         _ext: Option<&mut Extensions>,
-        _ctx: &Context<State>,
+        _ctx: &Context,
         stream: &Socket,
     ) -> bool {
         stream

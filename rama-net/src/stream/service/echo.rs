@@ -40,15 +40,14 @@ impl Default for EchoService {
     }
 }
 
-impl<T, S> Service<T, S> for EchoService
+impl<S> Service<S> for EchoService
 where
-    T: Send + Sync + 'static,
     S: Stream + 'static,
 {
     type Response = u64;
     type Error = BoxError;
 
-    async fn serve(&self, _ctx: Context<T>, stream: S) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, _ctx: Context, stream: S) -> Result<Self::Response, Self::Error> {
         let (mut reader, mut writer) = tokio::io::split(stream);
         tokio::io::copy(&mut reader, &mut writer)
             .await

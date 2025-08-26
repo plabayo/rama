@@ -281,11 +281,11 @@ impl PathMatcher {
     }
 }
 
-impl<State, Body> rama_core::matcher::Matcher<State, Request<Body>> for PathMatcher {
+impl< Body> rama_core::matcher::Matcher<Request<Body>> for PathMatcher {
     fn matches(
         &self,
         ext: Option<&mut Extensions>,
-        _ctx: &Context<State>,
+        _ctx: &Context,
         req: &Request<Body>,
     ) -> bool {
         match self.matches_path(req.uri().path()) {

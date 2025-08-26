@@ -83,11 +83,11 @@ impl<S> ConsumeErr<S, Trace, DefaulResponse> {
     }
 }
 
-impl<S, F, State, Request> Service<State, Request> for ConsumeErr<S, F, DefaulResponse>
+impl<S, F, Request> Service<Request> for ConsumeErr<S, F, DefaulResponse>
 where
-    S: Service<State, Request, Response: Default>,
+    S: Service<Request, Response: Default>,
     F: Fn(S::Error) + Send + Sync + 'static,
-    State: Clone + Send + Sync + 'static,
+    
     Request: Send + 'static,
 {
     type Response = S::Response;
@@ -95,7 +95,7 @@ where
 
     async fn serve(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         req: Request,
     ) -> Result<Self::Response, Self::Error> {
         match self.inner.serve(ctx, req).await {
@@ -108,12 +108,12 @@ where
     }
 }
 
-impl<S, F, State, Request, R> Service<State, Request> for ConsumeErr<S, F, StaticResponse<R>>
+impl<S, F, Request, R> Service<Request> for ConsumeErr<S, F, StaticResponse<R>>
 where
-    S: Service<State, Request>,
+    S: Service<Request>,
     F: Fn(S::Error) + Send + Sync + 'static,
     R: Into<S::Response> + Clone + Send + Sync + 'static,
-    State: Clone + Send + Sync + 'static,
+    
     Request: Send + 'static,
 {
     type Response = S::Response;
@@ -121,7 +121,7 @@ where
 
     async fn serve(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         req: Request,
     ) -> Result<Self::Response, Self::Error> {
         match self.inner.serve(ctx, req).await {
@@ -134,10 +134,10 @@ where
     }
 }
 
-impl<S, State, Request> Service<State, Request> for ConsumeErr<S, Trace, DefaulResponse>
+impl<S, Request> Service<Request> for ConsumeErr<S, Trace, DefaulResponse>
 where
-    S: Service<State, Request, Response: Default, Error: Into<BoxError>>,
-    State: Clone + Send + Sync + 'static,
+    S: Service<Request, Response: Default, Error: Into<BoxError>>,
+    
     Request: Send + 'static,
 {
     type Response = S::Response;
@@ -145,7 +145,7 @@ where
 
     async fn serve(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         req: Request,
     ) -> Result<Self::Response, Self::Error> {
         match self.inner.serve(ctx, req).await {
@@ -175,11 +175,11 @@ where
     }
 }
 
-impl<S, State, Request, R> Service<State, Request> for ConsumeErr<S, Trace, StaticResponse<R>>
+impl<S, Request, R> Service<Request> for ConsumeErr<S, Trace, StaticResponse<R>>
 where
-    S: Service<State, Request, Error: Into<BoxError>>,
+    S: Service<Request, Error: Into<BoxError>>,
     R: Into<S::Response> + Clone + Send + Sync + 'static,
-    State: Clone + Send + Sync + 'static,
+    
     Request: Send + 'static,
 {
     type Response = S::Response;
@@ -187,7 +187,7 @@ where
 
     async fn serve(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         req: Request,
     ) -> Result<Self::Response, Self::Error> {
         match self.inner.serve(ctx, req).await {

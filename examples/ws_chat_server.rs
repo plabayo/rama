@@ -52,7 +52,7 @@ async fn main() {
         let server = HttpServer::http1().service(Router::new().get("/", Html(INDEX)).get(
             "/chat",
             WebSocketAcceptor::new().into_service(service_fn(
-                async |ctx: Context<State>, mut ws: ServerWebSocket| {
+                async |ctx: Context, mut ws: ServerWebSocket| {
                     let state = ctx.into_parts().state;
                     let mut handler = WsHandler {
                         nickname: None,

@@ -151,15 +151,15 @@ where
     }
 
     /// Serve a single IO Byte Stream (e.g. a TCP Stream) as HTTP.
-    pub async fn serve<State, S, Response, IO>(
+    pub async fn serve< S, Response, IO>(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         stream: IO,
         service: S,
     ) -> HttpServeResult
     where
-        State: Clone + Send + Sync + 'static,
-        S: Service<State, Request, Response = Response, Error = Infallible> + Clone,
+        
+        S: Service<Request, Response = Response, Error = Infallible> + Clone,
         Response: IntoResponse + Send + 'static,
         IO: Stream,
     {
@@ -211,15 +211,15 @@ where
     ///
     /// [`Service`]: rama_core::Service
     /// [`Context`]: rama_core::Context
-    pub async fn listen_with_state<State, S, Response, I>(
+    pub async fn listen_with_state< S, Response, I>(
         self,
         state: State,
         interface: I,
         service: S,
     ) -> HttpServeResult
     where
-        State: Clone + Send + Sync + 'static,
-        S: Service<State, Request, Response = Response, Error = Infallible>,
+        
+        S: Service<Request, Response = Response, Error = Infallible>,
         Response: IntoResponse + Send + 'static,
         I: TryInto<Interface, Error: Into<BoxError>>,
     {
@@ -239,15 +239,15 @@ where
     ///
     /// [`Service`]: rama_core::Service
     /// [`Context`]: rama_core::Context
-    pub async fn listen_unix_with_state<State, S, Response, P>(
+    pub async fn listen_unix_with_state< S, Response, P>(
         self,
         state: State,
         path: P,
         service: S,
     ) -> HttpServeResult
     where
-        State: Clone + Send + Sync + 'static,
-        S: Service<State, Request, Response = Response, Error = Infallible>,
+        
+        S: Service<Request, Response = Response, Error = Infallible>,
         Response: IntoResponse + Send + 'static,
         P: AsRef<Path>,
     {
@@ -300,11 +300,11 @@ impl<B, S> Clone for HttpService<B, S> {
     }
 }
 
-impl<B, State, S, Response, IO> Service<State, IO> for HttpService<B, S>
+impl<B, S, Response, IO> Service< IO> for HttpService<B, S>
 where
     B: HttpCoreConnServer,
-    State: Clone + Send + Sync + 'static,
-    S: Service<State, Request, Response = Response, Error = Infallible>,
+    
+    S: Service<Request, Response = Response, Error = Infallible>,
     Response: IntoResponse + Send + 'static,
     IO: Stream,
 {
@@ -313,7 +313,7 @@ where
 
     fn serve(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         stream: IO,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
         let service = self.service.clone();

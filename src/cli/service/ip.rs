@@ -210,7 +210,7 @@ impl Service<(), Request> for HttpEchoService {
     type Response = Response;
     type Error = BoxError;
 
-    async fn serve(&self, ctx: Context<()>, _req: Request) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, ctx: Context, _req: Request) -> Result<Self::Response, Self::Error> {
         let peer_ip = ctx
             .get::<Forwarded>()
             .and_then(|f| f.client_ip())
@@ -235,7 +235,7 @@ where
     type Response = ();
     type Error = BoxError;
 
-    async fn serve(&self, ctx: Context<()>, stream: Input) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, ctx: Context, stream: Input) -> Result<Self::Response, Self::Error> {
         let peer_ip = ctx
             .get::<Forwarded>()
             .and_then(|f| f.client_ip())

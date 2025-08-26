@@ -12,17 +12,17 @@ use rama_udp::UdpSocket;
 use ::rama_dns::BoxDnsResolver;
 
 #[allow(clippy::too_many_arguments)]
-pub(super) trait UdpPacketProxy<State>: Send + Sync + 'static {
+pub(super) trait UdpPacketProxy: Send + Sync + 'static {
     fn proxy_udp_packets(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         client_address: SocketAddress,
         north: UdpSocket,
         north_read_buf_size: usize,
         south: UdpSocket,
         south_read_buf_size: usize,
         #[cfg(feature = "dns")] dns_resolver: Option<BoxDnsResolver>,
-    ) -> impl Future<Output = Result<Context<State>, Error>> + Send;
+    ) -> impl Future<Output = Result<Context, Error>> + Send;
 }
 
 #[derive(Debug, Clone, Default)]
@@ -30,17 +30,17 @@ pub(super) trait UdpPacketProxy<State>: Send + Sync + 'static {
 /// An UDP Relay which relays the UDP Packets without any inspection.
 pub struct DirectUdpRelay;
 
-impl<State: Clone + Send + Sync + 'static> UdpPacketProxy<State> for DirectUdpRelay {
+impl UdpPacketProxy for DirectUdpRelay {
     async fn proxy_udp_packets(
         &self,
-        #[cfg_attr(not(feature = "dns"), expect(unused_variables))] ctx: Context<State>,
+        #[cfg_attr(not(feature = "dns"), expect(unused_variables))] ctx: Context,
         client_address: SocketAddress,
         north: UdpSocket,
         north_read_buf_size: usize,
         south: UdpSocket,
         south_read_buf_size: usize,
         #[cfg(feature = "dns")] dns_resolver: Option<BoxDnsResolver>,
-    ) -> Result<Context<State>, Error> {
+    ) -> Result<Context, Error> {
         let relay = UdpSocketRelay::new(
             client_address,
             north,
@@ -113,26 +113,20 @@ impl<S: Clone> Clone for AsyncUdpInspector<S> {
     }
 }
 
-impl<S, State> UdpPacketProxy<State> for AsyncUdpInspector<S>
+impl<S> UdpPacketProxy for AsyncUdpInspector<S>
 where
-    S: Service<
-            State,
-            RelayRequest,
-            Response = (Context<State>, Option<Bytes>),
-            Error: Into<BoxError>,
-        >,
-    State: Clone + Send + Sync + 'static,
+    S: Service<RelayRequest, Response = (Context, Option<Bytes>), Error: Into<BoxError>>,
 {
     async fn proxy_udp_packets(
         &self,
-        mut ctx: Context<State>,
+        mut ctx: Context,
         client_address: SocketAddress,
         north: UdpSocket,
         north_read_buf_size: usize,
         south: UdpSocket,
         south_read_buf_size: usize,
         #[cfg(feature = "dns")] dns_resolver: Option<BoxDnsResolver>,
-    ) -> Result<Context<State>, Error> {
+    ) -> Result<Context, Error> {
         let relay = UdpSocketRelay::new(
             client_address,
             north,
@@ -237,22 +231,22 @@ pub enum UdpInspectAction {
 
 /// Inspector of relayed udp packets,
 /// handling both north and south traffic.
-pub trait UdpInspector<State>: Send + Sync + 'static {
+pub trait UdpInspector: Send + Sync + 'static {
     type Error: Into<BoxError> + Send + 'static;
 
     /// Inspect a relayed udp packet respond with a [`UdpInspectAction`].
     fn inspect_packet(
         &self,
-        ctx: &Context<State>,
+        ctx: &Context,
         direction: RelayDirection,
         server_address: SocketAddress,
         payload: &[u8],
     ) -> Result<UdpInspectAction, Self::Error>;
 }
 
-impl<F, E, State> UdpInspector<State> for F
+impl<F, E> UdpInspector for F
 where
-    F: Fn(&Context<State>, RelayDirection, SocketAddress, &[u8]) -> Result<UdpInspectAction, E>
+    F: Fn(&Context, RelayDirection, SocketAddress, &[u8]) -> Result<UdpInspectAction, E>
         + Send
         + Sync
         + 'static,
@@ -262,7 +256,7 @@ where
 
     fn inspect_packet(
         &self,
-        ctx: &Context<State>,
+        ctx: &Context,
         direction: RelayDirection,
         server_address: SocketAddress,
         payload: &[u8],
@@ -289,21 +283,20 @@ impl<S: Clone> Clone for SyncUdpInspector<S> {
     }
 }
 
-impl<S, State> UdpPacketProxy<State> for SyncUdpInspector<S>
+impl<S> UdpPacketProxy for SyncUdpInspector<S>
 where
-    S: UdpInspector<State>,
-    State: Clone + Send + Sync + 'static,
+    S: UdpInspector,
 {
     async fn proxy_udp_packets(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         client_address: SocketAddress,
         north: UdpSocket,
         north_read_buf_size: usize,
         south: UdpSocket,
         south_read_buf_size: usize,
         #[cfg(feature = "dns")] dns_resolver: Option<BoxDnsResolver>,
-    ) -> Result<Context<State>, Error> {
+    ) -> Result<Context, Error> {
         let relay = UdpSocketRelay::new(
             client_address,
             north,

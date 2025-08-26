@@ -21,12 +21,12 @@
 //!     pool: DatabaseConnectionPool,
 //! }
 //!
-//! async fn handle<S>(ctx: Context<S>, req: ()) -> Result<(), Infallible>
+//! async fn handle<S>(ctx: Context, req: ()) -> Result<(), Infallible>
 //! where
 //!    S: Clone + Send + Sync + 'static,
 //! {
 //!     // Grab the state from the request extensions.
-//!     let state = ctx.get::<Arc<State>>().unwrap();
+//!     let state = ctx.get::<Arc>().unwrap();
 //!
 //!     Ok(req)
 //! }
@@ -39,7 +39,7 @@
 //! };
 //!
 //! let mut service = (
-//!     // Share an `Arc<State>` with all requests.
+//!     // Share an `Arc` with all requests.
 //!     AddExtensionLayer::new(Arc::new(state)),
 //! ).into_layer(service_fn(handle));
 //!
@@ -148,11 +148,10 @@ impl<S, T> AddExtension<S, T> {
     define_inner_service_accessors!();
 }
 
-impl<State, Request, S, T> Service<State, Request> for AddExtension<S, T>
+impl<Request, S, T> Service<Request> for AddExtension<S, T>
 where
-    State: Clone + Send + Sync + 'static,
     Request: Send + 'static,
-    S: Service<State, Request>,
+    S: Service<Request>,
     T: Clone + Send + Sync + 'static,
 {
     type Response = S::Response;
@@ -160,7 +159,7 @@ where
 
     fn serve(
         &self,
-        mut ctx: Context<State>,
+        mut ctx: Context,
         req: Request,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
         ctx.insert(self.value.clone());
@@ -180,12 +179,11 @@ mod tests {
     async fn basic() {
         let state = Arc::new(State(1));
 
-        let svc = AddExtensionLayer::new(state).into_layer(service_fn(
-            async |ctx: Context<()>, _req: ()| {
+        let svc =
+            AddExtensionLayer::new(state).into_layer(service_fn(async |ctx: Context, _req: ()| {
                 let state = ctx.get::<Arc<State>>().unwrap();
                 Ok::<_, Infallible>(state.0)
-            },
-        ));
+            }));
 
         let res = svc.serve(Context::default(), ()).await.unwrap();
 

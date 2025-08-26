@@ -74,7 +74,7 @@ struct State {
     mitm_tls_service_data: TlsAcceptorData,
 }
 
-type Context = rama::Context<State>;
+type Context = rama::Context;
 
 #[tokio::main]
 async fn main() -> Result<(), BoxError> {
@@ -192,7 +192,7 @@ async fn http_connect_proxy(ctx: Context, upgraded: Upgraded) -> Result<(), Infa
     Ok(())
 }
 
-fn new_http_mitm_proxy() -> impl Service<State, Request, Response = Response, Error = Infallible> {
+fn new_http_mitm_proxy() -> impl Service<Request, Response = Response, Error = Infallible> {
     (
         MapResponseBodyLayer::new(Body::new),
         TraceLayer::new_for_http(),

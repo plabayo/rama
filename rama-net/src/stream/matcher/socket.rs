@@ -40,11 +40,11 @@ impl SocketAddressMatcher {
 }
 
 #[cfg(feature = "http")]
-impl<State, Body> rama_core::matcher::Matcher<State, Request<Body>> for SocketAddressMatcher {
+impl< Body> rama_core::matcher::Matcher<Request<Body>> for SocketAddressMatcher {
     fn matches(
         &self,
         _ext: Option<&mut Extensions>,
-        ctx: &Context<State>,
+        ctx: &Context,
         _req: &Request<Body>,
     ) -> bool {
         ctx.get::<SocketInfo>()
@@ -53,14 +53,14 @@ impl<State, Body> rama_core::matcher::Matcher<State, Request<Body>> for SocketAd
     }
 }
 
-impl<State, Socket> rama_core::matcher::Matcher<State, Socket> for SocketAddressMatcher
+impl< Socket> rama_core::matcher::Matcher< Socket> for SocketAddressMatcher
 where
     Socket: crate::stream::Socket,
 {
     fn matches(
         &self,
         _ext: Option<&mut Extensions>,
-        _ctx: &Context<State>,
+        _ctx: &Context,
         stream: &Socket,
     ) -> bool {
         stream
