@@ -3,7 +3,6 @@ use rama_core::Service;
 use rama_core::graceful::ShutdownGuard;
 use rama_core::rt::Executor;
 use rama_core::telemetry::tracing::{self, Instrument};
-use std::fmt;
 use std::io;
 use std::os::fd::AsFd;
 use std::os::fd::AsRawFd;
@@ -24,58 +23,26 @@ use crate::UnixSocketAddress;
 use crate::UnixSocketInfo;
 use crate::UnixStream;
 
+#[non_exhaustive]
+#[derive(Clone, Debug)]
 /// Builder for `UnixListener`.
-pub struct UnixListenerBuilder<S> {
-    state: S,
-}
+pub struct UnixListenerBuilder;
 
-impl<S> fmt::Debug for UnixListenerBuilder<S>
-where
-    S: fmt::Debug,
-{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("UnixListenerBuilder")
-            .field("state", &self.state)
-            .finish()
-    }
-}
-
-impl UnixListenerBuilder<()> {
+impl UnixListenerBuilder {
     /// Create a new `UnixListenerBuilder` without a state.
     #[must_use]
     pub fn new() -> Self {
-        Self { state: () }
+        Self {}
     }
 }
 
-impl Default for UnixListenerBuilder<()> {
+impl Default for UnixListenerBuilder {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<S: Clone> Clone for UnixListenerBuilder<S> {
-    fn clone(&self) -> Self {
-        Self {
-            state: self.state.clone(),
-        }
-    }
-}
-
-impl<S> UnixListenerBuilder<S>
-where
-    S: Clone + Send + Sync + 'static,
-{
-    /// Create a new `TcpListenerBuilder` with the given state.
-    pub fn with_state(state: S) -> Self {
-        Self { state }
-    }
-}
-
-impl<S> UnixListenerBuilder<S>
-where
-    S: Clone + Send + Sync + 'static,
-{
+impl UnixListenerBuilder {
     /// Creates a new [`UnixListener`], which will be bound to the specified path.
     ///
     /// The returned listener is ready for accepting connections.
@@ -124,7 +91,7 @@ where
     pub async fn bind_socket_opts(
         self,
         opts: SocketOptions,
-    ) -> Result<UnixListener<S>, rama_core::error::BoxError> {
+    ) -> Result<UnixListener, rama_core::error::BoxError> {
         let socket = tokio::task::spawn_blocking(move || opts.try_build_socket()).await??;
         Ok(self.bind_socket(socket)?)
     }
@@ -149,7 +116,7 @@ impl UnixListener {
     /// Create a new [`UnixListenerBuilder`] without a state,
     /// which can be used to configure a [`UnixListener`].
     #[must_use]
-    pub fn build() -> UnixListenerBuilder<()> {
+    pub fn build() -> UnixListenerBuilder {
         UnixListenerBuilder::new()
     }
 
