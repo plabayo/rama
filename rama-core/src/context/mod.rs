@@ -41,7 +41,7 @@
 //! }
 //!
 //! let state = ServiceState{ value: 5 };
-//! let ctx = Context::default();
+//! let ctx = Context::with_state(state);
 //! ```
 //!
 //! ## Example: Extensions
@@ -310,7 +310,7 @@ impl Context {
     /// struct State {
     ///     mul: i32,
     /// }
-    /// let mut ctx = Context::default();
+    /// let mut ctx = Context::with_state(Arc::new(State{ mul: 2 }));
     /// ctx.insert(true);
     /// let value: &i32 = ctx.get_or_insert_with_ctx(|ctx| ctx.state().mul * 21);
     /// assert_eq!(*value, 42);
