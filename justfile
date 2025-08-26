@@ -202,6 +202,10 @@ publish:
     cargo publish -p rama
     cargo publish -p rama-cli
 
+[working-directory: './rama-cli/manifests/winget/Plabayo/Rama/Preview']
+@submit-rama-cli-winget-preview:
+    wingetcreate submit -p 'Plabayo.Rama.Preview version bump' .
+
 update-deps:
     cargo upgrade
     cargo upgrades

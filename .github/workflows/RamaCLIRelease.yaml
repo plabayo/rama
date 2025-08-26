@@ -127,3 +127,58 @@ jobs:
             target/${{ matrix.target }}/release/*.sha256
           prerelease: ${{ contains(github.ref_name, '-') }}
           tag_name: ${{ inputs.tag || github.ref_name }}
+
+  build-release-windows:
+    runs-on: windows-latest
+    env:
+      RUST_BACKTRACE: full
+    strategy:
+      fail-fast: true
+      matrix:
+        target:
+          - x86_64-pc-windows-msvc
+
+    steps:
+      - uses: ilammy/setup-nasm@v1
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          env-vars: "RUST_TOOLCHAIN=${{ env.RUST_TOOLCHAIN }}"
+
+      - name: Build release (Windows)
+        shell: bash
+        run: |
+          cargo build --release -p rama-cli --target ${{ matrix.target }}
+
+      - name: Package (zip)
+        shell: pwsh
+        run: |
+          $BinPath = "target/${{ matrix.target }}/release"
+          $Exe     = Join-Path $BinPath "rama.exe"
+          if (!(Test-Path $Exe)) { throw "Binary not found: $Exe" }
+          $Zip = Join-Path $BinPath "rama.${{ matrix.target }}.zip"
+          if (Test-Path $Zip) { Remove-Item $Zip }
+          Compress-Archive -Path $Exe -DestinationPath $Zip -Force
+
+      - name: Generate checksums
+        shell: pwsh
+        run: |
+          $BinPath = "target/${{ matrix.target }}/release"
+          $Zip     = Join-Path $BinPath "rama.${{ matrix.target }}.zip"
+          $Hash    = (Get-FileHash -Path $Zip -Algorithm SHA256).Hash.ToLower()
+          Set-Content -NoNewline -Path "$Zip.sha256" -Value "$Hash  $(Split-Path -Leaf $Zip)`n"
+
+      - name: Upload Github Assets
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          files: |
+            target/${{ matrix.target }}/release/*.zip
+            target/${{ matrix.target }}/release/*.sha256
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          tag_name: ${{ inputs.tag || github.ref_name }}
