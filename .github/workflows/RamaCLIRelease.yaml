@@ -139,6 +139,7 @@ jobs:
           - x86_64-pc-windows-msvc
 
     steps:
+      - uses: ilammy/setup-nasm@v1
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
