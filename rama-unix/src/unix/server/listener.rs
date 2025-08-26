@@ -95,7 +95,10 @@ where
             path: path.to_owned(),
         });
 
-        Ok(UnixListener { inner, cleanup })
+        Ok(UnixListener {
+            inner,
+            _cleanup: cleanup,
+        })
     }
 
     /// Creates a new [`UnixListener`], which will be bound to the specified socket.
@@ -110,7 +113,7 @@ where
         let inner = TokioUnixListener::from_std(std_listener)?;
         Ok(UnixListener {
             inner,
-            cleanup: None,
+            _cleanup: None,
         })
     }
 
@@ -138,7 +141,7 @@ where
 /// of that cleanup.
 pub struct UnixListener {
     inner: TokioUnixListener,
-    cleanup: Option<UnixSocketCleanup>,
+    _cleanup: Option<UnixSocketCleanup>,
 }
 
 impl UnixListener {
@@ -190,7 +193,7 @@ impl From<TokioUnixListener> for UnixListener {
     fn from(value: TokioUnixListener) -> Self {
         Self {
             inner: value,
-            cleanup: None,
+            _cleanup: None,
         }
     }
 }
@@ -212,7 +215,7 @@ impl TryFrom<StdUnixListener> for UnixListener {
         let inner = TokioUnixListener::from_std(listener)?;
         Ok(Self {
             inner,
-            cleanup: None,
+            _cleanup: None,
         })
     }
 }
