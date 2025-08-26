@@ -159,6 +159,7 @@ pub struct Parts {
 }
 
 impl Context {
+    #[must_use]
     /// Create a new [`Context`] with the given state.
     pub fn new(executor: Executor) -> Self {
         Self {
@@ -167,6 +168,7 @@ impl Context {
         }
     }
 
+    #[must_use]
     pub fn from_parts(parts: Parts) -> Self {
         Self {
             executor: parts.executor,
@@ -174,6 +176,7 @@ impl Context {
         }
     }
 
+    #[must_use]
     pub fn into_parts(self) -> Parts {
         Parts {
             executor: self.executor,
@@ -181,6 +184,7 @@ impl Context {
         }
     }
 
+    #[must_use]
     /// Get a reference to the executor.
     pub fn executor(&self) -> &Executor {
         &self.executor
@@ -208,6 +212,7 @@ impl Context {
         self.executor.spawn_task(future)
     }
 
+    #[must_use]
     /// Returns true if the `Context` contains the given type.
     ///
     /// Use [`Self::get`] in case you want to have access to the type
@@ -216,6 +221,7 @@ impl Context {
         self.extensions.contains::<T>()
     }
 
+    #[must_use]
     /// Get a shared reference to an extension.
     ///
     /// An extension is a type that implements `Send + Sync + 'static`,
@@ -427,6 +433,7 @@ impl Context {
         self.extensions.maybe_insert(extension)
     }
 
+    #[must_use]
     /// Return the entire dynamic state of the [`Context`] by reference.
     ///
     /// Useful only in case you have a function which works with [`Extensions`] rather
@@ -495,6 +502,7 @@ impl Context {
         self.extensions.remove()
     }
 
+    #[must_use]
     /// Get a reference to the shutdown guard,
     /// if and only if the context was created within a graceful environment.
     pub fn guard(&self) -> Option<&ShutdownGuard> {

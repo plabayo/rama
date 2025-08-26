@@ -100,9 +100,8 @@ impl ClientConfigChainRefData<'_> {
     }
 }
 
-pub fn extract_client_config_from_ctx(
-    ctx: &Context,
-) -> Option<ClientConfigChainRef<'_>> {
+#[must_use]
+pub fn extract_client_config_from_ctx(ctx: &Context) -> Option<ClientConfigChainRef<'_>> {
     match ctx.get::<ClientConfigChain>() {
         Some(chain) => Some(ClientConfigChainRef {
             data: ClientConfigChainRefData::Chain(chain),
@@ -115,10 +114,7 @@ pub fn extract_client_config_from_ctx(
     }
 }
 
-pub fn append_client_config_to_ctx(
-    ctx: &mut Context,
-    cfg: impl Into<Arc<ClientConfig>>,
-) {
+pub fn append_client_config_to_ctx(ctx: &mut Context, cfg: impl Into<Arc<ClientConfig>>) {
     match ctx.get_mut::<ClientConfigChain>() {
         Some(chain) => {
             chain.configs.push(cfg.into());
