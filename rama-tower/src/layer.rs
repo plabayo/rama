@@ -180,7 +180,7 @@ impl<S: fmt::Debug> fmt::Debug for TowerAdapterService<S> {
     }
 }
 
-impl<State> Clone for TowerAdapterService<State> {
+impl<S> Clone for TowerAdapterService<S> {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
