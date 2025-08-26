@@ -21,12 +21,10 @@
 //!     pool: DatabaseConnectionPool,
 //! }
 //!
-//! async fn handle<S>(ctx: Context, req: ()) -> Result<(), Infallible>
-//! where
-//!    S: Clone + Send + Sync + 'static,
+//! async fn handle(ctx: Context, req: ()) -> Result<(), Infallible>
 //! {
 //!     // Grab the state from the request extensions.
-//!     let state = ctx.get::<Arc>().unwrap();
+//!     let state = ctx.get::<Arc<State>>().unwrap();
 //!
 //!     Ok(req)
 //! }
