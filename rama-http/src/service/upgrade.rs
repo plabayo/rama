@@ -25,7 +25,7 @@ impl Upgrade {
     }
 }
 
-impl<Body> Service<State, Request<Body>> for Upgrade
+impl<Body> Service<Request<Body>> for Upgrade
 where
     Body: Send + 'static,
 {
