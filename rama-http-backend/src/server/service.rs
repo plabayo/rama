@@ -151,14 +151,13 @@ where
     }
 
     /// Serve a single IO Byte Stream (e.g. a TCP Stream) as HTTP.
-    pub async fn serve< S, Response, IO>(
+    pub async fn serve<S, Response, IO>(
         &self,
         ctx: Context,
         stream: IO,
         service: S,
     ) -> HttpServeResult
     where
-        
         S: Service<Request, Response = Response, Error = Infallible> + Clone,
         Response: IntoResponse + Send + 'static,
         IO: Stream,
@@ -173,7 +172,7 @@ where
     /// It's a shortcut in case you don't need to operate on the transport layer directly.
     pub async fn listen<S, Response, I>(self, interface: I, service: S) -> HttpServeResult
     where
-        S: Service<(), Request, Response = Response, Error = Infallible>,
+        S: Service<Request, Response = Response, Error = Infallible>,
         Response: IntoResponse + Send + 'static,
         I: TryInto<Interface, Error: Into<BoxError>>,
     {
@@ -192,68 +191,11 @@ where
     /// It's a shortcut in case you don't need to operate on the unix transport layer directly.
     pub async fn listen_unix<S, Response, P>(self, path: P, service: S) -> HttpServeResult
     where
-        S: Service<(), Request, Response = Response, Error = Infallible>,
+        S: Service<Request, Response = Response, Error = Infallible>,
         Response: IntoResponse + Send + 'static,
         P: AsRef<Path>,
     {
         let unix = UnixListener::bind_path(path).await?;
-        let service = HttpService::new(self.builder, service);
-        match self.guard {
-            Some(guard) => unix.serve_graceful(guard, service).await,
-            None => unix.serve(service).await,
-        };
-        Ok(())
-    }
-
-    /// Listen for connections on the given [`Interface`], serving HTTP connections.
-    ///
-    /// Same as [`Self::listen`], but including the given state in the [`Service`]'s [`Context`].
-    ///
-    /// [`Service`]: rama_core::Service
-    /// [`Context`]: rama_core::Context
-    pub async fn listen_with_state< S, Response, I>(
-        self,
-        state: State,
-        interface: I,
-        service: S,
-    ) -> HttpServeResult
-    where
-        
-        S: Service<Request, Response = Response, Error = Infallible>,
-        Response: IntoResponse + Send + 'static,
-        I: TryInto<Interface, Error: Into<BoxError>>,
-    {
-        let tcp = TcpListener::build_with_state(state).bind(interface).await?;
-        let service = HttpService::new(self.builder, service);
-        match self.guard {
-            Some(guard) => tcp.serve_graceful(guard, service).await,
-            None => tcp.serve(service).await,
-        };
-        Ok(())
-    }
-
-    #[cfg(target_family = "unix")]
-    /// Listen for connections on the given [`Path`], using a unix (domain) socket, serving HTTP connections.
-    ///
-    /// Same as [`Self::listen`], but including the given state in the [`Service`]'s [`Context`].
-    ///
-    /// [`Service`]: rama_core::Service
-    /// [`Context`]: rama_core::Context
-    pub async fn listen_unix_with_state< S, Response, P>(
-        self,
-        state: State,
-        path: P,
-        service: S,
-    ) -> HttpServeResult
-    where
-        
-        S: Service<Request, Response = Response, Error = Infallible>,
-        Response: IntoResponse + Send + 'static,
-        P: AsRef<Path>,
-    {
-        let unix = UnixListener::build_with_state(state)
-            .bind_path(path)
-            .await?;
         let service = HttpService::new(self.builder, service);
         match self.guard {
             Some(guard) => unix.serve_graceful(guard, service).await,
@@ -300,10 +242,9 @@ impl<B, S> Clone for HttpService<B, S> {
     }
 }
 
-impl<B, S, Response, IO> Service< IO> for HttpService<B, S>
+impl<B, S, Response, IO> Service<IO> for HttpService<B, S>
 where
     B: HttpCoreConnServer,
-    
     S: Service<Request, Response = Response, Error = Infallible>,
     Response: IntoResponse + Send + 'static,
     IO: Stream,

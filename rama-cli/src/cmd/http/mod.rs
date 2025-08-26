@@ -338,13 +338,10 @@ async fn run_inner(guard: ShutdownGuard, cfg: CliCommandHttp) -> Result<(), BoxE
     Ok(())
 }
 
-async fn create_client<S>(
+async fn create_client(
     guard: ShutdownGuard,
     mut cfg: CliCommandHttp,
-) -> Result<impl Service<S, Request, Response = Response, Error = BoxError>, BoxError>
-where
-    S: Clone + Send + Sync + 'static,
-{
+) -> Result<impl Service<Request, Response = Response, Error = BoxError>, BoxError> {
     let (request_writer_mode, response_writer_mode) = if cfg.verbose {
         cfg.all = true;
         (Some(WriterMode::All), Some(WriterMode::All))

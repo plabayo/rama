@@ -73,8 +73,8 @@ use rama::{
 use std::{convert::Infallible, time::Duration};
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
-fn new_example_hijack_svc()
--> impl Clone + Service<(), Request, Response = Response, Error = Infallible> {
+fn new_example_hijack_svc() -> impl Clone + Service<Request, Response = Response, Error = Infallible>
+{
     StaticService::new(Html(
         r##"<!doctype html>
 <html>

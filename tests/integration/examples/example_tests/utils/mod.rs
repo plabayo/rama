@@ -46,7 +46,7 @@ use rama::tls::rustls::client as rustls_client;
 pub(super) type ClientService = BoxService<Request, Response, BoxError>;
 
 /// Runner for examples.
-pub(super) struct ExampleRunner<State = ()> {
+pub(super) struct ExampleRunner {
     pub(super) server_process: Child,
     #[cfg(feature = "http-full")]
     pub(super) client: ClientService,
@@ -74,10 +74,7 @@ pub(super) fn init_tracing() {
     });
 }
 
-impl ExampleRunner
-where
-    
-{
+impl ExampleRunner {
     /// Run an example server and create a client for it for interactive testing.
     ///
     /// # Panics
@@ -198,37 +195,25 @@ where
 
     #[cfg(feature = "http-full")]
     /// Create a `GET` http request to be sent to the child server.
-    pub(super) fn get(
-        &self,
-        url: impl IntoUrl,
-    ) -> RequestBuilder<'_, ClientService, Response> {
+    pub(super) fn get(&self, url: impl IntoUrl) -> RequestBuilder<'_, ClientService, Response> {
         self.client.get(url)
     }
 
     #[cfg(feature = "http-full")]
     /// Create a `HEAD` http request to be sent to the child server.
-    pub(super) fn head(
-        &self,
-        url: impl IntoUrl,
-    ) -> RequestBuilder<'_, ClientService, Response> {
+    pub(super) fn head(&self, url: impl IntoUrl) -> RequestBuilder<'_, ClientService, Response> {
         self.client.head(url)
     }
 
     #[cfg(feature = "http-full")]
     /// Create a `POST` http request to be sent to the child server.
-    pub(super) fn post(
-        &self,
-        url: impl IntoUrl,
-    ) -> RequestBuilder<'_, ClientService, Response> {
+    pub(super) fn post(&self, url: impl IntoUrl) -> RequestBuilder<'_, ClientService, Response> {
         self.client.post(url)
     }
 
     #[cfg(feature = "http-full")]
     /// Create a `DELETE` http request to be sent to the child server.
-    pub(super) fn delete(
-        &self,
-        url: impl IntoUrl,
-    ) -> RequestBuilder<'_, ClientService, Response> {
+    pub(super) fn delete(&self, url: impl IntoUrl) -> RequestBuilder<'_, ClientService, Response> {
         self.client.delete(url)
     }
 
@@ -251,7 +236,7 @@ where
     }
 }
 
-impl ExampleRunner<()> {
+impl ExampleRunner {
     /// Run an example and wait until it finished.
     ///
     /// # Panics

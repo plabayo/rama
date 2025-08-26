@@ -58,7 +58,6 @@ use rama::{
 use std::{convert::Infallible, time::Duration};
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
-type State = ();
 type Context = rama::Context;
 
 #[tokio::main]

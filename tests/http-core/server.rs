@@ -3096,7 +3096,7 @@ enum Msg {
     End,
 }
 
-impl Service<(), Request> for TestService {
+impl Service<Request> for TestService {
     type Response = Response;
     type Error = Infallible;
 
@@ -3170,7 +3170,7 @@ const HELLO: &str = "hello";
 #[derive(Debug, Clone)]
 struct HelloWorld;
 
-impl Service<(), Request> for HelloWorld {
+impl Service<Request> for HelloWorld {
     type Response = Response;
     type Error = Infallible;
 
@@ -3185,8 +3185,7 @@ impl Service<(), Request> for HelloWorld {
 }
 
 fn unreachable_service()
--> impl Service<(), rama::http::Request, Response = rama::http::Response, Error = Infallible> + Clone
-{
+-> impl Service<rama::http::Request, Response = rama::http::Response, Error = Infallible> + Clone {
     service_fn(async |_req| unreachable!())
 }
 

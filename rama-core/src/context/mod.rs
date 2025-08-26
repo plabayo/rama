@@ -92,7 +92,6 @@
 
 use crate::graceful::ShutdownGuard;
 use crate::rt::Executor;
-use std::fmt;
 use std::ops::{Deref, DerefMut};
 use tokio::task::JoinHandle;
 

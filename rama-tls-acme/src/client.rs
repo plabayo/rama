@@ -44,10 +44,7 @@ pub struct AcmeClient {
     default_retry_duration: Duration,
 }
 
-impl AcmeClient
-where
-    State: Send + Sync + Clone + 'static,
-{
+impl AcmeClient {
     /// Create a new acme [`AcmeClient`] for the given directory url and using the provided https client
     pub async fn new<S>(
         directory_url: &str,
@@ -223,10 +220,7 @@ struct AccountCredentials {
     kid: String,
 }
 
-impl<'a> Account<'a>
-where
-    State: Send + Sync + Clone + 'static,
-{
+impl<'a> Account<'a> {
     #[must_use]
     /// Get (local) account state
     pub fn state(&self) -> &server::Account {
@@ -277,11 +271,7 @@ where
     }
 
     /// Get [`Order`] which is stored on the given url
-    pub async fn get_order(
-        &self,
-        ctx: Context,
-        order_url: &str,
-    ) -> Result<Order<'_>, ClientError> {
+    pub async fn get_order(&self, ctx: Context, order_url: &str) -> Result<Order<'_>, ClientError> {
         let do_request = async || {
             let ctx = ctx.clone();
             let response = self.post(ctx, order_url, NO_PAYLOAD).await?;
@@ -341,10 +331,7 @@ impl Signer for AccountCredentials {
     }
 }
 
-impl<'a> Order<'a>
-where
-    State: Send + Sync + Clone + 'static,
-{
+impl<'a> Order<'a> {
     #[must_use]
     /// Get (local) order state
     pub fn state(&self) -> &server::Order {
@@ -576,10 +563,7 @@ where
     ///
     /// To directly download the certificate without waiting for the correct status
     /// use [`Self::download_certificate_no_checks`] instead
-    pub async fn download_certificate(
-        &mut self,
-        ctx: Context,
-    ) -> Result<String, ClientError> {
+    pub async fn download_certificate(&mut self, ctx: Context) -> Result<String, ClientError> {
         self.wait_until_certificate_ready(ctx.clone()).await?;
         self.download_certificate_no_checks(ctx).await
     }

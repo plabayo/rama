@@ -575,16 +575,14 @@ impl<T> EasyHttpWebClientBuilder<T, HttpStage> {
 
 impl<T, S> EasyHttpWebClientBuilder<T, S> {
     /// Build a [`super::EasyHttpWebClient`] using the provided config
-    pub fn build< Body, ModifiedBody, ConnResponse>(
+    pub fn build<Body, ModifiedBody, ConnResponse>(
         self,
-    ) -> super::EasyHttpWebClient< Body, T::Response>
+    ) -> super::EasyHttpWebClient<Body, T::Response>
     where
-        
         Body: http_body::Body<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
         ModifiedBody:
             http_body::Body<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
         T: Service<
-                State,
                 Request<Body>,
                 Response = EstablishedClientConnection<ConnResponse, Request<ModifiedBody>>,
                 Error = BoxError,

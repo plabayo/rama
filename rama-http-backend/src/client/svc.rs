@@ -39,17 +39,11 @@ pub struct HttpClientService<Body, I = ()> {
     pub(super) http_req_inspector: I,
 }
 
-impl< BodyIn, BodyOut, I> Service<Request<BodyIn>> for HttpClientService<BodyOut, I>
+impl<BodyIn, BodyOut, I> Service<Request<BodyIn>> for HttpClientService<BodyOut, I>
 where
-    
     BodyIn: Send + 'static,
     BodyOut: http_body::Body<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
-    I: RequestInspector<
-            State,
-            Request<BodyIn>,
-            Error: Into<BoxError>,
-            RequestOut = Request<BodyOut>,
-        >,
+    I: RequestInspector<Request<BodyIn>, Error: Into<BoxError>, RequestOut = Request<BodyOut>>,
 {
     type Response = Response;
     type Error = BoxError;
@@ -157,7 +151,7 @@ where
     }
 }
 
-fn sanitize_client_req_header<S, B>(
+fn sanitize_client_req_header<B>(
     ctx: &mut Context,
     req: Request<B>,
 ) -> Result<Request<B>, BoxError> {

@@ -13,25 +13,25 @@ use std::{convert::Infallible, fmt, sync::Arc};
 /// Upgrade service can be used to handle the possibility of upgrading a request,
 /// after which it will pass down the transport RW to the attached upgrade service.
 pub struct UpgradeService<S, O> {
-    handlers: Vec<Arc<UpgradeHandler< O>>>,
+    handlers: Vec<Arc<UpgradeHandler<O>>>,
     inner: S,
 }
 
 /// UpgradeHandler is a helper struct used internally to create an upgrade service.
-pub struct UpgradeHandler<S, O> {
-    matcher: Box<dyn Matcher<S, Request>>,
-    responder: BoxService<S, Request, (O, Context, Request), O>,
-    handler: Arc<BoxService<S, Upgraded, (), Infallible>>,
-    _phantom: std::marker::PhantomData<fn(S, O) -> ()>,
+pub struct UpgradeHandler<O> {
+    matcher: Box<dyn Matcher<Request>>,
+    responder: BoxService<Request, (O, Context, Request), O>,
+    handler: Arc<BoxService<Upgraded, (), Infallible>>,
+    _phantom: std::marker::PhantomData<fn(O) -> ()>,
 }
 
-impl<S, O> UpgradeHandler<S, O> {
+impl<O> UpgradeHandler<O> {
     /// Create a new upgrade handler.
     pub(crate) fn new<M, R, H>(matcher: M, responder: R, handler: H) -> Self
     where
-        M: Matcher<S, Request>,
-        R: Service<S, Request, Response = (O, Context, Request), Error = O> + Clone,
-        H: Service<S, Upgraded, Response = (), Error = Infallible> + Clone,
+        M: Matcher<Request>,
+        R: Service<Request, Response = (O, Context, Request), Error = O> + Clone,
+        H: Service<Upgraded, Response = (), Error = Infallible> + Clone,
     {
         Self {
             matcher: Box::new(matcher),
@@ -44,7 +44,7 @@ impl<S, O> UpgradeHandler<S, O> {
 
 impl<S, O> UpgradeService<S, O> {
     /// Create a new [`UpgradeService`].
-    pub const fn new(handlers: Vec<Arc<UpgradeHandler< O>>>, inner: S) -> Self {
+    pub const fn new(handlers: Vec<Arc<UpgradeHandler<O>>>, inner: S) -> Self {
         Self { handlers, inner }
     }
 
@@ -77,7 +77,6 @@ where
 
 impl<S, O, E> Service<Request> for UpgradeService<S, O>
 where
-    
     S: Service<Request, Response = O, Error = E>,
     O: Send + Sync + 'static,
     E: Send + Sync + 'static,
@@ -85,11 +84,7 @@ where
     type Response = O;
     type Error = E;
 
-    async fn serve(
-        &self,
-        mut ctx: Context,
-        req: Request,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
         let mut ext = Extensions::new();
         for handler in &self.handlers {
             if !handler.matcher.matches(Some(&mut ext), &ctx, &req) {
@@ -137,7 +132,7 @@ where
     }
 }
 
-impl<S, O> fmt::Debug for UpgradeHandler<S, O> {
+impl<O> fmt::Debug for UpgradeHandler<O> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("UpgradeHandler").finish()
     }

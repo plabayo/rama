@@ -190,7 +190,7 @@ pub async fn run(cfg: CliCommandEcho) -> Result<(), BoxError> {
 #[derive(Debug, Clone)]
 struct AcmeService(String);
 
-impl Service<(), Request> for AcmeService {
+impl Service<Request> for AcmeService {
     type Response = Response;
     type Error = Infallible;
 

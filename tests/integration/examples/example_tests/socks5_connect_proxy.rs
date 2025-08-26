@@ -22,8 +22,7 @@ use rama::{
 async fn test_socks5_connect_proxy() {
     utils::init_tracing();
 
-    let runner =
-        utils::ExampleRunner::<()>::interactive("socks5_connect_proxy", Some("socks5,dns"));
+    let runner = utils::ExampleRunner::interactive("socks5_connect_proxy", Some("socks5,dns"));
 
     // wait for example to run... this is dirty
     tokio::time::sleep(Duration::from_secs(10)).await;

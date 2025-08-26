@@ -94,26 +94,14 @@ where
 
 impl<S, I1, I2, BodyIn, BodyOut> Service<Request<BodyIn>> for HttpConnector<S, I1, I2>
 where
-    I1: RequestInspector<
-            State,
-            Request<BodyIn>,
-            Error: Into<BoxError>,
-            StateOut = State,
-            RequestOut = Request<BodyIn>,
-        >,
-    I2: RequestInspector<
-            State,
-            Request<BodyIn>,
-            Error: Into<BoxError>,
-            RequestOut = Request<BodyOut>,
-        > + Clone,
+    I1: RequestInspector<Request<BodyIn>, Error: Into<BoxError>, RequestOut = Request<BodyIn>>,
+    I2: RequestInspector<Request<BodyIn>, Error: Into<BoxError>, RequestOut = Request<BodyOut>>
+        + Clone,
     S: ConnectorService<Request<BodyIn>, Connection: Stream + Unpin, Error: Into<BoxError>>,
-    
     BodyIn: http_body::Body<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
     BodyOut: http_body::Body<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
 {
-    type Response =
-        EstablishedClientConnection<HttpClientService<BodyOut, I2>, I1::StateOut, I1::RequestOut>;
+    type Response = EstablishedClientConnection<HttpClientService<BodyOut, I2>, I1::RequestOut>;
     type Error = BoxError;
 
     async fn serve(

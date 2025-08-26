@@ -224,7 +224,6 @@ async fn retry_mutating_policy() {
     assert_eq!(response_counter.load(Ordering::Acquire), 3);
 }
 
-type State = ();
 type InnerError = &'static str;
 type Error = rama_core::error::OpaqueError;
 
@@ -239,13 +238,13 @@ fn request(s: &'static str) -> Request<RetryBody> {
 #[derive(Clone)]
 struct RetryErrors;
 
-impl Policy< Response, Error> for RetryErrors {
+impl Policy<Response, Error> for RetryErrors {
     async fn retry(
         &self,
         ctx: Context,
         req: Request<RetryBody>,
         result: Result<Response, Error>,
-    ) -> PolicyResult< Response, Error> {
+    ) -> PolicyResult<Response, Error> {
         if result.is_err() {
             PolicyResult::Retry { ctx, req }
         } else {
@@ -265,13 +264,13 @@ impl Policy< Response, Error> for RetryErrors {
 #[derive(Clone)]
 struct Limit(Arc<Mutex<usize>>);
 
-impl Policy< Response, Error> for Limit {
+impl Policy<Response, Error> for Limit {
     async fn retry(
         &self,
         ctx: Context,
         req: Request<RetryBody>,
         result: Result<Response, Error>,
-    ) -> PolicyResult< Response, Error> {
+    ) -> PolicyResult<Response, Error> {
         let mut attempts = self.0.lock();
         if result.is_err() && *attempts > 0 {
             *attempts -= 1;
@@ -293,13 +292,13 @@ impl Policy< Response, Error> for Limit {
 #[derive(Clone)]
 struct UnlessErr(InnerError);
 
-impl Policy< Response, Error> for UnlessErr {
+impl Policy<Response, Error> for UnlessErr {
     async fn retry(
         &self,
         ctx: Context,
         req: Request<RetryBody>,
         result: Result<Response, Error>,
-    ) -> PolicyResult< Response, Error> {
+    ) -> PolicyResult<Response, Error> {
         if result
             .as_ref()
             .err()
@@ -324,13 +323,13 @@ impl Policy< Response, Error> for UnlessErr {
 #[derive(Clone)]
 struct CannotClone;
 
-impl Policy< Response, Error> for CannotClone {
+impl Policy<Response, Error> for CannotClone {
     async fn retry(
         &self,
         _: Context,
         _: Request<RetryBody>,
         _: Result<Response, Error>,
-    ) -> PolicyResult< Response, Error> {
+    ) -> PolicyResult<Response, Error> {
         unreachable!("retry cannot be called since request isn't cloned");
     }
 
@@ -350,7 +349,7 @@ struct MutatingPolicy {
     remaining: Arc<Mutex<usize>>,
 }
 
-impl Policy< Response, Error> for MutatingPolicy
+impl Policy<Response, Error> for MutatingPolicy
 where
     Error: Into<BoxError>,
 {
@@ -359,7 +358,7 @@ where
         ctx: Context,
         _req: Request<RetryBody>,
         _result: Result<Response, Error>,
-    ) -> PolicyResult< Response, Error> {
+    ) -> PolicyResult<Response, Error> {
         let mut remaining = self.remaining.lock();
         if *remaining == 0 {
             PolicyResult::Abort(Err(error!("out of retries")))

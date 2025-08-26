@@ -59,6 +59,7 @@ use rama::{
             server::{KeepAlive, KeepAliveStream},
         },
     },
+    layer::AddExtensionLayer,
     net::address::SocketAddress,
     rt::Executor,
     tcp::server::TcpListener,
@@ -118,9 +119,12 @@ async fn main() {
         let router = Arc::new(app);
         let graceful_router = GracefulRouter(router);
 
-        let app = (TraceLayer::new_for_http()).into_layer(graceful_router);
+        let app = (
+            AddExtensionLayer::new(controller),
+            TraceLayer::new_for_http(),
+        )
+            .into_layer(graceful_router);
         listener
-            .with_state(controller)
             .serve_graceful(guard, HttpServer::auto(exec).service(app))
             .await;
     });
@@ -132,18 +136,14 @@ async fn main() {
 }
 
 #[derive(Debug, Clone)]
-struct GracefulRouter(Arc<Router<Controller>>);
+struct GracefulRouter(Arc<Router>);
 
-impl Service<Controller, Request> for GracefulRouter {
+impl Service<Request> for GracefulRouter {
     type Response = Response;
     type Error = Infallible;
 
-    async fn serve(
-        &self,
-        ctx: Context<Controller>,
-        req: Request,
-    ) -> Result<Self::Response, Self::Error> {
-        if ctx.state().is_closed() {
+    async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
+        if ctx.get::<Controller>().unwrap().is_closed() {
             tracing::debug!("router received request while shutting down: returning 401");
             return Ok(StatusCode::GONE.into_response());
         }
@@ -156,8 +156,8 @@ pub mod handlers {
 
     use super::*;
 
-    pub async fn index(ctx: Context<Controller>) -> Html<String> {
-        let content = ctx.state().render_index();
+    pub async fn index(ctx: Context) -> Html<String> {
+        let content = ctx.get::<Controller>().unwrap().render_index();
         Html(content)
     }
 
@@ -188,15 +188,15 @@ pub mod handlers {
     }
 
     pub async fn start(
-        ctx: Context<Controller>,
+        ctx: Context,
         ReadSignals(Signals { delay }): ReadSignals<Signals>,
     ) -> impl IntoResponse {
-        ctx.state().reset(delay).await;
+        ctx.get::<Controller>().unwrap().reset(delay).await;
         StatusCode::OK
     }
 
-    pub async fn hello_world(ctx: Context<Controller>) -> impl IntoResponse {
-        let mut stream = ctx.state().subscribe();
+    pub async fn hello_world(ctx: Context) -> impl IntoResponse {
+        let mut stream = ctx.get::<Controller>().unwrap().subscribe();
 
         Sse::new(KeepAliveStream::new(
             KeepAlive::new(),

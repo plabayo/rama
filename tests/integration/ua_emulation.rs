@@ -260,8 +260,9 @@ async fn test_ua_emulation() {
         }
 
         async fn server_svc_fn(ctx: Context, req: Request) -> Result<Response, Infallible> {
-            let expected = ctx.state().expected;
-            let description = ctx.state().description;
+            let state = ctx.get::<State>().unwrap();
+            let expected = state.expected;
+            let description = state.description;
 
             println!("server receives {description}: {expected:?}");
 
@@ -323,12 +324,14 @@ async fn test_ua_emulation() {
                 Ok::<_, Infallible>(conn.serve(ctx, req).await.expect(description))
             }));
 
+        let mut ctx = Context::default();
+        ctx.insert(State {
+            expected,
+            description,
+        });
         client
             .serve(
-                Context::with_state(State {
-                    expected,
-                    description,
-                }),
+                ctx,
                 Request::builder()
                     .uri(test_case.uri)
                     .body(Body::empty())
@@ -357,11 +360,9 @@ async fn test_ua_embedded_profiles_are_all_resulting_in_correct_traffic_flow() {
                 counter: Arc<AtomicUsize>,
             }
 
-            async fn server_svc_fn(
-                ctx: Context,
-                _req: Request,
-            ) -> Result<Response, Infallible> {
-                ctx.state()
+            async fn server_svc_fn(ctx: Context, _req: Request) -> Result<Response, Infallible> {
+                ctx.get::<State>()
+                    .unwrap()
                     .counter
                     .fetch_add(1, std::sync::atomic::Ordering::Release);
                 Ok(Response::new(Body::empty()))
@@ -400,7 +401,8 @@ async fn test_ua_embedded_profiles_are_all_resulting_in_correct_traffic_flow() {
                     Ok::<_, Infallible>(conn.serve(ctx, req).await.expect(&expect_msg))
                 }));
 
-            let ctx = Context::with_state(State {
+            let mut ctx = Context::default();
+            ctx.insert(State {
                 counter: counter.clone(),
             });
 
@@ -445,19 +447,14 @@ impl<S> MockConnectorService<S> {
     }
 }
 
-impl< S> Service<Request> for MockConnectorService<S>
+impl<S> Service<Request> for MockConnectorService<S>
 where
     S: Service<Request, Response = Response, Error = Infallible> + Clone,
-    
 {
     type Error = S::Error;
     type Response = EstablishedClientConnection<MockSocket, Request>;
 
-    async fn serve(
-        &self,
-        ctx: Context,
-        req: Request,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
         let (client_socket, server_socket) = new_mock_sockets();
 
         let server_ctx = ctx.clone();
