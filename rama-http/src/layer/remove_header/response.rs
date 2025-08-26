@@ -152,7 +152,6 @@ impl<ReqBody, ResBody, S> Service<Request<ReqBody>> for RemoveResponseHeader<S>
 where
     ReqBody: Send + 'static,
     ResBody: Send + 'static,
-    
     S: Service<Request<ReqBody>, Response = Response<ResBody>>,
 {
     type Response = S::Response;

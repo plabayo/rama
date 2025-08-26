@@ -286,9 +286,8 @@ impl<S> ResponseWriterService<S, Sender<Response>> {
 
 impl<S, W> ResponseWriterService<S, W> {}
 
-impl< S, W, ReqBody, ResBody> Service<Request<ReqBody>> for ResponseWriterService<S, W>
+impl<S, W, ReqBody, ResBody> Service<Request<ReqBody>> for ResponseWriterService<S, W>
 where
-    
     S: Service<Request<ReqBody>, Response = Response<ResBody>, Error: Into<BoxError>>,
     W: ResponseWriter,
     ReqBody: Send + 'static,

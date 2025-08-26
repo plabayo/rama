@@ -28,7 +28,6 @@ impl<S> RamaHttpService<S> {
 impl<S> fmt::Debug for RamaHttpService<S>
 where
     S: fmt::Debug,
-    
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("RamaHttpService")
@@ -41,7 +40,6 @@ where
 impl<S> Clone for RamaHttpService<S>
 where
     S: Clone,
-    
 {
     fn clone(&self) -> Self {
         Self {
@@ -54,7 +52,6 @@ where
 impl<S, ReqBody, R> HttpService<ReqBody> for RamaHttpService<S>
 where
     S: Service<Request, Response = R, Error = Infallible> + Clone,
-    
     ReqBody: rama_http_types::dep::http_body::Body<Data = Bytes, Error: Into<BoxError>>
         + Send
         + Sync
@@ -114,7 +111,6 @@ mod sealed {
     impl<S, ReqBody, R> Sealed<ReqBody> for RamaHttpService<S>
     where
         S: Service<Request, Response = R, Error = Infallible> + Clone,
-        
         ReqBody: rama_http_types::dep::http_body::Body<Data = Bytes, Error: Into<BoxError>>
             + Send
             + Sync

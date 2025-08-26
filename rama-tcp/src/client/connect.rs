@@ -183,20 +183,18 @@ pub async fn default_tcp_connect(
     authority: Authority,
 ) -> Result<(TcpStream, SocketAddr), OpaqueError>
 where
-    
 {
     tcp_connect(ctx, authority, GlobalDnsResolver::default(), ()).await
 }
 
 /// Establish a [`TcpStream`] connection for the given [`Authority`].
-pub async fn tcp_connect< Dns, Connector>(
+pub async fn tcp_connect<Dns, Connector>(
     ctx: &Context,
     authority: Authority,
     dns: Dns,
     connector: Connector,
 ) -> Result<(TcpStream, SocketAddr), OpaqueError>
 where
-    
     Dns: DnsResolver + Clone,
     Connector: TcpStreamConnector<Error: Into<BoxError> + Send + 'static> + Clone,
 {
@@ -250,7 +248,7 @@ where
     tcp_connect_inner(ctx, domain, port, dns_mode, dns, connector, ip_mode).await
 }
 
-async fn tcp_connect_inner< Dns, Connector>(
+async fn tcp_connect_inner<Dns, Connector>(
     ctx: &Context,
     domain: Domain,
     port: u16,
@@ -260,7 +258,6 @@ async fn tcp_connect_inner< Dns, Connector>(
     connect_mode: ConnectIpMode,
 ) -> Result<(TcpStream, SocketAddr), OpaqueError>
 where
-    
     Dns: DnsResolver + Clone,
     Connector: TcpStreamConnector<Error: Into<BoxError> + Send + 'static> + Clone,
 {

@@ -166,8 +166,7 @@ impl<ReqBody, ResBody, S, V> Service<Request<ReqBody>> for ValidateRequestHeader
 where
     ReqBody: Send + 'static,
     ResBody: Send + 'static,
-    
-    V: ValidateRequest< ReqBody, ResponseBody = ResBody>,
+    V: ValidateRequest<ReqBody, ResponseBody = ResBody>,
     S: Service<Request<ReqBody>, Response = Response<ResBody>>,
 {
     type Response = Response<ResBody>;

@@ -45,29 +45,19 @@ impl IpNetMatcher {
 }
 
 #[cfg(feature = "http")]
-impl< Body> rama_core::matcher::Matcher<Request<Body>> for IpNetMatcher {
-    fn matches(
-        &self,
-        _ext: Option<&mut Extensions>,
-        ctx: &Context,
-        _req: &Request<Body>,
-    ) -> bool {
+impl<Body> rama_core::matcher::Matcher<Request<Body>> for IpNetMatcher {
+    fn matches(&self, _ext: Option<&mut Extensions>, ctx: &Context, _req: &Request<Body>) -> bool {
         ctx.get::<SocketInfo>()
             .map(|info| self.net.contains(&IpNet::from(info.peer_addr().ip())))
             .unwrap_or(self.optional)
     }
 }
 
-impl< Socket> rama_core::matcher::Matcher< Socket> for IpNetMatcher
+impl<Socket> rama_core::matcher::Matcher<Socket> for IpNetMatcher
 where
     Socket: crate::stream::Socket,
 {
-    fn matches(
-        &self,
-        _ext: Option<&mut Extensions>,
-        _ctx: &Context,
-        stream: &Socket,
-    ) -> bool {
+    fn matches(&self, _ext: Option<&mut Extensions>, _ctx: &Context, stream: &Socket) -> bool {
         stream
             .peer_addr()
             .map(|addr| self.net.contains(&IpNet::from(addr.ip())))

@@ -143,7 +143,6 @@ where
     S: Service<Request<Body>, Error = E>,
     T: FromStr<Err: Into<BoxError> + Send + Sync + 'static> + Send + Sync + 'static + Clone,
     C: FromIterator<T> + Send + Sync + 'static + Clone,
-    
     Body: Send + Sync + 'static,
     E: Into<BoxError> + Send + Sync + 'static,
 {

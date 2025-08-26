@@ -168,8 +168,7 @@ impl<A: Clone, C, S: Clone, L> Clone for ProxyAuthService<A, C, S, L> {
     }
 }
 
-impl<A, C, L, S, ReqBody, ResBody> Service<Request<ReqBody>>
-    for ProxyAuthService<A, C, S, L>
+impl<A, C, L, S, ReqBody, ResBody> Service<Request<ReqBody>> for ProxyAuthService<A, C, S, L>
 where
     A: Authority<C, L>,
     C: Credentials + Clone + Send + Sync + 'static,
@@ -177,7 +176,6 @@ where
     L: 'static,
     ReqBody: Send + 'static,
     ResBody: Default + Send + 'static,
-    
 {
     type Response = S::Response;
     type Error = S::Error;

@@ -86,7 +86,6 @@ async fn test_tls_boring_dynamic_certs() {
 
 fn http_client(host: &Option<&str>) -> ClientService
 where
-    
 {
     let domain = host.map(|host| Domain::from_str(host).unwrap());
 

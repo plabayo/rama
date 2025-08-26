@@ -60,7 +60,6 @@ where
         + Send
         + Sync
         + 'static,
-    
     Request: Send + 'static,
 {
     type Response = T::Response;
@@ -137,7 +136,6 @@ where
         + Send
         + Sync
         + 'static,
-    
     Request: Send + 'static,
 {
     type Response = T::Response;

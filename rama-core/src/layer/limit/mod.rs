@@ -95,7 +95,6 @@ where
     T: Service<Request, Error: Into<BoxError>>,
     P: policy::Policy<Request, Error: Into<BoxError>>,
     Request: Send + Sync + 'static,
-    
 {
     type Response = T::Response;
     type Error = BoxError;
@@ -122,8 +121,7 @@ where
     }
 }
 
-impl<T, P, F, Request, FnResponse, FnError> Service<Request>
-    for Limit<T, P, ErrorIntoResponseFn<F>>
+impl<T, P, F, Request, FnResponse, FnError> Service<Request> for Limit<T, P, ErrorIntoResponseFn<F>>
 where
     T: Service<Request>,
     P: policy::Policy<Request>,
@@ -131,7 +129,6 @@ where
     FnResponse: Into<T::Response> + Send + 'static,
     FnError: Into<T::Error> + Send + Sync + 'static,
     Request: Send + Sync + 'static,
-    
 {
     type Response = T::Response;
     type Error = T::Error;

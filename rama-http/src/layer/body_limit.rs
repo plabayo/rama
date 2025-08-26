@@ -84,7 +84,6 @@ impl<S> BodyLimitService<S> {
 impl<S, ReqBody> Service<Request<ReqBody>> for BodyLimitService<S>
 where
     S: Service<Request<Body>>,
-    
     ReqBody: rama_http_types::dep::http_body::Body<Data = Bytes, Error: Into<BoxError>>
         + Send
         + Sync

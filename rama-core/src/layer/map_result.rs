@@ -94,7 +94,6 @@ impl<S, F, Request, Response, Error> Service<Request> for MapResult<S, F>
 where
     S: Service<Request>,
     F: Fn(Result<S::Response, S::Error>) -> Result<Response, Error> + Send + Sync + 'static,
-    
     Request: Send + 'static,
     Response: Send + 'static,
     Error: Send + 'static,
@@ -102,11 +101,7 @@ where
     type Response = Response;
     type Error = Error;
 
-    async fn serve(
-        &self,
-        ctx: Context,
-        req: Request,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
         let result = self.inner.serve(ctx, req).await;
         (self.f)(result)
     }

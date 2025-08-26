@@ -173,7 +173,6 @@ impl<S> SetSensitiveRequestHeaders<S> {
 
 impl<ReqBody, ResBody, S> Service<Request<ReqBody>> for SetSensitiveRequestHeaders<S>
 where
-    
     S: Service<Request<ReqBody>, Response = Response<ResBody>>,
     ReqBody: Send + 'static,
     ResBody: Send + 'static,
@@ -276,7 +275,6 @@ impl<S> SetSensitiveResponseHeaders<S> {
 
 impl<ReqBody, ResBody, S> Service<Request<ReqBody>> for SetSensitiveResponseHeaders<S>
 where
-    
     S: Service<Request<ReqBody>, Response = Response<ResBody>>,
     ReqBody: Send + 'static,
     ResBody: Send + 'static,

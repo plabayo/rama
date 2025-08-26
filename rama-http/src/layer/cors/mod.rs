@@ -682,7 +682,6 @@ where
     S: Service<Request<ReqBody>, Response = Response<ResBody>>,
     ReqBody: Send + 'static,
     ResBody: Default + Send + 'static,
-    
 {
     type Response = S::Response;
     type Error = S::Error;

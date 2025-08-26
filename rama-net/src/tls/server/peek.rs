@@ -61,22 +61,17 @@ impl<T: fmt::Debug, F: fmt::Debug> fmt::Debug for TlsPeekRouter<T, F> {
     }
 }
 
-impl< Stream, Response, T, F> Service< Stream> for TlsPeekRouter<T, F>
+impl<Stream, Response, T, F> Service<Stream> for TlsPeekRouter<T, F>
 where
-    
     Stream: crate::stream::Stream + Unpin,
     Response: Send + 'static,
-    T: Service< TlsPeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
-    F: Service< TlsPeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
+    T: Service<TlsPeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
+    F: Service<TlsPeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
 {
     type Response = Response;
     type Error = BoxError;
 
-    async fn serve(
-        &self,
-        ctx: Context,
-        mut stream: Stream,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, ctx: Context, mut stream: Stream) -> Result<Self::Response, Self::Error> {
         let mut peek_buf = [0u8; TLS_HEADER_PEEK_LEN];
         let n = stream
             .read(&mut peek_buf)

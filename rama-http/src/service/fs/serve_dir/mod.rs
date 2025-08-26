@@ -317,7 +317,7 @@ impl<F> ServeDir<F> {
     ///
     /// If you want to manually control how the error response is generated you can make a new
     /// service that wraps a `ServeDir` and calls `try_call` instead of `call`.
-    pub async fn try_call< ReqBody, FResBody>(
+    pub async fn try_call<ReqBody, FResBody>(
         &self,
         ctx: Context,
         req: Request<ReqBody>,
@@ -395,7 +395,7 @@ impl<F> ServeDir<F> {
     }
 }
 
-impl< ReqBody, F, FResBody> Service<Request<ReqBody>> for ServeDir<F>
+impl<ReqBody, F, FResBody> Service<Request<ReqBody>> for ServeDir<F>
 where
     ReqBody: Send + 'static,
     F: Service<Request<ReqBody>, Response = Response<FResBody>, Error = Infallible> + Clone,
@@ -523,7 +523,7 @@ impl ServeVariant {
 #[derive(Debug, Clone, Copy)]
 pub struct DefaultServeDirFallback(Infallible);
 
-impl< ReqBody> Service<Request<ReqBody>> for DefaultServeDirFallback
+impl<ReqBody> Service<Request<ReqBody>> for DefaultServeDirFallback
 where
     ReqBody: Send + 'static,
 {

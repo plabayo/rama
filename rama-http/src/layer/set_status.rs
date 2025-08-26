@@ -118,9 +118,8 @@ impl<S: Clone> Clone for SetStatus<S> {
 
 impl<S: Copy> Copy for SetStatus<S> {}
 
-impl< S, ReqBody, ResBody> Service<Request<ReqBody>> for SetStatus<S>
+impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for SetStatus<S>
 where
-    
     S: Service<Request<ReqBody>, Response = Response<ResBody>>,
     ReqBody: Send + 'static,
     ResBody: Send + 'static,

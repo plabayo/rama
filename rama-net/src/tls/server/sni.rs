@@ -76,22 +76,17 @@ impl<S: fmt::Debug, F: fmt::Debug> fmt::Debug for SniRouter<S, F> {
     }
 }
 
-impl< Stream, Response, S, F> Service< Stream> for SniRouter<S, F>
+impl<Stream, Response, S, F> Service<Stream> for SniRouter<S, F>
 where
-    
     Stream: crate::stream::Stream + Unpin,
     Response: Send + 'static,
-    S: Service< SniRequest<Stream>, Response = Response, Error: Into<BoxError>>,
-    F: Service< TlsPeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
+    S: Service<SniRequest<Stream>, Response = Response, Error: Into<BoxError>>,
+    F: Service<TlsPeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
 {
     type Response = Response;
     type Error = BoxError;
 
-    async fn serve(
-        &self,
-        ctx: Context,
-        mut stream: Stream,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, ctx: Context, mut stream: Stream) -> Result<Self::Response, Self::Error> {
         let mut peek_buf = [0u8; TLS_HEADER_PEEK_LEN];
         let n = stream
             .read(&mut peek_buf)

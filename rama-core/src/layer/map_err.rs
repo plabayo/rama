@@ -55,18 +55,13 @@ impl<S, F, Request, Error> Service<Request> for MapErr<S, F>
 where
     S: Service<Request>,
     F: Fn(S::Error) -> Error + Send + Sync + 'static,
-    
     Request: Send + 'static,
     Error: Send + 'static,
 {
     type Response = S::Response;
     type Error = Error;
 
-    async fn serve(
-        &self,
-        ctx: Context,
-        req: Request,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
         match self.inner.serve(ctx, req).await {
             Ok(resp) => Ok(resp),
             Err(err) => Err((self.f)(err)),

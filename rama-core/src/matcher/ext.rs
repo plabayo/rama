@@ -44,7 +44,6 @@ where
 
 impl<Request, P, T> Matcher<Request> for ExtensionMatcher<P, T>
 where
-    
     Request: Send + 'static,
     T: Clone + Send + Sync + 'static,
     P: private::ExtensionPredicate<T>,

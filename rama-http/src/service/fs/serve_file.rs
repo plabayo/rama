@@ -112,7 +112,7 @@ impl ServeFile {
     ///
     /// See [`ServeDir::try_call`] for more details.
     #[inline]
-    pub async fn try_call< ReqBody>(
+    pub async fn try_call<ReqBody>(
         &self,
         ctx: Context,
         req: Request<ReqBody>,
@@ -124,7 +124,7 @@ impl ServeFile {
     }
 }
 
-impl< ReqBody> Service<Request<ReqBody>> for ServeFile
+impl<ReqBody> Service<Request<ReqBody>> for ServeFile
 where
     ReqBody: Send + 'static,
 {

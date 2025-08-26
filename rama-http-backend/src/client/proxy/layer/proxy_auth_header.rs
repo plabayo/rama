@@ -59,7 +59,6 @@ impl<S> SetProxyAuthHttpHeaderService<S> {
 impl<S, Body> Service<Request<Body>> for SetProxyAuthHttpHeaderService<S>
 where
     S: Service<Request<Body>>,
-    
     Body: Send + 'static,
 {
     type Response = S::Response;

@@ -20,9 +20,8 @@ impl HttpsAlpnModifier {
     }
 }
 
-impl< ReqBody> Service<Request<ReqBody>> for HttpsAlpnModifier
+impl<ReqBody> Service<Request<ReqBody>> for HttpsAlpnModifier
 where
-    
     ReqBody: Send + 'static,
 {
     type Error = BoxError;

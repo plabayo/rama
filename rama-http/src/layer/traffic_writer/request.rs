@@ -168,9 +168,8 @@ impl RequestWriterInspector<Sender<Request>> {
     }
 }
 
-impl< W, ReqBody> Service<Request<ReqBody>> for RequestWriterInspector<W>
+impl<W, ReqBody> Service<Request<ReqBody>> for RequestWriterInspector<W>
 where
-    
     W: RequestWriter,
     ReqBody: http_body::Body<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
 {

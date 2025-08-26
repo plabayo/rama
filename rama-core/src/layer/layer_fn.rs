@@ -94,7 +94,6 @@ mod tests {
         where
             Request: Send + 'static,
             S: Service<Request, Response = &'static str>,
-            
         {
             type Response = String;
             type Error = S::Error;

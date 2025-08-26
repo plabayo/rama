@@ -272,11 +272,7 @@ impl<S: Clone, F: Clone> Clone for RequestMetricsService<S, F> {
 }
 
 impl<S, F> RequestMetricsService<S, F> {
-    fn compute_attributes<Body>(
-        &self,
-        ctx: &mut Context,
-        req: &Request<Body>,
-    ) -> Vec<KeyValue>
+    fn compute_attributes<Body>(&self, ctx: &mut Context, req: &Request<Body>) -> Vec<KeyValue>
     where
         F: AttributesFactory,
     {
@@ -322,7 +318,6 @@ impl<S, F, Body> Service<Request<Body>> for RequestMetricsService<S, F>
 where
     S: Service<Request, Response: IntoResponse>,
     F: AttributesFactory,
-    
     Body: http_body::Body<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
 {
     type Response = Response;

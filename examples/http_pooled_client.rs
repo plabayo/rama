@@ -131,7 +131,6 @@ impl FirstConnOnly {
 
 impl<Request> Policy<Request> for FirstConnOnly
 where
-    
     Request: Send + 'static,
 {
     type Guard = ();

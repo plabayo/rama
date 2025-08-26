@@ -31,9 +31,8 @@ impl HttpVersionAdapter {
     }
 }
 
-impl< ReqBody> Service<Request<ReqBody>> for HttpVersionAdapter
+impl<ReqBody> Service<Request<ReqBody>> for HttpVersionAdapter
 where
-    
     ReqBody: Send + 'static,
 {
     type Error = BoxError;

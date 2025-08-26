@@ -59,17 +59,12 @@ impl<S, Request> Service<Request> for TraceErr<S>
 where
     Request: Send + 'static,
     S: Service<Request, Error: std::fmt::Display + Send + Sync + 'static>,
-    
 {
     type Response = S::Response;
     type Error = S::Error;
 
     #[inline]
-    async fn serve(
-        &self,
-        ctx: Context,
-        req: Request,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
         let level = self.level;
         let res = self.inner.serve(ctx, req).await;
         if let Err(ref err) = res {

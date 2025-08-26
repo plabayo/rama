@@ -108,7 +108,7 @@ impl UserAgentProvider for UserAgentDatabase {
     }
 }
 
-impl< P> UserAgentProvider for Option<P>
+impl<P> UserAgentProvider for Option<P>
 where
     P: UserAgentProvider,
 {
@@ -118,7 +118,7 @@ where
     }
 }
 
-impl< P> UserAgentProvider for Arc<P>
+impl<P> UserAgentProvider for Arc<P>
 where
     P: UserAgentProvider,
 {
@@ -128,7 +128,7 @@ where
     }
 }
 
-impl< P> UserAgentProvider for Box<P>
+impl<P> UserAgentProvider for Box<P>
 where
     P: UserAgentProvider,
 {

@@ -74,7 +74,6 @@ where
     S: Service<Request<ReqBody>, Response = Response<ResBody>>,
     ReqBody: Send + 'static,
     ResBody: Default + Send + 'static,
-    
 {
     type Response = S::Response;
     type Error = S::Error;
@@ -148,7 +147,6 @@ impl<S, ReqBody> Service<Request<ReqBody>> for RequestBodyTimeout<S>
 where
     S: Service<Request<TimeoutBody<ReqBody>>>,
     ReqBody: Send + 'static,
-    
 {
     type Response = S::Response;
     type Error = S::Error;
@@ -197,7 +195,6 @@ where
     S: Service<Request<ReqBody>, Response = Response<ResBody>>,
     ReqBody: Send + 'static,
     ResBody: Default + Send + 'static,
-    
 {
     type Response = Response<TimeoutBody<ResBody>>;
     type Error = S::Error;

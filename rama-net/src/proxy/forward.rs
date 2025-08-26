@@ -24,9 +24,8 @@ impl StreamForwardService {
     }
 }
 
-impl< S, T> Service< ProxyRequest<S, T>> for StreamForwardService
+impl<S, T> Service<ProxyRequest<S, T>> for StreamForwardService
 where
-    
     S: Stream + Unpin,
     T: Stream + Unpin,
 {

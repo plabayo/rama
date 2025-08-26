@@ -47,7 +47,6 @@ impl<S> CollectBody<S> {
 impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for CollectBody<S>
 where
     S: Service<Request<ReqBody>, Response = Response<ResBody>, Error: Into<BoxError>>,
-    
     ReqBody: Send + 'static,
     ResBody:
         Body<Data: Send, Error: std::error::Error + Send + Sync + 'static> + Send + Sync + 'static,

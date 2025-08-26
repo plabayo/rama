@@ -108,11 +108,10 @@ struct LoggingService<S> {
     inner: S,
 }
 
-impl<S, Req> Service< Req> for LoggingService<S>
+impl<S, Req> Service<Req> for LoggingService<S>
 where
-    S: Service< Req, Response = EstablishedClientConnection<TcpStream, Req>>,
+    S: Service<Req, Response = EstablishedClientConnection<TcpStream, Req>>,
     S::Error: Send + 'static,
-    
     Req: Send + 'static,
 {
     type Response = EstablishedClientConnection<TcpStream, Req>;

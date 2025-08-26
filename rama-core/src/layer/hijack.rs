@@ -63,17 +63,12 @@ where
     S: Service<Request>,
     H: Service<Request, Response: Into<S::Response>, Error: Into<S::Error>>,
     M: Matcher<Request>,
-    
     Request: Send + 'static,
 {
     type Response = S::Response;
     type Error = S::Error;
 
-    async fn serve(
-        &self,
-        mut ctx: Context,
-        req: Request,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
         let mut ext = Extensions::new();
         if self.matcher.matches(Some(&mut ext), &ctx, &req) {
             ctx.extend(ext);

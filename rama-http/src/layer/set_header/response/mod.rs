@@ -411,9 +411,8 @@ impl<ReqBody, ResBody, S, M> Service<Request<ReqBody>> for SetResponseHeader<S, 
 where
     ReqBody: Send + 'static,
     ResBody: Send + 'static,
-    
     S: Service<Request<ReqBody>, Response = Response<ResBody>>,
-    M: MakeHeaderValueFactory< ReqBody, ResBody>,
+    M: MakeHeaderValueFactory<ReqBody, ResBody>,
 {
     type Response = S::Response;
     type Error = S::Error;

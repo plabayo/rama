@@ -178,7 +178,6 @@ impl<S> HttpProxyAddressService<S> {
 impl<S, Request> Service<Request> for HttpProxyAddressService<S>
 where
     S: Service<Request>,
-    
 {
     type Response = S::Response;
     type Error = S::Error;

@@ -185,7 +185,6 @@ impl<ReqBody, ResBody, S> Service<Request<ReqBody>> for AddRequiredRequestHeader
 where
     ReqBody: Send + 'static,
     ResBody: Send + 'static,
-    
     S: Service<Request<ReqBody>, Response = Response<ResBody>, Error: Into<BoxError>>,
 {
     type Response = S::Response;

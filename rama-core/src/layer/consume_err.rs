@@ -87,17 +87,12 @@ impl<S, F, Request> Service<Request> for ConsumeErr<S, F, DefaulResponse>
 where
     S: Service<Request, Response: Default>,
     F: Fn(S::Error) + Send + Sync + 'static,
-    
     Request: Send + 'static,
 {
     type Response = S::Response;
     type Error = Infallible;
 
-    async fn serve(
-        &self,
-        ctx: Context,
-        req: Request,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
         match self.inner.serve(ctx, req).await {
             Ok(resp) => Ok(resp),
             Err(err) => {
@@ -113,17 +108,12 @@ where
     S: Service<Request>,
     F: Fn(S::Error) + Send + Sync + 'static,
     R: Into<S::Response> + Clone + Send + Sync + 'static,
-    
     Request: Send + 'static,
 {
     type Response = S::Response;
     type Error = Infallible;
 
-    async fn serve(
-        &self,
-        ctx: Context,
-        req: Request,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
         match self.inner.serve(ctx, req).await {
             Ok(resp) => Ok(resp),
             Err(err) => {
@@ -137,17 +127,12 @@ where
 impl<S, Request> Service<Request> for ConsumeErr<S, Trace, DefaulResponse>
 where
     S: Service<Request, Response: Default, Error: Into<BoxError>>,
-    
     Request: Send + 'static,
 {
     type Response = S::Response;
     type Error = Infallible;
 
-    async fn serve(
-        &self,
-        ctx: Context,
-        req: Request,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
         match self.inner.serve(ctx, req).await {
             Ok(resp) => Ok(resp),
             Err(err) => {
@@ -179,17 +164,12 @@ impl<S, Request, R> Service<Request> for ConsumeErr<S, Trace, StaticResponse<R>>
 where
     S: Service<Request, Error: Into<BoxError>>,
     R: Into<S::Response> + Clone + Send + Sync + 'static,
-    
     Request: Send + 'static,
 {
     type Response = S::Response;
     type Error = Infallible;
 
-    async fn serve(
-        &self,
-        ctx: Context,
-        req: Request,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
         match self.inner.serve(ctx, req).await {
             Ok(resp) => Ok(resp),
             Err(err) => {

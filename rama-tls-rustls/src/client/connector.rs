@@ -233,18 +233,12 @@ impl<S> TlsConnector<S, ConnectorKindTunnel> {
 impl<S, Request> Service<Request> for TlsConnector<S, ConnectorKindAuto>
 where
     S: ConnectorService<Request, Connection: Stream + Unpin, Error: Into<BoxError>>,
-    
-    Request:
-        TryRefIntoTransportContext< Error: Into<BoxError> + Send + 'static> + Send + 'static,
+    Request: TryRefIntoTransportContext<Error: Into<BoxError> + Send + 'static> + Send + 'static,
 {
     type Response = EstablishedClientConnection<AutoTlsStream<S::Connection>, Request>;
     type Error = BoxError;
 
-    async fn serve(
-        &self,
-        ctx: Context,
-        req: Request,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
         let EstablishedClientConnection { mut ctx, req, conn } =
             self.inner.connect(ctx, req).await.map_err(Into::into)?;
         let transport_ctx = ctx
@@ -309,18 +303,12 @@ where
 impl<S, Request> Service<Request> for TlsConnector<S, ConnectorKindSecure>
 where
     S: ConnectorService<Request, Connection: Stream + Unpin, Error: Into<BoxError>>,
-    
-    Request:
-        TryRefIntoTransportContext< Error: Into<BoxError> + Send + 'static> + Send + 'static,
+    Request: TryRefIntoTransportContext<Error: Into<BoxError> + Send + 'static> + Send + 'static,
 {
     type Response = EstablishedClientConnection<TlsStream<S::Connection>, Request>;
     type Error = BoxError;
 
-    async fn serve(
-        &self,
-        ctx: Context,
-        req: Request,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
         let EstablishedClientConnection { mut ctx, req, conn } =
             self.inner.connect(ctx, req).await.map_err(Into::into)?;
 
@@ -350,17 +338,12 @@ where
 impl<S, Request> Service<Request> for TlsConnector<S, ConnectorKindTunnel>
 where
     S: ConnectorService<Request, Connection: Stream + Unpin, Error: Into<BoxError>>,
-    
     Request: Send + 'static,
 {
     type Response = EstablishedClientConnection<AutoTlsStream<S::Connection>, Request>;
     type Error = BoxError;
 
-    async fn serve(
-        &self,
-        ctx: Context,
-        req: Request,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
         let EstablishedClientConnection { mut ctx, req, conn } =
             self.inner.connect(ctx, req).await.map_err(Into::into)?;
 

@@ -52,17 +52,11 @@ impl WebSocketMatcher {
     }
 }
 
-impl< Body> Matcher<Request<Body>> for WebSocketMatcher
+impl<Body> Matcher<Request<Body>> for WebSocketMatcher
 where
-    
     Body: Send + 'static,
 {
-    fn matches(
-        &self,
-        _ext: Option<&mut Extensions>,
-        _ctx: &Context,
-        req: &Request<Body>,
-    ) -> bool {
+    fn matches(&self, _ext: Option<&mut Extensions>, _ctx: &Context, req: &Request<Body>) -> bool {
         match req.version() {
             version @ (Version::HTTP_10 | Version::HTTP_11) => {
                 match req.method() {
@@ -448,9 +442,8 @@ impl WebSocketAcceptor {
     }
 }
 
-impl< Body> Service<Request<Body>> for WebSocketAcceptor
+impl<Body> Service<Request<Body>> for WebSocketAcceptor
 where
-    
     Body: Send + 'static,
 {
     type Response = (Response, Context, Request<Body>);
@@ -741,18 +734,13 @@ impl ServerWebSocket {
 
 impl<S, Body> Service<Request<Body>> for WebSocketAcceptorService<S>
 where
-    S: Clone + Service< ServerWebSocket, Response = ()>,
-    
+    S: Clone + Service<ServerWebSocket, Response = ()>,
     Body: Send + 'static,
 {
     type Response = Response;
     type Error = S::Error;
 
-    async fn serve(
-        &self,
-        ctx: Context,
-        req: Request<Body>,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, ctx: Context, req: Request<Body>) -> Result<Self::Response, Self::Error> {
         match self.acceptor.serve(ctx, req).await {
             Ok((resp, ctx, mut req)) => {
                 #[cfg(not(feature = "compression"))]
@@ -849,10 +837,7 @@ impl WebSocketEchoService {
     }
 }
 
-impl Service< AsyncWebSocket> for WebSocketEchoService
-where
-    
-{
+impl Service<AsyncWebSocket> for WebSocketEchoService {
     type Response = ();
     type Error = OpaqueError;
 
@@ -905,10 +890,7 @@ where
     }
 }
 
-impl Service< ServerWebSocket> for WebSocketEchoService
-where
-    
-{
+impl Service<ServerWebSocket> for WebSocketEchoService {
     type Response = ();
     type Error = OpaqueError;
 
@@ -922,10 +904,7 @@ where
     }
 }
 
-impl Service< upgrade::Upgraded> for WebSocketEchoService
-where
-    
-{
+impl Service<upgrade::Upgraded> for WebSocketEchoService {
     type Response = ();
     type Error = OpaqueError;
 

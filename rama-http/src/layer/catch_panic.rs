@@ -216,7 +216,7 @@ impl<S: Clone, T: Clone> Clone for CatchPanic<S, T> {
     }
 }
 
-impl< S, T, ReqBody, ResBody> Service<Request<ReqBody>> for CatchPanic<S, T>
+impl<S, T, ReqBody, ResBody> Service<Request<ReqBody>> for CatchPanic<S, T>
 where
     S: Service<Request<ReqBody>, Response = Response<ResBody>>,
     ResBody: Into<Body> + Send + 'static,

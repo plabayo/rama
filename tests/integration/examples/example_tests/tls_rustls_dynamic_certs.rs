@@ -88,7 +88,6 @@ async fn test_tls_rustls_dynamic_certs() {
 
 fn http_client(host: &Option<&str>) -> ClientService
 where
-    
 {
     let domain = host.map(|host| Domain::from_str(host).unwrap());
     let tls_config = TlsConnectorDataBuilder::new_http_auto()

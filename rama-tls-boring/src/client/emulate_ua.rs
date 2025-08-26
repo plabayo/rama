@@ -38,8 +38,7 @@ impl<S> EmulateTlsProfileService<S> {
 
 impl<S, Request> Service<Request> for EmulateTlsProfileService<S>
 where
-    
-    Request: TryRefIntoTransportContext< Error: Into<BoxError>> + Send + 'static,
+    Request: TryRefIntoTransportContext<Error: Into<BoxError>> + Send + 'static,
     S: Service<Request, Error: Into<BoxError>>,
 {
     type Response = S::Response;

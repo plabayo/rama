@@ -79,12 +79,9 @@ impl<S> ProxyConnector<S> {
 impl<Request, S> Service<Request> for ProxyConnector<S>
 where
     S: ConnectorService<Request, Connection: Stream + Unpin, Error: Into<BoxError>>,
-    
-    Request:
-        TryRefIntoTransportContext< Error: Into<BoxError> + Send + 'static> + Send + 'static,
+    Request: TryRefIntoTransportContext<Error: Into<BoxError> + Send + 'static> + Send + 'static,
 {
-    type Response =
-        EstablishedClientConnection<MaybeProxiedConnection<S::Connection>, Request>;
+    type Response = EstablishedClientConnection<MaybeProxiedConnection<S::Connection>, Request>;
 
     type Error = BoxError;
 

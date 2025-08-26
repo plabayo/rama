@@ -107,7 +107,6 @@ impl<S: Clone> Clone for Decompression<S> {
 impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for Decompression<S>
 where
     S: Service<Request<ReqBody>, Response = Response<ResBody>>,
-    
     ReqBody: Send + 'static,
     ResBody: Body<Data: Send + 'static, Error: Send + 'static> + Send + 'static,
 {

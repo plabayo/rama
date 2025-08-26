@@ -251,7 +251,7 @@ impl<S, M> SetRequestId<S, M> {
     define_inner_service_accessors!();
 }
 
-impl< S, M, ReqBody, ResBody> Service<Request<ReqBody>> for SetRequestId<S, M>
+impl<S, M, ReqBody, ResBody> Service<Request<ReqBody>> for SetRequestId<S, M>
 where
     S: Service<Request<ReqBody>, Response = Response<ResBody>>,
     M: MakeRequestId,
@@ -364,7 +364,7 @@ impl<S: Clone> Clone for PropagateRequestId<S> {
     }
 }
 
-impl< S, ReqBody, ResBody> Service<Request<ReqBody>> for PropagateRequestId<S>
+impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for PropagateRequestId<S>
 where
     S: Service<Request<ReqBody>, Response = Response<ResBody>>,
     ReqBody: Send + 'static,
