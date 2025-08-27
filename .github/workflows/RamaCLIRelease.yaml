@@ -171,22 +171,16 @@ jobs:
           wait-for-completion: true
           output-artifact-directory: "target/${{ matrix.target }}/release"
 
-      - name: Package (zip)
+      - name: Rename ZIP and generate checksums
         shell: pwsh
         run: |
-          $BinPath = "target/${{ matrix.target }}/release"
-          $Exe     = Join-Path $BinPath "rama.exe"
-          if (!(Test-Path $Exe)) { throw "Binary not found: $Exe" }
-          $Zip = Join-Path $BinPath "rama.${{ matrix.target }}.zip"
-          if (Test-Path $Zip) { Remove-Item $Zip }
-          Compress-Archive -Path $Exe -DestinationPath $Zip -Force
+          $BinPath     = "target/${{ matrix.target }}/release"
+          $OriginalZip = Join-Path $BinPath "artifact.zip"
+          $Zip         = Join-Path $BinPath "rama.${{ matrix.target }}.zip"
 
-      - name: Generate checksums
-        shell: pwsh
-        run: |
-          $BinPath = "target/${{ matrix.target }}/release"
-          $Zip     = Join-Path $BinPath "rama.${{ matrix.target }}.zip"
-          $Hash    = (Get-FileHash -Path $Zip -Algorithm SHA256).Hash.ToLower()
+          Move-Item -Path $OriginalZip $Zip
+
+          $Hash = (Get-FileHash -Path $Zip -Algorithm SHA256).Hash.ToLower()
           Set-Content -NoNewline -Path "$Zip.sha256" -Value "$Hash  $(Split-Path -Leaf $Zip)`n"
 
       - name: Upload Github Assets
