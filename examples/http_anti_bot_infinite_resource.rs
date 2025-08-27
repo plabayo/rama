@@ -79,14 +79,18 @@ async fn main() {
     let exec = Executor::graceful(graceful.guard());
     let app = HttpServer::auto(exec).service(
         (
-            AddExtensionLayer::new(state),
             TraceLayer::new_for_http(),
             AddRequiredResponseHeadersLayer::default(),
         )
             .into_layer(router),
     );
 
-    let tcp_svc = (ConsumeErrLayer::default(), IpFirewall).into_layer(app);
+    let tcp_svc = (
+        AddExtensionLayer::new(state),
+        ConsumeErrLayer::default(),
+        IpFirewall,
+    )
+        .into_layer(app);
 
     let address = SocketAddress::local_ipv4(62039);
     tracing::info!("running service at: {address}");
