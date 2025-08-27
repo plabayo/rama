@@ -13,7 +13,7 @@ pub struct FsRecorder {
 impl FsRecorder {
     /// Create a new file recorder that appends HAR entries to `path`.
     pub fn new(path: impl Into<PathBuf>) -> Self {
-        FsRecorder {
+        Self {
             path: Arc::new(path.into()),
         }
     }
@@ -25,7 +25,7 @@ impl Recorder for FsRecorder {
         let json = match serde_json::to_string(&line) {
             Ok(s) => s,
             Err(e) => {
-                eprintln!("FsRecorder serialization error: {}", e);
+                eprintln!("FsRecorder serialization error: {e}");
                 return;
             }
         };
@@ -39,14 +39,14 @@ impl Recorder for FsRecorder {
         {
             Ok(f) => f,
             Err(e) => {
-                eprintln!("FsRecorder file open error: {}", e);
+                eprintln!("FsRecorder file open error: {e}");
                 return;
             }
         };
 
         // Write JSON + newline
         if let Err(e) = file.write_all(json.as_bytes()).await {
-            eprintln!("FsRecorder write error: {}", e);
+            eprintln!("FsRecorder write error: {e}");
         }
         file.write_all(b"\n").await.unwrap();
     }

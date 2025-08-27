@@ -10,7 +10,7 @@ pub trait Toggle: Send + Sync + 'static {
 }
 
 impl Toggle for bool {
-    fn status(&self) -> impl Future<Output = bool> + Send + '_ {
+    fn status(&self) -> impl Future<Output = Self> + Send + '_ {
         ready(*self)
     }
 }

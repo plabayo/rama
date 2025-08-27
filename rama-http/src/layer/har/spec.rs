@@ -23,6 +23,7 @@ mod mime_serde {
     use mime::Mime;
     use serde::Serializer;
 
+    #[allow(clippy::ref_option)]
     pub(super) fn serialize<S>(mime: &Option<Mime>, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
@@ -167,6 +168,7 @@ pub struct Entry {
 }
 
 impl Entry {
+    #[must_use]
     pub fn new(
         started_date_time: String,
         time: u64,
@@ -336,7 +338,7 @@ impl Response {
         let mut ext = resp_parts.extensions;
         let headers_order: OriginalHttp1Headers = ext.remove().expect("Original order");
         let header_map =
-            Http1HeaderMap::from_parts(resp_parts.headers.clone(), headers_order).into_headers();
+            Http1HeaderMap::from_parts(resp_parts.headers, headers_order).into_headers();
 
         let headers_size_ext = ext.get::<HeaderByteLength>();
         let headers_size = headers_size_ext.map(|v| v.0 as i64).unwrap_or(-1);

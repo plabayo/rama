@@ -22,13 +22,14 @@ use tokio::task::JoinHandle;
 /// assert_eq!(flag.load(Ordering::Relaxed), false);
 /// # });
 /// ```
+#[must_use]
 pub fn signal_toggle() -> (Arc<AtomicBool>, mpsc::Sender<()>, JoinHandle<()>) {
     let (tx, mut rx) = mpsc::channel::<()>(16);
     let flag = Arc::new(AtomicBool::new(false));
     let flag_clone = Arc::clone(&flag);
 
     let handle = tokio::spawn(async move {
-        while let Some(_) = rx.recv().await {
+        while (rx.recv().await).is_some() {
             let current = flag_clone.load(Ordering::Acquire);
             flag_clone.store(!current, Ordering::Release);
         }
@@ -78,7 +79,7 @@ where
     let handle = tokio::spawn(async move {
         tokio::select! {
             _ = async {
-                while let Some(_) = rx.recv().await {
+                while (rx.recv().await).is_some() {
                     let current = flag_clone.load(Ordering::Acquire);
                     flag_clone.store(!current, Ordering::Release);
                 }

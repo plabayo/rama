@@ -7,8 +7,9 @@ pub struct InMemoryRecorder {
 }
 
 impl InMemoryRecorder {
+    #[must_use]
     pub fn new() -> Self {
-        InMemoryRecorder {
+        Self {
             data: Arc::new(Mutex::new(Vec::new())),
         }
     }
