@@ -3,6 +3,7 @@ use crate::layer::har::spec::Log as HarLog;
 use std::future::Future;
 
 pub mod default;
+pub mod fs_recorder;
 pub mod layer;
 pub mod request_comment;
 pub mod service;

@@ -19,6 +19,21 @@ use rama_http_types::proto::h1::headers::original::OriginalHttp1Headers;
 use rama_http_types::{HeaderMap, Version as HttpVersion, proto::h1::Http1HeaderMap};
 use serde::{Deserialize, Serialize};
 
+mod mime_serde {
+    use mime::Mime;
+    use serde::Serializer;
+
+    pub(super) fn serialize<S>(mime: &Option<Mime>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match mime {
+            Some(m) => serializer.serialize_str(m.as_ref()),
+            None => serializer.serialize_none(),
+        }
+    }
+}
+
 // this needs to be refactored somewhere else as
 // it's widely used across the codebase
 fn into_string_version(v: HttpVersion) -> Result<String, OpaqueError> {
@@ -78,7 +93,7 @@ fn into_har_headers(header_map: &HeaderMap) -> Vec<Header> {
         .collect()
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Log {
     pub version: Cow<'static, str>,
     pub creator: Creator,
@@ -105,21 +120,21 @@ impl Default for Log {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Creator {
     pub name: String,
     pub version: Cow<'static, str>,
     pub comment: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Browser {
     pub name: String,
     pub version: Cow<'static, str>,
     pub comment: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Page {
     pub started_date_time: String,
     pub id: String,
@@ -128,14 +143,14 @@ pub struct Page {
     pub comment: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct PageTimings {
     pub on_content_load: Option<f64>,
     pub on_load: Option<f64>,
     pub comment: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Entry {
     pub pageref: Option<String>,
     pub started_date_time: String,
@@ -176,7 +191,7 @@ impl Entry {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Request {
     pub method: String,
     pub url: String,
@@ -265,7 +280,7 @@ impl Request {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Response {
     /// Response status.
     pub status: u16,
@@ -343,7 +358,7 @@ impl Response {
 
 // TODO: https://github.com/plabayo/rama/issues/44
 // For now this will have to be manually parsed. Needs an http-cookie logic
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Serialize, Default)]
 pub struct Cookie {
     pub name: String,
     pub value: String,
@@ -355,7 +370,7 @@ pub struct Cookie {
     pub comment: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Header {
     pub name: String,
     pub value: String,
@@ -369,8 +384,9 @@ pub struct QueryStringPair {
     pub comment: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct PostData {
+    #[serde(with = "mime_serde")]
     pub mime_type: Option<Mime>,
     pub params: Option<Vec<PostParam>>,
     pub text: Option<String>,
@@ -386,10 +402,11 @@ pub struct PostParam {
     pub comment: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Content {
     pub size: i64,
     pub compression: Option<i64>,
+    #[serde(with = "mime_serde")]
     pub mime_type: Option<Mime>,
     pub text: Option<String>,
     /// Encoding used for response text field e.g "base64".
@@ -399,14 +416,14 @@ pub struct Content {
     pub comment: Option<String>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Serialize, Default)]
 pub struct Cache {
     pub before_request: Option<CacheState>,
     pub after_request: Option<CacheState>,
     pub comment: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct CacheState {
     pub expires: Option<String>,
     pub last_access: Option<String>,
@@ -415,7 +432,7 @@ pub struct CacheState {
     pub comment: Option<String>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Serialize, Default)]
 pub struct Timings {
     pub blocked: Option<u64>,
     pub dns: Option<u64>,
