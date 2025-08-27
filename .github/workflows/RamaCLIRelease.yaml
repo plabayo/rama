@@ -165,7 +165,7 @@ jobs:
         with:
           api-token: "${{ secrets.SIGNPATH_API_TOKEN }}"
           organization-id: "177e81da-21f7-469e-823f-a924bcc9f474"
-          project-slug: "rama"
+          project-slug: "rama_"
           signing-policy-slug: "test-signing"
           github-artifact-id: "${{ steps.upload-unsigned-artifact.outputs.artifact-id }}"
           wait-for-completion: true
