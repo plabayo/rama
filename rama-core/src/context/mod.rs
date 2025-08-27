@@ -6,6 +6,12 @@
 //!
 //! 1. dynamic state: these can be injected as [`Extensions`]s using methods such as [`Context::insert`]
 //!
+//! Any state that is optional, and especially optional state injected by middleware, can be inserted using extensions.
+//! It is however important to try as much as possible to then also consume this state in an approach that deals
+//! gracefully with its absence. Good examples of this are header-related inputs. Headers might be set or not,
+//! and so absence of [`Extensions`]s that might be created as a result of these might reasonably not exist.
+//! It might of course still mean the app returns an error response when it is absent, but it should not unwrap/panic.
+//!
 //! [`rama`]: crate
 //!
 //! # Examples
