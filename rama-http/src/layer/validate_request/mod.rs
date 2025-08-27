@@ -59,9 +59,8 @@
 //! #[derive(Clone, Copy)]
 //! pub struct MyHeader { /* ...  */ }
 //!
-//! impl<S, B> ValidateRequest<S, B> for MyHeader
+//! impl<B> ValidateRequest<B> for MyHeader
 //!     where
-//!         S: Clone + Send + Sync + 'static,
 //!         B: Send + 'static,
 //! {
 //!     type ResponseBody = Body;

@@ -84,9 +84,9 @@
 //! # let http_client = service_fn(async |_: Request| Ok::<_, Infallible>(Response::new(Body::empty())));
 //! let policy = policy::Limited::new(10) // Set the maximum number of redirections to 10.
 //!     // Return an error when the limit was reached.
-//!     .or::<(), _, (), _>(policy::redirect_fn(|_| Err(MyError::TooManyRedirects)))
+//!     .or::<_, (), _>(policy::redirect_fn(|_| Err(MyError::TooManyRedirects)))
 //!     // Do not follow cross-origin redirections, and return the redirection responses as-is.
-//!     .and::<(), _, (), _>(policy::SameOrigin::new());
+//!     .and::<_, (), _>(policy::SameOrigin::new());
 //!
 //! let client = (
 //!     FollowRedirectLayer::with_policy(policy),

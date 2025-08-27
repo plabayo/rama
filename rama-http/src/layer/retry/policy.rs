@@ -15,13 +15,12 @@ use rama_core::Context;
 ///
 /// struct Attempts(Arc<Mutex<usize>>);
 ///
-/// impl<S, R, E> Policy< R, E> for Attempts
+/// impl<R, E> Policy< R, E> for Attempts
 ///     where
-///         S: Clone + Send + Sync + 'static,
 ///         R: Send + 'static,
 ///         E: Send + Sync + 'static,
 /// {
-///     async fn retry(&self, ctx: Context, req: Request<RetryBody>, result: Result<R, E>) -> PolicyResult<S, R, E> {
+///     async fn retry(&self, ctx: Context, req: Request<RetryBody>, result: Result<R, E>) -> PolicyResult<R, E> {
 ///         match result {
 ///             Ok(_) => {
 ///                 // Treat all `Response`s as success,

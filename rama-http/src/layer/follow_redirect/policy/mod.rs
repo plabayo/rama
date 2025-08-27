@@ -118,7 +118,7 @@ pub trait PolicyExt {
     ///     Other(Body),
     /// }
     ///
-    /// let policy = Limited::default().and::<(), _, _, ()>(clone_body_fn(|body| {
+    /// let policy = Limited::default().and::<_, _, ()>(clone_body_fn(|body| {
     ///     if let MyBody::Bytes(buf) = body {
     ///         Some(MyBody::Bytes(buf.clone()))
     ///     } else {
@@ -148,7 +148,7 @@ pub trait PolicyExt {
     ///     // ...
     /// }
     ///
-    /// let policy = Limited::default().or::<(), _, (), _>(Err(MyError::TooManyRedirects));
+    /// let policy = Limited::default().or::<_, (), _>(Err(MyError::TooManyRedirects));
     /// ```
     fn or<P, B, E>(self, other: P) -> Or<Self, P>
     where

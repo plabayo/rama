@@ -21,7 +21,7 @@
 //! #     Ok(())
 //! # }
 //!
-//! async fn handler<S>(_ctx: Context, _req: Request) -> Result<Response, std::io::Error> {
+//! async fn handler(_ctx: Context, _req: Request) -> Result<Response, std::io::Error> {
 //!     some_expensive_io_operation().await?;
 //!     Ok(StatusCode::OK.into_response())
 //! }
