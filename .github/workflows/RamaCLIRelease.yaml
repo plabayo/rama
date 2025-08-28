@@ -103,10 +103,59 @@ jobs:
         with:
           env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
 
+      - name: Setup signing keychain
+        run: |
+          KEYCHAIN=build.keychain
+          security create-keychain -p "" "$KEYCHAIN"
+          security default-keychain -s "$KEYCHAIN"
+          security unlock-keychain -p "" "$KEYCHAIN"
+          security set-keychain-settings "$KEYCHAIN"
+
+          echo "${MACOS_CERT_P12}" | base64 --decode > cert.p12
+          security import cert.p12 -k "$KEYCHAIN" -P "${MACOS_CERT_PASSWORD}" -T /usr/bin/codesign
+          # Allow codesign and notarytool to use the key without prompts
+          security set-key-partition-list -S apple-tool:,apple: -s -k "" "$KEYCHAIN"
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+
       - name: Build release
         shell: bash
         run: |
           cargo build --release -p rama-cli --target ${{ matrix.target }}
+
+      - name: Codesign binary
+        run: |
+          BIN="target/${{ matrix.target }}/release/rama"
+          codesign --force --timestamp --options runtime --sign "${MACOS_CERT_COMMON_NAME}" "$BIN"
+          codesign --verify --strict --verbose=2 "$BIN"
+        env:
+          MACOS_CERT_COMMON_NAME: ${{ secrets.MACOS_CERT_COMMON_NAME }}
+
+      - name: Notarize with notarytool
+        run: |
+          BIN="target/${{ matrix.target }}/release/rama"
+          ZIP="rama-${{ matrix.target }}.zip"
+          # Create a zip for submission. keepParent preserves the name
+          (cd "target/${{ matrix.target }}/release" && ditto -c -k --sequesterRsrc --keepParent "rama" "$ZIP")
+          # Write API key to a temporary file
+          KEY_JSON="$RUNNER_TEMP/ac_api_key.json"
+          cat > "$KEY_JSON" <<EOF
+          {
+            "key_id": "${AC_API_KEY_ID}",
+            "issuer_id": "${AC_API_ISSUER_ID}",
+            "key": "${AC_API_KEY}"
+          }
+          EOF
+          xcrun notarytool submit "target/${{ matrix.target }}/release/$ZIP" --key "$KEY_JSON" --wait --progress
+          # Staple the ticket to the binary itself
+          xcrun stapler staple -v "$BIN"
+          # Final checks
+          spctl --assess --type execute --verbose "$BIN"
+        env:
+          AC_API_KEY_ID: ${{ secrets.AC_API_KEY_ID }}
+          AC_API_ISSUER_ID: ${{ secrets.AC_API_ISSUER_ID }}
+          AC_API_KEY: ${{ secrets.AC_API_KEY }}
 
       - name: Package
         run: |
