@@ -5,12 +5,14 @@ use rama_core::{
     error::OpaqueError,
     telemetry::tracing::{debug, trace},
 };
-use rama_http::headers::sec_websocket_extensions;
 use std::{
     fmt,
     io::{self, Read, Write},
     mem,
 };
+
+#[cfg(feature = "compression")]
+use rama_http::headers::sec_websocket_extensions;
 
 pub mod frame;
 
