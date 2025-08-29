@@ -6,6 +6,7 @@ set -euo pipefail
 # -----------------------------
 KEYCHAIN_NAME="${KEYCHAIN_NAME:-ramabuild.keychain-db}"   # modern suffix -db
 KEYCHAIN_PATH="$HOME/Library/Keychains/$KEYCHAIN_NAME"
+KEYCHAIN_PASSWORD="${KEYCHAIN_PASSWORD:-}"
 CERT_P12_B64="${MACOS_CERT_P12:-}"                        # base64 p12 (optional)
 CERT_P12_PASS="${MACOS_CERT_PASSWORD:-}"                  # p12 password (optional)
 CERT_COMMON_NAME="${MACOS_CERT_COMMON_NAME:-plabayo.tech}" # default as requested
