@@ -233,7 +233,7 @@ venndb = "0.6"
 walkdir = "2.5"
 want = "0.3"
 webpki-roots = "1.0"
-x509-parser = { version = "0.17.0" }
+x509-parser = "0.18"
 zstd = "0.13"
 
 [workspace.lints.rust]
