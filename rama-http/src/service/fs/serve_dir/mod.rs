@@ -1,12 +1,14 @@
 use crate::dep::http_body::{self, Body as HttpBody};
 use crate::headers::encoding::{SupportedEncodings, parse_accept_encoding_headers};
 use crate::layer::set_status::SetStatus;
+use crate::service::fs::serve_dir::open_file::open_file_embedded;
 use crate::{Body, HeaderValue, Method, Request, Response, StatusCode, header};
 use percent_encoding::percent_decode;
 use rama_core::bytes::Bytes;
 use rama_core::error::{BoxError, OpaqueError};
 use rama_core::telemetry::tracing;
 use rama_core::{Context, Service};
+use rama_utils::include_dir::Dir;
 use std::fmt;
 use std::str::FromStr;
 use std::{
@@ -20,6 +22,12 @@ mod open_file;
 
 #[cfg(test)]
 mod tests;
+
+#[derive(Clone, Debug)]
+enum DirSource {
+    Filesystem(PathBuf),
+    Embedded(Dir<'static>),
+}
 
 // default capacity 64KiB
 const DEFAULT_CAPACITY: usize = 65536;
@@ -38,7 +46,7 @@ const DEFAULT_CAPACITY: usize = 65536;
 /// - We don't have necessary permissions to read the file
 #[derive(Clone, Debug)]
 pub struct ServeDir<F = DefaultServeDirFallback> {
-    base: PathBuf,
+    base: DirSource,
     buf_chunk_size: usize,
     precompressed_variants: Option<PrecompressedVariants>,
     // This is used to specialise implementation for
@@ -57,6 +65,15 @@ impl ServeDir<DefaultServeDirFallback> {
         let mut base = PathBuf::from(".");
         base.push(path.as_ref());
 
+        Self::new_with_base(DirSource::Filesystem(base))
+    }
+
+    #[must_use]
+    pub fn new_embedded(path: Dir<'static>) -> Self {
+        Self::new_with_base(DirSource::Embedded(path))
+    }
+
+    fn new_with_base(base: DirSource) -> Self {
         Self {
             base,
             buf_chunk_size: DEFAULT_CAPACITY,
@@ -74,7 +91,7 @@ impl ServeDir<DefaultServeDirFallback> {
         P: AsRef<Path>,
     {
         Self {
-            base: path.as_ref().to_owned(),
+            base: DirSource::Filesystem(path.as_ref().to_path_buf()),
             buf_chunk_size: DEFAULT_CAPACITY,
             precompressed_variants: None,
             variant: ServeVariant::SingleFile { mime },
@@ -374,24 +391,34 @@ impl<F> ServeDir<F> {
             .get(header::RANGE)
             .and_then(|value| value.to_str().ok())
             .map(|s| s.to_owned());
-
         let negotiated_encodings: Vec<_> = parse_accept_encoding_headers(
             req.headers(),
             self.precompressed_variants.unwrap_or_default(),
         )
         .collect();
 
-        let variant = self.variant.clone();
-
-        let open_file_result = open_file::open_file(
-            variant,
-            path_to_file,
-            req,
-            negotiated_encodings,
-            range_header,
-            buf_chunk_size,
-        )
-        .await;
+        let open_file_result = match &self.base {
+            DirSource::Filesystem(_) => {
+                let variant = self.variant.clone();
+                open_file::open_file(
+                    variant,
+                    path_to_file,
+                    req,
+                    negotiated_encodings,
+                    range_header.as_deref(),
+                    buf_chunk_size,
+                )
+                .await
+            }
+            DirSource::Embedded(path) => open_file_embedded(
+                path,
+                path_to_file,
+                &req,
+                &negotiated_encodings,
+                range_header.as_deref(),
+                buf_chunk_size,
+            ),
+        };
 
         future::consume_open_file_result(open_file_result, fallback_and_request).await
     }
@@ -487,7 +514,7 @@ enum ServeVariant {
 }
 
 impl ServeVariant {
-    fn build_and_validate_path(&self, base_path: &Path, requested_path: &str) -> Option<PathBuf> {
+    fn build_and_validate_path(&self, source: &DirSource, requested_path: &str) -> Option<PathBuf> {
         match self {
             Self::Directory { serve_mode: _ } => {
                 let path = requested_path.trim_start_matches('/');
@@ -495,30 +522,45 @@ impl ServeVariant {
                 let path_decoded = percent_decode(path.as_ref()).decode_utf8().ok()?;
                 let path_decoded = Path::new(&*path_decoded);
 
-                let mut path_to_file = base_path.to_path_buf();
-                for component in path_decoded.components() {
-                    match component {
-                        Component::Normal(comp) => {
-                            // protect against paths like `/foo/c:/bar/baz` (#204)
-                            if Path::new(&comp)
-                                .components()
-                                .all(|c| matches!(c, Component::Normal(_)))
-                            {
-                                path_to_file.push(comp)
-                            } else {
-                                return None;
-                            }
-                        }
-                        Component::CurDir => {}
-                        Component::Prefix(_) | Component::RootDir | Component::ParentDir => {
-                            return None;
-                        }
+                match source {
+                    DirSource::Filesystem(base_path) => {
+                        Self::validate_path_components(base_path.clone(), path_decoded)
+                    }
+                    DirSource::Embedded(_) => {
+                        Self::validate_path_components(PathBuf::new(), path_decoded)
                     }
                 }
-                Some(path_to_file)
             }
-            Self::SingleFile { mime: _ } => Some(base_path.to_path_buf()),
+            Self::SingleFile { mime: _ } => match source {
+                DirSource::Filesystem(base_path) => Some(base_path.clone()),
+                DirSource::Embedded(_) => {
+                    unreachable!()
+                }
+            },
         }
+    }
+
+    fn validate_path_components(mut path: PathBuf, path_decoded: &Path) -> Option<PathBuf> {
+        for component in path_decoded.components() {
+            match component {
+                Component::Normal(comp) => {
+                    // protect against paths like `/foo/c:/bar/baz` (#204)
+                    if Path::new(&comp)
+                        .components()
+                        .all(|c| matches!(c, Component::Normal(_)))
+                    {
+                        path.push(comp)
+                    } else {
+                        return None;
+                    }
+                }
+                Component::CurDir => {}
+                Component::Prefix(_) | Component::RootDir | Component::ParentDir => {
+                    return None;
+                }
+            }
+        }
+        Some(path)
     }
 }
 

@@ -6,7 +6,10 @@ use crate::headers::{encoding::Encoding, specifier::QualityValue};
 use crate::{HeaderValue, Method, Request, Uri, header};
 use chrono::{DateTime, Local};
 use http_range_header::RangeUnsatisfiableError;
+use rama_core::combinators::Either;
 use rama_core::telemetry::tracing;
+use rama_utils::include_dir::Dir;
+use std::io::Cursor;
 use std::{
     ffi::OsStr,
     fmt,
@@ -16,6 +19,7 @@ use std::{
     path::{Path, PathBuf},
     time::SystemTime,
 };
+use tokio::io::AsyncRead;
 use tokio::{fs::File, io::AsyncSeekExt};
 
 pub(super) enum OpenFileOutput {
@@ -27,6 +31,26 @@ pub(super) enum OpenFileOutput {
     NotModified,
     InvalidRedirectUri,
     InvalidFilename,
+}
+
+impl OpenFileOutput {
+    pub(super) fn new_file_opened(
+        extent: FileRequestExtent,
+        chunk_size: usize,
+        mime: HeaderValue,
+        maybe_encoding: Option<Encoding>,
+        maybe_range: Option<Result<Vec<RangeInclusive<u64>>, RangeUnsatisfiableError>>,
+        last_modified: Option<LastModified>,
+    ) -> Self {
+        Self::FileOpened(Box::new(FileOpened {
+            extent,
+            chunk_size,
+            mime_header_value: mime,
+            maybe_encoding,
+            maybe_range,
+            last_modified,
+        }))
+    }
 }
 
 pub(super) struct FileOpened {
@@ -41,6 +65,85 @@ pub(super) struct FileOpened {
 pub(super) enum FileRequestExtent {
     Full(File, Metadata),
     Head(Metadata),
+    Embedded(Vec<u8>, u64), // Content, original file size
+    EmbeddedHead(u64),      // Content length for HEAD requests on embedded files
+}
+
+impl FileRequestExtent {
+    pub(super) fn into_reader(self) -> Option<impl AsyncRead + Send + Sync + Unpin> {
+        match self {
+            Self::Head(_) | Self::EmbeddedHead(_) => None,
+            Self::Full(file, _) => Some(Either::A(file)),
+            Self::Embedded(content, _) => Some(Either::B(Cursor::new(content))),
+        }
+    }
+
+    pub(super) fn file_size(&self) -> u64 {
+        match self {
+            Self::Head(meta) | Self::Full(_, meta) => meta.len(),
+            Self::Embedded(_, original_size) => *original_size,
+            Self::EmbeddedHead(size) => *size,
+        }
+    }
+}
+
+pub(super) fn open_file_embedded(
+    base: &Dir,
+    mut path_to_file: PathBuf,
+    req: &Request,
+    negotiated_encodings: &[QualityValue<Encoding>],
+    range_header: Option<&str>,
+    buf_chunk_size: usize,
+) -> io::Result<OpenFileOutput> {
+    // Check if this is a directory request (empty path or directory path)
+    // If so, try to serve index.html
+    if path_to_file.as_os_str().is_empty() || path_to_file.to_str() == Some(".") {
+        path_to_file = PathBuf::from("index.html");
+    }
+
+    let mime = guess_mime_type(&path_to_file);
+    let maybe_encoding = preferred_encoding(&mut path_to_file, negotiated_encodings);
+
+    let Some(file) = base.get_file(&path_to_file) else {
+        return Ok(OpenFileOutput::FileNotFound);
+    };
+
+    let last_modified = file
+        .metadata()
+        .map(|metadata| LastModified::from(metadata.modified()));
+
+    if let Some(output) = check_modified_headers(last_modified.as_ref(), req) {
+        return Ok(output);
+    }
+
+    let content_length = file.contents().len() as u64;
+    let maybe_range = try_parse_range(range_header, content_length);
+
+    // Use appropriate extent based on request method
+    let extent = if req.method() == Method::HEAD {
+        FileRequestExtent::EmbeddedHead(content_length)
+    } else {
+        let mut content = file.contents().to_vec();
+
+        // Apply seek for range requests, similar to filesystem files
+        if let Some(Ok(ranges)) = maybe_range.as_ref()
+            && ranges.len() == 1
+        {
+            let start = *ranges[0].start() as usize;
+            content.drain(0..start.min(content.len()));
+        }
+
+        FileRequestExtent::Embedded(content, content_length)
+    };
+
+    Ok(OpenFileOutput::new_file_opened(
+        extent,
+        buf_chunk_size,
+        mime,
+        maybe_encoding,
+        maybe_range,
+        last_modified,
+    ))
 }
 
 pub(super) async fn open_file(
@@ -48,19 +151,9 @@ pub(super) async fn open_file(
     mut path_to_file: PathBuf,
     req: Request,
     negotiated_encodings: Vec<QualityValue<Encoding>>,
-    range_header: Option<String>,
+    range_header: Option<&str>,
     buf_chunk_size: usize,
 ) -> io::Result<OpenFileOutput> {
-    let if_unmodified_since = req
-        .headers()
-        .get(header::IF_UNMODIFIED_SINCE)
-        .and_then(IfUnmodifiedSince::from_header_value);
-
-    let if_modified_since = req
-        .headers()
-        .get(header::IF_MODIFIED_SINCE)
-        .and_then(IfModifiedSince::from_header_value);
-
     let mime = match variant {
         ServeVariant::Directory { serve_mode } => {
             // Might already at this point know a redirect or not found result should be
@@ -72,12 +165,7 @@ pub(super) async fn open_file(
                 return Ok(output);
             }
 
-            mime_guess::from_path(&path_to_file)
-                .first_raw()
-                .map(HeaderValue::from_static)
-                .unwrap_or_else(|| {
-                    HeaderValue::from_str(mime::APPLICATION_OCTET_STREAM.as_ref()).unwrap()
-                })
+            guess_mime_type(&path_to_file)
         }
 
         ServeVariant::SingleFile { mime } => mime,
@@ -88,24 +176,20 @@ pub(super) async fn open_file(
             file_metadata_with_fallback(path_to_file, negotiated_encodings).await?;
 
         let last_modified = meta.modified().ok().map(LastModified::from);
-        if let Some(output) = check_modified_headers(
-            last_modified.as_ref(),
-            if_unmodified_since,
-            if_modified_since,
-        ) {
+        if let Some(output) = check_modified_headers(last_modified.as_ref(), &req) {
             return Ok(output);
         }
 
-        let maybe_range = try_parse_range(range_header.as_deref(), meta.len());
+        let maybe_range = try_parse_range(range_header, meta.len());
 
-        Ok(OpenFileOutput::FileOpened(Box::new(FileOpened {
-            extent: FileRequestExtent::Head(meta),
-            chunk_size: buf_chunk_size,
-            mime_header_value: mime,
+        Ok(OpenFileOutput::new_file_opened(
+            FileRequestExtent::Head(meta),
+            buf_chunk_size,
+            mime,
             maybe_encoding,
             maybe_range,
             last_modified,
-        })))
+        ))
     } else {
         let (mut file, maybe_encoding) =
             match open_file_with_fallback(path_to_file, negotiated_encodings).await {
@@ -118,15 +202,11 @@ pub(super) async fn open_file(
             };
         let meta = file.metadata().await?;
         let last_modified = meta.modified().ok().map(LastModified::from);
-        if let Some(output) = check_modified_headers(
-            last_modified.as_ref(),
-            if_unmodified_since,
-            if_modified_since,
-        ) {
+        if let Some(output) = check_modified_headers(last_modified.as_ref(), &req) {
             return Ok(output);
         }
 
-        let maybe_range = try_parse_range(range_header.as_deref(), meta.len());
+        let maybe_range = try_parse_range(range_header, meta.len());
         if let Some(Ok(ranges)) = maybe_range.as_ref()
             && ranges.len() == 1
         {
@@ -135,14 +215,14 @@ pub(super) async fn open_file(
             file.seek(SeekFrom::Start(*ranges[0].start())).await?;
         }
 
-        Ok(OpenFileOutput::FileOpened(Box::new(FileOpened {
-            extent: FileRequestExtent::Full(file, meta),
-            chunk_size: buf_chunk_size,
-            mime_header_value: mime,
+        Ok(OpenFileOutput::new_file_opened(
+            FileRequestExtent::Full(file, meta),
+            buf_chunk_size,
+            mime,
             maybe_encoding,
             maybe_range,
             last_modified,
-        })))
+        ))
     }
 }
 
@@ -166,11 +246,28 @@ fn is_invalid_filename_error(err: &io::Error) -> bool {
     false
 }
 
+// Common MIME type guessing logic
+fn guess_mime_type(path: &Path) -> HeaderValue {
+    mime_guess::from_path(path)
+        .first_raw()
+        .map(HeaderValue::from_static)
+        .unwrap_or_else(|| HeaderValue::from_str(mime::APPLICATION_OCTET_STREAM.as_ref()).unwrap())
+}
+
 fn check_modified_headers(
     modified: Option<&LastModified>,
-    if_unmodified_since: Option<IfUnmodifiedSince>,
-    if_modified_since: Option<IfModifiedSince>,
+    req: &Request,
 ) -> Option<OpenFileOutput> {
+    let if_unmodified_since = req
+        .headers()
+        .get(header::IF_UNMODIFIED_SINCE)
+        .and_then(IfUnmodifiedSince::from_header_value);
+
+    let if_modified_since = req
+        .headers()
+        .get(header::IF_MODIFIED_SINCE)
+        .and_then(IfModifiedSince::from_header_value);
+
     if let Some(since) = if_unmodified_since {
         let precondition = modified
             .as_ref()
