@@ -161,7 +161,7 @@ async fn spawn_socks5_server() -> SocketAddress {
 // By default it the relay will just forward all packets unchanged and unconditionally.
 
 fn udp_packet_inspect(
-    _ctx: &Context<()>,
+    _ctx: &Context,
     dir: RelayDirection,
     _addr: SocketAddress,
     data: &[u8],

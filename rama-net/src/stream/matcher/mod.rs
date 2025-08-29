@@ -35,12 +35,12 @@ use rama_http_types::Request;
 /// A matcher to match on a [`Socket`].
 ///
 /// [`Socket`]: crate::stream::Socket
-pub struct SocketMatcher<State, Socket> {
-    kind: SocketMatcherKind<State, Socket>,
+pub struct SocketMatcher<Socket> {
+    kind: SocketMatcherKind<Socket>,
     negate: bool,
 }
 
-impl<State, Socket> Clone for SocketMatcher<State, Socket> {
+impl<Socket> Clone for SocketMatcher<Socket> {
     fn clone(&self) -> Self {
         Self {
             kind: self.kind.clone(),
@@ -49,7 +49,7 @@ impl<State, Socket> Clone for SocketMatcher<State, Socket> {
     }
 }
 
-impl<State, Socket> fmt::Debug for SocketMatcher<State, Socket> {
+impl<Socket> fmt::Debug for SocketMatcher<Socket> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SocketMatcher")
             .field("kind", &self.kind)
@@ -59,7 +59,7 @@ impl<State, Socket> fmt::Debug for SocketMatcher<State, Socket> {
 }
 
 /// The different kinds of socket matchers.
-enum SocketMatcherKind<State, Socket> {
+enum SocketMatcherKind<Socket> {
     /// [`SocketAddressMatcher`], a matcher that matches on the [`SocketAddr`] of the peer.
     ///
     /// [`SocketAddr`]: std::net::SocketAddr
@@ -79,14 +79,14 @@ enum SocketMatcherKind<State, Socket> {
     /// [`SocketAddr`]: std::net::SocketAddr
     IpNet(IpNetMatcher),
     /// zero or more matchers that all need to match in order for the matcher to return `true`.
-    All(Vec<SocketMatcher<State, Socket>>),
+    All(Vec<SocketMatcher<Socket>>),
     /// `true` if no matchers are defined, or any of the defined matcher match.
-    Any(Vec<SocketMatcher<State, Socket>>),
+    Any(Vec<SocketMatcher<Socket>>),
     /// A custom matcher that implements [`rama_core::matcher::Matcher`].
-    Custom(Arc<dyn rama_core::matcher::Matcher<State, Socket>>),
+    Custom(Arc<dyn rama_core::matcher::Matcher<Socket>>),
 }
 
-impl<State, Socket> Clone for SocketMatcherKind<State, Socket> {
+impl<Socket> Clone for SocketMatcherKind<Socket> {
     fn clone(&self) -> Self {
         match self {
             Self::SocketAddress(matcher) => Self::SocketAddress(matcher.clone()),
@@ -101,7 +101,7 @@ impl<State, Socket> Clone for SocketMatcherKind<State, Socket> {
     }
 }
 
-impl<State, Socket> fmt::Debug for SocketMatcherKind<State, Socket> {
+impl<Socket> fmt::Debug for SocketMatcherKind<Socket> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::SocketAddress(matcher) => f.debug_tuple("SocketAddress").field(matcher).finish(),
@@ -116,7 +116,7 @@ impl<State, Socket> fmt::Debug for SocketMatcherKind<State, Socket> {
     }
 }
 
-impl<State, Socket> SocketMatcher<State, Socket> {
+impl<Socket> SocketMatcher<Socket> {
     /// Create a new socket address matcher to match on a socket address.
     ///
     /// See [`SocketAddressMatcher::new`] for more information.
@@ -395,7 +395,7 @@ impl<State, Socket> SocketMatcher<State, Socket> {
     /// See [`rama_core::matcher::Matcher`] for more information.
     pub fn custom<M>(matcher: M) -> Self
     where
-        M: rama_core::matcher::Matcher<State, Socket>,
+        M: rama_core::matcher::Matcher<Socket>,
     {
         Self {
             kind: SocketMatcherKind::Custom(Arc::new(matcher)),
@@ -409,7 +409,7 @@ impl<State, Socket> SocketMatcher<State, Socket> {
     #[must_use]
     pub fn and_custom<M>(self, matcher: M) -> Self
     where
-        M: rama_core::matcher::Matcher<State, Socket>,
+        M: rama_core::matcher::Matcher<Socket>,
     {
         self.and(Self::custom(matcher))
     }
@@ -420,7 +420,7 @@ impl<State, Socket> SocketMatcher<State, Socket> {
     #[must_use]
     pub fn or_custom<M>(self, matcher: M) -> Self
     where
-        M: rama_core::matcher::Matcher<State, Socket>,
+        M: rama_core::matcher::Matcher<Socket>,
     {
         self.or(Self::custom(matcher))
     }
@@ -466,18 +466,11 @@ impl<State, Socket> SocketMatcher<State, Socket> {
 }
 
 #[cfg(feature = "http")]
-impl<State, Body> rama_core::matcher::Matcher<State, Request<Body>>
-    for SocketMatcherKind<State, Request<Body>>
+impl<Body> rama_core::matcher::Matcher<Request<Body>> for SocketMatcherKind<Request<Body>>
 where
-    State: 'static,
     Body: 'static,
 {
-    fn matches(
-        &self,
-        ext: Option<&mut Extensions>,
-        ctx: &Context<State>,
-        req: &Request<Body>,
-    ) -> bool {
+    fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context, req: &Request<Body>) -> bool {
         match self {
             Self::SocketAddress(matcher) => matcher.matches(ext, ctx, req),
             Self::IpNet(matcher) => matcher.matches(ext, ctx, req),
@@ -492,29 +485,21 @@ where
 }
 
 #[cfg(feature = "http")]
-impl<State, Body> rama_core::matcher::Matcher<State, Request<Body>>
-    for SocketMatcher<State, Request<Body>>
+impl<Body> rama_core::matcher::Matcher<Request<Body>> for SocketMatcher<Request<Body>>
 where
-    State: 'static,
     Body: 'static,
 {
-    fn matches(
-        &self,
-        ext: Option<&mut Extensions>,
-        ctx: &Context<State>,
-        req: &Request<Body>,
-    ) -> bool {
+    fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context, req: &Request<Body>) -> bool {
         let result = self.kind.matches(ext, ctx, req);
         if self.negate { !result } else { result }
     }
 }
 
-impl<State, Socket> rama_core::matcher::Matcher<State, Socket> for SocketMatcherKind<State, Socket>
+impl<Socket> rama_core::matcher::Matcher<Socket> for SocketMatcherKind<Socket>
 where
     Socket: crate::stream::Socket,
-    State: 'static,
 {
-    fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context<State>, stream: &Socket) -> bool {
+    fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context, stream: &Socket) -> bool {
         match self {
             Self::SocketAddress(matcher) => matcher.matches(ext, ctx, stream),
             Self::IpNet(matcher) => matcher.matches(ext, ctx, stream),
@@ -528,12 +513,11 @@ where
     }
 }
 
-impl<State, Socket> rama_core::matcher::Matcher<State, Socket> for SocketMatcher<State, Socket>
+impl<Socket> rama_core::matcher::Matcher<Socket> for SocketMatcher<Socket>
 where
     Socket: crate::stream::Socket,
-    State: 'static,
 {
-    fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context<State>, stream: &Socket) -> bool {
+    fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context, stream: &Socket) -> bool {
         let result = self.kind.matches(ext, ctx, stream);
         if self.negate { !result } else { result }
     }
@@ -549,11 +533,11 @@ mod test {
 
     struct BooleanMatcher(bool);
 
-    impl Matcher<(), Request<()>> for BooleanMatcher {
+    impl Matcher<Request<()>> for BooleanMatcher {
         fn matches(
             &self,
             _ext: Option<&mut Extensions>,
-            _ctx: &Context<()>,
+            _ctx: &Context,
             _req: &Request<()>,
         ) -> bool {
             self.0

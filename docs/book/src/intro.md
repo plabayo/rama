@@ -22,7 +22,7 @@ And of course as a reminder, if you want to use Rama but are still learning Rust
 - [Service Stack](./intro/service_stack.md)
 - [🍔 Middlewares and ☘️ Leaf Services](./intro/terminology.md)
 - [Network Layers](./intro/network_layers.md)
-- [☀️ Context<State>](./intro/context.md)
+- [☀️ Context](./intro/context.md)
 - [🧱 Modular](./intro/modular.md)
 - [🚚 Dynamic Dispatch](./intro/dynamic_dispatch.md)
 - [🚫 Errors](./intro/errors.md)

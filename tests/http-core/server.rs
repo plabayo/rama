@@ -3096,13 +3096,13 @@ enum Msg {
     End,
 }
 
-impl Service<(), Request> for TestService {
+impl Service<Request> for TestService {
     type Response = Response;
     type Error = Infallible;
 
     fn serve(
         &self,
-        _ctx: rama::Context<()>,
+        _ctx: rama::Context,
         mut req: Request,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
         let tx = self.tx.clone();
@@ -3170,13 +3170,13 @@ const HELLO: &str = "hello";
 #[derive(Debug, Clone)]
 struct HelloWorld;
 
-impl Service<(), Request> for HelloWorld {
+impl Service<Request> for HelloWorld {
     type Response = Response;
     type Error = Infallible;
 
     fn serve(
         &self,
-        _ctx: rama::Context<()>,
+        _ctx: rama::Context,
         _req: Request,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
         let response = Response::new(rama::http::Body::from(HELLO));
@@ -3185,8 +3185,7 @@ impl Service<(), Request> for HelloWorld {
 }
 
 fn unreachable_service()
--> impl Service<(), rama::http::Request, Response = rama::http::Response, Error = Infallible> + Clone
-{
+-> impl Service<rama::http::Request, Response = rama::http::Response, Error = Infallible> + Clone {
     service_fn(async |_req| unreachable!())
 }
 

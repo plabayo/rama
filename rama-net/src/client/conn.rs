@@ -2,18 +2,16 @@ use rama_core::{Context, Service, error::BoxError, service::BoxService};
 use std::fmt;
 
 /// The established connection to a server returned for the http client to be used.
-pub struct EstablishedClientConnection<S, State, Request> {
+pub struct EstablishedClientConnection<S, Request> {
     /// The [`Context`] of the `Request` for which a connection was established.
-    pub ctx: Context<State>,
+    pub ctx: Context,
     /// The `Request` for which a connection was established.
     pub req: Request,
     /// The established connection stream/service/... to the server.
     pub conn: S,
 }
 
-impl<S: fmt::Debug, State: fmt::Debug, Request: fmt::Debug> fmt::Debug
-    for EstablishedClientConnection<S, State, Request>
-{
+impl<S: fmt::Debug, Request: fmt::Debug> fmt::Debug for EstablishedClientConnection<S, Request> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("EstablishedClientConnection")
             .field("ctx", &self.ctx)
@@ -23,9 +21,7 @@ impl<S: fmt::Debug, State: fmt::Debug, Request: fmt::Debug> fmt::Debug
     }
 }
 
-impl<S: Clone, State: Clone, Request: Clone> Clone
-    for EstablishedClientConnection<S, State, Request>
-{
+impl<S: Clone, Request: Clone> Clone for EstablishedClientConnection<S, Request> {
     fn clone(&self) -> Self {
         Self {
             ctx: self.ctx.clone(),
@@ -40,7 +36,7 @@ impl<S: Clone, State: Clone, Request: Clone> Clone
 ///
 /// Can also be manually implemented as an alternative [`Service`] trait,
 /// but from a Rama POV it is mostly used for UX trait bounds.
-pub trait ConnectorService<State, Request>: Send + Sync + 'static {
+pub trait ConnectorService<Request>: Send + Sync + 'static {
     /// Connection returned by the [`ConnectorService`]
     type Connection;
     /// Error returned in case of connection / setup failure
@@ -50,20 +46,19 @@ pub trait ConnectorService<State, Request>: Send + Sync + 'static {
     /// or connection revival.
     fn connect(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         req: Request,
     ) -> impl Future<
-        Output = Result<EstablishedClientConnection<Self::Connection, State, Request>, Self::Error>,
+        Output = Result<EstablishedClientConnection<Self::Connection, Request>, Self::Error>,
     > + Send
     + '_;
 }
 
-impl<S, State, Request, Connection> ConnectorService<State, Request> for S
+impl<S, Request, Connection> ConnectorService<Request> for S
 where
     S: Service<
-            State,
             Request,
-            Response = EstablishedClientConnection<Connection, State, Request>,
+            Response = EstablishedClientConnection<Connection, Request>,
             Error: Into<BoxError>,
         >,
 {
@@ -72,10 +67,10 @@ where
 
     fn connect(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         req: Request,
     ) -> impl Future<
-        Output = Result<EstablishedClientConnection<Self::Connection, State, Request>, Self::Error>,
+        Output = Result<EstablishedClientConnection<Self::Connection, Request>, Self::Error>,
     > + Send
     + '_ {
         self.serve(ctx, req)
@@ -107,30 +102,21 @@ impl<S: Clone> Clone for BoxedConnectorService<S> {
     }
 }
 
-impl<S, State, Request, Svc> Service<State, Request> for BoxedConnectorService<S>
+impl<S, Request, Svc> Service<Request> for BoxedConnectorService<S>
 where
     S: Service<
-            State,
             Request,
-            Response = EstablishedClientConnection<Svc, State, Request>,
+            Response = EstablishedClientConnection<Svc, Request>,
             Error: Into<BoxError>,
         >,
-    Svc: Service<State, Request>,
-    State: Send + 'static,
+    Svc: Service<Request>,
     Request: Send + 'static,
 {
-    type Response = EstablishedClientConnection<
-        BoxService<State, Request, Svc::Response, Svc::Error>,
-        State,
-        Request,
-    >;
+    type Response =
+        EstablishedClientConnection<BoxService<Request, Svc::Response, Svc::Error>, Request>;
     type Error = S::Error;
 
-    async fn serve(
-        &self,
-        ctx: Context<State>,
-        req: Request,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
         let EstablishedClientConnection {
             ctx,
             req,

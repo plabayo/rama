@@ -7,8 +7,6 @@ mod http_anti_bot_infinite_resource;
 #[cfg(feature = "http-full")]
 mod http_anti_bot_zip_bomb;
 #[cfg(feature = "http-full")]
-mod http_conn_state;
-#[cfg(feature = "http-full")]
 mod http_connect_proxy;
 #[cfg(feature = "http-full")]
 mod http_form;

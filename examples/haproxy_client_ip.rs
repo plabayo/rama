@@ -56,7 +56,7 @@ async fn main() {
         let tcp_http_service = HttpServer::auto(Executor::graceful(guard.clone())).service(
             AddRequiredResponseHeaders::new(Router::new().get(
                 "/",
-                async |ctx: Context<()>| -> Result<String, (StatusCode, String)> {
+                async |ctx: Context| -> Result<String, (StatusCode, String)> {
                     let client_ip = ctx
                         .get::<Forwarded>()
                         .and_then(|f| f.client_ip())

@@ -286,10 +286,9 @@ impl<S> ResponseWriterService<S, Sender<Response>> {
 
 impl<S, W> ResponseWriterService<S, W> {}
 
-impl<State, S, W, ReqBody, ResBody> Service<State, Request<ReqBody>> for ResponseWriterService<S, W>
+impl<S, W, ReqBody, ResBody> Service<Request<ReqBody>> for ResponseWriterService<S, W>
 where
-    State: Clone + Send + Sync + 'static,
-    S: Service<State, Request<ReqBody>, Response = Response<ResBody>, Error: Into<BoxError>>,
+    S: Service<Request<ReqBody>, Response = Response<ResBody>, Error: Into<BoxError>>,
     W: ResponseWriter,
     ReqBody: Send + 'static,
     ResBody: http_body::Body<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
@@ -299,7 +298,7 @@ where
 
     async fn serve(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         req: Request<ReqBody>,
     ) -> Result<Self::Response, Self::Error> {
         let do_not_print_response: Option<DoNotWriteResponse> = ctx.get().cloned();

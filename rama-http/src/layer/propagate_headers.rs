@@ -96,10 +96,9 @@ impl<S> PropagateHeader<S> {
     define_inner_service_accessors!();
 }
 
-impl<ReqBody, ResBody, S, State> Service<State, Request<ReqBody>> for PropagateHeader<S>
+impl<ReqBody, ResBody, S> Service<Request<ReqBody>> for PropagateHeader<S>
 where
-    S: Service<State, Request<ReqBody>, Response = Response<ResBody>>,
-    State: Clone + Send + Sync + 'static,
+    S: Service<Request<ReqBody>, Response = Response<ResBody>>,
     ReqBody: Send + 'static,
     ResBody: Send + 'static,
 {
@@ -108,7 +107,7 @@ where
 
     async fn serve(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         req: Request<ReqBody>,
     ) -> Result<Self::Response, Self::Error> {
         let value = req.headers().get(&self.header).cloned();

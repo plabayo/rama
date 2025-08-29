@@ -79,13 +79,12 @@ impl<S> CompressAdaptService<S> {
     }
 }
 
-impl<ReqBody, ResBody, S, State> Service<State, Request<ReqBody>> for CompressAdaptService<S>
+impl<ReqBody, ResBody, S> Service<Request<ReqBody>> for CompressAdaptService<S>
 where
-    S: Service<State, Request<ReqBody>, Response = Response<ResBody>>,
+    S: Service<Request<ReqBody>, Response = Response<ResBody>>,
     ResBody:
         Body<Data: Send + 'static, Error: Into<BoxError> + Send + Sync + 'static> + Send + 'static,
     ReqBody: Send + 'static,
-    State: Clone + Send + Sync + 'static,
 {
     type Response = Response<CompressionBody<DecompressionBody<ResBody>>>;
     type Error = S::Error;
@@ -93,7 +92,7 @@ where
     #[allow(unreachable_code, unused_mut, unused_variables, unreachable_patterns)]
     async fn serve(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         req: Request<ReqBody>,
     ) -> Result<Self::Response, Self::Error> {
         let requested_encoding =

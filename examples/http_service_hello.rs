@@ -87,7 +87,7 @@ async fn main() {
             SetSensitiveResponseHeadersLayer::from_shared(sensitive_headers),
             MapResponseLayer::new(IntoResponse::into_response),
         )
-            .into_layer(service_fn(async |ctx: Context<()>, req: Request| {
+            .into_layer(service_fn(async |ctx: Context, req: Request| {
                 let socket_info = ctx.get::<SocketInfo>().unwrap();
                 let tracker = ctx.get::<BytesRWTrackerHandle>().unwrap();
                 Ok(Html(format!(

@@ -296,7 +296,7 @@ repositories in function of rama that aren't crates:
 Developing proxies are the primary focus of Rama (ラマ). It can however also be used to develop web services to serve web pages, Http API's and static content. This comes with many of the same benefits that you get when developing proxies using Rama:
 
 * Use Async Method Traits;
-* Reuse modular [Tower](https://github.com/tower-rs/tower)-like middleware using extensions as well as strongly typed state;
+* Reuse modular [Tower](https://github.com/tower-rs/tower)-like middleware using extensions;
 * Have the ability to be in full control of your web stack from Transport Layer (Tcp, Udp), through Tls and Http;
 * If all you care about is the Http layer then that is fine to.
 * Be able to trust that your incoming Application Http data has not been modified (e.g. Http header casing and order is preserved);
@@ -385,7 +385,7 @@ automated processes look like a human.
 
 ## 🧑‍💻 | Http Clients
 
-In [The rama book](https://ramaproxy.org/book) you can read and learn that a big pillar of Rama's architecture is built on top of [the Service concept](https://ramaproxy.org/book/intro/services_all_the_way_down.html). A [`Service`][rama-service] takes as input a user-defined `State` (e.g. containing your database Pool) and a `Request`, and uses it to serve either a `Response` or `Error`. Such a [`Service`][rama-service] can produce the response "directly" (also called ☘️ Leaf services) or instead pass the request and state to an inner [`Service`][rama-service] which it wraps around (so called 🍔 Middlewares).
+In [The rama book](https://ramaproxy.org/book) you can read and learn that a big pillar of Rama's architecture is built on top of [the Service concept](https://ramaproxy.org/book/intro/services_all_the_way_down.html). A [`Service`][rama-service] takes a `Request`, and uses it to serve either a `Response` or `Error`. Such a [`Service`][rama-service] can produce the response "directly" (also called ☘️ Leaf services) or instead pass the request to an inner [`Service`][rama-service] which it wraps around (so called 🍔 Middlewares).
 
 [rama-service]: https://ramaproxy.org/docs/rama/service/trait.Service.html
 

@@ -33,9 +33,9 @@ impl<S, F> MapRequest<S, F> {
     define_inner_service_accessors!();
 }
 
-impl<S, F, State, R1, R2> Service<State, R1> for MapRequest<S, F>
+impl<S, F, R1, R2> Service<R1> for MapRequest<S, F>
 where
-    S: Service<State, R2>,
+    S: Service<R2>,
     F: Fn(R1) -> R2 + Send + Sync + 'static,
 {
     type Response = S::Response;
@@ -44,7 +44,7 @@ where
     #[inline]
     fn serve(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         request: R1,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
         self.inner.serve(ctx, (self.f)(request))

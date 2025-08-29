@@ -44,22 +44,17 @@ impl<S> MockConnectorService<S> {
     }
 }
 
-impl<State, S, Request, Error, Server> Service<State, Request> for MockConnectorService<S>
+impl<S, Request, Error, Server> Service<Request> for MockConnectorService<S>
 where
     S: Fn() -> Server + Send + Sync + 'static,
-    Server: Service<State, MockSocket, Error = Error>,
-    State: Clone + Send + Sync + 'static,
+    Server: Service<MockSocket, Error = Error>,
     Request: Send + 'static,
     Error: std::fmt::Debug + 'static,
 {
     type Error = Infallible;
-    type Response = EstablishedClientConnection<MockSocket, State, Request>;
+    type Response = EstablishedClientConnection<MockSocket, Request>;
 
-    async fn serve(
-        &self,
-        ctx: Context<State>,
-        req: Request,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
         let (client, server) = duplex(self.max_buffer_size);
         let client_socket = MockSocket { stream: client };
         let server_socket = MockSocket { stream: server };

@@ -38,17 +38,17 @@ pub use concurrent::{ConcurrentCounter, ConcurrentPolicy, ConcurrentTracker, Lim
 mod matcher;
 
 /// The full result of a limit policy.
-pub struct PolicyResult<State, Request, Guard, Error> {
+pub struct PolicyResult<Request, Guard, Error> {
     /// The input context
-    pub ctx: Context<State>,
+    pub ctx: Context,
     /// The input request
     pub request: Request,
     /// The output part of the limit policy.
     pub output: PolicyOutput<Guard, Error>,
 }
 
-impl<State: fmt::Debug, Request: fmt::Debug, Guard: fmt::Debug, Error: fmt::Debug> std::fmt::Debug
-    for PolicyResult<State, Request, Guard, Error>
+impl<Request: fmt::Debug, Guard: fmt::Debug, Error: fmt::Debug> std::fmt::Debug
+    for PolicyResult<Request, Guard, Error>
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PolicyResult")
@@ -83,7 +83,7 @@ impl<Guard: fmt::Debug, Error: fmt::Debug> std::fmt::Debug for PolicyOutput<Guar
 
 /// A limit [`Policy`] is used to determine whether a request is allowed to proceed,
 /// and if not, how to handle it.
-pub trait Policy<State, Request>: Send + Sync + 'static {
+pub trait Policy<Request>: Send + Sync + 'static {
     /// The guard type that is returned when the request is allowed to proceed.
     ///
     /// See [`PolicyOutput::Ready`].
@@ -101,15 +101,14 @@ pub trait Policy<State, Request>: Send + Sync + 'static {
     /// was handled by this limit policy.
     fn check(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         request: Request,
-    ) -> impl Future<Output = PolicyResult<State, Request, Self::Guard, Self::Error>> + Send + '_;
+    ) -> impl Future<Output = PolicyResult<Request, Self::Guard, Self::Error>> + Send + '_;
 }
 
-impl<State, Request, P> Policy<State, Request> for Option<P>
+impl<Request, P> Policy<Request> for Option<P>
 where
-    P: Policy<State, Request>,
-    State: Clone + Send + Sync + 'static,
+    P: Policy<Request>,
     Request: Send + 'static,
 {
     type Guard = Option<P::Guard>;
@@ -117,9 +116,9 @@ where
 
     async fn check(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         request: Request,
-    ) -> PolicyResult<State, Request, Self::Guard, Self::Error> {
+    ) -> PolicyResult<Request, Self::Guard, Self::Error> {
         match self {
             Some(policy) => {
                 let result = policy.check(ctx, request).await;
@@ -150,10 +149,9 @@ where
     }
 }
 
-impl<State, Request, P> Policy<State, Request> for &'static P
+impl<Request, P> Policy<Request> for &'static P
 where
-    P: Policy<State, Request>,
-    State: Clone + Send + Sync + 'static,
+    P: Policy<Request>,
     Request: Send + 'static,
 {
     type Guard = P::Guard;
@@ -161,17 +159,16 @@ where
 
     async fn check(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         request: Request,
-    ) -> PolicyResult<State, Request, Self::Guard, Self::Error> {
+    ) -> PolicyResult<Request, Self::Guard, Self::Error> {
         (**self).check(ctx, request).await
     }
 }
 
-impl<State, Request, P> Policy<State, Request> for Arc<P>
+impl<Request, P> Policy<Request> for Arc<P>
 where
-    P: Policy<State, Request>,
-    State: Clone + Send + Sync + 'static,
+    P: Policy<Request>,
     Request: Send + 'static,
 {
     type Guard = P::Guard;
@@ -179,17 +176,16 @@ where
 
     async fn check(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         request: Request,
-    ) -> PolicyResult<State, Request, Self::Guard, Self::Error> {
+    ) -> PolicyResult<Request, Self::Guard, Self::Error> {
         self.as_ref().check(ctx, request).await
     }
 }
 
-impl<State, Request, P> Policy<State, Request> for Box<P>
+impl<Request, P> Policy<Request> for Box<P>
 where
-    P: Policy<State, Request>,
-    State: Clone + Send + Sync + 'static,
+    P: Policy<Request>,
     Request: Send + 'static,
 {
     type Guard = P::Guard;
@@ -197,9 +193,9 @@ where
 
     async fn check(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         request: Request,
-    ) -> PolicyResult<State, Request, Self::Guard, Self::Error> {
+    ) -> PolicyResult<Request, Self::Guard, Self::Error> {
         self.as_ref().check(ctx, request).await
     }
 }
@@ -217,9 +213,8 @@ impl UnlimitedPolicy {
     }
 }
 
-impl<State, Request> Policy<State, Request> for UnlimitedPolicy
+impl<Request> Policy<Request> for UnlimitedPolicy
 where
-    State: Clone + Send + Sync + 'static,
     Request: Send + 'static,
 {
     type Guard = ();
@@ -227,9 +222,9 @@ where
 
     async fn check(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         request: Request,
-    ) -> PolicyResult<State, Request, Self::Guard, Self::Error> {
+    ) -> PolicyResult<Request, Self::Guard, Self::Error> {
         PolicyResult {
             ctx,
             request,
@@ -240,23 +235,23 @@ where
 
 macro_rules! impl_limit_policy_either {
     ($id:ident, $($param:ident),+ $(,)?) => {
-        impl<$($param),+, State, Request> Policy<State, Request> for crate::combinators::$id<$($param),+>
+        impl<$($param),+, Request> Policy<Request> for crate::combinators::$id<$($param),+>
         where
             $(
-                $param: Policy<State, Request>,
+                $param: Policy<Request>,
                 $param::Error: Into<BoxError>,
             )+
             Request: Send + 'static,
-            State: Clone + Send + Sync + 'static,
+
         {
             type Guard = crate::combinators::$id<$($param::Guard),+>;
             type Error = BoxError;
 
             async fn check(
                 &self,
-                ctx: Context<State>,
+                ctx: Context,
                 req: Request,
-            ) -> PolicyResult<State, Request, Self::Guard, Self::Error> {
+            ) -> PolicyResult<Request, Self::Guard, Self::Error> {
                 match self {
                     $(
                         crate::combinators::$id::$param(policy) => {

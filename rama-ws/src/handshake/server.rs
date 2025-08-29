@@ -52,17 +52,11 @@ impl WebSocketMatcher {
     }
 }
 
-impl<State, Body> Matcher<State, Request<Body>> for WebSocketMatcher
+impl<Body> Matcher<Request<Body>> for WebSocketMatcher
 where
-    State: Clone + Send + Sync + 'static,
     Body: Send + 'static,
 {
-    fn matches(
-        &self,
-        _ext: Option<&mut Extensions>,
-        _ctx: &Context<State>,
-        req: &Request<Body>,
-    ) -> bool {
+    fn matches(&self, _ext: Option<&mut Extensions>, _ctx: &Context, req: &Request<Body>) -> bool {
         match req.version() {
             version @ (Version::HTTP_10 | Version::HTTP_11) => {
                 match req.method() {
@@ -448,17 +442,16 @@ impl WebSocketAcceptor {
     }
 }
 
-impl<State, Body> Service<State, Request<Body>> for WebSocketAcceptor
+impl<Body> Service<Request<Body>> for WebSocketAcceptor
 where
-    State: Clone + Send + Sync + 'static,
     Body: Send + 'static,
 {
-    type Response = (Response, Context<State>, Request<Body>);
+    type Response = (Response, Context, Request<Body>);
     type Error = Response;
 
     async fn serve(
         &self,
-        mut ctx: Context<State>,
+        mut ctx: Context,
         req: Request<Body>,
     ) -> Result<Self::Response, Self::Error> {
         match validate_http_client_request(&req) {
@@ -739,20 +732,15 @@ impl ServerWebSocket {
     }
 }
 
-impl<S, State, Body> Service<State, Request<Body>> for WebSocketAcceptorService<S>
+impl<S, Body> Service<Request<Body>> for WebSocketAcceptorService<S>
 where
-    S: Clone + Service<State, ServerWebSocket, Response = ()>,
-    State: Clone + Send + Sync + 'static,
+    S: Clone + Service<ServerWebSocket, Response = ()>,
     Body: Send + 'static,
 {
     type Response = Response;
     type Error = S::Error;
 
-    async fn serve(
-        &self,
-        ctx: Context<State>,
-        req: Request<Body>,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, ctx: Context, req: Request<Body>) -> Result<Self::Response, Self::Error> {
         match self.acceptor.serve(ctx, req).await {
             Ok((resp, ctx, mut req)) => {
                 #[cfg(not(feature = "compression"))]
@@ -849,16 +837,13 @@ impl WebSocketEchoService {
     }
 }
 
-impl<State> Service<State, AsyncWebSocket> for WebSocketEchoService
-where
-    State: Clone + Send + Sync + 'static,
-{
+impl Service<AsyncWebSocket> for WebSocketEchoService {
     type Response = ();
     type Error = OpaqueError;
 
     async fn serve(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         socket: AsyncWebSocket,
     ) -> Result<Self::Response, Self::Error> {
         let protocol = ctx
@@ -905,16 +890,13 @@ where
     }
 }
 
-impl<State> Service<State, ServerWebSocket> for WebSocketEchoService
-where
-    State: Clone + Send + Sync + 'static,
-{
+impl Service<ServerWebSocket> for WebSocketEchoService {
     type Response = ();
     type Error = OpaqueError;
 
     async fn serve(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         socket: ServerWebSocket,
     ) -> Result<Self::Response, Self::Error> {
         let socket = socket.into_inner();
@@ -922,16 +904,13 @@ where
     }
 }
 
-impl<State> Service<State, upgrade::Upgraded> for WebSocketEchoService
-where
-    State: Clone + Send + Sync + 'static,
-{
+impl Service<upgrade::Upgraded> for WebSocketEchoService {
     type Response = ();
     type Error = OpaqueError;
 
     async fn serve(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         io: upgrade::Upgraded,
     ) -> Result<Self::Response, Self::Error> {
         #[cfg(not(feature = "compression"))]

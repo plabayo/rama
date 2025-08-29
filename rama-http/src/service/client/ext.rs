@@ -8,9 +8,7 @@ use rama_http_headers::authorization::Credentials;
 /// Extends an Http Client with high level features,
 /// to facilitate the creation and sending of http requests,
 /// in a more ergonomic way.
-pub trait HttpClientExt<State>:
-    private::HttpClientExtSealed<State> + Sized + Send + Sync + 'static
-{
+pub trait HttpClientExt: private::HttpClientExtSealed + Sized + Send + Sync + 'static {
     /// The response type returned by the `execute` method.
     type ExecuteResponse;
     /// The error type returned by the `execute` method.
@@ -23,7 +21,7 @@ pub trait HttpClientExt<State>:
     /// This method fails whenever the supplied [`Url`] cannot be parsed.
     ///
     /// [`Url`]: crate::Uri
-    fn get(&self, url: impl IntoUrl) -> RequestBuilder<'_, Self, State, Self::ExecuteResponse>;
+    fn get(&self, url: impl IntoUrl) -> RequestBuilder<'_, Self, Self::ExecuteResponse>;
 
     /// Convenience method to make a `POST` request to a URL.
     ///
@@ -32,7 +30,7 @@ pub trait HttpClientExt<State>:
     /// This method fails whenever the supplied [`Url`] cannot be parsed.
     ///
     /// [`Url`]: crate::Uri
-    fn post(&self, url: impl IntoUrl) -> RequestBuilder<'_, Self, State, Self::ExecuteResponse>;
+    fn post(&self, url: impl IntoUrl) -> RequestBuilder<'_, Self, Self::ExecuteResponse>;
 
     /// Convenience method to make a `PUT` request to a URL.
     ///
@@ -41,7 +39,7 @@ pub trait HttpClientExt<State>:
     /// This method fails whenever the supplied [`Url`] cannot be parsed.
     ///
     /// [`Url`]: crate::Uri
-    fn put(&self, url: impl IntoUrl) -> RequestBuilder<'_, Self, State, Self::ExecuteResponse>;
+    fn put(&self, url: impl IntoUrl) -> RequestBuilder<'_, Self, Self::ExecuteResponse>;
 
     /// Convenience method to make a `PATCH` request to a URL.
     ///
@@ -50,7 +48,7 @@ pub trait HttpClientExt<State>:
     /// This method fails whenever the supplied [`Url`] cannot be parsed.
     ///
     /// [`Url`]: crate::Uri
-    fn patch(&self, url: impl IntoUrl) -> RequestBuilder<'_, Self, State, Self::ExecuteResponse>;
+    fn patch(&self, url: impl IntoUrl) -> RequestBuilder<'_, Self, Self::ExecuteResponse>;
 
     /// Convenience method to make a `DELETE` request to a URL.
     ///
@@ -59,21 +57,21 @@ pub trait HttpClientExt<State>:
     /// This method fails whenever the supplied [`Url`] cannot be parsed.
     ///
     /// [`Url`]: crate::Uri
-    fn delete(&self, url: impl IntoUrl) -> RequestBuilder<'_, Self, State, Self::ExecuteResponse>;
+    fn delete(&self, url: impl IntoUrl) -> RequestBuilder<'_, Self, Self::ExecuteResponse>;
 
     /// Convenience method to make a `HEAD` request to a URL.
     ///
     /// # Errors
     ///
     /// This method fails whenever the supplied `Url` cannot be parsed.
-    fn head(&self, url: impl IntoUrl) -> RequestBuilder<'_, Self, State, Self::ExecuteResponse>;
+    fn head(&self, url: impl IntoUrl) -> RequestBuilder<'_, Self, Self::ExecuteResponse>;
 
     /// Convenience method to make a `CONNECT` request to a URL.
     ///
     /// # Errors
     ///
     /// This method fails whenever the supplied `Url` cannot be parsed.
-    fn connect(&self, url: impl IntoUrl) -> RequestBuilder<'_, Self, State, Self::ExecuteResponse>;
+    fn connect(&self, url: impl IntoUrl) -> RequestBuilder<'_, Self, Self::ExecuteResponse>;
 
     /// Start building a [`Request`] with the [`Method`] and [`Url`].
     ///
@@ -91,7 +89,7 @@ pub trait HttpClientExt<State>:
         &self,
         method: Method,
         url: impl IntoUrl,
-    ) -> RequestBuilder<'_, Self, State, Self::ExecuteResponse>;
+    ) -> RequestBuilder<'_, Self, Self::ExecuteResponse>;
 
     /// Start building a [`Request`], using the given [`Request`].
     ///
@@ -100,7 +98,7 @@ pub trait HttpClientExt<State>:
     fn build_from_request<Body: Into<crate::Body>>(
         &self,
         request: Request<Body>,
-    ) -> RequestBuilder<'_, Self, State, Self::ExecuteResponse>;
+    ) -> RequestBuilder<'_, Self, Self::ExecuteResponse>;
 
     /// Executes a `Request`.
     ///
@@ -109,43 +107,43 @@ pub trait HttpClientExt<State>:
     /// This method fails if there was an error while sending request.
     fn execute(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         request: Request,
     ) -> impl Future<Output = Result<Self::ExecuteResponse, Self::ExecuteError>>;
 }
 
-impl<State, S, Body> HttpClientExt<State> for S
+impl<S, Body> HttpClientExt for S
 where
-    S: Service<State, Request, Response = Response<Body>, Error: Into<BoxError>>,
+    S: Service<Request, Response = Response<Body>, Error: Into<BoxError>>,
 {
     type ExecuteResponse = Response<Body>;
     type ExecuteError = S::Error;
 
-    fn get(&self, url: impl IntoUrl) -> RequestBuilder<'_, Self, State, Self::ExecuteResponse> {
+    fn get(&self, url: impl IntoUrl) -> RequestBuilder<'_, Self, Self::ExecuteResponse> {
         self.request(Method::GET, url)
     }
 
-    fn post(&self, url: impl IntoUrl) -> RequestBuilder<'_, Self, State, Self::ExecuteResponse> {
+    fn post(&self, url: impl IntoUrl) -> RequestBuilder<'_, Self, Self::ExecuteResponse> {
         self.request(Method::POST, url)
     }
 
-    fn put(&self, url: impl IntoUrl) -> RequestBuilder<'_, Self, State, Self::ExecuteResponse> {
+    fn put(&self, url: impl IntoUrl) -> RequestBuilder<'_, Self, Self::ExecuteResponse> {
         self.request(Method::PUT, url)
     }
 
-    fn patch(&self, url: impl IntoUrl) -> RequestBuilder<'_, Self, State, Self::ExecuteResponse> {
+    fn patch(&self, url: impl IntoUrl) -> RequestBuilder<'_, Self, Self::ExecuteResponse> {
         self.request(Method::PATCH, url)
     }
 
-    fn delete(&self, url: impl IntoUrl) -> RequestBuilder<'_, Self, State, Self::ExecuteResponse> {
+    fn delete(&self, url: impl IntoUrl) -> RequestBuilder<'_, Self, Self::ExecuteResponse> {
         self.request(Method::DELETE, url)
     }
 
-    fn head(&self, url: impl IntoUrl) -> RequestBuilder<'_, Self, State, Self::ExecuteResponse> {
+    fn head(&self, url: impl IntoUrl) -> RequestBuilder<'_, Self, Self::ExecuteResponse> {
         self.request(Method::HEAD, url)
     }
 
-    fn connect(&self, url: impl IntoUrl) -> RequestBuilder<'_, Self, State, Self::ExecuteResponse> {
+    fn connect(&self, url: impl IntoUrl) -> RequestBuilder<'_, Self, Self::ExecuteResponse> {
         self.request(Method::CONNECT, url)
     }
 
@@ -153,7 +151,7 @@ where
         &self,
         method: Method,
         url: impl IntoUrl,
-    ) -> RequestBuilder<'_, Self, State, Self::ExecuteResponse> {
+    ) -> RequestBuilder<'_, Self, Self::ExecuteResponse> {
         let uri = match url.into_url() {
             Ok(uri) => uri,
             Err(err) => {
@@ -179,7 +177,7 @@ where
     fn build_from_request<RequestBody: Into<crate::Body>>(
         &self,
         request: Request<RequestBody>,
-    ) -> RequestBuilder<'_, Self, State, Self::ExecuteResponse> {
+    ) -> RequestBuilder<'_, Self, Self::ExecuteResponse> {
         RequestBuilder {
             http_client_service: self,
             state: RequestBuilderState::PostBody(request.map(Into::into)),
@@ -189,7 +187,7 @@ where
 
     fn execute(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         request: Request,
     ) -> impl Future<Output = Result<Self::ExecuteResponse, Self::ExecuteError>> {
         Service::serve(self, ctx, request)
@@ -369,10 +367,10 @@ mod private {
         }
     }
 
-    pub trait HttpClientExtSealed<State> {}
+    pub trait HttpClientExtSealed {}
 
-    impl<State, S, Body> HttpClientExtSealed<State> for S where
-        S: Service<State, Request, Response = Response<Body>, Error: Into<BoxError>>
+    impl<S, Body> HttpClientExtSealed for S where
+        S: Service<Request, Response = Response<Body>, Error: Into<BoxError>>
     {
     }
 }
@@ -380,13 +378,13 @@ mod private {
 /// A builder to construct the properties of a [`Request`].
 ///
 /// Constructed using [`HttpClientExt`].
-pub struct RequestBuilder<'a, S, State, Response> {
+pub struct RequestBuilder<'a, S, Response> {
     http_client_service: &'a S,
     state: RequestBuilderState,
-    _phantom: std::marker::PhantomData<fn(State, Response) -> ()>,
+    _phantom: std::marker::PhantomData<fn(Response) -> ()>,
 }
 
-impl<S, State, Response> std::fmt::Debug for RequestBuilder<'_, S, State, Response>
+impl<S, Response> std::fmt::Debug for RequestBuilder<'_, S, Response>
 where
     S: std::fmt::Debug,
 {
@@ -405,9 +403,9 @@ enum RequestBuilderState {
     Error(OpaqueError),
 }
 
-impl<S, State, Body> RequestBuilder<'_, S, State, Response<Body>>
+impl<S, Body> RequestBuilder<'_, S, Response<Body>>
 where
-    S: Service<State, Request, Response = Response<Body>, Error: Into<BoxError>>,
+    S: Service<Request, Response = Response<Body>, Error: Into<BoxError>>,
 {
     /// Add a `Header` to this [`Request`].
     #[must_use]
@@ -732,7 +730,7 @@ where
     /// # Errors
     ///
     /// This method fails if there was an error while sending [`Request`].
-    pub async fn send(self, ctx: Context<State>) -> Result<Response<Body>, OpaqueError> {
+    pub async fn send(self, ctx: Context) -> Result<Response<Body>, OpaqueError> {
         let request = match self.state {
             RequestBuilderState::PreBody(builder) => builder
                 .body(crate::Body::empty())
@@ -769,12 +767,11 @@ mod test {
     use rama_utils::backoff::ExponentialBackoff;
     use std::convert::Infallible;
 
-    async fn fake_client_fn<S, Body>(
-        _ctx: Context<S>,
+    async fn fake_client_fn<Body>(
+        _ctx: Context,
         request: Request<Body>,
     ) -> Result<Response, Infallible>
     where
-        S: Clone + Send + Sync + 'static,
         Body: crate::dep::http_body::Body<Data: Send + 'static, Error: Send + 'static>
             + Send
             + 'static,
@@ -805,9 +802,9 @@ mod test {
     }
 
     type OpaqueError = rama_core::error::BoxError;
-    type HttpClient<S> = BoxService<S, Request, Response, OpaqueError>;
+    type HttpClient = BoxService<Request, Response, OpaqueError>;
 
-    fn client<S: Clone + Send + Sync + 'static>() -> HttpClient<S> {
+    fn client() -> HttpClient {
         let builder = (
             MapResultLayer::new(map_internal_client_error),
             TraceLayer::new_for_http(),

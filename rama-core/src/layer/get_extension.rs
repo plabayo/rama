@@ -128,11 +128,10 @@ impl<S, T, Fut, F> GetExtension<S, T, Fut, F> {
     define_inner_service_accessors!();
 }
 
-impl<State, Request, S, T, Fut, F> Service<State, Request> for GetExtension<S, T, Fut, F>
+impl<Request, S, T, Fut, F> Service<Request> for GetExtension<S, T, Fut, F>
 where
-    State: Clone + Send + Sync + 'static,
     Request: Send + 'static,
-    S: Service<State, Request>,
+    S: Service<Request>,
     T: Clone + Send + Sync + 'static,
     F: Fn(T) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = ()> + Send + 'static,
@@ -140,11 +139,7 @@ where
     type Response = S::Response;
     type Error = S::Error;
 
-    async fn serve(
-        &self,
-        ctx: Context<State>,
-        req: Request,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
         if let Some(value) = ctx.get::<T>() {
             let value = value.clone();
             (self.callback)(value).await;
@@ -173,7 +168,7 @@ mod tests {
                 cloned_value.store(state.0, std::sync::atomic::Ordering::Release);
             }
         })
-        .into_layer(service_fn(async |ctx: Context<()>, _req: ()| {
+        .into_layer(service_fn(async |ctx: Context, _req: ()| {
             let state = ctx.get::<State>().unwrap();
             Ok::<_, Infallible>(state.0)
         }));

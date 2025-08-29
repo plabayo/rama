@@ -27,8 +27,8 @@ mod marker {
 #[derive(Debug, Clone)]
 struct OddMatcher;
 
-impl<State> Matcher<State, u8> for OddMatcher {
-    fn matches(&self, ext: Option<&mut Extensions>, _ctx: &Context<State>, req: &u8) -> bool {
+impl Matcher<u8> for OddMatcher {
+    fn matches(&self, ext: Option<&mut Extensions>, _ctx: &Context, req: &u8) -> bool {
         if *req % 2 != 0 {
             if let Some(ext) = ext {
                 ext.insert(marker::Odd);
@@ -42,8 +42,8 @@ impl<State> Matcher<State, u8> for OddMatcher {
 #[derive(Debug, Clone)]
 struct EvenMatcher;
 
-impl<State> Matcher<State, u8> for EvenMatcher {
-    fn matches(&self, ext: Option<&mut Extensions>, _ctx: &Context<State>, req: &u8) -> bool {
+impl Matcher<u8> for EvenMatcher {
+    fn matches(&self, ext: Option<&mut Extensions>, _ctx: &Context, req: &u8) -> bool {
         if *req % 2 == 0 {
             if let Some(ext) = ext {
                 ext.insert(marker::Even);
@@ -57,8 +57,8 @@ impl<State> Matcher<State, u8> for EvenMatcher {
 #[derive(Debug, Clone)]
 struct ConstMatcher(u8);
 
-impl<State> Matcher<State, u8> for ConstMatcher {
-    fn matches(&self, ext: Option<&mut Extensions>, _ctx: &Context<State>, req: &u8) -> bool {
+impl Matcher<u8> for ConstMatcher {
+    fn matches(&self, ext: Option<&mut Extensions>, _ctx: &Context, req: &u8) -> bool {
         if *req == self.0 {
             if let Some(ext) = ext {
                 ext.insert(marker::Const);
@@ -172,16 +172,16 @@ fn test_and_or() {
 #[test]
 fn test_match_fn_always() {
     assert!(match_fn(|| true).matches(None, &Context::default(), &()));
-    assert!(match_fn(|_: &Context<()>| true).matches(None, &Context::default(), &()));
+    assert!(match_fn(|_: &Context| true).matches(None, &Context::default(), &()));
     assert!(match_fn(|_: Option<&mut Extensions>| true).matches(None, &Context::default(), &()));
     assert!(
-        match_fn(|_: Option<&mut Extensions>, _: &Context<()>| true).matches(
+        match_fn(|_: Option<&mut Extensions>, _: &Context| true).matches(
             None,
             &Context::default(),
             &()
         )
     );
-    assert!(match_fn(|_: &Context<()>, _: &()| true).matches(None, &Context::default(), &()));
+    assert!(match_fn(|_: &Context, _: &()| true).matches(None, &Context::default(), &()));
     assert!(match_fn(|_: &()| true).matches(None, &Context::default(), &()));
     assert!(match_fn(|_: &u8| true).matches(None, &Context::default(), &0));
     assert!(match_fn(|_: &bool| true).matches(None, &Context::default(), &false));
@@ -208,8 +208,8 @@ enum TestMatchers {
     Odd(OddMatcher),
 }
 
-impl<State> Matcher<State, u8> for TestMatchers {
-    fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context<State>, req: &u8) -> bool {
+impl Matcher<u8> for TestMatchers {
+    fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context, req: &u8) -> bool {
         match self {
             Self::Const(m) => m.matches(ext, ctx, req),
             Self::Even(m) => m.matches(ext, ctx, req),
@@ -298,8 +298,7 @@ fn test_box() {
 
 #[test]
 fn test_iter_box_and() {
-    let matchers: Vec<Box<dyn Matcher<_, _>>> =
-        vec![Box::new(ConstMatcher(1)), Box::new(OddMatcher)];
+    let matchers: Vec<Box<dyn Matcher<_>>> = vec![Box::new(ConstMatcher(1)), Box::new(OddMatcher)];
 
     assert!(matchers[0].matches(None, &Context::default(), &1));
     assert!(matchers[1].matches(None, &Context::default(), &1));
@@ -315,7 +314,7 @@ fn test_iter_box_and() {
 
 #[test]
 fn test_iter_box_or() {
-    let matchers: Vec<Box<dyn Matcher<_, _>>> = vec![
+    let matchers: Vec<Box<dyn Matcher<_>>> = vec![
         Box::new(ConstMatcher(0)),
         Box::new(ConstMatcher(2)),
         Box::new(OddMatcher),
@@ -379,7 +378,7 @@ fn test_ext_insert_and_revert_op_or() {
 
 #[test]
 fn test_ext_insert_and_revert_iter_or() {
-    let matcher: Vec<Box<dyn Matcher<_, _>>> = vec![
+    let matcher: Vec<Box<dyn Matcher<_>>> = vec![
         Box::new(EvenMatcher.and(ConstMatcher(2))),
         Box::new(OddMatcher.and(ConstMatcher(3))),
     ];
@@ -411,7 +410,7 @@ fn test_ext_insert_and_revert_iter_or() {
 
 #[test]
 fn test_ext_insert_and_revert_iter_and() {
-    let matcher: Vec<Box<dyn Matcher<_, _>>> = vec![
+    let matcher: Vec<Box<dyn Matcher<_>>> = vec![
         Box::new(ConstMatcher(2).or(ConstMatcher(3))),
         Box::new(OddMatcher.or(EvenMatcher)),
     ];

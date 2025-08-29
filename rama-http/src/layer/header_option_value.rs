@@ -81,11 +81,10 @@ where
     }
 }
 
-impl<T, S, State, Body, E> Service<State, Request<Body>> for HeaderOptionValueService<T, S>
+impl<T, S, Body, E> Service<Request<Body>> for HeaderOptionValueService<T, S>
 where
-    S: Service<State, Request<Body>, Error = E>,
+    S: Service<Request<Body>, Error = E>,
     T: Default + Clone + Send + Sync + 'static,
-    State: Clone + Send + Sync + 'static,
     Body: Send + Sync + 'static,
     E: Into<BoxError> + Send + Sync + 'static,
 {
@@ -94,7 +93,7 @@ where
 
     async fn serve(
         &self,
-        mut ctx: Context<State>,
+        mut ctx: Context,
         request: Request<Body>,
     ) -> Result<Self::Response, Self::Error> {
         match request.header_str(&self.header_name) {
@@ -226,12 +225,11 @@ mod test {
                 .body(())
                 .unwrap();
 
-            let inner_service = rama_core::service::service_fn(
-                move |ctx: Context<()>, _req: Request<()>| async move {
+            let inner_service =
+                rama_core::service::service_fn(move |ctx: Context, _req: Request<()>| async move {
                     assert_eq!(expected_output, ctx.contains::<UnitValue>());
                     Ok::<_, std::convert::Infallible>(())
-                },
-            );
+                });
 
             let service = HeaderOptionValueService::<UnitValue, _>::required(
                 inner_service,
@@ -264,12 +262,11 @@ mod test {
                 .body(())
                 .unwrap();
 
-            let inner_service = rama_core::service::service_fn(
-                move |ctx: Context<()>, _req: Request<()>| async move {
+            let inner_service =
+                rama_core::service::service_fn(move |ctx: Context, _req: Request<()>| async move {
                     assert_eq!(expected_output, ctx.contains::<UnitValue>());
                     Ok::<_, std::convert::Infallible>(())
-                },
-            );
+                });
 
             let service = HeaderOptionValueService::<UnitValue, _>::optional(
                 inner_service,
@@ -289,7 +286,7 @@ mod test {
             .unwrap();
 
         let inner_service =
-            rama_core::service::service_fn(async |ctx: Context<()>, _req: Request<()>| {
+            rama_core::service::service_fn(async |ctx: Context, _req: Request<()>| {
                 assert!(!ctx.contains::<UnitValue>());
 
                 Ok::<_, std::convert::Infallible>(())

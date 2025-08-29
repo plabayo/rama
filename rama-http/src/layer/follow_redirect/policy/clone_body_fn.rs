@@ -18,15 +18,15 @@ impl<F> fmt::Debug for CloneBodyFn<F> {
     }
 }
 
-impl<F, S, B, E> Policy<S, B, E> for CloneBodyFn<F>
+impl<F, B, E> Policy<B, E> for CloneBodyFn<F>
 where
     F: FnMut(&B) -> Option<B> + Send + Sync + 'static,
 {
-    fn redirect(&mut self, _: &Context<S>, _: &Attempt<'_>) -> Result<Action, E> {
+    fn redirect(&mut self, _: &Context, _: &Attempt<'_>) -> Result<Action, E> {
         Ok(Action::Follow)
     }
 
-    fn clone_body(&mut self, _: &Context<S>, body: &B) -> Option<B> {
+    fn clone_body(&mut self, _: &Context, body: &B) -> Option<B> {
         (self.f)(body)
     }
 }

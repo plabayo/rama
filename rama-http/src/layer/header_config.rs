@@ -24,7 +24,7 @@
 //! async fn main() {
 //!     let service = HeaderConfigLayer::<Config>::required(HeaderName::from_static("x-proxy-config"))
 //!         .into_layer(WebService::default()
-//!             .get("/", async |ctx: Context<()>| {
+//!             .get("/", async |ctx: Context| {
 //!                 let cfg = ctx.get::<Config>().unwrap();
 //!                 assert_eq!(cfg.s, "E&G");
 //!                 assert_eq!(cfg.n, 1);
@@ -137,11 +137,10 @@ where
     }
 }
 
-impl<T, S, State, Body, E> Service<State, Request<Body>> for HeaderConfigService<T, S>
+impl<T, S, Body, E> Service<Request<Body>> for HeaderConfigService<T, S>
 where
-    S: Service<State, Request<Body>, Error = E>,
+    S: Service<Request<Body>, Error = E>,
     T: DeserializeOwned + Clone + Send + Sync + 'static,
-    State: Clone + Send + Sync + 'static,
     Body: Send + Sync + 'static,
     E: Into<BoxError> + Send + Sync + 'static,
 {
@@ -150,7 +149,7 @@ where
 
     async fn serve(
         &self,
-        mut ctx: Context<State>,
+        mut ctx: Context,
         request: Request<Body>,
     ) -> Result<Self::Response, Self::Error> {
         let config = match extract_header_config::<_, T, _>(&request, &self.header_name) {
@@ -256,7 +255,7 @@ mod test {
             .unwrap();
 
         let inner_service =
-            rama_core::service::service_fn(async |ctx: Context<()>, _req: Request<()>| {
+            rama_core::service::service_fn(async |ctx: Context, _req: Request<()>| {
                 let cfg: &Config = ctx.get().unwrap();
                 assert_eq!(cfg.s, "E&G");
                 assert_eq!(cfg.n, 1);
@@ -284,7 +283,7 @@ mod test {
             .unwrap();
 
         let inner_service =
-            rama_core::service::service_fn(async |ctx: Context<()>, _req: Request<()>| {
+            rama_core::service::service_fn(async |ctx: Context, _req: Request<()>| {
                 let cfg: &Config = ctx.get().unwrap();
                 assert_eq!(cfg.s, "E&G");
                 assert_eq!(cfg.n, 1);
@@ -311,7 +310,7 @@ mod test {
             .unwrap();
 
         let inner_service =
-            rama_core::service::service_fn(async |ctx: Context<()>, _req: Request<()>| {
+            rama_core::service::service_fn(async |ctx: Context, _req: Request<()>| {
                 assert!(ctx.get::<Config>().is_none());
 
                 Ok::<_, std::convert::Infallible>(())

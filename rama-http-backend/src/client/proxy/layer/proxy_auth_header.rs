@@ -56,10 +56,9 @@ impl<S> SetProxyAuthHttpHeaderService<S> {
     }
 }
 
-impl<S, State, Body> Service<State, Request<Body>> for SetProxyAuthHttpHeaderService<S>
+impl<S, Body> Service<Request<Body>> for SetProxyAuthHttpHeaderService<S>
 where
-    S: Service<State, Request<Body>>,
-    State: Clone + Send + Sync + 'static,
+    S: Service<Request<Body>>,
     Body: Send + 'static,
 {
     type Response = S::Response;
@@ -67,7 +66,7 @@ where
 
     fn serve(
         &self,
-        mut ctx: Context<State>,
+        mut ctx: Context,
         mut req: Request<Body>,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
         if let Some(pa) = ctx.get::<ProxyAddress>()

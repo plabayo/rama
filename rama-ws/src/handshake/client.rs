@@ -65,13 +65,13 @@ impl<B: Clone> Clone for WebSocketRequestBuilder<B> {
 /// [`WebSocketRequestBuilder`] inner wrapper type used for a builder,
 /// which includes a service, and thus is there to actually send the request as well and
 /// even follow up.
-pub struct WithService<'a, S, Body, State> {
-    builder: RequestBuilder<'a, S, State, Response<Body>>,
+pub struct WithService<'a, S, Body> {
+    builder: RequestBuilder<'a, S, Response<Body>>,
     config: Option<WebSocketConfig>,
     is_h2: bool,
 }
 
-impl<S: fmt::Debug, Body, State> fmt::Debug for WithService<'_, S, Body, State> {
+impl<S: fmt::Debug, Body> fmt::Debug for WithService<'_, S, Body> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("WithService")
             .field("builder", &self.builder)
@@ -101,13 +101,13 @@ where
     }
 }
 
-fn new_ws_request_builder_from_uri_with_service<'a, S, Body, State, T>(
+fn new_ws_request_builder_from_uri_with_service<'a, S, Body, T>(
     service: &'a S,
     uri: T,
     version: Version,
-) -> RequestBuilder<'a, S, State, Response<Body>>
+) -> RequestBuilder<'a, S, Response<Body>>
 where
-    S: Service<State, Request, Response = Response<Body>, Error: Into<BoxError>>,
+    S: Service<Request, Response = Response<Body>, Error: Into<BoxError>>,
     T: IntoUrl,
 {
     let builder = match version {
@@ -123,12 +123,12 @@ where
     builder.typed_header(headers::SecWebSocketVersion::V13)
 }
 
-fn new_ws_request_builder_from_request<'a, S, Body, State, RequestBody>(
+fn new_ws_request_builder_from_request<'a, S, Body, RequestBody>(
     service: &'a S,
     mut request: Request<RequestBody>,
-) -> RequestBuilder<'a, S, State, Response<Body>>
+) -> RequestBuilder<'a, S, Response<Body>>
 where
-    S: Service<State, Request, Response = Response<Body>, Error: Into<BoxError>>,
+    S: Service<Request, Response = Response<Body>, Error: Into<BoxError>>,
     RequestBody: Into<rama_http::Body>,
 {
     match request.version() {
@@ -530,10 +530,9 @@ impl WebSocketRequestBuilder<request::Builder> {
     }
 }
 
-impl<'a, S, State, Body> WebSocketRequestBuilder<WithService<'a, S, Body, State>>
+impl<'a, S, Body> WebSocketRequestBuilder<WithService<'a, S, Body>>
 where
-    S: Service<State, Request, Response = Response<Body>, Error: Into<BoxError>>,
-    State: Clone + Send + Sync + 'static,
+    S: Service<Request, Response = Response<Body>, Error: Into<BoxError>>,
 {
     /// Create a new `http/1.1` WebSocket [`Request`] builder.
     pub fn new_with_service<T>(service: &'a S, uri: T) -> Self
@@ -758,7 +757,7 @@ where
     /// to [`NegotiatedHandshakeRequest`].
     pub async fn initiate_handshake(
         self,
-        mut ctx: Context<State>,
+        mut ctx: Context,
     ) -> Result<NegotiatedHandshakeRequest<Body>, HandshakeError> {
         let builder = match self.protocols.as_ref() {
             Some(protocols) => self.inner.builder.overwrite_typed_header(protocols),
@@ -804,7 +803,7 @@ where
 
     /// Establish a client [`WebSocket`], consuming this [`WebSocketRequestBuilder`],
     /// by doing the http-handshake, including validation and returning the socket if all is good.
-    pub async fn handshake(self, ctx: Context<State>) -> Result<ClientWebSocket, HandshakeError> {
+    pub async fn handshake(self, ctx: Context) -> Result<ClientWebSocket, HandshakeError> {
         let handshake = self.initiate_handshake(ctx).await?;
         handshake.complete().await
     }
@@ -961,20 +960,17 @@ impl ClientWebSocket {
 }
 
 /// Extends an Http Client with high level features WebSocket features.
-pub trait HttpClientWebSocketExt<Body, State>:
-    private::HttpClientWebSocketExtSealed<Body, State> + Sized + Send + Sync + 'static
+pub trait HttpClientWebSocketExt<Body>:
+    private::HttpClientWebSocketExtSealed<Body> + Sized + Send + Sync + 'static
 {
     /// Create a new [`WebSocketRequestBuilder`]] to be used to establish a WebSocket connection over http/1.1.
-    fn websocket(
-        &self,
-        url: impl IntoUrl,
-    ) -> WebSocketRequestBuilder<WithService<'_, Self, Body, State>>;
+    fn websocket(&self, url: impl IntoUrl) -> WebSocketRequestBuilder<WithService<'_, Self, Body>>;
 
     /// Create a new [`WebSocketRequestBuilder`] to be used to establish a WebSocket connection over h2.
     fn websocket_h2(
         &self,
         url: impl IntoUrl,
-    ) -> WebSocketRequestBuilder<WithService<'_, Self, Body, State>>;
+    ) -> WebSocketRequestBuilder<WithService<'_, Self, Body>>;
 
     /// Create a new [`WebSocketRequestBuilder`] starting from the given request.
     ///
@@ -983,32 +979,28 @@ pub trait HttpClientWebSocketExt<Body, State>:
     fn websocket_with_request<RequestBody: Into<rama_http::Body>>(
         &self,
         req: Request<RequestBody>,
-    ) -> WebSocketRequestBuilder<WithService<'_, Self, Body, State>>;
+    ) -> WebSocketRequestBuilder<WithService<'_, Self, Body>>;
 }
 
-impl<State, S, Body> HttpClientWebSocketExt<Body, State> for S
+impl<S, Body> HttpClientWebSocketExt<Body> for S
 where
-    S: Service<State, Request, Response = Response<Body>, Error: Into<BoxError>>,
-    State: Clone + Send + Sync + 'static,
+    S: Service<Request, Response = Response<Body>, Error: Into<BoxError>>,
 {
-    fn websocket(
-        &self,
-        url: impl IntoUrl,
-    ) -> WebSocketRequestBuilder<WithService<'_, Self, Body, State>> {
+    fn websocket(&self, url: impl IntoUrl) -> WebSocketRequestBuilder<WithService<'_, Self, Body>> {
         WebSocketRequestBuilder::new_with_service(self, url)
     }
 
     fn websocket_h2(
         &self,
         url: impl IntoUrl,
-    ) -> WebSocketRequestBuilder<WithService<'_, Self, Body, State>> {
+    ) -> WebSocketRequestBuilder<WithService<'_, Self, Body>> {
         WebSocketRequestBuilder::new_h2_with_service(self, url)
     }
 
     fn websocket_with_request<RequestBody: Into<rama_http::Body>>(
         &self,
         req: Request<RequestBody>,
-    ) -> WebSocketRequestBuilder<WithService<'_, Self, Body, State>> {
+    ) -> WebSocketRequestBuilder<WithService<'_, Self, Body>> {
         WebSocketRequestBuilder::new_with_service_and_request(self, req)
     }
 }
@@ -1016,10 +1008,10 @@ where
 mod private {
     use super::*;
 
-    pub trait HttpClientWebSocketExtSealed<Body, State> {}
+    pub trait HttpClientWebSocketExtSealed<Body> {}
 
-    impl<State, S, Body> HttpClientWebSocketExtSealed<Body, State> for S where
-        S: Service<State, Request, Response = Response<Body>, Error: Into<BoxError>>
+    impl<S, Body> HttpClientWebSocketExtSealed<Body> for S where
+        S: Service<Request, Response = Response<Body>, Error: Into<BoxError>>
     {
     }
 }

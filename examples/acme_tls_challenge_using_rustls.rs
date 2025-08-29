@@ -217,7 +217,7 @@ impl ResolvesServerCert for ResolvesServerCertAcme {
     }
 }
 
-async fn internal_tcp_service_fn<S>(_ctx: Context<()>, _stream: S) -> Result<(), Infallible> {
+async fn internal_tcp_service_fn<S>(_ctx: Context, _stream: S) -> Result<(), Infallible> {
     Ok(())
 }
 

@@ -179,7 +179,7 @@ fn parse_certificate(
     Ok((cert_chain, priv_key_der))
 }
 
-async fn http_service<S>(_ctx: Context<S>, _request: Request) -> Result<Response, Infallible> {
+async fn http_service(_ctx: Context, _request: Request) -> Result<Response, Infallible> {
     Ok(
         "hello client, you were served by rustls tls terminator proxy issuing a dynamic config"
             .into_response(),

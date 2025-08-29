@@ -22,14 +22,11 @@ define_http_rejection! {
     pub struct MissingHost;
 }
 
-impl<S> FromRequestContextRefPair<S> for Host
-where
-    S: Clone + Send + Sync + 'static,
-{
+impl FromRequestContextRefPair for Host {
     type Rejection = MissingHost;
 
     async fn from_request_context_ref_pair(
-        ctx: &Context<S>,
+        ctx: &Context,
         parts: &Parts,
     ) -> Result<Self, Self::Rejection> {
         Ok(Self(match ctx.get::<RequestContext>() {

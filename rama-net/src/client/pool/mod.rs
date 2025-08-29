@@ -550,21 +550,16 @@ where
     }
 }
 
-impl<State, Request, C, ID> Service<State, Request> for LeasedConnection<C, ID>
+impl<Request, C, ID> Service<Request> for LeasedConnection<C, ID>
 where
     ID: Send + Sync + Debug + 'static,
-    C: Service<State, Request>,
+    C: Service<Request>,
     Request: Send + 'static,
-    State: Send + Sync + 'static,
 {
     type Response = C::Response;
     type Error = C::Error;
 
-    async fn serve(
-        &self,
-        ctx: Context<State>,
-        req: Request,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
         let result = self.as_ref().serve(ctx, req).await;
         if result.is_err() {
             let id = &self.pooled_conn.as_ref().expect("msg").id;
@@ -621,10 +616,10 @@ impl<C, ID: Debug> Debug for LruDropPool<C, ID> {
 /// are not unique and multiple connections can have the same ID. IDs are used
 /// to filter which connections can be used for a specific Request in a way that
 /// is independent of what a Request is.
-pub trait ReqToConnID<State, Request>: Sized + Clone + Send + Sync + 'static {
+pub trait ReqToConnID<Request>: Sized + Clone + Send + Sync + 'static {
     type ID: ConnID;
 
-    fn id(&self, ctx: &Context<State>, request: &Request) -> Result<Self::ID, OpaqueError>;
+    fn id(&self, ctx: &Context, request: &Request) -> Result<Self::ID, OpaqueError>;
 }
 
 /// [`ConnID`] is used to identify a connection in a connection pool. These IDs
@@ -640,14 +635,14 @@ pub trait ConnID: Send + Sync + PartialEq + Clone + Debug + 'static {
     }
 }
 
-impl<State, Request, ID, F> ReqToConnID<State, Request> for F
+impl<Request, ID, F> ReqToConnID<Request> for F
 where
-    F: Fn(&Context<State>, &Request) -> Result<ID, OpaqueError> + Clone + Send + Sync + 'static,
+    F: Fn(&Context, &Request) -> Result<ID, OpaqueError> + Clone + Send + Sync + 'static,
     ID: ConnID,
 {
     type ID = ID;
 
-    fn id(&self, ctx: &Context<State>, request: &Request) -> Result<Self::ID, OpaqueError> {
+    fn id(&self, ctx: &Context, request: &Request) -> Result<Self::ID, OpaqueError> {
         self(ctx, request)
     }
 }
@@ -681,22 +676,17 @@ impl<S, P, R> PooledConnector<S, P, R> {
     );
 }
 
-impl<State, Request, S, P, R> Service<State, Request> for PooledConnector<S, P, R>
+impl<Request, S, P, R> Service<Request> for PooledConnector<S, P, R>
 where
-    S: ConnectorService<State, Request, Connection: Send, Error: Send + 'static>,
-    State: Send + Sync + 'static,
+    S: ConnectorService<Request, Connection: Send, Error: Send + 'static>,
     Request: Send + 'static,
     P: Pool<S::Connection, R::ID>,
-    R: ReqToConnID<State, Request>,
+    R: ReqToConnID<Request>,
 {
-    type Response = EstablishedClientConnection<P::Connection, State, Request>;
+    type Response = EstablishedClientConnection<P::Connection, Request>;
     type Error = BoxError;
 
-    async fn serve(
-        &self,
-        ctx: Context<State>,
-        req: Request,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
         let conn_id = self.req_to_conn_id.id(&ctx, &req)?;
 
         // Try to get connection from pool, if no connection is found, we will have to create a new
@@ -811,19 +801,14 @@ mod tests {
         }
     }
 
-    impl<State, Request> Service<State, Request> for TestService
+    impl<Request> Service<Request> for TestService
     where
-        State: Clone + Send + Sync + 'static,
         Request: Send + 'static,
     {
-        type Response = EstablishedClientConnection<Vec<u32>, State, Request>;
+        type Response = EstablishedClientConnection<Vec<u32>, Request>;
         type Error = Infallible;
 
-        async fn serve(
-            &self,
-            ctx: Context<State>,
-            req: Request,
-        ) -> Result<Self::Response, Self::Error> {
+        async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
             let conn = vec![];
             self.created_connection.fetch_add(1, Ordering::Relaxed);
             Ok(EstablishedClientConnection { ctx, req, conn })
@@ -836,10 +821,10 @@ mod tests {
     /// able to reuse the same connections
     struct StringRequestLengthID;
 
-    impl<State> ReqToConnID<State, String> for StringRequestLengthID {
+    impl ReqToConnID<String> for StringRequestLengthID {
         type ID = usize;
 
-        fn id(&self, _ctx: &Context<State>, req: &String) -> Result<Self::ID, OpaqueError> {
+        fn id(&self, _ctx: &Context, req: &String) -> Result<Self::ID, OpaqueError> {
             Ok(req.chars().count())
         }
     }
@@ -855,7 +840,7 @@ mod tests {
         let svc = PooledConnector::new(
             TestService::default(),
             pool,
-            |_ctx: &Context<()>, _req: &String| Ok(()),
+            |_ctx: &Context, _req: &String| Ok(()),
         );
 
         let iterations = 10;
@@ -953,19 +938,14 @@ mod tests {
         pub created_connection: AtomicI16,
     }
 
-    impl<State, Request> Service<State, Request> for TestConnector
+    impl<Request> Service<Request> for TestConnector
     where
-        State: Clone + Send + Sync + 'static,
         Request: Send + 'static,
     {
-        type Response = EstablishedClientConnection<InnerService, State, Request>;
+        type Response = EstablishedClientConnection<InnerService, Request>;
         type Error = Infallible;
 
-        async fn serve(
-            &self,
-            ctx: Context<State>,
-            req: Request,
-        ) -> Result<Self::Response, Self::Error> {
+        async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
             let conn = InnerService::default();
             self.created_connection.fetch_add(1, Ordering::Relaxed);
             Ok(EstablishedClientConnection { ctx, req, conn })
@@ -977,16 +957,13 @@ mod tests {
         should_error: AtomicBool,
     }
 
-    impl<State> Service<State, bool> for InnerService
-    where
-        State: Clone + Send + Sync + 'static,
-    {
+    impl Service<bool> for InnerService {
         type Response = ();
         type Error = OpaqueError;
 
         async fn serve(
             &self,
-            _ctx: Context<State>,
+            _ctx: Context,
             should_error: bool,
         ) -> Result<Self::Response, Self::Error> {
             // Once this service is broken it will stay in this state, similar to a closed tcp connection
@@ -1088,12 +1065,7 @@ mod tests {
             .unwrap()
             .with_reuse_strategy(strategy);
 
-        let svc =
-            PooledConnector::new(
-                TestService::default(),
-                pool,
-                |_: &Context<_>, _: &()| Ok(()),
-            );
+        let svc = PooledConnector::new(TestService::default(), pool, |_: &Context, _: &()| Ok(()));
 
         // Open two concurrent connections and drop them.
         let mut conns = Vec::new();

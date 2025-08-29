@@ -38,8 +38,8 @@ impl Clone for Limited {
     }
 }
 
-impl<S, B, E> Policy<S, B, E> for Limited {
-    fn redirect(&mut self, _: &Context<S>, _: &Attempt<'_>) -> Result<Action, E> {
+impl<B, E> Policy<B, E> for Limited {
+    fn redirect(&mut self, _: &Context, _: &Attempt<'_>) -> Result<Action, E> {
         if self.remaining > 0 {
             self.remaining -= 1;
             Ok(Action::Follow)
@@ -78,10 +78,10 @@ mod tests {
         _inner_work(&uri, &mut policy, &mut ctx);
     }
 
-    fn _inner_work(uri: &Uri, policy: &mut Limited, ctx: &mut Context<()>) {
+    fn _inner_work(uri: &Uri, policy: &mut Limited, ctx: &mut Context) {
         for _ in 0..2 {
             let mut request = Request::builder().uri(uri.clone()).body(()).unwrap();
-            Policy::<(), (), ()>::on_request(policy, ctx, &mut request);
+            Policy::<(), ()>::on_request(policy, ctx, &mut request);
 
             let attempt = Attempt {
                 status: Default::default(),
@@ -89,14 +89,14 @@ mod tests {
                 previous: uri,
             };
             assert!(
-                Policy::<(), (), ()>::redirect(policy, ctx, &attempt)
+                Policy::<(), ()>::redirect(policy, ctx, &attempt)
                     .unwrap()
                     .is_follow()
             );
         }
 
         let mut request = Request::builder().uri(uri.clone()).body(()).unwrap();
-        Policy::<(), (), ()>::on_request(policy, ctx, &mut request);
+        Policy::<(), ()>::on_request(policy, ctx, &mut request);
 
         let attempt = Attempt {
             status: Default::default(),
@@ -104,7 +104,7 @@ mod tests {
             previous: uri,
         };
         assert!(
-            Policy::<(), (), ()>::redirect(policy, ctx, &attempt)
+            Policy::<(), ()>::redirect(policy, ctx, &attempt)
                 .unwrap()
                 .is_stop()
         );

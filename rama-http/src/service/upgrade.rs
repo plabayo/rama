@@ -25,9 +25,8 @@ impl Upgrade {
     }
 }
 
-impl<State, Body> Service<State, Request<Body>> for Upgrade
+impl<Body> Service<Request<Body>> for Upgrade
 where
-    State: Clone + Send + Sync + 'static,
     Body: Send + 'static,
 {
     type Response = Response;
@@ -35,7 +34,7 @@ where
 
     async fn serve(
         &self,
-        mut ctx: Context<State>,
+        mut ctx: Context,
         req: Request<Body>,
     ) -> Result<Self::Response, Self::Error> {
         let req_ctx: &mut RequestContext = match ctx

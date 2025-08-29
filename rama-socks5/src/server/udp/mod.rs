@@ -40,30 +40,28 @@ mod relay;
 ///
 /// [`Socks5Acceptor`]: crate::server::Socks5Acceptor
 /// [`Command::UdpAssociate`]: crate::proto::Command::UdpAssociate
-pub trait Socks5UdpAssociator<S, State>: Socks5UdpAssociatorSeal<S, State> {}
+pub trait Socks5UdpAssociator<S>: Socks5UdpAssociatorSeal<S> {}
 
-impl<S, State, C> Socks5UdpAssociator<S, State> for C where C: Socks5UdpAssociatorSeal<S, State> {}
+impl<S, C> Socks5UdpAssociator<S> for C where C: Socks5UdpAssociatorSeal<S> {}
 
-pub trait Socks5UdpAssociatorSeal<S, State>: Send + Sync + 'static {
+pub trait Socks5UdpAssociatorSeal<S>: Send + Sync + 'static {
     fn accept_udp_associate(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         stream: S,
         destination: Authority,
     ) -> impl Future<Output = Result<(), Error>> + Send + '_
     where
-        S: Stream + Unpin,
-        State: Clone + Send + Sync + 'static;
+        S: Stream + Unpin;
 }
 
-impl<S, State> Socks5UdpAssociatorSeal<S, State> for ()
+impl<S> Socks5UdpAssociatorSeal<S> for ()
 where
     S: Stream + Unpin,
-    State: Clone + Send + Sync + 'static,
 {
     async fn accept_udp_associate(
         &self,
-        _ctx: Context<State>,
+        _ctx: Context,
         mut stream: S,
         destination: Authority,
     ) -> Result<(), Error> {
@@ -87,13 +85,13 @@ where
 /// [`Default`] [`UdpBinder`] implementation.
 pub struct DefaultUdpBinder;
 
-impl<S: Clone + Send + Sync + 'static> Service<S, Interface> for DefaultUdpBinder {
-    type Response = (UdpSocket, Context<S>);
+impl Service<Interface> for DefaultUdpBinder {
+    type Response = (UdpSocket, Context);
     type Error = BoxError;
 
     async fn serve(
         &self,
-        ctx: Context<S>,
+        ctx: Context,
         interface: Interface,
     ) -> Result<Self::Response, Self::Error> {
         let socket = UdpSocket::bind(interface).await?;
@@ -439,16 +437,15 @@ impl Default for DefaultUdpRelay {
     }
 }
 
-impl<B, I, S, State> Socks5UdpAssociatorSeal<S, State> for UdpRelay<B, I>
+impl<B, I, S> Socks5UdpAssociatorSeal<S> for UdpRelay<B, I>
 where
-    B: SocketService<State, Socket = UdpSocket>,
-    I: UdpPacketProxy<State>,
+    B: SocketService<Socket = UdpSocket>,
+    I: UdpPacketProxy,
     S: Stream + Unpin,
-    State: Clone + Send + Sync + 'static,
 {
     async fn accept_udp_associate(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         mut stream: S,
         destination: Authority,
     ) -> Result<(), Error> {

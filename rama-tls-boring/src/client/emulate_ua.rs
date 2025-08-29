@@ -36,11 +36,10 @@ impl<S> EmulateTlsProfileService<S> {
     );
 }
 
-impl<S, State, Request> Service<State, Request> for EmulateTlsProfileService<S>
+impl<S, Request> Service<Request> for EmulateTlsProfileService<S>
 where
-    State: Clone + Send + Sync + 'static,
-    Request: TryRefIntoTransportContext<State, Error: Into<BoxError>> + Send + 'static,
-    S: Service<State, Request, Error: Into<BoxError>>,
+    Request: TryRefIntoTransportContext<Error: Into<BoxError>> + Send + 'static,
+    S: Service<Request, Error: Into<BoxError>>,
 {
     type Response = S::Response;
 
@@ -48,7 +47,7 @@ where
 
     async fn serve(
         &self,
-        mut ctx: rama_core::Context<State>,
+        mut ctx: rama_core::Context,
         req: Request,
     ) -> Result<Self::Response, Self::Error> {
         let tls_profile = ctx.get::<TlsProfile>().cloned();

@@ -68,16 +68,15 @@ where
     }
 }
 
-impl<T, S, IO> Service<T, IO> for TlsAcceptorService<S>
+impl<S, IO> Service<IO> for TlsAcceptorService<S>
 where
-    T: Send + Sync + 'static,
     IO: Stream + Unpin + 'static,
-    S: Service<T, SslStream<IO>, Error: Into<BoxError>>,
+    S: Service<SslStream<IO>, Error: Into<BoxError>>,
 {
     type Response = S::Response;
     type Error = BoxError;
 
-    async fn serve(&self, mut ctx: Context<T>, stream: IO) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut ctx: Context, stream: IO) -> Result<Self::Response, Self::Error> {
         // allow tls acceptor data to be injected,
         // e.g. useful for TLS environments where some data (such as server auth, think ACME)
         // is updated at runtime, be it infrequent

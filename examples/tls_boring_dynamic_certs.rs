@@ -195,7 +195,7 @@ pub fn second_example_self_signed_auth() -> Result<ServerAuthData, OpaqueError> 
     })
 }
 
-async fn http_service<S>(_ctx: Context<S>, _request: Request) -> Result<Response, Infallible> {
+async fn http_service(_ctx: Context, _request: Request) -> Result<Response, Infallible> {
     Ok(
         "hello client, you were served by boring tls terminator proxy issuing a dynamic certificate"
             .into_response(),

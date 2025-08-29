@@ -13,10 +13,10 @@ pub struct And<A, B> {
 }
 
 impl<A, B> And<A, B> {
-    pub(crate) fn new<S, Bd, E>(a: A, b: B) -> Self
+    pub(crate) fn new<Bd, E>(a: A, b: B) -> Self
     where
-        A: Policy<S, Bd, E>,
-        B: Policy<S, Bd, E>,
+        A: Policy<Bd, E>,
+        B: Policy<Bd, E>,
     {
         Self { a, b }
     }
@@ -48,24 +48,24 @@ where
     }
 }
 
-impl<S, Bd, E, A, B> Policy<S, Bd, E> for And<A, B>
+impl<Bd, E, A, B> Policy<Bd, E> for And<A, B>
 where
-    A: Policy<S, Bd, E>,
-    B: Policy<S, Bd, E>,
+    A: Policy<Bd, E>,
+    B: Policy<Bd, E>,
 {
-    fn redirect(&mut self, ctx: &Context<S>, attempt: &Attempt<'_>) -> Result<Action, E> {
+    fn redirect(&mut self, ctx: &Context, attempt: &Attempt<'_>) -> Result<Action, E> {
         match self.a.redirect(ctx, attempt) {
             Ok(Action::Follow) => self.b.redirect(ctx, attempt),
             a => a,
         }
     }
 
-    fn on_request(&mut self, ctx: &mut Context<S>, request: &mut Request<Bd>) {
+    fn on_request(&mut self, ctx: &mut Context, request: &mut Request<Bd>) {
         self.a.on_request(ctx, request);
         self.b.on_request(ctx, request);
     }
 
-    fn clone_body(&mut self, ctx: &Context<S>, body: &Bd) -> Option<Bd> {
+    fn clone_body(&mut self, ctx: &Context, body: &Bd) -> Option<Bd> {
         self.a
             .clone_body(ctx, body)
             .or_else(|| self.b.clone_body(ctx, body))
@@ -91,11 +91,11 @@ mod tests {
         }
     }
 
-    impl<S, B, E, P> Policy<S, B, E> for Taint<P>
+    impl<B, E, P> Policy<B, E> for Taint<P>
     where
-        P: Policy<S, B, E>,
+        P: Policy<B, E>,
     {
-        fn redirect(&mut self, ctx: &Context<S>, attempt: &Attempt<'_>) -> Result<Action, E> {
+        fn redirect(&mut self, ctx: &Context, attempt: &Attempt<'_>) -> Result<Action, E> {
             self.used = true;
             self.policy.redirect(ctx, attempt)
         }
@@ -113,9 +113,9 @@ mod tests {
 
         let a = Taint::new(Action::Follow);
         let b = Taint::new(Action::Follow);
-        let mut policy = And::new::<(), (), ()>(a, b);
+        let mut policy = And::new::<(), ()>(a, b);
         assert!(
-            Policy::<(), (), ()>::redirect(&mut policy, &ctx, &attempt)
+            Policy::<(), ()>::redirect(&mut policy, &ctx, &attempt)
                 .unwrap()
                 .is_follow()
         );
@@ -124,9 +124,9 @@ mod tests {
 
         let a = Taint::new(Action::Stop);
         let b = Taint::new(Action::Follow);
-        let mut policy = And::new::<(), (), ()>(a, b);
+        let mut policy = And::new::<(), ()>(a, b);
         assert!(
-            Policy::<(), (), ()>::redirect(&mut policy, &ctx, &attempt)
+            Policy::<(), ()>::redirect(&mut policy, &ctx, &attempt)
                 .unwrap()
                 .is_stop()
         );
@@ -135,9 +135,9 @@ mod tests {
 
         let a = Taint::new(Action::Follow);
         let b = Taint::new(Action::Stop);
-        let mut policy = And::new::<(), (), ()>(a, b);
+        let mut policy = And::new::<(), ()>(a, b);
         assert!(
-            Policy::<(), (), ()>::redirect(&mut policy, &ctx, &attempt)
+            Policy::<(), ()>::redirect(&mut policy, &ctx, &attempt)
                 .unwrap()
                 .is_stop()
         );
@@ -146,9 +146,9 @@ mod tests {
 
         let a = Taint::new(Action::Stop);
         let b = Taint::new(Action::Stop);
-        let mut policy = And::new::<(), (), ()>(a, b);
+        let mut policy = And::new::<(), ()>(a, b);
         assert!(
-            Policy::<(), (), ()>::redirect(&mut policy, &ctx, &attempt)
+            Policy::<(), ()>::redirect(&mut policy, &ctx, &attempt)
                 .unwrap()
                 .is_stop()
         );

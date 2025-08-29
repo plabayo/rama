@@ -102,10 +102,9 @@ impl<B> ConcurrentPolicy<B, ConcurrentCounter> {
     }
 }
 
-impl<B, C, State, Request> Policy<State, Request> for ConcurrentPolicy<B, C>
+impl<B, C, Request> Policy<Request> for ConcurrentPolicy<B, C>
 where
     B: Backoff,
-    State: Clone + Send + Sync + 'static,
     Request: Send + 'static,
     C: ConcurrentTracker,
 {
@@ -114,9 +113,9 @@ where
 
     async fn check(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         request: Request,
-    ) -> PolicyResult<State, Request, Self::Guard, Self::Error> {
+    ) -> PolicyResult<Request, Self::Guard, Self::Error> {
         let tracker_err = match self.tracker.try_access() {
             Ok(guard) => {
                 return PolicyResult {
@@ -220,14 +219,14 @@ impl Drop for ConcurrentCounterGuard {
 mod tests {
     use super::*;
 
-    fn assert_ready<S, R, G, E>(result: PolicyResult<S, R, G, E>) -> G {
+    fn assert_ready<R, G, E>(result: PolicyResult<R, G, E>) -> G {
         match result.output {
             PolicyOutput::Ready(guard) => guard,
             _ => panic!("unexpected output, expected ready"),
         }
     }
 
-    fn assert_abort<S, R, G, E>(result: &PolicyResult<S, R, G, E>) {
+    fn assert_abort<R, G, E>(result: &PolicyResult<R, G, E>) {
         match result.output {
             PolicyOutput::Abort(_) => (),
             _ => panic!("unexpected output, expected abort"),

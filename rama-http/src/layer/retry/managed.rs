@@ -32,21 +32,20 @@ pub struct ManagedPolicy<B = Undefined, C = Undefined, R = Undefined> {
     retry: R,
 }
 
-impl<B, C, R, State, Response, Error> Policy<State, Response, Error> for ManagedPolicy<B, C, R>
+impl<B, C, R, Response, Error> Policy<Response, Error> for ManagedPolicy<B, C, R>
 where
     B: Backoff,
-    C: CloneInput<State>,
-    R: RetryRule<State, Response, Error>,
-    State: Clone + Send + Sync + 'static,
+    C: CloneInput,
+    R: RetryRule<Response, Error>,
     Response: Send + 'static,
     Error: Send + 'static,
 {
     async fn retry(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         req: Request<RetryBody>,
         result: Result<Response, Error>,
-    ) -> PolicyResult<State, Response, Error> {
+    ) -> PolicyResult<Response, Error> {
         if ctx.get::<DoNotRetry>().is_some() {
             // Custom extension to signal that the request should not be retried.
             return PolicyResult::Abort(result);
@@ -63,9 +62,9 @@ where
 
     fn clone_input(
         &self,
-        ctx: &Context<State>,
+        ctx: &Context,
         req: &Request<RetryBody>,
-    ) -> Option<(Context<State>, Request<RetryBody>)> {
+    ) -> Option<(Context, Request<RetryBody>)> {
         if ctx.get::<DoNotRetry>().is_some() {
             None
         } else {
@@ -162,26 +161,25 @@ impl<B, C> ManagedPolicy<B, C, Undefined> {
 
 /// A trait that is used to umbrella-cover all possible
 /// implementation kinds for the retry rule functionality.
-pub trait RetryRule<S, R, E>: private::Sealed<(S, R, E)> + Send + Sync + 'static {
+pub trait RetryRule<R, E>: private::Sealed<(R, E)> + Send + Sync + 'static {
     /// Check if the given result should be retried.
     fn retry(
         &self,
-        ctx: Context<S>,
+        ctx: Context,
         result: Result<R, E>,
-    ) -> impl Future<Output = (Context<S>, Result<R, E>, bool)> + Send + '_;
+    ) -> impl Future<Output = (Context, Result<R, E>, bool)> + Send + '_;
 }
 
-impl<S, Body, E> RetryRule<S, Response<Body>, E> for Undefined
+impl<Body, E> RetryRule<Response<Body>, E> for Undefined
 where
-    S: Clone + Send + Sync + 'static,
     E: std::fmt::Debug + Send + Sync + 'static,
     Body: Send + 'static,
 {
     async fn retry(
         &self,
-        ctx: Context<S>,
+        ctx: Context,
         result: Result<Response<Body>, E>,
-    ) -> (Context<S>, Result<Response<Body>, E>, bool) {
+    ) -> (Context, Result<Response<Body>, E>, bool) {
         match &result {
             Ok(response) => {
                 let status = response.status();
@@ -203,26 +201,21 @@ where
     }
 }
 
-impl<F, Fut, S, R, E> RetryRule<S, R, E> for F
+impl<F, Fut, R, E> RetryRule<R, E> for F
 where
-    F: Fn(Context<S>, Result<R, E>) -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = (Context<S>, Result<R, E>, bool)> + Send + 'static,
-    S: Clone + Send + Sync + 'static,
+    F: Fn(Context, Result<R, E>) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = (Context, Result<R, E>, bool)> + Send + 'static,
     R: Send + 'static,
     E: Send + Sync + 'static,
 {
-    async fn retry(
-        &self,
-        ctx: Context<S>,
-        result: Result<R, E>,
-    ) -> (Context<S>, Result<R, E>, bool) {
+    async fn retry(&self, ctx: Context, result: Result<R, E>) -> (Context, Result<R, E>, bool) {
         self(ctx, result).await
     }
 }
 
 /// A trait that is used to umbrella-cover all possible
 /// implementation kinds for the cloning functionality.
-pub trait CloneInput<S>: private::Sealed<(S,)> + Send + Sync + 'static {
+pub trait CloneInput: private::Sealed<()> + Send + Sync + 'static {
     /// Clone the input request if necessary.
     ///
     /// See [`Policy::clone_input`] for more details.
@@ -230,33 +223,33 @@ pub trait CloneInput<S>: private::Sealed<(S,)> + Send + Sync + 'static {
     /// [`Policy::clone_input`]: super::Policy::clone_input
     fn clone_input(
         &self,
-        ctx: &Context<S>,
+        ctx: &Context,
         req: &Request<RetryBody>,
-    ) -> Option<(Context<S>, Request<RetryBody>)>;
+    ) -> Option<(Context, Request<RetryBody>)>;
 }
 
-impl<S: Clone> CloneInput<S> for Undefined {
+impl CloneInput for Undefined {
     fn clone_input(
         &self,
-        ctx: &Context<S>,
+        ctx: &Context,
         req: &Request<RetryBody>,
-    ) -> Option<(Context<S>, Request<RetryBody>)> {
+    ) -> Option<(Context, Request<RetryBody>)> {
         Some((ctx.clone(), req.clone()))
     }
 }
 
-impl<F, S> CloneInput<S> for F
+impl<F> CloneInput for F
 where
-    F: Fn(&Context<S>, &Request<RetryBody>) -> Option<(Context<S>, Request<RetryBody>)>
+    F: Fn(&Context, &Request<RetryBody>) -> Option<(Context, Request<RetryBody>)>
         + Send
         + Sync
         + 'static,
 {
     fn clone_input(
         &self,
-        ctx: &Context<S>,
+        ctx: &Context,
         req: &Request<RetryBody>,
-    ) -> Option<(Context<S>, Request<RetryBody>)> {
+    ) -> Option<(Context, Request<RetryBody>)> {
         self(ctx, req)
     }
 }
@@ -288,17 +281,17 @@ mod private {
     pub trait Sealed<S> {}
 
     impl<S> Sealed<S> for Undefined {}
-    impl<F, S> Sealed<(S,)> for F where
-        F: Fn(&Context<S>, &Request<RetryBody>) -> Option<(Context<S>, Request<RetryBody>)>
+    impl<F> Sealed<()> for F where
+        F: Fn(&Context, &Request<RetryBody>) -> Option<(Context, Request<RetryBody>)>
             + Send
             + Sync
             + 'static
     {
     }
-    impl<F, Fut, S, R, E> Sealed<(S, R, E)> for F
+    impl<F, Fut, R, E> Sealed<(R, E)> for F
     where
-        F: Fn(Context<S>, Result<R, E>) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = (Context<S>, Result<R, E>, bool)> + Send + 'static,
+        F: Fn(Context, Result<R, E>) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = (Context, Result<R, E>, bool)> + Send + 'static,
     {
     }
 }
@@ -311,26 +304,26 @@ mod tests {
     use std::time::Duration;
 
     fn assert_clone_input_none(
-        ctx: &Context<()>,
+        ctx: &Context,
         req: &Request<RetryBody>,
-        policy: &impl Policy<(), Response, ()>,
+        policy: &impl Policy<Response, ()>,
     ) {
         assert!(policy.clone_input(ctx, req).is_none());
     }
 
     fn assert_clone_input_some(
-        ctx: &Context<()>,
+        ctx: &Context,
         req: &Request<RetryBody>,
-        policy: &impl Policy<(), Response, ()>,
+        policy: &impl Policy<Response, ()>,
     ) {
         assert!(policy.clone_input(ctx, req).is_some());
     }
 
     async fn assert_retry(
-        ctx: Context<()>,
+        ctx: Context,
         req: Request<RetryBody>,
         result: Result<Response, ()>,
-        policy: &impl Policy<(), Response, ()>,
+        policy: &impl Policy<Response, ()>,
     ) {
         match policy.retry(ctx, req, result).await {
             PolicyResult::Retry { .. } => (),
@@ -339,10 +332,10 @@ mod tests {
     }
 
     async fn assert_abort(
-        ctx: Context<()>,
+        ctx: Context,
         req: Request<RetryBody>,
         result: Result<Response, ()>,
-        policy: &impl Policy<(), Response, ()>,
+        policy: &impl Policy<Response, ()>,
     ) {
         match policy.retry(ctx, req, result).await {
             PolicyResult::Retry { .. } => panic!("expected abort"),
@@ -429,10 +422,7 @@ mod tests {
             .body(RetryBody::empty())
             .unwrap();
 
-        fn clone_fn<S>(
-            _: &Context<S>,
-            _: &Request<RetryBody>,
-        ) -> Option<(Context<S>, Request<RetryBody>)> {
+        fn clone_fn(_: &Context, _: &Request<RetryBody>) -> Option<(Context, Request<RetryBody>)> {
             None
         }
 
@@ -458,10 +448,10 @@ mod tests {
             .body(RetryBody::empty())
             .unwrap();
 
-        async fn retry_fn<S, R, E>(
-            ctx: Context<S>,
+        async fn retry_fn<R, E>(
+            ctx: Context,
             result: Result<R, E>,
-        ) -> (Context<S>, Result<R, E>, bool) {
+        ) -> (Context, Result<R, E>, bool) {
             match result {
                 Ok(_) => (ctx, result, false),
                 Err(_) => (ctx, result, true),
@@ -499,17 +489,14 @@ mod tests {
             .body(RetryBody::empty())
             .unwrap();
 
-        fn clone_fn<S>(
-            _: &Context<S>,
-            _: &Request<RetryBody>,
-        ) -> Option<(Context<S>, Request<RetryBody>)> {
+        fn clone_fn(_: &Context, _: &Request<RetryBody>) -> Option<(Context, Request<RetryBody>)> {
             None
         }
 
-        async fn retry_fn<S, R, E>(
-            ctx: Context<S>,
+        async fn retry_fn<R, E>(
+            ctx: Context,
             result: Result<R, E>,
-        ) -> (Context<S>, Result<R, E>, bool) {
+        ) -> (Context, Result<R, E>, bool) {
             match result {
                 Ok(_) => (ctx, result, false),
                 Err(_) => (ctx, result, true),

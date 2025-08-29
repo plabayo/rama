@@ -145,11 +145,9 @@ impl<S, F> MapResponseBody<S, F> {
     define_inner_service_accessors!();
 }
 
-impl<F, S, State, ReqBody, ResBody, NewResBody> Service<State, Request<ReqBody>>
-    for MapResponseBody<S, F>
+impl<F, S, ReqBody, ResBody, NewResBody> Service<Request<ReqBody>> for MapResponseBody<S, F>
 where
-    S: Service<State, Request<ReqBody>, Response = Response<ResBody>>,
-    State: Clone + Send + Sync + 'static,
+    S: Service<Request<ReqBody>, Response = Response<ResBody>>,
     ReqBody: Send + 'static,
     ResBody: Send + Sync + 'static,
     NewResBody: Send + Sync + 'static,
@@ -160,7 +158,7 @@ where
 
     async fn serve(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         req: Request<ReqBody>,
     ) -> Result<Self::Response, Self::Error> {
         let res = self.inner.serve(ctx, req).await?;

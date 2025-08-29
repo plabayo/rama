@@ -84,9 +84,9 @@
 //! # let http_client = service_fn(async |_: Request| Ok::<_, Infallible>(Response::new(Body::empty())));
 //! let policy = policy::Limited::new(10) // Set the maximum number of redirections to 10.
 //!     // Return an error when the limit was reached.
-//!     .or::<(), _, (), _>(policy::redirect_fn(|_| Err(MyError::TooManyRedirects)))
+//!     .or::<_, (), _>(policy::redirect_fn(|_| Err(MyError::TooManyRedirects)))
 //!     // Do not follow cross-origin redirections, and return the redirection responses as-is.
-//!     .and::<(), _, (), _>(policy::SameOrigin::new());
+//!     .and::<_, (), _>(policy::SameOrigin::new());
 //!
 //! let client = (
 //!     FollowRedirectLayer::with_policy(policy),
@@ -224,20 +224,19 @@ impl<S, P> FollowRedirect<S, P> {
     define_inner_service_accessors!();
 }
 
-impl<State, ReqBody, ResBody, S, P> Service<State, Request<ReqBody>> for FollowRedirect<S, P>
+impl<ReqBody, ResBody, S, P> Service<Request<ReqBody>> for FollowRedirect<S, P>
 where
-    State: Clone + Send + Sync + 'static,
-    S: Service<State, Request<ReqBody>, Response = Response<ResBody>>,
+    S: Service<Request<ReqBody>, Response = Response<ResBody>>,
     ReqBody: Body + Default + Send + 'static,
     ResBody: Send + 'static,
-    P: Policy<State, ReqBody, S::Error> + Clone,
+    P: Policy<ReqBody, S::Error> + Clone,
 {
     type Response = Response<ResBody>;
     type Error = S::Error;
 
     fn serve(
         &self,
-        mut ctx: Context<State>,
+        mut ctx: Context,
         mut req: Request<ReqBody>,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> {
         let mut method = req.method().clone();
@@ -357,9 +356,9 @@ where
         }
     }
 
-    fn try_clone_from<S, P, E>(&mut self, ctx: &Context<S>, policy: &mut P, body: &B)
+    fn try_clone_from<P, E>(&mut self, ctx: &Context, policy: &mut P, body: &B)
     where
-        P: Policy<S, B, E>,
+        P: Policy<B, E>,
     {
         match self {
             Self::Some(_) | Self::Empty => {}
@@ -372,9 +371,9 @@ where
     }
 }
 
-fn clone_body<S, P, B, E>(ctx: &Context<S>, policy: &mut P, body: &B) -> Option<B>
+fn clone_body<P, B, E>(ctx: &Context, policy: &mut P, body: &B) -> Option<B>
 where
-    P: Policy<S, B, E>,
+    P: Policy<B, E>,
     B: Body + Default,
 {
     if body.size_hint().exact() == Some(0) {
@@ -447,7 +446,7 @@ mod tests {
 
     /// A server with an endpoint `GET /{n}` which redirects to `/{n-1}` unless `n` equals zero,
     /// returning `n` as the response body.
-    async fn handle<S, B>(_ctx: Context<S>, req: Request<B>) -> Result<Response<u64>, Infallible> {
+    async fn handle<B>(_ctx: Context, req: Request<B>) -> Result<Response<u64>, Infallible> {
         let n: u64 = req.uri().path()[1..].parse().unwrap();
         let mut res = Response::builder();
         if n > 0 {

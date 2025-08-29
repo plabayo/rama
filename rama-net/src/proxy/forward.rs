@@ -24,9 +24,8 @@ impl StreamForwardService {
     }
 }
 
-impl<State, S, T> Service<State, ProxyRequest<S, T>> for StreamForwardService
+impl<S, T> Service<ProxyRequest<S, T>> for StreamForwardService
 where
-    State: Clone + Send + Sync + 'static,
     S: Stream + Unpin,
     T: Stream + Unpin,
 {
@@ -35,7 +34,7 @@ where
 
     async fn serve(
         &self,
-        _ctx: Context<State>,
+        _ctx: Context,
         ProxyRequest {
             mut source,
             mut target,

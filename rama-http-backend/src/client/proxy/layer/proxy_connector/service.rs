@@ -116,22 +116,15 @@ impl<S> HttpProxyConnector<S> {
     define_inner_service_accessors!();
 }
 
-impl<S, State, Request> Service<State, Request> for HttpProxyConnector<S>
+impl<S, Request> Service<Request> for HttpProxyConnector<S>
 where
-    S: ConnectorService<State, Request, Connection: Stream + Unpin, Error: Into<BoxError>>,
-    State: Clone + Send + Sync + 'static,
-    Request:
-        TryRefIntoTransportContext<State, Error: Into<BoxError> + Send + 'static> + Send + 'static,
+    S: ConnectorService<Request, Connection: Stream + Unpin, Error: Into<BoxError>>,
+    Request: TryRefIntoTransportContext<Error: Into<BoxError> + Send + 'static> + Send + 'static,
 {
-    type Response =
-        EstablishedClientConnection<MaybeHttpProxiedConnection<S::Connection>, State, Request>;
+    type Response = EstablishedClientConnection<MaybeHttpProxiedConnection<S::Connection>, Request>;
     type Error = BoxError;
 
-    async fn serve(
-        &self,
-        mut ctx: Context<State>,
-        req: Request,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
         let address = ctx.get::<ProxyAddress>().cloned();
         if !address
             .as_ref()

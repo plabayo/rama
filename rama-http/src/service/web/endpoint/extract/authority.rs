@@ -22,14 +22,11 @@ define_http_rejection! {
     pub struct MissingAuthority;
 }
 
-impl<S> FromRequestContextRefPair<S> for Authority
-where
-    S: Clone + Send + Sync + 'static,
-{
+impl FromRequestContextRefPair for Authority {
     type Rejection = MissingAuthority;
 
     async fn from_request_context_ref_pair(
-        ctx: &Context<S>,
+        ctx: &Context,
         parts: &Parts,
     ) -> Result<Self, Self::Rejection> {
         Ok(Self(match ctx.get::<RequestContext>() {

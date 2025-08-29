@@ -163,10 +163,9 @@ impl<S> NormalizePath<S> {
     define_inner_service_accessors!();
 }
 
-impl<S, State, ReqBody, ResBody> Service<State, Request<ReqBody>> for NormalizePath<S>
+impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for NormalizePath<S>
 where
-    S: Service<State, Request<ReqBody>, Response = Response<ResBody>>,
-    State: Clone + Send + Sync + 'static,
+    S: Service<Request<ReqBody>, Response = Response<ResBody>>,
     ReqBody: Send + 'static,
     ResBody: Send + 'static,
 {
@@ -175,7 +174,7 @@ where
 
     fn serve(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         mut req: Request<ReqBody>,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
         match self.mode {
@@ -348,7 +347,7 @@ mod tests {
     #[tokio::test]
     async fn append_works() {
         async fn handle(
-            _ctx: Context<()>,
+            _ctx: Context,
             request: Request<()>,
         ) -> Result<Response<String>, Infallible> {
             Ok(Response::new(request.uri().to_string()))

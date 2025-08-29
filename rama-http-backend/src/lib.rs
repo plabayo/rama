@@ -92,7 +92,7 @@ mod tests {
         assert!(duration < Duration::from_millis(200));
     }
 
-    async fn server_svc_fn(_ctx: Context<()>, _req: Request) -> Result<Response, Infallible> {
+    async fn server_svc_fn(_ctx: Context, _req: Request) -> Result<Response, Infallible> {
         sleep(Duration::from_millis(100)).await;
         Ok(Response::new(Body::from("a random response body")))
     }

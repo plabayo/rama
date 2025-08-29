@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 /// A [`Service`] that produces rama services,
 /// to serve requests with, be it transport layer requests or application layer requests.
-pub trait Service<S, Request>: Sized + Send + Sync + 'static {
+pub trait Service<Request>: Sized + Send + Sync + 'static {
     /// The type of response returned by the service.
     type Response: Send + 'static;
 
@@ -20,19 +20,19 @@ pub trait Service<S, Request>: Sized + Send + Sync + 'static {
     /// using the given context.
     fn serve(
         &self,
-        ctx: Context<S>,
+        ctx: Context,
         req: Request,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_;
 
     /// Box this service to allow for dynamic dispatch.
-    fn boxed(self) -> BoxService<S, Request, Self::Response, Self::Error> {
+    fn boxed(self) -> BoxService<Request, Self::Response, Self::Error> {
         BoxService::new(self)
     }
 }
 
-impl<S, State, Request> Service<State, Request> for std::sync::Arc<S>
+impl<S, Request> Service<Request> for std::sync::Arc<S>
 where
-    S: Service<State, Request>,
+    S: Service<Request>,
 {
     type Response = S::Response;
     type Error = S::Error;
@@ -40,16 +40,16 @@ where
     #[inline]
     fn serve(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         req: Request,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
         self.as_ref().serve(ctx, req)
     }
 }
 
-impl<S, State, Request> Service<State, Request> for &'static S
+impl<S, Request> Service<Request> for &'static S
 where
-    S: Service<State, Request>,
+    S: Service<Request>,
 {
     type Response = S::Response;
     type Error = S::Error;
@@ -57,16 +57,16 @@ where
     #[inline]
     fn serve(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         req: Request,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
         (**self).serve(ctx, req)
     }
 }
 
-impl<S, State, Request> Service<State, Request> for Box<S>
+impl<S, Request> Service<Request> for Box<S>
 where
-    S: Service<State, Request>,
+    S: Service<Request>,
 {
     type Response = S::Response;
     type Error = S::Error;
@@ -74,7 +74,7 @@ where
     #[inline]
     fn serve(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         req: Request,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
         self.as_ref().serve(ctx, req)
@@ -85,28 +85,28 @@ where
 /// implemented according to the pioneers of this Design Pattern
 /// found at <https://rust-lang.github.io/async-fundamentals-initiative/evaluation/case-studies/builder-provider-api.html#dynamic-dispatch-behind-the-api>
 /// and widely published at <https://blog.rust-lang.org/inside-rust/2023/05/03/stabilizing-async-fn-in-trait.html>.
-trait DynService<S, Request> {
+trait DynService<Request> {
     type Response;
     type Error;
 
     #[allow(clippy::type_complexity)]
     fn serve_box(
         &self,
-        ctx: Context<S>,
+        ctx: Context,
         req: Request,
     ) -> Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send + '_>>;
 }
 
-impl<S, Request, T> DynService<S, Request> for T
+impl<Request, T> DynService<Request> for T
 where
-    T: Service<S, Request>,
+    T: Service<Request>,
 {
     type Response = T::Response;
     type Error = T::Error;
 
     fn serve_box(
         &self,
-        ctx: Context<S>,
+        ctx: Context,
         req: Request,
     ) -> Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send + '_>> {
         Box::pin(self.serve(ctx, req))
@@ -115,12 +115,11 @@ where
 
 /// A boxed [`Service`], to serve requests with,
 /// for where you require dynamic dispatch.
-pub struct BoxService<S, Request, Response, Error> {
-    inner:
-        Arc<dyn DynService<S, Request, Response = Response, Error = Error> + Send + Sync + 'static>,
+pub struct BoxService<Request, Response, Error> {
+    inner: Arc<dyn DynService<Request, Response = Response, Error = Error> + Send + Sync + 'static>,
 }
 
-impl<S, Request, Response, Error> Clone for BoxService<S, Request, Response, Error> {
+impl<Request, Response, Error> Clone for BoxService<Request, Response, Error> {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
@@ -128,12 +127,12 @@ impl<S, Request, Response, Error> Clone for BoxService<S, Request, Response, Err
     }
 }
 
-impl<S, Request, Response, Error> BoxService<S, Request, Response, Error> {
+impl<Request, Response, Error> BoxService<Request, Response, Error> {
     /// Create a new [`BoxService`] from the given service.
     #[inline]
     pub fn new<T>(service: T) -> Self
     where
-        T: Service<S, Request, Response = Response, Error = Error>,
+        T: Service<Request, Response = Response, Error = Error>,
     {
         Self {
             inner: Arc::new(service),
@@ -141,15 +140,14 @@ impl<S, Request, Response, Error> BoxService<S, Request, Response, Error> {
     }
 }
 
-impl<S, Request, Response, Error> std::fmt::Debug for BoxService<S, Request, Response, Error> {
+impl<Request, Response, Error> std::fmt::Debug for BoxService<Request, Response, Error> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("BoxService").finish()
     }
 }
 
-impl<S, Request, Response, Error> Service<S, Request> for BoxService<S, Request, Response, Error>
+impl<Request, Response, Error> Service<Request> for BoxService<Request, Response, Error>
 where
-    S: 'static,
     Request: 'static,
     Response: Send + 'static,
     Error: Send + 'static,
@@ -160,7 +158,7 @@ where
     #[inline]
     fn serve(
         &self,
-        ctx: Context<S>,
+        ctx: Context,
         req: Request,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
         self.inner.serve_box(ctx, req)
@@ -174,19 +172,19 @@ where
 
 macro_rules! impl_service_either {
     ($id:ident, $($param:ident),+ $(,)?) => {
-        impl<$($param),+, State, Request, Response> Service<State, Request> for crate::combinators::$id<$($param),+>
+        impl<$($param),+, Request, Response> Service<Request> for crate::combinators::$id<$($param),+>
         where
             $(
-                $param: Service<State, Request, Response = Response, Error: Into<BoxError>>,
+                $param: Service<Request, Response = Response, Error: Into<BoxError>>,
             )+
             Request: Send + 'static,
-            State: Clone + Send + Sync + 'static,
+
             Response: Send + 'static,
         {
             type Response = Response;
             type Error = BoxError;
 
-            async fn serve(&self, ctx: Context<State>, req: Request) -> Result<Self::Response, Self::Error> {
+            async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
                 match self {
                     $(
                         crate::combinators::$id::$param(s) => s.serve(ctx, req).await.map_err(Into::into),
@@ -250,9 +248,8 @@ impl<R, E: fmt::Debug> fmt::Debug for RejectService<R, E> {
     }
 }
 
-impl<S, Request, Response, Error> Service<S, Request> for RejectService<Response, Error>
+impl<Request, Response, Error> Service<Request> for RejectService<Response, Error>
 where
-    S: 'static,
     Request: 'static,
     Response: Send + 'static,
     Error: Clone + Send + Sync + 'static,
@@ -263,7 +260,7 @@ where
     #[inline]
     fn serve(
         &self,
-        _ctx: Context<S>,
+        _ctx: Context,
         _req: Request,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
         let error = self.error.clone();
@@ -279,15 +276,11 @@ mod tests {
     #[derive(Debug)]
     struct AddSvc(usize);
 
-    impl Service<(), usize> for AddSvc {
+    impl Service<usize> for AddSvc {
         type Response = usize;
         type Error = Infallible;
 
-        async fn serve(
-            &self,
-            _ctx: Context<()>,
-            req: usize,
-        ) -> Result<Self::Response, Self::Error> {
+        async fn serve(&self, _ctx: Context, req: usize) -> Result<Self::Response, Self::Error> {
             Ok(self.0 + req)
         }
     }
@@ -295,15 +288,11 @@ mod tests {
     #[derive(Debug)]
     struct MulSvc(usize);
 
-    impl Service<(), usize> for MulSvc {
+    impl Service<usize> for MulSvc {
         type Response = usize;
         type Error = Infallible;
 
-        async fn serve(
-            &self,
-            _ctx: Context<()>,
-            req: usize,
-        ) -> Result<Self::Response, Self::Error> {
+        async fn serve(&self, _ctx: Context, req: usize) -> Result<Self::Response, Self::Error> {
             Ok(self.0 * req)
         }
     }
@@ -314,7 +303,7 @@ mod tests {
 
         assert_send::<AddSvc>();
         assert_send::<MulSvc>();
-        assert_send::<BoxService<(), (), (), ()>>();
+        assert_send::<BoxService<(), (), ()>>();
         assert_send::<RejectService>();
     }
 
@@ -324,7 +313,7 @@ mod tests {
 
         assert_sync::<AddSvc>();
         assert_sync::<MulSvc>();
-        assert_sync::<BoxService<(), (), (), ()>>();
+        assert_sync::<BoxService<(), (), ()>>();
         assert_sync::<RejectService>();
     }
 

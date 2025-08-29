@@ -14,21 +14,20 @@ pub trait HttpService<ReqBody>: sealed::Sealed<ReqBody> {
     ) -> impl Future<Output = Result<Response, Infallible>> + Send + 'static;
 }
 
-pub struct RamaHttpService<S, State> {
+pub struct RamaHttpService<S> {
     svc: S,
-    ctx: Context<State>,
+    ctx: Context,
 }
 
-impl<S, State> RamaHttpService<S, State> {
-    pub fn new(ctx: Context<State>, svc: S) -> Self {
+impl<S> RamaHttpService<S> {
+    pub fn new(ctx: Context, svc: S) -> Self {
         Self { svc, ctx }
     }
 }
 
-impl<S, State> fmt::Debug for RamaHttpService<S, State>
+impl<S> fmt::Debug for RamaHttpService<S>
 where
     S: fmt::Debug,
-    State: fmt::Debug,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("RamaHttpService")
@@ -38,10 +37,9 @@ where
     }
 }
 
-impl<S, State> Clone for RamaHttpService<S, State>
+impl<S> Clone for RamaHttpService<S>
 where
     S: Clone,
-    State: Clone,
 {
     fn clone(&self) -> Self {
         Self {
@@ -51,10 +49,9 @@ where
     }
 }
 
-impl<S, State, ReqBody, R> HttpService<ReqBody> for RamaHttpService<S, State>
+impl<S, ReqBody, R> HttpService<ReqBody> for RamaHttpService<S>
 where
-    S: Service<State, Request, Response = R, Error = Infallible> + Clone,
-    State: Clone + Send + Sync + 'static,
+    S: Service<Request, Response = R, Error = Infallible> + Clone,
     ReqBody: rama_http_types::dep::http_body::Body<Data = Bytes, Error: Into<BoxError>>
         + Send
         + Sync
@@ -111,10 +108,9 @@ mod sealed {
 
     pub trait Sealed<T>: Send + Sync + 'static {}
 
-    impl<S, State, ReqBody, R> Sealed<ReqBody> for RamaHttpService<S, State>
+    impl<S, ReqBody, R> Sealed<ReqBody> for RamaHttpService<S>
     where
-        S: Service<State, Request, Response = R, Error = Infallible> + Clone,
-        State: Clone + Send + Sync + 'static,
+        S: Service<Request, Response = R, Error = Infallible> + Clone,
         ReqBody: rama_http_types::dep::http_body::Body<Data = Bytes, Error: Into<BoxError>>
             + Send
             + Sync

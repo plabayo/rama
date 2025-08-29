@@ -22,10 +22,10 @@ impl super::ConnID for BasicHttpConId {
     }
 }
 
-impl<State, Body> ReqToConnID<State, Request<Body>> for BasicHttpConnIdentifier {
+impl<Body> ReqToConnID<Request<Body>> for BasicHttpConnIdentifier {
     type ID = BasicHttpConId;
 
-    fn id(&self, ctx: &Context<State>, req: &Request<Body>) -> Result<Self::ID, OpaqueError> {
+    fn id(&self, ctx: &Context, req: &Request<Body>) -> Result<Self::ID, OpaqueError> {
         let req_ctx = match ctx.get::<RequestContext>() {
             Some(ctx) => ctx,
             None => &RequestContext::try_from((ctx, req))?,

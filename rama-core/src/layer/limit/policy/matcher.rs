@@ -2,11 +2,10 @@ use crate::{Context, context::Extensions, matcher::Matcher};
 
 use super::{Policy, PolicyOutput, PolicyResult};
 
-impl<M, P, State, Request> Policy<State, Request> for Vec<(M, P)>
+impl<M, P, Request> Policy<Request> for Vec<(M, P)>
 where
-    M: Matcher<State, Request>,
-    P: Policy<State, Request>,
-    State: Clone + Send + Sync + 'static,
+    M: Matcher<Request>,
+    P: Policy<Request>,
     Request: Send + 'static,
 {
     type Guard = Option<P::Guard>;
@@ -14,9 +13,9 @@ where
 
     async fn check(
         &self,
-        mut ctx: Context<State>,
+        mut ctx: Context,
         request: Request,
-    ) -> PolicyResult<State, Request, Self::Guard, Self::Error> {
+    ) -> PolicyResult<Request, Self::Guard, Self::Error> {
         let mut ext = Extensions::new();
         for (matcher, policy) in self.iter() {
             if matcher.matches(Some(&mut ext), &ctx, &request) {
@@ -53,11 +52,10 @@ where
     }
 }
 
-impl<M, P, State, Request> Policy<State, Request> for (Vec<(M, P)>, P)
+impl<M, P, Request> Policy<Request> for (Vec<(M, P)>, P)
 where
-    M: Matcher<State, Request>,
-    P: Policy<State, Request>,
-    State: Clone + Send + Sync + 'static,
+    M: Matcher<Request>,
+    P: Policy<Request>,
     Request: Send + 'static,
 {
     type Guard = P::Guard;
@@ -65,9 +63,9 @@ where
 
     async fn check(
         &self,
-        mut ctx: Context<State>,
+        mut ctx: Context,
         request: Request,
-    ) -> PolicyResult<State, Request, Self::Guard, Self::Error> {
+    ) -> PolicyResult<Request, Self::Guard, Self::Error> {
         let (matchers, default_policy) = self;
         let mut ext = Extensions::new();
         for (matcher, policy) in matchers.iter() {
@@ -92,14 +90,14 @@ mod tests {
 
     use super::*;
 
-    fn assert_ready<S, R, G, E>(result: PolicyResult<S, R, G, E>) -> G {
+    fn assert_ready<R, G, E>(result: PolicyResult<R, G, E>) -> G {
         match result.output {
             PolicyOutput::Ready(guard) => guard,
             _ => panic!("unexpected output, expected ready"),
         }
     }
 
-    fn assert_abort<S, R, G, E>(result: &PolicyResult<S, R, G, E>) {
+    fn assert_abort<R, G, E>(result: &PolicyResult<R, G, E>) {
         match result.output {
             PolicyOutput::Abort(_) => (),
             _ => panic!("unexpected output, expected abort"),
@@ -141,8 +139,8 @@ mod tests {
         Odd,
     }
 
-    impl<State> Matcher<State, u8> for TestMatchers {
-        fn matches(&self, _ext: Option<&mut Extensions>, _ctx: &Context<State>, req: &u8) -> bool {
+    impl Matcher<u8> for TestMatchers {
+        fn matches(&self, _ext: Option<&mut Extensions>, _ctx: &Context, req: &u8) -> bool {
             match self {
                 Self::Const(n) => *n == *req,
                 Self::Odd => *req % 2 == 1,

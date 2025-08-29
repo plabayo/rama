@@ -2,19 +2,14 @@ use std::convert::Infallible;
 
 use crate::{Context, Service};
 
-impl<State, Request> Service<State, Request> for ()
+impl<Request> Service<Request> for ()
 where
-    State: Clone + Send + Sync + 'static,
     Request: Send + 'static,
 {
     type Error = Infallible;
-    type Response = (Context<State>, Request);
+    type Response = (Context, Request);
 
-    async fn serve(
-        &self,
-        ctx: Context<State>,
-        req: Request,
-    ) -> Result<(Context<State>, Request), Self::Error> {
+    async fn serve(&self, ctx: Context, req: Request) -> Result<(Context, Request), Self::Error> {
         Ok((ctx, req))
     }
 }

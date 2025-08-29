@@ -108,11 +108,10 @@ impl std::error::Error for RetryError {
     }
 }
 
-impl<P, S, State, Body> Service<State, Request<Body>> for Retry<P, S>
+impl<P, S, Body> Service<Request<Body>> for Retry<P, S>
 where
-    P: Policy<State, S::Response, S::Error>,
-    S: Service<State, Request<RetryBody>, Error: Into<BoxError>>,
-    State: Clone + Send + Sync + 'static,
+    P: Policy<S::Response, S::Error>,
+    S: Service<Request<RetryBody>, Error: Into<BoxError>>,
     Body: HttpBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static,
 {
     type Response = S::Response;
@@ -120,7 +119,7 @@ where
 
     async fn serve(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         request: Request<Body>,
     ) -> Result<Self::Response, Self::Error> {
         let mut ctx = ctx;
@@ -197,16 +196,17 @@ mod test {
         }
 
         async fn retry<E>(
-            ctx: Context<State>,
+            ctx: Context,
             result: Result<Response, E>,
-        ) -> (Context<State>, Result<Response, E>, bool) {
+        ) -> (Context, Result<Response, E>, bool) {
             if ctx.contains::<DoNotRetry>() {
                 panic!("unexpected retry: should be disabled");
             }
 
             if let Ok(ref res) = result {
                 if res.status().is_server_error() {
-                    ctx.state()
+                    ctx.get::<State>()
+                        .unwrap()
                         .retry_counter
                         .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
                     (ctx, result, true)
@@ -214,7 +214,8 @@ mod test {
                     (ctx, result, false)
                 }
             } else {
-                ctx.state()
+                ctx.get::<State>()
+                    .unwrap()
                     .retry_counter
                     .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 (ctx, result, true)
@@ -238,13 +239,15 @@ mod test {
             Request::builder().body(s.into()).unwrap()
         }
 
-        fn ctx() -> Context<State> {
-            Context::with_state(State {
+        fn ctx() -> Context {
+            let mut ctx = Context::default();
+            ctx.insert(State {
                 retry_counter: Arc::new(AtomicUsize::new(0)),
-            })
+            });
+            ctx
         }
 
-        fn ctx_do_not_retry() -> Context<State> {
+        fn ctx_do_not_retry() -> Context {
             let mut ctx = ctx();
             ctx.insert(DoNotRetry::default());
             ctx
@@ -254,11 +257,11 @@ mod test {
             msg: &'static str,
             input: &'static str,
             output: &'static str,
-            ctx: Context<State>,
+            ctx: Context,
             retried: bool,
-            service: &impl Service<State, Request, Response = Response, Error = E>,
+            service: &impl Service<Request, Response = Response, Error = E>,
         ) {
-            let state = ctx.state_clone();
+            let state = ctx.get::<State>().unwrap().clone();
 
             let fut = service.serve(ctx, request(input));
             let res = fut.await.unwrap();
@@ -287,11 +290,11 @@ mod test {
         async fn assert_serve_err<E: std::fmt::Debug>(
             msg: &'static str,
             input: &'static str,
-            ctx: Context<State>,
+            ctx: Context,
             retried: bool,
-            service: &impl Service<State, Request, Response = Response, Error = E>,
+            service: &impl Service<Request, Response = Response, Error = E>,
         ) {
-            let state = ctx.state_clone();
+            let state = ctx.get::<State>().unwrap().clone();
 
             let fut = service.serve(ctx, request(input));
             let res = fut.await;

@@ -137,7 +137,7 @@ async fn main() {
                                     "lucky_number": path.number,
                                 }))
                             },
-                            HttpMatcher::get("/*") => async move |ctx: Context<()>, req: Request| {
+                            HttpMatcher::get("/*") => async move |ctx: Context, req: Request| {
                                 Json(json!({
                                     "method": req.method().as_str(),
                                     "path": req.uri().path(),
@@ -174,13 +174,10 @@ async fn main() {
         .expect("graceful shutdown");
 }
 
-async fn http_connect_accept<S>(
-    mut ctx: Context<S>,
+async fn http_connect_accept(
+    mut ctx: Context,
     req: Request,
-) -> Result<(Response, Context<S>, Request), Response>
-where
-    S: Clone + Send + Sync + 'static,
-{
+) -> Result<(Response, Context, Request), Response> {
     match ctx
         .get_or_try_insert_with_ctx::<RequestContext, _>(|ctx| (ctx, &req).try_into())
         .map(|ctx| ctx.authority.clone())
@@ -202,10 +199,7 @@ where
     Ok((StatusCode::OK.into_response(), ctx, req))
 }
 
-async fn http_plain_proxy<S>(ctx: Context<S>, req: Request) -> Result<Response, Infallible>
-where
-    S: Clone + Send + Sync + 'static,
-{
+async fn http_plain_proxy(ctx: Context, req: Request) -> Result<Response, Infallible> {
     let client = EasyHttpWebClient::default();
     match client.serve(ctx, req).await {
         Ok(resp) => {

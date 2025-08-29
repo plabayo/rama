@@ -65,22 +65,17 @@ impl<T: fmt::Debug, F: fmt::Debug> fmt::Debug for Socks5PeekRouter<T, F> {
     }
 }
 
-impl<State, Stream, Response, T, F> Service<State, Stream> for Socks5PeekRouter<T, F>
+impl<Stream, Response, T, F> Service<Stream> for Socks5PeekRouter<T, F>
 where
-    State: Clone + Send + Sync + 'static,
     Stream: rama_net::stream::Stream + Unpin,
     Response: Send + 'static,
-    T: Service<State, Socks5PeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
-    F: Service<State, Socks5PeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
+    T: Service<Socks5PeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
+    F: Service<Socks5PeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
 {
     type Response = Response;
     type Error = BoxError;
 
-    async fn serve(
-        &self,
-        ctx: Context<State>,
-        mut stream: Stream,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, ctx: Context, mut stream: Stream) -> Result<Self::Response, Self::Error> {
         let mut peek_buf = [0u8; SOCKS5_HEADER_PEEK_LEN];
         let n = stream
             .read(&mut peek_buf)

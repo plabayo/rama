@@ -24,27 +24,26 @@ use crate::proto::{ReplyKind, server::Reply};
 ///
 /// [`Socks5Acceptor`]: crate::server::Socks5Acceptor
 /// [`Command::Bind`]: crate::proto::Command::Bind
-pub trait Socks5Binder<S, State>: Socks5BinderSeal<S, State> {}
+pub trait Socks5Binder<S>: Socks5BinderSeal<S> {}
 
-impl<S, State, C> Socks5Binder<S, State> for C where C: Socks5BinderSeal<S, State> {}
+impl<S, C> Socks5Binder<S> for C where C: Socks5BinderSeal<S> {}
 
-pub trait Socks5BinderSeal<S, State>: Send + Sync + 'static {
+pub trait Socks5BinderSeal<S>: Send + Sync + 'static {
     fn accept_bind(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         stream: S,
         destination: Authority,
     ) -> impl Future<Output = Result<(), Error>> + Send + '_;
 }
 
-impl<S, State> Socks5BinderSeal<S, State> for ()
+impl<S> Socks5BinderSeal<S> for ()
 where
     S: Stream + Unpin,
-    State: Clone + Send + Sync + 'static,
 {
     async fn accept_bind(
         &self,
-        _ctx: Context<State>,
+        _ctx: Context,
         mut stream: S,
         destination: Authority,
     ) -> Result<(), Error> {
@@ -121,7 +120,7 @@ impl<A, S> Binder<A, S> {
     /// Any [`Service`] can be used as long as it has the signature:
     ///
     /// ```plain
-    /// (Context<State>, ProxyRequest) -> ((), Into<BoxError>)
+    /// (Context, ProxyRequest) -> ((), Into<BoxError>)
     /// ```
     pub fn with_service<T>(self, service: T) -> Binder<A, T> {
         Binder {
@@ -200,16 +199,13 @@ impl<A: Clone, S: Clone> Clone for Binder<A, S> {
 /// Default [`AcceptorFactory`] used by [`DefaultBinder`].
 pub struct DefaultAcceptorFactory;
 
-impl<S> Service<S, Interface> for DefaultAcceptorFactory
-where
-    S: Clone + Send + Sync + 'static,
-{
-    type Response = (TcpListener<()>, Context<S>);
+impl Service<Interface> for DefaultAcceptorFactory {
+    type Response = (TcpListener, Context);
     type Error = BoxError;
 
     async fn serve(
         &self,
-        ctx: Context<S>,
+        ctx: Context,
         interface: Interface,
     ) -> Result<Self::Response, Self::Error> {
         let acceptor = TcpListener::bind(interface).await?;
@@ -229,10 +225,7 @@ pub trait Acceptor: Send + Sync + 'static {
     fn accept(self) -> impl Future<Output = Result<(Self::Stream, SocketAddress), Error>> + Send;
 }
 
-impl<S> Acceptor for TcpListener<S>
-where
-    S: Clone + Send + Sync + 'static,
-{
+impl Acceptor for TcpListener {
     type Stream = TcpStream;
 
     fn local_addr(&self) -> io::Result<SocketAddress> {
@@ -260,13 +253,11 @@ impl Default for DefaultBinder {
     }
 }
 
-impl<S, State, F, StreamService> Socks5BinderSeal<S, State> for Binder<F, StreamService>
+impl<S, F, StreamService> Socks5BinderSeal<S> for Binder<F, StreamService>
 where
     S: Stream + Unpin,
-    State: Clone + Send + Sync + 'static,
-    F: SocketService<State, Socket: Acceptor<Stream: Unpin>>,
+    F: SocketService<Socket: Acceptor<Stream: Unpin>>,
     StreamService: Service<
-            State,
             ProxyRequest<S, <F::Socket as Acceptor>::Stream>,
             Response = (),
             Error: Into<BoxError>,
@@ -274,7 +265,7 @@ where
 {
     async fn accept_bind(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         mut stream: S,
         requested_bind_address: Authority,
     ) -> Result<(), Error> {
@@ -499,14 +490,13 @@ mod test {
         }
     }
 
-    impl<S, State> Socks5BinderSeal<S, State> for MockBinder
+    impl<S> Socks5BinderSeal<S> for MockBinder
     where
         S: Stream + Unpin,
-        State: Clone + Send + Sync + 'static,
     {
         async fn accept_bind(
             &self,
-            _ctx: Context<State>,
+            _ctx: Context,
             mut stream: S,
             _requested_bind_address: Authority,
         ) -> Result<(), Error> {

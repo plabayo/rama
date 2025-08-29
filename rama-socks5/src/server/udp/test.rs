@@ -24,14 +24,13 @@ impl MockUdpAssociator {
     }
 }
 
-impl<S, State> Socks5UdpAssociatorSeal<S, State> for MockUdpAssociator
+impl<S> Socks5UdpAssociatorSeal<S> for MockUdpAssociator
 where
     S: Stream + Unpin,
-    State: Clone + Send + Sync + 'static,
 {
     async fn accept_udp_associate(
         &self,
-        _ctx: Context<State>,
+        _ctx: Context,
         mut stream: S,
         _destination: Authority,
     ) -> Result<(), Error> {

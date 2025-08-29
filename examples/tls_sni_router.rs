@@ -113,7 +113,7 @@ const NAME_BAZ: &str = "baz";
 const INTERFACE_BAZ: SocketAddress = SocketAddress::local_ipv4(63806);
 
 async fn sni_router<S>(
-    ctx: Context<()>,
+    ctx: Context,
     SniRequest { stream, sni }: SniRequest<S>,
 ) -> Result<(), OpaqueError>
 where

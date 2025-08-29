@@ -144,7 +144,7 @@ pub(super) struct RequestInfo {
     pub(super) peer_addr: Option<String>,
 }
 
-pub(super) async fn get_user_agent_info(ctx: &Context<Arc<State>>) -> UserAgentInfo {
+pub(super) async fn get_user_agent_info(ctx: &Context) -> UserAgentInfo {
     ctx.get()
         .map(|ua: &UserAgent| UserAgentInfo {
             user_agent: ua.header_str().to_owned(),
@@ -159,7 +159,7 @@ pub(super) async fn get_request_info(
     fetch_mode: FetchMode,
     resource_type: ResourceType,
     initiator: Initiator,
-    ctx: &mut Context<Arc<State>>,
+    ctx: &mut Context,
     parts: &Parts,
 ) -> Result<RequestInfo, BoxError> {
     let request_context = ctx
@@ -218,7 +218,7 @@ pub(super) struct HttpInfo {
 }
 
 pub(super) async fn get_and_store_http_info(
-    ctx: &Context<Arc<State>>,
+    ctx: &Context,
     headers: HeaderMap,
     ext: &mut Extensions,
     http_version: http::Version,
@@ -235,7 +235,7 @@ pub(super) async fn get_and_store_http_info(
         _ => None,
     };
 
-    if let Some(storage) = ctx.state().storage.as_ref() {
+    if let Some(storage) = ctx.get::<Arc<State>>().unwrap().storage.as_ref() {
         let auth = ctx.contains::<StorageAuthorized>();
 
         match http_version {
@@ -403,7 +403,7 @@ pub(super) enum TlsDisplayInfoExtensionData {
 }
 
 pub(super) async fn get_tls_display_info_and_store(
-    ctx: &Context<Arc<State>>,
+    ctx: &Context,
     ua: String,
 ) -> Result<Option<TlsDisplayInfo>, OpaqueError> {
     let hello: &ClientHello = match ctx
@@ -414,7 +414,7 @@ pub(super) async fn get_tls_display_info_and_store(
         None => return Ok(None),
     };
 
-    if let Some(storage) = ctx.state().storage.as_ref() {
+    if let Some(storage) = ctx.get::<Arc<State>>().unwrap().storage.as_ref() {
         let auth = ctx.contains::<StorageAuthorized>();
         storage
             .store_tls_client_hello(ua, auth, hello.clone())

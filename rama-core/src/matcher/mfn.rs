@@ -14,44 +14,42 @@ pub fn match_fn<F, A>(f: F) -> MatchFnBox<F, A> {
 ///
 /// You do not need to implement this trait yourself.
 /// Instead, you need to use the [`match_fn`] function to create a [`MatchFn`].
-pub trait MatchFn<S, Request, A>: private::Sealed<S, Request, A> + Send + Sync + 'static {}
+pub trait MatchFn<Request, A>: private::Sealed<Request, A> + Send + Sync + 'static {}
 
-impl<F, S, Request> MatchFn<S, Request, ()> for F where F: Fn() -> bool + Send + Sync + 'static {}
+impl<F, Request> MatchFn<Request, ()> for F where F: Fn() -> bool + Send + Sync + 'static {}
 
-impl<F, S, Request> MatchFn<S, Request, (Request,)> for F where
+impl<F, Request> MatchFn<Request, (Request,)> for F where
     F: Fn(&Request) -> bool + Send + Sync + 'static
 {
 }
 
-impl<F, S, Request> MatchFn<S, Request, (Context<S>, Request)> for F where
-    F: Fn(&Context<S>, &Request) -> bool + Send + Sync + 'static
+impl<F, Request> MatchFn<Request, (Context, Request)> for F where
+    F: Fn(&Context, &Request) -> bool + Send + Sync + 'static
 {
 }
 
-impl<F, S, Request> MatchFn<S, Request, (Option<&mut Extensions>, Context<S>, Request)> for F where
-    F: Fn(Option<&mut Extensions>, &Context<S>, &Request) -> bool + Send + Sync + 'static
+impl<F, Request> MatchFn<Request, (Option<&mut Extensions>, Context, Request)> for F where
+    F: Fn(Option<&mut Extensions>, &Context, &Request) -> bool + Send + Sync + 'static
 {
 }
 
-impl<F, S, Request> MatchFn<S, Request, ((), (), Option<&mut Extensions>, Request)> for F where
+impl<F, Request> MatchFn<Request, ((), (), Option<&mut Extensions>, Request)> for F where
     F: Fn(Option<&mut Extensions>, &Request) -> bool + Send + Sync + 'static
 {
 }
 
-impl<F, S, Request> MatchFn<S, Request, ((), (), (), (), Option<&mut Extensions>)> for F where
+impl<F, Request> MatchFn<Request, ((), (), (), (), Option<&mut Extensions>)> for F where
     F: Fn(Option<&mut Extensions>) -> bool + Send + Sync + 'static
 {
 }
 
-impl<F, S, Request> MatchFn<S, Request, ((), (), (), (), (), Context<S>)> for F where
-    F: Fn(&Context<S>) -> bool + Send + Sync + 'static
+impl<F, Request> MatchFn<Request, ((), (), (), (), (), Context)> for F where
+    F: Fn(&Context) -> bool + Send + Sync + 'static
 {
 }
 
-impl<F, S, Request>
-    MatchFn<S, Request, ((), (), (), (), (), (), Option<&mut Extensions>, Context<S>)> for F
-where
-    F: Fn(Option<&mut Extensions>, &Context<S>) -> bool + Send + Sync + 'static,
+impl<F, Request> MatchFn<Request, ((), (), (), (), (), (), Option<&mut Extensions>, Context)> for F where
+    F: Fn(Option<&mut Extensions>, &Context) -> bool + Send + Sync + 'static
 {
 }
 
@@ -79,12 +77,12 @@ impl<F, A> std::fmt::Debug for MatchFnBox<F, A> {
     }
 }
 
-impl<F, S, Request, A> Matcher<S, Request> for MatchFnBox<F, A>
+impl<F, Request, A> Matcher<Request> for MatchFnBox<F, A>
 where
     A: Send + 'static,
-    F: MatchFn<S, Request, A>,
+    F: MatchFn<Request, A>,
 {
-    fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context<S>, req: &Request) -> bool {
+    fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context, req: &Request) -> bool {
         self.f.call(ext, ctx, req)
     }
 }
@@ -92,84 +90,83 @@ where
 mod private {
     use super::*;
 
-    pub trait Sealed<S, Request, A> {
+    pub trait Sealed<Request, A> {
         /// returns true on a match, false otherwise
         ///
         /// `ext` is None in case the callee is not interested in collecting potential
         /// match metadata gathered during the matching process. An example of this
         /// path parameters for an http Uri matcher.
-        fn call(&self, ext: Option<&mut Extensions>, ctx: &Context<S>, req: &Request) -> bool;
+        fn call(&self, ext: Option<&mut Extensions>, ctx: &Context, req: &Request) -> bool;
     }
 
-    impl<F, S, Request> Sealed<S, Request, ()> for F
+    impl<F, Request> Sealed<Request, ()> for F
     where
         F: Fn() -> bool + Send + Sync + 'static,
     {
-        fn call(&self, _ext: Option<&mut Extensions>, _ctx: &Context<S>, _req: &Request) -> bool {
+        fn call(&self, _ext: Option<&mut Extensions>, _ctx: &Context, _req: &Request) -> bool {
             (self)()
         }
     }
 
-    impl<F, S, Request> Sealed<S, Request, (Request,)> for F
+    impl<F, Request> Sealed<Request, (Request,)> for F
     where
         F: Fn(&Request) -> bool + Send + Sync + 'static,
     {
-        fn call(&self, _ext: Option<&mut Extensions>, _ctx: &Context<S>, req: &Request) -> bool {
+        fn call(&self, _ext: Option<&mut Extensions>, _ctx: &Context, req: &Request) -> bool {
             (self)(req)
         }
     }
 
-    impl<F, S, Request> Sealed<S, Request, (Context<S>, Request)> for F
+    impl<F, Request> Sealed<Request, (Context, Request)> for F
     where
-        F: Fn(&Context<S>, &Request) -> bool + Send + Sync + 'static,
+        F: Fn(&Context, &Request) -> bool + Send + Sync + 'static,
     {
-        fn call(&self, _ext: Option<&mut Extensions>, ctx: &Context<S>, req: &Request) -> bool {
+        fn call(&self, _ext: Option<&mut Extensions>, ctx: &Context, req: &Request) -> bool {
             (self)(ctx, req)
         }
     }
 
-    impl<F, S, Request> Sealed<S, Request, (Option<&mut Extensions>, Context<S>, Request)> for F
+    impl<F, Request> Sealed<Request, (Option<&mut Extensions>, Context, Request)> for F
     where
-        F: Fn(Option<&mut Extensions>, &Context<S>, &Request) -> bool + Send + Sync + 'static,
+        F: Fn(Option<&mut Extensions>, &Context, &Request) -> bool + Send + Sync + 'static,
     {
-        fn call(&self, ext: Option<&mut Extensions>, ctx: &Context<S>, req: &Request) -> bool {
+        fn call(&self, ext: Option<&mut Extensions>, ctx: &Context, req: &Request) -> bool {
             (self)(ext, ctx, req)
         }
     }
 
-    impl<F, S, Request> Sealed<S, Request, ((), (), Option<&mut Extensions>, Request)> for F
+    impl<F, Request> Sealed<Request, ((), (), Option<&mut Extensions>, Request)> for F
     where
         F: Fn(Option<&mut Extensions>, &Request) -> bool + Send + Sync + 'static,
     {
-        fn call(&self, ext: Option<&mut Extensions>, _ctx: &Context<S>, req: &Request) -> bool {
+        fn call(&self, ext: Option<&mut Extensions>, _ctx: &Context, req: &Request) -> bool {
             (self)(ext, req)
         }
     }
 
-    impl<F, S, Request> Sealed<S, Request, ((), (), (), (), Option<&mut Extensions>)> for F
+    impl<F, Request> Sealed<Request, ((), (), (), (), Option<&mut Extensions>)> for F
     where
         F: Fn(Option<&mut Extensions>) -> bool + Send + Sync + 'static,
     {
-        fn call(&self, ext: Option<&mut Extensions>, _ctx: &Context<S>, _req: &Request) -> bool {
+        fn call(&self, ext: Option<&mut Extensions>, _ctx: &Context, _req: &Request) -> bool {
             (self)(ext)
         }
     }
 
-    impl<F, S, Request> Sealed<S, Request, ((), (), (), (), (), Context<S>)> for F
+    impl<F, Request> Sealed<Request, ((), (), (), (), (), Context)> for F
     where
-        F: Fn(&Context<S>) -> bool + Send + Sync + 'static,
+        F: Fn(&Context) -> bool + Send + Sync + 'static,
     {
-        fn call(&self, _ext: Option<&mut Extensions>, ctx: &Context<S>, _req: &Request) -> bool {
+        fn call(&self, _ext: Option<&mut Extensions>, ctx: &Context, _req: &Request) -> bool {
             (self)(ctx)
         }
     }
 
-    impl<F, S, Request>
-        Sealed<S, Request, ((), (), (), (), (), (), Option<&mut Extensions>, Context<S>)> for F
+    impl<F, Request> Sealed<Request, ((), (), (), (), (), (), Option<&mut Extensions>, Context)> for F
     where
-        F: Fn(Option<&mut Extensions>, &Context<S>) -> bool + Send + Sync + 'static,
+        F: Fn(Option<&mut Extensions>, &Context) -> bool + Send + Sync + 'static,
     {
-        fn call(&self, ext: Option<&mut Extensions>, ctx: &Context<S>, _req: &Request) -> bool {
+        fn call(&self, ext: Option<&mut Extensions>, ctx: &Context, _req: &Request) -> bool {
             (self)(ext, ctx)
         }
     }

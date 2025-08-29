@@ -80,31 +80,29 @@ mod private {
     use tokio::select;
 
     pub trait Sealed {
-        fn http_core_serve_connection<IO, State, S, Response>(
+        fn http_core_serve_connection<IO, S, Response>(
             &self,
-            ctx: Context<State>,
+            ctx: Context,
             io: IO,
             service: S,
         ) -> impl Future<Output = HttpServeResult> + Send + '_
         where
             IO: Stream,
-            State: Clone + Send + Sync + 'static,
-            S: Service<State, Request, Response = Response, Error = Infallible> + Clone,
+            S: Service<Request, Response = Response, Error = Infallible> + Clone,
             Response: IntoResponse + Send + 'static;
     }
 
     impl Sealed for super::Http1Builder {
         #[inline]
-        async fn http_core_serve_connection<IO, State, S, Response>(
+        async fn http_core_serve_connection<IO, S, Response>(
             &self,
-            ctx: Context<State>,
+            ctx: Context,
             io: IO,
             service: S,
         ) -> HttpServeResult
         where
             IO: Stream,
-            State: Clone + Send + Sync + 'static,
-            S: Service<State, Request, Response = Response, Error = Infallible> + Clone,
+            S: Service<Request, Response = Response, Error = Infallible> + Clone,
             Response: IntoResponse + Send + 'static,
         {
             let guard = ctx.guard().cloned();
@@ -139,16 +137,15 @@ mod private {
 
     impl Sealed for super::Http2Builder {
         #[inline]
-        async fn http_core_serve_connection<IO, State, S, Response>(
+        async fn http_core_serve_connection<IO, S, Response>(
             &self,
-            ctx: Context<State>,
+            ctx: Context,
             io: IO,
             service: S,
         ) -> HttpServeResult
         where
             IO: Stream,
-            State: Clone + Send + Sync + 'static,
-            S: Service<State, Request, Response = Response, Error = Infallible> + Clone,
+            S: Service<Request, Response = Response, Error = Infallible> + Clone,
             Response: IntoResponse + Send + 'static,
         {
             let stream = Box::pin(io);
@@ -182,16 +179,15 @@ mod private {
 
     impl Sealed for super::AutoBuilder {
         #[inline]
-        async fn http_core_serve_connection<IO, State, S, Response>(
+        async fn http_core_serve_connection<IO, S, Response>(
             &self,
-            ctx: Context<State>,
+            ctx: Context,
             io: IO,
             service: S,
         ) -> HttpServeResult
         where
             IO: Stream,
-            State: Clone + Send + Sync + 'static,
-            S: Service<State, Request, Response = Response, Error = Infallible> + Clone,
+            S: Service<Request, Response = Response, Error = Infallible> + Clone,
             Response: IntoResponse + Send + 'static,
         {
             let stream = Box::pin(io);

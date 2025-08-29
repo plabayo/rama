@@ -73,8 +73,8 @@ use rama::{
 use std::{convert::Infallible, time::Duration};
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
-fn new_example_hijack_svc()
--> impl Clone + Service<(), Request, Response = Response, Error = Infallible> {
+fn new_example_hijack_svc() -> impl Clone + Service<Request, Response = Response, Error = Infallible>
+{
     StaticService::new(Html(
         r##"<!doctype html>
 <html>
@@ -185,9 +185,9 @@ async fn main() {
 }
 
 async fn http_connect_accept(
-    mut ctx: Context<()>,
+    mut ctx: Context,
     req: Request,
-) -> Result<(Response, Context<()>, Request), Response> {
+) -> Result<(Response, Context, Request), Response> {
     match ctx
         .get_or_try_insert_with_ctx::<RequestContext, _>(|ctx| (ctx, &req).try_into())
         .map(|ctx| ctx.authority.clone())
@@ -214,7 +214,7 @@ async fn http_connect_accept(
     Ok((StatusCode::OK.into_response(), ctx, req))
 }
 
-async fn http_plain_proxy(ctx: Context<()>, req: Request) -> Result<Response, Infallible> {
+async fn http_plain_proxy(ctx: Context, req: Request) -> Result<Response, Infallible> {
     let client = EasyHttpWebClient::default();
     match client.serve(ctx, req).await {
         Ok(resp) => {

@@ -65,7 +65,7 @@ use std::marker::PhantomData;
 ///
 /// # #[tokio::main]
 /// # async fn main() {
-/// async fn svc(_ctx: Context<State>, request: Request<Body>) -> Result<(), Infallible> {
+/// async fn svc(_ctx: Context, request: Request<Body>) -> Result<(), Infallible> {
 ///     // ...
 ///     # assert_eq!(
 ///     #     request.headers().get("X-Real-Ip").unwrap(),
@@ -313,19 +313,18 @@ impl<S> SetForwardedHeaderService<S, XForwardedProto> {
     }
 }
 
-impl<S, H, State, Body> Service<State, Request<Body>> for SetForwardedHeaderService<S, H>
+impl<S, H, Body> Service<Request<Body>> for SetForwardedHeaderService<S, H>
 where
-    S: Service<State, Request<Body>, Error: Into<BoxError>>,
+    S: Service<Request<Body>, Error: Into<BoxError>>,
     H: ForwardHeader + Send + Sync + 'static,
     Body: Send + 'static,
-    State: Clone + Send + Sync + 'static,
 {
     type Response = S::Response;
     type Error = BoxError;
 
     async fn serve(
         &self,
-        mut ctx: Context<State>,
+        mut ctx: Context,
         mut req: Request<Body>,
     ) -> Result<Self::Response, Self::Error> {
         let forwarded: Option<rama_net::forwarded::Forwarded> = ctx.get().cloned();
@@ -373,7 +372,7 @@ mod tests {
     use rama_core::{Layer, error::OpaqueError, service::service_fn};
     use std::{convert::Infallible, net::IpAddr};
 
-    fn assert_is_service<T: Service<(), Request<()>>>(_: T) {}
+    fn assert_is_service<T: Service<Request<()>>>(_: T) {}
 
     async fn dummy_service_fn() -> Result<Response, OpaqueError> {
         Ok(StatusCode::OK.into_response())

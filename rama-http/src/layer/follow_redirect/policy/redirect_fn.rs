@@ -18,11 +18,11 @@ impl<F> fmt::Debug for RedirectFn<F> {
     }
 }
 
-impl<S, B, E, F> Policy<S, B, E> for RedirectFn<F>
+impl<B, E, F> Policy<B, E> for RedirectFn<F>
 where
     F: FnMut(&Attempt<'_>) -> Result<Action, E> + Send + Sync + 'static,
 {
-    fn redirect(&mut self, _: &Context<S>, attempt: &Attempt<'_>) -> Result<Action, E> {
+    fn redirect(&mut self, _: &Context, attempt: &Attempt<'_>) -> Result<Action, E> {
         (self.f)(attempt)
     }
 }

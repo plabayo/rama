@@ -297,23 +297,11 @@ impl<S>
     }
 }
 
-impl<
-    S,
-    State,
-    ReqBody,
-    ResBody,
-    M,
-    OnRequestT,
-    OnResponseT,
-    OnFailureT,
-    OnBodyChunkT,
-    OnEosT,
-    MakeSpanT,
-> Service<State, Request<ReqBody>>
+impl<S, ReqBody, ResBody, M, OnRequestT, OnResponseT, OnFailureT, OnBodyChunkT, OnEosT, MakeSpanT>
+    Service<Request<ReqBody>>
     for Trace<S, M, MakeSpanT, OnRequestT, OnResponseT, OnBodyChunkT, OnEosT, OnFailureT>
 where
-    S: Service<State, Request<ReqBody>, Response = Response<ResBody>, Error: fmt::Display>,
-    State: Clone + Send + Sync + 'static,
+    S: Service<Request<ReqBody>, Response = Response<ResBody>, Error: fmt::Display>,
     ReqBody: HttpBody + Send + 'static,
     ResBody: HttpBody<Error: fmt::Display> + Send + Sync + 'static,
     M: MakeClassifier<Classifier: Clone>,
@@ -330,7 +318,7 @@ where
 
     async fn serve(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         req: Request<ReqBody>,
     ) -> Result<Self::Response, Self::Error> {
         let start = Instant::now();

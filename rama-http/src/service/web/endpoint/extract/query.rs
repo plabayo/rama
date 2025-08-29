@@ -45,15 +45,14 @@ where
     }
 }
 
-impl<T, S> FromRequestContextRefPair<S> for Query<T>
+impl<T> FromRequestContextRefPair for Query<T>
 where
     T: DeserializeOwned + Send + Sync + 'static,
-    S: Clone + Send + Sync + 'static,
 {
     type Rejection = FailedToDeserializeQueryString;
 
     async fn from_request_context_ref_pair(
-        _ctx: &Context<S>,
+        _ctx: &Context,
         parts: &Parts,
     ) -> Result<Self, Self::Rejection> {
         let query = parts.uri.query().unwrap_or_default();
@@ -61,15 +60,14 @@ where
     }
 }
 
-impl<T, S> OptionalFromRequestContextRefPair<S> for Query<T>
+impl<T> OptionalFromRequestContextRefPair for Query<T>
 where
     T: DeserializeOwned + Send + Sync + 'static,
-    S: Clone + Send + Sync + 'static,
 {
     type Rejection = FailedToDeserializeQueryString;
 
     async fn from_request_context_ref_pair(
-        _ctx: &Context<S>,
+        _ctx: &Context,
         parts: &Parts,
     ) -> Result<Option<Self>, Self::Rejection> {
         match parts.uri.query() {

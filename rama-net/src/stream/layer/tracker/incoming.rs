@@ -42,10 +42,9 @@ where
     }
 }
 
-impl<State, S, IO> Service<State, IO> for IncomingBytesTrackerService<S>
+impl<S, IO> Service<IO> for IncomingBytesTrackerService<S>
 where
-    State: Clone + Send + Sync + 'static,
-    S: Service<State, BytesRWTracker<IO>>,
+    S: Service<BytesRWTracker<IO>>,
     IO: Stream,
 {
     type Response = S::Response;
@@ -53,7 +52,7 @@ where
 
     fn serve(
         &self,
-        mut ctx: Context<State>,
+        mut ctx: Context,
         stream: IO,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
         let tracked_stream = BytesRWTracker::new(stream);

@@ -7,7 +7,7 @@ use std::sync::Arc;
 async fn test_http_rate_limit() {
     utils::init_tracing();
 
-    let runner: Arc<utils::ExampleRunner<()>> =
+    let runner: Arc<utils::ExampleRunner> =
         Arc::new(utils::ExampleRunner::interactive("http_rate_limit", None));
 
     const ADDRESS: &str = "http://127.0.0.1:62008";
@@ -19,7 +19,7 @@ async fn test_http_rate_limit() {
 }
 
 async fn assert_endpoint_concurrent_runs(
-    runner: Arc<utils::ExampleRunner<()>>,
+    runner: Arc<utils::ExampleRunner>,
     n: usize,
     endpoint: String,
     expected_success: usize,

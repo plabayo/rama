@@ -162,20 +162,19 @@ impl<S, F, A> ValidateRequestHeader<S, BoxValidateRequestFn<F, A>> {
     }
 }
 
-impl<ReqBody, ResBody, State, S, V> Service<State, Request<ReqBody>> for ValidateRequestHeader<S, V>
+impl<ReqBody, ResBody, S, V> Service<Request<ReqBody>> for ValidateRequestHeader<S, V>
 where
     ReqBody: Send + 'static,
     ResBody: Send + 'static,
-    State: Clone + Send + Sync + 'static,
-    V: ValidateRequest<State, ReqBody, ResponseBody = ResBody>,
-    S: Service<State, Request<ReqBody>, Response = Response<ResBody>>,
+    V: ValidateRequest<ReqBody, ResponseBody = ResBody>,
+    S: Service<Request<ReqBody>, Response = Response<ResBody>>,
 {
     type Response = Response<ResBody>;
     type Error = S::Error;
 
     async fn serve(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         req: Request<ReqBody>,
     ) -> Result<Self::Response, Self::Error> {
         match self.validate.validate(ctx, req).await {

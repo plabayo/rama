@@ -3,83 +3,63 @@ use crate::{Context, Service};
 
 use super::RequestInspector;
 
-impl<I1, StateIn, RequestIn> Service<StateIn, RequestIn> for (I1,)
+impl<I1, RequestIn> Service<RequestIn> for (I1,)
 where
-    I1: RequestInspector<StateIn, RequestIn, Error: Into<BoxError>>,
-    StateIn: Clone + Send + Sync + 'static,
+    I1: RequestInspector<RequestIn, Error: Into<BoxError>>,
     RequestIn: Send + 'static,
 {
     type Error = BoxError;
-    type Response = (Context<I1::StateOut>, I1::RequestOut);
+    type Response = (Context, I1::RequestOut);
 
-    async fn serve(
-        &self,
-        ctx: Context<StateIn>,
-        req: RequestIn,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, ctx: Context, req: RequestIn) -> Result<Self::Response, Self::Error> {
         self.0.inspect_request(ctx, req).await.map_err(Into::into)
     }
 }
 
-impl<I1, I2, StateIn, RequestIn> Service<StateIn, RequestIn> for (I1, I2)
+impl<I1, I2, RequestIn> Service<RequestIn> for (I1, I2)
 where
-    I1: RequestInspector<StateIn, RequestIn, Error: Into<BoxError>>,
-    I2: RequestInspector<I1::StateOut, I1::RequestOut, Error: Into<BoxError>>,
-    StateIn: Clone + Send + Sync + 'static,
+    I1: RequestInspector<RequestIn, Error: Into<BoxError>>,
+    I2: RequestInspector<I1::RequestOut, Error: Into<BoxError>>,
     RequestIn: Send + 'static,
 {
     type Error = BoxError;
-    type Response = (Context<I2::StateOut>, I2::RequestOut);
+    type Response = (Context, I2::RequestOut);
 
-    async fn serve(
-        &self,
-        ctx: Context<StateIn>,
-        req: RequestIn,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, ctx: Context, req: RequestIn) -> Result<Self::Response, Self::Error> {
         let (ctx, req) = self.0.inspect_request(ctx, req).await.map_err(Into::into)?;
         self.1.inspect_request(ctx, req).await.map_err(Into::into)
     }
 }
 
-impl<I1, I2, I3, StateIn, RequestIn> Service<StateIn, RequestIn> for (I1, I2, I3)
+impl<I1, I2, I3, RequestIn> Service<RequestIn> for (I1, I2, I3)
 where
-    I1: RequestInspector<StateIn, RequestIn, Error: Into<BoxError>>,
-    I2: RequestInspector<I1::StateOut, I1::RequestOut, Error: Into<BoxError>>,
-    I3: RequestInspector<I2::StateOut, I2::RequestOut, Error: Into<BoxError>>,
-    StateIn: Clone + Send + Sync + 'static,
+    I1: RequestInspector<RequestIn, Error: Into<BoxError>>,
+    I2: RequestInspector<I1::RequestOut, Error: Into<BoxError>>,
+    I3: RequestInspector<I2::RequestOut, Error: Into<BoxError>>,
     RequestIn: Send + 'static,
 {
     type Error = BoxError;
-    type Response = (Context<I3::StateOut>, I3::RequestOut);
+    type Response = (Context, I3::RequestOut);
 
-    async fn serve(
-        &self,
-        ctx: Context<StateIn>,
-        req: RequestIn,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, ctx: Context, req: RequestIn) -> Result<Self::Response, Self::Error> {
         let (ctx, req) = self.0.inspect_request(ctx, req).await.map_err(Into::into)?;
         let (ctx, req) = self.1.inspect_request(ctx, req).await.map_err(Into::into)?;
         self.2.inspect_request(ctx, req).await.map_err(Into::into)
     }
 }
 
-impl<I1, I2, I3, I4, StateIn, RequestIn> Service<StateIn, RequestIn> for (I1, I2, I3, I4)
+impl<I1, I2, I3, I4, RequestIn> Service<RequestIn> for (I1, I2, I3, I4)
 where
-    I1: RequestInspector<StateIn, RequestIn, Error: Into<BoxError>>,
-    I2: RequestInspector<I1::StateOut, I1::RequestOut, Error: Into<BoxError>>,
-    I3: RequestInspector<I2::StateOut, I2::RequestOut, Error: Into<BoxError>>,
-    I4: RequestInspector<I3::StateOut, I3::RequestOut, Error: Into<BoxError>>,
-    StateIn: Clone + Send + Sync + 'static,
+    I1: RequestInspector<RequestIn, Error: Into<BoxError>>,
+    I2: RequestInspector<I1::RequestOut, Error: Into<BoxError>>,
+    I3: RequestInspector<I2::RequestOut, Error: Into<BoxError>>,
+    I4: RequestInspector<I3::RequestOut, Error: Into<BoxError>>,
     RequestIn: Send + 'static,
 {
     type Error = BoxError;
-    type Response = (Context<I4::StateOut>, I4::RequestOut);
+    type Response = (Context, I4::RequestOut);
 
-    async fn serve(
-        &self,
-        ctx: Context<StateIn>,
-        req: RequestIn,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, ctx: Context, req: RequestIn) -> Result<Self::Response, Self::Error> {
         let (ctx, req) = self.0.inspect_request(ctx, req).await.map_err(Into::into)?;
         let (ctx, req) = self.1.inspect_request(ctx, req).await.map_err(Into::into)?;
         let (ctx, req) = self.2.inspect_request(ctx, req).await.map_err(Into::into)?;
@@ -87,24 +67,19 @@ where
     }
 }
 
-impl<I1, I2, I3, I4, I5, StateIn, RequestIn> Service<StateIn, RequestIn> for (I1, I2, I3, I4, I5)
+impl<I1, I2, I3, I4, I5, RequestIn> Service<RequestIn> for (I1, I2, I3, I4, I5)
 where
-    I1: RequestInspector<StateIn, RequestIn, Error: Into<BoxError>>,
-    I2: RequestInspector<I1::StateOut, I1::RequestOut, Error: Into<BoxError>>,
-    I3: RequestInspector<I2::StateOut, I2::RequestOut, Error: Into<BoxError>>,
-    I4: RequestInspector<I3::StateOut, I3::RequestOut, Error: Into<BoxError>>,
-    I5: RequestInspector<I4::StateOut, I4::RequestOut, Error: Into<BoxError>>,
-    StateIn: Clone + Send + Sync + 'static,
+    I1: RequestInspector<RequestIn, Error: Into<BoxError>>,
+    I2: RequestInspector<I1::RequestOut, Error: Into<BoxError>>,
+    I3: RequestInspector<I2::RequestOut, Error: Into<BoxError>>,
+    I4: RequestInspector<I3::RequestOut, Error: Into<BoxError>>,
+    I5: RequestInspector<I4::RequestOut, Error: Into<BoxError>>,
     RequestIn: Send + 'static,
 {
     type Error = BoxError;
-    type Response = (Context<I5::StateOut>, I5::RequestOut);
+    type Response = (Context, I5::RequestOut);
 
-    async fn serve(
-        &self,
-        ctx: Context<StateIn>,
-        req: RequestIn,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, ctx: Context, req: RequestIn) -> Result<Self::Response, Self::Error> {
         let (ctx, req) = self.0.inspect_request(ctx, req).await.map_err(Into::into)?;
         let (ctx, req) = self.1.inspect_request(ctx, req).await.map_err(Into::into)?;
         let (ctx, req) = self.2.inspect_request(ctx, req).await.map_err(Into::into)?;
@@ -113,26 +88,20 @@ where
     }
 }
 
-impl<I1, I2, I3, I4, I5, I6, StateIn, RequestIn> Service<StateIn, RequestIn>
-    for (I1, I2, I3, I4, I5, I6)
+impl<I1, I2, I3, I4, I5, I6, RequestIn> Service<RequestIn> for (I1, I2, I3, I4, I5, I6)
 where
-    I1: RequestInspector<StateIn, RequestIn, Error: Into<BoxError>>,
-    I2: RequestInspector<I1::StateOut, I1::RequestOut, Error: Into<BoxError>>,
-    I3: RequestInspector<I2::StateOut, I2::RequestOut, Error: Into<BoxError>>,
-    I4: RequestInspector<I3::StateOut, I3::RequestOut, Error: Into<BoxError>>,
-    I5: RequestInspector<I4::StateOut, I4::RequestOut, Error: Into<BoxError>>,
-    I6: RequestInspector<I5::StateOut, I5::RequestOut, Error: Into<BoxError>>,
-    StateIn: Clone + Send + Sync + 'static,
+    I1: RequestInspector<RequestIn, Error: Into<BoxError>>,
+    I2: RequestInspector<I1::RequestOut, Error: Into<BoxError>>,
+    I3: RequestInspector<I2::RequestOut, Error: Into<BoxError>>,
+    I4: RequestInspector<I3::RequestOut, Error: Into<BoxError>>,
+    I5: RequestInspector<I4::RequestOut, Error: Into<BoxError>>,
+    I6: RequestInspector<I5::RequestOut, Error: Into<BoxError>>,
     RequestIn: Send + 'static,
 {
     type Error = BoxError;
-    type Response = (Context<I6::StateOut>, I6::RequestOut);
+    type Response = (Context, I6::RequestOut);
 
-    async fn serve(
-        &self,
-        ctx: Context<StateIn>,
-        req: RequestIn,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, ctx: Context, req: RequestIn) -> Result<Self::Response, Self::Error> {
         let (ctx, req) = self.0.inspect_request(ctx, req).await.map_err(Into::into)?;
         let (ctx, req) = self.1.inspect_request(ctx, req).await.map_err(Into::into)?;
         let (ctx, req) = self.2.inspect_request(ctx, req).await.map_err(Into::into)?;
@@ -142,27 +111,21 @@ where
     }
 }
 
-impl<I1, I2, I3, I4, I5, I6, I7, StateIn, RequestIn> Service<StateIn, RequestIn>
-    for (I1, I2, I3, I4, I5, I6, I7)
+impl<I1, I2, I3, I4, I5, I6, I7, RequestIn> Service<RequestIn> for (I1, I2, I3, I4, I5, I6, I7)
 where
-    I1: RequestInspector<StateIn, RequestIn, Error: Into<BoxError>>,
-    I2: RequestInspector<I1::StateOut, I1::RequestOut, Error: Into<BoxError>>,
-    I3: RequestInspector<I2::StateOut, I2::RequestOut, Error: Into<BoxError>>,
-    I4: RequestInspector<I3::StateOut, I3::RequestOut, Error: Into<BoxError>>,
-    I5: RequestInspector<I4::StateOut, I4::RequestOut, Error: Into<BoxError>>,
-    I6: RequestInspector<I5::StateOut, I5::RequestOut, Error: Into<BoxError>>,
-    I7: RequestInspector<I6::StateOut, I6::RequestOut, Error: Into<BoxError>>,
-    StateIn: Clone + Send + Sync + 'static,
+    I1: RequestInspector<RequestIn, Error: Into<BoxError>>,
+    I2: RequestInspector<I1::RequestOut, Error: Into<BoxError>>,
+    I3: RequestInspector<I2::RequestOut, Error: Into<BoxError>>,
+    I4: RequestInspector<I3::RequestOut, Error: Into<BoxError>>,
+    I5: RequestInspector<I4::RequestOut, Error: Into<BoxError>>,
+    I6: RequestInspector<I5::RequestOut, Error: Into<BoxError>>,
+    I7: RequestInspector<I6::RequestOut, Error: Into<BoxError>>,
     RequestIn: Send + 'static,
 {
     type Error = BoxError;
-    type Response = (Context<I7::StateOut>, I7::RequestOut);
+    type Response = (Context, I7::RequestOut);
 
-    async fn serve(
-        &self,
-        ctx: Context<StateIn>,
-        req: RequestIn,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, ctx: Context, req: RequestIn) -> Result<Self::Response, Self::Error> {
         let (ctx, req) = self.0.inspect_request(ctx, req).await.map_err(Into::into)?;
         let (ctx, req) = self.1.inspect_request(ctx, req).await.map_err(Into::into)?;
         let (ctx, req) = self.2.inspect_request(ctx, req).await.map_err(Into::into)?;
@@ -173,28 +136,23 @@ where
     }
 }
 
-impl<I1, I2, I3, I4, I5, I6, I7, I8, StateIn, RequestIn> Service<StateIn, RequestIn>
+impl<I1, I2, I3, I4, I5, I6, I7, I8, RequestIn> Service<RequestIn>
     for (I1, I2, I3, I4, I5, I6, I7, I8)
 where
-    I1: RequestInspector<StateIn, RequestIn, Error: Into<BoxError>>,
-    I2: RequestInspector<I1::StateOut, I1::RequestOut, Error: Into<BoxError>>,
-    I3: RequestInspector<I2::StateOut, I2::RequestOut, Error: Into<BoxError>>,
-    I4: RequestInspector<I3::StateOut, I3::RequestOut, Error: Into<BoxError>>,
-    I5: RequestInspector<I4::StateOut, I4::RequestOut, Error: Into<BoxError>>,
-    I6: RequestInspector<I5::StateOut, I5::RequestOut, Error: Into<BoxError>>,
-    I7: RequestInspector<I6::StateOut, I6::RequestOut, Error: Into<BoxError>>,
-    I8: RequestInspector<I7::StateOut, I7::RequestOut, Error: Into<BoxError>>,
-    StateIn: Clone + Send + Sync + 'static,
+    I1: RequestInspector<RequestIn, Error: Into<BoxError>>,
+    I2: RequestInspector<I1::RequestOut, Error: Into<BoxError>>,
+    I3: RequestInspector<I2::RequestOut, Error: Into<BoxError>>,
+    I4: RequestInspector<I3::RequestOut, Error: Into<BoxError>>,
+    I5: RequestInspector<I4::RequestOut, Error: Into<BoxError>>,
+    I6: RequestInspector<I5::RequestOut, Error: Into<BoxError>>,
+    I7: RequestInspector<I6::RequestOut, Error: Into<BoxError>>,
+    I8: RequestInspector<I7::RequestOut, Error: Into<BoxError>>,
     RequestIn: Send + 'static,
 {
     type Error = BoxError;
-    type Response = (Context<I8::StateOut>, I8::RequestOut);
+    type Response = (Context, I8::RequestOut);
 
-    async fn serve(
-        &self,
-        ctx: Context<StateIn>,
-        req: RequestIn,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, ctx: Context, req: RequestIn) -> Result<Self::Response, Self::Error> {
         let (ctx, req) = self.0.inspect_request(ctx, req).await.map_err(Into::into)?;
         let (ctx, req) = self.1.inspect_request(ctx, req).await.map_err(Into::into)?;
         let (ctx, req) = self.2.inspect_request(ctx, req).await.map_err(Into::into)?;
@@ -206,29 +164,24 @@ where
     }
 }
 
-impl<I1, I2, I3, I4, I5, I6, I7, I8, I9, StateIn, RequestIn> Service<StateIn, RequestIn>
+impl<I1, I2, I3, I4, I5, I6, I7, I8, I9, RequestIn> Service<RequestIn>
     for (I1, I2, I3, I4, I5, I6, I7, I8, I9)
 where
-    I1: RequestInspector<StateIn, RequestIn, Error: Into<BoxError>>,
-    I2: RequestInspector<I1::StateOut, I1::RequestOut, Error: Into<BoxError>>,
-    I3: RequestInspector<I2::StateOut, I2::RequestOut, Error: Into<BoxError>>,
-    I4: RequestInspector<I3::StateOut, I3::RequestOut, Error: Into<BoxError>>,
-    I5: RequestInspector<I4::StateOut, I4::RequestOut, Error: Into<BoxError>>,
-    I6: RequestInspector<I5::StateOut, I5::RequestOut, Error: Into<BoxError>>,
-    I7: RequestInspector<I6::StateOut, I6::RequestOut, Error: Into<BoxError>>,
-    I8: RequestInspector<I7::StateOut, I7::RequestOut, Error: Into<BoxError>>,
-    I9: RequestInspector<I8::StateOut, I8::RequestOut, Error: Into<BoxError>>,
-    StateIn: Clone + Send + Sync + 'static,
+    I1: RequestInspector<RequestIn, Error: Into<BoxError>>,
+    I2: RequestInspector<I1::RequestOut, Error: Into<BoxError>>,
+    I3: RequestInspector<I2::RequestOut, Error: Into<BoxError>>,
+    I4: RequestInspector<I3::RequestOut, Error: Into<BoxError>>,
+    I5: RequestInspector<I4::RequestOut, Error: Into<BoxError>>,
+    I6: RequestInspector<I5::RequestOut, Error: Into<BoxError>>,
+    I7: RequestInspector<I6::RequestOut, Error: Into<BoxError>>,
+    I8: RequestInspector<I7::RequestOut, Error: Into<BoxError>>,
+    I9: RequestInspector<I8::RequestOut, Error: Into<BoxError>>,
     RequestIn: Send + 'static,
 {
     type Error = BoxError;
-    type Response = (Context<I9::StateOut>, I9::RequestOut);
+    type Response = (Context, I9::RequestOut);
 
-    async fn serve(
-        &self,
-        ctx: Context<StateIn>,
-        req: RequestIn,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, ctx: Context, req: RequestIn) -> Result<Self::Response, Self::Error> {
         let (ctx, req) = self.0.inspect_request(ctx, req).await.map_err(Into::into)?;
         let (ctx, req) = self.1.inspect_request(ctx, req).await.map_err(Into::into)?;
         let (ctx, req) = self.2.inspect_request(ctx, req).await.map_err(Into::into)?;
@@ -241,30 +194,25 @@ where
     }
 }
 
-impl<I1, I2, I3, I4, I5, I6, I7, I8, I9, I10, StateIn, RequestIn> Service<StateIn, RequestIn>
+impl<I1, I2, I3, I4, I5, I6, I7, I8, I9, I10, RequestIn> Service<RequestIn>
     for (I1, I2, I3, I4, I5, I6, I7, I8, I9, I10)
 where
-    I1: RequestInspector<StateIn, RequestIn, Error: Into<BoxError>>,
-    I2: RequestInspector<I1::StateOut, I1::RequestOut, Error: Into<BoxError>>,
-    I3: RequestInspector<I2::StateOut, I2::RequestOut, Error: Into<BoxError>>,
-    I4: RequestInspector<I3::StateOut, I3::RequestOut, Error: Into<BoxError>>,
-    I5: RequestInspector<I4::StateOut, I4::RequestOut, Error: Into<BoxError>>,
-    I6: RequestInspector<I5::StateOut, I5::RequestOut, Error: Into<BoxError>>,
-    I7: RequestInspector<I6::StateOut, I6::RequestOut, Error: Into<BoxError>>,
-    I8: RequestInspector<I7::StateOut, I7::RequestOut, Error: Into<BoxError>>,
-    I9: RequestInspector<I8::StateOut, I8::RequestOut, Error: Into<BoxError>>,
-    I10: RequestInspector<I9::StateOut, I9::RequestOut, Error: Into<BoxError>>,
-    StateIn: Clone + Send + Sync + 'static,
+    I1: RequestInspector<RequestIn, Error: Into<BoxError>>,
+    I2: RequestInspector<I1::RequestOut, Error: Into<BoxError>>,
+    I3: RequestInspector<I2::RequestOut, Error: Into<BoxError>>,
+    I4: RequestInspector<I3::RequestOut, Error: Into<BoxError>>,
+    I5: RequestInspector<I4::RequestOut, Error: Into<BoxError>>,
+    I6: RequestInspector<I5::RequestOut, Error: Into<BoxError>>,
+    I7: RequestInspector<I6::RequestOut, Error: Into<BoxError>>,
+    I8: RequestInspector<I7::RequestOut, Error: Into<BoxError>>,
+    I9: RequestInspector<I8::RequestOut, Error: Into<BoxError>>,
+    I10: RequestInspector<I9::RequestOut, Error: Into<BoxError>>,
     RequestIn: Send + 'static,
 {
     type Error = BoxError;
-    type Response = (Context<I10::StateOut>, I10::RequestOut);
+    type Response = (Context, I10::RequestOut);
 
-    async fn serve(
-        &self,
-        ctx: Context<StateIn>,
-        req: RequestIn,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, ctx: Context, req: RequestIn) -> Result<Self::Response, Self::Error> {
         let (ctx, req) = self.0.inspect_request(ctx, req).await.map_err(Into::into)?;
         let (ctx, req) = self.1.inspect_request(ctx, req).await.map_err(Into::into)?;
         let (ctx, req) = self.2.inspect_request(ctx, req).await.map_err(Into::into)?;
@@ -278,31 +226,26 @@ where
     }
 }
 
-impl<I1, I2, I3, I4, I5, I6, I7, I8, I9, I10, I11, StateIn, RequestIn> Service<StateIn, RequestIn>
+impl<I1, I2, I3, I4, I5, I6, I7, I8, I9, I10, I11, RequestIn> Service<RequestIn>
     for (I1, I2, I3, I4, I5, I6, I7, I8, I9, I10, I11)
 where
-    I1: RequestInspector<StateIn, RequestIn, Error: Into<BoxError>>,
-    I2: RequestInspector<I1::StateOut, I1::RequestOut, Error: Into<BoxError>>,
-    I3: RequestInspector<I2::StateOut, I2::RequestOut, Error: Into<BoxError>>,
-    I4: RequestInspector<I3::StateOut, I3::RequestOut, Error: Into<BoxError>>,
-    I5: RequestInspector<I4::StateOut, I4::RequestOut, Error: Into<BoxError>>,
-    I6: RequestInspector<I5::StateOut, I5::RequestOut, Error: Into<BoxError>>,
-    I7: RequestInspector<I6::StateOut, I6::RequestOut, Error: Into<BoxError>>,
-    I8: RequestInspector<I7::StateOut, I7::RequestOut, Error: Into<BoxError>>,
-    I9: RequestInspector<I8::StateOut, I8::RequestOut, Error: Into<BoxError>>,
-    I10: RequestInspector<I9::StateOut, I9::RequestOut, Error: Into<BoxError>>,
-    I11: RequestInspector<I10::StateOut, I10::RequestOut, Error: Into<BoxError>>,
-    StateIn: Clone + Send + Sync + 'static,
+    I1: RequestInspector<RequestIn, Error: Into<BoxError>>,
+    I2: RequestInspector<I1::RequestOut, Error: Into<BoxError>>,
+    I3: RequestInspector<I2::RequestOut, Error: Into<BoxError>>,
+    I4: RequestInspector<I3::RequestOut, Error: Into<BoxError>>,
+    I5: RequestInspector<I4::RequestOut, Error: Into<BoxError>>,
+    I6: RequestInspector<I5::RequestOut, Error: Into<BoxError>>,
+    I7: RequestInspector<I6::RequestOut, Error: Into<BoxError>>,
+    I8: RequestInspector<I7::RequestOut, Error: Into<BoxError>>,
+    I9: RequestInspector<I8::RequestOut, Error: Into<BoxError>>,
+    I10: RequestInspector<I9::RequestOut, Error: Into<BoxError>>,
+    I11: RequestInspector<I10::RequestOut, Error: Into<BoxError>>,
     RequestIn: Send + 'static,
 {
     type Error = BoxError;
-    type Response = (Context<I11::StateOut>, I11::RequestOut);
+    type Response = (Context, I11::RequestOut);
 
-    async fn serve(
-        &self,
-        ctx: Context<StateIn>,
-        req: RequestIn,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, ctx: Context, req: RequestIn) -> Result<Self::Response, Self::Error> {
         let (ctx, req) = self.0.inspect_request(ctx, req).await.map_err(Into::into)?;
         let (ctx, req) = self.1.inspect_request(ctx, req).await.map_err(Into::into)?;
         let (ctx, req) = self.2.inspect_request(ctx, req).await.map_err(Into::into)?;
@@ -317,32 +260,27 @@ where
     }
 }
 
-impl<I1, I2, I3, I4, I5, I6, I7, I8, I9, I10, I11, I12, StateIn, RequestIn>
-    Service<StateIn, RequestIn> for (I1, I2, I3, I4, I5, I6, I7, I8, I9, I10, I11, I12)
+impl<I1, I2, I3, I4, I5, I6, I7, I8, I9, I10, I11, I12, RequestIn> Service<RequestIn>
+    for (I1, I2, I3, I4, I5, I6, I7, I8, I9, I10, I11, I12)
 where
-    I1: RequestInspector<StateIn, RequestIn, Error: Into<BoxError>>,
-    I2: RequestInspector<I1::StateOut, I1::RequestOut, Error: Into<BoxError>>,
-    I3: RequestInspector<I2::StateOut, I2::RequestOut, Error: Into<BoxError>>,
-    I4: RequestInspector<I3::StateOut, I3::RequestOut, Error: Into<BoxError>>,
-    I5: RequestInspector<I4::StateOut, I4::RequestOut, Error: Into<BoxError>>,
-    I6: RequestInspector<I5::StateOut, I5::RequestOut, Error: Into<BoxError>>,
-    I7: RequestInspector<I6::StateOut, I6::RequestOut, Error: Into<BoxError>>,
-    I8: RequestInspector<I7::StateOut, I7::RequestOut, Error: Into<BoxError>>,
-    I9: RequestInspector<I8::StateOut, I8::RequestOut, Error: Into<BoxError>>,
-    I10: RequestInspector<I9::StateOut, I9::RequestOut, Error: Into<BoxError>>,
-    I11: RequestInspector<I10::StateOut, I10::RequestOut, Error: Into<BoxError>>,
-    I12: RequestInspector<I11::StateOut, I11::RequestOut, Error: Into<BoxError>>,
-    StateIn: Clone + Send + Sync + 'static,
+    I1: RequestInspector<RequestIn, Error: Into<BoxError>>,
+    I2: RequestInspector<I1::RequestOut, Error: Into<BoxError>>,
+    I3: RequestInspector<I2::RequestOut, Error: Into<BoxError>>,
+    I4: RequestInspector<I3::RequestOut, Error: Into<BoxError>>,
+    I5: RequestInspector<I4::RequestOut, Error: Into<BoxError>>,
+    I6: RequestInspector<I5::RequestOut, Error: Into<BoxError>>,
+    I7: RequestInspector<I6::RequestOut, Error: Into<BoxError>>,
+    I8: RequestInspector<I7::RequestOut, Error: Into<BoxError>>,
+    I9: RequestInspector<I8::RequestOut, Error: Into<BoxError>>,
+    I10: RequestInspector<I9::RequestOut, Error: Into<BoxError>>,
+    I11: RequestInspector<I10::RequestOut, Error: Into<BoxError>>,
+    I12: RequestInspector<I11::RequestOut, Error: Into<BoxError>>,
     RequestIn: Send + 'static,
 {
     type Error = BoxError;
-    type Response = (Context<I12::StateOut>, I12::RequestOut);
+    type Response = (Context, I12::RequestOut);
 
-    async fn serve(
-        &self,
-        ctx: Context<StateIn>,
-        req: RequestIn,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, ctx: Context, req: RequestIn) -> Result<Self::Response, Self::Error> {
         let (ctx, req) = self.0.inspect_request(ctx, req).await.map_err(Into::into)?;
         let (ctx, req) = self.1.inspect_request(ctx, req).await.map_err(Into::into)?;
         let (ctx, req) = self.2.inspect_request(ctx, req).await.map_err(Into::into)?;

@@ -90,18 +90,17 @@ mod tests {
             }
         }
 
-        impl<S, State, Request> Service<State, Request> for ToUpper<S>
+        impl<S, Request> Service<Request> for ToUpper<S>
         where
             Request: Send + 'static,
-            S: Service<State, Request, Response = &'static str>,
-            State: Clone + Send + Sync + 'static,
+            S: Service<Request, Response = &'static str>,
         {
             type Response = String;
             type Error = S::Error;
 
             async fn serve(
                 &self,
-                ctx: Context<State>,
+                ctx: Context,
                 req: Request,
             ) -> Result<Self::Response, Self::Error> {
                 let res = self.0.serve(ctx, req).await;

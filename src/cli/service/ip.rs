@@ -143,7 +143,7 @@ impl IpServiceBuilder<mode::Http> {
     pub fn build(
         self,
         executor: Executor,
-    ) -> Result<impl Service<(), TcpStream, Response = (), Error = Infallible>, BoxError> {
+    ) -> Result<impl Service<TcpStream, Response = (), Error = Infallible>, BoxError> {
         let (tcp_forwarded_layer, http_forwarded_layer) = match &self.forward {
             None => (None, None),
             Some(ForwardKind::Forwarded) => {
@@ -206,11 +206,11 @@ impl IpServiceBuilder<mode::Http> {
 /// The inner http echo-service used by the [`IpServiceBuilder`].
 pub struct HttpEchoService;
 
-impl Service<(), Request> for HttpEchoService {
+impl Service<Request> for HttpEchoService {
     type Response = Response;
     type Error = BoxError;
 
-    async fn serve(&self, ctx: Context<()>, _req: Request) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, ctx: Context, _req: Request) -> Result<Self::Response, Self::Error> {
         let peer_ip = ctx
             .get::<Forwarded>()
             .and_then(|f| f.client_ip())
@@ -228,14 +228,14 @@ impl Service<(), Request> for HttpEchoService {
 /// The inner tcp echo-service used by the [`IpServiceBuilder`].
 pub struct TcpEchoService;
 
-impl<Input> Service<(), Input> for TcpEchoService
+impl<Input> Service<Input> for TcpEchoService
 where
     Input: Stream + Unpin,
 {
     type Response = ();
     type Error = BoxError;
 
-    async fn serve(&self, ctx: Context<()>, stream: Input) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, ctx: Context, stream: Input) -> Result<Self::Response, Self::Error> {
         let peer_ip = ctx
             .get::<Forwarded>()
             .and_then(|f| f.client_ip())
@@ -268,7 +268,7 @@ impl IpServiceBuilder<mode::Transport> {
     /// build a tcp service ready to echo http traffic back
     pub fn build(
         self,
-    ) -> Result<impl Service<(), TcpStream, Response = (), Error = Infallible>, BoxError> {
+    ) -> Result<impl Service<TcpStream, Response = (), Error = Infallible>, BoxError> {
         let tcp_forwarded_layer = match &self.forward {
             None => None,
             Some(ForwardKind::HaProxy) => Some(HaProxyLayer::default()),

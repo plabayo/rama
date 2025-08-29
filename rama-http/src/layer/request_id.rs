@@ -251,10 +251,9 @@ impl<S, M> SetRequestId<S, M> {
     define_inner_service_accessors!();
 }
 
-impl<State, S, M, ReqBody, ResBody> Service<State, Request<ReqBody>> for SetRequestId<S, M>
+impl<S, M, ReqBody, ResBody> Service<Request<ReqBody>> for SetRequestId<S, M>
 where
-    State: Clone + Send + Sync + 'static,
-    S: Service<State, Request<ReqBody>, Response = Response<ResBody>>,
+    S: Service<Request<ReqBody>, Response = Response<ResBody>>,
     M: MakeRequestId,
     ReqBody: Send + 'static,
     ResBody: Send + 'static,
@@ -264,7 +263,7 @@ where
 
     async fn serve(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         mut req: Request<ReqBody>,
     ) -> Result<Self::Response, Self::Error> {
         if let Some(request_id) = req.headers().get(&self.header_name) {
@@ -365,10 +364,9 @@ impl<S: Clone> Clone for PropagateRequestId<S> {
     }
 }
 
-impl<State, S, ReqBody, ResBody> Service<State, Request<ReqBody>> for PropagateRequestId<S>
+impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for PropagateRequestId<S>
 where
-    State: Clone + Send + Sync + 'static,
-    S: Service<State, Request<ReqBody>, Response = Response<ResBody>>,
+    S: Service<Request<ReqBody>, Response = Response<ResBody>>,
     ReqBody: Send + 'static,
     ResBody: Send + 'static,
 {
@@ -377,7 +375,7 @@ where
 
     async fn serve(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         req: Request<ReqBody>,
     ) -> Result<Self::Response, Self::Error> {
         let request_id = req

@@ -40,29 +40,19 @@ impl SocketAddressMatcher {
 }
 
 #[cfg(feature = "http")]
-impl<State, Body> rama_core::matcher::Matcher<State, Request<Body>> for SocketAddressMatcher {
-    fn matches(
-        &self,
-        _ext: Option<&mut Extensions>,
-        ctx: &Context<State>,
-        _req: &Request<Body>,
-    ) -> bool {
+impl<Body> rama_core::matcher::Matcher<Request<Body>> for SocketAddressMatcher {
+    fn matches(&self, _ext: Option<&mut Extensions>, ctx: &Context, _req: &Request<Body>) -> bool {
         ctx.get::<SocketInfo>()
             .map(|info| info.peer_addr() == &self.addr)
             .unwrap_or(self.optional)
     }
 }
 
-impl<State, Socket> rama_core::matcher::Matcher<State, Socket> for SocketAddressMatcher
+impl<Socket> rama_core::matcher::Matcher<Socket> for SocketAddressMatcher
 where
     Socket: crate::stream::Socket,
 {
-    fn matches(
-        &self,
-        _ext: Option<&mut Extensions>,
-        _ctx: &Context<State>,
-        stream: &Socket,
-    ) -> bool {
+    fn matches(&self, _ext: Option<&mut Extensions>, _ctx: &Context, stream: &Socket) -> bool {
         stream
             .peer_addr()
             .map(|addr| addr == self.addr)

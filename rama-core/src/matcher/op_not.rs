@@ -23,11 +23,11 @@ impl<T> Not<T> {
     }
 }
 
-impl<State, Request, T> Matcher<State, Request> for Not<T>
+impl<Request, T> Matcher<Request> for Not<T>
 where
-    T: Matcher<State, Request>,
+    T: Matcher<Request>,
 {
-    fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context<State>, req: &Request) -> bool {
+    fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context, req: &Request) -> bool {
         !self.0.matches(ext, ctx, req)
     }
 }

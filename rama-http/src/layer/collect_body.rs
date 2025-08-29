@@ -44,10 +44,9 @@ impl<S> CollectBody<S> {
     define_inner_service_accessors!();
 }
 
-impl<S, State, ReqBody, ResBody> Service<State, Request<ReqBody>> for CollectBody<S>
+impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for CollectBody<S>
 where
-    S: Service<State, Request<ReqBody>, Response = Response<ResBody>, Error: Into<BoxError>>,
-    State: Clone + Send + Sync + 'static,
+    S: Service<Request<ReqBody>, Response = Response<ResBody>, Error: Into<BoxError>>,
     ReqBody: Send + 'static,
     ResBody:
         Body<Data: Send, Error: std::error::Error + Send + Sync + 'static> + Send + Sync + 'static,
@@ -57,7 +56,7 @@ where
 
     async fn serve(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         req: Request<ReqBody>,
     ) -> Result<Self::Response, Self::Error> {
         let resp = self
