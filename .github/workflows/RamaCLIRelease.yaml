@@ -103,10 +103,16 @@ jobs:
         with:
           env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
 
-      - name: Build release
-        shell: bash
+      - name: Build and Sign
         run: |
-          cargo build --release -p rama-cli --target ${{ matrix.target }}
+          bash ./rama-cli/scripts/build_and_sign_macos.sh ${{ matrix.target }}
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          MACOS_CERT_COMMON_NAME: ${{ secrets.MACOS_CERT_COMMON_NAME }}
+          AC_API_KEY_ID: ${{ secrets.AC_API_KEY_ID }}
+          AC_API_ISSUER_ID: ${{ secrets.AC_API_ISSUER_ID }}
+          AC_API_KEY: ${{ secrets.AC_API_KEY }}
 
       - name: Package
         run: |
@@ -165,7 +171,7 @@ jobs:
         with:
           api-token: "${{ secrets.SIGNPATH_API_TOKEN }}"
           organization-id: "177e81da-21f7-469e-823f-a924bcc9f474"
-          project-slug: "rama_"
+          project-slug: "rama"
           signing-policy-slug: "test-signing"
           github-artifact-id: "${{ steps.upload-unsigned-artifact.outputs.artifact-id }}"
           wait-for-completion: true
