@@ -1,5 +1,5 @@
 use crate::layer::har::Recorder;
-use crate::layer::har::default::InMemoryRecorder;
+use crate::layer::har::fs_recorder::FsRecorder;
 use crate::layer::har::service::HARExportService;
 use crate::layer::har::toggle::Toggle;
 use rama_core::Layer;
@@ -9,11 +9,11 @@ pub struct HARExportLayer<R, T> {
     pub toggle: T,
 }
 
-impl Default for HARExportLayer<InMemoryRecorder, bool> {
-    fn default() -> Self {
+impl<T: Toggle> HARExportLayer<FsRecorder, T> {
+    pub fn new(fs_path: String, toggle: T) -> Self {
         Self {
-            recorder: InMemoryRecorder::new(),
-            toggle: false,
+            recorder: FsRecorder::new(fs_path),
+            toggle,
         }
     }
 }
@@ -48,5 +48,73 @@ where
             toggle: self.toggle,
             recorder: self.recorder,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::layer::har::signal::signal_toggle;
+    use crate::layer::har::{HarLog, Recorder};
+    use std::sync::{Arc, Mutex, atomic::Ordering};
+
+    // simple alternative implementation
+
+    #[derive(Clone)]
+    pub struct InMemoryRecorder {
+        data: Arc<Mutex<Vec<HarLog>>>,
+    }
+
+    impl InMemoryRecorder {
+        #[must_use]
+        pub fn new() -> Self {
+            Self {
+                data: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+    }
+
+    impl Recorder for InMemoryRecorder {
+        async fn record(&self, line: HarLog) {
+            let mut lock = self.data.lock().unwrap();
+            lock.push(line);
+        }
+    }
+
+    impl<T: Toggle> HARExportLayer<InMemoryRecorder, T> {
+        pub fn new_test(toggle: T) -> Self {
+            Self {
+                recorder: InMemoryRecorder::new(),
+                toggle,
+            }
+        }
+    }
+
+    #[tokio::test]
+    // Test showing flag on/off working with a manual recorder
+    async fn in_memory_recorder_records_logs() {
+        let (flag, tx, _handle) = signal_toggle();
+        let layer = HARExportLayer::new_test(flag.clone());
+        // initially the flag is set false
+        assert_eq!(flag.load(Ordering::Relaxed), false);
+
+        // flip once
+        tx.send(()).await.unwrap();
+        tokio::task::yield_now().await;
+        assert_eq!(flag.load(Ordering::Relaxed), true);
+
+        layer.recorder.record(HarLog::default()).await;
+
+        // flip it manually
+        tx.send(()).await.unwrap();
+        tokio::task::yield_now().await;
+        assert_eq!(flag.load(Ordering::Relaxed), false);
+
+        // Check that the recorder captured something
+        let data = layer.recorder.data.lock().unwrap();
+        assert!(
+            !data.is_empty(),
+            "Expected recorder to have recorded at least one HAR log"
+        );
     }
 }

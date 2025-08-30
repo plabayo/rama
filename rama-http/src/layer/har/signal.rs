@@ -29,9 +29,8 @@ pub fn signal_toggle() -> (Arc<AtomicBool>, mpsc::Sender<()>, JoinHandle<()>) {
     let flag_clone = Arc::clone(&flag);
 
     let handle = tokio::spawn(async move {
-        while (rx.recv().await).is_some() {
-            let current = flag_clone.load(Ordering::Acquire);
-            flag_clone.store(!current, Ordering::Release);
+        while rx.recv().await.is_some() {
+            flag_clone.fetch_xor(true, Ordering::AcqRel);
         }
     });
 
