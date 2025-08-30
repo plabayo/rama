@@ -17,7 +17,7 @@ use rama_http_headers::HeaderEncode;
 use rama_http_headers::{ContentType, Cookie as RamaCookie, HeaderMapExt, Location};
 use rama_http_types::dep::http;
 use rama_http_types::proto::h1::headers::original::OriginalHttp1Headers;
-use rama_http_types::{HeaderMap, Version as HttpVersion, proto::h1::Http1HeaderMap};
+use rama_http_types::{HeaderMap, Version as RamaHttpVersion, proto::h1::Http1HeaderMap};
 use serde::{Deserialize, Serialize};
 
 mod mime_serde {
@@ -48,16 +48,27 @@ mod chrono_serializer {
     }
 }
 
-// this needs to be refactored somewhere else as
-// it's widely used across the codebase
-fn into_string_version(v: HttpVersion) -> Result<String, OpaqueError> {
-    match v {
-        HttpVersion::HTTP_09 => Ok(String::from("0.9")),
-        HttpVersion::HTTP_10 => Ok(String::from("1.0")),
-        HttpVersion::HTTP_11 => Ok(String::from("1.1")),
-        HttpVersion::HTTP_2 => Ok(String::from("2")),
-        HttpVersion::HTTP_3 => Ok(String::from("3")),
-        _ => Err(OpaqueError::from_display("Unsupported HTTP Version")),
+rama_utils::macros::enums::enum_builder! {
+    @String
+    pub enum HttpVersion {
+        Http09 => "0.9",
+        Http10 => "1.0",
+        Http11 => "1.1",
+        Http2 => "2",
+        Http3 => "3",
+    }
+}
+
+impl From<RamaHttpVersion> for HttpVersion {
+    fn from(rhv: RamaHttpVersion) -> Self {
+        match rhv {
+            RamaHttpVersion::HTTP_09 => Self::Http09,
+            RamaHttpVersion::HTTP_10 => Self::Http10,
+            RamaHttpVersion::HTTP_11 => Self::Http11,
+            RamaHttpVersion::HTTP_2 => Self::Http2,
+            RamaHttpVersion::HTTP_3 => Self::Http3,
+            _ => panic!("Unknown Http version"),
+        }
     }
 }
 
@@ -214,7 +225,7 @@ impl Entry {
 pub struct Request {
     pub method: String,
     pub url: String,
-    pub http_version: String,
+    pub http_version: HttpVersion,
     pub cookies: Vec<Cookie>,
     pub headers: Vec<Header>,
     pub query_string: Vec<QueryStringPair>,
@@ -233,8 +244,6 @@ impl Request {
     where
         State: Clone + Send + Sync + 'static,
     {
-        let http_version = into_string_version(parts.version)?;
-
         let post_data = if parts.method == "POST" {
             let mime_type = get_mime(&parts.headers);
             let params = match mime_type {
@@ -287,7 +296,7 @@ impl Request {
         Ok(Self {
             method: parts.method.to_string(),
             url: parts.uri.to_string(),
-            http_version,
+            http_version: parts.version.into(),
             cookies,
             headers: into_har_headers(&header_map),
             query_string,
@@ -306,7 +315,7 @@ pub struct Response {
     /// Response status description.
     pub status_text: String,
     /// Response HTTP Version.
-    pub http_version: String,
+    pub http_version: HttpVersion,
     /// List of cookie objects.
     pub cookies: Vec<Cookie>,
     /// List of header objects.
@@ -328,8 +337,6 @@ impl Response {
         resp_parts: http::response::Parts,
         payload: &[u8],
     ) -> Result<Self, OpaqueError> {
-        let http_version = into_string_version(resp_parts.version)?;
-
         let content = Content {
             size: payload.len() as i64,
             compression: None,
@@ -363,7 +370,7 @@ impl Response {
         Ok(Self {
             status: 0,
             status_text: String::new(),
-            http_version,
+            http_version: resp_parts.version.into(),
             cookies,
             headers: into_har_headers(&header_map),
             content,
