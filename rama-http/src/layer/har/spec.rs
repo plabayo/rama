@@ -423,6 +423,15 @@ pub struct PostParam {
     pub comment: Option<String>,
 }
 
+rama_utils::macros::enums::enum_builder! {
+    @String
+    pub enum ContentEncoding {
+        Base64 => "base64",
+        Gzip => "gzip",
+        Deflate => "deflate",
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Content {
     pub size: i64,
@@ -433,10 +442,9 @@ pub struct Content {
     /// Encoding used for response text field e.g "base64".
     /// Leave out this field if the text field is HTTP decoded (decompressed & unchunked),
     /// than trans-coded from its original character set into UTF-8.
-    pub encoding: Option<String>,
+    pub encoding: Option<ContentEncoding>,
     pub comment: Option<String>,
 }
-
 #[derive(Debug, Clone, Serialize, Default)]
 pub struct Cache {
     pub before_request: Option<CacheState>,
