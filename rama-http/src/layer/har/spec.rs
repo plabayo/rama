@@ -7,6 +7,7 @@ use crate::layer::har::request_comment::RequestComment;
 use crate::proto::HeaderByteLength;
 use crate::service::web::extract::Query;
 
+use chrono::{DateTime, Utc};
 use mime::Mime;
 
 use rama_core::Context;
@@ -32,6 +33,18 @@ mod mime_serde {
             Some(m) => serializer.serialize_str(m.as_ref()),
             None => serializer.serialize_none(),
         }
+    }
+}
+
+mod chrono_serializer {
+    use chrono::{DateTime, Utc};
+    use serde::Serializer;
+
+    pub(super) fn serialize<S>(dt: &DateTime<Utc>, s: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        s.serialize_str(&dt.to_rfc3339())
     }
 }
 
@@ -137,7 +150,9 @@ pub struct Browser {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Page {
-    pub started_date_time: String,
+    /// Date and time stamp of the request start (ISO 8601 - YYYY-MM-DDThh:mm:ss.sTZD)
+    #[serde(with = "chrono_serializer")]
+    pub started_date_time: DateTime<Utc>,
     pub id: String,
     pub title: String,
     pub page_timings: PageTimings,
@@ -154,7 +169,9 @@ pub struct PageTimings {
 #[derive(Debug, Clone, Serialize)]
 pub struct Entry {
     pub pageref: Option<String>,
-    pub started_date_time: String,
+    /// Date and time stamp of the request start (ISO 8601 - YYYY-MM-DDThh:mm:ss.sTZD)
+    #[serde(with = "chrono_serializer")]
+    pub started_date_time: DateTime<Utc>,
     /// milliseconds
     pub time: u64,
     pub request: Request,
@@ -170,7 +187,7 @@ pub struct Entry {
 impl Entry {
     #[must_use]
     pub fn new(
-        started_date_time: String,
+        started_date_time: DateTime<Utc>,
         time: u64,
         request: Request,
         response: Option<Response>,
@@ -366,7 +383,9 @@ pub struct Cookie {
     pub value: String,
     pub path: Option<String>,
     pub domain: Option<String>,
-    pub expires: Option<String>,
+    /// Date and time stamp of the request start (ISO 8601 - YYYY-MM-DDThh:mm:ss.sTZD)
+    #[serde(with = "chrono_serializer")]
+    pub expires: DateTime<Utc>,
     pub http_only: Option<bool>,
     pub secure: Option<bool>,
     pub comment: Option<String>,
@@ -427,7 +446,9 @@ pub struct Cache {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct CacheState {
-    pub expires: Option<String>,
+    /// Date and time stamp of the request start (ISO 8601 - YYYY-MM-DDThh:mm:ss.sTZD)
+    #[serde(with = "chrono_serializer")]
+    pub expires: DateTime<Utc>,
     pub last_access: Option<String>,
     pub e_tag: Option<String>,
     pub hit_count: Option<i64>,

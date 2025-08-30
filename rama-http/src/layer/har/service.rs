@@ -6,6 +6,9 @@ use crate::layer::har::spec::{
 };
 use crate::layer::har::toggle::Toggle;
 use crate::{Body, Request, Response};
+
+use chrono::Utc;
+
 use rama_core::telemetry::tracing;
 use rama_core::{Context, Service, bytes::Bytes, error::BoxError};
 use rama_error::{ErrorExt, OpaqueError};
@@ -108,7 +111,7 @@ where
             let cache = Cache::default();
 
             let entry = Entry::new(
-                "started_date_time".to_owned(),
+                Utc::now(),
                 0, // time elapsed
                 request,
                 response,
