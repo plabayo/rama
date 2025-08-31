@@ -557,7 +557,7 @@ where
                 tracing::trace!("recv GOAWAY: {frame:?}");
                 // This should prevent starting new streams,
                 // but should allow continuing to process current streams
-                // until they are all EOS. Once they are should
+                // until they are all EOS. Once they are, State should
                 // transition to GoAway.
                 self.streams.recv_go_away(&frame)?;
                 *self.error = Some(frame);

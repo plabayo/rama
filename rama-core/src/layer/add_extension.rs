@@ -37,7 +37,7 @@
 //! };
 //!
 //! let mut service = (
-//!     // Share an `Arc` with all requests.
+//!     // Share an `Arc<State>` with all requests.
 //!     AddExtensionLayer::new(Arc::new(state)),
 //! ).into_layer(service_fn(handle));
 //!

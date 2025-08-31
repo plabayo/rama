@@ -4,12 +4,11 @@ use crate::{
     Request, Response, StatusCode, matcher::HttpMatcher,
     service::web::endpoint::response::IntoResponse,
 };
-use core::fmt;
 use rama_core::{
     Context, Service,
     service::{BoxService, service_fn},
 };
-use std::{convert::Infallible, sync::Arc};
+use std::{convert::Infallible, fmt, sync::Arc};
 
 use super::match_service;
 

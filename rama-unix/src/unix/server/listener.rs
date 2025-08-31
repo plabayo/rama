@@ -29,10 +29,10 @@ use crate::UnixStream;
 pub struct UnixListenerBuilder;
 
 impl UnixListenerBuilder {
-    /// Create a new `UnixListenerBuilder` without a state.
+    /// Create a new `UnixListenerBuilder`.
     #[must_use]
     pub fn new() -> Self {
-        Self {}
+        Self
     }
 }
 
