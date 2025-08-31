@@ -51,7 +51,7 @@ use rama::{
         server::HttpServer,
         service::web::response::IntoResponse,
     },
-    layer::ConsumeErrLayer,
+    layer::{AddExtensionLayer, ConsumeErrLayer},
     net::{
         http::RequestContext, proxy::ProxyTarget, stream::layer::http::BodyLimitLayer,
         tls::server::SelfSignedData, user::Basic,
@@ -74,7 +74,7 @@ struct State {
     mitm_tls_service_data: TlsAcceptorData,
 }
 
-type Context = rama::Context<State>;
+type Context = rama::Context;
 
 #[tokio::main]
 async fn main() -> Result<(), BoxError> {
@@ -97,7 +97,7 @@ async fn main() -> Result<(), BoxError> {
     let graceful = rama::graceful::Shutdown::default();
 
     graceful.spawn_task_fn(async |guard| {
-        let tcp_service = TcpListener::build_with_state(state)
+        let tcp_service = TcpListener::build()
             .bind("127.0.0.1:62019")
             .await
             .expect("bind tcp proxy to 127.0.0.1:62019");
@@ -123,6 +123,7 @@ async fn main() -> Result<(), BoxError> {
             .serve_graceful(
                 guard,
                 (
+                    AddExtensionLayer::new(state),
                     // protect the http proxy from too large bodies, both from request and response end
                     BodyLimitLayer::symmetric(2 * 1024 * 1024),
                 )
@@ -180,9 +181,10 @@ async fn http_connect_proxy(ctx: Context, upgraded: Upgraded) -> Result<(), Infa
 
     let http_transport_service = HttpServer::auto(ctx.executor().clone()).service(http_service);
 
-    let https_service = TlsAcceptorLayer::new(ctx.state().mitm_tls_service_data.clone())
-        .with_store_client_hello(true)
-        .into_layer(http_transport_service);
+    let https_service =
+        TlsAcceptorLayer::new(ctx.get::<State>().unwrap().mitm_tls_service_data.clone())
+            .with_store_client_hello(true)
+            .into_layer(http_transport_service);
 
     https_service
         .serve(ctx, upgraded)
@@ -192,7 +194,7 @@ async fn http_connect_proxy(ctx: Context, upgraded: Upgraded) -> Result<(), Infa
     Ok(())
 }
 
-fn new_http_mitm_proxy() -> impl Service<State, Request, Response = Response, Error = Infallible> {
+fn new_http_mitm_proxy() -> impl Service<Request, Response = Response, Error = Infallible> {
     (
         MapResponseBodyLayer::new(Body::new),
         TraceLayer::new_for_http(),

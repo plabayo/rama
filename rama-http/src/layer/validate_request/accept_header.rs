@@ -51,9 +51,8 @@ impl<ResBody> fmt::Debug for AcceptHeader<ResBody> {
     }
 }
 
-impl<S, B, ResBody> ValidateRequest<S, B> for AcceptHeader<ResBody>
+impl<B, ResBody> ValidateRequest<B> for AcceptHeader<ResBody>
 where
-    S: Clone + Send + Sync + 'static,
     B: Send + Sync + 'static,
     ResBody: Default + Send + 'static,
 {
@@ -61,9 +60,9 @@ where
 
     async fn validate(
         &self,
-        ctx: Context<S>,
+        ctx: Context,
         req: Request<B>,
-    ) -> Result<(Context<S>, Request<B>), Response<Self::ResponseBody>> {
+    ) -> Result<(Context, Request<B>), Response<Self::ResponseBody>> {
         if !req.headers().contains_key(header::ACCEPT) {
             return Ok((ctx, req));
         }

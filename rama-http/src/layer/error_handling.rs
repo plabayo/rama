@@ -21,7 +21,7 @@
 //! #     Ok(())
 //! # }
 //!
-//! async fn handler<S>(_ctx: Context<S>, _req: Request) -> Result<Response, std::io::Error> {
+//! async fn handler(_ctx: Context, _req: Request) -> Result<Response, std::io::Error> {
 //!     some_expensive_io_operation().await?;
 //!     Ok(StatusCode::OK.into_response())
 //! }
@@ -154,20 +154,15 @@ impl<S> ErrorHandler<S> {
     }
 }
 
-impl<S, State, Body> Service<State, Request<Body>> for ErrorHandler<S, ()>
+impl<S, Body> Service<Request<Body>> for ErrorHandler<S, ()>
 where
-    S: Service<State, Request<Body>, Response: IntoResponse, Error: IntoResponse>,
-    State: Clone + Send + Sync + 'static,
+    S: Service<Request<Body>, Response: IntoResponse, Error: IntoResponse>,
     Body: Send + 'static,
 {
     type Response = Response;
     type Error = Infallible;
 
-    async fn serve(
-        &self,
-        ctx: Context<State>,
-        req: Request<Body>,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, ctx: Context, req: Request<Body>) -> Result<Self::Response, Self::Error> {
         match self.inner.serve(ctx, req).await {
             Ok(response) => Ok(response.into_response()),
             Err(error) => Ok(error.into_response()),
@@ -175,22 +170,17 @@ where
     }
 }
 
-impl<S, F, R, State, Body> Service<State, Request<Body>> for ErrorHandler<S, F>
+impl<S, F, R, Body> Service<Request<Body>> for ErrorHandler<S, F>
 where
-    S: Service<State, Request<Body>, Response: IntoResponse>,
+    S: Service<Request<Body>, Response: IntoResponse>,
     F: Fn(S::Error) -> R + Clone + Send + Sync + 'static,
     R: IntoResponse + 'static,
-    State: Clone + Send + Sync + 'static,
     Body: Send + 'static,
 {
     type Response = Response;
     type Error = Infallible;
 
-    async fn serve(
-        &self,
-        ctx: Context<State>,
-        req: Request<Body>,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, ctx: Context, req: Request<Body>) -> Result<Self::Response, Self::Error> {
         match self.inner.serve(ctx, req).await {
             Ok(response) => Ok(response.into_response()),
             Err(error) => Ok((self.error_mapper)(error).into_response()),

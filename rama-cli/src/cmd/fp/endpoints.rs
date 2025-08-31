@@ -93,10 +93,7 @@ pub(super) async fn get_consent() -> impl IntoResponse {
     )
 }
 
-pub(super) async fn get_report(
-    mut ctx: Context<Arc<State>>,
-    req: Request,
-) -> Result<Html, Response> {
+pub(super) async fn get_report(mut ctx: Context, req: Request) -> Result<Html, Response> {
     let ja4h = get_ja4h_info(&req);
 
     let (mut parts, _) = req.into_parts();
@@ -129,7 +126,7 @@ pub(super) async fn get_report(
     let head = r#"<script src="/assets/script.js"></script>"#;
 
     let mut tables = vec![
-        ctx.state().data_source.clone().into(),
+        ctx.get::<Arc<State>>().unwrap().data_source.clone().into(),
         user_agent_info.into(),
         request_info.into(),
         Table {
@@ -309,9 +306,14 @@ pub(super) struct AcmeChallengeParams {
 
 pub(super) async fn get_acme_challenge(
     Path(params): Path<AcmeChallengeParams>,
-    ctx: Context<Arc<State>>,
+    ctx: Context,
 ) -> Response {
-    match ctx.state().acme.get_challenge(params.token) {
+    match ctx
+        .get::<Arc<State>>()
+        .unwrap()
+        .acme
+        .get_challenge(params.token)
+    {
         Some(challenge) => Response::builder()
             .status(StatusCode::OK)
             .header("content-type", "text/plain")
@@ -344,7 +346,7 @@ pub(super) struct APINumberRequest {
 
 pub(super) async fn post_api_fetch_number(
     Path(params): Path<APINumberParams>,
-    mut ctx: Context<Arc<State>>,
+    mut ctx: Context,
     req: Request,
 ) -> Result<Json<serde_json::Value>, Response> {
     let ja4h = get_ja4h_info(&req);
@@ -381,7 +383,7 @@ pub(super) async fn post_api_fetch_number(
         .await
         .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()).into_response())?;
 
-    if let Some(storage) = ctx.state().storage.as_ref() {
+    if let Some(storage) = ctx.get::<Arc<State>>().unwrap().storage.as_ref() {
         let auth = ctx.contains::<crate::fp::StorageAuthorized>();
         if let Some(js_web_apis) = request.js_web_apis.clone() {
             storage
@@ -426,7 +428,7 @@ pub(super) async fn post_api_fetch_number(
 
 pub(super) async fn post_api_xml_http_request_number(
     Path(params): Path<APINumberParams>,
-    mut ctx: Context<Arc<State>>,
+    mut ctx: Context,
     req: Request,
 ) -> Result<Json<serde_json::Value>, Response> {
     let ja4h = get_ja4h_info(&req);
@@ -481,7 +483,7 @@ pub(super) async fn post_api_xml_http_request_number(
 // endpoints: form
 //------------------------------------------
 
-pub(super) async fn form(mut ctx: Context<Arc<State>>, req: Request) -> Result<Html, Response> {
+pub(super) async fn form(mut ctx: Context, req: Request) -> Result<Html, Response> {
     let ja4h = get_ja4h_info(&req);
 
     let (mut parts, _) = req.into_parts();
@@ -531,7 +533,7 @@ pub(super) async fn form(mut ctx: Context<Arc<State>>, req: Request) -> Result<H
     }
 
     let mut tables = vec![
-        ctx.state().data_source.clone().into(),
+        ctx.get::<Arc<State>>().unwrap().data_source.clone().into(),
         user_agent_info.into(),
         request_info.into(),
         Table {
@@ -575,10 +577,7 @@ pub(super) async fn form(mut ctx: Context<Arc<State>>, req: Request) -> Result<H
 // endpoints: WS(S)
 //------------------------------------------
 
-pub(super) async fn ws_api(
-    ctx: Context<Arc<State>>,
-    ws: ServerWebSocket,
-) -> Result<(), OpaqueError> {
+pub(super) async fn ws_api(ctx: Context, ws: ServerWebSocket) -> Result<(), OpaqueError> {
     tracing::debug!("ws api called");
     let (mut ws, mut parts) = ws.into_parts();
 
@@ -600,7 +599,7 @@ pub(super) async fn ws_api(
     if let Some(hello) = ctx
         .get::<SecureTransport>()
         .and_then(|st| st.client_hello())
-        && let Some(storage) = ctx.state().storage.as_ref()
+        && let Some(storage) = ctx.get::<Arc<State>>().unwrap().storage.as_ref()
     {
         let auth = ctx.contains::<StorageAuthorized>();
         storage

@@ -17,7 +17,7 @@ use rama_http::layer::required_header::AddRequiredRequestHeaders;
 async fn test_haproxy_client_ip() {
     utils::init_tracing();
 
-    let runner = utils::ExampleRunner::<()>::interactive("haproxy_client_ip", None);
+    let runner = utils::ExampleRunner::interactive("haproxy_client_ip", None);
 
     // try direct
     let resp = runner

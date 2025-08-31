@@ -40,21 +40,18 @@ pub enum TransportProtocol {
 /// not expressible with [`Into`].
 ///
 /// e.g. `&Request: Into<TransportContext>` would not work if it needs also [`Context`] and be a ref.
-pub trait TryRefIntoTransportContext<State> {
+pub trait TryRefIntoTransportContext {
     /// The error that can happen when trying to turn the self reference into the TransportContext.
     type Error;
 
     /// Try to turn the reference to self within the given context into the TransportContext.
-    fn try_ref_into_transport_ctx(
-        &self,
-        ctx: &Context<State>,
-    ) -> Result<TransportContext, Self::Error>;
+    fn try_ref_into_transport_ctx(&self, ctx: &Context) -> Result<TransportContext, Self::Error>;
 }
 
-impl<T: HttpRequestParts, State> TryFrom<(&Context<State>, &T)> for TransportContext {
+impl<T: HttpRequestParts> TryFrom<(&Context, &T)> for TransportContext {
     type Error = OpaqueError;
 
-    fn try_from((ctx, req): (&Context<State>, &T)) -> Result<Self, Self::Error> {
+    fn try_from((ctx, req): (&Context, &T)) -> Result<Self, Self::Error> {
         Ok(if let Some(req_ctx) = ctx.get::<RequestContext>() {
             req_ctx.into()
         } else {

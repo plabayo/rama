@@ -677,19 +677,18 @@ impl<S> Cors<S> {
     }
 }
 
-impl<S, State, ReqBody, ResBody> Service<State, Request<ReqBody>> for Cors<S>
+impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for Cors<S>
 where
-    S: Service<State, Request<ReqBody>, Response = Response<ResBody>>,
+    S: Service<Request<ReqBody>, Response = Response<ResBody>>,
     ReqBody: Send + 'static,
     ResBody: Default + Send + 'static,
-    State: Clone + Send + Sync + 'static,
 {
     type Response = S::Response;
     type Error = S::Error;
 
     async fn serve(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         req: Request<ReqBody>,
     ) -> Result<Self::Response, Self::Error> {
         let (parts, body) = req.into_parts();

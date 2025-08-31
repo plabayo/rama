@@ -58,7 +58,7 @@ async fn main() {
     let router = Router::new()
         .get("/", Html(r##"<h1>Rama - Web Router</h1>"##.to_owned()))
         // route with a parameter
-        .post("/greet/{name}", async |ctx: Context<()>, req: Request| {
+        .post("/greet/{name}", async |ctx: Context, req: Request| {
             let uri_params = ctx.get::<UriParams>().unwrap();
             let name = uri_params.get("name").unwrap();
             Json(json!({
@@ -67,7 +67,7 @@ async fn main() {
             }))
         })
         // catch-all route
-        .get("/lang/{*code}", async |ctx: Context<()>| {
+        .get("/lang/{*code}", async |ctx: Context| {
             let translations = [
                 ("en", "Welcome to our site!"),
                 ("fr", "Bienvenue sur notre site!"),

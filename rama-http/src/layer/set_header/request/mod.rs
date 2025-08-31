@@ -335,20 +335,19 @@ where
     }
 }
 
-impl<ReqBody, ResBody, State, S, M> Service<State, Request<ReqBody>> for SetRequestHeader<S, M>
+impl<ReqBody, ResBody, S, M> Service<Request<ReqBody>> for SetRequestHeader<S, M>
 where
     ReqBody: Send + 'static,
     ResBody: Send + 'static,
-    State: Clone + Send + Sync + 'static,
-    S: Service<State, Request<ReqBody>, Response = Response<ResBody>>,
-    M: MakeHeaderValue<State, ReqBody>,
+    S: Service<Request<ReqBody>, Response = Response<ResBody>>,
+    M: MakeHeaderValue<ReqBody>,
 {
     type Response = S::Response;
     type Error = S::Error;
 
     async fn serve(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         req: Request<ReqBody>,
     ) -> Result<Self::Response, Self::Error> {
         let (ctx, req) = self

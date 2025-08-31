@@ -31,17 +31,16 @@ impl HttpVersionAdapter {
     }
 }
 
-impl<State, ReqBody> Service<State, Request<ReqBody>> for HttpVersionAdapter
+impl<ReqBody> Service<Request<ReqBody>> for HttpVersionAdapter
 where
-    State: Clone + Send + Sync + 'static,
     ReqBody: Send + 'static,
 {
     type Error = BoxError;
-    type Response = (Context<State>, Request<ReqBody>);
+    type Response = (Context, Request<ReqBody>);
 
     async fn serve(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         mut req: Request<ReqBody>,
     ) -> Result<Self::Response, Self::Error> {
         match (ctx.get::<TargetHttpVersion>(), self.default_version) {

@@ -85,21 +85,15 @@ impl Forwarder<super::TcpConnector> {
     }
 }
 
-impl<S, T, C> Service<S, T> for Forwarder<C>
+impl<T, C> Service<T> for Forwarder<C>
 where
-    S: Clone + Send + Sync + 'static,
     T: Stream + Unpin,
-    C: ConnectorService<
-            S,
-            crate::client::Request,
-            Connection: Stream + Unpin,
-            Error: Into<BoxError>,
-        >,
+    C: ConnectorService<crate::client::Request, Connection: Stream + Unpin, Error: Into<BoxError>>,
 {
     type Response = ();
     type Error = BoxError;
 
-    async fn serve(&self, ctx: Context<S>, source: T) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, ctx: Context, source: T) -> Result<Self::Response, Self::Error> {
         let authority = match &self.kind {
             ForwarderKind::Static(target) => target.clone(),
             ForwarderKind::Dynamic => {

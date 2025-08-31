@@ -4,23 +4,8 @@
 //!
 //! [`rama`] supports two kinds of states:
 //!
-//! 1. type-safe state: this is the `S` generic parameter in [`Context`] and is to be used
-//!    as much as possible, given its existence and type properties can be validated at compile time
+//! 1. static state: this state can be a part of the service struct or captured by a closure
 //! 2. dynamic state: these can be injected as [`Extensions`]s using methods such as [`Context::insert`]
-//!
-//! As a rule of thumb one should use the type-safe state (1) in case:
-//!
-//! - the state is always expected to exist at the point the middleware/service is called
-//! - the state is specific to the app or middleware
-//! - and the state can be constructed in a default/empty state
-//!
-//! The latter is important given the state is often created (or at least reserved) prior to
-//! it is actually being populated by the relevant middleware. This is not the case for app-specific state
-//! such as Database pools which are created since the start and shared among many different tasks.
-//!
-//! The rule could be be simplified to "if you need to `.unwrap()` you probably want type-safe state instead".
-//! It's however just a guideline and not a hard rule. As maintainers of [`rama`] we'll do our best to respect it though,
-//! and we recommend you to do the same.
 //!
 //! Any state that is optional, and especially optional state injected by middleware, can be inserted using extensions.
 //! It is however important to try as much as possible to then also consume this state in an approach that deals
@@ -31,18 +16,6 @@
 //! [`rama`]: crate
 //!
 //! # Examples
-//!
-//! ```
-//! use rama_core::Context;
-//!
-//! #[derive(Debug)]
-//! struct ServiceState {
-//!     value: i32,
-//! }
-//!
-//! let state = ServiceState{ value: 5 };
-//! let ctx = Context::with_state(state);
-//! ```
 //!
 //! ## Example: Extensions
 //!
@@ -58,41 +31,9 @@
 //! ctx.insert(5i32);
 //! assert_eq!(ctx.get::<i32>(), Some(&5i32));
 //! ```
-//!
-//! ## State Wraps
-//!
-//! > 📖 [rustdoc link](https://ramaproxy.org/docs/rama/context/struct.Context.html#method.map_state)
-//!
-//! `rama` was built from the ground up to operate on and between different layers of the network stack.
-//! This has also an impact on state. Because sure, typed state is nice, but state leakage is not. What do I mean with that?
-//!
-//! When creating a `TcpListener` with state the state will be owned by that `TcpListener`. By default
-//! it will clone the state and pass a clone to each incoming `tcp` connection. You can however also
-//! inject your own state provider to customise that behaviour. Pretty much the same goes for an `HttpServer`,
-//! where it will do the same for each incoming http request. This is great for stuff that is okay to share, but it is not desired
-//! for state that you wish to have a narrower scope. Examples are state that are tied to a single _tcp_ connection and thus
-//! you do not wish to keep a global cache for this, as it would either be shared or get overly complicated to ensure
-//! you keep things separate and clean.
-//!
-//! One solution is to wrap your state.
-//!
-//! > See for reference: [/examples/http_conn_state.rs](https://github.com/plabayo/rama/tree/main/examples/http_conn_state.rs)
-//!
-//! In that example we make use of:
-//!
-//! - [`MapStateLayer`](https://ramaproxy.org/docs/rama/layer/struct.MapStateLayer.html):
-//!   this generic layer allows you to map the state from one type to another,
-//!   which is great in cases like this where you want the Application layer (http)
-//!   to have a different type compared to the network layer (tpc).
-//! - the [`derive_more` third-party crate](https://docs.rs/derive_more/latest/derive_more/) is used
-//!   as an example how one can use such crates to make services or layers which do not
-//!   depend on a specific state type, but instead only require a reference (mutable or not)
-//!   to specific properties they need, which can be useful in case that service
-//!   is used in multiple branches, each with their own concrete _state_ type.
 
 use crate::graceful::ShutdownGuard;
 use crate::rt::Executor;
-use std::fmt;
 use std::ops::{Deref, DerefMut};
 use tokio::task::JoinHandle;
 
@@ -143,150 +84,49 @@ impl DerefMut for RequestContextExt {
     }
 }
 
+#[derive(Debug, Default, Clone)]
 /// Context passed to and between services as input.
 ///
 /// See [`crate::context`] for more information.
-pub struct Context<S> {
-    state: S,
+pub struct Context {
     executor: Executor,
     extensions: Extensions,
 }
 
-impl<S: fmt::Debug> fmt::Debug for Context<S> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Context")
-            .field("state", &self.state)
-            .field("executor", &self.executor)
-            .field("extensions", &self.extensions)
-            .finish()
-    }
-}
-
+#[derive(Debug)]
 /// Component parts of [`Context`].
-pub struct Parts<S> {
-    pub state: S,
+pub struct Parts {
     pub executor: Executor,
     pub extensions: Extensions,
 }
 
-impl<S: fmt::Debug> fmt::Debug for Parts<S> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Parts")
-            .field("state", &self.state)
-            .field("executor", &self.executor)
-            .field("extensions", &self.extensions)
-            .finish()
-    }
-}
-
-impl Default for Context<()> {
-    fn default() -> Self {
-        Self::new((), Executor::default())
-    }
-}
-
-impl<S: Clone> Clone for Context<S> {
-    fn clone(&self) -> Self {
-        Self {
-            state: self.state.clone(),
-            executor: self.executor.clone(),
-            extensions: self.extensions.clone(),
-        }
-    }
-}
-
-impl<S> Context<S> {
+impl Context {
+    #[must_use]
     /// Create a new [`Context`] with the given state.
-    pub fn new(state: S, executor: Executor) -> Self {
+    pub fn new(executor: Executor) -> Self {
         Self {
-            state,
             executor,
             extensions: Extensions::new(),
         }
     }
 
-    pub fn from_parts(parts: Parts<S>) -> Self {
+    #[must_use]
+    pub fn from_parts(parts: Parts) -> Self {
         Self {
-            state: parts.state,
             executor: parts.executor,
             extensions: parts.extensions,
         }
     }
 
-    pub fn into_parts(self) -> Parts<S> {
+    #[must_use]
+    pub fn into_parts(self) -> Parts {
         Parts {
-            state: self.state,
             executor: self.executor,
             extensions: self.extensions,
         }
     }
 
-    /// Create a new [`Context`] with the given state and default extension.
-    pub fn with_state(state: S) -> Self {
-        Self::new(state, Executor::default())
-    }
-
-    /// Get a reference to the state.
-    pub fn state(&self) -> &S {
-        &self.state
-    }
-
-    /// Get an exclusive reference to the state.
-    pub fn state_mut(&mut self) -> &mut S {
-        &mut self.state
-    }
-
-    /// Map the state from one type to another.
-    pub fn map_state<F, W>(self, f: F) -> Context<W>
-    where
-        F: FnOnce(S) -> W,
-    {
-        Context {
-            state: f(self.state),
-            executor: self.executor,
-            extensions: self.extensions,
-        }
-    }
-
-    /// Swap the state from one type to another,
-    /// returning the new object as well as the previously defined state.
-    pub fn swap_state<W>(self, state: W) -> (Context<W>, S) {
-        (
-            Context {
-                state,
-                executor: self.executor,
-                extensions: self.extensions,
-            },
-            self.state,
-        )
-    }
-
-    /// Clones the internals of this [`Context`]
-    /// to provide a new context, but while mapping the state
-    /// into a new state.
-    pub fn clone_map_state<F, W>(&self, f: F) -> Context<W>
-    where
-        S: Clone,
-        F: FnOnce(S) -> W,
-    {
-        Context {
-            state: f(self.state.clone()),
-            executor: self.executor.clone(),
-            extensions: self.extensions.clone(),
-        }
-    }
-
-    /// Clones the internals of this [`Context`]
-    /// to provide a new context, but using the given state, instead of
-    /// the one defined in the current [`Context`].
-    pub fn clone_with_state<W>(&self, state: W) -> Context<W> {
-        Context {
-            state,
-            executor: self.executor.clone(),
-            extensions: self.extensions.clone(),
-        }
-    }
-
+    #[must_use]
     /// Get a reference to the executor.
     pub fn executor(&self) -> &Executor {
         &self.executor
@@ -314,6 +154,7 @@ impl<S> Context<S> {
         self.executor.spawn_task(future)
     }
 
+    #[must_use]
     /// Returns true if the `Context` contains the given type.
     ///
     /// Use [`Self::get`] in case you want to have access to the type
@@ -322,6 +163,7 @@ impl<S> Context<S> {
         self.extensions.contains::<T>()
     }
 
+    #[must_use]
     /// Get a shared reference to an extension.
     ///
     /// An extension is a type that implements `Send + Sync + 'static`,
@@ -405,14 +247,13 @@ impl<S> Context<S> {
     ///
     /// ```
     /// # use rama_core::Context;
-    /// # use std::sync::Arc;
     /// # #[derive(Debug, Clone)]
     /// struct State {
     ///     mul: i32,
     /// }
-    /// let mut ctx = Context::with_state(Arc::new(State{ mul: 2 }));
-    /// ctx.insert(true);
-    /// let value: &i32 = ctx.get_or_insert_with_ctx(|ctx| ctx.state().mul * 21);
+    /// let mut ctx = Context::default();
+    /// ctx.insert(State{ mul: 2 });
+    /// let value: &i32 = ctx.get_or_insert_with_ctx(|ctx| ctx.get::<State>().unwrap().mul * 21);
     /// assert_eq!(*value, 42);
     /// let existing_value: &mut i32 = ctx.get_or_insert_default();
     /// assert_eq!(*existing_value, 42);
@@ -533,6 +374,7 @@ impl<S> Context<S> {
         self.extensions.maybe_insert(extension)
     }
 
+    #[must_use]
     /// Return the entire dynamic state of the [`Context`] by reference.
     ///
     /// Useful only in case you have a function which works with [`Extensions`] rather
@@ -601,16 +443,10 @@ impl<S> Context<S> {
         self.extensions.remove()
     }
 
+    #[must_use]
     /// Get a reference to the shutdown guard,
     /// if and only if the context was created within a graceful environment.
     pub fn guard(&self) -> Option<&ShutdownGuard> {
         self.executor.guard()
-    }
-}
-
-impl<S: Clone> Context<S> {
-    /// Get a cloned reference to the state.
-    pub fn state_clone(&self) -> S {
-        self.state.clone()
     }
 }

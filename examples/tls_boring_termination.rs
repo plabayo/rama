@@ -118,7 +118,7 @@ async fn main() {
         .expect("graceful shutdown");
 }
 
-async fn http_service<S>(ctx: Context<S>, _request: Request) -> Result<Response, Infallible> {
+async fn http_service(ctx: Context, _request: Request) -> Result<Response, Infallible> {
     // REMARK: builds on the assumption that we are using the haproxy protocol
     let client_addr = ctx
         .get::<Forwarded>()

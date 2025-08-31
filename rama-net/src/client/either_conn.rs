@@ -31,25 +31,24 @@ use crate::client::EstablishedClientConnection;
 macro_rules! impl_service_either_conn {
     ($id:ident, $($param:ident),+ $(,)?) => {
         rama_macros::paste! {
-            impl<$($param, [<Conn $param>]),+, State, Request> Service<State, Request> for $id<$($param),+>
+            impl<$($param, [<Conn $param>]),+, Request> Service<Request> for $id<$($param),+>
             where
                 $(
                     $param: Service<
-                        State,
                         Request,
-                        Response = EstablishedClientConnection<[<Conn $param>], State, Request>,
+                        Response = EstablishedClientConnection<[<Conn $param>], Request>,
                         Error: Into<BoxError>,
                     >,
                     [<Conn $param>]: Send + 'static,
                 )+
                 Request: Send + 'static,
-                State: Clone + Send + Sync + 'static,
+
 
             {
-                type Response = EstablishedClientConnection<[<$id Connected>]<$([<Conn $param>]),+,>, State, Request>;
+                type Response = EstablishedClientConnection<[<$id Connected>]<$([<Conn $param>]),+,>, Request>;
                 type Error = BoxError;
 
-                async fn serve(&self, ctx: Context<State>, req: Request) -> Result<Self::Response, Self::Error> {
+                async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
                     match self {
                         $(
                             $id::$param(s) => {
@@ -91,19 +90,19 @@ impl_either_conn_connected!(impl_iterator_either);
 
 macro_rules! impl_service_either_conn_connected {
     ($id:ident, $($param:ident),+ $(,)?) => {
-        impl<$($param),+, State, Request, Response> Service<State, Request> for $id<$($param),+>
+        impl<$($param),+, Request, Response> Service<Request> for $id<$($param),+>
         where
             $(
-                $param: Service<State, Request, Response = Response, Error: Into<BoxError>>,
+                $param: Service<Request, Response = Response, Error: Into<BoxError>>,
             )+
             Request: Send + 'static,
-            State: Clone + Send + Sync + 'static,
+
             Response: Send + 'static,
         {
             type Response = Response;
             type Error = BoxError;
 
-            async fn serve(&self, ctx: Context<State>, req: Request) -> Result<Self::Response, Self::Error> {
+            async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
                 match self {
                     $(
                         $id::$param(s) => s.serve(ctx, req).await.map_err(Into::into),

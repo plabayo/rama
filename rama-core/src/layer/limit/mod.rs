@@ -90,19 +90,18 @@ where
     }
 }
 
-impl<T, P, State, Request> Service<State, Request> for Limit<T, P, ()>
+impl<T, P, Request> Service<Request> for Limit<T, P, ()>
 where
-    T: Service<State, Request, Error: Into<BoxError>>,
-    P: policy::Policy<State, Request, Error: Into<BoxError>>,
+    T: Service<Request, Error: Into<BoxError>>,
+    P: policy::Policy<Request, Error: Into<BoxError>>,
     Request: Send + Sync + 'static,
-    State: Clone + Send + Sync + 'static,
 {
     type Response = T::Response;
     type Error = BoxError;
 
     async fn serve(
         &self,
-        mut ctx: Context<State>,
+        mut ctx: Context,
         mut request: Request,
     ) -> Result<Self::Response, Self::Error> {
         loop {
@@ -122,23 +121,21 @@ where
     }
 }
 
-impl<T, P, F, State, Request, FnResponse, FnError> Service<State, Request>
-    for Limit<T, P, ErrorIntoResponseFn<F>>
+impl<T, P, F, Request, FnResponse, FnError> Service<Request> for Limit<T, P, ErrorIntoResponseFn<F>>
 where
-    T: Service<State, Request>,
-    P: policy::Policy<State, Request>,
+    T: Service<Request>,
+    P: policy::Policy<Request>,
     F: Fn(P::Error) -> Result<FnResponse, FnError> + Send + Sync + 'static,
     FnResponse: Into<T::Response> + Send + 'static,
     FnError: Into<T::Error> + Send + Sync + 'static,
     Request: Send + Sync + 'static,
-    State: Clone + Send + Sync + 'static,
 {
     type Response = T::Response;
     type Error = T::Error;
 
     async fn serve(
         &self,
-        mut ctx: Context<State>,
+        mut ctx: Context,
         mut request: Request,
     ) -> Result<Self::Response, Self::Error> {
         loop {
@@ -174,8 +171,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_limit() {
-        async fn handle_request<State, Request>(
-            _ctx: Context<State>,
+        async fn handle_request<Request>(
+            _ctx: Context,
             req: Request,
         ) -> Result<Request, Infallible> {
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -203,8 +200,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_with_error_into_response_fn() {
-        async fn handle_request<State, Request>(
-            _ctx: Context<State>,
+        async fn handle_request<Request>(
+            _ctx: Context,
             _req: Request,
         ) -> Result<&'static str, Infallible> {
             Ok("good")
@@ -222,8 +219,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_zero_limit() {
-        async fn handle_request<State, Request>(
-            _ctx: Context<State>,
+        async fn handle_request<Request>(
+            _ctx: Context,
             req: Request,
         ) -> Result<Request, Infallible> {
             Ok(req)

@@ -38,17 +38,17 @@ pub use proxy_connector::{MaybeProxiedConnection, ProxyConnector, ProxyConnector
 /// passed through your "connector" setup. All this and more is possible by defining your own
 /// http client. Rama is here to empower you, the building blocks are there, go crazy
 /// with your own service fork and use the full power of Rust at your fingertips ;)
-pub struct EasyHttpWebClient<State, BodyIn, ConnResponse> {
-    connector: BoxService<State, Request<BodyIn>, ConnResponse, BoxError>,
+pub struct EasyHttpWebClient<BodyIn, ConnResponse> {
+    connector: BoxService<Request<BodyIn>, ConnResponse, BoxError>,
 }
 
-impl<State, BodyIn, ConnResponse> fmt::Debug for EasyHttpWebClient<State, BodyIn, ConnResponse> {
+impl<BodyIn, ConnResponse> fmt::Debug for EasyHttpWebClient<BodyIn, ConnResponse> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("EasyHttpWebClient").finish()
     }
 }
 
-impl<State, BodyIn, ConnResponse> Clone for EasyHttpWebClient<State, BodyIn, ConnResponse> {
+impl<BodyIn, ConnResponse> Clone for EasyHttpWebClient<BodyIn, ConnResponse> {
     fn clone(&self) -> Self {
         Self {
             connector: self.connector.clone(),
@@ -56,7 +56,7 @@ impl<State, BodyIn, ConnResponse> Clone for EasyHttpWebClient<State, BodyIn, Con
     }
 }
 
-impl EasyHttpWebClient<(), (), ()> {
+impl EasyHttpWebClient<(), ()> {
     /// Create a [`EasyHttpWebClientBuilder`] to easily create a [`EasyHttpWebClient`]
     #[must_use]
     pub fn builder() -> EasyHttpWebClientBuilder {
@@ -64,14 +64,9 @@ impl EasyHttpWebClient<(), (), ()> {
     }
 }
 
-impl<State, Body> Default
-    for EasyHttpWebClient<
-        State,
-        Body,
-        EstablishedClientConnection<HttpClientService<Body>, State, Request<Body>>,
-    >
+impl<Body> Default
+    for EasyHttpWebClient<Body, EstablishedClientConnection<HttpClientService<Body>, Request<Body>>>
 where
-    State: Clone + Send + Sync + 'static,
     Body: http_body::Body<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
 {
     #[cfg(feature = "boring")]
@@ -111,10 +106,10 @@ where
     }
 }
 
-impl<State, BodyIn, ConnResponse> EasyHttpWebClient<State, BodyIn, ConnResponse> {
+impl<BodyIn, ConnResponse> EasyHttpWebClient<BodyIn, ConnResponse> {
     /// Create a new [`EasyHttpWebClient`] using the provided connector
     #[must_use]
-    pub fn new(connector: BoxService<State, Request<BodyIn>, ConnResponse, BoxError>) -> Self {
+    pub fn new(connector: BoxService<Request<BodyIn>, ConnResponse, BoxError>) -> Self {
         Self { connector }
     }
 
@@ -122,34 +117,25 @@ impl<State, BodyIn, ConnResponse> EasyHttpWebClient<State, BodyIn, ConnResponse>
     #[must_use]
     pub fn with_connector<BodyInNew, ConnResponseNew>(
         self,
-        connector: BoxService<State, Request<BodyInNew>, ConnResponseNew, BoxError>,
-    ) -> EasyHttpWebClient<State, BodyInNew, ConnResponseNew> {
+        connector: BoxService<Request<BodyInNew>, ConnResponseNew, BoxError>,
+    ) -> EasyHttpWebClient<BodyInNew, ConnResponseNew> {
         EasyHttpWebClient { connector }
     }
 }
 
-impl<State, Body, ModifiedBody, ConnResponse> Service<State, Request<Body>>
-    for EasyHttpWebClient<
-        State,
-        Body,
-        EstablishedClientConnection<ConnResponse, State, Request<ModifiedBody>>,
-    >
+impl<Body, ModifiedBody, ConnResponse> Service<Request<Body>>
+    for EasyHttpWebClient<Body, EstablishedClientConnection<ConnResponse, Request<ModifiedBody>>>
 where
-    State: Send + Sync + 'static,
     Body: http_body::Body<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
     ModifiedBody:
         http_body::Body<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
-    ConnResponse: Service<State, Request<ModifiedBody>, Response = Response, Error = BoxError>,
+    ConnResponse: Service<Request<ModifiedBody>, Response = Response, Error = BoxError>,
 {
     type Response = Response;
 
     type Error = OpaqueError;
 
-    async fn serve(
-        &self,
-        ctx: Context<State>,
-        req: Request<Body>,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, ctx: Context, req: Request<Body>) -> Result<Self::Response, Self::Error> {
         let uri = req.uri().clone();
 
         let EstablishedClientConnection { ctx, req, conn } = self.connector.serve(ctx, req).await?;

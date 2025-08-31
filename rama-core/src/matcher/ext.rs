@@ -42,14 +42,13 @@ where
     }
 }
 
-impl<State, Request, P, T> Matcher<State, Request> for ExtensionMatcher<P, T>
+impl<Request, P, T> Matcher<Request> for ExtensionMatcher<P, T>
 where
-    State: Clone + Send + Sync + 'static,
     Request: Send + 'static,
     T: Clone + Send + Sync + 'static,
     P: private::ExtensionPredicate<T>,
 {
-    fn matches(&self, _ext: Option<&mut Extensions>, ctx: &Context<State>, _req: &Request) -> bool {
+    fn matches(&self, _ext: Option<&mut Extensions>, ctx: &Context, _req: &Request) -> bool {
         ctx.get::<T>()
             .map(|v| self.predicate.call(v))
             .unwrap_or_default()

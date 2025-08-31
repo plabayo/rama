@@ -397,9 +397,9 @@ impl UdpSocketRelay {
 
 #[cfg(feature = "dns")]
 impl UdpSocketRelay {
-    pub(super) fn maybe_with_dns_resolver<State>(
+    pub(super) fn maybe_with_dns_resolver(
         mut self,
-        ctx: &Context<State>,
+        ctx: &Context,
         resolver: Option<BoxDnsResolver>,
     ) -> Self {
         self.dns_resolver = resolver;

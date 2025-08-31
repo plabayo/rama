@@ -112,31 +112,29 @@ impl ServeFile {
     ///
     /// See [`ServeDir::try_call`] for more details.
     #[inline]
-    pub async fn try_call<State, ReqBody>(
+    pub async fn try_call<ReqBody>(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         req: Request<ReqBody>,
     ) -> Result<Response, std::io::Error>
     where
-        State: Clone + Send + Sync + 'static,
         ReqBody: Send + 'static,
     {
         self.0.try_call(ctx, req).await
     }
 }
 
-impl<State, ReqBody> Service<State, Request<ReqBody>> for ServeFile
+impl<ReqBody> Service<Request<ReqBody>> for ServeFile
 where
     ReqBody: Send + 'static,
-    State: Clone + Send + Sync + 'static,
 {
-    type Error = <ServeDir as Service<State, Request<ReqBody>>>::Error;
-    type Response = <ServeDir as Service<State, Request<ReqBody>>>::Response;
+    type Error = <ServeDir as Service<Request<ReqBody>>>::Error;
+    type Response = <ServeDir as Service<Request<ReqBody>>>::Response;
 
     #[inline]
     async fn serve(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         req: Request<ReqBody>,
     ) -> Result<Self::Response, Self::Error> {
         self.0.serve(ctx, req).await

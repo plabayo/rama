@@ -148,19 +148,18 @@ impl<S: Clone> Clone for RemoveRequestHeader<S> {
     }
 }
 
-impl<ReqBody, ResBody, State, S> Service<State, Request<ReqBody>> for RemoveRequestHeader<S>
+impl<ReqBody, ResBody, S> Service<Request<ReqBody>> for RemoveRequestHeader<S>
 where
     ReqBody: Send + 'static,
     ResBody: Send + 'static,
-    State: Clone + Send + Sync + 'static,
-    S: Service<State, Request<ReqBody>, Response = Response<ResBody>>,
+    S: Service<Request<ReqBody>, Response = Response<ResBody>>,
 {
     type Response = S::Response;
     type Error = S::Error;
 
     fn serve(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         mut req: Request<ReqBody>,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
         match &self.mode {
@@ -188,7 +187,7 @@ mod test {
     #[tokio::test]
     async fn remove_request_header_prefix() {
         let svc = RemoveRequestHeaderLayer::prefix("x-foo").into_layer(service_fn(
-            async |_ctx: Context<()>, req: Request| {
+            async |_ctx: Context, req: Request| {
                 assert!(req.headers().get("x-foo-bar").is_none());
                 assert_eq!(
                     req.headers().get("foo").map(|v| v.to_str().unwrap()),
@@ -208,7 +207,7 @@ mod test {
     #[tokio::test]
     async fn remove_request_header_exact() {
         let svc = RemoveRequestHeaderLayer::exact(HeaderName::from_static("x-foo")).into_layer(
-            service_fn(async |_ctx: Context<()>, req: Request| {
+            service_fn(async |_ctx: Context, req: Request| {
                 assert!(req.headers().get("x-foo").is_none());
                 assert_eq!(
                     req.headers().get("x-foo-bar").map(|v| v.to_str().unwrap()),
@@ -228,7 +227,7 @@ mod test {
     #[tokio::test]
     async fn remove_request_header_hop_by_hop() {
         let svc = RemoveRequestHeaderLayer::hop_by_hop().into_layer(service_fn(
-            async |_ctx: Context<()>, req: Request| {
+            async |_ctx: Context, req: Request| {
                 assert!(req.headers().get("connection").is_none());
                 assert_eq!(
                     req.headers().get("foo").map(|v| v.to_str().unwrap()),

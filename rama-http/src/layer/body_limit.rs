@@ -81,10 +81,9 @@ impl<S> BodyLimitService<S> {
     define_inner_service_accessors!();
 }
 
-impl<S, State, ReqBody> Service<State, Request<ReqBody>> for BodyLimitService<S>
+impl<S, ReqBody> Service<Request<ReqBody>> for BodyLimitService<S>
 where
-    S: Service<State, Request<Body>>,
-    State: Clone + Send + Sync + 'static,
+    S: Service<Request<Body>>,
     ReqBody: rama_http_types::dep::http_body::Body<Data = Bytes, Error: Into<BoxError>>
         + Send
         + Sync
@@ -95,7 +94,7 @@ where
 
     async fn serve(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         req: Request<ReqBody>,
     ) -> Result<Self::Response, Self::Error> {
         let req = req.map(|body| {

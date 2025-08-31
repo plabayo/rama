@@ -22,9 +22,10 @@
 #[cfg(target_family = "unix")]
 mod unix_example {
     use rama::{
-        Context,
+        Context, Layer,
         error::BoxError,
         graceful::ShutdownGuard,
+        layer::AddExtensionLayer,
         net::stream::Stream,
         service::service_fn,
         telemetry::tracing::{self, level_filters::LevelFilter},
@@ -48,18 +49,18 @@ mod unix_example {
 
         const PATH: &str = "/tmp/rama_example_unix.socket";
 
-        let listener = UnixListener::build_with_state(graceful.guard())
+        let listener = UnixListener::build()
             .bind_path(PATH)
             .await
             .expect("bind Unix socket");
 
         graceful.spawn_task_fn(async |guard| {
-            async fn handle(
-                ctx: Context<ShutdownGuard>,
-                mut stream: impl Stream + Unpin,
-            ) -> Result<(), BoxError> {
+            async fn handle(ctx: Context, mut stream: impl Stream + Unpin) -> Result<(), BoxError> {
                 let mut buf = [0u8; 1024];
-                let guard = ctx.state();
+                // TODO instead of having to do this manually, make this a lot easier by having this
+                // inserted in extensions automatically (part of executor/graceful server)
+                // Should be done when https://github.com/plabayo/rama/issues/462 is finished
+                let guard = ctx.get::<ShutdownGuard>().unwrap();
 
                 loop {
                     let n = tokio::select! {
@@ -97,7 +98,12 @@ mod unix_example {
                 file.path = %PATH,
                 "ready to unix-serve",
             );
-            listener.serve_graceful(guard, service_fn(handle)).await;
+            listener
+                .serve_graceful(
+                    guard.clone(),
+                    AddExtensionLayer::new(guard).into_layer(service_fn(handle)),
+                )
+                .await;
         });
 
         let duration = graceful.shutdown().await;

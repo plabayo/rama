@@ -60,12 +60,9 @@ pub(super) async fn connect(cfg: super::CliCommandWs) -> Result<ClientWebSocket,
         .context("establish WS(S) connection")
 }
 
-async fn create_client<S>(
+async fn create_client(
     cfg: super::CliCommandWs,
-) -> Result<impl Service<S, Request, Response = Response, Error = BoxError>, BoxError>
-where
-    S: Clone + Send + Sync + 'static,
-{
+) -> Result<impl Service<Request, Response = Response, Error = BoxError>, BoxError> {
     let mut tls_config = if cfg.emulate {
         TlsConnectorDataBuilder::new()
     } else {

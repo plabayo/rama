@@ -272,13 +272,9 @@ impl<S: Clone, F: Clone> Clone for RequestMetricsService<S, F> {
 }
 
 impl<S, F> RequestMetricsService<S, F> {
-    fn compute_attributes<Body, State>(
-        &self,
-        ctx: &mut Context<State>,
-        req: &Request<Body>,
-    ) -> Vec<KeyValue>
+    fn compute_attributes<Body>(&self, ctx: &mut Context, req: &Request<Body>) -> Vec<KeyValue>
     where
-        F: AttributesFactory<State>,
+        F: AttributesFactory,
     {
         let mut attributes = self
             .attributes_factory
@@ -318,11 +314,10 @@ impl<S, F> RequestMetricsService<S, F> {
     }
 }
 
-impl<S, F, State, Body> Service<State, Request<Body>> for RequestMetricsService<S, F>
+impl<S, F, Body> Service<Request<Body>> for RequestMetricsService<S, F>
 where
-    S: Service<State, Request, Response: IntoResponse>,
-    F: AttributesFactory<State>,
-    State: Clone + Send + Sync + 'static,
+    S: Service<Request, Response: IntoResponse>,
+    F: AttributesFactory,
     Body: http_body::Body<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
 {
     type Response = Response;
@@ -330,7 +325,7 @@ where
 
     async fn serve(
         &self,
-        mut ctx: Context<State>,
+        mut ctx: Context,
         req: Request<Body>,
     ) -> Result<Self::Response, Self::Error> {
         let mut attributes: Vec<KeyValue> = self.compute_attributes(&mut ctx, &req);
@@ -556,7 +551,7 @@ mod tests {
             metric_prefix: Some("foo".to_owned()),
             ..Default::default()
         })
-        .with_attributes(|size_hint: usize, _ctx: &Context<()>| {
+        .with_attributes(|size_hint: usize, _ctx: &Context| {
             let mut attributes = Vec::with_capacity(size_hint + 1);
             attributes.push(KeyValue::new("test", "attribute_fn"));
             attributes

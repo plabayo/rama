@@ -42,13 +42,8 @@ impl From<Regex> for UriMatcher {
     }
 }
 
-impl<State, Body> rama_core::matcher::Matcher<State, Request<Body>> for UriMatcher {
-    fn matches(
-        &self,
-        _ext: Option<&mut Extensions>,
-        _ctx: &Context<State>,
-        req: &Request<Body>,
-    ) -> bool {
+impl<Body> rama_core::matcher::Matcher<Request<Body>> for UriMatcher {
+    fn matches(&self, _ext: Option<&mut Extensions>, _ctx: &Context, req: &Request<Body>) -> bool {
         self.matches_uri(req.uri())
     }
 }

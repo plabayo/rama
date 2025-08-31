@@ -14,86 +14,83 @@ use std::{
 ///
 /// It is also implemented directly for [`HeaderValue`]. When a fixed header value should be added
 /// to all responses, it can be supplied directly to the middleware.
-pub trait MakeHeaderValue<S, B>: Send + Sync + 'static {
+pub trait MakeHeaderValue<B>: Send + Sync + 'static {
     /// Try to create a header value from the request or response.
     fn make_header_value(
         &self,
-        ctx: Context<S>,
+        ctx: Context,
         req: Request<B>,
-    ) -> impl Future<Output = (Context<S>, Request<B>, Option<HeaderValue>)> + Send + '_;
+    ) -> impl Future<Output = (Context, Request<B>, Option<HeaderValue>)> + Send + '_;
 }
 
 /// Functional version of [`MakeHeaderValue`].
-pub trait MakeHeaderValueFn<S, B, A>: Send + Sync + 'static {
+pub trait MakeHeaderValueFn<B, A>: Send + Sync + 'static {
     /// Try to create a header value from the request or response.
     fn call(
         &self,
-        ctx: Context<S>,
+        ctx: Context,
         req: Request<B>,
-    ) -> impl Future<Output = (Context<S>, Request<B>, Option<HeaderValue>)> + Send + '_;
+    ) -> impl Future<Output = (Context, Request<B>, Option<HeaderValue>)> + Send + '_;
 }
 
-impl<F, Fut, S, B> MakeHeaderValueFn<S, B, ()> for F
+impl<F, Fut, B> MakeHeaderValueFn<B, ()> for F
 where
-    S: Clone + Send + Sync + 'static,
     B: Send + 'static,
     F: Fn() -> Fut + Send + Sync + 'static,
     Fut: Future<Output = Option<HeaderValue>> + Send + 'static,
 {
     async fn call(
         &self,
-        ctx: Context<S>,
+        ctx: Context,
         req: Request<B>,
-    ) -> (Context<S>, Request<B>, Option<HeaderValue>) {
+    ) -> (Context, Request<B>, Option<HeaderValue>) {
         let maybe_value = self().await;
         (ctx, req, maybe_value)
     }
 }
 
-impl<F, Fut, S, B> MakeHeaderValueFn<S, B, ((), B)> for F
+impl<F, Fut, B> MakeHeaderValueFn<B, ((), B)> for F
 where
-    S: Clone + Send + Sync + 'static,
     B: Send + 'static,
     F: Fn(Request<B>) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = (Request<B>, Option<HeaderValue>)> + Send + 'static,
 {
     async fn call(
         &self,
-        ctx: Context<S>,
+        ctx: Context,
         req: Request<B>,
-    ) -> (Context<S>, Request<B>, Option<HeaderValue>) {
+    ) -> (Context, Request<B>, Option<HeaderValue>) {
         let (req, maybe_value) = self(req).await;
         (ctx, req, maybe_value)
     }
 }
 
-impl<F, Fut, S, B> MakeHeaderValueFn<S, B, (Context<S>,)> for F
+impl<F, Fut, B> MakeHeaderValueFn<B, (Context,)> for F
 where
-    S: Clone + Send + Sync + 'static,
     B: Send + 'static,
-    F: Fn(Context<S>) -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = (Context<S>, Option<HeaderValue>)> + Send + 'static,
+    F: Fn(Context) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = (Context, Option<HeaderValue>)> + Send + 'static,
 {
     async fn call(
         &self,
-        ctx: Context<S>,
+        ctx: Context,
         req: Request<B>,
-    ) -> (Context<S>, Request<B>, Option<HeaderValue>) {
+    ) -> (Context, Request<B>, Option<HeaderValue>) {
         let (ctx, maybe_value) = self(ctx).await;
         (ctx, req, maybe_value)
     }
 }
 
-impl<F, Fut, S, B> MakeHeaderValueFn<S, B, (Context<S>, B)> for F
+impl<F, Fut, B> MakeHeaderValueFn<B, (Context, B)> for F
 where
-    F: Fn(Context<S>, Request<B>) -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = (Context<S>, Request<B>, Option<HeaderValue>)> + Send + 'static,
+    F: Fn(Context, Request<B>) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = (Context, Request<B>, Option<HeaderValue>)> + Send + 'static,
 {
     fn call(
         &self,
-        ctx: Context<S>,
+        ctx: Context,
         req: Request<B>,
-    ) -> impl Future<Output = (Context<S>, Request<B>, Option<HeaderValue>)> + Send + '_ {
+    ) -> impl Future<Output = (Context, Request<B>, Option<HeaderValue>)> + Send + '_ {
         self(ctx, req)
     }
 }
@@ -137,44 +134,42 @@ where
     }
 }
 
-impl<S, B, A, F> MakeHeaderValue<S, B> for BoxMakeHeaderValueFn<F, A>
+impl<B, A, F> MakeHeaderValue<B> for BoxMakeHeaderValueFn<F, A>
 where
     A: Send + 'static,
-    F: MakeHeaderValueFn<S, B, A>,
+    F: MakeHeaderValueFn<B, A>,
 {
     fn make_header_value(
         &self,
-        ctx: Context<S>,
+        ctx: Context,
         req: Request<B>,
-    ) -> impl Future<Output = (Context<S>, Request<B>, Option<HeaderValue>)> + Send + '_ {
+    ) -> impl Future<Output = (Context, Request<B>, Option<HeaderValue>)> + Send + '_ {
         self.f.call(ctx, req)
     }
 }
 
-impl<S, B> MakeHeaderValue<S, B> for HeaderValue
+impl<B> MakeHeaderValue<B> for HeaderValue
 where
-    S: Clone + Send + Sync + 'static,
     B: Send + 'static,
 {
     fn make_header_value(
         &self,
-        ctx: Context<S>,
+        ctx: Context,
         req: Request<B>,
-    ) -> impl Future<Output = (Context<S>, Request<B>, Option<Self>)> + Send + '_ {
+    ) -> impl Future<Output = (Context, Request<B>, Option<Self>)> + Send + '_ {
         ready((ctx, req, Some(self.clone())))
     }
 }
 
-impl<S, B> MakeHeaderValue<S, B> for Option<HeaderValue>
+impl<B> MakeHeaderValue<B> for Option<HeaderValue>
 where
-    S: Clone + Send + Sync + 'static,
     B: Send + 'static,
 {
     fn make_header_value(
         &self,
-        ctx: Context<S>,
+        ctx: Context,
         req: Request<B>,
-    ) -> impl Future<Output = (Context<S>, Request<B>, Self)> + Send + '_ {
+    ) -> impl Future<Output = (Context, Request<B>, Self)> + Send + '_ {
         ready((ctx, req, self.clone()))
     }
 }
@@ -187,16 +182,16 @@ pub(super) enum InsertHeaderMode {
 }
 
 impl InsertHeaderMode {
-    pub(super) async fn apply<S, B, M>(
+    pub(super) async fn apply<B, M>(
         self,
         header_name: &HeaderName,
-        ctx: Context<S>,
+        ctx: Context,
         req: Request<B>,
         make: &M,
-    ) -> (Context<S>, Request<B>)
+    ) -> (Context, Request<B>)
     where
         B: Send + 'static,
-        M: MakeHeaderValue<S, B>,
+        M: MakeHeaderValue<B>,
     {
         match self {
             Self::Override => {

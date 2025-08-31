@@ -55,10 +55,10 @@ use rama::{
     Layer, Service,
     error::{BoxError, ErrorContext, OpaqueError},
     futures::SinkExt,
-    http::conn::TargetHttpVersion,
     http::{
         Body, Request, Response, StatusCode,
         client::EasyHttpWebClient,
+        conn::TargetHttpVersion,
         headers::{
             HeaderEncode, HeaderMapExt as _, SecWebSocketExtensions, TypedHeader,
             sec_websocket_extensions::Extension,
@@ -84,7 +84,7 @@ use rama::{
             protocol::{Role, WebSocketConfig},
         },
     },
-    layer::ConsumeErrLayer,
+    layer::{AddExtensionLayer, ConsumeErrLayer},
     matcher::Matcher,
     net::{
         http::RequestContext,
@@ -124,7 +124,7 @@ struct State {
     ua_db: Arc<UserAgentDatabase>,
 }
 
-type Context = rama::Context<State>;
+type Context = rama::Context;
 
 #[tokio::main]
 async fn main() -> Result<(), BoxError> {
@@ -148,13 +148,14 @@ async fn main() -> Result<(), BoxError> {
     let graceful = rama::graceful::Shutdown::default();
 
     graceful.spawn_task_fn(async |guard| {
-        let tcp_service = TcpListener::build_with_state(state.clone())
+        let tcp_service = TcpListener::build()
             .bind("127.0.0.1:62017")
             .await
             .expect("bind tcp proxy to 127.0.0.1:62017");
 
         let exec = Executor::graceful(guard.clone());
-        let http_mitm_service = new_http_mitm_proxy(&Context::with_state(state));
+
+        let http_mitm_service = new_http_mitm_proxy(&state);
         let http_service = HttpServer::auto(exec).service(
             (
                 TraceLayer::new_for_http(),
@@ -174,6 +175,7 @@ async fn main() -> Result<(), BoxError> {
             .serve_graceful(
                 guard,
                 (
+                    AddExtensionLayer::new(state),
                     // protect the http proxy from too large bodies, both from request and response end
                     BodyLimitLayer::symmetric(2 * 1024 * 1024),
                 )
@@ -227,14 +229,15 @@ async fn http_connect_proxy(ctx: Context, upgraded: Upgraded) -> Result<(), Infa
     // as we otherwise might not be able to define the scheme/authority
     // for upstream http requests.
 
-    let http_service = new_http_mitm_proxy(&ctx);
+    let state = ctx.get::<State>().unwrap();
+    let http_service = new_http_mitm_proxy(state);
 
     let mut http_tp = HttpServer::auto(ctx.executor().clone());
     http_tp.h2_mut().enable_connect_protocol();
 
     let http_transport_service = http_tp.service(http_service);
 
-    let https_service = TlsAcceptorLayer::new(ctx.state().mitm_tls_service_data.clone())
+    let https_service = TlsAcceptorLayer::new(state.mitm_tls_service_data.clone())
         .with_store_client_hello(true)
         .into_layer(http_transport_service);
 
@@ -247,13 +250,13 @@ async fn http_connect_proxy(ctx: Context, upgraded: Upgraded) -> Result<(), Infa
 }
 
 fn new_http_mitm_proxy(
-    ctx: &Context,
-) -> impl Service<State, Request, Response = Response, Error = Infallible> {
+    state: &State,
+) -> impl Service<Request, Response = Response, Error = Infallible> {
     (
         MapResponseBodyLayer::new(Body::new),
         TraceLayer::new_for_http(),
         ConsumeErrLayer::default(),
-        UserAgentEmulateLayer::new(ctx.state().ua_db.clone())
+        UserAgentEmulateLayer::new(state.ua_db.clone())
             .try_auto_detect_user_agent(true)
             .optional(true),
         CompressAdaptLayer::default(),
@@ -347,7 +350,7 @@ fn new_mitm_tls_service_data() -> Result<TlsAcceptorData, OpaqueError> {
 
 async fn mitm_websocket<S>(client: &S, mut ctx: Context, req: Request) -> Response
 where
-    S: Service<State, Request, Response = Response, Error = OpaqueError>,
+    S: Service<Request, Response = Response, Error = OpaqueError>,
 {
     tracing::debug!("detected websocket request: starting MITM WS upgrade...");
 

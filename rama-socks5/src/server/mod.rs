@@ -358,18 +358,13 @@ impl std::error::Error for Error {
 }
 
 impl<C, B, U, A> Socks5Acceptor<C, B, U, A> {
-    pub async fn accept<S, State>(
-        &self,
-        mut ctx: Context<State>,
-        mut stream: S,
-    ) -> Result<(), Error>
+    pub async fn accept<S>(&self, mut ctx: Context, mut stream: S) -> Result<(), Error>
     where
-        C: Socks5Connector<S, State>,
-        U: Socks5UdpAssociator<S, State>,
+        C: Socks5Connector<S>,
+        U: Socks5UdpAssociator<S>,
         A: Authorizer<user::Basic, Error: fmt::Debug>,
-        B: Socks5Binder<S, State>,
+        B: Socks5Binder<S>,
         S: Stream + Unpin,
-        State: Clone + Send + Sync + 'static,
     {
         let client_header = client::Header::read_from(&mut stream)
             .await
@@ -545,14 +540,13 @@ impl<C, B, U, A: Authorizer<user::Basic, Error: fmt::Debug>> Socks5Acceptor<C, B
     }
 }
 
-impl<C, B, U, A, State, S> Service<State, S> for Socks5Acceptor<C, B, U, A>
+impl<C, B, U, A, S> Service<S> for Socks5Acceptor<C, B, U, A>
 where
-    C: Socks5Connector<S, State>,
-    U: Socks5UdpAssociator<S, State>,
+    C: Socks5Connector<S>,
+    U: Socks5UdpAssociator<S>,
     A: Authorizer<user::Basic, Error: fmt::Debug>,
-    B: Socks5Binder<S, State>,
+    B: Socks5Binder<S>,
     S: Stream + Unpin,
-    State: Clone + Send + Sync + 'static,
 {
     type Response = ();
     type Error = Error;
@@ -560,7 +554,7 @@ where
     #[inline]
     fn serve(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         stream: S,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
         self.accept(ctx, stream)
@@ -569,10 +563,10 @@ where
 
 impl<C, B, U, A> Socks5Acceptor<C, B, U, A>
 where
-    C: Socks5Connector<TcpStream, ()>,
-    U: Socks5UdpAssociator<TcpStream, ()>,
+    C: Socks5Connector<TcpStream>,
+    U: Socks5UdpAssociator<TcpStream>,
     A: Authorizer<user::Basic, Error: fmt::Debug>,
-    B: Socks5Binder<TcpStream, ()>,
+    B: Socks5Binder<TcpStream>,
 {
     /// Listen for connections on the given [`Interface`], serving Socks5(h) connections.
     ///
@@ -582,33 +576,6 @@ where
         I: TryInto<Interface, Error: Into<BoxError>>,
     {
         let tcp = TcpListener::bind(interface).await?;
-        tcp.serve(self).await;
-        Ok(())
-    }
-}
-
-impl<C, B, U, A> Socks5Acceptor<C, B, U, A> {
-    /// Listen for connections on the given [`Interface`], serving Socks5(h) connections.
-    ///
-    /// Same as [`Self::listen`], but including the given state in the [`Service`]'s [`Context`].
-    ///
-    /// [`Service`]: rama_core::Service
-    /// [`Context`]: rama_core::Context
-    pub async fn listen_with_state<State, I>(
-        self,
-        state: State,
-        interface: I,
-    ) -> Result<(), BoxError>
-    where
-        C: Socks5Connector<TcpStream, State>,
-        U: Socks5UdpAssociator<TcpStream, State>,
-        A: Authorizer<user::Basic, Error: fmt::Debug>,
-        B: Socks5Binder<TcpStream, State>,
-        State: Clone + Send + Sync + 'static,
-        State: Clone + Send + Sync + 'static,
-        I: TryInto<Interface, Error: Into<BoxError>>,
-    {
-        let tcp = TcpListener::build_with_state(state).bind(interface).await?;
         tcp.serve(self).await;
         Ok(())
     }

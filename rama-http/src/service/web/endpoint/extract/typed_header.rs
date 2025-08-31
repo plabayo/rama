@@ -23,15 +23,14 @@ impl<H: Clone> Clone for TypedHeader<H> {
     }
 }
 
-impl<S, H> FromRequestContextRefPair<S> for TypedHeader<H>
+impl<H> FromRequestContextRefPair for TypedHeader<H>
 where
-    S: Clone + Send + Sync + 'static,
     H: HeaderDecode + Send + Sync + 'static,
 {
     type Rejection = TypedHeaderRejection;
 
     async fn from_request_context_ref_pair(
-        _ctx: &Context<S>,
+        _ctx: &Context,
         parts: &Parts,
     ) -> Result<Self, Self::Rejection> {
         let mut values = parts.headers.get_all(H::name()).iter();
@@ -50,15 +49,14 @@ where
     }
 }
 
-impl<S, H> OptionalFromRequestContextRefPair<S> for TypedHeader<H>
+impl<H> OptionalFromRequestContextRefPair for TypedHeader<H>
 where
-    S: Clone + Send + Sync + 'static,
     H: HeaderDecode + Send + Sync + 'static,
 {
     type Rejection = TypedHeaderRejection;
 
     async fn from_request_context_ref_pair(
-        _ctx: &Context<S>,
+        _ctx: &Context,
         parts: &Parts,
     ) -> Result<Option<Self>, Self::Rejection> {
         let mut values = parts.headers.get_all(H::name()).iter();

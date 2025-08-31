@@ -76,21 +76,18 @@ impl<S> ProxyConnector<S> {
     }
 }
 
-impl<State, Request, S> Service<State, Request> for ProxyConnector<S>
+impl<Request, S> Service<Request> for ProxyConnector<S>
 where
-    S: ConnectorService<State, Request, Connection: Stream + Unpin, Error: Into<BoxError>>,
-    State: Clone + Send + Sync + 'static,
-    Request:
-        TryRefIntoTransportContext<State, Error: Into<BoxError> + Send + 'static> + Send + 'static,
+    S: ConnectorService<Request, Connection: Stream + Unpin, Error: Into<BoxError>>,
+    Request: TryRefIntoTransportContext<Error: Into<BoxError> + Send + 'static> + Send + 'static,
 {
-    type Response =
-        EstablishedClientConnection<MaybeProxiedConnection<S::Connection>, State, Request>;
+    type Response = EstablishedClientConnection<MaybeProxiedConnection<S::Connection>, Request>;
 
     type Error = BoxError;
 
     async fn serve(
         &self,
-        ctx: rama_core::Context<State>,
+        ctx: rama_core::Context,
         req: Request,
     ) -> Result<Self::Response, Self::Error> {
         let proxy = ctx.get::<ProxyAddress>();

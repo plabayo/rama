@@ -31,7 +31,7 @@ use rama::{
         ws::handshake::server::WebSocketAcceptor,
     },
     layer::{
-        ConsumeErrLayer, HijackLayer, Layer, LimitLayer, TimeoutLayer,
+        AddExtensionLayer, ConsumeErrLayer, HijackLayer, Layer, LimitLayer, TimeoutLayer,
         limit::policy::ConcurrentPolicy,
     },
     net::{
@@ -226,15 +226,11 @@ pub async fn run(cfg: CliCommandFingerprint) -> Result<(), BoxError> {
     let pg_url = std::env::var("DATABASE_URL").ok();
     let storage_auth = std::env::var("RAMA_FP_STORAGE_COOKIE").ok();
 
-    let tcp_listener = TcpListener::build_with_state(Arc::new(
-        State::new(acme_data, pg_url, storage_auth.as_deref())
-            .await
-            .expect("create state"),
-    ))
-    .bind(cfg.bind.clone())
-    .await
-    .map_err(OpaqueError::from_boxed)
-    .context("bind fp service")?;
+    let tcp_listener = TcpListener::build()
+        .bind(cfg.bind.clone())
+        .await
+        .map_err(OpaqueError::from_boxed)
+        .context("bind fp service")?;
 
     let bind_address = tcp_listener
         .local_addr()
@@ -311,6 +307,11 @@ pub async fn run(cfg: CliCommandFingerprint) -> Result<(), BoxError> {
             );
 
         let tcp_service_builder = (
+            AddExtensionLayer::new(Arc::new(
+                State::new(acme_data, pg_url, storage_auth.as_deref())
+                    .await
+                    .expect("create state"),
+            )),
             ConsumeErrLayer::trace(tracing::Level::WARN),
             tcp_forwarded_layer,
             TimeoutLayer::new(Duration::from_secs(300)),
@@ -402,17 +403,17 @@ impl<S: std::fmt::Debug> std::fmt::Debug for StorageAuthService<S> {
     }
 }
 
-impl<S, Body> Service<Arc<State>, Request<Body>> for StorageAuthService<S>
+impl<S, Body> Service<Request<Body>> for StorageAuthService<S>
 where
     Body: Send + 'static,
-    S: Service<Arc<State>, Request<Body>>,
+    S: Service<Request<Body>>,
 {
     type Response = S::Response;
     type Error = S::Error;
 
     async fn serve(
         &self,
-        mut ctx: Context<Arc<State>>,
+        mut ctx: Context,
         mut req: Request<Body>,
     ) -> Result<Self::Response, Self::Error> {
         if let Some(cookie) = req.headers().typed_get::<Cookie>() {
@@ -420,7 +421,7 @@ where
                 .iter()
                 .filter_map(|(k, v)| {
                     if k.eq_ignore_ascii_case("rama-storage-auth") {
-                        if Some(v) == ctx.state().storage_auth.as_deref() {
+                        if Some(v) == ctx.get::<Arc<State>>().unwrap().storage_auth.as_deref() {
                             ctx.insert(StorageAuthorized);
                         }
                         Some("rama-storage-auth=xxx".to_owned())

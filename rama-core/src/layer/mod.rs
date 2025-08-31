@@ -124,22 +124,17 @@ where
     }
 }
 
-impl<S, L, State, Request> Service<State, Request> for MaybeLayeredService<S, L>
+impl<S, L, Request> Service<Request> for MaybeLayeredService<S, L>
 where
-    S: Service<State, Request, Error: Into<BoxError>>,
+    S: Service<Request, Error: Into<BoxError>>,
     L: Layer<S> + 'static,
-    L::Service: Service<State, Request, Response = S::Response, Error: Into<BoxError>>,
-    State: Clone + Send + Sync + 'static,
+    L::Service: Service<Request, Response = S::Response, Error: Into<BoxError>>,
     Request: Send + 'static,
 {
     type Error = BoxError;
     type Response = S::Response;
 
-    async fn serve(
-        &self,
-        ctx: Context<State>,
-        req: Request,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
         match &self.0 {
             MaybeLayeredSvc::Enabled(svc) => svc.serve(ctx, req).await.map_err(Into::into),
             MaybeLayeredSvc::Disabled(inner) => inner.serve(ctx, req).await.map_err(Into::into),
@@ -915,10 +910,6 @@ mod hijack;
 #[doc(inline)]
 pub use hijack::{HijackLayer, HijackService};
 
-mod map_state;
-#[doc(inline)]
-pub use map_state::{MapState, MapStateLayer};
-
 mod layer_fn;
 #[doc(inline)]
 pub use layer_fn::{LayerFn, layer_fn};
@@ -1001,7 +992,7 @@ mod tests {
     #[tokio::test]
     async fn simple_layer() {
         let svc = (GetExtensionLayer::new(async |_: String| {})).into_layer(service_fn(
-            async |_: Context<()>, _: ()| Ok::<_, OpaqueError>(()),
+            async |_: Context, _: ()| Ok::<_, OpaqueError>(()),
         ));
 
         svc.serve(Context::default(), ()).await.unwrap();
@@ -1011,7 +1002,7 @@ mod tests {
     async fn simple_optional_layer() {
         let maybe_layer = Some(GetExtensionLayer::new(async |_: String| {}));
 
-        let svc = (maybe_layer).into_layer(service_fn(async |_: Context<()>, _: ()| {
+        let svc = (maybe_layer).into_layer(service_fn(async |_: Context, _: ()| {
             Ok::<_, OpaqueError>(())
         }));
 

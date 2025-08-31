@@ -30,13 +30,8 @@ impl SubdomainTrieMatcher {
     }
 }
 
-impl<State, Body> Matcher<State, Request<Body>> for SubdomainTrieMatcher {
-    fn matches(
-        &self,
-        ext: Option<&mut Extensions>,
-        ctx: &Context<State>,
-        req: &Request<Body>,
-    ) -> bool {
+impl<Body> Matcher<Request<Body>> for SubdomainTrieMatcher {
+    fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context, req: &Request<Body>) -> bool {
         let match_authority = |ctx: &RequestContext| match ctx.authority.host() {
             Host::Name(domain) => {
                 let is_match = self.is_match(domain.as_str());

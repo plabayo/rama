@@ -118,10 +118,9 @@ impl<S: Clone> Clone for SetStatus<S> {
 
 impl<S: Copy> Copy for SetStatus<S> {}
 
-impl<State, S, ReqBody, ResBody> Service<State, Request<ReqBody>> for SetStatus<S>
+impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for SetStatus<S>
 where
-    State: Clone + Send + Sync + 'static,
-    S: Service<State, Request<ReqBody>, Response = Response<ResBody>>,
+    S: Service<Request<ReqBody>, Response = Response<ResBody>>,
     ReqBody: Send + 'static,
     ResBody: Send + 'static,
 {
@@ -130,7 +129,7 @@ where
 
     async fn serve(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         req: Request<ReqBody>,
     ) -> Result<Self::Response, Self::Error> {
         let mut response = self.inner.serve(ctx, req).await?;

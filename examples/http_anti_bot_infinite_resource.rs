@@ -33,8 +33,7 @@ use rama::{
     http::{
         InfiniteReader, StatusCode,
         headers::ContentType,
-        layer::required_header::AddRequiredResponseHeadersLayer,
-        layer::trace::TraceLayer,
+        layer::{required_header::AddRequiredResponseHeadersLayer, trace::TraceLayer},
         server::HttpServer,
         service::web::{
             Router,
@@ -42,7 +41,7 @@ use rama::{
             response::{Headers, Html, IntoResponse},
         },
     },
-    layer::ConsumeErrLayer,
+    layer::{AddExtensionLayer, ConsumeErrLayer},
     net::{address::SocketAddress, stream::SocketInfo},
     rt::Executor,
     tcp::{TcpStream, server::TcpListener},
@@ -70,6 +69,8 @@ async fn main() {
 
     let graceful = rama::graceful::Shutdown::default();
 
+    let state = State::default();
+
     let router = Router::new()
         .get("/", Html(r##"<h1>Hello, Human!?</h1>"##.to_owned()))
         .get("/robots.txt", ROBOTS_TXT)
@@ -84,11 +85,16 @@ async fn main() {
             .into_layer(router),
     );
 
-    let tcp_svc = (ConsumeErrLayer::default(), IpFirewall).into_layer(app);
+    let tcp_svc = (
+        AddExtensionLayer::new(state),
+        ConsumeErrLayer::default(),
+        IpFirewall,
+    )
+        .into_layer(app);
 
     let address = SocketAddress::local_ipv4(62039);
     tracing::info!("running service at: {address}");
-    let tcp_server = TcpListener::build_with_state(State::default())
+    let tcp_server = TcpListener::build()
         .bind(address)
         .await
         .expect("bind tcp server");
@@ -118,14 +124,14 @@ struct InfiniteResourceParameters {
 
 async fn infinite_resource(
     Query(parameters): Query<InfiniteResourceParameters>,
-    ctx: Context<State>,
+    ctx: Context,
 ) -> impl IntoResponse {
     let Some(socket_info) = ctx.get::<SocketInfo>() else {
         tracing::error!("failed to fetch IP from SocketInfo; fail request with 500");
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
     let ip_addr = socket_info.peer_addr().ip();
-    let mut block_list = ctx.state().block_list.lock().await;
+    let mut block_list = ctx.get::<State>().unwrap().block_list.lock().await;
     block_list.insert(ip_addr);
     tracing::info!(
         "blocking bad ip: {ip_addr}; serve content (limit: {:?})",
@@ -155,24 +161,20 @@ impl<S> Layer<S> for IpFirewall {
     }
 }
 
-impl<S> Service<State, TcpStream> for IpFirewallService<S>
+impl<S> Service<TcpStream> for IpFirewallService<S>
 where
-    S: Service<State, TcpStream, Error: Into<BoxError>>,
+    S: Service<TcpStream, Error: Into<BoxError>>,
 {
     type Response = S::Response;
     type Error = BoxError;
 
-    async fn serve(
-        &self,
-        ctx: Context<State>,
-        stream: TcpStream,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, ctx: Context, stream: TcpStream) -> Result<Self::Response, Self::Error> {
         let ip_addr = ctx
             .get::<SocketInfo>()
             .ok_or_else(|| OpaqueError::from_display("no socket info found").into_boxed())?
             .peer_addr()
             .ip();
-        let block_list = ctx.state().block_list.lock().await;
+        let block_list = ctx.get::<State>().unwrap().block_list.lock().await;
         if block_list.contains(&ip_addr) {
             return Err(OpaqueError::from_display(format!(
                 "drop connection for blocked ip: {ip_addr}"
