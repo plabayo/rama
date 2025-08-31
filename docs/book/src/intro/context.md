@@ -31,15 +31,18 @@ across different layers of the network.
 
 ## State
 
-`rama` currently only support one type of state:
+`rama` supports two kinds of states:
 
-1. dynamic state: these can be injected as [`Extensions`]s using methods such as [`Context::insert`]
+1. static state: this state can be a part of the service struct or captured by a closure
+2. dynamic state: these can be injected as [`Extensions`]s using methods such as [`Context::insert`]
 
 Any state that is optional, and especially optional state injected by middleware, can be inserted using extensions.
 It is however important to try as much as possible to then also consume this state in an approach that deals
 gracefully with its absence. Good examples of this are header-related inputs. Headers might be set or not,
 and so absence of [`Extensions`]s that might be created as a result of these might reasonably not exist.
 It might of course still mean the app returns an error response when it is absent, but it should not unwrap/panic.
+
+TODO: once https://github.com/plabayo/rama/issues/462 is finished and `Context` is removed, write a separate page about `State` and explain all the different options in more detail.
 
 [`Context`]: https://ramaproxy.org/docs/rama/context/struct.Context.html
 [`Context::insert`]: https://ramaproxy.org/docs/rama/context/struct.Context.html#method.insert

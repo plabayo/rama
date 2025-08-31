@@ -2,9 +2,10 @@
 //!
 //! # State
 //!
-//! [`rama`] currently supports one type of state:
+//! [`rama`] supports two kinds of states:
 //!
-//! 1. dynamic state: these can be injected as [`Extensions`]s using methods such as [`Context::insert`]
+//! 1. static state: this state can be a part of the service struct or captured by a closure
+//! 2. dynamic state: these can be injected as [`Extensions`]s using methods such as [`Context::insert`]
 //!
 //! Any state that is optional, and especially optional state injected by middleware, can be inserted using extensions.
 //! It is however important to try as much as possible to then also consume this state in an approach that deals
