@@ -515,6 +515,10 @@ name = "http_k8s_health"
 required-features = ["http-full"]
 
 [[example]]
+name = "http_record_har"
+required-features = ["http-full", "boring"]
+
+[[example]]
 name = "http_key_value_store"
 required-features = ["http-full"]
 

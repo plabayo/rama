@@ -32,7 +32,7 @@ async-compression = { workspace = true, features = [
     "zstd",
 ], optional = true }
 bitflags = { workspace = true }
-chrono = { workspace = true }
+chrono = { workspace = true, features = ["serde"] }
 const_format = { workspace = true }
 csv = { workspace = true }
 flate2 = { workspace = true, optional = true }

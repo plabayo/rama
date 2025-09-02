@@ -86,6 +86,13 @@ impl ContentEncoding {
     }
 }
 
+impl ContentEncoding {
+    // TODO: revisit this in future
+    pub fn first_str(&self) -> Option<&str> {
+        self.0.iter().next()
+    }
+}
+
 mod sealed {
     pub trait AsCoding: Sealed {}
 

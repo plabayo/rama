@@ -64,6 +64,16 @@ impl TypedHeader for SetCookie {
     }
 }
 
+// TODO: More powerful cookie API
+
+impl SetCookie {
+    #[inline]
+    // TODO: this probbly will be removed soon...
+    pub fn iter_header_values(&self) -> impl Iterator<Item = &HeaderValue> {
+        self.0.iter()
+    }
+}
+
 impl HeaderDecode for SetCookie {
     fn decode<'i, I: Iterator<Item = &'i HeaderValue>>(values: &mut I) -> Result<Self, Error> {
         let vec = values.cloned().collect::<Vec<_>>();
