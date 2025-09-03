@@ -1702,8 +1702,7 @@ mod tests {
             let hdr = vec![1u8; i];
             assert!(
                 HeaderName::from_bytes(&hdr).is_err(),
-                "{} invalid header chars did not fail",
-                i
+                "{i} invalid header chars did not fail",
             );
         }
     }

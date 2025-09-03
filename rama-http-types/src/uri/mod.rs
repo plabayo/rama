@@ -373,7 +373,7 @@ impl Uri {
         let s = Bytes::from_static(src.as_bytes());
         match Self::from_shared(s) {
             Ok(uri) => uri,
-            Err(e) => panic!("static str is not valid URI: {}", e),
+            Err(e) => panic!("static str is not valid URI: {e}"),
         }
     }
 
@@ -1035,17 +1035,17 @@ impl Default for Uri {
 impl fmt::Display for Uri {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if let Some(scheme) = self.scheme() {
-            write!(f, "{}://", scheme)?;
+            write!(f, "{scheme}://")?;
         }
 
         if let Some(authority) = self.authority() {
-            write!(f, "{}", authority)?;
+            write!(f, "{authority}")?;
         }
 
         write!(f, "{}", self.path())?;
 
         if let Some(query) = self.query() {
-            write!(f, "?{}", query)?;
+            write!(f, "?{query}")?;
         }
 
         Ok(())

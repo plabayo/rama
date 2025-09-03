@@ -3635,10 +3635,9 @@ fn usable_capacity(cap: usize) -> usize {
 fn to_raw_capacity(n: usize) -> usize {
     match n.checked_add(n / 3) {
         Some(n) => n,
-        None => panic!(
-            "requested capacity {} too large: overflow while converting to raw capacity",
-            n
-        ),
+        None => {
+            panic!("requested capacity {n} too large: overflow while converting to raw capacity")
+        }
     }
 }
 
