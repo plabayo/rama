@@ -72,9 +72,7 @@ fn reserve() {
     let reserved_cap = headers.capacity();
     assert!(
         reserved_cap >= requested_cap,
-        "requested {} capacity, but it reserved only {} entries",
-        requested_cap,
-        reserved_cap,
+        "requested {requested_cap} capacity, but it reserved only {reserved_cap} entries",
     );
 
     for i in 0..requested_cap {
