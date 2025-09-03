@@ -544,7 +544,7 @@ mod tests {
         assert_eq!(0, ON_EOS().load(Ordering::Acquire), "eos");
         assert_eq!(0, ON_FAILURE().load(Ordering::Acquire), "failure");
 
-        res.into_body().collect().await.unwrap().to_bytes();
+        let _ = res.into_body().collect().await.unwrap().to_bytes();
         assert_eq!(
             1,
             ON_BODY_CHUNK_COUNT().load(Ordering::Acquire),
@@ -602,7 +602,7 @@ mod tests {
         assert_eq!(0, ON_EOS().load(Ordering::Acquire), "eos");
         assert_eq!(0, ON_FAILURE().load(Ordering::Acquire), "failure");
 
-        res.into_body().collect().await.unwrap().to_bytes();
+        let _ = res.into_body().collect().await.unwrap().to_bytes();
         assert_eq!(
             3,
             ON_BODY_CHUNK_COUNT().load(Ordering::Acquire),

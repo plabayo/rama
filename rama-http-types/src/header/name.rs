@@ -1612,7 +1612,7 @@ impl<'a> PartialEq<HdrName<'a>> for HeaderName {
         match self.inner {
             Repr::Standard(a) => match other.inner {
                 Repr::Standard(b) => a == b,
-                _ => false,
+                Repr::Custom(_) => false,
             },
             Repr::Custom(Custom(ref a)) => match other.inner {
                 Repr::Custom(ref b) => {
@@ -1622,7 +1622,7 @@ impl<'a> PartialEq<HdrName<'a>> for HeaderName {
                         eq_ignore_ascii_case(a.as_bytes(), b.buf)
                     }
                 }
-                _ => false,
+                Repr::Standard(_) => false,
             },
         }
     }

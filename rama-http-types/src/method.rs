@@ -51,13 +51,13 @@ pub struct Method(Inner);
 
 impl From<http_upstream::Method> for Method {
     fn from(value: http_upstream::Method) -> Self {
-        value.into()
+        Self::from_str(value.as_str()).unwrap()
     }
 }
 
 impl From<Method> for http_upstream::Method {
     fn from(value: Method) -> Self {
-        value.into()
+        Self::from_str(value.as_str()).unwrap()
     }
 }
 

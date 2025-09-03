@@ -216,6 +216,7 @@ impl<T> From<Response<T>> for http_upstream::response::Response<T> {
 /// The HTTP response head consists of a status, version, and a set of
 /// header fields.
 #[derive(Clone)]
+#[non_exhaustive]
 pub struct Parts {
     /// The response's status
     pub status: StatusCode,
@@ -228,8 +229,6 @@ pub struct Parts {
 
     /// The response's extensions
     pub extensions: Extensions,
-
-    _priv: (),
 }
 
 impl From<http_upstream::response::Parts> for Parts {
@@ -240,7 +239,6 @@ impl From<http_upstream::response::Parts> for Parts {
             headers: value.headers.into(),
             // TODO
             extensions: Extensions::new(),
-            _priv: (),
         }
     }
 }
@@ -260,6 +258,7 @@ impl From<Parts> for http_upstream::response::Parts {
 /// This type can be used to construct an instance of `Response` through a
 /// builder-like pattern.
 #[derive(Debug)]
+#[must_use]
 pub struct Builder {
     inner: Result<Parts>,
 }
@@ -281,7 +280,6 @@ impl Response<()> {
     ///     .unwrap();
     /// ```
     #[inline]
-    #[must_use]
     pub fn builder() -> Builder {
         Builder::new()
     }
@@ -560,7 +558,6 @@ impl Parts {
             version: Version::default(),
             headers: HeaderMap::default(),
             extensions: Extensions::default(),
-            _priv: (),
         }
     }
 }
@@ -592,7 +589,6 @@ impl Builder {
     ///     .unwrap();
     /// ```
     #[inline]
-    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -636,7 +632,6 @@ impl Builder {
     ///     .body(())
     ///     .unwrap();
     /// ```
-    #[must_use]
     pub fn version(self, version: Version) -> Self {
         self.and_then(move |mut head| {
             head.version = version;

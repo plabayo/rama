@@ -15,7 +15,7 @@ mod full;
 mod limited;
 mod stream;
 
-mod util;
+mod local_util;
 
 use self::combinators::{BoxBody, MapErr, MapFrame, UnsyncBoxBody};
 

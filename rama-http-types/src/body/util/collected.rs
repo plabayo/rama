@@ -8,7 +8,7 @@ use crate::body::{Frame, StreamingBody};
 use crate::header::HeaderMap;
 use bytes::{Buf, Bytes};
 
-use super::util::BufList;
+use super::local_util::BufList;
 
 /// A collected body produced by [`BodyExt::collect`] which collects all the DATA frames
 /// and trailers.

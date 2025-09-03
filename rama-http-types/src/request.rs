@@ -195,6 +195,7 @@ impl<T> From<Request<T>> for http_upstream::request::Request<T> {
 /// The HTTP request head consists of a method, uri, version, and a set of
 /// header fields.
 #[derive(Clone)]
+#[non_exhaustive]
 pub struct Parts {
     /// The request's method
     pub method: Method,
@@ -210,8 +211,6 @@ pub struct Parts {
 
     /// The request's extensions
     pub extensions: Extensions,
-
-    _priv: (),
 }
 
 impl From<http_upstream::request::Parts> for Parts {
@@ -223,7 +222,6 @@ impl From<http_upstream::request::Parts> for Parts {
             headers: value.headers.into(),
             // TODO
             extensions: Extensions::new(),
-            _priv: (),
         }
     }
 }
@@ -243,6 +241,7 @@ impl From<Parts> for http_upstream::request::Parts {
 /// This type can be used to construct an instance or `Request`
 /// through a builder-like pattern.
 #[derive(Debug)]
+#[must_use]
 pub struct Builder {
     inner: Result<Parts>,
 }
@@ -265,7 +264,6 @@ impl Request<()> {
     ///     .unwrap();
     /// ```
     #[inline]
-    #[must_use]
     pub fn builder() -> Builder {
         Builder::new()
     }
@@ -770,7 +768,6 @@ impl Parts {
             version: Version::default(),
             headers: HeaderMap::default(),
             extensions: Extensions::default(),
-            _priv: (),
         }
     }
 }
@@ -802,7 +799,6 @@ impl Builder {
     ///     .unwrap();
     /// ```
     #[inline]
-    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }

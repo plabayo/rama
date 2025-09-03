@@ -541,9 +541,8 @@ impl<T> HeaderMap<T> {
                 danger: Danger::Green,
             })
         } else {
-            let raw_cap = match to_raw_capacity(capacity).checked_next_power_of_two() {
-                Some(c) => c,
-                None => return Err(MaxSizeReached { _priv: () }),
+            let Some(raw_cap) = to_raw_capacity(capacity).checked_next_power_of_two() else {
+                return Err(MaxSizeReached { _priv: () });
             };
             if raw_cap > MAX_SIZE {
                 return Err(MaxSizeReached { _priv: () });
@@ -765,6 +764,7 @@ impl<T> HeaderMap<T> {
         Ok(())
     }
 
+    #[allow(clippy::needless_pass_by_value)]
     /// Returns a reference to the value associated with the key.
     ///
     /// If there are multiple values associated with the key, then the first one
@@ -806,6 +806,7 @@ impl<T> HeaderMap<T> {
         }
     }
 
+    #[allow(clippy::needless_pass_by_value)]
     /// Returns a mutable reference to the value associated with the key.
     ///
     /// If there are multiple values associated with the key, then the first one
@@ -836,6 +837,7 @@ impl<T> HeaderMap<T> {
         }
     }
 
+    #[allow(clippy::needless_pass_by_value)]
     /// Returns a view of all values associated with a key.
     ///
     /// The returned view does not incur any allocations and allows iterating
@@ -871,6 +873,7 @@ impl<T> HeaderMap<T> {
         }
     }
 
+    #[allow(clippy::needless_pass_by_value)]
     /// Returns true if the map contains a value for the specified key.
     ///
     /// # Examples
@@ -1492,7 +1495,7 @@ impl<T> HeaderMap<T> {
     #[inline]
     fn find<K>(&self, key: &K) -> Option<(usize, usize)>
     where
-        K: Hash + Into<HeaderName> + ?Sized,
+        K: Hash + Into<HeaderName>,
         HeaderName: PartialEq<K>,
     {
         if self.entries.is_empty() {
@@ -1544,6 +1547,7 @@ impl<T> HeaderMap<T> {
         Ok(index)
     }
 
+    #[allow(clippy::needless_pass_by_value)]
     /// Removes a key from the map, returning the value associated with the key.
     ///
     /// Returns `None` if the map does not contain the key. If there are
@@ -3551,17 +3555,17 @@ impl Pos {
     }
 
     #[inline]
-    fn is_some(&self) -> bool {
+    fn is_some(self) -> bool {
         !self.is_none()
     }
 
     #[inline]
-    fn is_none(&self) -> bool {
+    fn is_none(self) -> bool {
         self.index == !0
     }
 
     #[inline]
-    fn resolve(&self) -> Option<(usize, HashValue)> {
+    fn resolve(self) -> Option<(usize, HashValue)> {
         if self.is_some() {
             Some((self.index as usize, self.hash))
         } else {
@@ -3657,15 +3661,14 @@ where
 
     const MASK: u64 = (MAX_SIZE as u64) - 1;
 
-    let hash = match *danger {
+    let hash = if let Danger::Red(ref hasher) = *danger {
         // Safe hash
-        Danger::Red(ref hasher) => hasher.hash_one(k),
+        hasher.hash_one(k)
+    } else {
         // Fast hash
-        _ => {
-            let mut h = FnvHasher::default();
-            k.hash(&mut h);
-            h.finish()
-        }
+        let mut h = FnvHasher::default();
+        k.hash(&mut h);
+        h.finish()
     };
 
     HashValue((hash & MASK) as u16)

@@ -59,7 +59,7 @@ impl<T> Frame<T> {
     pub fn into_data(self) -> Result<T, Self> {
         match self.kind {
             Kind::Data(data) => Ok(data),
-            _ => Err(self),
+            Kind::Trailers(_) => Err(self),
         }
     }
 
@@ -69,7 +69,7 @@ impl<T> Frame<T> {
     pub fn data_ref(&self) -> Option<&T> {
         match self.kind {
             Kind::Data(ref data) => Some(data),
-            _ => None,
+            Kind::Trailers(_) => None,
         }
     }
 
@@ -79,7 +79,7 @@ impl<T> Frame<T> {
     pub fn data_mut(&mut self) -> Option<&mut T> {
         match self.kind {
             Kind::Data(ref mut data) => Some(data),
-            _ => None,
+            Kind::Trailers(_) => None,
         }
     }
 
@@ -95,7 +95,7 @@ impl<T> Frame<T> {
     pub fn into_trailers(self) -> Result<HeaderMap, Self> {
         match self.kind {
             Kind::Trailers(trailers) => Ok(trailers),
-            _ => Err(self),
+            Kind::Data(_) => Err(self),
         }
     }
 
@@ -105,7 +105,7 @@ impl<T> Frame<T> {
     pub fn trailers_ref(&self) -> Option<&HeaderMap> {
         match self.kind {
             Kind::Trailers(ref trailers) => Some(trailers),
-            _ => None,
+            Kind::Data(_) => None,
         }
     }
 
@@ -115,7 +115,7 @@ impl<T> Frame<T> {
     pub fn trailers_mut(&mut self) -> Option<&mut HeaderMap> {
         match self.kind {
             Kind::Trailers(ref mut trailers) => Some(trailers),
-            _ => None,
+            Kind::Data(_) => None,
         }
     }
 }

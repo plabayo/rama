@@ -112,6 +112,7 @@ impl From<Uri> for http_upstream::Uri {
     }
 }
 
+#[non_exhaustive]
 /// The various parts of a URI.
 ///
 /// This struct is used to provide to and retrieve from a URI.
@@ -125,9 +126,6 @@ pub struct Parts {
 
     /// The origin-form component of a URI
     pub path_and_query: Option<PathAndQuery>,
-
-    /// Allow extending in the future
-    _priv: (),
 }
 
 /// An error resulting from a failed attempt to construct a URI.
@@ -211,7 +209,6 @@ impl Uri {
     ///     .build()
     ///     .unwrap();
     /// ```
-    #[must_use]
     pub fn builder() -> Builder {
         Builder::new()
     }
@@ -829,7 +826,6 @@ impl From<Uri> for Parts {
             scheme,
             authority,
             path_and_query,
-            _priv: (),
         }
     }
 }

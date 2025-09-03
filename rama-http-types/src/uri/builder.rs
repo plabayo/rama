@@ -8,6 +8,7 @@ use crate::Uri;
 /// This type can be used to construct an instance of `Uri`
 /// through a builder pattern.
 #[derive(Debug)]
+#[must_use]
 pub struct Builder {
     parts: Result<Parts, crate::Error>,
 }
@@ -28,7 +29,6 @@ impl Builder {
     ///     .unwrap();
     /// ```
     #[inline]
-    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }

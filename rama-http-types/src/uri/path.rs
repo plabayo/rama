@@ -31,6 +31,7 @@ impl PathAndQuery {
             // path ...
             for (i, &b) in &mut iter {
                 // See https://url.spec.whatwg.org/#path-state
+                #[allow(clippy::match_same_arms)]
                 match b {
                     b'?' => {
                         debug_assert_eq!(query, NONE);

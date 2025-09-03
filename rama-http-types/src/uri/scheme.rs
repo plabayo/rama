@@ -130,6 +130,7 @@ impl PartialEq for Scheme {
         use self::Protocol::{Http, Https};
         use self::Scheme2::{None, Other, Standard};
 
+        #[allow(clippy::match_same_arms)]
         match (&self.inner, &other.inner) {
             (&Standard(Http), &Standard(Http)) => true,
             (&Standard(Https), &Standard(Https)) => true,
@@ -248,11 +249,8 @@ impl Scheme2<usize> {
                 // that it is a valid single byte UTF-8 code point.
                 for &b in s {
                     match SCHEME_CHARS[b as usize] {
-                        b':' => {
+                        b':' | 0 => {
                             // Don't want :// here
-                            return Err(ErrorKind::InvalidScheme.into());
-                        }
-                        0 => {
                             return Err(ErrorKind::InvalidScheme.into());
                         }
                         _ => {}
@@ -315,8 +313,8 @@ impl Scheme2<usize> {
 }
 
 impl Protocol {
-    pub(super) fn len(&self) -> usize {
-        match *self {
+    pub(super) fn len(self) -> usize {
+        match self {
             Self::Http => 4,
             Self::Https => 5,
         }
