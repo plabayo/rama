@@ -12,7 +12,7 @@
 //! ```
 //! use rama_http_types::{Request, Response, StatusCode};
 //!
-//! fn respond_to(req: Request<()>) -> http::Result<Response<()>> {
+//! fn respond_to(req: Request<()>) -> rama_http_types::Result<Response<()>> {
 //!     let mut builder = Response::builder()
 //!         .header("Foo", "Bar")
 //!         .status(StatusCode::OK);
@@ -30,7 +30,7 @@
 //! ```
 //! use rama_http_types::{Request, Response, StatusCode};
 //!
-//! fn not_found(_req: Request<()>) -> http::Result<Response<()>> {
+//! fn not_found(_req: Request<()>) -> rama_http_types::Result<Response<()>> {
 //!     Response::builder()
 //!         .status(StatusCode::NOT_FOUND)
 //!         .body(())
@@ -42,7 +42,7 @@
 //! ```no_run
 //! use rama_http_types::{Request, Response};
 //!
-//! fn get(url: &str) -> http::Result<Response<()>> {
+//! fn get(url: &str) -> rama_http_types::Result<Response<()>> {
 //!     // ...
 //! # panic!()
 //! }
@@ -92,7 +92,7 @@ use crate::version::Version;
 /// ```
 /// use rama_http_types::{Request, Response, StatusCode};
 ///
-/// fn respond_to(req: Request<()>) -> http::Result<Response<()>> {
+/// fn respond_to(req: Request<()>) -> rama_http_types::Result<Response<()>> {
 ///     let mut builder = Response::builder()
 ///         .header("Foo", "Bar")
 ///         .status(StatusCode::OK);
@@ -110,7 +110,7 @@ use crate::version::Version;
 /// ```
 /// use rama_http_types::{Request, Response, StatusCode};
 ///
-/// fn not_found(_req: Request<()>) -> http::Result<Response<()>> {
+/// fn not_found(_req: Request<()>) -> rama_http_types::Result<Response<()>> {
 ///     Response::builder()
 ///         .status(StatusCode::NOT_FOUND)
 ///         .body(())
@@ -122,7 +122,7 @@ use crate::version::Version;
 /// ```no_run
 /// use rama_http_types::{Request, Response};
 ///
-/// fn get(url: &str) -> http::Result<Response<()>> {
+/// fn get(url: &str) -> rama_http_types::Result<Response<()>> {
 ///     // ...
 /// # panic!()
 /// }

@@ -37,7 +37,7 @@
 //! ```
 //! use rama_http_types::{Request, Response, StatusCode};
 //!
-//! fn respond_to(req: Request<()>) -> http::Result<Response<()>> {
+//! fn respond_to(req: Request<()>) -> rama_http_types::Result<Response<()>> {
 //!     if req.uri() != "/awesome-url" {
 //!         return Response::builder()
 //!             .status(StatusCode::NOT_FOUND)
@@ -104,7 +104,7 @@ use crate::{Result, Uri};
 /// ```
 /// use rama_http_types::{Request, Response, StatusCode};
 ///
-/// fn respond_to(req: Request<()>) -> http::Result<Response<()>> {
+/// fn respond_to(req: Request<()>) -> rama_http_types::Result<Response<()>> {
 ///     if req.uri() != "/awesome-url" {
 ///         return Response::builder()
 ///             .status(StatusCode::NOT_FOUND)

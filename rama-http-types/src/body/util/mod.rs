@@ -94,7 +94,7 @@ pub trait BodyExt: crate::body::StreamingBody {
     ///
     /// ```
     /// use rama_http_types::header::HeaderMap;
-    /// use http_body_util::{Full, BodyExt};
+    /// use rama_http_types::body::util::{Full, BodyExt};
     /// use bytes::Bytes;
     ///
     /// # #[tokio::main]

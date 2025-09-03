@@ -8,8 +8,8 @@
 //! use rama_core::bytes::Bytes;
 //! use rama_core::futures::stream::StreamExt;
 //! use rama_core::error::BoxError;
-//! use rama_http::dep::http_body::Frame;
-//! use rama_http::body::util::{BodyExt , StreamBody};
+//! use rama_http::body::Frame;
+//! use rama_http::body::util::{BodyExt, StreamBody};
 //! use rama_http::body::util::combinators::BoxBody as InnerBoxBody;
 //! use rama_http::layer::compression::CompressionLayer;
 //! use rama_http::{Body, Request, Response, header::ACCEPT_ENCODING};
