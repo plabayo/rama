@@ -65,10 +65,12 @@ use std::any::Any;
 use std::convert::TryInto;
 use std::fmt;
 
+use crate::body::Body;
+use crate::dep::http_upstream;
 use crate::header::{HeaderMap, HeaderName, HeaderValue};
 use crate::status::StatusCode;
 use crate::version::Version;
-use crate::{Body, Extensions, Result};
+use crate::{Extensions, Result};
 
 /// Represents an HTTP response
 ///
@@ -182,6 +184,31 @@ pub struct Response<T = Body> {
     body: T,
 }
 
+impl<T> From<http_upstream::response::Response<T>> for Response<T> {
+    fn from(value: http_upstream::response::Response<T>) -> Self {
+        let (parts, body) = value.into_parts();
+        Self::from_parts(parts.into(), body)
+    }
+}
+
+impl<T> From<Response<T>> for http_upstream::response::Response<T> {
+    fn from(value: Response<T>) -> Self {
+        let (parts, body) = value.into_parts();
+
+        let headers = http_upstream::HeaderMap::from(parts.headers);
+
+        let mut builder = http_upstream::response::Builder::new()
+            .status(http_upstream::StatusCode::from(parts.status))
+            .version(http_upstream::Version::from(parts.version));
+
+        *builder.headers_mut().unwrap() = headers;
+
+        // TODO extensions
+
+        builder.body(body).unwrap()
+    }
+}
+
 /// Component parts of an HTTP `Response`
 ///
 /// The HTTP response head consists of a status, version, and a set of
@@ -201,6 +228,29 @@ pub struct Parts {
     pub extensions: Extensions,
 
     _priv: (),
+}
+
+impl From<http_upstream::response::Parts> for Parts {
+    fn from(value: http_upstream::response::Parts) -> Self {
+        Self {
+            status: value.status.into(),
+            version: value.version.into(),
+            headers: value.headers.into(),
+            // TODO
+            extensions: Extensions::new(),
+            _priv: (),
+        }
+    }
+}
+
+impl From<Parts> for http_upstream::response::Parts {
+    fn from(value: Parts) -> Self {
+        // not possible to directly create upstream parts so we have to be creative
+        let response = Response::from_parts(value, ());
+        let response = http_upstream::response::Response::from(response);
+        let (parts, _) = response.into_parts();
+        parts
+    }
 }
 
 /// An HTTP response builder

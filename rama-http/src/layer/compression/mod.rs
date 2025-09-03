@@ -9,8 +9,8 @@
 //! use rama_core::futures::stream::StreamExt;
 //! use rama_core::error::BoxError;
 //! use rama_http::dep::http_body::Frame;
-//! use rama_http::dep::http_body_util::{BodyExt , StreamBody};
-//! use rama_http::dep::http_body_util::combinators::BoxBody as InnerBoxBody;
+//! use rama_http::body::util::{BodyExt , StreamBody};
+//! use rama_http::body::util::combinators::BoxBody as InnerBoxBody;
 //! use rama_http::layer::compression::CompressionLayer;
 //! use rama_http::{Body, Request, Response, header::ACCEPT_ENCODING};
 //! use rama_core::service::service_fn;
@@ -96,16 +96,15 @@ mod tests {
 
     use crate::layer::compression::predicate::SizeAbove;
 
-    use crate::dep::http_body::Body as _;
-    use crate::dep::http_body_util::BodyExt;
     use crate::header::{
         ACCEPT_ENCODING, ACCEPT_RANGES, CONTENT_ENCODING, CONTENT_RANGE, CONTENT_TYPE, RANGE,
     };
-    use crate::{Body, HeaderValue, Request, Response};
+    use crate::{HeaderValue, Request, Response, StreamingBody, body::util::BodyExt};
     use async_compression::tokio::write::{BrotliDecoder, BrotliEncoder};
     use flate2::read::GzDecoder;
     use rama_core::service::service_fn;
     use rama_core::{Context, Service};
+    use rama_http_types::Body;
     use std::convert::Infallible;
     use std::io::Read;
     use std::sync::{Arc, RwLock};
@@ -119,7 +118,7 @@ mod tests {
     impl Predicate for Always {
         fn should_compress<B>(&self, _: &rama_http_types::Response<B>) -> bool
         where
-            B: rama_http_types::dep::http_body::Body,
+            B: StreamingBody,
         {
             true
         }
@@ -297,7 +296,7 @@ mod tests {
         impl Predicate for EveryOtherResponse {
             fn should_compress<B>(&self, _: &rama_http_types::Response<B>) -> bool
             where
-                B: rama_http_types::dep::http_body::Body,
+                B: StreamingBody,
             {
                 let mut guard = self.0.write().unwrap();
                 let should_compress = *guard % 2 != 0;

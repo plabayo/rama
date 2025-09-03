@@ -23,6 +23,7 @@
 //! ```
 
 use crate::byte_str::ByteStr;
+use crate::dep::http_upstream;
 use std::convert::TryFrom;
 
 use bytes::Bytes;
@@ -97,6 +98,18 @@ pub struct Uri {
     scheme: Scheme,
     authority: Authority,
     path_and_query: PathAndQuery,
+}
+
+impl From<http_upstream::Uri> for Uri {
+    fn from(value: http_upstream::Uri) -> Self {
+        Self::from_str(&value.to_string()).unwrap()
+    }
+}
+
+impl From<Uri> for http_upstream::Uri {
+    fn from(value: Uri) -> Self {
+        Self::from_str(&value.to_string()).unwrap()
+    }
 }
 
 /// The various parts of a URI.

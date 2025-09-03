@@ -29,10 +29,10 @@
 //! # }
 //! ```
 
-use crate::Request;
-use crate::dep::http_body_util::Limited;
+use crate::body::util::Limited;
+use crate::{Body, Request};
 use rama_core::{Context, Layer, Service, bytes::Bytes, error::BoxError};
-use rama_http_types::Body;
+use rama_http_types::StreamingBody;
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
 
@@ -84,10 +84,7 @@ impl<S> BodyLimitService<S> {
 impl<S, ReqBody> Service<Request<ReqBody>> for BodyLimitService<S>
 where
     S: Service<Request<Body>>,
-    ReqBody: rama_http_types::dep::http_body::Body<Data = Bytes, Error: Into<BoxError>>
-        + Send
-        + Sync
-        + 'static,
+    ReqBody: StreamingBody<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
 {
     type Response = S::Response;
     type Error = S::Error;

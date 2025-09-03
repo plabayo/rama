@@ -1,6 +1,7 @@
 use rama_core::bytes::Bytes;
 use rama_core::telemetry::tracing::{Instrument, trace_root_span};
 use rama_core::{Context, Service, error::BoxError};
+use rama_http::StreamingBody;
 use rama_http::opentelemetry::version_as_protocol_version;
 use rama_http::service::web::response::IntoResponse;
 use rama_http_types::{Request, Response};
@@ -52,10 +53,7 @@ where
 impl<S, ReqBody, R> HttpService<ReqBody> for RamaHttpService<S>
 where
     S: Service<Request, Response = R, Error = Infallible> + Clone,
-    ReqBody: rama_http_types::dep::http_body::Body<Data = Bytes, Error: Into<BoxError>>
-        + Send
-        + Sync
-        + 'static,
+    ReqBody: StreamingBody<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
     R: IntoResponse + Send + 'static,
 {
     fn serve_http(
@@ -89,10 +87,7 @@ pub(crate) struct VoidHttpService;
 
 impl<ReqBody> HttpService<ReqBody> for VoidHttpService
 where
-    ReqBody: rama_http_types::dep::http_body::Body<Data = Bytes, Error: Into<BoxError>>
-        + Send
-        + Sync
-        + 'static,
+    ReqBody: StreamingBody<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
 {
     #[allow(clippy::manual_async_fn)]
     fn serve_http(
@@ -111,19 +106,13 @@ mod sealed {
     impl<S, ReqBody, R> Sealed<ReqBody> for RamaHttpService<S>
     where
         S: Service<Request, Response = R, Error = Infallible> + Clone,
-        ReqBody: rama_http_types::dep::http_body::Body<Data = Bytes, Error: Into<BoxError>>
-            + Send
-            + Sync
-            + 'static,
+        ReqBody: StreamingBody<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
         R: IntoResponse + Send + 'static,
     {
     }
 
     impl<ReqBody> Sealed<ReqBody> for VoidHttpService where
-        ReqBody: rama_http_types::dep::http_body::Body<Data = Bytes, Error: Into<BoxError>>
-            + Send
-            + Sync
-            + 'static
+        ReqBody: StreamingBody<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static
     {
     }
 }

@@ -25,6 +25,7 @@ use rama::{
     tls::boring::{client::TlsConnectorDataBuilder, core::x509::X509},
     utils::{backoff::ExponentialBackoff, rng::HasherRng},
 };
+use rama_http::StreamingBody;
 use tokio_test::assert_err;
 
 use std::{str::FromStr, time::Duration};
@@ -149,10 +150,7 @@ fn map_internal_client_error<E, Body>(
 ) -> Result<Response, rama::error::BoxError>
 where
     E: Into<rama::error::BoxError>,
-    Body: rama::http::dep::http_body::Body<Data = bytes::Bytes, Error: Into<BoxError>>
-        + Send
-        + Sync
-        + 'static,
+    Body: StreamingBody<Data = bytes::Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
 {
     match result {
         Ok(response) => Ok(response.map(rama::http::Body::new)),

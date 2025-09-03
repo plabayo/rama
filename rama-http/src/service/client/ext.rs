@@ -163,9 +163,7 @@ where
             }
         };
 
-        let builder = crate::request::Builder::new()
-            .method(method)
-            .uri(uri);
+        let builder = crate::request::Builder::new().method(method).uri(uri);
 
         RequestBuilder {
             http_client_service: self,
@@ -753,6 +751,7 @@ mod test {
 
     use super::*;
     use crate::{
+        StreamingBody,
         layer::{
             required_header::AddRequiredRequestHeadersLayer,
             retry::{ManagedPolicy, RetryLayer},
@@ -772,9 +771,7 @@ mod test {
         request: Request<Body>,
     ) -> Result<Response, Infallible>
     where
-        Body: crate::dep::http_body::Body<Data: Send + 'static, Error: Send + 'static>
-            + Send
-            + 'static,
+        Body: StreamingBody<Data: Send + 'static, Error: Send + 'static> + Send + 'static,
     {
         let ua = request.headers().get(crate::header::USER_AGENT).unwrap();
         assert_eq!(
@@ -790,7 +787,7 @@ mod test {
     ) -> Result<Response, rama_core::error::BoxError>
     where
         E: Into<rama_core::error::BoxError>,
-        Body: crate::dep::http_body::Body<Data = rama_core::bytes::Bytes, Error: Into<BoxError>>
+        Body: StreamingBody<Data = rama_core::bytes::Bytes, Error: Into<BoxError>>
             + Send
             + Sync
             + 'static,

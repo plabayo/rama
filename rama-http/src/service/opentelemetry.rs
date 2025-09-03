@@ -1,14 +1,10 @@
+use crate::{Body, Request, Response, body::util::BodyExt, dep::http_upstream};
 use opentelemetry_http::HttpClient;
 use rama_core::{
     Context, Service,
     bytes::Bytes,
     error::{BoxError, ErrorContext},
     rt::Executor,
-};
-use rama_http_types::{
-    Body,
-    dep::http_body_util::BodyExt,
-    dep::http_upstream_types::{Request, Response},
 };
 use std::{fmt, pin::Pin};
 
@@ -86,13 +82,20 @@ where
 {
     fn send_bytes<'life0, 'async_trait>(
         &'life0 self,
-        request: Request<Bytes>,
-    ) -> Pin<Box<dyn Future<Output = Result<Response<Bytes>, BoxError>> + Send + 'async_trait>>
+        request: http_upstream::Request<Bytes>,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<http_upstream::Response<Bytes>, BoxError>>
+                + Send
+                + 'async_trait,
+        >,
+    >
     where
         'life0: 'async_trait,
         Self: 'async_trait,
     {
         let ctx = self.ctx.clone();
+        let request = Request::from(request);
         let request = request.map(Body::from);
 
         let svc = self.service.clone();
@@ -102,7 +105,7 @@ where
             let resp = svc.serve(ctx, request).await.map_err(Into::into)?;
             let (parts, body) = resp.into_parts();
             let body = body.collect().await?.to_bytes();
-            Ok(Response::from_parts(parts, body))
+            Ok(http_upstream::Response::from_parts(parts.into(), body))
         });
 
         Box::pin(async move { handle.await.context("await tokio handle to fut exec")? })

@@ -6,7 +6,6 @@ use rama_core::bytes::Bytes;
 use rama_core::bytes::BytesMut;
 use rama_core::telemetry::tracing::{debug, error, trace, trace_span, warn};
 use rama_http::proto::{HeaderByteLength, RequestExtensions, RequestHeaders};
-use rama_http_types::dep::http;
 use rama_http_types::header::Entry;
 use rama_http_types::header::{self, HeaderMap, HeaderValue};
 use rama_http_types::proto::h1::{Http1HeaderMap, Http1HeaderName};
@@ -275,7 +274,7 @@ impl Http1Transaction for Server {
             return Err(Parse::transfer_encoding_invalid());
         }
 
-        let mut extensions = http::Extensions::default();
+        let mut extensions = rama_http_types::Extensions::default();
 
         let headers = headers.consume(&mut extensions);
 
@@ -437,7 +436,7 @@ impl Server {
     #[inline(never)]
     fn encode_h1_headers(
         msg: Encode<'_, StatusCode>,
-        ext: &mut http::Extensions,
+        ext: &mut rama_http_types::Extensions,
         dst: &mut Vec<u8>,
         is_last: bool,
         orig_len: usize,
@@ -494,7 +493,7 @@ impl Server {
     #[inline]
     fn encode_headers<W>(
         msg: Encode<'_, StatusCode>,
-        ext: &mut http::Extensions,
+        ext: &mut rama_http_types::Extensions,
         dst: &mut Vec<u8>,
         mut is_last: bool,
         orig_len: usize,
@@ -920,7 +919,7 @@ impl Http1Transaction for Client {
                 headers.append(name, value);
             }
 
-            let mut extensions = http::Extensions::default();
+            let mut extensions = rama_http_types::Extensions::default();
 
             let headers = headers.consume(&mut extensions);
 
@@ -1378,7 +1377,7 @@ pub(crate) fn write_headers(headers: &HeaderMap, dst: &mut Vec<u8>) {
 fn write_h1_headers(
     headers: HeaderMap,
     title_case_headers: bool,
-    ext: &mut http::Extensions,
+    ext: &mut rama_http_types::Extensions,
     dst: &mut Vec<u8>,
 ) -> Http1HeaderMap {
     let mut out_h1_headers = Http1HeaderMap::with_capacity(headers.len());
@@ -1829,7 +1828,7 @@ mod tests {
 
     #[test]
     fn test_decoder_response_request_extensions() {
-        let mut request_exts = http::Extensions::new();
+        let mut request_exts = rama_http_types::Extensions::new();
 
         request_exts.insert(42u64);
 
@@ -2669,12 +2668,12 @@ mod tests {
     #[test]
     fn test_write_headers_orig_case_empty_value() {
         let mut headers = HeaderMap::new();
-        let name = http::header::HeaderName::from_static("x-empty");
+        let name = rama_http_types::header::HeaderName::from_static("x-empty");
         headers.insert(&name, "".parse().expect("parse empty"));
         let mut orig_cases = OriginalHttp1Headers::default();
         orig_cases.push("X-EmptY".parse().unwrap());
 
-        let mut ext = http::Extensions::new();
+        let mut ext = rama_http_types::Extensions::new();
         ext.insert(orig_cases);
 
         let mut dst = Vec::new();
@@ -2691,7 +2690,7 @@ mod tests {
     #[test]
     fn test_write_headers_orig_case_multiple_entries() {
         let mut headers = HeaderMap::new();
-        let name = http::header::HeaderName::from_static("x-empty");
+        let name = rama_http_types::header::HeaderName::from_static("x-empty");
         headers.insert(&name, "a".parse().unwrap());
         headers.append(&name, "b".parse().unwrap());
 
@@ -2699,7 +2698,7 @@ mod tests {
         orig_cases.push("X-Empty".parse().unwrap());
         orig_cases.push("X-EMPTY".parse().unwrap());
 
-        let mut ext = http::Extensions::new();
+        let mut ext = rama_http_types::Extensions::new();
         ext.insert(orig_cases);
 
         let mut dst = Vec::new();

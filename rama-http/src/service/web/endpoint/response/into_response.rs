@@ -1,8 +1,8 @@
 use super::{IntoResponseParts, ResponseParts};
-use crate::dep::http_body::{Frame, SizeHint};
+use crate::Response;
+use crate::body::{Body, Frame, SizeHint, StreamingBody};
 use crate::dep::mime;
 use crate::service::web::response::Headers;
-use crate::{Body, Response};
 use crate::{
     Extensions, StatusCode,
     header::{self, HeaderMap, HeaderName, HeaderValue},
@@ -11,7 +11,6 @@ use rama_core::bytes::{Buf, Bytes, BytesMut, buf::Chain};
 use rama_core::error::BoxError;
 use rama_http_headers::{ContentDisposition, ContentType};
 use rama_http_types::InfiniteReader;
-use rama_http_types::dep::http_body;
 use rama_utils::macros::all_the_tuples_no_last_special_case;
 use std::{
     borrow::Cow,
@@ -93,7 +92,7 @@ where
 
 impl<B> IntoResponse for Response<B>
 where
-    B: http_body::Body<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
+    B: StreamingBody<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
 {
     fn into_response(self) -> Response {
         self.map(Body::new)
@@ -192,7 +191,7 @@ struct BytesChainBody<T, U> {
     second: Option<U>,
 }
 
-impl<T, U> http_body::Body for BytesChainBody<T, U>
+impl<T, U> StreamingBody for BytesChainBody<T, U>
 where
     T: Buf + Unpin,
     U: Buf + Unpin,

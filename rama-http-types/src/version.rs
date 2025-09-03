@@ -21,9 +21,37 @@
 
 use std::fmt;
 
+use crate::dep::http_upstream;
+
 /// Represents a version of the HTTP spec.
 #[derive(PartialEq, PartialOrd, Copy, Clone, Eq, Ord, Hash)]
 pub struct Version(Http);
+
+impl From<http_upstream::Version> for Version {
+    fn from(value: http_upstream::Version) -> Self {
+        match value {
+            http_upstream::Version::HTTP_09 => Version::HTTP_09,
+            http_upstream::Version::HTTP_10 => Version::HTTP_10,
+            http_upstream::Version::HTTP_11 => Version::HTTP_11,
+            http_upstream::Version::HTTP_2 => Version::HTTP_2,
+            http_upstream::Version::HTTP_3 => Version::HTTP_3,
+            _ => unreachable!("unreachable"),
+        }
+    }
+}
+
+impl From<Version> for http_upstream::Version {
+    fn from(value: Version) -> Self {
+        match value {
+            Version::HTTP_09 => http_upstream::Version::HTTP_09,
+            Version::HTTP_10 => http_upstream::Version::HTTP_10,
+            Version::HTTP_11 => http_upstream::Version::HTTP_11,
+            Version::HTTP_2 => http_upstream::Version::HTTP_2,
+            Version::HTTP_3 => http_upstream::Version::HTTP_3,
+            _ => unreachable!("unreachable"),
+        }
+    }
+}
 
 impl Version {
     /// `HTTP/0.9`

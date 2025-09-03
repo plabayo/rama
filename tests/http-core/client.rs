@@ -9,11 +9,12 @@ use std::pin::Pin;
 use std::thread;
 use std::time::Duration;
 
+use rama::http::body::util::{BodyExt, StreamBody};
 use rama::http::core::body::Frame;
-use rama::http::dep::http_body_util::{BodyExt, StreamBody};
 use rama::http::header::{HeaderMap, HeaderName, HeaderValue};
 use rama::http::uri::PathAndQuery;
 use rama::http::{Method, Request, StatusCode, Uri, Version};
+use rama_http::StreamingBody;
 
 use super::support;
 
@@ -28,14 +29,14 @@ fn s(buf: &[u8]) -> &str {
 
 async fn concat<B>(b: B) -> Result<Bytes, B::Error>
 where
-    B: rama::http::core::body::Body,
+    B: StreamingBody,
 {
     b.collect().await.map(|c| c.to_bytes())
 }
 
 async fn concat_with_trailers<B>(b: B) -> Result<(Bytes, Option<HeaderMap>), B::Error>
 where
-    B: rama::http::core::body::Body,
+    B: StreamingBody,
 {
     let collect = b.collect().await?;
     let trailers = collect.trailers().cloned();
@@ -170,7 +171,7 @@ macro_rules! test {
                 );
             )*
 
-            let (body, _trailers) = rt.block_on(concat_with_trailers(res))
+            let (body, _trailers) = rt.block_on(concat_with_trailers(res.into_body()))
                 .expect("body concat wait");
 
             let expected_res_body = Option::<&[u8]>::from($response_body)
@@ -247,7 +248,7 @@ macro_rules! test {
         let rt = $runtime;
 
         #[allow(unused_assignments, unused_mut)]
-        let mut body = BodyExt::boxed(rama::http::dep::http_body_util::Empty::<rama_core::bytes::Bytes>::new());
+        let mut body = BodyExt::boxed(rama::http::body::util::Empty::<rama_core::bytes::Bytes>::new());
         let mut req_builder = Request::builder();
         $(
             test!(@client_request; req_builder, body, addr, $c_req_prop: $c_req_val);
@@ -420,7 +421,7 @@ macro_rules! __client_req_prop {
     }};
 
     ($req_builder:ident, $body:ident, $addr:ident, body: $body_e:expr) => {{
-        $body = BodyExt::boxed(rama::http::dep::http_body_util::Full::from($body_e));
+        $body = BodyExt::boxed(rama::http::body::util::Full::from($body_e));
     }};
 
     ($req_builder:ident, $body:ident, $addr:ident, body_stream: $body_e:expr) => {{
@@ -1489,14 +1490,15 @@ mod conn {
     use futures_channel::{mpsc, oneshot};
     use rama::bytes::{Buf, Bytes};
     use rama::futures::future::{self, FutureExt, TryFutureExt, poll_fn};
+    use rama_http::StreamingBody;
     use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _, ReadBuf};
     use tokio::net::{TcpListener as TkTcpListener, TcpStream};
 
     use rama::error::BoxError;
-    use rama::http::core::body::{Body, Frame};
+    use rama::http::body::util::{BodyExt, Empty, StreamBody};
+    use rama::http::core::body::Frame;
     use rama::http::core::client::conn;
     use rama::http::core::service::RamaHttpService;
-    use rama::http::dep::http_body_util::{BodyExt, Empty, StreamBody};
     use rama::http::io::upgrade::OnUpgrade;
     use rama::http::{Method, Request, Response, StatusCode};
     use rama::rt::Executor;
@@ -1746,7 +1748,7 @@ mod conn {
 
         let res = client.send_request(req).and_then(move |res| {
             assert_eq!(res.status(), rama::http::StatusCode::OK);
-            concat(res)
+            concat(res.into_body())
         });
         let rx = rx1.expect("thread panicked");
         let rx = rx.then(|_| tokio::time::sleep(Duration::from_millis(200)));
@@ -1791,7 +1793,7 @@ mod conn {
 
         let res = client.send_request(req).and_then(move |res| {
             assert_eq!(res.status(), rama::http::StatusCode::OK);
-            concat(res)
+            concat(res.into_body())
         });
         let rx = rx1.expect("thread panicked");
         let rx = rx.then(|_| tokio::time::sleep(Duration::from_millis(200)));
@@ -1830,7 +1832,7 @@ mod conn {
             .unwrap();
         let res1 = client.send_request(req).and_then(move |res| {
             assert_eq!(res.status(), rama::http::StatusCode::OK);
-            concat(res)
+            concat(res.into_body())
         });
 
         // pipelined request will hit NotReady, and thus should return an Error::Cancel
@@ -1899,7 +1901,7 @@ mod conn {
             let res = client.send_request(req).and_then(move |res| {
                 assert_eq!(res.status(), rama::http::StatusCode::SWITCHING_PROTOCOLS);
                 assert_eq!(res.headers()["Upgrade"], "foobar");
-                concat(res)
+                concat(res.into_body())
             });
 
             let rx = rx1.expect("thread panicked");
@@ -1985,7 +1987,7 @@ mod conn {
                 .send_request(req)
                 .and_then(move |res| {
                     assert_eq!(res.status(), rama::http::StatusCode::OK);
-                    concat(res)
+                    concat(res.into_body())
                 })
                 .map_ok(|body| {
                     assert_eq!(body.as_ref(), b"");
@@ -2714,13 +2716,12 @@ mod conn {
         });
 
         let req = Request::post("/a")
-            .body(rama::http::dep::http_body_util::BodyExt::map_frame::<
-                _,
-                bytes::Bytes,
-            >(
-                rama::http::dep::http_body_util::Full::<rama_core::bytes::Bytes>::from("baguette"),
-                |_| panic!("oopsie"),
-            ))
+            .body(
+                rama::http::body::util::BodyExt::map_frame::<_, bytes::Bytes>(
+                    rama::http::body::util::Full::<rama_core::bytes::Bytes>::from("baguette"),
+                    |_| panic!("oopsie"),
+                ),
+            )
             .unwrap();
 
         let error = client.send_request(req).await.unwrap_err();

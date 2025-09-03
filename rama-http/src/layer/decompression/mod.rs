@@ -13,7 +13,7 @@
 //! use rama_core::service::service_fn;
 //! use rama_core::{Context, Service, Layer};
 //! use rama_http::layer::decompression::{DecompressionBody, RequestDecompressionLayer};
-//! use rama_http::dep::http_body_util::BodyExt;
+//! use rama_http::body::util::BodyExt;
 //! use rama_core::error::BoxError;
 //!
 //! # #[tokio::main]
@@ -55,7 +55,7 @@
 //! use rama_core::service::service_fn;
 //! use rama_core::{Context, Service, Layer};
 //! use rama_http::layer::{compression::Compression, decompression::DecompressionLayer};
-//! use rama_http::dep::http_body_util::BodyExt;
+//! use rama_http::body::util::BodyExt;
 //! use rama_core::error::BoxError;
 //!
 //! #
@@ -116,13 +116,13 @@ mod tests {
     use std::convert::Infallible;
     use std::io::Write;
 
-    use crate::dep::http_body_util::BodyExt;
     use crate::layer::compression::Compression;
-    use crate::{Body, HeaderMap, HeaderName, Request, Response};
+    use crate::{HeaderMap, HeaderName, Request, Response, body::util::BodyExt};
     use rama_core::service::service_fn;
     use rama_core::{Context, Service};
 
     use flate2::write::GzEncoder;
+    use rama_http_types::Body;
 
     #[tokio::test]
     async fn works() {

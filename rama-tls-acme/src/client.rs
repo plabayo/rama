@@ -23,7 +23,7 @@ use rama_crypto::{
 };
 use rama_http::{
     BodyExtractExt, Request, Response,
-    dep::http_body_util::BodyExt,
+    body::util::BodyExt,
     headers::{ContentType, HeaderMapExt, Location, RetryAfter, TypedHeader, UserAgent},
     service::client::HttpClientExt,
     utils::HeaderValueGetter,

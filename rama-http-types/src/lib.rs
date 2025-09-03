@@ -17,8 +17,10 @@
 #![cfg_attr(test, allow(clippy::float_cmp))]
 #![cfg_attr(not(test), warn(clippy::print_stdout, clippy::dbg_macro))]
 
-pub(crate) mod body;
-pub use body::{Body, BodyDataStream, BodyExtractExt, BodyLimit, InfiniteReader, sse};
+pub mod body;
+pub use body::{
+    Body, BodyDataStream, BodyExtractExt, BodyLimit, InfiniteReader, StreamingBody, sse,
+};
 
 #[macro_use]
 mod convert;
@@ -63,10 +65,10 @@ pub mod dep {
     //!
     //! Exported for your convenience.
 
-    pub mod http_upstream_types {
-        //! Re-export of the [`http`] crate.
+    pub mod http_upstream {
+        //! Re-export of the [`http`] crate incase we need to convert.
         //!
-        //! todo
+        //! A general purpose library of common HTTP types.
         //!
         //! [`http`]: https://docs.rs/http
 
@@ -74,10 +76,10 @@ pub mod dep {
         pub use http::*;
     }
 
-    pub mod http_body {
-        //! Re-export of the [`http-body`] crate.
+    pub mod http_body_upstream {
+        //! Re-export of the [`http-body`] crate incase we need to convert.
         //!
-        //! Asynchronous HTTP request or response body.
+        //! Asynchronous HTTP request or response body
         //!
         //! [`http-body`]: https://docs.rs/http-body
 
@@ -85,8 +87,8 @@ pub mod dep {
         pub use http_body::*;
     }
 
-    pub mod http_body_util {
-        //! Re-export of the [`http-body-util`] crate.
+    pub mod http_body_util_upstream {
+        //! Re-export of the [`http-body-util`] crate incase we need to convert.
         //!
         //! Utilities for working with [`http-body`] types.
         //!

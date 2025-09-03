@@ -113,11 +113,8 @@ impl Default for AllowPrivateNetworkInner {
 mod tests {
     use super::AllowPrivateNetwork;
 
-    use crate::Body;
-    use crate::{
-        HeaderName, HeaderValue, Request, Response, header::ORIGIN, request::Parts,
-    };
     use crate::layer::cors::CorsLayer;
+    use crate::{Body, HeaderName, HeaderValue, Request, Response, header::ORIGIN, request::Parts};
     use rama_core::error::BoxError;
     use rama_core::service::service_fn;
     use rama_core::{Context, Layer, Service};

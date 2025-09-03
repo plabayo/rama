@@ -19,9 +19,10 @@
 
 #[doc(inline)]
 pub use ::rama_http_types::{
-    Body, BodyDataStream, BodyExtractExt, BodyLimit, Extensions, HeaderMap, HeaderName,
-    HeaderValue, InfiniteReader, Method, Request, Response, Scheme, StatusCode, Uri, Version, conn,
-    header, method, opentelemetry, proto, request, response, sse, status, uri, version,
+    Body, BodyDataStream, BodyExtractExt, BodyLimit, Error as HttpError, Extensions, HeaderMap,
+    HeaderName, HeaderValue, InfiniteReader, Method, Request, Response, Result as HttpResult,
+    Scheme, StatusCode, StreamingBody, Uri, Version, conn, header, method, opentelemetry, proto,
+    request, response, sse, status, uri, version,
 };
 
 pub mod body;
@@ -46,6 +47,6 @@ pub mod dep {
 
     #[doc(inline)]
     pub use ::rama_http_types::dep::{
-        http_body, http_body_util, http_upstream_types, mime, mime_guess,
+        http_body_upstream, http_body_util_upstream, http_upstream, mime, mime_guess,
     };
 }

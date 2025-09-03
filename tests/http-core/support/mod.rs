@@ -9,9 +9,9 @@ use std::sync::{
 use futures::FutureExt;
 use rama::Context;
 use rama::http::StatusCode;
+use rama::http::body::util::{BodyExt, Full};
 use rama::http::core::server;
 use rama::http::core::service::RamaHttpService;
-use rama::http::dep::http_body_util::{BodyExt, Full};
 use rama::rt::Executor;
 use rama_core::bytes::Bytes;
 use rama_core::telemetry::tracing;
@@ -375,7 +375,7 @@ async fn async_test(cfg: __TestConfig) {
                         func(req.headers());
                     }
                     let sbody = sreq.body;
-                    req.collect().map(move |result| {
+                    req.into_body().collect().map(move |result| {
                         Ok::<_, Infallible>(match result {
                             Ok(collected) => {
                                 let body = collected.to_bytes();
@@ -476,7 +476,7 @@ async fn async_test(cfg: __TestConfig) {
                 func(res.headers());
             }
 
-            let body = res.collect().await.unwrap().to_bytes();
+            let body = res.into_body().collect().await.unwrap().to_bytes();
 
             assert_eq!(body.as_ref(), cbody.as_slice(), "server body");
         }

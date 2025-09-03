@@ -38,7 +38,12 @@ as a distant relative.
   - License:
     - Original: <https://github.com/hyperium/http-body/blob/69e80eb41cae652a1a38e1ce77690be1a0e7f356/LICENSE>
     - Type: MIT
-    - Copy: [./licenses/http](./licenses/http-body)
+    - Copy: [./licenses/http-body](./licenses/http-body)
+- http-body-util: <https://github.com/hyperium/http-body/commit/69e80eb41cae652a1a38e1ce77690be1a0e7f356>
+  - License:
+    - Original: <https://github.com/hyperium/http-body/blob/69e80eb41cae652a1a38e1ce77690be1a0e7f356/LICENSE>
+    - Type: MIT
+    - Copy: [./licenses/http-body-util](./licenses/http-body-util)
 
 ### tower-rs
 

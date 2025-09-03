@@ -842,8 +842,8 @@ mod tests {
     use rama_core::error::BoxError;
     use rama_core::rt::Executor;
     use rama_core::service::service_fn;
-    use rama_http_types::dep::http_body::Body;
-    use rama_http_types::dep::http_body_util::{BodyExt, Empty};
+    use rama_http::StreamingBody;
+    use rama_http_types::body::util::{BodyExt, Empty};
     use rama_http_types::{Request, Response};
     use std::{convert::Infallible, net::SocketAddr, time::Duration};
     use tokio::{
@@ -1001,7 +1001,7 @@ mod tests {
 
     async fn connect_h1<B>(addr: SocketAddr) -> client::conn::http1::SendRequest<B>
     where
-        B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
+        B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
     {
         let stream = TcpStream::connect(addr).await.unwrap();
         let (sender, connection) = http1::handshake(stream).await.unwrap();
@@ -1013,7 +1013,7 @@ mod tests {
 
     async fn connect_h2<B>(addr: SocketAddr) -> client::conn::http2::SendRequest<B>
     where
-        B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
+        B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
     {
         let stream = TcpStream::connect(addr).await.unwrap();
         let (sender, connection) = client::conn::http2::Builder::new(Executor::new())

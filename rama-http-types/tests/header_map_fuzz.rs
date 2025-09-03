@@ -76,12 +76,12 @@ impl Fuzz {
 
         let mut steps = vec![];
         let mut expect = AltMap::default();
-        let num = rng.gen_range(5..500);
+        let num = rng.random_range(5..500);
 
         let weight = Weight {
-            insert: rng.gen_range(1..10),
-            remove: rng.gen_range(1..10),
-            append: rng.gen_range(1..10),
+            insert: rng.random_range(1..10),
+            remove: rng.random_range(1..10),
+            append: rng.random_range(1..10),
         };
 
         while steps.len() < num {
@@ -130,7 +130,7 @@ impl AltMap {
     fn gen_action(&mut self, weight: &Weight, rng: &mut StdRng) -> Action {
         let sum = weight.insert + weight.remove + weight.append;
 
-        let mut num = rng.gen_range(0..sum);
+        let mut num = rng.random_range(0..sum);
 
         if num < weight.insert {
             return self.gen_insert(rng);
@@ -180,7 +180,7 @@ impl AltMap {
 
     /// Negative numbers weigh finding an existing header higher
     fn gen_name(&self, weight: i32, rng: &mut StdRng) -> HeaderName {
-        let mut existing = rng.gen_ratio(1, weight.abs() as u32);
+        let mut existing = rng.random_ratio(1, weight.abs() as u32);
 
         if weight < 0 {
             existing = !existing;
@@ -202,7 +202,7 @@ impl AltMap {
         if self.map.is_empty() {
             None
         } else {
-            let n = rng.gen_range(0..self.map.len());
+            let n = rng.random_range(0..self.map.len());
             self.map.keys().nth(n).map(Clone::clone)
         }
     }

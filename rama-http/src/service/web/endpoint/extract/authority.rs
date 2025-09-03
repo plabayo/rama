@@ -45,7 +45,7 @@ mod tests {
     use super::*;
 
     use crate::StatusCode;
-    use crate::dep::http_body_util::BodyExt as _;
+    use crate::body::util::BodyExt;
     use crate::header::X_FORWARDED_HOST;
     use crate::layer::forwarded::GetForwardedHeaderService;
     use crate::service::web::WebService;

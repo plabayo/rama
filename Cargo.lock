@@ -2794,6 +2794,7 @@ dependencies = [
  "const_format",
  "fnv",
  "futures",
+ "futures-util",
  "hex",
  "http",
  "http-body",

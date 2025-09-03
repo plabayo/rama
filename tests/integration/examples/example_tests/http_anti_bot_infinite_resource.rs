@@ -2,7 +2,7 @@ use super::utils;
 use rama::{
     Context,
     http::client::EasyHttpWebClient,
-    http::dep::http_body_util::BodyExt,
+    http::body::util::BodyExt,
     http::service::client::HttpClientExt,
     http::{BodyExtractExt, StatusCode},
 };

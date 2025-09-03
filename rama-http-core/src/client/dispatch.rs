@@ -5,8 +5,7 @@ use std::task::{Context, Poll};
 use pin_project_lite::pin_project;
 use rama_core::error::BoxError;
 use rama_core::telemetry::tracing::trace;
-use rama_http_types::dep::http_body::Body;
-use rama_http_types::{Request, Response};
+use rama_http_types::{Request, Response, StreamingBody};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::{body::Incoming, proto::h2::client::ResponseFutMap};
@@ -292,7 +291,7 @@ impl<T> TrySendError<T> {
 pin_project! {
     pub struct SendWhen<B>
     where
-        B: Body,
+        B: StreamingBody,
         B: Send,
         B: 'static,
         B: Unpin,
@@ -309,7 +308,7 @@ pin_project! {
 
 impl<B> Future for SendWhen<B>
 where
-    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
+    B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     type Output = ();
 
