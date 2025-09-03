@@ -10,9 +10,9 @@ use std::thread;
 use std::time::Duration;
 
 use rama::http::core::body::Frame;
-use rama::http::dep::http::uri::PathAndQuery;
 use rama::http::dep::http_body_util::{BodyExt, StreamBody};
 use rama::http::header::{HeaderMap, HeaderName, HeaderValue};
+use rama::http::uri::PathAndQuery;
 use rama::http::{Method, Request, StatusCode, Uri, Version};
 
 use super::support;

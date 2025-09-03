@@ -18,6 +18,7 @@ all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
+bytes = { workspace = true }
 const_format = { workspace = true }
 fnv = { workspace = true }
 http = { workspace = true }

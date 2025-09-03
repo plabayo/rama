@@ -3,7 +3,7 @@
 use super::FromRequestContextRefPair;
 use crate::utils::macros::define_http_rejection;
 use rama_core::Context;
-use rama_http_types::dep::http::request::Parts;
+use rama_http_types::request::Parts;
 use rama_net::address;
 use rama_net::http::RequestContext;
 use rama_utils::macros::impl_deref;

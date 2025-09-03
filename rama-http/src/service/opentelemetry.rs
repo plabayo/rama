@@ -1,4 +1,3 @@
-use crate::{Request, Response};
 use opentelemetry_http::HttpClient;
 use rama_core::{
     Context, Service,
@@ -6,7 +5,11 @@ use rama_core::{
     error::{BoxError, ErrorContext},
     rt::Executor,
 };
-use rama_http_types::{Body, dep::http_body_util::BodyExt};
+use rama_http_types::{
+    Body,
+    dep::http_body_util::BodyExt,
+    dep::http_upstream_types::{Request, Response},
+};
 use std::{fmt, pin::Pin};
 
 /// Wrapper type which allows you to use an rama http [`Service`]
@@ -77,7 +80,9 @@ impl<S> OtelExporter<S> {
 
 impl<S> HttpClient for OtelExporter<S>
 where
-    S: fmt::Debug + Clone + Service<Request, Response = Response, Error: Into<BoxError>>,
+    S: fmt::Debug
+        + Clone
+        + Service<Request<Body>, Response = Response<Body>, Error: Into<BoxError>>,
 {
     fn send_bytes<'life0, 'async_trait>(
         &'life0 self,

@@ -12,7 +12,6 @@ rama-http-core = { workspace = true, features = ["unstable"] }
 rama-http-types = { workspace = true }
 
 futures = { workspace = true }
-http = { workspace = true }
 tokio = { workspace = true, features = ["time"] }
 tokio-test = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["fmt"] }

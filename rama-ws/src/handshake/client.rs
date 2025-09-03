@@ -8,7 +8,6 @@ use rama_core::error::{BoxError, ErrorContext, OpaqueError};
 use rama_core::telemetry::tracing;
 use rama_core::{Context, Service};
 use rama_http::conn::TargetHttpVersion;
-use rama_http::dep::http::{self, request, response};
 use rama_http::headers::sec_websocket_extensions::{Extension, PerMessageDeflateConfig};
 use rama_http::headers::sec_websocket_protocol::AcceptedWebSocketProtocol;
 use rama_http::headers::{
@@ -19,6 +18,7 @@ use rama_http::proto::h2::ext::Protocol;
 use rama_http::service::client::ext::{IntoHeaderName, IntoHeaderValue};
 use rama_http::service::client::{HttpClientExt, IntoUrl, RequestBuilder};
 use rama_http::{Body, Method, Request, Response, StatusCode, Version, header, headers};
+use rama_http::{request, response};
 
 use crate::protocol::{Role, WebSocketConfig};
 use crate::runtime::AsyncWebSocket;

@@ -20,12 +20,37 @@
 pub(crate) mod body;
 pub use body::{Body, BodyDataStream, BodyExtractExt, BodyLimit, InfiniteReader, sse};
 
-mod request;
-pub use request::{HttpRequestParts, HttpRequestPartsMut, Request};
+#[macro_use]
+mod convert;
 
-/// Type alias for [`http::Response`] whose body type defaults to [`Body`], the most common body
-/// type used with rama.
-pub type Response<T = Body> = http::Response<T>;
+pub mod header;
+pub mod method;
+pub mod request;
+pub mod response;
+pub mod status;
+pub mod uri;
+pub mod version;
+
+mod byte_str;
+mod error;
+mod extensions;
+
+pub use crate::error::{Error, Result};
+pub use crate::extensions::Extensions;
+#[doc(inline)]
+pub use crate::header::{HeaderMap, HeaderName, HeaderValue};
+#[doc(inline)]
+pub use crate::method::Method;
+#[doc(inline)]
+pub use crate::request::{HttpRequestParts, HttpRequestPartsMut, Request};
+#[doc(inline)]
+pub use crate::response::Response;
+#[doc(inline)]
+pub use crate::status::StatusCode;
+#[doc(inline)]
+pub use crate::uri::{Scheme, Uri};
+#[doc(inline)]
+pub use crate::version::Version;
 
 pub mod proto;
 
@@ -38,10 +63,10 @@ pub mod dep {
     //!
     //! Exported for your convenience.
 
-    pub mod http {
+    pub mod http_upstream_types {
         //! Re-export of the [`http`] crate.
         //!
-        //! A general purpose library of common HTTP types.
+        //! todo
         //!
         //! [`http`]: https://docs.rs/http
 
@@ -94,52 +119,3 @@ pub mod dep {
         pub use mime_guess::*;
     }
 }
-
-pub mod header {
-    //! HTTP header types
-
-    #[doc(inline)]
-    pub use crate::dep::http::header::*;
-
-    macro_rules! static_header {
-        ($($name_bytes:literal),+ $(,)?) => {
-            $(
-                rama_macros::paste! {
-                    #[doc = concat!("header name constant for `", $name_bytes, "`.")]
-                    pub static [<$name_bytes:snake:upper>]: super::HeaderName = super::HeaderName::from_static($name_bytes);
-                }
-            )+
-        };
-    }
-
-    // non-std conventional
-    static_header!["x-forwarded-host", "x-forwarded-for", "x-forwarded-proto",];
-
-    // standard
-    static_header!["keep-alive", "proxy-connection", "last-event-id"];
-
-    // non-std client ip forward headers
-    static_header![
-        "cf-connecting-ip",
-        "true-client-ip",
-        "client-ip",
-        "x-client-ip",
-        "x-real-ip",
-    ];
-
-    /// Static Header Value that is can be used as `User-Agent` or `Server` header.
-    pub static RAMA_ID_HEADER_VALUE: HeaderValue = HeaderValue::from_static(
-        const_format::formatcp!("{}/{}", rama_utils::info::NAME, rama_utils::info::VERSION),
-    );
-}
-
-#[doc(inline)]
-pub use self::dep::http::header::{HeaderMap, HeaderName, HeaderValue};
-#[doc(inline)]
-pub use self::dep::http::method::Method;
-#[doc(inline)]
-pub use self::dep::http::status::StatusCode;
-#[doc(inline)]
-pub use self::dep::http::uri::{Scheme, Uri};
-#[doc(inline)]
-pub use self::dep::http::version::Version;

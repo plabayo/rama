@@ -336,7 +336,7 @@ fn sanitize_client_req_header<B>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rama_http::{Scheme, Uri, dep::http::uri::Authority};
+    use rama_http::{Scheme, Uri, uri::Authority};
     use rama_net::{
         Protocol,
         address::{Domain, Host},

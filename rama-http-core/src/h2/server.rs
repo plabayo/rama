@@ -1437,7 +1437,7 @@ impl Peer {
         response: Response<()>,
         end_of_stream: bool,
     ) -> frame::Headers {
-        use rama_http_types::dep::http::response::Parts;
+        use rama_http_types::response::Parts;
 
         // Extract the components of the HTTP request
         let (
@@ -1478,7 +1478,7 @@ impl Peer {
         promised_id: StreamId,
         request: Request<()>,
     ) -> Result<frame::PushPromise, UserError> {
-        use rama_http_types::dep::http::request::Parts;
+        use rama_http_types::request::Parts;
 
         if let Err(e) = frame::PushPromise::validate_request(&request) {
             match e {
@@ -1551,7 +1551,7 @@ impl proto::Peer for Peer {
         header_size: usize,
         stream_id: StreamId,
     ) -> Result<Self::Poll, Error> {
-        use rama_http_types::{Version, dep::http::uri};
+        use rama_http_types::{Version, uri};
 
         let mut b = Request::builder();
 

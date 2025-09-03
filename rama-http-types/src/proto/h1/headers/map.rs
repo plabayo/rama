@@ -13,8 +13,7 @@ use super::{
 };
 
 use crate::{
-    HeaderMap, HeaderName, HeaderValue, Request,
-    dep::http::Extensions,
+    Extensions, HeaderMap, HeaderName, HeaderValue, Request,
     header::{self, InvalidHeaderName},
 };
 

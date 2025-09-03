@@ -1,5 +1,5 @@
 use super::IntoResponse;
-use crate::{Body, Response, dep::http::StatusCode};
+use crate::{Body, Response, StatusCode};
 use csv;
 use rama_core::bytes::buf::Writer;
 use rama_core::bytes::{BufMut, BytesMut};

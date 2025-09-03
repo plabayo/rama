@@ -1,7 +1,7 @@
 //! Module in function of the [`Path`] extractor.
 
 use super::FromRequestContextRefPair;
-use crate::dep::http::request::Parts;
+use crate::request::Parts;
 use crate::matcher::{UriParams, UriParamsDeserializeError};
 use crate::utils::macros::{composite_http_rejection, define_http_rejection};
 use rama_core::Context;

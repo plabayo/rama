@@ -1,7 +1,6 @@
 use super::IntoResponse;
 use crate::{
-    Response, StatusCode,
-    dep::http::Extensions,
+    Extensions, Response, StatusCode,
     header::{HeaderMap, HeaderName, HeaderValue},
 };
 use rama_utils::macros::all_the_tuples_no_last_special_case;

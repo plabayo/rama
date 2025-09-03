@@ -7,7 +7,7 @@
 //! [`CompressionLayer::compress_when`]: super::CompressionLayer::compress_when
 
 use crate::dep::http_body::Body;
-use rama_http_types::{HeaderMap, StatusCode, Version, dep::http::Extensions, header};
+use rama_http_types::{Extensions, HeaderMap, StatusCode, Version, header};
 use std::{fmt, sync::Arc};
 
 /// Predicate used to determine if a response should be compressed or not.

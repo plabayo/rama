@@ -1,7 +1,7 @@
 //! Module in function of the [`Query`] extractor.
 
 use super::{FromRequestContextRefPair, OptionalFromRequestContextRefPair};
-use crate::dep::http::request::Parts;
+use crate::request::Parts;
 use crate::utils::macros::define_http_rejection;
 use rama_core::Context;
 use serde::de::DeserializeOwned;

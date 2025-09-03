@@ -1,6 +1,6 @@
 use std::{fmt, sync::Arc};
 
-use crate::dep::http::{
+use crate::{
     header::{self, HeaderName, HeaderValue},
     request::Parts as RequestParts,
 };

@@ -163,7 +163,7 @@ where
             }
         };
 
-        let builder = crate::dep::http::request::Builder::new()
+        let builder = crate::request::Builder::new()
             .method(method)
             .uri(uri);
 
@@ -398,7 +398,7 @@ where
 
 #[derive(Debug)]
 enum RequestBuilderState {
-    PreBody(crate::dep::http::request::Builder),
+    PreBody(crate::request::Builder),
     PostBody(crate::Request),
     Error(OpaqueError),
 }

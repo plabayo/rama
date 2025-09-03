@@ -46,7 +46,7 @@
 
 #![allow(clippy::enum_variant_names)]
 
-use crate::dep::http::{
+use crate::{
     HeaderMap, HeaderValue, Method, Request, Response,
     header::{self, HeaderName},
 };
@@ -202,7 +202,7 @@ impl CorsLayer {
     /// #     }
     /// # }
     /// use rama_http::layer::cors::{CorsLayer, AllowOrigin};
-    /// use rama_http::dep::http::{request::Parts as RequestParts, HeaderValue};
+    /// use rama_http::{request::Parts as RequestParts, HeaderValue};
     ///
     /// let client = get_api_client();
     ///
@@ -274,7 +274,7 @@ impl CorsLayer {
     /// # struct MyServerConfig { cors_max_age: Duration }
     /// use std::time::Duration;
     ///
-    /// use rama_http::dep::http::{request::Parts as RequestParts, HeaderValue};
+    /// use rama_http::{request::Parts as RequestParts, HeaderValue};
     /// use rama_http::layer::cors::{CorsLayer, MaxAge};
     ///
     /// let layer = CorsLayer::new().max_age(MaxAge::dynamic(
@@ -362,7 +362,7 @@ impl CorsLayer {
     ///
     /// ```
     /// use rama_http::layer::cors::{CorsLayer, AllowOrigin};
-    /// use rama_http::dep::http::{request::Parts as RequestParts, HeaderValue};
+    /// use rama_http::{request::Parts as RequestParts, HeaderValue};
     ///
     /// let layer = CorsLayer::new().allow_origin(AllowOrigin::predicate(
     ///     |origin: &HeaderValue, _request_parts: &RequestParts| {

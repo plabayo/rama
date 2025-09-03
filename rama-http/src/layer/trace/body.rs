@@ -4,6 +4,7 @@ use crate::layer::classify::ClassifyEos;
 use pin_project_lite::pin_project;
 use rama_core::futures::ready;
 use rama_core::telemetry::tracing::Span;
+use rama_http_types::HeaderMap;
 use std::{
     fmt,
     pin::Pin,
@@ -62,10 +63,11 @@ where
 
                 let frame = match frame.into_trailers() {
                     Ok(trailers) => {
+                        let trailers = HeaderMap::from(trailers);
                         if let Some((on_eos, stream_start)) = this.on_eos.take() {
                             on_eos.on_eos(Some(&trailers), stream_start.elapsed(), this.span);
                         }
-                        Frame::trailers(trailers)
+                        Frame::trailers(trailers.into())
                     }
                     Err(frame) => frame,
                 };
