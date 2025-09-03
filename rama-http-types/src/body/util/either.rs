@@ -138,7 +138,7 @@ pub(crate) mod proj {
         }
         impl<'__pin, L, R> Unpin for Either<L, R> where __Origin<'__pin, L, R>: Unpin {}
 
-        #[expect(dead_code)]
+        #[allow(dead_code)]
         trait MustNotImplDrop {}
         #[allow(drop_bounds)]
         impl<T: Drop> MustNotImplDrop for T {}
