@@ -281,6 +281,7 @@ return_self_not_must_use = "warn"
 single_match_else = "warn"
 trivially_copy_pass_by_ref = "warn"
 use_self = "warn"
+uninlined_format_args = "warn"
 
 [features]
 default = []
