@@ -1,6 +1,6 @@
 use crate::body::util::BodyExt as _;
 
-use crate::body::{StreamingBody, Frame, SizeHint};
+use crate::body::{Frame, SizeHint, StreamingBody};
 use bytes::Buf;
 use std::{
     fmt,

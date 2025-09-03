@@ -3,7 +3,7 @@ use std::fmt::Debug;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use crate::body::{StreamingBody, Frame, SizeHint};
+use crate::body::{Frame, SizeHint, StreamingBody};
 use bytes::Buf;
 use proj::EitherProj;
 

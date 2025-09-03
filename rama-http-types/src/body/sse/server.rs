@@ -1,6 +1,6 @@
 //! SSE types for servers.
 
-use crate::body::{StreamingBody, Frame};
+use crate::body::{Frame, StreamingBody};
 use pin_project_lite::pin_project;
 use rama_core::bytes::Bytes;
 use rama_core::futures::Stream;

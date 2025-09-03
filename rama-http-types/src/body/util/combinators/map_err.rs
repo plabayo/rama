@@ -1,4 +1,4 @@
-use crate::body::{StreamingBody, Frame, SizeHint};
+use crate::body::{Frame, SizeHint, StreamingBody};
 use pin_project_lite::pin_project;
 use std::{
     any::type_name,

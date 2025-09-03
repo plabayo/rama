@@ -1,6 +1,6 @@
 use std::str::FromStr;
 
-use super::{ErrorKind, InvalidUri, Port, Uri, URI_CHARS};
+use super::{ErrorKind, InvalidUri, Port, URI_CHARS, Uri};
 
 #[test]
 fn test_char_table() {

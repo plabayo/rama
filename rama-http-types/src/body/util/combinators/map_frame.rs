@@ -1,4 +1,4 @@
-use crate::body::{StreamingBody, Frame};
+use crate::body::{Frame, StreamingBody};
 use bytes::Buf;
 use pin_project_lite::pin_project;
 use std::{
