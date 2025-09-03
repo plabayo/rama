@@ -84,7 +84,7 @@ impl StatusCode {
     /// assert!(err.is_err());
     /// ```
     #[inline]
-    pub fn from_u16(src: u16) -> Result<StatusCode, InvalidStatusCode> {
+    pub fn from_u16(src: u16) -> Result<Self, InvalidStatusCode> {
         if !(100..1000).contains(&src) {
             return Err(InvalidStatusCode::new());
         }
@@ -95,7 +95,7 @@ impl StatusCode {
     }
 
     /// Converts a `&[u8]` to a status code.
-    pub fn from_bytes(src: &[u8]) -> Result<StatusCode, InvalidStatusCode> {
+    pub fn from_bytes(src: &[u8]) -> Result<Self, InvalidStatusCode> {
         if src.len() != 3 {
             return Err(InvalidStatusCode::new());
         }
@@ -130,6 +130,7 @@ impl StatusCode {
     /// assert_eq!(status.as_u16(), 200);
     /// ```
     #[inline]
+    #[must_use]
     pub const fn as_u16(&self) -> u16 {
         self.0.get()
     }
@@ -146,6 +147,7 @@ impl StatusCode {
     /// assert_eq!(status.as_str(), "200");
     /// ```
     #[inline]
+    #[must_use]
     pub fn as_str(&self) -> &str {
         let offset = (self.0.get() - 100) as usize;
         let offset = offset * 3;
@@ -182,36 +184,42 @@ impl StatusCode {
     /// let status = http::StatusCode::OK;
     /// assert_eq!(status.canonical_reason(), Some("OK"));
     /// ```
+    #[must_use]
     pub fn canonical_reason(&self) -> Option<&'static str> {
         canonical_reason(self.0.get())
     }
 
     /// Check if status is within 100-199.
     #[inline]
+    #[must_use]
     pub fn is_informational(&self) -> bool {
         (100..200).contains(&self.0.get())
     }
 
     /// Check if status is within 200-299.
     #[inline]
+    #[must_use]
     pub fn is_success(&self) -> bool {
         (200..300).contains(&self.0.get())
     }
 
     /// Check if status is within 300-399.
     #[inline]
+    #[must_use]
     pub fn is_redirection(&self) -> bool {
         (300..400).contains(&self.0.get())
     }
 
     /// Check if status is within 400-499.
     #[inline]
+    #[must_use]
     pub fn is_client_error(&self) -> bool {
         (400..500).contains(&self.0.get())
     }
 
     /// Check if status is within 500-599.
     #[inline]
+    #[must_use]
     pub fn is_server_error(&self) -> bool {
         (500..600).contains(&self.0.get())
     }
@@ -244,8 +252,8 @@ impl fmt::Display for StatusCode {
 
 impl Default for StatusCode {
     #[inline]
-    fn default() -> StatusCode {
-        StatusCode::OK
+    fn default() -> Self {
+        Self::OK
     }
 }
 
@@ -265,7 +273,7 @@ impl PartialEq<StatusCode> for u16 {
 
 impl From<StatusCode> for u16 {
     #[inline]
-    fn from(status: StatusCode) -> u16 {
+    fn from(status: StatusCode) -> Self {
         status.0.get()
     }
 }
@@ -273,14 +281,14 @@ impl From<StatusCode> for u16 {
 impl FromStr for StatusCode {
     type Err = InvalidStatusCode;
 
-    fn from_str(s: &str) -> Result<StatusCode, InvalidStatusCode> {
-        StatusCode::from_bytes(s.as_ref())
+    fn from_str(s: &str) -> Result<Self, InvalidStatusCode> {
+        Self::from_bytes(s.as_ref())
     }
 }
 
-impl<'a> From<&'a StatusCode> for StatusCode {
+impl<'a> From<&'a Self> for StatusCode {
     #[inline]
-    fn from(t: &'a StatusCode) -> Self {
+    fn from(t: &'a Self) -> Self {
         t.to_owned()
     }
 }
@@ -290,7 +298,7 @@ impl<'a> TryFrom<&'a [u8]> for StatusCode {
 
     #[inline]
     fn try_from(t: &'a [u8]) -> Result<Self, Self::Error> {
-        StatusCode::from_bytes(t)
+        Self::from_bytes(t)
     }
 }
 
@@ -308,7 +316,7 @@ impl TryFrom<u16> for StatusCode {
 
     #[inline]
     fn try_from(t: u16) -> Result<Self, Self::Error> {
-        StatusCode::from_u16(t)
+        Self::from_u16(t)
     }
 }
 
@@ -537,8 +545,8 @@ status_codes! {
 }
 
 impl InvalidStatusCode {
-    fn new() -> InvalidStatusCode {
-        InvalidStatusCode { _priv: () }
+    fn new() -> Self {
+        Self { _priv: () }
     }
 }
 

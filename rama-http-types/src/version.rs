@@ -30,11 +30,11 @@ pub struct Version(Http);
 impl From<http_upstream::Version> for Version {
     fn from(value: http_upstream::Version) -> Self {
         match value {
-            http_upstream::Version::HTTP_09 => Version::HTTP_09,
-            http_upstream::Version::HTTP_10 => Version::HTTP_10,
-            http_upstream::Version::HTTP_11 => Version::HTTP_11,
-            http_upstream::Version::HTTP_2 => Version::HTTP_2,
-            http_upstream::Version::HTTP_3 => Version::HTTP_3,
+            http_upstream::Version::HTTP_09 => Self::HTTP_09,
+            http_upstream::Version::HTTP_10 => Self::HTTP_10,
+            http_upstream::Version::HTTP_11 => Self::HTTP_11,
+            http_upstream::Version::HTTP_2 => Self::HTTP_2,
+            http_upstream::Version::HTTP_3 => Self::HTTP_3,
             _ => unreachable!("unreachable"),
         }
     }
@@ -43,11 +43,11 @@ impl From<http_upstream::Version> for Version {
 impl From<Version> for http_upstream::Version {
     fn from(value: Version) -> Self {
         match value {
-            Version::HTTP_09 => http_upstream::Version::HTTP_09,
-            Version::HTTP_10 => http_upstream::Version::HTTP_10,
-            Version::HTTP_11 => http_upstream::Version::HTTP_11,
-            Version::HTTP_2 => http_upstream::Version::HTTP_2,
-            Version::HTTP_3 => http_upstream::Version::HTTP_3,
+            Version::HTTP_09 => Self::HTTP_09,
+            Version::HTTP_10 => Self::HTTP_10,
+            Version::HTTP_11 => Self::HTTP_11,
+            Version::HTTP_2 => Self::HTTP_2,
+            Version::HTTP_3 => Self::HTTP_3,
             _ => unreachable!("unreachable"),
         }
     }
@@ -55,19 +55,19 @@ impl From<Version> for http_upstream::Version {
 
 impl Version {
     /// `HTTP/0.9`
-    pub const HTTP_09: Version = Version(Http::Http09);
+    pub const HTTP_09: Self = Self(Http::Http09);
 
     /// `HTTP/1.0`
-    pub const HTTP_10: Version = Version(Http::Http10);
+    pub const HTTP_10: Self = Self(Http::Http10);
 
     /// `HTTP/1.1`
-    pub const HTTP_11: Version = Version(Http::Http11);
+    pub const HTTP_11: Self = Self(Http::Http11);
 
     /// `HTTP/2.0`
-    pub const HTTP_2: Version = Version(Http::H2);
+    pub const HTTP_2: Self = Self(Http::H2);
 
     /// `HTTP/3.0`
-    pub const HTTP_3: Version = Version(Http::H3);
+    pub const HTTP_3: Self = Self(Http::H3);
 }
 
 #[derive(PartialEq, PartialOrd, Copy, Clone, Eq, Ord, Hash)]
@@ -82,14 +82,14 @@ enum Http {
 
 impl Default for Version {
     #[inline]
-    fn default() -> Version {
-        Version::HTTP_11
+    fn default() -> Self {
+        Self::HTTP_11
     }
 }
 
 impl fmt::Debug for Version {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        use self::Http::*;
+        use self::Http::{__NonExhaustive, H2, H3, Http09, Http10, Http11};
 
         f.write_str(match self.0 {
             Http09 => "HTTP/0.9",

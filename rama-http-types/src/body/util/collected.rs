@@ -24,16 +24,19 @@ impl<B: Buf> Collected<B> {
     /// If there is a trailers frame buffered, returns a reference to it.
     ///
     /// Returns `None` if the body contained no trailers.
+    #[must_use]
     pub fn trailers(&self) -> Option<&HeaderMap> {
         self.trailers.as_ref()
     }
 
     /// Aggregate this buffered into a [`Buf`].
+    #[must_use]
     pub fn aggregate(self) -> impl Buf {
         self.bufs
     }
 
     /// Convert this body into a [`Bytes`].
+    #[must_use]
     pub fn to_bytes(mut self) -> Bytes {
         self.bufs.copy_to_bytes(self.bufs.remaining())
     }

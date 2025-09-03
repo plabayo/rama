@@ -17,7 +17,10 @@
 
 use crate::dep::http_upstream;
 
-use self::Inner::*;
+use self::Inner::{
+    Connect, Delete, ExtensionAllocated, ExtensionInline, Get, Head, Options, Patch, Post, Put,
+    Trace,
+};
 use self::extension::{AllocatedExtension, InlineExtension};
 
 use std::convert::TryFrom;
@@ -82,76 +85,76 @@ enum Inner {
 
 impl Method {
     /// GET
-    pub const GET: Method = Method(Get);
+    pub const GET: Self = Self(Get);
 
     /// POST
-    pub const POST: Method = Method(Post);
+    pub const POST: Self = Self(Post);
 
     /// PUT
-    pub const PUT: Method = Method(Put);
+    pub const PUT: Self = Self(Put);
 
     /// DELETE
-    pub const DELETE: Method = Method(Delete);
+    pub const DELETE: Self = Self(Delete);
 
     /// HEAD
-    pub const HEAD: Method = Method(Head);
+    pub const HEAD: Self = Self(Head);
 
     /// OPTIONS
-    pub const OPTIONS: Method = Method(Options);
+    pub const OPTIONS: Self = Self(Options);
 
     /// CONNECT
-    pub const CONNECT: Method = Method(Connect);
+    pub const CONNECT: Self = Self(Connect);
 
     /// PATCH
-    pub const PATCH: Method = Method(Patch);
+    pub const PATCH: Self = Self(Patch);
 
     /// TRACE
-    pub const TRACE: Method = Method(Trace);
+    pub const TRACE: Self = Self(Trace);
 
     /// Converts a slice of bytes to an HTTP method.
-    pub fn from_bytes(src: &[u8]) -> Result<Method, InvalidMethod> {
+    pub fn from_bytes(src: &[u8]) -> Result<Self, InvalidMethod> {
         match src.len() {
             0 => Err(InvalidMethod::new()),
             3 => match src {
-                b"GET" => Ok(Method(Get)),
-                b"PUT" => Ok(Method(Put)),
-                _ => Method::extension_inline(src),
+                b"GET" => Ok(Self(Get)),
+                b"PUT" => Ok(Self(Put)),
+                _ => Self::extension_inline(src),
             },
             4 => match src {
-                b"POST" => Ok(Method(Post)),
-                b"HEAD" => Ok(Method(Head)),
-                _ => Method::extension_inline(src),
+                b"POST" => Ok(Self(Post)),
+                b"HEAD" => Ok(Self(Head)),
+                _ => Self::extension_inline(src),
             },
             5 => match src {
-                b"PATCH" => Ok(Method(Patch)),
-                b"TRACE" => Ok(Method(Trace)),
-                _ => Method::extension_inline(src),
+                b"PATCH" => Ok(Self(Patch)),
+                b"TRACE" => Ok(Self(Trace)),
+                _ => Self::extension_inline(src),
             },
             6 => match src {
-                b"DELETE" => Ok(Method(Delete)),
-                _ => Method::extension_inline(src),
+                b"DELETE" => Ok(Self(Delete)),
+                _ => Self::extension_inline(src),
             },
             7 => match src {
-                b"OPTIONS" => Ok(Method(Options)),
-                b"CONNECT" => Ok(Method(Connect)),
-                _ => Method::extension_inline(src),
+                b"OPTIONS" => Ok(Self(Options)),
+                b"CONNECT" => Ok(Self(Connect)),
+                _ => Self::extension_inline(src),
             },
             _ => {
                 if src.len() <= InlineExtension::MAX {
-                    Method::extension_inline(src)
+                    Self::extension_inline(src)
                 } else {
                     let allocated = AllocatedExtension::new(src)?;
 
-                    Ok(Method(ExtensionAllocated(allocated)))
+                    Ok(Self(ExtensionAllocated(allocated)))
                 }
             }
         }
     }
 
-    fn extension_inline(src: &[u8]) -> Result<Method, InvalidMethod> {
+    fn extension_inline(src: &[u8]) -> Result<Self, InvalidMethod> {
         let inline = InlineExtension::new(src)?;
 
-        Ok(Method(ExtensionInline(inline)))
+        Ok(Self(ExtensionInline(inline)))
     }
 
     /// Whether a method is considered "safe", meaning the request is
@@ -159,6 +162,7 @@ impl Method {
     ///
     /// See [the spec](https://tools.ietf.org/html/rfc7231#section-4.2.1)
     /// for more words.
+    #[must_use]
     pub fn is_safe(&self) -> bool {
         matches!(self.0, Get | Head | Options | Trace)
     }
@@ -168,6 +172,7 @@ impl Method {
     ///
     /// See [the spec](https://tools.ietf.org/html/rfc7231#section-4.2.2) for
     /// more words.
+    #[must_use]
     pub fn is_idempotent(&self) -> bool {
         match self.0 {
             Put | Delete => true,
@@ -177,6 +182,7 @@ impl Method {
 
     /// Return a &str representation of the HTTP method
     #[inline]
+    #[must_use]
     pub fn as_str(&self) -> &str {
         match self.0 {
             Options => "OPTIONS",
@@ -201,14 +207,14 @@ impl AsRef<str> for Method {
     }
 }
 
-impl<'a> PartialEq<&'a Method> for Method {
+impl<'a> PartialEq<&'a Self> for Method {
     #[inline]
-    fn eq(&self, other: &&'a Method) -> bool {
+    fn eq(&self, other: &&'a Self) -> bool {
         self == *other
     }
 }
 
-impl<'a> PartialEq<Method> for &'a Method {
+impl PartialEq<Method> for &Method {
     #[inline]
     fn eq(&self, other: &Method) -> bool {
         *self == other
@@ -236,7 +242,7 @@ impl<'a> PartialEq<&'a str> for Method {
     }
 }
 
-impl<'a> PartialEq<Method> for &'a str {
+impl PartialEq<Method> for &str {
     #[inline]
     fn eq(&self, other: &Method) -> bool {
         *self == other.as_ref()
@@ -257,14 +263,14 @@ impl fmt::Display for Method {
 
 impl Default for Method {
     #[inline]
-    fn default() -> Method {
-        Method::GET
+    fn default() -> Self {
+        Self::GET
     }
 }
 
-impl<'a> From<&'a Method> for Method {
+impl<'a> From<&'a Self> for Method {
     #[inline]
-    fn from(t: &'a Method) -> Self {
+    fn from(t: &'a Self) -> Self {
         t.clone()
     }
 }
@@ -274,7 +280,7 @@ impl<'a> TryFrom<&'a [u8]> for Method {
 
     #[inline]
     fn try_from(t: &'a [u8]) -> Result<Self, Self::Error> {
-        Method::from_bytes(t)
+        Self::from_bytes(t)
     }
 }
 
@@ -297,8 +303,8 @@ impl FromStr for Method {
 }
 
 impl InvalidMethod {
-    fn new() -> InvalidMethod {
-        InvalidMethod { _priv: () }
+    fn new() -> Self {
+        Self { _priv: () }
     }
 }
 
@@ -334,18 +340,18 @@ mod extension {
         // Method::from_bytes() assumes this is at least 7
         pub(super) const MAX: usize = 15;
 
-        pub(super) fn new(src: &[u8]) -> Result<InlineExtension, InvalidMethod> {
-            let mut data: [u8; InlineExtension::MAX] = Default::default();
+        pub(super) fn new(src: &[u8]) -> Result<Self, InvalidMethod> {
+            let mut data: [u8; Self::MAX] = Default::default();
 
             write_checked(src, &mut data)?;
 
             // Invariant: write_checked ensures that the first src.len() bytes
             // of data are valid UTF-8.
-            Ok(InlineExtension(data, src.len() as u8))
+            Ok(Self(data, src.len() as u8))
         }
 
         pub(super) fn as_str(&self) -> &str {
-            let InlineExtension(data, len) = self;
+            let Self(data, len) = self;
             // Safety: the invariant of InlineExtension ensures that the first
             // len bytes of data contain valid UTF-8.
             unsafe { str::from_utf8_unchecked(&data[..*len as usize]) }
@@ -353,14 +359,14 @@ mod extension {
     }
 
     impl AllocatedExtension {
-        pub(super) fn new(src: &[u8]) -> Result<AllocatedExtension, InvalidMethod> {
+        pub(super) fn new(src: &[u8]) -> Result<Self, InvalidMethod> {
             let mut data: Vec<u8> = vec![0; src.len()];
 
             write_checked(src, &mut data)?;
 
             // Invariant: data is exactly src.len() long and write_checked
             // ensures that the first src.len() bytes of data are valid UTF-8.
-            Ok(AllocatedExtension(data.into_boxed_slice()))
+            Ok(Self(data.into_boxed_slice()))
         }
 
         pub(super) fn as_str(&self) -> &str {

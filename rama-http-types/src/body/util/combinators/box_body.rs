@@ -65,7 +65,7 @@ where
     D: Buf + 'static,
 {
     fn default() -> Self {
-        BoxBody::new(crate::body::util::Empty::new().map_err(|err| match err {}))
+        Self::new(crate::body::util::Empty::new().map_err(|err| match err {}))
     }
 }
 
@@ -117,6 +117,6 @@ where
     D: Buf + 'static,
 {
     fn default() -> Self {
-        UnsyncBoxBody::new(crate::body::util::Empty::new().map_err(|err| match err {}))
+        Self::new(crate::body::util::Empty::new().map_err(|err| match err {}))
     }
 }

@@ -28,8 +28,9 @@ impl Builder {
     ///     .unwrap();
     /// ```
     #[inline]
-    pub fn new() -> Builder {
-        Builder::default()
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
     }
 
     /// Set the `Scheme` for this URI.
@@ -137,7 +138,7 @@ impl Builder {
     where
         F: FnOnce(Parts) -> Result<Parts, crate::Error>,
     {
-        Builder {
+        Self {
             parts: self.parts.and_then(func),
         }
     }
@@ -145,8 +146,8 @@ impl Builder {
 
 impl Default for Builder {
     #[inline]
-    fn default() -> Builder {
-        Builder {
+    fn default() -> Self {
+        Self {
             parts: Ok(Parts::default()),
         }
     }

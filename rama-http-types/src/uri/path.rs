@@ -116,7 +116,7 @@ impl PathAndQuery {
             unsafe { ByteStr::from_utf8_unchecked(src) }
         };
 
-        Ok(PathAndQuery { data, query })
+        Ok(Self { data, query })
     }
 
     /// Convert a `PathAndQuery` from a static string.
@@ -138,10 +138,11 @@ impl PathAndQuery {
     /// assert_eq!(v.query(), Some("world"));
     /// ```
     #[inline]
+    #[must_use]
     pub fn from_static(src: &'static str) -> Self {
         let src = Bytes::from_static(src.as_bytes());
 
-        PathAndQuery::from_shared(src).unwrap()
+        Self::from_shared(src).unwrap()
     }
 
     /// Attempt to convert a `Bytes` buffer to a `PathAndQuery`.
@@ -153,28 +154,28 @@ impl PathAndQuery {
         T: AsRef<[u8]> + 'static,
     {
         if_downcast_into!(T, Bytes, src, {
-            return PathAndQuery::from_shared(src);
+            return Self::from_shared(src);
         });
 
-        PathAndQuery::try_from(src.as_ref())
+        Self::try_from(src.as_ref())
     }
 
     pub(super) fn empty() -> Self {
-        PathAndQuery {
+        Self {
             data: ByteStr::new(),
             query: NONE,
         }
     }
 
     pub(super) fn slash() -> Self {
-        PathAndQuery {
+        Self {
             data: ByteStr::from_static("/"),
             query: NONE,
         }
     }
 
     pub(super) fn star() -> Self {
-        PathAndQuery {
+        Self {
             data: ByteStr::from_static("*"),
             query: NONE,
         }
@@ -296,7 +297,7 @@ impl<'a> TryFrom<&'a [u8]> for PathAndQuery {
     type Error = InvalidUri;
     #[inline]
     fn try_from(s: &'a [u8]) -> Result<Self, Self::Error> {
-        PathAndQuery::from_shared(Bytes::copy_from_slice(s))
+        Self::from_shared(Bytes::copy_from_slice(s))
     }
 }
 
@@ -312,7 +313,7 @@ impl TryFrom<Vec<u8>> for PathAndQuery {
     type Error = InvalidUri;
     #[inline]
     fn try_from(vec: Vec<u8>) -> Result<Self, Self::Error> {
-        PathAndQuery::from_shared(vec.into())
+        Self::from_shared(vec.into())
     }
 }
 
@@ -320,7 +321,7 @@ impl TryFrom<String> for PathAndQuery {
     type Error = InvalidUri;
     #[inline]
     fn try_from(s: String) -> Result<Self, Self::Error> {
-        PathAndQuery::from_shared(s.into())
+        Self::from_shared(s.into())
     }
 }
 
@@ -369,7 +370,7 @@ impl hash::Hash for PathAndQuery {
 
 impl PartialEq for PathAndQuery {
     #[inline]
-    fn eq(&self, other: &PathAndQuery) -> bool {
+    fn eq(&self, other: &Self) -> bool {
         self.data == other.data
     }
 }
@@ -383,7 +384,7 @@ impl PartialEq<str> for PathAndQuery {
     }
 }
 
-impl<'a> PartialEq<PathAndQuery> for &'a str {
+impl PartialEq<PathAndQuery> for &str {
     #[inline]
     fn eq(&self, other: &PathAndQuery) -> bool {
         self == &other.as_str()
@@ -420,7 +421,7 @@ impl PartialEq<PathAndQuery> for String {
 
 impl PartialOrd for PathAndQuery {
     #[inline]
-    fn partial_cmp(&self, other: &PathAndQuery) -> Option<cmp::Ordering> {
+    fn partial_cmp(&self, other: &Self) -> Option<cmp::Ordering> {
         self.as_str().partial_cmp(other.as_str())
     }
 }
@@ -446,7 +447,7 @@ impl<'a> PartialOrd<&'a str> for PathAndQuery {
     }
 }
 
-impl<'a> PartialOrd<PathAndQuery> for &'a str {
+impl PartialOrd<PathAndQuery> for &str {
     #[inline]
     fn partial_cmp(&self, other: &PathAndQuery) -> Option<cmp::Ordering> {
         self.partial_cmp(&other.as_str())
@@ -510,15 +511,15 @@ mod tests {
     #[test]
     fn equates_with_a_string() {
         let path_and_query: PathAndQuery = "/hello/world&foo=bar".parse().unwrap();
-        assert_eq!(path_and_query, "/hello/world&foo=bar".to_string());
-        assert_eq!("/hello/world&foo=bar".to_string(), path_and_query);
+        assert_eq!(path_and_query, "/hello/world&foo=bar".to_owned());
+        assert_eq!("/hello/world&foo=bar".to_owned(), path_and_query);
     }
 
     #[test]
     fn not_equal_with_a_string_of_a_different_path() {
         let path_and_query: PathAndQuery = "/hello/world&foo=bar".parse().unwrap();
-        assert_ne!(path_and_query, "/hello&foo=bar".to_string());
-        assert_ne!("/hello&foo=bar".to_string(), path_and_query);
+        assert_ne!(path_and_query, "/hello&foo=bar".to_owned());
+        assert_ne!("/hello&foo=bar".to_owned(), path_and_query);
     }
 
     #[test]
@@ -548,10 +549,10 @@ mod tests {
     #[test]
     fn compares_with_a_string() {
         let path_and_query: PathAndQuery = "/b/world&foo=bar".parse().unwrap();
-        assert!(path_and_query < "/c/world&foo=bar".to_string());
-        assert!("/c/world&foo=bar".to_string() > path_and_query);
-        assert!(path_and_query > "/a/world&foo=bar".to_string());
-        assert!("/a/world&foo=bar".to_string() < path_and_query);
+        assert!(path_and_query < "/c/world&foo=bar");
+        assert!("/c/world&foo=bar" > path_and_query);
+        assert!(path_and_query > "/a/world&foo=bar");
+        assert!("/a/world&foo=bar" < path_and_query);
     }
 
     #[test]
@@ -599,6 +600,6 @@ mod tests {
     }
 
     fn pq(s: &str) -> PathAndQuery {
-        s.parse().expect(&format!("parsing {}", s))
+        s.parse().unwrap_or_else(|_| panic!("parsing {}", s))
     }
 }

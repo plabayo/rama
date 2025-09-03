@@ -48,13 +48,17 @@ impl fmt::Display for Error {
 
 impl Error {
     /// Return true if the underlying error has the same type as T.
+    #[must_use]
     pub fn is<T: error::Error + 'static>(&self) -> bool {
         self.get_ref().is::<T>()
     }
 
     /// Return a reference to the lower level, inner error.
+    #[must_use]
     pub fn get_ref(&self) -> &(dyn error::Error + 'static) {
-        use self::ErrorKind::*;
+        use self::ErrorKind::{
+            HeaderName, HeaderValue, MaxSizeReached, Method, StatusCode, Uri, UriParts,
+        };
 
         match self.inner {
             StatusCode(ref e) => e,
@@ -77,63 +81,63 @@ impl error::Error for Error {
 }
 
 impl From<MaxSizeReached> for Error {
-    fn from(err: MaxSizeReached) -> Error {
-        Error {
+    fn from(err: MaxSizeReached) -> Self {
+        Self {
             inner: ErrorKind::MaxSizeReached(err),
         }
     }
 }
 
 impl From<status::InvalidStatusCode> for Error {
-    fn from(err: status::InvalidStatusCode) -> Error {
-        Error {
+    fn from(err: status::InvalidStatusCode) -> Self {
+        Self {
             inner: ErrorKind::StatusCode(err),
         }
     }
 }
 
 impl From<method::InvalidMethod> for Error {
-    fn from(err: method::InvalidMethod) -> Error {
-        Error {
+    fn from(err: method::InvalidMethod) -> Self {
+        Self {
             inner: ErrorKind::Method(err),
         }
     }
 }
 
 impl From<uri::InvalidUri> for Error {
-    fn from(err: uri::InvalidUri) -> Error {
-        Error {
+    fn from(err: uri::InvalidUri) -> Self {
+        Self {
             inner: ErrorKind::Uri(err),
         }
     }
 }
 
 impl From<uri::InvalidUriParts> for Error {
-    fn from(err: uri::InvalidUriParts) -> Error {
-        Error {
+    fn from(err: uri::InvalidUriParts) -> Self {
+        Self {
             inner: ErrorKind::UriParts(err),
         }
     }
 }
 
 impl From<header::InvalidHeaderName> for Error {
-    fn from(err: header::InvalidHeaderName) -> Error {
-        Error {
+    fn from(err: header::InvalidHeaderName) -> Self {
+        Self {
             inner: ErrorKind::HeaderName(err),
         }
     }
 }
 
 impl From<header::InvalidHeaderValue> for Error {
-    fn from(err: header::InvalidHeaderValue) -> Error {
-        Error {
+    fn from(err: header::InvalidHeaderValue) -> Self {
+        Self {
             inner: ErrorKind::HeaderValue(err),
         }
     }
 }
 
 impl From<std::convert::Infallible> for Error {
-    fn from(err: std::convert::Infallible) -> Error {
+    fn from(err: std::convert::Infallible) -> Self {
         match err {}
     }
 }

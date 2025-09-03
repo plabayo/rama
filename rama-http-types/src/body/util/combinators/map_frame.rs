@@ -37,6 +37,7 @@ impl<B, F> MapFrame<B, F> {
     }
 
     /// Get a pinned mutable reference to the inner body
+    #[must_use]
     pub fn get_pin_mut(self: Pin<&mut Self>) -> Pin<&mut B> {
         self.project().inner
     }

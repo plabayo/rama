@@ -10,16 +10,16 @@ pub(crate) struct ByteStr {
 
 impl ByteStr {
     #[inline]
-    pub(crate) fn new() -> ByteStr {
-        ByteStr {
+    pub(crate) fn new() -> Self {
+        Self {
             // Invariant: the empty slice is trivially valid UTF-8.
             bytes: Bytes::new(),
         }
     }
 
     #[inline]
-    pub(crate) const fn from_static(val: &'static str) -> ByteStr {
-        ByteStr {
+    pub(crate) const fn from_static(val: &'static str) -> Self {
+        Self {
             // Invariant: val is a str so contains valid UTF-8.
             bytes: Bytes::from_static(val.as_bytes()),
         }
@@ -32,7 +32,7 @@ impl ByteStr {
     /// ## Safety
     /// `bytes` must contain valid UTF-8. In a release build it is undefined
     /// behavior to call this with `bytes` that is not valid UTF-8.
-    pub(crate) unsafe fn from_utf8_unchecked(bytes: Bytes) -> ByteStr {
+    pub(crate) unsafe fn from_utf8_unchecked(bytes: Bytes) -> Self {
         if cfg!(debug_assertions) {
             match str::from_utf8(&bytes) {
                 Ok(_) => (),
@@ -43,13 +43,13 @@ impl ByteStr {
             }
         }
         // Invariant: assumed by the safety requirements of this function.
-        ByteStr { bytes }
+        Self { bytes }
     }
 
-    pub(crate) fn from_utf8(bytes: Bytes) -> Result<ByteStr, std::str::Utf8Error> {
+    pub(crate) fn from_utf8(bytes: Bytes) -> Result<Self, std::str::Utf8Error> {
         str::from_utf8(&bytes)?;
         // Invariant: just checked is utf8
-        Ok(ByteStr { bytes })
+        Ok(Self { bytes })
     }
 }
 
@@ -66,8 +66,8 @@ impl ops::Deref for ByteStr {
 
 impl From<String> for ByteStr {
     #[inline]
-    fn from(src: String) -> ByteStr {
-        ByteStr {
+    fn from(src: String) -> Self {
+        Self {
             // Invariant: src is a String so contains valid UTF-8.
             bytes: Bytes::from(src),
         }
@@ -76,8 +76,8 @@ impl From<String> for ByteStr {
 
 impl<'a> From<&'a str> for ByteStr {
     #[inline]
-    fn from(src: &'a str) -> ByteStr {
-        ByteStr {
+    fn from(src: &'a str) -> Self {
+        Self {
             // Invariant: src is a str so contains valid UTF-8.
             bytes: Bytes::copy_from_slice(src.as_bytes()),
         }

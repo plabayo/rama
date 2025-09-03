@@ -70,7 +70,7 @@ struct AltMap {
 }
 
 impl Fuzz {
-    fn new(seed: [u8; 32]) -> Fuzz {
+    fn new(seed: [u8; 32]) -> Self {
         // Seed the RNG
         let mut rng = StdRng::from_seed(seed);
 
@@ -88,7 +88,7 @@ impl Fuzz {
             steps.push(expect.gen_step(&weight, &mut rng));
         }
 
-        Fuzz {
+        Self {
             seed,
             steps,
             reduce: 0,
@@ -170,7 +170,7 @@ impl AltMap {
         let name = self.gen_name(-5, rng);
         let val = gen_header_value(rng);
 
-        let vals = self.map.entry(name.clone()).or_insert(vec![]);
+        let vals = self.map.entry(name.clone()).or_default();
 
         let ret = !vals.is_empty();
         vals.push(val.clone());
@@ -180,7 +180,7 @@ impl AltMap {
 
     /// Negative numbers weigh finding an existing header higher
     fn gen_name(&self, weight: i32, rng: &mut StdRng) -> HeaderName {
-        let mut existing = rng.random_ratio(1, weight.abs() as u32);
+        let mut existing = rng.random_ratio(1, weight.unsigned_abs());
 
         if weight < 0 {
             existing = !existing;
@@ -203,7 +203,7 @@ impl AltMap {
             None
         } else {
             let n = rng.random_range(0..self.map.len());
-            self.map.keys().nth(n).map(Clone::clone)
+            self.map.keys().nth(n).cloned()
         }
     }
 
@@ -221,7 +221,7 @@ impl AltMap {
 
         for (key, val) in &self.map {
             // Test get
-            assert_eq!(other.get(key), val.get(0));
+            assert_eq!(other.get(key), val.first());
 
             // Test get_all
             let vals = other.get_all(key);
@@ -234,18 +234,18 @@ impl AltMap {
 impl Action {
     fn apply(self, map: &mut HeaderMap<HeaderValue>) {
         match self {
-            Action::Insert { name, val, old } => {
+            Self::Insert { name, val, old } => {
                 let actual = map.insert(name, val);
                 assert_eq!(actual, old);
             }
-            Action::Remove { name, val } => {
+            Self::Remove { name, val } => {
                 // Just to help track the state, load all associated values.
                 let _ = map.get_all(&name).iter().collect::<Vec<_>>();
 
                 let actual = map.remove(&name);
                 assert_eq!(actual, val);
             }
-            Action::Append { name, val, ret } => {
+            Self::Append { name, val, ret } => {
                 assert_eq!(ret, map.append(name, val));
             }
         }
@@ -253,7 +253,7 @@ impl Action {
 }
 
 fn gen_header_name(g: &mut StdRng) -> HeaderName {
-    const STANDARD_HEADERS: &'static [HeaderName] = &[
+    const STANDARD_HEADERS: &[HeaderName] = &[
         header::ACCEPT,
         header::ACCEPT_CHARSET,
         header::ACCEPT_ENCODING,
@@ -354,10 +354,9 @@ fn gen_string(g: &mut StdRng, min: usize, max: usize) -> String {
     let bytes: Vec<_> = (min..max)
         .map(|_| {
             // Chars to pick from
-            b"ABCDEFGHIJKLMNOPQRSTUVabcdefghilpqrstuvwxyz----"
+            *b"ABCDEFGHIJKLMNOPQRSTUVabcdefghilpqrstuvwxyz----"
                 .choose(g)
                 .unwrap()
-                .clone()
         })
         .collect();
 

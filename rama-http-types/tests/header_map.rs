@@ -9,29 +9,27 @@ fn smoke() {
 
     let name: HeaderName = "hello".parse().unwrap();
 
-    match headers.entry(&name) {
-        Entry::Vacant(e) => {
-            e.insert("world".parse().unwrap());
-        }
-        _ => panic!(),
+    if let Entry::Vacant(e) = headers.entry(&name) {
+        e.insert("world".parse().unwrap());
+    } else {
+        panic!()
     }
 
     assert!(headers.get("hello").is_some());
 
-    match headers.entry(&name) {
-        Entry::Occupied(mut e) => {
-            assert_eq!(e.get(), &"world");
+    if let Entry::Occupied(mut e) = headers.entry(&name) {
+        assert_eq!(e.get(), &"world");
 
-            // Push another value
-            e.append("zomg".parse().unwrap());
+        // Push another value
+        e.append("zomg".parse().unwrap());
 
-            let mut i = e.iter();
+        let mut i = e.iter();
 
-            assert_eq!(*i.next().unwrap(), "world");
-            assert_eq!(*i.next().unwrap(), "zomg");
-            assert!(i.next().is_none());
-        }
-        _ => panic!(),
+        assert_eq!(*i.next().unwrap(), "world");
+        assert_eq!(*i.next().unwrap(), "zomg");
+        assert!(i.next().is_none());
+    } else {
+        panic!()
     }
 }
 
@@ -46,13 +44,13 @@ fn reserve_over_capacity() {
 #[test]
 fn with_capacity_max() {
     // The largest capacity such that (cap + cap / 3) < MAX_SIZE.
-    HeaderMap::<u32>::with_capacity(24_576);
+    let _ = HeaderMap::<u32>::with_capacity(24_576);
 }
 
 #[test]
 #[should_panic]
 fn with_capacity_overflow() {
-    HeaderMap::<u32>::with_capacity(24_577);
+    let _ = HeaderMap::<u32>::with_capacity(24_577);
 }
 
 #[test]
@@ -203,9 +201,10 @@ fn drain_entry() {
 
     // Using insert_mult
     {
-        let mut e = match headers.entry("hello") {
-            Entry::Occupied(e) => e,
-            _ => panic!(),
+        let mut e = if let Entry::Occupied(e) = headers.entry("hello") {
+            e
+        } else {
+            panic!()
         };
 
         let vals: Vec<_> = e.insert_mult("wat".parse().unwrap()).collect();
@@ -351,7 +350,7 @@ fn custom_std(n: usize) -> Vec<HeaderName> {
         .collect()
 }
 
-const STD: &'static [HeaderName] = &[
+const STD: &[HeaderName] = &[
     ACCEPT,
     ACCEPT_CHARSET,
     ACCEPT_ENCODING,
@@ -447,7 +446,7 @@ fn insert_invalid() {
 fn value_htab() {
     // RFC 7230 Section 3.2:
     // > field-content  = field-vchar [ 1*( SP / HTAB ) field-vchar ]
-    HeaderValue::from_static("hello\tworld");
+    let _ = HeaderValue::from_static("hello\tworld");
     HeaderValue::from_str("hello\tworld").unwrap();
 }
 

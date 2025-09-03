@@ -99,7 +99,7 @@ impl<T: Buf> Buf for BufList<T> {
 
 impl<T> Default for BufList<T> {
     fn default() -> Self {
-        BufList {
+        Self {
             bufs: VecDeque::new(),
         }
     }

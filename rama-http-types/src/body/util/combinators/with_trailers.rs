@@ -63,27 +63,28 @@ where
             let mut this = self.as_mut().project();
 
             match this.state.as_mut().project() {
-                StateProj::PollBody { body, trailers } => match ready!(body.poll_frame(cx)?) {
-                    Some(frame) => match frame.into_trailers() {
-                        Ok(prev_trailers) => {
-                            let trailers = trailers.take().unwrap();
-                            this.state.set(State::PollTrailers {
-                                trailers,
-                                prev_trailers: Some(prev_trailers),
-                            });
+                StateProj::PollBody { body, trailers } => {
+                    if let Some(frame) = ready!(body.poll_frame(cx)?) {
+                        match frame.into_trailers() {
+                            Ok(prev_trailers) => {
+                                let trailers = trailers.take().unwrap();
+                                this.state.set(State::PollTrailers {
+                                    trailers,
+                                    prev_trailers: Some(prev_trailers),
+                                });
+                            }
+                            Err(frame) => {
+                                return Poll::Ready(Some(Ok(frame)));
+                            }
                         }
-                        Err(frame) => {
-                            return Poll::Ready(Some(Ok(frame)));
-                        }
-                    },
-                    None => {
+                    } else {
                         let trailers = trailers.take().unwrap();
                         this.state.set(State::PollTrailers {
                             trailers,
                             prev_trailers: None,
                         });
                     }
-                },
+                }
                 StateProj::PollTrailers {
                     trailers,
                     prev_trailers,

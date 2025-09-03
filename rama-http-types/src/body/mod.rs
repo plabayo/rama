@@ -153,10 +153,7 @@ impl<B: StreamingBody> StreamingBody for http::Request<B> {
     ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
         // SAFETY:
         // A pin projection.
-        unsafe {
-            self.map_unchecked_mut(http::Request::body_mut)
-                .poll_frame(cx)
-        }
+        unsafe { self.map_unchecked_mut(Self::body_mut).poll_frame(cx) }
     }
 
     fn is_end_stream(&self) -> bool {
@@ -178,10 +175,7 @@ impl<B: StreamingBody> StreamingBody for http::Response<B> {
     ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
         // SAFETY:
         // A pin projection.
-        unsafe {
-            self.map_unchecked_mut(http::Response::body_mut)
-                .poll_frame(cx)
-        }
+        unsafe { self.map_unchecked_mut(Self::body_mut).poll_frame(cx) }
     }
 
     fn is_end_stream(&self) -> bool {

@@ -25,6 +25,7 @@ impl<T> Frame<T> {
     }
 
     /// Create a trailers frame.
+    #[must_use]
     pub fn trailers(map: HeaderMap) -> Self {
         Self {
             kind: Kind::Trailers(map),

@@ -15,6 +15,7 @@ pub struct Empty<D> {
 
 impl<D> Empty<D> {
     /// Create a new `Empty`.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }

@@ -25,7 +25,7 @@ where
         } else {
             None
         };
-        Full { data }
+        Self { data }
     }
 }
 
@@ -61,7 +61,7 @@ where
 {
     /// Create an empty `Full`.
     fn default() -> Self {
-        Full { data: None }
+        Self { data: None }
     }
 }
 
@@ -70,7 +70,7 @@ where
     D: Buf + From<Bytes>,
 {
     fn from(bytes: Bytes) -> Self {
-        Full::new(D::from(bytes))
+        Self::new(D::from(bytes))
     }
 }
 
@@ -79,7 +79,7 @@ where
     D: Buf + From<Vec<u8>>,
 {
     fn from(vec: Vec<u8>) -> Self {
-        Full::new(D::from(vec))
+        Self::new(D::from(vec))
     }
 }
 
@@ -88,7 +88,7 @@ where
     D: Buf + From<&'static [u8]>,
 {
     fn from(slice: &'static [u8]) -> Self {
-        Full::new(D::from(slice))
+        Self::new(D::from(slice))
     }
 }
 
@@ -99,8 +99,8 @@ where
 {
     fn from(cow: Cow<'static, B>) -> Self {
         match cow {
-            Cow::Borrowed(b) => Full::new(D::from(b)),
-            Cow::Owned(o) => Full::new(D::from(o)),
+            Cow::Borrowed(b) => Self::new(D::from(b)),
+            Cow::Owned(o) => Self::new(D::from(o)),
         }
     }
 }
@@ -110,7 +110,7 @@ where
     D: Buf + From<String>,
 {
     fn from(s: String) -> Self {
-        Full::new(D::from(s))
+        Self::new(D::from(s))
     }
 }
 
@@ -119,7 +119,7 @@ where
     D: Buf + From<&'static str>,
 {
     fn from(slice: &'static str) -> Self {
-        Full::new(D::from(slice))
+        Self::new(D::from(slice))
     }
 }
 

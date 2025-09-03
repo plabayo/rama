@@ -39,8 +39,8 @@ impl<L> Either<L, L> {
     /// of the same type.
     pub fn into_inner(self) -> L {
         match self {
-            Either::Left(left) => left,
-            Either::Right(right) => right,
+            Self::Left(left) => left,
+            Self::Right(right) => right,
         }
     }
 }
@@ -72,15 +72,15 @@ where
 
     fn is_end_stream(&self) -> bool {
         match self {
-            Either::Left(left) => left.is_end_stream(),
-            Either::Right(right) => right.is_end_stream(),
+            Self::Left(left) => left.is_end_stream(),
+            Self::Right(right) => right.is_end_stream(),
         }
     }
 
     fn size_hint(&self) -> SizeHint {
         match self {
-            Either::Left(left) => left.size_hint(),
-            Either::Right(right) => right.size_hint(),
+            Self::Left(left) => left.size_hint(),
+            Self::Right(right) => right.size_hint(),
         }
     }
 }
