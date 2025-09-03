@@ -1170,7 +1170,7 @@ impl HeaderName {
     /// # Examples
     ///
     /// ```
-    /// # use http::header::*;
+    /// # use rama_http_types::header::*;
     ///
     /// // Parsing a lower case header
     /// let hdr = HeaderName::from_lowercase(b"content-length").unwrap();
@@ -1242,7 +1242,7 @@ impl HeaderName {
     /// # Examples
     ///
     /// ```
-    /// # use http::header::*;
+    /// # use rama_http_types::header::*;
     /// // Parsing a standard header
     /// let hdr = HeaderName::from_static("content-length");
     /// assert_eq!(CONTENT_LENGTH, hdr);
@@ -1256,7 +1256,7 @@ impl HeaderName {
     /// ```
     ///
     /// ```should_panic
-    /// # use http::header::*;
+    /// # use rama_http_types::header::*;
     /// #
     /// // Parsing a header that contains invalid symbols(s):
     /// HeaderName::from_static("content{}{}length"); // This line panics!
@@ -1466,7 +1466,7 @@ impl PartialEq<str> for HeaderName {
     /// # Examples
     ///
     /// ```
-    /// use http::header::CONTENT_LENGTH;
+    /// use rama_http_types::header::CONTENT_LENGTH;
     ///
     /// assert_eq!(CONTENT_LENGTH, "content-length");
     /// assert_eq!(CONTENT_LENGTH, "Content-Length");
@@ -1485,7 +1485,7 @@ impl PartialEq<HeaderName> for str {
     /// # Examples
     ///
     /// ```
-    /// use http::header::CONTENT_LENGTH;
+    /// use rama_http_types::header::CONTENT_LENGTH;
     ///
     /// assert_eq!(CONTENT_LENGTH, "content-length");
     /// assert_eq!(CONTENT_LENGTH, "Content-Length");

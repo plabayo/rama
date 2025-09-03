@@ -4,7 +4,7 @@ macro_rules! bench {
             #[allow(unused_imports)]
             use super::custom_hdr;
             use fnv::FnvHasher;
-            use http::header::*;
+            use rama_http_types::header::*;
             use seahash::SeaHasher;
             use std::hash::BuildHasherDefault;
             #[allow(unused_imports)]
@@ -470,7 +470,7 @@ bench!(hn_hdrs_set_11_get_with_miss(new_map, b) {
     });
 });
 
-use http::header::*;
+use rama_http_types::header::*;
 
 fn custom_hdr(n: usize) -> Vec<HeaderName> {
     (0..n)

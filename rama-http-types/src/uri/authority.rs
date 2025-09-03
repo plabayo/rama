@@ -41,7 +41,7 @@ impl Authority {
     /// # Examples
     ///
     /// ```
-    /// # use http::uri::Authority;
+    /// # use rama_http_types::uri::Authority;
     /// let authority = Authority::from_static("example.com");
     /// assert_eq!(authority.host(), "example.com");
     /// ```
@@ -190,7 +190,7 @@ impl Authority {
     /// # Examples
     ///
     /// ```
-    /// # use http::uri::*;
+    /// # use rama_http_types::uri::*;
     /// let authority: Authority = "example.org:80".parse().unwrap();
     ///
     /// assert_eq!(authority.host(), "example.org");
@@ -219,7 +219,7 @@ impl Authority {
     /// Authority with port
     ///
     /// ```
-    /// # use http::uri::Authority;
+    /// # use rama_http_types::uri::Authority;
     /// let authority: Authority = "example.org:80".parse().unwrap();
     ///
     /// let port = authority.port().unwrap();
@@ -230,7 +230,7 @@ impl Authority {
     /// Authority without port
     ///
     /// ```
-    /// # use http::uri::Authority;
+    /// # use rama_http_types::uri::Authority;
     /// let authority: Authority = "example.org".parse().unwrap();
     ///
     /// assert!(authority.port().is_none());
@@ -247,7 +247,7 @@ impl Authority {
     /// # Example
     ///
     /// ```
-    /// # use http::uri::Authority;
+    /// # use rama_http_types::uri::Authority;
     /// let authority: Authority = "example.org:80".parse().unwrap();
     ///
     /// assert_eq!(authority.port_u16(), Some(80));
@@ -285,7 +285,7 @@ impl Eq for Authority {}
 /// # Examples
 ///
 /// ```
-/// # use http::uri::Authority;
+/// # use rama_http_types::uri::Authority;
 /// let authority: Authority = "HELLO.com".parse().unwrap();
 /// assert_eq!(authority, "hello.coM");
 /// assert_eq!("hello.com", authority);
@@ -331,7 +331,7 @@ impl PartialEq<Authority> for String {
 /// # Examples
 ///
 /// ```
-/// # use http::uri::Authority;
+/// # use rama_http_types::uri::Authority;
 /// let authority: Authority = "DEF.com".parse().unwrap();
 /// assert!(authority < "ghi.com");
 /// assert!(authority > "abc.com");
@@ -397,7 +397,7 @@ impl PartialOrd<Authority> for String {
 /// # Examples
 ///
 /// ```
-/// # use http::uri::Authority;
+/// # use rama_http_types::uri::Authority;
 /// # use std::hash::{Hash, Hasher};
 /// # use std::collections::hash_map::DefaultHasher;
 ///

@@ -88,7 +88,7 @@ impl HeaderValue {
     /// # Examples
     ///
     /// ```
-    /// # use http::header::HeaderValue;
+    /// # use rama_http_types::header::HeaderValue;
     /// let val = HeaderValue::from_static("hello");
     /// assert_eq!(val, "hello");
     /// ```
@@ -129,7 +129,7 @@ impl HeaderValue {
     /// # Examples
     ///
     /// ```
-    /// # use http::header::HeaderValue;
+    /// # use rama_http_types::header::HeaderValue;
     /// let val = HeaderValue::from_str("hello").unwrap();
     /// assert_eq!(val, "hello");
     /// ```
@@ -137,7 +137,7 @@ impl HeaderValue {
     /// An invalid value
     ///
     /// ```
-    /// # use http::header::HeaderValue;
+    /// # use rama_http_types::header::HeaderValue;
     /// let val = HeaderValue::from_str("\n");
     /// assert!(val.is_err());
     /// ```
@@ -154,8 +154,8 @@ impl HeaderValue {
     /// # Examples
     ///
     /// ```
-    /// # use http::header::{HeaderValue, HeaderName};
-    /// # use http::header::ACCEPT;
+    /// # use rama_http_types::header::{HeaderValue, HeaderName};
+    /// # use rama_http_types::header::ACCEPT;
     /// let val = HeaderValue::from_name(ACCEPT);
     /// assert_eq!(val, HeaderValue::from_bytes(b"accept").unwrap());
     /// ```
@@ -176,7 +176,7 @@ impl HeaderValue {
     /// # Examples
     ///
     /// ```
-    /// # use http::header::HeaderValue;
+    /// # use rama_http_types::header::HeaderValue;
     /// let val = HeaderValue::from_bytes(b"hello\xfa").unwrap();
     /// assert_eq!(val, &b"hello\xfa"[..]);
     /// ```
@@ -184,7 +184,7 @@ impl HeaderValue {
     /// An invalid value
     ///
     /// ```
-    /// # use http::header::HeaderValue;
+    /// # use rama_http_types::header::HeaderValue;
     /// let val = HeaderValue::from_bytes(b"\n");
     /// assert!(val.is_err());
     /// ```
@@ -274,7 +274,7 @@ impl HeaderValue {
     /// # Examples
     ///
     /// ```
-    /// # use http::header::HeaderValue;
+    /// # use rama_http_types::header::HeaderValue;
     /// let val = HeaderValue::from_static("hello");
     /// assert_eq!(val.to_str().unwrap(), "hello");
     /// ```
@@ -297,7 +297,7 @@ impl HeaderValue {
     /// # Examples
     ///
     /// ```
-    /// # use http::header::HeaderValue;
+    /// # use rama_http_types::header::HeaderValue;
     /// let val = HeaderValue::from_static("hello");
     /// assert_eq!(val.len(), 5);
     /// ```
@@ -311,7 +311,7 @@ impl HeaderValue {
     /// # Examples
     ///
     /// ```
-    /// # use http::header::HeaderValue;
+    /// # use rama_http_types::header::HeaderValue;
     /// let val = HeaderValue::from_static("");
     /// assert!(val.is_empty());
     ///
@@ -328,7 +328,7 @@ impl HeaderValue {
     /// # Examples
     ///
     /// ```
-    /// # use http::header::HeaderValue;
+    /// # use rama_http_types::header::HeaderValue;
     /// let val = HeaderValue::from_static("hello");
     /// assert_eq!(val.as_bytes(), b"hello");
     /// ```
@@ -342,7 +342,7 @@ impl HeaderValue {
     /// # Examples
     ///
     /// ```
-    /// # use http::header::HeaderValue;
+    /// # use rama_http_types::header::HeaderValue;
     /// let mut val = HeaderValue::from_static("my secret");
     ///
     /// val.set_sensitive(true);
@@ -373,7 +373,7 @@ impl HeaderValue {
     /// # Examples
     ///
     /// ```
-    /// # use http::header::HeaderValue;
+    /// # use rama_http_types::header::HeaderValue;
     /// let mut val = HeaderValue::from_static("my secret");
     ///
     /// val.set_sensitive(true);

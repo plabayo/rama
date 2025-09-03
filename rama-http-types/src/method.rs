@@ -8,7 +8,7 @@
 //! # Examples
 //!
 //! ```
-//! use http::Method;
+//! use rama_http_types::Method;
 //!
 //! assert_eq!(Method::GET, Method::from_bytes(b"GET").unwrap());
 //! assert!(Method::GET.is_idempotent());
@@ -37,7 +37,7 @@ use std::{fmt, str};
 /// # Examples
 ///
 /// ```
-/// use http::Method;
+/// use rama_http_types::Method;
 ///
 /// assert_eq!(Method::GET, Method::from_bytes(b"GET").unwrap());
 /// assert!(Method::GET.is_idempotent());

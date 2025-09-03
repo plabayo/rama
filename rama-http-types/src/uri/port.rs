@@ -16,7 +16,7 @@ impl<T> Port<T> {
     /// Port as `u16`.
     ///
     /// ```
-    /// # use http::uri::Authority;
+    /// # use rama_http_types::uri::Authority;
     /// let authority: Authority = "example.org:80".parse().unwrap();
     ///
     /// let port = authority.port().unwrap();
@@ -49,7 +49,7 @@ where
     /// Port as `str`.
     ///
     /// ```
-    /// # use http::uri::Authority;
+    /// # use rama_http_types::uri::Authority;
     /// let authority: Authority = "example.org:80".parse().unwrap();
     ///
     /// let port = authority.port().unwrap();

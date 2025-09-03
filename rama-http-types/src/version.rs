@@ -10,7 +10,7 @@
 //! # Examples
 //!
 //! ```
-//! use http::Version;
+//! use rama_http_types::Version;
 //!
 //! let http11 = Version::HTTP_11;
 //! let http2 = Version::HTTP_2;

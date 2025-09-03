@@ -1,5 +1,5 @@
 use criterion::{criterion_group, criterion_main, BenchmarkId,Criterion, Throughput};
-use http::header::HeaderName;
+use rama_http_types::header::HeaderName;
 
 // This is a list of some of the standard headers ordered by increasing size.
 // It has exactly one standard header per size (some sizes don't have a standard

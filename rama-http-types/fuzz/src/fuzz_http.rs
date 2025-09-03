@@ -1,10 +1,10 @@
 #![no_main]
 
-use http::Request;
-use http::Response;
-use http::StatusCode;
 use libfuzzer_sys::arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
+use rama_http_types::Request;
+use rama_http_types::Response;
+use rama_http_types::StatusCode;
 
 #[derive(Debug, Arbitrary)]
 struct HttpSpec {

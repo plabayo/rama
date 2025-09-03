@@ -7,7 +7,7 @@
 //! # Examples
 //!
 //! ```
-//! use http::StatusCode;
+//! use rama_http_types::StatusCode;
 //!
 //! assert_eq!(StatusCode::from_u16(200).unwrap(), StatusCode::OK);
 //! assert_eq!(StatusCode::NOT_FOUND, 404);
@@ -37,7 +37,7 @@ use crate::dep::http_upstream;
 /// # Examples
 ///
 /// ```
-/// use http::StatusCode;
+/// use rama_http_types::StatusCode;
 ///
 /// assert_eq!(StatusCode::from_u16(200).unwrap(), StatusCode::OK);
 /// assert_eq!(StatusCode::NOT_FOUND.as_u16(), 404);
@@ -75,7 +75,7 @@ impl StatusCode {
     /// # Example
     ///
     /// ```
-    /// use http::StatusCode;
+    /// use rama_http_types::StatusCode;
     ///
     /// let ok = StatusCode::from_u16(200).unwrap();
     /// assert_eq!(ok, StatusCode::OK);
@@ -228,7 +228,7 @@ impl fmt::Debug for StatusCode {
 /// # Example
 ///
 /// ```
-/// # use http::StatusCode;
+/// # use rama_http_types::StatusCode;
 /// assert_eq!(format!("{}", StatusCode::OK), "200 OK");
 /// ```
 impl fmt::Display for StatusCode {

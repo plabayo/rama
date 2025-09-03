@@ -2,7 +2,7 @@
 
 extern crate test;
 
-use http::method::Method;
+use rama_http_types::method::Method;
 use test::Bencher;
 
 fn make_all_methods() -> Vec<Vec<u8>> {

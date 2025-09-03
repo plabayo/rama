@@ -3,7 +3,7 @@
 extern crate test;
 
 use bytes::Bytes;
-use http::HeaderValue;
+use rama_http_types::HeaderValue;
 use test::Bencher;
 
 static SHORT: &'static [u8] = b"localhost";

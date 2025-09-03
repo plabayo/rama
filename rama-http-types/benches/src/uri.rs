@@ -2,7 +2,7 @@
 
 extern crate test;
 
-use http::Uri;
+use rama_http_types::Uri;
 use test::Bencher;
 
 #[bench]

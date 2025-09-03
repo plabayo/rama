@@ -10,7 +10,7 @@
 //! Creating a `Request` to send
 //!
 //! ```no_run
-//! use http::{Request, Response};
+//! use rama_http_types::{Request, Response};
 //!
 //! let mut request = Request::builder()
 //!     .uri("https://www.rust-lang.org/")
@@ -35,7 +35,7 @@
 //! Inspecting a request to see what was sent.
 //!
 //! ```
-//! use http::{Request, Response, StatusCode};
+//! use rama_http_types::{Request, Response, StatusCode};
 //!
 //! fn respond_to(req: Request<()>) -> http::Result<Response<()>> {
 //!     if req.uri() != "/awesome-url" {
@@ -73,7 +73,7 @@ use crate::{Extensions, Result, Uri};
 /// Creating a `Request` to send
 ///
 /// ```no_run
-/// use http::{Request, Response};
+/// use rama_http_types::{Request, Response};
 ///
 /// let mut request = Request::builder()
 ///     .uri("https://www.rust-lang.org/")
@@ -98,7 +98,7 @@ use crate::{Extensions, Result, Uri};
 /// Inspecting a request to see what was sent.
 ///
 /// ```
-/// use http::{Request, Response, StatusCode};
+/// use rama_http_types::{Request, Response, StatusCode};
 ///
 /// fn respond_to(req: Request<()>) -> http::Result<Response<()>> {
 ///     if req.uri() != "/awesome-url" {
@@ -121,7 +121,7 @@ use crate::{Extensions, Result, Uri};
 /// # extern crate serde;
 /// # extern crate serde_json;
 /// # extern crate http;
-/// use http::Request;
+/// use rama_http_types::Request;
 /// use serde::de;
 ///
 /// fn deserialize<T>(req: Request<Vec<u8>>) -> serde_json::Result<Request<T>>
@@ -141,7 +141,7 @@ use crate::{Extensions, Result, Uri};
 /// # extern crate serde;
 /// # extern crate serde_json;
 /// # extern crate http;
-/// use http::Request;
+/// use rama_http_types::Request;
 /// use serde::ser;
 ///
 /// fn serialize<T>(req: Request<T>) -> serde_json::Result<Request<Vec<u8>>>
@@ -202,7 +202,7 @@ impl Request<()> {
     /// # Examples
     ///
     /// ```
-    /// # use http::*;
+    /// # use rama_http_types::*;
     /// let request = Request::builder()
     ///     .method("GET")
     ///     .uri("https://www.rust-lang.org/")
@@ -223,7 +223,7 @@ impl Request<()> {
     /// # Example
     ///
     /// ```
-    /// # use http::*;
+    /// # use rama_http_types::*;
     ///
     /// let request = Request::get("https://www.rust-lang.org/")
     ///     .body(())
@@ -245,7 +245,7 @@ impl Request<()> {
     /// # Example
     ///
     /// ```
-    /// # use http::*;
+    /// # use rama_http_types::*;
     ///
     /// let request = Request::put("https://www.rust-lang.org/")
     ///     .body(())
@@ -267,7 +267,7 @@ impl Request<()> {
     /// # Example
     ///
     /// ```
-    /// # use http::*;
+    /// # use rama_http_types::*;
     ///
     /// let request = Request::post("https://www.rust-lang.org/")
     ///     .body(())
@@ -289,7 +289,7 @@ impl Request<()> {
     /// # Example
     ///
     /// ```
-    /// # use http::*;
+    /// # use rama_http_types::*;
     ///
     /// let request = Request::delete("https://www.rust-lang.org/")
     ///     .body(())
@@ -311,7 +311,7 @@ impl Request<()> {
     /// # Example
     ///
     /// ```
-    /// # use http::*;
+    /// # use rama_http_types::*;
     ///
     /// let request = Request::options("https://www.rust-lang.org/")
     ///     .body(())
@@ -334,7 +334,7 @@ impl Request<()> {
     /// # Example
     ///
     /// ```
-    /// # use http::*;
+    /// # use rama_http_types::*;
     ///
     /// let request = Request::head("https://www.rust-lang.org/")
     ///     .body(())
@@ -356,7 +356,7 @@ impl Request<()> {
     /// # Example
     ///
     /// ```
-    /// # use http::*;
+    /// # use rama_http_types::*;
     ///
     /// let request = Request::connect("https://www.rust-lang.org/")
     ///     .body(())
@@ -378,7 +378,7 @@ impl Request<()> {
     /// # Example
     ///
     /// ```
-    /// # use http::*;
+    /// # use rama_http_types::*;
     ///
     /// let request = Request::patch("https://www.rust-lang.org/")
     ///     .body(())
@@ -400,7 +400,7 @@ impl Request<()> {
     /// # Example
     ///
     /// ```
-    /// # use http::*;
+    /// # use rama_http_types::*;
     ///
     /// let request = Request::trace("https://www.rust-lang.org/")
     ///     .body(())
@@ -424,7 +424,7 @@ impl<T> Request<T> {
     /// # Examples
     ///
     /// ```
-    /// # use http::*;
+    /// # use rama_http_types::*;
     /// let request = Request::new("hello world");
     ///
     /// assert_eq!(*request.method(), Method::GET);
@@ -443,7 +443,7 @@ impl<T> Request<T> {
     /// # Examples
     ///
     /// ```
-    /// # use http::*;
+    /// # use rama_http_types::*;
     /// let request = Request::new("hello world");
     /// let (mut parts, body) = request.into_parts();
     /// parts.method = Method::POST;
@@ -460,7 +460,7 @@ impl<T> Request<T> {
     /// # Examples
     ///
     /// ```
-    /// # use http::*;
+    /// # use rama_http_types::*;
     /// let request: Request<()> = Request::default();
     /// assert_eq!(*request.method(), Method::GET);
     /// ```
@@ -474,7 +474,7 @@ impl<T> Request<T> {
     /// # Examples
     ///
     /// ```
-    /// # use http::*;
+    /// # use rama_http_types::*;
     /// let mut request: Request<()> = Request::default();
     /// *request.method_mut() = Method::PUT;
     /// assert_eq!(*request.method(), Method::PUT);
@@ -489,7 +489,7 @@ impl<T> Request<T> {
     /// # Examples
     ///
     /// ```
-    /// # use http::*;
+    /// # use rama_http_types::*;
     /// let request: Request<()> = Request::default();
     /// assert_eq!(*request.uri(), *"/");
     /// ```
@@ -503,7 +503,7 @@ impl<T> Request<T> {
     /// # Examples
     ///
     /// ```
-    /// # use http::*;
+    /// # use rama_http_types::*;
     /// let mut request: Request<()> = Request::default();
     /// *request.uri_mut() = "/hello".parse().unwrap();
     /// assert_eq!(*request.uri(), *"/hello");
@@ -518,7 +518,7 @@ impl<T> Request<T> {
     /// # Examples
     ///
     /// ```
-    /// # use http::*;
+    /// # use rama_http_types::*;
     /// let request: Request<()> = Request::default();
     /// assert_eq!(request.version(), Version::HTTP_11);
     /// ```
@@ -532,7 +532,7 @@ impl<T> Request<T> {
     /// # Examples
     ///
     /// ```
-    /// # use http::*;
+    /// # use rama_http_types::*;
     /// let mut request: Request<()> = Request::default();
     /// *request.version_mut() = Version::HTTP_2;
     /// assert_eq!(request.version(), Version::HTTP_2);
@@ -547,7 +547,7 @@ impl<T> Request<T> {
     /// # Examples
     ///
     /// ```
-    /// # use http::*;
+    /// # use rama_http_types::*;
     /// let request: Request<()> = Request::default();
     /// assert!(request.headers().is_empty());
     /// ```
@@ -561,8 +561,8 @@ impl<T> Request<T> {
     /// # Examples
     ///
     /// ```
-    /// # use http::*;
-    /// # use http::header::*;
+    /// # use rama_http_types::*;
+    /// # use rama_http_types::header::*;
     /// let mut request: Request<()> = Request::default();
     /// request.headers_mut().insert(HOST, HeaderValue::from_static("world"));
     /// assert!(!request.headers().is_empty());
@@ -577,7 +577,7 @@ impl<T> Request<T> {
     /// # Examples
     ///
     /// ```
-    /// # use http::*;
+    /// # use rama_http_types::*;
     /// let request: Request<()> = Request::default();
     /// assert!(request.extensions().get::<i32>().is_none());
     /// ```
@@ -591,8 +591,8 @@ impl<T> Request<T> {
     /// # Examples
     ///
     /// ```
-    /// # use http::*;
-    /// # use http::header::*;
+    /// # use rama_http_types::*;
+    /// # use rama_http_types::header::*;
     /// let mut request: Request<()> = Request::default();
     /// request.extensions_mut().insert("hello");
     /// assert_eq!(request.extensions().get(), Some(&"hello"));
@@ -607,7 +607,7 @@ impl<T> Request<T> {
     /// # Examples
     ///
     /// ```
-    /// # use http::*;
+    /// # use rama_http_types::*;
     /// let request: Request<String> = Request::default();
     /// assert!(request.body().is_empty());
     /// ```
@@ -621,7 +621,7 @@ impl<T> Request<T> {
     /// # Examples
     ///
     /// ```
-    /// # use http::*;
+    /// # use rama_http_types::*;
     /// let mut request: Request<String> = Request::default();
     /// request.body_mut().push_str("hello world");
     /// assert!(!request.body().is_empty());
@@ -636,7 +636,7 @@ impl<T> Request<T> {
     /// # Examples
     ///
     /// ```
-    /// # use http::Request;
+    /// # use rama_http_types::Request;
     /// let request = Request::new(10);
     /// let body = request.into_body();
     /// assert_eq!(body, 10);
@@ -651,7 +651,7 @@ impl<T> Request<T> {
     /// # Examples
     ///
     /// ```
-    /// # use http::*;
+    /// # use rama_http_types::*;
     /// let request = Request::new(());
     /// let (parts, body) = request.into_parts();
     /// assert_eq!(parts.method, Method::GET);
@@ -667,7 +667,7 @@ impl<T> Request<T> {
     /// # Examples
     ///
     /// ```
-    /// # use http::*;
+    /// # use rama_http_types::*;
     /// let request = Request::builder().body("some string").unwrap();
     /// let mapped_request: Request<&[u8]> = request.map(|b| {
     ///   assert_eq!(b, "some string");
@@ -739,7 +739,7 @@ impl Builder {
     /// # Examples
     ///
     /// ```
-    /// # use http::*;
+    /// # use rama_http_types::*;
     ///
     /// let req = request::Builder::new()
     ///     .method("POST")
@@ -758,7 +758,7 @@ impl Builder {
     /// # Examples
     ///
     /// ```
-    /// # use http::*;
+    /// # use rama_http_types::*;
     ///
     /// let req = Request::builder()
     ///     .method("POST")
@@ -784,7 +784,7 @@ impl Builder {
     /// # Examples
     ///
     /// ```
-    /// # use http::*;
+    /// # use rama_http_types::*;
     ///
     /// let mut req = Request::builder();
     /// assert_eq!(req.method_ref(),Some(&Method::GET));
@@ -803,7 +803,7 @@ impl Builder {
     /// # Examples
     ///
     /// ```
-    /// # use http::*;
+    /// # use rama_http_types::*;
     ///
     /// let req = Request::builder()
     ///     .uri("https://www.rust-lang.org/")
@@ -828,7 +828,7 @@ impl Builder {
     /// # Examples
     ///
     /// ```
-    /// # use http::*;
+    /// # use rama_http_types::*;
     ///
     /// let mut req = Request::builder();
     /// assert_eq!(req.uri_ref().unwrap(), "/" );
@@ -847,7 +847,7 @@ impl Builder {
     /// # Examples
     ///
     /// ```
-    /// # use http::*;
+    /// # use rama_http_types::*;
     ///
     /// let req = Request::builder()
     ///     .version(Version::HTTP_2)
@@ -868,7 +868,7 @@ impl Builder {
     /// # Examples
     ///
     /// ```
-    /// # use http::*;
+    /// # use rama_http_types::*;
     ///
     /// let mut req = Request::builder();
     /// assert_eq!(req.version_ref().unwrap(), &Version::HTTP_11 );
@@ -889,8 +889,8 @@ impl Builder {
     /// # Examples
     ///
     /// ```
-    /// # use http::*;
-    /// # use http::header::HeaderValue;
+    /// # use rama_http_types::*;
+    /// # use rama_http_types::header::HeaderValue;
     ///
     /// let req = Request::builder()
     ///     .header("Accept", "text/html")
@@ -919,7 +919,7 @@ impl Builder {
     /// # Example
     ///
     /// ```
-    /// # use http::Request;
+    /// # use rama_http_types::Request;
     /// let req = Request::builder()
     ///     .header("Accept", "text/html")
     ///     .header("X-Custom-Foo", "bar");
@@ -938,7 +938,7 @@ impl Builder {
     /// # Example
     ///
     /// ```
-    /// # use http::{header::HeaderValue, Request};
+    /// # use rama_http_types::{header::HeaderValue, Request};
     /// let mut req = Request::builder();
     /// {
     ///   let headers = req.headers_mut().unwrap();
@@ -958,7 +958,7 @@ impl Builder {
     /// # Examples
     ///
     /// ```
-    /// # use http::*;
+    /// # use rama_http_types::*;
     ///
     /// let req = Request::builder()
     ///     .extension("My Extension")
@@ -985,7 +985,7 @@ impl Builder {
     /// # Example
     ///
     /// ```
-    /// # use http::Request;
+    /// # use rama_http_types::Request;
     /// let req = Request::builder().extension("My Extension").extension(5u32);
     /// let extensions = req.extensions_ref().unwrap();
     /// assert_eq!(extensions.get::<&'static str>(), Some(&"My Extension"));
@@ -1002,7 +1002,7 @@ impl Builder {
     /// # Example
     ///
     /// ```
-    /// # use http::Request;
+    /// # use rama_http_types::Request;
     /// let mut req = Request::builder().extension("My Extension");
     /// let mut extensions = req.extensions_mut().unwrap();
     /// assert_eq!(extensions.get::<&'static str>(), Some(&"My Extension"));
@@ -1027,7 +1027,7 @@ impl Builder {
     /// # Examples
     ///
     /// ```
-    /// # use http::*;
+    /// # use rama_http_types::*;
     ///
     /// let request = Request::builder()
     ///     .body(())

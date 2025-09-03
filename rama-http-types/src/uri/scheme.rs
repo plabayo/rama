@@ -49,7 +49,7 @@ impl Scheme {
     /// # Examples
     ///
     /// ```
-    /// # use http::uri::*;
+    /// # use rama_http_types::uri::*;
     /// let scheme: Scheme = "http".parse().unwrap();
     /// assert_eq!(scheme.as_str(), "http");
     /// ```
@@ -146,7 +146,7 @@ impl Eq for Scheme {}
 /// # Examples
 ///
 /// ```
-/// # use http::uri::Scheme;
+/// # use rama_http_types::uri::Scheme;
 /// let scheme: Scheme = "HTTP".parse().unwrap();
 /// assert_eq!(scheme, *"http");
 /// ```

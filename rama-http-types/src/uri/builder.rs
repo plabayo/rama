@@ -18,7 +18,7 @@ impl Builder {
     /// # Examples
     ///
     /// ```
-    /// # use http::*;
+    /// # use rama_http_types::*;
     ///
     /// let uri = uri::Builder::new()
     ///     .scheme("https")
@@ -37,7 +37,7 @@ impl Builder {
     /// # Examples
     ///
     /// ```
-    /// # use http::*;
+    /// # use rama_http_types::*;
     ///
     /// let mut builder = uri::Builder::new();
     /// builder.scheme("https");
@@ -59,7 +59,7 @@ impl Builder {
     /// # Examples
     ///
     /// ```
-    /// # use http::*;
+    /// # use rama_http_types::*;
     ///
     /// let uri = uri::Builder::new()
     ///     .authority("tokio.rs")
@@ -83,7 +83,7 @@ impl Builder {
     /// # Examples
     ///
     /// ```
-    /// # use http::*;
+    /// # use rama_http_types::*;
     ///
     /// let uri = uri::Builder::new()
     ///     .path_and_query("/hello?foo=bar")
@@ -120,7 +120,7 @@ impl Builder {
     /// # Examples
     ///
     /// ```
-    /// # use http::*;
+    /// # use rama_http_types::*;
     ///
     /// let uri = Uri::builder()
     ///     .build()
