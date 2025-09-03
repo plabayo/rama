@@ -68,7 +68,7 @@ pub(crate) struct ParseContext<'a> {
     h1_max_headers: Option<usize>,
     h09_responses: bool,
     on_informational: &'a mut Option<crate::ext::OnInformational>,
-    encoded_request_extensions: &'a mut Option<rama_http_types::Extensions>,
+    encoded_request_extensions: &'a mut Option<rama_core::context::Extensions>,
 }
 
 struct EncodeHead<'a, S> {
@@ -79,7 +79,7 @@ struct EncodeHead<'a, S> {
     /// Headers of the Incoming message.
     pub(crate) headers: HeaderMap,
     /// Extensions.
-    extensions: &'a mut rama_http_types::Extensions,
+    extensions: &'a mut rama_core::context::Extensions,
 }
 
 /// Passed to Http1Transaction::encode

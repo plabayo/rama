@@ -6,7 +6,8 @@
 //! [`Compression::compress_when`]: super::Compression::compress_when
 //! [`CompressionLayer::compress_when`]: super::CompressionLayer::compress_when
 
-use rama_http_types::{Extensions, HeaderMap, StatusCode, StreamingBody, Version, header};
+use rama_core::context::Extensions;
+use rama_http_types::{HeaderMap, StatusCode, StreamingBody, Version, header};
 use std::{fmt, sync::Arc};
 
 /// Predicate used to determine if a response should be compressed or not.

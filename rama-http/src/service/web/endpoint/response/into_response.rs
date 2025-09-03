@@ -4,10 +4,11 @@ use crate::body::{Body, Frame, SizeHint, StreamingBody};
 use crate::dep::mime;
 use crate::service::web::response::Headers;
 use crate::{
-    Extensions, StatusCode,
+    StatusCode,
     header::{self, HeaderMap, HeaderName, HeaderValue},
 };
 use rama_core::bytes::{Buf, Bytes, BytesMut, buf::Chain};
+use rama_core::context::Extensions;
 use rama_core::error::BoxError;
 use rama_http_headers::{ContentDisposition, ContentType};
 use rama_http_types::InfiniteReader;

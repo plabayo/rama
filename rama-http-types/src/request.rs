@@ -56,12 +56,14 @@ use std::any::Any;
 use std::convert::TryInto;
 use std::fmt;
 
+use rama_core::context::Extensions;
+
 use crate::body::Body;
 use crate::dep::http_upstream;
 use crate::header::{HeaderMap, HeaderName, HeaderValue};
 use crate::method::Method;
 use crate::version::Version;
-use crate::{Extensions, Result, Uri};
+use crate::{Result, Uri};
 
 /// Represents an HTTP request.
 ///

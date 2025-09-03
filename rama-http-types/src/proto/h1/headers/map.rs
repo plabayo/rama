@@ -4,6 +4,7 @@ use std::{
 };
 
 use crate::header::AsHeaderName;
+use rama_core::context::Extensions;
 use serde::{Deserialize, Serialize, de::Error as _, ser::Error as _};
 
 use super::{
@@ -13,7 +14,7 @@ use super::{
 };
 
 use crate::{
-    Extensions, HeaderMap, HeaderName, HeaderValue, Request,
+    HeaderMap, HeaderName, HeaderValue, Request,
     header::{self, InvalidHeaderName},
 };
 

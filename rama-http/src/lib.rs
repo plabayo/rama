@@ -19,10 +19,10 @@
 
 #[doc(inline)]
 pub use ::rama_http_types::{
-    Body, BodyDataStream, BodyExtractExt, BodyLimit, Error as HttpError, Extensions, HeaderMap,
-    HeaderName, HeaderValue, InfiniteReader, Method, Request, Response, Result as HttpResult,
-    Scheme, StatusCode, StreamingBody, Uri, Version, conn, header, method, opentelemetry, proto,
-    request, response, sse, status, uri, version,
+    Body, BodyDataStream, BodyExtractExt, BodyLimit, Error as HttpError, HeaderMap, HeaderName,
+    HeaderValue, InfiniteReader, Method, Request, Response, Result as HttpResult, Scheme,
+    StatusCode, StreamingBody, Uri, Version, conn, header, method, opentelemetry, proto, request,
+    response, sse, status, uri, version,
 };
 
 pub mod body;

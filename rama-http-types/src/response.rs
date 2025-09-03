@@ -65,12 +65,14 @@ use std::any::Any;
 use std::convert::TryInto;
 use std::fmt;
 
+use rama_core::context::Extensions;
+
+use crate::Result;
 use crate::body::Body;
 use crate::dep::http_upstream;
 use crate::header::{HeaderMap, HeaderName, HeaderValue};
 use crate::status::StatusCode;
 use crate::version::Version;
-use crate::{Extensions, Result};
 
 /// Represents an HTTP response
 ///

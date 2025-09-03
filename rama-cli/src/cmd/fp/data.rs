@@ -1,9 +1,9 @@
 use super::{State, StorageAuthorized};
 use rama::{
-    Context,
+    context::{Context, Extensions},
     error::{BoxError, ErrorContext, OpaqueError},
     http::{
-        self, Extensions, HeaderMap, HeaderName, Request,
+        self, HeaderMap, HeaderName, Request,
         core::h2::frame::EarlyFrameCapture,
         headers::forwarded::Forwarded,
         proto::{h1::Http1HeaderMap, h2::PseudoHeaderOrder},

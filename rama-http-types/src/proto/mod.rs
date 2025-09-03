@@ -5,6 +5,8 @@
 
 use std::{ops::Deref, sync::Arc};
 
+use rama_core::context::Extensions;
+
 pub mod h1;
 pub mod h2;
 
@@ -36,10 +38,10 @@ impl Deref for RequestHeaders {
 /// Read-only copy of the parent request extensions.
 ///
 /// This extension can be made available as part of a response.
-pub struct RequestExtensions(Arc<crate::Extensions>);
+pub struct RequestExtensions(Arc<Extensions>);
 
-impl From<crate::Extensions> for RequestExtensions {
-    fn from(value: crate::Extensions) -> Self {
+impl From<Extensions> for RequestExtensions {
+    fn from(value: Extensions) -> Self {
         Self(Arc::new(value))
     }
 }
@@ -50,7 +52,7 @@ impl From<crate::Extensions> for RequestExtensions {
 // not available in response extensions?
 
 impl Deref for RequestExtensions {
-    type Target = crate::Extensions;
+    type Target = Extensions;
 
     fn deref(&self) -> &Self::Target {
         self.0.as_ref()

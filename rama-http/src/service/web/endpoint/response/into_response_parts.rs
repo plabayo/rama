@@ -1,8 +1,9 @@
 use super::IntoResponse;
 use crate::{
-    Extensions, Response, StatusCode,
+    Response, StatusCode,
     header::{HeaderMap, HeaderName, HeaderValue},
 };
+use rama_core::context::Extensions;
 use rama_utils::macros::all_the_tuples_no_last_special_case;
 use std::{convert::Infallible, fmt};
 

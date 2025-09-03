@@ -35,10 +35,9 @@ pub mod version;
 
 mod byte_str;
 mod error;
-mod extensions;
 
+#[doc(inline)]
 pub use crate::error::{Error, Result};
-pub use crate::extensions::Extensions;
 #[doc(inline)]
 pub use crate::header::{HeaderMap, HeaderName, HeaderValue};
 #[doc(inline)]

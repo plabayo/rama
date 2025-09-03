@@ -1,7 +1,8 @@
 //! Pieces pertaining to the HTTP message protocol.
 
+use rama_core::context::Extensions;
 use rama_http::io::upgrade;
-use rama_http_types::{Extensions, HeaderMap, Method, Response, StatusCode, Uri, Version};
+use rama_http_types::{HeaderMap, Method, Response, StatusCode, Uri, Version};
 
 pub(crate) mod h1;
 
