@@ -59,7 +59,6 @@ use std::fmt;
 use rama_core::context::Extensions;
 
 use crate::body::Body;
-use crate::dep::http_upstream;
 use crate::header::{HeaderMap, HeaderName, HeaderValue};
 use crate::method::Method;
 use crate::version::Version;
@@ -164,32 +163,6 @@ pub struct Request<T = Body> {
     body: T,
 }
 
-impl<T> From<http_upstream::request::Request<T>> for Request<T> {
-    fn from(value: http_upstream::request::Request<T>) -> Self {
-        let (parts, body) = value.into_parts();
-        Self::from_parts(parts.into(), body)
-    }
-}
-
-impl<T> From<Request<T>> for http_upstream::request::Request<T> {
-    fn from(value: Request<T>) -> Self {
-        let (parts, body) = value.into_parts();
-
-        let headers = http_upstream::HeaderMap::from(parts.headers);
-
-        let mut builder = http_upstream::request::Builder::new()
-            .method(http_upstream::Method::from(parts.method))
-            .uri(http_upstream::Uri::from(parts.uri))
-            .version(http_upstream::Version::from(parts.version));
-
-        *builder.headers_mut().unwrap() = headers;
-
-        // TODO extensions
-
-        builder.body(body).unwrap()
-    }
-}
-
 /// Component parts of an HTTP `Request`
 ///
 /// The HTTP request head consists of a method, uri, version, and a set of
@@ -211,29 +184,6 @@ pub struct Parts {
 
     /// The request's extensions
     pub extensions: Extensions,
-}
-
-impl From<http_upstream::request::Parts> for Parts {
-    fn from(value: http_upstream::request::Parts) -> Self {
-        Self {
-            method: value.method.into(),
-            uri: value.uri.into(),
-            version: value.version.into(),
-            headers: value.headers.into(),
-            // TODO
-            extensions: Extensions::new(),
-        }
-    }
-}
-
-impl From<Parts> for http_upstream::request::Parts {
-    fn from(value: Parts) -> Self {
-        // not possible to directly create upstream parts so we have to be creative
-        let request = Request::from_parts(value, ());
-        let request = http_upstream::request::Request::from(request);
-        let (parts, _) = request.into_parts();
-        parts
-    }
 }
 
 /// An HTTP request builder

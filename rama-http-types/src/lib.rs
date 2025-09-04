@@ -25,6 +25,9 @@ pub use body::{
 #[macro_use]
 mod convert;
 
+#[cfg(feature = "hyperium")]
+pub mod hyperium;
+
 pub mod header;
 pub mod method;
 pub mod request;
@@ -64,38 +67,41 @@ pub mod dep {
     //!
     //! Exported for your convenience.
 
-    pub mod http_upstream {
-        //! Re-export of the [`http`] crate incase we need to convert.
-        //!
-        //! A general purpose library of common HTTP types.
-        //!
-        //! [`http`]: https://docs.rs/http
+    #[cfg(feature = "hyperium")]
+    pub mod hyperium {
+        pub mod http {
+            //! Re-export of the [`http`] crate incase we need to convert.
+            //!
+            //! A general purpose library of common HTTP types.
+            //!
+            //! [`http`]: https://docs.rs/http
 
-        #[doc(inline)]
-        pub use http::*;
-    }
+            #[doc(inline)]
+            pub use http::*;
+        }
 
-    pub mod http_body_upstream {
-        //! Re-export of the [`http-body`] crate incase we need to convert.
-        //!
-        //! Asynchronous HTTP request or response body
-        //!
-        //! [`http-body`]: https://docs.rs/http-body
+        pub mod http_body {
+            //! Re-export of the [`http-body`] crate incase we need to convert.
+            //!
+            //! Asynchronous HTTP request or response body
+            //!
+            //! [`http-body`]: https://docs.rs/http-body
 
-        #[doc(inline)]
-        pub use http_body::*;
-    }
+            #[doc(inline)]
+            pub use http_body::*;
+        }
 
-    pub mod http_body_util_upstream {
-        //! Re-export of the [`http-body-util`] crate incase we need to convert.
-        //!
-        //! Utilities for working with [`http-body`] types.
-        //!
-        //! [`http-body`]: https://docs.rs/http-body
-        //! [`http-body-util`]: https://docs.rs/http-body-util
+        pub mod http_body_util {
+            //! Re-export of the [`http-body-util`] crate incase we need to convert.
+            //!
+            //! Utilities for working with [`http-body`] types.
+            //!
+            //! [`http-body`]: https://docs.rs/http-body
+            //! [`http-body-util`]: https://docs.rs/http-body-util
 
-        #[doc(inline)]
-        pub use http_body_util::*;
+            #[doc(inline)]
+            pub use http_body_util::*;
+        }
     }
 
     pub mod mime {

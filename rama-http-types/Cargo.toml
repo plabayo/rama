@@ -17,14 +17,18 @@ allowed = []
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
+[features]
+default = []
+hyperium = ["dep:http", "dep:http-body", "dep:http-body-util"]
+
 [dependencies]
 bytes = { workspace = true }
 const_format = { workspace = true }
 fnv = { workspace = true }
 futures-util = { workspace = true }
-http = { workspace = true }
-http-body = { workspace = true }
-http-body-util = { workspace = true }
+http = { workspace = true, optional = true }
+http-body = { workspace = true, optional = true }
+http-body-util = { workspace = true, optional = true }
 itoa = { workspace = true }
 memchr = { workspace = true }
 mime = { workspace = true }

@@ -348,6 +348,7 @@ http-full = [
     "compression",
     "dep:tokio",
 ]
+hyperium = ["rama-http?/hyperium"]
 proxy = ["dep:rama-proxy"]
 haproxy = ["dep:rama-haproxy"]
 socks5 = ["dep:rama-socks5", "udp", "tcp", "rama-net/http", "rama-tcp/http"]

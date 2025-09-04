@@ -15,8 +15,6 @@
 //! assert_eq!(Method::POST.as_str(), "POST");
 //! ```
 
-use crate::dep::http_upstream;
-
 use self::Inner::{
     Connect, Delete, ExtensionAllocated, ExtensionInline, Get, Head, Options, Patch, Post, Put,
     Trace,
@@ -48,18 +46,6 @@ use std::{fmt, str};
 /// ```
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct Method(Inner);
-
-impl From<http_upstream::Method> for Method {
-    fn from(value: http_upstream::Method) -> Self {
-        Self::from_str(value.as_str()).unwrap()
-    }
-}
-
-impl From<Method> for http_upstream::Method {
-    fn from(value: Method) -> Self {
-        Self::from_str(value.as_str()).unwrap()
-    }
-}
 
 /// A possible error value when converting `Method` from bytes.
 pub struct InvalidMethod {

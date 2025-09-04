@@ -1,4 +1,4 @@
-use crate::{Body, Request, Response, body::util::BodyExt, dep::http_upstream};
+use crate::{Body, Request, Response, body::util::BodyExt, dep::hyperium};
 use opentelemetry_http::HttpClient;
 use rama_core::{
     Context, Service,
@@ -82,10 +82,10 @@ where
 {
     fn send_bytes<'life0, 'async_trait>(
         &'life0 self,
-        request: http_upstream::Request<Bytes>,
+        request: hyperium::http::Request<Bytes>,
     ) -> Pin<
         Box<
-            dyn Future<Output = Result<http_upstream::Response<Bytes>, BoxError>>
+            dyn Future<Output = Result<hyperium::http::Response<Bytes>, BoxError>>
                 + Send
                 + 'async_trait,
         >,
@@ -105,7 +105,7 @@ where
             let resp = svc.serve(ctx, request).await.map_err(Into::into)?;
             let (parts, body) = resp.into_parts();
             let body = body.collect().await?.to_bytes();
-            Ok(http_upstream::Response::from_parts(parts.into(), body))
+            Ok(hyperium::http::Response::from_parts(parts.into(), body))
         });
 
         Box::pin(async move { handle.await.context("await tokio handle to fut exec")? })

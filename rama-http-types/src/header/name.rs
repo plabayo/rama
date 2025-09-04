@@ -1,5 +1,4 @@
 use crate::byte_str::ByteStr;
-use crate::dep::http_upstream;
 use bytes::{Bytes, BytesMut};
 
 use std::borrow::Borrow;
@@ -33,18 +32,6 @@ use std::str::FromStr;
 #[derive(Clone, Eq, PartialEq, Hash)]
 pub struct HeaderName {
     inner: Repr<Custom>,
-}
-
-impl From<http_upstream::HeaderName> for HeaderName {
-    fn from(value: http_upstream::HeaderName) -> Self {
-        Self::from_str(value.as_ref()).unwrap()
-    }
-}
-
-impl From<HeaderName> for http_upstream::HeaderName {
-    fn from(value: HeaderName) -> Self {
-        Self::from_str(value.as_ref()).unwrap()
-    }
 }
 
 // Almost a full `HeaderName`

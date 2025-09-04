@@ -7,7 +7,6 @@ use std::hash::{Hash, Hasher};
 use std::str::FromStr;
 use std::{cmp, fmt, str};
 
-use crate::dep::http_upstream;
 use crate::header::name::HeaderName;
 
 /// Represents an HTTP header field value.
@@ -23,18 +22,6 @@ use crate::header::name::HeaderName;
 pub struct HeaderValue {
     inner: Bytes,
     is_sensitive: bool,
-}
-
-impl From<http_upstream::HeaderValue> for HeaderValue {
-    fn from(value: http_upstream::HeaderValue) -> Self {
-        Self::from_bytes(value.as_bytes()).unwrap()
-    }
-}
-
-impl From<HeaderValue> for http_upstream::HeaderValue {
-    fn from(value: HeaderValue) -> Self {
-        Self::from_bytes(value.as_bytes()).unwrap()
-    }
 }
 
 /// A possible error when converting a `HeaderValue` from a string or byte

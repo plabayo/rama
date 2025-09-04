@@ -46,7 +46,9 @@ pub mod dep {
     pub use rama_core as core;
 
     #[doc(inline)]
-    pub use ::rama_http_types::dep::{
-        http_body_upstream, http_body_util_upstream, http_upstream, mime, mime_guess,
-    };
+    pub use ::rama_http_types::dep::{mime, mime_guess};
+
+    #[cfg(feature = "hyperium")]
+    #[doc(inline)]
+    pub use ::rama_http_types::dep::hyperium;
 }

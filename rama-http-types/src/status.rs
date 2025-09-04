@@ -20,8 +20,6 @@ use std::fmt;
 use std::num::NonZeroU16;
 use std::str::FromStr;
 
-use crate::dep::http_upstream;
-
 /// An HTTP status code (`status-code` in RFC 9110 et al.).
 ///
 /// Constants are provided for known status codes, including those in the IANA
@@ -45,18 +43,6 @@ use crate::dep::http_upstream;
 /// ```
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct StatusCode(NonZeroU16);
-
-impl From<http_upstream::StatusCode> for StatusCode {
-    fn from(value: http_upstream::StatusCode) -> Self {
-        Self::from_u16(value.as_u16()).unwrap()
-    }
-}
-
-impl From<StatusCode> for http_upstream::StatusCode {
-    fn from(value: StatusCode) -> Self {
-        Self::from_u16(value.as_u16()).unwrap()
-    }
-}
 
 /// A possible error value when converting a `StatusCode` from a `u16` or `&str`.
 ///

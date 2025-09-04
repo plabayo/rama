@@ -7,7 +7,6 @@ use std::marker::PhantomData;
 use std::{fmt, mem, ops, ptr, vec};
 
 use crate::Error;
-use crate::dep::http_upstream;
 
 use super::HeaderValue;
 use super::name::{HdrName, HeaderName, InvalidHeaderName};
@@ -50,35 +49,6 @@ pub struct HeaderMap<T = HeaderValue> {
     entries: Vec<Bucket<T>>,
     extra_values: Vec<ExtraValue<T>>,
     danger: Danger,
-}
-
-impl From<http_upstream::HeaderMap<http_upstream::HeaderValue>> for HeaderMap<HeaderValue> {
-    fn from(value: http_upstream::HeaderMap<http_upstream::HeaderValue>) -> Self {
-        let mut map = Self::with_capacity(value.len());
-        for (key, value) in value.into_iter() {
-            if let Some(key) = key {
-                map.insert(HeaderName::from(key), HeaderValue::from(value));
-            }
-        }
-
-        map
-    }
-}
-
-impl From<HeaderMap<HeaderValue>> for http_upstream::HeaderMap<http_upstream::HeaderValue> {
-    fn from(value: HeaderMap<HeaderValue>) -> Self {
-        let mut map = Self::with_capacity(value.len());
-        for (key, value) in value.into_iter() {
-            if let Some(key) = key {
-                map.insert(
-                    http_upstream::HeaderName::from(key),
-                    http_upstream::HeaderValue::from(value),
-                );
-            }
-        }
-
-        map
-    }
 }
 
 // # Implementation notes
