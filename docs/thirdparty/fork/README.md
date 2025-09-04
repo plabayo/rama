@@ -29,21 +29,6 @@ as a distant relative.
     - Original: <https://github.com/hyperium/headers/blob/8db1b786d414cc43e4d77e73b0f7afdcf061be59/LICENSE>
     - Type: MIT
     - Copy: [./licenses/headers](./licenses/headers)
-- http: <https://github.com/hyperium/http/commit/8c1fb204b8594ce5cf198af8568453f9df4ed953>
-  - License:
-    - Original: <https://github.com/hyperium/http/blob/8c1fb204b8594ce5cf198af8568453f9df4ed953/LICENSE-MIT>
-    - Type: MIT
-    - Copy: [./licenses/http](./licenses/http)
-- http-body: <https://github.com/hyperium/http-body/commit/69e80eb41cae652a1a38e1ce77690be1a0e7f356>
-  - License:
-    - Original: <https://github.com/hyperium/http-body/blob/69e80eb41cae652a1a38e1ce77690be1a0e7f356/LICENSE>
-    - Type: MIT
-    - Copy: [./licenses/http-body](./licenses/http-body)
-- http-body-util: <https://github.com/hyperium/http-body/commit/69e80eb41cae652a1a38e1ce77690be1a0e7f356>
-  - License:
-    - Original: <https://github.com/hyperium/http-body/blob/69e80eb41cae652a1a38e1ce77690be1a0e7f356/LICENSE>
-    - Type: MIT
-    - Copy: [./licenses/http-body-util](./licenses/http-body-util)
 
 ### tower-rs
 
