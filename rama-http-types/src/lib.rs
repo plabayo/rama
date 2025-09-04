@@ -22,9 +22,6 @@ pub use body::{
     Body, BodyDataStream, BodyExtractExt, BodyLimit, InfiniteReader, StreamingBody, sse,
 };
 
-#[macro_use]
-mod convert;
-
 pub mod extensions;
 pub mod request;
 pub mod response;
