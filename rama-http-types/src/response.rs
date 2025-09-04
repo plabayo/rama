@@ -191,6 +191,7 @@ impl From<Parts> for HyperiumParts {
 /// This type can be used to construct an instance of `Response` through a
 /// builder-like pattern.
 #[derive(Debug)]
+#[must_use]
 pub struct Builder {
     inner: Result<Parts>,
 }
@@ -233,8 +234,8 @@ impl<T> Response<T> {
     /// assert_eq!(*response.body(), "hello world");
     /// ```
     #[inline]
-    pub fn new(body: T) -> Response<T> {
-        Response {
+    pub fn new(body: T) -> Self {
+        Self {
             head: Parts::new(),
             body,
         }
@@ -256,8 +257,8 @@ impl<T> Response<T> {
     /// assert_eq!(*response.body(), "hello world");
     /// ```
     #[inline]
-    pub fn from_parts(parts: Parts, body: T) -> Response<T> {
-        Response { head: parts, body }
+    pub fn from_parts(parts: Parts, body: T) -> Self {
+        Self { head: parts, body }
     }
 
     /// Returns the `StatusCode`.
@@ -465,8 +466,8 @@ impl<T> Response<T> {
 
 impl<T: Default> Default for Response<T> {
     #[inline]
-    fn default() -> Response<T> {
-        Response::new(T::default())
+    fn default() -> Self {
+        Self::new(T::default())
     }
 }
 
@@ -484,8 +485,8 @@ impl<T: fmt::Debug> fmt::Debug for Response<T> {
 
 impl Parts {
     /// Creates a new default instance of `Parts`
-    fn new() -> Parts {
-        Parts {
+    fn new() -> Self {
+        Self {
             status: StatusCode::default(),
             version: Version::default(),
             headers: HeaderMap::default(),
@@ -521,8 +522,8 @@ impl Builder {
     ///     .unwrap();
     /// ```
     #[inline]
-    pub fn new() -> Builder {
-        Builder::default()
+    pub fn new() -> Self {
+        Self::default()
     }
 
     /// Set the HTTP status for this response.
@@ -539,7 +540,7 @@ impl Builder {
     ///     .body(())
     ///     .unwrap();
     /// ```
-    pub fn status<T>(self, status: T) -> Builder
+    pub fn status<T>(self, status: T) -> Self
     where
         T: TryInto<StatusCode>,
         <T as TryInto<StatusCode>>::Error: Into<crate::Error>,
@@ -564,7 +565,7 @@ impl Builder {
     ///     .body(())
     ///     .unwrap();
     /// ```
-    pub fn version(self, version: Version) -> Builder {
+    pub fn version(self, version: Version) -> Self {
         self.and_then(move |mut head| {
             head.version = version;
             Ok(head)
@@ -590,7 +591,7 @@ impl Builder {
     ///     .body(())
     ///     .unwrap();
     /// ```
-    pub fn header<K, V>(self, key: K, value: V) -> Builder
+    pub fn header<K, V>(self, key: K, value: V) -> Self
     where
         K: TryInto<HeaderName>,
         <K as TryInto<HeaderName>>::Error: Into<crate::Error>,
@@ -621,6 +622,7 @@ impl Builder {
     /// assert_eq!( headers["Accept"], "text/html" );
     /// assert_eq!( headers["X-Custom-Foo"], "bar" );
     /// ```
+    #[must_use]
     pub fn headers_ref(&self) -> Option<&HeaderMap<HeaderValue>> {
         self.inner.as_ref().ok().map(|h| &h.headers)
     }
@@ -663,7 +665,7 @@ impl Builder {
     /// assert_eq!(response.extensions().get::<&'static str>(),
     ///            Some(&"My Extension"));
     /// ```
-    pub fn extension<T>(self, extension: T) -> Builder
+    pub fn extension<T>(self, extension: T) -> Self
     where
         T: Clone + Any + Send + Sync + 'static,
     {
@@ -686,6 +688,7 @@ impl Builder {
     /// assert_eq!(extensions.get::<&'static str>(), Some(&"My Extension"));
     /// assert_eq!(extensions.get::<u32>(), Some(&5u32));
     /// ```
+    #[must_use]
     pub fn extensions_ref(&self) -> Option<&Extensions> {
         self.inner.as_ref().ok().map(|h| &h.extensions)
     }
@@ -738,7 +741,7 @@ impl Builder {
     where
         F: FnOnce(Parts) -> Result<Parts>,
     {
-        Builder {
+        Self {
             inner: self.inner.and_then(func),
         }
     }
@@ -746,8 +749,8 @@ impl Builder {
 
 impl Default for Builder {
     #[inline]
-    fn default() -> Builder {
-        Builder {
+    fn default() -> Self {
+        Self {
             inner: Ok(Parts::new()),
         }
     }

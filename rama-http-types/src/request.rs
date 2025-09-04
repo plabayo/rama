@@ -83,6 +83,7 @@ impl From<Parts> for HyperiumParts {
 /// This type can be used to construct an instance or `Request`
 /// through a builder-like pattern.
 #[derive(Debug)]
+#[must_use]
 pub struct Builder {
     inner: Result<Parts>,
 }
@@ -325,8 +326,8 @@ impl<T> Request<T> {
     /// assert_eq!(*request.body(), "hello world");
     /// ```
     #[inline]
-    pub fn new(body: T) -> Request<T> {
-        Request {
+    pub fn new(body: T) -> Self {
+        Self {
             head: Parts::new(),
             body,
         }
@@ -345,8 +346,8 @@ impl<T> Request<T> {
     /// let request = Request::from_parts(parts, body);
     /// ```
     #[inline]
-    pub fn from_parts(parts: Parts, body: T) -> Request<T> {
-        Request { head: parts, body }
+    pub fn from_parts(parts: Parts, body: T) -> Self {
+        Self { head: parts, body }
     }
 
     /// Returns a reference to the associated HTTP method.
@@ -582,8 +583,8 @@ impl<T> Request<T> {
 }
 
 impl<T: Default> Default for Request<T> {
-    fn default() -> Request<T> {
-        Request::new(T::default())
+    fn default() -> Self {
+        Self::new(T::default())
     }
 }
 
@@ -602,8 +603,8 @@ impl<T: fmt::Debug> fmt::Debug for Request<T> {
 
 impl Parts {
     /// Creates a new default instance of `Parts`
-    fn new() -> Parts {
-        Parts {
+    fn new() -> Self {
+        Self {
             method: Method::default(),
             uri: Uri::default(),
             version: Version::default(),
@@ -640,8 +641,8 @@ impl Builder {
     ///     .unwrap();
     /// ```
     #[inline]
-    pub fn new() -> Builder {
-        Builder::default()
+    pub fn new() -> Self {
+        Self::default()
     }
 
     /// Set the HTTP method for this request.
@@ -658,7 +659,7 @@ impl Builder {
     ///     .body(())
     ///     .unwrap();
     /// ```
-    pub fn method<T>(self, method: T) -> Builder
+    pub fn method<T>(self, method: T) -> Self
     where
         T: TryInto<Method>,
         <T as TryInto<Method>>::Error: Into<crate::Error>,
@@ -703,7 +704,7 @@ impl Builder {
     ///     .body(())
     ///     .unwrap();
     /// ```
-    pub fn uri<T>(self, uri: T) -> Builder
+    pub fn uri<T>(self, uri: T) -> Self
     where
         T: TryInto<Uri>,
         <T as TryInto<Uri>>::Error: Into<crate::Error>,
@@ -747,7 +748,7 @@ impl Builder {
     ///     .body(())
     ///     .unwrap();
     /// ```
-    pub fn version(self, version: Version) -> Builder {
+    pub fn version(self, version: Version) -> Self {
         self.and_then(move |mut head| {
             head.version = version;
             Ok(head)
@@ -791,7 +792,7 @@ impl Builder {
     ///     .body(())
     ///     .unwrap();
     /// ```
-    pub fn header<K, V>(self, key: K, value: V) -> Builder
+    pub fn header<K, V>(self, key: K, value: V) -> Self
     where
         K: TryInto<HeaderName>,
         <K as TryInto<HeaderName>>::Error: Into<crate::Error>,
@@ -861,7 +862,7 @@ impl Builder {
     /// assert_eq!(req.extensions().get::<&'static str>(),
     ///            Some(&"My Extension"));
     /// ```
-    pub fn extension<T>(self, extension: T) -> Builder
+    pub fn extension<T>(self, extension: T) -> Self
     where
         T: Clone + Any + Send + Sync + 'static,
     {
@@ -936,7 +937,7 @@ impl Builder {
     where
         F: FnOnce(Parts) -> Result<Parts>,
     {
-        Builder {
+        Self {
             inner: self.inner.and_then(func),
         }
     }
@@ -944,33 +945,12 @@ impl Builder {
 
 impl Default for Builder {
     #[inline]
-    fn default() -> Builder {
-        Builder {
+    fn default() -> Self {
+        Self {
             inner: Ok(Parts::new()),
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn it_can_map_a_body_from_one_type_to_another() {
-        let request = Request::builder().body("some string").unwrap();
-        let mapped_request = request.map(|s| {
-            assert_eq!(s, "some string");
-            123u32
-        });
-        assert_eq!(mapped_request.body(), &123u32);
-    }
-}
-
-/// Type alias for [`HttpRequest`] whose body type
-/// defaults to [`Body`], the most common body type used with rama.
-///
-/// [`HttpRequest`]: crate::dep::http::Request
-// pub type Request<T = Body> = http::Request<T>;
 
 /// [`HttpRequestParts`] is used in places where we don't need the [`ReqBody`] of the [`HttpRequest`]
 ///
@@ -1125,5 +1105,20 @@ impl HttpRequestPartsMut for Parts {
 
     fn extensions_mut(&mut self) -> &mut Extensions {
         &mut self.extensions
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn it_can_map_a_body_from_one_type_to_another() {
+        let request = Request::builder().body("some string").unwrap();
+        let mapped_request = request.map(|s| {
+            assert_eq!(s, "some string");
+            123u32
+        });
+        assert_eq!(mapped_request.body(), &123u32);
     }
 }
