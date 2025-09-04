@@ -1,77 +1,14 @@
-//! HTTP response types.
-//!
-//! This module contains structs related to HTTP responses, notably the
-//! `Response` type itself as well as a builder to create responses. Typically
-//! you'll import the `http::Response` type rather than reaching into this
-//! module itself.
-//!
-//! # Examples
-//!
-//! Creating a `Response` to return
-//!
-//! ```
-//! use rama_http_types::{Request, Response, StatusCode};
-//!
-//! fn respond_to(req: Request<()>) -> rama_http_types::Result<Response<()>> {
-//!     let mut builder = Response::builder()
-//!         .header("Foo", "Bar")
-//!         .status(StatusCode::OK);
-//!
-//!     if req.headers().contains_key("Another-Header") {
-//!         builder = builder.header("Another-Header", "Ack");
-//!     }
-//!
-//!     builder.body(())
-//! }
-//! ```
-//!
-//! A simple 404 handler
-//!
-//! ```
-//! use rama_http_types::{Request, Response, StatusCode};
-//!
-//! fn not_found(_req: Request<()>) -> rama_http_types::Result<Response<()>> {
-//!     Response::builder()
-//!         .status(StatusCode::NOT_FOUND)
-//!         .body(())
-//! }
-//! ```
-//!
-//! Or otherwise inspecting the result of a request:
-//!
-//! ```no_run
-//! use rama_http_types::{Request, Response};
-//!
-//! fn get(url: &str) -> rama_http_types::Result<Response<()>> {
-//!     // ...
-//! # panic!()
-//! }
-//!
-//! let response = get("https://www.rust-lang.org/").unwrap();
-//!
-//! if !response.status().is_success() {
-//!     panic!("failed to get a successful response status!");
-//! }
-//!
-//! if let Some(date) = response.headers().get("Date") {
-//!     // we've got a `Date` header!
-//! }
-//!
-//! let body = response.body();
-//! // ...
-//! ```
-
 use std::any::Any;
 use std::convert::TryInto;
 use std::fmt;
 
-use rama_core::context::Extensions;
-
-use crate::Result;
-use crate::body::Body;
+use crate::dep::hyperium::http::response::{Parts as HyperiumParts, Response as HyperiumResponse};
+use crate::extensions::{HyperiumExtensions, RamaExtensions};
 use crate::header::{HeaderMap, HeaderName, HeaderValue};
 use crate::status::StatusCode;
 use crate::version::Version;
+use crate::{Body, Result};
+use rama_core::context::Extensions;
 
 /// Represents an HTTP response
 ///
@@ -89,9 +26,9 @@ use crate::version::Version;
 /// Creating a `Response` to return
 ///
 /// ```
-/// use rama_http_types::{Request, Response, StatusCode};
+/// use http::{Request, Response, StatusCode};
 ///
-/// fn respond_to(req: Request<()>) -> rama_http_types::Result<Response<()>> {
+/// fn respond_to(req: Request<()>) -> http::Result<Response<()>> {
 ///     let mut builder = Response::builder()
 ///         .header("Foo", "Bar")
 ///         .status(StatusCode::OK);
@@ -107,9 +44,9 @@ use crate::version::Version;
 /// A simple 404 handler
 ///
 /// ```
-/// use rama_http_types::{Request, Response, StatusCode};
+/// use http::{Request, Response, StatusCode};
 ///
-/// fn not_found(_req: Request<()>) -> rama_http_types::Result<Response<()>> {
+/// fn not_found(_req: Request<()>) -> http::Result<Response<()>> {
 ///     Response::builder()
 ///         .status(StatusCode::NOT_FOUND)
 ///         .body(())
@@ -119,9 +56,9 @@ use crate::version::Version;
 /// Or otherwise inspecting the result of a request:
 ///
 /// ```no_run
-/// use rama_http_types::{Request, Response};
+/// use http::{Request, Response};
 ///
-/// fn get(url: &str) -> rama_http_types::Result<Response<()>> {
+/// fn get(url: &str) -> http::Result<Response<()>> {
 ///     // ...
 /// # panic!()
 /// }
@@ -146,7 +83,7 @@ use crate::version::Version;
 /// # extern crate serde;
 /// # extern crate serde_json;
 /// # extern crate http;
-/// use rama_http_types::Response;
+/// use http::Response;
 /// use serde::de;
 ///
 /// fn deserialize<T>(res: Response<Vec<u8>>) -> serde_json::Result<Response<T>>
@@ -166,7 +103,7 @@ use crate::version::Version;
 /// # extern crate serde;
 /// # extern crate serde_json;
 /// # extern crate http;
-/// use rama_http_types::Response;
+/// use http::Response;
 /// use serde::ser;
 ///
 /// fn serialize<T>(res: Response<T>) -> serde_json::Result<Response<Vec<u8>>>
@@ -185,12 +122,35 @@ pub struct Response<T = Body> {
     body: T,
 }
 
+impl<T> From<HyperiumResponse<T>> for Response<T> {
+    fn from(value: HyperiumResponse<T>) -> Self {
+        let (parts, body) = value.into_parts();
+        Self::from_parts(parts.into(), body)
+    }
+}
+
+impl<T> From<Response<T>> for HyperiumResponse<T> {
+    fn from(value: Response<T>) -> Self {
+        // We can create hyper parts directly so we have to be slightly creative
+        let (parts, body) = value.into_parts();
+
+        let mut builder = HyperiumResponse::builder()
+            .status(parts.status)
+            .version(parts.version);
+
+        *builder.headers_mut().unwrap() = parts.headers;
+        *builder.extensions_mut().unwrap() = RamaExtensions(parts.extensions).into();
+
+        builder.body(body).unwrap()
+    }
+}
+
 /// Component parts of an HTTP `Response`
 ///
 /// The HTTP response head consists of a status, version, and a set of
 /// header fields.
-#[derive(Clone)]
 #[non_exhaustive]
+#[derive(Clone)]
 pub struct Parts {
     /// The response's status
     pub status: StatusCode,
@@ -205,12 +165,32 @@ pub struct Parts {
     pub extensions: Extensions,
 }
 
+impl From<HyperiumParts> for Parts {
+    fn from(value: HyperiumParts) -> Self {
+        Self {
+            extensions: HyperiumExtensions(value.extensions).into(),
+            headers: value.headers,
+            version: value.version,
+            status: value.status,
+        }
+    }
+}
+
+impl From<Parts> for HyperiumParts {
+    fn from(parts: Parts) -> Self {
+        // We can create hyper parts directly so we have to be slightly creative
+        let request = Response::from_parts(parts, ());
+        let request = HyperiumResponse::from(request);
+        let (parts, _) = request.into_parts();
+        parts
+    }
+}
+
 /// An HTTP response builder
 ///
 /// This type can be used to construct an instance of `Response` through a
 /// builder-like pattern.
 #[derive(Debug)]
-#[must_use]
 pub struct Builder {
     inner: Result<Parts>,
 }
@@ -224,7 +204,7 @@ impl Response<()> {
     /// # Examples
     ///
     /// ```
-    /// # use rama_http_types::*;
+    /// # use http::*;
     /// let response = Response::builder()
     ///     .status(200)
     ///     .header("X-Custom-Foo", "Bar")
@@ -246,15 +226,15 @@ impl<T> Response<T> {
     /// # Examples
     ///
     /// ```
-    /// # use rama_http_types::*;
+    /// # use http::*;
     /// let response = Response::new("hello world");
     ///
     /// assert_eq!(response.status(), StatusCode::OK);
     /// assert_eq!(*response.body(), "hello world");
     /// ```
     #[inline]
-    pub fn new(body: T) -> Self {
-        Self {
+    pub fn new(body: T) -> Response<T> {
+        Response {
             head: Parts::new(),
             body,
         }
@@ -265,7 +245,7 @@ impl<T> Response<T> {
     /// # Examples
     ///
     /// ```
-    /// # use rama_http_types::*;
+    /// # use http::*;
     /// let response = Response::new("hello world");
     /// let (mut parts, body) = response.into_parts();
     ///
@@ -276,8 +256,8 @@ impl<T> Response<T> {
     /// assert_eq!(*response.body(), "hello world");
     /// ```
     #[inline]
-    pub fn from_parts(parts: Parts, body: T) -> Self {
-        Self { head: parts, body }
+    pub fn from_parts(parts: Parts, body: T) -> Response<T> {
+        Response { head: parts, body }
     }
 
     /// Returns the `StatusCode`.
@@ -285,7 +265,7 @@ impl<T> Response<T> {
     /// # Examples
     ///
     /// ```
-    /// # use rama_http_types::*;
+    /// # use http::*;
     /// let response: Response<()> = Response::default();
     /// assert_eq!(response.status(), StatusCode::OK);
     /// ```
@@ -299,7 +279,7 @@ impl<T> Response<T> {
     /// # Examples
     ///
     /// ```
-    /// # use rama_http_types::*;
+    /// # use http::*;
     /// let mut response: Response<()> = Response::default();
     /// *response.status_mut() = StatusCode::CREATED;
     /// assert_eq!(response.status(), StatusCode::CREATED);
@@ -314,7 +294,7 @@ impl<T> Response<T> {
     /// # Examples
     ///
     /// ```
-    /// # use rama_http_types::*;
+    /// # use http::*;
     /// let response: Response<()> = Response::default();
     /// assert_eq!(response.version(), Version::HTTP_11);
     /// ```
@@ -328,7 +308,7 @@ impl<T> Response<T> {
     /// # Examples
     ///
     /// ```
-    /// # use rama_http_types::*;
+    /// # use http::*;
     /// let mut response: Response<()> = Response::default();
     /// *response.version_mut() = Version::HTTP_2;
     /// assert_eq!(response.version(), Version::HTTP_2);
@@ -343,7 +323,7 @@ impl<T> Response<T> {
     /// # Examples
     ///
     /// ```
-    /// # use rama_http_types::*;
+    /// # use http::*;
     /// let response: Response<()> = Response::default();
     /// assert!(response.headers().is_empty());
     /// ```
@@ -357,8 +337,8 @@ impl<T> Response<T> {
     /// # Examples
     ///
     /// ```
-    /// # use rama_http_types::*;
-    /// # use rama_http_types::header::*;
+    /// # use http::*;
+    /// # use http::header::*;
     /// let mut response: Response<()> = Response::default();
     /// response.headers_mut().insert(HOST, HeaderValue::from_static("world"));
     /// assert!(!response.headers().is_empty());
@@ -373,7 +353,7 @@ impl<T> Response<T> {
     /// # Examples
     ///
     /// ```
-    /// # use rama_http_types::*;
+    /// # use http::*;
     /// let response: Response<()> = Response::default();
     /// assert!(response.extensions().get::<i32>().is_none());
     /// ```
@@ -387,8 +367,8 @@ impl<T> Response<T> {
     /// # Examples
     ///
     /// ```
-    /// # use rama_http_types::*;
-    /// # use rama_http_types::header::*;
+    /// # use http::*;
+    /// # use http::header::*;
     /// let mut response: Response<()> = Response::default();
     /// response.extensions_mut().insert("hello");
     /// assert_eq!(response.extensions().get(), Some(&"hello"));
@@ -403,7 +383,7 @@ impl<T> Response<T> {
     /// # Examples
     ///
     /// ```
-    /// # use rama_http_types::*;
+    /// # use http::*;
     /// let response: Response<String> = Response::default();
     /// assert!(response.body().is_empty());
     /// ```
@@ -417,7 +397,7 @@ impl<T> Response<T> {
     /// # Examples
     ///
     /// ```
-    /// # use rama_http_types::*;
+    /// # use http::*;
     /// let mut response: Response<String> = Response::default();
     /// response.body_mut().push_str("hello world");
     /// assert!(!response.body().is_empty());
@@ -432,7 +412,7 @@ impl<T> Response<T> {
     /// # Examples
     ///
     /// ```
-    /// # use rama_http_types::Response;
+    /// # use http::Response;
     /// let response = Response::new(10);
     /// let body = response.into_body();
     /// assert_eq!(body, 10);
@@ -447,7 +427,7 @@ impl<T> Response<T> {
     /// # Examples
     ///
     /// ```
-    /// # use rama_http_types::*;
+    /// # use http::*;
     /// let response: Response<()> = Response::default();
     /// let (parts, body) = response.into_parts();
     /// assert_eq!(parts.status, StatusCode::OK);
@@ -463,7 +443,7 @@ impl<T> Response<T> {
     /// # Examples
     ///
     /// ```
-    /// # use rama_http_types::*;
+    /// # use http::*;
     /// let response = Response::builder().body("some string").unwrap();
     /// let mapped_response: Response<&[u8]> = response.map(|b| {
     ///   assert_eq!(b, "some string");
@@ -485,8 +465,8 @@ impl<T> Response<T> {
 
 impl<T: Default> Default for Response<T> {
     #[inline]
-    fn default() -> Self {
-        Self::new(T::default())
+    fn default() -> Response<T> {
+        Response::new(T::default())
     }
 }
 
@@ -504,8 +484,8 @@ impl<T: fmt::Debug> fmt::Debug for Response<T> {
 
 impl Parts {
     /// Creates a new default instance of `Parts`
-    fn new() -> Self {
-        Self {
+    fn new() -> Parts {
+        Parts {
             status: StatusCode::default(),
             version: Version::default(),
             headers: HeaderMap::default(),
@@ -533,7 +513,7 @@ impl Builder {
     /// # Examples
     ///
     /// ```
-    /// # use rama_http_types::*;
+    /// # use http::*;
     ///
     /// let response = response::Builder::new()
     ///     .status(200)
@@ -541,8 +521,8 @@ impl Builder {
     ///     .unwrap();
     /// ```
     #[inline]
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new() -> Builder {
+        Builder::default()
     }
 
     /// Set the HTTP status for this response.
@@ -552,14 +532,14 @@ impl Builder {
     /// # Examples
     ///
     /// ```
-    /// # use rama_http_types::*;
+    /// # use http::*;
     ///
     /// let response = Response::builder()
     ///     .status(200)
     ///     .body(())
     ///     .unwrap();
     /// ```
-    pub fn status<T>(self, status: T) -> Self
+    pub fn status<T>(self, status: T) -> Builder
     where
         T: TryInto<StatusCode>,
         <T as TryInto<StatusCode>>::Error: Into<crate::Error>,
@@ -577,14 +557,14 @@ impl Builder {
     /// # Examples
     ///
     /// ```
-    /// # use rama_http_types::*;
+    /// # use http::*;
     ///
     /// let response = Response::builder()
     ///     .version(Version::HTTP_2)
     ///     .body(())
     ///     .unwrap();
     /// ```
-    pub fn version(self, version: Version) -> Self {
+    pub fn version(self, version: Version) -> Builder {
         self.and_then(move |mut head| {
             head.version = version;
             Ok(head)
@@ -600,8 +580,8 @@ impl Builder {
     /// # Examples
     ///
     /// ```
-    /// # use rama_http_types::*;
-    /// # use rama_http_types::header::HeaderValue;
+    /// # use http::*;
+    /// # use http::header::HeaderValue;
     ///
     /// let response = Response::builder()
     ///     .header("Content-Type", "text/html")
@@ -610,7 +590,7 @@ impl Builder {
     ///     .body(())
     ///     .unwrap();
     /// ```
-    pub fn header<K, V>(self, key: K, value: V) -> Self
+    pub fn header<K, V>(self, key: K, value: V) -> Builder
     where
         K: TryInto<HeaderName>,
         <K as TryInto<HeaderName>>::Error: Into<crate::Error>,
@@ -632,8 +612,8 @@ impl Builder {
     /// # Example
     ///
     /// ```
-    /// # use rama_http_types::Response;
-    /// # use rama_http_types::header::HeaderValue;
+    /// # use http::Response;
+    /// # use http::header::HeaderValue;
     /// let res = Response::builder()
     ///     .header("Accept", "text/html")
     ///     .header("X-Custom-Foo", "bar");
@@ -641,7 +621,6 @@ impl Builder {
     /// assert_eq!( headers["Accept"], "text/html" );
     /// assert_eq!( headers["X-Custom-Foo"], "bar" );
     /// ```
-    #[must_use]
     pub fn headers_ref(&self) -> Option<&HeaderMap<HeaderValue>> {
         self.inner.as_ref().ok().map(|h| &h.headers)
     }
@@ -652,9 +631,9 @@ impl Builder {
     /// # Example
     ///
     /// ```
-    /// # use rama_http_types::*;
-    /// # use rama_http_types::header::HeaderValue;
-    /// # use rama_http_types::response::Builder;
+    /// # use http::*;
+    /// # use http::header::HeaderValue;
+    /// # use http::response::Builder;
     /// let mut res = Response::builder();
     /// {
     ///   let headers = res.headers_mut().unwrap();
@@ -674,7 +653,7 @@ impl Builder {
     /// # Examples
     ///
     /// ```
-    /// # use rama_http_types::*;
+    /// # use http::*;
     ///
     /// let response = Response::builder()
     ///     .extension("My Extension")
@@ -684,7 +663,7 @@ impl Builder {
     /// assert_eq!(response.extensions().get::<&'static str>(),
     ///            Some(&"My Extension"));
     /// ```
-    pub fn extension<T>(self, extension: T) -> Self
+    pub fn extension<T>(self, extension: T) -> Builder
     where
         T: Clone + Any + Send + Sync + 'static,
     {
@@ -701,13 +680,12 @@ impl Builder {
     /// # Example
     ///
     /// ```
-    /// # use rama_http_types::Response;
+    /// # use http::Response;
     /// let res = Response::builder().extension("My Extension").extension(5u32);
     /// let extensions = res.extensions_ref().unwrap();
     /// assert_eq!(extensions.get::<&'static str>(), Some(&"My Extension"));
     /// assert_eq!(extensions.get::<u32>(), Some(&5u32));
     /// ```
-    #[must_use]
     pub fn extensions_ref(&self) -> Option<&Extensions> {
         self.inner.as_ref().ok().map(|h| &h.extensions)
     }
@@ -719,7 +697,7 @@ impl Builder {
     /// # Example
     ///
     /// ```
-    /// # use rama_http_types::Response;
+    /// # use http::Response;
     /// let mut res = Response::builder().extension("My Extension");
     /// let mut extensions = res.extensions_mut().unwrap();
     /// assert_eq!(extensions.get::<&'static str>(), Some(&"My Extension"));
@@ -744,7 +722,7 @@ impl Builder {
     /// # Examples
     ///
     /// ```
-    /// # use rama_http_types::*;
+    /// # use http::*;
     ///
     /// let response = Response::builder()
     ///     .body(())
@@ -760,7 +738,7 @@ impl Builder {
     where
         F: FnOnce(Parts) -> Result<Parts>,
     {
-        Self {
+        Builder {
             inner: self.inner.and_then(func),
         }
     }
@@ -768,8 +746,8 @@ impl Builder {
 
 impl Default for Builder {
     #[inline]
-    fn default() -> Self {
-        Self {
+    fn default() -> Builder {
+        Builder {
             inner: Ok(Parts::new()),
         }
     }

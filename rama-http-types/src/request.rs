@@ -1,174 +1,44 @@
-//! HTTP request types.
-//!
-//! This module contains structs related to HTTP requests, notably the
-//! `Request` type itself as well as a builder to create requests. Typically
-//! you'll import the `http::Request` type rather than reaching into this
-//! module itself.
-//!
-//! # Examples
-//!
-//! Creating a `Request` to send
-//!
-//! ```no_run
-//! use rama_http_types::{Request, Response};
-//!
-//! let mut request = Request::builder()
-//!     .uri("https://www.rust-lang.org/")
-//!     .header("User-Agent", "my-awesome-agent/1.0");
-//!
-//! if needs_awesome_header() {
-//!     request = request.header("Awesome", "yes");
-//! }
-//!
-//! let response = send(request.body(()).unwrap());
-//!
-//! # fn needs_awesome_header() -> bool {
-//! #     true
-//! # }
-//! #
-//! fn send(req: Request<()>) -> Response<()> {
-//!     // ...
-//! # panic!()
-//! }
-//! ```
-//!
-//! Inspecting a request to see what was sent.
-//!
-//! ```
-//! use rama_http_types::{Request, Response, StatusCode};
-//!
-//! fn respond_to(req: Request<()>) -> rama_http_types::Result<Response<()>> {
-//!     if req.uri() != "/awesome-url" {
-//!         return Response::builder()
-//!             .status(StatusCode::NOT_FOUND)
-//!             .body(())
-//!     }
-//!
-//!     let has_awesome_header = req.headers().contains_key("Awesome");
-//!     let body = req.body();
-//!
-//!     // ...
-//! # panic!()
-//! }
-//! ```
-
 use std::any::Any;
-use std::convert::TryInto;
 use std::fmt;
 
+use crate::Result;
+use crate::dep::hyperium::http::request::{Parts as HyperiumParts, Request as HyperiumRequest};
+use crate::extensions::{HyperiumExtensions, RamaExtensions};
+use crate::{HeaderMap, HeaderName, HeaderValue, Method, Uri, Version, body::Body};
 use rama_core::context::Extensions;
 
-use crate::body::Body;
-use crate::header::{HeaderMap, HeaderName, HeaderValue};
-use crate::method::Method;
-use crate::version::Version;
-use crate::{Result, Uri};
-
-/// Represents an HTTP request.
-///
-/// An HTTP request consists of a head and a potentially optional body. The body
-/// component is generic, enabling arbitrary types to represent the HTTP body.
-/// For example, the body could be `Vec<u8>`, a `Stream` of byte chunks, or a
-/// value that has been deserialized.
-///
-/// # Examples
-///
-/// Creating a `Request` to send
-///
-/// ```no_run
-/// use rama_http_types::{Request, Response};
-///
-/// let mut request = Request::builder()
-///     .uri("https://www.rust-lang.org/")
-///     .header("User-Agent", "my-awesome-agent/1.0");
-///
-/// if needs_awesome_header() {
-///     request = request.header("Awesome", "yes");
-/// }
-///
-/// let response = send(request.body(()).unwrap());
-///
-/// # fn needs_awesome_header() -> bool {
-/// #     true
-/// # }
-/// #
-/// fn send(req: Request<()>) -> Response<()> {
-///     // ...
-/// # panic!()
-/// }
-/// ```
-///
-/// Inspecting a request to see what was sent.
-///
-/// ```
-/// use rama_http_types::{Request, Response, StatusCode};
-///
-/// fn respond_to(req: Request<()>) -> rama_http_types::Result<Response<()>> {
-///     if req.uri() != "/awesome-url" {
-///         return Response::builder()
-///             .status(StatusCode::NOT_FOUND)
-///             .body(())
-///     }
-///
-///     let has_awesome_header = req.headers().contains_key("Awesome");
-///     let body = req.body();
-///
-///     // ...
-/// # panic!()
-/// }
-/// ```
-///
-/// Deserialize a request of bytes via json:
-///
-/// ```
-/// # extern crate serde;
-/// # extern crate serde_json;
-/// # extern crate http;
-/// use rama_http_types::Request;
-/// use serde::de;
-///
-/// fn deserialize<T>(req: Request<Vec<u8>>) -> serde_json::Result<Request<T>>
-///     where for<'de> T: de::Deserialize<'de>,
-/// {
-///     let (parts, body) = req.into_parts();
-///     let body = serde_json::from_slice(&body)?;
-///     Ok(Request::from_parts(parts, body))
-/// }
-/// #
-/// # fn main() {}
-/// ```
-///
-/// Or alternatively, serialize the body of a request to json
-///
-/// ```
-/// # extern crate serde;
-/// # extern crate serde_json;
-/// # extern crate http;
-/// use rama_http_types::Request;
-/// use serde::ser;
-///
-/// fn serialize<T>(req: Request<T>) -> serde_json::Result<Request<Vec<u8>>>
-///     where T: ser::Serialize,
-/// {
-///     let (parts, body) = req.into_parts();
-///     let body = serde_json::to_vec(&body)?;
-///     Ok(Request::from_parts(parts, body))
-/// }
-/// #
-/// # fn main() {}
-/// ```
 #[derive(Clone)]
 pub struct Request<T = Body> {
     head: Parts,
     body: T,
 }
 
-/// Component parts of an HTTP `Request`
-///
-/// The HTTP request head consists of a method, uri, version, and a set of
-/// header fields.
-#[derive(Clone)]
+impl<T> From<HyperiumRequest<T>> for Request<T> {
+    fn from(value: HyperiumRequest<T>) -> Self {
+        let (parts, body) = value.into_parts();
+        Self::from_parts(parts.into(), body)
+    }
+}
+
+impl<T> From<Request<T>> for HyperiumRequest<T> {
+    fn from(value: Request<T>) -> Self {
+        // We can create hyper parts directly so we have to be slightly creative
+        let (parts, body) = value.into_parts();
+
+        let mut builder = HyperiumRequest::builder()
+            .method(parts.method)
+            .uri(parts.uri)
+            .version(parts.version);
+
+        *builder.headers_mut().unwrap() = parts.headers;
+        *builder.extensions_mut().unwrap() = RamaExtensions(parts.extensions).into();
+
+        builder.body(body).unwrap()
+    }
+}
+
 #[non_exhaustive]
+#[derive(Clone)]
 pub struct Parts {
     /// The request's method
     pub method: Method,
@@ -186,12 +56,33 @@ pub struct Parts {
     pub extensions: Extensions,
 }
 
+impl From<HyperiumParts> for Parts {
+    fn from(value: HyperiumParts) -> Self {
+        Self {
+            extensions: HyperiumExtensions(value.extensions).into(),
+            headers: value.headers,
+            method: value.method,
+            uri: value.uri,
+            version: value.version,
+        }
+    }
+}
+
+impl From<Parts> for HyperiumParts {
+    fn from(parts: Parts) -> Self {
+        // We can create hyper parts directly so we have to be slightly creative
+        let request = Request::from_parts(parts, ());
+        let request = HyperiumRequest::from(request);
+        let (parts, _) = request.into_parts();
+        parts
+    }
+}
+
 /// An HTTP request builder
 ///
 /// This type can be used to construct an instance or `Request`
 /// through a builder-like pattern.
 #[derive(Debug)]
-#[must_use]
 pub struct Builder {
     inner: Result<Parts>,
 }
@@ -205,7 +96,7 @@ impl Request<()> {
     /// # Examples
     ///
     /// ```
-    /// # use rama_http_types::*;
+    /// # use http::*;
     /// let request = Request::builder()
     ///     .method("GET")
     ///     .uri("https://www.rust-lang.org/")
@@ -226,7 +117,7 @@ impl Request<()> {
     /// # Example
     ///
     /// ```
-    /// # use rama_http_types::*;
+    /// # use http::*;
     ///
     /// let request = Request::get("https://www.rust-lang.org/")
     ///     .body(())
@@ -248,7 +139,7 @@ impl Request<()> {
     /// # Example
     ///
     /// ```
-    /// # use rama_http_types::*;
+    /// # use http::*;
     ///
     /// let request = Request::put("https://www.rust-lang.org/")
     ///     .body(())
@@ -270,7 +161,7 @@ impl Request<()> {
     /// # Example
     ///
     /// ```
-    /// # use rama_http_types::*;
+    /// # use http::*;
     ///
     /// let request = Request::post("https://www.rust-lang.org/")
     ///     .body(())
@@ -292,7 +183,7 @@ impl Request<()> {
     /// # Example
     ///
     /// ```
-    /// # use rama_http_types::*;
+    /// # use http::*;
     ///
     /// let request = Request::delete("https://www.rust-lang.org/")
     ///     .body(())
@@ -314,7 +205,7 @@ impl Request<()> {
     /// # Example
     ///
     /// ```
-    /// # use rama_http_types::*;
+    /// # use http::*;
     ///
     /// let request = Request::options("https://www.rust-lang.org/")
     ///     .body(())
@@ -337,7 +228,7 @@ impl Request<()> {
     /// # Example
     ///
     /// ```
-    /// # use rama_http_types::*;
+    /// # use http::*;
     ///
     /// let request = Request::head("https://www.rust-lang.org/")
     ///     .body(())
@@ -359,7 +250,7 @@ impl Request<()> {
     /// # Example
     ///
     /// ```
-    /// # use rama_http_types::*;
+    /// # use http::*;
     ///
     /// let request = Request::connect("https://www.rust-lang.org/")
     ///     .body(())
@@ -381,7 +272,7 @@ impl Request<()> {
     /// # Example
     ///
     /// ```
-    /// # use rama_http_types::*;
+    /// # use http::*;
     ///
     /// let request = Request::patch("https://www.rust-lang.org/")
     ///     .body(())
@@ -403,7 +294,7 @@ impl Request<()> {
     /// # Example
     ///
     /// ```
-    /// # use rama_http_types::*;
+    /// # use http::*;
     ///
     /// let request = Request::trace("https://www.rust-lang.org/")
     ///     .body(())
@@ -427,15 +318,15 @@ impl<T> Request<T> {
     /// # Examples
     ///
     /// ```
-    /// # use rama_http_types::*;
+    /// # use http::*;
     /// let request = Request::new("hello world");
     ///
     /// assert_eq!(*request.method(), Method::GET);
     /// assert_eq!(*request.body(), "hello world");
     /// ```
     #[inline]
-    pub fn new(body: T) -> Self {
-        Self {
+    pub fn new(body: T) -> Request<T> {
+        Request {
             head: Parts::new(),
             body,
         }
@@ -446,7 +337,7 @@ impl<T> Request<T> {
     /// # Examples
     ///
     /// ```
-    /// # use rama_http_types::*;
+    /// # use http::*;
     /// let request = Request::new("hello world");
     /// let (mut parts, body) = request.into_parts();
     /// parts.method = Method::POST;
@@ -454,8 +345,8 @@ impl<T> Request<T> {
     /// let request = Request::from_parts(parts, body);
     /// ```
     #[inline]
-    pub fn from_parts(parts: Parts, body: T) -> Self {
-        Self { head: parts, body }
+    pub fn from_parts(parts: Parts, body: T) -> Request<T> {
+        Request { head: parts, body }
     }
 
     /// Returns a reference to the associated HTTP method.
@@ -463,7 +354,7 @@ impl<T> Request<T> {
     /// # Examples
     ///
     /// ```
-    /// # use rama_http_types::*;
+    /// # use http::*;
     /// let request: Request<()> = Request::default();
     /// assert_eq!(*request.method(), Method::GET);
     /// ```
@@ -477,7 +368,7 @@ impl<T> Request<T> {
     /// # Examples
     ///
     /// ```
-    /// # use rama_http_types::*;
+    /// # use http::*;
     /// let mut request: Request<()> = Request::default();
     /// *request.method_mut() = Method::PUT;
     /// assert_eq!(*request.method(), Method::PUT);
@@ -492,7 +383,7 @@ impl<T> Request<T> {
     /// # Examples
     ///
     /// ```
-    /// # use rama_http_types::*;
+    /// # use http::*;
     /// let request: Request<()> = Request::default();
     /// assert_eq!(*request.uri(), *"/");
     /// ```
@@ -506,7 +397,7 @@ impl<T> Request<T> {
     /// # Examples
     ///
     /// ```
-    /// # use rama_http_types::*;
+    /// # use http::*;
     /// let mut request: Request<()> = Request::default();
     /// *request.uri_mut() = "/hello".parse().unwrap();
     /// assert_eq!(*request.uri(), *"/hello");
@@ -521,7 +412,7 @@ impl<T> Request<T> {
     /// # Examples
     ///
     /// ```
-    /// # use rama_http_types::*;
+    /// # use http::*;
     /// let request: Request<()> = Request::default();
     /// assert_eq!(request.version(), Version::HTTP_11);
     /// ```
@@ -535,7 +426,7 @@ impl<T> Request<T> {
     /// # Examples
     ///
     /// ```
-    /// # use rama_http_types::*;
+    /// # use http::*;
     /// let mut request: Request<()> = Request::default();
     /// *request.version_mut() = Version::HTTP_2;
     /// assert_eq!(request.version(), Version::HTTP_2);
@@ -550,7 +441,7 @@ impl<T> Request<T> {
     /// # Examples
     ///
     /// ```
-    /// # use rama_http_types::*;
+    /// # use http::*;
     /// let request: Request<()> = Request::default();
     /// assert!(request.headers().is_empty());
     /// ```
@@ -564,8 +455,8 @@ impl<T> Request<T> {
     /// # Examples
     ///
     /// ```
-    /// # use rama_http_types::*;
-    /// # use rama_http_types::header::*;
+    /// # use http::*;
+    /// # use http::header::*;
     /// let mut request: Request<()> = Request::default();
     /// request.headers_mut().insert(HOST, HeaderValue::from_static("world"));
     /// assert!(!request.headers().is_empty());
@@ -580,7 +471,7 @@ impl<T> Request<T> {
     /// # Examples
     ///
     /// ```
-    /// # use rama_http_types::*;
+    /// # use http::*;
     /// let request: Request<()> = Request::default();
     /// assert!(request.extensions().get::<i32>().is_none());
     /// ```
@@ -594,8 +485,8 @@ impl<T> Request<T> {
     /// # Examples
     ///
     /// ```
-    /// # use rama_http_types::*;
-    /// # use rama_http_types::header::*;
+    /// # use http::*;
+    /// # use http::header::*;
     /// let mut request: Request<()> = Request::default();
     /// request.extensions_mut().insert("hello");
     /// assert_eq!(request.extensions().get(), Some(&"hello"));
@@ -610,7 +501,7 @@ impl<T> Request<T> {
     /// # Examples
     ///
     /// ```
-    /// # use rama_http_types::*;
+    /// # use http::*;
     /// let request: Request<String> = Request::default();
     /// assert!(request.body().is_empty());
     /// ```
@@ -624,7 +515,7 @@ impl<T> Request<T> {
     /// # Examples
     ///
     /// ```
-    /// # use rama_http_types::*;
+    /// # use http::*;
     /// let mut request: Request<String> = Request::default();
     /// request.body_mut().push_str("hello world");
     /// assert!(!request.body().is_empty());
@@ -639,7 +530,7 @@ impl<T> Request<T> {
     /// # Examples
     ///
     /// ```
-    /// # use rama_http_types::Request;
+    /// # use http::Request;
     /// let request = Request::new(10);
     /// let body = request.into_body();
     /// assert_eq!(body, 10);
@@ -654,7 +545,7 @@ impl<T> Request<T> {
     /// # Examples
     ///
     /// ```
-    /// # use rama_http_types::*;
+    /// # use http::*;
     /// let request = Request::new(());
     /// let (parts, body) = request.into_parts();
     /// assert_eq!(parts.method, Method::GET);
@@ -670,7 +561,7 @@ impl<T> Request<T> {
     /// # Examples
     ///
     /// ```
-    /// # use rama_http_types::*;
+    /// # use http::*;
     /// let request = Request::builder().body("some string").unwrap();
     /// let mapped_request: Request<&[u8]> = request.map(|b| {
     ///   assert_eq!(b, "some string");
@@ -691,8 +582,8 @@ impl<T> Request<T> {
 }
 
 impl<T: Default> Default for Request<T> {
-    fn default() -> Self {
-        Self::new(T::default())
+    fn default() -> Request<T> {
+        Request::new(T::default())
     }
 }
 
@@ -711,8 +602,8 @@ impl<T: fmt::Debug> fmt::Debug for Request<T> {
 
 impl Parts {
     /// Creates a new default instance of `Parts`
-    fn new() -> Self {
-        Self {
+    fn new() -> Parts {
+        Parts {
             method: Method::default(),
             uri: Uri::default(),
             version: Version::default(),
@@ -741,7 +632,7 @@ impl Builder {
     /// # Examples
     ///
     /// ```
-    /// # use rama_http_types::*;
+    /// # use http::*;
     ///
     /// let req = request::Builder::new()
     ///     .method("POST")
@@ -749,8 +640,8 @@ impl Builder {
     ///     .unwrap();
     /// ```
     #[inline]
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new() -> Builder {
+        Builder::default()
     }
 
     /// Set the HTTP method for this request.
@@ -760,14 +651,14 @@ impl Builder {
     /// # Examples
     ///
     /// ```
-    /// # use rama_http_types::*;
+    /// # use http::*;
     ///
     /// let req = Request::builder()
     ///     .method("POST")
     ///     .body(())
     ///     .unwrap();
     /// ```
-    pub fn method<T>(self, method: T) -> Self
+    pub fn method<T>(self, method: T) -> Builder
     where
         T: TryInto<Method>,
         <T as TryInto<Method>>::Error: Into<crate::Error>,
@@ -786,7 +677,7 @@ impl Builder {
     /// # Examples
     ///
     /// ```
-    /// # use rama_http_types::*;
+    /// # use http::*;
     ///
     /// let mut req = Request::builder();
     /// assert_eq!(req.method_ref(),Some(&Method::GET));
@@ -805,14 +696,14 @@ impl Builder {
     /// # Examples
     ///
     /// ```
-    /// # use rama_http_types::*;
+    /// # use http::*;
     ///
     /// let req = Request::builder()
     ///     .uri("https://www.rust-lang.org/")
     ///     .body(())
     ///     .unwrap();
     /// ```
-    pub fn uri<T>(self, uri: T) -> Self
+    pub fn uri<T>(self, uri: T) -> Builder
     where
         T: TryInto<Uri>,
         <T as TryInto<Uri>>::Error: Into<crate::Error>,
@@ -830,7 +721,7 @@ impl Builder {
     /// # Examples
     ///
     /// ```
-    /// # use rama_http_types::*;
+    /// # use http::*;
     ///
     /// let mut req = Request::builder();
     /// assert_eq!(req.uri_ref().unwrap(), "/" );
@@ -849,14 +740,14 @@ impl Builder {
     /// # Examples
     ///
     /// ```
-    /// # use rama_http_types::*;
+    /// # use http::*;
     ///
     /// let req = Request::builder()
     ///     .version(Version::HTTP_2)
     ///     .body(())
     ///     .unwrap();
     /// ```
-    pub fn version(self, version: Version) -> Self {
+    pub fn version(self, version: Version) -> Builder {
         self.and_then(move |mut head| {
             head.version = version;
             Ok(head)
@@ -870,7 +761,7 @@ impl Builder {
     /// # Examples
     ///
     /// ```
-    /// # use rama_http_types::*;
+    /// # use http::*;
     ///
     /// let mut req = Request::builder();
     /// assert_eq!(req.version_ref().unwrap(), &Version::HTTP_11 );
@@ -891,8 +782,8 @@ impl Builder {
     /// # Examples
     ///
     /// ```
-    /// # use rama_http_types::*;
-    /// # use rama_http_types::header::HeaderValue;
+    /// # use http::*;
+    /// # use http::header::HeaderValue;
     ///
     /// let req = Request::builder()
     ///     .header("Accept", "text/html")
@@ -900,7 +791,7 @@ impl Builder {
     ///     .body(())
     ///     .unwrap();
     /// ```
-    pub fn header<K, V>(self, key: K, value: V) -> Self
+    pub fn header<K, V>(self, key: K, value: V) -> Builder
     where
         K: TryInto<HeaderName>,
         <K as TryInto<HeaderName>>::Error: Into<crate::Error>,
@@ -921,7 +812,7 @@ impl Builder {
     /// # Example
     ///
     /// ```
-    /// # use rama_http_types::Request;
+    /// # use http::Request;
     /// let req = Request::builder()
     ///     .header("Accept", "text/html")
     ///     .header("X-Custom-Foo", "bar");
@@ -940,7 +831,7 @@ impl Builder {
     /// # Example
     ///
     /// ```
-    /// # use rama_http_types::{header::HeaderValue, Request};
+    /// # use http::{header::HeaderValue, Request};
     /// let mut req = Request::builder();
     /// {
     ///   let headers = req.headers_mut().unwrap();
@@ -960,7 +851,7 @@ impl Builder {
     /// # Examples
     ///
     /// ```
-    /// # use rama_http_types::*;
+    /// # use http::*;
     ///
     /// let req = Request::builder()
     ///     .extension("My Extension")
@@ -970,7 +861,7 @@ impl Builder {
     /// assert_eq!(req.extensions().get::<&'static str>(),
     ///            Some(&"My Extension"));
     /// ```
-    pub fn extension<T>(self, extension: T) -> Self
+    pub fn extension<T>(self, extension: T) -> Builder
     where
         T: Clone + Any + Send + Sync + 'static,
     {
@@ -987,7 +878,7 @@ impl Builder {
     /// # Example
     ///
     /// ```
-    /// # use rama_http_types::Request;
+    /// # use http::Request;
     /// let req = Request::builder().extension("My Extension").extension(5u32);
     /// let extensions = req.extensions_ref().unwrap();
     /// assert_eq!(extensions.get::<&'static str>(), Some(&"My Extension"));
@@ -1004,7 +895,7 @@ impl Builder {
     /// # Example
     ///
     /// ```
-    /// # use rama_http_types::Request;
+    /// # use http::Request;
     /// let mut req = Request::builder().extension("My Extension");
     /// let mut extensions = req.extensions_mut().unwrap();
     /// assert_eq!(extensions.get::<&'static str>(), Some(&"My Extension"));
@@ -1029,7 +920,7 @@ impl Builder {
     /// # Examples
     ///
     /// ```
-    /// # use rama_http_types::*;
+    /// # use http::*;
     ///
     /// let request = Request::builder()
     ///     .body(())
@@ -1045,7 +936,7 @@ impl Builder {
     where
         F: FnOnce(Parts) -> Result<Parts>,
     {
-        Self {
+        Builder {
             inner: self.inner.and_then(func),
         }
     }
@@ -1053,20 +944,41 @@ impl Builder {
 
 impl Default for Builder {
     #[inline]
-    fn default() -> Self {
-        Self {
+    fn default() -> Builder {
+        Builder {
             inner: Ok(Parts::new()),
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn it_can_map_a_body_from_one_type_to_another() {
+        let request = Request::builder().body("some string").unwrap();
+        let mapped_request = request.map(|s| {
+            assert_eq!(s, "some string");
+            123u32
+        });
+        assert_eq!(mapped_request.body(), &123u32);
+    }
+}
+
+/// Type alias for [`HttpRequest`] whose body type
+/// defaults to [`Body`], the most common body type used with rama.
+///
+/// [`HttpRequest`]: crate::dep::http::Request
+// pub type Request<T = Body> = http::Request<T>;
 
 /// [`HttpRequestParts`] is used in places where we don't need the [`ReqBody`] of the [`HttpRequest`]
 ///
 /// In those places we need to support using [`HttpRequest`] and [`Parts`]. By using
 /// this trait we can support both types behind a single generic that implements this trait.
 ///
-/// [`ReqBody`]: crate::body::Body
-/// [`HttpRequest`]: crate::Request
+/// [`ReqBody`]: crate::dep::http_body::Body
+/// [`HttpRequest`]: crate::dep::http::Request
 pub trait HttpRequestParts {
     fn method(&self) -> &Method;
     fn uri(&self) -> &Uri;
@@ -1213,20 +1125,5 @@ impl HttpRequestPartsMut for Parts {
 
     fn extensions_mut(&mut self) -> &mut Extensions {
         &mut self.extensions
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn it_can_map_a_body_from_one_type_to_another() {
-        let request = Request::builder().body("some string").unwrap();
-        let mapped_request = request.map(|s| {
-            assert_eq!(s, "some string");
-            123u32
-        });
-        assert_eq!(mapped_request.body(), &123u32);
     }
 }

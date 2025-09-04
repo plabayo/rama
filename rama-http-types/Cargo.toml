@@ -19,7 +19,6 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 default = []
-hyperium = ["dep:http", "dep:http-body", "dep:http-body-util"]
 
 [dependencies]
 bytes = { workspace = true }

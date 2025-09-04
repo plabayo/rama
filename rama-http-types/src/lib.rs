@@ -25,22 +25,16 @@ pub use body::{
 #[macro_use]
 mod convert;
 
-#[cfg(feature = "hyperium")]
-pub mod hyperium;
-
-pub mod header;
-pub mod method;
+pub mod extensions;
 pub mod request;
 pub mod response;
-pub mod status;
-pub mod uri;
-pub mod version;
-
-mod byte_str;
-mod error;
+pub use crate::dep::hyperium::http::method;
+pub use crate::dep::hyperium::http::status;
+pub use crate::dep::hyperium::http::uri;
+pub use crate::dep::hyperium::http::version;
 
 #[doc(inline)]
-pub use crate::error::{Error, Result};
+pub use crate::dep::hyperium::http::{Error, Result};
 #[doc(inline)]
 pub use crate::header::{HeaderMap, HeaderName, HeaderValue};
 #[doc(inline)]
@@ -62,12 +56,49 @@ pub mod opentelemetry;
 
 pub mod conn;
 
+pub mod header {
+    //! HTTP header types
+
+    #[doc(inline)]
+    pub use crate::dep::hyperium::http::header::*;
+
+    macro_rules! static_header {
+        ($($name_bytes:literal),+ $(,)?) => {
+            $(
+                rama_macros::paste! {
+                    #[doc = concat!("header name constant for `", $name_bytes, "`.")]
+                    pub static [<$name_bytes:snake:upper>]: super::HeaderName = super::HeaderName::from_static($name_bytes);
+                }
+            )+
+        };
+    }
+
+    // non-std conventional
+    static_header!["x-forwarded-host", "x-forwarded-for", "x-forwarded-proto",];
+
+    // standard
+    static_header!["keep-alive", "proxy-connection", "last-event-id"];
+
+    // non-std client ip forward headers
+    static_header![
+        "cf-connecting-ip",
+        "true-client-ip",
+        "client-ip",
+        "x-client-ip",
+        "x-real-ip",
+    ];
+
+    /// Static Header Value that is can be used as `User-Agent` or `Server` header.
+    pub static RAMA_ID_HEADER_VALUE: HeaderValue = HeaderValue::from_static(
+        const_format::formatcp!("{}/{}", rama_utils::info::NAME, rama_utils::info::VERSION),
+    );
+}
+
 pub mod dep {
     //! Dependencies for rama http modules.
     //!
     //! Exported for your convenience.
 
-    #[cfg(feature = "hyperium")]
     pub mod hyperium {
         pub mod http {
             //! Re-export of the [`http`] crate incase we need to convert.

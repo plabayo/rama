@@ -19,9 +19,8 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 default = []
-opentelemetry = ["rama-core/opentelemetry", "hyperium", "rama-net/opentelemetry", "dep:opentelemetry-http"]
+opentelemetry = ["rama-core/opentelemetry", "rama-net/opentelemetry", "dep:opentelemetry-http"]
 compression = ["dep:async-compression", "dep:rawzip", "dep:flate2"]
-hyperium = ["rama-http-types/hyperium"]
 tls = ["rama-net/tls"]
 
 [dependencies]
