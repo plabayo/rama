@@ -3,8 +3,7 @@
 //! # Example
 //!
 //! ```
-//! use rama_http::{Body, Request, Response};
-//! use rama_http::dep::http_body;
+//! use rama_http::{Body, Request, Response, StreamingBody, body::{Frame, SizeHint}};
 //! use rama_core::bytes::Bytes;
 //! use std::convert::Infallible;
 //! use std::{pin::Pin, task::{ready, Context, Poll}};
@@ -24,16 +23,16 @@
 //!     }
 //! }
 //!
-//! impl http_body::Body for BodyWrapper {
+//! impl StreamingBody for BodyWrapper {
 //!     // ...
 //!     # type Data = Bytes;
 //!     # type Error = BoxError;
 //!     # fn poll_frame(
 //!     #     self: Pin<&mut Self>,
 //!     #     cx: &mut Context<'_>
-//!     # ) -> Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> { unimplemented!() }
+//!     # ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> { unimplemented!() }
 //!     # fn is_end_stream(&self) -> bool { unimplemented!() }
-//!     # fn size_hint(&self) -> http_body::SizeHint { unimplemented!() }
+//!     # fn size_hint(&self) -> SizeHint { unimplemented!() }
 //! }
 //!
 //! async fn handle<B>(_: Request<B>) -> Result<Response, Infallible> {

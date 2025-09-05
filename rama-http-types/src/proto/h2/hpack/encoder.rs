@@ -4,7 +4,7 @@ use super::{Header, huffman};
 use rama_core::bytes::{BufMut, BytesMut};
 use rama_core::telemetry::tracing;
 
-use crate::dep::http::header::{HeaderName, HeaderValue};
+use crate::header::{HeaderName, HeaderValue};
 
 #[derive(Debug)]
 pub struct Encoder {

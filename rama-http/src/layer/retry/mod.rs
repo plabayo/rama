@@ -1,8 +1,6 @@
 //! Middleware for retrying "failed" requests.
 
-use crate::Request;
-use crate::dep::http_body::Body as HttpBody;
-use crate::dep::http_body_util::BodyExt;
+use crate::{Request, StreamingBody, body::util::BodyExt};
 use rama_core::error::BoxError;
 use rama_core::{Context, Service};
 use rama_utils::macros::define_inner_service_accessors;
@@ -112,7 +110,7 @@ impl<P, S, Body> Service<Request<Body>> for Retry<P, S>
 where
     P: Policy<S::Response, S::Error>,
     S: Service<Request<RetryBody>, Error: Into<BoxError>>,
-    Body: HttpBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static,
+    Body: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static,
 {
     type Response = S::Response;
     type Error = RetryError;

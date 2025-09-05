@@ -1,18 +1,17 @@
 use super::{IntoResponseParts, ResponseParts};
-use crate::dep::http_body::{Frame, SizeHint};
+use crate::Response;
+use crate::body::{Body, Frame, SizeHint, StreamingBody};
 use crate::dep::mime;
 use crate::service::web::response::Headers;
-use crate::{Body, Response};
 use crate::{
     StatusCode,
-    dep::http::Extensions,
     header::{self, HeaderMap, HeaderName, HeaderValue},
 };
 use rama_core::bytes::{Buf, Bytes, BytesMut, buf::Chain};
+use rama_core::context::Extensions;
 use rama_core::error::BoxError;
 use rama_http_headers::{ContentDisposition, ContentType};
 use rama_http_types::InfiniteReader;
-use rama_http_types::dep::{http, http_body};
 use rama_utils::macros::all_the_tuples_no_last_special_case;
 use std::{
     borrow::Cow,
@@ -94,14 +93,14 @@ where
 
 impl<B> IntoResponse for Response<B>
 where
-    B: http_body::Body<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
+    B: StreamingBody<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
 {
     fn into_response(self) -> Response {
         self.map(Body::new)
     }
 }
 
-impl IntoResponse for http::response::Parts {
+impl IntoResponse for crate::response::Parts {
     fn into_response(self) -> Response {
         Response::from_parts(self, Body::empty())
     }
@@ -193,7 +192,7 @@ struct BytesChainBody<T, U> {
     second: Option<U>,
 }
 
-impl<T, U> http_body::Body for BytesChainBody<T, U>
+impl<T, U> StreamingBody for BytesChainBody<T, U>
 where
     T: Buf + Unpin,
     U: Buf + Unpin,
@@ -313,7 +312,7 @@ where
     }
 }
 
-impl<R> IntoResponse for (http::response::Parts, R)
+impl<R> IntoResponse for (crate::response::Parts, R)
 where
     R: IntoResponse,
 {
@@ -323,7 +322,7 @@ where
     }
 }
 
-impl<R> IntoResponse for (http::response::Response<()>, R)
+impl<R> IntoResponse for (crate::response::Response<()>, R)
 where
     R: IntoResponse,
 {
@@ -397,7 +396,7 @@ macro_rules! impl_into_response {
         }
 
         #[allow(non_snake_case)]
-        impl<R, $($ty,)*> IntoResponse for (http::response::Parts, $($ty),*, R)
+        impl<R, $($ty,)*> IntoResponse for (crate::response::Parts, $($ty),*, R)
         where
             $( $ty: IntoResponseParts, )*
             R: IntoResponse,
@@ -421,7 +420,7 @@ macro_rules! impl_into_response {
         }
 
         #[allow(non_snake_case)]
-        impl<R, $($ty,)*> IntoResponse for (http::response::Response<()>, $($ty),*, R)
+        impl<R, $($ty,)*> IntoResponse for (crate::response::Response<()>, $($ty),*, R)
         where
             $( $ty: IntoResponseParts, )*
             R: IntoResponse,

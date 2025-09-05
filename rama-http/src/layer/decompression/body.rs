@@ -1,7 +1,7 @@
 #![allow(unused_imports)]
 
 use crate::HeaderMap;
-use crate::dep::http_body::{Body, Frame, SizeHint};
+use crate::body::{Body, Frame, SizeHint, StreamingBody};
 use crate::layer::util::compression::{
     AsyncReadBody, BodyIntoStream, CompressionLevel, DecorateAsyncRead, WrapBody,
 };
@@ -25,7 +25,7 @@ pin_project! {
     /// [`Decompression`]: super::Decompression
     pub struct DecompressionBody<B>
     where
-        B: Body
+        B: StreamingBody
     {
         #[pin]
         pub(crate) inner: BodyInner<B>,
@@ -34,7 +34,7 @@ pin_project! {
 
 impl<B> Default for DecompressionBody<B>
 where
-    B: Body + Default,
+    B: StreamingBody + Default,
 {
     fn default() -> Self {
         Self {
@@ -47,7 +47,7 @@ where
 
 impl<B> DecompressionBody<B>
 where
-    B: Body,
+    B: StreamingBody,
 {
     pub(crate) fn new(inner: BodyInner<B>) -> Self {
         Self { inner }
@@ -63,7 +63,7 @@ pin_project! {
     #[project = BodyInnerProj]
     pub(crate) enum BodyInner<B>
     where
-        B: Body,
+        B: StreamingBody,
     {
         Gzip {
             #[pin]
@@ -88,7 +88,7 @@ pin_project! {
     }
 }
 
-impl<B: Body> BodyInner<B> {
+impl<B: StreamingBody> BodyInner<B> {
     pub(crate) fn gzip(inner: WrapBody<GzipDecoder<B>>) -> Self {
         Self::Gzip { inner }
     }
@@ -110,9 +110,9 @@ impl<B: Body> BodyInner<B> {
     }
 }
 
-impl<B> Body for DecompressionBody<B>
+impl<B> StreamingBody for DecompressionBody<B>
 where
-    B: Body<Error: Into<BoxError>>,
+    B: StreamingBody<Error: Into<BoxError>>,
 {
     type Data = Bytes;
     type Error = BoxError;
@@ -147,7 +147,7 @@ where
 
 impl<B> DecorateAsyncRead for GzipDecoder<B>
 where
-    B: Body,
+    B: StreamingBody,
 {
     type Input = AsyncReadBody<B>;
     type Output = GzipDecoder<Self::Input>;
@@ -165,7 +165,7 @@ where
 
 impl<B> DecorateAsyncRead for ZlibDecoder<B>
 where
-    B: Body,
+    B: StreamingBody,
 {
     type Input = AsyncReadBody<B>;
     type Output = ZlibDecoder<Self::Input>;
@@ -181,7 +181,7 @@ where
 
 impl<B> DecorateAsyncRead for BrotliDecoder<B>
 where
-    B: Body,
+    B: StreamingBody,
 {
     type Input = AsyncReadBody<B>;
     type Output = BrotliDecoder<Self::Input>;
@@ -197,7 +197,7 @@ where
 
 impl<B> DecorateAsyncRead for ZstdDecoder<B>
 where
-    B: Body,
+    B: StreamingBody,
 {
     type Input = AsyncReadBody<B>;
     type Output = ZstdDecoder<Self::Input>;

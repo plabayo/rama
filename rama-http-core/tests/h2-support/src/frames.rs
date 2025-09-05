@@ -2,7 +2,9 @@ use std::convert::TryInto;
 use std::fmt;
 
 use rama_core::bytes::Bytes;
-use rama_http_types::{HeaderMap, StatusCode, proto::h1::headers::original::OriginalHttp1Headers};
+use rama_http_types::{
+    HeaderMap, Method, StatusCode, Uri, header, proto::h1::headers::original::OriginalHttp1Headers,
+};
 
 use rama_http_core::h2::frame::{self, Frame, StreamId};
 
@@ -104,9 +106,9 @@ where
 impl Mock<frame::Headers> {
     pub fn request<M, U>(self, method: M, uri: U) -> Self
     where
-        M: TryInto<http::Method>,
+        M: TryInto<Method>,
         M::Error: fmt::Debug,
-        U: TryInto<http::Uri>,
+        U: TryInto<Uri>,
         U::Error: fmt::Debug,
     {
         let method = method.try_into().unwrap();
@@ -120,7 +122,7 @@ impl Mock<frame::Headers> {
 
     pub fn method<M>(self, method: M) -> Self
     where
-        M: TryInto<http::Method>,
+        M: TryInto<Method>,
         M::Error: fmt::Debug,
     {
         let method = method.try_into().unwrap();
@@ -146,7 +148,7 @@ impl Mock<frame::Headers> {
 
     pub fn response<S>(self, status: S) -> Self
     where
-        S: TryInto<http::StatusCode>,
+        S: TryInto<StatusCode>,
         S::Error: fmt::Debug,
     {
         let status = status.try_into().unwrap();
@@ -169,9 +171,9 @@ impl Mock<frame::Headers> {
 
     pub fn field<K, V>(self, key: K, value: V) -> Self
     where
-        K: TryInto<http::header::HeaderName>,
+        K: TryInto<header::HeaderName>,
         K::Error: fmt::Debug,
-        V: TryInto<http::header::HeaderValue>,
+        V: TryInto<header::HeaderValue>,
         V::Error: fmt::Debug,
     {
         let (id, pseudo, mut fields, mut field_order) = self.into_parts();
@@ -242,9 +244,9 @@ impl Mock<frame::Data> {
 impl Mock<frame::PushPromise> {
     pub fn request<M, U>(self, method: M, uri: U) -> Self
     where
-        M: TryInto<http::Method>,
+        M: TryInto<Method>,
         M::Error: fmt::Debug,
-        U: TryInto<http::Uri>,
+        U: TryInto<Uri>,
         U::Error: fmt::Debug,
     {
         let method = method.try_into().unwrap();
@@ -264,9 +266,9 @@ impl Mock<frame::PushPromise> {
 
     pub fn field<K, V>(self, key: K, value: V) -> Self
     where
-        K: TryInto<http::header::HeaderName>,
+        K: TryInto<header::HeaderName>,
         K::Error: fmt::Debug,
-        V: TryInto<http::header::HeaderValue>,
+        V: TryInto<header::HeaderValue>,
         V::Error: fmt::Debug,
     {
         let (id, promised, pseudo, mut fields, field_order) = self.into_parts();

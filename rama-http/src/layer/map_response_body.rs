@@ -4,8 +4,7 @@
 //!
 //! ```
 //! use rama_core::bytes::Bytes;
-//! use rama_http::{Body, Request, Response};
-//! use rama_http::dep::http_body;
+//! use rama_http::{Body, Request, Response, StreamingBody, body::{Frame, SizeHint}};
 //! use std::convert::Infallible;
 //! use std::{pin::Pin, task::{Context, Poll}};
 //! use rama_core::{Layer, Service, context};
@@ -28,8 +27,8 @@
 //!     }
 //! }
 //!
-//! impl<B> http_body::Body for PrintChunkSizesBody<B>
-//!     where B: http_body::Body<Data = Bytes, Error = BoxError>,
+//! impl<B> StreamingBody for PrintChunkSizesBody<B>
+//!     where B: StreamingBody<Data = Bytes, Error = BoxError>,
 //! {
 //!     type Data = Bytes;
 //!     type Error = BoxError;
@@ -37,7 +36,7 @@
 //!     fn poll_frame(
 //!         mut self: Pin<&mut Self>,
 //!         cx: &mut Context<'_>,
-//!     ) -> Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
+//!     ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
 //!         let inner_body = self.as_mut().project().inner;
 //!         if let Some(frame) = ready!(inner_body.poll_frame(cx)?) {
 //!             if let Some(chunk) = frame.data_ref() {
@@ -55,7 +54,7 @@
 //!         self.inner.is_end_stream()
 //!     }
 //!
-//!     fn size_hint(&self) -> http_body::SizeHint {
+//!     fn size_hint(&self) -> SizeHint {
 //!         self.inner.size_hint()
 //!     }
 //! }

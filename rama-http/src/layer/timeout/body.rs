@@ -1,7 +1,6 @@
-use http_body::Body;
+use crate::body::{Frame, StreamingBody};
 use pin_project_lite::pin_project;
 use rama_core::error::BoxError;
-use rama_http_types::dep::http_body;
 use std::{
     future::Future,
     pin::Pin,
@@ -33,7 +32,7 @@ pin_project! {
     /// use rama_core::bytes::Bytes;
     /// use std::time::Duration;
     /// use rama_http::{Request, Response};
-    /// use rama_http::dep::http_body_util::Full;
+    /// use rama_http::body::util::Full;
     /// use rama_http::layer::timeout::RequestBodyTimeoutLayer;
     /// use rama_core::{Layer, service::service_fn};
     ///
@@ -71,9 +70,9 @@ impl<B> TimeoutBody<B> {
     }
 }
 
-impl<B> Body for TimeoutBody<B>
+impl<B> StreamingBody for TimeoutBody<B>
 where
-    B: Body,
+    B: StreamingBody,
     B::Error: Into<BoxError>,
 {
     type Data = B::Data;
@@ -82,7 +81,7 @@ where
     fn poll_frame(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
-    ) -> Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
         let mut this = self.project();
 
         // Start the `Sleep` if not active.
@@ -122,9 +121,9 @@ impl std::fmt::Display for TimeoutError {
 mod tests {
     use super::*;
 
+    use crate::body::util::BodyExt;
     use pin_project_lite::pin_project;
     use rama_core::bytes::Bytes;
-    use rama_http_types::dep::{http_body::Frame, http_body_util::BodyExt};
     use std::{error::Error, fmt::Display};
 
     #[derive(Debug)]
@@ -145,7 +144,7 @@ mod tests {
         }
     }
 
-    impl Body for MockBody {
+    impl StreamingBody for MockBody {
         type Data = Bytes;
         type Error = MockError;
 

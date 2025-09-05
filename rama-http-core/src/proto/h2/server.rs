@@ -9,13 +9,14 @@ use rama_core::bytes::Bytes;
 use rama_core::error::BoxError;
 use rama_core::rt::Executor;
 use rama_core::telemetry::tracing::{Instrument, debug, trace, trace_root_span, warn};
+use rama_http::StreamingBody;
 use rama_http::io::upgrade::{self, OnUpgrade, Pending, Upgraded};
 use rama_http::opentelemetry::version_as_protocol_version;
 use rama_http_types::{Method, Request, Response, header};
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use super::{PipeToSendStream, SendBuf, ping};
-use crate::body::{Body, Incoming as IncomingBody};
+use crate::body::Incoming as IncomingBody;
 use crate::common::date;
 use crate::headers;
 use crate::proto::Dispatched;
@@ -342,7 +343,7 @@ pin_project! {
     #[allow(missing_debug_implementations)]
     pub struct H2Stream<F, B>
     where
-        B: Body,
+        B: StreamingBody,
         B: Send,
         B: 'static,
         B: Unpin,
@@ -361,7 +362,7 @@ pin_project! {
     #[project = H2StreamStateProj]
     enum H2StreamState<F, B>
     where
-        B: Body,
+        B: StreamingBody,
         B: Send,
         B: 'static,
         B: Unpin,
@@ -389,7 +390,7 @@ struct ConnectParts {
 
 impl<F, B> H2Stream<F, B>
 where
-    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
+    B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     fn new(
         fut: F,
@@ -421,7 +422,7 @@ macro_rules! reply {
 impl<F, B, E> H2Stream<F, B>
 where
     F: Future<Output = Result<Response<B>, E>>,
-    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
+    B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
     E: Into<BoxError>,
 {
     fn poll2(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<crate::Result<()>> {
@@ -521,7 +522,7 @@ where
 impl<F, B, E> Future for H2Stream<F, B>
 where
     F: Future<Output = Result<Response<B>, E>>,
-    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
+    B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
     E: Into<BoxError>,
 {
     type Output = ();

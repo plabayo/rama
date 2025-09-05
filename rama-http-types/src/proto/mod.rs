@@ -3,8 +3,9 @@
 //! For low-level proto details you can refer to the `proto` module
 //! in the `rama-http-core` crate.
 
-use crate::dep::http;
 use std::{ops::Deref, sync::Arc};
+
+use rama_core::context::Extensions;
 
 pub mod h1;
 pub mod h2;
@@ -37,10 +38,10 @@ impl Deref for RequestHeaders {
 /// Read-only copy of the parent request extensions.
 ///
 /// This extension can be made available as part of a response.
-pub struct RequestExtensions(Arc<http::Extensions>);
+pub struct RequestExtensions(Arc<Extensions>);
 
-impl From<http::Extensions> for RequestExtensions {
-    fn from(value: http::Extensions) -> Self {
+impl From<Extensions> for RequestExtensions {
+    fn from(value: Extensions) -> Self {
         Self(Arc::new(value))
     }
 }
@@ -51,7 +52,7 @@ impl From<http::Extensions> for RequestExtensions {
 // not available in response extensions?
 
 impl Deref for RequestExtensions {
-    type Target = http::Extensions;
+    type Target = Extensions;
 
     fn deref(&self) -> &Self::Target {
         self.0.as_ref()

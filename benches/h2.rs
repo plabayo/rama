@@ -53,7 +53,7 @@ async fn handle_request(
         let data = data?;
         let _ = body.flow_control().release_capacity(data.len());
     }
-    let response = http::Response::new(());
+    let response = rama_http::Response::new(());
     let mut send = respond.send_response(response, false)?;
     send.send_data(Bytes::from_static(b"pong"), true)?;
 

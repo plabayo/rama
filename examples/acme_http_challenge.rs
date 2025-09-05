@@ -38,7 +38,6 @@ use rama::{
     },
     graceful,
     http::{
-        Body,
         client::EasyHttpWebClient,
         headers::{ContentType, HeaderMapExt},
         layer::{compression::CompressionLayer, trace::TraceLayer},
@@ -60,6 +59,7 @@ use rama::{
         boring::client::TlsConnectorDataBuilder,
     },
 };
+use rama_http::{Body, Response};
 use std::{sync::Arc, time::Duration};
 use tokio::time::sleep;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
@@ -155,7 +155,7 @@ async fn main() {
                     WebService::default().get(&path, move |_ctx: Context| {
                         let state = state.clone();
                         async move {
-                            let mut response = http::Response::new(Body::from(
+                            let mut response = Response::new(Body::from(
                                 state.key_authorization.as_str().to_owned(),
                             ));
                             let headers = response.headers_mut();

@@ -48,7 +48,7 @@
 //! use rama_core::error::BoxError;
 //! use rama_core::service::service_fn;
 //! use rama_core::{Context, Layer, Service};
-//! use rama_http::dep::http_body::Body as _;
+//! use rama_http::StreamingBody as _;
 //! use rama_http::layer::set_header::SetResponseHeaderLayer;
 //! use rama_http::{
 //!     header::{self, HeaderValue},

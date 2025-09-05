@@ -17,13 +17,13 @@ use rama_core::{
 use rama_http::headers::sec_websocket_extensions;
 use rama_http::{
     Method, Request, Response, StatusCode, Version,
-    dep::http::request,
     headers::{
         self, HeaderMapExt, HttpResponseBuilderExt,
         sec_websocket_extensions::{Extension, PerMessageDeflateConfig},
     },
     io::upgrade,
     proto::h2::ext::Protocol,
+    request,
     service::web::response::{Headers, IntoResponse},
 };
 

@@ -7,7 +7,7 @@ use rama::{
     error::{BoxError, ErrorContext, OpaqueError, error},
     graceful::{self, Shutdown, ShutdownGuard},
     http::{
-        Request, Response, Version,
+        Request, Response, StreamingBody, Version,
         client::{
             EasyHttpWebClient,
             proxy::layer::{HttpProxyAddressLayer, SetProxyAuthHttpHeaderLayer},
@@ -534,10 +534,7 @@ fn map_internal_client_error<E, Body>(
 ) -> Result<Response, BoxError>
 where
     E: Into<BoxError>,
-    Body: rama::http::dep::http_body::Body<Data = rama::bytes::Bytes, Error: Into<BoxError>>
-        + Send
-        + Sync
-        + 'static,
+    Body: StreamingBody<Data = rama::bytes::Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
 {
     match result {
         Ok(response) => Ok(response.map(rama::http::Body::new)),

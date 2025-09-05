@@ -1,8 +1,6 @@
 use super::WriterMode;
-use crate::dep::http_body;
-use crate::dep::http_body_util::BodyExt;
 use crate::io::write_http_request;
-use crate::{Body, Request};
+use crate::{Body, Request, StreamingBody, body::util::BodyExt};
 use rama_core::bytes::Bytes;
 use rama_core::error::{BoxError, ErrorExt, OpaqueError};
 use rama_core::rt::Executor;
@@ -171,7 +169,7 @@ impl RequestWriterInspector<Sender<Request>> {
 impl<W, ReqBody> Service<Request<ReqBody>> for RequestWriterInspector<W>
 where
     W: RequestWriter,
-    ReqBody: http_body::Body<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
+    ReqBody: StreamingBody<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
 {
     type Error = BoxError;
     type Response = (Context, Request);

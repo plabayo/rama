@@ -133,10 +133,10 @@ impl CompressionLayer {
 mod tests {
     use super::*;
 
-    use crate::dep::http_body_util::BodyExt;
-    use crate::{Body, Request, Response, header::ACCEPT_ENCODING};
+    use crate::{Request, Response, body::util::BodyExt, header::ACCEPT_ENCODING};
     use rama_core::service::service_fn;
     use rama_core::{Context, Service};
+    use rama_http_types::Body;
     use std::convert::Infallible;
     use tokio::fs::File;
     use tokio_util::io::ReaderStream;

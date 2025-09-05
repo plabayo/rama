@@ -207,7 +207,7 @@ impl<Body> TryRefIntoTransportContext for rama_http_types::Request<Body> {
     }
 }
 
-impl TryRefIntoTransportContext for rama_http_types::dep::http::request::Parts {
+impl TryRefIntoTransportContext for rama_http_types::request::Parts {
     type Error = OpaqueError;
 
     fn try_ref_into_transport_ctx(&self, ctx: &Context) -> Result<TransportContext, Self::Error> {

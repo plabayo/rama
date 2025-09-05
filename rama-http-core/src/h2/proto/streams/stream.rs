@@ -3,7 +3,6 @@ use crate::h2::Reason;
 use super::*;
 
 use rama_core::telemetry::tracing;
-use rama_http::dep::http;
 use std::fmt;
 use std::task::{Context, Waker};
 use std::time::Instant;
@@ -76,7 +75,7 @@ pub(super) struct Stream {
     pub is_pending_push: bool,
 
     /// The extensions map of the last processed encoded http request
-    pub encoded_request_extensions: Option<http::Extensions>,
+    pub encoded_request_extensions: Option<rama_core::context::Extensions>,
 
     // ===== Fields related to receiving =====
     /// Next node in the accept linked list

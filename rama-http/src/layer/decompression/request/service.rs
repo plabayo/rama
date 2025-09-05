@@ -1,7 +1,5 @@
 use std::fmt;
 
-use crate::dep::http_body::Body;
-use crate::dep::http_body_util::{BodyExt, Empty, combinators::UnsyncBoxBody};
 use crate::headers::encoding::{AcceptEncoding, SupportedEncodings};
 use crate::layer::{
     decompression::DecompressionBody,
@@ -9,6 +7,10 @@ use crate::layer::{
     util::compression::{CompressionLevel, WrapBody},
 };
 use crate::{HeaderValue, Request, Response, StatusCode, header};
+use crate::{
+    StreamingBody,
+    body::util::{BodyExt, Empty, combinators::UnsyncBoxBody},
+};
 use rama_core::bytes::Buf;
 use rama_core::error::BoxError;
 use rama_core::{Context, Service};
@@ -58,8 +60,8 @@ where
             Response = Response<ResBody>,
             Error: Into<BoxError>,
         >,
-    ReqBody: Body + Send + 'static,
-    ResBody: Body<Data = D, Error: Into<BoxError>> + Send + 'static,
+    ReqBody: StreamingBody + Send + 'static,
+    ResBody: StreamingBody<Data = D, Error: Into<BoxError>> + Send + 'static,
     D: Buf + 'static,
 {
     type Response = Response<UnsyncBoxBody<D, BoxError>>;
@@ -76,22 +78,22 @@ where
             if let header::Entry::Occupied(entry) = parts.headers.entry(header::CONTENT_ENCODING) {
                 match entry.get().as_bytes() {
                     b"gzip" if self.accept.gzip() => {
-                        entry.remove();
+                        let _ = entry.remove();
                         parts.headers.remove(header::CONTENT_LENGTH);
                         BodyInner::gzip(WrapBody::new(body, CompressionLevel::default()))
                     }
                     b"deflate" if self.accept.deflate() => {
-                        entry.remove();
+                        let _ = entry.remove();
                         parts.headers.remove(header::CONTENT_LENGTH);
                         BodyInner::deflate(WrapBody::new(body, CompressionLevel::default()))
                     }
                     b"br" if self.accept.br() => {
-                        entry.remove();
+                        let _ = entry.remove();
                         parts.headers.remove(header::CONTENT_LENGTH);
                         BodyInner::brotli(WrapBody::new(body, CompressionLevel::default()))
                     }
                     b"zstd" if self.accept.zstd() => {
-                        entry.remove();
+                        let _ = entry.remove();
                         parts.headers.remove(header::CONTENT_LENGTH);
                         BodyInner::zstd(WrapBody::new(body, CompressionLevel::default()))
                     }

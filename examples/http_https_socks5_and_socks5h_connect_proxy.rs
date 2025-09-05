@@ -27,7 +27,7 @@ use rama::{
     Context, Layer, Service,
     context::RequestContextExt,
     http::{
-        Body, Request, Response, StatusCode,
+        Request, Response, StatusCode,
         client::EasyHttpWebClient,
         layer::{
             proxy_auth::ProxyAuthLayer,
@@ -68,6 +68,7 @@ use rama::{
 
 #[cfg(all(feature = "rustls", not(feature = "boring")))]
 use rama::tls::rustls::server::{TlsAcceptorDataBuilder, TlsAcceptorLayer};
+use rama_http::Body;
 
 use std::{convert::Infallible, time::Duration};
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};

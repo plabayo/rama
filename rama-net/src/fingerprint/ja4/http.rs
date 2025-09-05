@@ -363,7 +363,7 @@ mod tests {
                     ).unwrap();
                 )+
 
-                let mut extensions = rama_http_types::dep::http::Extensions::default();
+                let mut extensions = rama_core::context::Extensions::default();
                 let headers = map.consume(&mut extensions);
 
                 let (mut parts, body) = Request::new(()).into_parts();

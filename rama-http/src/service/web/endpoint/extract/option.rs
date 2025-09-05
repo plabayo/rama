@@ -1,7 +1,7 @@
 use rama_core::Context;
 
 use crate::service::web::endpoint::IntoResponse;
-use crate::{Request, dep::http::request::Parts};
+use crate::{Request, request::Parts};
 
 use super::{FromRequest, FromRequestContextRefPair};
 

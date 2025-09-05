@@ -1,8 +1,9 @@
 use pin_project_lite::pin_project;
 use rama::futures::stream::Stream;
-use rama::http::dep::http_body::{Body, Frame};
+use rama::http::body::Frame;
 use rama::http::header::HeaderMap;
 use rama_core::bytes::Buf;
+use rama_http::StreamingBody;
 use std::{
     pin::Pin,
     task::{Context, Poll},
@@ -39,7 +40,7 @@ impl<S> StreamBodyWithTrailers<S> {
     }
 }
 
-impl<S, D, E> Body for StreamBodyWithTrailers<S>
+impl<S, D, E> StreamingBody for StreamBodyWithTrailers<S>
 where
     S: Stream<Item = Result<Frame<D>, E>>,
     D: Buf,

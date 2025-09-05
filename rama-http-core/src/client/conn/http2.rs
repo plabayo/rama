@@ -12,11 +12,11 @@ use rama_core::telemetry::tracing::{debug, trace};
 use rama_http::proto::h2::frame::EarlyFrame;
 use rama_http_types::proto::h2::PseudoHeaderOrder;
 use rama_http_types::proto::h2::frame::{SettingOrder, SettingsConfig};
-use rama_http_types::{Request, Response};
+use rama_http_types::{Request, Response, StreamingBody};
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use super::super::dispatch::{self, TrySendError};
-use crate::body::{Body, Incoming as IncomingBody};
+use crate::body::Incoming as IncomingBody;
 use crate::proto;
 
 /// The sender side of an established connection.
@@ -42,7 +42,7 @@ impl<B> Clone for SendRequest<B> {
 pub struct Connection<T, B>
 where
     T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
-    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
+    B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     inner: (PhantomData<T>, proto::h2::ClientTask<B, T>),
 }
@@ -71,7 +71,7 @@ pub async fn handshake<T, B>(
 ) -> crate::Result<(SendRequest<B>, Connection<T, B>)>
 where
     T: AsyncRead + AsyncWrite + Send + Unpin + 'static,
-    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
+    B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     Builder::new(exec).handshake(io).await
 }
@@ -118,7 +118,7 @@ impl<B> SendRequest<B> {
 
 impl<B> SendRequest<B>
 where
-    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
+    B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     /// Sends a `Request` on the associated connection.
     ///
@@ -195,7 +195,7 @@ impl<B> fmt::Debug for SendRequest<B> {
 impl<T, B> Connection<T, B>
 where
     T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
-    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
+    B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     /// Returns whether the [extended CONNECT protocol][1] is enabled or not.
     ///
@@ -214,7 +214,7 @@ where
 impl<T, B> fmt::Debug for Connection<T, B>
 where
     T: AsyncRead + AsyncWrite + fmt::Debug + Send + 'static + Unpin,
-    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
+    B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Connection").finish()
@@ -224,7 +224,7 @@ where
 impl<T, B> Future for Connection<T, B>
 where
     T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
-    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
+    B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     type Output = crate::Result<()>;
 
@@ -508,7 +508,7 @@ impl Builder {
     ) -> impl Future<Output = crate::Result<(SendRequest<B>, Connection<T, B>)>>
     where
         T: AsyncRead + AsyncWrite + Send + Unpin + 'static,
-        B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
+        B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
     {
         let opts = self.clone();
 
@@ -549,7 +549,7 @@ impl Builder {
 #[cfg(test)]
 mod tests {
     use rama_core::rt::Executor;
-    use rama_http_types::dep::http_body_util;
+    use rama_http_types::body::util::Empty;
     use tokio::io::{AsyncRead, AsyncWrite};
 
     #[tokio::test]
@@ -559,7 +559,7 @@ mod tests {
         async fn run(io: impl AsyncRead + AsyncWrite + Send + Unpin + 'static) {
             let (_sender, conn) = crate::client::conn::http2::handshake::<
                 _,
-                http_body_util::Empty<rama_core::bytes::Bytes>,
+                Empty<rama_core::bytes::Bytes>,
             >(Executor::default(), io)
             .await
             .unwrap();

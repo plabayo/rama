@@ -1,9 +1,9 @@
 //! File system related services.
 
+use crate::{StreamingBody, body::Frame};
 use pin_project_lite::pin_project;
 use rama_core::bytes::Bytes;
 use rama_core::futures::Stream;
-use rama_http_types::dep::http_body::{Body, Frame};
 use std::{
     fmt, io,
     pin::Pin,
@@ -64,7 +64,7 @@ where
     }
 }
 
-impl<T> Body for AsyncReadBody<T>
+impl<T> StreamingBody for AsyncReadBody<T>
 where
     T: AsyncRead,
 {

@@ -3,7 +3,7 @@ use std::fmt;
 use super::IntoResponse;
 use crate::Body;
 use crate::Response;
-use crate::dep::http::StatusCode;
+use crate::StatusCode;
 use crate::headers::ContentType;
 use rama_core::error::OpaqueError;
 use rama_core::telemetry::tracing;

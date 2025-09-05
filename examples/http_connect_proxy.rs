@@ -60,7 +60,7 @@ use rama::{
     Context, Layer, Service,
     context::{Extensions, RequestContextExt},
     http::{
-        Body, Request, Response, StatusCode,
+        Request, Response, StatusCode,
         client::EasyHttpWebClient,
         layer::{
             proxy_auth::ProxyAuthLayer,
@@ -94,6 +94,7 @@ use rama::{
     },
 };
 
+use rama_http::Body;
 use serde::Deserialize;
 use serde_json::json;
 use std::{convert::Infallible, sync::Arc, time::Duration};

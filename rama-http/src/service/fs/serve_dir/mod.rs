@@ -1,7 +1,6 @@
-use crate::dep::http_body::{self, Body as HttpBody};
 use crate::headers::encoding::{SupportedEncodings, parse_accept_encoding_headers};
 use crate::layer::set_status::SetStatus;
-use crate::{Body, HeaderValue, Method, Request, Response, StatusCode, header};
+use crate::{Body, HeaderValue, Method, Request, Response, StatusCode, StreamingBody, header};
 use percent_encoding::percent_decode;
 use rama_core::bytes::Bytes;
 use rama_core::error::{BoxError, OpaqueError};
@@ -324,7 +323,7 @@ impl<F> ServeDir<F> {
     ) -> Result<Response, std::io::Error>
     where
         F: Service<Request<ReqBody>, Response = Response<FResBody>, Error = Infallible> + Clone,
-        FResBody: http_body::Body<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
+        FResBody: StreamingBody<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
     {
         if req.method() != Method::GET && req.method() != Method::HEAD {
             if self.call_fallback_on_method_not_allowed {
@@ -399,7 +398,7 @@ impl<ReqBody, F, FResBody> Service<Request<ReqBody>> for ServeDir<F>
 where
     ReqBody: Send + 'static,
     F: Service<Request<ReqBody>, Response = Response<FResBody>, Error = Infallible> + Clone,
-    FResBody: HttpBody<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
+    FResBody: StreamingBody<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
 {
     type Response = Response;
     type Error = Infallible;

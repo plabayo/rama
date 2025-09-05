@@ -6,7 +6,7 @@ use std::convert::Infallible;
 use std::net::SocketAddr;
 
 use rama::futures::future::join_all;
-use rama::http::dep::http_body_util::BodyExt;
+use rama::http::body::util::BodyExt;
 use rama::http::{Method, Request, Response};
 use rama::rt::Executor;
 use tokio::sync::Mutex;
@@ -19,7 +19,7 @@ fn main() {
     divan::main();
 }
 
-type BoxedBody = rama::http::dep::http_body_util::combinators::BoxBody<bytes::Bytes, Infallible>;
+type BoxedBody = rama::http::body::util::combinators::BoxBody<bytes::Bytes, Infallible>;
 
 // HTTP1
 
@@ -349,11 +349,11 @@ impl Opts {
                             .expect("send_data");
                     }
                 });
-                rama::http::dep::http_body_util::StreamBody::new(rx).boxed()
+                rama::http::body::util::StreamBody::new(rx).boxed()
             } else if let Some(chunk) = self.request_body {
-                rama::http::dep::http_body_util::Full::new(bytes::Bytes::from(chunk)).boxed()
+                rama::http::body::util::Full::new(bytes::Bytes::from(chunk)).boxed()
             } else {
-                rama::http::dep::http_body_util::Empty::new().boxed()
+                rama::http::body::util::Empty::new().boxed()
             };
             let mut req = Request::new(body);
             *req.method_mut() = self.request_method.clone();

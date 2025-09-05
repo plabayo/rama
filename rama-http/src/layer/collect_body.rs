@@ -1,7 +1,6 @@
 //! Collect the http `Body`
 
-use crate::dep::http_body_util::BodyExt;
-use crate::{Request, Response, dep::http_body::Body};
+use crate::{Body, Request, Response, StreamingBody, body::util::BodyExt};
 use rama_core::{
     Context, Layer, Service,
     error::{BoxError, ErrorContext, OpaqueError},
@@ -48,8 +47,10 @@ impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for CollectBody<S>
 where
     S: Service<Request<ReqBody>, Response = Response<ResBody>, Error: Into<BoxError>>,
     ReqBody: Send + 'static,
-    ResBody:
-        Body<Data: Send, Error: std::error::Error + Send + Sync + 'static> + Send + Sync + 'static,
+    ResBody: StreamingBody<Data: Send, Error: std::error::Error + Send + Sync + 'static>
+        + Send
+        + Sync
+        + 'static,
 {
     type Response = Response;
     type Error = BoxError;
@@ -67,7 +68,7 @@ where
             .context("CollectBody::inner:serve")?;
         let (parts, body) = resp.into_parts();
         let bytes = body.collect().await.context("collect body")?.to_bytes();
-        let body = crate::Body::from(bytes);
+        let body = Body::from(bytes);
         Ok(Response::from_parts(parts, body))
     }
 }

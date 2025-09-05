@@ -1,7 +1,4 @@
-use crate::{
-    Body, Request,
-    dep::{http_body, http_body_util::BodyExt},
-};
+use crate::{Body, Request, StreamingBody, body::util::BodyExt};
 use rama_core::{bytes::Bytes, error::BoxError};
 use rama_http_types::proto::{
     h1::Http1HeaderMap,
@@ -18,7 +15,7 @@ pub async fn write_http_request<W, B>(
 ) -> Result<Request, BoxError>
 where
     W: AsyncWrite + Unpin + Send + Sync + 'static,
-    B: http_body::Body<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
+    B: StreamingBody<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
 {
     let (mut parts, body) = req.into_parts();
 

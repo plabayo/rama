@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use httparse::ParserConfig;
 use rama_core::bytes::Bytes;
+use rama_http::Body;
 use rama_http::io::upgrade::Upgraded;
 use std::task::ready;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -34,7 +35,7 @@ pin_project_lite::pin_project! {
     where
         S: HttpService<IncomingBody>,
     {
-        conn: Http1Dispatcher<T, rama_http_types::Body, S>,
+        conn: Http1Dispatcher<T, Body, S>,
     }
 }
 

@@ -27,7 +27,7 @@ use rama::{
     Context, Layer, Service,
     graceful::Shutdown,
     http::{
-        Body, Request, Response, StatusCode,
+        Request, Response, StatusCode,
         client::EasyHttpWebClient,
         layer::{proxy_auth::ProxyAuthLayer, trace::TraceLayer, upgrade::UpgradeLayer},
         matcher::MethodMatcher,
@@ -59,6 +59,7 @@ use rama::{
 
 #[cfg(all(feature = "rustls", not(feature = "boring")))]
 use rama::tls::rustls::server::{TlsAcceptorDataBuilder, TlsAcceptorLayer};
+use rama_http::Body;
 
 use std::convert::Infallible;
 use std::time::Duration;

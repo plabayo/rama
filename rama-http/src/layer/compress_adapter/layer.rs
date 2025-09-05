@@ -48,10 +48,9 @@ impl CompressAdaptLayer {
 mod tests {
     use super::*;
 
-    use crate::dep::http_body_util::BodyExt;
     use crate::layer::compression::CompressionLayer;
     use crate::layer::set_header::SetResponseHeaderLayer;
-    use crate::{Body, Request, Response, header::ACCEPT_ENCODING};
+    use crate::{Body, Request, Response, body::util::BodyExt, header::ACCEPT_ENCODING};
     use rama_core::service::service_fn;
     use rama_core::{Context, Service};
     use rama_http_types::HeaderValue;

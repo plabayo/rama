@@ -3,7 +3,7 @@ use std::fmt;
 
 use rama_core::bytes::Bytes;
 use rama_http_types::HeaderValue;
-use rama_http_types::dep::http::uri::{self, Authority, Scheme, Uri};
+use rama_http_types::uri::{self, Authority, Scheme, Uri};
 
 use crate::Error;
 use crate::util::{IterExt, TryFromValues};

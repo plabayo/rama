@@ -1,5 +1,5 @@
 use crate::Request;
-use crate::dep::http_body_util::BodyExt;
+use crate::body::util::BodyExt;
 use crate::service::web::extract::FromRequest;
 use crate::utils::macros::define_http_rejection;
 use rama_utils::macros::impl_deref;

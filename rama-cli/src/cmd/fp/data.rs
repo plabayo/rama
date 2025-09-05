@@ -1,13 +1,13 @@
 use super::{State, StorageAuthorized};
 use rama::{
-    Context,
+    context::{Context, Extensions},
     error::{BoxError, ErrorContext, OpaqueError},
     http::{
         self, HeaderMap, HeaderName, Request,
         core::h2::frame::EarlyFrameCapture,
-        dep::http::{Extensions, request::Parts},
         headers::forwarded::Forwarded,
         proto::{h1::Http1HeaderMap, h2::PseudoHeaderOrder},
+        request::Parts,
     },
     net::{
         fingerprint::{Ja3, Ja4, Ja4H, PeetPrint},

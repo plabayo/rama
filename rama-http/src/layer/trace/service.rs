@@ -3,12 +3,11 @@ use super::{
     DefaultOnResponse, GrpcMakeClassifier, HttpMakeClassifier, MakeSpan, OnBodyChunk, OnEos,
     OnFailure, OnRequest, OnResponse, ResponseBody,
 };
-use crate::dep::http_body::Body as HttpBody;
 use crate::layer::classify::{
     ClassifiedResponse, ClassifyResponse, GrpcErrorsAsFailures, MakeClassifier,
     ServerErrorsAsFailures, SharedClassifier,
 };
-use crate::{Request, Response};
+use crate::{Request, Response, StreamingBody};
 use rama_core::{Context, Service, telemetry::tracing::Instrument};
 use rama_utils::macros::define_inner_service_accessors;
 use std::{fmt, time::Instant};
@@ -302,8 +301,8 @@ impl<S, ReqBody, ResBody, M, OnRequestT, OnResponseT, OnFailureT, OnBodyChunkT, 
     for Trace<S, M, MakeSpanT, OnRequestT, OnResponseT, OnBodyChunkT, OnEosT, OnFailureT>
 where
     S: Service<Request<ReqBody>, Response = Response<ResBody>, Error: fmt::Display>,
-    ReqBody: HttpBody + Send + 'static,
-    ResBody: HttpBody<Error: fmt::Display> + Send + Sync + 'static,
+    ReqBody: StreamingBody + Send + 'static,
+    ResBody: StreamingBody<Error: fmt::Display> + Send + Sync + 'static,
     M: MakeClassifier<Classifier: Clone>,
     MakeSpanT: MakeSpan<ReqBody>,
     OnRequestT: OnRequest<ReqBody>,

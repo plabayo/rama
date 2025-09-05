@@ -2,8 +2,8 @@ use super::Header;
 
 use fnv::FnvHasher;
 
-use crate::dep::http::method::Method;
 use crate::header;
+use crate::method::Method;
 
 use std::collections::VecDeque;
 use std::hash::{Hash, Hasher};

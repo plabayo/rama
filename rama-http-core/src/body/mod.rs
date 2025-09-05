@@ -15,12 +15,12 @@
 //!   requests and client responses).
 //!
 //! There are additional implementations available in [`http-body-util`][],
-//! such as a `Full` or `Empty` body. These are also exposed under `rama::http::dep::http_body_util`.
+//! such as a `Full` or `Empty` body. These are also exposed under `rama::http::body::util`.
 //!
 //! [`http-body-util`]: https://docs.rs/http-body-util
 
 pub use rama_core::bytes::{Buf, Bytes};
-pub use rama_http_types::dep::http_body::{Body, Frame, SizeHint};
+pub use rama_http_types::body::{Body, Frame, SizeHint};
 
 pub use self::incoming::Incoming;
 

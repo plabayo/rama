@@ -3,8 +3,10 @@
 use rama::bytes::Buf;
 use rama::futures::StreamExt;
 use rama::futures::stream;
-use rama::http::dep::http_body::Frame;
-use rama::http::dep::http_body_util::{BodyExt, StreamBody};
+use rama::http::body::{
+    Frame,
+    util::{BodyExt, StreamBody},
+};
 
 #[global_allocator]
 static ALLOC: divan::AllocProfiler = divan::AllocProfiler::system();

@@ -8,7 +8,7 @@ use std::fmt;
 use crate::{
     Context, Service,
     error::{BoxError, ErrorContext, OpaqueError},
-    http::{Request, Response, dep::http_body},
+    http::{Request, Response, StreamingBody},
     net::client::EstablishedClientConnection,
     service::BoxService,
     telemetry::tracing,
@@ -67,7 +67,7 @@ impl EasyHttpWebClient<(), ()> {
 impl<Body> Default
     for EasyHttpWebClient<Body, EstablishedClientConnection<HttpClientService<Body>, Request<Body>>>
 where
-    Body: http_body::Body<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
+    Body: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
 {
     #[cfg(feature = "boring")]
     fn default() -> Self {
@@ -126,9 +126,9 @@ impl<BodyIn, ConnResponse> EasyHttpWebClient<BodyIn, ConnResponse> {
 impl<Body, ModifiedBody, ConnResponse> Service<Request<Body>>
     for EasyHttpWebClient<Body, EstablishedClientConnection<ConnResponse, Request<ModifiedBody>>>
 where
-    Body: http_body::Body<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
+    Body: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
     ModifiedBody:
-        http_body::Body<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
+        StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
     ConnResponse: Service<Request<ModifiedBody>, Response = Response, Error = BoxError>,
 {
     type Response = Response;

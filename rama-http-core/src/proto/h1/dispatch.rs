@@ -7,7 +7,7 @@ use std::{
 use rama_core::bytes::{Buf, Bytes};
 use rama_core::error::BoxError;
 use rama_core::telemetry::tracing::{debug, error, trace};
-use rama_http::io::upgrade::OnUpgrade;
+use rama_http::{StreamingBody, io::upgrade::OnUpgrade};
 use rama_http_types::{Request, Response, StatusCode};
 use std::task::ready;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -18,7 +18,7 @@ use crate::client::dispatch::TrySendError;
 use crate::common::task;
 use crate::proto::{BodyLength, Conn, Dispatched, MessageHead, RequestHead};
 
-pub(crate) struct Dispatcher<D, Bs: Body, I, T> {
+pub(crate) struct Dispatcher<D, Bs: StreamingBody, I, T> {
     conn: Conn<I, Bs::Data, T>,
     dispatch: D,
     body_tx: Option<crate::body::Sender>,
@@ -73,7 +73,7 @@ where
     D::PollError: Into<BoxError>,
     I: AsyncRead + AsyncWrite + Unpin,
     T: Http1Transaction + Unpin,
-    Bs: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
+    Bs: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     pub(crate) fn new(dispatch: D, conn: Conn<I, Bs::Data, T>) -> Self {
         Self {
@@ -455,7 +455,7 @@ where
     D::PollError: Into<BoxError>,
     I: AsyncRead + AsyncWrite + Unpin,
     T: Http1Transaction + Unpin,
-    Bs: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
+    Bs: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     type Output = crate::Result<Dispatched>;
 
@@ -493,7 +493,7 @@ impl<T> Drop for OptGuard<'_, T> {
 
 impl<
     S: HttpService<B>,
-    B: Body<Data: Send + 'static, Error: Into<BoxError> + Send + 'static + Unpin>,
+    B: StreamingBody<Data: Send + 'static, Error: Into<BoxError> + Send + 'static + Unpin>,
 > Server<S, B>
 {
     pub(crate) fn new(service: S) -> Self {
@@ -512,7 +512,7 @@ impl<
 // Service is never pinned
 impl<
     S: HttpService<B>,
-    B: Body<Data: Send + 'static, Error: Into<BoxError> + Send + 'static + Unpin>,
+    B: StreamingBody<Data: Send + 'static, Error: Into<BoxError> + Send + 'static + Unpin>,
 > Unpin for Server<S, B>
 {
 }
@@ -522,7 +522,7 @@ where
     S: HttpService<IncomingBody>,
 {
     type PollItem = MessageHead<StatusCode>;
-    type PollBody = rama_http_types::Body;
+    type PollBody = Body;
     type PollError = Infallible;
     type RecvItem = RequestHead;
 
@@ -595,7 +595,7 @@ impl<B> Client<B> {
 
 impl<B> Dispatch for Client<B>
 where
-    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
+    B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     type PollItem = RequestHead;
     type PollBody = B;

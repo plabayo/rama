@@ -1,10 +1,10 @@
 use super::{Header, header::BytesStr, huffman};
-use crate::dep::http::{
+use crate::proto::h2::frame;
+use crate::{
     header,
     method::{self, Method},
     status::{self, StatusCode},
 };
-use crate::proto::h2::frame;
 
 use rama_core::bytes::{Buf, Bytes, BytesMut};
 use rama_core::telemetry::tracing;
@@ -620,7 +620,7 @@ impl From<DecoderError> for frame::Error {
 
 /// Get an entry from the static table
 fn get_static(idx: usize) -> Header {
-    use crate::dep::http::header::HeaderValue;
+    use crate::header::HeaderValue;
 
     match idx {
         1 => Header::Authority(BytesStr::from_static("")),

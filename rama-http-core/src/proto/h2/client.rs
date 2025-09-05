@@ -14,17 +14,20 @@ use rama_core::rt::Executor;
 use rama_core::telemetry::tracing::{Instrument, debug, trace, trace_root_span, warn};
 use rama_core::{bytes::Bytes, combinators::Either};
 use rama_core::{error::BoxError, futures::future::FusedFuture};
-use rama_http::io::upgrade::{self, Upgraded};
+use rama_http::{
+    StreamingBody,
+    io::upgrade::{self, Upgraded},
+};
 use rama_http_types::{
-    Method, Request, Response, StatusCode, Version, dep::http_body,
-    opentelemetry::version_as_protocol_version, proto::h2::frame::SettingOrder,
+    Method, Request, Response, StatusCode, Version, opentelemetry::version_as_protocol_version,
+    proto::h2::frame::SettingOrder,
 };
 use std::task::ready;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use super::ping::{Ponger, Recorder};
 use super::{H2Upgraded, PipeToSendStream, SendBuf, ping};
-use crate::body::{Body, Incoming as IncomingBody};
+use crate::body::Incoming as IncomingBody;
 use crate::client::dispatch::{Callback, SendWhen, TrySendError};
 use crate::h2::SendStream;
 use crate::h2::client::ResponseFuture;
@@ -166,7 +169,7 @@ pub(crate) async fn handshake<T, B>(
 ) -> crate::Result<ClientTask<B, T>>
 where
     T: AsyncRead + AsyncWrite + Send + Unpin + 'static,
-    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
+    B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     handshake_with_builder(new_builder(config), io, req_rx, config, exec).await
 }
@@ -180,7 +183,7 @@ pub(crate) async fn handshake_with_builder<T, B>(
 ) -> crate::Result<ClientTask<B, T>>
 where
     T: AsyncRead + AsyncWrite + Send + Unpin + 'static,
-    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
+    B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     let (h2_tx, mut conn) = builder
         .handshake::<_, SendBuf<B::Data>>(io)
@@ -239,7 +242,7 @@ where
 pin_project! {
     struct Conn<T, B>
     where
-        B: http_body::Body,
+        B: StreamingBody,
         B: Send,
         B: 'static,
         B: Unpin,
@@ -250,23 +253,23 @@ pin_project! {
         #[pin]
         ponger: Ponger,
         #[pin]
-        conn: Connection<T, SendBuf<<B as Body>::Data>>,
+        conn: Connection<T, SendBuf<<B as StreamingBody>::Data>>,
     }
 }
 
 impl<T, B> Conn<T, B>
 where
-    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
+    B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
     T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
-    fn new(ponger: Ponger, conn: Connection<T, SendBuf<<B as Body>::Data>>) -> Self {
+    fn new(ponger: Ponger, conn: Connection<T, SendBuf<<B as StreamingBody>::Data>>) -> Self {
         Self { ponger, conn }
     }
 }
 
 impl<T, B> Future for Conn<T, B>
 where
-    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
+    B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
     T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     type Output = Result<(), crate::h2::Error>;
@@ -292,7 +295,7 @@ where
 pin_project! {
     struct ConnMapErr<T, B>
     where
-        B: Body,
+        B: StreamingBody,
         B: Send,
         B: 'static,
         B: Unpin,
@@ -306,7 +309,7 @@ pin_project! {
         T: 'static,
     {
         #[pin]
-        conn: Either<Conn<T, B>, Connection<T, SendBuf<<B as Body>::Data>>>,
+        conn: Either<Conn<T, B>, Connection<T, SendBuf<<B as StreamingBody>::Data>>>,
         #[pin]
         is_terminated: bool,
     }
@@ -314,7 +317,7 @@ pin_project! {
 
 impl<T, B> Future for ConnMapErr<T, B>
 where
-    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
+    B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
     T: AsyncRead + AsyncWrite + Unpin + Send,
 {
     type Output = Result<(), ()>;
@@ -337,7 +340,7 @@ where
 
 impl<T, B> FusedFuture for ConnMapErr<T, B>
 where
-    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
+    B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
     T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     fn is_terminated(&self) -> bool {
@@ -348,7 +351,7 @@ where
 pin_project! {
     pub struct ConnTask<T, B>
     where
-        B: Body,
+        B: StreamingBody,
         B: Send,
         B: 'static,
         B: Unpin,
@@ -372,7 +375,7 @@ pin_project! {
 
 impl<T, B> ConnTask<T, B>
 where
-    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
+    B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
     T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     fn new(
@@ -390,7 +393,7 @@ where
 
 impl<T, B> Future for ConnTask<T, B>
 where
-    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
+    B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
     T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     type Output = ();
@@ -419,7 +422,7 @@ pin_project! {
     #[project = H2ClientFutureProject]
     pub enum H2ClientFuture<B, T>
     where
-        B: Body,
+        B: StreamingBody,
         B: Send,
         B: 'static,
         B: Unpin,
@@ -449,7 +452,7 @@ pin_project! {
 
 impl<B, T> Future for H2ClientFuture<B, T>
 where
-    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
+    B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
     T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     type Output = ();
@@ -467,7 +470,7 @@ where
 
 struct FutCtx<B>
 where
-    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
+    B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     is_connect: bool,
     eos: bool,
@@ -477,14 +480,14 @@ where
     cb: Callback<Request<B>, Response<IncomingBody>>,
 }
 
-impl<B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin> Unpin
+impl<B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin> Unpin
     for FutCtx<B>
 {
 }
 
 pub(crate) struct ClientTask<B, T>
 where
-    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
+    B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
     T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     ping: ping::Recorder,
@@ -499,7 +502,7 @@ where
 
 impl<B, T> ClientTask<B, T>
 where
-    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
+    B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
     T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     pub(crate) fn is_extended_connect_protocol_enabled(&self) -> bool {
@@ -510,7 +513,7 @@ where
 pin_project! {
     pub struct PipeMap<S>
     where
-        S: Body,
+        S: StreamingBody,
     {
         #[pin]
         pipe: PipeToSendStream<S>,
@@ -523,7 +526,7 @@ pin_project! {
 
 impl<B> Future for PipeMap<B>
 where
-    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
+    B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     type Output = ();
 
@@ -547,7 +550,7 @@ where
 
 impl<B, T> ClientTask<B, T>
 where
-    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
+    B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
     T: AsyncRead + AsyncWrite + Send + Unpin,
 {
     #[allow(clippy::needless_pass_by_ref_mut)]
@@ -618,7 +621,7 @@ where
 pin_project! {
     pub(crate) struct ResponseFutMap<B>
     where
-        B: Body,
+        B: StreamingBody,
         B: Send,
         B: 'static,
         B: Unpin,
@@ -631,13 +634,13 @@ pin_project! {
         #[pin]
         ping: Option<Recorder>,
         #[pin]
-        send_stream: Option<Option<SendStream<SendBuf<<B as Body>::Data>>>>,
+        send_stream: Option<Option<SendStream<SendBuf<<B as StreamingBody>::Data>>>>,
     }
 }
 
 impl<B> Future for ResponseFutMap<B>
 where
-    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
+    B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     type Output = Result<Response<crate::body::Incoming>, (crate::Error, Option<Request<B>>)>;
 
@@ -701,7 +704,7 @@ where
 
 impl<B, T> Future for ClientTask<B, T>
 where
-    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
+    B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
     T: AsyncRead + AsyncWrite + Unpin + Send,
 {
     type Output = crate::Result<Dispatched>;

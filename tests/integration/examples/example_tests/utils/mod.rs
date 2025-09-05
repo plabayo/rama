@@ -1,6 +1,8 @@
 #![allow(dead_code)]
 
 use rama::telemetry::tracing::level_filters::LevelFilter;
+#[cfg(feature = "http-full")]
+use rama_http::Body;
 use std::{
     process::{Child, ExitStatus},
     sync::Once,
@@ -14,7 +16,7 @@ use ::std::time::Duration;
 use rama::{
     Layer, Service,
     error::BoxError,
-    http::Body,
+    http::StreamingBody,
     http::client::proxy::layer::SetProxyAuthHttpHeaderLayer,
     http::service::client::{HttpClientExt, IntoUrl, RequestBuilder},
     http::ws::handshake::client::{HttpClientWebSocketExt, WebSocketRequestBuilder, WithService},
@@ -278,10 +280,7 @@ fn map_internal_client_error<E, Body>(
 ) -> Result<Response, rama::error::BoxError>
 where
     E: Into<rama::error::BoxError>,
-    Body: rama::http::dep::http_body::Body<Data = bytes::Bytes, Error: Into<BoxError>>
-        + Send
-        + Sync
-        + 'static,
+    Body: StreamingBody<Data = bytes::Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
 {
     match result {
         Ok(response) => Ok(response.map(rama::http::Body::new)),

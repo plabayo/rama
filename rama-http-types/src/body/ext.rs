@@ -1,4 +1,4 @@
-use crate::dep::http_body_util::BodyExt;
+use super::util::BodyExt;
 use rama_error::{BoxError, ErrorContext, OpaqueError};
 
 /// An extension trait for [`Body`] that provides methods to extract data from it.
@@ -16,7 +16,7 @@ pub trait BodyExtractExt: private::Sealed {
 
 impl<Body> BodyExtractExt for crate::Response<Body>
 where
-    Body: crate::dep::http_body::Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static,
+    Body: crate::body::StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static,
 {
     async fn try_into_json<T: serde::de::DeserializeOwned + Send + 'static>(
         self,
@@ -43,7 +43,7 @@ where
 
 impl<Body> BodyExtractExt for crate::Request<Body>
 where
-    Body: crate::dep::http_body::Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static,
+    Body: crate::body::StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static,
 {
     async fn try_into_json<T: serde::de::DeserializeOwned + Send + 'static>(
         self,

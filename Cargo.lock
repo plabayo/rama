@@ -1276,7 +1276,6 @@ name = "h2-support"
 version = "0.1.0"
 dependencies = [
  "futures",
- "http",
  "rama-core",
  "rama-http-core",
  "rama-http-types",
@@ -2496,7 +2495,6 @@ dependencies = [
  "futures-channel",
  "h2-support",
  "hex",
- "http",
  "indexmap",
  "itertools 0.14.0",
  "itoa",
@@ -2800,9 +2798,11 @@ dependencies = [
 name = "rama-http-types"
 version = "0.3.0-alpha.4"
 dependencies = [
+ "bytes",
  "const_format",
  "fnv",
  "futures",
+ "futures-util",
  "hex",
  "http",
  "http-body",

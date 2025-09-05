@@ -2,8 +2,8 @@
 
 use super::IntoResponse;
 use super::{FromRequestContextRefPair, OptionalFromRequestContextRefPair};
-use crate::dep::http::request::Parts;
 use crate::headers::{self, HeaderDecode};
+use crate::request::Parts;
 use crate::{HeaderName, Response};
 use rama_core::Context;
 use std::ops::Deref;

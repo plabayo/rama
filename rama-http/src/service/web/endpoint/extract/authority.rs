@@ -3,7 +3,7 @@
 use super::FromRequestContextRefPair;
 use crate::utils::macros::define_http_rejection;
 use rama_core::Context;
-use rama_http_types::dep::http::request::Parts;
+use rama_http_types::request::Parts;
 use rama_net::address;
 use rama_net::http::RequestContext;
 use rama_utils::macros::impl_deref;
@@ -45,7 +45,7 @@ mod tests {
     use super::*;
 
     use crate::StatusCode;
-    use crate::dep::http_body_util::BodyExt as _;
+    use crate::body::util::BodyExt;
     use crate::header::X_FORWARDED_HOST;
     use crate::layer::forwarded::GetForwardedHeaderService;
     use crate::service::web::WebService;

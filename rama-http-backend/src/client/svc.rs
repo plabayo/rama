@@ -6,13 +6,14 @@ use rama_core::{
     telemetry::tracing,
 };
 use rama_http::{
-    conn::TargetHttpVersion, header::SEC_WEBSOCKET_KEY, utils::RequestSwitchVersionExt,
+    StreamingBody, conn::TargetHttpVersion, header::SEC_WEBSOCKET_KEY,
+    utils::RequestSwitchVersionExt,
 };
 use rama_http_headers::{HeaderMapExt, Host};
 use rama_http_types::{
     Method, Request, Response, Version,
-    dep::{http::uri::PathAndQuery, http_body},
     header::{CONNECTION, HOST, KEEP_ALIVE, PROXY_CONNECTION, TRANSFER_ENCODING, UPGRADE},
+    uri::PathAndQuery,
 };
 use rama_net::{address::ProxyAddress, http::RequestContext};
 use std::fmt;
@@ -42,7 +43,7 @@ pub struct HttpClientService<Body, I = ()> {
 impl<BodyIn, BodyOut, I> Service<Request<BodyIn>> for HttpClientService<BodyOut, I>
 where
     BodyIn: Send + 'static,
-    BodyOut: http_body::Body<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
+    BodyOut: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
     I: RequestInspector<Request<BodyIn>, Error: Into<BoxError>, RequestOut = Request<BodyOut>>,
 {
     type Response = Response;
@@ -336,7 +337,7 @@ fn sanitize_client_req_header<B>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rama_http::{Scheme, Uri, dep::http::uri::Authority};
+    use rama_http::{Scheme, Uri, uri::Authority};
     use rama_net::{
         Protocol,
         address::{Domain, Host},

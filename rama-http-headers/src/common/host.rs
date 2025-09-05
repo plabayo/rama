@@ -3,7 +3,7 @@ use std::fmt;
 use std::net::IpAddr;
 
 use rama_core::bytes::Bytes;
-use rama_http_types::dep::http::uri;
+use rama_http_types::uri;
 use rama_http_types::{HeaderName, HeaderValue};
 use rama_net::address;
 

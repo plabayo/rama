@@ -2,12 +2,12 @@ use super::CompressionBody;
 use super::CompressionLevel;
 use super::body::BodyInner;
 use super::predicate::{DefaultPredicate, Predicate};
-use crate::dep::http_body::Body;
 use crate::headers::encoding::{AcceptEncoding, Encoding};
 use crate::layer::util::compression::WrapBody;
 use crate::{Request, Response, header};
 use rama_core::{Context, Service};
 use rama_http_types::HeaderValue;
+use rama_http_types::StreamingBody;
 use rama_utils::macros::define_inner_service_accessors;
 use rama_utils::str::submatch_ignore_ascii_case;
 
@@ -186,7 +186,7 @@ impl<S, P> Compression<S, P> {
 impl<ReqBody, ResBody, S, P> Service<Request<ReqBody>> for Compression<S, P>
 where
     S: Service<Request<ReqBody>, Response = Response<ResBody>>,
-    ResBody: Body<Data: Send + 'static, Error: Send + 'static> + Send + 'static,
+    ResBody: StreamingBody<Data: Send + 'static, Error: Send + 'static> + Send + 'static,
     P: Predicate + Send + Sync + 'static,
     ReqBody: Send + 'static,
 {

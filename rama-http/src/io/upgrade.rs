@@ -93,8 +93,8 @@ pub struct Parts<T> {
 ///
 /// - `http::Request<B>`
 /// - `http::Response<B>`
-/// - `&mut http::Request<B>`
-/// - `&mut http::Response<B>`
+/// - `&mut rama_http::Request<B>`
+/// - `&mut rama_http::Response<B>`
 pub fn on<T: sealed::CanUpgrade>(msg: T) -> OnUpgrade {
     msg.on_upgrade()
 }

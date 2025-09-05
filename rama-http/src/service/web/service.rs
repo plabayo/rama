@@ -264,7 +264,7 @@ impl Service<Request> for WebService {
 /// ```rust
 /// use rama_http::matcher::{HttpMatcher, MethodMatcher};
 /// use rama_http::{Body, Request, Response, StatusCode};
-/// use rama_http::dep::http_body_util::BodyExt;
+/// use rama_http::body::util::BodyExt;
 /// use rama_core::{Context, Service};
 ///
 /// #[tokio::main]
@@ -291,7 +291,7 @@ impl Service<Request> for WebService {
 /// ```rust
 /// use rama_http::matcher::{HttpMatcher, MethodMatcher};
 /// use rama_http::{Body, Request, Response, StatusCode};
-/// use rama_http::dep::http_body_util::BodyExt;
+/// use rama_http::body::util::BodyExt;
 /// use rama_http::service::web::IntoEndpointService;
 /// use rama_core::{Context, Service};
 /// use rama_core::matcher::MatcherRouter;
@@ -330,9 +330,8 @@ pub use crate::__match_service as match_service;
 
 #[cfg(test)]
 mod test {
-    use crate::Body;
-    use crate::dep::http_body_util::BodyExt;
     use crate::matcher::MethodMatcher;
+    use crate::{Body, body::util::BodyExt};
 
     use super::*;
 

@@ -1,4 +1,4 @@
-use rama_http_types::dep::http::response;
+use rama_http_types::response;
 
 use crate::HeaderEncode;
 

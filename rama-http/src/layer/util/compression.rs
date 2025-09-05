@@ -1,6 +1,6 @@
 //! Types used by compression and decompression middleware.
 
-use crate::dep::http_body::{Body, Frame};
+use crate::body::{Frame, SizeHint, StreamingBody};
 use pin_project_lite::pin_project;
 use rama_core::bytes::{Buf, Bytes, BytesMut};
 use rama_core::error::BoxError;
@@ -15,8 +15,10 @@ use tokio::io::AsyncRead;
 use tokio_util::io::StreamReader;
 
 /// A `Body` that has been converted into an `AsyncRead`.
-pub(crate) type AsyncReadBody<B> =
-    StreamReader<StreamErrorIntoIoError<BodyIntoStream<B>, <B as Body>::Error>, <B as Body>::Data>;
+pub(crate) type AsyncReadBody<B> = StreamReader<
+    StreamErrorIntoIoError<BodyIntoStream<B>, <B as StreamingBody>::Error>,
+    <B as StreamingBody>::Data,
+>;
 
 /// Trait for applying some decorator to an `AsyncRead`
 pub(crate) trait DecorateAsyncRead {
@@ -54,7 +56,7 @@ impl<M: DecorateAsyncRead> WrapBody<M> {
     #[allow(dead_code)]
     pub(crate) fn new<B>(body: B, quality: CompressionLevel) -> Self
     where
-        B: Body,
+        B: StreamingBody,
         M: DecorateAsyncRead<Input = AsyncReadBody<B>>,
     {
         // convert `Body` into a `Stream`
@@ -78,9 +80,9 @@ impl<M: DecorateAsyncRead> WrapBody<M> {
     }
 }
 
-impl<B, M> Body for WrapBody<M>
+impl<B, M> StreamingBody for WrapBody<M>
 where
-    B: Body<Error: Into<BoxError>>,
+    B: StreamingBody<Error: Into<BoxError>>,
     M: DecorateAsyncRead<Input = AsyncReadBody<B>>,
 {
     type Data = Bytes;
@@ -141,7 +143,7 @@ where
 pin_project! {
     pub(crate) struct BodyIntoStream<B>
     where
-        B: Body,
+        B: StreamingBody,
     {
         #[pin]
         body: B,
@@ -153,7 +155,7 @@ pin_project! {
 #[allow(dead_code)]
 impl<B> BodyIntoStream<B>
 where
-    B: Body,
+    B: StreamingBody,
 {
     pub(crate) fn new(body: B) -> Self {
         Self {
@@ -186,7 +188,7 @@ where
 
 impl<B> Stream for BodyIntoStream<B>
 where
-    B: Body,
+    B: StreamingBody,
 {
     type Item = Result<B::Data, B::Error>;
 
@@ -215,9 +217,9 @@ where
     }
 }
 
-impl<B> Body for BodyIntoStream<B>
+impl<B> StreamingBody for BodyIntoStream<B>
 where
-    B: Body,
+    B: StreamingBody,
 {
     type Data = B::Data;
     type Error = B::Error;
@@ -245,7 +247,7 @@ where
     }
 
     #[inline]
-    fn size_hint(&self) -> rama_http_types::dep::http_body::SizeHint {
+    fn size_hint(&self) -> SizeHint {
         self.body.size_hint()
     }
 }
