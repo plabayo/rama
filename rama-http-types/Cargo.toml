@@ -25,9 +25,9 @@ bytes = { workspace = true }
 const_format = { workspace = true }
 fnv = { workspace = true }
 futures-util = { workspace = true }
-http = { workspace = true, optional = true }
-http-body = { workspace = true, optional = true }
-http-body-util = { workspace = true, optional = true }
+http = { workspace = true }
+http-body = { workspace = true }
+http-body-util = { workspace = true }
 itoa = { workspace = true }
 memchr = { workspace = true }
 mime = { workspace = true }
