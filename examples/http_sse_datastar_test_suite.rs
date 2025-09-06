@@ -14,7 +14,7 @@
 
 use rama::{
     Layer,
-    futures::async_stream::stream,
+    futures::async_stream::stream_fn,
     http::{
         layer::trace::TraceLayer,
         matcher::HttpMatcher,
@@ -142,10 +142,16 @@ pub mod handlers {
     pub async fn test(ReadSignals(test_case): ReadSignals<TestCase>) -> impl IntoResponse {
         Sse::new(KeepAliveStream::new(
             KeepAlive::new(),
-            stream! {
+            stream_fn(async |mut yielder| {
                 for event in test_case.events {
                     let sse_event = match event {
-                        TestCaseEvent::ExecuteScript { script, event_id, retry_duration, attributes, auto_remove } => {
+                        TestCaseEvent::ExecuteScript {
+                            script,
+                            event_id,
+                            retry_duration,
+                            attributes,
+                            auto_remove,
+                        } => {
                             let mut event = ExecuteScript {
                                 script: script.into(),
                                 auto_remove,
@@ -181,15 +187,23 @@ pub mod handlers {
                                 }),
                             }.into_datastar_event();
                             if let Some(id) = event_id
-                                && let Err(err) = event.try_set_id(id) {
-                                    tracing::error!("failed to set id of event: {err}");
-                                }
+                                && let Err(err) = event.try_set_id(id)
+                            {
+                                tracing::error!("failed to set id of event: {err}");
+                            }
                             if let Some(retry) = retry_duration {
                                 event.set_retry(retry);
                             }
                             event
                         }
-                        TestCaseEvent::PatchElements { elements, event_id, retry_duration, mode, selector, use_view_transition } => {
+                        TestCaseEvent::PatchElements {
+                            elements,
+                            event_id,
+                            retry_duration,
+                            mode,
+                            selector,
+                            use_view_transition,
+                        } => {
                             let mut event = PatchElements {
                                 elements: elements.map(Into::into),
                                 selector: selector.map(Into::into),
@@ -204,35 +218,51 @@ pub mod handlers {
                                     _ => ElementPatchMode::Outer, // includes "outer"
                                 },
                                 use_view_transition: use_view_transition.unwrap_or_default(),
-                            }.into_datastar_event();
+                            }
+                            .into_datastar_event();
                             if let Some(id) = event_id
-                                && let Err(err) = event.try_set_id(id) {
-                                    tracing::error!("failed to set id of event: {err}");
-                                }
+                                && let Err(err) = event.try_set_id(id)
+                            {
+                                tracing::error!("failed to set id of event: {err}");
+                            }
                             if let Some(retry) = retry_duration {
                                 event.set_retry(retry);
                             }
                             event
-                        },
-                        TestCaseEvent::PatchSignals { signals, signals_raw, event_id, retry_duration, only_if_missing } => {
+                        }
+                        TestCaseEvent::PatchSignals {
+                            signals,
+                            signals_raw,
+                            event_id,
+                            retry_duration,
+                            only_if_missing,
+                        } => {
                             let mut event = PatchSignals {
-                                signals: signals_raw.unwrap_or_else(|| signals.map(|signals| serde_json::to_string(&signals).unwrap_or_default()).unwrap_or_default()),
+                                signals: signals_raw.unwrap_or_else(|| {
+                                    signals
+                                        .map(|signals| {
+                                            serde_json::to_string(&signals).unwrap_or_default()
+                                        })
+                                        .unwrap_or_default()
+                                }),
                                 only_if_missing: only_if_missing.unwrap_or_default(),
-                            }.into_datastar_event();
+                            }
+                            .into_datastar_event();
                             if let Some(id) = event_id
-                                && let Err(err) = event.try_set_id(id) {
-                                    tracing::error!("failed to set id of event: {err}");
-                                }
+                                && let Err(err) = event.try_set_id(id)
+                            {
+                                tracing::error!("failed to set id of event: {err}");
+                            }
                             if let Some(retry) = retry_duration {
                                 event.set_retry(retry);
                             }
                             event
-                        },
+                        }
                     };
 
-                    yield Ok::<_, Infallible>(sse_event);
+                    yielder.yield_item(Ok::<_, Infallible>(sse_event)).await;
                 }
-            },
+            }),
         ))
     }
 }

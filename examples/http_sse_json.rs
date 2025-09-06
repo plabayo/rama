@@ -30,7 +30,7 @@
 use rama::{
     Layer,
     error::{ErrorContext, OpaqueError},
-    futures::async_stream::stream,
+    futures::async_stream::stream_fn,
     http::{
         headers::LastEventId,
         layer::trace::TraceLayer,
@@ -74,16 +74,16 @@ async fn api_events_endpoint(last_id: Option<TypedHeader<LastEventId>>) -> impl 
 
     Sse::new(KeepAliveStream::new(
         KeepAlive::new(),
-        stream! {
+        stream_fn(move |mut yielder| async move {
             for i in 0..42 {
                 // emulate random delays :P
                 tokio::time::sleep(Duration::from_millis((i % 7) * 5)).await;
 
                 // NOTE that in a realistic service this data most likely
                 // comes from an async service or channel.
-                yield next_event();
+                yielder.yield_item(next_event()).await;
             }
-        },
+        }),
     ))
 }
 
