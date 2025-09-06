@@ -2873,6 +2873,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rama-pac"
+version = "0.3.0-alpha.4"
+dependencies = [
+ "rama-core",
+ "rama-http",
+ "rama-net",
+]
+
+[[package]]
 name = "rama-proxy"
 version = "0.3.0-alpha.4"
 dependencies = [
