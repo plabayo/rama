@@ -128,6 +128,15 @@ Please refer to <https://github.com/plabayo/rama/milestones> to know what's on t
 
 Rama (`0.2`) was featured in a 📻 Rustacean episode on the 19th of May 2024, and available to listen at <https://rustacean-station.org/episode/glen-de-cauwsemaecker/>. In this episode [Glen](https://www.glendc.com/) explains the history of Rama, why it exists, how it can be used and more.
 
+On the 19th of August 2025 we released [the first episode][netstack-one] of [Netstack.FM](https://netstack.fm), a
+new podcast about networking, Rust and everything in between. In [the first episode][netstack-one]
+we went over the origins of [Glen](https://www.glendc.com), Rama and why the podcast was created.
+
+[netstack-one]: https://netstack.fm/#episode-1
+
+Rama is also frequently featured in newsletters
+such as <https://this-week-in-rust.org/>.
+
 ## 💼 | License
 
 This project is dual-licensed under both the [MIT license][mit-license] and [Apache 2.0 License][apache-license].
