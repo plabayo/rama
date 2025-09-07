@@ -123,8 +123,8 @@ Rama comes with 🔋 batteries included, giving you the full freedom to build th
 
 > 🗒️ _Footnotes_
 >
-> * <sup>(1)</sup> Part of [`v0.3.0` milestone (ETA: 2025 Q3)](https://github.com/plabayo/rama/milestone/2)
-> * <sup>(2)</sup> Part of [`v0.4.0` milestone (ETA: 2025 Q3)](https://github.com/plabayo/rama/milestone/3)
+> * <sup>(1)</sup> Part of [`v0.3.0` milestone (ETA: 2025 Q4)](https://github.com/plabayo/rama/milestone/2)
+> * <sup>(2)</sup> Part of [`v0.4.0` milestone (ETA: 2025 Q4)](https://github.com/plabayo/rama/milestone/3)
 > * <sup>(3)</sup> No immediate plans, but on our radar. Please [open an issue](https://github.com/plabayo/rama/issues) to request this feature if you have an immediate need for it. Please add sufficient motivation/reasoning and consider [becoming a sponsor](#--sponsors) to help accelerate its priority.
 
 The primary focus of Rama is to aid you in your development of [proxies](https://ramaproxy.org/book/proxies/intro.html):
@@ -296,7 +296,7 @@ repositories in function of rama that aren't crates:
 Developing proxies are the primary focus of Rama (ラマ). It can however also be used to develop web services to serve web pages, Http API's and static content. This comes with many of the same benefits that you get when developing proxies using Rama:
 
 * Use Async Method Traits;
-* Reuse modular [Tower](https://github.com/tower-rs/tower)-like middleware using extensions as well as strongly typed state;
+* Reuse modular [Tower](https://github.com/tower-rs/tower)-like middleware using extensions;
 * Have the ability to be in full control of your web stack from Transport Layer (Tcp, Udp), through Tls and Http;
 * If all you care about is the Http layer then that is fine to.
 * Be able to trust that your incoming Application Http data has not been modified (e.g. Http header casing and order is preserved);
@@ -385,7 +385,7 @@ automated processes look like a human.
 
 ## 🧑‍💻 | Http Clients
 
-In [The rama book](https://ramaproxy.org/book) you can read and learn that a big pillar of Rama's architecture is built on top of [the Service concept](https://ramaproxy.org/book/intro/services_all_the_way_down.html). A [`Service`][rama-service] takes as input a user-defined `State` (e.g. containing your database Pool) and a `Request`, and uses it to serve either a `Response` or `Error`. Such a [`Service`][rama-service] can produce the response "directly" (also called ☘️ Leaf services) or instead pass the request and state to an inner [`Service`][rama-service] which it wraps around (so called 🍔 Middlewares).
+In [The rama book](https://ramaproxy.org/book) you can read and learn that a big pillar of Rama's architecture is built on top of [the Service concept](https://ramaproxy.org/book/intro/services_all_the_way_down.html). A [`Service`][rama-service] takes a `Request`, and uses it to serve either a `Response` or `Error`. Such a [`Service`][rama-service] can produce the response "directly" (also called ☘️ Leaf services) or instead pass the request to an inner [`Service`][rama-service] which it wraps around (so called 🍔 Middlewares).
 
 [rama-service]: https://ramaproxy.org/docs/rama/service/trait.Service.html
 
@@ -461,28 +461,14 @@ We also make use of [`cargo vet`](https://github.com/mozilla/cargo-vet) to [audi
 
 ### Tier 1 Platforms
 
-Rama (ラマ) is developed mostly on MacOS M-Series machines and run in production
-on a variety of Linux systems. These are tier 1 platofrms.
+Rama (ラマ) is developed mostly on MacOS M-Series and Windows 11 x64 machines.
+Most organisations running rama in production do so on a variety of Linux systems. These are tier 1 platforms.
 
 | platform | tested | test platform |
 |----------|--------|---------------|
-| MacOS    | ✅     | MacOS Apple Silicon (developer laptop) and macos-12 Intel ([GitHub Action](https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners/about-github-hosted-runners)) |
-| Linux    | ✅     | Ubuntu 22.04 ([GitHub Action](https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners/about-github-hosted-runners)) |
-
-### Tier 2 platforms
-
-These platforms we do not run ourselves but do have basic support, meaning:
-
-* the code compiles and checks;
-* unit tests pass
-
-As we do not use this platform ourselves and neither do we run integration tests on them,
-we can however not promise that there are no issues with these builds. Neither do
-we provide binary builds for this platform.
-
-| platform | tested | test platform |
-|----------|--------|---------------|
-| Windows    | ✅     | Windows latest (x64) ([GitHub Action](https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners/about-github-hosted-runners)) |
+| MacOS    | ✅     | MacOS 15 Apple Silicon: developer machine + [GitHub Action](https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners/about-github-hosted-runners) |
+| Linux    | ✅     | AMD x64 developer machine with Ubuntu 25 + [GitHub Action (Ubuntu 24.04)](https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners/about-github-hosted-runners) |
+| Windows  | ✅     | Windows 11 AMD x64 developer machine + [GitHub Action (Windows latest (x64))](https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners/about-github-hosted-runners) |
 
 ### Other Platforms
 
@@ -505,6 +491,15 @@ Please refer to <https://github.com/plabayo/rama/milestones> to know what's on t
 ## 📰 | Media Appearances
 
 Rama (`0.2`)  was featured in a 📻 Rustacean episode on the 19th of May 2024, and available to listen at <https://rustacean-station.org/episode/glen-de-cauwsemaecker/>. In this episode [Glen](https://www.glendc.com/) explains the history of Rama, why it exists, how it can be used and more.
+
+On the 19th of August 2025 we released [the first episode][netstack-one] of [Netstack.FM](https://netstack.fm), a
+new podcast about networking, Rust and everything in between. In [the first episode][netstack-one]
+we went over the origins of [Glen](https://www.glendc.com), Rama and why the podcast was created.
+
+[netstack-one]: https://netstack.fm/#episode-1
+
+Rama is also frequently featured in newsletters
+such as <https://this-week-in-rust.org/>.
 
 ## 💼 | License
 
@@ -648,3 +643,6 @@ Available at <https://ramaproxy.org/book/faq.html>.
 [![Star History Chart](https://api.star-history.com/svg?repos=plabayo/rama&type=Date)](https://star-history.com/#plabayo/rama&Date)
 
 [![original (OG) rama logo](./docs/book/src/img/old_logo.png)](https://ramaproxy.org/)
+
+📚 Want to know why we built Rama?
+Check out [the NetstackFM podcast](https://ramaproxy.org/book/netstackfm.html).

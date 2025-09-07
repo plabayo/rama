@@ -82,7 +82,7 @@ async fn main() {
 
     let tls_config = TlsConnectorDataBuilder::new_http_auto()
         .with_server_verify_mode(ServerVerifyMode::Disable)
-        .with_keylog_intent(rama_net::tls::KeyLogIntent::Environment)
+        .with_keylog_intent(rama::net::tls::KeyLogIntent::Environment)
         .into_shared_builder();
 
     let client = EasyHttpWebClient::builder()
@@ -149,21 +149,20 @@ async fn main() {
     graceful.spawn_task_fn(async move |guard| {
         let exec = Executor::graceful(guard.clone());
         HttpServer::auto(exec)
-            .listen_with_state(
-                state,
+            .listen(
                 ADDR,
                 (TraceLayer::new_for_http(), CompressionLayer::new()).into_layer(
-                    WebService::default().get(
-                        &path,
-                        async move |ctx: Context<Arc<ChallengeState>>| {
+                    WebService::default().get(&path, move |_ctx: Context| {
+                        let state = state.clone();
+                        async move {
                             let mut response = http::Response::new(Body::from(
-                                ctx.state().key_authorization.as_str().to_owned(),
+                                state.key_authorization.as_str().to_owned(),
                             ));
                             let headers = response.headers_mut();
                             headers.typed_insert(ContentType::octet_stream());
                             response
-                        },
-                    ),
+                        }
+                    }),
                 ),
             )
             .await

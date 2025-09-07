@@ -13,8 +13,9 @@ use rama::{
         HeaderName, HeaderValue, Request,
         header::COOKIE,
         headers::{
-            Cookie, HeaderMapExt, all_client_hint_header_name_strings,
+            Cookie, HeaderMapExt, SecWebSocketProtocol, all_client_hint_header_name_strings,
             forwarded::{CFConnectingIp, ClientIp, TrueClientIp, XClientIp, XRealIp},
+            sec_websocket_extensions,
         },
         layer::{
             catch_panic::CatchPanicLayer, compression::CompressionLayer,
@@ -30,7 +31,7 @@ use rama::{
         ws::handshake::server::WebSocketAcceptor,
     },
     layer::{
-        ConsumeErrLayer, HijackLayer, Layer, LimitLayer, TimeoutLayer,
+        AddExtensionLayer, ConsumeErrLayer, HijackLayer, Layer, LimitLayer, TimeoutLayer,
         limit::policy::ConcurrentPolicy,
     },
     net::{
@@ -225,15 +226,11 @@ pub async fn run(cfg: CliCommandFingerprint) -> Result<(), BoxError> {
     let pg_url = std::env::var("DATABASE_URL").ok();
     let storage_auth = std::env::var("RAMA_FP_STORAGE_COOKIE").ok();
 
-    let tcp_listener = TcpListener::build_with_state(Arc::new(
-        State::new(acme_data, pg_url, storage_auth.as_deref())
-            .await
-            .expect("create state"),
-    ))
-    .bind(cfg.bind.clone())
-    .await
-    .map_err(OpaqueError::from_boxed)
-    .context("bind fp service")?;
+    let tcp_listener = TcpListener::build()
+        .bind(cfg.bind.clone())
+        .await
+        .map_err(OpaqueError::from_boxed)
+        .context("bind fp service")?;
 
     let bind_address = tcp_listener
         .local_addr()
@@ -241,8 +238,9 @@ pub async fn run(cfg: CliCommandFingerprint) -> Result<(), BoxError> {
 
     graceful.spawn_task_fn(async move |guard|  {
         let ws_service = ConsumeErrLayer::default().into_layer(WebSocketAcceptor::new()
-            .with_sub_protocols(["a", "b"])
-            .with_sub_protocols_flex(true)
+            .with_protocols(SecWebSocketProtocol::new("a").with_additional_protocol("b"))
+            .with_protocols_flex(true)
+            .with_extensions(sec_websocket_extensions::SecWebSocketExtensions::per_message_deflate())
             .into_service(service_fn(endpoints::ws_api)));
 
         let inner_http_service = HijackLayer::new(
@@ -309,6 +307,11 @@ pub async fn run(cfg: CliCommandFingerprint) -> Result<(), BoxError> {
             );
 
         let tcp_service_builder = (
+            AddExtensionLayer::new(Arc::new(
+                State::new(acme_data, pg_url, storage_auth.as_deref())
+                    .await
+                    .expect("create state"),
+            )),
             ConsumeErrLayer::trace(tracing::Level::WARN),
             tcp_forwarded_layer,
             TimeoutLayer::new(Duration::from_secs(300)),
@@ -400,17 +403,17 @@ impl<S: std::fmt::Debug> std::fmt::Debug for StorageAuthService<S> {
     }
 }
 
-impl<S, Body> Service<Arc<State>, Request<Body>> for StorageAuthService<S>
+impl<S, Body> Service<Request<Body>> for StorageAuthService<S>
 where
     Body: Send + 'static,
-    S: Service<Arc<State>, Request<Body>>,
+    S: Service<Request<Body>>,
 {
     type Response = S::Response;
     type Error = S::Error;
 
     async fn serve(
         &self,
-        mut ctx: Context<Arc<State>>,
+        mut ctx: Context,
         mut req: Request<Body>,
     ) -> Result<Self::Response, Self::Error> {
         if let Some(cookie) = req.headers().typed_get::<Cookie>() {
@@ -418,7 +421,7 @@ where
                 .iter()
                 .filter_map(|(k, v)| {
                     if k.eq_ignore_ascii_case("rama-storage-auth") {
-                        if Some(v) == ctx.state().storage_auth.as_deref() {
+                        if Some(v) == ctx.get::<Arc<State>>().unwrap().storage_auth.as_deref() {
                             ctx.insert(StorageAuthorized);
                         }
                         Some("rama-storage-auth=xxx".to_owned())

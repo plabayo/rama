@@ -7,6 +7,8 @@ use crate::h2::{client, proto, server};
 
 use rama_core::bytes::{Buf, Bytes};
 use rama_core::telemetry::tracing;
+use rama_http::proto::RequestHeaders;
+use rama_http::proto::h1::Http1HeaderMap;
 use rama_http::proto::h2::frame::EarlyFrameStreamContext;
 use rama_http_types::dep::http::Extensions;
 use rama_http_types::proto::h1::headers::original::OriginalHttp1Headers;
@@ -345,6 +347,16 @@ where
         if *request.method() == Method::HEAD {
             stream.content_length = ContentLength::Head;
         }
+
+        // TODO: with a bit of trickery we can perhaps in future
+        // do better than just cloning here...
+
+        let mut request_ext = request.extensions().clone();
+        let request_headers = request.headers().clone();
+        let request_headers = Http1HeaderMap::new(request_headers, Some(&mut request_ext));
+
+        request_ext.insert(RequestHeaders::from(request_headers));
+        stream.encoded_request_extensions = Some(request_ext);
 
         // Convert the message
         let headers = client::Peer::convert_send_message(

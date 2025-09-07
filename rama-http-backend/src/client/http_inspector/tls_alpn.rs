@@ -20,17 +20,16 @@ impl HttpsAlpnModifier {
     }
 }
 
-impl<State, ReqBody> Service<State, Request<ReqBody>> for HttpsAlpnModifier
+impl<ReqBody> Service<Request<ReqBody>> for HttpsAlpnModifier
 where
-    State: Clone + Send + Sync + 'static,
     ReqBody: Send + 'static,
 {
     type Error = BoxError;
-    type Response = (Context<State>, Request<ReqBody>);
+    type Response = (Context, Request<ReqBody>);
 
     async fn serve(
         &self,
-        mut ctx: Context<State>,
+        mut ctx: Context,
         req: Request<ReqBody>,
     ) -> Result<Self::Response, Self::Error> {
         if let Some(proto) = ctx

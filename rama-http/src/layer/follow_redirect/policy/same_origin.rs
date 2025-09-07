@@ -22,8 +22,8 @@ impl fmt::Debug for SameOrigin {
     }
 }
 
-impl<S, B, E> Policy<S, B, E> for SameOrigin {
-    fn redirect(&mut self, _: &Context<S>, attempt: &Attempt<'_>) -> Result<Action, E> {
+impl<B, E> Policy<B, E> for SameOrigin {
+    fn redirect(&mut self, _: &Context, attempt: &Attempt<'_>) -> Result<Action, E> {
         if eq_origin(attempt.previous(), attempt.location()) {
             Ok(Action::Follow)
         } else {
@@ -48,7 +48,7 @@ mod tests {
         let mut ctx = Context::default();
 
         let mut request = Request::builder().uri(initial).body(()).unwrap();
-        Policy::<(), (), ()>::on_request(&mut policy, &mut ctx, &mut request);
+        Policy::<(), ()>::on_request(&mut policy, &mut ctx, &mut request);
 
         let attempt = Attempt {
             status: Default::default(),
@@ -56,13 +56,13 @@ mod tests {
             previous: request.uri(),
         };
         assert!(
-            Policy::<(), (), ()>::redirect(&mut policy, &ctx, &attempt)
+            Policy::<(), ()>::redirect(&mut policy, &ctx, &attempt)
                 .unwrap()
                 .is_follow()
         );
 
         let mut request = Request::builder().uri(same_origin).body(()).unwrap();
-        Policy::<(), (), ()>::on_request(&mut policy, &mut ctx, &mut request);
+        Policy::<(), ()>::on_request(&mut policy, &mut ctx, &mut request);
 
         let attempt = Attempt {
             status: Default::default(),
@@ -70,7 +70,7 @@ mod tests {
             previous: request.uri(),
         };
         assert!(
-            Policy::<(), (), ()>::redirect(&mut policy, &ctx, &attempt)
+            Policy::<(), ()>::redirect(&mut policy, &ctx, &attempt)
                 .unwrap()
                 .is_stop()
         );

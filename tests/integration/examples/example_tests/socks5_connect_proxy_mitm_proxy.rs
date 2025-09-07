@@ -28,7 +28,7 @@ use rama::{
 async fn test_socks5_connect_proxy_mitm_proxy() {
     utils::init_tracing();
 
-    let runner = utils::ExampleRunner::<()>::interactive(
+    let runner = utils::ExampleRunner::interactive(
         "socks5_connect_proxy_mitm_proxy",
         Some("socks5,boring,dns"),
     );

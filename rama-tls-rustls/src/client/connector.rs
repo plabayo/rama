@@ -230,21 +230,15 @@ impl<S> TlsConnector<S, ConnectorKindTunnel> {
 
 // this way we do not need a hacky macro... however is there a way to do this without needing to hacK?!?!
 
-impl<S, State, Request> Service<State, Request> for TlsConnector<S, ConnectorKindAuto>
+impl<S, Request> Service<Request> for TlsConnector<S, ConnectorKindAuto>
 where
-    S: ConnectorService<State, Request, Connection: Stream + Unpin, Error: Into<BoxError>>,
-    State: Clone + Send + Sync + 'static,
-    Request:
-        TryRefIntoTransportContext<State, Error: Into<BoxError> + Send + 'static> + Send + 'static,
+    S: ConnectorService<Request, Connection: Stream + Unpin, Error: Into<BoxError>>,
+    Request: TryRefIntoTransportContext<Error: Into<BoxError> + Send + 'static> + Send + 'static,
 {
-    type Response = EstablishedClientConnection<AutoTlsStream<S::Connection>, State, Request>;
+    type Response = EstablishedClientConnection<AutoTlsStream<S::Connection>, Request>;
     type Error = BoxError;
 
-    async fn serve(
-        &self,
-        ctx: Context<State>,
-        req: Request,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
         let EstablishedClientConnection { mut ctx, req, conn } =
             self.inner.connect(ctx, req).await.map_err(Into::into)?;
         let transport_ctx = ctx
@@ -306,21 +300,15 @@ where
     }
 }
 
-impl<S, State, Request> Service<State, Request> for TlsConnector<S, ConnectorKindSecure>
+impl<S, Request> Service<Request> for TlsConnector<S, ConnectorKindSecure>
 where
-    S: ConnectorService<State, Request, Connection: Stream + Unpin, Error: Into<BoxError>>,
-    State: Clone + Send + Sync + 'static,
-    Request:
-        TryRefIntoTransportContext<State, Error: Into<BoxError> + Send + 'static> + Send + 'static,
+    S: ConnectorService<Request, Connection: Stream + Unpin, Error: Into<BoxError>>,
+    Request: TryRefIntoTransportContext<Error: Into<BoxError> + Send + 'static> + Send + 'static,
 {
-    type Response = EstablishedClientConnection<TlsStream<S::Connection>, State, Request>;
+    type Response = EstablishedClientConnection<TlsStream<S::Connection>, Request>;
     type Error = BoxError;
 
-    async fn serve(
-        &self,
-        ctx: Context<State>,
-        req: Request,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
         let EstablishedClientConnection { mut ctx, req, conn } =
             self.inner.connect(ctx, req).await.map_err(Into::into)?;
 
@@ -347,20 +335,15 @@ where
     }
 }
 
-impl<S, State, Request> Service<State, Request> for TlsConnector<S, ConnectorKindTunnel>
+impl<S, Request> Service<Request> for TlsConnector<S, ConnectorKindTunnel>
 where
-    S: ConnectorService<State, Request, Connection: Stream + Unpin, Error: Into<BoxError>>,
-    State: Clone + Send + Sync + 'static,
+    S: ConnectorService<Request, Connection: Stream + Unpin, Error: Into<BoxError>>,
     Request: Send + 'static,
 {
-    type Response = EstablishedClientConnection<AutoTlsStream<S::Connection>, State, Request>;
+    type Response = EstablishedClientConnection<AutoTlsStream<S::Connection>, Request>;
     type Error = BoxError;
 
-    async fn serve(
-        &self,
-        ctx: Context<State>,
-        req: Request,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
         let EstablishedClientConnection { mut ctx, req, conn } =
             self.inner.connect(ctx, req).await.map_err(Into::into)?;
 

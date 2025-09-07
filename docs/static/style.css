@@ -17,8 +17,9 @@
 }
 
 html {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-        "Helvetica Neue", Arial, sans-serif;
+    font-family:
+        -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue",
+        Arial, sans-serif;
     font-size: 16px;
     line-height: 1.5;
     color: var(--rama-text);
@@ -847,4 +848,60 @@ sup a:hover {
 .installation-links a:hover {
     color: var(--rama-hover);
     background-color: rgba(0, 200, 0, 0.1);
+}
+
+.netstackfm {
+    margin-top: 5rem;
+    padding: 3rem 1.5rem;
+    background: linear-gradient(135deg, #1a1d23 0%, #0f1114 100%);
+    border-radius: 1rem;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+    color: #f8f9fa;
+    text-align: center;
+}
+
+.netstackfm .section-title {
+    margin: 0 0 2rem;
+    font-size: 1.8rem;
+    font-weight: 700;
+}
+
+.netstackfm .section-title a {
+    color: #fff;
+    text-decoration: none;
+}
+
+.netstackfm .netstackfm-inner {
+    max-width: 880px;
+    margin: 0 auto;
+}
+
+.netstackfm .netstackfm-tagline {
+    font-size: 1.15rem;
+    line-height: 1.6;
+    margin-bottom: 1.75rem;
+}
+
+.netstackfm .netstackfm-buttons {
+    margin-top: 2rem;
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 0.75rem;
+}
+
+.netstackfm .btn {
+    min-width: 140px;
+    text-align: center;
+}
+
+.netstackfm .btn svg {
+    margin-right: 0.5rem;
+    vertical-align: middle;
+}
+
+.netstackfm .netstackfm-credit {
+    margin-top: 2rem;
+    font-size: 0.95rem;
+    opacity: 0.85;
 }

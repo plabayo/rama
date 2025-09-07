@@ -171,19 +171,18 @@ impl<S, P> UserAgentEmulateService<S, P> {
     }
 }
 
-impl<State, Body, S, P> Service<State, Request<Body>> for UserAgentEmulateService<S, P>
+impl<Body, S, P> Service<Request<Body>> for UserAgentEmulateService<S, P>
 where
-    State: Clone + Send + Sync + 'static,
     Body: Send + Sync + 'static,
-    S: Service<State, Request<Body>, Error: Into<BoxError>>,
-    P: UserAgentProvider<State>,
+    S: Service<Request<Body>, Error: Into<BoxError>>,
+    P: UserAgentProvider,
 {
     type Response = S::Response;
     type Error = BoxError;
 
     async fn serve(
         &self,
-        mut ctx: Context<State>,
+        mut ctx: Context,
         mut req: Request<Body>,
     ) -> Result<Self::Response, Self::Error> {
         if let Some(fallback) = self.select_fallback {
@@ -319,17 +318,16 @@ impl UserAgentEmulateHttpConnectModifier {
     }
 }
 
-impl<State, ReqBody> Service<State, Request<ReqBody>> for UserAgentEmulateHttpConnectModifier
+impl<ReqBody> Service<Request<ReqBody>> for UserAgentEmulateHttpConnectModifier
 where
-    State: Clone + Send + Sync + 'static,
     ReqBody: Send + 'static,
 {
     type Error = BoxError;
-    type Response = (Context<State>, Request<ReqBody>);
+    type Response = (Context, Request<ReqBody>);
 
     async fn serve(
         &self,
-        mut ctx: Context<State>,
+        mut ctx: Context,
         mut req: Request<ReqBody>,
     ) -> Result<Self::Response, Self::Error> {
         match ctx.get().cloned() {
@@ -351,8 +349,8 @@ where
     }
 }
 
-fn emulate_http_connect_settings<Body, State>(
-    ctx: &mut Context<State>,
+fn emulate_http_connect_settings<Body>(
+    ctx: &mut Context,
     req: &mut Request<Body>,
     profile: &HttpProfile,
 ) {
@@ -405,17 +403,16 @@ impl UserAgentEmulateHttpRequestModifier {
     }
 }
 
-impl<State, ReqBody> Service<State, Request<ReqBody>> for UserAgentEmulateHttpRequestModifier
+impl<ReqBody> Service<Request<ReqBody>> for UserAgentEmulateHttpRequestModifier
 where
-    State: Clone + Send + Sync + 'static,
     ReqBody: Send + 'static,
 {
     type Error = BoxError;
-    type Response = (Context<State>, Request<ReqBody>);
+    type Response = (Context, Request<ReqBody>);
 
     async fn serve(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         mut req: Request<ReqBody>,
     ) -> Result<Self::Response, Self::Error> {
         match ctx.get() {
@@ -498,8 +495,8 @@ where
     }
 }
 
-fn get_base_http_headers<'a, Body, State>(
-    ctx: &Context<State>,
+fn get_base_http_headers<'a, Body>(
+    ctx: &Context,
     req: &Request<Body>,
     profile: &'a HttpProfile,
 ) -> Option<&'a Http1HeaderMap> {
@@ -674,16 +671,19 @@ fn merge_http_headers<'a>(
         let base_header_name = base_name.header_name();
         let original_value = original_headers.remove(base_header_name);
         match base_header_name {
-            &ACCEPT
-            | &ACCEPT_LANGUAGE
-            | &SEC_WEBSOCKET_KEY
-            | &SEC_WEBSOCKET_EXTENSIONS
-            | &SEC_WEBSOCKET_PROTOCOL => {
+            &ACCEPT | &ACCEPT_LANGUAGE | &SEC_WEBSOCKET_EXTENSIONS => {
                 let value = original_value.unwrap_or(base_value);
                 output_headers_ref.push((base_name, value));
             }
-            &REFERER | &COOKIE | &AUTHORIZATION | &HOST | &ORIGIN | &CONTENT_LENGTH
-            | &CONTENT_TYPE => {
+            &REFERER
+            | &COOKIE
+            | &AUTHORIZATION
+            | &HOST
+            | &ORIGIN
+            | &CONTENT_LENGTH
+            | &CONTENT_TYPE
+            | &SEC_WEBSOCKET_PROTOCOL
+            | &SEC_WEBSOCKET_KEY => {
                 if let Some(value) = original_value {
                     output_headers_ref.push((base_name, value));
                 }
@@ -1876,7 +1876,7 @@ mod tests {
             version: Option<Version>,
             method: Option<Method>,
             headers: Option<HeaderMap>,
-            ctx: Option<Context<()>>,
+            ctx: Option<Context>,
             expected: &'static str,
         }
 

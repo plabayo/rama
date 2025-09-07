@@ -70,9 +70,8 @@ impl<ResBody> Redirect<ResBody> {
     }
 }
 
-impl<State, Body, ResBody> Service<State, Request<Body>> for Redirect<ResBody>
+impl<Body, ResBody> Service<Request<Body>> for Redirect<ResBody>
 where
-    State: Clone + Send + Sync + 'static,
     Body: Send + 'static,
     ResBody: Default + Send + 'static,
 {
@@ -81,7 +80,7 @@ where
 
     async fn serve(
         &self,
-        _ctx: Context<State>,
+        _ctx: Context,
         _req: Request<Body>,
     ) -> Result<Self::Response, Self::Error> {
         let mut res = Response::default();

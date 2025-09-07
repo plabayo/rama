@@ -148,19 +148,18 @@ impl<S: Clone> Clone for RemoveResponseHeader<S> {
     }
 }
 
-impl<ReqBody, ResBody, State, S> Service<State, Request<ReqBody>> for RemoveResponseHeader<S>
+impl<ReqBody, ResBody, S> Service<Request<ReqBody>> for RemoveResponseHeader<S>
 where
     ReqBody: Send + 'static,
     ResBody: Send + 'static,
-    State: Clone + Send + Sync + 'static,
-    S: Service<State, Request<ReqBody>, Response = Response<ResBody>>,
+    S: Service<Request<ReqBody>, Response = Response<ResBody>>,
 {
     type Response = S::Response;
     type Error = S::Error;
 
     async fn serve(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         req: Request<ReqBody>,
     ) -> Result<Self::Response, Self::Error> {
         let mut resp = self.inner.serve(ctx, req).await?;
@@ -189,7 +188,7 @@ mod test {
     #[tokio::test]
     async fn remove_response_header_prefix() {
         let svc = RemoveResponseHeaderLayer::prefix("x-foo").into_layer(service_fn(
-            async |_ctx: Context<()>, _req: Request| {
+            async |_ctx: Context, _req: Request| {
                 Ok::<_, Infallible>(
                     Response::builder()
                         .header("x-foo-bar", "baz")
@@ -211,7 +210,7 @@ mod test {
     #[tokio::test]
     async fn remove_response_header_exact() {
         let svc = RemoveResponseHeaderLayer::exact(HeaderName::from_static("foo")).into_layer(
-            service_fn(async |_ctx: Context<()>, _req: Request| {
+            service_fn(async |_ctx: Context, _req: Request| {
                 Ok::<_, Infallible>(
                     Response::builder()
                         .header("x-foo", "baz")
@@ -233,7 +232,7 @@ mod test {
     #[tokio::test]
     async fn remove_response_header_hop_by_hop() {
         let svc = RemoveResponseHeaderLayer::hop_by_hop().into_layer(service_fn(
-            async |_ctx: Context<()>, _req: Request| {
+            async |_ctx: Context, _req: Request| {
                 Ok::<_, Infallible>(
                     Response::builder()
                         .header("connection", "close")

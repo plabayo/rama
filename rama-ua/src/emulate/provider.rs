@@ -78,28 +78,28 @@ pub enum UserAgentSelectFallback {
 /// [`UserAgent`]: crate::UserAgent
 /// [`UserAgentSelectFallback::Random`]: UserAgentSelectFallback::Random
 /// [`UserAgentEmulateService`]: crate::emulate::UserAgentEmulateService
-pub trait UserAgentProvider<State>: Send + Sync + 'static {
+pub trait UserAgentProvider: Send + Sync + 'static {
     /// Selects a user agent profile based on the current context.
-    fn select_user_agent_profile(&self, ctx: &Context<State>) -> Option<&UserAgentProfile>;
+    fn select_user_agent_profile(&self, ctx: &Context) -> Option<&UserAgentProfile>;
 }
 
-impl<State> UserAgentProvider<State> for () {
+impl UserAgentProvider for () {
     #[inline]
-    fn select_user_agent_profile(&self, _ctx: &Context<State>) -> Option<&UserAgentProfile> {
+    fn select_user_agent_profile(&self, _ctx: &Context) -> Option<&UserAgentProfile> {
         None
     }
 }
 
-impl<State> UserAgentProvider<State> for UserAgentProfile {
+impl UserAgentProvider for UserAgentProfile {
     #[inline]
-    fn select_user_agent_profile(&self, _ctx: &Context<State>) -> Option<&UserAgentProfile> {
+    fn select_user_agent_profile(&self, _ctx: &Context) -> Option<&UserAgentProfile> {
         Some(self)
     }
 }
 
-impl<State> UserAgentProvider<State> for UserAgentDatabase {
+impl UserAgentProvider for UserAgentDatabase {
     #[inline]
-    fn select_user_agent_profile(&self, ctx: &Context<State>) -> Option<&UserAgentProfile> {
+    fn select_user_agent_profile(&self, ctx: &Context) -> Option<&UserAgentProfile> {
         match (ctx.get(), ctx.get()) {
             (Some(agent), _) => self.get(agent),
             (None, Some(UserAgentSelectFallback::Random)) => self.rnd(),
@@ -108,47 +108,47 @@ impl<State> UserAgentProvider<State> for UserAgentDatabase {
     }
 }
 
-impl<State, P> UserAgentProvider<State> for Option<P>
+impl<P> UserAgentProvider for Option<P>
 where
-    P: UserAgentProvider<State>,
+    P: UserAgentProvider,
 {
     #[inline]
-    fn select_user_agent_profile(&self, ctx: &Context<State>) -> Option<&UserAgentProfile> {
+    fn select_user_agent_profile(&self, ctx: &Context) -> Option<&UserAgentProfile> {
         self.as_ref().and_then(|p| p.select_user_agent_profile(ctx))
     }
 }
 
-impl<State, P> UserAgentProvider<State> for Arc<P>
+impl<P> UserAgentProvider for Arc<P>
 where
-    P: UserAgentProvider<State>,
+    P: UserAgentProvider,
 {
     #[inline]
-    fn select_user_agent_profile(&self, ctx: &Context<State>) -> Option<&UserAgentProfile> {
+    fn select_user_agent_profile(&self, ctx: &Context) -> Option<&UserAgentProfile> {
         self.as_ref().select_user_agent_profile(ctx)
     }
 }
 
-impl<State, P> UserAgentProvider<State> for Box<P>
+impl<P> UserAgentProvider for Box<P>
 where
-    P: UserAgentProvider<State>,
+    P: UserAgentProvider,
 {
     #[inline]
-    fn select_user_agent_profile(&self, ctx: &Context<State>) -> Option<&UserAgentProfile> {
+    fn select_user_agent_profile(&self, ctx: &Context) -> Option<&UserAgentProfile> {
         self.as_ref().select_user_agent_profile(ctx)
     }
 }
 
 macro_rules! impl_user_agent_provider_either {
     ($id:ident, $($param:ident),+ $(,)?) => {
-        impl<State, $($param),+> UserAgentProvider<State> for ::rama_core::combinators::$id<$($param),+>
+        impl< $($param),+> UserAgentProvider for ::rama_core::combinators::$id<$($param),+>
         where
             $(
-                $param: UserAgentProvider<State>,
+                $param: UserAgentProvider,
             )+
         {
             fn select_user_agent_profile(
                 &self,
-                ctx: &Context<State>,
+                ctx: &Context,
             ) -> Option<&UserAgentProfile> {
                 match self {
                     $(

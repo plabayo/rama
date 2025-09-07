@@ -175,17 +175,16 @@ impl<S> HttpProxyAddressService<S> {
     }
 }
 
-impl<S, State, Request> Service<State, Request> for HttpProxyAddressService<S>
+impl<S, Request> Service<Request> for HttpProxyAddressService<S>
 where
-    S: Service<State, Request>,
-    State: Clone + Send + Sync + 'static,
+    S: Service<Request>,
 {
     type Response = S::Response;
     type Error = S::Error;
 
     fn serve(
         &self,
-        mut ctx: Context<State>,
+        mut ctx: Context,
         req: Request,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
         if let Some(ref address) = self.address

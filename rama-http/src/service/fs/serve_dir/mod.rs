@@ -333,15 +333,13 @@ impl<F> ServeDir<F> {
     ///
     /// If you want to manually control how the error response is generated you can make a new
     /// service that wraps a `ServeDir` and calls `try_call` instead of `call`.
-    pub async fn try_call<State, ReqBody, FResBody>(
+    pub async fn try_call<ReqBody, FResBody>(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         req: Request<ReqBody>,
     ) -> Result<Response, std::io::Error>
     where
-        State: Clone + Send + Sync + 'static,
-        F: Service<State, Request<ReqBody>, Response = Response<FResBody>, Error = Infallible>
-            + Clone,
+        F: Service<Request<ReqBody>, Response = Response<FResBody>, Error = Infallible> + Clone,
         FResBody: http_body::Body<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
     {
         if req.method() != Method::GET && req.method() != Method::HEAD {
@@ -413,11 +411,10 @@ impl<F> ServeDir<F> {
     }
 }
 
-impl<State, ReqBody, F, FResBody> Service<State, Request<ReqBody>> for ServeDir<F>
+impl<ReqBody, F, FResBody> Service<Request<ReqBody>> for ServeDir<F>
 where
-    State: Clone + Send + Sync + 'static,
     ReqBody: Send + 'static,
-    F: Service<State, Request<ReqBody>, Response = Response<FResBody>, Error = Infallible> + Clone,
+    F: Service<Request<ReqBody>, Response = Response<FResBody>, Error = Infallible> + Clone,
     FResBody: HttpBody<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
 {
     type Response = Response;
@@ -425,7 +422,7 @@ where
 
     async fn serve(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         req: Request<ReqBody>,
     ) -> Result<Self::Response, Self::Error> {
         let result = self.try_call(ctx, req).await;
@@ -549,9 +546,8 @@ impl ServeVariant {
 #[derive(Debug, Clone, Copy)]
 pub struct DefaultServeDirFallback(Infallible);
 
-impl<State, ReqBody> Service<State, Request<ReqBody>> for DefaultServeDirFallback
+impl<ReqBody> Service<Request<ReqBody>> for DefaultServeDirFallback
 where
-    State: Clone + Send + Sync + 'static,
     ReqBody: Send + 'static,
 {
     type Response = Response;
@@ -559,7 +555,7 @@ where
 
     async fn serve(
         &self,
-        _ctx: Context<State>,
+        _ctx: Context,
         _req: Request<ReqBody>,
     ) -> Result<Self::Response, Self::Error> {
         match self.0 {}

@@ -3,40 +3,25 @@ use crate::{Context, context::Extensions};
 use super::Matcher;
 
 /// Extension to apply matcher operations to an [`Iterator`] of [`Matcher`]s.
-pub trait IteratorMatcherExt<'a, M, State, Request>: Iterator<Item = &'a M> + 'a
+pub trait IteratorMatcherExt<'a, M, Request>: Iterator<Item = &'a M> + 'a
 where
-    M: Matcher<State, Request>,
+    M: Matcher<Request>,
 {
     /// Matches in case all [`Matcher`] elements match for the given `Request`
     /// within the specified [`crate::Context`].
-    fn matches_and(
-        self,
-        ext: Option<&mut Extensions>,
-        ctx: &Context<State>,
-        request: &Request,
-    ) -> bool;
+    fn matches_and(self, ext: Option<&mut Extensions>, ctx: &Context, request: &Request) -> bool;
 
     /// Matches in case any of the [`Matcher`] elements match for the given `Request`
     /// within the specified [`crate::Context`].
-    fn matches_or(
-        self,
-        ext: Option<&mut Extensions>,
-        ctx: &Context<State>,
-        request: &Request,
-    ) -> bool;
+    fn matches_or(self, ext: Option<&mut Extensions>, ctx: &Context, request: &Request) -> bool;
 }
 
-impl<'a, I, M, State, Request> IteratorMatcherExt<'a, M, State, Request> for I
+impl<'a, I, M, Request> IteratorMatcherExt<'a, M, Request> for I
 where
     I: Iterator<Item = &'a M> + 'a,
-    M: Matcher<State, Request>,
+    M: Matcher<Request>,
 {
-    fn matches_and(
-        self,
-        ext: Option<&mut Extensions>,
-        ctx: &Context<State>,
-        request: &Request,
-    ) -> bool {
+    fn matches_and(self, ext: Option<&mut Extensions>, ctx: &Context, request: &Request) -> bool {
         match ext {
             None => {
                 for matcher in self {
@@ -59,12 +44,7 @@ where
         }
     }
 
-    fn matches_or(
-        self,
-        ext: Option<&mut Extensions>,
-        ctx: &Context<State>,
-        request: &Request,
-    ) -> bool {
+    fn matches_or(self, ext: Option<&mut Extensions>, ctx: &Context, request: &Request) -> bool {
         let mut it = self.peekable();
         if it.peek().is_none() {
             return true;

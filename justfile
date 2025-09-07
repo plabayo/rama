@@ -1,3 +1,9 @@
+set windows-shell := ["powershell.exe", "-NoLogo", "-Command"]
+
+export RUSTFLAGS := "-D warnings"
+export RUSTDOCFLAGS := "-D rustdoc::broken-intra-doc-links"
+export RUST_LOG := "debug"
+
 fmt *ARGS:
 	cargo fmt --all {{ARGS}}
 
@@ -11,19 +17,19 @@ sort:
 lint: fmt sort
 
 check:
-	RUSTFLAGS='-D warnings' cargo check --workspace --all-targets --all-features
+	cargo check --workspace --all-targets --all-features
 
 check-crate CRATE:
-	RUSTFLAGS='-D warnings' cargo check -p {{CRATE}} --all-targets --all-features
+	cargo check -p {{CRATE}} --all-targets --all-features
 
 check-links:
     lychee .
 
 clippy:
-	RUSTFLAGS='-D warnings' cargo clippy --workspace --all-targets --all-features
+	cargo clippy --workspace --all-targets --all-features
 
 clippy-crate CRATE:
-	RUSTFLAGS='-D warnings' cargo clippy -p {{CRATE}} --all-targets --all-features
+	cargo clippy -p {{CRATE}} --all-targets --all-features
 
 clippy-fix *ARGS:
 	cargo clippy --workspace --all-targets --all-features --fix {{ARGS}}
@@ -38,13 +44,13 @@ extra-checks:
 	{{justfile_directory()}}/scripts/extra-checks.sh
 
 doc:
-	RUSTDOCFLAGS="-D rustdoc::broken-intra-doc-links" cargo doc --all-features --no-deps
+	cargo doc --all-features --no-deps
 
 doc-crate CRATE:
-	RUSTDOCFLAGS="-D rustdoc::broken-intra-doc-links" cargo doc --all-features --no-deps -p {{CRATE}}
+	cargo doc --all-features --no-deps -p {{CRATE}}
 
 doc-open:
-	RUSTDOCFLAGS="-D rustdoc::broken-intra-doc-links" cargo doc --all-features --no-deps --open
+	cargo doc --all-features --no-deps --open
 
 hack:
 	@cargo install cargo-hack
@@ -62,7 +68,7 @@ test-spec-h2 *ARGS:
 test-spec: test-spec-h2
 
 test-ignored:
-	cargo test --features=cli,compression,http-full,proxy-full,tcp,rustls --workspace -- --ignored
+	cargo test --features=cli,http-full,proxy-full,rustls --workspace -- --ignored
 
 qq: lint check clippy doc extra-checks
 
@@ -93,7 +99,7 @@ rama-fp *ARGS:
 	cargo run -p rama-fp -- {{ARGS}}
 
 watch-rama-fp *ARGS:
-	RUST_LOG=debug cargo watch -x 'run -p rama-fp -- {{ARGS}}'
+	cargo watch -x 'run -p rama-fp -- {{ARGS}}'
 
 docker-build-rama-fp:
 	docker build -f rama-fp/infra/Dockerfile -t glendc/rama-fp:latest .
@@ -195,6 +201,10 @@ publish:
     cargo publish -p rama-tower
     cargo publish -p rama
     cargo publish -p rama-cli
+
+[working-directory: './rama-cli/manifests/winget/Plabayo/Rama/Preview']
+@submit-rama-cli-winget-preview:
+    wingetcreate submit -p 'Plabayo.Rama.Preview version bump' .
 
 update-deps:
     cargo upgrade

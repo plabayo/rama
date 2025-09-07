@@ -1,9 +1,9 @@
 //! [`rama::inspect::RequestInspector`] that ship with this crate,
 //! that are especially useful for the http connector service in this crate.
 
-#[cfg(any(feature = "rustls", feature = "boring"))]
+#[cfg(feature = "tls")]
 mod tls_alpn;
-#[cfg(any(feature = "rustls", feature = "boring"))]
+#[cfg(feature = "tls")]
 pub use tls_alpn::HttpsAlpnModifier;
 
 mod version_adapter;

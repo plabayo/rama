@@ -62,10 +62,10 @@ impl RequestContext {
     }
 }
 
-impl<T: HttpRequestParts, State> TryFrom<(&Context<State>, &T)> for RequestContext {
+impl<T: HttpRequestParts> TryFrom<(&Context, &T)> for RequestContext {
     type Error = OpaqueError;
 
-    fn try_from((ctx, req): (&Context<State>, &T)) -> Result<Self, Self::Error> {
+    fn try_from((ctx, req): (&Context, &T)) -> Result<Self, Self::Error> {
         let uri = req.uri();
 
         let protocol = protocol_from_uri_or_context(ctx, uri, req.method());
@@ -152,11 +152,7 @@ impl<T: HttpRequestParts, State> TryFrom<(&Context<State>, &T)> for RequestConte
 }
 
 #[allow(clippy::unnecessary_lazy_evaluations)]
-fn protocol_from_uri_or_context<State>(
-    ctx: &Context<State>,
-    uri: &Uri,
-    method: &Method,
-) -> Protocol {
+fn protocol_from_uri_or_context(ctx: &Context, uri: &Uri, method: &Method) -> Protocol {
     Protocol::maybe_from_uri_scheme_str_and_method(uri.scheme(), Some(method)).or_else(|| ctx.get::<Forwarded>()
         .and_then(|f| f.client_proto().map(|p| {
             tracing::trace!(url.furi = %uri, "request context: detected protocol from forwarded client proto");
@@ -203,24 +199,18 @@ impl From<&RequestContext> for TransportContext {
     }
 }
 
-impl<State, Body> TryRefIntoTransportContext<State> for rama_http_types::Request<Body> {
+impl<Body> TryRefIntoTransportContext for rama_http_types::Request<Body> {
     type Error = OpaqueError;
 
-    fn try_ref_into_transport_ctx(
-        &self,
-        ctx: &Context<State>,
-    ) -> Result<TransportContext, Self::Error> {
+    fn try_ref_into_transport_ctx(&self, ctx: &Context) -> Result<TransportContext, Self::Error> {
         (ctx, self).try_into()
     }
 }
 
-impl<State> TryRefIntoTransportContext<State> for rama_http_types::dep::http::request::Parts {
+impl TryRefIntoTransportContext for rama_http_types::dep::http::request::Parts {
     type Error = OpaqueError;
 
-    fn try_ref_into_transport_ctx(
-        &self,
-        ctx: &Context<State>,
-    ) -> Result<TransportContext, Self::Error> {
+    fn try_ref_into_transport_ctx(&self, ctx: &Context) -> Result<TransportContext, Self::Error> {
         (ctx, self).try_into()
     }
 }

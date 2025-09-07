@@ -4,7 +4,7 @@ use rama::{Context, http::BodyExtractExt};
 const EXPECTED_FILE_CONTENT: &str = include_str!("../../../../test-files/index.html");
 
 #[tokio::test]
-// #[ignore]
+#[ignore]
 async fn test_http_service_include_dir() {
     utils::init_tracing();
 

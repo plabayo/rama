@@ -65,8 +65,11 @@ async fn test_http_mitm_proxy() {
                 .match_route(
                     "/echo",
                     HttpMatcher::custom(WebSocketMatcher::new()),
-                    ConsumeErrLayer::trace(Level::DEBUG)
-                        .into_layer(WebSocketAcceptor::new().into_echo_service()),
+                    ConsumeErrLayer::trace(Level::DEBUG).into_layer(
+                        WebSocketAcceptor::new()
+                            .with_per_message_deflate_overwrite_extensions()
+                            .into_echo_service(),
+                    ),
                 )
                 .get("/{*any}", async |req: Request| {
                     Json(json!({
@@ -121,6 +124,26 @@ async fn test_http_mitm_proxy() {
             .as_str()
     );
 
+    // test ws proxy flow w/ deflate ext
+    let mut ws = runner
+        .websocket("ws://127.0.0.1:63003/echo")
+        .with_per_message_deflate_overwrite_extensions()
+        .handshake(ctx.clone())
+        .await
+        .expect("ws handshake to receive");
+    ws.send_message("You bastard!".into())
+        .await
+        .expect("ws message to be sent");
+    assert_eq!(
+        "You shazbot!",
+        ws.recv_message()
+            .await
+            .expect("echo ws message to be received")
+            .into_text()
+            .expect("echo ws message to be a text message")
+            .as_str()
+    );
+
     // test https request proxy flow
     let result = runner
         .get("https://127.0.0.1:63004/foo/bar")
@@ -136,6 +159,26 @@ async fn test_http_mitm_proxy() {
     // test wss proxy flow
     let mut ws = runner
         .websocket_h2("wss://127.0.0.1:63004/echo")
+        .handshake(ctx.clone())
+        .await
+        .expect("ws handshake to receive");
+    ws.send_message("You bastard!".into())
+        .await
+        .expect("ws message to be sent");
+    assert_eq!(
+        "You shazbot!",
+        ws.recv_message()
+            .await
+            .expect("echo ws message to be received")
+            .into_text()
+            .expect("echo ws message to be a text message")
+            .as_str()
+    );
+
+    // test wss proxy flow w/ deflate ext
+    let mut ws = runner
+        .websocket_h2("wss://127.0.0.1:63004/echo")
+        .with_per_message_deflate_overwrite_extensions()
         .handshake(ctx.clone())
         .await
         .expect("ws handshake to receive");

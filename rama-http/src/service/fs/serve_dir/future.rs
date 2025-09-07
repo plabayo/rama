@@ -12,21 +12,22 @@ use rama_core::{Context, Service, error::BoxError};
 use rama_http_types::dep::http_body;
 use std::{convert::Infallible, io};
 
-pub(super) async fn consume_open_file_result<State, ReqBody, ResBody, F>(
-    open_file_result: Result<OpenFileOutput, io::Error>,
-    fallback_and_request: Option<(&F, Context<State>, Request<ReqBody>)>,
-) -> Result<Response, io::Error>
+pub(super) async fn consume_open_file_result<ReqBody, ResBody, F>(
+    open_file_result: Result<OpenFileOutput, std::io::Error>,
+    fallback_and_request: Option<(&F, Context, Request<ReqBody>)>,
+) -> Result<Response, std::io::Error>
 where
-    State: Clone + Send + Sync + 'static,
-    F: Service<State, Request<ReqBody>, Response = Response<ResBody>, Error = Infallible> + Clone,
+    F: Service<Request<ReqBody>, Response = Response<ResBody>, Error = Infallible> + Clone,
     ResBody: http_body::Body<Data = Bytes> + Send + Sync + 'static,
     ResBody::Error: Into<BoxError>,
 {
     match open_file_result {
         Ok(OpenFileOutput::FileOpened(file_output)) => Ok(build_response(*file_output)),
+
         Ok(OpenFileOutput::Redirect { location }) => {
             let mut res = response_with_status(StatusCode::TEMPORARY_REDIRECT);
-            res.headers_mut().insert(header::LOCATION, location);
+            res.headers_mut()
+                .insert(rama_http_types::header::LOCATION, location);
             Ok(res)
         }
 
@@ -95,13 +96,13 @@ pub(super) fn not_found() -> Response {
     response_with_status(StatusCode::NOT_FOUND)
 }
 
-pub(super) async fn serve_fallback<F, State, B, FResBody>(
+pub(super) async fn serve_fallback<F, B, FResBody>(
     fallback: &F,
-    ctx: Context<State>,
+    ctx: Context,
     req: Request<B>,
-) -> Result<Response, io::Error>
+) -> Result<Response, std::io::Error>
 where
-    F: Service<State, Request<B>, Response = Response<FResBody>, Error = Infallible>,
+    F: Service<Request<B>, Response = Response<FResBody>, Error = Infallible>,
     FResBody: http_body::Body<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
 {
     let response = fallback.serve(ctx, req).await.unwrap();

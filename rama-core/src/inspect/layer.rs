@@ -78,21 +78,16 @@ impl<I: Clone, S: Clone> Clone for RequestInspectorLayerService<I, S> {
     }
 }
 
-impl<I, S, StateIn, RequestIn> Service<StateIn, RequestIn> for RequestInspectorLayerService<I, S>
+impl<I, S, RequestIn> Service<RequestIn> for RequestInspectorLayerService<I, S>
 where
-    I: RequestInspector<StateIn, RequestIn>,
-    S: Service<I::StateOut, I::RequestOut, Error: Into<I::Error>>,
-    StateIn: Clone + Send + Sync + 'static,
+    I: RequestInspector<RequestIn>,
+    S: Service<I::RequestOut, Error: Into<I::Error>>,
     RequestIn: Send + 'static,
 {
     type Response = S::Response;
     type Error = I::Error;
 
-    async fn serve(
-        &self,
-        ctx: Context<StateIn>,
-        req: RequestIn,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, ctx: Context, req: RequestIn) -> Result<Self::Response, Self::Error> {
         let (ctx, req) = self.request_inspector.inspect_request(ctx, req).await?;
         self.inner.serve(ctx, req).await.map_err(Into::into)
     }

@@ -7,7 +7,7 @@ use super::{FromRequest, FromRequestContextRefPair};
 
 /// Customize the behavior of `Option<Self>` as a [`FromRequestContextRefPair`]
 /// extractor.
-pub trait OptionalFromRequestContextRefPair<S>: Sized + Send + Sync + 'static {
+pub trait OptionalFromRequestContextRefPair: Sized + Send + Sync + 'static {
     /// If the extractor fails, it will use this "rejection" type.
     ///
     /// A rejection is a kind of error that can be converted into a response.
@@ -15,7 +15,7 @@ pub trait OptionalFromRequestContextRefPair<S>: Sized + Send + Sync + 'static {
 
     /// Perform the extraction.
     fn from_request_context_ref_pair(
-        ctx: &Context<S>,
+        ctx: &Context,
         parts: &Parts,
     ) -> impl Future<Output = Result<Option<Self>, Self::Rejection>> + Send;
 }
@@ -33,15 +33,14 @@ pub trait OptionalFromRequest: Sized + Send + Sync + 'static {
     ) -> impl Future<Output = Result<Option<Self>, Self::Rejection>> + Send;
 }
 
-impl<S, T> FromRequestContextRefPair<S> for Option<T>
+impl<T> FromRequestContextRefPair for Option<T>
 where
-    T: OptionalFromRequestContextRefPair<S>,
-    S: Send + Sync,
+    T: OptionalFromRequestContextRefPair,
 {
     type Rejection = T::Rejection;
 
     fn from_request_context_ref_pair(
-        ctx: &Context<S>,
+        ctx: &Context,
         parts: &Parts,
     ) -> impl Future<Output = Result<Self, Self::Rejection>> + Send {
         T::from_request_context_ref_pair(ctx, parts)

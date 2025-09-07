@@ -4,39 +4,39 @@ use rama_core::bytes::Bytes;
 use rama_http_types::HeaderValue;
 use sha1::{Digest, Sha1};
 
-use super::SecWebsocketKey;
+use super::SecWebSocketKey;
 
-/// The `Sec-Websocket-Accept` header.
+/// The `Sec-WebSocket-Accept` header.
 ///
-/// This header is used in the Websocket handshake, sent back by the
+/// This header is used in the WebSocket handshake, sent back by the
 /// server indicating a successful handshake. It is a signature
-/// of the `Sec-Websocket-Key` header.
+/// of the `Sec-WebSocket-Key` header.
 ///
 /// # Example
 ///
 /// ```no_run
-/// use rama_http_headers::{SecWebsocketAccept, SecWebsocketKey};
+/// use rama_http_headers::{SecWebSocketAccept, SecWebSocketKey};
 ///
-/// let sec_key: SecWebsocketKey = /* from request headers */
+/// let sec_key: SecWebSocketKey = /* from request headers */
 /// #    unimplemented!();
 ///
-/// let sec_accept = SecWebsocketAccept::from(sec_key);
+/// let sec_accept = SecWebSocketAccept::from(sec_key);
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct SecWebsocketAccept(HeaderValue);
+pub struct SecWebSocketAccept(HeaderValue);
 
 derive_header! {
-    SecWebsocketAccept(_),
+    SecWebSocketAccept(_),
     name: SEC_WEBSOCKET_ACCEPT
 }
 
-impl From<SecWebsocketKey> for SecWebsocketAccept {
-    fn from(key: SecWebsocketKey) -> Self {
+impl From<SecWebSocketKey> for SecWebSocketAccept {
+    fn from(key: SecWebSocketKey) -> Self {
         sign(key.0.as_bytes())
     }
 }
 
-fn sign(key: &[u8]) -> SecWebsocketAccept {
+fn sign(key: &[u8]) -> SecWebSocketAccept {
     let mut sha1 = Sha1::default();
     sha1.update(key);
     sha1.update(&b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11"[..]);
@@ -44,7 +44,7 @@ fn sign(key: &[u8]) -> SecWebsocketAccept {
 
     let val = HeaderValue::from_maybe_shared(b64).expect("base64 is a valid value");
 
-    SecWebsocketAccept(val)
+    SecWebSocketAccept(val)
 }
 
 #[cfg(test)]
@@ -55,8 +55,8 @@ mod tests {
     #[test]
     fn key_to_accept() {
         // From https://tools.ietf.org/html/rfc6455#section-1.2
-        let key = test_decode::<SecWebsocketKey>(&["dGhlIHNhbXBsZSBub25jZQ=="]).expect("key");
-        let accept = SecWebsocketAccept::from(key);
+        let key = test_decode::<SecWebSocketKey>(&["dGhlIHNhbXBsZSBub25jZQ=="]).expect("key");
+        let accept = SecWebSocketAccept::from(key);
         let headers = test_encode(accept);
 
         assert_eq!(

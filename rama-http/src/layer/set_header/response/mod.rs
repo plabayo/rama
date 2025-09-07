@@ -121,7 +121,7 @@
 //!             Ok::<_, Infallible>(res)
 //!         }),
 //!         HeaderName::from_static("x-used-request-id"),
-//!         async |ctx: Context<()>| {
+//!         async |ctx: Context| {
 //!             let factory = ctx.get::<RequestID>().cloned().map(|id| {
 //!                 BoxMakeHeaderValueFn::new(async move |res: Response| {
 //!                     let header_value = res.extensions().get::<Success>().map(|_| {
@@ -407,20 +407,19 @@ where
     }
 }
 
-impl<ReqBody, ResBody, State, S, M> Service<State, Request<ReqBody>> for SetResponseHeader<S, M>
+impl<ReqBody, ResBody, S, M> Service<Request<ReqBody>> for SetResponseHeader<S, M>
 where
     ReqBody: Send + 'static,
     ResBody: Send + 'static,
-    State: Clone + Send + Sync + 'static,
-    S: Service<State, Request<ReqBody>, Response = Response<ResBody>>,
-    M: MakeHeaderValueFactory<State, ReqBody, ResBody>,
+    S: Service<Request<ReqBody>, Response = Response<ResBody>>,
+    M: MakeHeaderValueFactory<ReqBody, ResBody>,
 {
     type Response = S::Response;
     type Error = S::Error;
 
     async fn serve(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         req: Request<ReqBody>,
     ) -> Result<Self::Response, Self::Error> {
         let (ctx, req, header_maker) = self.make.make_header_value_maker(ctx, req).await;

@@ -9,20 +9,15 @@ use rama_net::{
 #[derive(Debug, Clone)]
 pub struct TurmoilTcpConnector;
 
-impl<State, Request> Service<State, Request> for TurmoilTcpConnector
+impl<Request> Service<Request> for TurmoilTcpConnector
 where
-    State: Clone + Send + Sync + 'static,
-    Request: TryRefIntoTransportContext<State> + Send + 'static,
+    Request: TryRefIntoTransportContext + Send + 'static,
     Request::Error: Into<BoxError> + Send + Sync + 'static,
 {
-    type Response = EstablishedClientConnection<turmoil::net::TcpStream, State, Request>;
+    type Response = EstablishedClientConnection<turmoil::net::TcpStream, Request>;
     type Error = BoxError;
 
-    async fn serve(
-        &self,
-        ctx: Context<State>,
-        req: Request,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
         let transport_context = req.try_ref_into_transport_ctx(&ctx).map_err(Into::into)?;
         let authority = &transport_context.authority;
         let host = authority.host();

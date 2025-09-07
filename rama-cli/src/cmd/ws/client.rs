@@ -7,6 +7,7 @@ use rama::{
             EasyHttpWebClient,
             proxy::layer::{HttpProxyAddressLayer, SetProxyAuthHttpHeaderLayer},
         },
+        headers::SecWebSocketProtocol,
         layer::{
             auth::AddAuthorizationLayer,
             decompression::DecompressionLayer,
@@ -44,22 +45,24 @@ pub(super) async fn connect(cfg: super::CliCommandWs) -> Result<ClientWebSocket,
         HttpVersion::H2 => client.websocket_h2(cfg.uri),
     };
 
-    if let Some(protocols) = cfg.protocols {
-        builder.set_sub_protocols(protocols);
+    if let Some(mut protocols) = cfg.protocols.map(|p| p.into_iter())
+        && let Some(first_protocol) = protocols.next()
+    {
+        builder.set_protocols(
+            SecWebSocketProtocol::new(first_protocol).with_additional_protocols(protocols),
+        );
     }
 
     builder
+        .with_per_message_deflate_overwrite_extensions()
         .handshake(Context::default())
         .await
         .context("establish WS(S) connection")
 }
 
-async fn create_client<S>(
+async fn create_client(
     cfg: super::CliCommandWs,
-) -> Result<impl Service<S, Request, Response = Response, Error = BoxError>, BoxError>
-where
-    S: Clone + Send + Sync + 'static,
-{
+) -> Result<impl Service<Request, Response = Response, Error = BoxError>, BoxError> {
     let mut tls_config = if cfg.emulate {
         TlsConnectorDataBuilder::new()
     } else {

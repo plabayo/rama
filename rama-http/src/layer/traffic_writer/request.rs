@@ -168,20 +168,19 @@ impl RequestWriterInspector<Sender<Request>> {
     }
 }
 
-impl<State, W, ReqBody> Service<State, Request<ReqBody>> for RequestWriterInspector<W>
+impl<W, ReqBody> Service<Request<ReqBody>> for RequestWriterInspector<W>
 where
-    State: Clone + Send + Sync + 'static,
     W: RequestWriter,
     ReqBody: http_body::Body<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
 {
     type Error = BoxError;
-    type Response = (Context<State>, Request);
+    type Response = (Context, Request);
 
     async fn serve(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         req: Request<ReqBody>,
-    ) -> Result<(Context<State>, Request), Self::Error> {
+    ) -> Result<(Context, Request), Self::Error> {
         let req = if ctx.get::<DoNotWriteRequest>().is_some() {
             req.map(Body::new)
         } else {

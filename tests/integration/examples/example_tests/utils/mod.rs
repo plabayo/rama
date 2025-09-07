@@ -17,7 +17,7 @@ use rama::{
     http::Body,
     http::client::proxy::layer::SetProxyAuthHttpHeaderLayer,
     http::service::client::{HttpClientExt, IntoUrl, RequestBuilder},
-    http::ws::handshake::client::{HttpClientWebSocketExt, WebsocketRequestBuilder, WithService},
+    http::ws::handshake::client::{HttpClientWebSocketExt, WebSocketRequestBuilder, WithService},
     http::{
         Request, Response,
         client::EasyHttpWebClient,
@@ -43,15 +43,15 @@ use rama::{net::tls::client::ServerVerifyMode, tls::boring::client as boring_cli
 use rama::tls::rustls::client as rustls_client;
 
 #[cfg(feature = "http-full")]
-pub(super) type ClientService<State> = BoxService<State, Request, Response, BoxError>;
+pub(super) type ClientService = BoxService<Request, Response, BoxError>;
 
 /// Runner for examples.
-pub(super) struct ExampleRunner<State = ()> {
+pub(super) struct ExampleRunner {
     pub(super) server_process: Child,
     #[cfg(feature = "http-full")]
-    pub(super) client: ClientService<State>,
+    pub(super) client: ClientService,
     #[cfg(not(feature = "http-full"))]
-    _phantom: std::marker::PhantomData<State>,
+    _phantom: std::marker::PhantomData,
 }
 
 /// to ensure we only ever register tracing once,
@@ -74,10 +74,7 @@ pub(super) fn init_tracing() {
     });
 }
 
-impl<State> ExampleRunner<State>
-where
-    State: Clone + Send + Sync + 'static,
-{
+impl ExampleRunner {
     /// Run an example server and create a client for it for interactive testing.
     ///
     /// # Panics
@@ -89,7 +86,7 @@ where
     ) -> Self {
         let child = escargot::CargoBuild::new()
             .arg(format!(
-                "--features=cli,compression,tcp,http-full,proxy-full,{}",
+                "--features=cli,tcp,http-full,proxy-full,{}",
                 extra_features.unwrap_or_default()
             ))
             .example(example_name.as_ref())
@@ -192,43 +189,31 @@ where
     }
 
     #[cfg(feature = "http-full")]
-    pub(super) fn set_client(&mut self, client: ClientService<State>) {
+    pub(super) fn set_client(&mut self, client: ClientService) {
         self.client = client;
     }
 
     #[cfg(feature = "http-full")]
     /// Create a `GET` http request to be sent to the child server.
-    pub(super) fn get(
-        &self,
-        url: impl IntoUrl,
-    ) -> RequestBuilder<'_, ClientService<State>, State, Response> {
+    pub(super) fn get(&self, url: impl IntoUrl) -> RequestBuilder<'_, ClientService, Response> {
         self.client.get(url)
     }
 
     #[cfg(feature = "http-full")]
     /// Create a `HEAD` http request to be sent to the child server.
-    pub(super) fn head(
-        &self,
-        url: impl IntoUrl,
-    ) -> RequestBuilder<'_, ClientService<State>, State, Response> {
+    pub(super) fn head(&self, url: impl IntoUrl) -> RequestBuilder<'_, ClientService, Response> {
         self.client.head(url)
     }
 
     #[cfg(feature = "http-full")]
     /// Create a `POST` http request to be sent to the child server.
-    pub(super) fn post(
-        &self,
-        url: impl IntoUrl,
-    ) -> RequestBuilder<'_, ClientService<State>, State, Response> {
+    pub(super) fn post(&self, url: impl IntoUrl) -> RequestBuilder<'_, ClientService, Response> {
         self.client.post(url)
     }
 
     #[cfg(feature = "http-full")]
     /// Create a `DELETE` http request to be sent to the child server.
-    pub(super) fn delete(
-        &self,
-        url: impl IntoUrl,
-    ) -> RequestBuilder<'_, ClientService<State>, State, Response> {
+    pub(super) fn delete(&self, url: impl IntoUrl) -> RequestBuilder<'_, ClientService, Response> {
         self.client.delete(url)
     }
 
@@ -237,7 +222,7 @@ where
     pub(super) fn websocket(
         &self,
         url: impl IntoUrl,
-    ) -> WebsocketRequestBuilder<WithService<'_, ClientService<State>, Body, State>> {
+    ) -> WebSocketRequestBuilder<WithService<'_, ClientService, Body>> {
         self.client.websocket(url)
     }
 
@@ -246,12 +231,12 @@ where
     pub(super) fn websocket_h2(
         &self,
         url: impl IntoUrl,
-    ) -> WebsocketRequestBuilder<WithService<'_, ClientService<State>, Body, State>> {
+    ) -> WebSocketRequestBuilder<WithService<'_, ClientService, Body>> {
         self.client.websocket_h2(url)
     }
 }
 
-impl ExampleRunner<()> {
+impl ExampleRunner {
     /// Run an example and wait until it finished.
     ///
     /// # Panics
@@ -281,7 +266,7 @@ impl ExampleRunner<()> {
     }
 }
 
-impl<State> std::ops::Drop for ExampleRunner<State> {
+impl std::ops::Drop for ExampleRunner {
     fn drop(&mut self) {
         self.server_process.kill().expect("kill server process");
     }

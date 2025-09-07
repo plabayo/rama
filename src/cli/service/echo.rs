@@ -230,14 +230,14 @@ impl<H> EchoServiceBuilder<H> {
 
 impl<H> EchoServiceBuilder<H>
 where
-    H: Layer<EchoService, Service: Service<(), Request, Response = Response, Error = BoxError>>,
+    H: Layer<EchoService, Service: Service<Request, Response = Response, Error = BoxError>>,
 {
     #[allow(unused_mut)]
     /// build a tcp service ready to echo http traffic back
     pub fn build(
         mut self,
         executor: Executor,
-    ) -> Result<impl Service<(), TcpStream, Response = (), Error = Infallible>, BoxError> {
+    ) -> Result<impl Service<TcpStream, Response = (), Error = Infallible>, BoxError> {
         let tcp_forwarded_layer = match &self.forward {
             Some(ForwardKind::HaProxy) => Some(HaProxyLayer::default()),
             _ => None,
@@ -299,7 +299,7 @@ where
     /// build an http service ready to echo http traffic back
     pub fn build_http(
         &self,
-    ) -> impl Service<(), Request, Response: IntoResponse, Error = Infallible> + use<H> {
+    ) -> impl Service<Request, Response: IntoResponse, Error = Infallible> + use<H> {
         let http_forwarded_layer = match &self.forward {
             None | Some(ForwardKind::HaProxy) => None,
             Some(ForwardKind::Forwarded) => Some(Either7::A(GetForwardedHeaderLayer::forwarded())),
@@ -332,7 +332,20 @@ where
             self.ws_support.then(|| {
                 UpgradeLayer::new(
                     WebSocketMatcher::default(),
-                    WebSocketAcceptor::default().with_sub_protocols_flex(true),
+                    {
+                        let acceptor = WebSocketAcceptor::default()
+                            .with_protocols_flex(true)
+                            .with_echo_protocols();
+
+                        #[cfg(feature = "compression")]
+                        {
+                            acceptor.with_per_message_deflate_overwrite_extensions()
+                        }
+                        #[cfg(not(feature = "compression"))]
+                        {
+                            acceptor
+                        }
+                    },
                     ConsumeErrLayer::trace(tracing::Level::DEBUG)
                         .into_layer(WebSocketEchoService::default()),
                 )
@@ -351,15 +364,11 @@ pub struct EchoService {
     uadb: Option<std::sync::Arc<UserAgentDatabase>>,
 }
 
-impl Service<(), Request> for EchoService {
+impl Service<Request> for EchoService {
     type Response = Response;
     type Error = BoxError;
 
-    async fn serve(
-        &self,
-        mut ctx: Context<()>,
-        req: Request,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
         let user_agent_info = ctx
             .get()
             .map(|ua: &UserAgent| {

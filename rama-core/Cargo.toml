@@ -27,7 +27,7 @@ opentelemetry = [
 ]
 
 [dependencies]
-async-stream = { workspace = true }
+asynk-strim = { workspace = true }
 bytes = { workspace = true }
 futures = { workspace = true }
 opentelemetry = { workspace = true, optional = true }

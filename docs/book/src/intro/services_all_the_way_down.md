@@ -32,7 +32,7 @@ pub trait Service<S, Request>: Send + Sync + 'static {
     /// using the given context.
     fn serve(
         &self,
-        ctx: Context<S>,
+        ctx: Context,
         req: Request,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_;
 }

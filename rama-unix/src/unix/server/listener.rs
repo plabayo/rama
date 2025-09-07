@@ -3,7 +3,6 @@ use rama_core::Service;
 use rama_core::graceful::ShutdownGuard;
 use rama_core::rt::Executor;
 use rama_core::telemetry::tracing::{self, Instrument};
-use std::fmt;
 use std::io;
 use std::os::fd::AsFd;
 use std::os::fd::AsRawFd;
@@ -24,62 +23,30 @@ use crate::UnixSocketAddress;
 use crate::UnixSocketInfo;
 use crate::UnixStream;
 
+#[non_exhaustive]
+#[derive(Clone, Debug)]
 /// Builder for `UnixListener`.
-pub struct UnixListenerBuilder<S> {
-    state: S,
-}
+pub struct UnixListenerBuilder;
 
-impl<S> fmt::Debug for UnixListenerBuilder<S>
-where
-    S: fmt::Debug,
-{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("UnixListenerBuilder")
-            .field("state", &self.state)
-            .finish()
-    }
-}
-
-impl UnixListenerBuilder<()> {
-    /// Create a new `UnixListenerBuilder` without a state.
+impl UnixListenerBuilder {
+    /// Create a new `UnixListenerBuilder`.
     #[must_use]
     pub fn new() -> Self {
-        Self { state: () }
+        Self
     }
 }
 
-impl Default for UnixListenerBuilder<()> {
+impl Default for UnixListenerBuilder {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<S: Clone> Clone for UnixListenerBuilder<S> {
-    fn clone(&self) -> Self {
-        Self {
-            state: self.state.clone(),
-        }
-    }
-}
-
-impl<S> UnixListenerBuilder<S>
-where
-    S: Clone + Send + Sync + 'static,
-{
-    /// Create a new `TcpListenerBuilder` with the given state.
-    pub fn with_state(state: S) -> Self {
-        Self { state }
-    }
-}
-
-impl<S> UnixListenerBuilder<S>
-where
-    S: Clone + Send + Sync + 'static,
-{
+impl UnixListenerBuilder {
     /// Creates a new [`UnixListener`], which will be bound to the specified path.
     ///
     /// The returned listener is ready for accepting connections.
-    pub async fn bind_path(self, path: impl AsRef<Path>) -> Result<UnixListener<S>, io::Error> {
+    pub async fn bind_path(self, path: impl AsRef<Path>) -> Result<UnixListener, io::Error> {
         let path = path.as_ref();
 
         if tokio::fs::try_exists(path).await.unwrap_or_default() {
@@ -97,8 +64,7 @@ where
 
         Ok(UnixListener {
             inner,
-            state: self.state,
-            cleanup,
+            _cleanup: cleanup,
         })
     }
 
@@ -108,14 +74,13 @@ where
     pub fn bind_socket(
         self,
         socket: rama_net::socket::core::Socket,
-    ) -> Result<UnixListener<S>, io::Error> {
+    ) -> Result<UnixListener, io::Error> {
         let std_listener: StdUnixListener = socket.into();
         std_listener.set_nonblocking(true)?;
         let inner = TokioUnixListener::from_std(std_listener)?;
         Ok(UnixListener {
             inner,
-            state: self.state,
-            cleanup: None,
+            _cleanup: None,
         })
     }
 
@@ -126,12 +91,13 @@ where
     pub async fn bind_socket_opts(
         self,
         opts: SocketOptions,
-    ) -> Result<UnixListener<S>, rama_core::error::BoxError> {
+    ) -> Result<UnixListener, rama_core::error::BoxError> {
         let socket = tokio::task::spawn_blocking(move || opts.try_build_socket()).await??;
         Ok(self.bind_socket(socket)?)
     }
 }
 
+#[derive(Debug)]
 /// A Unix (domain) socket server, listening for incoming connections once served
 /// using one of the `serve` methods such as [`UnixListener::serve`].
 ///
@@ -140,42 +106,18 @@ where
 /// was created using the `bind_path` constructor. Otherwise
 /// it is assumed that the creator of this listener is in charge
 /// of that cleanup.
-pub struct UnixListener<S> {
+pub struct UnixListener {
     inner: TokioUnixListener,
-    state: S,
-    cleanup: Option<UnixSocketCleanup>,
+    _cleanup: Option<UnixSocketCleanup>,
 }
 
-impl<S> fmt::Debug for UnixListener<S>
-where
-    S: fmt::Debug,
-{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("UnixListener")
-            .field("inner", &self.inner)
-            .field("state", &self.state)
-            .field("cleanup", &self.cleanup)
-            .finish()
-    }
-}
-
-impl UnixListener<()> {
+impl UnixListener {
     #[inline]
     /// Create a new [`UnixListenerBuilder`] without a state,
     /// which can be used to configure a [`UnixListener`].
     #[must_use]
-    pub fn build() -> UnixListenerBuilder<()> {
+    pub fn build() -> UnixListenerBuilder {
         UnixListenerBuilder::new()
-    }
-
-    #[inline]
-    /// Create a new [`UnixListenerBuilder`] with the given state,
-    /// which can be used to configure a [`UnixListener`].
-    pub fn build_with_state<S>(state: S) -> UnixListenerBuilder<S>
-    where
-        S: Clone + Send + Sync + 'static,
-    {
-        UnixListenerBuilder::with_state(state)
     }
 
     #[inline]
@@ -204,7 +146,7 @@ impl UnixListener<()> {
     }
 }
 
-impl<S> UnixListener<S> {
+impl UnixListener {
     /// Returns the local address that this listener is bound to.
     ///
     /// This can be useful, for example, when binding to port 0 to figure out
@@ -212,29 +154,18 @@ impl<S> UnixListener<S> {
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
         self.inner.local_addr()
     }
-
-    /// Gets a reference to the listener's state.
-    pub fn state(&self) -> &S {
-        &self.state
-    }
-
-    /// Gets an exclusive reference to the listener's state.
-    pub fn state_mut(&mut self) -> &mut S {
-        &mut self.state
-    }
 }
 
-impl From<TokioUnixListener> for UnixListener<()> {
+impl From<TokioUnixListener> for UnixListener {
     fn from(value: TokioUnixListener) -> Self {
         Self {
             inner: value,
-            state: (),
-            cleanup: None,
+            _cleanup: None,
         }
     }
 }
 
-impl TryFrom<rama_net::socket::core::Socket> for UnixListener<()> {
+impl TryFrom<rama_net::socket::core::Socket> for UnixListener {
     type Error = io::Error;
 
     #[inline]
@@ -243,7 +174,7 @@ impl TryFrom<rama_net::socket::core::Socket> for UnixListener<()> {
     }
 }
 
-impl TryFrom<StdUnixListener> for UnixListener<()> {
+impl TryFrom<StdUnixListener> for UnixListener {
     type Error = io::Error;
 
     fn try_from(listener: StdUnixListener) -> Result<Self, Self::Error> {
@@ -251,42 +182,26 @@ impl TryFrom<StdUnixListener> for UnixListener<()> {
         let inner = TokioUnixListener::from_std(listener)?;
         Ok(Self {
             inner,
-            state: (),
-            cleanup: None,
+            _cleanup: None,
         })
     }
 }
 
-impl<S> AsRawFd for UnixListener<S> {
+impl AsRawFd for UnixListener {
     #[inline]
     fn as_raw_fd(&self) -> RawFd {
         self.inner.as_raw_fd()
     }
 }
 
-impl<S> AsFd for UnixListener<S> {
+impl AsFd for UnixListener {
     #[inline]
     fn as_fd(&self) -> BorrowedFd<'_> {
         self.inner.as_fd()
     }
 }
 
-impl UnixListener<()> {
-    /// Define the TcpListener's state after it was created,
-    /// useful in case it wasn't built using the builder.
-    pub fn with_state<S>(self, state: S) -> UnixListener<S> {
-        UnixListener {
-            inner: self.inner,
-            state,
-            cleanup: self.cleanup,
-        }
-    }
-}
-
-impl<State> UnixListener<State>
-where
-    State: Clone + Send + Sync + 'static,
-{
+impl UnixListener {
     /// Accept a single connection from this listener,
     /// what you can do with whatever you want.
     #[inline]
@@ -301,9 +216,9 @@ where
     /// the underlying service can choose to spawn a task to handle the accepted stream.
     pub async fn serve<S>(self, service: S)
     where
-        S: Service<State, UnixStream>,
+        S: Service<UnixStream>,
     {
-        let ctx = Context::new(self.state, Executor::new());
+        let ctx = Context::new(Executor::new());
         let service = Arc::new(service);
 
         loop {
@@ -346,9 +261,9 @@ where
     /// it to the service.
     pub async fn serve_graceful<S>(self, guard: ShutdownGuard, service: S)
     where
-        S: Service<State, UnixStream>,
+        S: Service<UnixStream>,
     {
-        let ctx: Context<State> = Context::new(self.state, Executor::graceful(guard.clone()));
+        let ctx: Context = Context::new(Executor::graceful(guard.clone()));
         let service = Arc::new(service);
         let mut cancelled_fut = pin!(guard.cancelled());
 

@@ -10,6 +10,7 @@ use rama_boring::{
     x509::{
         X509,
         extension::{BasicConstraints, KeyUsage, SubjectKeyIdentifier},
+        store::X509Store,
     },
 };
 use rama_core::telemetry::tracing::{debug, trace};
@@ -78,6 +79,7 @@ pub struct TlsConnectorDataBuilder {
     server_verify_mode: Option<ServerVerifyMode>,
     keylog_intent: Option<KeyLogIntent>,
     cipher_list: Option<Vec<u16>>,
+    server_verify_cert_store: Option<X509Store>,
     store_server_certificate_chain: Option<bool>,
     alpn_protos: Option<Bytes>,
     min_ssl_version: Option<SslVersion>,
@@ -241,6 +243,19 @@ impl TlsConnectorDataBuilder {
         /// Set the [`ServerVerifyMode`] that will be used by the tls client to verify the server
         pub fn server_verify_mode(mut self, server_verify_mode: Option<ServerVerifyMode>) -> Self {
             self.server_verify_mode = server_verify_mode;
+            self
+        }
+    );
+
+    generate_set_and_with!(
+        /// Set the [`X509Store`] that will be used by the tls client to verify the server certs
+        ///
+        /// (unless the mode is [`ServerVerifyMode::Disable`])
+        pub fn server_verify_cert_store(
+            mut self,
+            server_verify_cert_store: Option<X509Store>,
+        ) -> Self {
+            self.server_verify_cert_store = server_verify_cert_store;
             self
         }
     );
@@ -441,6 +456,50 @@ impl TlsConnectorDataBuilder {
         let mut cfg_builder =
             rama_boring::ssl::SslConnector::builder(rama_boring::ssl::SslMethod::tls_client())
                 .context("create (boring) ssl connector builder")?;
+
+        if let Some(store) = self.server_verify_cert_store.clone() {
+            trace!("boring connector: set provided cert store to verify as server");
+            cfg_builder
+                .set_verify_cert_store(store)
+                .context("set verify cert store")?;
+        } else {
+            #[cfg(target_os = "windows")]
+            {
+                // on windows it seems to have no root CA by default when using boringssl
+                // this code path is there to set it anyway
+                static WINDOWS_ROOT_CA: std::sync::LazyLock<Result<X509Store, OpaqueError>> =
+                    std::sync::LazyLock::new(|| {
+                        trace!("boring connector: windows: load root certs for current user");
+
+                        // Trusted Root Certification Authorities
+                        let user_root = schannel::cert_store::CertStore::open_current_user("ROOT")
+                            .context("open (root) cert store for current user")?;
+
+                        let mut builder = rama_boring::x509::store::X509StoreBuilder::new()
+                            .context("build x509 store builder")?;
+
+                        for cert in user_root.certs() {
+                            // Convert the Windows cert to DER, then to BoringSSL X509
+                            if let Ok(x509) = X509::from_der(cert.to_der()) {
+                                let _ = builder.add_cert(x509);
+                            }
+                        }
+
+                        Ok(builder.build())
+                    });
+
+                let store = WINDOWS_ROOT_CA
+                    .as_ref()
+                    .context("create windows root CA")?
+                    .clone();
+
+                cfg_builder
+                    .set_verify_cert_store(store)
+                    .context("set default windows verify cert store")?;
+            }
+            #[cfg(not(target_os = "windows"))]
+            trace!("boring connector: do not set (root) ca file"); // on non-windows we assume that the default is fine
+        }
 
         if let Some(keylog_filename) = self.keylog_filepath().as_deref() {
             let handle = new_key_log_file_handle(keylog_filename)?;
@@ -947,6 +1006,7 @@ impl TlsConnectorDataBuilder {
             max_ssl_version,
             verify_algorithm_prefs,
             server_verify_mode,
+            server_verify_cert_store: None,
             client_auth,
             store_server_certificate_chain: Some(store_server_certificate_chain),
             grease_enabled: Some(grease_enabled),

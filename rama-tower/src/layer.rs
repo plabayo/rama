@@ -4,21 +4,14 @@ use crate::core::Service as TowerService;
 use rama_core::error::{BoxError, ErrorContext};
 use std::{
     fmt,
-    marker::PhantomData,
     ops::{Deref, DerefMut},
     pin::Pin,
     sync::Arc,
 };
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 /// Wrapper type that can be used to smuggle a ctx into a request's extensions.
-pub struct ContextWrap<S>(pub rama_core::Context<S>);
-
-impl<S: fmt::Debug> fmt::Debug for ContextWrap<S> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("ContextWrap").field(&self.0).finish()
-    }
-}
+pub struct ContextWrap(pub rama_core::Context);
 
 /// Trait to be implemented for any request that can "smuggle" [`Context`]s.
 ///
@@ -30,13 +23,13 @@ impl<S: fmt::Debug> fmt::Debug for ContextWrap<S> {
 ///   to easily swap between the pair and direct request format.
 ///
 /// [`Context`]: rama_core::Context
-pub trait ContextSmuggler<S> {
+pub trait ContextSmuggler {
     /// inject the context into the smuggler.
-    fn inject_ctx(&mut self, ctx: rama_core::Context<S>);
+    fn inject_ctx(&mut self, ctx: rama_core::Context);
 
     /// try to extract the smuggled context out of the smuggle,
     /// which is only possible once.
-    fn try_extract_ctx(&mut self) -> Option<rama_core::Context<S>>;
+    fn try_extract_ctx(&mut self) -> Option<rama_core::Context>;
 }
 
 #[cfg(feature = "http")]
@@ -44,28 +37,28 @@ mod http {
     use super::*;
     use rama_http_types::Request;
 
-    impl<B, S: Clone + Send + Sync + 'static> ContextSmuggler<S> for Request<B> {
-        fn inject_ctx(&mut self, ctx: rama_core::Context<S>) {
+    impl<B> ContextSmuggler for Request<B> {
+        fn inject_ctx(&mut self, ctx: rama_core::Context) {
             let wrap = ContextWrap(ctx);
             self.extensions_mut().insert(wrap);
         }
 
-        fn try_extract_ctx(&mut self) -> Option<rama_core::Context<S>> {
-            let wrap: ContextWrap<_> = self.extensions_mut().remove()?;
+        fn try_extract_ctx(&mut self) -> Option<rama_core::Context> {
+            let wrap: ContextWrap = self.extensions_mut().remove()?;
             Some(wrap.0)
         }
     }
 }
 
 /// Simple implementation of a [`ContextSmuggler`].
-pub struct RequestStatePair<R, S> {
+pub struct RequestStatePair<R> {
     /// the inner reuqest
     pub request: R,
     /// the storage to "smuggle" the ctx"
-    pub ctx: Option<rama_core::Context<S>>,
+    pub ctx: Option<rama_core::Context>,
 }
 
-impl<R: fmt::Debug, S: fmt::Debug> fmt::Debug for RequestStatePair<R, S> {
+impl<R: fmt::Debug> fmt::Debug for RequestStatePair<R> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("RequestStatePair")
             .field("request", &self.request)
@@ -74,7 +67,7 @@ impl<R: fmt::Debug, S: fmt::Debug> fmt::Debug for RequestStatePair<R, S> {
     }
 }
 
-impl<R: Clone, S: Clone> Clone for RequestStatePair<R, S> {
+impl<R: Clone> Clone for RequestStatePair<R> {
     fn clone(&self) -> Self {
         Self {
             request: self.request.clone(),
@@ -83,7 +76,7 @@ impl<R: Clone, S: Clone> Clone for RequestStatePair<R, S> {
     }
 }
 
-impl<R, S> RequestStatePair<R, S> {
+impl<R> RequestStatePair<R> {
     pub const fn new(req: R) -> Self {
         Self {
             request: req,
@@ -92,7 +85,7 @@ impl<R, S> RequestStatePair<R, S> {
     }
 }
 
-impl<R, S> Deref for RequestStatePair<R, S> {
+impl<R> Deref for RequestStatePair<R> {
     type Target = R;
 
     fn deref(&self) -> &Self::Target {
@@ -100,18 +93,18 @@ impl<R, S> Deref for RequestStatePair<R, S> {
     }
 }
 
-impl<R, S> DerefMut for RequestStatePair<R, S> {
+impl<R> DerefMut for RequestStatePair<R> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.request
     }
 }
 
-impl<R, S> ContextSmuggler<S> for RequestStatePair<R, S> {
-    fn inject_ctx(&mut self, ctx: rama_core::Context<S>) {
+impl<R> ContextSmuggler for RequestStatePair<R> {
+    fn inject_ctx(&mut self, ctx: rama_core::Context) {
         self.ctx = Some(ctx);
     }
 
-    fn try_extract_ctx(&mut self) -> Option<rama_core::Context<S>> {
+    fn try_extract_ctx(&mut self) -> Option<rama_core::Context> {
         self.ctx.take()
     }
 }
@@ -128,12 +121,11 @@ impl<R, S> ContextSmuggler<S> for RequestStatePair<R, S> {
 /// [`rama::Layer`]: crate::Layer
 /// [`rama::Service`]: crate::Service
 /// [`ServiceAdapter`]: super::ServiceAdapter.
-pub struct LayerAdapter<L, State> {
+pub struct LayerAdapter<L> {
     inner: L,
-    _state: PhantomData<fn() -> State>,
 }
 
-impl<L: Send + Sync + 'static, State> LayerAdapter<L, State> {
+impl<L: Send + Sync + 'static> LayerAdapter<L> {
     /// Adapt a [`tower::Layer`] into a [`rama::Layer`].
     ///
     /// See [`LayerAdapter`] for more information.
@@ -141,10 +133,7 @@ impl<L: Send + Sync + 'static, State> LayerAdapter<L, State> {
     /// [`tower::Layer`]: tower_layer::Layer
     /// [`rama::Layer`]: crate::Layer
     pub fn new(layer: L) -> Self {
-        Self {
-            inner: layer,
-            _state: PhantomData,
-        }
+        Self { inner: layer }
     }
 
     /// Consume itself to return the inner [`tower::Layer`] back.
@@ -155,7 +144,7 @@ impl<L: Send + Sync + 'static, State> LayerAdapter<L, State> {
     }
 }
 
-impl<L: fmt::Debug, State> fmt::Debug for LayerAdapter<L, State> {
+impl<L: fmt::Debug> fmt::Debug for LayerAdapter<L> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("LayerAdapter")
             .field("inner", &self.inner)
@@ -169,12 +158,11 @@ impl<L: fmt::Debug, State> fmt::Debug for LayerAdapter<L, State> {
 /// [`tower::Service`]: tower_service::Service
 /// [`tower::Layer`]: tower_layer::Layer
 /// [`rama::Service`]: rama_core::Service
-pub struct TowerAdapterService<S, State> {
+pub struct TowerAdapterService<S> {
     inner: Arc<S>,
-    _state: PhantomData<fn() -> State>,
 }
 
-impl<S, State> TowerAdapterService<S, State> {
+impl<S> TowerAdapterService<S> {
     /// Reference to the inner [`rama::Service`].
     ///
     /// [`rama::Service`]: rama_core::Service
@@ -184,7 +172,7 @@ impl<S, State> TowerAdapterService<S, State> {
     }
 }
 
-impl<S: fmt::Debug, State> fmt::Debug for TowerAdapterService<S, State> {
+impl<S: fmt::Debug> fmt::Debug for TowerAdapterService<S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TowerAdapterService")
             .field("inner", &self.inner)
@@ -192,11 +180,10 @@ impl<S: fmt::Debug, State> fmt::Debug for TowerAdapterService<S, State> {
     }
 }
 
-impl<S, State> Clone for TowerAdapterService<S, State> {
+impl<S> Clone for TowerAdapterService<S> {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
-            _state: PhantomData,
         }
     }
 }
@@ -216,27 +203,25 @@ impl<T: fmt::Debug> fmt::Debug for LayerAdapterService<T> {
     }
 }
 
-impl<L, S, State> rama_core::Layer<S> for LayerAdapter<L, State>
+impl<L, S> rama_core::Layer<S> for LayerAdapter<L>
 where
-    L: TowerLayer<TowerAdapterService<S, State>, Service: Clone + Send + Sync + 'static>,
+    L: TowerLayer<TowerAdapterService<S>, Service: Clone + Send + Sync + 'static>,
 {
     type Service = LayerAdapterService<L::Service>;
 
     fn layer(&self, inner: S) -> Self::Service {
         let tower_svc = TowerAdapterService {
             inner: Arc::new(inner),
-            _state: PhantomData,
         };
         let layered_tower_svc = self.inner.layer(tower_svc);
         LayerAdapterService(layered_tower_svc)
     }
 }
 
-impl<T, State, Request> TowerService<Request> for TowerAdapterService<T, State>
+impl<T, Request> TowerService<Request> for TowerAdapterService<T>
 where
-    T: rama_core::Service<State, Request, Error: Into<BoxError>>,
-    State: Clone + Send + Sync + 'static,
-    Request: ContextSmuggler<State> + Send + 'static,
+    T: rama_core::Service<Request, Error: Into<BoxError>>,
+    Request: ContextSmuggler + Send + 'static,
 {
     type Response = T::Response;
     type Error = BoxError;
@@ -253,7 +238,7 @@ where
     fn call(&mut self, mut req: Request) -> Self::Future {
         let svc = self.inner.clone();
         Box::pin(async move {
-            let ctx: rama_core::Context<State> = req
+            let ctx: rama_core::Context = req
                 .try_extract_ctx()
                 .context("extract context from req smuggler")?;
             svc.serve(ctx, req).await.map_err(Into::into)
@@ -261,22 +246,21 @@ where
     }
 }
 
-impl<T, State, Request> rama_core::Service<State, Request> for LayerAdapterService<T>
+impl<T, Request> rama_core::Service<Request> for LayerAdapterService<T>
 where
     T: TowerService<Request, Response: Send + 'static, Error: Send + 'static, Future: Send>
         + Clone
         + Send
         + Sync
         + 'static,
-    State: Clone + Send + Sync + 'static,
-    Request: ContextSmuggler<State> + Send + 'static,
+    Request: ContextSmuggler + Send + 'static,
 {
     type Response = T::Response;
     type Error = T::Error;
 
     fn serve(
         &self,
-        ctx: rama_core::Context<State>,
+        ctx: rama_core::Context,
         mut req: Request,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
         req.inject_ctx(ctx);

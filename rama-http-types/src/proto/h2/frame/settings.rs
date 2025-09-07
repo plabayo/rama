@@ -318,38 +318,7 @@ impl fmt::Debug for Settings {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let mut builder = f.debug_struct("Settings");
         builder.field("flags", &self.flags);
-        builder.field("setting_order", &self.config.setting_order);
-
-        self.for_each(|setting| match setting.id {
-            SettingId::EnablePush => {
-                builder.field("enable_push", &setting.value);
-            }
-            SettingId::HeaderTableSize => {
-                builder.field("header_table_size", &setting.value);
-            }
-            SettingId::InitialWindowSize => {
-                builder.field("initial_window_size", &setting.value);
-            }
-            SettingId::MaxConcurrentStreams => {
-                builder.field("max_concurrent_streams", &setting.value);
-            }
-            SettingId::MaxFrameSize => {
-                builder.field("max_frame_size", &setting.value);
-            }
-            SettingId::MaxHeaderListSize => {
-                builder.field("max_header_list_size", &setting.value);
-            }
-            SettingId::EnableConnectProtocol => {
-                builder.field("enable_connect_protocol", &setting.value);
-            }
-            SettingId::NoRfc7540Priorities => {
-                builder.field("no_rfc7540_priorities", &setting.value);
-            }
-            SettingId::Unknown(id) => {
-                builder.field(&format!("unknown_unknown_setting_{id}"), &setting.value);
-            }
-        });
-
+        builder.field("config", &self.config);
         builder.finish()
     }
 }

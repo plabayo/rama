@@ -4,7 +4,7 @@ use rama_core::Context;
 use std::marker::PhantomData;
 
 /// Trait for validating requests.
-pub trait ValidateRequestFn<S, B, A>: Send + Sync + 'static {
+pub trait ValidateRequestFn<B, A>: Send + Sync + 'static {
     /// The body type used for responses to unvalidated requests.
     type ResponseBody;
 
@@ -13,14 +13,13 @@ pub trait ValidateRequestFn<S, B, A>: Send + Sync + 'static {
     /// If `Ok(())` is returned then the request is allowed through, otherwise not.
     fn call(
         &self,
-        ctx: Context<S>,
+        ctx: Context,
         request: Request<B>,
-    ) -> impl Future<Output = Result<(Context<S>, Request<B>), Response<Self::ResponseBody>>> + Send + '_;
+    ) -> impl Future<Output = Result<(Context, Request<B>), Response<Self::ResponseBody>>> + Send + '_;
 }
 
-impl<S, B, F, Fut, ResBody> ValidateRequestFn<S, B, ()> for F
+impl<B, F, Fut, ResBody> ValidateRequestFn<B, ()> for F
 where
-    S: Clone + Send + Sync + 'static,
     B: Send + 'static,
     ResBody: Send + 'static,
     F: Fn() -> Fut + Send + Sync + 'static,
@@ -30,9 +29,9 @@ where
 
     async fn call(
         &self,
-        ctx: Context<S>,
+        ctx: Context,
         req: Request<B>,
-    ) -> Result<(Context<S>, Request<B>), Response<Self::ResponseBody>> {
+    ) -> Result<(Context, Request<B>), Response<Self::ResponseBody>> {
         match self().await {
             Ok(_) => Ok((ctx, req)),
             Err(res) => Err(res),
@@ -40,9 +39,8 @@ where
     }
 }
 
-impl<S, B, F, Fut, ResBody> ValidateRequestFn<S, B, ((), Request<B>)> for F
+impl<B, F, Fut, ResBody> ValidateRequestFn<B, ((), Request<B>)> for F
 where
-    S: Clone + Send + Sync + 'static,
     B: Send + 'static,
     ResBody: Send + 'static,
     F: Fn(Request<B>) -> Fut + Send + Sync + 'static,
@@ -52,9 +50,9 @@ where
 
     async fn call(
         &self,
-        ctx: Context<S>,
+        ctx: Context,
         req: Request<B>,
-    ) -> Result<(Context<S>, Request<B>), Response<Self::ResponseBody>> {
+    ) -> Result<(Context, Request<B>), Response<Self::ResponseBody>> {
         match self(req).await {
             Ok(req) => Ok((ctx, req)),
             Err(res) => Err(res),
@@ -62,21 +60,20 @@ where
     }
 }
 
-impl<S, B, F, Fut, ResBody> ValidateRequestFn<S, B, (Context<S>,)> for F
+impl<B, F, Fut, ResBody> ValidateRequestFn<B, (Context,)> for F
 where
-    S: Clone + Send + Sync + 'static,
     B: Send + 'static,
     ResBody: Send + 'static,
-    F: Fn(Context<S>) -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = Result<Context<S>, Response<ResBody>>> + Send + 'static,
+    F: Fn(Context) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Result<Context, Response<ResBody>>> + Send + 'static,
 {
     type ResponseBody = ResBody;
 
     async fn call(
         &self,
-        ctx: Context<S>,
+        ctx: Context,
         req: Request<B>,
-    ) -> Result<(Context<S>, Request<B>), Response<Self::ResponseBody>> {
+    ) -> Result<(Context, Request<B>), Response<Self::ResponseBody>> {
         match self(ctx).await {
             Ok(ctx) => Ok((ctx, req)),
             Err(res) => Err(res),
@@ -84,18 +81,18 @@ where
     }
 }
 
-impl<S, B, F, Fut, ResBody> ValidateRequestFn<S, B, (Context<S>, Request<B>)> for F
+impl<B, F, Fut, ResBody> ValidateRequestFn<B, (Context, Request<B>)> for F
 where
-    F: Fn(Context<S>, Request<B>) -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = Result<(Context<S>, Request<B>), Response<ResBody>>> + Send + 'static,
+    F: Fn(Context, Request<B>) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Result<(Context, Request<B>), Response<ResBody>>> + Send + 'static,
 {
     type ResponseBody = ResBody;
 
     fn call(
         &self,
-        ctx: Context<S>,
+        ctx: Context,
         request: Request<B>,
-    ) -> impl Future<Output = Result<(Context<S>, Request<B>), Response<Self::ResponseBody>>> + Send + '_
+    ) -> impl Future<Output = Result<(Context, Request<B>), Response<Self::ResponseBody>>> + Send + '_
     {
         self(ctx, request)
     }
@@ -140,18 +137,18 @@ where
     }
 }
 
-impl<S, B, A, F> ValidateRequest<S, B> for BoxValidateRequestFn<F, A>
+impl<B, A, F> ValidateRequest<B> for BoxValidateRequestFn<F, A>
 where
     A: Send + Sync + 'static,
-    F: ValidateRequestFn<S, B, A>,
+    F: ValidateRequestFn<B, A>,
 {
     type ResponseBody = F::ResponseBody;
 
     fn validate(
         &self,
-        ctx: Context<S>,
+        ctx: Context,
         request: Request<B>,
-    ) -> impl Future<Output = Result<(Context<S>, Request<B>), Response<Self::ResponseBody>>> + Send + '_
+    ) -> impl Future<Output = Result<(Context, Request<B>), Response<Self::ResponseBody>>> + Send + '_
     {
         self.f.call(ctx, request)
     }

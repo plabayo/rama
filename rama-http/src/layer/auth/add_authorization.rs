@@ -242,19 +242,18 @@ impl<S: Clone> Clone for AddAuthorization<S> {
     }
 }
 
-impl<S, State, ReqBody, ResBody> Service<State, Request<ReqBody>> for AddAuthorization<S>
+impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for AddAuthorization<S>
 where
-    S: Service<State, Request<ReqBody>, Response = Response<ResBody>>,
+    S: Service<Request<ReqBody>, Response = Response<ResBody>>,
     ReqBody: Send + 'static,
     ResBody: Send + 'static,
-    State: Clone + Send + Sync + 'static,
 {
     type Response = S::Response;
     type Error = S::Error;
 
     async fn serve(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         mut req: Request<ReqBody>,
     ) -> Result<Self::Response, Self::Error> {
         if let Some(value) = &self.value

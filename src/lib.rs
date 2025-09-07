@@ -48,7 +48,7 @@
 //!
 //! | category | support list |
 //! |-|-|
-//! | ✅ [transports](crate::net::stream) | ✅ [tcp] ⸱ ✅ [udp] ⸱ ✅ [Unix (UDS)][unix] ⸱ ✅ [middleware](crate::net::stream::layer) |
+//! | ✅ [transports](crate::net::stream) | ✅ [tcp] ⸱ ✅ [udp] ⸱ ✅ Unix (UDS)] ⸱ ✅ [middleware](crate::net::stream::layer) |
 //! | ✅ [http] | ✅ [auto](crate::http::server::service::HttpServer::auto) ⸱ ✅ [http/1.1](crate::http::server::service::HttpServer::http1) ⸱ ✅ [h2](crate::http::server::service::HttpServer::h2) ⸱ 🏗️ h3 <sup>(2)</sup> ⸱ ✅ [middleware](crate::http::layer) |
 //! | ✅ web server | ✅ [fs](crate::http::service::fs) ⸱ ✅ [redirect](crate::http::service::redirect::Redirect) ⸱ ✅ [router](crate::http::service::web::Router) ⸱ ✅ [dyn router](crate::http::service::web::WebService) ⸱ ✅ [static router](crate::http::service::web::match_service) ⸱ ✅ [handler extractors](crate::http::service::web::extract) ⸱ ✅ [k8s healthcheck](crate::http::service::web::k8s) |
 //! | ✅ [http client](crate::http::client) | ✅ [easy client](crate::http::client::EasyHttpWebClient) ⸱ ✅ [high level API](crate::http::service::client::HttpClientExt) ⸱ ✅ [BoringSSL Connect](crate::tls::boring::client::TlsConnectorLayer) ⸱ ✅ [Rustls Connect](crate::tls::rustls::client::TlsConnectorLayer) ⸱ ✅ [HTTP Proxy Connect](crate::http::client::proxy::layer::HttpProxyConnector) ⸱ ✅ [Socks5 Proxy Connect](crate::proxy::socks5::Socks5ProxyConnectorLayer) ⸱ ❌ [Chromium Http](https://github.com/plabayo/rama/issues/189) <sup>(3)</sup> |
@@ -71,8 +71,8 @@
 //!
 //! > 🗒️ _Footnotes_
 //! >
-//! > * <sup>(1)</sup> Part of [`v0.3.0` milestone (ETA: 2025 Q2)](https://github.com/plabayo/rama/milestone/2)
-//! > * <sup>(2)</sup> Part of [`v0.4.0` milestone (ETA: 2025 Q3)](https://github.com/plabayo/rama/milestone/3)
+//! > * <sup>(1)</sup> Part of [`v0.3.0` milestone (ETA: 2025 Q4)](https://github.com/plabayo/rama/milestone/2)
+//! > * <sup>(2)</sup> Part of [`v0.4.0` milestone (ETA: 2025 Q4)](https://github.com/plabayo/rama/milestone/3)
 //! > * <sup>(3)</sup> No immediate plans, but on our radar. Please [open an issue](https://github.com/plabayo/rama/issues) to request this feature if you have an immediate need for it. Please add sufficient motivation/reasoning and consider [becoming a sponsor](https://ramaproxy.org/book/sponsor.html) to help accelerate its priority.
 //!
 //! The primary focus of Rama is to aid you in your development of [proxies](https://ramaproxy.org/book/proxies/intro.html):

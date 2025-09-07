@@ -124,6 +124,7 @@ use rama_core::telemetry::tracing::{
     self,
     instrument::{Instrument, Instrumented},
 };
+use rama_http::proto::HeaderByteLength;
 use rama_http::proto::h2::frame::EarlyFrameStreamContext;
 use rama_http_types::proto::h1::headers::original::OriginalHttp1Headers;
 use rama_http_types::proto::h2::frame::{
@@ -1547,6 +1548,7 @@ impl proto::Peer for Peer {
         pseudo: Pseudo,
         fields: HeaderMap,
         field_order: OriginalHttp1Headers,
+        header_size: usize,
         stream_id: StreamId,
     ) -> Result<Self::Poll, Error> {
         use rama_http_types::{Version, dep::http::uri};
@@ -1661,6 +1663,10 @@ impl proto::Peer for Peer {
         if !field_order.is_empty() {
             request.extensions_mut().insert(field_order);
         }
+
+        request
+            .extensions_mut()
+            .insert(HeaderByteLength(header_size));
 
         *request.headers_mut() = fields;
 

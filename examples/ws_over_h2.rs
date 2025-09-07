@@ -27,13 +27,13 @@ use rama::{
         ws::handshake::server::WebSocketAcceptor,
     },
     layer::ConsumeErrLayer,
+    net::tls::ApplicationProtocol,
     net::tls::server::{SelfSignedData, ServerAuth, ServerConfig},
     rt::Executor,
     tcp::server::TcpListener,
     telemetry::tracing::{Level, info, level_filters::LevelFilter},
     tls::boring::server::{TlsAcceptorData, TlsAcceptorLayer},
 };
-use rama_net::tls::ApplicationProtocol;
 
 use std::time::Duration;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};

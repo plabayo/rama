@@ -62,7 +62,7 @@ async fn main() {
 
     let graceful = rama::graceful::Shutdown::default();
 
-    let router: Router<()> = Router::new().get("/", ServiceAdapter::new(HelloSvc));
+    let router: Router = Router::new().get("/", ServiceAdapter::new(HelloSvc));
     let app = LayerAdapter::new((
         TimeoutLayer(Duration::from_secs(30)),
         AddHelloMarkerHeaderLayer,

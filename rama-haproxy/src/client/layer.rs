@@ -201,21 +201,16 @@ impl<S: Clone, P, V: Clone> Clone for HaProxyService<S, P, V> {
     }
 }
 
-impl<S, P, State, Request> Service<State, Request> for HaProxyService<S, P, version::One>
+impl<S, P, Request> Service<Request> for HaProxyService<S, P, version::One>
 where
-    S: ConnectorService<State, Request, Connection: Stream + Socket + Unpin, Error: Into<BoxError>>,
+    S: ConnectorService<Request, Connection: Stream + Socket + Unpin, Error: Into<BoxError>>,
     P: Send + 'static,
-    State: Clone + Send + Sync + 'static,
     Request: Send + 'static,
 {
-    type Response = EstablishedClientConnection<S::Connection, State, Request>;
+    type Response = EstablishedClientConnection<S::Connection, Request>;
     type Error = BoxError;
 
-    async fn serve(
-        &self,
-        ctx: Context<State>,
-        req: Request,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
         let EstablishedClientConnection { ctx, req, mut conn } =
             self.inner.connect(ctx, req).await.map_err(Into::into)?;
 
@@ -251,27 +246,17 @@ where
     }
 }
 
-impl<S, P, State, Request, T> Service<State, Request> for HaProxyService<S, P, version::Two>
+impl<S, P, Request, T> Service<Request> for HaProxyService<S, P, version::Two>
 where
-    S: Service<
-            State,
-            Request,
-            Response = EstablishedClientConnection<T, State, Request>,
-            Error: Into<BoxError>,
-        >,
+    S: Service<Request, Response = EstablishedClientConnection<T, Request>, Error: Into<BoxError>>,
     P: protocol::Protocol + Send + 'static,
-    State: Clone + Send + Sync + 'static,
     Request: Send + 'static,
     T: Stream + Socket + Unpin,
 {
-    type Response = EstablishedClientConnection<T, State, Request>;
+    type Response = EstablishedClientConnection<T, Request>;
     type Error = BoxError;
 
-    async fn serve(
-        &self,
-        ctx: Context<State>,
-        req: Request,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
         let EstablishedClientConnection { ctx, req, mut conn } =
             self.inner.serve(ctx, req).await.map_err(Into::into)?;
 

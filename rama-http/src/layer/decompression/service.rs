@@ -104,10 +104,9 @@ impl<S: Clone> Clone for Decompression<S> {
     }
 }
 
-impl<S, State, ReqBody, ResBody> Service<State, Request<ReqBody>> for Decompression<S>
+impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for Decompression<S>
 where
-    S: Service<State, Request<ReqBody>, Response = Response<ResBody>>,
-    State: Clone + Send + Sync + 'static,
+    S: Service<Request<ReqBody>, Response = Response<ResBody>>,
     ReqBody: Send + 'static,
     ResBody: Body<Data: Send + 'static, Error: Send + 'static> + Send + 'static,
 {
@@ -116,7 +115,7 @@ where
 
     async fn serve(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         mut req: Request<ReqBody>,
     ) -> Result<Self::Response, Self::Error> {
         if let header::Entry::Vacant(entry) = req.headers_mut().entry(ACCEPT_ENCODING)

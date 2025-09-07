@@ -51,15 +51,13 @@ impl<S: Clone> Clone for RequestDecompression<S> {
     }
 }
 
-impl<S, State, ReqBody, ResBody, D> Service<State, Request<ReqBody>> for RequestDecompression<S>
+impl<S, ReqBody, ResBody, D> Service<Request<ReqBody>> for RequestDecompression<S>
 where
     S: Service<
-            State,
             Request<DecompressionBody<ReqBody>>,
             Response = Response<ResBody>,
             Error: Into<BoxError>,
         >,
-    State: Clone + Send + Sync + 'static,
     ReqBody: Body + Send + 'static,
     ResBody: Body<Data = D, Error: Into<BoxError>> + Send + 'static,
     D: Buf + 'static,
@@ -69,7 +67,7 @@ where
 
     async fn serve(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         req: Request<ReqBody>,
     ) -> Result<Self::Response, Self::Error> {
         let (mut parts, body) = req.into_parts();

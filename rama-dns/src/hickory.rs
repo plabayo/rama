@@ -24,7 +24,12 @@ pub struct HickoryDns(Arc<TokioResolver>);
 impl Default for HickoryDns {
     #[cfg(any(unix, target_os = "windows"))]
     fn default() -> Self {
-        Self::try_new_system().unwrap_or_else(|_| Self::new_cloudflare())
+        Self::try_new_system().unwrap_or_else(|err| {
+            tracing::warn!(
+                "fail to create system HickoryDns client: fallback to cloudflare: {err}"
+            );
+            Self::new_cloudflare()
+        })
     }
 
     #[cfg(not(any(unix, target_os = "windows")))]

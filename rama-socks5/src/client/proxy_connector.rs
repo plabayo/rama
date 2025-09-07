@@ -337,21 +337,15 @@ impl<S> Socks5ProxyConnector<S> {
     }
 }
 
-impl<S, State, Request> Service<State, Request> for Socks5ProxyConnector<S>
+impl<S, Request> Service<Request> for Socks5ProxyConnector<S>
 where
-    S: ConnectorService<State, Request, Connection: Stream + Unpin, Error: Into<BoxError>>,
-    State: Clone + Send + Sync + 'static,
-    Request:
-        TryRefIntoTransportContext<State, Error: Into<BoxError> + Send + 'static> + Send + 'static,
+    S: ConnectorService<Request, Connection: Stream + Unpin, Error: Into<BoxError>>,
+    Request: TryRefIntoTransportContext<Error: Into<BoxError> + Send + 'static> + Send + 'static,
 {
-    type Response = EstablishedClientConnection<S::Connection, State, Request>;
+    type Response = EstablishedClientConnection<S::Connection, Request>;
     type Error = BoxError;
 
-    async fn serve(
-        &self,
-        mut ctx: Context<State>,
-        req: Request,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
         let address = ctx.remove::<ProxyAddress>();
         if !address
             .as_ref()

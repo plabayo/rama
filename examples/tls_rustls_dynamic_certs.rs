@@ -206,7 +206,7 @@ fn load_certificate(cert_chain: &[u8], private_key: &[u8]) -> Result<CertifiedKe
     Ok(CertifiedKey::new(cert_chain, signing_key))
 }
 
-async fn http_service<S>(_ctx: Context<S>, _request: Request) -> Result<Response, Infallible> {
+async fn http_service(_ctx: Context, _request: Request) -> Result<Response, Infallible> {
     Ok(
         "hello client, you were served by rustls tls terminator proxy issuing a dynamic certificate"
             .into_response(),

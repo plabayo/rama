@@ -67,6 +67,7 @@ use rama::{
             response::{IntoResponse, Json},
         },
     },
+    layer::AddExtensionLayer,
     net::{address::SocketAddress, user::Bearer},
     rt::Executor,
     telemetry::tracing::{self, level_filters::LevelFilter},
@@ -109,10 +110,9 @@ async fn main() {
     );
     let exec = Executor::default();
     HttpServer::auto(exec)
-        .listen_with_state(
-            Arc::new(AppState::default()),
+        .listen(
             addr,
-            TraceLayer::new_for_http()
+            (AddExtensionLayer::new(Arc::new(AppState::default())),TraceLayer::new_for_http())
                 .into_layer(
                     WebService::default()
                         .get("/", Json(json!({
@@ -129,11 +129,11 @@ async fn main() {
                         .get("/keys", list_keys)
                         .nest("/admin", ValidateRequestHeaderLayer::auth(Bearer::new_static("secret-token"))
                             .into_layer(WebService::default()
-                                .delete("/keys", async |ctx: Context<Arc<AppState>>| {
-                                    ctx.state().db.write().await.clear();
+                                .delete("/keys", async |ctx: Context| {
+                                    ctx.get::<Arc<AppState>>().unwrap().db.write().await.clear();
                                 })
-                                .delete("/item/:key", async |Path(params): Path<ItemParam>, ctx: Context<Arc<AppState>>| {
-                                    match ctx.state().db.write().await.remove(&params.key) {
+                                .delete("/item/:key", async |Path(params): Path<ItemParam>, ctx: Context| {
+                                    match ctx.get::<Arc<AppState>>().unwrap().db.write().await.remove(&params.key) {
                                         Some(_) => StatusCode::OK,
                                         None => StatusCode::NOT_FOUND,
                                     }
@@ -142,16 +142,16 @@ async fn main() {
                             HttpMatcher::method_get().or_method_head().and_path("/item/:key"),
                             // only compress the get Action, not the Post Action
                             CompressionLayer::new()
-                                .into_layer((async |Path(params): Path<ItemParam>, method: Method, ctx: Context<Arc<AppState>>| {
+                                .into_layer((async |Path(params): Path<ItemParam>, method: Method, ctx: Context| {
                                     match method {
                                         Method::GET => {
-                                            match ctx.state().db.read().await.get(&params.key) {
+                                            match ctx.get::<Arc<AppState>>().unwrap().db.read().await.get(&params.key) {
                                                 Some(b) => b.clone().into_response(),
                                                 None => StatusCode::NOT_FOUND.into_response(),
                                             }
                                         }
                                         Method::HEAD => {
-                                            if ctx.state().db.read().await.contains_key(&params.key) {
+                                            if ctx.get::<Arc<AppState>>().unwrap().db.read().await.contains_key(&params.key) {
                                                 StatusCode::OK
                                             } else {
                                                 StatusCode::NOT_FOUND
@@ -161,19 +161,19 @@ async fn main() {
                                     }
                                 }).into_endpoint_service()),
                         )
-                        .post("/items", async |ctx: Context<Arc<AppState>>, Json(dict): Json<HashMap<String, String>>| {
-                            let mut db = ctx.state().db.write().await;
+                        .post("/items", async |ctx: Context, Json(dict): Json<HashMap<String, String>>| {
+                            let mut db = ctx.get::<Arc<AppState>>().unwrap().db.write().await;
                             for (k, v) in dict {
                                 db.insert(k, bytes::Bytes::from(v));
                             }
                             StatusCode::OK
                         })
 
-                        .post("/item/:key", async |Path(params): Path<ItemParam>, ctx: Context<Arc<AppState>>, Bytes(value): Bytes| {
+                        .post("/item/:key", async |Path(params): Path<ItemParam>, ctx: Context, Bytes(value): Bytes| {
                             if value.is_empty() {
                                 return StatusCode::BAD_REQUEST;
                             }
-                            ctx.state().db.write().await.insert(params.key, value);
+                            ctx.get::<Arc<AppState>>().unwrap().db.write().await.insert(params.key, value);
                             StatusCode::OK
                         }),
                 ),
@@ -183,8 +183,9 @@ async fn main() {
 }
 
 /// a service_fn can be a regular fn, instead of a closure
-async fn list_keys(ctx: Context<Arc<AppState>>) -> impl IntoResponse {
-    ctx.state()
+async fn list_keys(ctx: Context) -> impl IntoResponse {
+    ctx.get::<Arc<AppState>>()
+        .unwrap()
         .db
         .read()
         .await

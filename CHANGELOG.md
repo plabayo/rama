@@ -5,7 +5,43 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-# 0.3.0-alpha.1
+# 0.3.0-alpha.3
+
+> Release date: `2025-08-29`
+
+### Windows Tier 1 Support
+
+Windows is now a tier 1 platform.
+Bug tickets specific to windows can now be reported, windows 10 and above.
+
+### Added
+
+- Windows promoted to tier-1 target, with pre-built binaries, signed releases, and `winget` package publication (`Plabayo.Rama.Preview`) (#683, #689, #690).
+- HTTP-to-HTTPS upgrade redirect service (#678).
+- Support for custom X.509 certificate stores in `rama-tls-boring`, with system store defaults (via `schannel`) on Windows (#677).
+- Support for WebSocket extensions, including per-message deflate, plus new typed WebSocket headers (#663, #672).
+- Header byte size tracking for HTTP/1 and HTTP/2 requests and responses (#672, #688).
+- `include_dir` integration into `rama-utils`, with cross-platform support and embedded directory serving example (#665).
+- OTLP HTTP metrics improvements (#383).
+- Router support for defining routes without a leading slash (#664).
+- New unified HTTP and SOCKS5(h) proxy connector for `EasyWebClient`, with default HTTP proxy connector fallback (#659, #668).
+- `tokio-turmoil` based HTTP/1 client–server test for simulation environments (#642).
+- Hot-reload (dev-only) support for the `http_sse_datastar_hello` example.
+- Added support for HTTP status code 301 in `Redirect` server utilities.
+
+### Changed
+
+- Windows support validated across all CLI targets and CI (#674).
+- Internal layering simplified with `MaybeProxiedConnection` and `MaybeLayeredService` wrappers (#670, #673, #671).
+- Consistent naming change from `Websocket` to `WebSocket`.
+- Improved test coverage for `http-mitm-proxy-boring`.
+
+### Fixed
+
+- Broken tracing when multiple layers were active (#660).
+- Rust 1.89 lint errors (#661).
+
+# 0.3.0-alpha.2
 
 > Release date: `2025-08-05`
 

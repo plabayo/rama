@@ -313,6 +313,10 @@ impl Headers {
         self.header_block.is_over_size
     }
 
+    pub fn calculate_header_list_size(&self) -> usize {
+        self.header_block.calculate_header_list_size()
+    }
+
     pub fn into_parts(self) -> (Pseudo, HeaderMap, OriginalHttp1Headers) {
         (
             self.header_block.pseudo,
@@ -542,6 +546,10 @@ impl PushPromise {
         decoder: &mut hpack::Decoder,
     ) -> Result<(), Error> {
         self.header_block.load(src, max_header_list_size, decoder)
+    }
+
+    pub fn calculate_header_list_size(&self) -> usize {
+        self.header_block.calculate_header_list_size()
     }
 
     pub fn stream_id(&self) -> StreamId {

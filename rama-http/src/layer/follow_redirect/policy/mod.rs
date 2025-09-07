@@ -41,8 +41,8 @@ use rama_core::Context;
 ///     uris: HashSet<Uri>,
 /// }
 ///
-/// impl<S, B, E> Policy<S, B, E> for DetectCycle {
-///     fn redirect(&mut self, _: &Context<S>, attempt: &Attempt<'_>) -> Result<Action, E> {
+/// impl< B, E> Policy< B, E> for DetectCycle {
+///     fn redirect(&mut self, _: &Context, attempt: &Attempt<'_>) -> Result<Action, E> {
 ///         if self.uris.contains(attempt.location()) {
 ///             Ok(Action::Stop)
 ///         } else {
@@ -52,12 +52,12 @@ use rama_core::Context;
 ///     }
 /// }
 /// ```
-pub trait Policy<S, B, E>: Send + Sync + 'static {
+pub trait Policy<B, E>: Send + Sync + 'static {
     /// Invoked when the service received a response with a redirection status code (`3xx`).
     ///
     /// This method returns an [`Action`] which indicates whether the service should follow
     /// the redirection.
-    fn redirect(&mut self, ctx: &Context<S>, attempt: &Attempt<'_>) -> Result<Action, E>;
+    fn redirect(&mut self, ctx: &Context, attempt: &Attempt<'_>) -> Result<Action, E>;
 
     /// Invoked right before the service makes a request, regardless of whether it is redirected
     /// or not.
@@ -66,7 +66,7 @@ pub trait Policy<S, B, E>: Send + Sync + 'static {
     /// or prepare the request in other ways.
     ///
     /// The default implementation does nothing.
-    fn on_request(&mut self, _ctx: &mut Context<S>, _request: &mut Request<B>) {}
+    fn on_request(&mut self, _ctx: &mut Context, _request: &mut Request<B>) {}
 
     /// Try to clone a request body before the service makes a redirected request.
     ///
@@ -76,24 +76,24 @@ pub trait Policy<S, B, E>: Send + Sync + 'static {
     /// in which case `B::default()` will be used to create a new request body.
     ///
     /// The default implementation returns `None`.
-    fn clone_body(&mut self, _ctx: &Context<S>, _body: &B) -> Option<B> {
+    fn clone_body(&mut self, _ctx: &Context, _body: &B) -> Option<B> {
         None
     }
 }
 
-impl<S, B, E, P> Policy<S, B, E> for Box<P>
+impl<B, E, P> Policy<B, E> for Box<P>
 where
-    P: Policy<S, B, E> + ?Sized,
+    P: Policy<B, E> + ?Sized,
 {
-    fn redirect(&mut self, ctx: &Context<S>, attempt: &Attempt<'_>) -> Result<Action, E> {
+    fn redirect(&mut self, ctx: &Context, attempt: &Attempt<'_>) -> Result<Action, E> {
         (**self).redirect(ctx, attempt)
     }
 
-    fn on_request(&mut self, ctx: &mut Context<S>, request: &mut Request<B>) {
+    fn on_request(&mut self, ctx: &mut Context, request: &mut Request<B>) {
         (**self).on_request(ctx, request)
     }
 
-    fn clone_body(&mut self, ctx: &Context<S>, body: &B) -> Option<B> {
+    fn clone_body(&mut self, ctx: &Context, body: &B) -> Option<B> {
         (**self).clone_body(ctx, body)
     }
 }
@@ -118,7 +118,7 @@ pub trait PolicyExt {
     ///     Other(Body),
     /// }
     ///
-    /// let policy = Limited::default().and::<(), _, _, ()>(clone_body_fn(|body| {
+    /// let policy = Limited::default().and::<_, _, ()>(clone_body_fn(|body| {
     ///     if let MyBody::Bytes(buf) = body {
     ///         Some(MyBody::Bytes(buf.clone()))
     ///     } else {
@@ -126,10 +126,10 @@ pub trait PolicyExt {
     ///     }
     /// }));
     /// ```
-    fn and<S, P, B, E>(self, other: P) -> And<Self, P>
+    fn and<P, B, E>(self, other: P) -> And<Self, P>
     where
-        Self: Policy<S, B, E> + Sized,
-        P: Policy<S, B, E>;
+        Self: Policy<B, E> + Sized,
+        P: Policy<B, E>;
 
     /// Create a new `Policy` that returns [`Action::Follow`] if either `self` or `other` returns
     /// `Action::Follow`.
@@ -148,30 +148,30 @@ pub trait PolicyExt {
     ///     // ...
     /// }
     ///
-    /// let policy = Limited::default().or::<(), _, (), _>(Err(MyError::TooManyRedirects));
+    /// let policy = Limited::default().or::<_, (), _>(Err(MyError::TooManyRedirects));
     /// ```
-    fn or<S, P, B, E>(self, other: P) -> Or<Self, P>
+    fn or<P, B, E>(self, other: P) -> Or<Self, P>
     where
-        Self: Policy<S, B, E> + Sized,
-        P: Policy<S, B, E>;
+        Self: Policy<B, E> + Sized,
+        P: Policy<B, E>;
 }
 
 impl<T> PolicyExt for T
 where
     T: ?Sized,
 {
-    fn and<S, P, B, E>(self, other: P) -> And<Self, P>
+    fn and<P, B, E>(self, other: P) -> And<Self, P>
     where
-        Self: Policy<S, B, E> + Sized,
-        P: Policy<S, B, E>,
+        Self: Policy<B, E> + Sized,
+        P: Policy<B, E>,
     {
         And::new(self, other)
     }
 
-    fn or<S, P, B, E>(self, other: P) -> Or<Self, P>
+    fn or<P, B, E>(self, other: P) -> Or<Self, P>
     where
-        Self: Policy<S, B, E> + Sized,
-        P: Policy<S, B, E>,
+        Self: Policy<B, E> + Sized,
+        P: Policy<B, E>,
     {
         Or::new(self, other)
     }
@@ -235,17 +235,17 @@ impl Action {
     }
 }
 
-impl<S, B, E> Policy<S, B, E> for Action {
-    fn redirect(&mut self, _: &Context<S>, _: &Attempt<'_>) -> Result<Action, E> {
+impl<B, E> Policy<B, E> for Action {
+    fn redirect(&mut self, _: &Context, _: &Attempt<'_>) -> Result<Action, E> {
         Ok(*self)
     }
 }
 
-impl<S, B, E> Policy<S, B, E> for Result<Action, E>
+impl<B, E> Policy<B, E> for Result<Action, E>
 where
     E: Clone + Send + Sync + 'static,
 {
-    fn redirect(&mut self, _: &Context<S>, _: &Attempt<'_>) -> Self {
+    fn redirect(&mut self, _: &Context, _: &Attempt<'_>) -> Self {
         self.clone()
     }
 }

@@ -16,17 +16,18 @@
 //!
 //! You should see a response with `HTTP/1.1 200 OK` and the content of the `index.html` file.
 
-use http::StatusCode;
 use rama::{
     Layer,
+    http::StatusCode,
     http::server::HttpServer,
     http::service::web::WebService,
+    http::service::web::{extract::Path, response::IntoResponse},
     layer::TraceErrLayer,
     rt::Executor,
     tcp::server::TcpListener,
     utils::include_dir::{Dir, include_dir},
 };
-use rama_http::service::web::{extract::Path, response::IntoResponse};
+
 use serde::Deserialize;
 
 // TODO: ensure we do not need to import `include_dir` module ourselves

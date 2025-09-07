@@ -86,9 +86,8 @@ async fn test_tls_rustls_dynamic_certs() {
     }
 }
 
-fn http_client<State>(host: &Option<&str>) -> ClientService<State>
+fn http_client(host: &Option<&str>) -> ClientService
 where
-    State: Clone + Send + Sync + 'static,
 {
     let domain = host.map(|host| Domain::from_str(host).unwrap());
     let tls_config = TlsConnectorDataBuilder::new_http_auto()

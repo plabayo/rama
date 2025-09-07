@@ -28,27 +28,26 @@ use crate::proto::{ReplyKind, server::Reply};
 ///
 /// [`Socks5Acceptor`]: crate::server::Socks5Acceptor
 /// [`Command::Connect`]: crate::proto::Command::Connect
-pub trait Socks5Connector<S, State>: Socks5ConnectorSeal<S, State> {}
+pub trait Socks5Connector<S>: Socks5ConnectorSeal<S> {}
 
-impl<S, State, C> Socks5Connector<S, State> for C where C: Socks5ConnectorSeal<S, State> {}
+impl<S, C> Socks5Connector<S> for C where C: Socks5ConnectorSeal<S> {}
 
-pub trait Socks5ConnectorSeal<S, State>: Send + Sync + 'static {
+pub trait Socks5ConnectorSeal<S>: Send + Sync + 'static {
     fn accept_connect(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         stream: S,
         destination: Authority,
     ) -> impl Future<Output = Result<(), Error>> + Send + '_;
 }
 
-impl<S, State> Socks5ConnectorSeal<S, State> for ()
+impl<S> Socks5ConnectorSeal<S> for ()
 where
     S: Stream + Unpin,
-    State: Clone + Send + Sync + 'static,
 {
     async fn accept_connect(
         &self,
-        _ctx: Context<State>,
+        _ctx: Context,
         mut stream: S,
         destination: Authority,
     ) -> Result<(), Error> {
@@ -142,8 +141,8 @@ impl<C, S> Connector<C, S> {
     /// Any [`Service`] can be used as long as it has the signature:
     ///
     /// ```plain
-    /// (Context<State>, TcpRequest)
-    ///     -> (EstablishedConnection<T, State, TcpRequest>, Into<BoxError>)
+    /// (Context, TcpRequest)
+    ///     -> (EstablishedConnection<T, TcpRequest>, Into<BoxError>)
     /// ```
     pub fn with_connector<T>(self, connector: T) -> Connector<T, S> {
         Connector {
@@ -160,7 +159,7 @@ impl<C, S> Connector<C, S> {
     /// Any [`Service`] can be used as long as it has the signature:
     ///
     /// ```plain
-    /// (Context<State>, ProxyRequest) -> ((), Into<BoxError>)
+    /// (Context, ProxyRequest) -> ((), Into<BoxError>)
     /// ```
     pub fn with_service<T>(self, service: T) -> Connector<C, T> {
         Connector {
@@ -205,23 +204,21 @@ impl<C: Clone, S: Clone> Clone for Connector<C, S> {
     }
 }
 
-impl<S, T, State, InnerConnector, StreamService> Socks5ConnectorSeal<S, State>
+impl<S, T, InnerConnector, StreamService> Socks5ConnectorSeal<S>
     for Connector<InnerConnector, StreamService>
 where
     S: Stream + Unpin,
     T: Stream + Socket + Unpin,
-    State: Clone + Send + Sync + 'static,
     InnerConnector: Service<
-            State,
             TcpRequest,
-            Response = EstablishedClientConnection<T, State, TcpRequest>,
+            Response = EstablishedClientConnection<T, TcpRequest>,
             Error: Into<BoxError>,
         >,
-    StreamService: Service<State, ProxyRequest<S, T>, Response = (), Error: Into<BoxError>>,
+    StreamService: Service<ProxyRequest<S, T>, Response = (), Error: Into<BoxError>>,
 {
     async fn accept_connect(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         mut stream: S,
         destination: Authority,
     ) -> Result<(), Error> {
@@ -369,15 +366,14 @@ impl<S: Clone> Clone for LazyConnector<S> {
     }
 }
 
-impl<S, State, StreamService> Socks5ConnectorSeal<S, State> for LazyConnector<StreamService>
+impl<S, StreamService> Socks5ConnectorSeal<S> for LazyConnector<StreamService>
 where
     S: Stream + Unpin,
-    State: Clone + Send + Sync + 'static,
-    StreamService: Service<State, S, Response = (), Error: Into<BoxError>>,
+    StreamService: Service<S, Response = (), Error: Into<BoxError>>,
 {
     async fn accept_connect(
         &self,
-        mut ctx: Context<State>,
+        mut ctx: Context,
         mut stream: S,
         destination: Authority,
     ) -> Result<(), Error> {
@@ -454,14 +450,13 @@ mod test {
         }
     }
 
-    impl<S, State> Socks5ConnectorSeal<S, State> for MockConnector
+    impl<S> Socks5ConnectorSeal<S> for MockConnector
     where
         S: Stream + Unpin,
-        State: Clone + Send + Sync + 'static,
     {
         async fn accept_connect(
             &self,
-            _ctx: Context<State>,
+            _ctx: Context,
             mut stream: S,
             _destination: Authority,
         ) -> Result<(), Error> {

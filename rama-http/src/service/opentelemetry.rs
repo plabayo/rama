@@ -11,16 +11,15 @@ use std::{fmt, pin::Pin};
 
 /// Wrapper type which allows you to use an rama http [`Service`]
 /// as an http exporter for your OTLP setup.
-pub struct OtelExporter<S, State = ()> {
+pub struct OtelExporter<S = ()> {
     service: S,
-    ctx: Context<State>,
+    ctx: Context,
     handle: tokio::runtime::Handle,
 }
 
-impl<S, State> Clone for OtelExporter<S, State>
+impl<S> Clone for OtelExporter<S>
 where
     S: Clone,
-    State: Clone,
 {
     fn clone(&self) -> Self {
         Self {
@@ -31,10 +30,9 @@ where
     }
 }
 
-impl<S, State> fmt::Debug for OtelExporter<S, State>
+impl<S> fmt::Debug for OtelExporter<S>
 where
     S: fmt::Debug,
-    State: fmt::Debug,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("OtelExporter")
@@ -52,17 +50,6 @@ impl<S> OtelExporter<S> {
             service,
             ctx: Context::default(),
             handle: tokio::runtime::Handle::current(),
-        }
-    }
-
-    /// attach `State` to this [`OtelExporter`],
-    /// only useful if you use the state somewhere in your inner service.
-    pub fn with_state<T>(self, state: T) -> OtelExporter<S, T> {
-        let (ctx, _) = self.ctx.swap_state(state);
-        OtelExporter {
-            service: self.service,
-            ctx,
-            handle: self.handle,
         }
     }
 
@@ -88,10 +75,9 @@ impl<S> OtelExporter<S> {
     }
 }
 
-impl<S, State> HttpClient for OtelExporter<S, State>
+impl<S> HttpClient for OtelExporter<S>
 where
-    S: fmt::Debug + Clone + Service<State, Request, Response = Response, Error: Into<BoxError>>,
-    State: fmt::Debug + Send + Sync + Clone + 'static,
+    S: fmt::Debug + Clone + Service<Request, Response = Response, Error: Into<BoxError>>,
 {
     fn send_bytes<'life0, 'async_trait>(
         &'life0 self,

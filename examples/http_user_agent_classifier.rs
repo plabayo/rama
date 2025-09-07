@@ -44,7 +44,7 @@ async fn main() {
         .unwrap();
 }
 
-async fn handle(ctx: Context<()>, _req: Request) -> Result<Response, Infallible> {
+async fn handle(ctx: Context, _req: Request) -> Result<Response, Infallible> {
     let ua: &UserAgent = ctx.get().unwrap();
     Ok(Json(json!({
         "ua": ua.header_str(),

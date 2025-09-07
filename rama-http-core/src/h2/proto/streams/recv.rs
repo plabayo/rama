@@ -3,6 +3,7 @@ use crate::h2::codec::UserError;
 use crate::h2::proto;
 use rama_core::telemetry::tracing;
 
+use rama_http::proto::{RequestExtensions, RequestHeaders};
 use rama_http_types::proto::h1::headers::original::OriginalHttp1Headers;
 use rama_http_types::proto::h2::frame::{
     DEFAULT_INITIAL_WINDOW_SIZE, PushPromiseHeaderError, Reason,
@@ -239,6 +240,7 @@ impl Recv {
         }
 
         let stream_id = frame.stream_id();
+        let header_size = frame.calculate_header_list_size();
         let (pseudo, fields, field_order) = frame.into_parts();
 
         if pseudo.protocol.is_some()
@@ -255,10 +257,13 @@ impl Recv {
         }
 
         if !pseudo.is_informational() {
-            let message =
-                counts
-                    .peer()
-                    .convert_poll_message(pseudo, fields, field_order, stream_id)?;
+            let message = counts.peer().convert_poll_message(
+                pseudo,
+                fields,
+                field_order,
+                header_size,
+                stream_id,
+            )?;
 
             // Push the frame onto the stream's recv buffer
             stream
@@ -330,7 +335,17 @@ impl Recv {
         // If the buffer is not empty, then the first frame must be a HEADERS
         // frame or the user violated the contract.
         match stream.pending_recv.pop_front(&mut self.buffer) {
-            Some(Event::Headers(peer::PollMessage::Client(response))) => Poll::Ready(Ok(response)),
+            Some(Event::Headers(peer::PollMessage::Client(mut response))) => {
+                if let Some(mut request_ext) = stream.encoded_request_extensions.take() {
+                    if let Some(request_headers) = request_ext.remove::<RequestHeaders>() {
+                        response.extensions_mut().insert(request_headers);
+                    }
+                    response
+                        .extensions_mut()
+                        .insert(RequestExtensions::from(request_ext));
+                }
+                Poll::Ready(Ok(response))
+            }
             Some(_) => panic!("poll_response called after response returned"),
             None => {
                 if !stream.state.ensure_recv_open()? {
@@ -761,11 +776,13 @@ impl Recv {
         }
 
         let promised_id = frame.promised_id();
+        let header_size = frame.calculate_header_list_size();
         let (pseudo, fields, field_order) = frame.into_parts();
         let req = crate::h2::server::Peer::convert_poll_message(
             pseudo,
             fields,
             field_order,
+            header_size,
             promised_id,
         )?;
 

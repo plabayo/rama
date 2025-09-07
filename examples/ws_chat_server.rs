@@ -16,7 +16,7 @@
 //! or with yourself using different browsers or browser tabs :)
 
 use rama::{
-    Context,
+    Context, Layer,
     http::{
         server::HttpServer,
         service::web::{Router, response::Html},
@@ -25,6 +25,7 @@ use rama::{
             handshake::server::{ServerWebSocket, WebSocketAcceptor},
         },
     },
+    layer::AddExtensionLayer,
     service::service_fn,
     tcp::server::TcpListener,
     telemetry::tracing::{debug, error, info, level_filters::LevelFilter, warn},
@@ -52,8 +53,8 @@ async fn main() {
         let server = HttpServer::http1().service(Router::new().get("/", Html(INDEX)).get(
             "/chat",
             WebSocketAcceptor::new().into_service(service_fn(
-                async |ctx: Context<State>, mut ws: ServerWebSocket| {
-                    let state = ctx.into_parts().state;
+                async |ctx: Context, mut ws: ServerWebSocket| {
+                    let state = ctx.get::<State>().unwrap().clone();
                     let mut handler = WsHandler {
                         nickname: None,
                         broadcast_tx: state.broadcast_tx,
@@ -113,11 +114,12 @@ async fn main() {
         ));
         info!("open mini web chat @ http://127.0.0.1:62033");
         info!("or connect directly to ws://127.0.0.1:62033/chat (via 'rama ws')");
+
+
         TcpListener::bind("127.0.0.1:62033")
             .await
             .expect("bind TCP Listener")
-            .with_state(State::default())
-            .serve_graceful(guard, server)
+            .serve_graceful(guard, AddExtensionLayer::new(State::default()).into_layer(server))
             .await;
     });
 

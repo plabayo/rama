@@ -7,7 +7,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 async fn test_tcp_listener_layers() {
     utils::init_tracing();
 
-    let _runner = utils::ExampleRunner::<()>::interactive("tcp_listener_layers", None);
+    let _runner = utils::ExampleRunner::interactive("tcp_listener_layers", None);
 
     let mut stream = None;
     let ctx = Context::default();

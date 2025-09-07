@@ -7,8 +7,6 @@ mod http_anti_bot_infinite_resource;
 #[cfg(feature = "http-full")]
 mod http_anti_bot_zip_bomb;
 #[cfg(feature = "http-full")]
-mod http_conn_state;
-#[cfg(feature = "http-full")]
 mod http_connect_proxy;
 #[cfg(feature = "http-full")]
 mod http_form;
@@ -29,7 +27,7 @@ mod http_k8s_health;
 mod http_key_value_store;
 #[cfg(feature = "http-full")]
 mod http_listener_hello;
-#[cfg(all(feature = "http-full", feature = "rustls"))]
+#[cfg(all(feature = "http-full", feature = "rustls",))]
 mod http_mitm_proxy_boring;
 #[cfg(all(feature = "http-full", feature = "rustls"))]
 mod http_mitm_proxy_rustls;
@@ -39,6 +37,8 @@ mod http_pooled_client;
 mod http_rama_tower;
 #[cfg(feature = "http-full")]
 mod http_rate_limit;
+#[cfg(all(feature = "http-full", feature = "boring"))]
+mod http_record_har;
 #[cfg(feature = "http-full")]
 mod http_service_fs;
 #[cfg(feature = "http-full")]
@@ -81,6 +81,8 @@ mod udp_codec;
 mod ws_chat_server;
 #[cfg(feature = "http-full")]
 mod ws_echo_server;
+#[cfg(all(feature = "http-full", feature = "compression"))]
+mod ws_echo_server_with_compression;
 #[cfg(all(feature = "http-full", feature = "boring"))]
 mod ws_over_h2;
 #[cfg(all(feature = "http-full", feature = "boring"))]

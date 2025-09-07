@@ -39,24 +39,18 @@ pub struct HttpClientService<Body, I = ()> {
     pub(super) http_req_inspector: I,
 }
 
-impl<State, BodyIn, BodyOut, I> Service<State, Request<BodyIn>> for HttpClientService<BodyOut, I>
+impl<BodyIn, BodyOut, I> Service<Request<BodyIn>> for HttpClientService<BodyOut, I>
 where
-    State: Clone + Send + Sync + 'static,
     BodyIn: Send + 'static,
     BodyOut: http_body::Body<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
-    I: RequestInspector<
-            State,
-            Request<BodyIn>,
-            Error: Into<BoxError>,
-            RequestOut = Request<BodyOut>,
-        >,
+    I: RequestInspector<Request<BodyIn>, Error: Into<BoxError>, RequestOut = Request<BodyOut>>,
 {
     type Response = Response;
     type Error = BoxError;
 
     async fn serve(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         mut req: Request<BodyIn>,
     ) -> Result<Self::Response, Self::Error> {
         // Check if this http connection can actually be used for TargetHttpVersion
@@ -157,8 +151,8 @@ where
     }
 }
 
-fn sanitize_client_req_header<S, B>(
-    ctx: &mut Context<S>,
+fn sanitize_client_req_header<B>(
+    ctx: &mut Context,
     req: Request<B>,
 ) -> Result<Request<B>, BoxError> {
     // logic specific to this method

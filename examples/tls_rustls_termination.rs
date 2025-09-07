@@ -115,7 +115,7 @@ async fn main() {
         .expect("graceful shutdown");
 }
 
-async fn internal_tcp_service_fn<S>(ctx: Context<()>, mut stream: S) -> Result<(), Infallible>
+async fn internal_tcp_service_fn<S>(ctx: Context, mut stream: S) -> Result<(), Infallible>
 where
     S: Stream + Unpin,
 {
