@@ -2,6 +2,7 @@
 
 use std::borrow::Cow;
 use std::fmt::Debug;
+use std::str::FromStr;
 
 use crate::dep::http::request::Parts as ReqParts;
 use crate::layer::har::extensions::RequestComment;
@@ -14,9 +15,12 @@ use rama_error::{ErrorContext, OpaqueError};
 use rama_http_headers::{ContentType, Cookie as RamaCookie, HeaderMapExt, Location};
 use rama_http_headers::{HeaderEncode, SetCookie};
 use rama_http_types::dep::http;
+use rama_http_types::proto::h1::Http1HeaderName;
 use rama_http_types::{HeaderMap, Version as RamaHttpVersion, proto::h1::Http1HeaderMap};
 use rama_net::address::SocketAddress;
 
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD as ENGINE;
 use chrono::{DateTime, Utc};
 use mime::Mime;
 use serde::{Deserialize, Serialize};
@@ -77,11 +81,11 @@ mod chrono_serializer {
 rama_utils::macros::enums::enum_builder! {
     @String
     pub enum HttpVersion {
-        Http09 => "0.9",
-        Http10 => "1.0",
-        Http11 => "1.1",
-        Http2 => "2",
-        Http3 => "3",
+        Http09 => "0.9" | "HTTP/0.9",
+        Http10 => "1.0" | "HTTP/1" | "HTTP/1.0",
+        Http11 => "1.1" | "HTTP/1.1",
+        Http2 => "2" | "HTTP/2" | "h2",
+        Http3 => "3" | "HTTP/3" | "h3",
     }
 }
 
@@ -340,8 +344,62 @@ pub struct Request {
     pub comment: Option<Cow<'static, str>>,
 }
 
+impl TryFrom<Request> for crate::Request {
+    type Error = OpaqueError;
+
+    fn try_from(har_request: Request) -> Result<Self, Self::Error> {
+        let body = if let Some(text) = har_request.post_data.and_then(|pd| pd.text) {
+            if let Ok(bin) = ENGINE.decode(&text) {
+                crate::Body::from(bin)
+            } else {
+                crate::Body::from(text)
+            }
+        } else {
+            crate::Body::empty()
+        };
+
+        let mut orig_headers = Http1HeaderMap::with_capacity(har_request.headers.len());
+        for header in har_request.headers {
+            orig_headers.append(
+                Http1HeaderName::from_str(&header.name).context("convert http header name")?,
+                crate::HeaderValue::from_maybe_shared(header.value)
+                    .context("convert http header value")?,
+            );
+        }
+        let (headers, orig_headers) = orig_headers.into_parts();
+
+        let builder = crate::Request::builder()
+            .method(
+                har_request
+                    .method
+                    .parse::<crate::Method>()
+                    .context("parse HAR HTTP Method")?,
+            )
+            .uri(har_request.url);
+
+        let builder = if let Ok(ver) = har_request.http_version.try_into() {
+            builder.version(ver)
+        } else {
+            builder
+        };
+
+        let mut req = builder
+            .body(body)
+            .context("build http request from HAR data")?;
+
+        *req.headers_mut() = headers;
+        req.extensions_mut().insert(orig_headers);
+
+        if let Some(comment) = har_request.comment {
+            req.extensions_mut().insert(RequestComment::new(comment));
+        }
+
+        Ok(req)
+    }
+}
+
 impl Request {
-    pub fn from_rama_request_parts(
+    pub fn from_http_request_parts(
         ctx: &Context,
         parts: &http::request::Parts,
         payload: &[u8],
@@ -360,7 +418,7 @@ impl Request {
 
             let text = match std::str::from_utf8(payload) {
                 Ok(s) => s.to_owned(),
-                Err(_) => format!("{payload:x?}"), // TODO: use base64 instead
+                Err(_) => ENGINE.encode(payload),
             };
 
             Some(PostData {
@@ -461,7 +519,7 @@ pub struct Response {
 }
 
 impl Response {
-    pub fn from_rama_response_parts(
+    pub fn from_http_response_parts(
         parts: &http::response::Parts,
         payload: &[u8],
     ) -> Result<Self, OpaqueError> {
@@ -471,7 +529,7 @@ impl Response {
             mime_type: get_mime(&parts.headers),
             text: (!payload.is_empty()).then(|| match std::str::from_utf8(payload) {
                 Ok(s) => s.to_owned(),
-                Err(_) => format!("{payload:x?}"), // TODO: use base64 instead
+                Err(_) => ENGINE.encode(payload),
             }),
             encoding: parts
                 .headers

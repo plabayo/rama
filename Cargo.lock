@@ -2690,6 +2690,7 @@ name = "rama-http"
 version = "0.3.0-alpha.4"
 dependencies = [
  "async-compression",
+ "base64",
  "bitflags",
  "brotli",
  "chrono",

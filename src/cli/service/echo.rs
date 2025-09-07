@@ -49,7 +49,11 @@ use crate::{
     net::tls::server::ServerConfig,
     tls::boring::server::{TlsAcceptorData, TlsAcceptorLayer},
 };
-use rama_http::service::web::{extract::Json, response::IntoResponse};
+use rama_core::error::ErrorContext;
+use rama_http::{
+    convert::curl,
+    service::web::{extract::Json, response::IntoResponse},
+};
 use rama_http_backend::server::layer::upgrade::UpgradeLayer;
 use rama_http_core::h2::frame::EarlyFrameCapture;
 use rama_ws::handshake::server::{WebSocketAcceptor, WebSocketEchoService, WebSocketMatcher};
@@ -454,6 +458,14 @@ impl Service<Request> for EchoService {
 
         let (mut parts, body) = req.into_parts();
 
+        let body = body
+            .collect()
+            .await
+            .context("collect request body for echo purposes")?
+            .to_bytes();
+
+        let curl_request = curl::cmd_string_for_request_parts_and_payload(&ctx, &parts, &body);
+
         let headers: Vec<_> = Http1HeaderMap::new(parts.headers, Some(&mut parts.extensions))
             .into_iter()
             .map(|(name, value)| {
@@ -466,7 +478,6 @@ impl Service<Request> for EchoService {
             })
             .collect();
 
-        let body = body.collect().await.unwrap().to_bytes();
         let body = hex::encode(body.as_ref());
 
         #[cfg(any(feature = "rustls", feature = "boring"))]
@@ -703,6 +714,7 @@ impl Service<Request> for EchoService {
                 "headers": headers,
                 "payload": body,
                 "ja4h": ja4h,
+                "curl": curl_request,
             },
             "tls": tls_info,
             "socket_addr": ctx.get::<Forwarded>()

@@ -12,3 +12,9 @@ pub use search::{
 };
 
 pub mod utf8;
+
+#[cfg(not(target_os = "windows"))]
+pub const NATIVE_NEWLINE: &str = "\n";
+
+#[cfg(target_os = "windows")]
+pub const NATIVE_NEWLINE: &str = "\r\n";
