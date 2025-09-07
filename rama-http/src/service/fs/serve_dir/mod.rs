@@ -512,7 +512,7 @@ impl ServeVariant {
                 let path_decoded = Path::new(&*path_decoded);
 
                 let mut path_to_file = match source {
-                    DirSource::Filesystem(base_path) => base_path.to_path_buf(),
+                    DirSource::Filesystem(base_path) => base_path.clone(),
                     DirSource::Embedded(_) => PathBuf::new(), // For embedded files, we don't need a filesystem path
                 };
 
@@ -538,7 +538,7 @@ impl ServeVariant {
                 Some(path_to_file)
             }
             Self::SingleFile { mime: _ } => match source {
-                DirSource::Filesystem(base_path) => Some(base_path.to_path_buf()),
+                DirSource::Filesystem(base_path) => Some(base_path.clone()),
                 DirSource::Embedded(_) => Some(PathBuf::new()), // For embedded single file
             },
         }
