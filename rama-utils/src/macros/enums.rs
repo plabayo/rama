@@ -315,7 +315,7 @@ macro_rules! __enum_builder {
         $(#[$m:meta])*
         @String
         $enum_vis:vis enum $enum_name:ident
-        { $( $(#[$enum_meta:meta])* $enum_var: ident => $enum_val: expr ),* $(,)? }
+        { $( $(#[$enum_meta:meta])* $enum_var:ident => $enum_val:literal $(| $enum_val_alt:literal)* ),* $(,)? }
     ) => {
         $(#[$m])*
         #[derive(Debug, PartialEq, Eq, Clone, Hash)]
@@ -350,7 +350,7 @@ macro_rules! __enum_builder {
         impl<'a> From<&'a str> for $enum_name {
             fn from(s: &'a str) -> Self {
                 $crate::macros::match_ignore_ascii_case_str!(match(s) {
-                    $($enum_val => $enum_name::$enum_var),*
+                    $($enum_val $(| $enum_val_alt)* => $enum_name::$enum_var),*
                     , _ => $enum_name::Unknown(s.to_owned()),
                 })
             }
@@ -369,7 +369,7 @@ macro_rules! __enum_builder {
             /// `None` for unknown values
             pub fn strict_parse(s: &str) -> Option<Self> {
                 $crate::macros::match_ignore_ascii_case_str!(match(s) {
-                    $($enum_val => Some($enum_name::$enum_var)),*
+                    $($enum_val $(| $enum_val_alt)* => Some($enum_name::$enum_var)),*
                     , _ => None,
                 })
             }
@@ -378,7 +378,7 @@ macro_rules! __enum_builder {
         impl From<String> for $enum_name {
             fn from(s: String) -> Self {
                 match s.as_str() {
-                    $($enum_val => $enum_name::$enum_var),*
+                    $($enum_val $(| $enum_val_alt)* => $enum_name::$enum_var),*
                     , _ => $enum_name::Unknown(s),
                 }
             }

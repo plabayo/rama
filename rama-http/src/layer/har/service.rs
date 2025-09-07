@@ -57,7 +57,7 @@ where
                 .to_bytes();
 
             let har_req_result =
-                HarRequest::from_rama_request_parts(&ctx, &req_parts, &req_body_bytes);
+                HarRequest::from_http_request_parts(&ctx, &req_parts, &req_body_bytes);
             let request = Request::from_parts(req_parts, Body::from(req_body_bytes));
 
             match har_req_result {
@@ -96,7 +96,7 @@ where
                         })?
                         .to_bytes();
 
-                    let maybe_response = match HarResponse::from_rama_response_parts(
+                    let maybe_response = match HarResponse::from_http_response_parts(
                         &resp_parts,
                         &resp_body_bytes,
                     ) {

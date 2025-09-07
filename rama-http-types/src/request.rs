@@ -24,16 +24,7 @@ pub trait HttpRequestParts {
     fn extensions(&self) -> &Extensions;
 }
 
-/// Same as [`HttpRequestParts`] but also adding mutable access
-pub trait HttpRequestPartsMut: HttpRequestParts {
-    fn method_mut(&mut self) -> &mut Method;
-    fn uri_mut(&mut self) -> &mut Uri;
-    fn version_mut(&mut self) -> &mut Version;
-    fn headers_mut(&mut self) -> &mut HeaderMap<HeaderValue>;
-    fn extensions_mut(&mut self) -> &mut Extensions;
-}
-
-impl<Body> HttpRequestParts for &http::Request<Body> {
+impl<T: HttpRequestParts> HttpRequestParts for &T {
     fn method(&self) -> &Method {
         (*self).method()
     }
@@ -52,6 +43,59 @@ impl<Body> HttpRequestParts for &http::Request<Body> {
 
     fn extensions(&self) -> &Extensions {
         (*self).extensions()
+    }
+}
+
+impl<T: HttpRequestParts> HttpRequestParts for &mut T {
+    fn method(&self) -> &Method {
+        (**self).method()
+    }
+
+    fn uri(&self) -> &Uri {
+        (**self).uri()
+    }
+
+    fn version(&self) -> Version {
+        (**self).version()
+    }
+
+    fn headers(&self) -> &HeaderMap<HeaderValue> {
+        (**self).headers()
+    }
+
+    fn extensions(&self) -> &Extensions {
+        (**self).extensions()
+    }
+}
+
+/// Same as [`HttpRequestParts`] but also adding mutable access
+pub trait HttpRequestPartsMut: HttpRequestParts {
+    fn method_mut(&mut self) -> &mut Method;
+    fn uri_mut(&mut self) -> &mut Uri;
+    fn version_mut(&mut self) -> &mut Version;
+    fn headers_mut(&mut self) -> &mut HeaderMap<HeaderValue>;
+    fn extensions_mut(&mut self) -> &mut Extensions;
+}
+
+impl<T: HttpRequestPartsMut> HttpRequestPartsMut for &mut T {
+    fn method_mut(&mut self) -> &mut Method {
+        (*self).method_mut()
+    }
+
+    fn uri_mut(&mut self) -> &mut Uri {
+        (*self).uri_mut()
+    }
+
+    fn version_mut(&mut self) -> &mut Version {
+        (*self).version_mut()
+    }
+
+    fn headers_mut(&mut self) -> &mut HeaderMap<HeaderValue> {
+        (*self).headers_mut()
+    }
+
+    fn extensions_mut(&mut self) -> &mut Extensions {
+        (*self).extensions_mut()
     }
 }
 
@@ -96,28 +140,6 @@ impl<Body> HttpRequestPartsMut for http::Request<Body> {
 
     fn extensions_mut(&mut self) -> &mut Extensions {
         self.extensions_mut()
-    }
-}
-
-impl HttpRequestParts for &Parts {
-    fn method(&self) -> &Method {
-        &self.method
-    }
-
-    fn uri(&self) -> &Uri {
-        &self.uri
-    }
-
-    fn version(&self) -> Version {
-        self.version
-    }
-
-    fn headers(&self) -> &HeaderMap<HeaderValue> {
-        &self.headers
-    }
-
-    fn extensions(&self) -> &Extensions {
-        &self.extensions
     }
 }
 

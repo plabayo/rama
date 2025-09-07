@@ -6,9 +6,8 @@
 #[doc(inline)]
 pub use ::rama_http::{
     Body, BodyDataStream, BodyExtractExt, BodyLimit, HeaderMap, HeaderName, HeaderValue,
-    InfiniteReader, Method, Request, Response, Scheme, StatusCode, Uri, Version, body, conn, dep,
-    header, headers, io, matcher, opentelemetry, proto, request_headers_to_curl_command, service,
-    sse, utils,
+    InfiniteReader, Method, Request, Response, Scheme, StatusCode, Uri, Version, body, conn,
+    convert, dep, header, headers, io, matcher, opentelemetry, proto, service, sse, utils,
 };
 
 #[cfg(feature = "http-full")]
