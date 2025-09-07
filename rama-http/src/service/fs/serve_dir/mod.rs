@@ -515,7 +515,7 @@ impl ServeVariant {
                     DirSource::Filesystem(base_path) => base_path.to_path_buf(),
                     DirSource::Embedded(_) => PathBuf::new(), // For embedded files, we don't need a filesystem path
                 };
-                
+
                 for component in path_decoded.components() {
                     match component {
                         Component::Normal(comp) => {

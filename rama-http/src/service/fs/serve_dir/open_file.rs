@@ -1,5 +1,5 @@
 use super::{
-    DirectoryServeMode, ServeVariant, DirSource,
+    DirSource, DirectoryServeMode, ServeVariant,
     headers::{IfModifiedSince, IfUnmodifiedSince, LastModified},
 };
 use crate::headers::{encoding::Encoding, specifier::QualityValue};
@@ -8,6 +8,7 @@ use chrono::{DateTime, Local};
 use http_range_header::RangeUnsatisfiableError;
 use rama_core::combinators::Either;
 use rama_core::telemetry::tracing;
+use rama_utils::include_dir::{Dir, Metadata as EmbeddedMetadata};
 use std::io::Cursor;
 use std::{
     ffi::OsStr,
@@ -20,8 +21,6 @@ use std::{
 };
 use tokio::io::AsyncRead;
 use tokio::{fs::File, io::AsyncSeekExt};
-use rama_utils::include_dir::{Dir, Metadata as EmbeddedMetadata};
-
 
 pub(super) enum OpenFileOutput {
     FileOpened(Box<FileOpened>),
@@ -88,7 +87,6 @@ impl FileRequestExtent {
     }
 }
 
-
 pub(super) async fn open_file(
     variant: ServeVariant,
     mut path_to_file: PathBuf,
@@ -138,14 +136,17 @@ pub(super) async fn open_file(
                 ))
             }
             DirSource::Embedded(base) => {
-                let (contents, metadata, maybe_encoding) =
-                    match open_embedded_file_with_fallback(base, path_to_file, negotiated_encodings) {
-                        Ok(result) => result,
-                        Err(err) => return Err(err),
-                    };
+                let (contents, metadata, maybe_encoding) = match open_embedded_file_with_fallback(
+                    base,
+                    path_to_file,
+                    negotiated_encodings,
+                ) {
+                    Ok(result) => result,
+                    Err(err) => return Err(err),
+                };
 
-                let last_modified = metadata
-                    .map(|metadata| LastModified::from(metadata.modified()));
+                let last_modified =
+                    metadata.map(|metadata| LastModified::from(metadata.modified()));
 
                 if let Some(output) = check_modified_headers(last_modified.as_ref(), &req) {
                     return Ok(output);
@@ -198,11 +199,14 @@ pub(super) async fn open_file(
                 ))
             }
             DirSource::Embedded(base) => {
-                let (contents, metadata, maybe_encoding) =
-                    match open_embedded_file_with_fallback(base, path_to_file, negotiated_encodings) {
-                        Ok(result) => result,
-                        Err(err) => return Err(err),
-                    };
+                let (contents, metadata, maybe_encoding) = match open_embedded_file_with_fallback(
+                    base,
+                    path_to_file,
+                    negotiated_encodings,
+                ) {
+                    Ok(result) => result,
+                    Err(err) => return Err(err),
+                };
 
                 let last_modified = metadata
                     .as_ref()
@@ -371,7 +375,7 @@ fn open_embedded_file_with_fallback(
                 path.set_extension(OsStr::new(""));
                 // Remove the encoding from the negotiated_encodings since the file doesn't exist
                 negotiated_encoding.retain(|qv| qv.value != encoding);
-            },
+            }
             (None, None) => {
                 return Err(io::Error::new(io::ErrorKind::NotFound, "file not found"));
             }
@@ -465,7 +469,9 @@ async fn maybe_serve_directory(
 
                     // Process all entries (directories and files)
                     for entry in dir.entries() {
-                        let file_name_str = entry.path().file_name()
+                        let file_name_str = entry
+                            .path()
+                            .file_name()
                             .map(|n| n.to_string_lossy().to_string())
                             .unwrap_or_default();
 
@@ -475,16 +481,19 @@ async fn maybe_serve_directory(
                             entries.push(DirEntry::new(file_name_str, true, modified, 0));
                         } else {
                             // File entry
-                            let file = entry.as_file().expect("Entry should be a file if not a directory");
-                            let modified = file.metadata()
+                            let file = entry
+                                .as_file()
+                                .expect("Entry should be a file if not a directory");
+                            let modified = file
+                                .metadata()
                                 .map(|m| m.modified())
                                 .unwrap_or(SystemTime::UNIX_EPOCH);
-                            
+
                             entries.push(DirEntry::new(
-                                file_name_str, 
-                                false, 
-                                modified, 
-                                file.contents().len() as u64
+                                file_name_str,
+                                false,
+                                modified,
+                                file.contents().len() as u64,
                             ));
                         }
                     }
@@ -625,7 +634,12 @@ struct DirEntry {
 
 impl DirEntry {
     fn new(name: String, is_dir: bool, modified: SystemTime, size: u64) -> Self {
-        Self { name, is_dir, modified, size }
+        Self {
+            name,
+            is_dir,
+            modified,
+            size,
+        }
     }
 }
 
