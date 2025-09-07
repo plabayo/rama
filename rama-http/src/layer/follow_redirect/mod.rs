@@ -84,9 +84,9 @@
 //! # let http_client = service_fn(async |_: Request| Ok::<_, Infallible>(Response::new(Body::empty())));
 //! let policy = policy::Limited::new(10) // Set the maximum number of redirections to 10.
 //!     // Return an error when the limit was reached.
-//!     .or::<(), _, (), _>(policy::redirect_fn(|_| Err(MyError::TooManyRedirects)))
+//!     .or::<_, (), _>(policy::redirect_fn(|_| Err(MyError::TooManyRedirects)))
 //!     // Do not follow cross-origin redirections, and return the redirection responses as-is.
-//!     .and::<(), _, (), _>(policy::SameOrigin::new());
+//!     .and::<_, (), _>(policy::SameOrigin::new());
 //!
 //! let client = (
 //!     FollowRedirectLayer::with_policy(policy),
@@ -123,6 +123,7 @@ pub struct FollowRedirectLayer<P = Standard> {
 
 impl FollowRedirectLayer {
     /// Create a new [`FollowRedirectLayer`] with a [`Standard`] redirection policy.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -130,7 +131,7 @@ impl FollowRedirectLayer {
 
 impl Default for FollowRedirectLayer {
     fn default() -> Self {
-        FollowRedirectLayer {
+        Self {
             policy: Standard::default(),
         }
     }
@@ -147,7 +148,7 @@ impl<P: fmt::Debug> fmt::Debug for FollowRedirectLayer<P> {
 impl<P> FollowRedirectLayer<P> {
     /// Create a new [`FollowRedirectLayer`] with the given redirection [`Policy`].
     pub fn with_policy(policy: P) -> Self {
-        FollowRedirectLayer { policy }
+        Self { policy }
     }
 }
 
@@ -217,26 +218,25 @@ where
 impl<S, P> FollowRedirect<S, P> {
     /// Create a new [`FollowRedirect`] with the given redirection [`Policy`].
     pub fn with_policy(inner: S, policy: P) -> Self {
-        FollowRedirect { inner, policy }
+        Self { inner, policy }
     }
 
     define_inner_service_accessors!();
 }
 
-impl<State, ReqBody, ResBody, S, P> Service<State, Request<ReqBody>> for FollowRedirect<S, P>
+impl<ReqBody, ResBody, S, P> Service<Request<ReqBody>> for FollowRedirect<S, P>
 where
-    State: Clone + Send + Sync + 'static,
-    S: Service<State, Request<ReqBody>, Response = Response<ResBody>>,
+    S: Service<Request<ReqBody>, Response = Response<ResBody>>,
     ReqBody: Body + Default + Send + 'static,
     ResBody: Send + 'static,
-    P: Policy<State, ReqBody, S::Error> + Clone,
+    P: Policy<ReqBody, S::Error> + Clone,
 {
     type Response = Response<ResBody>;
     type Error = S::Error;
 
     fn serve(
         &self,
-        mut ctx: Context<State>,
+        mut ctx: Context,
         mut req: Request<ReqBody>,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> {
         let mut method = req.method().clone();
@@ -290,9 +290,7 @@ where
                     _ => return Ok(res),
                 };
 
-                let taken_body = if let Some(body) = body.take() {
-                    body
-                } else {
+                let Some(taken_body) = body.take() else {
                     return Ok(res);
                 };
 
@@ -300,9 +298,7 @@ where
                     .headers()
                     .get(&LOCATION)
                     .and_then(|loc| resolve_uri(std::str::from_utf8(loc.as_bytes()).ok()?, &uri));
-                let location = if let Some(loc) = location {
-                    loc
-                } else {
+                let Some(location) = location else {
                     return Ok(res);
                 };
 
@@ -350,34 +346,34 @@ where
     B: Body + Default,
 {
     fn take(&mut self) -> Option<B> {
-        match std::mem::replace(self, BodyRepr::None) {
-            BodyRepr::Some(body) => Some(body),
-            BodyRepr::Empty => {
-                *self = BodyRepr::Empty;
+        match std::mem::replace(self, Self::None) {
+            Self::Some(body) => Some(body),
+            Self::Empty => {
+                *self = Self::Empty;
                 Some(B::default())
             }
-            BodyRepr::None => None,
+            Self::None => None,
         }
     }
 
-    fn try_clone_from<S, P, E>(&mut self, ctx: &Context<S>, policy: &mut P, body: &B)
+    fn try_clone_from<P, E>(&mut self, ctx: &Context, policy: &mut P, body: &B)
     where
-        P: Policy<S, B, E>,
+        P: Policy<B, E>,
     {
         match self {
-            BodyRepr::Some(_) | BodyRepr::Empty => {}
-            BodyRepr::None => {
+            Self::Some(_) | Self::Empty => {}
+            Self::None => {
                 if let Some(body) = clone_body(ctx, policy, body) {
-                    *self = BodyRepr::Some(body);
+                    *self = Self::Some(body);
                 }
             }
         }
     }
 }
 
-fn clone_body<S, P, B, E>(ctx: &Context<S>, policy: &mut P, body: &B) -> Option<B>
+fn clone_body<P, B, E>(ctx: &Context, policy: &mut P, body: &B) -> Option<B>
 where
-    P: Policy<S, B, E>,
+    P: Policy<B, E>,
     B: Body + Default,
 {
     if body.size_hint().exact() == Some(0) {
@@ -450,7 +446,7 @@ mod tests {
 
     /// A server with an endpoint `GET /{n}` which redirects to `/{n-1}` unless `n` equals zero,
     /// returning `n` as the response body.
-    async fn handle<S, B>(_ctx: Context<S>, req: Request<B>) -> Result<Response<u64>, Infallible> {
+    async fn handle<B>(_ctx: Context, req: Request<B>) -> Result<Response<u64>, Infallible> {
         let n: u64 = req.uri().path()[1..].parse().unwrap();
         let mut res = Response::builder();
         if n > 0 {

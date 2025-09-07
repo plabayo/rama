@@ -20,12 +20,12 @@ pub enum UserId {
 impl PartialEq<str> for UserId {
     fn eq(&self, other: &str) -> bool {
         match self {
-            UserId::Username(username) => username == other,
-            UserId::Token(token) => {
+            Self::Username(username) => username == other,
+            Self::Token(token) => {
                 let other = other.as_bytes();
                 token == other
             }
-            UserId::Anonymous => false,
+            Self::Anonymous => false,
         }
     }
 }
@@ -39,12 +39,12 @@ impl PartialEq<UserId> for str {
 impl PartialEq<[u8]> for UserId {
     fn eq(&self, other: &[u8]) -> bool {
         match self {
-            UserId::Username(username) => {
+            Self::Username(username) => {
                 let username_bytes = username.as_bytes();
                 username_bytes == other
             }
-            UserId::Token(token) => token == other,
-            UserId::Anonymous => false,
+            Self::Token(token) => token == other,
+            Self::Anonymous => false,
         }
     }
 }
@@ -58,12 +58,12 @@ impl PartialEq<UserId> for [u8] {
 impl PartialEq<String> for UserId {
     fn eq(&self, other: &String) -> bool {
         match self {
-            UserId::Username(username) => username == other,
-            UserId::Token(token) => {
+            Self::Username(username) => username == other,
+            Self::Token(token) => {
                 let other = other.as_bytes();
                 token == other
             }
-            UserId::Anonymous => false,
+            Self::Anonymous => false,
         }
     }
 }
@@ -77,12 +77,12 @@ impl PartialEq<UserId> for String {
 impl PartialEq<Vec<u8>> for UserId {
     fn eq(&self, other: &Vec<u8>) -> bool {
         match self {
-            UserId::Username(username) => {
+            Self::Username(username) => {
                 let username_bytes = username.as_bytes();
                 username_bytes == other
             }
-            UserId::Token(token) => token == other,
-            UserId::Anonymous => false,
+            Self::Token(token) => token == other,
+            Self::Anonymous => false,
         }
     }
 }

@@ -45,8 +45,9 @@ derive_header! {
 impl Connection {
     /// A constructor to easily create a `Connection: close` header.
     #[inline]
-    pub fn close() -> Connection {
-        Connection(HeaderValue::from_static("close").into())
+    #[must_use]
+    pub fn close() -> Self {
+        Self(HeaderValue::from_static("close").into())
     }
 
     /// Returns true if this [`Connection`] header contains `close`.
@@ -57,8 +58,9 @@ impl Connection {
 
     /// A constructor to easily create a `Connection: keep-alive` header.
     #[inline]
-    pub fn keep_alive() -> Connection {
-        Connection(HeaderValue::from_static("keep-alive").into())
+    #[must_use]
+    pub fn keep_alive() -> Self {
+        Self(HeaderValue::from_static("keep-alive").into())
     }
 
     /// Returns true if this [`Connection`] header contains `keep-alive`.
@@ -69,8 +71,9 @@ impl Connection {
 
     /// A constructor to easily create a `Connection: Upgrade` header.
     #[inline]
-    pub fn upgrade() -> Connection {
-        Connection(HeaderValue::from_static("upgrade").into())
+    #[must_use]
+    pub fn upgrade() -> Self {
+        Self(HeaderValue::from_static("upgrade").into())
     }
 
     /// Returns true if this [`Connection`] header contains `Upgrade`.
@@ -100,6 +103,7 @@ impl Connection {
     /// assert!(conn.contains("keep-alive"));
     /// assert!(conn.contains("Keep-Alive"));
     /// ```
+    #[allow(clippy::needless_pass_by_value)]
     pub fn contains(&self, name: impl AsConnectionOption) -> bool {
         let s = name.as_connection_option();
         self.0.iter().any(|opt| opt.eq_ignore_ascii_case(s))
@@ -112,7 +116,7 @@ impl FromIterator<HeaderName> for Connection {
         I: IntoIterator<Item = HeaderName>,
     {
         let flat = iter.into_iter().map(HeaderValue::from).collect();
-        Connection(flat)
+        Self(flat)
     }
 }
 

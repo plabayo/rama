@@ -1,5 +1,14 @@
-fmt:
-	cargo fmt --all
+set windows-shell := ["powershell.exe", "-NoLogo", "-Command"]
+
+export RUSTFLAGS := "-D warnings"
+export RUSTDOCFLAGS := "-D rustdoc::broken-intra-doc-links"
+export RUST_LOG := "debug"
+
+fmt *ARGS:
+	cargo fmt --all {{ARGS}}
+
+fmt-crate CRATE *ARGS:
+	cargo fmt --all -p {{CRATE}} {{ARGS}}
 
 sort:
 	@cargo install cargo-sort
@@ -8,16 +17,25 @@ sort:
 lint: fmt sort
 
 check:
-	RUSTFLAGS='-D warnings' cargo check --workspace --all-targets --all-features
+	cargo check --workspace --all-targets --all-features
+
+check-crate CRATE:
+	cargo check -p {{CRATE}} --all-targets --all-features
 
 check-links:
     lychee .
 
 clippy:
-	RUSTFLAGS='-D warnings' cargo clippy --workspace --all-targets --all-features
+	cargo clippy --workspace --all-targets --all-features
+
+clippy-crate CRATE:
+	cargo clippy -p {{CRATE}} --all-targets --all-features
 
 clippy-fix *ARGS:
 	cargo clippy --workspace --all-targets --all-features --fix {{ARGS}}
+
+clippy-fix-crate CRATE *ARGS:
+	cargo clippy -p {{CRATE}} --all-targets --all-features --fix {{ARGS}}
 
 typos:
 	typos -w
@@ -26,10 +44,13 @@ extra-checks:
 	{{justfile_directory()}}/scripts/extra-checks.sh
 
 doc:
-	RUSTDOCFLAGS="-D rustdoc::broken-intra-doc-links" cargo doc --all-features --no-deps
+	cargo doc --all-features --no-deps
+
+doc-crate CRATE:
+	cargo doc --all-features --no-deps -p {{CRATE}}
 
 doc-open:
-	RUSTDOCFLAGS="-D rustdoc::broken-intra-doc-links" cargo doc --all-features --no-deps --open
+	cargo doc --all-features --no-deps --open
 
 hack:
 	@cargo install cargo-hack
@@ -38,17 +59,26 @@ hack:
 test:
 	cargo test --all-features --workspace
 
+test-crate CRATE:
+	cargo test --all-features -p {{CRATE}}
+
 test-spec-h2 *ARGS:
     bash rama-http-core/ci/h2spec.sh {{ARGS}}
 
 test-spec: test-spec-h2
 
 test-ignored:
-	cargo test --features=cli,compression,http-full,proxy-full,tcp,rustls --workspace -- --ignored
+	cargo test --features=cli,http-full,proxy-full,rustls --workspace -- --ignored
 
 qq: lint check clippy doc extra-checks
 
 qa: qq test
+
+qa-crate CRATE:
+    just check-crate {{CRATE}}
+    just clippy-crate {{CRATE}}
+    just doc-crate {{CRATE}}
+    just test-crate {{CRATE}}
 
 qa-full: qa hack test-ignored fuzz-60s check-links
 
@@ -69,7 +99,7 @@ rama-fp *ARGS:
 	cargo run -p rama-fp -- {{ARGS}}
 
 watch-rama-fp *ARGS:
-	RUST_LOG=debug cargo watch -x 'run -p rama-fp -- {{ARGS}}'
+	cargo watch -x 'run -p rama-fp -- {{ARGS}}'
 
 docker-build-rama-fp:
 	docker build -f rama-fp/infra/Dockerfile -t glendc/rama-fp:latest .
@@ -164,12 +194,17 @@ publish:
     cargo publish -p rama-http-core
     cargo publish -p rama-http-backend
     cargo publish -p rama-ws
+    cargo publish -p rama-tls-acme
     cargo publish -p rama-haproxy
     cargo publish -p rama-proxy
     cargo publish -p rama-socks5
     cargo publish -p rama-tower
     cargo publish -p rama
     cargo publish -p rama-cli
+
+[working-directory: './rama-cli/manifests/winget/Plabayo/Rama/Preview']
+@submit-rama-cli-winget-preview:
+    wingetcreate submit -p 'Plabayo.Rama.Preview version bump' .
 
 update-deps:
     cargo upgrade

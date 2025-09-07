@@ -35,13 +35,13 @@ derive_header! {
 }
 
 impl From<Duration> for AccessControlMaxAge {
-    fn from(dur: Duration) -> AccessControlMaxAge {
-        AccessControlMaxAge(dur.into())
+    fn from(dur: Duration) -> Self {
+        Self(dur.into())
     }
 }
 
 impl From<AccessControlMaxAge> for Duration {
-    fn from(acma: AccessControlMaxAge) -> Duration {
+    fn from(acma: AccessControlMaxAge) -> Self {
         acma.0.into()
     }
 }

@@ -3,7 +3,7 @@
 use super::IntoResponse;
 use super::{FromRequestContextRefPair, OptionalFromRequestContextRefPair};
 use crate::dep::http::request::Parts;
-use crate::headers::{self, Header};
+use crate::headers::{self, HeaderDecode};
 use crate::{HeaderName, Response};
 use rama_core::Context;
 use std::ops::Deref;
@@ -23,15 +23,14 @@ impl<H: Clone> Clone for TypedHeader<H> {
     }
 }
 
-impl<S, H> FromRequestContextRefPair<S> for TypedHeader<H>
+impl<H> FromRequestContextRefPair for TypedHeader<H>
 where
-    S: Clone + Send + Sync + 'static,
-    H: Header + Send + Sync + 'static,
+    H: HeaderDecode + Send + Sync + 'static,
 {
     type Rejection = TypedHeaderRejection;
 
     async fn from_request_context_ref_pair(
-        _ctx: &Context<S>,
+        _ctx: &Context,
         parts: &Parts,
     ) -> Result<Self, Self::Rejection> {
         let mut values = parts.headers.get_all(H::name()).iter();
@@ -50,15 +49,14 @@ where
     }
 }
 
-impl<S, H> OptionalFromRequestContextRefPair<S> for TypedHeader<H>
+impl<H> OptionalFromRequestContextRefPair for TypedHeader<H>
 where
-    S: Clone + Send + Sync + 'static,
-    H: Header + Send + Sync + 'static,
+    H: HeaderDecode + Send + Sync + 'static,
 {
     type Rejection = TypedHeaderRejection;
 
     async fn from_request_context_ref_pair(
-        _ctx: &Context<S>,
+        _ctx: &Context,
         parts: &Parts,
     ) -> Result<Option<Self>, Self::Rejection> {
         let mut values = parts.headers.get_all(H::name()).iter();
@@ -91,11 +89,13 @@ pub struct TypedHeaderRejection {
 
 impl TypedHeaderRejection {
     /// Name of the header that caused the rejection
+    #[must_use]
     pub fn name(&self) -> &HeaderName {
         self.name
     }
 
     /// Reason why the header extraction has failed
+    #[must_use]
     pub fn reason(&self) -> &TypedHeaderRejectionReason {
         &self.reason
     }

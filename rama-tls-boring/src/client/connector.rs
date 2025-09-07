@@ -69,6 +69,7 @@ impl TlsConnectorLayer<ConnectorKindAuto> {
     /// Creates a new [`TlsConnectorLayer`] which will establish
     /// a secure connection if the request demands it,
     /// otherwise it will forward the pre-established inner connection.
+    #[must_use]
     pub fn auto() -> Self {
         Self {
             connector_data: None,
@@ -80,6 +81,7 @@ impl TlsConnectorLayer<ConnectorKindAuto> {
 impl TlsConnectorLayer<ConnectorKindSecure> {
     /// Creates a new [`TlsConnectorLayer`] which will always
     /// establish a secure connection regardless of the request it is for.
+    #[must_use]
     pub fn secure() -> Self {
         Self {
             connector_data: None,
@@ -91,6 +93,7 @@ impl TlsConnectorLayer<ConnectorKindSecure> {
 impl TlsConnectorLayer<ConnectorKindTunnel> {
     /// Creates a new [`TlsConnectorLayer`] which will establish
     /// a secure connection if the request is to be tunneled.
+    #[must_use]
     pub fn tunnel(host: Option<Host>) -> Self {
         Self {
             connector_data: None,
@@ -216,21 +219,15 @@ impl<S> TlsConnector<S, ConnectorKindTunnel> {
 
 // this way we do not need a hacky macro... however is there a way to do this without needing to hacK?!?!
 
-impl<S, State, Request> Service<State, Request> for TlsConnector<S, ConnectorKindAuto>
+impl<S, Request> Service<Request> for TlsConnector<S, ConnectorKindAuto>
 where
-    S: ConnectorService<State, Request, Connection: Stream + Unpin, Error: Into<BoxError>>,
-    State: Clone + Send + Sync + 'static,
-    Request:
-        TryRefIntoTransportContext<State, Error: Into<BoxError> + Send + 'static> + Send + 'static,
+    S: ConnectorService<Request, Connection: Stream + Unpin, Error: Into<BoxError>>,
+    Request: TryRefIntoTransportContext<Error: Into<BoxError> + Send + 'static> + Send + 'static,
 {
-    type Response = EstablishedClientConnection<AutoTlsStream<S::Connection>, State, Request>;
+    type Response = EstablishedClientConnection<AutoTlsStream<S::Connection>, Request>;
     type Error = BoxError;
 
-    async fn serve(
-        &self,
-        ctx: Context<State>,
-        req: Request,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
         let EstablishedClientConnection { mut ctx, req, conn } =
             self.inner.connect(ctx, req).await.map_err(Into::into)?;
 
@@ -281,21 +278,15 @@ where
     }
 }
 
-impl<S, State, Request> Service<State, Request> for TlsConnector<S, ConnectorKindSecure>
+impl<S, Request> Service<Request> for TlsConnector<S, ConnectorKindSecure>
 where
-    S: ConnectorService<State, Request, Connection: Stream + Unpin, Error: Into<BoxError>>,
-    State: Clone + Send + Sync + 'static,
-    Request:
-        TryRefIntoTransportContext<State, Error: Into<BoxError> + Send + 'static> + Send + 'static,
+    S: ConnectorService<Request, Connection: Stream + Unpin, Error: Into<BoxError>>,
+    Request: TryRefIntoTransportContext<Error: Into<BoxError> + Send + 'static> + Send + 'static,
 {
-    type Response = EstablishedClientConnection<TlsStream<S::Connection>, State, Request>;
+    type Response = EstablishedClientConnection<TlsStream<S::Connection>, Request>;
     type Error = BoxError;
 
-    async fn serve(
-        &self,
-        ctx: Context<State>,
-        req: Request,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
         let EstablishedClientConnection { mut ctx, req, conn } =
             self.inner.connect(ctx, req).await.map_err(Into::into)?;
 
@@ -323,40 +314,34 @@ where
     }
 }
 
-impl<S, State, Request> Service<State, Request> for TlsConnector<S, ConnectorKindTunnel>
+impl<S, Request> Service<Request> for TlsConnector<S, ConnectorKindTunnel>
 where
-    S: ConnectorService<State, Request, Connection: Stream + Unpin, Error: Into<BoxError>>,
-    State: Clone + Send + Sync + 'static,
+    S: ConnectorService<Request, Connection: Stream + Unpin, Error: Into<BoxError>>,
     Request: Send + 'static,
 {
-    type Response = EstablishedClientConnection<AutoTlsStream<S::Connection>, State, Request>;
+    type Response = EstablishedClientConnection<AutoTlsStream<S::Connection>, Request>;
     type Error = BoxError;
 
-    async fn serve(
-        &self,
-        ctx: Context<State>,
-        req: Request,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
         let EstablishedClientConnection { mut ctx, req, conn } =
             self.inner.connect(ctx, req).await.map_err(Into::into)?;
 
-        let host = match ctx
+        let host = if let Some(host) = ctx
             .get::<TlsTunnel>()
             .as_ref()
             .map(|t| &t.server_host)
             .or(self.kind.host.as_ref())
         {
-            Some(host) => host.clone(),
-            None => {
-                tracing::trace!(
-                    "TlsConnector(tunnel): return inner connection: no Tls tunnel is requested"
-                );
-                return Ok(EstablishedClientConnection {
-                    ctx,
-                    req,
-                    conn: AutoTlsStream::plain(conn),
-                });
-            }
+            host.clone()
+        } else {
+            tracing::trace!(
+                "TlsConnector(tunnel): return inner connection: no Tls tunnel is requested"
+            );
+            return Ok(EstablishedClientConnection {
+                ctx,
+                req,
+                conn: AutoTlsStream::plain(conn),
+            });
         };
 
         let connector_data = self.connector_data(&mut ctx)?;
@@ -373,10 +358,7 @@ where
 }
 
 impl<S, K> TlsConnector<S, K> {
-    fn connector_data<State: 'static>(
-        &self,
-        ctx: &mut Context<State>,
-    ) -> Result<TlsConnectorData, OpaqueError> {
+    fn connector_data(&self, ctx: &mut Context) -> Result<TlsConnectorData, OpaqueError> {
         let target_version = ctx
             .get::<TargetHttpVersion>()
             .map(|version| ApplicationProtocol::try_from(version.0))

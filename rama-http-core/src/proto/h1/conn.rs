@@ -8,6 +8,7 @@ use std::time::Duration;
 use httparse::ParserConfig;
 use rama_core::bytes::{Buf, Bytes};
 use rama_core::telemetry::tracing::{debug, error, trace, warn};
+use rama_http::dep::http;
 use rama_http::io::upgrade;
 use rama_http_types::dep::http_body::Frame;
 use rama_http_types::header::{CONNECTION, TE};
@@ -43,8 +44,8 @@ where
     B: Buf,
     T: Http1Transaction,
 {
-    pub(crate) fn new(io: I) -> Conn<I, B, T> {
-        Conn {
+    pub(crate) fn new(io: I) -> Self {
+        Self {
             io: Buffered::new(io),
             state: State {
                 allow_half_close: false,
@@ -63,6 +64,7 @@ where
                 notify_read: false,
                 reading: Reading::Init,
                 writing: Writing::Init,
+                encoded_request_extensions: None,
                 upgrade: None,
                 // We assume a modern world where the remote speaks HTTP/1.1.
                 // If they tell us otherwise, we'll downgrade in `read_head`.
@@ -179,21 +181,19 @@ where
         debug_assert!(self.can_read_head());
         trace!("Conn::read_head");
 
-        if !self.state.h1_header_read_timeout_running {
-            if let Some(h1_header_read_timeout) = self.state.h1_header_read_timeout {
-                let deadline = Instant::now() + h1_header_read_timeout;
-                self.state.h1_header_read_timeout_running = true;
-                match self.state.h1_header_read_timeout_fut {
-                    Some(ref mut h1_header_read_timeout_fut) => {
-                        trace!("resetting h1 header read timeout timer");
-                        *h1_header_read_timeout_fut = Box::pin(tokio::time::sleep_until(deadline));
-                    }
-                    None => {
-                        trace!("setting h1 header read timeout timer");
-                        self.state.h1_header_read_timeout_fut =
-                            Some(Box::pin(tokio::time::sleep_until(deadline)));
-                    }
-                }
+        if !self.state.h1_header_read_timeout_running
+            && let Some(h1_header_read_timeout) = self.state.h1_header_read_timeout
+        {
+            let deadline = Instant::now() + h1_header_read_timeout;
+            self.state.h1_header_read_timeout_running = true;
+            if let Some(ref mut h1_header_read_timeout_fut) = self.state.h1_header_read_timeout_fut
+            {
+                trace!("resetting h1 header read timeout timer");
+                *h1_header_read_timeout_fut = Box::pin(tokio::time::sleep_until(deadline));
+            } else {
+                trace!("setting h1 header read timeout timer");
+                self.state.h1_header_read_timeout_fut =
+                    Some(Box::pin(tokio::time::sleep_until(deadline)));
             }
         }
 
@@ -205,22 +205,21 @@ where
                 h1_max_headers: self.state.h1_max_headers,
                 h09_responses: self.state.h09_responses,
                 on_informational: &mut self.state.on_informational,
+                encoded_request_extensions: &mut self.state.encoded_request_extensions,
             },
         ) {
             Poll::Ready(Ok(msg)) => msg,
             Poll::Ready(Err(e)) => return self.on_read_head_error(e),
             Poll::Pending => {
-                if self.state.h1_header_read_timeout_running {
-                    if let Some(ref mut h1_header_read_timeout_fut) =
+                if self.state.h1_header_read_timeout_running
+                    && let Some(ref mut h1_header_read_timeout_fut) =
                         self.state.h1_header_read_timeout_fut
-                    {
-                        if Pin::new(h1_header_read_timeout_fut).poll(cx).is_ready() {
-                            self.state.h1_header_read_timeout_running = false;
+                    && Pin::new(h1_header_read_timeout_fut).poll(cx).is_ready()
+                {
+                    self.state.h1_header_read_timeout_running = false;
 
-                            warn!("read header from client timeout");
-                            return Poll::Ready(Some(Err(crate::Error::new_header_timeout())));
-                        }
-                    }
+                    warn!("read header from client timeout");
+                    return Poll::Ready(Some(Err(crate::Error::new_header_timeout())));
                 }
 
                 return Poll::Pending;
@@ -358,7 +357,7 @@ where
             }
             Reading::Continue(ref decoder) => {
                 // Write the 100 Continue if not already responded...
-                if let Writing::Init = self.state.writing {
+                if matches!(self.state.writing, Writing::Init) {
                     trace!("automatically sending 100 Continue");
                     let cont = b"HTTP/1.1 100 Continue\r\n\r\n";
                     self.io.headers_buf().extend_from_slice(cont);
@@ -585,8 +584,11 @@ where
             buf,
         ) {
             Ok(encoder) => {
-                self.state.on_informational =
-                    head.extensions.remove::<crate::ext::OnInformational>();
+                self.state.on_informational = head
+                    .extensions
+                    .get::<crate::ext::OnInformational>()
+                    .cloned();
+                self.state.encoded_request_extensions = Some(head.extensions);
                 Some(encoder)
             }
             Err(err) => {
@@ -634,7 +636,7 @@ where
                 head.version = Version::HTTP_10;
             }
             Version::HTTP_11 => {
-                if let KA::Disabled = self.state.keep_alive.status() {
+                if matches!(self.state.keep_alive.status(), KA::Disabled) {
                     head.headers
                         .insert(CONNECTION, HeaderValue::from_static("close"));
                 }
@@ -719,9 +721,8 @@ where
     pub(crate) fn end_body(&mut self) -> crate::Result<()> {
         debug_assert!(self.can_write_body());
 
-        let encoder = match self.state.writing {
-            Writing::Body(ref mut enc) => enc,
-            _ => return Ok(()),
+        let Writing::Body(ref mut encoder) = self.state.writing else {
+            return Ok(());
         };
 
         // end of stream, that means we should try to eof
@@ -752,7 +753,7 @@ where
     // - Client: there is nothing we can do
     // - Server: if Response hasn't been written yet, we can send a 4xx response
     fn on_parse_error(&mut self, err: crate::Error) -> crate::Result<()> {
-        if let Writing::Init = self.state.writing {
+        if matches!(self.state.writing, Writing::Init) {
             if self.has_h2_prefix() {
                 return Err(crate::Error::new_version_h2());
             }
@@ -881,6 +882,8 @@ struct State {
     reading: Reading,
     /// State of allowed writes
     writing: Writing,
+    /// Last known request extensions encoded
+    encoded_request_extensions: Option<http::Extensions>,
     /// An expected pending HTTP upgrade.
     upgrade: Option<upgrade::Pending>,
     /// Either HTTP/1.0 or 1.1 connection
@@ -931,10 +934,10 @@ impl fmt::Debug for State {
 impl fmt::Debug for Writing {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
-            Writing::Init => f.write_str("Init"),
-            Writing::Body(ref enc) => f.debug_tuple("Body").field(enc).finish(),
-            Writing::KeepAlive => f.write_str("KeepAlive"),
-            Writing::Closed => f.write_str("Closed"),
+            Self::Init => f.write_str("Init"),
+            Self::Body(ref enc) => f.debug_tuple("Body").field(enc).finish(),
+            Self::KeepAlive => f.write_str("KeepAlive"),
+            Self::Closed => f.write_str("Closed"),
         }
     }
 }
@@ -943,7 +946,7 @@ impl std::ops::BitAndAssign<bool> for KA {
     fn bitand_assign(&mut self, enabled: bool) {
         if !enabled {
             trace!("remote disabling keep-alive");
-            *self = KA::Disabled;
+            *self = Self::Disabled;
         }
     }
 }
@@ -958,19 +961,19 @@ enum KA {
 
 impl KA {
     fn idle(&mut self) {
-        *self = KA::Idle;
+        *self = Self::Idle;
     }
 
     fn busy(&mut self) {
-        *self = KA::Busy;
+        *self = Self::Busy;
     }
 
     fn disable(&mut self) {
-        *self = KA::Disabled;
+        *self = Self::Disabled;
     }
 
-    fn status(&self) -> KA {
-        *self
+    fn status(self) -> Self {
+        self
     }
 }
 
@@ -1001,7 +1004,7 @@ impl State {
     fn try_keep_alive<T: Http1Transaction>(&mut self) {
         match (&self.reading, &self.writing) {
             (&Reading::KeepAlive, &Writing::KeepAlive) => {
-                if let KA::Busy = self.keep_alive.status() {
+                if matches!(self.keep_alive.status(), KA::Busy) {
                     self.idle::<T>();
                 } else {
                     trace!(
@@ -1024,7 +1027,7 @@ impl State {
     }
 
     fn busy(&mut self) {
-        if let KA::Disabled = self.keep_alive.status() {
+        if matches!(self.keep_alive.status(), KA::Disabled) {
             return;
         }
         self.keep_alive.busy();

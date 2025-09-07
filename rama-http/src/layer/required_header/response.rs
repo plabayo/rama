@@ -22,6 +22,7 @@ pub struct AddRequiredResponseHeadersLayer {
 
 impl AddRequiredResponseHeadersLayer {
     /// Create a new [`AddRequiredResponseHeadersLayer`].
+    #[must_use]
     pub const fn new() -> Self {
         Self {
             overwrite: false,
@@ -33,6 +34,7 @@ impl AddRequiredResponseHeadersLayer {
     /// If set to `true`, the headers will be overwritten.
     ///
     /// Default is `false`.
+    #[must_use]
     pub const fn overwrite(mut self, overwrite: bool) -> Self {
         self.overwrite = overwrite;
         self
@@ -50,6 +52,7 @@ impl AddRequiredResponseHeadersLayer {
     /// Set a custom [`SERVER`] header value.
     ///
     /// By default a versioned `rama` value is used.
+    #[must_use]
     pub fn server_header_value(mut self, value: HeaderValue) -> Self {
         self.server_header_value = Some(value);
         self
@@ -58,6 +61,7 @@ impl AddRequiredResponseHeadersLayer {
     /// Maybe set a custom [`SERVER`] header value.
     ///
     /// By default a versioned `rama` value is used.
+    #[must_use]
     pub fn maybe_server_header_value(mut self, value: Option<HeaderValue>) -> Self {
         self.server_header_value = value;
         self
@@ -114,6 +118,7 @@ impl<S> AddRequiredResponseHeaders<S> {
     /// If set to `true`, the headers will be overwritten.
     ///
     /// Default is `false`.
+    #[must_use]
     pub const fn overwrite(mut self, overwrite: bool) -> Self {
         self.overwrite = overwrite;
         self
@@ -131,6 +136,7 @@ impl<S> AddRequiredResponseHeaders<S> {
     /// Set a custom [`SERVER`] header value.
     ///
     /// By default a versioned `rama` value is used.
+    #[must_use]
     pub fn server_header_value(mut self, value: HeaderValue) -> Self {
         self.server_header_value = Some(value);
         self
@@ -139,6 +145,7 @@ impl<S> AddRequiredResponseHeaders<S> {
     /// Maybe set a custom [`SERVER`] header value.
     ///
     /// By default a versioned `rama` value is used.
+    #[must_use]
     pub fn maybe_server_header_value(mut self, value: Option<HeaderValue>) -> Self {
         self.server_header_value = value;
         self
@@ -167,19 +174,18 @@ where
     }
 }
 
-impl<ReqBody, ResBody, State, S> Service<State, Request<ReqBody>> for AddRequiredResponseHeaders<S>
+impl<ReqBody, ResBody, S> Service<Request<ReqBody>> for AddRequiredResponseHeaders<S>
 where
     ReqBody: Send + 'static,
     ResBody: Send + 'static,
-    State: Clone + Send + Sync + 'static,
-    S: Service<State, Request<ReqBody>, Response = Response<ResBody>>,
+    S: Service<Request<ReqBody>, Response = Response<ResBody>>,
 {
     type Response = S::Response;
     type Error = S::Error;
 
     async fn serve(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         req: Request<ReqBody>,
     ) -> Result<Self::Response, Self::Error> {
         let mut resp = self.inner.serve(ctx, req).await?;
@@ -220,7 +226,7 @@ mod tests {
     #[tokio::test]
     async fn add_required_response_headers() {
         let svc = AddRequiredResponseHeadersLayer::default().into_layer(service_fn(
-            async |_ctx: Context<()>, req: Request| {
+            async |_ctx: Context, req: Request| {
                 assert!(!req.headers().contains_key(SERVER));
                 assert!(!req.headers().contains_key(DATE));
                 Ok::<_, Infallible>(Response::new(Body::empty()))
@@ -241,7 +247,7 @@ mod tests {
     async fn add_required_response_headers_custom_server() {
         let svc = AddRequiredResponseHeadersLayer::default()
             .server_header_value(HeaderValue::from_static("foo"))
-            .into_layer(service_fn(async |_ctx: Context<()>, req: Request| {
+            .into_layer(service_fn(async |_ctx: Context, req: Request| {
                 assert!(!req.headers().contains_key(SERVER));
                 assert!(!req.headers().contains_key(DATE));
                 Ok::<_, Infallible>(Response::new(Body::empty()))
@@ -261,7 +267,7 @@ mod tests {
     async fn add_required_response_headers_overwrite() {
         let svc = AddRequiredResponseHeadersLayer::new()
             .overwrite(true)
-            .into_layer(service_fn(async |_ctx: Context<()>, req: Request| {
+            .into_layer(service_fn(async |_ctx: Context, req: Request| {
                 assert!(!req.headers().contains_key(SERVER));
                 assert!(!req.headers().contains_key(DATE));
                 Ok::<_, Infallible>(
@@ -288,7 +294,7 @@ mod tests {
         let svc = AddRequiredResponseHeadersLayer::new()
             .overwrite(true)
             .server_header_value(HeaderValue::from_static("foo"))
-            .into_layer(service_fn(async |_ctx: Context<()>, req: Request| {
+            .into_layer(service_fn(async |_ctx: Context, req: Request| {
                 assert!(!req.headers().contains_key(SERVER));
                 assert!(!req.headers().contains_key(DATE));
                 Ok::<_, Infallible>(

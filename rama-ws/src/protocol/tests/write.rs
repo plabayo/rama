@@ -1,8 +1,10 @@
 use crate::{
     Message,
-    protocol::{Role, WebSocket, WebSocketConfig, error::ProtocolError},
+    protocol::{PerMessageDeflateConfig, Role, WebSocket, WebSocketConfig, error::ProtocolError},
 };
+use rama_core::telemetry::tracing;
 use std::io::{self, Cursor, Read, Write};
+use tracing_test::traced_test;
 
 pin_project_lite::pin_project! {
     struct WriteMoc<Stream> {
@@ -65,6 +67,44 @@ fn receive_messages() {
 }
 
 #[test]
+#[traced_test]
+fn receive_compressed_hello_text_msg_rfc7692_example_compression_1() {
+    let incoming = Cursor::new(vec![0xc1, 0x07, 0xf2, 0x48, 0xcd, 0xc9, 0xc9, 0x07, 0x00]);
+
+    let mut socket = WebSocket::from_raw_socket(
+        WriteMoc::new(incoming),
+        Role::Client,
+        Some(WebSocketConfig {
+            per_message_deflate: Some(PerMessageDeflateConfig::default()),
+            ..Default::default()
+        }),
+    );
+
+    assert_eq!(socket.read().unwrap(), Message::Text("Hello".into()));
+}
+
+#[test]
+#[traced_test]
+fn receive_compressed_hello_text_msg_rfc7692_example_compression_2() {
+    #[rustfmt::skip]
+    let incoming = Cursor::new(vec![
+        0x41, 0x03, 0xf2, 0x48, 0xcd,       // fragment #1
+        0x80, 0x04, 0xc9, 0xc9, 0x07, 0x00, // fragment #2
+    ]);
+
+    let mut socket = WebSocket::from_raw_socket(
+        WriteMoc::new(incoming),
+        Role::Client,
+        Some(WebSocketConfig {
+            per_message_deflate: Some(PerMessageDeflateConfig::default()),
+            ..Default::default()
+        }),
+    );
+
+    assert_eq!(socket.read().unwrap(), Message::Text("Hello".into()));
+}
+
+#[test]
 fn size_limiting_text_fragmented() {
     let incoming = Cursor::new(vec![
         0x01, 0x07, 0x48, 0x65, 0x6c, 0x6c, 0x6f, 0x2c, 0x20, 0x80, 0x06, 0x57, 0x6f, 0x72, 0x6c,
@@ -112,7 +152,7 @@ fn server_write_flush_behaviour() {
     let mut ws = WebSocket::from_raw_socket(
         WriteMoc::new(Cursor::new(Vec::default())),
         Role::Server,
-        Some(WebSocketConfig::default().write_buffer_size(WRITE_BUFFER_SIZE)),
+        Some(WebSocketConfig::default().with_write_buffer_size(WRITE_BUFFER_SIZE)),
     );
 
     assert_eq!(ws.get_ref().written_bytes, 0);

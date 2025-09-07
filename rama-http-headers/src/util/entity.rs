@@ -120,7 +120,7 @@ impl<T: AsRef<[u8]>> EntityTag<T> {
         };
 
         if check_slice_validity(&slice[start..length - 1]) {
-            Some(EntityTag(src))
+            Some(Self(src))
         } else {
             None
         }
@@ -153,9 +153,9 @@ impl EntityTag {
     */
 
     #[cfg(test)]
-    pub(crate) fn from_static(bytes: &'static str) -> EntityTag {
+    pub(crate) fn from_static(bytes: &'static str) -> Self {
         let val = HeaderValue::from_static(bytes);
-        match EntityTag::from_val(&val) {
+        match Self::from_val(&val) {
             Some(tag) => tag,
             None => {
                 panic!("invalid static string for EntityTag: {bytes:?}");
@@ -163,13 +163,13 @@ impl EntityTag {
         }
     }
 
-    pub(crate) fn from_owned(val: HeaderValue) -> Option<EntityTag> {
+    pub(crate) fn from_owned(val: HeaderValue) -> Option<Self> {
         EntityTag::parse(val.as_bytes())?;
-        Some(EntityTag(val))
+        Some(Self(val))
     }
 
-    pub(crate) fn from_val(val: &HeaderValue) -> Option<EntityTag> {
-        EntityTag::parse(val.as_bytes()).map(|_entity| EntityTag(val.clone()))
+    pub(crate) fn from_val(val: &HeaderValue) -> Option<Self> {
+        EntityTag::parse(val.as_bytes()).map(|_entity| Self(val.clone()))
     }
 }
 
@@ -186,19 +186,19 @@ impl super::TryFromValues for EntityTag {
     {
         values
             .just_one()
-            .and_then(EntityTag::from_val)
+            .and_then(Self::from_val)
             .ok_or_else(Error::invalid)
     }
 }
 
 impl From<EntityTag> for HeaderValue {
-    fn from(tag: EntityTag) -> HeaderValue {
+    fn from(tag: EntityTag) -> Self {
         tag.0
     }
 }
 
 impl<'a> From<&'a EntityTag> for HeaderValue {
-    fn from(tag: &'a EntityTag) -> HeaderValue {
+    fn from(tag: &'a EntityTag) -> Self {
         tag.0.clone()
     }
 }
@@ -238,8 +238,8 @@ impl EntityTagRange {
         F: Fn(&EntityTag<&str>, &EntityTag) -> bool,
     {
         match *self {
-            EntityTagRange::Any => true,
-            EntityTagRange::Tags(ref tags) => tags
+            Self::Any => true,
+            Self::Tags(ref tags) => tags
                 .iter()
                 .flat_map(EntityTag::<&str>::parse)
                 .any(|tag| func(&tag, entity)),
@@ -254,17 +254,17 @@ impl super::TryFromValues for EntityTagRange {
     {
         let flat = FlatCsv::try_from_values(values)?;
         if flat.value == "*" {
-            Ok(EntityTagRange::Any)
+            Ok(Self::Any)
         } else {
-            Ok(EntityTagRange::Tags(flat))
+            Ok(Self::Tags(flat))
         }
     }
 }
 
 impl<'a> From<&'a EntityTagRange> for HeaderValue {
-    fn from(tag: &'a EntityTagRange) -> HeaderValue {
+    fn from(tag: &'a EntityTagRange) -> Self {
         match *tag {
-            EntityTagRange::Any => HeaderValue::from_static("*"),
+            EntityTagRange::Any => Self::from_static("*"),
             EntityTagRange::Tags(ref tags) => tags.into(),
         }
     }

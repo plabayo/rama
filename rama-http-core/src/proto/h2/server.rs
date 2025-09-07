@@ -54,8 +54,8 @@ pub(crate) struct Config {
 }
 
 impl Default for Config {
-    fn default() -> Config {
-        Config {
+    fn default() -> Self {
+        Self {
             adaptive_window: false,
             initial_conn_window_size: DEFAULT_CONN_WINDOW,
             initial_stream_window_size: DEFAULT_STREAM_WINDOW,
@@ -109,7 +109,7 @@ where
     T: AsyncRead + AsyncWrite + Unpin,
     S: HttpService<IncomingBody>,
 {
-    pub(crate) fn new(io: T, service: S, config: &Config, exec: Executor) -> Server<T, S> {
+    pub(crate) fn new(io: T, service: S, config: &Config, exec: Executor) -> Self {
         let mut builder = crate::h2::server::Builder::default();
         builder
             .initial_window_size(config.initial_stream_window_size)
@@ -144,7 +144,7 @@ where
             keep_alive_while_idle: true,
         };
 
-        Server {
+        Self {
             exec,
             state: State::Handshaking {
                 ping_config,
@@ -189,7 +189,7 @@ where
                     let mut conn = ready!(Pin::new(hs).poll(cx).map_err(crate::Error::new_h2))?;
                     let ping = if ping_config.is_enabled() {
                         let pp = conn.ping_pong().expect("conn.ping_pong");
-                        Some(ping::channel(pp, ping_config.clone()))
+                        Some(ping::channel(pp, ping_config))
                     } else {
                         None
                     };
@@ -218,6 +218,7 @@ impl<T> Serving<T>
 where
     T: AsyncRead + AsyncWrite + Unpin,
 {
+    #[allow(clippy::needless_pass_by_ref_mut)]
     fn poll_server<S>(
         &mut self,
         cx: &mut Context<'_>,
@@ -395,8 +396,8 @@ where
         connect_parts: Option<ConnectParts>,
         respond: SendResponse<SendBuf<B::Data>>,
         date_header: bool,
-    ) -> H2Stream<F, B> {
-        H2Stream {
+    ) -> Self {
+        Self {
             reply: respond,
             state: H2StreamState::Service { fut, connect_parts },
             date_header,

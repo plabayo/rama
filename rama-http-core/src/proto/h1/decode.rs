@@ -87,8 +87,8 @@ enum ChunkedState {
 impl Decoder {
     // constructors
 
-    pub(crate) fn length(x: u64) -> Decoder {
-        Decoder {
+    pub(crate) fn length(x: u64) -> Self {
+        Self {
             kind: Kind::Length(x),
         }
     }
@@ -96,8 +96,8 @@ impl Decoder {
     pub(crate) fn chunked(
         h1_max_headers: Option<usize>,
         h1_max_header_size: Option<usize>,
-    ) -> Decoder {
-        Decoder {
+    ) -> Self {
+        Self {
             kind: Kind::Chunked {
                 state: ChunkedState::new(),
                 chunk_len: 0,
@@ -110,8 +110,8 @@ impl Decoder {
         }
     }
 
-    pub(crate) fn eof() -> Decoder {
-        Decoder {
+    pub(crate) fn eof() -> Self {
+        Self {
             kind: Kind::Eof(false),
         }
     }
@@ -122,9 +122,9 @@ impl Decoder {
         h1_max_header_size: Option<usize>,
     ) -> Self {
         match len {
-            DecodedLength::CHUNKED => Decoder::chunked(h1_max_headers, h1_max_header_size),
-            DecodedLength::CLOSE_DELIMITED => Decoder::eof(),
-            length => Decoder::length(length.danger_len()),
+            DecodedLength::CHUNKED => Self::chunked(h1_max_headers, h1_max_header_size),
+            DecodedLength::CLOSE_DELIMITED => Self::eof(),
+            length => Self::length(length.danger_len()),
         }
     }
 
@@ -293,14 +293,14 @@ macro_rules! put_u8 {
 }
 
 impl ChunkedState {
-    fn new() -> ChunkedState {
-        ChunkedState::Start
+    fn new() -> Self {
+        Self::Start
     }
 
     // TODO: in future see if we can avoid this many arguments
     #[allow(clippy::too_many_arguments)]
     fn step<R: MemRead>(
-        &self,
+        self,
         cx: &mut Context<'_>,
         body: &mut R,
         size: &mut u64,
@@ -310,20 +310,18 @@ impl ChunkedState {
         trailers_cnt: &mut usize,
         h1_max_headers: usize,
         h1_max_header_size: usize,
-    ) -> Poll<Result<ChunkedState, io::Error>> {
-        match *self {
-            self::ChunkedState::Start => ChunkedState::read_start(cx, body, size),
-            self::ChunkedState::Size => ChunkedState::read_size(cx, body, size),
-            self::ChunkedState::SizeLws => ChunkedState::read_size_lws(cx, body),
-            self::ChunkedState::Extension => ChunkedState::read_extension(cx, body, extensions_cnt),
-            self::ChunkedState::SizeLf => ChunkedState::read_size_lf(cx, body, *size),
-            self::ChunkedState::Body => ChunkedState::read_body(cx, body, size, buf),
-            self::ChunkedState::BodyCr => ChunkedState::read_body_cr(cx, body),
-            self::ChunkedState::BodyLf => ChunkedState::read_body_lf(cx, body),
-            self::ChunkedState::Trailer => {
-                ChunkedState::read_trailer(cx, body, trailers_buf, h1_max_header_size)
-            }
-            self::ChunkedState::TrailerLf => ChunkedState::read_trailer_lf(
+    ) -> Poll<Result<Self, io::Error>> {
+        match self {
+            Self::Start => Self::read_start(cx, body, size),
+            Self::Size => Self::read_size(cx, body, size),
+            Self::SizeLws => Self::read_size_lws(cx, body),
+            Self::Extension => Self::read_extension(cx, body, extensions_cnt),
+            Self::SizeLf => Self::read_size_lf(cx, body, *size),
+            Self::Body => Self::read_body(cx, body, size, buf),
+            Self::BodyCr => Self::read_body_cr(cx, body),
+            Self::BodyLf => Self::read_body_lf(cx, body),
+            Self::Trailer => Self::read_trailer(cx, body, trailers_buf, h1_max_header_size),
+            Self::TrailerLf => Self::read_trailer_lf(
                 cx,
                 body,
                 trailers_buf,
@@ -331,13 +329,9 @@ impl ChunkedState {
                 h1_max_headers,
                 h1_max_header_size,
             ),
-            self::ChunkedState::EndCr => {
-                ChunkedState::read_end_cr(cx, body, trailers_buf, h1_max_header_size)
-            }
-            self::ChunkedState::EndLf => {
-                ChunkedState::read_end_lf(cx, body, trailers_buf, h1_max_header_size)
-            }
-            self::ChunkedState::End => Poll::Ready(Ok(ChunkedState::End)),
+            Self::EndCr => Self::read_end_cr(cx, body, trailers_buf, h1_max_header_size),
+            Self::EndLf => Self::read_end_lf(cx, body, trailers_buf, h1_max_header_size),
+            Self::End => Poll::Ready(Ok(Self::End)),
         }
     }
 
@@ -345,7 +339,7 @@ impl ChunkedState {
         cx: &mut Context<'_>,
         rdr: &mut R,
         size: &mut u64,
-    ) -> Poll<Result<ChunkedState, io::Error>> {
+    ) -> Poll<Result<Self, io::Error>> {
         trace!("Read chunk start");
 
         let radix = 16;
@@ -370,14 +364,14 @@ impl ChunkedState {
             }
         }
 
-        Poll::Ready(Ok(ChunkedState::Size))
+        Poll::Ready(Ok(Self::Size))
     }
 
     fn read_size<R: MemRead>(
         cx: &mut Context<'_>,
         rdr: &mut R,
         size: &mut u64,
-    ) -> Poll<Result<ChunkedState, io::Error>> {
+    ) -> Poll<Result<Self, io::Error>> {
         trace!("Read chunk hex size");
 
         let radix = 16;
@@ -394,9 +388,9 @@ impl ChunkedState {
                 *size = or_overflow!(size.checked_mul(radix));
                 *size = or_overflow!(size.checked_add((b + 10 - b'A') as u64));
             }
-            b'\t' | b' ' => return Poll::Ready(Ok(ChunkedState::SizeLws)),
-            b';' => return Poll::Ready(Ok(ChunkedState::Extension)),
-            b'\r' => return Poll::Ready(Ok(ChunkedState::SizeLf)),
+            b'\t' | b' ' => return Poll::Ready(Ok(Self::SizeLws)),
+            b';' => return Poll::Ready(Ok(Self::Extension)),
+            b'\r' => return Poll::Ready(Ok(Self::SizeLf)),
             _ => {
                 return Poll::Ready(Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
@@ -404,18 +398,18 @@ impl ChunkedState {
                 )));
             }
         }
-        Poll::Ready(Ok(ChunkedState::Size))
+        Poll::Ready(Ok(Self::Size))
     }
     fn read_size_lws<R: MemRead>(
         cx: &mut Context<'_>,
         rdr: &mut R,
-    ) -> Poll<Result<ChunkedState, io::Error>> {
+    ) -> Poll<Result<Self, io::Error>> {
         trace!("read_size_lws");
         match byte!(rdr, cx) {
             // LWS can follow the chunk size, but no more digits can come
-            b'\t' | b' ' => Poll::Ready(Ok(ChunkedState::SizeLws)),
-            b';' => Poll::Ready(Ok(ChunkedState::Extension)),
-            b'\r' => Poll::Ready(Ok(ChunkedState::SizeLf)),
+            b'\t' | b' ' => Poll::Ready(Ok(Self::SizeLws)),
+            b';' => Poll::Ready(Ok(Self::Extension)),
+            b'\r' => Poll::Ready(Ok(Self::SizeLf)),
             _ => Poll::Ready(Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "Invalid chunk size linear white space",
@@ -426,7 +420,7 @@ impl ChunkedState {
         cx: &mut Context<'_>,
         rdr: &mut R,
         extensions_cnt: &mut u64,
-    ) -> Poll<Result<ChunkedState, io::Error>> {
+    ) -> Poll<Result<Self, io::Error>> {
         trace!("read_extension");
         // We don't care about extensions really at all. Just ignore them.
         // They "end" at the next CRLF.
@@ -435,7 +429,7 @@ impl ChunkedState {
         // them from themselves, we reject extensions containing plain LF as
         // well.
         match byte!(rdr, cx) {
-            b'\r' => Poll::Ready(Ok(ChunkedState::SizeLf)),
+            b'\r' => Poll::Ready(Ok(Self::SizeLf)),
             b'\n' => Poll::Ready(Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "invalid chunk extension contains newline",
@@ -448,7 +442,7 @@ impl ChunkedState {
                         "chunk extensions over limit",
                     )))
                 } else {
-                    Poll::Ready(Ok(ChunkedState::Extension))
+                    Poll::Ready(Ok(Self::Extension))
                 }
             } // no supported extensions
         }
@@ -457,15 +451,15 @@ impl ChunkedState {
         cx: &mut Context<'_>,
         rdr: &mut R,
         size: u64,
-    ) -> Poll<Result<ChunkedState, io::Error>> {
+    ) -> Poll<Result<Self, io::Error>> {
         trace!("Chunk size is {:?}", size);
         match byte!(rdr, cx) {
             b'\n' => {
                 if size == 0 {
-                    Poll::Ready(Ok(ChunkedState::EndCr))
+                    Poll::Ready(Ok(Self::EndCr))
                 } else {
                     debug!("incoming chunked header: {0:#X} ({0} bytes)", size);
-                    Poll::Ready(Ok(ChunkedState::Body))
+                    Poll::Ready(Ok(Self::Body))
                 }
             }
             _ => Poll::Ready(Err(io::Error::new(
@@ -480,7 +474,7 @@ impl ChunkedState {
         rdr: &mut R,
         rem: &mut u64,
         buf: &mut Option<Bytes>,
-    ) -> Poll<Result<ChunkedState, io::Error>> {
+    ) -> Poll<Result<Self, io::Error>> {
         trace!("Chunked read, remaining={:?}", rem);
 
         // cap remaining bytes at the max capacity of usize
@@ -504,17 +498,17 @@ impl ChunkedState {
         *rem -= count as u64;
 
         if *rem > 0 {
-            Poll::Ready(Ok(ChunkedState::Body))
+            Poll::Ready(Ok(Self::Body))
         } else {
-            Poll::Ready(Ok(ChunkedState::BodyCr))
+            Poll::Ready(Ok(Self::BodyCr))
         }
     }
     fn read_body_cr<R: MemRead>(
         cx: &mut Context<'_>,
         rdr: &mut R,
-    ) -> Poll<Result<ChunkedState, io::Error>> {
+    ) -> Poll<Result<Self, io::Error>> {
         match byte!(rdr, cx) {
-            b'\r' => Poll::Ready(Ok(ChunkedState::BodyLf)),
+            b'\r' => Poll::Ready(Ok(Self::BodyLf)),
             _ => Poll::Ready(Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "Invalid chunk body CR",
@@ -524,9 +518,9 @@ impl ChunkedState {
     fn read_body_lf<R: MemRead>(
         cx: &mut Context<'_>,
         rdr: &mut R,
-    ) -> Poll<Result<ChunkedState, io::Error>> {
+    ) -> Poll<Result<Self, io::Error>> {
         match byte!(rdr, cx) {
-            b'\n' => Poll::Ready(Ok(ChunkedState::Start)),
+            b'\n' => Poll::Ready(Ok(Self::Start)),
             _ => Poll::Ready(Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "Invalid chunk body LF",
@@ -539,7 +533,7 @@ impl ChunkedState {
         rdr: &mut R,
         trailers_buf: &mut Option<BytesMut>,
         h1_max_header_size: usize,
-    ) -> Poll<Result<ChunkedState, io::Error>> {
+    ) -> Poll<Result<Self, io::Error>> {
         trace!("read_trailer");
         let byte = byte!(rdr, cx);
 
@@ -550,8 +544,8 @@ impl ChunkedState {
         );
 
         match byte {
-            b'\r' => Poll::Ready(Ok(ChunkedState::TrailerLf)),
-            _ => Poll::Ready(Ok(ChunkedState::Trailer)),
+            b'\r' => Poll::Ready(Ok(Self::TrailerLf)),
+            _ => Poll::Ready(Ok(Self::Trailer)),
         }
     }
 
@@ -562,7 +556,7 @@ impl ChunkedState {
         trailers_cnt: &mut usize,
         h1_max_headers: usize,
         h1_max_header_size: usize,
-    ) -> Poll<Result<ChunkedState, io::Error>> {
+    ) -> Poll<Result<Self, io::Error>> {
         let byte = byte!(rdr, cx);
         match byte {
             b'\n' => {
@@ -580,7 +574,7 @@ impl ChunkedState {
                     h1_max_header_size
                 );
 
-                Poll::Ready(Ok(ChunkedState::EndCr))
+                Poll::Ready(Ok(Self::EndCr))
             }
             _ => Poll::Ready(Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -594,14 +588,14 @@ impl ChunkedState {
         rdr: &mut R,
         trailers_buf: &mut Option<BytesMut>,
         h1_max_header_size: usize,
-    ) -> Poll<Result<ChunkedState, io::Error>> {
+    ) -> Poll<Result<Self, io::Error>> {
         let byte = byte!(rdr, cx);
         match byte {
             b'\r' => {
                 if let Some(trailers_buf) = trailers_buf {
                     put_u8!(trailers_buf, byte, h1_max_header_size);
                 }
-                Poll::Ready(Ok(ChunkedState::EndLf))
+                Poll::Ready(Ok(Self::EndLf))
             }
             byte => {
                 match trailers_buf {
@@ -616,7 +610,7 @@ impl ChunkedState {
                     }
                 }
 
-                Poll::Ready(Ok(ChunkedState::Trailer))
+                Poll::Ready(Ok(Self::Trailer))
             }
         }
     }
@@ -625,14 +619,14 @@ impl ChunkedState {
         rdr: &mut R,
         trailers_buf: &mut Option<BytesMut>,
         h1_max_header_size: usize,
-    ) -> Poll<Result<ChunkedState, io::Error>> {
+    ) -> Poll<Result<Self, io::Error>> {
         let byte = byte!(rdr, cx);
         match byte {
             b'\n' => {
                 if let Some(trailers_buf) = trailers_buf {
                     put_u8!(trailers_buf, byte, h1_max_header_size);
                 }
-                Poll::Ready(Ok(ChunkedState::End))
+                Poll::Ready(Ok(Self::End))
             }
             _ => Poll::Ready(Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -643,6 +637,7 @@ impl ChunkedState {
 }
 
 // TODO: disallow Transfer-Encoding, Content-Length, Trailer, etc in trailers ??
+#[allow(clippy::needless_pass_by_ref_mut)]
 fn decode_trailers(buf: &mut BytesMut, count: usize) -> Result<HeaderMap, io::Error> {
     let mut trailers = HeaderMap::new();
     let mut headers = vec![httparse::EMPTY_HEADER; count];
@@ -651,24 +646,18 @@ fn decode_trailers(buf: &mut BytesMut, count: usize) -> Result<HeaderMap, io::Er
         Ok(httparse::Status::Complete((_, headers))) => {
             for header in headers.iter() {
                 use std::convert::TryFrom;
-                let name = match HeaderName::try_from(header.name) {
-                    Ok(name) => name,
-                    Err(_) => {
-                        return Err(io::Error::new(
-                            io::ErrorKind::InvalidInput,
-                            format!("Invalid header name: {:?}", &header),
-                        ));
-                    }
+                let Ok(name) = HeaderName::try_from(header.name) else {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("Invalid header name: {:?}", &header),
+                    ));
                 };
 
-                let value = match HeaderValue::from_bytes(header.value) {
-                    Ok(value) => value,
-                    Err(_) => {
-                        return Err(io::Error::new(
-                            io::ErrorKind::InvalidInput,
-                            format!("Invalid header value: {:?}", &header),
-                        ));
-                    }
+                let Ok(value) = HeaderValue::from_bytes(header.value) else {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("Invalid header value: {:?}", &header),
+                    ));
                 };
 
                 trailers.insert(name, value);

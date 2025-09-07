@@ -51,25 +51,25 @@ pub(in crate::h2::proto) struct FlowControl {
 }
 
 impl FlowControl {
-    pub(in crate::h2::proto) fn new() -> FlowControl {
-        FlowControl {
+    pub(in crate::h2::proto) fn new() -> Self {
+        Self {
             window_size: Window(0),
             available: Window(0),
         }
     }
 
     /// Returns the window size as known by the peer
-    pub(in crate::h2::proto) fn window_size(&self) -> WindowSize {
+    pub(in crate::h2::proto) fn window_size(self) -> WindowSize {
         self.window_size.as_size()
     }
 
     /// Returns the window size available to the consumer
-    pub(in crate::h2::proto) fn available(&self) -> Window {
+    pub(in crate::h2::proto) fn available(self) -> Window {
         self.available
     }
 
     /// Returns true if there is unavailable window capacity
-    pub(in crate::h2::proto) fn has_unavailable(&self) -> bool {
+    pub(in crate::h2::proto) fn has_unavailable(self) -> bool {
         if self.window_size < 0 {
             return false;
         }
@@ -98,7 +98,7 @@ impl FlowControl {
     /// available bytes does not reach the threshold, this returns `None`.
     ///
     /// This represents pending outbound WINDOW_UPDATE frames.
-    pub(in crate::h2::proto) fn unclaimed_capacity(&self) -> Option<WindowSize> {
+    pub(in crate::h2::proto) fn unclaimed_capacity(self) -> Option<WindowSize> {
         let available = self.available;
 
         if self.window_size >= available {
@@ -207,11 +207,11 @@ impl FlowControl {
 pub struct Window(i32);
 
 impl Window {
-    pub fn as_size(&self) -> WindowSize {
+    pub fn as_size(self) -> WindowSize {
         if self.0 < 0 { 0 } else { self.0 as WindowSize }
     }
 
-    pub fn checked_size(&self) -> WindowSize {
+    pub fn checked_size(self) -> WindowSize {
         assert!(self.0 >= 0, "negative Window");
         self.0 as WindowSize
     }
@@ -231,7 +231,7 @@ impl Window {
         Ok(())
     }
 
-    pub fn add(&self, other: WindowSize) -> Result<Self, Reason> {
+    pub fn add(self, other: WindowSize) -> Result<Self, Reason> {
         if let Some(v) = self.0.checked_add(other as i32) {
             Ok(Self(v))
         } else {
@@ -267,7 +267,7 @@ impl fmt::Display for Window {
 }
 
 impl From<Window> for isize {
-    fn from(w: Window) -> isize {
-        w.0 as isize
+    fn from(w: Window) -> Self {
+        w.0 as Self
     }
 }

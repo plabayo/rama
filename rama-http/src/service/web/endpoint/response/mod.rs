@@ -45,7 +45,7 @@ mod form;
 #[doc(inline)]
 pub use form::Form;
 
-mod redirect;
+pub mod redirect;
 #[doc(inline)]
 pub use redirect::Redirect;
 

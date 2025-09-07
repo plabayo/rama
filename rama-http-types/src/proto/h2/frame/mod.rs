@@ -63,15 +63,15 @@ impl<T> Frame<T> {
         F: FnOnce(T) -> U,
     {
         match self {
-            Frame::Data(frame) => frame.map(f).into(),
-            Frame::Headers(frame) => frame.into(),
-            Frame::Priority(frame) => frame.into(),
-            Frame::PushPromise(frame) => frame.into(),
-            Frame::Settings(frame) => frame.into(),
-            Frame::Ping(frame) => frame.into(),
-            Frame::GoAway(frame) => frame.into(),
-            Frame::WindowUpdate(frame) => frame.into(),
-            Frame::Reset(frame) => frame.into(),
+            Self::Data(frame) => frame.map(f).into(),
+            Self::Headers(frame) => frame.into(),
+            Self::Priority(frame) => frame.into(),
+            Self::PushPromise(frame) => frame.into(),
+            Self::Settings(frame) => frame.into(),
+            Self::Ping(frame) => frame.into(),
+            Self::GoAway(frame) => frame.into(),
+            Self::WindowUpdate(frame) => frame.into(),
+            Self::Reset(frame) => frame.into(),
         }
     }
 }
@@ -79,15 +79,15 @@ impl<T> Frame<T> {
 impl<T> fmt::Debug for Frame<T> {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
         match *self {
-            Frame::Data(ref frame) => fmt::Debug::fmt(frame, fmt),
-            Frame::Headers(ref frame) => fmt::Debug::fmt(frame, fmt),
-            Frame::Priority(ref frame) => fmt::Debug::fmt(frame, fmt),
-            Frame::PushPromise(ref frame) => fmt::Debug::fmt(frame, fmt),
-            Frame::Settings(ref frame) => fmt::Debug::fmt(frame, fmt),
-            Frame::Ping(ref frame) => fmt::Debug::fmt(frame, fmt),
-            Frame::GoAway(ref frame) => fmt::Debug::fmt(frame, fmt),
-            Frame::WindowUpdate(ref frame) => fmt::Debug::fmt(frame, fmt),
-            Frame::Reset(ref frame) => fmt::Debug::fmt(frame, fmt),
+            Self::Data(ref frame) => fmt::Debug::fmt(frame, fmt),
+            Self::Headers(ref frame) => fmt::Debug::fmt(frame, fmt),
+            Self::Priority(ref frame) => fmt::Debug::fmt(frame, fmt),
+            Self::PushPromise(ref frame) => fmt::Debug::fmt(frame, fmt),
+            Self::Settings(ref frame) => fmt::Debug::fmt(frame, fmt),
+            Self::Ping(ref frame) => fmt::Debug::fmt(frame, fmt),
+            Self::GoAway(ref frame) => fmt::Debug::fmt(frame, fmt),
+            Self::WindowUpdate(ref frame) => fmt::Debug::fmt(frame, fmt),
+            Self::Reset(ref frame) => fmt::Debug::fmt(frame, fmt),
         }
     }
 }

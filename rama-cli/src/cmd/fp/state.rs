@@ -25,7 +25,7 @@ impl State {
             None => None,
         };
 
-        Ok(State {
+        Ok(Self {
             data_source: DataSource::default(),
             acme,
             storage,

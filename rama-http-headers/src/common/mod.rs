@@ -55,10 +55,12 @@ pub use self::proxy_authorization::ProxyAuthorization;
 pub use self::range::Range;
 pub use self::referer::Referer;
 pub use self::referrer_policy::ReferrerPolicy;
-pub use self::retry_after::RetryAfter;
-pub use self::sec_websocket_accept::SecWebsocketAccept;
-pub use self::sec_websocket_key::SecWebsocketKey;
-pub use self::sec_websocket_version::SecWebsocketVersion;
+pub use self::retry_after::{After, RetryAfter};
+pub use self::sec_websocket_accept::SecWebSocketAccept;
+pub use self::sec_websocket_extensions::SecWebSocketExtensions;
+pub use self::sec_websocket_key::SecWebSocketKey;
+pub use self::sec_websocket_protocol::SecWebSocketProtocol;
+pub use self::sec_websocket_version::SecWebSocketVersion;
 pub use self::server::Server;
 pub use self::set_cookie::SetCookie;
 pub use self::strict_transport_security::StrictTransportSecurity;
@@ -70,7 +72,7 @@ pub use self::vary::Vary;
 //pub use self::warning::Warning;
 
 #[cfg(test)]
-fn test_decode<T: crate::Header>(values: &[&str]) -> Option<T> {
+fn test_decode<T: crate::HeaderDecode>(values: &[&str]) -> Option<T> {
     use crate::HeaderMapExt;
     let mut map = ::rama_http_types::HeaderMap::new();
     for val in values {
@@ -80,7 +82,8 @@ fn test_decode<T: crate::Header>(values: &[&str]) -> Option<T> {
 }
 
 #[cfg(test)]
-fn test_encode<T: crate::Header>(header: T) -> ::rama_http_types::HeaderMap {
+#[allow(clippy::needless_pass_by_value)]
+fn test_encode<T: crate::HeaderEncode>(header: T) -> ::rama_http_types::HeaderMap {
     use crate::HeaderMapExt;
     let mut map = ::rama_http_types::HeaderMap::new();
     map.typed_insert(header);
@@ -177,7 +180,9 @@ mod referer;
 mod referrer_policy;
 mod retry_after;
 mod sec_websocket_accept;
+pub mod sec_websocket_extensions;
 mod sec_websocket_key;
+pub mod sec_websocket_protocol;
 mod sec_websocket_version;
 mod server;
 mod set_cookie;

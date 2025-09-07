@@ -1,4 +1,4 @@
-use crate::{Header, util};
+use crate::{HeaderDecode, HeaderEncode, TypedHeader, util};
 use rama_core::error::{ErrorContext, OpaqueError};
 use rama_http_types::{HeaderName, HeaderValue, header};
 use rama_net::forwarded::{ForwardedElement, ForwardedProtocol, ForwardedVersion, NodeId};
@@ -39,7 +39,7 @@ struct ViaElement {
 
 impl From<ViaElement> for ForwardedElement {
     fn from(via: ViaElement) -> Self {
-        let mut el = ForwardedElement::forwarded_by(via.node_id);
+        let mut el = Self::forwarded_by(via.node_id);
         el.set_forwarded_version(via.version);
         if let Some(protocol) = via.protocol {
             el.set_forwarded_proto(protocol);
@@ -48,17 +48,21 @@ impl From<ViaElement> for ForwardedElement {
     }
 }
 
-impl Header for Via {
+impl TypedHeader for Via {
     fn name() -> &'static HeaderName {
         &header::VIA
     }
+}
 
+impl HeaderDecode for Via {
     fn decode<'i, I: Iterator<Item = &'i HeaderValue>>(
         values: &mut I,
     ) -> Result<Self, crate::Error> {
         util::csv::from_comma_delimited(values).map(Via)
     }
+}
 
+impl HeaderEncode for Via {
     fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
         use std::fmt;
         struct Format<F>(F);
@@ -85,7 +89,7 @@ impl FromIterator<ViaElement> for Via {
     where
         T: IntoIterator<Item = ViaElement>,
     {
-        Via(iter.into_iter().collect())
+        Self(iter.into_iter().collect())
     }
 }
 
@@ -107,7 +111,11 @@ impl super::ForwardHeader for Via {
                 })
             })
             .collect();
-        if vec.is_empty() { None } else { Some(Via(vec)) }
+        if vec.is_empty() {
+            None
+        } else {
+            Some(Self(vec))
+        }
     }
 }
 

@@ -48,8 +48,8 @@ derive_header! {
 
 impl IfNoneMatch {
     /// Create a new `If-None-Match: *` header.
-    pub fn any() -> IfNoneMatch {
-        IfNoneMatch(EntityTagRange::Any)
+    pub fn any() -> Self {
+        Self(EntityTagRange::Any)
     }
 
     /// Checks whether the ETag passes this precondition.
@@ -59,8 +59,8 @@ impl IfNoneMatch {
 }
 
 impl From<ETag> for IfNoneMatch {
-    fn from(etag: ETag) -> IfNoneMatch {
-        IfNoneMatch(EntityTagRange::Tags(HeaderValue::from(etag.0).into()))
+    fn from(etag: ETag) -> Self {
+        Self(EntityTagRange::Tags(HeaderValue::from(etag.0).into()))
     }
 }
 

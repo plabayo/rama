@@ -14,15 +14,16 @@ pub struct WindowUpdate {
 }
 
 impl WindowUpdate {
-    pub fn new(stream_id: StreamId, size_increment: u32) -> WindowUpdate {
-        WindowUpdate {
+    #[must_use]
+    pub fn new(stream_id: StreamId, size_increment: u32) -> Self {
+        Self {
             stream_id,
             size_increment,
         }
     }
 
     /// Builds a `WindowUpdate` frame from a raw frame.
-    pub fn load(head: Head, payload: &[u8]) -> Result<WindowUpdate, Error> {
+    pub fn load(head: Head, payload: &[u8]) -> Result<Self, Error> {
         debug_assert_eq!(head.kind(), Kind::WindowUpdate);
         if payload.len() != 4 {
             return Err(Error::BadFrameSize);
@@ -36,7 +37,7 @@ impl WindowUpdate {
             return Err(Error::InvalidWindowUpdateValue);
         }
 
-        Ok(WindowUpdate {
+        Ok(Self {
             stream_id: head.stream_id(),
             size_increment,
         })
@@ -52,6 +53,6 @@ impl WindowUpdate {
 
 impl<B> From<WindowUpdate> for Frame<B> {
     fn from(src: WindowUpdate) -> Self {
-        Frame::WindowUpdate(src)
+        Self::WindowUpdate(src)
     }
 }

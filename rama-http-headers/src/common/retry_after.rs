@@ -1,4 +1,4 @@
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 use rama_http_types::HeaderValue;
 
@@ -17,15 +17,15 @@ use crate::util::{HttpDate, Seconds, TryFromValues};
 ///
 /// # Examples
 /// ```
-/// use std::time::{Duration, SystemTime};
-/// use rama_http_headers::RetryAfter;
+/// use std::time::{SystemTime};
+/// use rama_http_headers::{RetryAfter, util::Seconds};
 ///
-/// let delay = RetryAfter::delay(Duration::from_secs(300));
+/// let delay = RetryAfter::delay(Seconds::new(300));
 /// let date = RetryAfter::date(SystemTime::now());
 /// ```
 ///
 /// Retry-After header, defined in [RFC7231](https://datatracker.ietf.org/doc/html/rfc7231#section-7.1.3)
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct RetryAfter(After);
 
 derive_header! {
@@ -33,8 +33,8 @@ derive_header! {
     name: RETRY_AFTER
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum After {
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum After {
     /// Retry after the given DateTime
     DateTime(HttpDate),
     /// Retry after this duration has elapsed
@@ -43,13 +43,20 @@ enum After {
 
 impl RetryAfter {
     /// Create an `RetryAfter` header with a date value.
-    pub fn date(time: SystemTime) -> RetryAfter {
-        RetryAfter(After::DateTime(time.into()))
+    #[must_use]
+    pub fn date(time: SystemTime) -> Self {
+        Self(After::DateTime(time.into()))
     }
 
-    /// Create an `RetryAfter` header with a date value.
-    pub fn delay(dur: Duration) -> RetryAfter {
-        RetryAfter(After::Delay(dur.into()))
+    /// Create an `RetryAfter` header with a delay value in seconds
+    #[must_use]
+    pub fn delay(seconds: Seconds) -> Self {
+        Self(After::Delay(seconds))
+    }
+
+    #[must_use]
+    pub fn after(&self) -> After {
+        self.0
     }
 }
 
@@ -62,18 +69,18 @@ impl TryFromValues for After {
             .next()
             .and_then(|val| {
                 if let Some(delay) = Seconds::from_val(val) {
-                    return Some(After::Delay(delay));
+                    return Some(Self::Delay(delay));
                 }
 
                 let date = HttpDate::from_val(val)?;
-                Some(After::DateTime(date))
+                Some(Self::DateTime(date))
             })
             .ok_or_else(Error::invalid)
     }
 }
 
 impl<'a> From<&'a After> for HeaderValue {
-    fn from(after: &'a After) -> HeaderValue {
+    fn from(after: &'a After) -> Self {
         match *after {
             After::Delay(ref delay) => delay.into(),
             After::DateTime(ref date) => date.into(),
@@ -83,16 +90,14 @@ impl<'a> From<&'a After> for HeaderValue {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
     use super::super::test_decode;
-    use super::RetryAfter;
+    use super::{RetryAfter, Seconds};
     use crate::util::HttpDate;
 
     #[test]
     fn delay_decode() {
         let r: RetryAfter = test_decode(&["1234"]).unwrap();
-        assert_eq!(r, RetryAfter::delay(Duration::from_secs(1234)),);
+        assert_eq!(r, RetryAfter::delay(Seconds::new(1234)));
     }
 
     macro_rules! test_retry_after_datetime {

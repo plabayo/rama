@@ -18,8 +18,9 @@ pub struct Authority {
 
 impl Authority {
     /// Creates a new [`Authority`].
+    #[must_use]
     pub const fn new(host: Host, port: u16) -> Self {
-        Authority { host, port }
+        Self { host, port }
     }
 
     /// creates a new local ipv4 [`Authority`] for the given port
@@ -32,8 +33,9 @@ impl Authority {
     /// let addr = Authority::local_ipv4(8080);
     /// assert_eq!("127.0.0.1:8080", addr.to_string());
     /// ```
+    #[must_use]
     pub const fn local_ipv4(port: u16) -> Self {
-        Authority {
+        Self {
             host: Host::Address(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))),
             port,
         }
@@ -49,8 +51,9 @@ impl Authority {
     /// let addr = Authority::local_ipv6(8080);
     /// assert_eq!("[::1]:8080", addr.to_string());
     /// ```
+    #[must_use]
     pub const fn local_ipv6(port: u16) -> Self {
-        Authority {
+        Self {
             host: Host::Address(IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1))),
             port,
         }
@@ -66,8 +69,9 @@ impl Authority {
     /// let addr = Authority::default_ipv4(8080);
     /// assert_eq!("0.0.0.0:8080", addr.to_string());
     /// ```
+    #[must_use]
     pub const fn default_ipv4(port: u16) -> Self {
-        Authority {
+        Self {
             host: Host::Address(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0))),
             port,
         }
@@ -83,8 +87,9 @@ impl Authority {
     /// let addr = Authority::default_ipv6(8080);
     /// assert_eq!("[::]:8080", addr.to_string());
     /// ```
+    #[must_use]
     pub const fn default_ipv6(port: u16) -> Self {
-        Authority {
+        Self {
             host: Host::Address(IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0))),
             port,
         }
@@ -100,29 +105,34 @@ impl Authority {
     /// let addr = Authority::broadcast_ipv4(8080);
     /// assert_eq!("255.255.255.255:8080", addr.to_string());
     /// ```
+    #[must_use]
     pub const fn broadcast_ipv4(port: u16) -> Self {
-        Authority {
+        Self {
             host: Host::Address(IpAddr::V4(Ipv4Addr::new(255, 255, 255, 255))),
             port,
         }
     }
 
     /// Gets the [`Host`] reference.
+    #[must_use]
     pub fn host(&self) -> &Host {
         &self.host
     }
 
     /// Consumes the [`Authority`] and returns the [`Host`].
+    #[must_use]
     pub fn into_host(self) -> Host {
         self.host
     }
 
     /// Gets the port
+    #[must_use]
     pub fn port(&self) -> u16 {
         self.port
     }
 
     /// Consume self into its parts: `(host, port)`
+    #[must_use]
     pub fn into_parts(self) -> (Host, u16) {
         (self.host, self.port)
     }
@@ -172,19 +182,19 @@ impl From<([u8; 16], u16)> for Authority {
 
 impl From<(Host, u16)> for Authority {
     fn from((host, port): (Host, u16)) -> Self {
-        Authority { host, port }
+        Self { host, port }
     }
 }
 
 impl From<Authority> for Host {
-    fn from(authority: Authority) -> Host {
+    fn from(authority: Authority) -> Self {
         authority.host
     }
 }
 
 impl From<SocketAddr> for Authority {
     fn from(addr: SocketAddr) -> Self {
-        Authority {
+        Self {
             host: Host::Address(addr.ip()),
             port: addr.port(),
         }
@@ -193,7 +203,7 @@ impl From<SocketAddr> for Authority {
 
 impl From<&SocketAddr> for Authority {
     fn from(addr: &SocketAddr) -> Self {
-        Authority {
+        Self {
             host: Host::Address(addr.ip()),
             port: addr.port(),
         }
@@ -203,7 +213,7 @@ impl From<&SocketAddr> for Authority {
 impl From<SocketAddress> for Authority {
     fn from(addr: SocketAddress) -> Self {
         let (ip, port) = addr.into_parts();
-        Authority {
+        Self {
             host: Host::Address(ip),
             port,
         }
@@ -212,7 +222,7 @@ impl From<SocketAddress> for Authority {
 
 impl From<&SocketAddress> for Authority {
     fn from(addr: &SocketAddress) -> Self {
-        Authority {
+        Self {
             host: Host::Address(addr.ip_addr()),
             port: addr.port(),
         }
@@ -242,7 +252,7 @@ impl std::str::FromStr for Authority {
     type Err = OpaqueError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Authority::try_from(s)
+        Self::try_from(s)
     }
 }
 
@@ -264,7 +274,7 @@ impl TryFrom<&str> for Authority {
             Host::Address(IpAddr::V6(_)) if !s.starts_with('[') => Err(OpaqueError::from_display(
                 "missing brackets for IPv6 address with port",
             )),
-            _ => Ok(Authority { host, port }),
+            _ => Ok(Self { host, port }),
         }
     }
 }
@@ -329,6 +339,7 @@ impl<'de> serde::Deserialize<'de> for Authority {
 mod tests {
     use super::*;
 
+    #[allow(clippy::needless_pass_by_value)]
     fn assert_eq(s: &str, authority: Authority, host: &str, port: u16) {
         assert_eq!(authority.host(), &host, "parsing: {s}");
         assert_eq!(authority.port(), port, "parsing: {s}");

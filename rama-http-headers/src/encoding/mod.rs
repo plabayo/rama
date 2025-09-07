@@ -52,39 +52,40 @@ impl fmt::Display for Encoding {
 impl From<Encoding> for rama_http_types::HeaderValue {
     #[inline]
     fn from(encoding: Encoding) -> Self {
-        rama_http_types::HeaderValue::from_static(encoding.as_str())
+        Self::from_static(encoding.as_str())
     }
 }
 
 impl Encoding {
     fn as_str(self) -> &'static str {
         match self {
-            Encoding::Identity => "identity",
-            Encoding::Gzip => "gzip",
-            Encoding::Deflate => "deflate",
-            Encoding::Brotli => "br",
-            Encoding::Zstd => "zstd",
+            Self::Identity => "identity",
+            Self::Gzip => "gzip",
+            Self::Deflate => "deflate",
+            Self::Brotli => "br",
+            Self::Zstd => "zstd",
         }
     }
 
+    #[must_use]
     pub fn to_file_extension(self) -> Option<&'static std::ffi::OsStr> {
         match self {
-            Encoding::Gzip => Some(std::ffi::OsStr::new(".gz")),
-            Encoding::Deflate => Some(std::ffi::OsStr::new(".zz")),
-            Encoding::Brotli => Some(std::ffi::OsStr::new(".br")),
-            Encoding::Zstd => Some(std::ffi::OsStr::new(".zst")),
-            Encoding::Identity => None,
+            Self::Gzip => Some(std::ffi::OsStr::new(".gz")),
+            Self::Deflate => Some(std::ffi::OsStr::new(".zz")),
+            Self::Brotli => Some(std::ffi::OsStr::new(".br")),
+            Self::Zstd => Some(std::ffi::OsStr::new(".zst")),
+            Self::Identity => None,
         }
     }
 
-    fn parse(s: &str, supported_encoding: impl SupportedEncodings) -> Option<Encoding> {
+    fn parse(s: &str, supported_encoding: impl SupportedEncodings) -> Option<Self> {
         match_ignore_ascii_case_str! {
             match (s) {
-                "gzip" | "x-gzip" if supported_encoding.gzip() => Some(Encoding::Gzip),
-                "deflate" if supported_encoding.deflate() => Some(Encoding::Deflate),
-                "br" if supported_encoding.br() => Some(Encoding::Brotli),
-                "zstd" if supported_encoding.zstd() => Some(Encoding::Zstd),
-                "identity" => Some(Encoding::Identity),
+                "gzip" | "x-gzip" if supported_encoding.gzip() => Some(Self::Gzip),
+                "deflate" if supported_encoding.deflate() => Some(Self::Deflate),
+                "br" if supported_encoding.br() => Some(Self::Brotli),
+                "zstd" if supported_encoding.zstd() => Some(Self::Zstd),
+                "identity" => Some(Self::Identity),
                 _ => None,
             }
         }
@@ -97,7 +98,7 @@ impl Encoding {
         headers
             .get(rama_http_types::header::CONTENT_ENCODING)
             .and_then(|hval| hval.to_str().ok())
-            .and_then(|s| Encoding::parse(s, supported_encoding))
+            .and_then(|s| Self::parse(s, supported_encoding))
     }
 
     #[inline]
@@ -105,18 +106,15 @@ impl Encoding {
         headers: &rama_http_types::HeaderMap,
         supported_encoding: impl SupportedEncodings,
     ) -> Self {
-        Encoding::maybe_from_content_encoding_header(headers, supported_encoding)
-            .unwrap_or(Encoding::Identity)
+        Self::maybe_from_content_encoding_header(headers, supported_encoding)
+            .unwrap_or(Self::Identity)
     }
 
     pub fn maybe_from_accept_encoding_headers(
         headers: &rama_http_types::HeaderMap,
         supported_encoding: impl SupportedEncodings,
     ) -> Option<Self> {
-        Encoding::maybe_preferred_encoding(parse_accept_encoding_headers(
-            headers,
-            supported_encoding,
-        ))
+        Self::maybe_preferred_encoding(parse_accept_encoding_headers(headers, supported_encoding))
     }
 
     #[inline]
@@ -124,12 +122,12 @@ impl Encoding {
         headers: &rama_http_types::HeaderMap,
         supported_encoding: impl SupportedEncodings,
     ) -> Self {
-        Encoding::maybe_from_accept_encoding_headers(headers, supported_encoding)
-            .unwrap_or(Encoding::Identity)
+        Self::maybe_from_accept_encoding_headers(headers, supported_encoding)
+            .unwrap_or(Self::Identity)
     }
 
     pub fn maybe_preferred_encoding(
-        accepted_encodings: impl Iterator<Item = QualityValue<Encoding>>,
+        accepted_encodings: impl Iterator<Item = QualityValue<Self>>,
     ) -> Option<Self> {
         accepted_encodings
             .filter(|qval| qval.quality.as_u16() > 0)
@@ -151,10 +149,8 @@ pub fn parse_accept_encoding_headers<'a>(
         .filter_map(move |v| {
             let mut v = v.splitn(2, ';');
 
-            let encoding = match Encoding::parse(v.next().unwrap().trim(), supported_encoding) {
-                Some(encoding) => encoding,
-                None => return None, // ignore unknown encodings
-            };
+            // ignore unknown encodings
+            let encoding = Encoding::parse(v.next().unwrap().trim(), supported_encoding)?;
 
             let qval = if let Some(qval) = v.next() {
                 qval.trim().parse::<Quality>().ok()?

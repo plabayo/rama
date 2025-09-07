@@ -39,7 +39,7 @@ pub(crate) struct GoingAway {
 
 impl GoAway {
     pub(super) fn new() -> Self {
-        GoAway {
+        Self {
             close_now: false,
             going_away: None,
             is_user_initiated: false,

@@ -55,7 +55,7 @@ impl AllowPrivateNetwork {
             HeaderName::from_static("access-control-allow-private-network");
 
         // Cheapest fallback: allow_private_network hasn't been set
-        if let AllowPrivateNetworkInner::No = &self.0 {
+        if matches!(&self.0, AllowPrivateNetworkInner::No) {
             return None;
         }
 

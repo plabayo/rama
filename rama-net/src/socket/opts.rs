@@ -27,6 +27,7 @@ pub enum Domain {
 
 impl Domain {
     #[inline]
+    #[must_use]
     pub fn as_socket_domain(self) -> SocketDomain {
         self.into()
     }
@@ -35,9 +36,9 @@ impl Domain {
 impl From<Domain> for SocketDomain {
     fn from(value: Domain) -> Self {
         match value {
-            Domain::IPv4 => SocketDomain::IPV4,
-            Domain::IPv6 => SocketDomain::IPV6,
-            Domain::Unix => SocketDomain::UNIX,
+            Domain::IPv4 => Self::IPV4,
+            Domain::IPv6 => Self::IPV6,
+            Domain::Unix => Self::UNIX,
         }
     }
 }
@@ -67,6 +68,7 @@ pub enum Protocol {
 
 impl Protocol {
     #[inline]
+    #[must_use]
     pub fn as_socket_protocol(self) -> SocketProtocol {
         self.into()
     }
@@ -75,16 +77,16 @@ impl Protocol {
 impl From<Protocol> for SocketProtocol {
     fn from(value: Protocol) -> Self {
         match value {
-            Protocol::ICMPV4 => SocketProtocol::ICMPV4,
-            Protocol::ICMPV6 => SocketProtocol::ICMPV6,
-            Protocol::TCP => SocketProtocol::TCP,
-            Protocol::UDP => SocketProtocol::UDP,
+            Protocol::ICMPV4 => Self::ICMPV4,
+            Protocol::ICMPV6 => Self::ICMPV6,
+            Protocol::TCP => Self::TCP,
+            Protocol::UDP => Self::UDP,
             #[cfg(target_os = "linux")]
-            Protocol::MPTCP => SocketProtocol::MPTCP,
+            Protocol::MPTCP => Self::MPTCP,
             #[cfg(target_os = "linux")]
-            Protocol::DCCP => SocketProtocol::DCCP,
+            Protocol::DCCP => Self::DCCP,
             #[cfg(any(target_os = "freebsd", target_os = "linux"))]
-            Protocol::SCTP => SocketProtocol::SCTP,
+            Protocol::SCTP => Self::SCTP,
         }
     }
 }
@@ -116,6 +118,7 @@ pub enum Type {
 
 impl Type {
     #[inline]
+    #[must_use]
     pub fn as_socket_type(self) -> SocketType {
         self.into()
     }
@@ -124,14 +127,14 @@ impl Type {
 impl From<Type> for SocketType {
     fn from(value: Type) -> Self {
         match value {
-            Type::Stream => SocketType::STREAM,
-            Type::Datagram => SocketType::DGRAM,
+            Type::Stream => Self::STREAM,
+            Type::Datagram => Self::DGRAM,
             #[cfg(target_os = "linux")]
-            Type::DCCP => SocketType::DCCP,
+            Type::DCCP => Self::DCCP,
             #[cfg(not(target_os = "espidf"))]
-            Type::SequencePacket => SocketType::SEQPACKET,
+            Type::SequencePacket => Self::SEQPACKET,
             #[cfg(not(any(target_os = "redox", target_os = "espidf")))]
-            Type::Raw => SocketType::RAW,
+            Type::Raw => Self::RAW,
         }
     }
 }
@@ -225,7 +228,7 @@ impl<'de> Deserialize<'de> for TcpKeepAlive {
         }
 
         match Variants::deserialize(deserializer)? {
-            Variants::Time(time) => Ok(TcpKeepAlive {
+            Variants::Time(time) => Ok(Self {
                 time,
                 ..Default::default()
             }),
@@ -252,7 +255,7 @@ impl<'de> Deserialize<'de> for TcpKeepAlive {
                     target_os = "haiku",
                 )))]
                 retries,
-            } => Ok(TcpKeepAlive {
+            } => Ok(Self {
                 time,
                 #[cfg(not(any(
                     target_os = "openbsd",
@@ -282,6 +285,7 @@ impl<'de> Deserialize<'de> for TcpKeepAlive {
 
 impl TcpKeepAlive {
     #[inline]
+    #[must_use]
     pub fn into_socket_keep_alive(self) -> SocketTcpKeepAlive {
         self.into()
     }
@@ -289,7 +293,7 @@ impl TcpKeepAlive {
 
 impl From<TcpKeepAlive> for SocketTcpKeepAlive {
     fn from(value: TcpKeepAlive) -> Self {
-        let ka = SocketTcpKeepAlive::new();
+        let ka = Self::new();
 
         let ka = match value.time {
             Some(time) => ka.with_time(time),
@@ -332,14 +336,16 @@ impl From<TcpKeepAlive> for SocketTcpKeepAlive {
 impl SocketOptions {
     /// Create a default TCP (Ipv4) [`SocketOptions`].
     #[inline]
-    pub fn default_tcp() -> SocketOptions {
+    #[must_use]
+    pub fn default_tcp() -> Self {
         Default::default()
     }
 
     /// Create a default TCP (Ipv6) [`SocketOptions`].
     #[inline]
-    pub fn default_tcp_v6() -> SocketOptions {
-        SocketOptions {
+    #[must_use]
+    pub fn default_tcp_v6() -> Self {
+        Self {
             domain: Domain::IPv6,
             r#type: Type::Stream,
             protocol: Some(Protocol::TCP),
@@ -348,8 +354,9 @@ impl SocketOptions {
     }
     /// Create a default UDP (Ipv4) [`SocketOptions`].
     #[inline]
-    pub fn default_udp() -> SocketOptions {
-        SocketOptions {
+    #[must_use]
+    pub fn default_udp() -> Self {
+        Self {
             domain: Domain::IPv4,
             r#type: Type::Datagram,
             protocol: Some(Protocol::UDP),
@@ -359,8 +366,9 @@ impl SocketOptions {
 
     /// Create a default UDP (Ipv6) [`SocketOptions`].
     #[inline]
-    pub fn default_udp_v6() -> SocketOptions {
-        SocketOptions {
+    #[must_use]
+    pub fn default_udp_v6() -> Self {
+        Self {
             domain: Domain::IPv6,
             r#type: Type::Datagram,
             protocol: Some(Protocol::UDP),

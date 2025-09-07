@@ -5,9 +5,10 @@
 
 #[doc(inline)]
 pub use ::rama_http::{
-    Body, BodyDataStream, BodyExtractExt, BodyLimit, HeaderMap, HeaderName, HeaderValue, Method,
-    Request, Response, Scheme, StatusCode, Uri, Version, conn, dep, header, headers, io, matcher,
-    opentelemetry, proto, service, sse, request_headers_to_curl_command,
+    Body, BodyDataStream, BodyExtractExt, BodyLimit, HeaderMap, HeaderName, HeaderValue,
+    InfiniteReader, Method, Request, Response, Scheme, StatusCode, Uri, Version, body, conn, dep,
+    header, headers, io, matcher, opentelemetry, proto, request_headers_to_curl_command, service,
+    sse, utils,
 };
 
 #[cfg(feature = "http-full")]
@@ -29,8 +30,11 @@ pub mod layer {
 }
 
 #[cfg(feature = "http-full")]
+pub mod client;
+
+#[cfg(feature = "http-full")]
 #[doc(inline)]
-pub use ::rama_http_backend::{client, server};
+pub use ::rama_http_backend::server;
 
 #[cfg(feature = "ws")]
 #[doc(inline)]

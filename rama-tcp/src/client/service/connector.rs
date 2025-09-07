@@ -49,6 +49,7 @@ impl TcpConnector {
     ///
     /// You can use middleware around the [`TcpConnector`]
     /// or add connection pools, retry logic and more.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             dns: GlobalDnsResolver::new(),
@@ -99,27 +100,20 @@ impl Default for TcpConnector {
     }
 }
 
-impl<State, Request, Dns, ConnectorFactory> Service<State, Request>
-    for TcpConnector<Dns, ConnectorFactory>
+impl<Request, Dns, ConnectorFactory> Service<Request> for TcpConnector<Dns, ConnectorFactory>
 where
-    State: Clone + Send + Sync + 'static,
-    Request: TryRefIntoTransportContext<State> + Send + 'static,
+    Request: TryRefIntoTransportContext + Send + 'static,
     Request::Error: Into<BoxError> + Send + Sync + 'static,
     Dns: DnsResolver + Clone,
     ConnectorFactory: TcpStreamConnectorFactory<
-            State,
             Connector: TcpStreamConnector<Error: Into<BoxError> + Send + 'static>,
             Error: Into<BoxError> + Send + 'static,
         > + Clone,
 {
-    type Response = EstablishedClientConnection<TcpStream, State, Request>;
+    type Response = EstablishedClientConnection<TcpStream, Request>;
     type Error = BoxError;
 
-    async fn serve(
-        &self,
-        ctx: Context<State>,
-        req: Request,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
         let CreatedTcpStreamConnector { mut ctx, connector } = self
             .connector_factory
             .make_connector(ctx)

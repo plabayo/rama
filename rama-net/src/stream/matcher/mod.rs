@@ -35,12 +35,12 @@ use rama_http_types::Request;
 /// A matcher to match on a [`Socket`].
 ///
 /// [`Socket`]: crate::stream::Socket
-pub struct SocketMatcher<State, Socket> {
-    kind: SocketMatcherKind<State, Socket>,
+pub struct SocketMatcher<Socket> {
+    kind: SocketMatcherKind<Socket>,
     negate: bool,
 }
 
-impl<State, Socket> Clone for SocketMatcher<State, Socket> {
+impl<Socket> Clone for SocketMatcher<Socket> {
     fn clone(&self) -> Self {
         Self {
             kind: self.kind.clone(),
@@ -49,7 +49,7 @@ impl<State, Socket> Clone for SocketMatcher<State, Socket> {
     }
 }
 
-impl<State, Socket> fmt::Debug for SocketMatcher<State, Socket> {
+impl<Socket> fmt::Debug for SocketMatcher<Socket> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SocketMatcher")
             .field("kind", &self.kind)
@@ -59,7 +59,7 @@ impl<State, Socket> fmt::Debug for SocketMatcher<State, Socket> {
 }
 
 /// The different kinds of socket matchers.
-enum SocketMatcherKind<State, Socket> {
+enum SocketMatcherKind<Socket> {
     /// [`SocketAddressMatcher`], a matcher that matches on the [`SocketAddr`] of the peer.
     ///
     /// [`SocketAddr`]: std::net::SocketAddr
@@ -79,14 +79,14 @@ enum SocketMatcherKind<State, Socket> {
     /// [`SocketAddr`]: std::net::SocketAddr
     IpNet(IpNetMatcher),
     /// zero or more matchers that all need to match in order for the matcher to return `true`.
-    All(Vec<SocketMatcher<State, Socket>>),
+    All(Vec<SocketMatcher<Socket>>),
     /// `true` if no matchers are defined, or any of the defined matcher match.
-    Any(Vec<SocketMatcher<State, Socket>>),
+    Any(Vec<SocketMatcher<Socket>>),
     /// A custom matcher that implements [`rama_core::matcher::Matcher`].
-    Custom(Arc<dyn rama_core::matcher::Matcher<State, Socket>>),
+    Custom(Arc<dyn rama_core::matcher::Matcher<Socket>>),
 }
 
-impl<State, Socket> Clone for SocketMatcherKind<State, Socket> {
+impl<Socket> Clone for SocketMatcherKind<Socket> {
     fn clone(&self) -> Self {
         match self {
             Self::SocketAddress(matcher) => Self::SocketAddress(matcher.clone()),
@@ -101,7 +101,7 @@ impl<State, Socket> Clone for SocketMatcherKind<State, Socket> {
     }
 }
 
-impl<State, Socket> fmt::Debug for SocketMatcherKind<State, Socket> {
+impl<Socket> fmt::Debug for SocketMatcherKind<Socket> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::SocketAddress(matcher) => f.debug_tuple("SocketAddress").field(matcher).finish(),
@@ -116,7 +116,7 @@ impl<State, Socket> fmt::Debug for SocketMatcherKind<State, Socket> {
     }
 }
 
-impl<State, Socket> SocketMatcher<State, Socket> {
+impl<Socket> SocketMatcher<Socket> {
     /// Create a new socket address matcher to match on a socket address.
     ///
     /// See [`SocketAddressMatcher::new`] for more information.
@@ -139,6 +139,7 @@ impl<State, Socket> SocketMatcher<State, Socket> {
     }
 
     /// Add a new socket address matcher to the existing [`SocketMatcher`] to also match on a socket address.
+    #[must_use]
     pub fn and_socket_addr(self, addr: impl Into<std::net::SocketAddr>) -> Self {
         self.and(Self::socket_addr(addr))
     }
@@ -146,6 +147,7 @@ impl<State, Socket> SocketMatcher<State, Socket> {
     /// Add a new optional socket address matcher to the existing [`SocketMatcher`] to also match on a socket address.
     ///
     /// See [`SocketAddressMatcher::optional`] for more information.
+    #[must_use]
     pub fn and_optional_socket_addr(self, addr: impl Into<std::net::SocketAddr>) -> Self {
         self.and(Self::optional_socket_addr(addr))
     }
@@ -153,6 +155,7 @@ impl<State, Socket> SocketMatcher<State, Socket> {
     /// Add a new socket address matcher to the existing [`SocketMatcher`] as an alternative matcher to match on a socket address.
     ///
     /// See [`SocketAddressMatcher::new`] for more information.
+    #[must_use]
     pub fn or_socket_addr(self, addr: impl Into<std::net::SocketAddr>) -> Self {
         self.or(Self::socket_addr(addr))
     }
@@ -160,6 +163,7 @@ impl<State, Socket> SocketMatcher<State, Socket> {
     /// Add a new optional socket address matcher to the existing [`SocketMatcher`] as an alternative matcher to match on a socket address.
     ///
     /// See [`SocketAddressMatcher::optional`] for more information.
+    #[must_use]
     pub fn or_optional_socket_addr(self, addr: impl Into<std::net::SocketAddr>) -> Self {
         self.or(Self::optional_socket_addr(addr))
     }
@@ -167,6 +171,7 @@ impl<State, Socket> SocketMatcher<State, Socket> {
     /// create a new loopback matcher to match on whether or not the peer address is a loopback address.
     ///
     /// See [`LoopbackMatcher::new`] for more information.
+    #[must_use]
     pub fn loopback() -> Self {
         Self {
             kind: SocketMatcherKind::Loopback(LoopbackMatcher::new()),
@@ -178,6 +183,7 @@ impl<State, Socket> SocketMatcher<State, Socket> {
     /// this matcher will match in case socket address could not be found.
     ///
     /// See [`LoopbackMatcher::optional`] for more information.
+    #[must_use]
     pub fn optional_loopback() -> Self {
         Self {
             kind: SocketMatcherKind::Loopback(LoopbackMatcher::optional()),
@@ -188,6 +194,7 @@ impl<State, Socket> SocketMatcher<State, Socket> {
     /// Add a new loopback matcher to the existing [`SocketMatcher`] to also match on whether or not the peer address is a loopback address.
     ///
     /// See [`LoopbackMatcher::new`] for more information.
+    #[must_use]
     pub fn and_loopback(self) -> Self {
         self.and(Self::loopback())
     }
@@ -195,6 +202,7 @@ impl<State, Socket> SocketMatcher<State, Socket> {
     /// Add a new loopback matcher to the existing [`SocketMatcher`] to also match on whether or not the peer address is a loopback address.
     ///
     /// See [`LoopbackMatcher::optional`] for more information.
+    #[must_use]
     pub fn and_optional_loopback(self) -> Self {
         self.and(Self::optional_loopback())
     }
@@ -202,6 +210,7 @@ impl<State, Socket> SocketMatcher<State, Socket> {
     /// Add a new loopback matcher to the existing [`SocketMatcher`] as an alternative matcher to match on whether or not the peer address is a loopback address.
     ///
     /// See [`LoopbackMatcher::new`] for more information.
+    #[must_use]
     pub fn or_loopback(self) -> Self {
         self.or(Self::loopback())
     }
@@ -209,6 +218,7 @@ impl<State, Socket> SocketMatcher<State, Socket> {
     /// Add a new loopback matcher to the existing [`SocketMatcher`] as an alternative matcher to match on whether or not the peer address is a loopback address.
     ///
     /// See [`LoopbackMatcher::optional`] for more information.
+    #[must_use]
     pub fn or_optional_loopback(self) -> Self {
         self.or(Self::optional_loopback())
     }
@@ -216,6 +226,7 @@ impl<State, Socket> SocketMatcher<State, Socket> {
     /// create a new port matcher to match on the port part a [`SocketAddr`](std::net::SocketAddr).
     ///
     /// See [`PortMatcher::new`] for more information.
+    #[must_use]
     pub fn port(port: u16) -> Self {
         Self {
             kind: SocketMatcherKind::Port(PortMatcher::new(port)),
@@ -227,6 +238,7 @@ impl<State, Socket> SocketMatcher<State, Socket> {
     /// this matcher will match in case socket address could not be found.
     ///
     /// See [`PortMatcher::optional`] for more information.
+    #[must_use]
     pub fn optional_port(port: u16) -> Self {
         Self {
             kind: SocketMatcherKind::Port(PortMatcher::optional(port)),
@@ -238,6 +250,7 @@ impl<State, Socket> SocketMatcher<State, Socket> {
     /// also matcher on the port part of the [`SocketAddr`](std::net::SocketAddr).
     ///
     /// See [`PortMatcher::new`] for more information.
+    #[must_use]
     pub fn and_port(self, port: u16) -> Self {
         self.and(Self::port(port))
     }
@@ -246,6 +259,7 @@ impl<State, Socket> SocketMatcher<State, Socket> {
     /// to match on the port part of the [`SocketAddr`](std::net::SocketAddr).
     ///
     /// See [`PortMatcher::optional`] for more information.
+    #[must_use]
     pub fn and_optional_port(self, port: u16) -> Self {
         self.and(Self::optional_port(port))
     }
@@ -254,6 +268,7 @@ impl<State, Socket> SocketMatcher<State, Socket> {
     /// to match on the port part of the [`SocketAddr`](std::net::SocketAddr).
     ///
     /// See [`PortMatcher::new`] for more information.
+    #[must_use]
     pub fn or_port(self, port: u16) -> Self {
         self.or(Self::port(port))
     }
@@ -262,6 +277,7 @@ impl<State, Socket> SocketMatcher<State, Socket> {
     /// to match on the port part of the [`SocketAddr`](std::net::SocketAddr).
     ///
     /// See [`PortMatcher::optional`] for more information.
+    #[must_use]
     pub fn or_optional_port(self, port: u16) -> Self {
         self.or(Self::optional_port(port))
     }
@@ -290,6 +306,7 @@ impl<State, Socket> SocketMatcher<State, Socket> {
     /// Add a new IP network matcher to the existing [`SocketMatcher`] to also match on an IP Network.
     ///
     /// See [`IpNetMatcher::new`] for more information.
+    #[must_use]
     pub fn and_ip_net(self, ip_net: impl ip::IntoIpNet) -> Self {
         self.and(Self::ip_net(ip_net))
     }
@@ -297,6 +314,7 @@ impl<State, Socket> SocketMatcher<State, Socket> {
     /// Add a new IP network matcher to the existing [`SocketMatcher`] as an alternative matcher to match on an IP Network.
     ///
     /// See [`IpNetMatcher::optional`] for more information.
+    #[must_use]
     pub fn and_optional_ip_net(self, ip_net: impl ip::IntoIpNet) -> Self {
         self.and(Self::optional_ip_net(ip_net))
     }
@@ -304,6 +322,7 @@ impl<State, Socket> SocketMatcher<State, Socket> {
     /// Add a new IP network matcher to the existing [`SocketMatcher`] as an alternative matcher to match on an IP Network.
     ///
     /// See [`IpNetMatcher::new`] for more information.
+    #[must_use]
     pub fn or_ip_net(self, ip_net: impl ip::IntoIpNet) -> Self {
         self.or(Self::ip_net(ip_net))
     }
@@ -311,6 +330,7 @@ impl<State, Socket> SocketMatcher<State, Socket> {
     /// Add a new IP network matcher to the existing [`SocketMatcher`] as an alternative matcher to match on an IP Network.
     ///
     /// See [`IpNetMatcher::optional`] for more information.
+    #[must_use]
     pub fn or_optional_ip_net(self, ip_net: impl ip::IntoIpNet) -> Self {
         self.or(Self::optional_ip_net(ip_net))
     }
@@ -318,6 +338,7 @@ impl<State, Socket> SocketMatcher<State, Socket> {
     /// create a new local IP network matcher to match on whether or not the peer address is a private address.
     ///
     /// See [`PrivateIpNetMatcher::new`] for more information.
+    #[must_use]
     pub fn private_ip_net() -> Self {
         Self {
             kind: SocketMatcherKind::PrivateIpNet(PrivateIpNetMatcher::new()),
@@ -329,6 +350,7 @@ impl<State, Socket> SocketMatcher<State, Socket> {
     /// this matcher will match in case socket address could not be found.
     ///
     /// See [`PrivateIpNetMatcher::optional`] for more information.
+    #[must_use]
     pub fn optional_private_ip_net() -> Self {
         Self {
             kind: SocketMatcherKind::PrivateIpNet(PrivateIpNetMatcher::optional()),
@@ -339,6 +361,7 @@ impl<State, Socket> SocketMatcher<State, Socket> {
     /// Add a new local IP network matcher to the existing [`SocketMatcher`] to also match on whether or not the peer address is a private address.
     ///
     /// See [`PrivateIpNetMatcher::new`] for more information.
+    #[must_use]
     pub fn and_private_ip_net(self) -> Self {
         self.and(Self::private_ip_net())
     }
@@ -346,6 +369,7 @@ impl<State, Socket> SocketMatcher<State, Socket> {
     /// Add a new local IP network matcher to the existing [`SocketMatcher`] to also match on whether or not the peer address is a private address.
     ///
     /// See [`PrivateIpNetMatcher::optional`] for more information.
+    #[must_use]
     pub fn and_optional_private_ip_net(self) -> Self {
         self.and(Self::optional_private_ip_net())
     }
@@ -353,6 +377,7 @@ impl<State, Socket> SocketMatcher<State, Socket> {
     /// Add a new local IP network matcher to the existing [`SocketMatcher`] as an alternative matcher to match on whether or not the peer address is a private address.
     ///
     /// See [`PrivateIpNetMatcher::new`] for more information.
+    #[must_use]
     pub fn or_private_ip_net(self) -> Self {
         self.or(Self::private_ip_net())
     }
@@ -360,6 +385,7 @@ impl<State, Socket> SocketMatcher<State, Socket> {
     /// Add a new local IP network matcher to the existing [`SocketMatcher`] as an alternative matcher to match on whether or not the peer address is a private address.
     ///
     /// See [`PrivateIpNetMatcher::optional`] for more information.
+    #[must_use]
     pub fn or_optional_private_ip_net(self) -> Self {
         self.or(Self::optional_private_ip_net())
     }
@@ -369,7 +395,7 @@ impl<State, Socket> SocketMatcher<State, Socket> {
     /// See [`rama_core::matcher::Matcher`] for more information.
     pub fn custom<M>(matcher: M) -> Self
     where
-        M: rama_core::matcher::Matcher<State, Socket>,
+        M: rama_core::matcher::Matcher<Socket>,
     {
         Self {
             kind: SocketMatcherKind::Custom(Arc::new(matcher)),
@@ -380,9 +406,10 @@ impl<State, Socket> SocketMatcher<State, Socket> {
     /// Add a custom matcher to match on top of the existing set of [`SocketMatcher`] matchers.
     ///
     /// See [`rama_core::matcher::Matcher`] for more information.
+    #[must_use]
     pub fn and_custom<M>(self, matcher: M) -> Self
     where
-        M: rama_core::matcher::Matcher<State, Socket>,
+        M: rama_core::matcher::Matcher<Socket>,
     {
         self.and(Self::custom(matcher))
     }
@@ -390,21 +417,23 @@ impl<State, Socket> SocketMatcher<State, Socket> {
     /// Create a custom matcher to match as an alternative to the existing set of [`SocketMatcher`] matchers.
     ///
     /// See [`rama_core::matcher::Matcher`] for more information.
+    #[must_use]
     pub fn or_custom<M>(self, matcher: M) -> Self
     where
-        M: rama_core::matcher::Matcher<State, Socket>,
+        M: rama_core::matcher::Matcher<Socket>,
     {
         self.or(Self::custom(matcher))
     }
 
     /// Add a [`SocketMatcher`] to match on top of the existing set of [`SocketMatcher`] matchers.
-    pub fn and(mut self, matcher: SocketMatcher<State, Socket>) -> Self {
+    #[must_use]
+    pub fn and(mut self, matcher: Self) -> Self {
         match (self.negate, &mut self.kind) {
             (false, SocketMatcherKind::All(v)) => {
                 v.push(matcher);
                 self
             }
-            _ => SocketMatcher {
+            _ => Self {
                 kind: SocketMatcherKind::All(vec![self, matcher]),
                 negate: false,
             },
@@ -412,13 +441,14 @@ impl<State, Socket> SocketMatcher<State, Socket> {
     }
 
     /// Create a [`SocketMatcher`] matcher to match as an alternative to the existing set of [`SocketMatcher`] matchers.
-    pub fn or(mut self, matcher: SocketMatcher<State, Socket>) -> Self {
+    #[must_use]
+    pub fn or(mut self, matcher: Self) -> Self {
         match (self.negate, &mut self.kind) {
             (false, SocketMatcherKind::Any(v)) => {
                 v.push(matcher);
                 self
             }
-            _ => SocketMatcher {
+            _ => Self {
                 kind: SocketMatcherKind::Any(vec![self, matcher]),
                 negate: false,
             },
@@ -426,6 +456,7 @@ impl<State, Socket> SocketMatcher<State, Socket> {
     }
 
     /// Negate the current matcher
+    #[must_use]
     pub fn negate(self) -> Self {
         Self {
             kind: self.kind,
@@ -435,74 +466,58 @@ impl<State, Socket> SocketMatcher<State, Socket> {
 }
 
 #[cfg(feature = "http")]
-impl<State, Body> rama_core::matcher::Matcher<State, Request<Body>>
-    for SocketMatcherKind<State, Request<Body>>
+impl<Body> rama_core::matcher::Matcher<Request<Body>> for SocketMatcherKind<Request<Body>>
 where
-    State: 'static,
     Body: 'static,
 {
-    fn matches(
-        &self,
-        ext: Option<&mut Extensions>,
-        ctx: &Context<State>,
-        req: &Request<Body>,
-    ) -> bool {
+    fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context, req: &Request<Body>) -> bool {
         match self {
-            SocketMatcherKind::SocketAddress(matcher) => matcher.matches(ext, ctx, req),
-            SocketMatcherKind::IpNet(matcher) => matcher.matches(ext, ctx, req),
-            SocketMatcherKind::Loopback(matcher) => matcher.matches(ext, ctx, req),
-            SocketMatcherKind::PrivateIpNet(matcher) => matcher.matches(ext, ctx, req),
-            SocketMatcherKind::All(matchers) => matchers.iter().matches_and(ext, ctx, req),
-            SocketMatcherKind::Any(matchers) => matchers.iter().matches_or(ext, ctx, req),
-            SocketMatcherKind::Port(matcher) => matcher.matches(ext, ctx, req),
-            SocketMatcherKind::Custom(matcher) => matcher.matches(ext, ctx, req),
+            Self::SocketAddress(matcher) => matcher.matches(ext, ctx, req),
+            Self::IpNet(matcher) => matcher.matches(ext, ctx, req),
+            Self::Loopback(matcher) => matcher.matches(ext, ctx, req),
+            Self::PrivateIpNet(matcher) => matcher.matches(ext, ctx, req),
+            Self::All(matchers) => matchers.iter().matches_and(ext, ctx, req),
+            Self::Any(matchers) => matchers.iter().matches_or(ext, ctx, req),
+            Self::Port(matcher) => matcher.matches(ext, ctx, req),
+            Self::Custom(matcher) => matcher.matches(ext, ctx, req),
         }
     }
 }
 
 #[cfg(feature = "http")]
-impl<State, Body> rama_core::matcher::Matcher<State, Request<Body>>
-    for SocketMatcher<State, Request<Body>>
+impl<Body> rama_core::matcher::Matcher<Request<Body>> for SocketMatcher<Request<Body>>
 where
-    State: 'static,
     Body: 'static,
 {
-    fn matches(
-        &self,
-        ext: Option<&mut Extensions>,
-        ctx: &Context<State>,
-        req: &Request<Body>,
-    ) -> bool {
+    fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context, req: &Request<Body>) -> bool {
         let result = self.kind.matches(ext, ctx, req);
         if self.negate { !result } else { result }
     }
 }
 
-impl<State, Socket> rama_core::matcher::Matcher<State, Socket> for SocketMatcherKind<State, Socket>
+impl<Socket> rama_core::matcher::Matcher<Socket> for SocketMatcherKind<Socket>
 where
     Socket: crate::stream::Socket,
-    State: 'static,
 {
-    fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context<State>, stream: &Socket) -> bool {
+    fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context, stream: &Socket) -> bool {
         match self {
-            SocketMatcherKind::SocketAddress(matcher) => matcher.matches(ext, ctx, stream),
-            SocketMatcherKind::IpNet(matcher) => matcher.matches(ext, ctx, stream),
-            SocketMatcherKind::Loopback(matcher) => matcher.matches(ext, ctx, stream),
-            SocketMatcherKind::PrivateIpNet(matcher) => matcher.matches(ext, ctx, stream),
-            SocketMatcherKind::Port(matcher) => matcher.matches(ext, ctx, stream),
-            SocketMatcherKind::All(matchers) => matchers.iter().matches_and(ext, ctx, stream),
-            SocketMatcherKind::Any(matchers) => matchers.iter().matches_or(ext, ctx, stream),
-            SocketMatcherKind::Custom(matcher) => matcher.matches(ext, ctx, stream),
+            Self::SocketAddress(matcher) => matcher.matches(ext, ctx, stream),
+            Self::IpNet(matcher) => matcher.matches(ext, ctx, stream),
+            Self::Loopback(matcher) => matcher.matches(ext, ctx, stream),
+            Self::PrivateIpNet(matcher) => matcher.matches(ext, ctx, stream),
+            Self::Port(matcher) => matcher.matches(ext, ctx, stream),
+            Self::All(matchers) => matchers.iter().matches_and(ext, ctx, stream),
+            Self::Any(matchers) => matchers.iter().matches_or(ext, ctx, stream),
+            Self::Custom(matcher) => matcher.matches(ext, ctx, stream),
         }
     }
 }
 
-impl<State, Socket> rama_core::matcher::Matcher<State, Socket> for SocketMatcher<State, Socket>
+impl<Socket> rama_core::matcher::Matcher<Socket> for SocketMatcher<Socket>
 where
     Socket: crate::stream::Socket,
-    State: 'static,
 {
-    fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context<State>, stream: &Socket) -> bool {
+    fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context, stream: &Socket) -> bool {
         let result = self.kind.matches(ext, ctx, stream);
         if self.negate { !result } else { result }
     }
@@ -518,11 +533,11 @@ mod test {
 
     struct BooleanMatcher(bool);
 
-    impl Matcher<(), Request<()>> for BooleanMatcher {
+    impl Matcher<Request<()>> for BooleanMatcher {
         fn matches(
             &self,
             _ext: Option<&mut Extensions>,
-            _ctx: &Context<()>,
+            _ctx: &Context,
             _req: &Request<()>,
         ) -> bool {
             self.0

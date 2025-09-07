@@ -24,7 +24,7 @@ impl ServeFile {
                 HeaderValue::from_str(mime::APPLICATION_OCTET_STREAM.as_ref()).unwrap()
             });
 
-        ServeFile(ServeDir::new_single_file(path, mime))
+        Self(ServeDir::new_single_file(path, mime))
     }
 
     /// Create a new [`ServeFile`] with a specific mime type.
@@ -36,7 +36,7 @@ impl ServeFile {
     /// [header value]: https://docs.rs/http/latest/http/header/struct.HeaderValue.html
     pub fn new_with_mime<P: AsRef<Path>>(path: P, mime: &Mime) -> Self {
         let mime = HeaderValue::from_str(mime.as_ref()).expect("mime isn't a valid header value");
-        ServeFile(ServeDir::new_single_file(path, mime))
+        Self(ServeDir::new_single_file(path, mime))
     }
 
     /// Informs the service that it should also look for a precompressed gzip
@@ -49,6 +49,7 @@ impl ServeFile {
     /// Both the precompressed version and the uncompressed version are expected
     /// to be present in the same directory. Different precompressed
     /// variants can be combined.
+    #[must_use]
     pub fn precompressed_gzip(self) -> Self {
         Self(self.0.precompressed_gzip())
     }
@@ -63,6 +64,7 @@ impl ServeFile {
     /// Both the precompressed version and the uncompressed version are expected
     /// to be present in the same directory. Different precompressed
     /// variants can be combined.
+    #[must_use]
     pub fn precompressed_br(self) -> Self {
         Self(self.0.precompressed_br())
     }
@@ -77,6 +79,7 @@ impl ServeFile {
     /// Both the precompressed version and the uncompressed version are expected
     /// to be present in the same directory. Different precompressed
     /// variants can be combined.
+    #[must_use]
     pub fn precompressed_deflate(self) -> Self {
         Self(self.0.precompressed_deflate())
     }
@@ -91,6 +94,7 @@ impl ServeFile {
     /// Both the precompressed version and the uncompressed version are expected
     /// to be present in the same directory. Different precompressed
     /// variants can be combined.
+    #[must_use]
     pub fn precompressed_zstd(self) -> Self {
         Self(self.0.precompressed_zstd())
     }
@@ -98,6 +102,7 @@ impl ServeFile {
     /// Set a specific read buffer chunk size.
     ///
     /// The default capacity is 64kb.
+    #[must_use]
     pub fn with_buf_chunk_size(self, chunk_size: usize) -> Self {
         Self(self.0.with_buf_chunk_size(chunk_size))
     }
@@ -107,31 +112,29 @@ impl ServeFile {
     ///
     /// See [`ServeDir::try_call`] for more details.
     #[inline]
-    pub async fn try_call<State, ReqBody>(
+    pub async fn try_call<ReqBody>(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         req: Request<ReqBody>,
     ) -> Result<Response, std::io::Error>
     where
-        State: Clone + Send + Sync + 'static,
         ReqBody: Send + 'static,
     {
         self.0.try_call(ctx, req).await
     }
 }
 
-impl<State, ReqBody> Service<State, Request<ReqBody>> for ServeFile
+impl<ReqBody> Service<Request<ReqBody>> for ServeFile
 where
     ReqBody: Send + 'static,
-    State: Clone + Send + Sync + 'static,
 {
-    type Error = <ServeDir as Service<State, Request<ReqBody>>>::Error;
-    type Response = <ServeDir as Service<State, Request<ReqBody>>>::Response;
+    type Error = <ServeDir as Service<Request<ReqBody>>>::Error;
+    type Response = <ServeDir as Service<Request<ReqBody>>>::Response;
 
     #[inline]
     async fn serve(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         req: Request<ReqBody>,
     ) -> Result<Self::Response, Self::Error> {
         self.0.serve(ctx, req).await
@@ -380,7 +383,7 @@ mod tests {
         let body = res.into_body().collect().await.unwrap().to_bytes();
         let mut decompressed = Vec::new();
         BrotliDecompress(&mut &body[..], &mut decompressed).unwrap();
-        let decompressed = String::from_utf8(decompressed.to_vec()).unwrap();
+        let decompressed = String::from_utf8(decompressed.clone()).unwrap();
         assert!(decompressed.starts_with("\"This is a test file!\""));
     }
 
@@ -444,7 +447,7 @@ mod tests {
         let body = res.into_body().collect().await.unwrap().to_bytes();
         let mut decompressed = Vec::new();
         BrotliDecompress(&mut &body[..], &mut decompressed).unwrap();
-        let decompressed = String::from_utf8(decompressed.to_vec()).unwrap();
+        let decompressed = String::from_utf8(decompressed.clone()).unwrap();
         assert!(decompressed.starts_with("\"This is a test file!\""));
     }
 
@@ -484,7 +487,7 @@ mod tests {
         let body = res.into_body().collect().await.unwrap().to_bytes();
         let mut decompressed = Vec::new();
         BrotliDecompress(&mut &body[..], &mut decompressed).unwrap();
-        let decompressed = String::from_utf8(decompressed.to_vec()).unwrap();
+        let decompressed = String::from_utf8(decompressed.clone()).unwrap();
         assert!(decompressed.starts_with("Test file"));
     }
 

@@ -1,6 +1,6 @@
 use rama_http_types::HeaderValue;
 
-use crate::{Error, Header};
+use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
 
 /// `Content-Length` header, defined in
 /// [RFC7230](https://datatracker.ietf.org/doc/html/rfc7230#section-3.3.2)
@@ -41,11 +41,13 @@ use crate::{Error, Header};
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ContentLength(pub u64);
 
-impl Header for ContentLength {
+impl TypedHeader for ContentLength {
     fn name() -> &'static ::rama_http_types::header::HeaderName {
         &::rama_http_types::header::CONTENT_LENGTH
     }
+}
 
+impl HeaderDecode for ContentLength {
     fn decode<'i, I: Iterator<Item = &'i HeaderValue>>(values: &mut I) -> Result<Self, Error> {
         // If multiple Content-Length headers were sent, everything can still
         // be alright if they all contain the same value, and all parse
@@ -69,7 +71,9 @@ impl Header for ContentLength {
 
         len.map(ContentLength).ok_or_else(Error::invalid)
     }
+}
 
+impl HeaderEncode for ContentLength {
     fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
         values.extend(::std::iter::once(self.0.into()));
     }

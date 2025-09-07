@@ -16,6 +16,11 @@ pub enum Error {
     User(UserError),
 }
 
+pub struct GoAway {
+    pub debug_data: Bytes,
+    pub reason: Reason,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Initiator {
     User,
@@ -57,11 +62,15 @@ impl Error {
 }
 
 impl Initiator {
-    fn is_local(&self) -> bool {
-        match *self {
+    fn is_local(self) -> bool {
+        match self {
             Self::User | Self::Library => true,
             Self::Remote => false,
         }
+    }
+
+    pub(crate) fn is_library(self) -> bool {
+        matches!(self, Self::Library)
     }
 }
 
@@ -78,19 +87,19 @@ impl fmt::Display for Error {
 
 impl From<io::ErrorKind> for Error {
     fn from(src: io::ErrorKind) -> Self {
-        Error::Io(src, None)
+        Self::Io(src, None)
     }
 }
 
 impl From<UserError> for Error {
     fn from(value: UserError) -> Self {
-        Error::User(value)
+        Self::User(value)
     }
 }
 
 impl From<io::Error> for Error {
     fn from(src: io::Error) -> Self {
-        Error::Io(src.kind(), src.get_ref().map(|inner| inner.to_string()))
+        Self::Io(src.kind(), src.get_ref().map(|inner| inner.to_string()))
     }
 }
 

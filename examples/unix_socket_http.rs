@@ -20,7 +20,7 @@
 //! You should receive `pong` back as the payload of a 200 OK response.
 //! The host here is ignored and is just to make the uri valid.
 
-#[cfg(unix)]
+#[cfg(target_family = "unix")]
 mod unix_example {
     use rama::{
         http::server::HttpServer,
@@ -70,10 +70,10 @@ mod unix_example {
     }
 }
 
-#[cfg(unix)]
+#[cfg(target_family = "unix")]
 use unix_example::run;
 
-#[cfg(not(unix))]
+#[cfg(not(target_family = "unix"))]
 async fn run() {
     println!("unix_socket example is a unix-only example, bye now!");
 }

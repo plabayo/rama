@@ -20,7 +20,7 @@ use std::convert::Infallible;
 use std::fmt;
 use std::sync::Arc;
 
-#[cfg(unix)]
+#[cfg(target_family = "unix")]
 use ::{rama_unix::server::UnixListener, std::path::Path};
 
 /// A builder for configuring and listening over HTTP using a [`Service`].
@@ -58,6 +58,7 @@ where
 
 impl HttpServer<Http1ConnBuilder> {
     /// Create a new http/1.1 `Builder` with default settings.
+    #[must_use]
     pub fn http1() -> Self {
         Self {
             builder: Http1ConnBuilder::new(),
@@ -67,6 +68,7 @@ impl HttpServer<Http1ConnBuilder> {
 
     /// Set the guard that can be used by the [`HttpServer`]
     /// in case it is turned into an http1 listener.
+    #[must_use]
     pub fn with_guard(mut self, guard: ShutdownGuard) -> Self {
         self.guard = Some(guard);
         self
@@ -74,6 +76,7 @@ impl HttpServer<Http1ConnBuilder> {
 
     /// Maybe set the guard that can be used by the [`HttpServer`]
     /// in case it is turned into an http1 listener.
+    #[must_use]
     pub fn maybe_with_guard(mut self, guard: Option<ShutdownGuard>) -> Self {
         self.guard = guard;
         self
@@ -96,6 +99,7 @@ impl HttpServer<Http1ConnBuilder> {
 
 impl HttpServer<H2ConnBuilder> {
     /// Create a new h2 `Builder` with default settings.
+    #[must_use]
     pub fn h2(exec: Executor) -> Self {
         let guard = exec.guard().cloned();
         Self {
@@ -114,6 +118,7 @@ impl HttpServer<H2ConnBuilder> {
 
 impl HttpServer<AutoConnBuilder> {
     /// Create a new dual http/1.1 + h2 `Builder` with default settings.
+    #[must_use]
     pub fn auto(exec: Executor) -> Self {
         let guard = exec.guard().cloned();
         Self {
@@ -146,15 +151,14 @@ where
     }
 
     /// Serve a single IO Byte Stream (e.g. a TCP Stream) as HTTP.
-    pub async fn serve<State, S, Response, IO>(
+    pub async fn serve<S, Response, IO>(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         stream: IO,
         service: S,
     ) -> HttpServeResult
     where
-        State: Clone + Send + Sync + 'static,
-        S: Service<State, Request, Response = Response, Error = Infallible> + Clone,
+        S: Service<Request, Response = Response, Error = Infallible> + Clone,
         Response: IntoResponse + Send + 'static,
         IO: Stream,
     {
@@ -168,7 +172,7 @@ where
     /// It's a shortcut in case you don't need to operate on the transport layer directly.
     pub async fn listen<S, Response, I>(self, interface: I, service: S) -> HttpServeResult
     where
-        S: Service<(), Request, Response = Response, Error = Infallible>,
+        S: Service<Request, Response = Response, Error = Infallible>,
         Response: IntoResponse + Send + 'static,
         I: TryInto<Interface, Error: Into<BoxError>>,
     {
@@ -181,74 +185,17 @@ where
         Ok(())
     }
 
-    #[cfg(unix)]
+    #[cfg(target_family = "unix")]
     /// Listen for connections on the given [`Path`], using a unix (domain) socket, serving HTTP connections.
     ///
     /// It's a shortcut in case you don't need to operate on the unix transport layer directly.
     pub async fn listen_unix<S, Response, P>(self, path: P, service: S) -> HttpServeResult
     where
-        S: Service<(), Request, Response = Response, Error = Infallible>,
+        S: Service<Request, Response = Response, Error = Infallible>,
         Response: IntoResponse + Send + 'static,
         P: AsRef<Path>,
     {
         let unix = UnixListener::bind_path(path).await?;
-        let service = HttpService::new(self.builder, service);
-        match self.guard {
-            Some(guard) => unix.serve_graceful(guard, service).await,
-            None => unix.serve(service).await,
-        };
-        Ok(())
-    }
-
-    /// Listen for connections on the given [`Interface`], serving HTTP connections.
-    ///
-    /// Same as [`Self::listen`], but including the given state in the [`Service`]'s [`Context`].
-    ///
-    /// [`Service`]: rama_core::Service
-    /// [`Context`]: rama_core::Context
-    pub async fn listen_with_state<State, S, Response, I>(
-        self,
-        state: State,
-        interface: I,
-        service: S,
-    ) -> HttpServeResult
-    where
-        State: Clone + Send + Sync + 'static,
-        S: Service<State, Request, Response = Response, Error = Infallible>,
-        Response: IntoResponse + Send + 'static,
-        I: TryInto<Interface, Error: Into<BoxError>>,
-    {
-        let tcp = TcpListener::build_with_state(state).bind(interface).await?;
-        let service = HttpService::new(self.builder, service);
-        match self.guard {
-            Some(guard) => tcp.serve_graceful(guard, service).await,
-            None => tcp.serve(service).await,
-        };
-        Ok(())
-    }
-
-    #[cfg(unix)]
-    /// Listen for connections on the given [`Path`], using a unix (domain) socket, serving HTTP connections.
-    ///
-    /// Same as [`Self::listen`], but including the given state in the [`Service`]'s [`Context`].
-    ///
-    /// [`Service`]: rama_core::Service
-    /// [`Context`]: rama_core::Context
-    pub async fn listen_unix_with_state<State, S, Response, P>(
-        self,
-        state: State,
-        path: P,
-        service: S,
-    ) -> HttpServeResult
-    where
-        State: Clone + Send + Sync + 'static,
-        S: Service<State, Request, Response = Response, Error = Infallible>,
-        Response: IntoResponse + Send + 'static,
-        P: AsRef<Path>,
-    {
-        let unix = UnixListener::build_with_state(state)
-            .bind_path(path)
-            .await?;
         let service = HttpService::new(self.builder, service);
         match self.guard {
             Some(guard) => unix.serve_graceful(guard, service).await,
@@ -295,11 +242,10 @@ impl<B, S> Clone for HttpService<B, S> {
     }
 }
 
-impl<B, State, S, Response, IO> Service<State, IO> for HttpService<B, S>
+impl<B, S, Response, IO> Service<IO> for HttpService<B, S>
 where
     B: HttpCoreConnServer,
-    State: Clone + Send + Sync + 'static,
-    S: Service<State, Request, Response = Response, Error = Infallible>,
+    S: Service<Request, Response = Response, Error = Infallible>,
     Response: IntoResponse + Send + 'static,
     IO: Stream,
 {
@@ -308,7 +254,7 @@ where
 
     fn serve(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         stream: IO,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
         let service = self.service.clone();

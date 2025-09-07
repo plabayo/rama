@@ -108,27 +108,26 @@ struct LoggingService<S> {
     inner: S,
 }
 
-impl<S, State, Req> Service<State, Req> for LoggingService<S>
+impl<S, Req> Service<Req> for LoggingService<S>
 where
-    S: Service<State, Req, Response = EstablishedClientConnection<TcpStream, State, Req>>,
+    S: Service<Req, Response = EstablishedClientConnection<TcpStream, Req>>,
     S::Error: Send + 'static,
-    State: Send + Sync + 'static,
     Req: Send + 'static,
 {
-    type Response = EstablishedClientConnection<TcpStream, State, Req>;
+    type Response = EstablishedClientConnection<TcpStream, Req>;
     type Error = S::Error;
 
-    async fn serve(&self, ctx: Context<State>, req: Req) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, ctx: Context, req: Req) -> Result<Self::Response, Self::Error> {
         let result = self.inner.serve(ctx, req).await;
 
-        if let Ok(ref established_conn) = result {
-            if let Ok(Some(peer_addr)) = established_conn.conn.peer_addr().map(Some) {
-                tracing::info!(
-                    network.peer.address = %peer_addr.ip(),
-                    network.peer.port = %peer_addr.port(),
-                    "TCP connection established",
-                );
-            }
+        if let Ok(ref established_conn) = result
+            && let Ok(Some(peer_addr)) = established_conn.conn.peer_addr().map(Some)
+        {
+            tracing::info!(
+                network.peer.address = %peer_addr.ip(),
+                network.peer.port = %peer_addr.port(),
+                "TCP connection established",
+            );
         }
 
         result

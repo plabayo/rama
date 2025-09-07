@@ -36,6 +36,7 @@ pub struct ServerConfig {
 
 impl ServerConfig {
     /// Create a new [`ServerConfig`] using the given [`ServerAuth`].
+    #[must_use]
     pub fn new(auth: ServerAuth) -> Self {
         Self {
             server_auth: auth,
@@ -62,7 +63,7 @@ pub enum ServerAuth {
 
 impl Default for ServerAuth {
     fn default() -> Self {
-        ServerAuth::SelfSigned(SelfSignedData::default())
+        Self::SelfSigned(SelfSignedData::default())
     }
 }
 
@@ -103,7 +104,7 @@ pub enum ServerCertIssuerKind {
 
 impl Default for ServerCertIssuerKind {
     fn default() -> Self {
-        ServerCertIssuerKind::SelfSigned(SelfSignedData::default())
+        Self::SelfSigned(SelfSignedData::default())
     }
 }
 

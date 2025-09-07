@@ -3,7 +3,7 @@ use std::ops::{Bound, RangeBounds};
 
 use rama_http_types::{HeaderName, HeaderValue};
 
-use crate::{Error, Header, util};
+use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader, util};
 
 /// Content-Range, described in [RFC7233](https://tools.ietf.org/html/rfc7233#section-4.2)
 ///
@@ -55,7 +55,7 @@ impl ContentRange {
     pub fn bytes(
         range: impl RangeBounds<u64>,
         complete_length: impl Into<Option<u64>>,
-    ) -> Result<ContentRange, InvalidContentRange> {
+    ) -> Result<Self, InvalidContentRange> {
         let complete_length = complete_length.into();
 
         let start = match range.start_bound() {
@@ -73,7 +73,7 @@ impl ContentRange {
             },
         };
 
-        Ok(ContentRange {
+        Ok(Self {
             range: Some((start, end)),
             complete_length,
         })
@@ -82,8 +82,9 @@ impl ContentRange {
     /// Create a new `ContentRange` stating the range could not be satisfied.
     ///
     /// The passed argument is the complete length of the entity.
+    #[must_use]
     pub fn unsatisfied_bytes(complete_length: u64) -> Self {
-        ContentRange {
+        Self {
             range: None,
             complete_length: Some(complete_length),
         }
@@ -92,21 +93,25 @@ impl ContentRange {
     /// Get the byte range if satisified.
     ///
     /// Note that these byte ranges are inclusive on both ends.
+    #[must_use]
     pub fn bytes_range(&self) -> Option<(u64, u64)> {
         self.range
     }
 
     /// Get the bytes complete length if available.
+    #[must_use]
     pub fn bytes_len(&self) -> Option<u64> {
         self.complete_length
     }
 }
 
-impl Header for ContentRange {
+impl TypedHeader for ContentRange {
     fn name() -> &'static HeaderName {
         &::rama_http_types::header::CONTENT_RANGE
     }
+}
 
+impl HeaderDecode for ContentRange {
     fn decode<'i, I: Iterator<Item = &'i HeaderValue>>(values: &mut I) -> Result<Self, Error> {
         values
             .next()
@@ -138,14 +143,16 @@ impl Header for ContentRange {
                     Some((first_byte, last_byte))
                 };
 
-                Some(ContentRange {
+                Some(Self {
                     range,
                     complete_length,
                 })
             })
             .ok_or_else(Error::invalid)
     }
+}
 
+impl HeaderEncode for ContentRange {
     fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
         struct Adapter<'a>(&'a ContentRange);
 

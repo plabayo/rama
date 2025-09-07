@@ -17,10 +17,10 @@ pub enum Socks5ProxyError {
 impl fmt::Display for Socks5ProxyError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Socks5ProxyError::Handshake(error) => {
+            Self::Handshake(error) => {
                 write!(f, "socks5 proxy error: handshake error [{error}]")
             }
-            Socks5ProxyError::Transport(error) => {
+            Self::Transport(error) => {
                 write!(f, "socks5 proxy error: transport error: I/O [{error}]")
             }
         }
@@ -36,11 +36,11 @@ impl From<std::io::Error> for Socks5ProxyError {
 impl std::error::Error for Socks5ProxyError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Socks5ProxyError::Handshake(err) => match err.source() {
+            Self::Handshake(err) => match err.source() {
                 Some(err_src) if !err_src.is::<std::io::Error>() => Some(err_src),
                 _ => Some(err as &dyn std::error::Error),
             },
-            Socks5ProxyError::Transport(err) => {
+            Self::Transport(err) => {
                 // filter out generic io errors,
                 // but do allow custom errors (e.g. because IP is blocked)
                 let err_ref = err.source().unwrap_or_else(|| err.as_ref());

@@ -84,21 +84,16 @@ where
 impl<S, F> MapResult<S, F> {
     /// Creates a new [`MapResult`] service.
     pub const fn new(inner: S, f: F) -> Self {
-        MapResult { f, inner }
+        Self { f, inner }
     }
 
     define_inner_service_accessors!();
 }
 
-impl<S, F, State, Request, Response, Error> Service<State, Request> for MapResult<S, F>
+impl<S, F, Request, Response, Error> Service<Request> for MapResult<S, F>
 where
-    S: Service<State, Request>,
-    F: FnOnce(Result<S::Response, S::Error>) -> Result<Response, Error>
-        + Clone
-        + Send
-        + Sync
-        + 'static,
-    State: Clone + Send + Sync + 'static,
+    S: Service<Request>,
+    F: Fn(Result<S::Response, S::Error>) -> Result<Response, Error> + Send + Sync + 'static,
     Request: Send + 'static,
     Response: Send + 'static,
     Error: Send + 'static,
@@ -106,20 +101,16 @@ where
     type Response = Response;
     type Error = Error;
 
-    async fn serve(
-        &self,
-        ctx: Context<State>,
-        req: Request,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
         let result = self.inner.serve(ctx, req).await;
-        (self.f.clone())(result)
+        (self.f)(result)
     }
 }
 
 impl<F> MapResultLayer<F> {
     /// Creates a new [`MapResultLayer`] layer.
     pub const fn new(f: F) -> Self {
-        MapResultLayer { f }
+        Self { f }
     }
 }
 

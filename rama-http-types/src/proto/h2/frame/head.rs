@@ -28,8 +28,9 @@ pub enum Kind {
 // ===== impl Head =====
 
 impl Head {
-    pub fn new(kind: Kind, flag: u8, stream_id: StreamId) -> Head {
-        Head {
+    #[must_use]
+    pub fn new(kind: Kind, flag: u8, stream_id: StreamId) -> Self {
+        Self {
             kind,
             flag,
             stream_id,
@@ -37,28 +38,33 @@ impl Head {
     }
 
     /// Parse an HTTP/2 frame header
-    pub fn parse(header: &[u8]) -> Head {
+    #[must_use]
+    pub fn parse(header: &[u8]) -> Self {
         let (stream_id, _) = StreamId::parse(&header[5..]);
 
-        Head {
+        Self {
             kind: Kind::new(header[3]),
             flag: header[4],
             stream_id,
         }
     }
 
+    #[must_use]
     pub fn stream_id(&self) -> StreamId {
         self.stream_id
     }
 
+    #[must_use]
     pub fn kind(&self) -> Kind {
         self.kind
     }
 
+    #[must_use]
     pub fn flag(&self) -> u8 {
         self.flag
     }
 
+    #[must_use]
     pub fn encode_len(&self) -> usize {
         super::HEADER_LEN
     }
@@ -76,19 +82,20 @@ impl Head {
 // ===== impl Kind =====
 
 impl Kind {
-    pub fn new(byte: u8) -> Kind {
+    #[must_use]
+    pub fn new(byte: u8) -> Self {
         match byte {
-            0 => Kind::Data,
-            1 => Kind::Headers,
-            2 => Kind::Priority,
-            3 => Kind::Reset,
-            4 => Kind::Settings,
-            5 => Kind::PushPromise,
-            6 => Kind::Ping,
-            7 => Kind::GoAway,
-            8 => Kind::WindowUpdate,
-            9 => Kind::Continuation,
-            _ => Kind::Unknown,
+            0 => Self::Data,
+            1 => Self::Headers,
+            2 => Self::Priority,
+            3 => Self::Reset,
+            4 => Self::Settings,
+            5 => Self::PushPromise,
+            6 => Self::Ping,
+            7 => Self::GoAway,
+            8 => Self::WindowUpdate,
+            9 => Self::Continuation,
+            _ => Self::Unknown,
         }
     }
 }

@@ -11,7 +11,8 @@ use rama_http_types::{
     conn::{H2ClientContextParams, Http1ClientContextParams},
     header::{
         ACCEPT, ACCEPT_LANGUAGE, AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, COOKIE, HOST, ORIGIN,
-        REFERER, SEC_WEBSOCKET_VERSION, USER_AGENT,
+        REFERER, SEC_WEBSOCKET_EXTENSIONS, SEC_WEBSOCKET_KEY, SEC_WEBSOCKET_PROTOCOL,
+        SEC_WEBSOCKET_VERSION, USER_AGENT,
     },
     proto::h1::{
         Http1HeaderMap,
@@ -103,6 +104,7 @@ impl<S, P> UserAgentEmulateService<S, P> {
     /// When no user agent profile was found it will
     /// fail the request unless optional is true. In case of
     /// the latter the service will do nothing.
+    #[must_use]
     pub fn optional(mut self, optional: bool) -> Self {
         self.optional = optional;
         self
@@ -116,6 +118,7 @@ impl<S, P> UserAgentEmulateService<S, P> {
 
     /// If true, the service will try to auto-detect the user agent from the request,
     /// but only in case that info is not yet found in the context.
+    #[must_use]
     pub fn try_auto_detect_user_agent(mut self, try_auto_detect_user_agent: bool) -> Self {
         self.try_auto_detect_user_agent = try_auto_detect_user_agent;
         self
@@ -141,6 +144,7 @@ impl<S, P> UserAgentEmulateService<S, P> {
     /// and/or order of the headers taken together. Using this metadata allows you to
     /// communicate this data through anyway. If however your http client does respect
     /// casing and order, or you don't care about some of it, you might not need it.
+    #[must_use]
     pub fn input_header_order(mut self, name: HeaderName) -> Self {
         self.input_header_order = Some(name);
         self
@@ -154,6 +158,7 @@ impl<S, P> UserAgentEmulateService<S, P> {
 
     /// Choose what to do in case no profile could be selected
     /// using the regular pre-conditions as specified by the provider.
+    #[must_use]
     pub fn select_fallback(mut self, fb: UserAgentSelectFallback) -> Self {
         self.select_fallback = Some(fb);
         self
@@ -166,19 +171,18 @@ impl<S, P> UserAgentEmulateService<S, P> {
     }
 }
 
-impl<State, Body, S, P> Service<State, Request<Body>> for UserAgentEmulateService<S, P>
+impl<Body, S, P> Service<Request<Body>> for UserAgentEmulateService<S, P>
 where
-    State: Clone + Send + Sync + 'static,
     Body: Send + Sync + 'static,
-    S: Service<State, Request<Body>, Error: Into<BoxError>>,
-    P: UserAgentProvider<State>,
+    S: Service<Request<Body>, Error: Into<BoxError>>,
+    P: UserAgentProvider,
 {
     type Response = S::Response;
     type Error = BoxError;
 
     async fn serve(
         &self,
-        mut ctx: Context<State>,
+        mut ctx: Context,
         mut req: Request<Body>,
     ) -> Result<Self::Response, Self::Error> {
         if let Some(fallback) = self.select_fallback {
@@ -207,18 +211,15 @@ where
             }
         }
 
-        let profile = match self.provider.select_user_agent_profile(&ctx) {
-            Some(profile) => profile,
-            None => {
-                return if self.optional {
-                    Ok(self.inner.serve(ctx, req).await.map_err(Into::into)?)
-                } else {
-                    Err(OpaqueError::from_display(
-                        "requirement not fulfilled: user agent profile could not be selected",
-                    )
-                    .into_boxed())
-                };
-            }
+        let Some(profile) = self.provider.select_user_agent_profile(&ctx) else {
+            return if self.optional {
+                Ok(self.inner.serve(ctx, req).await.map_err(Into::into)?)
+            } else {
+                Err(OpaqueError::from_display(
+                    "requirement not fulfilled: user agent profile could not be selected",
+                )
+                .into_boxed())
+            };
         };
 
         tracing::debug!(
@@ -311,22 +312,22 @@ pub struct UserAgentEmulateHttpConnectModifier;
 impl UserAgentEmulateHttpConnectModifier {
     #[inline]
     /// Create a new (default) [`UserAgentEmulateHttpConnectModifier`].
+    #[must_use]
     pub fn new() -> Self {
         Self
     }
 }
 
-impl<State, ReqBody> Service<State, Request<ReqBody>> for UserAgentEmulateHttpConnectModifier
+impl<ReqBody> Service<Request<ReqBody>> for UserAgentEmulateHttpConnectModifier
 where
-    State: Clone + Send + Sync + 'static,
     ReqBody: Send + 'static,
 {
     type Error = BoxError;
-    type Response = (Context<State>, Request<ReqBody>);
+    type Response = (Context, Request<ReqBody>);
 
     async fn serve(
         &self,
-        mut ctx: Context<State>,
+        mut ctx: Context,
         mut req: Request<ReqBody>,
     ) -> Result<Self::Response, Self::Error> {
         match ctx.get().cloned() {
@@ -348,8 +349,8 @@ where
     }
 }
 
-fn emulate_http_connect_settings<Body, State>(
-    ctx: &mut Context<State>,
+fn emulate_http_connect_settings<Body>(
+    ctx: &mut Context,
     req: &mut Request<Body>,
     profile: &HttpProfile,
 ) {
@@ -396,22 +397,22 @@ pub struct UserAgentEmulateHttpRequestModifier;
 impl UserAgentEmulateHttpRequestModifier {
     #[inline]
     /// Create a new (default) [`UserAgentEmulateHttpRequestModifier`].
+    #[must_use]
     pub fn new() -> Self {
         Self
     }
 }
 
-impl<State, ReqBody> Service<State, Request<ReqBody>> for UserAgentEmulateHttpRequestModifier
+impl<ReqBody> Service<Request<ReqBody>> for UserAgentEmulateHttpRequestModifier
 where
-    State: Clone + Send + Sync + 'static,
     ReqBody: Send + 'static,
 {
     type Error = BoxError;
-    type Response = (Context<State>, Request<ReqBody>);
+    type Response = (Context, Request<ReqBody>);
 
     async fn serve(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         mut req: Request<ReqBody>,
     ) -> Result<Self::Response, Self::Error> {
         match ctx.get() {
@@ -478,7 +479,7 @@ where
                         "user agent emulation: insert h2 pseudo headers into request extensions: {pseudo_headers:?}"
                     );
 
-                    if let Some(pseudo_headers) = pseudo_headers.clone() {
+                    if let Some(pseudo_headers) = pseudo_headers {
                         req.extensions_mut().insert(pseudo_headers);
                     }
                 }
@@ -494,8 +495,8 @@ where
     }
 }
 
-fn get_base_http_headers<'a, Body, State>(
-    ctx: &Context<State>,
+fn get_base_http_headers<'a, Body>(
+    ctx: &Context,
     req: &Request<Body>,
     profile: &'a HttpProfile,
 ) -> Option<&'a Http1HeaderMap> {
@@ -620,7 +621,7 @@ fn get_base_http_headers_from_req_init(
 
 const SEC_FETCH_SITE: HeaderName = HeaderName::from_static("sec-fetch-site");
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::needless_pass_by_value)]
 fn merge_http_headers<'a>(
     base_http_headers: &Http1HeaderMap,
     original_http_header_order: Option<OriginalHttp1Headers>,
@@ -670,12 +671,19 @@ fn merge_http_headers<'a>(
         let base_header_name = base_name.header_name();
         let original_value = original_headers.remove(base_header_name);
         match base_header_name {
-            &ACCEPT | &ACCEPT_LANGUAGE => {
+            &ACCEPT | &ACCEPT_LANGUAGE | &SEC_WEBSOCKET_EXTENSIONS => {
                 let value = original_value.unwrap_or(base_value);
                 output_headers_ref.push((base_name, value));
             }
-            &REFERER | &COOKIE | &AUTHORIZATION | &HOST | &ORIGIN | &CONTENT_LENGTH
-            | &CONTENT_TYPE => {
+            &REFERER
+            | &COOKIE
+            | &AUTHORIZATION
+            | &HOST
+            | &ORIGIN
+            | &CONTENT_LENGTH
+            | &CONTENT_TYPE
+            | &SEC_WEBSOCKET_PROTOCOL
+            | &SEC_WEBSOCKET_KEY => {
                 if let Some(value) = original_value {
                     output_headers_ref.push((base_name, value));
                 }
@@ -713,12 +721,11 @@ fn merge_http_headers<'a>(
     // respect original header order of original headers where possible
     for header_name in original_http_header_order.into_iter().flatten() {
         let std_header_name = header_name.header_name();
-        if let Some(value) = original_headers.remove(std_header_name) {
-            if is_header_allowed(header_name.header_name())
-                && ClientHint::match_header_name(std_header_name).is_none()
-            {
-                output_headers_a.push((header_name, value));
-            }
+        if let Some(value) = original_headers.remove(std_header_name)
+            && is_header_allowed(header_name.header_name())
+            && ClientHint::match_header_name(std_header_name).is_none()
+        {
+            output_headers_a.push((header_name, value));
         }
     }
 
@@ -760,57 +767,51 @@ fn compute_sec_fetch_site_value(
                     let maybe_authority = uri
                         .host()
                         .and_then(|h| Host::try_from(h).ok().and_then(|h| {
-                            match default_port {
-                                Some(default_port) => {
-                                    tracing::trace!(url.full = %uri, "detected host {h} from (abs) referer uri");
-                                    Some(Authority::new(h, default_port))
-                                },
-                                None => {
-                                    tracing::trace!(url.full = %uri, "detected host {h} from (abs) referer uri: but no port available");
-                                    None
-                                },
+                            if let Some(default_port) = default_port {
+                                tracing::trace!(url.full = %uri, "detected host {h} from (abs) referer uri");
+                                Some(Authority::new(h, default_port))
+                            } else {
+                                tracing::trace!(url.full = %uri, "detected host {h} from (abs) referer uri: but no port available");
+                                None
                             }
                         }));
 
-                    match maybe_authority {
-                        Some(authority) => {
-                            if referer_protocol.as_ref() == protocol {
-                                if Some(&authority) == request_authority {
-                                    HeaderValue::from_static("same-origin")
-                                } else if let Some(request_host) =
-                                    request_authority.as_ref().map(|a| a.host())
-                                {
-                                    let is_same_registrable_domain =
-                                        match (authority.host(), request_host) {
-                                            (Host::Name(a), Host::Name(b)) => {
-                                                a.have_same_registrable_domain(b)
-                                            }
-                                            (Host::Address(a), Host::Address(b)) => a == b,
-                                            _ => false,
-                                        };
-                                    if is_same_registrable_domain {
-                                        HeaderValue::from_static("same-site")
-                                    } else {
-                                        HeaderValue::from_static("cross-site")
-                                    }
+                    if let Some(authority) = maybe_authority {
+                        if referer_protocol.as_ref() == protocol {
+                            if Some(&authority) == request_authority {
+                                HeaderValue::from_static("same-origin")
+                            } else if let Some(request_host) =
+                                request_authority.as_ref().map(|a| a.host())
+                            {
+                                let is_same_registrable_domain =
+                                    match (authority.host(), request_host) {
+                                        (Host::Name(a), Host::Name(b)) => {
+                                            a.have_same_registrable_domain(b)
+                                        }
+                                        (Host::Address(a), Host::Address(b)) => a == b,
+                                        _ => false,
+                                    };
+                                if is_same_registrable_domain {
+                                    HeaderValue::from_static("same-site")
                                 } else {
-                                    tracing::debug!(
-                                        http.request.header.referer = ?referer_value,
-                                        "missing request authority, returning none as default",
-                                    );
-                                    HeaderValue::from_static("none")
+                                    HeaderValue::from_static("cross-site")
                                 }
                             } else {
-                                HeaderValue::from_static("cross-site")
+                                tracing::debug!(
+                                    http.request.header.referer = ?referer_value,
+                                    "missing request authority, returning none as default",
+                                );
+                                HeaderValue::from_static("none")
                             }
+                        } else {
+                            HeaderValue::from_static("cross-site")
                         }
-                        None => {
-                            tracing::debug!(
-                                http.request.header.referer = ?referer_value,
-                                "invalid referer value (failed to extract authority from uri value)",
-                            );
-                            HeaderValue::from_static("none")
-                        }
+                    } else {
+                        tracing::debug!(
+                            http.request.header.referer = ?referer_value,
+                            "invalid referer value (failed to extract authority from uri value)",
+                        );
+                        HeaderValue::from_static("none")
                     }
                 }
                 Err(err) => {
@@ -1875,7 +1876,7 @@ mod tests {
             version: Option<Version>,
             method: Option<Method>,
             headers: Option<HeaderMap>,
-            ctx: Option<Context<()>>,
+            ctx: Option<Context>,
             expected: &'static str,
         }
 

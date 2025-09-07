@@ -40,16 +40,19 @@ impl fmt::Display for DnsResolveMode {
 
 impl DnsResolveMode {
     /// Creates a new "eager" resolve mod
+    #[must_use]
     pub const fn eager() -> Self {
         Self(ResolveMode::Eager)
     }
 
     /// Creates a new "lazy" resolve mode
+    #[must_use]
     pub const fn lazy() -> Self {
         Self(ResolveMode::Lazy)
     }
 
     /// Returns `true` if the [`DnsResolveMode`] is "eager".
+    #[must_use]
     pub fn is_eager(&self) -> bool {
         match self.0 {
             ResolveMode::Eager => true,
@@ -58,6 +61,7 @@ impl DnsResolveMode {
     }
 
     /// Returns `true` if the [`DnsResolveMode`] is "lazy".
+    #[must_use]
     pub fn is_lazy(&self) -> bool {
         match self.0 {
             ResolveMode::Eager => false,
@@ -80,8 +84,8 @@ impl TryFrom<&str> for DnsResolveMode {
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         match_ignore_ascii_case_str! {
             match (value) {
-                "eager" => Ok(DnsResolveMode::eager()),
-                "lazy" => Ok(DnsResolveMode::lazy()),
+                "eager" => Ok(Self::eager()),
+                "lazy" => Ok(Self::lazy()),
                 _ => Err(OpaqueError::from_display("Invalid DNS resolve mode: unknown str")),
             }
         }

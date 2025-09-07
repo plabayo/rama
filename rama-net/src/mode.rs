@@ -10,23 +10,15 @@ pub enum DnsResolveIpMode {
 
 impl DnsResolveIpMode {
     /// checks if IPv4 is supported in current mode
+    #[must_use]
     pub fn ipv4_supported(&self) -> bool {
-        matches!(
-            self,
-            DnsResolveIpMode::Dual
-                | DnsResolveIpMode::SingleIpV4
-                | DnsResolveIpMode::DualPreferIpV4
-        )
+        matches!(self, Self::Dual | Self::SingleIpV4 | Self::DualPreferIpV4)
     }
 
     /// checks if IPv6 is supported in current mode
+    #[must_use]
     pub fn ipv6_supported(&self) -> bool {
-        matches!(
-            self,
-            DnsResolveIpMode::Dual
-                | DnsResolveIpMode::SingleIpV6
-                | DnsResolveIpMode::DualPreferIpV4
-        )
+        matches!(self, Self::Dual | Self::SingleIpV6 | Self::DualPreferIpV4)
     }
 }
 ///Mode for establishing a connection

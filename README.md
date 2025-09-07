@@ -46,12 +46,14 @@ and scale complex network behavior with safety and speed.
 It's not just a toolkit—it's a mindset shift for how
 to design and operate dynamic, programmable network services
 
-> 💡 The reasons behind the creation of Rama can be read in [the "Why Rama" chapter](https://ramaproxy.org/book/why_rama).
+> [!IMPORTANT]
+> The reasons behind the creation of Rama can be read in [the "Why Rama" chapter](https://ramaproxy.org/book/why_rama).
 
 Rama is async-first using [Tokio](https://tokio.rs/) as its _only_ Async Runtime.
 Please refer to [the examples found in the `/examples` dir](https://github.com/plabayo/rama/tree/main/examples)
 to get inspired on how you can use it for your purposes.
 
+> [!WARNING]
 > This framework might not be for everyone. Particularly if you're building a typical simple web server
 > or just need an HTTP client for making standard requests, you might be better served by other crates.
 > While we at [Plabayo](https://plabayo.tech) use Rama for most of our web needs (clients, servers, and proxies),
@@ -89,7 +91,8 @@ to get inspired on how you can use it for your purposes.
 [![Paypal Donation][paypal-badge]][paypal-url]
 [![Discord][discord-badge]][discord-url]
 
-> 💡 If your organization relies on Rama (ラマ) for its operations,
+> [!NOTE]
+> If your organization relies on Rama (ラマ) for its operations,
 > we invite you to consider becoming a sponsor 💖. By supporting our project,
 > you'll help ensure its continued development and success.
 > To learn more about sponsorship opportunities, please refer to [the "Sponsors" section below](#--sponsors)
@@ -120,8 +123,8 @@ Rama comes with 🔋 batteries included, giving you the full freedom to build th
 
 > 🗒️ _Footnotes_
 >
-> * <sup>(1)</sup> Part of [`v0.3.0` milestone (ETA: 2025 Q3)](https://github.com/plabayo/rama/milestone/2)
-> * <sup>(2)</sup> Part of [`v0.4.0` milestone (ETA: 2025 Q3)](https://github.com/plabayo/rama/milestone/3)
+> * <sup>(1)</sup> Part of [`v0.3.0` milestone (ETA: 2025 Q4)](https://github.com/plabayo/rama/milestone/2)
+> * <sup>(2)</sup> Part of [`v0.4.0` milestone (ETA: 2025 Q4)](https://github.com/plabayo/rama/milestone/3)
 > * <sup>(3)</sup> No immediate plans, but on our radar. Please [open an issue](https://github.com/plabayo/rama/issues) to request this feature if you have an immediate need for it. Please add sufficient motivation/reasoning and consider [becoming a sponsor](#--sponsors) to help accelerate its priority.
 
 The primary focus of Rama is to aid you in your development of [proxies](https://ramaproxy.org/book/proxies/intro.html):
@@ -135,7 +138,8 @@ The primary focus of Rama is to aid you in your development of [proxies](https:/
 - 🕵️‍♀️ [Distortion proxies](https://ramaproxy.org/book/proxies/distort).
 - 🧭 [HaProxy (PROXY protocol)](https://ramaproxy.org/book/proxies/haproxy).
 
-> 💡 Check out [the "Intro to Proxies" chapters in the Rama book](https://ramaproxy.org/book/proxies/intro.html)
+> [!TIP]
+> Check out [the "Intro to Proxies" chapters in the Rama book](https://ramaproxy.org/book/proxies/intro.html)
 > to learn more about the different kind of proxies. It might help in case you are new to developing proxies.
 
 The [Distortion proxies](https://ramaproxy.org/book/proxies/distort) support
@@ -179,6 +183,7 @@ Next to proxies, Rama can also be used to develop [Web Services](#--web-services
 
 💬 Come join us at [Discord][discord-url] on the `#rama` public channel. To ask questions, discuss ideas and ask how rama may be useful for you.
 
+> [!NOTE]
 > Rama also has a public channel on the official Discord of the tokio project.
 > Feel free to join us there instead or as well: <https://discord.com/channels/500028886025895936/1349098858831024209>
 
@@ -244,6 +249,7 @@ Here is a list of all `rama` crates:
 - [`rama-unix`](https://crates.io/crates/rama-unix): Unix (domain) socket support for rama
 - [`rama-tcp`](https://crates.io/crates/rama-tcp): TCP support for rama
 - [`rama-udp`](https://crates.io/crates/rama-udp): UDP support for rama
+- [`rama-tls-acme`](https://crates.io/crates/rama-tls-acme): ACME support for rama
 - [`rama-tls-boring`](https://crates.io/crates/rama-tls-boring): [Boring](https://github.com/plabayo/rama-boring) tls support for rama
 - [`rama-tls-rustls`](https://crates.io/crates/rama-tls-rustls): [Rustls](https://github.com/rustls/rustls) support for rama
 - [`rama-proxy`](https://crates.io/crates/rama-proxy): proxy types and utilities for rama
@@ -290,7 +296,7 @@ repositories in function of rama that aren't crates:
 Developing proxies are the primary focus of Rama (ラマ). It can however also be used to develop web services to serve web pages, Http API's and static content. This comes with many of the same benefits that you get when developing proxies using Rama:
 
 * Use Async Method Traits;
-* Reuse modular [Tower](https://github.com/tower-rs/tower)-like middleware using extensions as well as strongly typed state;
+* Reuse modular [Tower](https://github.com/tower-rs/tower)-like middleware using extensions;
 * Have the ability to be in full control of your web stack from Transport Layer (Tcp, Udp), through Tls and Http;
 * If all you care about is the Http layer then that is fine to.
 * Be able to trust that your incoming Application Http data has not been modified (e.g. Http header casing and order is preserved);
@@ -303,7 +309,9 @@ Examples of the kind of web services you might build with rama in function of yo
 - a minimal api service (e.g. to expose device profiles or certificates);
 - a graphical interface / control panel;
 
-> 📖 Learn more about developing web services in the Rama book: <https://ramaproxy.org/book/web_servers.html>.
+> [!TIP]
+> 📖 Learn more about developing web services
+> in the Rama book: <https://ramaproxy.org/book/web_servers.html>.
 
 ### Datastar
 
@@ -370,13 +378,14 @@ This is the webservice behind the Rama fingerprinting service, which is used by 
 the UA emulation data for the Http and TLS layers. It is not meant to fingerprint humans or users. Instead it is meant to help
 automated processes look like a human.
 
-> 💡 This example showcases how you can make use of the [`match_service`](https://docs.rs/rama-http/latest/rama_http/service/web/macro.match_service.html)
+> [!TIP]
+> This example showcases how you can make use of the [`match_service`](https://docs.rs/rama-http/latest/rama_http/service/web/macro.match_service.html)
 > macro to create a `Box`-free service router. Another example of this approach can be seen in the
 > [http_service_match.rs](https://github.com/plabayo/rama/tree/main/examples/http_service_match.rs) example.
 
 ## 🧑‍💻 | Http Clients
 
-In [The rama book](https://ramaproxy.org/book) you can read and learn that a big pillar of Rama's architecture is built on top of [the Service concept](https://ramaproxy.org/book/intro/services_all_the_way_down.html). A [`Service`][rama-service] takes as input a user-defined `State` (e.g. containing your database Pool) and a `Request`, and uses it to serve either a `Response` or `Error`. Such a [`Service`][rama-service] can produce the response "directly" (also called ☘️ Leaf services) or instead pass the request and state to an inner [`Service`][rama-service] which it wraps around (so called 🍔 Middlewares).
+In [The rama book](https://ramaproxy.org/book) you can read and learn that a big pillar of Rama's architecture is built on top of [the Service concept](https://ramaproxy.org/book/intro/services_all_the_way_down.html). A [`Service`][rama-service] takes a `Request`, and uses it to serve either a `Response` or `Error`. Such a [`Service`][rama-service] can produce the response "directly" (also called ☘️ Leaf services) or instead pass the request to an inner [`Service`][rama-service] which it wraps around (so called 🍔 Middlewares).
 
 [rama-service]: https://ramaproxy.org/docs/rama/service/trait.Service.html
 
@@ -388,7 +397,9 @@ As a 🍒 cherry on the cake you can import the [`HttpClientExt`](https://ramapr
 
 ### 🧑‍💻 | Http Client Example
 
-> 💡 The full "high level" example can be found at [/examples/http_high_level_client.rs](https://github.com/plabayo/rama/tree/main/examples/http_high_level_client.rs).
+> [!TIP]
+> 💡 The full "high level" example can be found at
+> [/examples/http_high_level_client.rs](https://github.com/plabayo/rama/tree/main/examples/http_high_level_client.rs).
 
 ```rust
 use rama::http::service::client::HttpClientExt;
@@ -450,28 +461,14 @@ We also make use of [`cargo vet`](https://github.com/mozilla/cargo-vet) to [audi
 
 ### Tier 1 Platforms
 
-Rama (ラマ) is developed mostly on MacOS M-Series machines and run in production
-on a variety of Linux systems. These are tier 1 platofrms.
+Rama (ラマ) is developed mostly on MacOS M-Series and Windows 11 x64 machines.
+Most organisations running rama in production do so on a variety of Linux systems. These are tier 1 platforms.
 
 | platform | tested | test platform |
 |----------|--------|---------------|
-| MacOS    | ✅     | MacOS Apple Silicon (developer laptop) and macos-12 Intel ([GitHub Action](https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners/about-github-hosted-runners)) |
-| Linux    | ✅     | Ubuntu 22.04 ([GitHub Action](https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners/about-github-hosted-runners)) |
-
-### Tier 2 platforms
-
-These platforms we do not run ourselves but do have basic support, meaning:
-
-* the code compiles and checks;
-* unit tests pass
-
-As we do not use this platform ourselves and neither do we run integration tests on them,
-we can however not promise that there are no issues with these builds. Neither do
-we provide binary builds for this platform.
-
-| platform | tested | test platform |
-|----------|--------|---------------|
-| Windows    | ✅     | Windows latest (x64) ([GitHub Action](https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners/about-github-hosted-runners)) |
+| MacOS    | ✅     | MacOS 15 Apple Silicon: developer machine + [GitHub Action](https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners/about-github-hosted-runners) |
+| Linux    | ✅     | AMD x64 developer machine with Ubuntu 25 + [GitHub Action (Ubuntu 24.04)](https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners/about-github-hosted-runners) |
+| Windows  | ✅     | Windows 11 AMD x64 developer machine + [GitHub Action (Windows latest (x64))](https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners/about-github-hosted-runners) |
 
 ### Other Platforms
 
@@ -494,6 +491,15 @@ Please refer to <https://github.com/plabayo/rama/milestones> to know what's on t
 ## 📰 | Media Appearances
 
 Rama (`0.2`)  was featured in a 📻 Rustacean episode on the 19th of May 2024, and available to listen at <https://rustacean-station.org/episode/glen-de-cauwsemaecker/>. In this episode [Glen](https://www.glendc.com/) explains the history of Rama, why it exists, how it can be used and more.
+
+On the 19th of August 2025 we released [the first episode][netstack-one] of [Netstack.FM](https://netstack.fm), a
+new podcast about networking, Rust and everything in between. In [the first episode][netstack-one]
+we went over the origins of [Glen](https://www.glendc.com), Rama and why the podcast was created.
+
+[netstack-one]: https://netstack.fm/#episode-1
+
+Rama is also frequently featured in newsletters
+such as <https://this-week-in-rust.org/>.
 
 ## 💼 | License
 
@@ -519,7 +525,8 @@ For that we thank you. You can take a look at the open issues, and in particular
 In general, any issue not assigned already is free to be picked up by anyone else. Please do communicate in the ticket
 if you are planning to pick it up, as to avoid multiple people trying to solve the same one.
 
-> 💡 Some issues have a [`needs input`](https://github.com/plabayo/rama/issues?q=is%3Aissue+is%3Aopen+label%3A%22needs+input%22+) label.
+> [!NOTE]
+> Some issues have a [`needs input`](https://github.com/plabayo/rama/issues?q=is%3Aissue+is%3Aopen+label%3A%22needs+input%22+) label.
 > These mean that the issue is not yet ready for development. First of all prior to starting working on an issue you should always look for
 > alignment with the rama maintainers. However these
 > [`needs input`](https://github.com/plabayo/rama/issues?q=is%3Aissue+is%3Aopen+label%3A%22needs+input%22+) issues require also prior R&D work:
@@ -636,3 +643,6 @@ Available at <https://ramaproxy.org/book/faq.html>.
 [![Star History Chart](https://api.star-history.com/svg?repos=plabayo/rama&type=Date)](https://star-history.com/#plabayo/rama&Date)
 
 [![original (OG) rama logo](./docs/book/src/img/old_logo.png)](https://ramaproxy.org/)
+
+📚 Want to know why we built Rama?
+Check out [the NetstackFM podcast](https://ramaproxy.org/book/netstackfm.html).

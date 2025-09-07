@@ -33,6 +33,7 @@ enum ProxyFilterKey {
 
 impl ProxyFilterUsernameParser {
     /// Create a new [`ProxyFilterUsernameParser`].
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -42,8 +43,8 @@ impl UsernameLabelParser for ProxyFilterUsernameParser {
     type Error = OpaqueError;
 
     fn parse_label(&mut self, label: &str) -> UsernameLabelState {
-        match self.key.take() {
-            Some(key) => match key {
+        if let Some(key) = self.key.take() {
+            match key {
                 ProxyFilterKey::Id => {
                     self.proxy_filter.id = Some(match label.try_into() {
                         Ok(id) => id,
@@ -127,36 +128,35 @@ impl UsernameLabelParser for ProxyFilterUsernameParser {
                         None => Some(vec![asn]),
                     }
                 }
-            },
-            None => {
-                // allow bool-keys to be negated
-                let (key, bval) = if let Some(key) = label.strip_prefix('!') {
-                    (key, false)
-                } else {
-                    (label, true)
-                };
+            }
+        } else {
+            // allow bool-keys to be negated
+            let (key, bval) = if let Some(key) = label.strip_prefix('!') {
+                (key, false)
+            } else {
+                (label, true)
+            };
 
-                match_ignore_ascii_case_str! {
-                    match(key) {
-                        "datacenter" => self.proxy_filter.datacenter = Some(bval),
-                        "residential" => self.proxy_filter.residential = Some(bval),
-                        "mobile" => self.proxy_filter.mobile = Some(bval),
-                        "id" => self.key = Some(ProxyFilterKey::Id),
-                        "pool" => self.key = Some(ProxyFilterKey::Pool),
-                        "continent" => self.key = Some(ProxyFilterKey::Continent),
-                        "country" => self.key = Some(ProxyFilterKey::Country),
-                        "state" => self.key = Some(ProxyFilterKey::State),
-                        "city" => self.key = Some(ProxyFilterKey::City),
-                        "carrier" => self.key = Some(ProxyFilterKey::Carrier),
-                        "asn" => self.key = Some(ProxyFilterKey::Asn),
-                        _ => return UsernameLabelState::Ignored,
-                    }
+            match_ignore_ascii_case_str! {
+                match(key) {
+                    "datacenter" => self.proxy_filter.datacenter = Some(bval),
+                    "residential" => self.proxy_filter.residential = Some(bval),
+                    "mobile" => self.proxy_filter.mobile = Some(bval),
+                    "id" => self.key = Some(ProxyFilterKey::Id),
+                    "pool" => self.key = Some(ProxyFilterKey::Pool),
+                    "continent" => self.key = Some(ProxyFilterKey::Continent),
+                    "country" => self.key = Some(ProxyFilterKey::Country),
+                    "state" => self.key = Some(ProxyFilterKey::State),
+                    "city" => self.key = Some(ProxyFilterKey::City),
+                    "carrier" => self.key = Some(ProxyFilterKey::Carrier),
+                    "asn" => self.key = Some(ProxyFilterKey::Asn),
+                    _ => return UsernameLabelState::Ignored,
                 }
+            }
 
-                if !bval && self.key.take().is_some() {
-                    // negation only possible for standalone labels
-                    return UsernameLabelState::Ignored;
-                }
+            if !bval && self.key.take().is_some() {
+                // negation only possible for standalone labels
+                return UsernameLabelState::Ignored;
             }
         }
 

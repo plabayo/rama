@@ -13,7 +13,7 @@
 //!
 //! const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.2478.67";
 //!
-//! async fn handle<S>(ctx: Context<S>, _req: Request) -> Result<Response, Infallible> {
+//! async fn handle(ctx: Context, _req: Request) -> Result<Response, Infallible> {
 //!     let ua: &UserAgent = ctx.get().unwrap();
 //!
 //!     assert_eq!(ua.header_str(), UA);
@@ -108,17 +108,16 @@ where
     }
 }
 
-impl<S, State, Body> Service<State, Request<Body>> for UserAgentClassifier<S>
+impl<S, Body> Service<Request<Body>> for UserAgentClassifier<S>
 where
-    S: Service<State, Request<Body>>,
-    State: Clone + Send + Sync + 'static,
+    S: Service<Request<Body>>,
 {
     type Response = S::Response;
     type Error = S::Error;
 
     fn serve(
         &self,
-        mut ctx: Context<State>,
+        mut ctx: Context,
         req: Request<Body>,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
         let overwrites = self
@@ -165,6 +164,7 @@ pub struct UserAgentClassifierLayer {
 
 impl UserAgentClassifierLayer {
     /// Create a new [`UserAgentClassifierLayer`].
+    #[must_use]
     pub const fn new() -> Self {
         Self {
             overwrite_header: None,
@@ -173,6 +173,7 @@ impl UserAgentClassifierLayer {
 
     /// Define a custom header to allow overwriting certain
     /// [`UserAgent`] information.
+    #[must_use]
     pub fn overwrite_header(mut self, header: HeaderName) -> Self {
         self.overwrite_header = Some(header);
         self
@@ -211,7 +212,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_user_agent_classifier_layer_ua_rama() {
-        async fn handle<S>(ctx: Context<S>, _req: Request) -> Result<Response, Infallible> {
+        async fn handle(ctx: Context, _req: Request) -> Result<Response, Infallible> {
             let ua: &UserAgent = ctx.get().unwrap();
 
             assert_eq!(
@@ -241,7 +242,7 @@ mod tests {
     async fn test_user_agent_classifier_layer_ua_iphone_app() {
         const UA: &str = "iPhone App/1.0";
 
-        async fn handle<S>(ctx: Context<S>, _req: Request) -> Result<Response, Infallible> {
+        async fn handle(ctx: Context, _req: Request) -> Result<Response, Infallible> {
             let ua: &UserAgent = ctx.get().unwrap();
 
             assert_eq!(ua.header_str(), UA);
@@ -267,7 +268,7 @@ mod tests {
     async fn test_user_agent_classifier_layer_ua_chrome() {
         const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.2478.67";
 
-        async fn handle<S>(ctx: Context<S>, _req: Request) -> Result<Response, Infallible> {
+        async fn handle(ctx: Context, _req: Request) -> Result<Response, Infallible> {
             let ua: &UserAgent = ctx.get().unwrap();
 
             assert_eq!(ua.header_str(), UA);
@@ -293,7 +294,7 @@ mod tests {
     async fn test_user_agent_classifier_layer_overwrite_ua() {
         const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.2478.67";
 
-        async fn handle<S>(ctx: Context<S>, _req: Request) -> Result<Response, Infallible> {
+        async fn handle(ctx: Context, _req: Request) -> Result<Response, Infallible> {
             let ua: &UserAgent = ctx.get().unwrap();
 
             assert_eq!(ua.header_str(), UA);
@@ -328,7 +329,7 @@ mod tests {
     async fn test_user_agent_classifier_layer_overwrite_ua_all() {
         const UA: &str = "iPhone App/1.0";
 
-        async fn handle<S>(ctx: Context<S>, _req: Request) -> Result<Response, Infallible> {
+        async fn handle(ctx: Context, _req: Request) -> Result<Response, Infallible> {
             let ua: &UserAgent = ctx.get().unwrap();
 
             assert_eq!(ua.header_str(), UA);

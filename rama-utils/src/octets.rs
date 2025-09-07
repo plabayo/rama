@@ -13,6 +13,7 @@
 ///
 /// In case the buffer is too small.
 #[inline]
+#[must_use]
 pub fn unpack_octets_as_u16(buf: &[u8], offset: usize) -> u16 {
     ((buf[offset] as u16) << 8) | (buf[offset + 1] as u16)
 }
@@ -32,6 +33,7 @@ pub fn unpack_octets_as_u16(buf: &[u8], offset: usize) -> u16 {
 ///
 /// In case the buffer is too small.
 #[inline]
+#[must_use]
 pub fn unpack_octets_as_u32(buf: &[u8], offset: usize) -> u32 {
     ((buf[offset] as u32) << 24)
         | ((buf[offset + 1] as u32) << 16)

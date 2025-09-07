@@ -3,6 +3,7 @@ use crate::h2::Reason;
 use super::*;
 
 use rama_core::telemetry::tracing;
+use rama_http::dep::http;
 use std::fmt;
 use std::task::{Context, Waker};
 use std::time::Instant;
@@ -74,6 +75,9 @@ pub(super) struct Stream {
     /// Set to true when a push is pending for this stream
     pub is_pending_push: bool,
 
+    /// The extensions map of the last processed encoded http request
+    pub encoded_request_extensions: Option<http::Extensions>,
+
     // ===== Fields related to receiving =====
     /// Next node in the accept linked list
     pub next_pending_accept: Option<store::Key>,
@@ -124,8 +128,8 @@ impl fmt::Debug for Stream {
             .field("state", &self.state)
             .field("is_counted", &self.is_counted)
             .field("ref_count", &self.ref_count)
-            .field("next_pending_send", &self.next_pending_send)
-            .field("is_pending_send", &self.is_pending_send)
+            .h2_field_some("next_pending_send", &self.next_pending_send)
+            .h2_field_if("is_pending_send", self.is_pending_send)
             .field("send_flow", &self.send_flow)
             .field("requested_send_capacity", &self.requested_send_capacity)
             .field("buffered_send_data", &self.buffered_send_data)
@@ -135,24 +139,36 @@ impl fmt::Debug for Stream {
                 "next_pending_send_capacity",
                 &self.next_pending_send_capacity,
             )
-            .field("is_pending_send_capacity", &self.is_pending_send_capacity)
-            .field("send_capacity_inc", &self.send_capacity_inc)
-            .field("next_open", &self.next_open)
-            .field("is_pending_open", &self.is_pending_open)
-            .field("is_pending_push", &self.is_pending_push)
-            .field("next_pending_accept", &self.next_pending_accept)
-            .field("is_pending_accept", &self.is_pending_accept)
+            .h2_field_if("is_pending_send_capacity", self.is_pending_send_capacity)
+            .h2_field_if("send_capacity_inc", self.send_capacity_inc)
+            .h2_field_some("next_open", &self.next_open)
+            .h2_field_if("is_pending_open", self.is_pending_open)
+            .h2_field_if("is_pending_push", self.is_pending_push)
+            .h2_field_some(
+                "encoded_request_extensions",
+                &self.encoded_request_extensions,
+            )
+            .h2_field_some("next_pending_accept", &self.next_pending_accept)
+            .h2_field_if("is_pending_accept", self.is_pending_accept)
             .field("recv_flow", &self.recv_flow)
             .field("in_flight_recv_data", &self.in_flight_recv_data)
-            .field("next_window_update", &self.next_window_update)
-            .field("is_pending_window_update", &self.is_pending_window_update)
-            .field("reset_at", &self.reset_at)
-            .field("next_reset_expire", &self.next_reset_expire)
-            .field("pending_recv", &self.pending_recv)
-            .field("is_recv", &self.is_recv)
-            .field("recv_task", &self.recv_task.as_ref().map(|_| ()))
-            .field("push_task", &self.push_task.as_ref().map(|_| ()))
-            .field("pending_push_promises", &self.pending_push_promises)
+            .h2_field_some("next_window_update", &self.next_window_update)
+            .h2_field_if("is_pending_window_update", self.is_pending_window_update)
+            .h2_field_some("reset_at", &self.reset_at)
+            .h2_field_some("next_reset_expire", &self.next_reset_expire)
+            .h2_field_if_then(
+                "pending_recv",
+                !self.pending_recv.is_empty(),
+                &self.pending_recv,
+            )
+            .h2_field_if("is_recv", self.is_recv)
+            .h2_field_some("recv_task", &self.recv_task.as_ref().map(|_| ()))
+            .h2_field_some("push_task", &self.push_task.as_ref().map(|_| ()))
+            .h2_field_if_then(
+                "pending_push_promises",
+                !self.pending_push_promises.is_empty(),
+                &self.pending_push_promises,
+            )
             .field("content_length", &self.content_length)
             .finish()
     }
@@ -189,7 +205,7 @@ impl Stream {
         id: StreamId,
         init_send_window: WindowSize,
         init_recv_window: WindowSize,
-    ) -> Stream {
+    ) -> Self {
         let mut send_flow = FlowControl::new();
         let mut recv_flow = FlowControl::new();
 
@@ -204,7 +220,7 @@ impl Stream {
             .inc_window(init_send_window)
             .expect("invalid initial send window size");
 
-        Stream {
+        Self {
             id,
             state: State::default(),
             ref_count: 0,
@@ -224,6 +240,7 @@ impl Stream {
             is_pending_open: false,
             next_open: None,
             is_pending_push: false,
+            encoded_request_extensions: None,
 
             // ===== Fields related to receiving =====
             next_pending_accept: None,

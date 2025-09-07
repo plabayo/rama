@@ -16,6 +16,7 @@ pub struct Protocol {
 
 impl Protocol {
     /// Converts a static string to a protocol name.
+    #[must_use]
     pub const fn from_static(value: &'static str) -> Self {
         Self {
             value: BytesStr::from_static(value),

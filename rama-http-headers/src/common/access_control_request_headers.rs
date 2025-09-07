@@ -53,7 +53,7 @@ impl FromIterator<HeaderName> for AccessControlRequestHeaders {
         I: IntoIterator<Item = HeaderName>,
     {
         let flat = iter.into_iter().map(HeaderValue::from).collect();
-        AccessControlRequestHeaders(flat)
+        Self(flat)
     }
 }
 

@@ -27,8 +27,8 @@ impl<Body: fmt::Debug> fmt::Debug for SendRequest<Body> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut f = f.debug_tuple("SendRequest");
         match self {
-            SendRequest::Http1(send_request) => f.field(send_request).finish(),
-            SendRequest::Http2(send_request) => f.field(send_request).finish(),
+            Self::Http1(send_request) => f.field(send_request).finish(),
+            Self::Http2(send_request) => f.field(send_request).finish(),
         }
     }
 }
@@ -39,31 +39,25 @@ pub struct HttpClientService<Body, I = ()> {
     pub(super) http_req_inspector: I,
 }
 
-impl<State, BodyIn, BodyOut, I> Service<State, Request<BodyIn>> for HttpClientService<BodyOut, I>
+impl<BodyIn, BodyOut, I> Service<Request<BodyIn>> for HttpClientService<BodyOut, I>
 where
-    State: Clone + Send + Sync + 'static,
     BodyIn: Send + 'static,
     BodyOut: http_body::Body<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
-    I: RequestInspector<
-            State,
-            Request<BodyIn>,
-            Error: Into<BoxError>,
-            RequestOut = Request<BodyOut>,
-        >,
+    I: RequestInspector<Request<BodyIn>, Error: Into<BoxError>, RequestOut = Request<BodyOut>>,
 {
     type Response = Response;
     type Error = BoxError;
 
     async fn serve(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         mut req: Request<BodyIn>,
     ) -> Result<Self::Response, Self::Error> {
         // Check if this http connection can actually be used for TargetHttpVersion
         if let Some(target_version) = ctx.get::<TargetHttpVersion>() {
             match (&self.sender, target_version.0) {
-                (SendRequest::Http1(_), Version::HTTP_10 | Version::HTTP_11) => (),
-                (SendRequest::Http2(_), Version::HTTP_2) => (),
+                (SendRequest::Http1(_), Version::HTTP_10 | Version::HTTP_11)
+                | (SendRequest::Http2(_), Version::HTTP_2) => (),
                 (SendRequest::Http1(_), version) => Err(OpaqueError::from_display(format!(
                     "Http1 connector cannot send TargetHttpVersion {version:?}"
                 ))
@@ -92,20 +86,19 @@ where
                     req.switch_version(Version::HTTP_11)?;
                 }
             },
-            SendRequest::Http2(_) => match original_http_version {
-                Version::HTTP_2 => {
+            SendRequest::Http2(_) => {
+                if original_http_version == Version::HTTP_2 {
                     tracing::trace!(
                         "request version {original_http_version:?} is already h2 compatible, it will remain unchanged",
                     );
-                }
-                _ => {
+                } else {
                     tracing::debug!(
                         "modify request version {original_http_version:?} to compatible h2 connection version: {:?}",
                         Version::HTTP_2,
                     );
                     req.switch_version(Version::HTTP_2)?;
                 }
-            },
+            }
         }
 
         let (mut ctx, req) = self
@@ -158,8 +151,8 @@ where
     }
 }
 
-fn sanitize_client_req_header<S, B>(
-    ctx: &mut Context<S>,
+fn sanitize_client_req_header<B>(
+    ctx: &mut Context,
     req: Request<B>,
 ) -> Result<Request<B>, BoxError> {
     // logic specific to this method
@@ -167,17 +160,28 @@ fn sanitize_client_req_header<S, B>(
         return Err(OpaqueError::from_display("missing host in CONNECT request").into());
     }
 
-    let is_request_proxied = ctx.contains::<ProxyAddress>();
+    let uses_http_proxy = ctx
+        .get::<ProxyAddress>()
+        .and_then(|proxy| proxy.protocol.as_ref())
+        .map(|protocol| protocol.is_http())
+        .unwrap_or_default();
+
     let request_ctx = ctx
         .get_or_try_insert_with_ctx::<RequestContext, _>(|ctx| (ctx, &req).try_into())
         .context("fetch request context")?;
+
+    let is_insecure_request_over_http_proxy = !request_ctx.protocol.is_secure() && uses_http_proxy;
 
     // logic specific to http versions
     Ok(match req.version() {
         Version::HTTP_09 | Version::HTTP_10 | Version::HTTP_11 => {
             // remove authority and scheme for non-connect requests
             // cfr: <https://datatracker.ietf.org/doc/html/rfc2616#section-5.1.2>
-            if !is_request_proxied && req.uri().host().is_some() {
+            // Unless we are sending an insecure request over a http(s) proxy
+            if req.method() != Method::CONNECT
+                && !is_insecure_request_over_http_proxy
+                && req.uri().host().is_some()
+            {
                 tracing::trace!(
                     "remove authority and scheme from non-connect direct http(~1) request"
                 );
@@ -327,4 +331,152 @@ fn sanitize_client_req_header<S, B>(
             req
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rama_http::{Scheme, Uri, dep::http::uri::Authority};
+    use rama_net::{
+        Protocol,
+        address::{Domain, Host},
+    };
+
+    #[test]
+    fn should_sanitize_http1_except_connect() {
+        for method in [
+            Method::DELETE,
+            Method::GET,
+            Method::HEAD,
+            Method::OPTIONS,
+            Method::PATCH,
+            Method::POST,
+            Method::PUT,
+            Method::TRACE,
+        ]
+        .into_iter()
+        {
+            let uri = Uri::builder()
+                .authority("example.com")
+                .scheme(Scheme::HTTPS)
+                .path_and_query("/test")
+                .build()
+                .unwrap();
+
+            let req = Request::builder().uri(uri).method(method).body(()).unwrap();
+            let mut ctx = Context::default();
+            let req = sanitize_client_req_header(&mut ctx, req).unwrap();
+
+            let (parts, _) = req.into_parts();
+            let uri = parts.uri.into_parts();
+
+            assert_eq!(uri.scheme, None);
+            assert_eq!(uri.authority, None);
+        }
+    }
+
+    #[test]
+    fn should_not_sanitize_http1_connect() {
+        let uri = Uri::builder()
+            .authority("example.com")
+            .scheme("https")
+            .path_and_query("/test")
+            .build()
+            .unwrap();
+
+        let req = Request::builder()
+            .method(Method::CONNECT)
+            .uri(uri)
+            .body(())
+            .unwrap();
+        let mut ctx = Context::default();
+        let req = sanitize_client_req_header(&mut ctx, req).unwrap();
+
+        let (parts, _) = req.into_parts();
+        let uri = parts.uri.into_parts();
+
+        assert_eq!(uri.scheme, Some(Scheme::HTTPS));
+        assert_eq!(uri.authority, Some(Authority::from_static("example.com")));
+    }
+
+    #[test]
+    fn should_not_sanitize_insecure_http1_request_over_http_proxy() {
+        let uri = Uri::builder()
+            .authority("example.com")
+            .scheme(Scheme::HTTP)
+            .path_and_query("/test")
+            .build()
+            .unwrap();
+
+        let req = Request::builder().uri(uri).body(()).unwrap();
+
+        let mut ctx = Context::default();
+        ctx.insert(ProxyAddress {
+            authority: rama_net::address::Authority::new(Host::Name(Domain::example()), 80),
+            credential: None,
+            protocol: Some(Protocol::HTTP),
+        });
+
+        let req = sanitize_client_req_header(&mut ctx, req).unwrap();
+
+        let (parts, _) = req.into_parts();
+        let uri = parts.uri.into_parts();
+
+        assert_eq!(uri.scheme, Some(Scheme::HTTP));
+        assert_eq!(uri.authority, Some(Authority::from_static("example.com")));
+    }
+
+    #[test]
+    fn should_sanitize_secure_http1_request_over_http_proxy() {
+        let uri = Uri::builder()
+            .authority("example.com")
+            .scheme(Scheme::HTTPS)
+            .path_and_query("/test")
+            .build()
+            .unwrap();
+
+        let req = Request::builder().uri(uri).body(()).unwrap();
+
+        let mut ctx = Context::default();
+        ctx.insert(ProxyAddress {
+            authority: rama_net::address::Authority::new(Host::Name(Domain::example()), 80),
+            credential: None,
+            protocol: Some(Protocol::HTTP),
+        });
+
+        let req = sanitize_client_req_header(&mut ctx, req).unwrap();
+
+        let (parts, _) = req.into_parts();
+        let uri = parts.uri.into_parts();
+
+        assert_eq!(uri.scheme, None);
+        assert_eq!(uri.authority, None);
+    }
+
+    #[test]
+    fn should_sanitize_insecure_http1_request_over_socks_proxy() {
+        let uri = Uri::builder()
+            .authority("example.com")
+            .scheme(Scheme::HTTP)
+            .path_and_query("/test")
+            .build()
+            .unwrap();
+
+        let req = Request::builder().uri(uri).body(()).unwrap();
+
+        let mut ctx = Context::default();
+        ctx.insert(ProxyAddress {
+            authority: rama_net::address::Authority::new(Host::Name(Domain::example()), 80),
+            credential: None,
+            protocol: Some(Protocol::SOCKS5),
+        });
+
+        let req = sanitize_client_req_header(&mut ctx, req).unwrap();
+
+        let (parts, _) = req.into_parts();
+        let uri = parts.uri.into_parts();
+
+        assert_eq!(uri.scheme, None);
+        assert_eq!(uri.authority, None);
+    }
 }

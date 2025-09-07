@@ -1,0 +1,7 @@
+error: proc macro panicked
+ --> tests/include_dir_no_compile/relative_dir_not_found.rs:3:23
+  |
+3 | static _ASSETS: Dir = include_dir!("./foo");
+  |                       ^^^^^^^^^^^^^^^^^^^^^
+  |
+  = help: message: "$DIR/tests/include_dir_no_compile/./foo" is not a directory

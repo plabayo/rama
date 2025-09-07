@@ -17,7 +17,7 @@
 //!     let service = HeaderFromStrConfigLayer::<String>::required(HeaderName::from_static("x-proxy-labels"))
 //!         .with_repeat(true)
 //!         .into_layer(WebService::default()
-//!             .get("/", async |ctx: Context<()>| {
+//!             .get("/", async |ctx: Context| {
 //!                 // For production-like code you should prefer a custom type
 //!                 // to avoid possible conflicts. Ideally these are also as
 //!                 // cheap as possible to allocate.
@@ -98,6 +98,7 @@ impl<T, S, C> HeaderFromStrConfigService<T, S, C> {
 
     /// Toggle repeat on/off. When repeat is enabled the
     /// data config will be parsed and inserted as a container of type `C` (defaults to `Vec<T>`).
+    #[must_use]
     pub fn with_repeat(mut self, repeat: bool) -> Self {
         self.repeat = repeat;
         self
@@ -137,12 +138,11 @@ where
     }
 }
 
-impl<T, S, State, Body, E, C> Service<State, Request<Body>> for HeaderFromStrConfigService<T, S, C>
+impl<T, S, Body, E, C> Service<Request<Body>> for HeaderFromStrConfigService<T, S, C>
 where
-    S: Service<State, Request<Body>, Error = E>,
+    S: Service<Request<Body>, Error = E>,
     T: FromStr<Err: Into<BoxError> + Send + Sync + 'static> + Send + Sync + 'static + Clone,
     C: FromIterator<T> + Send + Sync + 'static + Clone,
-    State: Clone + Send + Sync + 'static,
     Body: Send + Sync + 'static,
     E: Into<BoxError> + Send + Sync + 'static,
 {
@@ -151,7 +151,7 @@ where
 
     async fn serve(
         &self,
-        mut ctx: Context<State>,
+        mut ctx: Context,
         request: Request<Body>,
     ) -> Result<Self::Response, Self::Error> {
         if self.repeat {
@@ -266,6 +266,7 @@ impl<T, C> HeaderFromStrConfigLayer<T, C> {
 
     /// Toggle repeat on/off. When repeat is enabled the
     /// data config will be parsed and inserted as a container of type `C` (defaults to `Vec<T>`).
+    #[must_use]
     pub fn with_repeat(mut self, repeat: bool) -> Self {
         self.repeat = repeat;
         self
@@ -312,7 +313,7 @@ mod test {
             .unwrap();
 
         let inner_service =
-            rama_core::service::service_fn(async |ctx: Context<()>, _req: Request<()>| {
+            rama_core::service::service_fn(async |ctx: Context, _req: Request<()>| {
                 let id: &usize = ctx.get().unwrap();
                 assert_eq!(*id, 42);
 
@@ -337,7 +338,7 @@ mod test {
             .unwrap();
 
         let inner_service =
-            rama_core::service::service_fn(async |ctx: Context<()>, _req: Request<()>| {
+            rama_core::service::service_fn(async |ctx: Context, _req: Request<()>| {
                 let labels: &Vec<String> = ctx.get().unwrap();
                 assert_eq!("foo+bar+baz+fin", labels.join("+"));
 
@@ -363,7 +364,7 @@ mod test {
             .unwrap();
 
         let inner_service =
-            rama_core::service::service_fn(async |ctx: Context<()>, _req: Request<()>| {
+            rama_core::service::service_fn(async |ctx: Context, _req: Request<()>| {
                 let labels: &HashSet<String> = ctx.get().unwrap();
                 assert_eq!(3, labels.len());
                 assert!(labels.contains("foo"));
@@ -392,7 +393,7 @@ mod test {
             .unwrap();
 
         let inner_service =
-            rama_core::service::service_fn(async |ctx: Context<()>, _req: Request<()>| {
+            rama_core::service::service_fn(async |ctx: Context, _req: Request<()>| {
                 let labels: &LinkedList<String> = ctx.get().unwrap();
                 let mut iter = labels.iter();
                 assert_eq!(Some("foo"), iter.next().map(|x| x.as_str()));
@@ -424,7 +425,7 @@ mod test {
             .unwrap();
 
         let inner_service =
-            rama_core::service::service_fn(async |ctx: Context<()>, _req: Request<()>| {
+            rama_core::service::service_fn(async |ctx: Context, _req: Request<()>| {
                 let labels: &Vec<String> = ctx.get().unwrap();
                 assert_eq!("foo+bar+baz+fin", labels.join("+"));
 
@@ -450,7 +451,7 @@ mod test {
             .unwrap();
 
         let inner_service =
-            rama_core::service::service_fn(async |ctx: Context<()>, _req: Request<()>| {
+            rama_core::service::service_fn(async |ctx: Context, _req: Request<()>| {
                 let id: usize = *ctx.get().unwrap();
                 assert_eq!(id, 42);
 
@@ -475,7 +476,7 @@ mod test {
             .unwrap();
 
         let inner_service =
-            rama_core::service::service_fn(async |ctx: Context<()>, _req: Request<()>| {
+            rama_core::service::service_fn(async |ctx: Context, _req: Request<()>| {
                 let labels: &Vec<String> = ctx.get().unwrap();
                 assert_eq!("foo+bar+baz+fin", labels.join("+"));
 
@@ -500,7 +501,7 @@ mod test {
             .unwrap();
 
         let inner_service =
-            rama_core::service::service_fn(async |ctx: Context<()>, _req: Request<()>| {
+            rama_core::service::service_fn(async |ctx: Context, _req: Request<()>| {
                 assert!(ctx.get::<usize>().is_none());
                 Ok::<_, std::convert::Infallible>(())
             });
@@ -522,7 +523,7 @@ mod test {
             .unwrap();
 
         let inner_service =
-            rama_core::service::service_fn(async |ctx: Context<()>, _req: Request<()>| {
+            rama_core::service::service_fn(async |ctx: Context, _req: Request<()>| {
                 assert!(ctx.get::<Vec<String>>().is_none());
 
                 Ok::<_, std::convert::Infallible>(())
@@ -546,7 +547,7 @@ mod test {
             .unwrap();
 
         let inner_service =
-            rama_core::service::service_fn(async |_ctx: Context<()>, _req: Request<()>| {
+            rama_core::service::service_fn(async |_ctx: Context, _req: Request<()>| {
                 Ok::<_, std::convert::Infallible>(())
             });
 
@@ -568,7 +569,7 @@ mod test {
             .unwrap();
 
         let inner_service =
-            rama_core::service::service_fn(async |ctx: Context<()>, _req: Request<()>| {
+            rama_core::service::service_fn(async |ctx: Context, _req: Request<()>| {
                 assert!(ctx.get::<Vec<String>>().is_none());
 
                 Ok::<_, std::convert::Infallible>(())
@@ -594,7 +595,7 @@ mod test {
             .unwrap();
 
         let inner_service =
-            rama_core::service::service_fn(async |_ctx: Context<()>, _req: Request<()>| {
+            rama_core::service::service_fn(async |_ctx: Context, _req: Request<()>| {
                 Ok::<_, std::convert::Infallible>(())
             });
 
@@ -617,7 +618,7 @@ mod test {
             .unwrap();
 
         let inner_service =
-            rama_core::service::service_fn(async |ctx: Context<()>, _req: Request<()>| {
+            rama_core::service::service_fn(async |ctx: Context, _req: Request<()>| {
                 assert!(ctx.get::<Vec<String>>().is_none());
 
                 Ok::<_, std::convert::Infallible>(())
@@ -643,7 +644,7 @@ mod test {
             .unwrap();
 
         let inner_service =
-            rama_core::service::service_fn(async |_ctx: Context<()>, _req: Request<()>| {
+            rama_core::service::service_fn(async |_ctx: Context, _req: Request<()>| {
                 Ok::<_, std::convert::Infallible>(())
             });
 
@@ -666,7 +667,7 @@ mod test {
             .unwrap();
 
         let inner_service =
-            rama_core::service::service_fn(async |ctx: Context<()>, _req: Request<()>| {
+            rama_core::service::service_fn(async |ctx: Context, _req: Request<()>| {
                 assert!(ctx.get::<Vec<String>>().is_none());
 
                 Ok::<_, std::convert::Infallible>(())

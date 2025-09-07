@@ -22,22 +22,20 @@ define_http_rejection! {
     pub struct MissingAuthority;
 }
 
-impl<S> FromRequestContextRefPair<S> for Authority
-where
-    S: Clone + Send + Sync + 'static,
-{
+impl FromRequestContextRefPair for Authority {
     type Rejection = MissingAuthority;
 
     async fn from_request_context_ref_pair(
-        ctx: &Context<S>,
+        ctx: &Context,
         parts: &Parts,
     ) -> Result<Self, Self::Rejection> {
-        Ok(Authority(match ctx.get::<RequestContext>() {
+        Ok(Self(match ctx.get::<RequestContext>() {
             Some(ctx) => ctx.authority.clone(),
-            None => RequestContext::try_from((ctx, parts))
-                .map_err(|_| MissingAuthority)?
-                .authority
-                .clone(),
+            None => {
+                RequestContext::try_from((ctx, parts))
+                    .map_err(|_| MissingAuthority)?
+                    .authority
+            }
         }))
     }
 }

@@ -76,22 +76,17 @@ impl<S: fmt::Debug, F: fmt::Debug> fmt::Debug for SniRouter<S, F> {
     }
 }
 
-impl<State, Stream, Response, S, F> Service<State, Stream> for SniRouter<S, F>
+impl<Stream, Response, S, F> Service<Stream> for SniRouter<S, F>
 where
-    State: Clone + Send + Sync + 'static,
     Stream: crate::stream::Stream + Unpin,
     Response: Send + 'static,
-    S: Service<State, SniRequest<Stream>, Response = Response, Error: Into<BoxError>>,
-    F: Service<State, TlsPeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
+    S: Service<SniRequest<Stream>, Response = Response, Error: Into<BoxError>>,
+    F: Service<TlsPeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
 {
     type Response = Response;
     type Error = BoxError;
 
-    async fn serve(
-        &self,
-        ctx: Context<State>,
-        mut stream: Stream,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, ctx: Context, mut stream: Stream) -> Result<Self::Response, Self::Error> {
         let mut peek_buf = [0u8; TLS_HEADER_PEEK_LEN];
         let n = stream
             .read(&mut peek_buf)
@@ -107,9 +102,7 @@ where
                 tracing::trace!(
                     "move tls peek buffer cursor due to reading not enough (read: {n})"
                 );
-                for i in (0..n).rev() {
-                    peek_buf[i + offset] = peek_buf[i];
-                }
+                peek_buf.copy_within(0..n, offset);
             }
 
             let mut peek = StackReader::new(peek_buf);

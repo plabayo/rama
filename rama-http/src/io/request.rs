@@ -72,8 +72,7 @@ where
                         w.write_all(format!("[{}: {}]\r\n", header, parts.uri.path()).as_bytes())
                             .await?;
                     }
-                    PseudoHeader::Protocol => (), // TODO: move ext h2 protocol out of h2 proto core once we need this info
-                    PseudoHeader::Status => (),   // not expected in request
+                    PseudoHeader::Protocol | PseudoHeader::Status => (), // not expected in request
                 }
             }
         }

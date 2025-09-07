@@ -53,6 +53,7 @@ impl PeetPrint {
     ///
     /// [`ClientHello`]: crate::tls::client::ClientHello
     /// [`ClientConfig`]: crate::tls::client::ClientConfig
+    #[allow(clippy::needless_pass_by_value)]
     pub fn compute_from_client_hello(
         client_hello: impl ClientHelloProvider,
     ) -> Result<Self, PeetComputeError> {
@@ -154,6 +155,7 @@ impl PeetPrint {
     }
 
     #[inline]
+    #[must_use]
     pub fn to_human_string(&self) -> String {
         format!("{self:?}")
     }
@@ -295,9 +297,9 @@ pub enum PeetComputeError {
 impl fmt::Display for PeetComputeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            PeetComputeError::MissingClientHello => write!(f, "PeetPrint: missing client hello"),
-            PeetComputeError::EmptyCipherSuites => write!(f, "PeetPrint: no cipher suites found"),
-            PeetComputeError::InvalidTlsVersion => {
+            Self::MissingClientHello => write!(f, "PeetPrint: missing client hello"),
+            Self::EmptyCipherSuites => write!(f, "PeetPrint: no cipher suites found"),
+            Self::InvalidTlsVersion => {
                 write!(f, "Peet Compute Error: invalid tls version")
             }
         }

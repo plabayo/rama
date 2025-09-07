@@ -36,8 +36,9 @@ where
 
 impl TimeoutLayer<LayerErrorStatic<Elapsed>> {
     /// Create a timeout from a duration
+    #[must_use]
     pub const fn new(timeout: Duration) -> Self {
-        TimeoutLayer {
+        Self {
             timeout,
             into_error: LayerErrorStatic::new(Elapsed::new(timeout)),
         }
@@ -63,7 +64,7 @@ impl<F> TimeoutLayer<LayerErrorFn<F>> {
     /// function.
     pub const fn with_error_fn<E>(timeout: Duration, error_fn: F) -> Self
     where
-        F: FnOnce() -> E + Clone + Send + Sync + 'static,
+        F: Fn() -> E + Send + Sync + 'static,
         E: Send + 'static,
     {
         Self {

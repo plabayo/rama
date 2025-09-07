@@ -35,6 +35,7 @@ pub struct Builder {
 
 impl Builder {
     /// Create a new auto connection builder.
+    #[must_use]
     pub fn new(executor: Executor) -> Self {
         Self {
             http1: http1::Builder::new(),
@@ -58,6 +59,7 @@ impl Builder {
     /// Does not do anything if used with [`serve_connection_with_upgrades`]
     ///
     /// [`serve_connection_with_upgrades`]: Builder::serve_connection_with_upgrades
+    #[must_use]
     pub fn http2_only(mut self) -> Self {
         assert!(self.version.is_none());
         self.version = Some(Version::H2);
@@ -69,6 +71,7 @@ impl Builder {
     /// Does not do anything if used with [`serve_connection_with_upgrades`]
     ///
     /// [`serve_connection_with_upgrades`]: Builder::serve_connection_with_upgrades
+    #[must_use]
     pub fn http1_only(mut self) -> Self {
         assert!(self.version.is_none());
         self.version = Some(Version::H1);
@@ -76,20 +79,20 @@ impl Builder {
     }
 
     /// Returns `true` if this builder can serve an HTTP/1.1-based connection.
+    #[must_use]
     pub fn is_http1_available(&self) -> bool {
         match self.version {
-            Some(Version::H1) => true,
+            None | Some(Version::H1) => true,
             Some(Version::H2) => false,
-            _ => true,
         }
     }
 
     /// Returns `true` if this builder can serve an HTTP/2-based connection.
+    #[must_use]
     pub fn is_http2_available(&self) -> bool {
         match self.version {
             Some(Version::H1) => false,
-            Some(Version::H2) => true,
-            _ => true,
+            None | Some(Version::H2) => true,
         }
     }
 

@@ -15,8 +15,9 @@ pub struct TimeoutLayer {
 
 impl TimeoutLayer {
     /// Creates a new [`TimeoutLayer`].
+    #[must_use]
     pub const fn new(timeout: Duration) -> Self {
-        TimeoutLayer { timeout }
+        Self { timeout }
     }
 }
 
@@ -59,7 +60,7 @@ impl<S: fmt::Debug> fmt::Debug for Timeout<S> {
 
 impl<S: Clone> Clone for Timeout<S> {
     fn clone(&self) -> Self {
-        Timeout {
+        Self {
             inner: self.inner.clone(),
             timeout: self.timeout,
         }
@@ -68,19 +69,18 @@ impl<S: Clone> Clone for Timeout<S> {
 
 impl<S: Copy> Copy for Timeout<S> {}
 
-impl<S, State, ReqBody, ResBody> Service<State, Request<ReqBody>> for Timeout<S>
+impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for Timeout<S>
 where
-    S: Service<State, Request<ReqBody>, Response = Response<ResBody>>,
+    S: Service<Request<ReqBody>, Response = Response<ResBody>>,
     ReqBody: Send + 'static,
     ResBody: Default + Send + 'static,
-    State: Clone + Send + Sync + 'static,
 {
     type Response = S::Response;
     type Error = S::Error;
 
     async fn serve(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         req: Request<ReqBody>,
     ) -> Result<Self::Response, Self::Error> {
         tokio::select! {
@@ -102,6 +102,7 @@ pub struct RequestBodyTimeoutLayer {
 
 impl RequestBodyTimeoutLayer {
     /// Creates a new [`RequestBodyTimeoutLayer`].
+    #[must_use]
     pub fn new(timeout: Duration) -> Self {
         Self { timeout }
     }
@@ -134,6 +135,7 @@ impl<S> RequestBodyTimeout<S> {
     /// Returns a new [`Layer`] that wraps services with a [`RequestBodyTimeoutLayer`] middleware.
     ///
     /// [`Layer`]: tower_layer::Layer
+    #[must_use]
     pub fn layer(timeout: Duration) -> RequestBodyTimeoutLayer {
         RequestBodyTimeoutLayer::new(timeout)
     }
@@ -141,18 +143,17 @@ impl<S> RequestBodyTimeout<S> {
     define_inner_service_accessors!();
 }
 
-impl<S, State, ReqBody> Service<State, Request<ReqBody>> for RequestBodyTimeout<S>
+impl<S, ReqBody> Service<Request<ReqBody>> for RequestBodyTimeout<S>
 where
-    S: Service<State, Request<TimeoutBody<ReqBody>>>,
+    S: Service<Request<TimeoutBody<ReqBody>>>,
     ReqBody: Send + 'static,
-    State: Clone + Send + Sync + 'static,
 {
     type Response = S::Response;
     type Error = S::Error;
 
     async fn serve(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         req: Request<ReqBody>,
     ) -> Result<Self::Response, Self::Error> {
         let req = req.map(|body| TimeoutBody::new(self.timeout, body));
@@ -168,6 +169,7 @@ pub struct ResponseBodyTimeoutLayer {
 
 impl ResponseBodyTimeoutLayer {
     /// Creates a new [`ResponseBodyTimeoutLayer`].
+    #[must_use]
     pub fn new(timeout: Duration) -> Self {
         Self { timeout }
     }
@@ -188,19 +190,18 @@ pub struct ResponseBodyTimeout<S> {
     timeout: Duration,
 }
 
-impl<S, State, ReqBody, ResBody> Service<State, Request<ReqBody>> for ResponseBodyTimeout<S>
+impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for ResponseBodyTimeout<S>
 where
-    S: Service<State, Request<ReqBody>, Response = Response<ResBody>>,
+    S: Service<Request<ReqBody>, Response = Response<ResBody>>,
     ReqBody: Send + 'static,
     ResBody: Default + Send + 'static,
-    State: Clone + Send + Sync + 'static,
 {
     type Response = Response<TimeoutBody<ResBody>>;
     type Error = S::Error;
 
     async fn serve(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         req: Request<ReqBody>,
     ) -> Result<Self::Response, Self::Error> {
         let res = self.inner.serve(ctx, req).await?;
@@ -221,6 +222,7 @@ impl<S> ResponseBodyTimeout<S> {
     /// Returns a new [`Layer`] that wraps services with a [`ResponseBodyTimeoutLayer`] middleware.
     ///
     /// [`Layer`]: tower_layer::Layer
+    #[must_use]
     pub fn layer(timeout: Duration) -> ResponseBodyTimeoutLayer {
         ResponseBodyTimeoutLayer::new(timeout)
     }

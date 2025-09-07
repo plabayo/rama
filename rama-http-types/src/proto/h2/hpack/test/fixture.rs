@@ -11,10 +11,10 @@ use std::str;
 fn test_fixture(path: &Path) {
     let data = std::fs::read_to_string(path).unwrap();
     let story: Value = serde_json::from_str(&data).unwrap();
-    test_story(story);
+    test_story(&story);
 }
 
-fn test_story(story: Value) {
+fn test_story(story: &Value) {
     let story = story.as_object().unwrap();
 
     if let Some(cases) = story.get("cases") {
@@ -96,7 +96,7 @@ fn test_story(story: Value) {
                 .expect
                 .iter()
                 .map(|(name, value)| {
-                    Header::new(name.clone().into(), value.clone().into())
+                    Header::new(&name.clone().into(), value.clone().into())
                         .unwrap()
                         .into()
                 })
@@ -137,10 +137,8 @@ fn key_str(e: &Header) -> &str {
 fn value_str(e: &Header) -> &str {
     match *e {
         Header::Field { ref value, .. } => value.to_str().unwrap(),
-        Header::Authority(ref v) => v,
+        Header::Authority(ref v) | Header::Scheme(ref v) | Header::Path(ref v) => v,
         Header::Method(ref m) => m.as_str(),
-        Header::Scheme(ref v) => v,
-        Header::Path(ref v) => v,
         Header::Protocol(ref v) => v.as_str(),
         Header::Status(ref v) => v.as_str(),
     }

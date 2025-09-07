@@ -48,7 +48,7 @@
 //!
 //! | category | support list |
 //! |-|-|
-//! | ✅ [transports](crate::net::stream) | ✅ [tcp] ⸱ ✅ [udp] ⸱ ✅ [Unix (UDS)][unix] ⸱ ✅ [middleware](crate::net::stream::layer) |
+//! | ✅ [transports](crate::net::stream) | ✅ [tcp] ⸱ ✅ [udp] ⸱ ✅ Unix (UDS)] ⸱ ✅ [middleware](crate::net::stream::layer) |
 //! | ✅ [http] | ✅ [auto](crate::http::server::service::HttpServer::auto) ⸱ ✅ [http/1.1](crate::http::server::service::HttpServer::http1) ⸱ ✅ [h2](crate::http::server::service::HttpServer::h2) ⸱ 🏗️ h3 <sup>(2)</sup> ⸱ ✅ [middleware](crate::http::layer) |
 //! | ✅ web server | ✅ [fs](crate::http::service::fs) ⸱ ✅ [redirect](crate::http::service::redirect::Redirect) ⸱ ✅ [router](crate::http::service::web::Router) ⸱ ✅ [dyn router](crate::http::service::web::WebService) ⸱ ✅ [static router](crate::http::service::web::match_service) ⸱ ✅ [handler extractors](crate::http::service::web::extract) ⸱ ✅ [k8s healthcheck](crate::http::service::web::k8s) |
 //! | ✅ [http client](crate::http::client) | ✅ [easy client](crate::http::client::EasyHttpWebClient) ⸱ ✅ [high level API](crate::http::service::client::HttpClientExt) ⸱ ✅ [BoringSSL Connect](crate::tls::boring::client::TlsConnectorLayer) ⸱ ✅ [Rustls Connect](crate::tls::rustls::client::TlsConnectorLayer) ⸱ ✅ [HTTP Proxy Connect](crate::http::client::proxy::layer::HttpProxyConnector) ⸱ ✅ [Socks5 Proxy Connect](crate::proxy::socks5::Socks5ProxyConnectorLayer) ⸱ ❌ [Chromium Http](https://github.com/plabayo/rama/issues/189) <sup>(3)</sup> |
@@ -71,8 +71,8 @@
 //!
 //! > 🗒️ _Footnotes_
 //! >
-//! > * <sup>(1)</sup> Part of [`v0.3.0` milestone (ETA: 2025 Q2)](https://github.com/plabayo/rama/milestone/2)
-//! > * <sup>(2)</sup> Part of [`v0.4.0` milestone (ETA: 2025 Q3)](https://github.com/plabayo/rama/milestone/3)
+//! > * <sup>(1)</sup> Part of [`v0.3.0` milestone (ETA: 2025 Q4)](https://github.com/plabayo/rama/milestone/2)
+//! > * <sup>(2)</sup> Part of [`v0.4.0` milestone (ETA: 2025 Q4)](https://github.com/plabayo/rama/milestone/3)
 //! > * <sup>(3)</sup> No immediate plans, but on our radar. Please [open an issue](https://github.com/plabayo/rama/issues) to request this feature if you have an immediate need for it. Please add sufficient motivation/reasoning and consider [becoming a sponsor](https://ramaproxy.org/book/sponsor.html) to help accelerate its priority.
 //!
 //! The primary focus of Rama is to aid you in your development of [proxies](https://ramaproxy.org/book/proxies/intro.html):
@@ -185,6 +185,7 @@
 //! - [`rama-unix`](https://crates.io/crates/rama-unix): Unix (domain) socket support for rama
 //! - [`rama-tcp`](https://crates.io/crates/rama-tcp): TCP support for rama
 //! - [`rama-udp`](https://crates.io/crates/rama-udp): UDP support for rama
+//! - [`rama-tls-acme`](https://crates.io/crates/rama-tls-acme): ACME support for rama
 //! - [`rama-tls-boring`](https://crates.io/crates/rama-tls-boring): [Boring](https://github.com/plabayo/rama-boring) tls support for rama
 //! - [`rama-tls-rustls`](https://crates.io/crates/rama-tls-rustls): [Rustls](https://github.com/rustls/rustls) support for rama
 //! - [`rama-proxy`](https://crates.io/crates/rama-proxy): proxy types and utilities for rama
@@ -273,6 +274,14 @@
 //! - [/examples/http_web_router.rs](https://github.com/plabayo/rama/tree/main/examples/http_web_router.rs):
 //!   a web service example showcasing demonstrating how to create a web router, which is excellent for the typical path-centric routing,
 //!   and an approach you'll recognise from most other web frameworks out there.
+//!
+//! The following examples show how you can integrate ACME into you webservices (ACME support in Rama is currently still under heavy development)
+// ! - [/examples/acme_http_challenge.rs](https://github.com/plabayo/rama/tree/main/examples/acme_http_challenge.rs):
+// !   Authenticate to an acme server using a http challenge
+// ! - [/examples/acme_tls_challenge_using_boring.rs](https://github.com/plabayo/rama/tree/main/examples/acme_tls_challenge_using_boring.rs):
+// !   Authenticate to an acme server using a tls challenge backed by boringssl
+// ! - [/examples/acme_tls_challenge_using_rustls.rs](https://github.com/plabayo/rama/tree/main/examples/acme_tls_challenge_using_rustls.rs):
+// !   Authenticate to an acme server using a tls challenge backed by rustls
 //!
 //! For a production-like example of a web service you can also read the [`rama-fp` source code](https://github.com/plabayo/rama/tree/main/rama-fp/src).
 //! This is the webservice behind the Rama fingerprinting service, which is used by the maintainers of 🦙 Rama (ラマ) to generate
@@ -386,16 +395,8 @@ pub use ::rama_udp as udp;
 #[doc(inline)]
 pub use ::rama_core::telemetry;
 
-#[cfg(any(feature = "rustls", feature = "boring"))]
-pub mod tls {
-    #[cfg(feature = "boring")]
-    #[doc(inline)]
-    pub use ::rama_tls_boring as boring;
-
-    #[cfg(feature = "rustls")]
-    #[doc(inline)]
-    pub use ::rama_tls_rustls as rustls;
-}
+#[cfg(any(feature = "rustls", feature = "boring", feature = "acme"))]
+pub mod tls;
 
 #[cfg(feature = "dns")]
 #[doc(inline)]

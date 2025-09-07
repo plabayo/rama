@@ -127,7 +127,7 @@ impl Setting {
     /// Creates a new [`Setting`] with the correct variant corresponding to the
     /// given setting id, based on the settings IDs defined in section
     /// 6.5.2.
-    pub fn new(id: impl Into<SettingId>, value: u32) -> Setting {
+    pub fn new(id: impl Into<SettingId>, value: u32) -> Self {
         Self {
             id: id.into(),
             value,
@@ -144,11 +144,12 @@ impl Setting {
     /// # Panics
     ///
     /// If given a buffer shorter than 6 bytes, the function will panic.
-    pub fn load(raw: &[u8]) -> Setting {
+    #[must_use]
+    pub fn load(raw: &[u8]) -> Self {
         let id: u16 = unpack_octets_as_u16(raw, 0);
         let val: u32 = unpack_octets_as_u32(raw, 2);
 
-        Setting::new(id, val)
+        Self::new(id, val)
     }
 
     pub fn encode(&self, dst: &mut BytesMut) {
@@ -186,10 +187,12 @@ pub struct SettingOrder {
 }
 
 impl SettingOrder {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
+    #[must_use]
     pub fn default_settings() -> Self {
         [
             SettingId::HeaderTableSize,
@@ -232,10 +235,12 @@ impl SettingOrder {
         self.ids.iter().copied()
     }
 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.ids.is_empty()
     }
 
+    #[must_use]
     pub fn len(&self) -> usize {
         self.ids.len()
     }
@@ -312,7 +317,7 @@ pub struct SettingsConfig {
 }
 
 impl SettingsConfig {
-    pub fn merge(&mut self, other: SettingsConfig) {
+    pub fn merge(&mut self, other: Self) {
         macro_rules! merge_fields {
             ($($field:ident),+$(,)?) => {
                 $(

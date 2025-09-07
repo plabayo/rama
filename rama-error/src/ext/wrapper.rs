@@ -22,11 +22,13 @@ impl OpaqueError {
     }
 
     /// create an [`OpaqueError`] from a boxed error
+    #[must_use]
     pub fn from_boxed(inner: BoxError) -> Self {
         Self(inner)
     }
 
     /// Returns true if the underlying error is of type `T`.
+    #[must_use]
     pub fn is<T>(&self) -> bool
     where
         T: std::error::Error + 'static,
@@ -35,6 +37,7 @@ impl OpaqueError {
     }
 
     /// Consumes the [`OpaqueError`] and returns it as a [`BoxError`].
+    #[must_use]
     pub fn into_boxed(self) -> BoxError {
         self.0
     }
@@ -52,6 +55,7 @@ impl OpaqueError {
 
     /// Attempts to downcast the error to a shared reference
     /// of the concrete type `T`.
+    #[must_use]
     pub fn downcast_ref<T>(&self) -> Option<&T>
     where
         T: std::error::Error + 'static,

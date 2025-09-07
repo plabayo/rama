@@ -148,7 +148,7 @@ async fn precompressed_br() {
     let body = res.into_body().collect().await.unwrap().to_bytes();
     let mut decompressed = Vec::new();
     BrotliDecompress(&mut &body[..], &mut decompressed).unwrap();
-    let decompressed = String::from_utf8(decompressed.to_vec()).unwrap();
+    let decompressed = String::from_utf8(decompressed.clone()).unwrap();
     assert!(decompressed.starts_with("\"This is a test file!\""));
 }
 
@@ -304,7 +304,7 @@ async fn not_found() {
     assert!(body.is_empty());
 }
 
-#[cfg(unix)]
+#[cfg(target_family = "unix")]
 #[tokio::test]
 async fn not_found_when_not_a_directory() {
     let svc = ServeDir::new("../test-files");
@@ -383,7 +383,7 @@ async fn fallbacks_to_different_precompressed_variant_if_not_found() {
     let body = res.into_body().collect().await.unwrap().to_bytes();
     let mut decompressed = Vec::new();
     BrotliDecompress(&mut &body[..], &mut decompressed).unwrap();
-    let decompressed = String::from_utf8(decompressed.to_vec()).unwrap();
+    let decompressed = String::from_utf8(decompressed.clone()).unwrap();
     assert!(decompressed.starts_with("Test file"));
 }
 

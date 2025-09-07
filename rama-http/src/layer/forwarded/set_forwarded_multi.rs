@@ -54,6 +54,7 @@ impl<T> Default for SetForwardedHeadersLayer<T> {
 
 impl<T> SetForwardedHeadersLayer<T> {
     /// Create a new `SetForwardedHeadersLayer` for the specified headers `T`.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             by_node: Domain::from_static("rama").into(),
@@ -107,7 +108,7 @@ impl<S: fmt::Debug, T> fmt::Debug for SetForwardedHeadersService<S, T> {
 
 impl<S: Clone, T> Clone for SetForwardedHeadersService<S, T> {
     fn clone(&self) -> Self {
-        SetForwardedHeadersService {
+        Self {
             inner: self.inner.clone(),
             by_node: self.by_node.clone(),
             _headers: PhantomData,
@@ -129,19 +130,19 @@ impl<S, T> SetForwardedHeadersService<S, T> {
 macro_rules! set_forwarded_service_for_tuple {
     ( $($ty:ident),* $(,)? ) => {
         #[allow(non_snake_case)]
-        impl<S, $($ty),* , State, Body> Service<State, Request<Body>> for SetForwardedHeadersService<S, ($($ty,)*)>
+        impl<S, $($ty),* , Body> Service<Request<Body>> for SetForwardedHeadersService<S, ($($ty,)*)>
         where
             $( $ty: ForwardHeader + Send + Sync + 'static, )*
-            S: Service<State, Request<Body>, Error: Into<BoxError>>,
+            S: Service<Request<Body>, Error: Into<BoxError>>,
             Body: Send + 'static,
-            State: Clone + Send + Sync + 'static,
+
         {
             type Response = S::Response;
             type Error = BoxError;
 
             async fn serve(
                 &self,
-                mut ctx: Context<State>,
+                mut ctx: Context,
                 mut req: Request<Body>,
             ) -> Result<Self::Response, Self::Error> {
                 let forwarded: Option<Forwarded> = ctx.get().cloned();
@@ -196,7 +197,7 @@ mod tests {
     use rama_http_headers::forwarded::XForwardedProto;
     use std::convert::Infallible;
 
-    fn assert_is_service<T: Service<(), Request<()>>>(_: T) {}
+    fn assert_is_service<T: Service<Request<()>>>(_: T) {}
 
     async fn dummy_service_fn() -> Result<Response, OpaqueError> {
         Ok(StatusCode::OK.into_response())

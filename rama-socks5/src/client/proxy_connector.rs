@@ -44,6 +44,7 @@ impl Socks5ProxyConnectorLayer {
     ///
     /// [`Context`]: rama_core::Context
     /// [`ProxyAddress`]: rama_net::address::ProxyAddress
+    #[must_use]
     pub fn optional() -> Self {
         Self {
             required: false,
@@ -58,6 +59,7 @@ impl Socks5ProxyConnectorLayer {
     ///
     /// [`Context`]: rama_core::Context
     /// [`ProxyAddress`]: rama_net::address::ProxyAddress
+    #[must_use]
     pub fn required() -> Self {
         Self {
             required: true,
@@ -219,52 +221,53 @@ impl<S> Socks5ProxyConnector<S> {
     ) -> ProxyAddress {
         use rand::prelude::*;
 
-        if let Some(dns_resolver) = self.dns_resolver.as_ref() {
-            if addr.protocol == Some(Protocol::SOCKS5) {
-                let ProxyAddress {
-                    protocol,
-                    authority,
-                    credential,
-                } = addr;
-                let (host, port) = authority.into_parts();
-                let host = match host {
-                    Host::Name(domain) => match dns_mode {
-                        DnsResolveIpMode::SingleIpV4 => {
-                            match dns_resolver.ipv4_lookup(domain.clone()).await {
-                                Ok(ips) => ips
-                                    .into_iter()
-                                    .choose(&mut rand::rng())
-                                    .map(|addr| Host::Address(IpAddr::V4(addr)))
-                                    .unwrap_or(Host::Name(domain)),
-                                Err(err) => {
-                                    tracing::debug!(
-                                        "failed to lookup ipv4 addresses for domain: {err:?}"
-                                    );
-                                    Host::Name(domain)
-                                }
+        if let Some(dns_resolver) = self.dns_resolver.as_ref()
+            && addr.protocol == Some(Protocol::SOCKS5)
+        {
+            let ProxyAddress {
+                protocol,
+                authority,
+                credential,
+            } = addr;
+            let (host, port) = authority.into_parts();
+            let host = match host {
+                Host::Name(domain) => match dns_mode {
+                    DnsResolveIpMode::SingleIpV4 => {
+                        match dns_resolver.ipv4_lookup(domain.clone()).await {
+                            Ok(ips) => ips
+                                .into_iter()
+                                .choose(&mut rand::rng())
+                                .map(|addr| Host::Address(IpAddr::V4(addr)))
+                                .unwrap_or(Host::Name(domain)),
+                            Err(err) => {
+                                tracing::debug!(
+                                    "failed to lookup ipv4 addresses for domain: {err:?}"
+                                );
+                                Host::Name(domain)
                             }
                         }
-                        DnsResolveIpMode::SingleIpV6 => {
-                            match dns_resolver.ipv6_lookup(domain.clone()).await {
-                                Ok(ips) => ips
-                                    .into_iter()
-                                    .choose(&mut rand::rng())
-                                    .map(|addr| Host::Address(IpAddr::V6(addr)))
-                                    .unwrap_or(Host::Name(domain)),
-                                Err(err) => {
-                                    tracing::debug!(
-                                        "failed to lookup ipv6 addresses for domain: {err:?}"
-                                    );
-                                    Host::Name(domain)
-                                }
+                    }
+                    DnsResolveIpMode::SingleIpV6 => {
+                        match dns_resolver.ipv6_lookup(domain.clone()).await {
+                            Ok(ips) => ips
+                                .into_iter()
+                                .choose(&mut rand::rng())
+                                .map(|addr| Host::Address(IpAddr::V6(addr)))
+                                .unwrap_or(Host::Name(domain)),
+                            Err(err) => {
+                                tracing::debug!(
+                                    "failed to lookup ipv6 addresses for domain: {err:?}"
+                                );
+                                Host::Name(domain)
                             }
                         }
-                        DnsResolveIpMode::Dual | DnsResolveIpMode::DualPreferIpV4 => {
-                            use tracing::{Instrument, trace_span};
+                    }
+                    DnsResolveIpMode::Dual | DnsResolveIpMode::DualPreferIpV4 => {
+                        use tracing::{Instrument, trace_span};
 
-                            let (tx, mut rx) = mpsc::unbounded_channel();
+                        let (tx, mut rx) = mpsc::unbounded_channel();
 
-                            tokio::spawn(
+                        tokio::spawn(
                                 {
                                     let tx = tx.clone();
                                     let domain = domain.clone();
@@ -274,13 +277,11 @@ impl<S> Socks5ProxyConnector<S> {
                                             Ok(ips) => {
                                                 if let Some(ip) =
                                                     ips.into_iter().choose(&mut rand::rng())
-                                                {
-                                                    if let Err(err) = tx.send(IpAddr::V4(ip)) {
+                                                    && let Err(err) = tx.send(IpAddr::V4(ip)) {
                                                         tracing::trace!(
                                                             "failed to send ipv4 lookup result for ip: {ip}; err = {err:?}"
                                                         )
                                                     }
-                                                }
                                             }
                                             Err(err) => tracing::debug!(
                                                 "failed to lookup ipv4 addresses for domain: {err:?}"
@@ -291,7 +292,7 @@ impl<S> Socks5ProxyConnector<S> {
                                 .instrument(trace_span!("dns::ipv4_lookup")),
                             );
 
-                            tokio::spawn(
+                        tokio::spawn(
                                 {
                                     let domain = domain.clone();
                                     let dns_resolver = dns_resolver.clone();
@@ -300,13 +301,11 @@ impl<S> Socks5ProxyConnector<S> {
                                             Ok(ips) => {
                                                 if let Some(ip) =
                                                     ips.into_iter().choose(&mut rand::rng())
-                                                {
-                                                    if let Err(err) = tx.send(IpAddr::V6(ip)) {
+                                                    && let Err(err) = tx.send(IpAddr::V6(ip)) {
                                                         tracing::trace!(
                                                             "failed to send ipv6 lookup result for ip {ip}: {err:?}"
                                                         )
                                                     }
-                                                }
                                             }
                                             Err(err) => tracing::debug!(
                                                 "failed to lookup ipv6 addresses for domain: {err:?}"
@@ -317,43 +316,36 @@ impl<S> Socks5ProxyConnector<S> {
                                 .instrument(trace_span!("dns::ipv6_lookup")),
                             );
 
-                            rx.recv()
-                                .await
-                                .map(Host::Address)
-                                .unwrap_or(Host::Name(domain))
-                        }
-                    },
-                    Host::Address(ip_addr) => Host::Address(ip_addr),
-                };
+                        rx.recv()
+                            .await
+                            .map(Host::Address)
+                            .unwrap_or(Host::Name(domain))
+                    }
+                },
+                Host::Address(ip_addr) => Host::Address(ip_addr),
+            };
 
-                let authority = Authority::new(host, port);
-                return ProxyAddress {
-                    protocol,
-                    authority,
-                    credential,
-                };
-            }
+            let authority = Authority::new(host, port);
+            return ProxyAddress {
+                protocol,
+                authority,
+                credential,
+            };
         }
 
         addr
     }
 }
 
-impl<S, State, Request> Service<State, Request> for Socks5ProxyConnector<S>
+impl<S, Request> Service<Request> for Socks5ProxyConnector<S>
 where
-    S: ConnectorService<State, Request, Connection: Stream + Unpin, Error: Into<BoxError>>,
-    State: Clone + Send + Sync + 'static,
-    Request:
-        TryRefIntoTransportContext<State, Error: Into<BoxError> + Send + 'static> + Send + 'static,
+    S: ConnectorService<Request, Connection: Stream + Unpin, Error: Into<BoxError>>,
+    Request: TryRefIntoTransportContext<Error: Into<BoxError> + Send + 'static> + Send + 'static,
 {
-    type Response = EstablishedClientConnection<S::Connection, State, Request>;
+    type Response = EstablishedClientConnection<S::Connection, Request>;
     type Error = BoxError;
 
-    async fn serve(
-        &self,
-        mut ctx: Context<State>,
-        req: Request,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
         let address = ctx.remove::<ProxyAddress>();
         if !address
             .as_ref()
@@ -398,18 +390,15 @@ where
                 })?;
 
         // return early in case we did not use a proxy
-        let proxy_address = match address {
-            Some(address) => address,
-            None => {
-                return if self.required {
-                    Err("socks5 proxy required but none is defined".into())
-                } else {
-                    tracing::trace!(
-                        "socks5 proxy connector: no proxy required or set: proceed with direct connection"
-                    );
-                    return Ok(established_conn);
-                };
-            }
+        let Some(proxy_address) = address else {
+            return if self.required {
+                Err("socks5 proxy required but none is defined".into())
+            } else {
+                tracing::trace!(
+                    "socks5 proxy connector: no proxy required or set: proceed with direct connection"
+                );
+                return Ok(established_conn);
+            };
         };
         // and do the handshake otherwise...
 

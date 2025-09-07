@@ -185,11 +185,13 @@ pub struct BytesRWTrackerHandle {
 
 impl BytesRWTrackerHandle {
     /// Get the number of bytes read (so far).
+    #[must_use]
     pub fn read(&self) -> usize {
         self.read.load(Ordering::Acquire)
     }
 
     /// Get the number of bytes written (so far).
+    #[must_use]
     pub fn written(&self) -> usize {
         self.written.load(Ordering::Acquire)
     }

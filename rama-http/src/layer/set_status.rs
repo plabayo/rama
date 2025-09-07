@@ -50,13 +50,15 @@ impl SetStatusLayer {
     /// Create a new [`SetStatusLayer`].
     ///
     /// The response status code will be `status` regardless of what the inner service returns.
+    #[must_use]
     pub const fn new(status: StatusCode) -> Self {
-        SetStatusLayer { status }
+        Self { status }
     }
 
     /// Create a new [`SetStatusLayer`] layer which will create
     /// a service that will always set the status code at [`StatusCode::OK`].
     #[inline]
+    #[must_use]
     pub const fn ok() -> Self {
         Self::new(StatusCode::OK)
     }
@@ -107,7 +109,7 @@ impl<S: fmt::Debug> fmt::Debug for SetStatus<S> {
 
 impl<S: Clone> Clone for SetStatus<S> {
     fn clone(&self) -> Self {
-        SetStatus {
+        Self {
             inner: self.inner.clone(),
             status: self.status,
         }
@@ -116,10 +118,9 @@ impl<S: Clone> Clone for SetStatus<S> {
 
 impl<S: Copy> Copy for SetStatus<S> {}
 
-impl<State, S, ReqBody, ResBody> Service<State, Request<ReqBody>> for SetStatus<S>
+impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for SetStatus<S>
 where
-    State: Clone + Send + Sync + 'static,
-    S: Service<State, Request<ReqBody>, Response = Response<ResBody>>,
+    S: Service<Request<ReqBody>, Response = Response<ResBody>>,
     ReqBody: Send + 'static,
     ResBody: Send + 'static,
 {
@@ -128,7 +129,7 @@ where
 
     async fn serve(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         req: Request<ReqBody>,
     ) -> Result<Self::Response, Self::Error> {
         let mut response = self.inner.serve(ctx, req).await?;

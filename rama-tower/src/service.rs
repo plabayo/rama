@@ -53,14 +53,13 @@ impl<T: fmt::Debug> fmt::Debug for ServiceAdapter<T> {
     }
 }
 
-impl<T, State, Request> rama_core::Service<State, Request> for ServiceAdapter<T>
+impl<T, Request> rama_core::Service<Request> for ServiceAdapter<T>
 where
     T: TowerService<Request, Response: Send + 'static, Error: Send + 'static, Future: Send>
         + Clone
         + Send
         + Sync
         + 'static,
-    State: Clone + Send + Sync + 'static,
     Request: Send + 'static,
 {
     type Response = T::Response;
@@ -68,7 +67,7 @@ where
 
     fn serve(
         &self,
-        _ctx: rama_core::Context<State>,
+        _ctx: rama_core::Context,
         req: Request,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
         let svc = self.0.clone();
@@ -131,13 +130,12 @@ impl<T: fmt::Debug> fmt::Debug for SharedServiceAdapter<T> {
     }
 }
 
-impl<T, State, Request> rama_core::Service<State, Request> for SharedServiceAdapter<T>
+impl<T, Request> rama_core::Service<Request> for SharedServiceAdapter<T>
 where
     T: TowerService<Request, Response: Send + 'static, Error: Send + 'static, Future: Send>
         + Send
         + Sync
         + 'static,
-    State: Clone + Send + Sync + 'static,
     Request: Send + 'static,
 {
     type Response = T::Response;
@@ -145,7 +143,7 @@ where
 
     fn serve(
         &self,
-        _ctx: rama_core::Context<State>,
+        _ctx: rama_core::Context,
         req: Request,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
         let svc = self.0.clone();

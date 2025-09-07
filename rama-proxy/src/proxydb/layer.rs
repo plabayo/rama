@@ -106,6 +106,7 @@ impl<S, D, P, F> ProxyDBService<S, D, P, F> {
     /// Set a [`ProxyFilterMode`] to define the behaviour surrounding
     /// [`ProxyFilter`] usage, e.g. if a proxy filter is required to be available or not,
     /// or what to do if it is optional and not available.
+    #[must_use]
     pub fn filter_mode(mut self, mode: ProxyFilterMode) -> Self {
         self.mode = mode;
         self
@@ -125,6 +126,7 @@ impl<S, D, P, F> ProxyDBService<S, D, P, F> {
     ///
     /// NOTE even when `preserve=false` it might still be that there's
     /// a [`ProxyAddress`] in case it was set by a previous layer.
+    #[must_use]
     pub const fn preserve_proxy(mut self, preserve: bool) -> Self {
         self.preserve = preserve;
         self
@@ -173,24 +175,18 @@ impl<S, D, P, F> ProxyDBService<S, D, P, F> {
     define_inner_service_accessors!();
 }
 
-impl<S, D, P, F, State, Request> Service<State, Request> for ProxyDBService<S, D, P, F>
+impl<S, D, P, F, Request> Service<Request> for ProxyDBService<S, D, P, F>
 where
-    S: Service<State, Request, Error: Into<BoxError> + Send + Sync + 'static>,
+    S: Service<Request, Error: Into<BoxError> + Send + Sync + 'static>,
     D: ProxyDB<Error: Into<BoxError> + Send + Sync + 'static>,
     P: ProxyQueryPredicate,
-    F: UsernameFormatter<State>,
-    State: Clone + Send + Sync + 'static,
-    Request:
-        TryRefIntoTransportContext<State, Error: Into<BoxError> + Send + 'static> + Send + 'static,
+    F: UsernameFormatter,
+    Request: TryRefIntoTransportContext<Error: Into<BoxError> + Send + 'static> + Send + 'static,
 {
     type Response = S::Response;
     type Error = BoxError;
 
-    async fn serve(
-        &self,
-        mut ctx: Context<State>,
-        req: Request,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
         if self.preserve && ctx.contains::<ProxyAddress>() {
             // shortcut in case a proxy address is already set,
             // and we wish to preserve it
@@ -394,6 +390,7 @@ impl<D, P, F> ProxyDBLayer<D, P, F> {
     /// Set a [`ProxyFilterMode`] to define the behaviour surrounding
     /// [`ProxyFilter`] usage, e.g. if a proxy filter is required to be available or not,
     /// or what to do if it is optional and not available.
+    #[must_use]
     pub fn filter_mode(mut self, mode: ProxyFilterMode) -> Self {
         self.mode = mode;
         self
@@ -405,6 +402,7 @@ impl<D, P, F> ProxyDBLayer<D, P, F> {
     ///
     /// NOTE even when `preserve=false` it might still be that there's
     /// a [`ProxyAddress`] in case it was set by a previous layer.
+    #[must_use]
     pub fn preserve_proxy(mut self, preserve: bool) -> Self {
         self.preserve = preserve;
         self
@@ -413,6 +411,7 @@ impl<D, P, F> ProxyDBLayer<D, P, F> {
     /// Set a [`ProxyQueryPredicate`] that will be used
     /// to possibly filter out proxies that according to the filters are correct,
     /// but not according to the predicate.
+    #[must_use]
     pub fn select_predicate<Predicate>(self, p: Predicate) -> ProxyDBLayer<D, Predicate, F> {
         ProxyDBLayer {
             db: self.db,
@@ -427,6 +426,7 @@ impl<D, P, F> ProxyDBLayer<D, P, F> {
     /// the username based on the selected [`Proxy`]. This is required
     /// in case the proxy is a router that accepts or maybe even requires
     /// username labels to configure proxies further down/up stream.
+    #[must_use]
     pub fn username_formatter<Formatter>(self, f: Formatter) -> ProxyDBLayer<D, P, Formatter> {
         ProxyDBLayer {
             db: self.db,
@@ -471,21 +471,21 @@ where
 
 /// Trait that is used to allow the formatting of a username,
 /// e.g. to allow proxy routers to have proxy config labels in the username.
-pub trait UsernameFormatter<S>: Send + Sync + 'static {
+pub trait UsernameFormatter: Send + Sync + 'static {
     /// format the username based on the root properties of the given proxy.
     fn fmt_username(
         &self,
-        ctx: &Context<S>,
+        ctx: &Context,
         proxy: &Proxy,
         filter: &ProxyFilter,
         username: &str,
     ) -> Option<String>;
 }
 
-impl<S> UsernameFormatter<S> for () {
+impl UsernameFormatter for () {
     fn fmt_username(
         &self,
-        _ctx: &Context<S>,
+        _ctx: &Context,
         _proxy: &Proxy,
         _filter: &ProxyFilter,
         _username: &str,
@@ -494,13 +494,13 @@ impl<S> UsernameFormatter<S> for () {
     }
 }
 
-impl<F, S> UsernameFormatter<S> for F
+impl<F> UsernameFormatter for F
 where
-    F: Fn(&Context<S>, &Proxy, &ProxyFilter, &str) -> Option<String> + Send + Sync + 'static,
+    F: Fn(&Context, &Proxy, &ProxyFilter, &str) -> Option<String> + Send + Sync + 'static,
 {
     fn fmt_username(
         &self,
-        ctx: &Context<S>,
+        ctx: &Context,
         proxy: &Proxy,
         filter: &ProxyFilter,
         username: &str,
@@ -572,7 +572,7 @@ mod tests {
 
         let service = ProxyDBLayer::new(Arc::new(db))
             .filter_mode(ProxyFilterMode::Default)
-            .into_layer(service_fn(async |ctx: Context<()>, _: Request| {
+            .into_layer(service_fn(async |ctx: Context, _: Request| {
                 Ok::<_, Infallible>(ctx.get::<ProxyAddress>().unwrap().clone())
             }));
 
@@ -623,7 +623,7 @@ mod tests {
 
         let service = ProxyDBLayer::new(Arc::new(proxy))
             .filter_mode(ProxyFilterMode::Default)
-            .into_layer(service_fn(async |ctx: Context<()>, _: Request| {
+            .into_layer(service_fn(async |ctx: Context, _: Request| {
                 Ok::<_, Infallible>(ctx.get::<ProxyAddress>().unwrap().clone())
             }));
 
@@ -675,7 +675,7 @@ mod tests {
         let service = ProxyDBLayer::new(Arc::new(proxy))
             .filter_mode(ProxyFilterMode::Default)
             .username_formatter(
-                |_ctx: &Context<()>, proxy: &Proxy, filter: &ProxyFilter, username: &str| {
+                |_ctx: &Context, proxy: &Proxy, filter: &ProxyFilter, username: &str| {
                     if proxy
                         .pool_id
                         .as_ref()
@@ -699,7 +699,7 @@ mod tests {
                     None
                 },
             )
-            .into_layer(service_fn(async |ctx: Context<()>, _: Request| {
+            .into_layer(service_fn(async |ctx: Context, _: Request| {
                 Ok::<_, Infallible>(ctx.get::<ProxyAddress>().unwrap().clone())
             }));
 
@@ -773,7 +773,7 @@ mod tests {
 
         let service = ProxyDBLayer::new(Arc::new(db))
             .filter_mode(ProxyFilterMode::Default)
-            .into_layer(service_fn(async |ctx: Context<()>, _| {
+            .into_layer(service_fn(async |ctx: Context, _| {
                 Ok::<_, Infallible>(ctx.get::<ProxyAddress>().unwrap().clone())
             }));
 
@@ -813,7 +813,7 @@ mod tests {
         let service = ProxyDBLayer::new(Arc::new(db))
             .preserve_proxy(true)
             .filter_mode(ProxyFilterMode::Default)
-            .into_layer(service_fn(async |ctx: Context<()>, _: Request| {
+            .into_layer(service_fn(async |ctx: Context, _: Request| {
                 Ok::<_, Infallible>(ctx.get::<ProxyAddress>().unwrap().clone())
             }));
 
@@ -837,7 +837,7 @@ mod tests {
         let db = memproxydb().await;
 
         let service = ProxyDBLayer::new(Arc::new(db)).into_layer(service_fn(
-            async |ctx: Context<()>, _: Request| {
+            async |ctx: Context, _: Request| {
                 Ok::<_, Infallible>(ctx.get::<ProxyAddress>().cloned())
             },
         ));
@@ -900,7 +900,7 @@ mod tests {
 
         let service = ProxyDBLayer::new(Arc::new(db))
             .filter_mode(ProxyFilterMode::Default)
-            .into_layer(service_fn(async |ctx: Context<()>, _: Request| {
+            .into_layer(service_fn(async |ctx: Context, _: Request| {
                 Ok::<_, Infallible>(ctx.get::<ProxyAddress>().unwrap().clone())
             }));
 
@@ -955,7 +955,7 @@ mod tests {
                 mobile: Some(false),
                 ..Default::default()
             }))
-            .into_layer(service_fn(async |ctx: Context<()>, _: Request| {
+            .into_layer(service_fn(async |ctx: Context, _: Request| {
                 Ok::<_, Infallible>(ctx.get::<ProxyAddress>().unwrap().clone())
             }));
 
@@ -1005,7 +1005,7 @@ mod tests {
 
         let service = ProxyDBLayer::new(Arc::new(db))
             .filter_mode(ProxyFilterMode::Required)
-            .into_layer(service_fn(async |ctx: Context<()>, _: Request| {
+            .into_layer(service_fn(async |ctx: Context, _: Request| {
                 Ok::<_, Infallible>(ctx.get::<ProxyAddress>().unwrap().clone())
             }));
 
@@ -1090,7 +1090,7 @@ mod tests {
         let service = ProxyDBLayer::new(Arc::new(db))
             .filter_mode(ProxyFilterMode::Required)
             .select_predicate(|proxy: &Proxy| proxy.mobile)
-            .into_layer(service_fn(async |ctx: Context<()>, _: Request| {
+            .into_layer(service_fn(async |ctx: Context, _: Request| {
                 Ok::<_, Infallible>(ctx.get::<ProxyAddress>().unwrap().clone())
             }));
 

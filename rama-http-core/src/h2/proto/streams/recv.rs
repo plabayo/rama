@@ -3,6 +3,7 @@ use crate::h2::codec::UserError;
 use crate::h2::proto;
 use rama_core::telemetry::tracing;
 
+use rama_http::proto::{RequestExtensions, RequestHeaders};
 use rama_http_types::proto::h1::headers::original::OriginalHttp1Headers;
 use rama_http_types::proto::h2::frame::{
     DEFAULT_INITIAL_WINDOW_SIZE, PushPromiseHeaderError, Reason,
@@ -78,7 +79,7 @@ pub(super) enum RecvHeaderBlockError<T> {
     State(Error),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub(crate) enum Open {
     PushPromise,
     Headers,
@@ -96,7 +97,7 @@ impl Recv {
             .expect("invalid initial remote window size");
         flow.assign_capacity(DEFAULT_INITIAL_WINDOW_SIZE).unwrap();
 
-        Recv {
+        Self {
             init_window_sz: DEFAULT_INITIAL_WINDOW_SIZE,
             flow,
             in_flight_data: 0 as WindowSize,
@@ -131,7 +132,7 @@ impl Recv {
         &mut self,
         id: StreamId,
         mode: Open,
-        counts: &mut Counts,
+        counts: &Counts,
     ) -> Result<Option<StreamId>, Error> {
         assert!(self.refused.is_none());
 
@@ -183,12 +184,9 @@ impl Recv {
             use rama_http_types::header;
 
             if let Some(content_length) = frame.fields().get(header::CONTENT_LENGTH) {
-                let content_length = match frame::parse_u64(content_length.as_bytes()) {
-                    Ok(v) => v,
-                    Err(_) => {
-                        proto_err!(stream: "could not parse content-length; stream={:?}", stream.id);
-                        return Err(Error::library_reset(stream.id, Reason::PROTOCOL_ERROR).into());
-                    }
+                let Ok(content_length) = frame::parse_u64(content_length.as_bytes()) else {
+                    proto_err!(stream: "could not parse content-length; stream={:?}", stream.id);
+                    return Err(Error::library_reset(stream.id, Reason::PROTOCOL_ERROR).into());
                 };
 
                 stream.content_length = ContentLength::Remaining(content_length);
@@ -242,6 +240,7 @@ impl Recv {
         }
 
         let stream_id = frame.stream_id();
+        let header_size = frame.calculate_header_list_size();
         let (pseudo, fields, field_order) = frame.into_parts();
 
         if pseudo.protocol.is_some()
@@ -258,10 +257,13 @@ impl Recv {
         }
 
         if !pseudo.is_informational() {
-            let message =
-                counts
-                    .peer()
-                    .convert_poll_message(pseudo, fields, field_order, stream_id)?;
+            let message = counts.peer().convert_poll_message(
+                pseudo,
+                fields,
+                field_order,
+                header_size,
+                stream_id,
+            )?;
 
             // Push the frame onto the stream's recv buffer
             stream
@@ -333,7 +335,17 @@ impl Recv {
         // If the buffer is not empty, then the first frame must be a HEADERS
         // frame or the user violated the contract.
         match stream.pending_recv.pop_front(&mut self.buffer) {
-            Some(Event::Headers(peer::PollMessage::Client(response))) => Poll::Ready(Ok(response)),
+            Some(Event::Headers(peer::PollMessage::Client(mut response))) => {
+                if let Some(mut request_ext) = stream.encoded_request_extensions.take() {
+                    if let Some(request_headers) = request_ext.remove::<RequestHeaders>() {
+                        response.extensions_mut().insert(request_headers);
+                    }
+                    response
+                        .extensions_mut()
+                        .insert(RequestExtensions::from(request_ext));
+                }
+                Poll::Ready(Ok(response))
+            }
             Some(_) => panic!("poll_response called after response returned"),
             None => {
                 if !stream.state.ensure_recv_open()? {
@@ -395,10 +407,10 @@ impl Recv {
         let _res = self.flow.assign_capacity(capacity);
         debug_assert!(_res.is_ok());
 
-        if self.flow.unclaimed_capacity().is_some() {
-            if let Some(task) = task.take() {
-                task.wake();
-            }
+        if self.flow.unclaimed_capacity().is_some()
+            && let Some(task) = task.take()
+        {
+            task.wake();
         }
     }
 
@@ -504,10 +516,10 @@ impl Recv {
         // If changing the target capacity means we gained a bunch of capacity,
         // enough that we went over the update threshold, then schedule sending
         // a connection WINDOW_UPDATE.
-        if self.flow.unclaimed_capacity().is_some() {
-            if let Some(task) = task.take() {
-                task.wake();
-            }
+        if self.flow.unclaimed_capacity().is_some()
+            && let Some(task) = task.take()
+        {
+            task.wake();
         }
         Ok(())
     }
@@ -764,11 +776,13 @@ impl Recv {
         }
 
         let promised_id = frame.promised_id();
+        let header_size = frame.calculate_header_list_size();
         let (pseudo, fields, field_order) = frame.into_parts();
         let req = crate::h2::server::Peer::convert_poll_message(
             pseudo,
             fields,
             field_order,
+            header_size,
             promised_id,
         )?;
 
@@ -801,14 +815,14 @@ impl Recv {
 
     /// Ensures that `id` is not in the `Idle` state.
     pub(super) fn ensure_not_idle(&self, id: StreamId) -> Result<(), Reason> {
-        if let Ok(next) = self.next_stream_id {
-            if id >= next {
-                tracing::debug!(
-                    "stream ID implicitly closed, PROTOCOL_ERROR; stream={:?}",
-                    id
-                );
-                return Err(Reason::PROTOCOL_ERROR);
-            }
+        if let Ok(next) = self.next_stream_id
+            && id >= next
+        {
+            tracing::debug!(
+                "stream ID implicitly closed, PROTOCOL_ERROR; stream={:?}",
+                id
+            );
+            return Err(Reason::PROTOCOL_ERROR);
         }
         // if next_stream_id is overflowed, that's ok.
 
@@ -816,7 +830,7 @@ impl Recv {
     }
 
     /// Handle remote sending an explicit RST_STREAM.
-    #[allow(clippy::unused_self)]
+    #[allow(clippy::unused_self, clippy::needless_pass_by_ref_mut)]
     pub(super) fn recv_reset(
         &mut self,
         frame: frame::Reset,
@@ -857,7 +871,7 @@ impl Recv {
     }
 
     /// Handle a connection-level error
-    #[allow(clippy::unused_self)]
+    #[allow(clippy::unused_self, clippy::needless_pass_by_ref_mut)]
     pub(super) fn handle_error(&mut self, err: &proto::Error, stream: &mut Stream) {
         // Receive an error
         stream.state.handle_error(err);
@@ -873,7 +887,7 @@ impl Recv {
         self.max_stream_id = last_processed_id;
     }
 
-    #[allow(clippy::unused_self)]
+    #[allow(clippy::unused_self, clippy::needless_pass_by_ref_mut)]
     pub(super) fn recv_eof(&mut self, stream: &mut Stream) {
         stream.state.recv_eof();
         stream.notify_send();
@@ -942,11 +956,15 @@ impl Recv {
             return;
         }
 
-        tracing::trace!("enqueue_reset_expiration; {:?}", stream.id);
-
         if counts.can_inc_num_reset_streams() {
             counts.inc_num_reset_streams();
+            tracing::trace!("enqueue_reset_expiration; {:?}", stream.id);
             self.pending_reset_expired.push(stream);
+        } else {
+            tracing::trace!(
+                "enqueue_reset_expiration; dropped {:?}, over max_concurrent_reset_streams",
+                stream.id
+            );
         }
     }
 
@@ -1092,9 +1110,8 @@ impl Recv {
             ready!(dst.poll_ready(cx))?;
 
             // Get the next stream
-            let stream = match self.pending_window_updates.pop(store) {
-                Some(stream) => stream,
-                None => return Poll::Ready(Ok(())),
+            let Some(stream) = self.pending_window_updates.pop(store) else {
+                return Poll::Ready(Ok(()));
             };
 
             counts.transition(stream, |_, stream| {
@@ -1179,7 +1196,7 @@ impl Recv {
         }
     }
 
-    #[allow(clippy::unused_self)]
+    #[allow(clippy::unused_self, clippy::needless_pass_by_ref_mut)]
     fn schedule_recv<T>(
         &mut self,
         cx: &Context,
@@ -1199,8 +1216,8 @@ impl Recv {
 // ===== impl Open =====
 
 impl Open {
-    pub(crate) fn is_push_promise(&self) -> bool {
-        matches!(*self, Self::PushPromise)
+    pub(crate) fn is_push_promise(self) -> bool {
+        matches!(self, Self::PushPromise)
     }
 }
 
@@ -1208,6 +1225,6 @@ impl Open {
 
 impl<T> From<Error> for RecvHeaderBlockError<T> {
     fn from(err: Error) -> Self {
-        RecvHeaderBlockError::State(err)
+        Self::State(err)
     }
 }

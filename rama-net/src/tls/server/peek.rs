@@ -61,22 +61,17 @@ impl<T: fmt::Debug, F: fmt::Debug> fmt::Debug for TlsPeekRouter<T, F> {
     }
 }
 
-impl<State, Stream, Response, T, F> Service<State, Stream> for TlsPeekRouter<T, F>
+impl<Stream, Response, T, F> Service<Stream> for TlsPeekRouter<T, F>
 where
-    State: Clone + Send + Sync + 'static,
     Stream: crate::stream::Stream + Unpin,
     Response: Send + 'static,
-    T: Service<State, TlsPeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
-    F: Service<State, TlsPeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
+    T: Service<TlsPeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
+    F: Service<TlsPeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
 {
     type Response = Response;
     type Error = BoxError;
 
-    async fn serve(
-        &self,
-        ctx: Context<State>,
-        mut stream: Stream,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, ctx: Context, mut stream: Stream) -> Result<Self::Response, Self::Error> {
         let mut peek_buf = [0u8; TLS_HEADER_PEEK_LEN];
         let n = stream
             .read(&mut peek_buf)
@@ -89,9 +84,7 @@ where
         let offset = TLS_HEADER_PEEK_LEN - n;
         if offset > 0 {
             tracing::trace!("move tls peek buffer cursor due to reading not enough: (read: {n})");
-            for i in (0..n).rev() {
-                peek_buf[i + offset] = peek_buf[i];
-            }
+            peek_buf.copy_within(0..n, offset);
         }
 
         let mut peek = StackReader::new(peek_buf);

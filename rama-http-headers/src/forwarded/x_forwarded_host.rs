@@ -1,4 +1,4 @@
-use crate::{Error, Header};
+use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
 use rama_http_types::header;
 use rama_http_types::{HeaderName, HeaderValue};
 use rama_net::address::Host;
@@ -28,20 +28,24 @@ use rama_net::forwarded::{ForwardedAuthority, ForwardedElement};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct XForwardedHost(ForwardedAuthority);
 
-impl Header for XForwardedHost {
+impl TypedHeader for XForwardedHost {
     fn name() -> &'static HeaderName {
         &header::X_FORWARDED_HOST
     }
+}
 
+impl HeaderDecode for XForwardedHost {
     fn decode<'i, I: Iterator<Item = &'i HeaderValue>>(values: &mut I) -> Result<Self, Error> {
-        Ok(XForwardedHost(
+        Ok(Self(
             values
                 .next()
                 .and_then(|value| value.to_str().ok().and_then(|s| s.parse().ok()))
                 .ok_or_else(Error::invalid)?,
         ))
     }
+}
 
+impl HeaderEncode for XForwardedHost {
     fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
         let s = self.0.to_string();
         values.extend(Some(HeaderValue::try_from(s).unwrap()))
@@ -51,22 +55,26 @@ impl Header for XForwardedHost {
 impl XForwardedHost {
     #[inline]
     /// Get a reference to the [`Host`] of this [`XForwardedHost`].
+    #[must_use]
     pub fn host(&self) -> &Host {
         self.0.host()
     }
 
     #[inline]
     /// Get a copy of the `port` of this [`XForwardedHost`] if it is set.
+    #[must_use]
     pub fn port(&self) -> Option<u16> {
         self.0.port()
     }
 
-    /// Return a reference to the inner data of this [`Header`].
+    /// Return a reference to the inner data of this header.
+    #[must_use]
     pub fn inner(&self) -> &ForwardedAuthority {
         &self.0
     }
 
-    /// Consume this [`Header`] into its inner data.
+    /// Consume this header into its inner data.
+    #[must_use]
     pub fn into_inner(self) -> ForwardedAuthority {
         self.0
     }
@@ -88,7 +96,7 @@ impl super::ForwardHeader for XForwardedHost {
     {
         let el = input.into_iter().next()?;
         let host = el.ref_forwarded_host().cloned()?;
-        Some(XForwardedHost(host))
+        Some(Self(host))
     }
 }
 

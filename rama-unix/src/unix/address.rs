@@ -15,6 +15,7 @@ impl UnixSocketAddress {
     /// Documentation reflected in [`SocketAddr`]
     ///
     /// [`SocketAddr`]: std::os::unix::net::SocketAddr
+    #[must_use]
     pub fn is_unnamed(&self) -> bool {
         self.0.is_unnamed()
     }
@@ -24,6 +25,7 @@ impl UnixSocketAddress {
     /// Documentation reflected in [`SocketAddr`]
     ///
     /// [`SocketAddr`]: std::os::unix::net::SocketAddr
+    #[must_use]
     pub fn as_pathname(&self) -> Option<&Path> {
         self.0.as_pathname()
     }
@@ -37,7 +39,7 @@ impl std::fmt::Debug for UnixSocketAddress {
 
 impl From<std::os::unix::net::SocketAddr> for UnixSocketAddress {
     fn from(value: std::os::unix::net::SocketAddr) -> Self {
-        UnixSocketAddress(value)
+        Self(value)
     }
 }
 

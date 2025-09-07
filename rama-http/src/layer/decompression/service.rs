@@ -34,6 +34,7 @@ impl<S> Decompression<S> {
     define_inner_service_accessors!();
 
     /// Sets whether to request the gzip encoding.
+    #[must_use]
     pub fn gzip(mut self, enable: bool) -> Self {
         self.accept.set_gzip(enable);
         self
@@ -46,6 +47,7 @@ impl<S> Decompression<S> {
     }
 
     /// Sets whether to request the Deflate encoding.
+    #[must_use]
     pub fn deflate(mut self, enable: bool) -> Self {
         self.accept.set_deflate(enable);
         self
@@ -58,6 +60,7 @@ impl<S> Decompression<S> {
     }
 
     /// Sets whether to request the Brotli encoding.
+    #[must_use]
     pub fn br(mut self, enable: bool) -> Self {
         self.accept.set_br(enable);
         self
@@ -70,6 +73,7 @@ impl<S> Decompression<S> {
     }
 
     /// Sets whether to request the Zstd encoding.
+    #[must_use]
     pub fn zstd(mut self, enable: bool) -> Self {
         self.accept.set_zstd(enable);
         self
@@ -93,17 +97,16 @@ impl<S: fmt::Debug> fmt::Debug for Decompression<S> {
 
 impl<S: Clone> Clone for Decompression<S> {
     fn clone(&self) -> Self {
-        Decompression {
+        Self {
             inner: self.inner.clone(),
             accept: self.accept,
         }
     }
 }
 
-impl<S, State, ReqBody, ResBody> Service<State, Request<ReqBody>> for Decompression<S>
+impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for Decompression<S>
 where
-    S: Service<State, Request<ReqBody>, Response = Response<ResBody>>,
-    State: Clone + Send + Sync + 'static,
+    S: Service<Request<ReqBody>, Response = Response<ResBody>>,
     ReqBody: Send + 'static,
     ResBody: Body<Data: Send + 'static, Error: Send + 'static> + Send + 'static,
 {
@@ -112,13 +115,13 @@ where
 
     async fn serve(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         mut req: Request<ReqBody>,
     ) -> Result<Self::Response, Self::Error> {
-        if let header::Entry::Vacant(entry) = req.headers_mut().entry(ACCEPT_ENCODING) {
-            if let Some(accept) = self.accept.maybe_to_header_value() {
-                entry.insert(accept);
-            }
+        if let header::Entry::Vacant(entry) = req.headers_mut().entry(ACCEPT_ENCODING)
+            && let Some(accept) = self.accept.maybe_to_header_value()
+        {
+            entry.insert(accept);
         }
 
         let res = self.inner.serve(ctx, req).await?;

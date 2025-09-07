@@ -113,10 +113,10 @@ pub(super) fn is_chunked(mut encodings: ValueIter<'_, HeaderValue>) -> bool {
 
 pub(super) fn is_chunked_(value: &HeaderValue) -> bool {
     // chunked must always be the last encoding, according to spec
-    if let Ok(s) = value.to_str() {
-        if let Some(encoding) = s.rsplit(',').next() {
-            return encoding.trim().eq_ignore_ascii_case("chunked");
-        }
+    if let Ok(s) = value.to_str()
+        && let Some(encoding) = s.rsplit(',').next()
+    {
+        return encoding.trim().eq_ignore_ascii_case("chunked");
     }
 
     false

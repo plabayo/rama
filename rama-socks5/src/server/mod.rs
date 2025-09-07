@@ -72,8 +72,8 @@ enum AuthKind<A> {
 impl<A: fmt::Debug> fmt::Debug for AuthKind<A> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            AuthKind::NoAuth(auth) => write!(f, "AuthKind::NoAuth({auth:?})"),
-            AuthKind::WithAuth(auth) => write!(f, "AuthKind::WithAuth({auth:?})"),
+            Self::NoAuth(auth) => write!(f, "AuthKind::NoAuth({auth:?})"),
+            Self::WithAuth(auth) => write!(f, "AuthKind::WithAuth({auth:?})"),
         }
     }
 }
@@ -81,8 +81,8 @@ impl<A: fmt::Debug> fmt::Debug for AuthKind<A> {
 impl<A: Clone> Clone for AuthKind<A> {
     fn clone(&self) -> Self {
         match self {
-            AuthKind::NoAuth(auth) => AuthKind::NoAuth(auth.clone()),
-            AuthKind::WithAuth(auth) => AuthKind::WithAuth(auth.clone()),
+            Self::NoAuth(auth) => Self::NoAuth(auth.clone()),
+            Self::WithAuth(auth) => Self::WithAuth(auth.clone()),
         }
     }
 }
@@ -92,6 +92,7 @@ impl Socks5Acceptor<(), (), (), ()> {
     ///
     /// Use [`Socks5Acceptor::default`] instead if you wish to create a default
     /// [`Socks5Acceptor`] which can be used as a simple and honest byte-byte proxy.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             connector: (),
@@ -258,13 +259,13 @@ enum ErrorContext {
 
 impl From<&'static str> for ErrorContext {
     fn from(value: &'static str) -> Self {
-        ErrorContext::Message(value)
+        Self::Message(value)
     }
 }
 
 impl From<ReplyKind> for ErrorContext {
     fn from(value: ReplyKind) -> Self {
-        ErrorContext::ReplyKind(value)
+        Self::ReplyKind(value)
     }
 }
 
@@ -323,9 +324,9 @@ enum ErrorKind {
 impl fmt::Display for ErrorContext {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ErrorContext::Message(message) => write!(f, "{message}"),
-            ErrorContext::ReplyKind(kind) => write!(f, "reply: {kind}"),
-            ErrorContext::None => write!(f, "no context"),
+            Self::Message(message) => write!(f, "{message}"),
+            Self::ReplyKind(kind) => write!(f, "reply: {kind}"),
+            Self::None => write!(f, "no context"),
         }
     }
 }
@@ -357,18 +358,13 @@ impl std::error::Error for Error {
 }
 
 impl<C, B, U, A> Socks5Acceptor<C, B, U, A> {
-    pub async fn accept<S, State>(
-        &self,
-        mut ctx: Context<State>,
-        mut stream: S,
-    ) -> Result<(), Error>
+    pub async fn accept<S>(&self, mut ctx: Context, mut stream: S) -> Result<(), Error>
     where
-        C: Socks5Connector<S, State>,
-        U: Socks5UdpAssociator<S, State>,
+        C: Socks5Connector<S>,
+        U: Socks5UdpAssociator<S>,
         A: Authorizer<user::Basic, Error: fmt::Debug>,
-        B: Socks5Binder<S, State>,
+        B: Socks5Binder<S>,
         S: Stream + Unpin,
-        State: Clone + Send + Sync + 'static,
     {
         let client_header = client::Header::read_from(&mut stream)
             .await
@@ -503,7 +499,7 @@ impl<C, B, U, A: Authorizer<user::Basic, Error: fmt::Debug>> Socks5Acceptor<C, B
                             Error::io(err).with_context("write server reply: no auth required")
                         })?;
 
-                    return Ok((SocksMethod::NoAuthenticationRequired, None));
+                    Ok((SocksMethod::NoAuthenticationRequired, None))
                 } else {
                     Header::new(SocksMethod::NoAcceptableMethods)
                         .write_to(stream)
@@ -544,14 +540,13 @@ impl<C, B, U, A: Authorizer<user::Basic, Error: fmt::Debug>> Socks5Acceptor<C, B
     }
 }
 
-impl<C, B, U, A, State, S> Service<State, S> for Socks5Acceptor<C, B, U, A>
+impl<C, B, U, A, S> Service<S> for Socks5Acceptor<C, B, U, A>
 where
-    C: Socks5Connector<S, State>,
-    U: Socks5UdpAssociator<S, State>,
+    C: Socks5Connector<S>,
+    U: Socks5UdpAssociator<S>,
     A: Authorizer<user::Basic, Error: fmt::Debug>,
-    B: Socks5Binder<S, State>,
+    B: Socks5Binder<S>,
     S: Stream + Unpin,
-    State: Clone + Send + Sync + 'static,
 {
     type Response = ();
     type Error = Error;
@@ -559,7 +554,7 @@ where
     #[inline]
     fn serve(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         stream: S,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
         self.accept(ctx, stream)
@@ -568,10 +563,10 @@ where
 
 impl<C, B, U, A> Socks5Acceptor<C, B, U, A>
 where
-    C: Socks5Connector<TcpStream, ()>,
-    U: Socks5UdpAssociator<TcpStream, ()>,
+    C: Socks5Connector<TcpStream>,
+    U: Socks5UdpAssociator<TcpStream>,
     A: Authorizer<user::Basic, Error: fmt::Debug>,
-    B: Socks5Binder<TcpStream, ()>,
+    B: Socks5Binder<TcpStream>,
 {
     /// Listen for connections on the given [`Interface`], serving Socks5(h) connections.
     ///
@@ -581,33 +576,6 @@ where
         I: TryInto<Interface, Error: Into<BoxError>>,
     {
         let tcp = TcpListener::bind(interface).await?;
-        tcp.serve(self).await;
-        Ok(())
-    }
-}
-
-impl<C, B, U, A> Socks5Acceptor<C, B, U, A> {
-    /// Listen for connections on the given [`Interface`], serving Socks5(h) connections.
-    ///
-    /// Same as [`Self::listen`], but including the given state in the [`Service`]'s [`Context`].
-    ///
-    /// [`Service`]: rama_core::Service
-    /// [`Context`]: rama_core::Context
-    pub async fn listen_with_state<State, I>(
-        self,
-        state: State,
-        interface: I,
-    ) -> Result<(), BoxError>
-    where
-        C: Socks5Connector<TcpStream, State>,
-        U: Socks5UdpAssociator<TcpStream, State>,
-        A: Authorizer<user::Basic, Error: fmt::Debug>,
-        B: Socks5Binder<TcpStream, State>,
-        State: Clone + Send + Sync + 'static,
-        State: Clone + Send + Sync + 'static,
-        I: TryInto<Interface, Error: Into<BoxError>>,
-    {
-        let tcp = TcpListener::build_with_state(state).bind(interface).await?;
         tcp.serve(self).await;
         Ok(())
     }

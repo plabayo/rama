@@ -37,29 +37,24 @@ impl<S: fmt::Debug> fmt::Debug for DnsResolveModeService<S> {
 
 impl<S: Clone> Clone for DnsResolveModeService<S> {
     fn clone(&self) -> Self {
-        DnsResolveModeService {
+        Self {
             inner: self.inner.clone(),
             header_name: self.header_name.clone(),
         }
     }
 }
 
-impl<State, Body, S> Service<State, Request<Body>> for DnsResolveModeService<S>
+impl<Body, S> Service<Request<Body>> for DnsResolveModeService<S>
 where
-    State: Clone + Send + Sync + 'static,
     Body: Send + Sync + 'static,
-    S: Service<
-            State,
-            Request<Body>,
-            Error: Into<rama_core::error::BoxError> + Send + Sync + 'static,
-        >,
+    S: Service<Request<Body>, Error: Into<rama_core::error::BoxError> + Send + Sync + 'static>,
 {
     type Response = S::Response;
     type Error = OpaqueError;
 
     async fn serve(
         &self,
-        mut ctx: Context<State>,
+        mut ctx: Context,
         request: Request<Body>,
     ) -> Result<Self::Response, Self::Error> {
         if let Some(header_value) = request.headers().get(&self.header_name) {

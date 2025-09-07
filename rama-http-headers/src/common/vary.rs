@@ -1,4 +1,4 @@
-use rama_http_types::HeaderValue;
+use rama_http_types::{HeaderName, HeaderValue};
 
 use crate::util::FlatCsv;
 
@@ -38,8 +38,9 @@ derive_header! {
 
 impl Vary {
     /// Create a new `Very: *` header.
-    pub fn any() -> Vary {
-        Vary(HeaderValue::from_static("*").into())
+    #[must_use]
+    pub fn any() -> Self {
+        Self(HeaderValue::from_static("*").into())
     }
 
     /// Check if this includes `*`.
@@ -50,6 +51,12 @@ impl Vary {
     /// Iterate the header names of this `Vary`.
     pub fn iter_strs(&self) -> impl Iterator<Item = &str> {
         self.0.iter()
+    }
+}
+
+impl From<HeaderName> for Vary {
+    fn from(name: HeaderName) -> Self {
+        Self(HeaderValue::from(name).into())
     }
 }
 

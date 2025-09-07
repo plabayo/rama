@@ -26,7 +26,9 @@ pub use exotic_forward_ip::{CFConnectingIp, ClientIp, TrueClientIp, XClientIp, X
 
 /// A trait for types headers that is used by middleware
 /// which supports headers that can be converted into and from Forward data.
-pub trait ForwardHeader: crate::Header + IntoIterator<Item = ForwardedElement> {
+pub trait ForwardHeader:
+    crate::HeaderEncode + crate::HeaderDecode + IntoIterator<Item = ForwardedElement>
+{
     /// Try to convert the given iterator of `ForwardedElement` into the header.
     ///
     /// `None` is returned if the conversion fails.

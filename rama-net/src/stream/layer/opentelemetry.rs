@@ -33,9 +33,9 @@ struct Metrics {
 
 impl Metrics {
     /// Create a new [`NetworkMetrics`]
-    fn new(meter: Meter, prefix: Option<String>) -> Self {
+    fn new(meter: &Meter, prefix: Option<&str>) -> Self {
         let network_connection_duration = meter
-            .f64_histogram(match &prefix {
+            .f64_histogram(match prefix {
                 Some(prefix) => Cow::Owned(format!("{prefix}.{NETWORK_CONNECTION_DURATION}")),
                 None => Cow::Borrowed(NETWORK_CONNECTION_DURATION),
             })
@@ -53,7 +53,7 @@ impl Metrics {
             )
             .build();
 
-        Metrics {
+        Self {
             network_connection_duration,
             network_total_connections,
         }
@@ -79,7 +79,7 @@ impl<F: fmt::Debug> fmt::Debug for NetworkMetricsLayer<F> {
 
 impl<F: Clone> Clone for NetworkMetricsLayer<F> {
     fn clone(&self) -> Self {
-        NetworkMetricsLayer {
+        Self {
             metrics: self.metrics.clone(),
             base_attributes: self.base_attributes.clone(),
             attributes_factory: self.attributes_factory.clone(),
@@ -90,12 +90,14 @@ impl<F: Clone> Clone for NetworkMetricsLayer<F> {
 impl NetworkMetricsLayer {
     /// Create a new [`NetworkMetricsLayer`] using the global [`Meter`] provider,
     /// with the default name and version.
+    #[must_use]
     pub fn new() -> Self {
         Self::custom(MeterOptions::default())
     }
 
     /// Create a new [`NetworkMetricsLayer`] using the global [`Meter`] provider,
     /// with a custom name and version.
+    #[must_use]
     pub fn custom(opts: MeterOptions) -> Self {
         let service_info = opts.service.unwrap_or_else(|| ServiceInfo {
             name: rama_utils::info::NAME.to_owned(),
@@ -104,10 +106,10 @@ impl NetworkMetricsLayer {
 
         let mut attributes = opts.attributes.unwrap_or_else(|| Vec::with_capacity(2));
         attributes.push(KeyValue::new(SERVICE_NAME, service_info.name.clone()));
-        attributes.push(KeyValue::new(SERVICE_VERSION, service_info.version.clone()));
+        attributes.push(KeyValue::new(SERVICE_VERSION, service_info.version));
 
         let meter = get_versioned_meter();
-        let metrics = Metrics::new(meter, opts.metric_prefix);
+        let metrics = Metrics::new(&meter, opts.metric_prefix.as_deref());
 
         Self {
             metrics: Arc::new(metrics),
@@ -207,9 +209,9 @@ impl<S: Clone, F: Clone> Clone for NetworkMetricsService<S, F> {
 }
 
 impl<S, F> NetworkMetricsService<S, F> {
-    fn compute_attributes<State>(&self, ctx: &Context<State>) -> Vec<KeyValue>
+    fn compute_attributes(&self, ctx: &Context) -> Vec<KeyValue>
     where
-        F: AttributesFactory<State>,
+        F: AttributesFactory,
     {
         let mut attributes = self
             .attributes_factory
@@ -235,21 +237,16 @@ impl<S, F> NetworkMetricsService<S, F> {
     }
 }
 
-impl<S, F, State, Stream> Service<State, Stream> for NetworkMetricsService<S, F>
+impl<S, F, Stream> Service<Stream> for NetworkMetricsService<S, F>
 where
-    S: Service<State, Stream>,
-    F: AttributesFactory<State>,
-    State: Clone + Send + Sync + 'static,
+    S: Service<Stream>,
+    F: AttributesFactory,
     Stream: crate::stream::Stream,
 {
     type Response = S::Response;
     type Error = S::Error;
 
-    async fn serve(
-        &self,
-        ctx: Context<State>,
-        stream: Stream,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, ctx: Context, stream: Stream) -> Result<Self::Response, Self::Error> {
         let attributes: Vec<KeyValue> = self.compute_attributes(&ctx);
 
         self.metrics.network_total_connections.add(1, &attributes);
@@ -373,7 +370,7 @@ mod tests {
             metric_prefix: Some("foo".to_owned()),
             ..Default::default()
         })
-        .with_attributes(|size_hint: usize, _ctx: &Context<()>| {
+        .with_attributes(|size_hint: usize, _ctx: &Context| {
             let mut attributes = Vec::with_capacity(size_hint + 1);
             attributes.push(KeyValue::new("test", "attribute_fn"));
             attributes

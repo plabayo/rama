@@ -5,7 +5,7 @@ use std::fmt;
 /// given function.
 ///
 /// The [`Layer::layer`] method takes a type implementing [`Service`] and
-/// returns a different type implementing [`Service`]. In many cases, this can
+/// returns a different type implementing [`Layer`]. In many cases, this can
 /// be implemented by a function or a closure. The [`LayerFn`] helper allows
 /// writing simple [`Layer`] implementations without needing the boilerplate of
 /// a new struct implementing [`Layer`].
@@ -23,12 +23,12 @@ pub struct LayerFn<F> {
 
 impl<F, S, Out> Layer<S> for LayerFn<F>
 where
-    F: FnOnce(S) -> Out + Clone,
+    F: Fn(S) -> Out,
 {
     type Service = Out;
 
     fn layer(&self, inner: S) -> Self::Service {
-        (self.f.clone())(inner)
+        (self.f)(inner)
     }
 
     fn into_layer(self, inner: S) -> Self::Service {
@@ -90,18 +90,17 @@ mod tests {
             }
         }
 
-        impl<S, State, Request> Service<State, Request> for ToUpper<S>
+        impl<S, Request> Service<Request> for ToUpper<S>
         where
             Request: Send + 'static,
-            S: Service<State, Request, Response = &'static str>,
-            State: Clone + Send + Sync + 'static,
+            S: Service<Request, Response = &'static str>,
         {
             type Response = String;
             type Error = S::Error;
 
             async fn serve(
                 &self,
-                ctx: Context<State>,
+                ctx: Context,
                 req: Request,
             ) -> Result<Self::Response, Self::Error> {
                 let res = self.0.serve(ctx, req).await;

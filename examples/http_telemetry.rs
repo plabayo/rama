@@ -42,29 +42,33 @@ use rama::{
         client::EasyHttpWebClient,
         layer::{opentelemetry::RequestMetricsLayer, trace::TraceLayer},
         server::HttpServer,
-        service::opentelemetry::OtelExporter,
-        service::web::WebService,
-        service::web::response::Html,
+        service::{
+            opentelemetry::OtelExporter,
+            web::{WebService, response::Html},
+        },
     },
+    layer::AddExtensionLayer,
     net::stream::layer::opentelemetry::NetworkMetricsLayer,
     rt::Executor,
     tcp::server::TcpListener,
-    telemetry::opentelemetry::{
-        self, InstrumentationScope, KeyValue,
-        metrics::UpDownCounter,
-        sdk::{
-            Resource,
-            metrics::{PeriodicReader, SdkMeterProvider},
+    telemetry::{
+        opentelemetry::{
+            self, InstrumentationScope, KeyValue,
+            metrics::UpDownCounter,
+            sdk::{
+                Resource,
+                metrics::{PeriodicReader, SdkMeterProvider},
+            },
+            semantic_conventions::{
+                self,
+                resource::{HOST_ARCH, OS_NAME},
+            },
         },
-        semantic_conventions::{
-            self,
-            resource::{HOST_ARCH, OS_NAME},
-        },
+        tracing::level_filters::LevelFilter,
     },
-    telemetry::tracing::level_filters::LevelFilter,
 };
 
-use opentelemetry_otlp::{ExportConfig, Protocol, WithExportConfig, WithHttpConfig};
+use opentelemetry_otlp::{WithExportConfig, WithHttpConfig};
 use std::{sync::Arc, time::Duration};
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -103,20 +107,13 @@ async fn main() {
         )
         .init();
 
-    // configure OT metrics exporter
-    let export_config = ExportConfig {
-        endpoint: Some("http://localhost:4317".to_owned()),
-        timeout: Some(Duration::from_secs(3)),
-        protocol: Protocol::Grpc,
-    };
-
     let exporter_http_svc = EasyHttpWebClient::default();
     let exporter_http_client = OtelExporter::new(exporter_http_svc);
 
     let meter_exporter = opentelemetry_otlp::MetricExporter::builder()
         .with_http()
         .with_http_client(exporter_http_client)
-        .with_export_config(export_config)
+        .with_endpoint("http://localhost:4317")
         .with_timeout(Duration::from_secs(10))
         .build()
         .expect("build OT exporter");
@@ -147,21 +144,25 @@ async fn main() {
         let exec = Executor::graceful(guard.clone());
         let http_service = HttpServer::auto(exec).service(
             (TraceLayer::new_for_http(), RequestMetricsLayer::default()).into_layer(
-                WebService::default().get("/", async |ctx: Context<Arc<Metrics>>| {
-                    ctx.state().counter.add(1, &[]);
+                WebService::default().get("/", async |ctx: Context| {
+                    ctx.get::<Arc<Metrics>>().unwrap().counter.add(1, &[]);
                     Html("<h1>Hello!</h1>")
                 }),
             ),
         );
 
         // service setup & go
-        TcpListener::build_with_state(state)
+        TcpListener::build()
             .bind("127.0.0.1:62012")
             .await
             .unwrap()
             .serve_graceful(
                 guard,
-                NetworkMetricsLayer::default().into_layer(http_service),
+                (
+                    AddExtensionLayer::new(state),
+                    NetworkMetricsLayer::default(),
+                )
+                    .into_layer(http_service),
             )
             .await;
     });

@@ -85,7 +85,7 @@ impl Header {
             }
         };
 
-        Ok(Header { version, methods })
+        Ok(Self { version, methods })
     }
 
     /// Write the client [`Header`] in binary format as specified by [RFC 1928] into the writer.
@@ -194,7 +194,7 @@ impl Request {
 
         let destination = read_authority(r).await?;
 
-        Ok(Request {
+        Ok(Self {
             version,
             command,
             destination,
@@ -244,6 +244,7 @@ impl PartialEq<RequestRef<'_>> for Request {
 }
 
 impl<'a> RequestRef<'a> {
+    #[must_use]
     pub fn new(command: Command, destination: &'a Authority) -> Self {
         Self {
             version: ProtocolVersion::Socks5,
@@ -360,6 +361,7 @@ pub struct UsernamePasswordRequest {
 
 impl UsernamePasswordRequest {
     /// Create a new [`UsernamePasswordRequest`].
+    #[must_use]
     pub fn new(basic: user::Basic) -> Self {
         Self {
             version: UsernamePasswordSubnegotiationVersion::One,
@@ -410,7 +412,7 @@ impl UsernamePasswordRequest {
             user::Basic::new(username, password)
         };
 
-        Ok(UsernamePasswordRequest { version, basic })
+        Ok(Self { version, basic })
     }
 
     /// Write the client [`UsernamePasswordRequest`] in binary format as specified by [RFC 1929] into the writer.
@@ -454,6 +456,7 @@ impl PartialEq<UsernamePasswordRequestRef<'_>> for UsernamePasswordRequest {
 }
 
 impl<'a> UsernamePasswordRequestRef<'a> {
+    #[must_use]
     pub fn new(basic: &'a user::Basic) -> Self {
         Self {
             version: UsernamePasswordSubnegotiationVersion::One,

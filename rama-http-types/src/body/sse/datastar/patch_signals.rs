@@ -30,7 +30,7 @@ impl<T> PatchSignals<T> {
     }
 
     /// Consume `self` as an [`Event`].
-    pub fn into_sse_event(self) -> Event<PatchSignals<T>> {
+    pub fn into_sse_event(self) -> Event<Self> {
         Event::new()
             .try_with_event(Self::TYPE.as_smol_str())
             .unwrap()
@@ -152,9 +152,8 @@ impl<R: EventDataLineReader> EventDataLineReader for PatchSignalsReader<R> {
     }
 
     fn data(&mut self, event: Option<&str>) -> Result<Option<Self::Data>, OpaqueError> {
-        let signals = match self.signals.data(None)? {
-            Some(signals) => signals,
-            None => return Ok(None),
+        let Some(signals) = self.signals.data(None)? else {
+            return Ok(None);
         };
 
         if !event

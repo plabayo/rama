@@ -21,6 +21,7 @@ impl BodyLimitLayer {
     /// Create a new [`BodyLimitLayer`], with the given limit to be applied to the request only.
     ///
     /// See [`BodyLimitLayer`] for more information.
+    #[must_use]
     pub fn request_only(limit: usize) -> Self {
         Self {
             limit: BodyLimit::request_only(limit),
@@ -30,6 +31,7 @@ impl BodyLimitLayer {
     /// Create a new [`BodyLimitLayer`], with the given limit to be applied to the response only.
     ///
     /// See [`BodyLimitLayer`] for more information.
+    #[must_use]
     pub fn response_only(limit: usize) -> Self {
         Self {
             limit: BodyLimit::response_only(limit),
@@ -39,6 +41,7 @@ impl BodyLimitLayer {
     /// Create a new [`BodyLimitLayer`], with the given limit to be applied to both the request and response bodies.
     ///
     /// See [`BodyLimitLayer`] for more information.
+    #[must_use]
     pub fn symmetric(limit: usize) -> Self {
         Self {
             limit: BodyLimit::symmetric(limit),
@@ -49,6 +52,7 @@ impl BodyLimitLayer {
     /// respectively to be applied to the request and response bodies.
     ///
     /// See [`BodyLimitLayer`] for more information.
+    #[must_use]
     pub fn asymmetric(request: usize, response: usize) -> Self {
         Self {
             limit: BodyLimit::asymmetric(request, response),
@@ -114,20 +118,15 @@ impl<S> BodyLimitService<S> {
     }
 }
 
-impl<S, State, IO> Service<State, IO> for BodyLimitService<S>
+impl<S, IO> Service<IO> for BodyLimitService<S>
 where
-    S: Service<State, IO>,
-    State: Clone + Send + Sync + 'static,
+    S: Service<IO>,
     IO: Stream,
 {
     type Response = S::Response;
     type Error = S::Error;
 
-    async fn serve(
-        &self,
-        mut ctx: Context<State>,
-        stream: IO,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut ctx: Context, stream: IO) -> Result<Self::Response, Self::Error> {
         ctx.insert(self.limit);
         self.inner.serve(ctx, stream).await
     }

@@ -49,6 +49,7 @@ impl Ja4 {
     ///
     /// [`ClientHello`]: crate::tls::client::ClientHello
     /// [`ClientConfig`]: crate::tls::client::ClientConfig
+    #[allow(clippy::needless_pass_by_value)]
     pub fn compute_from_client_hello(
         client_hello: impl ClientHelloProvider,
         negotiated_tls_version: Option<ProtocolVersion>,
@@ -127,6 +128,7 @@ impl Ja4 {
     }
 
     #[inline]
+    #[must_use]
     pub fn to_human_string(&self) -> String {
         format!("{self:?}")
     }
@@ -243,8 +245,8 @@ enum TransportProtocol {
 impl fmt::Display for TransportProtocol {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = match self {
-            TransportProtocol::Tcp => "t",
-            TransportProtocol::Quic => "q",
+            Self::Tcp => "t",
+            Self::Quic => "q",
         };
         f.write_str(s)
     }
@@ -261,10 +263,10 @@ enum TlsVersion {
 impl fmt::Display for TlsVersion {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = match self {
-            TlsVersion::Tls1_0 => "10",
-            TlsVersion::Tls1_1 => "11",
-            TlsVersion::Tls1_2 => "12",
-            TlsVersion::Tls1_3 => "13",
+            Self::Tls1_0 => "10",
+            Self::Tls1_1 => "11",
+            Self::Tls1_2 => "12",
+            Self::Tls1_3 => "13",
         };
         f.write_str(s)
     }
@@ -301,13 +303,13 @@ pub enum Ja4ComputeError {
 impl fmt::Display for Ja4ComputeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Ja4ComputeError::MissingClientHello => {
+            Self::MissingClientHello => {
                 write!(f, "Ja4 Compute Error: missing client hello")
             }
-            Ja4ComputeError::EmptyCipherSuites => {
+            Self::EmptyCipherSuites => {
                 write!(f, "Ja4 Compute Error: empty cipher suites")
             }
-            Ja4ComputeError::InvalidTlsVersion => {
+            Self::InvalidTlsVersion => {
                 write!(f, "Ja4 Compute Error: invalid tls version")
             }
         }

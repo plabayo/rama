@@ -122,6 +122,7 @@ impl BidirectionalWriter<UnboundedSender<BidirectionalMessage>> {
 
     /// Create a new [`BidirectionalWriter`] that prints requests and responses to stdout
     /// over an unbounded channel.
+    #[must_use]
     pub fn stdout_unbounded(
         executor: &Executor,
         request_mode: Option<WriterMode>,
@@ -132,6 +133,7 @@ impl BidirectionalWriter<UnboundedSender<BidirectionalMessage>> {
 
     /// Create a new [`BidirectionalWriter`] that prints requests and responses to stderr
     /// over an unbounded channel.
+    #[must_use]
     pub fn stderr_unbounded(
         executor: &Executor,
         request_mode: Option<WriterMode>,
@@ -295,6 +297,7 @@ impl BidirectionalWriter<Sender<BidirectionalMessage>> {
 
     /// Create a new [`BidirectionalWriter`] that prints requests and responses to stdout
     /// over a bounded channel.
+    #[must_use]
     pub fn stdout(
         executor: &Executor,
         buffer: usize,
@@ -311,6 +314,7 @@ impl BidirectionalWriter<Sender<BidirectionalMessage>> {
     }
 
     /// Create a new [`BidirectionalWriter`] that prints the last request and response to stdout.
+    #[must_use]
     pub fn stdout_last(
         executor: &Executor,
         request_mode: Option<WriterMode>,
@@ -321,6 +325,7 @@ impl BidirectionalWriter<Sender<BidirectionalMessage>> {
 
     /// Create a new [`BidirectionalWriter`] that prints requests and responses to stderr
     /// over a bounded channel.
+    #[must_use]
     pub fn stderr(
         executor: &Executor,
         buffer: usize,
@@ -337,6 +342,7 @@ impl BidirectionalWriter<Sender<BidirectionalMessage>> {
     }
 
     /// Create a new [`BidirectionalWriter`] that prints the last request and responses to stderr.
+    #[must_use]
     pub fn stderr_last(
         executor: &Executor,
         request_mode: Option<WriterMode>,

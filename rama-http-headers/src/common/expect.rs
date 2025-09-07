@@ -3,7 +3,7 @@ use std::fmt;
 use rama_http_types::{HeaderName, HeaderValue};
 
 use crate::util::IterExt;
-use crate::{Error, Header};
+use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
 
 /// The `Expect` header.
 ///
@@ -26,27 +26,31 @@ pub struct Expect(());
 
 impl Expect {
     /// "100-continue"
-    pub const CONTINUE: Expect = Expect(());
+    pub const CONTINUE: Self = Self(());
 }
 
-impl Header for Expect {
+impl TypedHeader for Expect {
     fn name() -> &'static HeaderName {
         &::rama_http_types::header::EXPECT
     }
+}
 
+impl HeaderDecode for Expect {
     fn decode<'i, I: Iterator<Item = &'i HeaderValue>>(values: &mut I) -> Result<Self, Error> {
         values
             .just_one()
             .and_then(|value| {
                 if value == "100-continue" {
-                    Some(Expect::CONTINUE)
+                    Some(Self::CONTINUE)
                 } else {
                     None
                 }
             })
             .ok_or_else(Error::invalid)
     }
+}
 
+impl HeaderEncode for Expect {
     fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
         values.extend(::std::iter::once(HeaderValue::from_static("100-continue")));
     }

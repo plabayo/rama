@@ -89,6 +89,7 @@ impl std::error::Error for EventBuildError {}
 
 impl<T> Event<T> {
     /// Create a new [`Event`].
+    #[must_use]
     pub fn new() -> Self {
         Self {
             event: None,

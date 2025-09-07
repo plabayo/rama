@@ -91,7 +91,7 @@ impl TlsCertSource {
         self,
         mut builder: SslAcceptorBuilder,
         server_name: Option<Host>,
-        maybe_client_hello: &Option<Arc<Mutex<Option<RamaClientHello>>>>,
+        maybe_client_hello: Option<&Arc<Mutex<Option<RamaClientHello>>>>,
     ) -> Result<SslAcceptorBuilder, OpaqueError> {
         match self.kind {
             TlsCertSourceKind::InMemory(issued_cert) => {
@@ -136,7 +136,7 @@ impl TlsCertSource {
                 ca_key,
                 ca_cert,
             } => {
-                let cb_maybe_client_hello = maybe_client_hello.clone();
+                let cb_maybe_client_hello = maybe_client_hello.cloned();
                 builder.set_select_certificate_callback(move |client_hello| {
                     if let Some(cb_maybe_client_hello) = &cb_maybe_client_hello {
                         let maybe_client_hello = match RamaClientHello::rama_try_from(&client_hello)
@@ -153,14 +153,14 @@ impl TlsCertSource {
                     let mut client_hello = client_hello;
                     let ssl_ref = client_hello.ssl_mut();
 
-                    let host = to_host(ssl_ref, &server_name).map_err(|err| {
+                    let host = to_host(ssl_ref, server_name.as_ref()).map_err(|err| {
                         tracing::error!("boring: failed getting host: {err:?}");
                         SelectCertError::ERROR
                     })?;
 
                     tracing::trace!(%host, "try to use cached issued cert or generate new one");
                     let issued_cert = match &cert_cache {
-                        None => issue_cert_for_ca(host.clone(), &ca_cert, &ca_key)
+                        None => issue_cert_for_ca(&host, &ca_cert, &ca_key)
                             .context("fresh issue of cert")
                             .map_err(|err| {
                                 tracing::error!(
@@ -170,7 +170,7 @@ impl TlsCertSource {
                             })?,
                         Some(cert_cache) => cert_cache
                             .try_get_with(host.clone(), || {
-                                issue_cert_for_ca(host.clone(), &ca_cert, &ca_key)
+                                issue_cert_for_ca(&host, &ca_cert, &ca_key)
                             })
                             .context("fresh issue of cert + insert")
                             .map_err(|err| {
@@ -181,7 +181,7 @@ impl TlsCertSource {
                             })?,
                     };
 
-                    add_issued_cert_to_ssl_ref(host, issued_cert, ssl_ref).map_err(|err| {
+                    add_issued_cert_to_ssl_ref(&host, &issued_cert, ssl_ref).map_err(|err| {
                         tracing::error!(
                             "boring: select certificate callback: add certs to ssl ref: {err:?}"
                         );
@@ -192,8 +192,8 @@ impl TlsCertSource {
                 });
             }
             TlsCertSourceKind::DynamicIssuer { issuer, cert_cache } => {
-                let cb_maybe_client_hello = maybe_client_hello.clone();
-                let cert_cache = cert_cache.clone();
+                let cb_maybe_client_hello = maybe_client_hello.cloned();
+                let cert_cache = cert_cache;
 
                 builder.set_async_select_certificate_callback(move |client_hello| {
                     let rama_client_hello =
@@ -207,7 +207,7 @@ impl TlsCertSource {
                     }
 
                     let ssl_ref = client_hello.ssl_mut();
-                    let host = to_host(ssl_ref, &server_name).map_err(|err| {
+                    let host = to_host(ssl_ref, server_name.as_ref()).map_err(|err| {
                         tracing::error!("boring: failed getting host: {err:?}");
                         AsyncSelectCertError{}
                     })?;
@@ -240,8 +240,8 @@ impl TlsCertSource {
                             let ssl_ref = client_hello.ssl_mut();
 
                             add_issued_cert_to_ssl_ref(
-                                host,
-                                issued_cert,
+                                &host,
+                                &issued_cert,
                                 ssl_ref,
                             ).map_err(|err| {
                                 tracing::error!("boring: async select certificate callback: add certs to ssl ref: {err:?}");
@@ -292,7 +292,7 @@ impl TryFrom<rama_net::tls::server::ServerConfig> for TlsAcceptorData {
         let cert_source_kind = match value.server_auth {
             ServerAuth::SelfSigned(data) => {
                 let issued_cert =
-                    self_signed_server_auth(data).context("boring/TlsAcceptorData")?;
+                    self_signed_server_auth(&data).context("boring/TlsAcceptorData")?;
                 TlsCertSourceKind::InMemory(issued_cert)
             }
             ServerAuth::Single(data) => {
@@ -315,7 +315,7 @@ impl TryFrom<rama_net::tls::server::ServerConfig> for TlsAcceptorData {
 
                 match data.kind {
                     ServerCertIssuerKind::SelfSigned(data) => {
-                        let (ca_cert, ca_key) = self_signed_server_ca(data)
+                        let (ca_cert, ca_key) = self_signed_server_ca(&data)
                             .context("boring/TlsAcceptorData: CA: self-signed ca")?;
                         TlsCertSourceKind::InMemoryIssuer {
                             cert_cache,
@@ -344,7 +344,7 @@ impl TryFrom<rama_net::tls::server::ServerConfig> for TlsAcceptorData {
         };
 
         // return the created server config, all good if you reach here
-        Ok(TlsAcceptorData {
+        Ok(Self {
             config: Arc::new(TlsConfig {
                 cert_source: TlsCertSource {
                     kind: cert_source_kind,
@@ -359,8 +359,8 @@ impl TryFrom<rama_net::tls::server::ServerConfig> for TlsAcceptorData {
     }
 }
 
-fn to_host(ssl_ref: &SslRef, server_name: &Option<Host>) -> Result<Host, OpaqueError> {
-    let host = match (ssl_ref.servername(NameType::HOST_NAME), &server_name) {
+fn to_host(ssl_ref: &SslRef, server_name: Option<&Host>) -> Result<Host, OpaqueError> {
+    let host = match (ssl_ref.servername(NameType::HOST_NAME), server_name) {
         (Some(sni), _) => {
             tracing::trace!("boring: server_name to host: use client SNI: {sni}");
             sni.parse().map_err(|err| {
@@ -424,7 +424,7 @@ fn server_auth_data_to_private_key_and_ca_chain(
 }
 
 fn issue_cert_for_ca(
-    host: Host,
+    host: &Host,
     ca_cert: &X509,
     ca_key: &PKey<Private>,
 ) -> Result<IssuedCert, OpaqueError> {
@@ -455,8 +455,8 @@ fn issue_cert_for_ca(
 }
 
 fn add_issued_cert_to_ssl_ref(
-    host: Host,
-    issued_cert: IssuedCert,
+    host: &Host,
+    issued_cert: &IssuedCert,
     builder: &mut SslRef,
 ) -> Result<(), OpaqueError> {
     tracing::trace!("add issued cert for host {host} to (boring) SslAcceptorBuilder");
@@ -483,9 +483,9 @@ fn add_issued_cert_to_ssl_ref(
     Ok(())
 }
 
-fn self_signed_server_auth(data: SelfSignedData) -> Result<IssuedCert, OpaqueError> {
-    let (ca_cert, ca_privkey) = self_signed_server_auth_gen_ca(&data).context("self-signed CA")?;
-    let (cert, privkey) = self_signed_server_auth_gen_cert(&data, &ca_cert, &ca_privkey)
+fn self_signed_server_auth(data: &SelfSignedData) -> Result<IssuedCert, OpaqueError> {
+    let (ca_cert, ca_privkey) = self_signed_server_auth_gen_ca(data).context("self-signed CA")?;
+    let (cert, privkey) = self_signed_server_auth_gen_cert(data, &ca_cert, &ca_privkey)
         .context("self-signed cert using self-signed CA")?;
     Ok(IssuedCert {
         cert_chain: vec![cert, ca_cert],
@@ -494,8 +494,8 @@ fn self_signed_server_auth(data: SelfSignedData) -> Result<IssuedCert, OpaqueErr
 }
 
 #[inline]
-fn self_signed_server_ca(data: SelfSignedData) -> Result<(X509, PKey<Private>), OpaqueError> {
-    self_signed_server_auth_gen_ca(&data)
+fn self_signed_server_ca(data: &SelfSignedData) -> Result<(X509, PKey<Private>), OpaqueError> {
+    self_signed_server_auth_gen_ca(data)
 }
 
 fn self_signed_server_auth_gen_cert(

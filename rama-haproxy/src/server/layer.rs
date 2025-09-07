@@ -21,6 +21,7 @@ pub struct HaProxyLayer {
 
 impl HaProxyLayer {
     /// Create a new [`HaProxyLayer`].
+    #[must_use]
     pub const fn new() -> Self {
         Self { peek: false }
     }
@@ -61,7 +62,7 @@ pub struct HaProxyService<S> {
 impl<S> HaProxyService<S> {
     /// Create a new [`HaProxyService`] with the given inner service.
     pub const fn new(inner: S) -> Self {
-        HaProxyService { inner, peek: false }
+        Self { inner, peek: false }
     }
 
     generate_set_and_with!(
@@ -88,27 +89,22 @@ impl<S: fmt::Debug> fmt::Debug for HaProxyService<S> {
 
 impl<S: Clone> Clone for HaProxyService<S> {
     fn clone(&self) -> Self {
-        HaProxyService {
+        Self {
             inner: self.inner.clone(),
             peek: self.peek,
         }
     }
 }
 
-impl<State, S, IO> Service<State, IO> for HaProxyService<S>
+impl<S, IO> Service<IO> for HaProxyService<S>
 where
-    State: Clone + Send + Sync + 'static,
-    S: Service<State, PeekStream<HeapReader, IO>, Error: Into<BoxError>>,
+    S: Service<PeekStream<HeapReader, IO>, Error: Into<BoxError>>,
     IO: Stream + Unpin,
 {
     type Response = S::Response;
     type Error = BoxError;
 
-    async fn serve(
-        &self,
-        mut ctx: Context<State>,
-        mut stream: IO,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut ctx: Context, mut stream: IO) -> Result<Self::Response, Self::Error> {
         let (mut buffer, mut read) = if self.peek {
             tracing::trace!("haproxy protocol peeking enabled: start detection");
 
@@ -182,27 +178,21 @@ where
                     v1::Addresses::Tcp4(info) => {
                         let peer_addr: SocketAddr = (info.source_address, info.source_port).into();
                         let el = ForwardedElement::forwarded_for(peer_addr);
-                        match ctx.get_mut::<Forwarded>() {
-                            Some(forwarded) => {
-                                forwarded.append(el);
-                            }
-                            None => {
-                                let forwarded = Forwarded::new(el);
-                                ctx.insert(forwarded);
-                            }
+                        if let Some(forwarded) = ctx.get_mut::<Forwarded>() {
+                            forwarded.append(el);
+                        } else {
+                            let forwarded = Forwarded::new(el);
+                            ctx.insert(forwarded);
                         }
                     }
                     v1::Addresses::Tcp6(info) => {
                         let peer_addr: SocketAddr = (info.source_address, info.source_port).into();
                         let el = ForwardedElement::forwarded_for(peer_addr);
-                        match ctx.get_mut::<Forwarded>() {
-                            Some(forwarded) => {
-                                forwarded.append(el);
-                            }
-                            None => {
-                                let forwarded = Forwarded::new(el);
-                                ctx.insert(forwarded);
-                            }
+                        if let Some(forwarded) = ctx.get_mut::<Forwarded>() {
+                            forwarded.append(el);
+                        } else {
+                            let forwarded = Forwarded::new(el);
+                            ctx.insert(forwarded);
                         }
                     }
                     v1::Addresses::Unknown => (),
@@ -214,27 +204,21 @@ where
                     v2::Addresses::IPv4(info) => {
                         let peer_addr: SocketAddr = (info.source_address, info.source_port).into();
                         let el = ForwardedElement::forwarded_for(peer_addr);
-                        match ctx.get_mut::<Forwarded>() {
-                            Some(forwarded) => {
-                                forwarded.append(el);
-                            }
-                            None => {
-                                let forwarded = Forwarded::new(el);
-                                ctx.insert(forwarded);
-                            }
+                        if let Some(forwarded) = ctx.get_mut::<Forwarded>() {
+                            forwarded.append(el);
+                        } else {
+                            let forwarded = Forwarded::new(el);
+                            ctx.insert(forwarded);
                         }
                     }
                     v2::Addresses::IPv6(info) => {
                         let peer_addr: SocketAddr = (info.source_address, info.source_port).into();
                         let el = ForwardedElement::forwarded_for(peer_addr);
-                        match ctx.get_mut::<Forwarded>() {
-                            Some(forwarded) => {
-                                forwarded.append(el);
-                            }
-                            None => {
-                                let forwarded = Forwarded::new(el);
-                                ctx.insert(forwarded);
-                            }
+                        if let Some(forwarded) = ctx.get_mut::<Forwarded>() {
+                            forwarded.append(el);
+                        } else {
+                            let forwarded = Forwarded::new(el);
+                            ctx.insert(forwarded);
                         }
                     }
                     v2::Addresses::Unix(_) | v2::Addresses::Unspecified => (),

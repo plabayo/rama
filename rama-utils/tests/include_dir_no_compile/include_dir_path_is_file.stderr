@@ -1,0 +1,7 @@
+error: proc macro panicked
+ --> tests/include_dir_no_compile/include_dir_path_is_file.rs:3:23
+  |
+3 | static _ASSETS: Dir = include_dir!("./bar/example.txt");
+  |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = help: message: "$DIR/tests/include_dir_no_compile/./bar/example.txt" is not a directory

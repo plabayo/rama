@@ -39,17 +39,20 @@ pub const MAX_MAX_FRAME_SIZE: FrameSize = (1 << 24) - 1;
 // ===== impl Settings =====
 
 impl Settings {
-    pub fn ack() -> Settings {
-        Settings {
+    #[must_use]
+    pub fn ack() -> Self {
+        Self {
             flags: SettingsFlags::ack(),
-            ..Settings::default()
+            ..Self::default()
         }
     }
 
+    #[must_use]
     pub fn is_ack(&self) -> bool {
         self.flags.is_ack()
     }
 
+    #[must_use]
     pub fn initial_window_size(&self) -> Option<u32> {
         self.config.initial_window_size
     }
@@ -58,7 +61,7 @@ impl Settings {
         self.config = config;
     }
 
-    pub fn merge(&mut self, other: Settings) {
+    pub fn merge(&mut self, other: Self) {
         self.config.merge(other.config);
     }
 
@@ -66,6 +69,7 @@ impl Settings {
         self.config.initial_window_size = size;
     }
 
+    #[must_use]
     pub fn max_concurrent_streams(&self) -> Option<u32> {
         self.config.max_concurrent_streams
     }
@@ -74,6 +78,7 @@ impl Settings {
         self.config.max_concurrent_streams = max;
     }
 
+    #[must_use]
     pub fn max_frame_size(&self) -> Option<u32> {
         self.config.max_frame_size
     }
@@ -85,6 +90,7 @@ impl Settings {
         self.config.max_frame_size = size;
     }
 
+    #[must_use]
     pub fn max_header_list_size(&self) -> Option<u32> {
         self.config.max_header_list_size
     }
@@ -93,6 +99,7 @@ impl Settings {
         self.config.max_header_list_size = size;
     }
 
+    #[must_use]
     pub fn is_push_enabled(&self) -> Option<bool> {
         self.config.enable_push.map(|val| val != 0)
     }
@@ -101,6 +108,7 @@ impl Settings {
         self.config.enable_push = Some(enable as u32);
     }
 
+    #[must_use]
     pub fn is_extended_connect_protocol_enabled(&self) -> Option<bool> {
         self.config.enable_connect_protocol.map(|val| val != 0)
     }
@@ -109,6 +117,7 @@ impl Settings {
         self.config.enable_connect_protocol = val;
     }
 
+    #[must_use]
     pub fn header_table_size(&self) -> Option<u32> {
         self.config.header_table_size
     }
@@ -121,6 +130,7 @@ impl Settings {
         self.config.no_rfc7540_priorities = size;
     }
 
+    #[must_use]
     pub fn no_rfc7540_priorities(&self) -> Option<u32> {
         self.config.no_rfc7540_priorities
     }
@@ -129,7 +139,7 @@ impl Settings {
         self.config.setting_order = order;
     }
 
-    pub fn load(head: Head, payload: &[u8]) -> Result<Settings, Error> {
+    pub fn load(head: Head, payload: &[u8]) -> Result<Self, Error> {
         debug_assert_eq!(head.kind(), super::Kind::Settings);
 
         if !head.stream_id().is_zero() {
@@ -146,7 +156,7 @@ impl Settings {
             }
 
             // Return the ACK frame
-            return Ok(Settings::ack());
+            return Ok(Self::ack());
         }
 
         // Ensure the payload length is correct, each setting is 6 bytes long.
@@ -155,7 +165,7 @@ impl Settings {
             return Err(Error::InvalidPayloadAckSettings);
         }
 
-        let mut settings = Settings::default();
+        let mut settings = Self::default();
         debug_assert!(!settings.flags.is_ack());
 
         let mut setting_order = SettingOrder::default();
@@ -299,8 +309,8 @@ impl Settings {
 }
 
 impl<T> From<Settings> for Frame<T> {
-    fn from(src: Settings) -> Frame<T> {
-        Frame::Settings(src)
+    fn from(src: Settings) -> Self {
+        Self::Settings(src)
     }
 }
 
@@ -308,38 +318,7 @@ impl fmt::Debug for Settings {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let mut builder = f.debug_struct("Settings");
         builder.field("flags", &self.flags);
-        builder.field("setting_order", &self.config.setting_order);
-
-        self.for_each(|setting| match setting.id {
-            SettingId::EnablePush => {
-                builder.field("enable_push", &setting.value);
-            }
-            SettingId::HeaderTableSize => {
-                builder.field("header_table_size", &setting.value);
-            }
-            SettingId::InitialWindowSize => {
-                builder.field("initial_window_size", &setting.value);
-            }
-            SettingId::MaxConcurrentStreams => {
-                builder.field("max_concurrent_streams", &setting.value);
-            }
-            SettingId::MaxFrameSize => {
-                builder.field("max_frame_size", &setting.value);
-            }
-            SettingId::MaxHeaderListSize => {
-                builder.field("max_header_list_size", &setting.value);
-            }
-            SettingId::EnableConnectProtocol => {
-                builder.field("enable_connect_protocol", &setting.value);
-            }
-            SettingId::NoRfc7540Priorities => {
-                builder.field("no_rfc7540_priorities", &setting.value);
-            }
-            SettingId::Unknown(id) => {
-                builder.field(&format!("unknown_unknown_setting_{id}"), &setting.value);
-            }
-        });
-
+        builder.field("config", &self.config);
         builder.finish()
     }
 }
@@ -347,25 +326,25 @@ impl fmt::Debug for Settings {
 // ===== impl SettingsFlags =====
 
 impl SettingsFlags {
-    pub fn empty() -> SettingsFlags {
-        SettingsFlags(0)
+    pub fn empty() -> Self {
+        Self(0)
     }
 
-    pub fn load(bits: u8) -> SettingsFlags {
-        SettingsFlags(bits & ALL)
+    pub fn load(bits: u8) -> Self {
+        Self(bits & ALL)
     }
 
-    pub fn ack() -> SettingsFlags {
-        SettingsFlags(ACK)
+    pub fn ack() -> Self {
+        Self(ACK)
     }
 
-    pub fn is_ack(&self) -> bool {
+    pub fn is_ack(self) -> bool {
         self.0 & ACK == ACK
     }
 }
 
 impl From<SettingsFlags> for u8 {
-    fn from(src: SettingsFlags) -> u8 {
+    fn from(src: SettingsFlags) -> Self {
         src.0
     }
 }

@@ -42,7 +42,7 @@ pub(super) struct Send {
 }
 
 /// A value to detect which public API has called `poll_reset`.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub(crate) enum PollReset {
     AwaitingHeaders,
     Streaming,
@@ -51,7 +51,7 @@ pub(crate) enum PollReset {
 impl Send {
     /// Create a new `Send`
     pub(super) fn new(config: &Config) -> Self {
-        Send {
+        Self {
             init_window_sz: config.remote_init_window_sz,
             max_stream_id: StreamId::MAX,
             next_stream_id: Ok(config.local_next_stream_id),
@@ -88,11 +88,11 @@ impl Send {
         {
             tracing::debug!("illegal connection-specific headers found");
             return Err(UserError::MalformedHeaders);
-        } else if let Some(te) = fields.get(rama_http_types::header::TE) {
-            if te != "trailers" {
-                tracing::debug!("illegal connection-specific headers found");
-                return Err(UserError::MalformedHeaders);
-            }
+        } else if let Some(te) = fields.get(rama_http_types::header::TE)
+            && te != "trailers"
+        {
+            tracing::debug!("illegal connection-specific headers found");
+            return Err(UserError::MalformedHeaders);
         }
         Ok(())
     }
@@ -123,6 +123,7 @@ impl Send {
         Ok(())
     }
 
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub(super) fn send_headers<B>(
         &mut self,
         frame: frame::Headers,
@@ -159,10 +160,8 @@ impl Send {
 
         // Need to notify the connection when pushing onto pending_open since
         // queue_frame only notifies for pending_send.
-        if pending_open {
-            if let Some(task) = task.take() {
-                task.wake();
-            }
+        if pending_open && let Some(task) = task.take() {
+            task.wake();
         }
 
         Ok(())
@@ -318,6 +317,7 @@ impl Send {
         self.prioritize.reserve_capacity(capacity, stream, counts)
     }
 
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub(super) fn poll_capacity(
         &mut self,
         cx: &Context,
@@ -349,12 +349,11 @@ impl Send {
         stream: &mut Stream,
         mode: PollReset,
     ) -> Poll<Result<Reason, crate::h2::Error>> {
-        match stream.state.ensure_reason(mode)? {
-            Some(reason) => Poll::Ready(Ok(reason)),
-            None => {
-                stream.wait_send(cx);
-                Poll::Pending
-            }
+        if let Some(reason) = stream.state.ensure_reason(mode)? {
+            Poll::Ready(Ok(reason))
+        } else {
+            stream.wait_send(cx);
+            Poll::Pending
         }
     }
 

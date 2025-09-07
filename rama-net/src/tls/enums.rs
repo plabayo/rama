@@ -11,6 +11,7 @@ macro_rules! impl_u16_is_grease {
     ($enum_name:ident) => {
         impl $enum_name {
             /// returns true if this id is a (tls) grease object
+            #[must_use]
             pub fn is_grease(&self) -> bool {
                 match self {
                     $enum_name::Unknown(x) if x & 0x0f0f == 0x0a0a => true,
@@ -721,7 +722,7 @@ impl ApplicationProtocol {
         Ok(b.len() + 1)
     }
 
-    pub fn decode_wire_format(r: &mut impl std::io::Read) -> std::io::Result<ApplicationProtocol> {
+    pub fn decode_wire_format(r: &mut impl std::io::Read) -> std::io::Result<Self> {
         let mut length = [0];
         r.read_exact(&mut length)?;
 

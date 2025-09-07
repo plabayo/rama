@@ -22,6 +22,9 @@ pub use ext::BodyExtractExt;
 
 pub mod sse;
 
+mod infinite;
+pub use infinite::InfiniteReader;
+
 type BoxBody = http_body_util::combinators::BoxBody<Bytes, BoxError>;
 
 fn boxed<B>(body: B) -> BoxBody
@@ -45,6 +48,7 @@ where
 }
 
 /// The body type used in rama requests and responses.
+#[must_use]
 #[derive(Debug)]
 pub struct Body(BoxBody);
 
@@ -100,6 +104,7 @@ impl Body {
     /// Convert the body into a [`Stream`] of [`sse::Event`]s.
     ///
     /// <https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events/Using_server-sent_events>.
+    #[must_use]
     pub fn into_event_stream<T: EventDataRead>(self) -> EventStream<BodyDataStream, T> {
         EventStream::new(self.into_data_stream())
     }
@@ -107,6 +112,7 @@ impl Body {
     /// Convert the body into a [`Stream`] of [`sse::Event`]s with optional string data.
     ///
     /// <https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events/Using_server-sent_events>.
+    #[must_use]
     pub fn into_string_data_event_stream(self) -> EventStream<BodyDataStream> {
         EventStream::new(self.into_data_stream())
     }
@@ -191,6 +197,7 @@ impl http_body::Body for Body {
 ///
 /// Created with [`Body::into_data_stream`].
 #[derive(Debug)]
+#[must_use]
 pub struct BodyDataStream {
     inner: Body,
 }

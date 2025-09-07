@@ -19,7 +19,7 @@ mod string_collect {
 
     impl StringCollector {
         pub(super) fn new() -> Self {
-            StringCollector {
+            Self {
                 data: String::new(),
                 incomplete: None,
             }
@@ -108,7 +108,7 @@ enum IncompleteMessageCollector {
 impl IncompleteMessage {
     /// Create new.
     pub(super) fn new(message_type: IncompleteMessageType) -> Self {
-        IncompleteMessage {
+        Self {
             collector: match message_type {
                 IncompleteMessageType::Binary => IncompleteMessageCollector::Binary(Vec::new()),
                 IncompleteMessageType::Text => {
@@ -167,6 +167,7 @@ impl IncompleteMessage {
 }
 
 /// The type of incomplete message.
+#[derive(Debug, Clone, Copy)]
 pub(super) enum IncompleteMessageType {
     Text,
     Binary,
@@ -195,55 +196,53 @@ pub enum Message {
 
 impl Message {
     /// Create a new text WebSocket message from a stringable.
-    pub fn text<S>(string: S) -> Message
+    pub fn text<S>(string: S) -> Self
     where
         S: Into<Utf8Bytes>,
     {
-        Message::Text(string.into())
+        Self::Text(string.into())
     }
 
     /// Create a new binary WebSocket message by converting to `Bytes`.
-    pub fn binary<B>(bin: B) -> Message
+    pub fn binary<B>(bin: B) -> Self
     where
         B: Into<Bytes>,
     {
-        Message::Binary(bin.into())
+        Self::Binary(bin.into())
     }
 
     /// Indicates whether a message is a text message.
     pub fn is_text(&self) -> bool {
-        matches!(*self, Message::Text(_))
+        matches!(*self, Self::Text(_))
     }
 
     /// Indicates whether a message is a binary message.
     pub fn is_binary(&self) -> bool {
-        matches!(*self, Message::Binary(_))
+        matches!(*self, Self::Binary(_))
     }
 
     /// Indicates whether a message is a ping message.
     pub fn is_ping(&self) -> bool {
-        matches!(*self, Message::Ping(_))
+        matches!(*self, Self::Ping(_))
     }
 
     /// Indicates whether a message is a pong message.
     pub fn is_pong(&self) -> bool {
-        matches!(*self, Message::Pong(_))
+        matches!(*self, Self::Pong(_))
     }
 
     /// Indicates whether a message is a close message.
     pub fn is_close(&self) -> bool {
-        matches!(*self, Message::Close(_))
+        matches!(*self, Self::Close(_))
     }
 
     /// Get the length of the WebSocket message.
     pub fn len(&self) -> usize {
         match *self {
-            Message::Text(ref string) => string.len(),
-            Message::Binary(ref data) | Message::Ping(ref data) | Message::Pong(ref data) => {
-                data.len()
-            }
-            Message::Close(ref data) => data.as_ref().map(|d| d.reason.len()).unwrap_or(0),
-            Message::Frame(ref frame) => frame.len(),
+            Self::Text(ref string) => string.len(),
+            Self::Binary(ref data) | Self::Ping(ref data) | Self::Pong(ref data) => data.len(),
+            Self::Close(ref data) => data.as_ref().map(|d| d.reason.len()).unwrap_or(0),
+            Self::Frame(ref frame) => frame.len(),
         }
     }
 
@@ -256,24 +255,22 @@ impl Message {
     /// Consume the WebSocket and return it as binary data.
     pub fn into_data(self) -> Bytes {
         match self {
-            Message::Text(utf8) => utf8.into(),
-            Message::Binary(data) | Message::Ping(data) | Message::Pong(data) => data,
-            Message::Close(None) => <_>::default(),
-            Message::Close(Some(frame)) => frame.reason.into(),
-            Message::Frame(frame) => frame.into_payload(),
+            Self::Text(utf8) => utf8.into(),
+            Self::Binary(data) | Self::Ping(data) | Self::Pong(data) => data,
+            Self::Close(None) => <_>::default(),
+            Self::Close(Some(frame)) => frame.reason.into(),
+            Self::Frame(frame) => frame.into_payload(),
         }
     }
 
     /// Attempt to consume the WebSocket message and convert it to a String.
     pub fn into_text(self) -> Result<Utf8Bytes, ProtocolError> {
         match self {
-            Message::Text(txt) => Ok(txt),
-            Message::Binary(data) | Message::Ping(data) | Message::Pong(data) => {
-                Ok(data.try_into()?)
-            }
-            Message::Close(None) => Ok(<_>::default()),
-            Message::Close(Some(frame)) => Ok(frame.reason),
-            Message::Frame(frame) => Ok(frame.into_text()?),
+            Self::Text(txt) => Ok(txt),
+            Self::Binary(data) | Self::Ping(data) | Self::Pong(data) => Ok(data.try_into()?),
+            Self::Close(None) => Ok(<_>::default()),
+            Self::Close(Some(frame)) => Ok(frame.reason),
+            Self::Frame(frame) => Ok(frame.into_text()?),
         }
     }
 
@@ -281,13 +278,13 @@ impl Message {
     /// this will try to convert binary data to utf8.
     pub fn to_text(&self) -> Result<&str, ProtocolError> {
         match *self {
-            Message::Text(ref string) => Ok(string.as_str()),
-            Message::Binary(ref data) | Message::Ping(ref data) | Message::Pong(ref data) => {
+            Self::Text(ref string) => Ok(string.as_str()),
+            Self::Binary(ref data) | Self::Ping(ref data) | Self::Pong(ref data) => {
                 Ok(str::from_utf8(data)?)
             }
-            Message::Close(None) => Ok(""),
-            Message::Close(Some(ref frame)) => Ok(&frame.reason),
-            Message::Frame(ref frame) => Ok(frame.to_text()?),
+            Self::Close(None) => Ok(""),
+            Self::Close(Some(ref frame)) => Ok(&frame.reason),
+            Self::Frame(ref frame) => Ok(frame.to_text()?),
         }
     }
 }
@@ -295,34 +292,34 @@ impl Message {
 impl From<String> for Message {
     #[inline]
     fn from(string: String) -> Self {
-        Message::text(string)
+        Self::text(string)
     }
 }
 
 impl<'s> From<&'s str> for Message {
     #[inline]
     fn from(string: &'s str) -> Self {
-        Message::text(string)
+        Self::text(string)
     }
 }
 
 impl<'b> From<&'b [u8]> for Message {
     #[inline]
     fn from(data: &'b [u8]) -> Self {
-        Message::binary(Bytes::copy_from_slice(data))
+        Self::binary(Bytes::copy_from_slice(data))
     }
 }
 
 impl From<Bytes> for Message {
     fn from(data: Bytes) -> Self {
-        Message::binary(data)
+        Self::binary(data)
     }
 }
 
 impl From<Vec<u8>> for Message {
     #[inline]
     fn from(data: Vec<u8>) -> Self {
-        Message::binary(data)
+        Self::binary(data)
     }
 }
 
@@ -336,12 +333,12 @@ impl From<Message> for Bytes {
 impl fmt::Display for Message {
     fn fmt(&self, f: &mut fmt::Formatter) -> StdResult<(), fmt::Error> {
         match self {
-            Message::Text(utf8_bytes) => write!(f, "Message::Text({utf8_bytes})"),
-            Message::Binary(bytes) => write!(f, "Message::Binary({bytes:x})"),
-            Message::Ping(bytes) => write!(f, "Message::Ping({bytes:x})"),
-            Message::Pong(bytes) => write!(f, "Message::Pong({bytes:x})"),
-            Message::Close(_) => write!(f, "Message::Close<length={}>", self.len()),
-            Message::Frame(_) => write!(f, "Message::Frame<length={}>", self.len()),
+            Self::Text(utf8_bytes) => write!(f, "Message::Text({utf8_bytes})"),
+            Self::Binary(bytes) => write!(f, "Message::Binary({bytes:x})"),
+            Self::Ping(bytes) => write!(f, "Message::Ping({bytes:x})"),
+            Self::Pong(bytes) => write!(f, "Message::Pong({bytes:x})"),
+            Self::Close(_) => write!(f, "Message::Close<length={}>", self.len()),
+            Self::Frame(_) => write!(f, "Message::Frame<length={}>", self.len()),
         }
     }
 }

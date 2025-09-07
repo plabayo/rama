@@ -18,6 +18,7 @@ impl HttpProxyConnectorLayer {
     ///
     /// [`Context`]: rama_core::Context
     /// [`ProxyAddress`]: rama_net::address::ProxyAddress
+    #[must_use]
     pub fn optional() -> Self {
         Self {
             required: false,
@@ -31,6 +32,7 @@ impl HttpProxyConnectorLayer {
     ///
     /// [`Context`]: rama_core::Context
     /// [`ProxyAddress`]: rama_net::address::ProxyAddress
+    #[must_use]
     pub fn required() -> Self {
         Self {
             required: true,
@@ -41,6 +43,7 @@ impl HttpProxyConnectorLayer {
     /// Set the HTTP version to use for the CONNECT request.
     ///
     /// By default this is set to HTTP/1.1.
+    #[must_use]
     pub fn with_version(mut self, version: Version) -> Self {
         self.version = Some(version);
         self
@@ -53,6 +56,7 @@ impl HttpProxyConnectorLayer {
     }
 
     /// Set the HTTP version to auto detect for the CONNECT request.
+    #[must_use]
     pub fn with_auto_version(mut self) -> Self {
         self.version = None;
         self

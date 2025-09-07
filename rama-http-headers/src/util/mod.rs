@@ -7,11 +7,11 @@ use crate::Error;
 pub(crate) use self::entity::{EntityTag, EntityTagRange};
 pub(crate) use self::flat_csv::{FlatCsv, SemiColon};
 pub(crate) use self::fmt::fmt;
-pub(crate) use self::http_date::HttpDate;
+pub use self::http_date::HttpDate;
 pub(crate) use self::iter::IterExt;
 //pub use language_tags::LanguageTag;
 //pub use self::quality_value::{Quality, QualityValue};
-pub(crate) use self::seconds::Seconds;
+pub use self::seconds::Seconds;
 pub(crate) use self::value_string::HeaderValueString;
 
 //mod charset;
@@ -28,18 +28,22 @@ mod value_string;
 
 macro_rules! derive_header {
     ($type:ident(_), name: $name:ident) => {
-        impl crate::Header for $type {
+        impl crate::TypedHeader for $type {
             fn name() -> &'static ::rama_http_types::header::HeaderName {
                 &::rama_http_types::header::$name
             }
+        }
 
+        impl crate::HeaderDecode for $type {
             fn decode<'i, I>(values: &mut I) -> Result<Self, crate::Error>
             where
                 I: Iterator<Item = &'i ::rama_http_types::header::HeaderValue>,
             {
                 crate::util::TryFromValues::try_from_values(values).map($type)
             }
+        }
 
+        impl crate::HeaderEncode for $type {
             fn encode<E: Extend<::rama_http_types::HeaderValue>>(&self, values: &mut E) {
                 values.extend(::std::iter::once((&self.0).into()));
             }
@@ -59,7 +63,7 @@ pub(crate) trait TryFromValues: Sized {
 impl TryFromValues for HeaderValue {
     fn try_from_values<'i, I>(values: &mut I) -> Result<Self, Error>
     where
-        I: Iterator<Item = &'i HeaderValue>,
+        I: Iterator<Item = &'i Self>,
     {
         values.next().cloned().ok_or_else(Error::invalid)
     }

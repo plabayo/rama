@@ -69,6 +69,7 @@ pub(crate) struct ParseContext<'a> {
     h1_max_headers: Option<usize>,
     h09_responses: bool,
     on_informational: &'a mut Option<crate::ext::OnInformational>,
+    encoded_request_extensions: &'a mut Option<http::Extensions>,
 }
 
 struct EncodeHead<'a, S> {
@@ -97,16 +98,16 @@ pub(crate) struct Encode<'a, T> {
 struct Wants(u8);
 
 impl Wants {
-    const EMPTY: Wants = Wants(0b00);
-    const EXPECT: Wants = Wants(0b01);
-    const UPGRADE: Wants = Wants(0b10);
+    const EMPTY: Self = Self(0b00);
+    const EXPECT: Self = Self(0b01);
+    const UPGRADE: Self = Self(0b10);
 
     #[must_use]
-    fn add(self, other: Wants) -> Wants {
-        Wants(self.0 | other.0)
+    fn add(self, other: Self) -> Self {
+        Self(self.0 | other.0)
     }
 
-    fn contains(&self, other: Wants) -> bool {
+    fn contains(self, other: Self) -> bool {
         (self.0 & other.0) == other.0
     }
 }

@@ -5,6 +5,7 @@ use std::fmt::{self, Write as _};
 use rama_core::bytes::Bytes;
 use rama_core::bytes::BytesMut;
 use rama_core::telemetry::tracing::{debug, error, trace, trace_span, warn};
+use rama_http::proto::{HeaderByteLength, RequestExtensions, RequestHeaders};
 use rama_http_types::dep::http;
 use rama_http_types::header::Entry;
 use rama_http_types::header::{self, HeaderMap, HeaderValue};
@@ -46,10 +47,10 @@ where
 
     let _entered = trace_span!("parse_headers");
 
-    if let Some(prev_len) = prev_len {
-        if !is_complete_fast(bytes, prev_len) {
-            return Ok(None);
-        }
+    if let Some(prev_len) = prev_len
+        && !is_complete_fast(bytes, prev_len)
+    {
+        return Ok(None);
     }
 
     T::parse(bytes, ctx)
@@ -136,7 +137,7 @@ impl Http1Transaction for Server {
                         return Err(Parse::UriTooLong);
                     }
                     method = Method::from_bytes(req.method.unwrap().as_bytes())?;
-                    path_range = Server::record_path_range(bytes, uri);
+                    path_range = Self::record_path_range(bytes, uri);
                     version = if req.version.unwrap() == 1 {
                         keep_alive = true;
                         is_http_11 = true;
@@ -280,6 +281,8 @@ impl Http1Transaction for Server {
 
         *ctx.req_method = Some(subject.0.clone());
 
+        extensions.insert(HeaderByteLength(len));
+
         Ok(Some(ParsedMessage {
             head: MessageHead {
                 version,
@@ -403,13 +406,13 @@ impl Http1Transaction for Server {
 }
 
 impl Server {
-    fn can_have_body(method: &Option<Method>, status: StatusCode) -> bool {
-        Server::can_chunked(method, status)
+    fn can_have_body(method: Option<&Method>, status: StatusCode) -> bool {
+        Self::can_chunked(method, status)
     }
 
-    fn can_chunked(method: &Option<Method>, status: StatusCode) -> bool {
-        if method == &Some(Method::HEAD)
-            || method == &Some(Method::CONNECT) && status.is_success()
+    fn can_chunked(method: Option<&Method>, status: StatusCode) -> bool {
+        if method == Some(&Method::HEAD)
+            || method == Some(&Method::CONNECT) && status.is_success()
             || status.is_informational()
         {
             false
@@ -418,16 +421,16 @@ impl Server {
         }
     }
 
-    fn can_have_content_length(method: &Option<Method>, status: StatusCode) -> bool {
-        if status.is_informational() || method == &Some(Method::CONNECT) && status.is_success() {
+    fn can_have_content_length(method: Option<&Method>, status: StatusCode) -> bool {
+        if status.is_informational() || method == Some(&Method::CONNECT) && status.is_success() {
             false
         } else {
             !matches!(status, StatusCode::NO_CONTENT | StatusCode::NOT_MODIFIED)
         }
     }
 
-    fn can_have_implicit_zero_content_length(method: &Option<Method>, status: StatusCode) -> bool {
-        Server::can_have_content_length(method, status) && method != &Some(Method::HEAD)
+    fn can_have_implicit_zero_content_length(method: Option<&Method>, status: StatusCode) -> bool {
+        Self::can_have_content_length(method, status) && method != Some(&Method::HEAD)
     }
 
     #[cold]
@@ -558,13 +561,13 @@ impl Server {
                             // same to help developers find bugs.
                             #[cfg(debug_assertions)]
                             {
-                                if let Some(len) = headers::content_length_parse(&value) {
-                                    if msg.req_method != &Some(Method::HEAD) || known_len != 0 {
-                                        assert!(
-                                            len == known_len,
-                                            "payload claims content-length of {known_len}, custom content-length header claims {len}",
-                                        );
-                                    }
+                                if let Some(len) = headers::content_length_parse(&value)
+                                    && (msg.req_method != &Some(Method::HEAD) || known_len != 0)
+                                {
+                                    assert!(
+                                        len == known_len,
+                                        "payload claims content-length of {known_len}, custom content-length header claims {len}",
+                                    );
                                 }
                             }
 
@@ -641,7 +644,7 @@ impl Server {
                     }
                     // check that we actually can send a chunked body...
                     if msg.head.version == Version::HTTP_10
-                        || !Server::can_chunked(msg.req_method, msg.head.subject)
+                        || !Self::can_chunked(msg.req_method.as_ref(), msg.head.subject)
                     {
                         continue;
                     }
@@ -681,7 +684,7 @@ impl Server {
                 header::TRAILER => {
                     // check that we actually can send a chunked body...
                     if msg.head.version == Version::HTTP_10
-                        || !Server::can_chunked(msg.req_method, msg.head.subject)
+                        || !Self::can_chunked(msg.req_method.as_ref(), msg.head.subject)
                     {
                         continue;
                     }
@@ -727,7 +730,7 @@ impl Server {
             encoder = match msg.body {
                 Some(BodyLength::Unknown) => {
                     if msg.head.version == Version::HTTP_10
-                        || !Server::can_chunked(msg.req_method, msg.head.subject)
+                        || !Self::can_chunked(msg.req_method.as_ref(), msg.head.subject)
                     {
                         Encoder::close_delimited()
                     } else {
@@ -739,8 +742,8 @@ impl Server {
                     }
                 }
                 None | Some(BodyLength::Known(0)) => {
-                    if Server::can_have_implicit_zero_content_length(
-                        msg.req_method,
+                    if Self::can_have_implicit_zero_content_length(
+                        msg.req_method.as_ref(),
                         msg.head.subject,
                     ) {
                         header_name_writer
@@ -749,7 +752,7 @@ impl Server {
                     Encoder::length(0)
                 }
                 Some(BodyLength::Known(len)) => {
-                    if !Server::can_have_content_length(msg.req_method, msg.head.subject) {
+                    if !Self::can_have_content_length(msg.req_method.as_ref(), msg.head.subject) {
                         Encoder::length(0)
                     } else {
                         header_name_writer
@@ -762,7 +765,7 @@ impl Server {
             };
         }
 
-        if !Server::can_have_body(msg.req_method, msg.head.subject) {
+        if !Self::can_have_body(msg.req_method.as_ref(), msg.head.subject) {
             trace!(
                 "server body forced to 0; method={:?}, status={:?}",
                 msg.req_method, msg.head.subject
@@ -781,10 +784,10 @@ impl Server {
             extend(dst, b"\r\n");
         }
 
-        if encoder.is_chunked() {
-            if let Some(allowed_trailer_fields) = allowed_trailer_fields {
-                encoder = encoder.into_chunked_with_trailing_fields(allowed_trailer_fields);
-            }
+        if encoder.is_chunked()
+            && let Some(allowed_trailer_fields) = allowed_trailer_fields
+        {
+            encoder = encoder.into_chunked_with_trailing_fields(allowed_trailer_fields);
         }
 
         Ok(encoder.set_last(is_last))
@@ -882,7 +885,7 @@ impl Http1Transaction for Client {
                 for header in &mut headers_indices[..headers_len] {
                     // SAFETY: array is valid up to `headers_len`
                     let header = unsafe { header.assume_init_mut() };
-                    Client::obs_fold_line(&mut slice, header);
+                    Self::obs_fold_line(&mut slice, header);
                 }
             }
 
@@ -928,13 +931,22 @@ impl Http1Transaction for Client {
                 extensions.insert(reason);
             }
 
+            extensions.insert(HeaderByteLength(len));
+
+            if let Some(mut request_ext) = ctx.encoded_request_extensions.take() {
+                if let Some(request_headers) = request_ext.remove::<RequestHeaders>() {
+                    extensions.insert(request_headers);
+                }
+                extensions.insert(RequestExtensions::from(request_ext));
+            }
+
             let head = MessageHead {
                 version,
                 subject: status,
                 headers,
                 extensions,
             };
-            if let Some((decode, is_upgrade)) = Client::decoder(&head, ctx.req_method)? {
+            if let Some((decode, is_upgrade)) = Self::decoder(&head, ctx.req_method)? {
                 return Ok(Some(ParsedMessage {
                     head,
                     decode,
@@ -946,10 +958,10 @@ impl Http1Transaction for Client {
                 }));
             }
 
-            if head.subject.is_informational() {
-                if let Some(callback) = ctx.on_informational {
-                    callback.call(head.into_response(()));
-                }
+            if head.subject.is_informational()
+                && let Some(callback) = ctx.on_informational
+            {
+                callback.call(head.into_response(()));
             }
 
             // Parsing a 1xx response could have consumed the buffer, check if
@@ -968,7 +980,7 @@ impl Http1Transaction for Client {
 
         *msg.req_method = Some(msg.head.subject.0.clone());
 
-        let body = Client::set_length(&mut msg.head, msg.body);
+        let body = Self::set_length(&mut msg.head, msg.body);
 
         let init_cap = 30 + msg.head.headers.len() * AVERAGE_HEADER_SIZE;
         dst.reserve(init_cap);
@@ -989,12 +1001,16 @@ impl Http1Transaction for Client {
         }
         extend(dst, b"\r\n");
 
-        write_h1_headers(
+        let orig_headers = write_h1_headers(
             msg.head.headers,
             msg.title_case_headers,
             msg.head.extensions,
             dst,
         );
+
+        msg.head
+            .extensions
+            .insert(RequestHeaders::from(orig_headers));
 
         extend(dst, b"\r\n");
 
@@ -1015,6 +1031,7 @@ impl Client {
     /// Returns Some(length, wants_upgrade) if successful.
     ///
     /// Returns None if this message head should be skipped (like a 100 status).
+    #[allow(clippy::needless_pass_by_ref_mut)]
     fn decoder(
         inc: &MessageHead<StatusCode>,
         method: &mut Option<Method>,
@@ -1078,10 +1095,9 @@ impl Client {
             Ok(Some((DecodedLength::CLOSE_DELIMITED, false)))
         }
     }
+
     fn set_length(head: &mut EncodeHead<'_, RequestLine>, body: Option<BodyLength>) -> Encoder {
-        let body = if let Some(body) = body {
-            body
-        } else {
+        let Some(body) = body else {
             head.headers.remove(header::TRANSFER_ENCODING);
             return Encoder::length(0);
         };
@@ -1150,7 +1166,7 @@ impl Client {
             Entry::Vacant(te) => {
                 if let Some(len) = existing_con_len {
                     Some(Encoder::length(len))
-                } else if let BodyLength::Unknown = body {
+                } else if matches!(body, BodyLength::Unknown) {
                     // GET, HEAD, and CONNECT almost never have bodies.
                     //
                     // So instead of sending a "chunked" body with a 0-chunk,
@@ -1194,9 +1210,7 @@ impl Client {
         // User didn't set transfer-encoding, AND we know body length,
         // so we can just set the Content-Length automatically.
 
-        let len = if let BodyLength::Known(len) = body {
-            len
-        } else {
+        let BodyLength::Known(len) = body else {
             unreachable!("BodyLength::Unknown would set chunked");
         };
 
@@ -1219,9 +1233,8 @@ impl Client {
         let buf = &mut all[idx.value.0..idx.value.1];
 
         // look for a newline, otherwise bail out
-        let first_nl = match buf.iter().position(|b| *b == b'\n') {
-            Some(i) => i,
-            None => return,
+        let Some(first_nl) = buf.iter().position(|b| *b == b'\n') else {
+            return;
         };
 
         // not on standard slices because whatever, sigh
@@ -1367,7 +1380,8 @@ fn write_h1_headers(
     title_case_headers: bool,
     ext: &mut http::Extensions,
     dst: &mut Vec<u8>,
-) {
+) -> Http1HeaderMap {
+    let mut out_h1_headers = Http1HeaderMap::with_capacity(headers.len());
     let h1_headers = Http1HeaderMap::new(headers, Some(ext));
     for (name, value) in h1_headers {
         if title_case_headers {
@@ -1384,7 +1398,9 @@ fn write_h1_headers(
             extend(dst, value.as_bytes());
             extend(dst, b"\r\n");
         }
+        out_h1_headers.append(name, value);
     }
+    out_h1_headers
 }
 
 struct FastWrite<'a>(&'a mut Vec<u8>);
@@ -1426,6 +1442,7 @@ mod tests {
                 h1_max_headers: None,
                 h09_responses: false,
                 on_informational: &mut None,
+                encoded_request_extensions: &mut None,
             },
         )
         .unwrap()
@@ -1448,6 +1465,7 @@ mod tests {
             h1_max_headers: None,
             h09_responses: false,
             on_informational: &mut None,
+            encoded_request_extensions: &mut None,
         };
         let msg = Client::parse(&mut raw, ctx).unwrap().unwrap();
         assert_eq!(raw.len(), 0);
@@ -1466,6 +1484,7 @@ mod tests {
             h1_max_headers: None,
             h09_responses: false,
             on_informational: &mut None,
+            encoded_request_extensions: &mut None,
         };
         Server::parse(&mut raw, ctx).unwrap_err();
     }
@@ -1481,6 +1500,7 @@ mod tests {
             h1_max_headers: None,
             h09_responses: true,
             on_informational: &mut None,
+            encoded_request_extensions: &mut None,
         };
         let msg = Client::parse(&mut raw, ctx).unwrap().unwrap();
         assert_eq!(raw, H09_RESPONSE);
@@ -1498,6 +1518,7 @@ mod tests {
             h1_max_headers: None,
             h09_responses: false,
             on_informational: &mut None,
+            encoded_request_extensions: &mut None,
         };
         Client::parse(&mut raw, ctx).unwrap_err();
         assert_eq!(raw, H09_RESPONSE);
@@ -1519,6 +1540,7 @@ mod tests {
             h1_max_headers: None,
             h09_responses: false,
             on_informational: &mut None,
+            encoded_request_extensions: &mut None,
         };
         let msg = Client::parse(&mut raw, ctx).unwrap().unwrap();
         assert_eq!(raw.len(), 0);
@@ -1537,6 +1559,7 @@ mod tests {
             h1_max_headers: None,
             h09_responses: false,
             on_informational: &mut None,
+            encoded_request_extensions: &mut None,
         };
         Client::parse(&mut raw, ctx).unwrap_err();
     }
@@ -1551,6 +1574,7 @@ mod tests {
             h1_max_headers: None,
             h09_responses: false,
             on_informational: &mut None,
+            encoded_request_extensions: &mut None,
         };
         let parsed_message = Server::parse(&mut raw, ctx).unwrap().unwrap();
         let mut orig_headers = parsed_message
@@ -1576,6 +1600,7 @@ mod tests {
                     h1_max_headers: None,
                     h09_responses: false,
                     on_informational: &mut None,
+                    encoded_request_extensions: &mut None,
                 },
             )
             .expect("parse ok")
@@ -1592,6 +1617,7 @@ mod tests {
                     h1_max_headers: None,
                     h09_responses: false,
                     on_informational: &mut None,
+                    encoded_request_extensions: &mut None,
                 },
             )
             .expect_err(comment)
@@ -1802,9 +1828,50 @@ mod tests {
     }
 
     #[test]
+    fn test_decoder_response_request_extensions() {
+        let mut request_exts = http::Extensions::new();
+
+        request_exts.insert(42u64);
+
+        let mut bytes = BytesMut::from(
+            "\
+         HTTP/1.1 200 OK\r\n\
+         \r\n\
+         ",
+        );
+        let msg = Client::parse(
+            &mut bytes,
+            ParseContext {
+                req_method: &mut Some(Method::GET),
+                h1_parser_config: Default::default(),
+                h1_max_headers: None,
+                h09_responses: false,
+                on_informational: &mut None,
+                encoded_request_extensions: &mut Some(request_exts),
+            },
+        )
+        .expect("parse ok")
+        .expect("parse complete");
+
+        assert_eq!(
+            42u64,
+            msg.head
+                .extensions
+                .get::<RequestExtensions>()
+                .unwrap()
+                .get::<u64>()
+                .copied()
+                .unwrap()
+        );
+    }
+
+    #[test]
     fn test_decoder_response() {
         fn parse(s: &str) -> ParsedMessage<StatusCode> {
-            parse_with_method(s, Method::GET)
+            let msg = parse_with_method(s, Method::GET);
+            let size = msg.head.extensions.get::<HeaderByteLength>().unwrap().0;
+            assert_eq!(size, s.len(), "parsed header: {s}");
+            msg
         }
 
         fn parse_ignores(s: &str) {
@@ -1818,6 +1885,7 @@ mod tests {
                         h1_max_headers: None,
                         h09_responses: false,
                         on_informational: &mut None,
+                        encoded_request_extensions: &mut None,
                     }
                 )
                 .expect("parse ok")
@@ -1835,6 +1903,7 @@ mod tests {
                     h1_max_headers: None,
                     h09_responses: false,
                     on_informational: &mut None,
+                    encoded_request_extensions: &mut None,
                 },
             )
             .expect("parse ok")
@@ -1851,6 +1920,7 @@ mod tests {
                     h1_max_headers: None,
                     h09_responses: false,
                     on_informational: &mut None,
+                    encoded_request_extensions: &mut None,
                 },
             )
             .expect_err("parse should err")
@@ -2444,6 +2514,7 @@ mod tests {
                 h1_max_headers: None,
                 h09_responses: false,
                 on_informational: &mut None,
+                encoded_request_extensions: &mut None,
             },
         )
         .expect("parse ok")
@@ -2482,6 +2553,7 @@ mod tests {
                         h1_max_headers: max_headers,
                         h09_responses: false,
                         on_informational: &mut None,
+                        encoded_request_extensions: &mut None,
                     },
                 );
                 if should_success {
@@ -2501,6 +2573,7 @@ mod tests {
                         h1_max_headers: max_headers,
                         h09_responses: false,
                         on_informational: &mut None,
+                        encoded_request_extensions: &mut None,
                     },
                 );
                 if should_success {
@@ -2606,7 +2679,8 @@ mod tests {
 
         let mut dst = Vec::new();
 
-        super::write_h1_headers(headers, false, &mut ext, &mut dst);
+        let headers = super::write_h1_headers(headers, false, &mut ext, &mut dst);
+        assert!(headers.get("x-empty").unwrap().is_empty());
 
         assert_eq!(
             dst, b"X-EmptY:\r\n",
@@ -2630,7 +2704,13 @@ mod tests {
 
         let mut dst = Vec::new();
 
-        super::write_h1_headers(headers, false, &mut ext, &mut dst);
+        let headers = super::write_h1_headers(headers, false, &mut ext, &mut dst);
+
+        assert_eq!("a", headers.get("x-empty").unwrap().to_str().unwrap());
+        let mut values = headers.headers().get_all("x-empty").iter();
+        assert_eq!("a", values.next().unwrap().to_str().unwrap());
+        assert_eq!("b", values.next().unwrap().to_str().unwrap());
+        assert!(values.next().is_none());
 
         assert_eq!(dst, b"X-Empty: a\r\nX-EMPTY: b\r\n");
     }

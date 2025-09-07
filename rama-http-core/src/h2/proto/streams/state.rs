@@ -1,4 +1,4 @@
-use std::io;
+use std::{fmt, io};
 
 use crate::h2::codec::UserError;
 use crate::h2::proto::{self, Error, Initiator, PollReset};
@@ -46,9 +46,16 @@ use rama_http_types::proto::h2::frame::{self, Reason, StreamId};
 ///        ES: END_STREAM flag
 ///        R:  RST_STREAM frame
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(super) struct State {
     inner: Inner,
+}
+
+// remove some noise for debug output
+impl fmt::Debug for State {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.inner.fmt(f)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -289,12 +296,10 @@ impl State {
 
     /// Handle a connection-level error.
     pub(super) fn handle_error(&mut self, err: &proto::Error) {
-        match self.inner {
-            Inner::Closed(..) => {}
-            _ => {
-                tracing::trace!("handle_error; err={:?}", err);
-                self.inner = Inner::Closed(Cause::Error(err.clone()));
-            }
+        if let Inner::Closed(..) = self.inner {
+        } else {
+            tracing::trace!("handle_error; err={:?}", err);
+            self.inner = Inner::Closed(Cause::Error(err.clone()));
         }
     }
 
@@ -472,7 +477,7 @@ impl State {
 }
 
 impl Default for State {
-    fn default() -> State {
-        State { inner: Inner::Idle }
+    fn default() -> Self {
+        Self { inner: Inner::Idle }
     }
 }

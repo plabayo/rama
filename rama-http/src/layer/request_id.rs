@@ -142,7 +142,7 @@ impl<M> SetRequestIdLayer<M> {
     where
         M: MakeRequestId,
     {
-        SetRequestIdLayer {
+        Self {
             header_name,
             make_request_id,
         }
@@ -153,7 +153,7 @@ impl<M> SetRequestIdLayer<M> {
     where
         M: MakeRequestId,
     {
-        SetRequestIdLayer::new(REQUEST_ID, make_request_id)
+        Self::new(REQUEST_ID, make_request_id)
     }
 
     /// Create a new `SetRequestIdLayer` that uses `x-request-id` as the header name.
@@ -161,7 +161,7 @@ impl<M> SetRequestIdLayer<M> {
     where
         M: MakeRequestId,
     {
-        SetRequestIdLayer::new(X_REQUEST_ID, make_request_id)
+        Self::new(X_REQUEST_ID, make_request_id)
     }
 }
 
@@ -211,7 +211,7 @@ impl<S: fmt::Debug, M: fmt::Debug> fmt::Debug for SetRequestId<S, M> {
 
 impl<S: Clone, M: Clone> Clone for SetRequestId<S, M> {
     fn clone(&self) -> Self {
-        SetRequestId {
+        Self {
             inner: self.inner.clone(),
             header_name: self.header_name.clone(),
             make_request_id: self.make_request_id.clone(),
@@ -251,10 +251,9 @@ impl<S, M> SetRequestId<S, M> {
     define_inner_service_accessors!();
 }
 
-impl<State, S, M, ReqBody, ResBody> Service<State, Request<ReqBody>> for SetRequestId<S, M>
+impl<S, M, ReqBody, ResBody> Service<Request<ReqBody>> for SetRequestId<S, M>
 where
-    State: Clone + Send + Sync + 'static,
-    S: Service<State, Request<ReqBody>, Response = Response<ResBody>>,
+    S: Service<Request<ReqBody>, Response = Response<ResBody>>,
     M: MakeRequestId,
     ReqBody: Send + 'static,
     ResBody: Send + 'static,
@@ -264,7 +263,7 @@ where
 
     async fn serve(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         mut req: Request<ReqBody>,
     ) -> Result<Self::Response, Self::Error> {
         if let Some(request_id) = req.headers().get(&self.header_name) {
@@ -295,7 +294,7 @@ pub struct PropagateRequestIdLayer {
 impl PropagateRequestIdLayer {
     /// Create a new `PropagateRequestIdLayer`.
     pub const fn new(header_name: HeaderName) -> Self {
-        PropagateRequestIdLayer { header_name }
+        Self { header_name }
     }
 
     /// Create a new `PropagateRequestIdLayer` that uses `request-id` as the header name.
@@ -358,17 +357,16 @@ impl<S: fmt::Debug> fmt::Debug for PropagateRequestId<S> {
 
 impl<S: Clone> Clone for PropagateRequestId<S> {
     fn clone(&self) -> Self {
-        PropagateRequestId {
+        Self {
             inner: self.inner.clone(),
             header_name: self.header_name.clone(),
         }
     }
 }
 
-impl<State, S, ReqBody, ResBody> Service<State, Request<ReqBody>> for PropagateRequestId<S>
+impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for PropagateRequestId<S>
 where
-    State: Clone + Send + Sync + 'static,
-    S: Service<State, Request<ReqBody>, Response = Response<ResBody>>,
+    S: Service<Request<ReqBody>, Response = Response<ResBody>>,
     ReqBody: Send + 'static,
     ResBody: Send + 'static,
 {
@@ -377,7 +375,7 @@ where
 
     async fn serve(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         req: Request<ReqBody>,
     ) -> Result<Self::Response, Self::Error> {
         let request_id = req

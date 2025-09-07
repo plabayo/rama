@@ -1,0 +1,34 @@
+[package]
+name = "rama-tls-acme"
+description = "ACME support for rama"
+version = { workspace = true }
+license = { workspace = true }
+edition = { workspace = true }
+repository = { workspace = true }
+keywords = ["acme", "async", "network", "rama", "certificates"]
+categories = ["asynchronous", "network-programming", "web-programming"]
+authors = { workspace = true }
+rust-version = { workspace = true }
+
+[package.metadata.cargo-public-api-crates]
+allowed = []
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[dependencies]
+base64 = { workspace = true }
+parking_lot = { workspace = true }
+rama-core = { workspace = true }
+rama-crypto = { workspace = true }
+rama-http = { workspace = true }
+rama-utils = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["time", "macros"] }
+
+[dev-dependencies]
+
+[lints]
+workspace = true

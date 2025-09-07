@@ -46,7 +46,7 @@ impl<A: Clone, C, L> Clone for ProxyAuthLayer<A, C, L> {
 impl<A, C> ProxyAuthLayer<A, C, ()> {
     /// Creates a new [`ProxyAuthLayer`].
     pub const fn new(proxy_auth: A) -> Self {
-        ProxyAuthLayer {
+        Self {
             proxy_auth,
             allow_anonymous: false,
             _phantom: PhantomData,
@@ -60,6 +60,7 @@ impl<A, C> ProxyAuthLayer<A, C, ()> {
     }
 
     /// Allow anonymous requests.
+    #[must_use]
     pub fn with_allow_anonymous(mut self, allow_anonymous: bool) -> Self {
         self.allow_anonymous = allow_anonymous;
         self
@@ -133,6 +134,7 @@ impl<A, C, S, L> ProxyAuthService<A, C, S, L> {
     }
 
     /// Allow anonymous requests.
+    #[must_use]
     pub fn with_allow_anonymous(mut self, allow_anonymous: bool) -> Self {
         self.allow_anonymous = allow_anonymous;
         self
@@ -157,7 +159,7 @@ impl<A: fmt::Debug, C, S: fmt::Debug, L> fmt::Debug for ProxyAuthService<A, C, S
 
 impl<A: Clone, C, S: Clone, L> Clone for ProxyAuthService<A, C, S, L> {
     fn clone(&self) -> Self {
-        ProxyAuthService {
+        Self {
             proxy_auth: self.proxy_auth.clone(),
             allow_anonymous: self.allow_anonymous,
             inner: self.inner.clone(),
@@ -166,23 +168,21 @@ impl<A: Clone, C, S: Clone, L> Clone for ProxyAuthService<A, C, S, L> {
     }
 }
 
-impl<A, C, L, S, State, ReqBody, ResBody> Service<State, Request<ReqBody>>
-    for ProxyAuthService<A, C, S, L>
+impl<A, C, L, S, ReqBody, ResBody> Service<Request<ReqBody>> for ProxyAuthService<A, C, S, L>
 where
     A: Authority<C, L>,
     C: Credentials + Clone + Send + Sync + 'static,
-    S: Service<State, Request<ReqBody>, Response = Response<ResBody>>,
+    S: Service<Request<ReqBody>, Response = Response<ResBody>>,
     L: 'static,
     ReqBody: Send + 'static,
     ResBody: Default + Send + 'static,
-    State: Clone + Send + Sync + 'static,
 {
     type Response = S::Response;
     type Error = S::Error;
 
     async fn serve(
         &self,
-        mut ctx: Context<State>,
+        mut ctx: Context,
         req: Request<ReqBody>,
     ) -> Result<Self::Response, Self::Error> {
         if let Some(credentials) = req

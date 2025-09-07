@@ -65,7 +65,7 @@ use std::marker::PhantomData;
 ///
 /// # #[tokio::main]
 /// # async fn main() {
-/// async fn svc(_ctx: Context<State>, request: Request<Body>) -> Result<(), Infallible> {
+/// async fn svc(_ctx: Context, request: Request<Body>) -> Result<(), Infallible> {
 ///     // ...
 ///     # assert_eq!(
 ///     #     request.headers().get("X-Real-Ip").unwrap(),
@@ -113,6 +113,7 @@ impl<T> SetForwardedHeaderLayer<T> {
     /// Set the given [`NodeId`] as the "by" property, identifying this proxy.
     ///
     /// Default of `None` will be set to `rama` otherwise.
+    #[must_use]
     pub fn forward_by(mut self, node_id: impl Into<NodeId>) -> Self {
         self.by_node = node_id.into();
         self
@@ -129,6 +130,7 @@ impl<T> SetForwardedHeaderLayer<T> {
 
 impl<T> SetForwardedHeaderLayer<T> {
     /// Create a new `SetForwardedHeaderLayer` for the specified headers `T`.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             by_node: Domain::from_static("rama").into(),
@@ -146,6 +148,7 @@ impl Default for SetForwardedHeaderLayer {
 impl SetForwardedHeaderLayer {
     #[inline]
     /// Create a new `SetForwardedHeaderLayer` for the standard [`Forwarded`] header.
+    #[must_use]
     pub fn forwarded() -> Self {
         Self::new()
     }
@@ -154,6 +157,7 @@ impl SetForwardedHeaderLayer {
 impl SetForwardedHeaderLayer<Via> {
     #[inline]
     /// Create a new `SetForwardedHeaderLayer` for the canonical [`Via`] header.
+    #[must_use]
     pub fn via() -> Self {
         Self::new()
     }
@@ -162,6 +166,7 @@ impl SetForwardedHeaderLayer<Via> {
 impl SetForwardedHeaderLayer<XForwardedFor> {
     #[inline]
     /// Create a new `SetForwardedHeaderLayer` for the canonical [`X-Forwarded-For`] header.
+    #[must_use]
     pub fn x_forwarded_for() -> Self {
         Self::new()
     }
@@ -170,6 +175,7 @@ impl SetForwardedHeaderLayer<XForwardedFor> {
 impl SetForwardedHeaderLayer<XForwardedHost> {
     #[inline]
     /// Create a new `SetForwardedHeaderLayer` for the canonical [`X-Forwarded-Host`] header.
+    #[must_use]
     pub fn x_forwarded_host() -> Self {
         Self::new()
     }
@@ -178,6 +184,7 @@ impl SetForwardedHeaderLayer<XForwardedHost> {
 impl SetForwardedHeaderLayer<XForwardedProto> {
     #[inline]
     /// Create a new `SetForwardedHeaderLayer` for the canonical [`X-Forwarded-Proto`] header.
+    #[must_use]
     pub fn x_forwarded_proto() -> Self {
         Self::new()
     }
@@ -228,7 +235,7 @@ impl<S: fmt::Debug, T> fmt::Debug for SetForwardedHeaderService<S, T> {
 
 impl<S: Clone, T> Clone for SetForwardedHeaderService<S, T> {
     fn clone(&self) -> Self {
-        SetForwardedHeaderService {
+        Self {
             inner: self.inner.clone(),
             by_node: self.by_node.clone(),
             _headers: PhantomData,
@@ -240,6 +247,7 @@ impl<S, T> SetForwardedHeaderService<S, T> {
     /// Set the given [`NodeId`] as the "by" property, identifying this proxy.
     ///
     /// Default of `None` will be set to `rama` otherwise.
+    #[must_use]
     pub fn forward_by(mut self, node_id: impl Into<NodeId>) -> Self {
         self.by_node = node_id.into();
         self
@@ -305,19 +313,18 @@ impl<S> SetForwardedHeaderService<S, XForwardedProto> {
     }
 }
 
-impl<S, H, State, Body> Service<State, Request<Body>> for SetForwardedHeaderService<S, H>
+impl<S, H, Body> Service<Request<Body>> for SetForwardedHeaderService<S, H>
 where
-    S: Service<State, Request<Body>, Error: Into<BoxError>>,
+    S: Service<Request<Body>, Error: Into<BoxError>>,
     H: ForwardHeader + Send + Sync + 'static,
     Body: Send + 'static,
-    State: Clone + Send + Sync + 'static,
 {
     type Response = S::Response;
     type Error = BoxError;
 
     async fn serve(
         &self,
-        mut ctx: Context<State>,
+        mut ctx: Context,
         mut req: Request<Body>,
     ) -> Result<Self::Response, Self::Error> {
         let forwarded: Option<rama_net::forwarded::Forwarded> = ctx.get().cloned();
@@ -344,10 +351,10 @@ where
             }
         };
 
-        if let Some(forwarded) = forwarded {
-            if let Some(header) = H::try_from_forwarded(forwarded.iter()) {
-                req.headers_mut().typed_insert(header);
-            }
+        if let Some(forwarded) = forwarded
+            && let Some(header) = H::try_from_forwarded(forwarded.iter())
+        {
+            req.headers_mut().typed_insert(header);
         }
 
         self.inner.serve(ctx, req).await.map_err(Into::into)
@@ -365,7 +372,7 @@ mod tests {
     use rama_core::{Layer, error::OpaqueError, service::service_fn};
     use std::{convert::Infallible, net::IpAddr};
 
-    fn assert_is_service<T: Service<(), Request<()>>>(_: T) {}
+    fn assert_is_service<T: Service<Request<()>>>(_: T) {}
 
     async fn dummy_service_fn() -> Result<Response, OpaqueError> {
         Ok(StatusCode::OK.into_response())

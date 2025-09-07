@@ -14,6 +14,7 @@ pub struct StringFilter(String);
 
 impl StringFilter {
     /// Create a string filter which will match anything
+    #[must_use]
     pub fn any() -> Self {
         "*".into()
     }
@@ -24,16 +25,19 @@ impl StringFilter {
     }
 
     /// Get the inner string.
+    #[must_use]
     pub fn inner(&self) -> &str {
         &self.0
     }
 
     /// Convert the string filter into the inner string.
+    #[must_use]
     pub fn into_inner(self) -> String {
         self.0
     }
 
     /// Return `true` if this value is considered an "any" value
+    #[must_use]
     pub fn is_any(&self) -> bool {
         self.0 == "*"
     }

@@ -27,7 +27,7 @@ struct Slot<T> {
 
 impl<T> Buffer<T> {
     pub(super) fn new() -> Self {
-        Buffer { slab: Slab::new() }
+        Self { slab: Slab::new() }
     }
 
     pub(super) fn is_empty(&self) -> bool {
@@ -37,7 +37,7 @@ impl<T> Buffer<T> {
 
 impl Deque {
     pub(super) fn new() -> Self {
-        Deque { indices: None }
+        Self { indices: None }
     }
 
     pub(super) fn is_empty(&self) -> bool {

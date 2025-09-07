@@ -27,25 +27,25 @@ pub struct HttpAuthorizer<A, C> {
 
 impl From<Basic> for HttpAuthorizer<StaticAuthorizer<Basic>, Basic> {
     fn from(value: Basic) -> Self {
-        HttpAuthorizer::new(StaticAuthorizer::new(value))
+        Self::new(StaticAuthorizer::new(value))
     }
 }
 
 impl From<Bearer> for HttpAuthorizer<StaticAuthorizer<Bearer>, Bearer> {
     fn from(value: Bearer) -> Self {
-        HttpAuthorizer::new(StaticAuthorizer::new(value))
+        Self::new(StaticAuthorizer::new(value))
     }
 }
 
 impl<C: Credentials> From<Vec<C>> for HttpAuthorizer<Vec<C>, C> {
     fn from(value: Vec<C>) -> Self {
-        HttpAuthorizer::new(value)
+        Self::new(value)
     }
 }
 
 impl<const N: usize, C: Credentials> From<[C; N]> for HttpAuthorizer<[C; N], C> {
     fn from(value: [C; N]) -> Self {
-        HttpAuthorizer::new(value)
+        Self::new(value)
     }
 }
 
@@ -124,9 +124,8 @@ where
     }
 }
 
-impl<S, ReqBody, A, C> ValidateRequest<S, ReqBody> for HttpAuthorizer<A, C>
+impl<ReqBody, A, C> ValidateRequest<ReqBody> for HttpAuthorizer<A, C>
 where
-    S: Clone + Send + Sync + 'static,
     ReqBody: Send + 'static,
     A: Authorizer<C, Error: fmt::Debug>,
     C: Credentials + Send + 'static,
@@ -135,9 +134,9 @@ where
 
     async fn validate(
         &self,
-        mut ctx: Context<S>,
+        mut ctx: Context,
         request: Request<ReqBody>,
-    ) -> Result<(Context<S>, Request<ReqBody>), Response<Self::ResponseBody>> {
+    ) -> Result<(Context, Request<ReqBody>), Response<Self::ResponseBody>> {
         match request.headers().typed_get::<Authorization<C>>() {
             Some(auth) => {
                 let AuthorizeResult { result, .. } = self.authorize(auth.into_inner()).await;

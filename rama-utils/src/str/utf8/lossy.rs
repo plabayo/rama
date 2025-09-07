@@ -29,7 +29,7 @@ impl<F: FnMut(&str)> LossyDecoder<F> {
     /// Create a new decoder from a callback.
     #[inline]
     pub fn new(push_str: F) -> Self {
-        LossyDecoder {
+        Self {
             push_str,
             incomplete: Incomplete {
                 buffer: [0, 0, 0, 0],

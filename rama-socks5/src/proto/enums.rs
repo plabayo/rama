@@ -144,16 +144,16 @@ impl From<&BoxError> for ReplyKind {
     fn from(err: &BoxError) -> Self {
         if let Some(err) = err.downcast_ref::<std::io::Error>() {
             match err.kind() {
-                std::io::ErrorKind::PermissionDenied => ReplyKind::ConnectionNotAllowed,
-                std::io::ErrorKind::HostUnreachable => ReplyKind::HostUnreachable,
-                std::io::ErrorKind::NetworkUnreachable => ReplyKind::NetworkUnreachable,
+                std::io::ErrorKind::PermissionDenied => Self::ConnectionNotAllowed,
+                std::io::ErrorKind::HostUnreachable => Self::HostUnreachable,
+                std::io::ErrorKind::NetworkUnreachable => Self::NetworkUnreachable,
                 std::io::ErrorKind::TimedOut | std::io::ErrorKind::UnexpectedEof => {
-                    ReplyKind::TtlExpired
+                    Self::TtlExpired
                 }
-                _ => ReplyKind::ConnectionRefused,
+                _ => Self::ConnectionRefused,
             }
         } else {
-            ReplyKind::ConnectionRefused
+            Self::ConnectionRefused
         }
     }
 }

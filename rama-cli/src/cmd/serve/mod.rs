@@ -84,17 +84,14 @@ pub async fn run(cfg: CliCommandServe) -> Result<(), BoxError> {
     crate::trace::init_tracing(LevelFilter::INFO);
 
     let maybe_tls_server_config = cfg.secure.then(|| {
-        let tls_key_pem_raw = match std::env::var("RAMA_TLS_KEY") {
-            Ok(raw) => raw,
-            Err(_) => {
-                return ServerConfig {
-                    application_layer_protocol_negotiation: Some(vec![
-                        ApplicationProtocol::HTTP_2,
-                        ApplicationProtocol::HTTP_11,
-                    ]),
-                    ..ServerConfig::new(ServerAuth::SelfSigned(SelfSignedData::default()))
-                };
-            }
+        let Ok(tls_key_pem_raw) = std::env::var("RAMA_TLS_KEY") else {
+            return ServerConfig {
+                application_layer_protocol_negotiation: Some(vec![
+                    ApplicationProtocol::HTTP_2,
+                    ApplicationProtocol::HTTP_11,
+                ]),
+                ..ServerConfig::new(ServerAuth::SelfSigned(SelfSignedData::default()))
+            };
         };
         let tls_key_pem_raw = std::str::from_utf8(
             &ENGINE
@@ -183,13 +180,13 @@ pub async fn run(cfg: CliCommandServe) -> Result<(), BoxError> {
 #[derive(Debug, Clone)]
 struct AcmeService(String);
 
-impl Service<(), Request> for AcmeService {
+impl Service<Request> for AcmeService {
     type Response = Response;
     type Error = Infallible;
 
     async fn serve(
         &self,
-        _ctx: rama::Context<()>,
+        _ctx: rama::Context,
         _req: Request,
     ) -> Result<Self::Response, Self::Error> {
         Ok(self.0.clone().into_response())

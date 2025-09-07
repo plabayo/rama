@@ -89,6 +89,7 @@ impl<T, U> Sender<T, U> {
         self.giver.give() || !self.buffered_once.swap(true, atomic::Ordering::AcqRel)
     }
 
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub(crate) fn try_send(&mut self, val: T) -> Result<RetryPromise<T, U>, T> {
         if !self.can_send() {
             return Err(val);
@@ -128,6 +129,7 @@ impl<T, U> UnboundedSender<T, U> {
         self.giver.is_canceled()
     }
 
+    #[allow(clippy::needless_pass_by_ref_mut)]
     pub(crate) fn try_send(&mut self, val: T) -> Result<RetryPromise<T, U>, T> {
         let (tx, rx) = oneshot::channel();
         self.inner
@@ -147,7 +149,7 @@ impl<T, U> UnboundedSender<T, U> {
 
 impl<T, U> Clone for UnboundedSender<T, U> {
     fn clone(&self) -> Self {
-        UnboundedSender {
+        Self {
             giver: self.giver.clone(),
             inner: self.inner.clone(),
         }
@@ -215,7 +217,7 @@ pub(crate) enum Callback<T, U> {
 impl<T, U> Drop for Callback<T, U> {
     fn drop(&mut self) {
         match self {
-            Callback::Retry(tx) => {
+            Self::Retry(tx) => {
                 if let Some(tx) = tx.take() {
                     let _ = tx.send(Err(TrySendError {
                         error: dispatch_gone(),
@@ -223,7 +225,7 @@ impl<T, U> Drop for Callback<T, U> {
                     }));
                 }
             }
-            Callback::NoRetry(tx) => {
+            Self::NoRetry(tx) => {
                 if let Some(tx) = tx.take() {
                     let _ = tx.send(Err(dispatch_gone()));
                 }
@@ -245,26 +247,26 @@ fn dispatch_gone() -> crate::Error {
 impl<T, U> Callback<T, U> {
     pub(crate) fn is_canceled(&self) -> bool {
         match *self {
-            Callback::Retry(Some(ref tx)) => tx.is_closed(),
-            Callback::NoRetry(Some(ref tx)) => tx.is_closed(),
+            Self::Retry(Some(ref tx)) => tx.is_closed(),
+            Self::NoRetry(Some(ref tx)) => tx.is_closed(),
             _ => unreachable!(),
         }
     }
 
     pub(crate) fn poll_canceled(&mut self, cx: &mut Context<'_>) -> Poll<()> {
         match *self {
-            Callback::Retry(Some(ref mut tx)) => tx.poll_closed(cx),
-            Callback::NoRetry(Some(ref mut tx)) => tx.poll_closed(cx),
+            Self::Retry(Some(ref mut tx)) => tx.poll_closed(cx),
+            Self::NoRetry(Some(ref mut tx)) => tx.poll_closed(cx),
             _ => unreachable!(),
         }
     }
 
     pub(crate) fn send(mut self, val: Result<U, TrySendError<T>>) {
         match self {
-            Callback::Retry(ref mut tx) => {
+            Self::Retry(ref mut tx) => {
                 let _ = tx.take().unwrap().send(val);
             }
-            Callback::NoRetry(ref mut tx) => {
+            Self::NoRetry(ref mut tx) => {
                 let _ = tx.take().unwrap().send(val.map_err(|e| e.error));
             }
         }

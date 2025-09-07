@@ -33,6 +33,7 @@ impl<T> Default for DomainTrie<T> {
 impl<T> DomainTrie<T> {
     #[inline]
     /// Create a new [`DomainTrie`].
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -40,6 +41,7 @@ impl<T> DomainTrie<T> {
     /// Consume `self` and insert the given domain paired with the input value `T`.
     ///
     /// This overwrites any existing value already in the tree for that (trie) node.
+    #[must_use]
     pub fn with_insert_domain(mut self, domain: impl AsRef<str>, value: T) -> Self {
         let reversed = reverse_domain(domain.as_ref());
         self.trie.insert(reversed, value);
@@ -58,6 +60,7 @@ impl<T> DomainTrie<T> {
     /// Consume `self` and insert the given domains paired with the input value `T`.
     ///
     /// This overwrites any existing value already in the tree for that (trie) node.
+    #[must_use]
     pub fn with_insert_domain_iter<I, S>(mut self, domains: I, value: T) -> Self
     where
         I: IntoIterator<Item = S>,

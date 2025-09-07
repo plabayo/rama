@@ -13,6 +13,7 @@ pub struct SetProxyAuthHttpHeaderLayer;
 
 impl SetProxyAuthHttpHeaderLayer {
     /// Create a new [`SetProxyAuthHttpHeaderLayer`].
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -55,10 +56,9 @@ impl<S> SetProxyAuthHttpHeaderService<S> {
     }
 }
 
-impl<S, State, Body> Service<State, Request<Body>> for SetProxyAuthHttpHeaderService<S>
+impl<S, Body> Service<Request<Body>> for SetProxyAuthHttpHeaderService<S>
 where
-    S: Service<State, Request<Body>>,
-    State: Clone + Send + Sync + 'static,
+    S: Service<Request<Body>>,
     Body: Send + 'static,
 {
     type Response = S::Response;
@@ -66,31 +66,31 @@ where
 
     fn serve(
         &self,
-        mut ctx: Context<State>,
+        mut ctx: Context,
         mut req: Request<Body>,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
-        if let Some(pa) = ctx.get::<ProxyAddress>() {
-            if let Some(credential) = pa.credential.clone() {
-                match credential {
-                    ProxyCredential::Basic(basic) => {
-                        let maybe_request_ctx = ctx
-                            .get_or_try_insert_with_ctx::<RequestContext, _>(|ctx| {
-                                (ctx, &req).try_into()
-                            })
-                            .ok();
-                        if !maybe_request_ctx
-                            .map(|ctx| ctx.protocol.is_secure())
-                            .unwrap_or_default()
-                        {
-                            tracing::trace!("inserted proxy Basic credentials into (http) request");
-                            req.headers_mut().typed_insert(ProxyAuthorization(basic))
-                        }
+        if let Some(pa) = ctx.get::<ProxyAddress>()
+            && let Some(credential) = pa.credential.clone()
+        {
+            match credential {
+                ProxyCredential::Basic(basic) => {
+                    let maybe_request_ctx = ctx
+                        .get_or_try_insert_with_ctx::<RequestContext, _>(|ctx| {
+                            (ctx, &req).try_into()
+                        })
+                        .ok();
+                    if !maybe_request_ctx
+                        .map(|ctx| ctx.protocol.is_secure())
+                        .unwrap_or_default()
+                    {
+                        tracing::trace!("inserted proxy Basic credentials into (http) request");
+                        req.headers_mut().typed_insert(ProxyAuthorization(basic))
                     }
-                    ProxyCredential::Bearer(bearer) => {
-                        // Bearer tokens always need to be inserted, as there's no uri support for these
-                        tracing::trace!("inserted proxy Bearer credentials into (http) request");
-                        req.headers_mut().typed_insert(ProxyAuthorization(bearer))
-                    }
+                }
+                ProxyCredential::Bearer(bearer) => {
+                    // Bearer tokens always need to be inserted, as there's no uri support for these
+                    tracing::trace!("inserted proxy Bearer credentials into (http) request");
+                    req.headers_mut().typed_insert(ProxyAuthorization(bearer))
                 }
             }
         }

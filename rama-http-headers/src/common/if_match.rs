@@ -46,8 +46,8 @@ derive_header! {
 
 impl IfMatch {
     /// Create a new `If-Match: *` header.
-    pub fn any() -> IfMatch {
-        IfMatch(EntityTagRange::Any)
+    pub fn any() -> Self {
+        Self(EntityTagRange::Any)
     }
 
     /// Returns whether this is `If-Match: *`, matching any entity tag.
@@ -65,8 +65,8 @@ impl IfMatch {
 }
 
 impl From<ETag> for IfMatch {
-    fn from(etag: ETag) -> IfMatch {
-        IfMatch(EntityTagRange::Tags(HeaderValue::from(etag.0).into()))
+    fn from(etag: ETag) -> Self {
+        Self(EntityTagRange::Tags(HeaderValue::from(etag.0).into()))
     }
 }
 

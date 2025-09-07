@@ -73,8 +73,8 @@ use rama::{
 use std::{convert::Infallible, time::Duration};
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
-fn new_example_hijack_svc()
--> impl Clone + Service<(), Request, Response = Response, Error = Infallible> {
+fn new_example_hijack_svc() -> impl Clone + Service<Request, Response = Response, Error = Infallible>
+{
     StaticService::new(Html(
         r##"<!doctype html>
 <html>
@@ -185,9 +185,9 @@ async fn main() {
 }
 
 async fn http_connect_accept(
-    mut ctx: Context<()>,
+    mut ctx: Context,
     req: Request,
-) -> Result<(Response, Context<()>, Request), Response> {
+) -> Result<(Response, Context, Request), Response> {
     match ctx
         .get_or_try_insert_with_ctx::<RequestContext, _>(|ctx| (ctx, &req).try_into())
         .map(|ctx| ctx.authority.clone())
@@ -214,27 +214,28 @@ async fn http_connect_accept(
     Ok((StatusCode::OK.into_response(), ctx, req))
 }
 
-async fn http_plain_proxy(ctx: Context<()>, req: Request) -> Result<Response, Infallible> {
+async fn http_plain_proxy(ctx: Context, req: Request) -> Result<Response, Infallible> {
     let client = EasyHttpWebClient::default();
     match client.serve(ctx, req).await {
         Ok(resp) => {
-            match resp
+            if let Some(client_socket_info) = resp
                 .extensions()
                 .get::<RequestContextExt>()
                 .and_then(|ext| ext.get::<ClientSocketInfo>())
             {
-                Some(client_socket_info) => tracing::info!(
+                tracing::info!(
                     http.response.status_code = %resp.status(),
                     network.local.port = client_socket_info.local_addr().map(|addr| addr.port().to_string()).unwrap_or_default(),
                     network.local.address = client_socket_info.local_addr().map(|addr| addr.ip().to_string()).unwrap_or_default(),
                     network.peer.port = %client_socket_info.peer_addr().port(),
                     network.peer.address = %client_socket_info.peer_addr().ip(),
                     "http plain text proxy received response",
-                ),
-                None => tracing::info!(
+                )
+            } else {
+                tracing::info!(
                     http.response.status_code = %resp.status(),
                     "http plain text proxy received response, IP info unknown",
-                ),
+                )
             };
             Ok(resp)
         }

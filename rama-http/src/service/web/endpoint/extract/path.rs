@@ -41,21 +41,20 @@ impl<T: Clone> Clone for Path<T> {
     }
 }
 
-impl<S, T> FromRequestContextRefPair<S> for Path<T>
+impl<T> FromRequestContextRefPair for Path<T>
 where
-    S: Clone + Send + Sync + 'static,
     T: DeserializeOwned + Send + Sync + 'static,
 {
     type Rejection = PathRejection;
 
     async fn from_request_context_ref_pair(
-        ctx: &Context<S>,
+        ctx: &Context,
         _parts: &Parts,
     ) -> Result<Self, Self::Rejection> {
         match ctx.get::<UriParams>() {
             Some(params) => {
                 let params = params.deserialize::<T>()?;
-                Ok(Path(params))
+                Ok(Self(params))
             }
             None => Err(MissingPathParams.into()),
         }

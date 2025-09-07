@@ -1,4 +1,4 @@
-//! `async fn serve(&self, Context<S>, Request) -> Result<Response, Error>`
+//! `async fn serve(&self, Context, Request) -> Result<Response, Error>`
 //!
 //! Crate used by the end-user `rama` crate and `rama` crate authors alike.
 //!
@@ -58,7 +58,7 @@ pub mod bytes {
 
 pub mod futures {
     //! Re-export of the [futures](https://docs.rs/futures/latest/futures/)
-    //! and [async-stream](https://docs.rs/async-stream/latest/async_stream/) crates.
+    //! and [asynk-strim](https://docs.rs/asynk-strim/latest/asynk_strim/) crates.
     //!
     //! Exported for your convenience and because it is so fundamental to rama.
 
@@ -72,7 +72,7 @@ pub mod futures {
     pub use ::futures::*;
 
     #[doc(inline)]
-    pub use ::async_stream;
+    pub use ::asynk_strim as async_stream;
 
     /// Joins two futures, waiting for both to complete.
     ///
@@ -143,20 +143,20 @@ pub mod futures {
         fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
             let mut this = self.project();
 
-            if let Some(future) = this.future1.as_mut().as_pin_mut() {
-                if let Poll::Ready(out) = future.poll(cx) {
-                    *this.output1 = Some(out);
+            if let Some(future) = this.future1.as_mut().as_pin_mut()
+                && let Poll::Ready(out) = future.poll(cx)
+            {
+                *this.output1 = Some(out);
 
-                    this.future1.set(None);
-                }
+                this.future1.set(None);
             }
 
-            if let Some(future) = this.future2.as_mut().as_pin_mut() {
-                if let Poll::Ready(out) = future.poll(cx) {
-                    *this.output2 = Some(out);
+            if let Some(future) = this.future2.as_mut().as_pin_mut()
+                && let Poll::Ready(out) = future.poll(cx)
+            {
+                *this.output2 = Some(out);
 
-                    this.future2.set(None);
-                }
+                this.future2.set(None);
             }
 
             take_zip_from_parts(this.output1, this.output2)
@@ -217,31 +217,31 @@ pub mod futures {
         fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
             let mut this = self.project();
 
-            if let Some(future) = this.future1.as_mut().as_pin_mut() {
-                if let Poll::Ready(out) = future.poll(cx) {
-                    match out {
-                        Ok(t) => {
-                            *this.output1 = Some(t);
+            if let Some(future) = this.future1.as_mut().as_pin_mut()
+                && let Poll::Ready(out) = future.poll(cx)
+            {
+                match out {
+                    Ok(t) => {
+                        *this.output1 = Some(t);
 
-                            this.future1.set(None);
-                        }
-
-                        Err(err) => return Poll::Ready(Err(err)),
+                        this.future1.set(None);
                     }
+
+                    Err(err) => return Poll::Ready(Err(err)),
                 }
             }
 
-            if let Some(future) = this.future2.as_mut().as_pin_mut() {
-                if let Poll::Ready(out) = future.poll(cx) {
-                    match out {
-                        Ok(t) => {
-                            *this.output2 = Some(t);
+            if let Some(future) = this.future2.as_mut().as_pin_mut()
+                && let Poll::Ready(out) = future.poll(cx)
+            {
+                match out {
+                    Ok(t) => {
+                        *this.output2 = Some(t);
 
-                            this.future2.set(None);
-                        }
-
-                        Err(err) => return Poll::Ready(Err(err)),
+                        this.future2.set(None);
                     }
+
+                    Err(err) => return Poll::Ready(Err(err)),
                 }
             }
 

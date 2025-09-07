@@ -29,6 +29,7 @@ pub struct Client {
 impl Client {
     /// Creates a new socks5 [`Client`].
     #[inline]
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }

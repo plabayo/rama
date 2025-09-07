@@ -24,7 +24,7 @@ impl ProxyCsvRowReader {
         let file = tokio::fs::File::open(path).await?;
         let reader = BufReader::new(file);
         let lines = reader.lines();
-        Ok(ProxyCsvRowReader {
+        Ok(Self {
             data: ProxyCsvRowReaderData::File(lines),
         })
     }
@@ -32,7 +32,7 @@ impl ProxyCsvRowReader {
     /// Create a new [`ProxyCsvRowReader`] from the given CSV data.
     pub fn raw(data: impl AsRef<str>) -> Self {
         let lines: Vec<_> = data.as_ref().lines().rev().map(str::to_owned).collect();
-        ProxyCsvRowReader {
+        Self {
             data: ProxyCsvRowReaderData::Raw(lines),
         }
     }

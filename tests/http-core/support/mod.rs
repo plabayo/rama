@@ -261,8 +261,8 @@ pub(crate) struct __CReq {
 }
 
 impl Default for __CReq {
-    fn default() -> __CReq {
-        __CReq {
+    fn default() -> Self {
+        Self {
             method: "GET",
             uri: "/",
             headers: HeaderMap::new(),
@@ -287,8 +287,8 @@ pub(crate) struct __SReq {
 }
 
 impl Default for __SReq {
-    fn default() -> __SReq {
-        __SReq {
+    fn default() -> Self {
+        Self {
             method: "GET",
             uri: "/",
             headers: Vec::new(),

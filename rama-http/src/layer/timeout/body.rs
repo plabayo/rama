@@ -63,7 +63,7 @@ pin_project! {
 impl<B> TimeoutBody<B> {
     /// Creates a new [`TimeoutBody`].
     pub fn new(timeout: Duration, body: B) -> Self {
-        TimeoutBody {
+        Self {
             timeout,
             sleep: None,
             body,
@@ -94,7 +94,7 @@ where
         };
 
         // Error if the timeout has expired.
-        if let Poll::Ready(()) = sleep_pinned.poll(cx) {
+        if sleep_pinned.poll(cx) == Poll::Ready(()) {
             return Poll::Ready(Some(Err(Box::new(TimeoutError(())))));
         }
 

@@ -1,0 +1,7 @@
+error: proc macro panicked
+ --> tests/include_dir_no_compile/include_dir_with_wrong_token.rs:3:23
+  |
+3 | static _ASSETS: Dir = include_dir!(42);
+  |                       ^^^^^^^^^^^^^^^^
+  |
+  = help: message: This macro only accepts a single, non-empty string argument

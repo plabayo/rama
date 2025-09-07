@@ -221,6 +221,7 @@ impl Default for Builder {
 
 impl Builder {
     /// Create a new connection builder.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             h1_parser_config: Default::default(),
@@ -272,7 +273,7 @@ impl Builder {
     /// and no error will be reported.
     ///
     /// Default is false.
-    pub fn ignore_invalid_headers(&mut self, enabled: bool) -> &mut Builder {
+    pub fn ignore_invalid_headers(&mut self, enabled: bool) -> &mut Self {
         self.h1_parser_config
             .ignore_invalid_headers_in_requests(enabled);
         self

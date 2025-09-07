@@ -27,16 +27,16 @@ where
 impl<S, F> MapRequest<S, F> {
     /// Creates a new [`MapRequest`] service.
     pub const fn new(inner: S, f: F) -> Self {
-        MapRequest { inner, f }
+        Self { inner, f }
     }
 
     define_inner_service_accessors!();
 }
 
-impl<S, F, State, R1, R2> Service<State, R1> for MapRequest<S, F>
+impl<S, F, R1, R2> Service<R1> for MapRequest<S, F>
 where
-    S: Service<State, R2>,
-    F: FnOnce(R1) -> R2 + Clone + Send + Sync + 'static,
+    S: Service<R2>,
+    F: Fn(R1) -> R2 + Send + Sync + 'static,
 {
     type Response = S::Response;
     type Error = S::Error;
@@ -44,10 +44,10 @@ where
     #[inline]
     fn serve(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         request: R1,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
-        self.inner.serve(ctx, (self.f.clone())(request))
+        self.inner.serve(ctx, (self.f)(request))
     }
 }
 
@@ -70,7 +70,7 @@ impl<F> fmt::Debug for MapRequestLayer<F> {
 impl<F> MapRequestLayer<F> {
     /// Creates a new [`MapRequestLayer`].
     pub const fn new(f: F) -> Self {
-        MapRequestLayer { f }
+        Self { f }
     }
 }
 

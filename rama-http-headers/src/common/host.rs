@@ -7,7 +7,7 @@ use rama_http_types::dep::http::uri;
 use rama_http_types::{HeaderName, HeaderValue};
 use rama_net::address;
 
-use crate::{Error, Header};
+use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
 
 /// The `Host` header.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd)]
@@ -18,26 +18,31 @@ pub struct Host {
 
 impl Host {
     /// Get the [`address::Host`], such as example.domain.
+    #[must_use]
     pub fn host(&self) -> &address::Host {
         &self.host
     }
 
     /// Get the optional port number.
+    #[must_use]
     pub fn port(&self) -> Option<u16> {
         self.port
     }
 
     /// Consume self into its parts: `(host, ?port)`
+    #[must_use]
     pub fn into_parts(self) -> (address::Host, Option<u16>) {
         (self.host, self.port)
     }
 }
 
-impl Header for Host {
+impl TypedHeader for Host {
     fn name() -> &'static HeaderName {
         &::rama_http_types::header::HOST
     }
+}
 
+impl HeaderDecode for Host {
     fn decode<'i, I: Iterator<Item = &'i HeaderValue>>(values: &mut I) -> Result<Self, Error> {
         let auth = values
             .next()
@@ -47,7 +52,9 @@ impl Header for Host {
         let port = auth.port_u16();
         Ok(Self { host, port })
     }
+}
 
+impl HeaderEncode for Host {
     fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
         let s = self.to_string();
         let bytes = Bytes::from_owner(s);
@@ -58,15 +65,15 @@ impl Header for Host {
 }
 
 impl From<address::Host> for Host {
-    fn from(host: address::Host) -> Host {
-        Host { host, port: None }
+    fn from(host: address::Host) -> Self {
+        Self { host, port: None }
     }
 }
 
 impl From<address::Authority> for Host {
-    fn from(auth: address::Authority) -> Host {
+    fn from(auth: address::Authority) -> Self {
         let (host, port) = auth.into_parts();
-        Host {
+        Self {
             host,
             port: Some(port),
         }

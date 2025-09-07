@@ -58,6 +58,11 @@ use rama::{
     http::{
         Body, Request, Response, StatusCode,
         client::EasyHttpWebClient,
+        conn::TargetHttpVersion,
+        headers::{
+            HeaderEncode, HeaderMapExt as _, SecWebSocketExtensions, TypedHeader,
+            sec_websocket_extensions::Extension,
+        },
         io::upgrade,
         layer::{
             compress_adapter::CompressAdaptLayer,
@@ -70,15 +75,16 @@ use rama::{
             upgrade::{UpgradeLayer, Upgraded},
         },
         matcher::MethodMatcher,
+        proto::RequestHeaders,
         server::HttpServer,
         service::web::response::IntoResponse,
         ws::{
             AsyncWebSocket, Message, ProtocolError,
             handshake::{client::HttpClientWebSocketExt, server::WebSocketMatcher},
-            protocol::Role,
+            protocol::{Role, WebSocketConfig},
         },
     },
-    layer::ConsumeErrLayer,
+    layer::{AddExtensionLayer, ConsumeErrLayer},
     matcher::Matcher,
     net::{
         http::RequestContext,
@@ -109,7 +115,6 @@ use rama::{
 };
 
 use itertools::Itertools;
-use rama_http::conn::TargetHttpVersion;
 use std::{convert::Infallible, sync::Arc, time::Duration};
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -119,7 +124,7 @@ struct State {
     ua_db: Arc<UserAgentDatabase>,
 }
 
-type Context = rama::Context<State>;
+type Context = rama::Context;
 
 #[tokio::main]
 async fn main() -> Result<(), BoxError> {
@@ -143,13 +148,14 @@ async fn main() -> Result<(), BoxError> {
     let graceful = rama::graceful::Shutdown::default();
 
     graceful.spawn_task_fn(async |guard| {
-        let tcp_service = TcpListener::build_with_state(state.clone())
+        let tcp_service = TcpListener::build()
             .bind("127.0.0.1:62017")
             .await
             .expect("bind tcp proxy to 127.0.0.1:62017");
 
         let exec = Executor::graceful(guard.clone());
-        let http_mitm_service = new_http_mitm_proxy(&Context::with_state(state));
+
+        let http_mitm_service = new_http_mitm_proxy(&state);
         let http_service = HttpServer::auto(exec).service(
             (
                 TraceLayer::new_for_http(),
@@ -169,6 +175,7 @@ async fn main() -> Result<(), BoxError> {
             .serve_graceful(
                 guard,
                 (
+                    AddExtensionLayer::new(state),
                     // protect the http proxy from too large bodies, both from request and response end
                     BodyLimitLayer::symmetric(2 * 1024 * 1024),
                 )
@@ -222,14 +229,15 @@ async fn http_connect_proxy(ctx: Context, upgraded: Upgraded) -> Result<(), Infa
     // as we otherwise might not be able to define the scheme/authority
     // for upstream http requests.
 
-    let http_service = new_http_mitm_proxy(&ctx);
+    let state = ctx.get::<State>().unwrap();
+    let http_service = new_http_mitm_proxy(state);
 
     let mut http_tp = HttpServer::auto(ctx.executor().clone());
     http_tp.h2_mut().enable_connect_protocol();
 
     let http_transport_service = http_tp.service(http_service);
 
-    let https_service = TlsAcceptorLayer::new(ctx.state().mitm_tls_service_data.clone())
+    let https_service = TlsAcceptorLayer::new(state.mitm_tls_service_data.clone())
         .with_store_client_hello(true)
         .into_layer(http_transport_service);
 
@@ -242,13 +250,13 @@ async fn http_connect_proxy(ctx: Context, upgraded: Upgraded) -> Result<(), Infa
 }
 
 fn new_http_mitm_proxy(
-    ctx: &Context,
-) -> impl Service<State, Request, Response = Response, Error = Infallible> {
+    state: &State,
+) -> impl Service<Request, Response = Response, Error = Infallible> {
     (
         MapResponseBodyLayer::new(Body::new),
         TraceLayer::new_for_http(),
         ConsumeErrLayer::default(),
-        UserAgentEmulateLayer::new(ctx.state().ua_db.clone())
+        UserAgentEmulateLayer::new(state.ua_db.clone())
             .try_auto_detect_user_agent(true)
             .optional(true),
         CompressAdaptLayer::default(),
@@ -342,7 +350,7 @@ fn new_mitm_tls_service_data() -> Result<TlsAcceptorData, OpaqueError> {
 
 async fn mitm_websocket<S>(client: &S, mut ctx: Context, req: Request) -> Response
 where
-    S: Service<State, Request, Response = Response, Error = OpaqueError>,
+    S: Service<Request, Response = Response, Error = OpaqueError>,
 {
     tracing::debug!("detected websocket request: starting MITM WS upgrade...");
 
@@ -362,22 +370,77 @@ where
     tracing::debug!("forcing egress http connection as {target_version:?} to ensure WS upgrade");
     ctx.insert(TargetHttpVersion(target_version));
 
-    let egress_socket = match client.websocket_with_request(req).handshake(ctx).await {
+    let mut handshake = match client
+        .websocket_with_request(req)
+        .initiate_handshake(ctx)
+        .await
+    {
         Ok(socket) => socket,
         Err(err) => {
-            tracing::error!("failed to create egress websocket: {err:?}");
+            tracing::error!("failed to create initiate egress websocket handshake: {err:?}");
             return StatusCode::BAD_GATEWAY.into_response();
         }
     };
 
-    let (egress_socket, response_parts, _) = egress_socket.into_parts();
+    if let Some(orig_req_headers) = handshake.response.extensions().get::<RequestHeaders>() {
+        let req_extensions = orig_req_headers
+            .headers()
+            .typed_get::<SecWebSocketExtensions>();
+        tracing::debug!(
+            "apply original req WS extensions (perhaps after UA Emulation) as handshake exts: {req_extensions:?}"
+        );
+        handshake.extensions = req_extensions;
+    }
+
+    let egress_socket = match handshake.complete().await {
+        Ok(socket) => socket,
+        Err(err) => {
+            tracing::error!("failed to complete WS handshake and create egress websocket: {err:?}");
+            return StatusCode::BAD_GATEWAY.into_response();
+        }
+    };
+
+    let (egress_socket, mut response_parts, _) = egress_socket.into_parts();
+
+    let mut ingress_socket_cfg: WebSocketConfig = Default::default();
+    if let Some(ingress_header) = parts_copy.headers.typed_get::<SecWebSocketExtensions>() {
+        tracing::debug!("ingress request contains sec-websocket-extensions header");
+        if let Some(accept_pmd_cfg) = ingress_header.iter().find_map(|ext| {
+            if let Extension::PerMessageDeflate(cfg) = ext {
+                Some(cfg.clone())
+            } else {
+                None
+            }
+        }) {
+            tracing::debug!("use deflate ext for ingress ws cfg: {accept_pmd_cfg:?}");
+            ingress_socket_cfg.per_message_deflate = Some((&accept_pmd_cfg).into());
+            let _ = response_parts.headers.insert(
+                SecWebSocketExtensions::name(),
+                SecWebSocketExtensions::per_message_deflate_with_config(accept_pmd_cfg)
+                    .encode_to_value(),
+            );
+        } else {
+            tracing::debug!(
+                "remove sec-websocket-extensions header if it exts: no ext was requested by ingress client"
+            );
+            let _ = response_parts
+                .headers
+                .remove(SecWebSocketExtensions::name());
+        }
+    } else {
+        tracing::debug!("ingress request does not contain sec-websocket-extensions header");
+    }
+
     let response = Response::from_parts(response_parts, Body::empty());
 
     tokio::spawn(async move {
         tracing::debug!("egresss websocket active: starting ingress WS upgrade...");
         let request = Request::from_parts(parts_copy, Body::empty());
         let ingress_socket = match upgrade::on(request).await {
-            Ok(upgraded) => AsyncWebSocket::from_raw_socket(upgraded, Role::Server, None).await,
+            Ok(upgraded) => {
+                AsyncWebSocket::from_raw_socket(upgraded, Role::Server, Some(ingress_socket_cfg))
+                    .await
+            }
             Err(err) => {
                 tracing::error!("error in upgrading ingress websocket: {err:?}");
                 return;

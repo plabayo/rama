@@ -132,7 +132,7 @@ fn tcp_connect_with_socket_opts(
 
 impl<ConnectFn, ConnectFnFut, ConnectFnErr> TcpStreamConnector for ConnectFn
 where
-    ConnectFn: FnOnce(SocketAddr) -> ConnectFnFut + Clone + Send + Sync + 'static,
+    ConnectFn: Fn(SocketAddr) -> ConnectFnFut + Clone + Send + Sync + 'static,
     ConnectFnFut: Future<Output = Result<TcpStream, ConnectFnErr>> + Send + 'static,
     ConnectFnErr: Into<BoxError> + Send + 'static,
 {
@@ -142,7 +142,7 @@ where
         &self,
         addr: SocketAddr,
     ) -> impl Future<Output = Result<TcpStream, Self::Error>> + Send + '_ {
-        (self.clone())(addr)
+        (self)(addr)
     }
 }
 
@@ -178,25 +178,23 @@ macro_rules! impl_stream_connector_either {
 ///
 /// Use [`tcp_connect`] in case you want to customise any of these settings,
 /// or use a [`rama_net::client::ConnectorService`] for even more advanced possibilities.
-pub async fn default_tcp_connect<State>(
-    ctx: &Context<State>,
+pub async fn default_tcp_connect(
+    ctx: &Context,
     authority: Authority,
 ) -> Result<(TcpStream, SocketAddr), OpaqueError>
 where
-    State: Clone + Send + Sync + 'static,
 {
     tcp_connect(ctx, authority, GlobalDnsResolver::default(), ()).await
 }
 
 /// Establish a [`TcpStream`] connection for the given [`Authority`].
-pub async fn tcp_connect<State, Dns, Connector>(
-    ctx: &Context<State>,
+pub async fn tcp_connect<Dns, Connector>(
+    ctx: &Context,
     authority: Authority,
     dns: Dns,
     connector: Connector,
 ) -> Result<(TcpStream, SocketAddr), OpaqueError>
 where
-    State: Clone + Send + Sync + 'static,
     Dns: DnsResolver + Clone,
     Connector: TcpStreamConnector<Error: Into<BoxError> + Send + 'static> + Clone,
 {
@@ -229,8 +227,8 @@ where
         }
     };
 
-    if let Some(dns_overwrite) = ctx.get::<DnsOverwrite>() {
-        if let Ok(tuple) = tcp_connect_inner(
+    if let Some(dns_overwrite) = ctx.get::<DnsOverwrite>()
+        && let Ok(tuple) = tcp_connect_inner(
             ctx,
             domain.clone(),
             port,
@@ -240,9 +238,8 @@ where
             ip_mode,
         )
         .await
-        {
-            return Ok(tuple);
-        }
+    {
+        return Ok(tuple);
     }
 
     //... otherwise we'll try to establish a connection,
@@ -251,8 +248,8 @@ where
     tcp_connect_inner(ctx, domain, port, dns_mode, dns, connector, ip_mode).await
 }
 
-async fn tcp_connect_inner<State, Dns, Connector>(
-    ctx: &Context<State>,
+async fn tcp_connect_inner<Dns, Connector>(
+    ctx: &Context,
     domain: Domain,
     port: u16,
     dns_mode: DnsResolveIpMode,
@@ -261,7 +258,6 @@ async fn tcp_connect_inner<State, Dns, Connector>(
     connect_mode: ConnectIpMode,
 ) -> Result<(TcpStream, SocketAddr), OpaqueError>
 where
-    State: Clone + Send + Sync + 'static,
     Dns: DnsResolver + Clone,
     Connector: TcpStreamConnector<Error: Into<BoxError> + Send + 'static> + Clone,
 {

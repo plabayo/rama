@@ -10,6 +10,7 @@ use rama_boring::{
     x509::{
         X509,
         extension::{BasicConstraints, KeyUsage, SubjectKeyIdentifier},
+        store::X509Store,
     },
 };
 use rama_core::telemetry::tracing::{debug, trace};
@@ -27,7 +28,7 @@ use rama_net::tls::{
 };
 use rama_net::{address::Domain, tls::client::ServerVerifyMode};
 use rama_utils::macros::generate_set_and_with;
-use std::{fmt, sync::Arc};
+use std::{borrow::Cow, fmt, sync::Arc};
 
 #[cfg(feature = "compression")]
 use super::compress_certificate::{
@@ -62,6 +63,7 @@ impl std::fmt::Debug for TlsConnectorData {
 }
 
 impl TlsConnectorData {
+    #[must_use]
     pub fn builder() -> TlsConnectorDataBuilder {
         TlsConnectorDataBuilder::new()
     }
@@ -77,6 +79,7 @@ pub struct TlsConnectorDataBuilder {
     server_verify_mode: Option<ServerVerifyMode>,
     keylog_intent: Option<KeyLogIntent>,
     cipher_list: Option<Vec<u16>>,
+    server_verify_cert_store: Option<X509Store>,
     store_server_certificate_chain: Option<bool>,
     alpn_protos: Option<Bytes>,
     min_ssl_version: Option<SslVersion>,
@@ -140,8 +143,8 @@ macro_rules! implement_reference_getters {
 
 #[derive(Debug, Clone)]
 pub struct ConnectorConfigClientAuth {
-    pub(super) cert_chain: Vec<X509>,
-    pub(super) private_key: PKey<Private>,
+    pub cert_chain: Vec<X509>,
+    pub private_key: PKey<Private>,
 }
 
 impl TlsConnectorDataBuilder {
@@ -170,11 +173,11 @@ impl TlsConnectorDataBuilder {
     );
 
     /// Return the SSL keylog file path if one exists.
-    pub fn keylog_filepath(&self) -> Option<String> {
+    pub fn keylog_filepath(&self) -> Option<Cow<'_, str>> {
         if let Some(intent) = self.keylog_intent_inner() {
             return intent.file_path();
         }
-        KeyLogIntent::default().file_path()
+        KeyLogIntent::env_file_path().map(Into::into)
     }
 
     fn keylog_intent_inner(&self) -> Option<&KeyLogIntent> {
@@ -186,22 +189,26 @@ impl TlsConnectorDataBuilder {
         })
     }
 
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
+    #[must_use]
     pub fn new_http_auto() -> Self {
         Self::new()
             .try_with_rama_alpn_protos(&[ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11])
             .expect("with http2 and http1")
     }
 
+    #[must_use]
     pub fn new_http_1() -> Self {
         Self::new()
             .try_with_rama_alpn_protos(&[ApplicationProtocol::HTTP_11])
             .expect("with http1")
     }
 
+    #[must_use]
     pub fn new_http_2() -> Self {
         Self::new()
             .try_with_rama_alpn_protos(&[ApplicationProtocol::HTTP_2])
@@ -212,7 +219,7 @@ impl TlsConnectorDataBuilder {
     ///
     /// When evaluating builders we start from this builder (the last one) and
     /// work our way back until we find a value.
-    pub fn push_base_config(&mut self, config: Arc<TlsConnectorDataBuilder>) -> &mut Self {
+    pub fn push_base_config(&mut self, config: Arc<Self>) -> &mut Self {
         self.base_builders.push(config);
         self
     }
@@ -220,13 +227,14 @@ impl TlsConnectorDataBuilder {
     /// Add [`ConfigBuilder`] to the start of our base builders
     ///
     /// Builder in the start is evaluated as the last one when iterating over builders
-    pub fn prepend_base_config(&mut self, config: Arc<TlsConnectorDataBuilder>) -> &mut Self {
+    pub fn prepend_base_config(&mut self, config: Arc<Self>) -> &mut Self {
         self.base_builders.insert(0, config);
         self
     }
 
     /// Same as [`TlsConnectorDataBuilder::push_base_config`] but consuming self
-    pub fn with_base_config(mut self, config: Arc<TlsConnectorDataBuilder>) -> Self {
+    #[must_use]
+    pub fn with_base_config(mut self, config: Arc<Self>) -> Self {
         self.push_base_config(config);
         self
     }
@@ -235,6 +243,19 @@ impl TlsConnectorDataBuilder {
         /// Set the [`ServerVerifyMode`] that will be used by the tls client to verify the server
         pub fn server_verify_mode(mut self, server_verify_mode: Option<ServerVerifyMode>) -> Self {
             self.server_verify_mode = server_verify_mode;
+            self
+        }
+    );
+
+    generate_set_and_with!(
+        /// Set the [`X509Store`] that will be used by the tls client to verify the server certs
+        ///
+        /// (unless the mode is [`ServerVerifyMode::Disable`])
+        pub fn server_verify_cert_store(
+            mut self,
+            server_verify_cert_store: Option<X509Store>,
+        ) -> Self {
+            self.server_verify_cert_store = server_verify_cert_store;
             self
         }
     );
@@ -436,7 +457,51 @@ impl TlsConnectorDataBuilder {
             rama_boring::ssl::SslConnector::builder(rama_boring::ssl::SslMethod::tls_client())
                 .context("create (boring) ssl connector builder")?;
 
-        if let Some(keylog_filename) = self.keylog_filepath() {
+        if let Some(store) = self.server_verify_cert_store.clone() {
+            trace!("boring connector: set provided cert store to verify as server");
+            cfg_builder
+                .set_verify_cert_store(store)
+                .context("set verify cert store")?;
+        } else {
+            #[cfg(target_os = "windows")]
+            {
+                // on windows it seems to have no root CA by default when using boringssl
+                // this code path is there to set it anyway
+                static WINDOWS_ROOT_CA: std::sync::LazyLock<Result<X509Store, OpaqueError>> =
+                    std::sync::LazyLock::new(|| {
+                        trace!("boring connector: windows: load root certs for current user");
+
+                        // Trusted Root Certification Authorities
+                        let user_root = schannel::cert_store::CertStore::open_current_user("ROOT")
+                            .context("open (root) cert store for current user")?;
+
+                        let mut builder = rama_boring::x509::store::X509StoreBuilder::new()
+                            .context("build x509 store builder")?;
+
+                        for cert in user_root.certs() {
+                            // Convert the Windows cert to DER, then to BoringSSL X509
+                            if let Ok(x509) = X509::from_der(cert.to_der()) {
+                                let _ = builder.add_cert(x509);
+                            }
+                        }
+
+                        Ok(builder.build())
+                    });
+
+                let store = WINDOWS_ROOT_CA
+                    .as_ref()
+                    .context("create windows root CA")?
+                    .clone();
+
+                cfg_builder
+                    .set_verify_cert_store(store)
+                    .context("set default windows verify cert store")?;
+            }
+            #[cfg(not(target_os = "windows"))]
+            trace!("boring connector: do not set (root) ca file"); // on non-windows we assume that the default is fine
+        }
+
+        if let Some(keylog_filename) = self.keylog_filepath().as_deref() {
             let handle = new_key_log_file_handle(keylog_filename)?;
             cfg_builder.set_keylog_callback(move |_, line| {
                 let line = format!("{line}\n");
@@ -741,20 +806,17 @@ impl TlsConnectorDataBuilder {
             for extension in cfg.extensions.iter().flatten() {
                 match extension {
                     ClientHelloExtension::ServerName(maybe_domain) => {
-                        server_name = match maybe_domain {
-                            Some(_) => {
-                                trace!(
-                                    "TlsConnectorData: builder: from std client config: set server (domain) name from host: {:?}",
-                                    maybe_domain
-                                );
-                                maybe_domain.clone()
-                            }
-                            None => {
-                                trace!(
-                                    "TlsConnectorData: builder: from std client config: ignore server null value"
-                                );
-                                None
-                            }
+                        server_name = if maybe_domain.is_some() {
+                            trace!(
+                                "TlsConnectorData: builder: from std client config: set server (domain) name from host: {:?}",
+                                maybe_domain
+                            );
+                            maybe_domain.clone()
+                        } else {
+                            trace!(
+                                "TlsConnectorData: builder: from std client config: ignore server null value"
+                            );
+                            None
                         };
                     }
                     ClientHelloExtension::ApplicationLayerProtocolNegotiation(alpn_list) => {
@@ -929,17 +991,75 @@ impl TlsConnectorDataBuilder {
             cipher_list
         );
 
-        let client_auth = match client_auth.cloned() {
-            None => None,
-            Some(ClientAuth::SelfSigned) => {
+        let client_auth = client_auth
+            .map(|auth| auth.clone().try_into())
+            .transpose()?;
+
+        Ok(Self {
+            base_builders: vec![],
+            keylog_intent: keylog_intent.cloned(),
+            extension_order,
+            cipher_list,
+            alpn_protos,
+            curves,
+            min_ssl_version,
+            max_ssl_version,
+            verify_algorithm_prefs,
+            server_verify_mode,
+            server_verify_cert_store: None,
+            client_auth,
+            store_server_certificate_chain: Some(store_server_certificate_chain),
+            grease_enabled: Some(grease_enabled),
+            ocsp_stapling_enabled: Some(ocsp_stapling_enabled),
+            signed_cert_timestamps_enabled: Some(signed_cert_timestamps_enabled),
+            certificate_compression_algorithms,
+            delegated_credential_schemes,
+            record_size_limit,
+            encrypted_client_hello,
+            server_name,
+        })
+    }
+}
+
+impl TryFrom<&rama_net::tls::client::ClientConfig> for TlsConnectorDataBuilder {
+    type Error = OpaqueError;
+
+    fn try_from(value: &rama_net::tls::client::ClientConfig) -> Result<Self, Self::Error> {
+        Self::try_from_multiple_client_configs(std::iter::once(value))
+    }
+}
+
+impl TryFrom<&Arc<rama_net::tls::client::ClientConfig>> for TlsConnectorDataBuilder {
+    type Error = OpaqueError;
+
+    fn try_from(value: &Arc<rama_net::tls::client::ClientConfig>) -> Result<Self, Self::Error> {
+        Self::try_from_multiple_client_configs(std::iter::once(value.as_ref()))
+    }
+}
+
+impl TryFrom<ClientHello> for TlsConnectorDataBuilder {
+    type Error = OpaqueError;
+
+    fn try_from(value: ClientHello) -> Result<Self, Self::Error> {
+        let client_config = rama_net::tls::client::ClientConfig::from(value);
+        Self::try_from(&client_config)
+    }
+}
+
+impl TryFrom<ClientAuth> for ConnectorConfigClientAuth {
+    type Error = OpaqueError;
+
+    fn try_from(auth: ClientAuth) -> Result<Self, Self::Error> {
+        match auth {
+            ClientAuth::SelfSigned => {
                 let (cert_chain, private_key) =
                     self_signed_client_auth().context("boring/TlsConnectorData")?;
-                Some(ConnectorConfigClientAuth {
+                Ok(Self {
                     cert_chain,
                     private_key,
                 })
             }
-            Some(ClientAuth::Single(data)) => {
+            ClientAuth::Single(data) => {
                 // server TLS Certs
                 let cert_chain = match data.cert_chain {
                     DataEncoding::Der(raw_data) => vec![X509::from_der(&raw_data[..]).context(
@@ -975,60 +1095,12 @@ impl TlsConnectorDataBuilder {
                         .context("boring/TlsConnectorData: parse private key from PEM content")?,
                 };
 
-                Some(ConnectorConfigClientAuth {
+                Ok(Self {
                     cert_chain,
                     private_key,
                 })
             }
-        };
-
-        Ok(TlsConnectorDataBuilder {
-            base_builders: vec![],
-            keylog_intent: keylog_intent.cloned(),
-            extension_order,
-            cipher_list,
-            alpn_protos,
-            curves,
-            min_ssl_version,
-            max_ssl_version,
-            verify_algorithm_prefs,
-            server_verify_mode,
-            client_auth,
-            store_server_certificate_chain: Some(store_server_certificate_chain),
-            grease_enabled: Some(grease_enabled),
-            ocsp_stapling_enabled: Some(ocsp_stapling_enabled),
-            signed_cert_timestamps_enabled: Some(signed_cert_timestamps_enabled),
-            certificate_compression_algorithms,
-            delegated_credential_schemes,
-            record_size_limit,
-            encrypted_client_hello,
-            server_name,
-        })
-    }
-}
-
-impl TryFrom<&rama_net::tls::client::ClientConfig> for TlsConnectorDataBuilder {
-    type Error = OpaqueError;
-
-    fn try_from(value: &rama_net::tls::client::ClientConfig) -> Result<Self, Self::Error> {
-        TlsConnectorDataBuilder::try_from_multiple_client_configs(std::iter::once(value))
-    }
-}
-
-impl TryFrom<&Arc<rama_net::tls::client::ClientConfig>> for TlsConnectorDataBuilder {
-    type Error = OpaqueError;
-
-    fn try_from(value: &Arc<rama_net::tls::client::ClientConfig>) -> Result<Self, Self::Error> {
-        TlsConnectorDataBuilder::try_from_multiple_client_configs(std::iter::once(value.as_ref()))
-    }
-}
-
-impl TryFrom<ClientHello> for TlsConnectorDataBuilder {
-    type Error = OpaqueError;
-
-    fn try_from(value: ClientHello) -> Result<Self, Self::Error> {
-        let client_config = rama_net::tls::client::ClientConfig::from(value);
-        Self::try_from(&client_config)
+        }
     }
 }
 

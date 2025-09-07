@@ -8,12 +8,14 @@ This directory contains example implementations demonstrating various features a
 - [`http_service_hello.rs`](./http_service_hello.rs) - A simple HTTP service that returns "Hello, World!"
 - [`http_listener_hello.rs`](./http_listener_hello.rs) - Basic HTTP listener example
 - [`http_service_fs.rs`](./http_service_fs.rs) - File system service for serving static files
+- [`http_service_include_dir.rs`](./http_service_include_dir.rs) - File system service for serving embedded files
 - [`http_web_service_dir_and_api.rs`](./http_web_service_dir_and_api.rs) - Combined directory and API service
 - [`http_web_router.rs`](./http_web_router.rs) - HTTP router implementation
 - [`http_service_match.rs`](./http_service_match.rs) - Service matching example
 - [`http_form.rs`](./http_form.rs) - Form handling example
 - [`http_health_check.rs`](./http_health_check.rs) - Health check endpoint implementation
 - [`http_k8s_health.rs`](./http_k8s_health.rs) - Kubernetes health check implementation
+- [`http_record_har.rs`](./http_record_har.rs) - Demo of HAR HTTP layer provided by rama
 
 ### Advanced HTTP Features
 - [`http_conn_state.rs`](./http_conn_state.rs) - Connection state management
@@ -28,15 +30,28 @@ This directory contains example implementations demonstrating various features a
 - [`http_sse_datastar_hello`](./http_sse_datastar_hello.rs) - a hello world example for datastar (featuring DIY `CQRS` in action);
 - [`http_sse_datastar_test_suite`](./http_sse_datastar_test_suite.rs) - datastar sdk test suite server
 
+### Anti-Bot examples
+
+- [`http_anti_bot_infinite_resource.rs`](./http_anti_bot_infinite_resource.rs) - example demonstrating how to serve an infinite resource
+- [`http_anti_bot_zip_bomb.rs`](./http_anti_bot_zip_bomb.rs) - example demonstrating how to serve a zip bomb
+
 ## HTTP Clients
 - [`http_high_level_client.rs`](./http_high_level_client.rs) - High-level HTTP client implementation
 - [`http_pooled_client.rs`](./http_pooled_client.rs) - Connection pooling client
 
 ### WebSocket
 - [`ws_echo_server.rs`](./ws_echo_server.rs) - WebSocket server which echos all messages back
+- [`ws_echo_server_with_compression.rs`](./ws_echo_server_with_compression.rs) - WebSocket server which echos all messages back, with per message deflate compression enabled and supported
 - [`ws_chat_server.rs`](./ws_chat_server.rs) - WebSocket chat server
 - [`ws_tls_server.rs`](./ws_tls_server.rs) - Secure WebSocket server example (WSS)
 - [`ws_over_h2.rs`](./ws_over_h2.rs) - Secure WebSocket server example using h2.
+- [`autobahn_client.rs`](./autobahn_client.rs) - Run autobahn WebSocket test suite.
+
+### ACME
+The following examples show how you can integrate ACME into you webservices (ACME support in Rama is currently still under heavy development)
+- [`acme_http_challenge.rs`](./acme_http_challenge.rs): Authenticate to an acme server using a http challenge
+- [`acme_tls_challenge_using_boring.rs`](./acme_tls_challenge_using_boring.rs): Authenticate to an acme server using a tls challenge backed by boringssl
+- [`acme_tls_challenge_using_rustls.rs`](./acme_tls_challenge_using_rustls.rs): Authenticate to an acme server using a tls challenge backed by rustls
 
 ## Proxies
 

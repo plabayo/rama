@@ -28,6 +28,9 @@
 
 🦙 Rama (ラマ) is a modular service framework for the 🦀 Rust language to move and transform your network packets.
 
+> 🎧 **New! Listen to [Netstack.FM Episode 1](https://netstack.fm/#episode-1)**
+> — the podcast about rethinking networking with Rust and building with Rama.
+
 This framework is designed for developers who need fine-grained, programmable control over how packets are handled across
 the network stack. Whether you're intercepting traffic for security analysis, emulating clients with custom user agents,
 hijacking connections for advanced testing, or building high-performance proxies,
@@ -111,8 +114,8 @@ Rama comes with 🔋 batteries included, giving you the full freedom to build th
 
 > 🗒️ _Footnotes_
 >
-> * <sup>(1)</sup> Part of [`v0.3.0` milestone (ETA: 2025 Q2)](https://github.com/plabayo/rama/milestone/2)
-> * <sup>(2)</sup> Part of [`v0.4.0` milestone (ETA: 2025 Q3)](https://github.com/plabayo/rama/milestone/2)
+> * <sup>(1)</sup> Part of [`v0.3.0` milestone (ETA: 2025 Q4)](https://github.com/plabayo/rama/milestone/2)
+> * <sup>(2)</sup> Part of [`v0.4.0` milestone (ETA: 2025 Q4)](https://github.com/plabayo/rama/milestone/3)
 > * <sup>(3)</sup> No immediate plans, but on our radar. Please [open an issue](https://github.com/plabayo/rama/issues) to request this feature if you have an immediate need for it. Please add sufficient motivation/reasoning and consider [becoming a sponsor](./sponsor.md) to help accelerate its priority.
 
 The primary focus of Rama is to aid you in your development of proxies:

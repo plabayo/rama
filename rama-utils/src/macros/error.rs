@@ -14,7 +14,7 @@ macro_rules! __static_str_error {
 
         impl $name {
             #[doc = concat!("Create a new ", stringify!($name), ".")]
-            pub fn new() -> Self {
+            #[must_use] pub fn new() -> Self {
                 Self::default()
             }
         }

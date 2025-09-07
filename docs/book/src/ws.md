@@ -153,12 +153,16 @@ You can find working WebSocket examples in the Rama repository:
 ws_echo_server.rs
 - [`ws_echo_server.rs`](https://github.com/plabayo/rama/blob/main/examples/ws_echo_server.rs)
   Simple WebSocket echo server.
+- [`ws_echo_server_with_compression.rs`](https://github.com/plabayo/rama/blob/main/examples/ws_echo_server_with_compression.rs)
+  Simple WebSocket echo server with compression enabled and supported (Per Message deflate).
 - [`ws_chat_server.rs`](https://github.com/plabayo/rama/blob/main/examples/ws_chat_server.rs)
   Simple WebSocket server for a basic chat room.
 - [`ws_tls_server.rs`](https://github.com/plabayo/rama/blob/main/examples/ws_tls_server.rs)
    Secure WebSocket server example (WSS).
 - [`ws_over_h2.rs`](https://github.com/plabayo/rama/blob/main/examples/ws_over_h2.rs)
    Secure WebSocket server using h2.
+- [`autobahn_client.rs`](https://github.com/plabayo/rama/blob/main/examples/autobahn_client.rs)
+   Run autobahn WebSocket test suite.
 
 In the existing [`http_mitm_proxy_boring.rs`](https://github.com/plabayo/rama/blob/main/examples/http_mitm_proxy_boring.rs) example
 you can find inspiration on how to MITM proxy WebSocket traffic. As often it is not the only

@@ -5,21 +5,28 @@ use proc_macro::{TokenStream, TokenTree};
 #[proc_macro_attribute]
 pub fn paste_test(args: TokenStream, input: TokenStream) -> TokenStream {
     let mut iter = args.clone().into_iter();
-    match iter.next() {
-        Some(TokenTree::Ident(_)) => {}
-        _ => panic!("{}", args),
+
+    if !matches!(iter.next(), Some(TokenTree::Ident(_))) {
+        panic!("{args}")
     }
-    match iter.next() {
-        Some(TokenTree::Punct(ref punct)) if punct.as_char() == '=' => {}
-        _ => panic!("{}", args),
+
+    if let Some(TokenTree::Punct(ref punct)) = iter.next()
+        && punct.as_char() == '='
+    {
+    } else {
+        panic!("{args}")
     }
-    match iter.next() {
-        Some(TokenTree::Literal(ref literal)) if literal.to_string().starts_with('"') => {}
-        _ => panic!("{}", args),
+
+    if let Some(TokenTree::Literal(ref literal)) = iter.next()
+        && literal.to_string().starts_with('"')
+    {
+    } else {
+        panic!("{args}")
     }
-    match iter.next() {
-        None => {}
-        _ => panic!("{}", args),
+
+    if iter.next().is_some() {
+        panic!("{args}")
     }
+
     input
 }

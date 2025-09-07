@@ -6,10 +6,11 @@ use super::HttpProxyError;
 use rama_core::error::{ErrorContext, OpaqueError};
 use rama_core::rt::Executor;
 use rama_core::telemetry::tracing;
+use rama_http::HeaderMap;
 use rama_http::io::upgrade;
 use rama_http_core::body::Incoming;
 use rama_http_core::client::conn::{http1, http2};
-use rama_http_headers::{Header, HeaderMapExt};
+use rama_http_headers::{HeaderEncode, HeaderMapExt};
 use rama_http_types::Response;
 use rama_http_types::{
     Body, HeaderName, HeaderValue, Method, Request, StatusCode, Version,
@@ -28,7 +29,7 @@ pub(super) struct InnerHttpProxyConnector {
 
 impl InnerHttpProxyConnector {
     /// Create a new [`InnerHttpProxyConnector`] with the given authority.
-    pub(super) fn new(authority: Authority) -> Result<Self, OpaqueError> {
+    pub(super) fn new(authority: &Authority) -> Result<Self, OpaqueError> {
         let uri = authority.to_string();
         let host_value: HeaderValue = uri.parse().context("parse authority as header value")?;
 
@@ -72,7 +73,7 @@ impl InnerHttpProxyConnector {
     }
 
     /// Add a typed header to the request.
-    pub(super) fn with_typed_header(&mut self, header: impl Header) -> &mut Self {
+    pub(super) fn with_typed_header(&mut self, header: impl HeaderEncode) -> &mut Self {
         self.req.headers_mut().typed_insert(header);
         self
     }
@@ -81,8 +82,8 @@ impl InnerHttpProxyConnector {
     pub(super) async fn handshake<S: Stream + Unpin>(
         self,
         stream: S,
-    ) -> Result<upgrade::Upgraded, HttpProxyError> {
-        let response = match self.version {
+    ) -> Result<(HeaderMap, upgrade::Upgraded), HttpProxyError> {
+        let mut response = match self.version {
             Some(Version::HTTP_10 | Version::HTTP_11) => {
                 Self::handshake_h1(self.req, stream).await?
             }
@@ -104,8 +105,12 @@ impl InnerHttpProxyConnector {
         };
 
         match response.status() {
-            StatusCode::OK => upgrade::on(response)
+            StatusCode::OK => upgrade::on(&mut response)
                 .await
+                .map(|upgraded| {
+                    let (parts, _) = response.into_parts();
+                    (parts.headers, upgraded)
+                })
                 .map_err(|err| HttpProxyError::Transport(OpaqueError::from_std(err).into_boxed())),
             StatusCode::PROXY_AUTHENTICATION_REQUIRED => Err(HttpProxyError::AuthRequired),
             StatusCode::SERVICE_UNAVAILABLE => Err(HttpProxyError::Unavailable),

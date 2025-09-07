@@ -100,6 +100,7 @@ pub struct SocketInfo {
 
 impl SocketInfo {
     /// Create a new `SocketInfo`.
+    #[must_use]
     pub const fn new(local_addr: Option<SocketAddr>, peer_addr: SocketAddr) -> Self {
         Self {
             local_addr,
@@ -108,11 +109,13 @@ impl SocketInfo {
     }
 
     /// Get the local address of the socket.
+    #[must_use]
     pub fn local_addr(&self) -> Option<&SocketAddr> {
         self.local_addr.as_ref()
     }
 
     /// Get the peer address of the socket.
+    #[must_use]
     pub fn peer_addr(&self) -> &SocketAddr {
         &self.peer_addr
     }

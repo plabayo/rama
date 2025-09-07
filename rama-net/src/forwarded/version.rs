@@ -16,24 +16,25 @@ enum VersionKind {
 
 impl ForwardedVersion {
     /// `HTTP/0.9`
-    pub const HTTP_09: ForwardedVersion = ForwardedVersion(VersionKind::Http09);
+    pub const HTTP_09: Self = Self(VersionKind::Http09);
 
     /// `HTTP/1.0`
-    pub const HTTP_10: ForwardedVersion = ForwardedVersion(VersionKind::Http10);
+    pub const HTTP_10: Self = Self(VersionKind::Http10);
 
     /// `HTTP/1.1`
-    pub const HTTP_11: ForwardedVersion = ForwardedVersion(VersionKind::Http11);
+    pub const HTTP_11: Self = Self(VersionKind::Http11);
 
     /// `HTTP/2.0`
-    pub const HTTP_2: ForwardedVersion = ForwardedVersion(VersionKind::H2);
+    pub const HTTP_2: Self = Self(VersionKind::H2);
 
     /// `HTTP/3.0`
-    pub const HTTP_3: ForwardedVersion = ForwardedVersion(VersionKind::H3);
+    pub const HTTP_3: Self = Self(VersionKind::H3);
 }
 
 #[cfg(feature = "http")]
 impl ForwardedVersion {
     /// Returns this [`ForwardedVersion`] as a [`Version`] if it is defined as http.
+    #[must_use]
     pub fn as_http(&self) -> Option<Version> {
         Some(match self.0 {
             VersionKind::Http09 => Version::HTTP_09,
@@ -81,7 +82,7 @@ impl TryFrom<&[u8]> for ForwardedVersion {
     type Error = InvalidForwardedVersion;
 
     fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
-        Ok(ForwardedVersion(match bytes {
+        Ok(Self(match bytes {
             b"0.9" => VersionKind::Http09,
             b"1" | b"1.0" => VersionKind::Http10,
             b"1.1" => VersionKind::Http11,

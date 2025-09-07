@@ -314,6 +314,7 @@ pub struct ServerErrorsAsFailures {
 
 impl ServerErrorsAsFailures {
     /// Create a new [`ServerErrorsAsFailures`].
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -321,6 +322,7 @@ impl ServerErrorsAsFailures {
     /// Returns a [`MakeClassifier`] that produces `ServerErrorsAsFailures`.
     ///
     /// This is a convenience function that simply calls `SharedClassifier::new`.
+    #[must_use]
     pub fn make_classifier() -> SharedClassifier<Self> {
         SharedClassifier::new(Self::new())
     }

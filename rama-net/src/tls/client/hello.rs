@@ -28,6 +28,7 @@ pub struct ClientHello {
 }
 
 impl ClientHello {
+    #[must_use]
     pub fn new(
         protocol_version: ProtocolVersion,
         cipher_suites: Vec<CipherSuite>,
@@ -43,21 +44,25 @@ impl ClientHello {
     }
 
     /// Return all [`ProtocolVersion`]s defined in this [`ClientHello`].
+    #[must_use]
     pub fn protocol_version(&self) -> ProtocolVersion {
         self.protocol_version
     }
 
     /// Return all [`CipherSuite`]s defined in this [`ClientHello`].
+    #[must_use]
     pub fn cipher_suites(&self) -> &[CipherSuite] {
         &self.cipher_suites[..]
     }
 
     /// Return all [`CompressionAlgorithm`]s defined in this [`ClientHello`].
+    #[must_use]
     pub fn compression_algorithms(&self) -> &[CompressionAlgorithm] {
         &self.compression_algorithms[..]
     }
 
     /// Return all [`ClientHelloExtension`]s defined in this [`ClientHello`].
+    #[must_use]
     pub fn extensions(&self) -> &[ClientHelloExtension] {
         &self.extensions[..]
     }
@@ -65,6 +70,7 @@ impl ClientHello {
     /// Return the server name (SNI) if it is set in the [`ClientHelloExtension`] defined in this [`ClientHello`].
     ///
     /// See [`ClientHelloExtension::ServerName`] for more information about the server name.
+    #[must_use]
     pub fn ext_server_name(&self) -> Option<&Domain> {
         for ext in &self.extensions {
             if let ClientHelloExtension::ServerName(domain) = ext {
@@ -78,6 +84,7 @@ impl ClientHello {
     /// if it is set in the [`ClientHelloExtension`] defined in this [`ClientHello`].
     ///
     /// See [`ClientHelloExtension::SupportedGroups`] for more information about these curves.
+    #[must_use]
     pub fn ext_supported_groups(&self) -> Option<&[SupportedGroup]> {
         for ext in &self.extensions {
             if let ClientHelloExtension::SupportedGroups(groups) = ext {
@@ -91,6 +98,7 @@ impl ClientHello {
     /// if it is set in the [`ClientHelloExtension`] defined in this [`ClientHello`].
     ///
     /// See [`ClientHelloExtension::ECPointFormats`] for more information about this.
+    #[must_use]
     pub fn ext_ec_point_formats(&self) -> Option<&[ECPointFormat]> {
         for ext in &self.extensions {
             if let ClientHelloExtension::ECPointFormats(formats) = ext {
@@ -104,6 +112,7 @@ impl ClientHello {
     /// if it is set in the [`ClientHelloExtension`] defined in this [`ClientHello`].
     ///
     /// See [`ClientHelloExtension::SignatureAlgorithms`] for more information about these algorithms
+    #[must_use]
     pub fn ext_signature_algorithms(&self) -> Option<&[SignatureScheme]> {
         for ext in &self.extensions {
             if let ClientHelloExtension::SignatureAlgorithms(algos) = ext {
@@ -117,6 +126,7 @@ impl ClientHello {
     /// if it is set in the [`ClientHelloExtension`] defined in this [`ClientHello`].
     ///
     /// See [`ClientHelloExtension::ApplicationLayerProtocolNegotiation`] for more information about these protocols (ALPN).
+    #[must_use]
     pub fn ext_alpn(&self) -> Option<&[ApplicationProtocol]> {
         for ext in &self.extensions {
             if let ClientHelloExtension::ApplicationLayerProtocolNegotiation(alpns) = ext {
@@ -130,6 +140,7 @@ impl ClientHello {
     /// if it is set in the [`ClientHelloExtension`] defined in this [`ClientHello`].
     ///
     /// See [`ClientHelloExtension::ApplicationSettings`] for more information about these protocols (ALPS).
+    #[must_use]
     pub fn ext_alps(&self) -> Option<&[ApplicationProtocol]> {
         for ext in &self.extensions {
             if let ClientHelloExtension::ApplicationSettings(alpns) = ext {
@@ -143,6 +154,7 @@ impl ClientHello {
     /// if it is set in the [`ClientHelloExtension`] defined in this [`ClientHello`].
     ///
     /// See [`ClientHelloExtension::SupportedVersions`] for more information about these versions
+    #[must_use]
     pub fn supported_versions(&self) -> Option<&[ProtocolVersion]> {
         for ext in &self.extensions {
             if let ClientHelloExtension::SupportedVersions(versions) = ext {
@@ -269,22 +281,23 @@ pub enum ClientHelloExtension {
 
 impl ClientHelloExtension {
     /// returns the [`ExtensionId`] which identifies this [`ClientHelloExtension`].
+    #[must_use]
     pub fn id(&self) -> ExtensionId {
         match self {
-            ClientHelloExtension::ServerName(_) => ExtensionId::SERVER_NAME,
-            ClientHelloExtension::SupportedGroups(_) => ExtensionId::SUPPORTED_GROUPS,
-            ClientHelloExtension::ECPointFormats(_) => ExtensionId::EC_POINT_FORMATS,
-            ClientHelloExtension::SignatureAlgorithms(_) => ExtensionId::SIGNATURE_ALGORITHMS,
-            ClientHelloExtension::ApplicationLayerProtocolNegotiation(_) => {
+            Self::ServerName(_) => ExtensionId::SERVER_NAME,
+            Self::SupportedGroups(_) => ExtensionId::SUPPORTED_GROUPS,
+            Self::ECPointFormats(_) => ExtensionId::EC_POINT_FORMATS,
+            Self::SignatureAlgorithms(_) => ExtensionId::SIGNATURE_ALGORITHMS,
+            Self::ApplicationLayerProtocolNegotiation(_) => {
                 ExtensionId::APPLICATION_LAYER_PROTOCOL_NEGOTIATION
             }
-            ClientHelloExtension::ApplicationSettings(_) => ExtensionId::APPLICATION_SETTINGS,
-            ClientHelloExtension::SupportedVersions(_) => ExtensionId::SUPPORTED_VERSIONS,
-            ClientHelloExtension::CertificateCompression(_) => ExtensionId::COMPRESS_CERTIFICATE,
-            ClientHelloExtension::DelegatedCredentials(_) => ExtensionId::DELEGATED_CREDENTIAL,
-            ClientHelloExtension::RecordSizeLimit(_) => ExtensionId::RECORD_SIZE_LIMIT,
-            ClientHelloExtension::EncryptedClientHello(_) => ExtensionId::ENCRYPTED_CLIENT_HELLO,
-            ClientHelloExtension::Opaque { id, .. } => *id,
+            Self::ApplicationSettings(_) => ExtensionId::APPLICATION_SETTINGS,
+            Self::SupportedVersions(_) => ExtensionId::SUPPORTED_VERSIONS,
+            Self::CertificateCompression(_) => ExtensionId::COMPRESS_CERTIFICATE,
+            Self::DelegatedCredentials(_) => ExtensionId::DELEGATED_CREDENTIAL,
+            Self::RecordSizeLimit(_) => ExtensionId::RECORD_SIZE_LIMIT,
+            Self::EncryptedClientHello(_) => ExtensionId::ENCRYPTED_CLIENT_HELLO,
+            Self::Opaque { id, .. } => *id,
         }
     }
 }

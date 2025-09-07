@@ -33,6 +33,7 @@ use rama::{
         service::web::WebService,
         service::web::response::{Html, Redirect},
     },
+    layer::AddExtensionLayer,
     net::stream::{SocketInfo, matcher::SocketMatcher},
     rt::Executor,
     telemetry::tracing::{self, level_filters::LevelFilter},
@@ -66,29 +67,36 @@ async fn main() {
     tracing::info!("running service at: {addr}");
     let exec = Executor::default();
     HttpServer::auto(exec)
-        .listen_with_state(
-            Arc::new(AppState::default()),
+        .listen(
             addr,
-            (TraceLayer::new_for_http(), CompressionLayer::new()).into_layer(
-                WebService::default()
-                    .not_found(Redirect::temporary("/error.html"))
-                    .get("/coin", coin_page)
-                    .post("/coin", async |ctx: Context<Arc<AppState>>| {
-                        ctx.state().counter.fetch_add(1, Ordering::AcqRel);
-                        coin_page(ctx).await
-                    })
-                    .on(
-                        HttpMatcher::get("/home").and_socket(SocketMatcher::loopback()),
-                        Html("Home Sweet Home!".to_owned()),
-                    )
-                    .dir("/", "test-files/examples/webservice"),
-            ),
+            (
+                AddExtensionLayer::new(Arc::new(AppState::default())),
+                TraceLayer::new_for_http(),
+                CompressionLayer::new(),
+            )
+                .into_layer(
+                    WebService::default()
+                        .not_found(Redirect::temporary("/error.html"))
+                        .get("/coin", coin_page)
+                        .post("/coin", async |ctx: Context| {
+                            ctx.get::<Arc<AppState>>()
+                                .unwrap()
+                                .counter
+                                .fetch_add(1, Ordering::AcqRel);
+                            coin_page(ctx).await
+                        })
+                        .on(
+                            HttpMatcher::get("/home").and_socket(SocketMatcher::loopback()),
+                            Html("Home Sweet Home!".to_owned()),
+                        )
+                        .dir("/", "test-files/examples/webservice"),
+                ),
         )
         .await
         .unwrap();
 }
 
-async fn coin_page(ctx: Context<Arc<AppState>>) -> Html<String> {
+async fn coin_page(ctx: Context) -> Html<String> {
     let emoji = if ctx
         .get::<SocketInfo>()
         .unwrap()
@@ -101,7 +109,11 @@ async fn coin_page(ctx: Context<Arc<AppState>>) -> Html<String> {
         "🌍"
     };
 
-    let count = ctx.state().counter.load(Ordering::Acquire);
+    let count = ctx
+        .get::<Arc<AppState>>()
+        .unwrap()
+        .counter
+        .load(Ordering::Acquire);
     Html(format!(
         r#"
 <!DOCTYPE html>

@@ -21,6 +21,7 @@ pub(crate) trait Peer {
         pseudo: Pseudo,
         fields: HeaderMap,
         field_order: OriginalHttp1Headers,
+        header_size: usize,
         stream_id: StreamId,
     ) -> Result<Self::Poll, Error>;
 
@@ -50,33 +51,46 @@ pub(crate) enum PollMessage {
 // ===== impl Dyn =====
 
 impl Dyn {
-    pub(crate) fn is_server(&self) -> bool {
-        *self == Dyn::Server
+    pub(crate) fn is_server(self) -> bool {
+        self == Self::Server
     }
 
-    pub(crate) fn is_local_init(&self, id: StreamId) -> bool {
+    pub(crate) fn is_local_init(self, id: StreamId) -> bool {
         assert!(!id.is_zero());
         self.is_server() == id.is_server_initiated()
     }
 
     pub(crate) fn convert_poll_message(
-        &self,
+        self,
         pseudo: Pseudo,
         fields: HeaderMap,
         field_order: OriginalHttp1Headers,
+        header_size: usize,
         stream_id: StreamId,
     ) -> Result<PollMessage, Error> {
         if self.is_server() {
-            crate::h2::server::Peer::convert_poll_message(pseudo, fields, field_order, stream_id)
-                .map(PollMessage::Server)
+            crate::h2::server::Peer::convert_poll_message(
+                pseudo,
+                fields,
+                field_order,
+                header_size,
+                stream_id,
+            )
+            .map(PollMessage::Server)
         } else {
-            crate::h2::client::Peer::convert_poll_message(pseudo, fields, field_order, stream_id)
-                .map(PollMessage::Client)
+            crate::h2::client::Peer::convert_poll_message(
+                pseudo,
+                fields,
+                field_order,
+                header_size,
+                stream_id,
+            )
+            .map(PollMessage::Client)
         }
     }
 
     /// Returns true if the remote peer can initiate a stream with the given ID.
-    pub(crate) fn ensure_can_open(&self, id: StreamId, mode: Open) -> Result<(), Error> {
+    pub(crate) fn ensure_can_open(self, id: StreamId, mode: Open) -> Result<(), Error> {
         if self.is_server() {
             // Ensure that the ID is a valid client initiated ID
             if mode.is_push_promise() || !id.is_client_initiated() {

@@ -32,12 +32,12 @@ where
     }
 }
 
-impl<State, Request, F, R, O, E> Factory<(Context<State>, Request), R, O, E> for F
+impl<Request, F, R, O, E> Factory<(Context, Request), R, O, E> for F
 where
-    F: Fn(Context<State>, Request) -> R + Send + Sync + 'static,
+    F: Fn(Context, Request) -> R + Send + Sync + 'static,
     R: Future<Output = Result<O, E>>,
 {
-    fn call(&self, (ctx, req): (Context<State>, Request)) -> R {
+    fn call(&self, (ctx, req): (Context, Request)) -> R {
         (self)(ctx, req)
     }
 }
@@ -103,11 +103,11 @@ where
     }
 }
 
-impl<State, Request, F, T, R, O, E> Service<State, Request> for ServiceFn<F, T, R, O, E>
+impl<Request, F, T, R, O, E> Service<Request> for ServiceFn<F, T, R, O, E>
 where
     F: Factory<T, R, O, E>,
     R: Future<Output = Result<O, E>> + Send + 'static,
-    T: FromContextRequest<State, Request>,
+    T: FromContextRequest<Request>,
     O: Send + 'static,
     E: Send + Sync + 'static,
 {
@@ -116,7 +116,7 @@ where
 
     fn serve(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         req: Request,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
         let param = T::from_context_request(ctx, req);
@@ -125,31 +125,29 @@ where
 }
 
 /// Convert a context+request into a parameter for the [`ServiceFn`] handler function.
-pub trait FromContextRequest<State, Request>: Send + 'static {
+pub trait FromContextRequest<Request>: Send + 'static {
     /// Convert a context+request into a parameter for the [`ServiceFn`] handler function.
-    fn from_context_request(ctx: Context<State>, req: Request) -> Self;
+    fn from_context_request(ctx: Context, req: Request) -> Self;
 }
 
-impl<State, Request> FromContextRequest<State, Request> for () {
-    fn from_context_request(_ctx: Context<State>, _req: Request) -> Self {}
+impl<Request> FromContextRequest<Request> for () {
+    fn from_context_request(_ctx: Context, _req: Request) -> Self {}
 }
 
-impl<State, Request> FromContextRequest<State, Request> for ((), Request)
+impl<Request> FromContextRequest<Request> for ((), Request)
 where
-    State: Clone + Send + Sync + 'static,
     Request: Send + 'static,
 {
-    fn from_context_request(_ctx: Context<State>, req: Request) -> Self {
+    fn from_context_request(_ctx: Context, req: Request) -> Self {
         ((), req)
     }
 }
 
-impl<State, Request> FromContextRequest<State, Request> for (Context<State>, Request)
+impl<Request> FromContextRequest<Request> for (Context, Request)
 where
-    State: Clone + Send + Sync + 'static,
     Request: Send + 'static,
 {
-    fn from_context_request(ctx: Context<State>, req: Request) -> Self {
+    fn from_context_request(ctx: Context, req: Request) -> Self {
         (ctx, req)
     }
 }
@@ -170,7 +168,7 @@ mod tests {
                 Ok(())
             })
             .boxed(),
-            service_fn(async |_ctx: Context<()>, req: String| {
+            service_fn(async |_ctx: Context, req: String| {
                 assert_eq!(req, "hello");
                 Ok(())
             })
@@ -191,7 +189,7 @@ mod tests {
     fn test_service_fn_without_usage() {
         assert_send_sync(service_fn(async || Ok::<_, Infallible>(())));
         assert_send_sync(service_fn(async |_req: String| Ok::<_, Infallible>(())));
-        assert_send_sync(service_fn(async |_ctx: Context<()>, _req: String| {
+        assert_send_sync(service_fn(async |_ctx: Context, _req: String| {
             Ok::<_, Infallible>(())
         }));
     }

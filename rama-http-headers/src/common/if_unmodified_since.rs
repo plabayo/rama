@@ -39,19 +39,20 @@ derive_header! {
 
 impl IfUnmodifiedSince {
     /// Check if the supplied time passes the precondtion.
+    #[must_use]
     pub fn precondition_passes(&self, last_modified: SystemTime) -> bool {
         self.0 >= last_modified.into()
     }
 }
 
 impl From<SystemTime> for IfUnmodifiedSince {
-    fn from(time: SystemTime) -> IfUnmodifiedSince {
-        IfUnmodifiedSince(time.into())
+    fn from(time: SystemTime) -> Self {
+        Self(time.into())
     }
 }
 
 impl From<IfUnmodifiedSince> for SystemTime {
-    fn from(date: IfUnmodifiedSince) -> SystemTime {
+    fn from(date: IfUnmodifiedSince) -> Self {
         date.0.into()
     }
 }

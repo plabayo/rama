@@ -25,6 +25,7 @@ pub struct Http1HeaderMap {
 }
 
 impl Http1HeaderMap {
+    #[must_use]
     pub fn with_capacity(size: usize) -> Self {
         Self {
             headers: HeaderMap::with_capacity(size),
@@ -32,6 +33,7 @@ impl Http1HeaderMap {
         }
     }
 
+    #[must_use]
     pub fn from_parts(headers: HeaderMap, original_headers: OriginalHttp1Headers) -> Self {
         Self {
             headers,
@@ -48,6 +50,7 @@ impl Http1HeaderMap {
         }
     }
 
+    #[must_use]
     pub fn new(headers: HeaderMap, ext: Option<&mut Extensions>) -> Self {
         let original_headers = ext.and_then(|ext| ext.remove()).unwrap_or_default();
         Self {
@@ -72,6 +75,12 @@ impl Http1HeaderMap {
         self.headers.contains_key(key)
     }
 
+    #[must_use]
+    pub fn headers(&self) -> &HeaderMap {
+        &self.headers
+    }
+
+    #[must_use]
     pub fn into_headers(self) -> HeaderMap {
         self.headers
     }
@@ -83,6 +92,7 @@ impl Http1HeaderMap {
         self.headers
     }
 
+    #[must_use]
     pub fn into_parts(self) -> (HeaderMap, OriginalHttp1Headers) {
         (self.headers, self.original_headers)
     }
@@ -213,23 +223,20 @@ impl Iterator for Http1HeaderMapIntoIter {
                 mut original_iter,
                 mut headers,
             } => loop {
-                match original_iter.next() {
-                    Some(http1_header_name) => {
-                        if let Some(value) = headers.remove(http1_header_name.header_name()) {
-                            let next = Some((http1_header_name, value));
-                            self.state = Http1HeaderMapIntoIterState::Original {
-                                original_iter,
-                                headers,
-                            };
-                            return next;
-                        }
-                    }
-                    None => {
-                        let mut it = headers.into_iter();
-                        let next = it.next();
-                        self.state = Http1HeaderMapIntoIterState::Rem(it);
+                if let Some(http1_header_name) = original_iter.next() {
+                    if let Some(value) = headers.remove(http1_header_name.header_name()) {
+                        let next = Some((http1_header_name, value));
+                        self.state = Http1HeaderMapIntoIterState::Original {
+                            original_iter,
+                            headers,
+                        };
                         return next;
                     }
+                } else {
+                    let mut it = headers.into_iter();
+                    let next = it.next();
+                    self.state = Http1HeaderMapIntoIterState::Rem(it);
+                    return next;
                 }
             },
             Http1HeaderMapIntoIterState::Rem(mut it) => {
@@ -316,21 +323,21 @@ impl Iterator for HeaderMapValueRemoverIntoIter {
     type Item = (Http1HeaderName, HeaderValue);
 
     fn next(&mut self) -> Option<Self::Item> {
-        if let Some(mut it) = self.cached_headers.take() {
-            if let Some(value) = it.next() {
-                match if it.peek().is_some() {
-                    self.cached_headers = Some(it);
-                    self.cached_header_name.clone()
-                } else {
-                    self.cached_header_name.take()
-                } {
-                    Some(name) => {
-                        return Some((name.into_http1_header_name(), value));
-                    }
-                    None => {
-                        if cfg!(debug_assertions) {
-                            panic!("no http header name found for multi-value header");
-                        }
+        if let Some(mut it) = self.cached_headers.take()
+            && let Some(value) = it.next()
+        {
+            match if it.peek().is_some() {
+                self.cached_headers = Some(it);
+                self.cached_header_name.clone()
+            } else {
+                self.cached_header_name.take()
+            } {
+                Some(name) => {
+                    return Some((name.into_http1_header_name(), value));
+                }
+                None => {
+                    if cfg!(debug_assertions) {
+                        panic!("no http header name found for multi-value header");
                     }
                 }
             }

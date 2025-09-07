@@ -188,6 +188,7 @@ impl fmt::Display for Header<'_> {
 
 impl Header<'_> {
     /// Creates an owned clone of this [`Header`].
+    #[must_use]
     pub fn to_owned(&self) -> Header<'static> {
         Header {
             header: Cow::Owned(self.header.to_vec()),
@@ -199,21 +200,25 @@ impl Header<'_> {
     }
 
     /// The length of this `Header`'s payload in bytes.
+    #[must_use]
     pub fn length(&self) -> usize {
         self.header[MINIMUM_LENGTH..].len()
     }
 
     /// The total length of this `Header` in bytes.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.header.len()
     }
 
     /// Tests whether this `Header`'s underlying byte slice is empty.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.header.is_empty()
     }
 
     /// The `AddressFamily` of this `Header`.
+    #[must_use]
     pub fn address_family(&self) -> AddressFamily {
         self.addresses.address_family()
     }
@@ -227,16 +232,19 @@ impl Header<'_> {
     }
 
     /// The bytes of the address portion of the payload.
+    #[must_use]
     pub fn address_bytes(&self) -> &[u8] {
         &self.header[MINIMUM_LENGTH..self.address_bytes_end()]
     }
 
     /// The bytes of the `TypeLengthValue` portion of the payload.
+    #[must_use]
     pub fn tlv_bytes(&self) -> &[u8] {
         &self.header[self.address_bytes_end()..]
     }
 
     /// An `Iterator` of `TypeLengthValue`s.
+    #[must_use]
     pub fn tlvs(&self) -> TypeLengthValues<'_> {
         TypeLengthValues {
             bytes: self.tlv_bytes(),
@@ -245,6 +253,7 @@ impl Header<'_> {
     }
 
     /// The underlying byte slice this `Header` is built on.
+    #[must_use]
     pub fn as_bytes(&self) -> &[u8] {
         self.header.as_ref()
     }
@@ -252,6 +261,7 @@ impl Header<'_> {
 
 impl TypeLengthValues<'_> {
     /// The underlying byte slice of the `TypeLengthValue`s portion of the `Header` payload.
+    #[must_use]
     pub fn as_bytes(&self) -> &[u8] {
         self.bytes
     }
@@ -298,11 +308,13 @@ impl<'a> Iterator for TypeLengthValues<'a> {
 
 impl TypeLengthValues<'_> {
     /// The number of bytes in the `TypeLengthValue` portion of the `Header`.
+    #[must_use]
     pub fn len(&self) -> u16 {
         self.bytes.len() as u16
     }
 
     /// Whether there are any bytes to be interpreted as `TypeLengthValue`s.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.bytes.is_empty()
     }
@@ -335,78 +347,82 @@ impl BitOr<Protocol> for AddressFamily {
 impl AddressFamily {
     /// The length in bytes for this `AddressFamily`.
     /// `AddressFamily::Unspecified` does not require any bytes, and is represented as `None`.
+    #[must_use]
     pub fn byte_length(&self) -> Option<usize> {
         match self {
-            AddressFamily::IPv4 => Some(IPV4_ADDRESSES_BYTES),
-            AddressFamily::IPv6 => Some(IPV6_ADDRESSES_BYTES),
-            AddressFamily::Unix => Some(UNIX_ADDRESSES_BYTES),
-            AddressFamily::Unspecified => None,
+            Self::IPv4 => Some(IPV4_ADDRESSES_BYTES),
+            Self::IPv6 => Some(IPV6_ADDRESSES_BYTES),
+            Self::Unix => Some(UNIX_ADDRESSES_BYTES),
+            Self::Unspecified => None,
         }
     }
 }
 
 impl From<AddressFamily> for u16 {
     fn from(address_family: AddressFamily) -> Self {
-        address_family.byte_length().unwrap_or_default() as u16
+        address_family.byte_length().unwrap_or_default() as Self
     }
 }
 
 impl From<(SocketAddr, SocketAddr)> for Addresses {
     fn from(addresses: (SocketAddr, SocketAddr)) -> Self {
         match addresses {
-            (SocketAddr::V4(source), SocketAddr::V4(destination)) => Addresses::IPv4(IPv4::new(
+            (SocketAddr::V4(source), SocketAddr::V4(destination)) => Self::IPv4(IPv4::new(
                 *source.ip(),
                 *destination.ip(),
                 source.port(),
                 destination.port(),
             )),
-            (SocketAddr::V6(source), SocketAddr::V6(destination)) => Addresses::IPv6(IPv6::new(
+            (SocketAddr::V6(source), SocketAddr::V6(destination)) => Self::IPv6(IPv6::new(
                 *source.ip(),
                 *destination.ip(),
                 source.port(),
                 destination.port(),
             )),
-            _ => Addresses::Unspecified,
+            _ => Self::Unspecified,
         }
     }
 }
 
 impl From<IPv4> for Addresses {
     fn from(addresses: IPv4) -> Self {
-        Addresses::IPv4(addresses)
+        Self::IPv4(addresses)
     }
 }
 
 impl From<IPv6> for Addresses {
     fn from(addresses: IPv6) -> Self {
-        Addresses::IPv6(addresses)
+        Self::IPv6(addresses)
     }
 }
 
 impl From<Unix> for Addresses {
     fn from(addresses: Unix) -> Self {
-        Addresses::Unix(addresses)
+        Self::Unix(addresses)
     }
 }
 
 impl Addresses {
     /// The `AddressFamily` for this `Addresses`.
+    #[must_use]
     pub fn address_family(&self) -> AddressFamily {
         match self {
-            Addresses::Unspecified => AddressFamily::Unspecified,
-            Addresses::IPv4(..) => AddressFamily::IPv4,
-            Addresses::IPv6(..) => AddressFamily::IPv6,
-            Addresses::Unix(..) => AddressFamily::Unix,
+            Self::Unspecified => AddressFamily::Unspecified,
+            Self::IPv4(..) => AddressFamily::IPv4,
+            Self::IPv6(..) => AddressFamily::IPv6,
+            Self::Unix(..) => AddressFamily::Unix,
         }
     }
 
     /// The length in bytes of the `Addresses` in the `Header`'s payload.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.address_family().byte_length().unwrap_or_default()
     }
 
     /// Tests whether the `Addresses` consume any space in the `Header`'s payload.
     /// `AddressFamily::Unspecified` does not require any bytes, and always returns true.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.address_family().byte_length().is_none()
     }
@@ -414,8 +430,9 @@ impl Addresses {
 
 impl Unix {
     /// Creates a new instance of a source and destination address pair for Unix sockets.
+    #[must_use]
     pub const fn new(source: [u8; 108], destination: [u8; 108]) -> Self {
-        Unix {
+        Self {
             source,
             destination,
         }
@@ -441,6 +458,7 @@ impl<'a, T: Into<u8>> From<(T, &'a [u8])> for TypeLengthValue<'a> {
 
 impl<'a> TypeLengthValue<'a> {
     /// Creates an owned clone of this [`TypeLengthValue`].
+    #[must_use]
     pub fn to_owned(&self) -> TypeLengthValue<'static> {
         TypeLengthValue {
             kind: self.kind,
@@ -458,11 +476,13 @@ impl<'a> TypeLengthValue<'a> {
     }
 
     /// The length in bytes of this `TypeLengthValue`'s value.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.value.len()
     }
 
     /// Tests whether the value of this `TypeLengthValue` is empty.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.value.is_empty()
     }
@@ -470,6 +490,6 @@ impl<'a> TypeLengthValue<'a> {
 
 impl From<Type> for u8 {
     fn from(kind: Type) -> Self {
-        kind as u8
+        kind as Self
     }
 }

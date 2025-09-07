@@ -1,13 +1,13 @@
 use crate::client::proxy::layer::HttpProxyError;
 
 use super::InnerHttpProxyConnector;
+use pin_project_lite::pin_project;
 use rama_core::{
     Context, Service,
-    combinators::Either,
     error::{BoxError, ErrorExt, OpaqueError},
     telemetry::tracing,
 };
-use rama_http::io::upgrade;
+use rama_http::{HeaderMap, io::upgrade};
 use rama_http_headers::ProxyAuthorization;
 use rama_http_types::Version;
 use rama_net::{
@@ -18,7 +18,11 @@ use rama_net::{
     user::ProxyCredential,
 };
 use rama_utils::macros::define_inner_service_accessors;
-use std::fmt;
+use std::fmt::Debug;
+use std::pin::Pin;
+use std::task::{self, Poll};
+use std::{fmt, ops, sync::Arc};
+use tokio::io::{AsyncRead, AsyncWrite};
 
 #[cfg(feature = "tls")]
 use rama_net::tls::TlsTunnel;
@@ -68,6 +72,7 @@ impl<S> HttpProxyConnector<S> {
     /// Set the HTTP version to use for the CONNECT request.
     ///
     /// By default this is set to HTTP/1.1.
+    #[must_use]
     pub fn with_version(mut self, version: Version) -> Self {
         self.version = Some(version);
         self
@@ -80,6 +85,7 @@ impl<S> HttpProxyConnector<S> {
     }
 
     /// Set the HTTP version to auto detect for the CONNECT request.
+    #[must_use]
     pub fn with_auto_version(mut self) -> Self {
         self.version = None;
         self
@@ -94,6 +100,7 @@ impl<S> HttpProxyConnector<S> {
     /// Create a new [`HttpProxyConnector`]
     /// which will only connect via an http proxy in case the [`ProxyAddress`] is available
     /// in the [`Context`].
+    #[must_use]
     pub fn optional(inner: S) -> Self {
         Self::new(inner, false)
     }
@@ -101,6 +108,7 @@ impl<S> HttpProxyConnector<S> {
     /// Create a new [`HttpProxyConnector`]
     /// which will always connect via an http proxy, but fail in case the [`ProxyAddress`] is
     /// not available in the [`Context`].
+    #[must_use]
     pub fn required(inner: S) -> Self {
         Self::new(inner, true)
     }
@@ -108,22 +116,15 @@ impl<S> HttpProxyConnector<S> {
     define_inner_service_accessors!();
 }
 
-impl<S, State, Request> Service<State, Request> for HttpProxyConnector<S>
+impl<S, Request> Service<Request> for HttpProxyConnector<S>
 where
-    S: ConnectorService<State, Request, Connection: Stream + Unpin, Error: Into<BoxError>>,
-    State: Clone + Send + Sync + 'static,
-    Request:
-        TryRefIntoTransportContext<State, Error: Into<BoxError> + Send + 'static> + Send + 'static,
+    S: ConnectorService<Request, Connection: Stream + Unpin, Error: Into<BoxError>>,
+    Request: TryRefIntoTransportContext<Error: Into<BoxError> + Send + 'static> + Send + 'static,
 {
-    type Response =
-        EstablishedClientConnection<Either<S::Connection, upgrade::Upgraded>, State, Request>;
+    type Response = EstablishedClientConnection<MaybeHttpProxiedConnection<S::Connection>, Request>;
     type Error = BoxError;
 
-    async fn serve(
-        &self,
-        mut ctx: Context<State>,
-        req: Request,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
         let address = ctx.get::<ProxyAddress>().cloned();
         if !address
             .as_ref()
@@ -183,27 +184,26 @@ where
                 })?;
 
         // return early in case we did not use a proxy
-        let address = match address {
-            Some(address) => address,
-            None => {
-                return if self.required {
-                    Err("http proxy required but none is defined".into())
-                } else {
-                    tracing::trace!(
-                        "http proxy connector: no proxy required or set: proceed with direct connection"
-                    );
-                    let EstablishedClientConnection { ctx, req, conn } = established_conn;
-                    return Ok(EstablishedClientConnection {
-                        ctx,
-                        req,
-                        conn: Either::A(conn),
-                    });
-                };
-            }
+        let Some(address) = address else {
+            return if self.required {
+                Err("http proxy required but none is defined".into())
+            } else {
+                tracing::trace!(
+                    "http proxy connector: no proxy required or set: proceed with direct connection"
+                );
+                let EstablishedClientConnection { ctx, req, conn } = established_conn;
+                return Ok(EstablishedClientConnection {
+                    ctx,
+                    req,
+                    conn: MaybeHttpProxiedConnection {
+                        inner: Connection::Direct { conn },
+                    },
+                });
+            };
         };
         // and do the handshake otherwise...
 
-        let EstablishedClientConnection { ctx, req, conn } = established_conn;
+        let EstablishedClientConnection { mut ctx, req, conn } = established_conn;
 
         tracing::trace!(
             server.address = %transport_ctx.authority.host(),
@@ -223,11 +223,13 @@ where
             return Ok(EstablishedClientConnection {
                 ctx,
                 req,
-                conn: Either::A(conn),
+                conn: MaybeHttpProxiedConnection {
+                    inner: Connection::Proxied { conn },
+                },
             });
         }
 
-        let mut connector = InnerHttpProxyConnector::new(transport_ctx.authority.clone())?;
+        let mut connector = InnerHttpProxyConnector::new(&transport_ctx.authority)?;
         match self.version {
             Some(version) => connector.set_version(version),
             None => connector.set_auto_version(),
@@ -244,10 +246,13 @@ where
             }
         }
 
-        let conn = connector
+        let (headers, conn) = connector
             .handshake(conn)
             .await
             .map_err(|err| OpaqueError::from_std(err).context("http proxy handshake"))?;
+
+        tracing::trace!("inserting HttpProxyHeaders in context");
+        ctx.insert(HttpProxyConnectResponseHeaders::new(headers));
 
         tracing::trace!(
             server.address = %transport_ctx.authority.host(),
@@ -257,7 +262,148 @@ where
         Ok(EstablishedClientConnection {
             ctx,
             req,
-            conn: Either::B(conn),
+            conn: MaybeHttpProxiedConnection {
+                inner: Connection::UpgradedProxy { conn },
+            },
         })
+    }
+}
+
+#[derive(Clone, Debug)]
+/// Extension added to the [`Context`] by [`HttpProxyConnector`] to record the
+/// headers from a successful CONNECT response.
+///
+/// This can be useful, for example, when the upstream proxy provider exposes
+/// information in these headers about the connection to the final destination.
+pub struct HttpProxyConnectResponseHeaders(Arc<HeaderMap>);
+
+impl HttpProxyConnectResponseHeaders {
+    fn new(headers: HeaderMap) -> Self {
+        Self(Arc::new(headers))
+    }
+}
+
+impl AsRef<HeaderMap> for HttpProxyConnectResponseHeaders {
+    fn as_ref(&self) -> &HeaderMap {
+        &self.0
+    }
+}
+
+impl ops::Deref for HttpProxyConnectResponseHeaders {
+    type Target = HeaderMap;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+pin_project! {
+    /// A connection which will be proxied if a [`ProxyAddress`] was configured
+    pub struct MaybeHttpProxiedConnection<S> {
+        #[pin]
+        inner: Connection<S>,
+    }
+}
+
+impl<S: Debug> Debug for MaybeHttpProxiedConnection<S> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MaybeHttpProxiedConnection")
+            .field("inner", &self.inner)
+            .finish()
+    }
+}
+
+pin_project! {
+    #[project = ConnectionProj]
+    enum Connection<S> {
+        Direct{ #[pin] conn: S },
+        Proxied{ #[pin] conn: S },
+        UpgradedProxy{ #[pin] conn: upgrade::Upgraded },
+    }
+}
+
+impl<S: Debug> Debug for Connection<S> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Direct { conn } => f.debug_struct("Direct").field("conn", conn).finish(),
+            Self::Proxied { conn } => f.debug_struct("Proxied").field("conn", conn).finish(),
+            Self::UpgradedProxy { conn } => {
+                f.debug_struct("UpgradedProxy").field("conn", conn).finish()
+            }
+        }
+    }
+}
+
+impl<Conn: AsyncWrite> AsyncWrite for MaybeHttpProxiedConnection<Conn> {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut task::Context<'_>,
+        buf: &[u8],
+    ) -> Poll<Result<usize, std::io::Error>> {
+        match self.project().inner.project() {
+            ConnectionProj::Direct { conn } | ConnectionProj::Proxied { conn } => {
+                conn.poll_write(cx, buf)
+            }
+            ConnectionProj::UpgradedProxy { conn } => conn.poll_write(cx, buf),
+        }
+    }
+
+    fn poll_flush(
+        self: Pin<&mut Self>,
+        cx: &mut task::Context<'_>,
+    ) -> Poll<Result<(), std::io::Error>> {
+        match self.project().inner.project() {
+            ConnectionProj::Direct { conn } | ConnectionProj::Proxied { conn } => {
+                conn.poll_flush(cx)
+            }
+            ConnectionProj::UpgradedProxy { conn } => conn.poll_flush(cx),
+        }
+    }
+
+    fn poll_shutdown(
+        self: Pin<&mut Self>,
+        cx: &mut task::Context<'_>,
+    ) -> Poll<Result<(), std::io::Error>> {
+        match self.project().inner.project() {
+            ConnectionProj::Direct { conn } | ConnectionProj::Proxied { conn } => {
+                conn.poll_shutdown(cx)
+            }
+            ConnectionProj::UpgradedProxy { conn } => conn.poll_shutdown(cx),
+        }
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        match &self.inner {
+            Connection::Direct { conn } | Connection::Proxied { conn } => conn.is_write_vectored(),
+            Connection::UpgradedProxy { conn } => conn.is_write_vectored(),
+        }
+    }
+
+    fn poll_write_vectored(
+        self: Pin<&mut Self>,
+        cx: &mut task::Context<'_>,
+        bufs: &[std::io::IoSlice<'_>],
+    ) -> Poll<Result<usize, std::io::Error>> {
+        match self.project().inner.project() {
+            ConnectionProj::Direct { conn } | ConnectionProj::Proxied { conn } => {
+                conn.poll_write_vectored(cx, bufs)
+            }
+            ConnectionProj::UpgradedProxy { conn } => conn.poll_write_vectored(cx, bufs),
+        }
+    }
+}
+
+impl<Conn: AsyncRead> AsyncRead for MaybeHttpProxiedConnection<Conn> {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        match self.project().inner.project() {
+            ConnectionProj::Direct { conn } | ConnectionProj::Proxied { conn } => {
+                conn.poll_read(cx, buf)
+            }
+            ConnectionProj::UpgradedProxy { conn } => conn.poll_read(cx, buf),
+        }
     }
 }

@@ -23,7 +23,7 @@ impl IPv4 {
         source_port: u16,
         destination_port: u16,
     ) -> Self {
-        IPv4 {
+        Self {
             source_address: source_address.into(),
             source_port,
             destination_address: destination_address.into(),
@@ -52,7 +52,7 @@ impl IPv6 {
         source_port: u16,
         destination_port: u16,
     ) -> Self {
-        IPv6 {
+        Self {
             source_address: source_address.into(),
             source_port,
             destination_address: destination_address.into(),

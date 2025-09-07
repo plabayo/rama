@@ -19,7 +19,7 @@ where
     F: Clone,
 {
     fn clone(&self) -> Self {
-        MapResponse {
+        Self {
             inner: self.inner.clone(),
             f: self.f.clone(),
         }
@@ -50,7 +50,7 @@ where
     F: Clone,
 {
     fn clone(&self) -> Self {
-        MapResponseLayer { f: self.f.clone() }
+        Self { f: self.f.clone() }
     }
 }
 
@@ -68,30 +68,25 @@ where
 impl<S, F> MapResponse<S, F> {
     /// Creates a new `MapResponse` service.
     pub const fn new(inner: S, f: F) -> Self {
-        MapResponse { f, inner }
+        Self { f, inner }
     }
 
     define_inner_service_accessors!();
 }
 
-impl<S, F, State, Request, Response> Service<State, Request> for MapResponse<S, F>
+impl<S, F, Request, Response> Service<Request> for MapResponse<S, F>
 where
-    S: Service<State, Request>,
-    F: FnOnce(S::Response) -> Response + Clone + Send + Sync + 'static,
-    State: Clone + Send + Sync + 'static,
+    S: Service<Request>,
+    F: Fn(S::Response) -> Response + Send + Sync + 'static,
     Request: Send + 'static,
     Response: Send + 'static,
 {
     type Response = Response;
     type Error = S::Error;
 
-    async fn serve(
-        &self,
-        ctx: Context<State>,
-        req: Request,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
         match self.inner.serve(ctx, req).await {
-            Ok(resp) => Ok((self.f.clone())(resp)),
+            Ok(resp) => Ok((self.f)(resp)),
             Err(err) => Err(err),
         }
     }
@@ -100,7 +95,7 @@ where
 impl<F> MapResponseLayer<F> {
     /// Creates a new [`MapResponseLayer`] layer.
     pub const fn new(f: F) -> Self {
-        MapResponseLayer { f }
+        Self { f }
     }
 }
 

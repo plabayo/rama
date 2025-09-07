@@ -23,7 +23,7 @@ impl<'de> Deserialize<'de> for DnsOverwrite {
         D: serde::Deserializer<'de>,
     {
         let map = HashMap::<Domain, Vec<IpAddr>>::deserialize(deserializer)?;
-        Ok(DnsOverwrite(Arc::new(InMemoryDns {
+        Ok(Self(Arc::new(InMemoryDns {
             trie: map.into_iter().collect(),
         })))
     }
@@ -71,6 +71,7 @@ pub struct InMemoryDns {
 
 impl InMemoryDns {
     /// Creates a new empty [`InMemoryDns`] instance.
+    #[must_use]
     pub fn new() -> Self {
         Default::default()
     }
@@ -78,7 +79,7 @@ impl InMemoryDns {
     /// Inserts a domain to IP address mapping to the [`InMemoryDns`].
     ///
     /// Existing mappings will be overwritten.
-    pub fn insert(&mut self, name: Domain, addresses: Vec<IpAddr>) -> &mut Self {
+    pub fn insert(&mut self, name: &Domain, addresses: Vec<IpAddr>) -> &mut Self {
         self.trie.insert_domain(name.as_str(), addresses);
         self
     }
@@ -87,7 +88,7 @@ impl InMemoryDns {
     ///
     /// This method accepts any type that can be converted into an `IpAddr`,
     /// such as `Ipv4Addr` or `Ipv6Addr`.
-    pub fn insert_address<A: Into<IpAddr>>(&mut self, name: Domain, addr: A) -> &mut Self {
+    pub fn insert_address<A: Into<IpAddr>>(&mut self, name: &Domain, addr: A) -> &mut Self {
         self.insert(name, vec![addr.into()])
     }
 
@@ -97,7 +98,7 @@ impl InMemoryDns {
     /// such as `Ipv4Addr` or `Ipv6Addr`.
     pub fn insert_addresses<I: IntoIterator<Item: Into<IpAddr>>>(
         &mut self,
-        name: Domain,
+        name: &Domain,
         addresses: I,
     ) -> &mut Self {
         self.insert(name, addresses.into_iter().map(Into::into).collect())

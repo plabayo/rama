@@ -40,30 +40,28 @@ mod relay;
 ///
 /// [`Socks5Acceptor`]: crate::server::Socks5Acceptor
 /// [`Command::UdpAssociate`]: crate::proto::Command::UdpAssociate
-pub trait Socks5UdpAssociator<S, State>: Socks5UdpAssociatorSeal<S, State> {}
+pub trait Socks5UdpAssociator<S>: Socks5UdpAssociatorSeal<S> {}
 
-impl<S, State, C> Socks5UdpAssociator<S, State> for C where C: Socks5UdpAssociatorSeal<S, State> {}
+impl<S, C> Socks5UdpAssociator<S> for C where C: Socks5UdpAssociatorSeal<S> {}
 
-pub trait Socks5UdpAssociatorSeal<S, State>: Send + Sync + 'static {
+pub trait Socks5UdpAssociatorSeal<S>: Send + Sync + 'static {
     fn accept_udp_associate(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         stream: S,
         destination: Authority,
     ) -> impl Future<Output = Result<(), Error>> + Send + '_
     where
-        S: Stream + Unpin,
-        State: Clone + Send + Sync + 'static;
+        S: Stream + Unpin;
 }
 
-impl<S, State> Socks5UdpAssociatorSeal<S, State> for ()
+impl<S> Socks5UdpAssociatorSeal<S> for ()
 where
     S: Stream + Unpin,
-    State: Clone + Send + Sync + 'static,
 {
     async fn accept_udp_associate(
         &self,
-        _ctx: Context<State>,
+        _ctx: Context,
         mut stream: S,
         destination: Authority,
     ) -> Result<(), Error> {
@@ -87,13 +85,13 @@ where
 /// [`Default`] [`UdpBinder`] implementation.
 pub struct DefaultUdpBinder;
 
-impl<S: Clone + Send + Sync + 'static> Service<S, Interface> for DefaultUdpBinder {
-    type Response = (UdpSocket, Context<S>);
+impl Service<Interface> for DefaultUdpBinder {
+    type Response = (UdpSocket, Context);
     type Error = BoxError;
 
     async fn serve(
         &self,
-        ctx: Context<S>,
+        ctx: Context,
         interface: Interface,
     ) -> Result<Self::Response, Self::Error> {
         let socket = UdpSocket::bind(interface).await?;
@@ -220,6 +218,7 @@ impl<B, I> UdpRelay<B, I> {
     /// - [`UdpRelay::with_bind_south_interface`]: to only set [`Interface`] for the south direction.
     ///
     /// By default it binds the udp sockets at `0.0.0.0:0`.
+    #[must_use]
     pub fn with_bind_interface(mut self, interface: impl Into<Interface>) -> Self {
         let interface = interface.into();
         self.bind_north_interface = interface.clone();
@@ -246,6 +245,7 @@ impl<B, I> UdpRelay<B, I> {
     /// - [`UdpRelay::with_bind_south_interface`]: to only set [`Interface`] for the south direction.
     ///
     /// By default it binds the udp sockets at `0.0.0.0:0`.
+    #[must_use]
     pub fn with_bind_north_interface(mut self, interface: impl Into<Interface>) -> Self {
         self.bind_north_interface = interface.into();
         self
@@ -270,6 +270,7 @@ impl<B, I> UdpRelay<B, I> {
     /// - [`UdpRelay::with_bind_north_interface`]: to only set [`Interface`] for the north direction.
     ///
     /// By default it binds the udp sockets at `0.0.0.0:0`.
+    #[must_use]
     pub fn with_bind_south_interface(mut self, interface: impl Into<Interface>) -> Self {
         self.bind_south_interface = interface.into();
         self
@@ -311,6 +312,7 @@ impl<B, I> UdpRelay<B, I> {
     /// Use:
     /// - [`UdpRelay::with_buffer_size`]: to only set the buffer size for both the north and south direction;
     /// - [`UdpRelay::with_buffer_size_north`]: to only set the buffer size for the north direction.
+    #[must_use]
     pub fn with_buffer_size_south(mut self, n: usize) -> Self {
         self.south_buffer_size = n;
         self
@@ -321,6 +323,7 @@ impl<B, I> UdpRelay<B, I> {
     /// Use:
     /// - [`UdpRelay::with_buffer_size`]: to only set the buffer size for both the north and south direction;
     /// - [`UdpRelay::with_buffer_size_south`]: to only set the buffer size for the south direction.
+    #[must_use]
     pub fn with_buffer_size_north(mut self, n: usize) -> Self {
         self.north_buffer_size = n;
         self
@@ -331,6 +334,7 @@ impl<B, I> UdpRelay<B, I> {
     /// Use:
     /// - [`UdpRelay::with_buffer_size_north`]: to only set the buffer size for the north direction.
     /// - [`UdpRelay::with_buffer_size_south`]: to only set the buffer size for the south direction.
+    #[must_use]
     pub fn with_buffer_size(mut self, n: usize) -> Self {
         self.north_buffer_size = n;
         self.south_buffer_size = n;
@@ -346,6 +350,7 @@ impl<B, I> UdpRelay<B, I> {
     ///
     /// It will be used to best-effort resolve the domain name,
     /// in case a domain name is passed to forward to the target server.
+    #[must_use]
     pub fn with_default_dns_resolver(mut self) -> Self {
         self.dns_resolver = None;
         self
@@ -364,6 +369,7 @@ impl<B, I> UdpRelay<B, I> {
     ///
     /// It will be used to best-effort resolve the domain name,
     /// in case a domain name is passed to forward to the target server.
+    #[must_use]
     pub fn with_dns_resolver(mut self, resolver: impl DnsResolver<Error = OpaqueError>) -> Self {
         self.dns_resolver = Some(resolver.boxed());
         self
@@ -431,16 +437,15 @@ impl Default for DefaultUdpRelay {
     }
 }
 
-impl<B, I, S, State> Socks5UdpAssociatorSeal<S, State> for UdpRelay<B, I>
+impl<B, I, S> Socks5UdpAssociatorSeal<S> for UdpRelay<B, I>
 where
-    B: SocketService<State, Socket = UdpSocket>,
-    I: UdpPacketProxy<State>,
+    B: SocketService<Socket = UdpSocket>,
+    I: UdpPacketProxy,
     S: Stream + Unpin,
-    State: Clone + Send + Sync + 'static,
 {
     async fn accept_udp_associate(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         mut stream: S,
         destination: Authority,
     ) -> Result<(), Error> {

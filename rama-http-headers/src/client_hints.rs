@@ -18,7 +18,7 @@ macro_rules! client_hint {
 
         impl ClientHint {
             #[doc = "Checks if the client hint is low entropy, meaning that it will be send by default."]
-            pub fn is_low_entropy(&self) -> bool {
+            #[must_use] pub fn is_low_entropy(&self) -> bool {
                 matches!(self, Self::SaveData | Self::Ua | Self::Mobile | Self::Platform)
             }
 
@@ -38,7 +38,7 @@ macro_rules! client_hint {
             }
 
             #[doc = "Returns the preferred string representation of the client hint."]
-            pub fn as_str(&self) -> &'static str {
+            #[must_use] pub fn as_str(&self) -> &'static str {
                 match self {
                     $(
                         Self::$name => {

@@ -44,11 +44,13 @@ where
 
 impl CompressionLayer {
     /// Creates a new [`CompressionLayer`].
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Sets whether to enable the gzip encoding.
+    #[must_use]
     pub fn gzip(mut self, enable: bool) -> Self {
         self.accept.set_gzip(enable);
         self
@@ -61,6 +63,7 @@ impl CompressionLayer {
     }
 
     /// Sets whether to enable the Deflate encoding.
+    #[must_use]
     pub fn deflate(mut self, enable: bool) -> Self {
         self.accept.set_deflate(enable);
         self
@@ -73,6 +76,7 @@ impl CompressionLayer {
     }
 
     /// Sets whether to enable the Brotli encoding.
+    #[must_use]
     pub fn br(mut self, enable: bool) -> Self {
         self.accept.set_br(enable);
         self
@@ -85,6 +89,7 @@ impl CompressionLayer {
     }
 
     /// Sets whether to enable the Zstd encoding.
+    #[must_use]
     pub fn zstd(mut self, enable: bool) -> Self {
         self.accept.set_zstd(enable);
         self
@@ -97,6 +102,7 @@ impl CompressionLayer {
     }
 
     /// Sets the compression quality.
+    #[must_use]
     pub fn quality(mut self, quality: CompressionLevel) -> Self {
         self.quality = quality;
         self

@@ -53,7 +53,7 @@ impl Default for ConsumeErrLayer<Trace> {
 impl<S, F> ConsumeErr<S, F, DefaulResponse> {
     /// Creates a new [`ConsumeErr`] service.
     pub const fn new(inner: S, f: F) -> Self {
-        ConsumeErr {
+        Self {
             f,
             inner,
             response: DefaulResponse,
@@ -83,71 +83,56 @@ impl<S> ConsumeErr<S, Trace, DefaulResponse> {
     }
 }
 
-impl<S, F, State, Request> Service<State, Request> for ConsumeErr<S, F, DefaulResponse>
+impl<S, F, Request> Service<Request> for ConsumeErr<S, F, DefaulResponse>
 where
-    S: Service<State, Request, Response: Default>,
-    F: FnOnce(S::Error) + Clone + Send + Sync + 'static,
-    State: Clone + Send + Sync + 'static,
+    S: Service<Request, Response: Default>,
+    F: Fn(S::Error) + Send + Sync + 'static,
     Request: Send + 'static,
 {
     type Response = S::Response;
     type Error = Infallible;
 
-    async fn serve(
-        &self,
-        ctx: Context<State>,
-        req: Request,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
         match self.inner.serve(ctx, req).await {
             Ok(resp) => Ok(resp),
             Err(err) => {
-                (self.f.clone())(err);
+                (self.f)(err);
                 Ok(S::Response::default())
             }
         }
     }
 }
 
-impl<S, F, State, Request, R> Service<State, Request> for ConsumeErr<S, F, StaticResponse<R>>
+impl<S, F, Request, R> Service<Request> for ConsumeErr<S, F, StaticResponse<R>>
 where
-    S: Service<State, Request>,
-    F: FnOnce(S::Error) + Clone + Send + Sync + 'static,
+    S: Service<Request>,
+    F: Fn(S::Error) + Send + Sync + 'static,
     R: Into<S::Response> + Clone + Send + Sync + 'static,
-    State: Clone + Send + Sync + 'static,
     Request: Send + 'static,
 {
     type Response = S::Response;
     type Error = Infallible;
 
-    async fn serve(
-        &self,
-        ctx: Context<State>,
-        req: Request,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
         match self.inner.serve(ctx, req).await {
             Ok(resp) => Ok(resp),
             Err(err) => {
-                (self.f.clone())(err);
+                (self.f)(err);
                 Ok(self.response.0.clone().into())
             }
         }
     }
 }
 
-impl<S, State, Request> Service<State, Request> for ConsumeErr<S, Trace, DefaulResponse>
+impl<S, Request> Service<Request> for ConsumeErr<S, Trace, DefaulResponse>
 where
-    S: Service<State, Request, Response: Default, Error: Into<BoxError>>,
-    State: Clone + Send + Sync + 'static,
+    S: Service<Request, Response: Default, Error: Into<BoxError>>,
     Request: Send + 'static,
 {
     type Response = S::Response;
     type Error = Infallible;
 
-    async fn serve(
-        &self,
-        ctx: Context<State>,
-        req: Request,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
         match self.inner.serve(ctx, req).await {
             Ok(resp) => Ok(resp),
             Err(err) => {
@@ -175,21 +160,16 @@ where
     }
 }
 
-impl<S, State, Request, R> Service<State, Request> for ConsumeErr<S, Trace, StaticResponse<R>>
+impl<S, Request, R> Service<Request> for ConsumeErr<S, Trace, StaticResponse<R>>
 where
-    S: Service<State, Request, Error: Into<BoxError>>,
+    S: Service<Request, Error: Into<BoxError>>,
     R: Into<S::Response> + Clone + Send + Sync + 'static,
-    State: Clone + Send + Sync + 'static,
     Request: Send + 'static,
 {
     type Response = S::Response;
     type Error = Infallible;
 
-    async fn serve(
-        &self,
-        ctx: Context<State>,
-        req: Request,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
         match self.inner.serve(ctx, req).await {
             Ok(resp) => Ok(resp),
             Err(err) => {
@@ -220,7 +200,7 @@ where
 impl<F> ConsumeErrLayer<F> {
     /// Creates a new [`ConsumeErrLayer`].
     pub const fn new(f: F) -> Self {
-        ConsumeErrLayer {
+        Self {
             f,
             response: DefaulResponse,
         }
@@ -229,6 +209,7 @@ impl<F> ConsumeErrLayer<F> {
 
 impl ConsumeErrLayer<Trace> {
     /// Creates a new [`ConsumeErrLayer`] to trace the consumed error.
+    #[must_use]
     pub const fn trace(level: tracing::Level) -> Self {
         Self::new(Trace(level))
     }

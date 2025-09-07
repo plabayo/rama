@@ -45,7 +45,7 @@ pub(super) struct Counts {
 impl Counts {
     /// Create a new `Counts` using the provided configuration values.
     pub(super) fn new(peer: peer::Dyn, config: &Config) -> Self {
-        Counts {
+        Self {
             peer,
             max_send_streams: config.initial_max_send_streams,
             num_send_streams: 0,

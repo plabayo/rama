@@ -25,8 +25,8 @@ pub struct SendRequest<B> {
 }
 
 impl<B> Clone for SendRequest<B> {
-    fn clone(&self) -> SendRequest<B> {
-        SendRequest {
+    fn clone(&self) -> Self {
+        Self {
             dispatch: self.dispatch.clone(),
         }
     }
@@ -104,11 +104,13 @@ impl<B> SendRequest<B> {
     /// This is mostly a hint. Due to inherent latency of networks, it is
     /// possible that even after checking this is ready, sending a request
     /// may still fail because the connection was closed in the meantime.
+    #[must_use]
     pub fn is_ready(&self) -> bool {
         self.dispatch.is_ready()
     }
 
     /// Checks if the connection side has been closed.
+    #[must_use]
     pub fn is_closed(&self) -> bool {
         self.dispatch.is_closed()
     }
@@ -239,8 +241,9 @@ where
 impl Builder {
     /// Creates a new connection builder.
     #[inline]
-    pub fn new(exec: Executor) -> Builder {
-        Builder {
+    #[must_use]
+    pub fn new(exec: Executor) -> Self {
+        Self {
             exec,
             h2_builder: Default::default(),
             headers_pseudo_order: None,

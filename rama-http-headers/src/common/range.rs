@@ -2,7 +2,7 @@ use std::ops::{Bound, RangeBounds};
 
 use rama_http_types::{HeaderName, HeaderValue};
 
-use crate::{Error, Header};
+use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
 
 /// `Range` header, defined in [RFC7233](https://tools.ietf.org/html/rfc7233#section-3.1)
 ///
@@ -65,7 +65,7 @@ impl Range {
             _ => return Err(InvalidRange),
         };
 
-        Ok(Range(HeaderValue::try_from(v).unwrap()))
+        Ok(Self(HeaderValue::try_from(v).unwrap()))
     }
 
     /// Iterate the range sets as a tuple of bounds, if valid with length.
@@ -88,16 +88,16 @@ impl Range {
 
             // Unbounded ranges in HTTP are actually a suffix
             // For example, `-100` means the last 100 bytes.
-            if let Bound::Unbounded = start {
-                if let Bound::Included(end) = end {
-                    if len < end {
-                        // Last N bytes is larger than available!
-                        return None;
-                    }
-                    return Some((Bound::Included(len - end), Bound::Unbounded));
+            if start == Bound::Unbounded
+                && let Bound::Included(end) = end
+            {
+                if len < end {
+                    // Last N bytes is larger than available!
+                    return None;
                 }
-                // else fall through
+                return Some((Bound::Included(len - end), Bound::Unbounded));
             }
+            // else fall through
 
             Some((start, end))
         })
@@ -112,24 +112,28 @@ fn parse_bound(s: &str) -> Option<Bound<u64>> {
     s.parse().ok().map(Bound::Included)
 }
 
-impl Header for Range {
+impl TypedHeader for Range {
     fn name() -> &'static HeaderName {
         &::rama_http_types::header::RANGE
     }
+}
 
+impl HeaderDecode for Range {
     fn decode<'i, I: Iterator<Item = &'i HeaderValue>>(values: &mut I) -> Result<Self, Error> {
         values
             .next()
             .and_then(|val| {
                 if val.to_str().ok()?.starts_with("bytes=") {
-                    Some(Range(val.clone()))
+                    Some(Self(val.clone()))
                 } else {
                     None
                 }
             })
             .ok_or_else(Error::invalid)
     }
+}
 
+impl HeaderEncode for Range {
     fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
         values.extend(::std::iter::once(self.0.clone()));
     }

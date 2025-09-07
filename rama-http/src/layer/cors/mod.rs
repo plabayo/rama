@@ -207,10 +207,13 @@ impl CorsLayer {
     /// let client = get_api_client();
     ///
     /// let layer = CorsLayer::new().allow_origin(AllowOrigin::async_predicate(
-    ///     |origin: HeaderValue, _request_parts: &RequestParts| async move {
-    ///         // fetch list of origins that are allowed
-    ///         let origins = client.fetch_allowed_origins().await;
-    ///         origins.contains(&origin)
+    ///     move |origin: HeaderValue, _request_parts: &RequestParts| {
+    ///         let client = client.clone();
+    ///         async move {
+    ///             // fetch list of origins that are allowed
+    ///             let origins = client.fetch_allowed_origins().await;
+    ///             origins.contains(&origin)
+    ///         }
     ///     },
     /// ));
     ///
@@ -219,7 +222,8 @@ impl CorsLayer {
     /// // if using &RequestParts, make sure all the values are owned
     /// // before passing into the future
     /// let layer = CorsLayer::new().allow_origin(AllowOrigin::async_predicate(
-    ///     |origin: HeaderValue, parts: &RequestParts| {
+    ///     move |origin: HeaderValue, parts: &RequestParts| {
+    ///         let client = client.clone();
     ///         let path = parts.uri.path().to_owned();
     ///
     ///         async move {
@@ -577,6 +581,7 @@ impl<S> Cors<S> {
     /// See [`CorsLayer::allow_credentials`] for more details.
     ///
     /// [mdn]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Access-Control-Allow-Credentials
+    #[must_use]
     pub fn allow_credentials<T>(self, allow_credentials: T) -> Self
     where
         T: Into<AllowCredentials>,
@@ -589,6 +594,7 @@ impl<S> Cors<S> {
     /// See [`CorsLayer::allow_headers`] for more details.
     ///
     /// [mdn]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Access-Control-Allow-Headers
+    #[must_use]
     pub fn allow_headers<T>(self, headers: T) -> Self
     where
         T: Into<AllowHeaders>,
@@ -601,6 +607,7 @@ impl<S> Cors<S> {
     /// See [`CorsLayer::max_age`] for more details.
     ///
     /// [mdn]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Access-Control-Max-Age
+    #[must_use]
     pub fn max_age<T>(self, max_age: T) -> Self
     where
         T: Into<MaxAge>,
@@ -613,6 +620,7 @@ impl<S> Cors<S> {
     /// See [`CorsLayer::allow_methods`] for more details.
     ///
     /// [mdn]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Access-Control-Allow-Methods
+    #[must_use]
     pub fn allow_methods<T>(self, methods: T) -> Self
     where
         T: Into<AllowMethods>,
@@ -625,6 +633,7 @@ impl<S> Cors<S> {
     /// See [`CorsLayer::allow_origin`] for more details.
     ///
     /// [mdn]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Access-Control-Allow-Origin
+    #[must_use]
     pub fn allow_origin<T>(self, origin: T) -> Self
     where
         T: Into<AllowOrigin>,
@@ -637,6 +646,7 @@ impl<S> Cors<S> {
     /// See [`CorsLayer::expose_headers`] for more details.
     ///
     /// [mdn]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Access-Control-Expose-Headers
+    #[must_use]
     pub fn expose_headers<T>(self, headers: T) -> Self
     where
         T: Into<ExposeHeaders>,
@@ -649,6 +659,7 @@ impl<S> Cors<S> {
     /// See [`CorsLayer::allow_private_network`] for more details.
     ///
     /// [wicg]: https://wicg.github.io/private-network-access/
+    #[must_use]
     pub fn allow_private_network<T>(self, allow_private_network: T) -> Self
     where
         T: Into<AllowPrivateNetwork>,
@@ -656,6 +667,7 @@ impl<S> Cors<S> {
         self.map_layer(|layer| layer.allow_private_network(allow_private_network))
     }
 
+    #[must_use]
     fn map_layer<F>(mut self, f: F) -> Self
     where
         F: FnOnce(CorsLayer) -> CorsLayer,
@@ -665,19 +677,18 @@ impl<S> Cors<S> {
     }
 }
 
-impl<S, State, ReqBody, ResBody> Service<State, Request<ReqBody>> for Cors<S>
+impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for Cors<S>
 where
-    S: Service<State, Request<ReqBody>, Response = Response<ResBody>>,
+    S: Service<Request<ReqBody>, Response = Response<ResBody>>,
     ReqBody: Send + 'static,
     ResBody: Default + Send + 'static,
-    State: Clone + Send + Sync + 'static,
 {
     type Response = S::Response;
     type Error = S::Error;
 
     async fn serve(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         req: Request<ReqBody>,
     ) -> Result<Self::Response, Self::Error> {
         let (parts, body) = req.into_parts();

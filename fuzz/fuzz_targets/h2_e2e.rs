@@ -88,7 +88,7 @@ async fn run(script: &[u8]) -> Result<(), rama_http_core::h2::Error> {
     let (mut h2, mut connection) = rama_http_core::h2::client::handshake(io).await?;
     let mut futs = FuturesUnordered::new();
     let future = future::poll_fn(|cx| {
-        if let Poll::Ready(()) = Pin::new(&mut connection).poll(cx)? {
+        if Pin::new(&mut connection).poll(cx)? == Poll::Ready(()) {
             return Poll::Ready(Ok::<_, rama_http_core::h2::Error>(()));
         }
         while futs.len() < 128 {

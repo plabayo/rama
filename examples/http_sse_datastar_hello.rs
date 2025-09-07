@@ -23,6 +23,12 @@
 //! cargo run --example http_sse_datastar_hello --features=http-full
 //! ```
 //!
+//! Or if you want to see the dev-only hotreload in action:
+//!
+//! ```sh
+//! RUST_LOG=debug cargo watch -x 'run --example http_sse_datastar_hello --features=http-full'
+//! ```
+//!
 //! # Expected output
 //!
 //! The server will start and listen on `:62031`. You open the url in your browser to easily interact:
@@ -36,7 +42,7 @@
 use rama::{
     Context, Layer, Service,
     error::OpaqueError,
-    futures::async_stream::stream,
+    futures::async_stream::stream_fn,
     graceful::ShutdownGuard,
     http::{
         Request, Response, StatusCode,
@@ -53,6 +59,7 @@ use rama::{
             server::{KeepAlive, KeepAliveStream},
         },
     },
+    layer::AddExtensionLayer,
     net::address::SocketAddress,
     rt::Executor,
     tcp::server::TcpListener,
@@ -100,18 +107,24 @@ async fn main() {
     graceful.spawn_task_fn(async move |guard| {
         let exec = Executor::graceful(guard.clone());
 
-        let router = Arc::new(
-            Router::new()
-                .get("/", handlers::index)
-                .post("/start", handlers::start)
-                .get("/hello-world", handlers::hello_world)
-                .get("/assets/datastar.js", DatastarScript::default()),
-        );
+        let app = Router::new()
+            .get("/", handlers::index)
+            .post("/start", handlers::start)
+            .get("/hello-world", handlers::hello_world)
+            .get("/assets/datastar.js", DatastarScript::default());
+
+        #[cfg(debug_assertions)]
+        let app = app.get("/hotreload", handlers::hotreload);
+
+        let router = Arc::new(app);
         let graceful_router = GracefulRouter(router);
 
-        let app = (TraceLayer::new_for_http()).into_layer(graceful_router);
+        let app = (
+            AddExtensionLayer::new(controller),
+            TraceLayer::new_for_http(),
+        )
+            .into_layer(graceful_router);
         listener
-            .with_state(controller)
             .serve_graceful(guard, HttpServer::auto(exec).service(app))
             .await;
     });
@@ -123,18 +136,14 @@ async fn main() {
 }
 
 #[derive(Debug, Clone)]
-struct GracefulRouter(Arc<Router<Controller>>);
+struct GracefulRouter(Arc<Router>);
 
-impl Service<Controller, Request> for GracefulRouter {
+impl Service<Request> for GracefulRouter {
     type Response = Response;
     type Error = Infallible;
 
-    async fn serve(
-        &self,
-        ctx: Context<Controller>,
-        req: Request,
-    ) -> Result<Self::Response, Self::Error> {
-        if ctx.state().is_closed() {
+    async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
+        if ctx.get::<Controller>().unwrap().is_closed() {
             tracing::debug!("router received request while shutting down: returning 401");
             return Ok(StatusCode::GONE.into_response());
         }
@@ -147,30 +156,58 @@ pub mod handlers {
 
     use super::*;
 
-    pub async fn index(ctx: Context<Controller>) -> Html<String> {
-        let content = ctx.state().render_index();
+    pub async fn index(ctx: Context) -> Html<String> {
+        let content = ctx.get::<Controller>().unwrap().render_index();
         Html(content)
     }
 
-    pub async fn start(
-        ctx: Context<Controller>,
-        ReadSignals(Signals { delay }): ReadSignals<Signals>,
-    ) -> impl IntoResponse {
-        ctx.state().reset(delay).await;
-        StatusCode::OK
-    }
+    #[cfg(debug_assertions)]
+    pub async fn hotreload() -> impl IntoResponse {
+        use rama::http::sse::datastar::ExecuteScript;
+        use std::sync::atomic;
 
-    pub async fn hello_world(ctx: Context<Controller>) -> impl IntoResponse {
-        let mut stream = ctx.state().subscribe();
+        // NOTE
+        // This only works if you develop with a single tab open only,
+        // in case you are testing with multiple UA's / Tabs at once
+        // you will need to expand this implementation by for example
+        // tracking against a date or version stored in a cookie
+        // or by some other means.
+
+        static ONCE: atomic::AtomicBool = atomic::AtomicBool::new(false);
 
         Sse::new(KeepAliveStream::new(
             KeepAlive::new(),
-            stream! {
+            stream_fn(move |mut yielder| async move {
+                if !ONCE.swap(true, atomic::Ordering::SeqCst) {
+                    let script = ExecuteScript::new("window.location.reload()");
+                    yielder
+                        .yield_item(Ok::<_, Infallible>(script.into_sse_event()))
+                        .await;
+                }
+                std::future::pending().await
+            }),
+        ))
+    }
+
+    pub async fn start(
+        ctx: Context,
+        ReadSignals(Signals { delay }): ReadSignals<Signals>,
+    ) -> impl IntoResponse {
+        ctx.get::<Controller>().unwrap().reset(delay).await;
+        StatusCode::OK
+    }
+
+    pub async fn hello_world(ctx: Context) -> impl IntoResponse {
+        let mut stream = ctx.get::<Controller>().unwrap().subscribe();
+
+        Sse::new(KeepAliveStream::new(
+            KeepAlive::new(),
+            stream_fn(move |mut yielder| async move {
                 while let Some(msg) = stream.next().await {
                     match msg {
                         Message::Event(event) => {
                             tracing::trace!("send next event data");
-                            yield Ok::<_, OpaqueError>(event);
+                            yielder.yield_item(Ok::<_, OpaqueError>(event)).await;
                         }
                         Message::Exit => {
                             tracing::debug!("exit message received, bye now!");
@@ -179,7 +216,7 @@ pub mod handlers {
                     };
                 }
                 tracing::debug!("exit hello world stream loop, bye!");
-            },
+            }),
         ))
     }
 }
@@ -188,8 +225,8 @@ pub mod controller {
     use super::*;
 
     use rama::futures::Stream;
+    use rama::http::sse::datastar::ExecuteScript;
     use rama::http::sse::datastar::{ElementPatchMode, PatchElements};
-    use rama_http::sse::datastar::ExecuteScript;
     use serde::{Deserialize, Serialize};
     use std::pin::Pin;
 
@@ -253,7 +290,7 @@ pub mod controller {
             let delay = Arc::new(AtomicU64::new(400));
             let anim_index = Arc::new(AtomicUsize::new(Self::MESSAGE.len()));
 
-            let controller = Controller {
+            let controller = Self {
                 is_closed: Arc::new(AtomicBool::new(false)),
 
                 delay,
@@ -274,6 +311,7 @@ pub mod controller {
             controller
         }
 
+        #[must_use]
         pub fn is_closed(&self) -> bool {
             self.is_closed.load(Ordering::Acquire)
         }
@@ -284,6 +322,7 @@ pub mod controller {
             }
         }
 
+        #[must_use]
         pub fn subscribe(&self) -> Pin<Box<impl Stream<Item = Message> + use<>>> {
             let mut subscriber = self.msg_tx.subscribe();
 
@@ -292,41 +331,49 @@ pub mod controller {
             let progress = (anim_index as f64) / (Self::MESSAGE.len() as f64) * 100f64;
             let text = &Self::MESSAGE[..anim_index];
 
-            Box::pin(stream! {
+            Box::pin(stream_fn(move |mut yielder| async move {
                 tracing::debug!("subscriber: fresh connect: send current signal/dom state");
-                yield sse_status_element_message(0f64);
-                yield remove_server_warning();
-                yield data_animation_element_message(text, progress);
-                yield update_signal_element_message(UpdateSignals { delay: Some(delay) });
+                yielder.yield_item(sse_status_element_message(0f64)).await;
+                yielder.yield_item(remove_server_warning()).await;
+                yielder
+                    .yield_item(data_animation_element_message(text, progress))
+                    .await;
+                yielder
+                    .yield_item(update_signal_element_message(UpdateSignals {
+                        delay: Some(delay),
+                    }))
+                    .await;
 
                 tracing::debug!("subscriber: enter inner subscriber loop");
 
                 let mut sse_status_interval = tokio::time::interval(Duration::from_millis(3000));
 
                 loop {
-                    yield tokio::select! {
-                        biased;
+                    yielder
+                        .yield_item(tokio::select! {
+                            biased;
 
-                        instant = sse_status_interval.tick() => {
-                            tracing::debug!(
-                                interval.elapsed_ms = %instant.elapsed().as_millis(),
-                                "subscriber: SSE status interval tick",
-                            );
-                            sse_status_element_message(instant.elapsed().as_secs_f64())
-                        }
-
-                        result = subscriber.recv() => {
-                            match result {
-                                Ok(msg) => msg,
-                                Err(err) => {
-                                    tracing::debug!(%err, "subscriber: exit");
-                                    return;
-                                },
+                            instant = sse_status_interval.tick() => {
+                                tracing::debug!(
+                                    interval.elapsed_ms = %instant.elapsed().as_millis(),
+                                    "subscriber: SSE status interval tick",
+                                );
+                                sse_status_element_message(instant.elapsed().as_secs_f64())
                             }
-                        }
-                    };
+
+                            result = subscriber.recv() => {
+                                match result {
+                                    Ok(msg) => msg,
+                                    Err(err) => {
+                                        tracing::debug!(%err, "subscriber: exit");
+                                        return;
+                                    },
+                                }
+                            }
+                        })
+                        .await;
                 }
-            })
+            }))
         }
 
         pub fn render_index(&self) -> String {
@@ -334,6 +381,16 @@ pub mod controller {
             let anim_index = self.anim_index.load(Ordering::Acquire);
             let progress = (anim_index as f64) / (Self::MESSAGE.len() as f64) * 100f64;
             let text = &Self::MESSAGE[..anim_index];
+
+            #[cfg(not(debug_assertions))]
+            const HOT_RELOAD: &str = "";
+            #[cfg(debug_assertions)]
+            const HOT_RELOAD: &str = r##"
+                <div
+                    id="hotreload"
+                    data-on-load="@get('/hotreload', {retryMaxCount: 1000,retryInterval:20, retryMaxWaitMs:200})"
+                ></div>
+            "##;
 
             tracing::debug!(
                 %delay,
@@ -487,10 +544,11 @@ pub mod controller {
     </style>
 </head>
 <body data-on-load="@get('/hello-world')">
+    {HOT_RELOAD}
     <div id="server-warning" style="display: none"></div>
     <div data-signals-delay="{delay}" class="card">
         <div class="card-header">
-            <h1>🦙💬 "hello 🚀 data-*"</h1>
+            <h1>🦙💬 "hello 🚀 datastar"</h1>
             <div id="sse-status">🔴</div>
         </div>
 

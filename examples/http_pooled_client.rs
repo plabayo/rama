@@ -129,9 +129,8 @@ impl FirstConnOnly {
     }
 }
 
-impl<State, Request> Policy<State, Request> for FirstConnOnly
+impl<Request> Policy<Request> for FirstConnOnly
 where
-    State: Send + Sync + 'static,
     Request: Send + 'static,
 {
     type Guard = ();
@@ -140,9 +139,9 @@ where
 
     async fn check(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         request: Request,
-    ) -> PolicyResult<State, Request, Self::Guard, Self::Error> {
+    ) -> PolicyResult<Request, Self::Guard, Self::Error> {
         let output = match !self.0.swap(true, Ordering::AcqRel) {
             true => PolicyOutput::Ready(()),
             false => PolicyOutput::Abort(OpaqueError::from_display(

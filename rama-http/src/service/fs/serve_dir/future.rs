@@ -12,13 +12,12 @@ use rama_core::{Context, Service, error::BoxError};
 use rama_http_types::dep::http_body;
 use std::{convert::Infallible, io};
 
-pub(super) async fn consume_open_file_result<State, ReqBody, ResBody, F>(
+pub(super) async fn consume_open_file_result<ReqBody, ResBody, F>(
     open_file_result: Result<OpenFileOutput, std::io::Error>,
-    fallback_and_request: Option<(&F, Context<State>, Request<ReqBody>)>,
+    fallback_and_request: Option<(&F, Context, Request<ReqBody>)>,
 ) -> Result<Response, std::io::Error>
 where
-    State: Clone + Send + Sync + 'static,
-    F: Service<State, Request<ReqBody>, Response = Response<ResBody>, Error = Infallible> + Clone,
+    F: Service<Request<ReqBody>, Response = Response<ResBody>, Error = Infallible> + Clone,
     ResBody: http_body::Body<Data = Bytes> + Send + Sync + 'static,
     ResBody::Error: Into<BoxError>,
 {
@@ -53,13 +52,13 @@ where
         }
 
         Err(err) => {
-            #[cfg(unix)]
+            #[cfg(target_family = "unix")]
             // 20 = libc::ENOTDIR => "not a directory
             // when `io_error_more` landed, this can be changed
             // to checking for `io::ErrorKind::NotADirectory`.
             // https://github.com/rust-lang/rust/issues/86442
             let error_is_not_a_directory = err.raw_os_error() == Some(20);
-            #[cfg(not(unix))]
+            #[cfg(not(target_family = "unix"))]
             let error_is_not_a_directory = false;
 
             if matches!(
@@ -97,13 +96,13 @@ pub(super) fn not_found() -> Response {
     response_with_status(StatusCode::NOT_FOUND)
 }
 
-pub(super) async fn serve_fallback<F, State, B, FResBody>(
+pub(super) async fn serve_fallback<F, B, FResBody>(
     fallback: &F,
-    ctx: Context<State>,
+    ctx: Context,
     req: Request<B>,
 ) -> Result<Response, std::io::Error>
 where
-    F: Service<State, Request<B>, Response = Response<FResBody>, Error = Infallible>,
+    F: Service<Request<B>, Response = Response<FResBody>, Error = Infallible>,
     FResBody: http_body::Body<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
 {
     let response = fallback.serve(ctx, req).await.unwrap();
@@ -207,7 +206,7 @@ fn build_response(output: FileOpened) -> Response {
             };
 
             builder
-                .header(header::CONTENT_LENGTH, size.to_string())
+                .header(header::CONTENT_LENGTH, size)
                 .body(body)
                 .unwrap()
         }

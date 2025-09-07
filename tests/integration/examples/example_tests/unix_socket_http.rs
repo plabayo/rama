@@ -11,7 +11,7 @@ use rama::{
 async fn test_unix_socket_http() {
     utils::init_tracing();
 
-    let _runner = utils::ExampleRunner::<()>::interactive("unix_socket_http", None);
+    let _runner = utils::ExampleRunner::interactive("unix_socket_http", None);
 
     let (request, svc) = async {
         for i in 0..5 {

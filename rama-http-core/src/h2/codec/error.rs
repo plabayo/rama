@@ -73,7 +73,7 @@ impl From<io::Error> for SendError {
 
 impl From<UserError> for SendError {
     fn from(src: UserError) -> Self {
-        SendError::User(src)
+        Self::User(src)
     }
 }
 
@@ -90,20 +90,18 @@ impl error::Error for UserError {}
 impl fmt::Display for UserError {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
         fmt.write_str(match *self {
-            UserError::InactiveStreamId => "inactive stream",
-            UserError::UnexpectedFrameType => "unexpected frame type",
-            UserError::PayloadTooBig => "payload too big",
-            UserError::Rejected => "rejected",
-            UserError::ReleaseCapacityTooBig => "release capacity too big",
-            UserError::OverflowedStreamId => "stream ID overflowed",
-            UserError::MalformedHeaders => "malformed headers",
-            UserError::MissingUriSchemeAndAuthority => "request URI missing scheme and authority",
-            UserError::PollResetAfterSendResponse => "poll_reset after send_response is illegal",
-            UserError::SendPingWhilePending => "send_ping before received previous pong",
-            UserError::SendSettingsWhilePending => "sending SETTINGS before received previous ACK",
-            UserError::PeerDisabledServerPush => {
-                "sending PUSH_PROMISE to peer who disabled server push"
-            }
+            Self::InactiveStreamId => "inactive stream",
+            Self::UnexpectedFrameType => "unexpected frame type",
+            Self::PayloadTooBig => "payload too big",
+            Self::Rejected => "rejected",
+            Self::ReleaseCapacityTooBig => "release capacity too big",
+            Self::OverflowedStreamId => "stream ID overflowed",
+            Self::MalformedHeaders => "malformed headers",
+            Self::MissingUriSchemeAndAuthority => "request URI missing scheme and authority",
+            Self::PollResetAfterSendResponse => "poll_reset after send_response is illegal",
+            Self::SendPingWhilePending => "send_ping before received previous pong",
+            Self::SendSettingsWhilePending => "sending SETTINGS before received previous ACK",
+            Self::PeerDisabledServerPush => "sending PUSH_PROMISE to peer who disabled server push",
         })
     }
 }

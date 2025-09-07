@@ -41,42 +41,40 @@ where
     pub fn parse_query_str(query: &str) -> Result<Self, FailedToDeserializeQueryString> {
         let params =
             serde_html_form::from_str(query).map_err(FailedToDeserializeQueryString::from_err)?;
-        Ok(Query(params))
+        Ok(Self(params))
     }
 }
 
-impl<T, S> FromRequestContextRefPair<S> for Query<T>
+impl<T> FromRequestContextRefPair for Query<T>
 where
     T: DeserializeOwned + Send + Sync + 'static,
-    S: Clone + Send + Sync + 'static,
 {
     type Rejection = FailedToDeserializeQueryString;
 
     async fn from_request_context_ref_pair(
-        _ctx: &Context<S>,
+        _ctx: &Context,
         parts: &Parts,
     ) -> Result<Self, Self::Rejection> {
         let query = parts.uri.query().unwrap_or_default();
-        Query::parse_query_str(query)
+        Self::parse_query_str(query)
     }
 }
 
-impl<T, S> OptionalFromRequestContextRefPair<S> for Query<T>
+impl<T> OptionalFromRequestContextRefPair for Query<T>
 where
     T: DeserializeOwned + Send + Sync + 'static,
-    S: Clone + Send + Sync + 'static,
 {
     type Rejection = FailedToDeserializeQueryString;
 
     async fn from_request_context_ref_pair(
-        _ctx: &Context<S>,
+        _ctx: &Context,
         parts: &Parts,
     ) -> Result<Option<Self>, Self::Rejection> {
         match parts.uri.query() {
             Some(query) => {
                 let params = serde_html_form::from_str(query)
                     .map_err(FailedToDeserializeQueryString::from_err)?;
-                Ok(Some(Query(params)))
+                Ok(Some(Self(params)))
             }
             None => Ok(None),
         }

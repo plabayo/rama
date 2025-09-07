@@ -121,7 +121,7 @@
 //!             Ok::<_, Infallible>(res)
 //!         }),
 //!         HeaderName::from_static("x-used-request-id"),
-//!         async |ctx: Context<()>| {
+//!         async |ctx: Context| {
 //!             let factory = ctx.get::<RequestID>().cloned().map(|id| {
 //!                 BoxMakeHeaderValueFn::new(async move |res: Response| {
 //!                     let header_value = res.extensions().get::<Success>().map(|_| {
@@ -150,7 +150,7 @@
 //! }
 //! ```
 
-use crate::{HeaderValue, Request, Response, header::HeaderName, headers::Header};
+use crate::{HeaderValue, Request, Response, header::HeaderName, headers::HeaderEncode};
 use rama_core::{Context, Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
@@ -182,24 +182,24 @@ impl<M> fmt::Debug for SetResponseHeaderLayer<M> {
 }
 
 impl SetResponseHeaderLayer<HeaderValue> {
-    /// Create a new [`SetResponseHeaderLayer`] from a typed [`Header`].
+    /// Create a new [`SetResponseHeaderLayer`] from a typed [`HeaderEncode`].
     ///
     /// See [`SetResponseHeaderLayer::overriding`] for more details.
-    pub fn overriding_typed<H: Header>(header: H) -> Self {
+    pub fn overriding_typed<H: HeaderEncode>(header: H) -> Self {
         Self::overriding(H::name().clone(), header.encode_to_value())
     }
 
-    /// Create a new [`SetResponseHeaderLayer`] from a typed [`Header`].
+    /// Create a new [`SetResponseHeaderLayer`] from a typed [`HeaderEncode`].
     ///
     /// See [`SetResponseHeaderLayer::appending`] for more details.
-    pub fn appending_typed<H: Header>(header: H) -> Self {
+    pub fn appending_typed<H: HeaderEncode>(header: H) -> Self {
         Self::appending(H::name().clone(), header.encode_to_value())
     }
 
-    /// Create a new [`SetResponseHeaderLayer`] from a typed [`Header`].
+    /// Create a new [`SetResponseHeaderLayer`] from a typed [`HeaderEncode`].
     ///
     /// See [`SetResponseHeaderLayer::if_not_present`] for more details.
-    pub fn if_not_present_typed<H: Header>(header: H) -> Self {
+    pub fn if_not_present_typed<H: HeaderEncode>(header: H) -> Self {
         Self::if_not_present(H::name().clone(), header.encode_to_value())
     }
 }
@@ -407,20 +407,19 @@ where
     }
 }
 
-impl<ReqBody, ResBody, State, S, M> Service<State, Request<ReqBody>> for SetResponseHeader<S, M>
+impl<ReqBody, ResBody, S, M> Service<Request<ReqBody>> for SetResponseHeader<S, M>
 where
     ReqBody: Send + 'static,
     ResBody: Send + 'static,
-    State: Clone + Send + Sync + 'static,
-    S: Service<State, Request<ReqBody>, Response = Response<ResBody>>,
-    M: MakeHeaderValueFactory<State, ReqBody, ResBody>,
+    S: Service<Request<ReqBody>, Response = Response<ResBody>>,
+    M: MakeHeaderValueFactory<ReqBody, ResBody>,
 {
     type Response = S::Response;
     type Error = S::Error;
 
     async fn serve(
         &self,
-        ctx: Context<State>,
+        ctx: Context,
         req: Request<ReqBody>,
     ) -> Result<Self::Response, Self::Error> {
         let (ctx, req, header_maker) = self.make.make_header_value_maker(ctx, req).await;

@@ -57,7 +57,7 @@ During Rama's initial development, we discovered that its advantages extend beyo
 to [web servers](./web_servers.md) and [http clients](./http_clients.md):
 
 * Utilize Async Method Traits for efficient asynchronous operations;
-* Leverage modular [Tower](https://github.com/tower-rs/tower)-like middleware with extensions and strongly typed state;
+* Leverage modular [Tower](https://github.com/tower-rs/tower)-like middleware with extensions;
 * Maintain full control over your web stack from the Transport Layer (TCP, UDP) through TLS and HTTP;
 * Ensure the integrity of your proxied data. E.g. for HTTP/1.1preserving header casing and order;
 

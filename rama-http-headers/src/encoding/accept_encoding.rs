@@ -10,6 +10,7 @@ pub struct AcceptEncoding {
 }
 
 impl AcceptEncoding {
+    #[must_use]
     pub fn maybe_to_header_value(self) -> Option<HeaderValue> {
         let accept = match (self.gzip(), self.deflate(), self.br(), self.zstd()) {
             (true, true, true, false) => "gzip,deflate,br",
@@ -36,6 +37,7 @@ impl AcceptEncoding {
         self.gzip = enable;
     }
 
+    #[must_use]
     pub fn with_gzip(mut self, enable: bool) -> Self {
         self.gzip = enable;
         self
@@ -45,6 +47,7 @@ impl AcceptEncoding {
         self.deflate = enable;
     }
 
+    #[must_use]
     pub fn with_deflate(mut self, enable: bool) -> Self {
         self.deflate = enable;
         self
@@ -54,6 +57,7 @@ impl AcceptEncoding {
         self.br = enable;
     }
 
+    #[must_use]
     pub fn with_br(mut self, enable: bool) -> Self {
         self.br = enable;
         self
@@ -63,6 +67,7 @@ impl AcceptEncoding {
         self.zstd = enable;
     }
 
+    #[must_use]
     pub fn with_zstd(mut self, enable: bool) -> Self {
         self.zstd = enable;
         self
@@ -89,7 +94,7 @@ impl SupportedEncodings for AcceptEncoding {
 
 impl Default for AcceptEncoding {
     fn default() -> Self {
-        AcceptEncoding {
+        Self {
             gzip: true,
             deflate: true,
             br: true,

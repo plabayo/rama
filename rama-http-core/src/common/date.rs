@@ -40,7 +40,7 @@ thread_local!(static CACHED: RefCell<CachedDate> = RefCell::new(CachedDate::new(
 
 impl CachedDate {
     fn new() -> Self {
-        let mut cache = CachedDate {
+        let mut cache = Self {
             bytes: [0; DATE_VALUE_LENGTH],
             pos: 0,
             header_value: HeaderValue::from_static(""),

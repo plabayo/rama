@@ -18,10 +18,10 @@
 #![cfg_attr(not(test), warn(clippy::print_stdout, clippy::dbg_macro))]
 
 pub(crate) mod body;
-pub use body::{Body, BodyDataStream, BodyExtractExt, BodyLimit, sse};
+pub use body::{Body, BodyDataStream, BodyExtractExt, BodyLimit, InfiniteReader, sse};
 
 mod request;
-pub use request::{HttpRequestParts, Request};
+pub use request::{HttpRequestParts, HttpRequestPartsMut, Request};
 
 pub mod curl;
 pub use curl::request_headers_to_curl_command;
