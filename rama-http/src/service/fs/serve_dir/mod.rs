@@ -1,7 +1,6 @@
 use crate::dep::http_body::{self, Body as HttpBody};
 use crate::headers::encoding::{SupportedEncodings, parse_accept_encoding_headers};
 use crate::layer::set_status::SetStatus;
-use crate::service::fs::serve_dir::open_file::open_file_embedded;
 use crate::{Body, HeaderValue, Method, Request, Response, StatusCode, header};
 use percent_encoding::percent_decode;
 use rama_core::bytes::Bytes;
@@ -391,34 +390,24 @@ impl<F> ServeDir<F> {
             .get(header::RANGE)
             .and_then(|value| value.to_str().ok())
             .map(|s| s.to_owned());
+
         let negotiated_encodings: Vec<_> = parse_accept_encoding_headers(
             req.headers(),
             self.precompressed_variants.unwrap_or_default(),
         )
         .collect();
 
-        let open_file_result = match &self.base {
-            DirSource::Filesystem(_) => {
-                let variant = self.variant.clone();
-                open_file::open_file(
-                    variant,
-                    path_to_file,
-                    req,
-                    negotiated_encodings,
-                    range_header.as_deref(),
-                    buf_chunk_size,
-                )
-                .await
-            }
-            DirSource::Embedded(path) => open_file_embedded(
-                path,
-                path_to_file,
-                &req,
-                &negotiated_encodings,
-                range_header.as_deref(),
-                buf_chunk_size,
-            ),
-        };
+        let variant = self.variant.clone();
+        let open_file_result = open_file::open_file(
+            variant,
+            path_to_file,
+            req,
+            negotiated_encodings,
+            range_header.as_deref(),
+            buf_chunk_size,
+            &self.base,
+        )
+        .await;
 
         future::consume_open_file_result(open_file_result, fallback_and_request).await
     }
@@ -522,45 +511,37 @@ impl ServeVariant {
                 let path_decoded = percent_decode(path.as_ref()).decode_utf8().ok()?;
                 let path_decoded = Path::new(&*path_decoded);
 
-                match source {
-                    DirSource::Filesystem(base_path) => {
-                        Self::validate_path_components(base_path.clone(), path_decoded)
-                    }
-                    DirSource::Embedded(_) => {
-                        Self::validate_path_components(PathBuf::new(), path_decoded)
+                let mut path_to_file = match source {
+                    DirSource::Filesystem(base_path) => base_path.to_path_buf(),
+                    DirSource::Embedded(_) => PathBuf::new(), // For embedded files, we don't need a filesystem path
+                };
+                
+                for component in path_decoded.components() {
+                    match component {
+                        Component::Normal(comp) => {
+                            // protect against paths like `/foo/c:/bar/baz` (#204)
+                            if Path::new(&comp)
+                                .components()
+                                .all(|c| matches!(c, Component::Normal(_)))
+                            {
+                                path_to_file.push(comp)
+                            } else {
+                                return None;
+                            }
+                        }
+                        Component::CurDir => {}
+                        Component::Prefix(_) | Component::RootDir | Component::ParentDir => {
+                            return None;
+                        }
                     }
                 }
+                Some(path_to_file)
             }
             Self::SingleFile { mime: _ } => match source {
-                DirSource::Filesystem(base_path) => Some(base_path.clone()),
-                DirSource::Embedded(_) => {
-                    unreachable!()
-                }
+                DirSource::Filesystem(base_path) => Some(base_path.to_path_buf()),
+                DirSource::Embedded(_) => Some(PathBuf::new()), // For embedded single file
             },
         }
-    }
-
-    fn validate_path_components(mut path: PathBuf, path_decoded: &Path) -> Option<PathBuf> {
-        for component in path_decoded.components() {
-            match component {
-                Component::Normal(comp) => {
-                    // protect against paths like `/foo/c:/bar/baz` (#204)
-                    if Path::new(&comp)
-                        .components()
-                        .all(|c| matches!(c, Component::Normal(_)))
-                    {
-                        path.push(comp)
-                    } else {
-                        return None;
-                    }
-                }
-                Component::CurDir => {}
-                Component::Prefix(_) | Component::RootDir | Component::ParentDir => {
-                    return None;
-                }
-            }
-        }
-        Some(path)
     }
 }
 
