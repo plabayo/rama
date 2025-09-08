@@ -369,7 +369,9 @@ async fn missing_precompressed_variant_fallbacks_to_uncompressed_for_head_reques
     test_missing_precompressed_variant_fallbacks_to_uncompressed_for_head_request(svc).await;
 }
 
-async fn test_missing_precompressed_variant_fallbacks_to_uncompressed_for_head_request(svc: ServeDir) {
+async fn test_missing_precompressed_variant_fallbacks_to_uncompressed_for_head_request(
+    svc: ServeDir,
+) {
     let request = Request::builder()
         .uri("/missing_precompressed.txt")
         .header("Accept-Encoding", "gzip")
@@ -511,7 +513,9 @@ async fn fallbacks_to_different_precompressed_variant_if_not_found_for_head_requ
     test_fallbacks_to_different_precompressed_variant_if_not_found_for_head_request(svc).await;
 }
 
-async fn test_fallbacks_to_different_precompressed_variant_if_not_found_for_head_request(svc: ServeDir) {
+async fn test_fallbacks_to_different_precompressed_variant_if_not_found_for_head_request(
+    svc: ServeDir,
+) {
     let req = Request::builder()
         .uri("/precompressed_br.txt")
         .header("Accept-Encoding", "gzip,br,deflate")
