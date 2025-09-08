@@ -7,6 +7,99 @@ use crate::extensions::{HyperiumExtensions, RamaExtensions};
 use crate::{HeaderMap, HeaderName, HeaderValue, Method, Uri, Version, body::Body};
 use rama_core::context::Extensions;
 
+/// Represents an HTTP request.
+///
+/// An HTTP request consists of a head and a potentially optional body. The body
+/// component is generic, enabling arbitrary types to represent the HTTP body.
+/// For example, the body could be `Vec<u8>`, a `Stream` of byte chunks, or a
+/// value that has been deserialized.
+///
+/// # Examples
+///
+/// Creating a `Request` to send
+///
+/// ```no_run
+/// use http::{Request, Response};
+///
+/// let mut request = Request::builder()
+///     .uri("https://www.rust-lang.org/")
+///     .header("User-Agent", "my-awesome-agent/1.0");
+///
+/// if needs_awesome_header() {
+///     request = request.header("Awesome", "yes");
+/// }
+///
+/// let response = send(request.body(()).unwrap());
+///
+/// # fn needs_awesome_header() -> bool {
+/// #     true
+/// # }
+/// #
+/// fn send(req: Request<()>) -> Response<()> {
+///     // ...
+/// # panic!()
+/// }
+/// ```
+///
+/// Inspecting a request to see what was sent.
+///
+/// ```
+/// use http::{Request, Response, StatusCode};
+///
+/// fn respond_to(req: Request<()>) -> http::Result<Response<()>> {
+///     if req.uri() != "/awesome-url" {
+///         return Response::builder()
+///             .status(StatusCode::NOT_FOUND)
+///             .body(())
+///     }
+///
+///     let has_awesome_header = req.headers().contains_key("Awesome");
+///     let body = req.body();
+///
+///     // ...
+/// # panic!()
+/// }
+/// ```
+///
+/// Deserialize a request of bytes via json:
+///
+/// ```
+/// # extern crate serde;
+/// # extern crate serde_json;
+/// # extern crate http;
+/// use http::Request;
+/// use serde::de;
+///
+/// fn deserialize<T>(req: Request<Vec<u8>>) -> serde_json::Result<Request<T>>
+///     where for<'de> T: de::Deserialize<'de>,
+/// {
+///     let (parts, body) = req.into_parts();
+///     let body = serde_json::from_slice(&body)?;
+///     Ok(Request::from_parts(parts, body))
+/// }
+/// #
+/// # fn main() {}
+/// ```
+///
+/// Or alternatively, serialize the body of a request to json
+///
+/// ```
+/// # extern crate serde;
+/// # extern crate serde_json;
+/// # extern crate http;
+/// use http::Request;
+/// use serde::ser;
+///
+/// fn serialize<T>(req: Request<T>) -> serde_json::Result<Request<Vec<u8>>>
+///     where T: ser::Serialize,
+/// {
+///     let (parts, body) = req.into_parts();
+///     let body = serde_json::to_vec(&body)?;
+///     Ok(Request::from_parts(parts, body))
+/// }
+/// #
+/// # fn main() {}
+/// ```
 #[derive(Clone)]
 pub struct Request<T = Body> {
     head: Parts,
@@ -22,7 +115,7 @@ impl<T> From<HyperiumRequest<T>> for Request<T> {
 
 impl<T> From<Request<T>> for HyperiumRequest<T> {
     fn from(value: Request<T>) -> Self {
-        // We can create hyper parts directly so we have to be slightly creative
+        // We can't create hyper parts directly so we have to be slightly creative
         let (parts, body) = value.into_parts();
 
         let mut builder = HyperiumRequest::builder()
@@ -70,7 +163,7 @@ impl From<HyperiumParts> for Parts {
 
 impl From<Parts> for HyperiumParts {
     fn from(parts: Parts) -> Self {
-        // We can create hyper parts directly so we have to be slightly creative
+        // We can't create hyper parts directly so we have to be slightly creative
         let request = Request::from_parts(parts, ());
         let request = HyperiumRequest::from(request);
         let (parts, _) = request.into_parts();
@@ -1110,6 +1203,8 @@ impl HttpRequestPartsMut for Parts {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
 
     #[test]
@@ -1120,5 +1215,85 @@ mod tests {
             123u32
         });
         assert_eq!(mapped_request.body(), &123u32);
+    }
+
+    #[test]
+    fn it_can_convert_between_rama_and_hyper() {
+        let uri = "https://example.com";
+        let version = Version::HTTP_2;
+        let method = Method::POST;
+        let body = "some string";
+
+        let mut rama_request = Request::builder()
+            .uri(uri)
+            .version(version)
+            .method(method.clone())
+            .body(body)
+            .unwrap();
+
+        let header_key = "test";
+        let header_value = HeaderValue::from_static("data");
+        rama_request
+            .headers_mut()
+            .insert(header_key, header_value.clone());
+
+        let extension = "test extensions".to_owned();
+        rama_request.extensions_mut().insert(extension.clone());
+
+        let mut hyper_request = HyperiumRequest::from(rama_request);
+
+        assert_eq!(hyper_request.uri(), uri);
+        assert_eq!(hyper_request.version(), version);
+        assert_eq!(hyper_request.method(), method);
+        assert_eq!(*hyper_request.body(), body);
+        assert_eq!(
+            hyper_request.headers().get(header_key).unwrap(),
+            header_value
+        );
+
+        // Rama extensions are wrapped into RamaExtensions so we can restore them later,
+        // its also possible to access them directly by using this as a nested type map.
+
+        // TODO if there is a solution for https://github.com/hyperium/http/issues/780#issuecomment-3253476634
+        // we can removed this extra nesting and just transfer them as-is
+
+        hyper_request.extensions_mut().insert::<usize>(4);
+
+        let rama_wrapped_extensions = hyper_request
+            .extensions_mut()
+            .get_mut::<RamaExtensions>()
+            .unwrap();
+        assert_eq!(
+            *rama_wrapped_extensions.0.get::<String>().unwrap(),
+            extension
+        );
+        rama_wrapped_extensions.0.insert(Arc::new(true));
+
+        let rama_request = Request::from(hyper_request);
+
+        assert_eq!(rama_request.uri(), uri);
+        assert_eq!(rama_request.version(), version);
+        assert_eq!(rama_request.method(), method);
+        assert_eq!(*rama_request.body(), body);
+        assert_eq!(
+            rama_request.headers().get(header_key).unwrap(),
+            header_value
+        );
+        // Original rama extension
+        assert_eq!(
+            *rama_request.extensions().get::<String>().unwrap(),
+            extension
+        );
+        // Hyper extension
+        let hyper_wrapper_extensions = rama_request
+            .extensions()
+            .get::<HyperiumExtensions>()
+            .unwrap();
+        assert_eq!(*hyper_wrapper_extensions.0.get::<usize>().unwrap(), 4);
+        // Rama extension inserted into hyper request
+        assert_eq!(
+            *rama_request.extensions().get::<Arc<bool>>().unwrap(),
+            Arc::new(true)
+        );
     }
 }

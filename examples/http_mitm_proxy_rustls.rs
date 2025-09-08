@@ -37,7 +37,7 @@ use rama::{
     error::{BoxError, ErrorContext, OpaqueError},
     http::layer::compress_adapter::CompressAdaptLayer,
     http::{
-        Request, Response, StatusCode,
+        Body, Request, Response, StatusCode,
         client::EasyHttpWebClient,
         layer::{
             map_response_body::MapResponseBodyLayer,
@@ -65,7 +65,6 @@ use rama::{
         server::{TlsAcceptorData, TlsAcceptorDataBuilder, TlsAcceptorLayer},
     },
 };
-use rama_http::Body;
 
 use std::{convert::Infallible, time::Duration};
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};

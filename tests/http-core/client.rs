@@ -13,8 +13,7 @@ use rama::http::body::util::{BodyExt, StreamBody};
 use rama::http::core::body::Frame;
 use rama::http::header::{HeaderMap, HeaderName, HeaderValue};
 use rama::http::uri::PathAndQuery;
-use rama::http::{Method, Request, StatusCode, Uri, Version};
-use rama_http::StreamingBody;
+use rama::http::{Method, Request, StatusCode, StreamingBody, Uri, Version};
 
 use super::support;
 

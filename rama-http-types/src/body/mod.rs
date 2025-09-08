@@ -1,9 +1,8 @@
 //! Asynchronous HTTP request or response body.
 //!
-//! See [`Body`] for more details.
-//!
-//! [`Body`]: trait.Body.html
+//! See [`StreamingBody`] for more details.
 
+use crate::body::util::BodyExt;
 use pin_project_lite::pin_project;
 use rama_core::bytes::Bytes;
 use rama_core::futures::TryStream;
@@ -34,8 +33,6 @@ pub mod sse;
 
 mod infinite;
 pub use infinite::InfiniteReader;
-
-use crate::body::util::BodyExt;
 
 // Rama specific stuff
 

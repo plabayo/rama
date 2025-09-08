@@ -22,7 +22,7 @@
 //! You should see in all the above examples the responses from the server.
 
 use rama::{
-    Layer, Service,
+    Context, Layer, Service,
     error::{ErrorContext, OpaqueError},
     http::{
         Body, Request, Response, StatusCode,
@@ -57,8 +57,6 @@ use rama::{
 
 use std::{convert::Infallible, time::Duration};
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
-
-type Context = rama::Context;
 
 #[tokio::main]
 async fn main() {

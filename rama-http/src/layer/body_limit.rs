@@ -29,10 +29,8 @@
 //! # }
 //! ```
 
-use crate::body::util::Limited;
-use crate::{Body, Request};
+use crate::{Body, Request, StreamingBody, body::util::Limited};
 use rama_core::{Context, Layer, Service, bytes::Bytes, error::BoxError};
-use rama_http_types::StreamingBody;
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
 

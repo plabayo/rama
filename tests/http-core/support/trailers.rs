@@ -1,9 +1,8 @@
 use pin_project_lite::pin_project;
 use rama::futures::stream::Stream;
-use rama::http::body::Frame;
+use rama::http::body::{Frame, StreamingBody};
 use rama::http::header::HeaderMap;
 use rama_core::bytes::Buf;
-use rama_http::StreamingBody;
 use std::{
     pin::Pin,
     task::{Context, Poll},

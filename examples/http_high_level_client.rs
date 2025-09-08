@@ -15,7 +15,7 @@
 use rama::{
     Context, Layer, Service,
     http::{
-        BodyExtractExt, Request, StatusCode,
+        Body, BodyExtractExt, Request, StatusCode,
         client::EasyHttpWebClient,
         headers::Accept,
         layer::{
@@ -40,7 +40,6 @@ use rama::{
 
 // Everything else we need is provided by the standard library, community crates or tokio.
 
-use rama_http::Body;
 use serde_json::json;
 use std::time::Duration;
 use tracing_subscriber::layer::SubscriberExt;

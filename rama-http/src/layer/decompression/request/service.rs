@@ -78,22 +78,22 @@ where
             if let header::Entry::Occupied(entry) = parts.headers.entry(header::CONTENT_ENCODING) {
                 match entry.get().as_bytes() {
                     b"gzip" if self.accept.gzip() => {
-                        let _ = entry.remove();
+                        entry.remove();
                         parts.headers.remove(header::CONTENT_LENGTH);
                         BodyInner::gzip(WrapBody::new(body, CompressionLevel::default()))
                     }
                     b"deflate" if self.accept.deflate() => {
-                        let _ = entry.remove();
+                        entry.remove();
                         parts.headers.remove(header::CONTENT_LENGTH);
                         BodyInner::deflate(WrapBody::new(body, CompressionLevel::default()))
                     }
                     b"br" if self.accept.br() => {
-                        let _ = entry.remove();
+                        entry.remove();
                         parts.headers.remove(header::CONTENT_LENGTH);
                         BodyInner::brotli(WrapBody::new(body, CompressionLevel::default()))
                     }
                     b"zstd" if self.accept.zstd() => {
-                        let _ = entry.remove();
+                        entry.remove();
                         parts.headers.remove(header::CONTENT_LENGTH);
                         BodyInner::zstd(WrapBody::new(body, CompressionLevel::default()))
                     }

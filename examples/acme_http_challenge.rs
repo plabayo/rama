@@ -38,6 +38,7 @@ use rama::{
     },
     graceful,
     http::{
+        Body, Response,
         client::EasyHttpWebClient,
         headers::{ContentType, HeaderMapExt},
         layer::{compression::CompressionLayer, trace::TraceLayer},
@@ -59,7 +60,6 @@ use rama::{
         boring::client::TlsConnectorDataBuilder,
     },
 };
-use rama_http::{Body, Response};
 use std::{sync::Arc, time::Duration};
 use tokio::time::sleep;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};

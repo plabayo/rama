@@ -11,7 +11,6 @@ impl From<HyperiumExtensions> for rama_core::context::Extensions {
             .map_or_else(Self::new, |ext| ext.0);
 
         rama_extensions.insert(HyperiumExtensions(extensions));
-
         rama_extensions
     }
 }
@@ -23,7 +22,6 @@ impl From<RamaExtensions> for crate::dep::hyperium::http::Extensions {
             .map_or_else(Self::new, |ext| ext.0);
 
         hyper_extensions.insert(RamaExtensions(extensions));
-
         hyper_extensions
     }
 }

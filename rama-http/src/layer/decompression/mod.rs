@@ -117,12 +117,11 @@ mod tests {
     use std::io::Write;
 
     use crate::layer::compression::Compression;
-    use crate::{HeaderMap, HeaderName, Request, Response, body::util::BodyExt};
+    use crate::{Body, HeaderMap, HeaderName, Request, Response, body::util::BodyExt};
     use rama_core::service::service_fn;
     use rama_core::{Context, Service};
 
     use flate2::write::GzEncoder;
-    use rama_http_types::Body;
 
     #[tokio::test]
     async fn works() {

@@ -4,7 +4,7 @@ use rama::{
     context::RequestContextExt,
     error::BoxError,
     http::{
-        Response,
+        Response, StreamingBody,
         client::EasyHttpWebClient,
         layer::{
             decompression::DecompressionLayer,
@@ -25,7 +25,6 @@ use rama::{
     tls::boring::{client::TlsConnectorDataBuilder, core::x509::X509},
     utils::{backoff::ExponentialBackoff, rng::HasherRng},
 };
-use rama_http::StreamingBody;
 use tokio_test::assert_err;
 
 use std::{str::FromStr, time::Duration};

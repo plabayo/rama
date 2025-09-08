@@ -154,7 +154,7 @@ where
                     }
                 };
 
-                let _ = entry.remove();
+                entry.remove();
                 parts.headers.remove(header::CONTENT_LENGTH);
 
                 Response::from_parts(parts, body)

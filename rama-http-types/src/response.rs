@@ -131,7 +131,7 @@ impl<T> From<HyperiumResponse<T>> for Response<T> {
 
 impl<T> From<Response<T>> for HyperiumResponse<T> {
     fn from(value: Response<T>) -> Self {
-        // We can create hyper parts directly so we have to be slightly creative
+        // We can't create hyper parts directly so we have to be slightly creative
         let (parts, body) = value.into_parts();
 
         let mut builder = HyperiumResponse::builder()
@@ -178,7 +178,7 @@ impl From<HyperiumParts> for Parts {
 
 impl From<Parts> for HyperiumParts {
     fn from(parts: Parts) -> Self {
-        // We can create hyper parts directly so we have to be slightly creative
+        // We can't create hyper parts directly so we have to be slightly creative
         let request = Response::from_parts(parts, ());
         let request = HyperiumResponse::from(request);
         let (parts, _) = request.into_parts();

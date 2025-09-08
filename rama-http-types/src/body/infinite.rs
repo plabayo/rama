@@ -13,7 +13,6 @@ use tokio::{
 };
 use tokio_util::io::ReaderStream;
 
-#[derive(Debug)]
 /// A(n) (in)finite random byte stream implementing [`AsyncRead`].
 ///
 /// Cheap to serve, expensive to download.
@@ -80,7 +79,7 @@ impl InfiniteReader {
         }
     }
 
-    /// Turn this [`InfiniteReader`] into a [`RamaBody`].
+    /// Turn this [`InfiniteReader`] into a [`Body`].
     ///
     /// [`Body`]: super::Body
     pub fn into_body(self) -> super::Body {
