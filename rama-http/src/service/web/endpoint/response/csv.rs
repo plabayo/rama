@@ -87,7 +87,7 @@ where
 {
     fn into_response(self) -> Response {
         // Extracted into separate fn so it's only compiled once for all T.
-        fn make_respone(
+        fn make_response(
             res: csv::Result<Vec<()>>,
             mut wtr: csv::Writer<Writer<BytesMut>>,
         ) -> Response {
@@ -134,7 +134,7 @@ where
         let mut wtr = csv::Writer::from_writer(buf);
         let res: Result<Vec<_>, _> = self.0.into_iter().map(|rec| wtr.serialize(rec)).collect();
 
-        make_respone(res, wtr)
+        make_response(res, wtr)
     }
 }
 

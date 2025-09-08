@@ -81,7 +81,7 @@ where
 {
     fn into_response(self) -> Response {
         // Extracted into separate fn so it's only compiled once for all T.
-        fn make_respone(buf: BytesMut, ser_result: serde_json::Result<()>) -> Response {
+        fn make_response(buf: BytesMut, ser_result: serde_json::Result<()>) -> Response {
             match ser_result {
                 Ok(()) => (Headers::single(ContentType::json()), buf.freeze()).into_response(),
                 Err(err) => (
@@ -96,7 +96,7 @@ where
         // https://docs.rs/serde_json/1.0.82/src/serde_json/ser.rs.html#2189
         let mut buf = BytesMut::with_capacity(128).writer();
         let res = serde_json::to_writer(&mut buf, &self.0);
-        make_respone(buf.into_inner(), res)
+        make_response(buf.into_inner(), res)
     }
 }
 

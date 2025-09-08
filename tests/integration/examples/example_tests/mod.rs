@@ -37,6 +37,8 @@ mod http_pooled_client;
 mod http_rama_tower;
 #[cfg(feature = "http-full")]
 mod http_rate_limit;
+#[cfg(all(feature = "http-full", feature = "boring"))]
+mod http_record_har;
 #[cfg(feature = "http-full")]
 mod http_service_fs;
 #[cfg(feature = "http-full")]

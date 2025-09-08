@@ -7,7 +7,7 @@
 pub use ::rama_http::{
     Body, BodyDataStream, BodyExtractExt, BodyLimit, HeaderMap, HeaderName, HeaderValue, HttpError,
     HttpResult, InfiniteReader, Method, Request, Response, Scheme, StatusCode, StreamingBody, Uri,
-    Version, body, conn, dep, header, headers, io, matcher, opentelemetry, proto, request,
+    Version, body, conn, convert, dep, header, headers, io, matcher, opentelemetry, proto, request,
     response, service, sse, uri, utils,
 };
 

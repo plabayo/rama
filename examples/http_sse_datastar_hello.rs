@@ -42,7 +42,7 @@
 use rama::{
     Context, Layer, Service,
     error::OpaqueError,
-    futures::async_stream::stream,
+    futures::async_stream::stream_fn,
     graceful::ShutdownGuard,
     http::{
         Request, Response, StatusCode,
@@ -177,13 +177,15 @@ pub mod handlers {
 
         Sse::new(KeepAliveStream::new(
             KeepAlive::new(),
-            stream! {
+            stream_fn(move |mut yielder| async move {
                 if !ONCE.swap(true, atomic::Ordering::SeqCst) {
                     let script = ExecuteScript::new("window.location.reload()");
-                    yield Ok::<_, Infallible>(script.into_sse_event());
+                    yielder
+                        .yield_item(Ok::<_, Infallible>(script.into_sse_event()))
+                        .await;
                 }
                 std::future::pending().await
-            },
+            }),
         ))
     }
 
@@ -200,12 +202,12 @@ pub mod handlers {
 
         Sse::new(KeepAliveStream::new(
             KeepAlive::new(),
-            stream! {
+            stream_fn(move |mut yielder| async move {
                 while let Some(msg) = stream.next().await {
                     match msg {
                         Message::Event(event) => {
                             tracing::trace!("send next event data");
-                            yield Ok::<_, OpaqueError>(event);
+                            yielder.yield_item(Ok::<_, OpaqueError>(event)).await;
                         }
                         Message::Exit => {
                             tracing::debug!("exit message received, bye now!");
@@ -214,7 +216,7 @@ pub mod handlers {
                     };
                 }
                 tracing::debug!("exit hello world stream loop, bye!");
-            },
+            }),
         ))
     }
 }
@@ -329,41 +331,49 @@ pub mod controller {
             let progress = (anim_index as f64) / (Self::MESSAGE.len() as f64) * 100f64;
             let text = &Self::MESSAGE[..anim_index];
 
-            Box::pin(stream! {
+            Box::pin(stream_fn(move |mut yielder| async move {
                 tracing::debug!("subscriber: fresh connect: send current signal/dom state");
-                yield sse_status_element_message(0f64);
-                yield remove_server_warning();
-                yield data_animation_element_message(text, progress);
-                yield update_signal_element_message(UpdateSignals { delay: Some(delay) });
+                yielder.yield_item(sse_status_element_message(0f64)).await;
+                yielder.yield_item(remove_server_warning()).await;
+                yielder
+                    .yield_item(data_animation_element_message(text, progress))
+                    .await;
+                yielder
+                    .yield_item(update_signal_element_message(UpdateSignals {
+                        delay: Some(delay),
+                    }))
+                    .await;
 
                 tracing::debug!("subscriber: enter inner subscriber loop");
 
                 let mut sse_status_interval = tokio::time::interval(Duration::from_millis(3000));
 
                 loop {
-                    yield tokio::select! {
-                        biased;
+                    yielder
+                        .yield_item(tokio::select! {
+                            biased;
 
-                        instant = sse_status_interval.tick() => {
-                            tracing::debug!(
-                                interval.elapsed_ms = %instant.elapsed().as_millis(),
-                                "subscriber: SSE status interval tick",
-                            );
-                            sse_status_element_message(instant.elapsed().as_secs_f64())
-                        }
-
-                        result = subscriber.recv() => {
-                            match result {
-                                Ok(msg) => msg,
-                                Err(err) => {
-                                    tracing::debug!(%err, "subscriber: exit");
-                                    return;
-                                },
+                            instant = sse_status_interval.tick() => {
+                                tracing::debug!(
+                                    interval.elapsed_ms = %instant.elapsed().as_millis(),
+                                    "subscriber: SSE status interval tick",
+                                );
+                                sse_status_element_message(instant.elapsed().as_secs_f64())
                             }
-                        }
-                    };
+
+                            result = subscriber.recv() => {
+                                match result {
+                                    Ok(msg) => msg,
+                                    Err(err) => {
+                                        tracing::debug!(%err, "subscriber: exit");
+                                        return;
+                                    },
+                                }
+                            }
+                        })
+                        .await;
                 }
-            })
+            }))
         }
 
         pub fn render_index(&self) -> String {

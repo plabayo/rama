@@ -64,6 +64,8 @@ Yes you can, there are even some examples:
   a web service example showcasing demonstrating how to create a web router,
   which is excellent for the typical path-centric routing,
   and an approach you'll recognise from most other web frameworks out there.
+- [/examples/http_record_har.rs](https://github.com/plabayo/rama/tree/main/examples/http_record_har.rs)
+  Demo of HAR HTTP layer provided by rama
 
 Given Rama's prime focus is to aid in the development of proxy services it is
 even more natural to write web services that run as part of a proxy service, e.g.:

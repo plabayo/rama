@@ -234,7 +234,7 @@ jobs:
   test-ignored-msrv:
     needs: [check, check-msrv, check-all-features]
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -249,7 +249,7 @@ jobs:
   # test-ignored-beta:
   #   needs: [check, check-msrv, check-all-features]
   #   runs-on: ubuntu-latest
-  #   timeout-minutes: 60
+  #   timeout-minutes: 90
   #   steps:
   #     - uses: actions/checkout@v4
   #     - uses: dtolnay/rust-toolchain@master
@@ -264,7 +264,7 @@ jobs:
   test-ignored:
     needs: [check, check-msrv, check-all-features]
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -279,7 +279,7 @@ jobs:
   test-ignored-macos-msrv:
     needs: [check, check-msrv, check-all-features]
     runs-on: macos-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -294,7 +294,7 @@ jobs:
   test-ignored-macos-beta:
     needs: [check, check-msrv, check-all-features]
     runs-on: macos-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -309,7 +309,7 @@ jobs:
   test-ignored-macos:
     needs: [check, check-msrv, check-all-features]
     runs-on: macos-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master

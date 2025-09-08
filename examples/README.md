@@ -15,6 +15,7 @@ This directory contains example implementations demonstrating various features a
 - [`http_form.rs`](./http_form.rs) - Form handling example
 - [`http_health_check.rs`](./http_health_check.rs) - Health check endpoint implementation
 - [`http_k8s_health.rs`](./http_k8s_health.rs) - Kubernetes health check implementation
+- [`http_record_har.rs`](./http_record_har.rs) - Demo of HAR HTTP layer provided by rama
 
 ### Advanced HTTP Features
 - [`http_conn_state.rs`](./http_conn_state.rs) - Connection state management

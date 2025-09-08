@@ -25,9 +25,11 @@ pub use ::rama_http_types::{
     proto, request, response, sse, status, uri, version,
 };
 
+pub use ::rama_http_headers as headers;
+
 pub mod body;
 
-pub use ::rama_http_headers as headers;
+pub mod convert;
 
 pub mod matcher;
 

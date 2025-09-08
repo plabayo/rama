@@ -72,7 +72,7 @@ rust-version = "1.88.0"
 [workspace.dependencies]
 arc-swap = "1.7"
 async-compression = "0.4"
-async-stream = { version = "0.3" }
+asynk-strim = { version = "0.1" }
 atomic-waker = "1.1"
 aws-lc-rs = { version = "1.13", features = ["bindgen"] }
 aws-lc-sys = { version = "0.29", features = ["bindgen"] }
@@ -81,7 +81,11 @@ bitflags = "2.9"
 brotli = "8"
 byteorder = "1.5"
 bytes = "1"
-chrono = "0.4"
+chrono = { version = "0.4", default-features = false, features = [
+    "serde",
+    "oldtime",
+    "clock",
+] }
 clap = { version = "4.5", features = ["derive"] }
 const_format = "0.2"
 csv = "1.3"
@@ -514,6 +518,10 @@ required-features = ["http-full"]
 [[example]]
 name = "http_k8s_health"
 required-features = ["http-full"]
+
+[[example]]
+name = "http_record_har"
+required-features = ["http-full", "boring"]
 
 [[example]]
 name = "http_key_value_store"
