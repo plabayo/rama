@@ -8,13 +8,13 @@ use rama::{
     graceful::{self, Shutdown, ShutdownGuard},
     http::{
         Request, Response, StatusCode, StreamingBody, Version,
+        body::util::BodyExt,
         client::{
             EasyHttpWebClient,
             proxy::layer::{HttpProxyAddressLayer, SetProxyAuthHttpHeaderLayer},
         },
         conn::TargetHttpVersion,
         convert::curl,
-        dep::http_body_util::BodyExt,
         layer::{
             auth::AddAuthorizationLayer,
             decompression::DecompressionLayer,
