@@ -1,4 +1,4 @@
-use rama_http_types::dep::http::request;
+use rama_http_types::request;
 
 use crate::HeaderEncode;
 

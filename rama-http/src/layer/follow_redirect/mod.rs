@@ -101,7 +101,7 @@
 
 pub mod policy;
 
-use crate::{Method, Request, Response, StatusCode, Uri, dep::http_body::Body, header::LOCATION};
+use crate::{Method, Request, Response, StatusCode, StreamingBody, Uri, header::LOCATION};
 use iri_string::types::{UriAbsoluteString, UriReferenceStr};
 use rama_core::{Context, Layer, Service};
 use rama_http_types::{
@@ -227,7 +227,7 @@ impl<S, P> FollowRedirect<S, P> {
 impl<ReqBody, ResBody, S, P> Service<Request<ReqBody>> for FollowRedirect<S, P>
 where
     S: Service<Request<ReqBody>, Response = Response<ResBody>>,
-    ReqBody: Body + Default + Send + 'static,
+    ReqBody: StreamingBody + Default + Send + 'static,
     ResBody: Send + 'static,
     P: Policy<ReqBody, S::Error> + Clone,
 {
@@ -343,7 +343,7 @@ enum BodyRepr<B> {
 
 impl<B> BodyRepr<B>
 where
-    B: Body + Default,
+    B: StreamingBody + Default,
 {
     fn take(&mut self) -> Option<B> {
         match std::mem::replace(self, Self::None) {
@@ -374,7 +374,7 @@ where
 fn clone_body<P, B, E>(ctx: &Context, policy: &mut P, body: &B) -> Option<B>
 where
     P: Policy<B, E>,
-    B: Body + Default,
+    B: StreamingBody + Default,
 {
     if body.size_hint().exact() == Some(0) {
         Some(B::default())

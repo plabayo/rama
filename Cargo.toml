@@ -99,6 +99,7 @@ flume = "0.11"
 fnv = "1.0"
 futures = "0.3"
 futures-channel = "0.3"
+futures-util = { version = "0.3", default-features = false }
 h2 = "0.4"
 hex = "0.4"
 hickory-resolver = { version = "0.25", default-features = false, features = [
@@ -284,6 +285,7 @@ return_self_not_must_use = "warn"
 single_match_else = "warn"
 trivially_copy_pass_by_ref = "warn"
 use_self = "warn"
+uninlined_format_args = "warn"
 
 [features]
 default = []
@@ -409,7 +411,6 @@ escargot = { workspace = true }
 futures = { workspace = true }
 futures-channel = { workspace = true }
 h2-support = { path = "rama-http-core/tests/h2-support" }
-http = { workspace = true }
 indexmap = { workspace = true, features = ["serde"] }
 itertools = { workspace = true }
 itoa = { workspace = true }

@@ -1,9 +1,8 @@
-//! HTTP body utilities.
+//! Asynchronous HTTP request or response body.
+//!
+//! See [`StreamingBody`] for more details.
 
-use crate::dep::{
-    http_body::{self, Body as _, Frame},
-    http_body_util::{self, BodyExt},
-};
+use crate::body::util::BodyExt;
 use pin_project_lite::pin_project;
 use rama_core::bytes::Bytes;
 use rama_core::futures::TryStream;
@@ -13,6 +12,16 @@ use sse::{EventDataRead, EventStream};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use sync_wrapper::SyncWrapper;
+
+// Things from http-body crate
+pub use crate::dep::hyperium::http_body::Body as StreamingBody;
+pub use crate::dep::hyperium::http_body::Frame;
+pub use crate::dep::hyperium::http_body::SizeHint;
+
+// Things from http-body-util crate
+pub mod util {
+    pub use crate::dep::hyperium::http_body_util::*;
+}
 
 mod limit;
 pub use limit::BodyLimit;
@@ -25,11 +34,59 @@ pub mod sse;
 mod infinite;
 pub use infinite::InfiniteReader;
 
-type BoxBody = http_body_util::combinators::BoxBody<Bytes, BoxError>;
+// Implementations copied over from http-body but addapted to work with our Requests/Response types
+
+impl<B: StreamingBody> StreamingBody for crate::Request<B> {
+    type Data = B::Data;
+    type Error = B::Error;
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        // SAFETY:
+        // A pin projection.
+        unsafe { self.map_unchecked_mut(Self::body_mut).poll_frame(cx) }
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.body().is_end_stream()
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        self.body().size_hint()
+    }
+}
+
+impl<B: StreamingBody> StreamingBody for crate::Response<B> {
+    type Data = B::Data;
+    type Error = B::Error;
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        // SAFETY:
+        // A pin projection.
+        unsafe { self.map_unchecked_mut(Self::body_mut).poll_frame(cx) }
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.body().is_end_stream()
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        self.body().size_hint()
+    }
+}
+
+// Rama specific stuff
+
+type BoxBody = util::combinators::BoxBody<Bytes, BoxError>;
 
 fn boxed<B>(body: B) -> BoxBody
 where
-    B: http_body::Body<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
+    B: StreamingBody<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
 {
     try_downcast(body).unwrap_or_else(|body| body.map_err(Into::into).boxed())
 }
@@ -53,10 +110,10 @@ where
 pub struct Body(BoxBody);
 
 impl Body {
-    /// Create a new `Body` that wraps another [`http_body::Body`].
+    /// Create a new `Body` that wraps another [`Body`].
     pub fn new<B>(body: B) -> Self
     where
-        B: http_body::Body<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
+        B: StreamingBody<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
     {
         try_downcast(body).unwrap_or_else(|body| Self(boxed(body)))
     }
@@ -64,14 +121,14 @@ impl Body {
     /// Create a new `Body` with a maximum size limit.
     pub fn with_limit<B>(body: B, limit: usize) -> Self
     where
-        B: http_body::Body<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
+        B: StreamingBody<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
     {
-        Self::new(crate::dep::http_body_util::Limited::new(body, limit))
+        Self::new(util::Limited::new(body, limit))
     }
 
     /// Create an empty body.
     pub fn empty() -> Self {
-        Self::new(http_body_util::Empty::new())
+        Self::new(util::Empty::new())
     }
 
     /// Create a new `Body` from a [`Stream`].
@@ -88,7 +145,7 @@ impl Body {
 
     /// Create a new [`Body`] from a [`Stream`] with a maximum size limit.
     pub fn limited(self, limit: usize) -> Self {
-        Self::new(crate::dep::http_body_util::Limited::new(self.0, limit))
+        Self::new(util::Limited::new(self.0, limit))
     }
 
     /// Convert the body into a [`Stream`] of data frames.
@@ -152,7 +209,7 @@ macro_rules! body_from_impl {
     ($ty:ty) => {
         impl From<$ty> for Body {
             fn from(buf: $ty) -> Self {
-                Self::new(http_body_util::Full::from(buf))
+                Self::new(crate::body::util::Full::from(buf))
             }
         }
     };
@@ -168,7 +225,7 @@ body_from_impl!(String);
 
 body_from_impl!(Bytes);
 
-impl http_body::Body for Body {
+impl StreamingBody for Body {
     type Data = Bytes;
     type Error = OpaqueError;
 
@@ -183,7 +240,7 @@ impl http_body::Body for Body {
     }
 
     #[inline]
-    fn size_hint(&self) -> http_body::SizeHint {
+    fn size_hint(&self) -> SizeHint {
         self.0.size_hint()
     }
 
@@ -219,7 +276,7 @@ impl Stream for BodyDataStream {
     }
 }
 
-impl http_body::Body for BodyDataStream {
+impl StreamingBody for BodyDataStream {
     type Data = Bytes;
     type Error = BoxError;
 
@@ -237,7 +294,7 @@ impl http_body::Body for BodyDataStream {
     }
 
     #[inline]
-    fn size_hint(&self) -> http_body::SizeHint {
+    fn size_hint(&self) -> SizeHint {
         self.inner.size_hint()
     }
 }
@@ -249,7 +306,7 @@ pin_project! {
     }
 }
 
-impl<S> http_body::Body for StreamBody<S>
+impl<S> StreamingBody for StreamBody<S>
 where
     S: TryStream<Ok: Into<Bytes>, Error: Into<BoxError>>,
 {

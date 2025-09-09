@@ -1,15 +1,14 @@
 use super::open_file::{FileOpened, FileRequestExtent, OpenFileOutput};
 use crate::headers::encoding::Encoding;
 use crate::{
-    Body, HeaderValue, Request, Response, StatusCode,
-    dep::http_body_util::BodyExt,
+    Body, HeaderValue, Request, Response, StatusCode, StreamingBody,
+    body::util::BodyExt,
     header::{self, ALLOW},
     service::fs::AsyncReadBody,
     service::web::response::{Html, IntoResponse},
 };
 use rama_core::bytes::Bytes;
 use rama_core::{Context, Service, error::BoxError};
-use rama_http_types::dep::http_body;
 use std::{convert::Infallible, io};
 
 pub(super) async fn consume_open_file_result<ReqBody, ResBody, F>(
@@ -18,7 +17,7 @@ pub(super) async fn consume_open_file_result<ReqBody, ResBody, F>(
 ) -> Result<Response, std::io::Error>
 where
     F: Service<Request<ReqBody>, Response = Response<ResBody>, Error = Infallible> + Clone,
-    ResBody: http_body::Body<Data = Bytes> + Send + Sync + 'static,
+    ResBody: StreamingBody<Data = Bytes> + Send + Sync + 'static,
     ResBody::Error: Into<BoxError>,
 {
     match open_file_result {
@@ -103,7 +102,7 @@ pub(super) async fn serve_fallback<F, B, FResBody>(
 ) -> Result<Response, std::io::Error>
 where
     F: Service<Request<B>, Response = Response<FResBody>, Error = Infallible>,
-    FResBody: http_body::Body<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
+    FResBody: StreamingBody<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
 {
     let response = fallback.serve(ctx, req).await.unwrap();
     Ok(response

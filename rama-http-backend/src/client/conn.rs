@@ -5,6 +5,7 @@ use rama_core::{
     inspect::RequestInspector,
 };
 use rama_http::{
+    StreamingBody,
     header::{HOST, USER_AGENT},
     opentelemetry::version_as_protocol_version,
 };
@@ -12,7 +13,6 @@ use rama_http_core::h2::ext::Protocol;
 use rama_http_types::{
     Request, Version,
     conn::{H2ClientContextParams, Http1ClientContextParams},
-    dep::http_body,
     proto::h2::PseudoHeaderOrder,
 };
 use rama_net::{
@@ -98,8 +98,8 @@ where
     I2: RequestInspector<Request<BodyIn>, Error: Into<BoxError>, RequestOut = Request<BodyOut>>
         + Clone,
     S: ConnectorService<Request<BodyIn>, Connection: Stream + Unpin, Error: Into<BoxError>>,
-    BodyIn: http_body::Body<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
-    BodyOut: http_body::Body<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
+    BodyIn: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
+    BodyOut: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
 {
     type Response = EstablishedClientConnection<HttpClientService<BodyOut, I2>, I1::RequestOut>;
     type Error = BoxError;

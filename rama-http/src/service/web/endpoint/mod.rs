@@ -183,7 +183,7 @@ mod private {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Body, Method, Request, StatusCode, dep::http_body_util::BodyExt};
+    use crate::{Body, Method, Request, StatusCode, body::util::BodyExt};
     use extract::*;
 
     fn assert_into_endpoint_service<T, I>(_: I)

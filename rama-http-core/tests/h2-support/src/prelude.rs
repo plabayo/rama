@@ -49,7 +49,7 @@ pub use super::client_ext::SendRequestExt;
 // Re-export HTTP types
 pub use rama_core::bytes::{Buf, BufMut, Bytes, BytesMut};
 pub use rama_http_types::{
-    self as http, HeaderMap, Method, Request, Response, StatusCode, Version, dep::http::uri,
+    self as http, HeaderMap, Method, Request, Response, StatusCode, Version, uri,
 };
 
 pub use tokio::io::{AsyncRead, AsyncWrite};

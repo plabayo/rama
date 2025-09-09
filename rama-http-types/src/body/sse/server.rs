@@ -1,6 +1,6 @@
 //! SSE types for servers.
 
-use crate::dep::http_body::{Body, Frame};
+use crate::body::{Frame, StreamingBody};
 use pin_project_lite::pin_project;
 use rama_core::bytes::Bytes;
 use rama_core::futures::Stream;
@@ -40,7 +40,7 @@ impl<S> SseResponseBody<S> {
     }
 }
 
-impl<S, E, T> Body for SseResponseBody<S>
+impl<S, E, T> StreamingBody for SseResponseBody<S>
 where
     S: Stream<Item = Result<Event<T>, E>>,
     E: Into<BoxError>,

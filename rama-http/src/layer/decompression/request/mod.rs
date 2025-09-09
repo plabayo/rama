@@ -5,13 +5,13 @@ pub(super) mod service;
 mod tests {
     use super::service::RequestDecompression;
 
-    use crate::dep::http_body_util::BodyExt;
     use crate::layer::decompression::DecompressionBody;
-    use crate::{Body, Request, Response, StatusCode, header};
+    use crate::{Request, Response, StatusCode, body::util::BodyExt, header};
     use rama_core::service::service_fn;
     use rama_core::{Context, Service};
 
     use flate2::{Compression, write::GzEncoder};
+    use rama_http_types::Body;
     use std::{convert::Infallible, io::Write};
 
     #[tokio::test]

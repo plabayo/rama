@@ -1,8 +1,8 @@
 use super::utils;
 use rama::{
     Context,
+    http::body::util::BodyExt,
     http::client::EasyHttpWebClient,
-    http::dep::http_body_util::BodyExt,
     http::service::client::HttpClientExt,
     http::{BodyExtractExt, StatusCode},
 };

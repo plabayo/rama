@@ -38,7 +38,7 @@ use rama::{
     },
     graceful,
     http::{
-        Body,
+        Body, Response,
         client::EasyHttpWebClient,
         headers::{ContentType, HeaderMapExt},
         layer::{compression::CompressionLayer, trace::TraceLayer},
@@ -155,7 +155,7 @@ async fn main() {
                     WebService::default().get(&path, move |_ctx: Context| {
                         let state = state.clone();
                         async move {
-                            let mut response = http::Response::new(Body::from(
+                            let mut response = Response::new(Body::from(
                                 state.key_authorization.as_str().to_owned(),
                             ));
                             let headers = response.headers_mut();

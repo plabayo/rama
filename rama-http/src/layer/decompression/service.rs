@@ -1,11 +1,10 @@
 use std::fmt;
 
 use super::{DecompressionBody, body::BodyInner};
-use crate::dep::http_body::Body;
 use crate::headers::encoding::{AcceptEncoding, SupportedEncodings};
 use crate::layer::util::compression::{CompressionLevel, WrapBody};
 use crate::{
-    Request, Response,
+    Request, Response, StreamingBody,
     header::{self, ACCEPT_ENCODING},
 };
 use rama_core::{Context, Service};
@@ -108,7 +107,7 @@ impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for Decompression<S>
 where
     S: Service<Request<ReqBody>, Response = Response<ResBody>>,
     ReqBody: Send + 'static,
-    ResBody: Body<Data: Send + 'static, Error: Send + 'static> + Send + 'static,
+    ResBody: StreamingBody<Data: Send + 'static, Error: Send + 'static> + Send + 'static,
 {
     type Response = Response<DecompressionBody<ResBody>>;
     type Error = S::Error;

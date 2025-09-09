@@ -4,9 +4,10 @@ use std::borrow::Cow;
 use std::fmt::Debug;
 use std::str::FromStr;
 
-use crate::dep::http::request::Parts as ReqParts;
 use crate::layer::har::extensions::RequestComment;
 use crate::proto::HeaderByteLength;
+use crate::request::Parts as ReqParts;
+use crate::response::Parts as RespParts;
 use crate::service::web::extract::Query;
 
 use rama_core::Context;
@@ -14,7 +15,6 @@ use rama_core::telemetry::tracing;
 use rama_error::{ErrorContext, OpaqueError};
 use rama_http_headers::{ContentType, Cookie as RamaCookie, HeaderMapExt, Location};
 use rama_http_headers::{HeaderEncode, SetCookie};
-use rama_http_types::dep::http;
 use rama_http_types::proto::h1::Http1HeaderName;
 use rama_http_types::{HeaderMap, Version as RamaHttpVersion, proto::h1::Http1HeaderMap};
 use rama_net::address::SocketAddress;
@@ -401,7 +401,7 @@ impl TryFrom<Request> for crate::Request {
 impl Request {
     pub fn from_http_request_parts(
         ctx: &Context,
-        parts: &http::request::Parts,
+        parts: &ReqParts,
         payload: &[u8],
     ) -> Result<Self, OpaqueError> {
         let post_data = if !payload.is_empty() {
@@ -520,7 +520,7 @@ pub struct Response {
 
 impl Response {
     pub fn from_http_response_parts(
-        parts: &http::response::Parts,
+        parts: &RespParts,
         payload: &[u8],
     ) -> Result<Self, OpaqueError> {
         let content = Content {

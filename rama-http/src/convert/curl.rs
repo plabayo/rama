@@ -5,12 +5,11 @@ use std::borrow::Cow;
 use std::fmt::{self, Write};
 use std::process::Command;
 
-use crate::dep::http::request;
 use crate::header::ACCEPT_ENCODING;
 use crate::headers::{HeaderEncode, ProxyAuthorization};
 use crate::proto::h1::headers::original::OriginalHttp1Headers;
 use crate::proto::h1::{Http1HeaderMap, Http1HeaderName};
-use crate::{Method, Uri, Version};
+use crate::{Method, Uri, Version, request};
 
 use rama_core::Context;
 use rama_core::bytes::Bytes;
@@ -250,7 +249,7 @@ mod tests {
     use rama_net::address::Authority;
     use rama_net::user::{Basic, Bearer};
 
-    use crate::dep::http_body_util::BodyExt;
+    use crate::body::util::BodyExt;
     use crate::layer::har;
 
     use super::*;

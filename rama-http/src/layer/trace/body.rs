@@ -1,5 +1,5 @@
 use super::{DefaultOnBodyChunk, DefaultOnEos, DefaultOnFailure, OnBodyChunk, OnEos, OnFailure};
-use crate::dep::http_body::{Body, Frame};
+use crate::body::{Frame, SizeHint, StreamingBody};
 use crate::layer::classify::ClassifyEos;
 use pin_project_lite::pin_project;
 use rama_core::futures::ready;
@@ -27,10 +27,10 @@ pin_project! {
     }
 }
 
-impl<B, C, OnBodyChunkT, OnEosT, OnFailureT> Body
+impl<B, C, OnBodyChunkT, OnEosT, OnFailureT> StreamingBody
     for ResponseBody<B, C, OnBodyChunkT, OnEosT, OnFailureT>
 where
-    B: Body<Error: fmt::Display>,
+    B: StreamingBody<Error: fmt::Display>,
     C: ClassifyEos,
     OnEosT: OnEos,
     OnBodyChunkT: OnBodyChunk<B::Data>,
@@ -96,7 +96,7 @@ where
         self.inner.is_end_stream()
     }
 
-    fn size_hint(&self) -> rama_http_types::dep::http_body::SizeHint {
+    fn size_hint(&self) -> SizeHint {
         self.inner.size_hint()
     }
 }

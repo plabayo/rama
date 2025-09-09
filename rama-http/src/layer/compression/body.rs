@@ -1,7 +1,6 @@
 #![allow(unused_imports)]
 
 use crate::HeaderMap;
-use crate::dep::http_body::{Body, Frame};
 use crate::layer::util::compression::{
     AsyncReadBody, BodyIntoStream, CompressionLevel, DecorateAsyncRead, WrapBody,
 };
@@ -13,6 +12,8 @@ use rama_core::{
 use async_compression::tokio::bufread::{BrotliEncoder, GzipEncoder, ZlibEncoder, ZstdEncoder};
 use pin_project_lite::pin_project;
 use rama_core::futures::ready;
+use rama_http_types::StreamingBody;
+use rama_http_types::body::Frame;
 use std::{
     io,
     marker::PhantomData,
@@ -29,7 +30,7 @@ pin_project! {
     /// [`Compression`]: super::Compression
     pub struct CompressionBody<B>
     where
-        B: Body,
+        B: StreamingBody,
     {
         #[pin]
         pub(crate) inner: BodyInner<B>,
@@ -38,7 +39,7 @@ pin_project! {
 
 impl<B> Default for CompressionBody<B>
 where
-    B: Body + Default,
+    B: StreamingBody + Default,
 {
     fn default() -> Self {
         Self {
@@ -51,7 +52,7 @@ where
 
 impl<B> CompressionBody<B>
 where
-    B: Body,
+    B: StreamingBody,
 {
     pub(crate) fn new(inner: BodyInner<B>) -> Self {
         Self { inner }
@@ -70,7 +71,7 @@ pin_project_cfg! {
     #[project = BodyInnerProj]
     pub(crate) enum BodyInner<B>
     where
-        B: Body,
+        B: StreamingBody,
     {
         Gzip {
             #[pin]
@@ -95,7 +96,7 @@ pin_project_cfg! {
     }
 }
 
-impl<B: Body> BodyInner<B> {
+impl<B: StreamingBody> BodyInner<B> {
     pub(crate) fn gzip(inner: WrapBody<GzipEncoder<B>>) -> Self {
         Self::Gzip { inner }
     }
@@ -117,9 +118,9 @@ impl<B: Body> BodyInner<B> {
     }
 }
 
-impl<B> Body for CompressionBody<B>
+impl<B> StreamingBody for CompressionBody<B>
 where
-    B: Body<Error: Into<BoxError>>,
+    B: StreamingBody<Error: Into<BoxError>>,
 {
     type Data = Bytes;
     type Error = BoxError;
@@ -144,11 +145,11 @@ where
         }
     }
 
-    fn size_hint(&self) -> rama_http_types::dep::http_body::SizeHint {
+    fn size_hint(&self) -> rama_http_types::body::SizeHint {
         if let BodyInner::Identity { inner } = &self.inner {
             inner.size_hint()
         } else {
-            rama_http_types::dep::http_body::SizeHint::new()
+            rama_http_types::body::SizeHint::new()
         }
     }
 
@@ -163,7 +164,7 @@ where
 
 impl<B> DecorateAsyncRead for GzipEncoder<B>
 where
-    B: Body,
+    B: StreamingBody,
 {
     type Input = AsyncReadBody<B>;
     type Output = GzipEncoder<Self::Input>;
@@ -179,7 +180,7 @@ where
 
 impl<B> DecorateAsyncRead for ZlibEncoder<B>
 where
-    B: Body,
+    B: StreamingBody,
 {
     type Input = AsyncReadBody<B>;
     type Output = ZlibEncoder<Self::Input>;
@@ -195,7 +196,7 @@ where
 
 impl<B> DecorateAsyncRead for BrotliEncoder<B>
 where
-    B: Body,
+    B: StreamingBody,
 {
     type Input = AsyncReadBody<B>;
     type Output = BrotliEncoder<Self::Input>;
@@ -220,7 +221,7 @@ where
 
 impl<B> DecorateAsyncRead for ZstdEncoder<B>
 where
-    B: Body,
+    B: StreamingBody,
 {
     type Input = AsyncReadBody<B>;
     type Output = ZstdEncoder<Self::Input>;

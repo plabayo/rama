@@ -280,7 +280,7 @@ mod tests {
 
     use super::*;
     use rama_core::service::service_fn;
-    use rama_http_types::{Body, Method, Request, StatusCode, dep::http_body_util::BodyExt};
+    use rama_http_types::{Body, Method, Request, StatusCode, body::util::BodyExt};
 
     fn root_service() -> impl Service<Request, Response = Response, Error = Infallible> {
         service_fn(|_ctx, _req| async {

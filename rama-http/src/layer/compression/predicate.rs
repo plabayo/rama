@@ -6,8 +6,8 @@
 //! [`Compression::compress_when`]: super::Compression::compress_when
 //! [`CompressionLayer::compress_when`]: super::CompressionLayer::compress_when
 
-use crate::dep::http_body::Body;
-use rama_http_types::{HeaderMap, StatusCode, Version, dep::http::Extensions, header};
+use rama_core::context::Extensions;
+use rama_http_types::{HeaderMap, StatusCode, StreamingBody, Version, header};
 use std::{fmt, sync::Arc};
 
 /// Predicate used to determine if a response should be compressed or not.
@@ -15,7 +15,7 @@ pub trait Predicate: Clone {
     /// Should this response be compressed or not?
     fn should_compress<B>(&self, response: &rama_http_types::Response<B>) -> bool
     where
-        B: Body;
+        B: StreamingBody;
 
     /// Combine two predicates into one.
     ///
@@ -38,7 +38,7 @@ where
 {
     fn should_compress<B>(&self, response: &rama_http_types::Response<B>) -> bool
     where
-        B: Body,
+        B: StreamingBody,
     {
         let status = response.status();
         let version = response.version();
@@ -54,7 +54,7 @@ where
 {
     fn should_compress<B>(&self, response: &rama_http_types::Response<B>) -> bool
     where
-        B: Body,
+        B: StreamingBody,
     {
         self.as_ref()
             .map(|inner| inner.should_compress(response))
@@ -78,7 +78,7 @@ where
 {
     fn should_compress<B>(&self, response: &rama_http_types::Response<B>) -> bool
     where
-        B: Body,
+        B: StreamingBody,
     {
         self.lhs.should_compress(response) && self.rhs.should_compress(response)
     }
@@ -139,7 +139,7 @@ impl Default for DefaultPredicate {
 impl Predicate for DefaultPredicate {
     fn should_compress<B>(&self, response: &rama_http_types::Response<B>) -> bool
     where
-        B: Body,
+        B: StreamingBody,
     {
         self.0.should_compress(response)
     }
@@ -172,7 +172,7 @@ impl Default for SizeAbove {
 impl Predicate for SizeAbove {
     fn should_compress<B>(&self, response: &rama_http_types::Response<B>) -> bool
     where
-        B: Body,
+        B: StreamingBody,
     {
         let content_size = response.body().size_hint().exact().or_else(|| {
             response
@@ -231,7 +231,7 @@ impl NotForContentType {
 impl Predicate for NotForContentType {
     fn should_compress<B>(&self, response: &rama_http_types::Response<B>) -> bool
     where
-        B: Body,
+        B: StreamingBody,
     {
         if let Some(except) = &self.exception
             && content_type(response) == except.as_str()

@@ -27,9 +27,9 @@ pub use form::*;
 
 /// Extractor to get the response body.
 #[derive(Debug)]
-pub struct Body(pub http::Body);
+pub struct Body(pub crate::Body);
 
-impl_deref!(Body: http::Body);
+impl_deref!(Body: crate::Body);
 
 impl FromRequest for Body {
     type Rejection = Infallible;
@@ -42,9 +42,8 @@ impl FromRequest for Body {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::dep::http_body_util::BodyExt;
     use crate::service::web::WebService;
-    use crate::{Method, Request, StatusCode};
+    use crate::{Method, Request, StatusCode, body::util::BodyExt};
     use rama_core::{Context, Service};
 
     #[tokio::test]

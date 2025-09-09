@@ -18,8 +18,8 @@ all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
-opentelemetry = ["rama-core/opentelemetry", "rama-net/opentelemetry", "dep:opentelemetry-http"]
 default = []
+opentelemetry = ["rama-core/opentelemetry", "rama-net/opentelemetry", "dep:opentelemetry-http"]
 compression = ["dep:async-compression", "dep:rawzip", "dep:flate2"]
 tls = ["rama-net/tls"]
 
@@ -37,6 +37,7 @@ chrono = { workspace = true }
 const_format = { workspace = true }
 csv = { workspace = true }
 flate2 = { workspace = true, optional = true }
+http = { workspace = true }
 http-range-header = { workspace = true }
 httpdate = { workspace = true }
 iri-string = { workspace = true }

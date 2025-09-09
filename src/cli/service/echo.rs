@@ -12,7 +12,7 @@ use crate::{
     error::{BoxError, OpaqueError},
     http::{
         Request, Response, Version,
-        dep::http_body_util::BodyExt,
+        body::util::BodyExt,
         header::USER_AGENT,
         headers::forwarded::{CFConnectingIp, ClientIp, TrueClientIp, XClientIp, XRealIp},
         layer::{

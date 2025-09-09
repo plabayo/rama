@@ -1,9 +1,8 @@
 //! Pieces pertaining to the HTTP message protocol.
 
+use rama_core::context::Extensions;
 use rama_http::io::upgrade;
-use rama_http_types::HeaderMap;
-use rama_http_types::Version;
-use rama_http_types::dep::http;
+use rama_http_types::{HeaderMap, Method, Response, StatusCode, Uri, Version};
 
 pub(crate) mod h1;
 
@@ -23,17 +22,17 @@ pub(crate) struct MessageHead<S> {
     /// Headers of the Incoming message.
     pub(crate) headers: HeaderMap,
     /// Extensions.
-    extensions: http::Extensions,
+    extensions: Extensions,
 }
 
 /// An incoming request message.
 pub(crate) type RequestHead = MessageHead<RequestLine>;
 
 #[derive(Debug, Default, PartialEq)]
-pub(crate) struct RequestLine(pub(crate) http::Method, pub(crate) http::Uri);
+pub(crate) struct RequestLine(pub(crate) Method, pub(crate) Uri);
 
 /// An incoming response message.
-pub(crate) type ResponseHead = MessageHead<http::StatusCode>;
+pub(crate) type ResponseHead = MessageHead<StatusCode>;
 
 #[derive(Debug)]
 pub(crate) enum BodyLength {
@@ -51,9 +50,9 @@ pub(crate) enum Dispatched {
     Upgrade(upgrade::Pending),
 }
 
-impl MessageHead<http::StatusCode> {
-    fn into_response<B>(self, body: B) -> http::Response<B> {
-        let mut res = http::Response::new(body);
+impl MessageHead<StatusCode> {
+    fn into_response<B>(self, body: B) -> Response<B> {
+        let mut res = Response::new(body);
         *res.status_mut() = self.subject;
         *res.headers_mut() = self.headers;
         *res.version_mut() = self.version;
