@@ -67,3 +67,8 @@ primary_region = 'lhr'
   port = 9187
   path = '/metrics'
   https = false
+
+[[vm]]
+memory = '512mb'
+cpu_kind = 'shared'
+cpus = 1
