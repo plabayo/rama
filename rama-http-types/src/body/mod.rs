@@ -34,6 +34,58 @@ pub mod sse;
 mod infinite;
 pub use infinite::InfiniteReader;
 
+// Implementations copied over from http-body but addapted to work with our Requests/Response types
+
+impl<B: StreamingBody> StreamingBody for crate::Request<B> {
+    type Data = B::Data;
+    type Error = B::Error;
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        // SAFETY:
+        // A pin projection.
+        unsafe {
+            self.map_unchecked_mut(crate::Request::body_mut)
+                .poll_frame(cx)
+        }
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.body().is_end_stream()
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        self.body().size_hint()
+    }
+}
+
+impl<B: StreamingBody> StreamingBody for crate::Response<B> {
+    type Data = B::Data;
+    type Error = B::Error;
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        // SAFETY:
+        // A pin projection.
+        unsafe {
+            self.map_unchecked_mut(crate::Response::body_mut)
+                .poll_frame(cx)
+        }
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.body().is_end_stream()
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        self.body().size_hint()
+    }
+}
+
 // Rama specific stuff
 
 type BoxBody = util::combinators::BoxBody<Bytes, BoxError>;

@@ -4,6 +4,7 @@ use std::fmt::{self, Write as _};
 
 use rama_core::bytes::Bytes;
 use rama_core::bytes::BytesMut;
+use rama_core::context::Extensions;
 use rama_core::telemetry::tracing::{debug, error, trace, trace_span, warn};
 use rama_http::proto::{HeaderByteLength, RequestExtensions, RequestHeaders};
 use rama_http_types::header::Entry;
@@ -274,7 +275,7 @@ impl Http1Transaction for Server {
             return Err(Parse::transfer_encoding_invalid());
         }
 
-        let mut extensions = rama_core::context::Extensions::default();
+        let mut extensions = Extensions::default();
 
         let headers = headers.consume(&mut extensions);
 
@@ -436,7 +437,7 @@ impl Server {
     #[inline(never)]
     fn encode_h1_headers(
         msg: Encode<'_, StatusCode>,
-        ext: &mut rama_core::context::Extensions,
+        ext: &mut Extensions,
         dst: &mut Vec<u8>,
         is_last: bool,
         orig_len: usize,
@@ -493,7 +494,7 @@ impl Server {
     #[inline]
     fn encode_headers<W>(
         msg: Encode<'_, StatusCode>,
-        ext: &mut rama_core::context::Extensions,
+        ext: &mut Extensions,
         dst: &mut Vec<u8>,
         mut is_last: bool,
         orig_len: usize,
@@ -919,7 +920,7 @@ impl Http1Transaction for Client {
                 headers.append(name, value);
             }
 
-            let mut extensions = rama_core::context::Extensions::default();
+            let mut extensions = Extensions::default();
 
             let headers = headers.consume(&mut extensions);
 
@@ -1377,7 +1378,7 @@ pub(crate) fn write_headers(headers: &HeaderMap, dst: &mut Vec<u8>) {
 fn write_h1_headers(
     headers: HeaderMap,
     title_case_headers: bool,
-    ext: &mut rama_core::context::Extensions,
+    ext: &mut Extensions,
     dst: &mut Vec<u8>,
 ) -> Http1HeaderMap {
     let mut out_h1_headers = Http1HeaderMap::with_capacity(headers.len());
@@ -1828,7 +1829,7 @@ mod tests {
 
     #[test]
     fn test_decoder_response_request_extensions() {
-        let mut request_exts = rama_core::context::Extensions::new();
+        let mut request_exts = Extensions::new();
 
         request_exts.insert(42u64);
 
@@ -2673,7 +2674,7 @@ mod tests {
         let mut orig_cases = OriginalHttp1Headers::default();
         orig_cases.push("X-EmptY".parse().unwrap());
 
-        let mut ext = rama_core::context::Extensions::new();
+        let mut ext = Extensions::new();
         ext.insert(orig_cases);
 
         let mut dst = Vec::new();
@@ -2698,7 +2699,7 @@ mod tests {
         orig_cases.push("X-Empty".parse().unwrap());
         orig_cases.push("X-EMPTY".parse().unwrap());
 
-        let mut ext = rama_core::context::Extensions::new();
+        let mut ext = Extensions::new();
         ext.insert(orig_cases);
 
         let mut dst = Vec::new();

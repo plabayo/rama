@@ -22,7 +22,6 @@ pub use body::{
     Body, BodyDataStream, BodyExtractExt, BodyLimit, InfiniteReader, StreamingBody, sse,
 };
 
-pub mod extensions;
 pub mod request;
 pub mod response;
 pub use crate::dep::hyperium::http::method;

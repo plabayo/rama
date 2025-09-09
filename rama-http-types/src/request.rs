@@ -2,8 +2,8 @@ use std::any::Any;
 use std::fmt;
 
 use crate::Result;
+use crate::dep::hyperium::http::Extensions as HyperExtensions;
 use crate::dep::hyperium::http::request::{Parts as HyperiumParts, Request as HyperiumRequest};
-use crate::extensions::{HyperiumExtensions, RamaExtensions};
 use crate::{HeaderMap, HeaderName, HeaderValue, Method, Uri, Version, body::Body};
 use rama_core::context::Extensions;
 
@@ -116,7 +116,14 @@ impl<T> From<HyperiumRequest<T>> for Request<T> {
 impl<T> From<Request<T>> for HyperiumRequest<T> {
     fn from(value: Request<T>) -> Self {
         // We can't create hyper parts directly so we have to be slightly creative
-        let (parts, body) = value.into_parts();
+        let (mut parts, body) = value.into_parts();
+
+        let mut hyper_extensions = parts
+            .extensions
+            .remove::<HyperExtensions>()
+            .unwrap_or_default();
+
+        hyper_extensions.insert(parts.extensions);
 
         let mut builder = HyperiumRequest::builder()
             .method(parts.method)
@@ -124,7 +131,7 @@ impl<T> From<Request<T>> for HyperiumRequest<T> {
             .version(parts.version);
 
         *builder.headers_mut().unwrap() = parts.headers;
-        *builder.extensions_mut().unwrap() = RamaExtensions(parts.extensions).into();
+        *builder.extensions_mut().unwrap() = hyper_extensions;
 
         builder.body(body).unwrap()
     }
@@ -150,9 +157,12 @@ pub struct Parts {
 }
 
 impl From<HyperiumParts> for Parts {
-    fn from(value: HyperiumParts) -> Self {
+    fn from(mut value: HyperiumParts) -> Self {
+        let mut rama_extensions = value.extensions.remove::<Extensions>().unwrap_or_default();
+        rama_extensions.insert(value.extensions);
+
         Self {
-            extensions: HyperiumExtensions(value.extensions).into(),
+            extensions: rama_extensions,
             headers: value.headers,
             method: value.method,
             uri: value.uri,
@@ -1283,13 +1293,10 @@ mod tests {
 
         let rama_wrapped_extensions = hyper_request
             .extensions_mut()
-            .get_mut::<RamaExtensions>()
+            .get_mut::<Extensions>()
             .unwrap();
-        assert_eq!(
-            *rama_wrapped_extensions.0.get::<String>().unwrap(),
-            extension
-        );
-        rama_wrapped_extensions.0.insert(Arc::new(true));
+        assert_eq!(*rama_wrapped_extensions.get::<String>().unwrap(), extension);
+        rama_wrapped_extensions.insert(Arc::new(true));
 
         let rama_request = Request::from(hyper_request);
 
@@ -1307,11 +1314,8 @@ mod tests {
             extension
         );
         // Hyper extension
-        let hyper_wrapper_extensions = rama_request
-            .extensions()
-            .get::<HyperiumExtensions>()
-            .unwrap();
-        assert_eq!(*hyper_wrapper_extensions.0.get::<usize>().unwrap(), 4);
+        let hyper_wrapper_extensions = rama_request.extensions().get::<HyperExtensions>().unwrap();
+        assert_eq!(*hyper_wrapper_extensions.get::<usize>().unwrap(), 4);
         // Rama extension inserted into hyper request
         assert_eq!(
             *rama_request.extensions().get::<Arc<bool>>().unwrap(),

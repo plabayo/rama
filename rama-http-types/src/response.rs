@@ -2,8 +2,8 @@ use std::any::Any;
 use std::convert::TryInto;
 use std::fmt;
 
+use crate::dep::hyperium::http::Extensions as HyperExtensions;
 use crate::dep::hyperium::http::response::{Parts as HyperiumParts, Response as HyperiumResponse};
-use crate::extensions::{HyperiumExtensions, RamaExtensions};
 use crate::header::{HeaderMap, HeaderName, HeaderValue};
 use crate::status::StatusCode;
 use crate::version::Version;
@@ -132,14 +132,21 @@ impl<T> From<HyperiumResponse<T>> for Response<T> {
 impl<T> From<Response<T>> for HyperiumResponse<T> {
     fn from(value: Response<T>) -> Self {
         // We can't create hyper parts directly so we have to be slightly creative
-        let (parts, body) = value.into_parts();
+        let (mut parts, body) = value.into_parts();
+
+        let mut hyper_extensions = parts
+            .extensions
+            .remove::<HyperExtensions>()
+            .unwrap_or_default();
+
+        hyper_extensions.insert(parts.extensions);
 
         let mut builder = HyperiumResponse::builder()
             .status(parts.status)
             .version(parts.version);
 
         *builder.headers_mut().unwrap() = parts.headers;
-        *builder.extensions_mut().unwrap() = RamaExtensions(parts.extensions).into();
+        *builder.extensions_mut().unwrap() = hyper_extensions;
 
         builder.body(body).unwrap()
     }
@@ -166,9 +173,12 @@ pub struct Parts {
 }
 
 impl From<HyperiumParts> for Parts {
-    fn from(value: HyperiumParts) -> Self {
+    fn from(mut value: HyperiumParts) -> Self {
+        let mut rama_extensions = value.extensions.remove::<Extensions>().unwrap_or_default();
+        rama_extensions.insert(value.extensions);
+
         Self {
-            extensions: HyperiumExtensions(value.extensions).into(),
+            extensions: rama_extensions,
             headers: value.headers,
             version: value.version,
             status: value.status,

@@ -3109,7 +3109,7 @@ impl Service<Request> for TestService {
         let trailers_tx = self.trailers_tx.clone();
 
         Box::pin(async move {
-            while let Some(item) = req.body_mut().frame().await {
+            while let Some(item) = req.frame().await {
                 match item {
                     Ok(frame) => {
                         if frame.is_data() {

@@ -170,7 +170,7 @@ macro_rules! test {
                 );
             )*
 
-            let (body, _trailers) = rt.block_on(concat_with_trailers(res.into_body()))
+            let (body, _trailers) = rt.block_on(concat_with_trailers(res))
                 .expect("body concat wait");
 
             let expected_res_body = Option::<&[u8]>::from($response_body)
@@ -1747,7 +1747,7 @@ mod conn {
 
         let res = client.send_request(req).and_then(move |res| {
             assert_eq!(res.status(), rama::http::StatusCode::OK);
-            concat(res.into_body())
+            concat(res)
         });
         let rx = rx1.expect("thread panicked");
         let rx = rx.then(|_| tokio::time::sleep(Duration::from_millis(200)));
@@ -1792,7 +1792,7 @@ mod conn {
 
         let res = client.send_request(req).and_then(move |res| {
             assert_eq!(res.status(), rama::http::StatusCode::OK);
-            concat(res.into_body())
+            concat(res)
         });
         let rx = rx1.expect("thread panicked");
         let rx = rx.then(|_| tokio::time::sleep(Duration::from_millis(200)));
@@ -1831,7 +1831,7 @@ mod conn {
             .unwrap();
         let res1 = client.send_request(req).and_then(move |res| {
             assert_eq!(res.status(), rama::http::StatusCode::OK);
-            concat(res.into_body())
+            concat(res)
         });
 
         // pipelined request will hit NotReady, and thus should return an Error::Cancel
@@ -1900,7 +1900,7 @@ mod conn {
             let res = client.send_request(req).and_then(move |res| {
                 assert_eq!(res.status(), rama::http::StatusCode::SWITCHING_PROTOCOLS);
                 assert_eq!(res.headers()["Upgrade"], "foobar");
-                concat(res.into_body())
+                concat(res)
             });
 
             let rx = rx1.expect("thread panicked");
@@ -1986,7 +1986,7 @@ mod conn {
                 .send_request(req)
                 .and_then(move |res| {
                     assert_eq!(res.status(), rama::http::StatusCode::OK);
-                    concat(res.into_body())
+                    concat(res)
                 })
                 .map_ok(|body| {
                     assert_eq!(body.as_ref(), b"");
@@ -2493,9 +2493,7 @@ mod conn {
                         rama::Context::default(),
                         service_fn(async |req: Request| {
                             tokio::spawn(async move {
-                                let _ = concat(req.into_body())
-                                    .await
-                                    .expect("server req body aggregate");
+                                let _ = concat(req).await.expect("server req body aggregate");
                             });
                             Ok::<_, Infallible>(
                                 rama::http::Response::new(rama::http::Body::empty()),
@@ -2578,7 +2576,7 @@ mod conn {
         assert!(resp.status().is_success());
 
         let mut body = String::new();
-        concat(resp.into_body())
+        concat(resp)
             .await
             .unwrap()
             .reader()
@@ -2682,7 +2680,7 @@ mod conn {
         assert!(res.extensions().get::<OnUpgrade>().is_none());
 
         let mut body = String::new();
-        concat(res.into_body())
+        concat(res)
             .await
             .unwrap()
             .reader()

@@ -21,8 +21,8 @@
 pub use ::rama_http_types::{
     Body, BodyDataStream, BodyExtractExt, BodyLimit, Error as HttpError, HeaderMap, HeaderName,
     HeaderValue, InfiniteReader, Method, Request, Response, Result as HttpResult, Scheme,
-    StatusCode, StreamingBody, Uri, Version, conn, extensions, header, method, opentelemetry,
-    proto, request, response, sse, status, uri, version,
+    StatusCode, StreamingBody, Uri, Version, conn, header, method, opentelemetry, proto, request,
+    response, sse, status, uri, version,
 };
 
 pub use ::rama_http_headers as headers;
