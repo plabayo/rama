@@ -95,8 +95,8 @@ pub mod dep {
     //!
     //! Exported for your convenience.
 
-    pub mod hyperium {
-        pub mod http {
+    pub(crate) mod hyperium {
+        pub(crate) mod http {
             //! Re-export of the [`http`] crate incase we need to convert.
             //!
             //! A general purpose library of common HTTP types.
@@ -107,7 +107,7 @@ pub mod dep {
             pub use http::*;
         }
 
-        pub mod http_body {
+        pub(crate) mod http_body {
             //! Re-export of the [`http-body`] crate incase we need to convert.
             //!
             //! Asynchronous HTTP request or response body
@@ -118,7 +118,7 @@ pub mod dep {
             pub use http_body::*;
         }
 
-        pub mod http_body_util {
+        pub(crate) mod http_body_util {
             //! Re-export of the [`http-body-util`] crate incase we need to convert.
             //!
             //! Utilities for working with [`http-body`] types.

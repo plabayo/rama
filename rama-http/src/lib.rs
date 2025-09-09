@@ -48,5 +48,5 @@ pub mod dep {
     pub use rama_core as core;
 
     #[doc(inline)]
-    pub use ::rama_http_types::dep::{hyperium, mime, mime_guess};
+    pub use ::rama_http_types::dep::{mime, mime_guess};
 }
