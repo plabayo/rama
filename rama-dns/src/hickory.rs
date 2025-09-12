@@ -191,6 +191,24 @@ impl HickoryDnsBuilder {
 impl DnsResolver for HickoryDns {
     type Error = OpaqueError;
 
+    async fn txt_lookup(&self, domain: Domain) -> Result<Vec<Vec<u8>>, Self::Error> {
+        let name = fqdn_from_domain(domain)?;
+
+        let mut results = vec![];
+        for txt in self
+            .0
+            .txt_lookup(name)
+            .await
+            .context("lookup TXT entry")?
+            .into_iter()
+        {
+            for value in txt.iter() {
+                results.push(value.to_vec());
+            }
+        }
+        Ok(results)
+    }
+
     async fn ipv4_lookup(&self, domain: Domain) -> Result<Vec<Ipv4Addr>, Self::Error> {
         let name = fqdn_from_domain(domain)?;
         Ok(self

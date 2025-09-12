@@ -388,7 +388,7 @@ const fn is_valid_label(name: &[u8], start: usize, stop: usize) -> bool {
         let mut i = start;
         while i < stop {
             let c = name[i];
-            if !c.is_ascii_alphanumeric() && (c != b'-' || i == start) {
+            if !c.is_ascii_alphanumeric() && c != b'_' && (c != b'-' || i == start) {
                 return false;
             }
             i += 1;
@@ -452,6 +452,9 @@ mod tests {
     fn test_domain_parse_valid() {
         for str in [
             "example.com",
+            "_acme-challenge.example.com",
+            "_acme-challenge_.example.com",
+            "_acme_challenge_.example.com",
             "www.example.com",
             "a-b-c.com",
             "a-b-c.example.com",

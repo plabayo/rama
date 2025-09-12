@@ -261,7 +261,13 @@ impl<'a> Account<'a> {
     pub async fn orders(&self, ctx: Context) -> Result<server::OrdersList, ClientError> {
         let do_request = async || {
             let ctx = ctx.clone();
-            let response = self.post(ctx, &self.inner.orders, NO_PAYLOAD).await?;
+            let response = self
+                .post(
+                    ctx,
+                    self.inner.orders.as_deref().unwrap_or_default(),
+                    NO_PAYLOAD,
+                )
+                .await?;
 
             let orders = parse_response::<server::OrdersList>(response).await?;
             Ok(orders)
@@ -410,6 +416,12 @@ impl<'a> Order<'a> {
     /// This does two things behind the scene
     /// 1. Notify acme server that challenge is ready and should be verified by the server ([`Self::notify_challenge_ready`])
     /// 2. Polls the acme server until the server has verified this challenge and has updated its internal status ([`Self::wait_until_challenge_finished`])
+    ///
+    /// Note that this (1) has the pre-condition that your challenge is indeed ready:
+    /// - for http/tls this means your server is ready to serve the challenge to incoming  clients
+    /// - for dns this means your record exists and has the correct value
+    ///
+    /// An error (underlying http 403) is returned in case the challenge is not ready.
     pub async fn finish_challenge(
         &self,
         ctx: Context,

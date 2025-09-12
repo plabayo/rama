@@ -1,6 +1,6 @@
 use crate::DnsResolver;
+use rama_core::error::{ErrorContext as _, OpaqueError};
 use rama_net::address::{Domain, DomainTrie};
-use rama_utils::macros::error::static_str_error;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
@@ -25,6 +25,7 @@ impl<'de> Deserialize<'de> for DnsOverwrite {
         let map = HashMap::<Domain, Vec<IpAddr>>::deserialize(deserializer)?;
         Ok(Self(Arc::new(InMemoryDns {
             trie: map.into_iter().collect(),
+            ..Default::default()
         })))
     }
 }
@@ -67,6 +68,7 @@ impl Deref for DnsOverwrite {
 /// or wrapped in [`DnsOverwrite`] to indicate dns overwrites.
 pub struct InMemoryDns {
     trie: DomainTrie<Vec<IpAddr>>,
+    txt_trie: DomainTrie<Vec<Vec<u8>>>,
 }
 
 impl InMemoryDns {
@@ -74,6 +76,14 @@ impl InMemoryDns {
     #[must_use]
     pub fn new() -> Self {
         Default::default()
+    }
+
+    /// Inserts a TXT record to the [`InMemoryDns`].
+    ///
+    /// Existing mappings will be overwritten.
+    pub fn insert_txt_records(&mut self, name: &Domain, values: Vec<Vec<u8>>) -> &mut Self {
+        self.txt_trie.insert_domain(name.as_str(), values);
+        self
     }
 
     /// Inserts a domain to IP address mapping to the [`InMemoryDns`].
@@ -116,13 +126,15 @@ impl InMemoryDns {
     }
 }
 
-static_str_error! {
-    #[doc = "domain not mapped in memory"]
-    pub struct DomainNotMappedErr;
-}
-
 impl DnsResolver for InMemoryDns {
-    type Error = DomainNotMappedErr;
+    type Error = OpaqueError;
+
+    async fn txt_lookup(&self, domain: Domain) -> Result<Vec<Vec<u8>>, Self::Error> {
+        self.txt_trie
+            .match_exact(domain)
+            .cloned()
+            .context("no value found for given TXT entry (key)")
+    }
 
     async fn ipv4_lookup(&self, domain: Domain) -> Result<Vec<Ipv4Addr>, Self::Error> {
         self.trie
@@ -137,7 +149,7 @@ impl DnsResolver for InMemoryDns {
                     .collect();
                 (!ips.is_empty()).then_some(ips)
             })
-            .ok_or(DomainNotMappedErr)
+            .ok_or_else(|| OpaqueError::from_display("no A records found for domain in memory"))
     }
 
     async fn ipv6_lookup(&self, domain: Domain) -> Result<Vec<Ipv6Addr>, Self::Error> {
@@ -153,7 +165,7 @@ impl DnsResolver for InMemoryDns {
                     .collect();
                 (!ips.is_empty()).then_some(ips)
             })
-            .ok_or(DomainNotMappedErr)
+            .ok_or_else(|| OpaqueError::from_display("no AAAA records found for domain in memory"))
     }
 }
 
