@@ -200,7 +200,7 @@ impl AcmeProvider {
     #[must_use]
     pub fn as_directory_url(&self) -> &str {
         match self {
-            Self::LetsEncryptProduction => "https://acme-v01.api.letsencrypt.org/directory",
+            Self::LetsEncryptProduction => "https://acme-v02.api.letsencrypt.org/directory",
             Self::LetsEncryptStaging => "https://acme-staging-v02.api.letsencrypt.org/directory",
             Self::ZeroSslProduction => "https://acme.zerossl.com/v2/DV90",
             Self::GoogleTrustServicesProduction => "https://dv.acme-v02.api.pki.goog/directory",
