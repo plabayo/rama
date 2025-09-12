@@ -36,6 +36,7 @@ use std::{
 };
 use tokio::time::sleep;
 
+#[derive(Debug)]
 /// Acme client that will used for all acme operations
 pub struct AcmeClient {
     https_client: BoxService<Request, Response, OpaqueError>,

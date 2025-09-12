@@ -74,7 +74,7 @@ arc-swap = "1.7"
 async-compression = "0.4"
 asynk-strim = { version = "0.1" }
 atomic-waker = "1.1"
-aws-lc-rs = { version = "1.13", features = ["bindgen"] }
+aws-lc-rs = { version = "1.14", features = ["bindgen"] }
 aws-lc-sys = { version = "0.29", features = ["bindgen"] }
 base64 = "0.22"
 bitflags = "2.9"
@@ -209,7 +209,7 @@ socket2 = "0.6"
 spmc = "0.3"
 syn = "2.0"
 sync_wrapper = "1.0"
-tempfile = "3.21"
+tempfile = "3.22"
 terminal-prompt = "0.2"
 tokio = "1.47"
 tokio-graceful = "0.2"
@@ -293,6 +293,7 @@ full = [
     "compression",
     "rustls",
     "boring",
+    "acme",
     "cli",
     "tcp",
     "udp",
