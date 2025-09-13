@@ -128,6 +128,18 @@ impl AcmeClient {
                 .await
                 .context("create account request")?;
 
+            if !response.status().is_success() {
+                return Err(OpaqueError::from_display(format!(
+                    "unexpected http response with status {}: {}",
+                    response.status(),
+                    response
+                        .try_into_string()
+                        .await
+                        .unwrap_or_else(|err| format!("body collect err post-error: {err}"))
+                ))
+                .into());
+            }
+
             let location: String = response
                 .header_str(Location::name())
                 .context("get location header")?
