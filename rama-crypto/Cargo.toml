@@ -30,6 +30,7 @@ rustls-pki-types = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 x509-parser = { workspace = true }
+byteorder = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
