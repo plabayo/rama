@@ -1,4 +1,4 @@
-use super::open_file::{FileOpened, FileRequestExtent, OpenFileOutput};
+use super::open_file::{FileOpened, OpenFileOutput};
 use crate::headers::encoding::Encoding;
 use crate::{
     Body, HeaderValue, Request, Response, StatusCode, StreamingBody,
@@ -117,10 +117,7 @@ where
 }
 
 fn build_response(output: FileOpened) -> Response {
-    let (maybe_file, size) = match output.extent {
-        FileRequestExtent::Full(file, meta) => (Some(file), meta.len()),
-        FileRequestExtent::Head(meta) => (None, meta.len()),
-    };
+    let size = output.extent.file_size();
 
     let mut builder = Response::builder()
         .header(header::CONTENT_TYPE, output.mime_header_value)
@@ -149,11 +146,11 @@ fn build_response(output: FileOpened) -> Response {
                         )))
                         .unwrap()
                 } else {
-                    let body = if let Some(file) = maybe_file {
-                        let range_size = range.end() - range.start() + 1;
+                    let range_size = range.end() - range.start() + 1;
+                    let body = if let Some(reader) = output.extent.into_reader() {
                         Body::new(
                             AsyncReadBody::with_capacity_limited(
-                                file,
+                                reader,
                                 output.chunk_size,
                                 range_size,
                             )
@@ -198,8 +195,8 @@ fn build_response(output: FileOpened) -> Response {
 
         // Not a range request
         None => {
-            let body = if let Some(file) = maybe_file {
-                Body::new(AsyncReadBody::with_capacity(file, output.chunk_size).boxed())
+            let body = if let Some(reader) = output.extent.into_reader() {
+                Body::new(AsyncReadBody::with_capacity(reader, output.chunk_size).boxed())
             } else {
                 empty_body()
             };
