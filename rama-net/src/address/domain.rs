@@ -63,6 +63,12 @@ impl Domain {
         self.0.ends_with('.')
     }
 
+    /// Returns `true` if this domain is a wildcard domain.
+    #[must_use]
+    pub fn is_wildcard(&self) -> bool {
+        self.0.starts_with("*.")
+    }
+
     /// Returns `true` if this [`Domain`] is a parent of the other.
     ///
     /// Note that a [`Domain`] is a sub of itself.
@@ -405,6 +411,17 @@ const fn is_valid_name(name: &[u8]) -> bool {
         let mut non_empty_groups = 0;
         let mut i = 0;
         let mut offset = 0;
+
+        // wildcard special case, only needed once
+        if name[0] == b'*' {
+            if name.len() <= 2 || name[1] != b'.' {
+                return false;
+            }
+            offset = 2;
+            i = 2;
+            non_empty_groups = 1;
+        }
+
         while i < name.len() {
             let c = name[i];
             if c == b'.' {
@@ -456,6 +473,8 @@ mod tests {
             "_acme-challenge_.example.com",
             "_acme_challenge_.example.com",
             "www.example.com",
+            "*.com", // technically invalid, but valid for us *shrug*
+            "*.example.com",
             "a-b-c.com",
             "a-b-c.example.com",
             "a-b-c.example",
@@ -476,12 +495,27 @@ mod tests {
     }
 
     #[test]
+    fn test_domain_is_wildcard() {
+        assert!(!Domain::from_static("localhost").is_wildcard());
+        assert!(!Domain::from_static("example.com").is_wildcard());
+        assert!(!Domain::from_static("foo.example.com").is_wildcard());
+
+        assert!(Domain::from_static("*.com").is_wildcard());
+        assert!(Domain::from_static("*.example.com").is_wildcard());
+        assert!(Domain::from_static("*.foo.example.com").is_wildcard());
+    }
+
+    #[test]
     fn test_domain_parse_invalid() {
         for str in [
             "",
             ".",
             "..",
             "-",
+            "*",
+            ".*",
+            "*.",
+            ".*.",
             ".-",
             "-.",
             ".-.",
@@ -490,6 +524,11 @@ mod tests {
             ".-.-",
             "2001:db8:3333:4444:5555:6666:7777:8888",
             "-example.com",
+            "foo.*.com",
+            "*example.com",
+            "*foo",
+            "o*o",
+            "fo*",
             "local!host",
             "thislabeliswaytoolongforbeingeversomethingwewishtocareabout-example.com",
             "example-thislabeliswaytoolongforbeingeversomethingwewishtocareabout.com",
@@ -500,8 +539,11 @@ mod tests {
             "example dot com",
             "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz",
         ] {
-            assert!(Domain::try_from(str.to_owned()).is_err());
-            assert!(Domain::try_from(str.as_bytes().to_vec()).is_err());
+            assert!(Domain::try_from(str.to_owned()).is_err(), "input = '{str}'");
+            assert!(
+                Domain::try_from(str.as_bytes().to_vec()).is_err(),
+                "input = '{str}'"
+            );
         }
     }
 
