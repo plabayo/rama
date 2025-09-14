@@ -10,6 +10,8 @@ use crate::{
 use rama_core::bytes::{Buf, Bytes, BytesMut, buf::Chain};
 use rama_core::context::Extensions;
 use rama_core::error::BoxError;
+use rama_core::telemetry::tracing;
+use rama_error::OpaqueError;
 use rama_http_headers::{ContentDisposition, ContentType};
 use rama_http_types::InfiniteReader;
 use rama_utils::macros::all_the_tuples_no_last_special_case;
@@ -75,6 +77,14 @@ impl IntoResponse for () {
 impl IntoResponse for Infallible {
     fn into_response(self) -> Response {
         match self {}
+    }
+}
+
+impl IntoResponse for OpaqueError {
+    // do not expose error in response for security reasons
+    fn into_response(self) -> Response {
+        tracing::debug!("unexpected error in HTTP handler: {self}; return 500 status code");
+        StatusCode::INTERNAL_SERVER_ERROR.into_response()
     }
 }
 
