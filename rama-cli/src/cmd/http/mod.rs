@@ -48,8 +48,6 @@ use std::{io::IsTerminal, str::FromStr, sync::Arc, time::Duration};
 use terminal_prompt::Terminal;
 use tokio::sync::oneshot;
 
-use crate::error::ErrorWithExitCode;
-
 mod writer;
 
 #[derive(Args, Debug, Clone)]
@@ -329,17 +327,18 @@ async fn run_inner(guard: ShutdownGuard, cfg: CliCommandHttp) -> Result<(), BoxE
     if cfg.check_status {
         let status = response.status();
         if status.is_client_error() {
-            return Err(ErrorWithExitCode::new(
-                4,
-                OpaqueError::from_display(format!("client http error, status: {status}")),
-            )
-            .into());
+            // TODO: we need ability to inject data (eg OS exit code) into errors, some kind of extensions,
+            // because wrapping with an error and than trying `downcast_ref` does not work,
+            // it just falls through, and calling `source` first is unreliable...
+            return Err(
+                OpaqueError::from_display(format!("client http error, status: {status}"))
+                    .into_boxed(),
+            );
         } else if status.is_server_error() {
-            return Err(ErrorWithExitCode::new(
-                5,
-                OpaqueError::from_display(format!("server http error, status: {status}")),
-            )
-            .into());
+            return Err(
+                OpaqueError::from_display(format!("server http error, status: {status}"))
+                    .into_boxed(),
+            );
         }
     }
 
