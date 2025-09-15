@@ -185,6 +185,10 @@ It also allows you to run a `rama` proxy, configured to your needs.
 
 Learn more about the `rama` binary and how to install it at [/deploy/rama-cli.md](./deploy/rama-cli.md).
 
+> Learn more about the rama CLI code signing- and privacy policy at
+> <https://ramaproxy.org/book/deploy/rama-cli.html#code-signing>.
+> Applicable to MacOS and Windows platforms only.
+
 ## 🧪 | Experimental
 
 🦙 Rama (ラマ) is to be considered experimental software for the foreseeable future. In the meanwhile it is already used

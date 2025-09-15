@@ -198,6 +198,11 @@ It also allows you to run a `rama` proxy, configured to your needs.
 
 Learn more about the `rama` binary and how to install it at <https://ramaproxy.org/book/deploy/rama-cli>.
 
+> [!IMPORTANT]
+> Learn more about the rama CLI code signing- and privacy policy at
+> <https://ramaproxy.org/book/deploy/rama-cli.html#code-signing>.
+> Applicable to MacOS and Windows platforms only.
+
 ## 🧪 | Experimental
 
 🦙 Rama (ラマ) is to be considered experimental software for the foreseeable future. In the meanwhile it is already used
@@ -602,6 +607,10 @@ start a conversation with us by sending an email to [glen@plabayo.tech](mailto:g
 Rama (ラマ) is bundled with Http/Tls emulation data, gathered for all major platforms and browsers using real devices by [BrowserStack](https://browserstack.com). It does this automatically every day by using [our public Fingerprinting service](https://fp.ramaproxy.org) which is hosted together with a database on [fly.io](https://fly.io).
 
 We are grateful to both sponsors for sponsering us these cloud resources.
+
+#### Other Partners
+
+* [SignPath.io](https://about.signpath.io): provides authoritive code signing for the windows rama CLI;
 
 ### Professional Services
 
