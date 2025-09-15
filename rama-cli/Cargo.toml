@@ -19,7 +19,6 @@ path = "src/main.rs"
 base64 = { workspace = true }
 chrono = { workspace = true }
 clap = { workspace = true }
-deadpool-postgres = { workspace = true }
 hex = { workspace = true }
 itertools = { workspace = true }
 mimalloc = { workspace = true, optional = true }
@@ -39,6 +38,8 @@ serde_json = { workspace = true }
 terminal-prompt = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 tokio-postgres = { workspace = true, features = ["with-serde_json-1", "with-chrono-0_4"] }
+bb8 = { workspace = true }
+bb8-postgres = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter", "json"] }
 tui-logger = { workspace = true }
 
