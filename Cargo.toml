@@ -335,7 +335,6 @@ udp = ["net", "dep:rama-udp"]
 ws = ["dep:rama-ws", "http"]
 acme = ["dep:rama-tls-acme"]
 http = [
-    "net",
     "dep:rama-http",
     "net",
     "ua",
