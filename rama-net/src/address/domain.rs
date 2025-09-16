@@ -69,6 +69,17 @@ impl Domain {
         self.0.starts_with("*.")
     }
 
+    /// Returns the parent of this wildcard domain,
+    /// in case it is indeed a wildcast domain,
+    /// otherwise `None` is returned.
+    ///
+    /// Use [`Self::is_wildcard`] if you just wish to check
+    /// it is is a wildcard domain, as it is cheaper to use.
+    #[must_use]
+    pub fn as_wildcard_parent(&self) -> Option<Self> {
+        self.0.strip_prefix("*.").map(|s| Self(s.into()))
+    }
+
     /// Returns `true` if this [`Domain`] is a parent of the other.
     ///
     /// Note that a [`Domain`] is a sub of itself.
@@ -503,6 +514,38 @@ mod tests {
         assert!(Domain::from_static("*.com").is_wildcard());
         assert!(Domain::from_static("*.example.com").is_wildcard());
         assert!(Domain::from_static("*.foo.example.com").is_wildcard());
+    }
+
+    #[test]
+    fn test_domain_as_wildcard_parent() {
+        assert!(
+            Domain::from_static("localhost")
+                .as_wildcard_parent()
+                .is_none()
+        );
+        assert!(
+            Domain::from_static("example.com")
+                .as_wildcard_parent()
+                .is_none()
+        );
+        assert!(
+            Domain::from_static("foo.example.com")
+                .as_wildcard_parent()
+                .is_none()
+        );
+
+        assert_eq!(
+            Some(Domain::from_static("com")),
+            Domain::from_static("*.com").as_wildcard_parent()
+        );
+        assert_eq!(
+            Some(Domain::from_static("example.com")),
+            Domain::from_static("*.example.com").as_wildcard_parent()
+        );
+        assert_eq!(
+            Some(Domain::from_static("foo.example.com")),
+            Domain::from_static("*.foo.example.com").as_wildcard_parent()
+        );
     }
 
     #[test]
