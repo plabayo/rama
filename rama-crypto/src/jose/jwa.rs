@@ -79,8 +79,9 @@ impl TryFrom<JWA> for &'static EcdsaSigningAlgorithm {
 
     fn try_from(value: JWA) -> Result<Self, Self::Error> {
         match value {
-            JWA::ES256 | JWA::ES512 => Ok(&ECDSA_P256_SHA256_FIXED_SIGNING),
+            JWA::ES256 => Ok(&ECDSA_P256_SHA256_FIXED_SIGNING),
             JWA::ES384 => Ok(&ECDSA_P384_SHA384_FIXED_SIGNING),
+            JWA::ES512 => Ok(&ECDSA_P521_SHA512_FIXED_SIGNING),
             JWA::HS256 | JWA::HS384 | JWA::HS512 => Err(OpaqueError::from_display(
                 "Hmac cannot be converted to elliptic curve",
             )),
