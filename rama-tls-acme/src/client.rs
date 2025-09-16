@@ -130,7 +130,7 @@ impl AcmeClient {
             ctx,
             account_key,
             options,
-            CreateAccountMode::CreateOrLoadAccount,
+            CreateAccountMode::CreateOrLoad,
         )
         .await
     }
@@ -144,13 +144,8 @@ impl AcmeClient {
         options: CreateAccountOptions,
     ) -> Result<Account<'_>, ClientError> {
         let account_key = EcdsaKey::generate().expect("generate key for account");
-        self.create_or_load_account_inner(
-            ctx,
-            account_key,
-            options,
-            CreateAccountMode::CreateAccount,
-        )
-        .await
+        self.create_or_load_account_inner(ctx, account_key, options, CreateAccountMode::Create)
+            .await
     }
 
     /// Create a new acme account using the provided [`EcdsaKey`]
@@ -160,13 +155,8 @@ impl AcmeClient {
         account_key: EcdsaKey,
         options: CreateAccountOptions,
     ) -> Result<Account<'_>, ClientError> {
-        self.create_or_load_account_inner(
-            ctx,
-            account_key,
-            options,
-            CreateAccountMode::CreateAccount,
-        )
-        .await
+        self.create_or_load_account_inner(ctx, account_key, options, CreateAccountMode::Create)
+            .await
     }
 
     /// Load acme account which is associated with the given [`EcdsaKey`]
@@ -182,7 +172,7 @@ impl AcmeClient {
                 only_return_existing: Some(true),
                 ..CreateAccountOptions::default()
             },
-            CreateAccountMode::LoadAccount,
+            CreateAccountMode::Load,
         )
         .await
     }
@@ -207,7 +197,7 @@ impl AcmeClient {
                 .await
                 .context("create account request")?;
 
-            if mode == CreateAccountMode::CreateAccount && response.status() == 200 {
+            if mode == CreateAccountMode::Create && response.status() == 200 {
                 return Err(OpaqueError::from_display(
                     "Tried creating new account, but account already exists",
                 )
@@ -287,9 +277,9 @@ impl AcmeClient {
 
 #[derive(Debug, PartialEq, Eq)]
 enum CreateAccountMode {
-    CreateAccount,
-    LoadAccount,
-    CreateOrLoadAccount,
+    Create,
+    Load,
+    CreateOrLoad,
 }
 
 #[derive(Clone, Debug)]
@@ -785,7 +775,7 @@ async fn parse_response<T: serde::de::DeserializeOwned + Send + 'static>(
     let result = serde_json::from_slice::<T>(&bytes);
     match result {
         Ok(result) => Ok(result),
-        Err(_) => Err(bytes_into_error(parts, bytes).await.into()),
+        Err(_) => Err(bytes_into_error(parts, bytes).await),
     }
 }
 
@@ -799,19 +789,18 @@ async fn response_into_error(response: Response) -> ClientError {
 
 async fn bytes_into_error(response_parts: Parts, bytes: Bytes) -> ClientError {
     let problem = serde_json::from_slice::<server::Problem>(&bytes);
-    match problem {
-        Ok(problem) => problem.into(),
-        Err(_) => {
-            let body_str = bytes
-                .try_into_string()
-                .await
-                .unwrap_or_else(|err| format!("body collect err post-error: {err}"));
-            OpaqueError::from_display(format!(
-                "Unexpected problem response with status code {}: {}",
-                response_parts.status, body_str
-            ))
-            .into()
-        }
+    if let Ok(problem) = problem {
+        problem.into()
+    } else {
+        let body_str = bytes
+            .try_into_string()
+            .await
+            .unwrap_or_else(|err| format!("body collect err post-error: {err}"));
+        OpaqueError::from_display(format!(
+            "Unexpected problem response with status code {}: {}",
+            response_parts.status, body_str
+        ))
+        .into()
     }
 }
 
