@@ -1,3 +1,9 @@
+/// Alternative for [`From`] which can be implemented by external crates for external types
+///
+/// To implement this trait, use a crate local `CrateMarker` generic type
+/// More info: <https://ramaproxy.org/book/intro/patterns.html#working-around-the-orphan-rule-in-specific-cases>
+///
+/// Note: [`RamaFrom`] has a blacket implementation for types that implement [`From`]
 pub trait RamaFrom<T, CrateMarker = ()> {
     fn rama_from(value: T) -> Self;
 }
@@ -11,6 +17,13 @@ where
     }
 }
 
+/// Alternative for [`Into`] which can be implemented by external crates for external types
+///
+/// To implement this trait, use a crate local `CrateMarker` generic type
+/// More info: <https://ramaproxy.org/book/intro/patterns.html#working-around-the-orphan-rule-in-specific-cases>
+///
+/// Note: [`RamaInto`] has a blacket implementation for types that implement [`RamaFrom`] in
+/// the opposite direction, and as such also work for types that implement [`Into`]
 pub trait RamaInto<T, CrateMarker = ()>: Sized {
     fn rama_into(self) -> T;
 }
@@ -25,6 +38,12 @@ where
     }
 }
 
+/// Alternative for [`TryFrom`] which can be implemented by external crates for external types
+///
+/// To implement this trait, use a crate local `CrateMarker` generic type
+/// More info: <https://ramaproxy.org/book/intro/patterns.html#working-around-the-orphan-rule-in-specific-cases>
+///
+/// Note: [`RamaTryFrom`] has a blacket implementation for types that implement [`TryFrom`]
 pub trait RamaTryFrom<T, CrateMarker = ()>: Sized {
     type Error;
     fn rama_try_from(value: T) -> Result<Self, Self::Error>;
@@ -41,6 +60,13 @@ where
     }
 }
 
+/// Alternative for [`TryInto`] which can be implemented by external crates for external types
+///
+/// To implement this trait, use a crate local `CrateMarker` generic type
+/// More info: <https://ramaproxy.org/book/intro/patterns.html#working-around-the-orphan-rule-in-specific-cases>
+///
+/// Note: [`RamaTryInto`] has a blacket implementation for types that implement [`RamaTryFrom`] in
+/// the opposite direction, and as such also work for types that implement [`TryInto`]
 pub trait RamaTryInto<T, CrateMarker = ()>: Sized {
     type Error;
     fn rama_try_into(self) -> Result<T, Self::Error>;
@@ -55,44 +81,5 @@ where
     #[inline]
     fn rama_try_into(self) -> Result<U, U::Error> {
         U::rama_try_from(self)
-    }
-}
-
-mod tests {
-    use super::*;
-
-    struct Test;
-
-    impl From<bool> for Test {
-        fn from(value: bool) -> Self {
-            Self
-        }
-    }
-
-    #[test]
-    fn test() {
-        let x: Test = true.into();
-        let x: Test = true.rama_into();
-    }
-
-    struct Crate1;
-    struct Crate2;
-
-    struct Bla;
-
-    impl RamaFrom<bool, Crate1> for Bla {
-        fn rama_from(value: bool) -> Self {
-            todo!()
-        }
-    }
-
-    impl RamaFrom<bool, Crate2> for Bla {
-        fn rama_from(value: bool) -> Self {
-            todo!()
-        }
-    }
-
-    fn bla() {
-        let _x: Bla = RamaFrom::<_, Crate1>::rama_from(true);
     }
 }
