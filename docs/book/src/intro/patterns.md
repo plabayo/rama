@@ -1,4 +1,4 @@
-# Patterns used inside of rama
+# Patterns used inside rama
 
 ## Working around the orphan rule in specific cases
 Rama is composed of many smaller, more focused crates. Splitting a large monolithic crate into several smaller ones offers many advantages, such as improved modularity and reusability, but it also comes with some drawbacks. The most significant among them is the limitation imposed by Rust's orphan rule. This rule *dictates* that in order to implement a trait for a type, either the trait or the type must be defined in the current crate. It does this for one very valid reason: trait coherence, which means there should be only one implementation for a trait for a specific type. This is needed to prevent conflicting implementations, to prevent that external crates with overlapping implementations cause unexpected behaviour, or that some crates suddenly break after a patch or minor update... There have been lots of discussions online already about relaxing the orphan rule, but so far nothing really has happened.
