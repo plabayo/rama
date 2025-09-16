@@ -158,20 +158,6 @@ jobs:
       - name: Run tests
         run: cargo test --all-features --workspace
 
-  test-macos-beta:
-    needs: [check, check-msrv, check-all-features]
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{env.RUST_TOOLCHAIN_MSRV}}
-      - uses: Swatinem/rust-cache@v2
-        with:
-          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN_MSRV}}"
-      - name: Run tests
-        run: cargo test --all-features --workspace
-
   test-macos:
     needs: [check, check-msrv, check-all-features]
     runs-on: macos-latest
@@ -187,21 +173,6 @@ jobs:
         run: cargo test --all-features --workspace
 
   test-windows-msrv:
-    needs: [check, check-msrv, check-all-features]
-    runs-on: windows-latest
-    steps:
-      - uses: ilammy/setup-nasm@v1
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{env.RUST_TOOLCHAIN_MSRV}}
-      - uses: Swatinem/rust-cache@v2
-        with:
-          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN_MSRV}}"
-      - name: Run tests
-        run: cargo test --all-features --workspace
-
-  test-windows-beta:
     needs: [check, check-msrv, check-all-features]
     runs-on: windows-latest
     steps:
@@ -246,21 +217,6 @@ jobs:
       - name: Run tests
         run: cargo test --features=cli,compression,rustls --workspace -- --ignored
 
-  # test-ignored-beta:
-  #   needs: [check, check-msrv, check-all-features]
-  #   runs-on: ubuntu-latest
-  #   timeout-minutes: 90
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     - uses: dtolnay/rust-toolchain@master
-  #       with:
-  #         toolchain: ${{env.RUST_TOOLCHAIN_BETA}}
-  #     - uses: Swatinem/rust-cache@v2
-  #       with:
-  #         env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN_BETA}}"
-  #     - name: Run tests
-  #       run: cargo test --features=cli,compression,rustls --workspace -- --ignored
-
   test-ignored:
     needs: [check, check-msrv, check-all-features]
     runs-on: ubuntu-latest
@@ -277,21 +233,6 @@ jobs:
         run: cargo test --features=cli,compression,rustls --workspace -- --ignored
 
   test-ignored-macos-msrv:
-    needs: [check, check-msrv, check-all-features]
-    runs-on: macos-latest
-    timeout-minutes: 90
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{env.RUST_TOOLCHAIN_MSRV}}
-      - uses: Swatinem/rust-cache@v2
-        with:
-          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN_MSRV}}"
-      - name: Run tests
-        run: cargo test --features=cli,compression,rustls --workspace -- --ignored
-
-  test-ignored-macos-beta:
     needs: [check, check-msrv, check-all-features]
     runs-on: macos-latest
     timeout-minutes: 90
@@ -335,20 +276,6 @@ jobs:
       - name: Run doc tests
         run: cargo test --doc --all-features --workspace
 
-  test-examples-beta:
-    needs: [check, check-msrv, check-all-features]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{env.RUST_TOOLCHAIN_BETA}}
-      - uses: Swatinem/rust-cache@v2
-        with:
-          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN_BETA}}"
-      - name: Run doc tests
-        run: cargo test --all-features --examples --workspace
-
   test-examples-msrv:
     needs: [check, check-msrv, check-all-features]
     runs-on: ubuntu-latest
@@ -374,34 +301,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
-      - name: Run doc tests
-        run: cargo test --all-features --examples --workspace
-
-  test-examples-macos-beta:
-    needs: [check, check-msrv, check-all-features]
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{env.RUST_TOOLCHAIN_BETA}}
-      - uses: Swatinem/rust-cache@v2
-        with:
-          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN_BETA}}"
-      - name: Run doc tests
-        run: cargo test --all-features --examples --workspace
-
-  test-examples-macos-msrv:
-    needs: [check, check-msrv, check-all-features]
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{env.RUST_TOOLCHAIN_MSRV}}
-      - uses: Swatinem/rust-cache@v2
-        with:
-          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN_MSRV}}"
       - name: Run doc tests
         run: cargo test --all-features --examples --workspace
 
@@ -523,16 +422,11 @@ jobs:
       - test
       - test-all-features
       - test-examples
-      # - test-msrv
+      - test-msrv
       - test-beta
       - test-examples-msrv
-      # - test-examples-beta
       - test-ignored
       - test-ignored-msrv
-      # currently broken because warning output format
-      # is gonna change in next version (currently breaking)
-      # which is breaking the UI tests for paste...
-      # - test-ignored-beta
       - test-docs
       - cargo-hack
       - cargo-deny
