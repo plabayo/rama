@@ -9,6 +9,21 @@ on:
         description: "Release Tag"
         required: true
         type: string
+      build_linux:
+        description: "Build Linux"
+        required: true
+        type: boolean
+        default: true
+      build_macos:
+        description: "Build macOS"
+        required: true
+        type: boolean
+        default: true
+      build_windows:
+        description: "Build Windows"
+        required: true
+        type: boolean
+        default: true
 
 env:
   CARGO_TERM_COLOR: always
@@ -16,6 +31,7 @@ env:
 
 jobs:
   build-release-linux:
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.build_linux }}
     runs-on: ubuntu-latest
     env:
       RUST_BACKTRACE: full
@@ -76,6 +92,7 @@ jobs:
           tag_name: ${{ inputs.tag || github.ref_name }}
 
   build-release-macos:
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.build_macos }}
     runs-on: macos-latest
     env:
       RUST_BACKTRACE: full
@@ -135,6 +152,7 @@ jobs:
           tag_name: ${{ inputs.tag || github.ref_name }}
 
   build-release-windows:
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.build_windows }}
     runs-on: windows-latest
     env:
       RUST_BACKTRACE: full
@@ -172,7 +190,7 @@ jobs:
           api-token: "${{ secrets.SIGNPATH_API_TOKEN }}"
           organization-id: "177e81da-21f7-469e-823f-a924bcc9f474"
           project-slug: "rama"
-          signing-policy-slug: "test-signing"
+          signing-policy-slug: "release-signing"
           github-artifact-id: "${{ steps.upload-unsigned-artifact.outputs.artifact-id }}"
           wait-for-completion: true
           output-artifact-directory: "target/${{ matrix.target }}/release"
