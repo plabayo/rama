@@ -1,8 +1,8 @@
 use std::ops::Deref;
 
 use aws_lc_rs::signature::{
-    ECDSA_P256_SHA256_FIXED_SIGNING, ECDSA_P384_SHA384_FIXED_SIGNING, EcdsaSigningAlgorithm,
-    EcdsaVerificationAlgorithm,
+    ECDSA_P256_SHA256_FIXED_SIGNING, ECDSA_P384_SHA384_FIXED_SIGNING,
+    ECDSA_P521_SHA512_FIXED_SIGNING, EcdsaSigningAlgorithm, EcdsaVerificationAlgorithm,
 };
 use rama_core::error::OpaqueError;
 use serde::{Deserialize, Serialize};
@@ -98,5 +98,18 @@ impl TryFrom<JWA> for &'static EcdsaVerificationAlgorithm {
     fn try_from(value: JWA) -> Result<Self, Self::Error> {
         let signing_algo: &'static EcdsaSigningAlgorithm = value.try_into()?;
         Ok(signing_algo.deref())
+    }
+}
+
+impl TryFrom<&'static EcdsaSigningAlgorithm> for JWA {
+    type Error = OpaqueError;
+
+    fn try_from(value: &'static EcdsaSigningAlgorithm) -> Result<Self, Self::Error> {
+        match value {
+            alg if *alg == ECDSA_P256_SHA256_FIXED_SIGNING => Ok(JWA::ES256),
+            alg if *alg == ECDSA_P384_SHA384_FIXED_SIGNING => Ok(JWA::ES384),
+            alg if *alg == ECDSA_P521_SHA512_FIXED_SIGNING => Ok(JWA::ES512),
+            _ => Err(OpaqueError::from_display("cannot convert to jwa")),
+        }
     }
 }
