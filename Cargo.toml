@@ -336,7 +336,6 @@ acme = ["dep:rama-tls-acme"]
 http = [
     "net",
     "dep:rama-http",
-    "net",
     "ua",
     "rama-net?/http",
     "rama-tcp?/http",
@@ -372,6 +371,7 @@ opentelemetry = [
 [dependencies]
 base64 = { workspace = true, optional = true }
 bytes = { workspace = true, optional = true }
+clap = { workspace = true, optional = true }
 hex = { workspace = true, optional = true }
 pin-project-lite = { workspace = true }
 rama-core = { workspace = true }
@@ -486,7 +486,7 @@ harness = false
 
 [[example]]
 name = "acme_http_challenge"
-required-features = ["http-full", "boring", "acme"]
+required-features = ["http-full", "boring", "acme", "clap"]
 
 [[example]]
 name = "acme_tls_challenge_using_boring"
