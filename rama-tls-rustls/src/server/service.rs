@@ -1,9 +1,9 @@
-use crate::RamaInto;
 use crate::dep::rustls::server::Acceptor;
 use crate::dep::tokio_rustls::{LazyConfigAcceptor, server::TlsStream};
 use crate::types::SecureTransport;
 use rama_core::{
     Context, Service,
+    conversion::RamaInto,
     error::{BoxError, ErrorContext, ErrorExt, OpaqueError},
 };
 use rama_net::{
