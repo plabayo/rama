@@ -195,6 +195,12 @@ pub trait ExtensionsRef {
     fn extensions(&self) -> &Extensions;
 }
 
+impl ExtensionsRef for Extensions {
+    fn extensions(&self) -> &Extensions {
+        self
+    }
+}
+
 impl<T> ExtensionsRef for &T
 where
     T: ExtensionsRef,
@@ -236,6 +242,12 @@ pub trait ExtensionsMut: ExtensionsRef {
 
     fn transfer_extensions<T: ExtensionsMut>(&mut self, target: &mut T) {
         *target.extensions_mut() = std::mem::take(self.extensions_mut());
+    }
+}
+
+impl ExtensionsMut for Extensions {
+    fn extensions_mut(&mut self) -> &mut Extensions {
+        self
     }
 }
 
