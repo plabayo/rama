@@ -1,6 +1,5 @@
 use super::TlsAcceptorData;
 use crate::{
-    RamaTryInto,
     core::{
         ssl::{AlpnError, SslAcceptor, SslMethod, SslRef},
         tokio::SslStream,
@@ -12,6 +11,7 @@ use parking_lot::Mutex;
 use rama_core::telemetry::tracing::{debug, trace};
 use rama_core::{
     Context, Service,
+    conversion::RamaTryInto,
     error::{BoxError, ErrorContext, ErrorExt, OpaqueError},
 };
 use rama_net::{

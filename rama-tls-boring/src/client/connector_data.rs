@@ -1,4 +1,3 @@
-use crate::RamaTryInto;
 use itertools::Itertools;
 use rama_boring::{
     asn1::Asn1Time,
@@ -16,6 +15,7 @@ use rama_boring::{
 use rama_core::telemetry::tracing::{debug, trace};
 use rama_core::{
     bytes::Bytes,
+    conversion::RamaTryInto,
     error::{ErrorContext, ErrorExt, OpaqueError},
 };
 use rama_net::tls::{

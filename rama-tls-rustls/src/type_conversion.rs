@@ -1,4 +1,5 @@
-use crate::{RamaFrom, RamaTryFrom};
+use crate::RamaTlsRustlsCrateMarker;
+use rama_core::conversion::{RamaFrom, RamaTryFrom};
 use rama_core::error::{ErrorContext, OpaqueError};
 use rama_net::{
     address::{Domain, Host},
@@ -13,14 +14,14 @@ use std::net::IpAddr;
 macro_rules! enum_from_rustls {
     ($t:ty => $($name:ident),+$(,)?) => {
         $(
-            impl RamaFrom<rustls::$name> for rama_net::tls::$name {
+            impl RamaFrom<rustls::$name, RamaTlsRustlsCrateMarker> for rama_net::tls::$name {
                 fn rama_from(value: ::rustls::$name) -> Self {
                     let n: $t = value.into();
                     n.into()
                 }
             }
 
-            impl RamaFrom<rama_net::tls::$name> for rustls::$name {
+            impl RamaFrom<rama_net::tls::$name, RamaTlsRustlsCrateMarker> for rustls::$name {
                 fn rama_from(value: rama_net::tls::$name) -> Self {
                     let n: $t = value.into();
                     n.into()
@@ -32,7 +33,7 @@ macro_rules! enum_from_rustls {
 
 enum_from_rustls!(u16 => ProtocolVersion, CipherSuite, SignatureScheme);
 
-impl RamaTryFrom<ProtocolVersion> for &rustls::SupportedProtocolVersion {
+impl RamaTryFrom<ProtocolVersion, RamaTlsRustlsCrateMarker> for &rustls::SupportedProtocolVersion {
     type Error = ProtocolVersion;
 
     fn rama_try_from(value: ProtocolVersion) -> Result<Self, Self::Error> {
@@ -44,7 +45,7 @@ impl RamaTryFrom<ProtocolVersion> for &rustls::SupportedProtocolVersion {
     }
 }
 
-impl<'a> RamaTryFrom<rustls::pki_types::ServerName<'a>> for Host {
+impl<'a> RamaTryFrom<rustls::pki_types::ServerName<'a>, RamaTlsRustlsCrateMarker> for Host {
     type Error = OpaqueError;
 
     fn rama_try_from(value: rustls::pki_types::ServerName<'a>) -> Result<Self, Self::Error> {
@@ -59,7 +60,7 @@ impl<'a> RamaTryFrom<rustls::pki_types::ServerName<'a>> for Host {
         }
     }
 }
-impl RamaTryFrom<Host> for rustls::pki_types::ServerName<'_> {
+impl RamaTryFrom<Host, RamaTlsRustlsCrateMarker> for rustls::pki_types::ServerName<'_> {
     type Error = OpaqueError;
 
     fn rama_try_from(value: Host) -> Result<Self, Self::Error> {
@@ -73,7 +74,7 @@ impl RamaTryFrom<Host> for rustls::pki_types::ServerName<'_> {
     }
 }
 
-impl<'a> RamaTryFrom<&rustls::pki_types::ServerName<'a>> for Host {
+impl<'a> RamaTryFrom<&rustls::pki_types::ServerName<'a>, RamaTlsRustlsCrateMarker> for Host {
     type Error = OpaqueError;
 
     fn rama_try_from(value: &rustls::pki_types::ServerName<'a>) -> Result<Self, Self::Error> {
@@ -89,7 +90,7 @@ impl<'a> RamaTryFrom<&rustls::pki_types::ServerName<'a>> for Host {
     }
 }
 
-impl<'a> RamaTryFrom<&'a Host> for rustls::pki_types::ServerName<'a> {
+impl<'a> RamaTryFrom<&'a Host, RamaTlsRustlsCrateMarker> for rustls::pki_types::ServerName<'a> {
     type Error = OpaqueError;
 
     fn rama_try_from(value: &'a Host) -> Result<Self, Self::Error> {
@@ -103,13 +104,13 @@ impl<'a> RamaTryFrom<&'a Host> for rustls::pki_types::ServerName<'a> {
     }
 }
 
-impl RamaFrom<&pki_types::CertificateDer<'static>> for DataEncoding {
+impl RamaFrom<&pki_types::CertificateDer<'static>, RamaTlsRustlsCrateMarker> for DataEncoding {
     fn rama_from(value: &pki_types::CertificateDer<'static>) -> Self {
         Self::Der(value.as_ref().into())
     }
 }
 
-impl RamaFrom<&[pki_types::CertificateDer<'static>]> for DataEncoding {
+impl RamaFrom<&[pki_types::CertificateDer<'static>], RamaTlsRustlsCrateMarker> for DataEncoding {
     fn rama_from(value: &[pki_types::CertificateDer<'static>]) -> Self {
         Self::DerStack(
             value
@@ -120,7 +121,7 @@ impl RamaFrom<&[pki_types::CertificateDer<'static>]> for DataEncoding {
     }
 }
 
-impl<'a> RamaFrom<rustls::server::ClientHello<'a>> for ClientHello {
+impl<'a> RamaFrom<rustls::server::ClientHello<'a>, RamaTlsRustlsCrateMarker> for ClientHello {
     fn rama_from(value: rustls::server::ClientHello<'a>) -> Self {
         let cipher_suites = value
             .cipher_suites()

@@ -47,6 +47,8 @@ pub mod username;
 
 pub mod telemetry;
 
+pub mod conversion;
+
 pub mod bytes {
     //! Re-export of [bytes](https://docs.rs/bytes/latest/bytes/) crate.
     //!

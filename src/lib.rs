@@ -374,8 +374,8 @@
 
 #[doc(inline)]
 pub use ::rama_core::{
-    Context, Layer, Service, bytes, combinators, context, error, futures, graceful, inspect, layer,
-    matcher, rt, service, username,
+    Context, Layer, Service, bytes, combinators, context, conversion, error, futures, graceful,
+    inspect, layer, matcher, rt, service, username,
 };
 
 #[doc(inline)]

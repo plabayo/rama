@@ -27,6 +27,7 @@
     - [🧘 Zen of Services](./intro/service_zen.md)
     - [🔭 Telemetry](./intro/telemetry.md)
     - [👤 User Agent](./intro/user_agent.md)
+    - [🏗 Patterns used inside rama](./intro/patterns.md)
 
 # Intro to Proxies
 
