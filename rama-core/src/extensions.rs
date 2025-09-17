@@ -2,6 +2,7 @@ use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::fmt;
 use std::hash::{BuildHasherDefault, Hasher};
+use std::sync::Arc;
 
 type AnyMap = HashMap<TypeId, Box<dyn AnyClone + Send + Sync>, BuildHasherDefault<IdHasher>>;
 
@@ -187,6 +188,68 @@ impl Extensions {
 impl fmt::Debug for Extensions {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Extensions").finish()
+    }
+}
+
+pub trait ExtensionsRef {
+    fn extensions(&self) -> &Extensions;
+}
+
+impl<T> ExtensionsRef for &T
+where
+    T: ExtensionsRef,
+{
+    fn extensions(&self) -> &Extensions {
+        (**self).extensions()
+    }
+}
+
+impl<T> ExtensionsRef for &mut T
+where
+    T: ExtensionsRef,
+{
+    fn extensions(&self) -> &Extensions {
+        (**self).extensions()
+    }
+}
+
+impl<T> ExtensionsRef for Box<T>
+where
+    T: ExtensionsRef,
+{
+    fn extensions(&self) -> &Extensions {
+        (**self).extensions()
+    }
+}
+
+impl<T> ExtensionsRef for Arc<T>
+where
+    T: ExtensionsRef,
+{
+    fn extensions(&self) -> &Extensions {
+        (**self).extensions()
+    }
+}
+
+pub trait ExtensionsMut: ExtensionsRef {
+    fn extensions_mut(&mut self) -> &mut Extensions;
+}
+
+impl<T> ExtensionsMut for &mut T
+where
+    T: ExtensionsMut,
+{
+    fn extensions_mut(&mut self) -> &mut Extensions {
+        (**self).extensions_mut()
+    }
+}
+
+impl<T> ExtensionsMut for Box<T>
+where
+    T: ExtensionsMut,
+{
+    fn extensions_mut(&mut self) -> &mut Extensions {
+        (**self).extensions_mut()
     }
 }
 

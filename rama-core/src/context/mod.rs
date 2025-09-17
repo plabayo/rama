@@ -37,9 +37,8 @@ use crate::rt::Executor;
 use std::ops::{Deref, DerefMut};
 use tokio::task::JoinHandle;
 
-mod extensions;
 #[doc(inline)]
-pub use extensions::Extensions;
+pub use super::extensions::Extensions;
 
 #[derive(Debug, Clone)]
 /// Wrapper type that can be injected into the dynamic extensions of a "Response",
