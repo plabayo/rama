@@ -7,11 +7,13 @@ use rama::{
     net::{
         address::Authority,
         client::{ConnectorService, EstablishedClientConnection},
+        stream::Socket,
         tls::{
             DataEncoding,
             client::{NegotiatedTlsParameters, ServerVerifyMode},
         },
     },
+    tcp::TcpStream,
     tcp::client::{Request, service::TcpConnector},
     telemetry::tracing::{self, level_filters::LevelFilter},
     tls::boring::{
@@ -19,7 +21,6 @@ use rama::{
         core::x509::X509,
     },
 };
-use tokio::net::TcpStream;
 
 #[derive(Args, Debug, Clone)]
 /// rama tls support

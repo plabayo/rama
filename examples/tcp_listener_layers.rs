@@ -21,13 +21,13 @@
 use rama::{
     Layer,
     layer::{HijackLayer, TimeoutLayer, TraceErrLayer},
-    net::stream::{matcher::SocketMatcher, service::EchoService},
+    net::stream::{Socket, matcher::SocketMatcher, service::EchoService},
     service::service_fn,
+    tcp::TcpStream,
     tcp::server::TcpListener,
     telemetry::tracing::{self, level_filters::LevelFilter},
 };
 use std::{convert::Infallible, time::Duration};
-use tokio::net::TcpStream;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]

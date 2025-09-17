@@ -7,7 +7,7 @@ use rama_dns::{DnsResolver, GlobalDnsResolver};
 use rama_net::{
     address::ProxyAddress,
     client::EstablishedClientConnection,
-    stream::{ClientSocketInfo, SocketInfo},
+    stream::{ClientSocketInfo, Socket, SocketInfo},
     transport::{TransportProtocol, TryRefIntoTransportContext},
 };
 

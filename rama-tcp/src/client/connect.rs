@@ -42,11 +42,9 @@ pub trait TcpStreamConnector: Clone + Send + Sync + 'static {
 impl TcpStreamConnector for () {
     type Error = std::io::Error;
 
-    fn connect(
-        &self,
-        addr: SocketAddr,
-    ) -> impl Future<Output = Result<TcpStream, Self::Error>> + Send + '_ {
-        TcpStream::connect(addr)
+    async fn connect(&self, addr: SocketAddr) -> Result<TcpStream, Self::Error> {
+        let stream = tokio::net::TcpStream::connect(addr).await?;
+        Ok(stream.into())
     }
 }
 
@@ -126,8 +124,10 @@ fn tcp_connect_with_socket_opts(
     socket
         .set_nonblocking(true)
         .context("set socket non-blocking")?;
-    TcpStream::from_std(std::net::TcpStream::from(socket))
-        .context("create tokio tcp stream from created raw (tcp) socket")
+    let stream = tokio::net::TcpStream::from_std(std::net::TcpStream::from(socket))
+        .context("create tokio tcp stream from created raw (tcp) socket")?;
+
+    Ok(stream.into())
 }
 
 impl<ConnectFn, ConnectFnFut, ConnectFnErr> TcpStreamConnector for ConnectFn

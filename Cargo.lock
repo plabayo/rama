@@ -2850,6 +2850,7 @@ dependencies = [
 name = "rama-tcp"
 version = "0.3.0-alpha.4"
 dependencies = [
+ "pin-project-lite",
  "rama-core",
  "rama-dns",
  "rama-http-types",

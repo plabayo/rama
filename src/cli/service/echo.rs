@@ -32,6 +32,7 @@ use crate::{
     net::stream::{SocketInfo, layer::http::BodyLimitLayer},
     proxy::haproxy::server::HaProxyLayer,
     rt::Executor,
+    tcp::TcpStream,
     telemetry::tracing,
     ua::profile::UserAgentDatabase,
 };
@@ -60,7 +61,6 @@ use rama_ws::handshake::server::{WebSocketAcceptor, WebSocketEchoService, WebSoc
 use serde::Serialize;
 use serde_json::json;
 use std::{convert::Infallible, time::Duration};
-use tokio::net::TcpStream;
 
 #[cfg(all(feature = "rustls", not(feature = "boring")))]
 use crate::tls::rustls::server::{TlsAcceptorData, TlsAcceptorLayer};

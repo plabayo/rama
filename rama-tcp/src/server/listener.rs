@@ -7,6 +7,7 @@ use rama_core::rt::Executor;
 use rama_core::telemetry::tracing::{self, Instrument, trace_root_span};
 use rama_net::address::SocketAddress;
 use rama_net::socket::Interface;
+use rama_net::stream::Socket;
 use rama_net::stream::SocketInfo;
 use std::pin::pin;
 use std::sync::Arc;
@@ -257,7 +258,7 @@ impl TcpListener {
     #[inline]
     pub async fn accept(&self) -> std::io::Result<(TcpStream, SocketAddress)> {
         let (stream, addr) = self.inner.accept().await?;
-        Ok((stream, addr.into()))
+        Ok((stream.into(), addr.into()))
     }
 
     /// Serve connections from this listener with the given service.
@@ -279,6 +280,8 @@ impl TcpListener {
                     continue;
                 }
             };
+
+            let socket = TcpStream::new(socket);
 
             let service = service.clone();
             let mut ctx = ctx.clone();
@@ -331,6 +334,7 @@ impl TcpListener {
                 result = self.inner.accept() => {
                     match result {
                         Ok((socket, peer_addr)) => {
+                            let socket = TcpStream::new(socket);
                             let service = service.clone();
                             let mut ctx = ctx.clone();
 

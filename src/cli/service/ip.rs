@@ -22,11 +22,12 @@ use crate::{
     proxy::haproxy::server::HaProxyLayer,
     rt::Executor,
     stream::Stream,
+    tcp::TcpStream,
     telemetry::tracing,
 };
 use rama_http::service::web::response::IntoResponse;
 use std::{convert::Infallible, marker::PhantomData, time::Duration};
-use tokio::{io::AsyncWriteExt, net::TcpStream};
+use tokio::io::AsyncWriteExt;
 
 #[derive(Debug, Clone)]
 /// Builder that can be used to run your own ip [`Service`],
