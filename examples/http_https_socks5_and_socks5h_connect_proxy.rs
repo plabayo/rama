@@ -68,6 +68,7 @@ use rama::{
 
 #[cfg(all(feature = "rustls", not(feature = "boring")))]
 use rama::tls::rustls::server::{TlsAcceptorDataBuilder, TlsAcceptorLayer};
+use rama_core::extensions::ExtensionsRef;
 
 use std::{convert::Infallible, time::Duration};
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};

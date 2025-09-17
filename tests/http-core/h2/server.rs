@@ -1,6 +1,7 @@
 #![deny(warnings)]
 
 use h2_support::prelude::*;
+use rama::extensions::ExtensionsMut;
 use rama_core::{extensions::ExtensionsRef, futures::StreamExt};
 use tokio::io::AsyncWriteExt;
 

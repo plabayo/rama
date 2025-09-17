@@ -10,6 +10,7 @@ use crate::{
 use rama_core::bytes::{Buf, Bytes, BytesMut, buf::Chain};
 use rama_core::context::Extensions;
 use rama_core::error::BoxError;
+use rama_core::extensions::ExtensionsMut;
 use rama_core::telemetry::tracing;
 use rama_error::OpaqueError;
 use rama_http_headers::{ContentDisposition, ContentType};

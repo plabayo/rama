@@ -25,6 +25,7 @@ use rama::{
     tls::boring::{client::TlsConnectorDataBuilder, core::x509::X509},
     utils::{backoff::ExponentialBackoff, rng::HasherRng},
 };
+use rama_core::extensions::ExtensionsRef;
 use tokio_test::assert_err;
 
 use std::{str::FromStr, time::Duration};

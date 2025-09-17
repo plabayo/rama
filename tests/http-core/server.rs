@@ -15,6 +15,7 @@ use std::time::Duration;
 
 use futures_channel::oneshot;
 use rama::error::{BoxError, OpaqueError};
+use rama::extensions::ExtensionsMut;
 use rama::futures::future::{self, Either, FutureExt};
 use rama::http::body::util::{BodyExt, Empty, Full, StreamBody, combinators::BoxBody};
 use rama::http::core::h2::client::SendRequest;

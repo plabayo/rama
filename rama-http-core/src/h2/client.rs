@@ -139,6 +139,7 @@ use crate::h2::proto::{self, Error};
 use crate::h2::{FlowControl, PingPong, RecvStream, SendStream};
 
 use rama_core::bytes::{Buf, Bytes};
+use rama_core::extensions::ExtensionsMut;
 use rama_core::telemetry::tracing::{self, Instrument};
 use rama_http::proto::HeaderByteLength;
 use rama_http::proto::h2::frame::{EarlyFrame, EarlyFrameStreamContext};

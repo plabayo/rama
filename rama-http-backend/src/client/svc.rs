@@ -2,6 +2,7 @@ use rama_core::{
     Context, Service,
     context::{self, RequestContextExt},
     error::{BoxError, ErrorContext, OpaqueError},
+    extensions::ExtensionsMut,
     inspect::RequestInspector,
     telemetry::tracing,
 };

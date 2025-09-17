@@ -9,6 +9,7 @@ use std::pin::Pin;
 use std::thread;
 use std::time::Duration;
 
+use rama::extensions::ExtensionsMut;
 use rama::http::body::util::{BodyExt, StreamBody};
 use rama::http::core::body::Frame;
 use rama::http::header::{HeaderMap, HeaderName, HeaderValue};
@@ -1488,6 +1489,7 @@ mod conn {
 
     use futures_channel::{mpsc, oneshot};
     use rama::bytes::{Buf, Bytes};
+    use rama::extensions::ExtensionsRef;
     use rama::futures::future::{self, FutureExt, TryFutureExt, poll_fn};
     use rama_http::StreamingBody;
     use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _, ReadBuf};

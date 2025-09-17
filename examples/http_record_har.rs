@@ -86,6 +86,7 @@ use rama::{
         profile::UserAgentDatabase,
     },
 };
+use rama_core::extensions::ExtensionsRef;
 
 use std::{
     convert::Infallible,
