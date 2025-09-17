@@ -1,7 +1,7 @@
 #![deny(warnings)]
 
 use h2_support::prelude::*;
-use rama_core::futures::StreamExt;
+use rama_core::{extensions::ExtensionsRef, futures::StreamExt};
 use tokio::io::AsyncWriteExt;
 
 const SETTINGS: &[u8] = &[0, 0, 0, 4, 0, 0, 0, 0, 0];

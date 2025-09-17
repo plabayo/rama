@@ -11,6 +11,7 @@ use crate::response::Parts as RespParts;
 use crate::service::web::extract::Query;
 
 use rama_core::Context;
+use rama_core::extensions::ExtensionsMut;
 use rama_core::telemetry::tracing;
 use rama_error::{ErrorContext, OpaqueError};
 use rama_http_headers::{ContentType, Cookie as RamaCookie, HeaderMapExt, Location};

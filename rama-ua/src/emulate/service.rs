@@ -3,6 +3,7 @@ use std::{borrow::Cow, fmt};
 use rama_core::{
     Context, Service,
     error::{BoxError, ErrorContext, OpaqueError},
+    extensions::{ExtensionsMut, ExtensionsRef},
     telemetry::tracing,
 };
 use rama_http_headers::{ClientHint, all_client_hints};

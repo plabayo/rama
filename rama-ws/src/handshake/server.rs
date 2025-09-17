@@ -9,6 +9,7 @@ use rama_core::{
     Context, Service,
     context::Extensions,
     error::{ErrorContext, OpaqueError},
+    extensions::ExtensionsRef,
     futures::{StreamExt, TryStreamExt},
     matcher::Matcher,
     telemetry::tracing::{self, Instrument},

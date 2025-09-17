@@ -2,6 +2,7 @@ use super::{HttpClientService, svc::SendRequest};
 use rama_core::{
     Context, Layer, Service,
     error::{BoxError, OpaqueError},
+    extensions::ExtensionsRef,
     inspect::RequestInspector,
     stream::Stream,
 };

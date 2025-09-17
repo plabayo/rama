@@ -4,7 +4,7 @@ use std::{
 };
 
 use crate::header::AsHeaderName;
-use rama_core::context::Extensions;
+use rama_core::{context::Extensions, extensions::ExtensionsRef};
 use serde::{Deserialize, Serialize, de::Error as _, ser::Error as _};
 
 use super::{

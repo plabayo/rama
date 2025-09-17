@@ -7,6 +7,7 @@ use crate::{
         header::{ACCEPT, CONTENT_LENGTH, CONTENT_TYPE, Entry, HeaderValue},
     },
 };
+use rama_core::extensions::ExtensionsMut;
 use rama_http::proto::h1::{Http1HeaderName, headers::original::OriginalHttp1Headers};
 use rama_utils::macros::match_ignore_ascii_case_str;
 use serde_json::Value;

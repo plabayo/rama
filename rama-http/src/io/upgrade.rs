@@ -281,6 +281,7 @@ impl Pending {
 }
 
 mod sealed {
+    use rama_core::extensions::ExtensionsMut;
     use rama_http_types::{Request, Response};
 
     use super::OnUpgrade;

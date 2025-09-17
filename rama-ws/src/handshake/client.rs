@@ -5,6 +5,7 @@ use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 
 use rama_core::error::{BoxError, ErrorContext, OpaqueError};
+use rama_core::extensions::ExtensionsMut;
 use rama_core::telemetry::tracing;
 use rama_core::{Context, Service};
 use rama_http::conn::TargetHttpVersion;
