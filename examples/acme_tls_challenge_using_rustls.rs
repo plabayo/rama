@@ -224,7 +224,6 @@ async fn main() {
     tracing::info!(?cert, "received certificiate");
     challenge_server_handle.abort();
 
-    // TODO once tls has been refactored this should be much easier to convert
     let cert_chain = cert
         .into_iter()
         .map(|pem| CertificateDer::from(pem.contents))

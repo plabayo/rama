@@ -243,17 +243,8 @@ async fn main() {
     tracing::info!(?cert, "received certificiate");
     challenge_server_handle.abort();
 
-    // TODO once tls has been refactored this should be much easier to convert
-    let der_stack: Vec<Vec<u8>> = cert
-        .into_iter()
-        .map(|pem| {
-            let parsed = pem.parse_x509().expect("parse pem into x509");
-            parsed.as_raw().to_vec()
-        })
-        .collect();
-
     let server_auth = ServerAuthData {
-        cert_chain: DataEncoding::DerStack(der_stack),
+        cert_chain: DataEncoding::DerStack(cert.into_iter().map(|pem| pem.contents).collect()),
         private_key: DataEncoding::Der(key_pair.serialize_der()),
         ocsp: None,
     };

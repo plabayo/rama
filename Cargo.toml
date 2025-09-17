@@ -486,7 +486,7 @@ harness = false
 
 [[example]]
 name = "acme_http_challenge"
-required-features = ["http-full", "boring", "acme", "clap"]
+required-features = ["http-full", "boring", "acme"]
 
 [[example]]
 name = "acme_tls_challenge_using_boring"
