@@ -2464,7 +2464,6 @@ version = "0.3.0-alpha.4"
 dependencies = [
  "base64",
  "bytes",
- "clap",
  "derive_more",
  "divan",
  "escargot",
@@ -2782,7 +2781,6 @@ dependencies = [
  "const_format",
  "fnv",
  "futures",
- "futures-util",
  "hex",
  "http",
  "http-body",

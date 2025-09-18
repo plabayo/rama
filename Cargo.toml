@@ -371,7 +371,6 @@ opentelemetry = [
 [dependencies]
 base64 = { workspace = true, optional = true }
 bytes = { workspace = true, optional = true }
-clap = { workspace = true, optional = true }
 hex = { workspace = true, optional = true }
 pin-project-lite = { workspace = true }
 rama-core = { workspace = true }

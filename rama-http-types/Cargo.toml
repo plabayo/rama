@@ -24,7 +24,6 @@ default = []
 bytes = { workspace = true }
 const_format = { workspace = true }
 fnv = { workspace = true }
-futures-util = { workspace = true }
 http = { workspace = true }
 http-body = { workspace = true }
 http-body-util = { workspace = true }
