@@ -202,21 +202,6 @@ jobs:
       - name: Run tests
         run: cargo test --all-features --workspace
 
-  test-ignored-msrv:
-    needs: [check, check-msrv, check-all-features]
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{env.RUST_TOOLCHAIN_MSRV}}
-      - uses: Swatinem/rust-cache@v2
-        with:
-          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN_MSRV}}"
-      - name: Run tests
-        run: cargo test --features=cli,compression,rustls --workspace -- --ignored
-
   test-ignored:
     needs: [check, check-msrv, check-all-features]
     runs-on: ubuntu-latest
@@ -426,7 +411,6 @@ jobs:
       - test-beta
       - test-examples-msrv
       - test-ignored
-      - test-ignored-msrv
       - test-docs
       - cargo-hack
       - cargo-deny
