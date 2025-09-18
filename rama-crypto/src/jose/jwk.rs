@@ -117,7 +117,8 @@ impl JWK {
     ///
     /// Warning: make sure to specify the correct algorithm.
     /// If `https://github.com/aws/aws-lc-rs/pull/834` gets merged this won't be needed anymore
-    fn new_from_escdsa_keypair(key: &EcdsaKeyPair, alg: JWA) -> Result<Self, OpaqueError> {
+    fn new_from_escdsa_keypair(key: &EcdsaKeyPair) -> Result<Self, OpaqueError> {
+        let alg = JWA::try_from(key.algorithm())?;
         let curve = alg.try_into()?;
         // 0x04 prefix + x + y
         let pub_key = key.public_key().as_ref();
@@ -182,6 +183,7 @@ impl JWK {
     }
 }
 
+#[derive(Debug)]
 /// [`EcdsaKey`] which is used to identify and authenticate our requests
 ///
 /// This contains the private and public key we will be using for JWS
@@ -213,8 +215,8 @@ impl EcdsaKey {
 
     /// Generate a new [`EcdsaKey`] from the given pkcs8 der
     pub fn from_pkcs8_der(
-        pkcs8_der: &[u8],
         alg: JWA,
+        pkcs8_der: &[u8],
         rng: SystemRandom,
     ) -> Result<Self, OpaqueError> {
         let ec_alg: &'static EcdsaSigningAlgorithm = alg.try_into()?;
@@ -225,19 +227,19 @@ impl EcdsaKey {
     }
 
     /// Create pkcs8 der for the current [`EcdsaKeyPair`]
-    pub fn pkcs8_der(&self) -> Result<(JWA, Document), OpaqueError> {
+    pub fn pkcs8_der(&self) -> Result<Document, OpaqueError> {
         let doc = self
             .inner
             .to_pkcs8v1()
             .context("create pkcs8 der from keypair")?;
-        Ok((self.alg, doc))
+        Ok(doc)
     }
 
     /// Create a [`JWK`] for this [`EcdsaKey`]
     #[must_use]
     pub fn create_jwk(&self) -> JWK {
         // `expect` because `new_for_escdsa_keypair`` can only fail if curve is not elliptic but we already check that in `new`
-        JWK::new_from_escdsa_keypair(&self.inner, self.alg).expect("create JWK from escdsa keypair")
+        JWK::new_from_escdsa_keypair(&self.inner).expect("create JWK from escdsa keypair")
     }
 
     #[must_use]
@@ -316,9 +318,10 @@ mod tests {
     #[test]
     fn can_generate_and_reuse_keys() {
         let key = EcdsaKey::generate().unwrap();
-        let stored = key.pkcs8_der().unwrap();
+        let alg = key.alg();
+        let der = key.pkcs8_der().unwrap();
         let recreated_key =
-            EcdsaKey::from_pkcs8_der(stored.1.as_ref(), stored.0, SystemRandom::new()).unwrap();
+            EcdsaKey::from_pkcs8_der(alg, der.as_ref(), SystemRandom::new()).unwrap();
 
         assert_eq!(key.create_jwk(), recreated_key.create_jwk())
     }
