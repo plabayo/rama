@@ -38,6 +38,7 @@ members = [
     "rama-macros",
     "rama-macros/tests/macros",
     "rama-net",
+    "rama-pac",
     "rama-proxy",
     "rama-socks5",
     "rama-tcp",
