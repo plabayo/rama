@@ -64,7 +64,7 @@ async fn api_json_events_endpoint() -> impl IntoResponse {
                 }
 
                 if i % 3 == 0 {
-                    let _ = buffer.push(b'\n');
+                    buffer.push(b'\n');
                     if let Err(err) = serde_json::to_writer(
                         &mut buffer,
                         &OrderEvent {

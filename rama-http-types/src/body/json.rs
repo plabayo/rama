@@ -120,17 +120,15 @@ where
             }
 
             // try to fetch the next chunk
-            let next_chunk = loop {
-                match ready!(this.stream.as_mut().poll_next(cx)) {
-                    Some(Ok(chunk)) => break chunk,
-                    Some(Err(err)) => {
-                        self.finish();
-                        return Poll::Ready(Some(Err(err)));
-                    }
-                    None => {
-                        self.finish();
-                        return Poll::Ready(None);
-                    }
+            let next_chunk = match ready!(this.stream.as_mut().poll_next(cx)) {
+                Some(Ok(chunk)) => chunk,
+                Some(Err(err)) => {
+                    self.finish();
+                    return Poll::Ready(Some(Err(err)));
+                }
+                None => {
+                    self.finish();
+                    return Poll::Ready(None);
                 }
             };
 
