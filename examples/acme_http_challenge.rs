@@ -236,7 +236,7 @@ async fn main() {
         .expect("finalize order");
 
     let cert = order
-        .download_certificate(Context::default())
+        .download_certificate_as_pem_stack(Context::default())
         .await
         .expect("download certificate");
 
