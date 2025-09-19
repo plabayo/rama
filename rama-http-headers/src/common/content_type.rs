@@ -49,6 +49,12 @@ impl ContentType {
         Self(mime::APPLICATION_JSON)
     }
 
+    #[inline]
+    #[must_use]
+    pub fn ndjson() -> Self {
+        Self(Mime::from_str("application/x-ndjson").unwrap())
+    }
+
     /// A constructor to easily create a `Content-Type: text/plain` header.
     #[inline]
     #[must_use]
@@ -164,7 +170,7 @@ impl ContentType {
     #[inline]
     #[must_use]
     pub fn jose_json() -> Self {
-        Self(mime::Mime::from_str("application/jose+json").unwrap())
+        Self(Mime::from_str("application/jose+json").unwrap())
     }
 
     /// Reference to the internal [`Mime`].
