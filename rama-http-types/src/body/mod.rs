@@ -35,8 +35,7 @@ pub mod sse;
 mod infinite;
 pub use infinite::InfiniteReader;
 
-mod json;
-pub use json::JsonStream;
+pub mod json;
 
 // Implementations copied over from http-body but addapted to work with our Requests/Response types
 
@@ -174,9 +173,23 @@ impl Body {
     ///
     /// Stream of json objects, each object separated by a newline (`\n`).
     #[must_use]
-    pub fn into_json_stream<T: DeserializeOwned>(self) -> JsonStream<T, BodyDataStream> {
+    pub fn into_json_stream<T: DeserializeOwned>(
+        self,
+    ) -> self::json::JsonStream<T, BodyDataStream> {
         let stream = self.into_data_stream();
-        JsonStream::new(stream)
+        self::json::JsonStream::new(stream)
+    }
+
+    /// Convert the body into a [`JsonStream`].
+    ///
+    /// Stream of json objects, each object separated by a newline (`\n`).
+    #[must_use]
+    pub fn into_json_stream_with_config<T: DeserializeOwned>(
+        self,
+        cfg: self::json::ParseConfig,
+    ) -> self::json::JsonStream<T, BodyDataStream> {
+        let stream = self.into_data_stream();
+        self::json::JsonStream::new_with_config(stream, cfg)
     }
 
     /// Convert the body into a [`Stream`] of [`sse::Event`]s with optional string data.

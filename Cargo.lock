@@ -2786,7 +2786,6 @@ dependencies = [
  "bytes",
  "const_format",
  "fnv",
- "futures",
  "hex",
  "http",
  "http-body",

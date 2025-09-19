@@ -47,7 +47,6 @@ tokio = { workspace = true, features = ["macros", "io-std"] }
 tokio-util = { workspace = true, features = ["io"] }
 
 [dev-dependencies]
-futures = { workspace = true }
 hex = { workspace = true }
 quickcheck = { workspace = true }
 rand = { workspace = true }
