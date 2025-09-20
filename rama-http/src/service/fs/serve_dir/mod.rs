@@ -21,6 +21,7 @@ mod open_file;
 #[cfg(test)]
 mod tests;
 
+/// Source of directory content - either filesystem or embedded.
 #[derive(Clone, Debug)]
 enum DirSource {
     Filesystem(PathBuf),
@@ -66,11 +67,13 @@ impl ServeDir<DefaultServeDirFallback> {
         Self::new_with_base(DirSource::Filesystem(base))
     }
 
+    /// Create a new [`ServeDir`] that serves files from embedded content.
     #[must_use]
     pub fn new_embedded(path: Dir<'static>) -> Self {
         Self::new_with_base(DirSource::Embedded(path))
     }
 
+    /// Create a new [`ServeDir`] with the specified directory source and default settings.
     fn new_with_base(base: DirSource) -> Self {
         Self {
             base,
@@ -84,6 +87,7 @@ impl ServeDir<DefaultServeDirFallback> {
         }
     }
 
+    /// Create a new [`ServeDir`] configured to serve a single file.
     pub(crate) fn new_single_file<P>(path: P, mime: HeaderValue) -> Self
     where
         P: AsRef<Path>,
@@ -499,6 +503,8 @@ enum ServeVariant {
 }
 
 impl ServeVariant {
+    /// Build and validate the file path based on the serve variant and requested path.
+    /// Returns None if the path is invalid or unsafe.
     fn build_and_validate_path(&self, source: &DirSource, requested_path: &str) -> Option<PathBuf> {
         match self {
             Self::Directory { serve_mode: _ } => {

@@ -22,6 +22,7 @@ use std::{
 use tokio::io::AsyncRead;
 use tokio::{fs::File, io::AsyncSeekExt};
 
+/// Represents the outcome of attempting to open a file for serving.
 pub(super) enum OpenFileOutput {
     FileOpened(Box<FileOpened>),
     Redirect { location: HeaderValue },
@@ -34,6 +35,7 @@ pub(super) enum OpenFileOutput {
 }
 
 impl OpenFileOutput {
+    /// Create a new FileOpened variant with the given parameters.
     pub(super) fn new_file_opened(
         extent: FileRequestExtent,
         chunk_size: usize,
@@ -53,6 +55,7 @@ impl OpenFileOutput {
     }
 }
 
+/// Contains the data for a successfully opened file ready for serving.
 pub(super) struct FileOpened {
     pub(super) extent: FileRequestExtent,
     pub(super) chunk_size: usize,
@@ -62,6 +65,7 @@ pub(super) struct FileOpened {
     pub(super) last_modified: Option<LastModified>,
 }
 
+/// Represents different ways a file can be accessed for serving.
 pub(super) enum FileRequestExtent {
     Full(File, Metadata),
     Head(Metadata),
@@ -70,6 +74,7 @@ pub(super) enum FileRequestExtent {
 }
 
 impl FileRequestExtent {
+    /// Convert the file extent into an async reader if possible.
     pub(super) fn into_reader(self) -> Option<impl AsyncRead + Send + Sync + Unpin> {
         match self {
             Self::Head(_) | Self::EmbeddedHead(_) => None,
@@ -87,6 +92,8 @@ impl FileRequestExtent {
     }
 }
 
+/// Open a file for serving, handling both filesystem and embedded sources.
+/// Supports precompressed variants, range requests, and conditional headers.
 pub(super) async fn open_file(
     variant: ServeVariant,
     mut path_to_file: PathBuf,
@@ -240,6 +247,7 @@ pub(super) async fn open_file(
     }
 }
 
+/// Check if an IO error indicates an invalid filename.
 fn is_invalid_filename_error(err: &io::Error) -> bool {
     // Only applies to NULL bytes
     if err.kind() == ErrorKind::InvalidInput {
@@ -261,6 +269,7 @@ fn is_invalid_filename_error(err: &io::Error) -> bool {
 }
 
 // Common MIME type guessing logic
+/// Guess the MIME type from a file path extension.
 fn guess_mime_type(path: &Path) -> HeaderValue {
     mime_guess::from_path(path)
         .first_raw()
@@ -268,6 +277,8 @@ fn guess_mime_type(path: &Path) -> HeaderValue {
         .unwrap_or_else(|| HeaderValue::from_str(mime::APPLICATION_OCTET_STREAM.as_ref()).unwrap())
 }
 
+/// Check conditional request headers (If-Modified-Since, If-Unmodified-Since)
+/// and return appropriate response if conditions are not met.
 fn check_modified_headers(
     modified: Option<&LastModified>,
     req: &Request,
@@ -309,6 +320,8 @@ fn check_modified_headers(
 
 // Returns the preferred_encoding encoding and modifies the path extension
 // to the corresponding file extension for the encoding.
+/// Determine the preferred encoding from negotiated encodings and modify the path
+/// to include the appropriate file extension for the encoding.
 fn preferred_encoding(
     path: &mut PathBuf,
     negotiated_encoding: &[QualityValue<Encoding>],
@@ -337,6 +350,8 @@ fn preferred_encoding(
 // Attempts to open the file with any of the possible negotiated_encodings in the
 // preferred order. If none of the negotiated_encodings have a corresponding precompressed
 // file the uncompressed file is used as a fallback.
+/// Attempt to open a file with any of the negotiated encodings in preferred order.
+/// Falls back to uncompressed file if no precompressed variants are found.
 async fn open_file_with_fallback(
     mut path: PathBuf,
     mut negotiated_encoding: Vec<QualityValue<Encoding>>,
@@ -359,6 +374,8 @@ async fn open_file_with_fallback(
     Ok((file, encoding))
 }
 
+/// Attempt to open an embedded file with any of the negotiated encodings.
+/// Falls back to uncompressed file if no precompressed variants are found.
 fn open_embedded_file_with_fallback(
     base: &Dir<'_>,
     mut path: PathBuf,
@@ -391,6 +408,7 @@ fn open_embedded_file_with_fallback(
 // Attempts to get the file metadata with any of the possible negotiated_encodings in the
 // preferred order. If none of the negotiated_encodings have a corresponding precompressed
 // file the uncompressed file is used as a fallback.
+/// Get file metadata with fallback for different encodings.
 async fn file_metadata_with_fallback(
     mut path: PathBuf,
     mut negotiated_encoding: Vec<QualityValue<Encoding>>,
@@ -413,6 +431,8 @@ async fn file_metadata_with_fallback(
     Ok((file, encoding))
 }
 
+/// Handle directory requests based on the configured directory serve mode.
+/// Can append index.html, return 404, or generate HTML file listing.
 async fn maybe_serve_directory(
     path_to_file: &mut PathBuf,
     uri: &Uri,
@@ -506,6 +526,7 @@ async fn maybe_serve_directory(
     }
 }
 
+/// Human-readable file size representation.
 enum HumanSize {
     None,
     Bytes(u64),
@@ -528,6 +549,7 @@ impl fmt::Display for HumanSize {
     }
 }
 
+/// Format file size in human-readable units (B, KB, MB, GB, TB).
 fn format_size(bytes: u64) -> HumanSize {
     const MAX_UNITS: usize = 5;
 
@@ -547,6 +569,7 @@ fn format_size(bytes: u64) -> HumanSize {
     }
 }
 
+/// Get an appropriate emoji icon for a file based on its MIME type.
 fn emoji_for_mime(mime: Option<&mime::Mime>, is_dir: bool) -> &'static str {
     if is_dir {
         return "📁";
@@ -567,6 +590,7 @@ fn emoji_for_mime(mime: Option<&mime::Mime>, is_dir: bool) -> &'static str {
     }
 }
 
+/// Parse and validate HTTP Range header.
 fn try_parse_range(
     maybe_range_ref: Option<&str>,
     file_size: u64,
@@ -591,6 +615,7 @@ async fn is_dir_embedded(path_to_file: &Path, base: &Dir<'_>) -> bool {
     base.get_dir(path_to_file).is_some()
 }
 
+/// Append a trailing slash to a URI path for directory redirection.
 fn append_slash_on_path(uri: Uri) -> Result<Uri, OpenFileOutput> {
     let rama_http_types::uri::Parts {
         scheme,
@@ -625,6 +650,7 @@ fn append_slash_on_path(uri: Uri) -> Result<Uri, OpenFileOutput> {
     })
 }
 
+/// Represents a directory entry for HTML file listing.
 struct DirEntry {
     name: String,
     is_dir: bool,
@@ -643,6 +669,7 @@ impl DirEntry {
     }
 }
 
+/// Generate HTML page for directory listing with file details and navigation.
 fn generate_directory_html(entries: Vec<DirEntry>, uri: &Uri) -> String {
     let mut rows = vec![];
 

@@ -11,6 +11,8 @@ use rama_core::bytes::Bytes;
 use rama_core::{Context, Service, error::BoxError};
 use std::{convert::Infallible, io};
 
+/// Consume the result of opening a file and create an appropriate HTTP response.
+/// Handles various file opening outcomes including success, redirection, HTML listing, and errors.
 pub(super) async fn consume_open_file_result<ReqBody, ResBody, F>(
     open_file_result: Result<OpenFileOutput, std::io::Error>,
     fallback_and_request: Option<(&F, Context, Request<ReqBody>)>,
@@ -95,6 +97,7 @@ pub(super) fn not_found() -> Response {
     response_with_status(StatusCode::NOT_FOUND)
 }
 
+/// Serve a request using the fallback service and convert the response body.
 pub(super) async fn serve_fallback<F, B, FResBody>(
     fallback: &F,
     ctx: Context,
@@ -116,6 +119,8 @@ where
         .map(Body::new))
 }
 
+/// Build an HTTP response from a successfully opened file.
+/// Handles range requests, content encoding, and appropriate headers.
 fn build_response(output: FileOpened) -> Response {
     let size = output.extent.file_size();
 
