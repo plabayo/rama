@@ -1,5 +1,6 @@
 use crate::{
     Context,
+    extensions::ExtensionsRef,
     matcher::{Extensions, Matcher},
 };
 
@@ -44,12 +45,13 @@ where
 
 impl<Request, P, T> Matcher<Request> for ExtensionMatcher<P, T>
 where
-    Request: Send + 'static,
+    Request: Send + ExtensionsRef + 'static,
     T: Clone + Send + Sync + 'static,
     P: private::ExtensionPredicate<T>,
 {
-    fn matches(&self, _ext: Option<&mut Extensions>, ctx: &Context, _req: &Request) -> bool {
-        ctx.get::<T>()
+    fn matches(&self, _ext: Option<&mut Extensions>, _ctx: &Context, req: &Request) -> bool {
+        req.extensions()
+            .get::<T>()
             .map(|v| self.predicate.call(v))
             .unwrap_or_default()
     }
@@ -101,34 +103,36 @@ mod test {
     #[test]
     fn test_extension_matcher() {
         let matcher = ExtensionMatcher::with_const(MyMarker(10));
-        let mut ctx = Context::default();
+        let ctx = Context::default();
+        let mut ext = Extensions::new();
 
-        assert!(!matcher.matches(None, &ctx, &()));
+        assert!(!matcher.matches(None, &ctx, &ext));
 
-        ctx.insert(MyMarker(20));
-        assert!(!matcher.matches(None, &ctx, &()));
+        ext.insert(MyMarker(20));
+        assert!(!matcher.matches(None, &ctx, &ext));
 
-        ctx.insert(MyOtherMarker(10));
-        assert!(!matcher.matches(None, &ctx, &()));
+        ext.insert(MyOtherMarker(10));
+        assert!(!matcher.matches(None, &ctx, &ext));
 
-        ctx.insert(MyMarker(10));
-        assert!(matcher.matches(None, &ctx, &()));
+        ext.insert(MyMarker(10));
+        assert!(matcher.matches(None, &ctx, &ext));
     }
 
     #[test]
     fn test_fn_extension_matcher() {
         let matcher = ExtensionMatcher::with_fn(|v: &MyMarker| v.0 % 2 == 0);
-        let mut ctx = Context::default();
+        let ctx = Context::default();
+        let mut ext = Extensions::new();
 
-        assert!(!matcher.matches(None, &ctx, &()));
+        assert!(!matcher.matches(None, &ctx, &ext));
 
-        ctx.insert(MyMarker(4));
-        assert!(matcher.matches(None, &ctx, &()));
+        ext.insert(MyMarker(4));
+        assert!(matcher.matches(None, &ctx, &ext));
 
-        ctx.insert(MyMarker(5));
-        assert!(!matcher.matches(None, &ctx, &()));
+        ext.insert(MyMarker(5));
+        assert!(!matcher.matches(None, &ctx, &ext));
 
-        ctx.insert(MyOtherMarker(4));
-        assert!(!matcher.matches(None, &ctx, &()));
+        ext.insert(MyOtherMarker(4));
+        assert!(!matcher.matches(None, &ctx, &ext));
     }
 }

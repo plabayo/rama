@@ -49,7 +49,7 @@
 //! # }
 //! ```
 
-use crate::{Context, Layer, Service};
+use crate::{Context, Layer, Service, extensions::ExtensionsMut};
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
 
@@ -148,7 +148,7 @@ impl<S, T> AddExtension<S, T> {
 
 impl<Request, S, T> Service<Request> for AddExtension<S, T>
 where
-    Request: Send + 'static,
+    Request: Send + ExtensionsMut + 'static,
     S: Service<Request>,
     T: Clone + Send + Sync + 'static,
 {
@@ -157,10 +157,10 @@ where
 
     fn serve(
         &self,
-        mut ctx: Context,
-        req: Request,
+        ctx: Context,
+        mut req: Request,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
-        ctx.insert(self.value.clone());
+        req.extensions_mut().insert(self.value.clone());
         self.inner.serve(ctx, req)
     }
 }
@@ -168,7 +168,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Context, service::service_fn};
+    use crate::{Context, context::Extensions, extensions::ExtensionsRef, service::service_fn};
     use std::{convert::Infallible, sync::Arc};
 
     struct State(i32);
@@ -177,13 +177,17 @@ mod tests {
     async fn basic() {
         let state = Arc::new(State(1));
 
-        let svc =
-            AddExtensionLayer::new(state).into_layer(service_fn(async |ctx: Context, _req: ()| {
-                let state = ctx.get::<Arc<State>>().unwrap();
+        let svc = AddExtensionLayer::new(state).into_layer(service_fn(
+            async |_ctx: Context, req: Extensions| {
+                let state = req.extensions().get::<Arc<State>>().unwrap();
                 Ok::<_, Infallible>(state.0)
-            }));
+            },
+        ));
 
-        let res = svc.serve(Context::default(), ()).await.unwrap();
+        let res = svc
+            .serve(Context::default(), Extensions::new())
+            .await
+            .unwrap();
 
         assert_eq!(1, res);
     }
