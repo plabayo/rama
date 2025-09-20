@@ -9,13 +9,23 @@ use rama_core::bytes::Bytes;
 use rama_core::service::service_fn;
 use rama_core::{Context, Service};
 use rama_http_types::BodyExtractExt;
+use rama_utils::include_dir::{Dir, include_dir};
 use std::convert::Infallible;
 use std::io::Read;
 
 #[tokio::test]
 async fn basic() {
-    let svc = ServeDir::new("..");
+    let svc = ServeDir::new("../rama-http");
+    test_basic(svc).await;
+}
 
+#[tokio::test]
+async fn basic_embedded() {
+    let svc = ServeDir::new_embedded(include_dir!("$CARGO_MANIFEST_DIR"));
+    test_basic(svc).await;
+}
+
+async fn test_basic(svc: ServeDir) {
     let req = Request::builder()
         .uri("/README.md")
         .body(Body::empty())
@@ -27,14 +37,24 @@ async fn basic() {
 
     let body = body_into_text(res.into_body()).await;
 
-    let contents = std::fs::read_to_string("../README.md").unwrap();
+    let contents = std::fs::read_to_string("../rama-http/README.md").unwrap();
     assert_eq!(body, contents);
 }
 
 #[tokio::test]
 async fn basic_with_index() {
     let svc = ServeDir::new("../test-files");
+    test_basic_with_index(svc).await;
+}
 
+#[tokio::test]
+async fn basic_with_index_embedded() {
+    const EMBEDDED_FILES: Dir = include_dir!("$CARGO_MANIFEST_DIR/../test-files");
+    let svc = ServeDir::new_embedded(EMBEDDED_FILES);
+    test_basic_with_index(svc).await;
+}
+
+async fn test_basic_with_index(svc: ServeDir) {
     let req = Request::new(Body::empty());
     let res = svc.serve(Context::default(), req).await.unwrap();
 
@@ -52,7 +72,17 @@ async fn basic_with_index() {
 #[tokio::test]
 async fn head_request() {
     let svc = ServeDir::new("../test-files");
+    test_head_request(svc).await;
+}
 
+#[tokio::test]
+async fn head_request_embedded() {
+    const EMBEDDED_FILES: Dir = include_dir!("$CARGO_MANIFEST_DIR/../test-files");
+    let svc = ServeDir::new_embedded(EMBEDDED_FILES);
+    test_head_request(svc).await;
+}
+
+async fn test_head_request(svc: ServeDir) {
     let req = Request::builder()
         .uri("/precompressed.txt")
         .method(Method::HEAD)
@@ -73,7 +103,17 @@ async fn head_request() {
 #[tokio::test]
 async fn precompresed_head_request() {
     let svc = ServeDir::new("../test-files").precompressed_gzip();
+    test_precompresed_head_request(svc).await;
+}
 
+#[tokio::test]
+async fn precompresed_head_request_embedded() {
+    const EMBEDDED_FILES: Dir = include_dir!("$CARGO_MANIFEST_DIR/../test-files");
+    let svc = ServeDir::new_embedded(EMBEDDED_FILES).precompressed_gzip();
+    test_precompresed_head_request(svc).await;
+}
+
+async fn test_precompresed_head_request(svc: ServeDir) {
     let req = Request::builder()
         .uri("/precompressed.txt")
         .header("Accept-Encoding", "gzip")
@@ -91,8 +131,18 @@ async fn precompresed_head_request() {
 
 #[tokio::test]
 async fn with_custom_chunk_size() {
-    let svc = ServeDir::new("..").with_buf_chunk_size(1024 * 32);
+    let svc = ServeDir::new("../rama-http").with_buf_chunk_size(1024 * 32);
+    test_with_custom_chunk_size(svc).await;
+}
 
+#[tokio::test]
+async fn with_custom_chunk_size_embedded() {
+    const EMBEDDED_FILES: Dir = include_dir!("$CARGO_MANIFEST_DIR");
+    let svc = ServeDir::new_embedded(EMBEDDED_FILES).with_buf_chunk_size(1024 * 32);
+    test_with_custom_chunk_size(svc).await;
+}
+
+async fn test_with_custom_chunk_size(svc: ServeDir) {
     let req = Request::builder()
         .uri("/README.md")
         .body(Body::empty())
@@ -104,14 +154,24 @@ async fn with_custom_chunk_size() {
 
     let body = body_into_text(res.into_body()).await;
 
-    let contents = std::fs::read_to_string("../README.md").unwrap();
+    let contents = std::fs::read_to_string("../rama-http/README.md").unwrap();
     assert_eq!(body, contents);
 }
 
 #[tokio::test]
 async fn precompressed_gzip() {
     let svc = ServeDir::new("../test-files").precompressed_gzip();
+    test_precompressed_gzip(svc).await;
+}
 
+#[tokio::test]
+async fn precompressed_gzip_embedded() {
+    const EMBEDDED_FILES: Dir = include_dir!("$CARGO_MANIFEST_DIR/../test-files");
+    let svc = ServeDir::new_embedded(EMBEDDED_FILES).precompressed_gzip();
+    test_precompressed_gzip(svc).await;
+}
+
+async fn test_precompressed_gzip(svc: ServeDir) {
     let req = Request::builder()
         .uri("/precompressed.txt")
         .header("Accept-Encoding", "gzip")
@@ -132,7 +192,17 @@ async fn precompressed_gzip() {
 #[tokio::test]
 async fn precompressed_br() {
     let svc = ServeDir::new("../test-files").precompressed_br();
+    test_precompressed_br(svc).await;
+}
 
+#[tokio::test]
+async fn precompressed_br_embedded() {
+    const EMBEDDED_FILES: Dir = include_dir!("$CARGO_MANIFEST_DIR/../test-files");
+    let svc = ServeDir::new_embedded(EMBEDDED_FILES).precompressed_br();
+    test_precompressed_br(svc).await;
+}
+
+async fn test_precompressed_br(svc: ServeDir) {
     let req = Request::builder()
         .uri("/precompressed.txt")
         .header("Accept-Encoding", "br")
@@ -153,6 +223,17 @@ async fn precompressed_br() {
 #[tokio::test]
 async fn precompressed_deflate() {
     let svc = ServeDir::new("../test-files").precompressed_deflate();
+    test_precompressed_deflate(svc).await;
+}
+
+#[tokio::test]
+async fn precompressed_deflate_embedded() {
+    const EMBEDDED_FILES: Dir = include_dir!("$CARGO_MANIFEST_DIR/../test-files");
+    let svc = ServeDir::new_embedded(EMBEDDED_FILES).precompressed_deflate();
+    test_precompressed_deflate(svc).await;
+}
+
+async fn test_precompressed_deflate(svc: ServeDir) {
     let request = Request::builder()
         .uri("/precompressed.txt")
         .header("Accept-Encoding", "deflate,br")
@@ -173,7 +254,17 @@ async fn precompressed_deflate() {
 #[tokio::test]
 async fn unsupported_precompression_algorithm_fallbacks_to_uncompressed() {
     let svc = ServeDir::new("../test-files").precompressed_gzip();
+    test_unsupported_precompression_algorithm_fallbacks_to_uncompressed(svc).await;
+}
 
+#[tokio::test]
+async fn unsupported_precompression_algorithm_fallbacks_to_uncompressed_embedded() {
+    const EMBEDDED_FILES: Dir = include_dir!("$CARGO_MANIFEST_DIR/../test-files");
+    let svc = ServeDir::new_embedded(EMBEDDED_FILES).precompressed_gzip();
+    test_unsupported_precompression_algorithm_fallbacks_to_uncompressed(svc).await;
+}
+
+async fn test_unsupported_precompression_algorithm_fallbacks_to_uncompressed(svc: ServeDir) {
     let request = Request::builder()
         .uri("/precompressed.txt")
         .header("Accept-Encoding", "br")
@@ -192,7 +283,17 @@ async fn unsupported_precompression_algorithm_fallbacks_to_uncompressed() {
 #[tokio::test]
 async fn only_precompressed_variant_existing() {
     let svc = ServeDir::new("../test-files").precompressed_gzip();
+    test_only_precompressed_variant_existing(svc).await;
+}
 
+#[tokio::test]
+async fn only_precompressed_variant_existing_embedded() {
+    const EMBEDDED_FILES: Dir = include_dir!("$CARGO_MANIFEST_DIR/../test-files");
+    let svc = ServeDir::new_embedded(EMBEDDED_FILES).precompressed_gzip();
+    test_only_precompressed_variant_existing(svc).await;
+}
+
+async fn test_only_precompressed_variant_existing(svc: ServeDir) {
     let request = Request::builder()
         .uri("/only_gzipped.txt")
         .body(Body::empty())
@@ -226,7 +327,17 @@ async fn only_precompressed_variant_existing() {
 #[tokio::test]
 async fn missing_precompressed_variant_fallbacks_to_uncompressed() {
     let svc = ServeDir::new("../test-files").precompressed_gzip();
+    test_missing_precompressed_variant_fallbacks_to_uncompressed(svc).await;
+}
 
+#[tokio::test]
+async fn missing_precompressed_variant_fallbacks_to_uncompressed_embedded() {
+    const EMBEDDED_FILES: Dir = include_dir!("$CARGO_MANIFEST_DIR/../test-files");
+    let svc = ServeDir::new_embedded(EMBEDDED_FILES).precompressed_gzip();
+    test_missing_precompressed_variant_fallbacks_to_uncompressed(svc).await;
+}
+
+async fn test_missing_precompressed_variant_fallbacks_to_uncompressed(svc: ServeDir) {
     let request = Request::builder()
         .uri("/missing_precompressed.txt")
         .header("Accept-Encoding", "gzip")
@@ -246,7 +357,19 @@ async fn missing_precompressed_variant_fallbacks_to_uncompressed() {
 #[tokio::test]
 async fn missing_precompressed_variant_fallbacks_to_uncompressed_for_head_request() {
     let svc = ServeDir::new("../test-files").precompressed_gzip();
+    test_missing_precompressed_variant_fallbacks_to_uncompressed_for_head_request(svc).await;
+}
 
+#[tokio::test]
+async fn missing_precompressed_variant_fallbacks_to_uncompressed_for_head_request_embedded() {
+    const EMBEDDED_FILES: Dir = include_dir!("$CARGO_MANIFEST_DIR/../test-files");
+    let svc = ServeDir::new_embedded(EMBEDDED_FILES).precompressed_gzip();
+    test_missing_precompressed_variant_fallbacks_to_uncompressed_for_head_request(svc).await;
+}
+
+async fn test_missing_precompressed_variant_fallbacks_to_uncompressed_for_head_request(
+    svc: ServeDir,
+) {
     let request = Request::builder()
         .uri("/missing_precompressed.txt")
         .header("Accept-Encoding", "gzip")
@@ -268,8 +391,18 @@ async fn missing_precompressed_variant_fallbacks_to_uncompressed_for_head_reques
 
 #[tokio::test]
 async fn access_to_sub_dirs() {
-    let svc = ServeDir::new("..");
+    let svc = ServeDir::new("../rama-http");
+    test_access_to_sub_dirs(svc).await;
+}
 
+#[tokio::test]
+async fn access_to_sub_dirs_embedded() {
+    const EMBEDDED_FILES: Dir = include_dir!("$CARGO_MANIFEST_DIR");
+    let svc = ServeDir::new_embedded(EMBEDDED_FILES);
+    test_access_to_sub_dirs(svc).await;
+}
+
+async fn test_access_to_sub_dirs(svc: ServeDir) {
     let req = Request::builder()
         .uri("/Cargo.toml")
         .body(Body::empty())
@@ -281,14 +414,24 @@ async fn access_to_sub_dirs() {
 
     let body = body_into_text(res.into_body()).await;
 
-    let contents = std::fs::read_to_string("../Cargo.toml").unwrap();
+    let contents = std::fs::read_to_string("../rama-http/Cargo.toml").unwrap();
     assert_eq!(body, contents);
 }
 
 #[tokio::test]
 async fn not_found() {
     let svc = ServeDir::new("..");
+    test_not_found(svc).await;
+}
 
+#[tokio::test]
+async fn not_found_embedded() {
+    const EMBEDDED_FILES: Dir = include_dir!("$CARGO_MANIFEST_DIR/../test-files");
+    let svc = ServeDir::new_embedded(EMBEDDED_FILES);
+    test_not_found(svc).await;
+}
+
+async fn test_not_found(svc: ServeDir) {
     let req = Request::builder()
         .uri("/not-found")
         .body(Body::empty())
@@ -326,7 +469,17 @@ async fn not_found_when_not_a_directory() {
 #[tokio::test]
 async fn not_found_precompressed() {
     let svc = ServeDir::new("../test-files").precompressed_gzip();
+    test_not_found_precompressed(svc).await;
+}
 
+#[tokio::test]
+async fn not_found_precompressed_embedded() {
+    const EMBEDDED_FILES: Dir = include_dir!("$CARGO_MANIFEST_DIR/../test-files");
+    let svc = ServeDir::new_embedded(EMBEDDED_FILES).precompressed_gzip();
+    test_not_found_precompressed(svc).await;
+}
+
+async fn test_not_found_precompressed(svc: ServeDir) {
     let req = Request::builder()
         .uri("/not-found")
         .header("Accept-Encoding", "gzip")
@@ -346,7 +499,21 @@ async fn fallbacks_to_different_precompressed_variant_if_not_found_for_head_requ
     let svc = ServeDir::new("../test-files")
         .precompressed_gzip()
         .precompressed_br();
+    test_fallbacks_to_different_precompressed_variant_if_not_found_for_head_request(svc).await;
+}
 
+#[tokio::test]
+async fn fallbacks_to_different_precompressed_variant_if_not_found_for_head_request_embedded() {
+    const EMBEDDED_FILES: Dir = include_dir!("$CARGO_MANIFEST_DIR/../test-files");
+    let svc = ServeDir::new_embedded(EMBEDDED_FILES)
+        .precompressed_gzip()
+        .precompressed_br();
+    test_fallbacks_to_different_precompressed_variant_if_not_found_for_head_request(svc).await;
+}
+
+async fn test_fallbacks_to_different_precompressed_variant_if_not_found_for_head_request(
+    svc: ServeDir,
+) {
     let req = Request::builder()
         .uri("/precompressed_br.txt")
         .header("Accept-Encoding", "gzip,br,deflate")
@@ -367,7 +534,19 @@ async fn fallbacks_to_different_precompressed_variant_if_not_found() {
     let svc = ServeDir::new("../test-files")
         .precompressed_gzip()
         .precompressed_br();
+    test_fallbacks_to_different_precompressed_variant_if_not_found(svc).await;
+}
 
+#[tokio::test]
+async fn fallbacks_to_different_precompressed_variant_if_not_found_embedded() {
+    const EMBEDDED_FILES: Dir = include_dir!("$CARGO_MANIFEST_DIR/../test-files");
+    let svc = ServeDir::new_embedded(EMBEDDED_FILES)
+        .precompressed_gzip()
+        .precompressed_br();
+    test_fallbacks_to_different_precompressed_variant_if_not_found(svc).await;
+}
+
+async fn test_fallbacks_to_different_precompressed_variant_if_not_found(svc: ServeDir) {
     let req = Request::builder()
         .uri("/precompressed_br.txt")
         .header("Accept-Encoding", "gzip,br,deflate")
@@ -456,10 +635,20 @@ where
 
 #[tokio::test]
 async fn access_cjk_percent_encoded_uri_path() {
+    let svc = ServeDir::new("../test-files");
+    test_access_cjk_percent_encoded_uri_path(svc).await;
+}
+
+#[tokio::test]
+async fn access_cjk_percent_encoded_uri_path_embedded() {
+    const EMBEDDED_FILES: Dir = include_dir!("$CARGO_MANIFEST_DIR/../test-files");
+    let svc = ServeDir::new_embedded(EMBEDDED_FILES);
+    test_access_cjk_percent_encoded_uri_path(svc).await;
+}
+
+async fn test_access_cjk_percent_encoded_uri_path(svc: ServeDir) {
     // percent encoding present of 你好世界.txt
     let cjk_filename_encoded = "%E4%BD%A0%E5%A5%BD%E4%B8%96%E7%95%8C.txt";
-
-    let svc = ServeDir::new("../test-files");
 
     let req = Request::builder()
         .uri(format!("/{cjk_filename_encoded}"))
@@ -473,9 +662,19 @@ async fn access_cjk_percent_encoded_uri_path() {
 
 #[tokio::test]
 async fn access_space_percent_encoded_uri_path() {
-    let encoded_filename = "filename%20with%20space.txt";
-
     let svc = ServeDir::new("../test-files");
+    test_access_space_percent_encoded_uri_path(svc).await;
+}
+
+#[tokio::test]
+async fn access_space_percent_encoded_uri_path_embedded() {
+    const EMBEDDED_FILES: Dir = include_dir!("$CARGO_MANIFEST_DIR/../test-files");
+    let svc = ServeDir::new_embedded(EMBEDDED_FILES);
+    test_access_space_percent_encoded_uri_path(svc).await;
+}
+
+async fn test_access_space_percent_encoded_uri_path(svc: ServeDir) {
+    let encoded_filename = "filename%20with%20space.txt";
 
     let req = Request::builder()
         .uri(format!("/{encoded_filename}"))
@@ -490,7 +689,17 @@ async fn access_space_percent_encoded_uri_path() {
 #[tokio::test]
 async fn read_partial_empty() {
     let svc = ServeDir::new("../test-files");
+    test_read_partial_empty(svc).await;
+}
 
+#[tokio::test]
+async fn read_partial_empty_embedded() {
+    const EMBEDDED_FILES: Dir = include_dir!("$CARGO_MANIFEST_DIR/../test-files");
+    let svc = ServeDir::new_embedded(EMBEDDED_FILES);
+    test_read_partial_empty(svc).await;
+}
+
+async fn test_read_partial_empty(svc: ServeDir) {
     let req = Request::builder()
         .uri("/empty.txt")
         .header("Range", "bytes=0-")
@@ -508,7 +717,18 @@ async fn read_partial_empty() {
 
 #[tokio::test]
 async fn read_partial_in_bounds() {
-    let svc = ServeDir::new("..");
+    let svc = ServeDir::new("../rama-http");
+    test_read_partial_in_bounds(svc).await;
+}
+
+#[tokio::test]
+async fn read_partial_in_bounds_embedded() {
+    const EMBEDDED_FILES: Dir = include_dir!("$CARGO_MANIFEST_DIR");
+    let svc = ServeDir::new_embedded(EMBEDDED_FILES);
+    test_read_partial_in_bounds(svc).await;
+}
+
+async fn test_read_partial_in_bounds(svc: ServeDir) {
     let bytes_start_incl = 9;
     let bytes_end_incl = 1023;
 
@@ -522,7 +742,7 @@ async fn read_partial_in_bounds() {
         .unwrap();
     let res = svc.serve(Context::default(), req).await.unwrap();
 
-    let file_contents = std::fs::read("../README.md").unwrap();
+    let file_contents = std::fs::read("../rama-http/README.md").unwrap();
     assert_eq!(res.status(), StatusCode::PARTIAL_CONTENT);
     assert_eq!(
         res.headers()["content-length"],
@@ -548,7 +768,18 @@ async fn read_partial_in_bounds() {
 
 #[tokio::test]
 async fn read_partial_accepts_out_of_bounds_range() {
-    let svc = ServeDir::new("..");
+    let svc = ServeDir::new("../rama-http");
+    test_read_partial_accepts_out_of_bounds_range(svc).await;
+}
+
+#[tokio::test]
+async fn read_partial_accepts_out_of_bounds_range_embedded() {
+    const EMBEDDED_FILES: Dir = include_dir!("$CARGO_MANIFEST_DIR");
+    let svc = ServeDir::new_embedded(EMBEDDED_FILES);
+    test_read_partial_accepts_out_of_bounds_range(svc).await;
+}
+
+async fn test_read_partial_accepts_out_of_bounds_range(svc: ServeDir) {
     let bytes_start_incl = 0;
     let bytes_end_excl = 9999999;
     let requested_len = bytes_end_excl - bytes_start_incl;
@@ -564,7 +795,7 @@ async fn read_partial_accepts_out_of_bounds_range() {
     let res = svc.serve(Context::default(), req).await.unwrap();
 
     assert_eq!(res.status(), StatusCode::PARTIAL_CONTENT);
-    let file_contents = std::fs::read("../README.md").unwrap();
+    let file_contents = std::fs::read("../rama-http/README.md").unwrap();
     assert_eq!(
         res.headers()["content-range"],
         &format!(
@@ -577,7 +808,18 @@ async fn read_partial_accepts_out_of_bounds_range() {
 
 #[tokio::test]
 async fn read_partial_errs_on_garbage_header() {
-    let svc = ServeDir::new("..");
+    let svc = ServeDir::new("../rama-http");
+    test_read_partial_errs_on_garbage_header(svc).await;
+}
+
+#[tokio::test]
+async fn read_partial_errs_on_garbage_header_embedded() {
+    const EMBEDDED_FILES: Dir = include_dir!("$CARGO_MANIFEST_DIR");
+    let svc = ServeDir::new_embedded(EMBEDDED_FILES);
+    test_read_partial_errs_on_garbage_header(svc).await;
+}
+
+async fn test_read_partial_errs_on_garbage_header(svc: ServeDir) {
     let req = Request::builder()
         .uri("/README.md")
         .header("Range", "bad_format")
@@ -585,7 +827,7 @@ async fn read_partial_errs_on_garbage_header() {
         .unwrap();
     let res = svc.serve(Context::default(), req).await.unwrap();
     assert_eq!(res.status(), StatusCode::RANGE_NOT_SATISFIABLE);
-    let file_contents = std::fs::read("../README.md").unwrap();
+    let file_contents = std::fs::read("../rama-http/README.md").unwrap();
     assert_eq!(
         res.headers()["content-range"],
         &format!("bytes */{}", file_contents.len())
@@ -594,7 +836,18 @@ async fn read_partial_errs_on_garbage_header() {
 
 #[tokio::test]
 async fn read_partial_errs_on_bad_range() {
-    let svc = ServeDir::new("..");
+    let svc = ServeDir::new("../rama-http");
+    test_read_partial_errs_on_bad_range(svc).await;
+}
+
+#[tokio::test]
+async fn read_partial_errs_on_bad_range_embedded() {
+    const EMBEDDED_FILES: Dir = include_dir!("$CARGO_MANIFEST_DIR");
+    let svc = ServeDir::new_embedded(EMBEDDED_FILES);
+    test_read_partial_errs_on_bad_range(svc).await;
+}
+
+async fn test_read_partial_errs_on_bad_range(svc: ServeDir) {
     let req = Request::builder()
         .uri("/README.md")
         .header("Range", "bytes=-1-15")
@@ -602,7 +855,7 @@ async fn read_partial_errs_on_bad_range() {
         .unwrap();
     let res = svc.serve(Context::default(), req).await.unwrap();
     assert_eq!(res.status(), StatusCode::RANGE_NOT_SATISFIABLE);
-    let file_contents = std::fs::read("../README.md").unwrap();
+    let file_contents = std::fs::read("../rama-http/README.md").unwrap();
     assert_eq!(
         res.headers()["content-range"],
         &format!("bytes */{}", file_contents.len())
@@ -611,7 +864,18 @@ async fn read_partial_errs_on_bad_range() {
 
 #[tokio::test]
 async fn accept_encoding_identity() {
-    let svc = ServeDir::new("..");
+    let svc = ServeDir::new("../rama-http");
+    test_accept_encoding_identity(svc).await;
+}
+
+#[tokio::test]
+async fn accept_encoding_identity_embedded() {
+    const EMBEDDED_FILES: Dir = include_dir!("$CARGO_MANIFEST_DIR");
+    let svc = ServeDir::new_embedded(EMBEDDED_FILES);
+    test_accept_encoding_identity(svc).await;
+}
+
+async fn test_accept_encoding_identity(svc: ServeDir) {
     let req = Request::builder()
         .uri("/README.md")
         .header("Accept-Encoding", "identity")
@@ -625,7 +889,18 @@ async fn accept_encoding_identity() {
 
 #[tokio::test]
 async fn last_modified() {
-    let svc = ServeDir::new("..");
+    let svc = ServeDir::new("../rama-http");
+    test_last_modified(svc).await;
+}
+
+#[tokio::test]
+async fn last_modified_embedded() {
+    const EMBEDDED_FILES: Dir = include_dir!("$CARGO_MANIFEST_DIR");
+    let svc = ServeDir::new_embedded(EMBEDDED_FILES);
+    test_last_modified(svc).await;
+}
+
+async fn test_last_modified(svc: ServeDir) {
     let req = Request::builder()
         .uri("/README.md")
         .body(Body::empty())
@@ -640,45 +915,44 @@ async fn last_modified() {
 
     // -- If-Modified-Since
 
-    let svc = ServeDir::new("..");
+    let svc_clone = svc.clone();
     let req = Request::builder()
         .uri("/README.md")
         .header(header::IF_MODIFIED_SINCE, last_modified)
         .body(Body::empty())
         .unwrap();
 
-    let res = svc.serve(Context::default(), req).await.unwrap();
+    let res = svc_clone.serve(Context::default(), req).await.unwrap();
     assert_eq!(res.status(), StatusCode::NOT_MODIFIED);
     assert!(res.into_body().frame().await.is_none());
 
-    let svc = ServeDir::new("..");
+    let svc_clone = svc.clone();
     let req = Request::builder()
         .uri("/README.md")
         .header(header::IF_MODIFIED_SINCE, "Fri, 09 Aug 1996 14:21:40 GMT")
         .body(Body::empty())
         .unwrap();
 
-    let res = svc.serve(Context::default(), req).await.unwrap();
+    let res = svc_clone.serve(Context::default(), req).await.unwrap();
     assert_eq!(res.status(), StatusCode::OK);
-    let readme_bytes = include_bytes!("../../../../../README.md");
+    let readme_content = std::fs::read("../rama-http/README.md").unwrap();
     let body = res.into_body().collect().await.unwrap().to_bytes();
-    assert_eq!(body.as_ref(), readme_bytes);
+    assert_eq!(body.as_ref(), &readme_content);
 
     // -- If-Unmodified-Since
 
-    let svc = ServeDir::new("..");
+    let svc_clone = svc.clone();
     let req = Request::builder()
         .uri("/README.md")
         .header(header::IF_UNMODIFIED_SINCE, last_modified)
         .body(Body::empty())
         .unwrap();
 
-    let res = svc.serve(Context::default(), req).await.unwrap();
+    let res = svc_clone.serve(Context::default(), req).await.unwrap();
     assert_eq!(res.status(), StatusCode::OK);
     let body = res.into_body().collect().await.unwrap().to_bytes();
-    assert_eq!(body.as_ref(), readme_bytes);
+    assert_eq!(body.as_ref(), &readme_content);
 
-    let svc = ServeDir::new("..");
     let req = Request::builder()
         .uri("/README.md")
         .header(header::IF_UNMODIFIED_SINCE, "Fri, 09 Aug 1996 14:21:40 GMT")
@@ -692,6 +966,18 @@ async fn last_modified() {
 
 #[tokio::test]
 async fn with_fallback_svc() {
+    let svc = ServeDir::new("..");
+    test_with_fallback_svc(svc).await;
+}
+
+#[tokio::test]
+async fn with_fallback_svc_embedded() {
+    const EMBEDDED_FILES: Dir = include_dir!("$CARGO_MANIFEST_DIR/../test-files");
+    let svc = ServeDir::new_embedded(EMBEDDED_FILES);
+    test_with_fallback_svc(svc).await;
+}
+
+async fn test_with_fallback_svc(svc: ServeDir) {
     async fn fallback(req: Request) -> Result<Response, Infallible> {
         Ok(Response::new(Body::from(format!(
             "from fallback {}",
@@ -699,7 +985,7 @@ async fn with_fallback_svc() {
         ))))
     }
 
-    let svc = ServeDir::new("..").fallback(service_fn(fallback));
+    let svc = svc.fallback(service_fn(fallback));
 
     let req = Request::builder()
         .uri("/doesnt-exist")
@@ -734,8 +1020,18 @@ async fn with_fallback_serve_file() {
 
 #[tokio::test]
 async fn method_not_allowed() {
-    let svc = ServeDir::new("..");
+    let svc = ServeDir::new("../rama-http");
+    test_method_not_allowed(svc).await;
+}
 
+#[tokio::test]
+async fn method_not_allowed_embedded() {
+    const EMBEDDED_FILES: Dir = include_dir!("$CARGO_MANIFEST_DIR");
+    let svc = ServeDir::new_embedded(EMBEDDED_FILES);
+    test_method_not_allowed(svc).await;
+}
+
+async fn test_method_not_allowed(svc: ServeDir) {
     let req = Request::builder()
         .method(Method::POST)
         .uri("/README.md")
