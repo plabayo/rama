@@ -3,10 +3,9 @@
 use std::error::Error as StdError;
 use std::fmt;
 
-use rama_core::error::BoxError;
-use rama_http_types::dep::http;
-
 use crate::h2;
+use rama_core::error::BoxError;
+use rama_http_types as http;
 
 /// Result type often returned from methods that can have hyper `Error`s.
 pub type Result<T> = std::result::Result<T, Error>;

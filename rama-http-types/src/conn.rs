@@ -1,6 +1,6 @@
 //! HTTP connection utilities.
 
-use crate::dep::http::Version;
+use crate::Version;
 use crate::proto::h2::{PseudoHeaderOrder, frame::EarlyFrameCapture};
 
 #[derive(Debug, Clone, Default)]

@@ -2,9 +2,11 @@
 //!
 //! [`Layer`]: rama_core::Layer
 
-use crate::dep::http_body;
 use crate::service::web::response::IntoResponse;
-use crate::{Request, Response};
+use crate::{
+    Request, Response, StreamingBody,
+    body::{Frame, SizeHint},
+};
 use pin_project_lite::pin_project;
 use rama_core::bytes::Bytes;
 use rama_core::telemetry::opentelemetry::metrics::UpDownCounter;
@@ -318,7 +320,7 @@ impl<S, F, Body> Service<Request<Body>> for RequestMetricsService<S, F>
 where
     S: Service<Request, Response: IntoResponse>,
     F: AttributesFactory,
-    Body: http_body::Body<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
+    Body: StreamingBody<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
 {
     type Response = Response;
     type Error = S::Error;
@@ -399,9 +401,9 @@ impl<B: fmt::Debug> fmt::Debug for BodyTracker<B> {
     }
 }
 
-impl<B> http_body::Body for BodyTracker<B>
+impl<B> StreamingBody for BodyTracker<B>
 where
-    B: http_body::Body<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
+    B: StreamingBody<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
 {
     type Data = B::Data;
     type Error = B::Error;
@@ -409,7 +411,7 @@ where
     fn poll_frame(
         self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
+    ) -> std::task::Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
         let this = self.project();
         match this.inner.poll_frame(cx) {
             std::task::Poll::Ready(opt) => {
@@ -429,7 +431,7 @@ where
         self.inner.is_end_stream()
     }
 
-    fn size_hint(&self) -> http_body::SizeHint {
+    fn size_hint(&self) -> SizeHint {
         self.inner.size_hint()
     }
 }

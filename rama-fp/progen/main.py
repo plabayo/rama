@@ -15,14 +15,14 @@ def write_profile_to_file(row, f):
 
 def main():
     # Get database connection string from environment variable
-    database_url = os.environ.get("DATABASE_URL")
+    database_url = os.environ.get("RAMA_FP_DATABASE_URL")
     if not database_url:
-        print("Error: DATABASE_URL environment variable not set")
+        print("Error: RAMA_FP_DATABASE_URL environment variable not set")
         return
 
     # Connect to the database
     try:
-        with psycopg.connect(f"{database_url}/fp") as conn:
+        with psycopg.connect(f"{database_url}") as conn:
             # Create a cursor
             with conn.cursor() as cur:
                 # Execute the query to select all rows from ua-profiles table
@@ -42,7 +42,7 @@ def main():
                             if col_name == "updated_at":
                                 if row[i]:
                                     updated_at = row[i].strftime("%Y-%m-%d %H:%M:%S")
-                                    one_week_ago_ms = (time.time() - 1.5 * 24 * 60 * 60) * 1000
+                                    one_week_ago_ms = (time.time() - 7 * 24 * 60 * 60) * 1000
                                     if row[i].timestamp() * 1000 > one_week_ago_ms:
                                         profile[col_name] = updated_at
                                     else:

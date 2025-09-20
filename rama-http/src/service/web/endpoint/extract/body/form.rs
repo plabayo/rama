@@ -1,7 +1,7 @@
 use rama_core::bytes::Bytes;
 
 use super::BytesRejection;
-use crate::dep::http_body_util::BodyExt;
+use crate::body::util::BodyExt;
 use crate::service::web::extract::FromRequest;
 use crate::utils::macros::{composite_http_rejection, define_http_rejection};
 use crate::{Method, Request};

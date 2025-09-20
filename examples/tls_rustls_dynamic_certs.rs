@@ -54,6 +54,7 @@
 // rama provides everything out of the box to build a TLS termination proxy
 use rama::{
     Context, Layer,
+    conversion::RamaFrom,
     error::{ErrorContext, OpaqueError},
     graceful::Shutdown,
     http::service::web::response::IntoResponse,
@@ -65,7 +66,6 @@ use rama::{
     tcp::server::TcpListener,
     telemetry::tracing::level_filters::LevelFilter,
     tls::rustls::{
-        RamaFrom,
         dep::{
             pemfile,
             rustls::{

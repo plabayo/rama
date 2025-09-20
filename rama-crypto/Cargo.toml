@@ -29,7 +29,7 @@ rcgen = { workspace = true }
 rustls-pki-types = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-x509-parser = { workspace = true }
+x509-parser = { workspace = true, features = ["verify-aws"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }

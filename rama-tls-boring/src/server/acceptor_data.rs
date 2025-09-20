@@ -1,4 +1,3 @@
-use crate::RamaTryFrom;
 use crate::core::{
     asn1::Asn1Time,
     bn::{BigNum, MsbOption},
@@ -18,6 +17,7 @@ use rama_boring::{
     x509::extension::{AuthorityKeyIdentifier, SubjectAlternativeName},
 };
 use rama_boring_tokio::{AsyncSelectCertError, BoxSelectCertFinish};
+use rama_core::conversion::RamaTryFrom;
 use rama_core::error::{ErrorContext, OpaqueError};
 use rama_core::telemetry::tracing;
 use rama_net::{

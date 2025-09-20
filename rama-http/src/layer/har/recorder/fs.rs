@@ -1,8 +1,8 @@
 use super::Recorder;
 use crate::layer::har::spec;
+use rama_core::context::Extensions;
 use rama_core::telemetry::tracing;
 use rama_error::{ErrorContext, OpaqueError};
-use rama_http_types::dep::http;
 use std::io::Write;
 use std::ops::Deref;
 use std::path::PathBuf;
@@ -44,7 +44,7 @@ impl Deref for HarFilePath {
 enum FileRecorderMessage {
     Record {
         log: Box<spec::Log>,
-        ext: oneshot::Sender<http::Extensions>,
+        ext: oneshot::Sender<Extensions>,
     },
     Stop,
 }
@@ -203,7 +203,7 @@ impl FileRecorderTask {
                         }
                     }
 
-                    let mut extensions = http::Extensions::new();
+                    let mut extensions = Extensions::new();
                     extensions.insert(HarFilePath(storage_ref.path.clone().into()));
                     if ext.send(extensions).is_err() {
                         tracing::debug!(
@@ -275,7 +275,7 @@ impl FileRecorder {
 }
 
 impl Recorder for FileRecorder {
-    async fn record(&self, log: spec::Log) -> Option<http::Extensions> {
+    async fn record(&self, log: spec::Log) -> Option<Extensions> {
         let (tx, rx) = oneshot::channel();
         if let Err(err) = self
             .tx

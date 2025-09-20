@@ -3,7 +3,7 @@ use crate::{
     Layer, Service,
     dns::DnsResolver,
     error::{BoxError, OpaqueError},
-    http::{Request, client::proxy::layer::HttpProxyConnector, dep::http_body},
+    http::{Request, StreamingBody, client::proxy::layer::HttpProxyConnector},
     net::client::{
         EstablishedClientConnection,
         pool::{
@@ -579,9 +579,9 @@ impl<T, S> EasyHttpWebClientBuilder<T, S> {
         self,
     ) -> super::EasyHttpWebClient<Body, T::Response>
     where
-        Body: http_body::Body<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
+        Body: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
         ModifiedBody:
-            http_body::Body<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
+            StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
         T: Service<
                 Request<Body>,
                 Response = EstablishedClientConnection<ConnResponse, Request<ModifiedBody>>,

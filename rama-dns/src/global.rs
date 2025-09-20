@@ -35,6 +35,15 @@ impl DnsResolver for GlobalDnsResolver {
     type Error = BoxError;
 
     #[inline]
+    fn txt_lookup(
+        &self,
+        domain: Domain,
+    ) -> impl Future<Output = Result<Vec<Vec<u8>>, Self::Error>> + Send + '_ {
+        let resolver = global_dns_resolver();
+        async move { resolver.txt_lookup(domain).await }
+    }
+
+    #[inline]
     fn ipv4_lookup(
         &self,
         domain: Domain,

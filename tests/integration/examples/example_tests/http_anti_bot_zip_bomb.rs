@@ -1,7 +1,7 @@
 use super::utils;
 use rama::{
     Context,
-    http::dep::http_body_util::BodyExt,
+    http::body::util::BodyExt,
     http::{BodyExtractExt, StatusCode},
 };
 use rama_http::headers::UserAgent;

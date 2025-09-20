@@ -9,9 +9,9 @@ use std::sync::{
 use futures::FutureExt;
 use rama::Context;
 use rama::http::StatusCode;
+use rama::http::body::util::{BodyExt, Full};
 use rama::http::core::server;
 use rama::http::core::service::RamaHttpService;
-use rama::http::dep::http_body_util::{BodyExt, Full};
 use rama::rt::Executor;
 use rama_core::bytes::Bytes;
 use rama_core::telemetry::tracing;

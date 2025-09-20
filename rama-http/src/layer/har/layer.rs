@@ -60,7 +60,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use rama_http_types::dep::http;
+    use rama_core::context::Extensions;
 
     use super::*;
     use crate::layer::har::recorder::Recorder;
@@ -85,7 +85,7 @@ mod tests {
     }
 
     impl Recorder for InMemoryRecorder {
-        async fn record(&self, log: Log) -> Option<http::Extensions> {
+        async fn record(&self, log: Log) -> Option<Extensions> {
             let mut lock = self.logs.lock().unwrap();
             lock.push(log);
             None

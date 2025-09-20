@@ -79,3 +79,23 @@ The `rama` "cli" is also available as a docker image:
 docker pull glendc/rama:latest
 docker run --rm glendc/rama:latest http example.com
 ```
+
+## Code Signing
+
+### Windows
+
+Free code signing for the windows (rama CLI) binary is provided by [SignPath.io](https://about.signpath.io/),
+certificate by [SignPath Foundation](https://signpath.org/).
+
+- Authors: [Glen De Cauwsemaecker (@glendc)](https://glendc.com)
+
+### MacOS
+
+The MacOS Binary of rama CLI is signed by the Plabayo organisation via the official
+Apple-provided tooling.
+
+## Privacy
+
+The Rama CLI tool collects no data of the user or sends anything to any of our servers.
+It is a tool to empower you and fully at your control. The full open source code
+can be found without compromises on [our GitHub repository](https://github.com/plabayo/rama/).

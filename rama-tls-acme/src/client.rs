@@ -11,20 +11,23 @@ use base64::{Engine as _, prelude::BASE64_URL_SAFE_NO_PAD};
 use parking_lot::Mutex;
 use rama_core::{
     Context, Service,
-    error::{ErrorContext, ErrorExt, OpaqueError},
+    bytes::Bytes,
+    error::{ErrorContext, OpaqueError},
     service::BoxService,
 };
 use rama_crypto::{
     dep::{
         pki_types::PrivatePkcs8KeyDer,
         rcgen::{self, Certificate},
+        x509_parser::pem::Pem,
     },
     jose::{EMPTY_PAYLOAD, EcdsaKey, Empty, Headers, JWSBuilder, NO_PAYLOAD, Signer},
 };
 use rama_http::{
     BodyExtractExt, Request, Response,
-    dep::http_body_util::BodyExt,
+    body::util::BodyExt,
     headers::{ContentType, HeaderMapExt, Location, RetryAfter, TypedHeader, UserAgent},
+    response::Parts,
     service::client::HttpClientExt,
     utils::HeaderValueGetter,
 };
@@ -36,6 +39,7 @@ use std::{
 };
 use tokio::time::sleep;
 
+#[derive(Debug)]
 /// Acme client that will used for all acme operations
 pub struct AcmeClient {
     https_client: BoxService<Request, Response, OpaqueError>,
@@ -111,28 +115,105 @@ impl AcmeClient {
             .to_owned())
     }
 
-    /// Create a new account with the given [`CreateAccountOptions`] options
+    /// Load acme account that is associated with the given [`EcdsaKey`]. If no account
+    /// exists yet a new account will be created using the given [`CreateAccountOptions`].
+    ///
+    /// If you don't wont this double functionality use: [`Self::create_account`], or
+    /// [`Self::load_account`] instead.
+    pub async fn create_or_load_account(
+        &self,
+        ctx: Context,
+        account_key: EcdsaKey,
+        options: CreateAccountOptions,
+    ) -> Result<Account<'_>, ClientError> {
+        self.create_or_load_account_inner(
+            ctx,
+            account_key,
+            options,
+            CreateAccountMode::CreateOrLoad,
+        )
+        .await
+    }
+
+    /// Create a new acme account
+    ///
+    /// Internally this will generate a new [`EcdsaKey`] which will be associated with this account
     pub async fn create_account(
         &self,
         ctx: Context,
         options: CreateAccountOptions,
     ) -> Result<Account<'_>, ClientError> {
-        let key = EcdsaKey::generate().context("generate key for account")?;
+        let account_key = EcdsaKey::generate().expect("generate key for account");
+        self.create_or_load_account_inner(ctx, account_key, options, CreateAccountMode::Create)
+            .await
+    }
 
+    /// Create a new acme account using the provided [`EcdsaKey`]
+    pub async fn create_account_with_key(
+        &self,
+        ctx: Context,
+        account_key: EcdsaKey,
+        options: CreateAccountOptions,
+    ) -> Result<Account<'_>, ClientError> {
+        self.create_or_load_account_inner(ctx, account_key, options, CreateAccountMode::Create)
+            .await
+    }
+
+    /// Load acme account which is associated with the given [`EcdsaKey`]
+    pub async fn load_account(
+        &self,
+        ctx: Context,
+        account_key: EcdsaKey,
+    ) -> Result<Account<'_>, ClientError> {
+        self.create_or_load_account_inner(
+            ctx,
+            account_key,
+            CreateAccountOptions {
+                only_return_existing: Some(true),
+                ..CreateAccountOptions::default()
+            },
+            CreateAccountMode::Load,
+        )
+        .await
+    }
+
+    async fn create_or_load_account_inner(
+        &self,
+        ctx: Context,
+        account_key: EcdsaKey,
+        options: CreateAccountOptions,
+        mode: CreateAccountMode,
+    ) -> Result<Account<'_>, ClientError> {
         let do_request = async || {
             let ctx = ctx.clone();
 
             let response = self
-                .post(ctx, &self.directory.new_account, Some(&options), &key)
+                .post(
+                    ctx,
+                    &self.directory.new_account,
+                    Some(&options),
+                    &account_key,
+                )
                 .await
                 .context("create account request")?;
 
-            let location: String = response
+            if mode == CreateAccountMode::Create && response.status() == 200 {
+                return Err(OpaqueError::from_display(
+                    "Tried creating new account, but account already exists",
+                )
+                .into());
+            }
+
+            let location = response
                 .header_str(Location::name())
-                .context("get location header")?
-                .into();
+                .map(|location| location.to_owned())
+                .context("get location header");
 
             let account = parse_response::<server::Account>(response).await?;
+            // Do this after parsing response, in case we have a failure it will also parse that
+            // into a proper Problem error
+            let location = location?;
+
             Ok((location, account))
         };
 
@@ -141,7 +222,10 @@ impl AcmeClient {
         Ok(Account {
             client: self,
             inner: account,
-            credentials: AccountCredentials { key, kid: location },
+            credentials: AccountCredentials {
+                key: account_key,
+                kid: location,
+            },
         })
     }
 
@@ -151,7 +235,7 @@ impl AcmeClient {
         url: &str,
         payload: Option<&impl Serialize>,
         signer: &impl Signer,
-    ) -> Result<Response, OpaqueError> {
+    ) -> Result<Response, ClientError> {
         let mut builder = JWSBuilder::new();
         if let Some(payload) = payload {
             let payload = serde_json::to_vec(payload).context("serialize payload")?;
@@ -180,9 +264,22 @@ impl AcmeClient {
 
         let response = request.send(ctx).await?;
 
-        *self.nonce.lock() = Some(Self::get_nonce_from_response(&response)?);
+        match Self::get_nonce_from_response(&response) {
+            Ok(nonce) => {
+                *self.nonce.lock() = Some(nonce);
+            }
+            Err(_) => return Err(response_into_error(response).await),
+        }
+
         Ok(response)
     }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum CreateAccountMode {
+    Create,
+    Load,
+    CreateOrLoad,
 }
 
 #[derive(Clone, Debug)]
@@ -199,7 +296,7 @@ impl AcmeProvider {
     #[must_use]
     pub fn as_directory_url(&self) -> &str {
         match self {
-            Self::LetsEncryptProduction => "https://acme-v01.api.letsencrypt.org/directory",
+            Self::LetsEncryptProduction => "https://acme-v02.api.letsencrypt.org/directory",
             Self::LetsEncryptStaging => "https://acme-staging-v02.api.letsencrypt.org/directory",
             Self::ZeroSslProduction => "https://acme.zerossl.com/v2/DV90",
             Self::GoogleTrustServicesProduction => "https://dv.acme-v02.api.pki.goog/directory",
@@ -227,6 +324,12 @@ impl<'a> Account<'a> {
         &self.inner
     }
 
+    #[must_use]
+    /// Get reference to [`EcdsaKey`] used by this [`Account`]
+    pub fn key(&self) -> &EcdsaKey {
+        &self.credentials.key
+    }
+
     /// Place a new [`Order`] using this [`Account`]
     pub async fn new_order(
         &self,
@@ -239,11 +342,16 @@ impl<'a> Account<'a> {
                 .post(ctx, &self.client.directory.new_order, Some(&new_order))
                 .await?;
 
-            let location: String = response
+            let location = response
                 .header_str(Location::name())
-                .context("read location header")?
-                .into();
+                .map(|location| location.to_owned())
+                .context("get location header");
+
             let order = parse_response::<server::Order>(response).await?;
+            // Do this after parsing response, in case we have a failure it will also parse that
+            // into a proper Problem error
+            let location = location?;
+
             Ok((location, order))
         };
 
@@ -260,7 +368,13 @@ impl<'a> Account<'a> {
     pub async fn orders(&self, ctx: Context) -> Result<server::OrdersList, ClientError> {
         let do_request = async || {
             let ctx = ctx.clone();
-            let response = self.post(ctx, &self.inner.orders, NO_PAYLOAD).await?;
+            let response = self
+                .post(
+                    ctx,
+                    self.inner.orders.as_deref().unwrap_or_default(),
+                    NO_PAYLOAD,
+                )
+                .await?;
 
             let orders = parse_response::<server::OrdersList>(response).await?;
             Ok(orders)
@@ -276,12 +390,17 @@ impl<'a> Account<'a> {
             let ctx = ctx.clone();
             let response = self.post(ctx, order_url, NO_PAYLOAD).await?;
 
-            let location: String = response
+            let location = response
                 .header_str(Location::name())
-                .context("read location header")?
-                .into();
+                .map(|location| location.to_owned())
+                .context("get location header");
 
             let order = parse_response::<server::Order>(response).await?;
+
+            // Do this after parsing response, in case we have a failure it will also parse that
+            // into a proper Problem error
+            let location = location?;
+
             Ok((location, order))
         };
         let (location, order) = retry_bad_nonce(do_request).await?;
@@ -298,7 +417,7 @@ impl<'a> Account<'a> {
         ctx: Context,
         url: &str,
         payload: Option<&impl Serialize>,
-    ) -> Result<Response, OpaqueError> {
+    ) -> Result<Response, ClientError> {
         self.client.post(ctx, url, payload, &self.credentials).await
     }
 }
@@ -409,6 +528,12 @@ impl<'a> Order<'a> {
     /// This does two things behind the scene
     /// 1. Notify acme server that challenge is ready and should be verified by the server ([`Self::notify_challenge_ready`])
     /// 2. Polls the acme server until the server has verified this challenge and has updated its internal status ([`Self::wait_until_challenge_finished`])
+    ///
+    /// Note that this (1) has the pre-condition that your challenge is indeed ready:
+    /// - for http/tls this means your server is ready to serve the challenge to incoming  clients
+    /// - for dns this means your record exists and has the correct value
+    ///
+    /// An error (underlying http 403) is returned in case the challenge is not ready.
     pub async fn finish_challenge(
         &self,
         ctx: Context,
@@ -539,10 +664,28 @@ impl<'a> Order<'a> {
     ///
     /// Note: for this to work the certificate needs to be ready (order.status == server::OrderStatus::Valid).
     /// Use [`Self::download_certificate`] instead to also wait for this correct status before downloading.
-    pub async fn download_certificate_no_checks(
+    pub async fn download_certificate_no_checks_as_pem_stack(
         &self,
         ctx: Context,
-    ) -> Result<String, ClientError> {
+    ) -> Result<Vec<Pem>, ClientError> {
+        let bytes = self.download_certificate_no_checks(ctx).await?;
+
+        let certificate = str::from_utf8(bytes.as_ref())
+            .context("parse response to pem")?
+            .to_owned();
+
+        let pems = Pem::iter_from_buffer(certificate.as_bytes())
+            .collect::<Result<Vec<Pem>, _>>()
+            .context("failed to parse pem")?;
+
+        Ok(pems)
+    }
+
+    /// Download the certificate generated by the server
+    ///
+    /// Note: for this to work the certificate needs to be ready (order.status == server::OrderStatus::Valid).
+    /// Use [`Self::download_certificate`] instead to also wait for this correct status before downloading.
+    pub async fn download_certificate_no_checks(&self, ctx: Context) -> Result<Bytes, ClientError> {
         let certificate_url = self
             .inner
             .certificate
@@ -552,20 +695,29 @@ impl<'a> Order<'a> {
 
         let body = response.into_body();
         let bytes = body.collect().await.context("collect body")?.to_bytes();
-        let certificate = str::from_utf8(bytes.as_ref())
-            .context("parse response to pem")?
-            .to_owned();
 
-        Ok(certificate)
+        Ok(bytes)
     }
 
     /// Wait until certificate is ready and then download it
     ///
     /// To directly download the certificate without waiting for the correct status
     /// use [`Self::download_certificate_no_checks`] instead
-    pub async fn download_certificate(&mut self, ctx: Context) -> Result<String, ClientError> {
+    pub async fn download_certificate(&mut self, ctx: Context) -> Result<Bytes, ClientError> {
         self.wait_until_certificate_ready(ctx.clone()).await?;
         self.download_certificate_no_checks(ctx).await
+    }
+
+    /// Wait until certificate is ready and then download it
+    ///
+    /// To directly download the certificate without waiting for the correct status
+    /// use [`Self::download_certificate_no_checks`] instead
+    pub async fn download_certificate_as_pem_stack(
+        &mut self,
+        ctx: Context,
+    ) -> Result<Vec<Pem>, ClientError> {
+        self.wait_until_certificate_ready(ctx.clone()).await?;
+        self.download_certificate_no_checks_as_pem_stack(ctx).await
     }
 
     /// Keep polling until the order has reached the given status
@@ -628,7 +780,7 @@ impl<'a> Order<'a> {
         ctx: Context,
         url: &str,
         payload: Option<&impl Serialize>,
-    ) -> Result<Response, OpaqueError> {
+    ) -> Result<Response, ClientError> {
         self.account.post(ctx, url, payload).await
     }
 }
@@ -636,19 +788,38 @@ impl<'a> Order<'a> {
 async fn parse_response<T: serde::de::DeserializeOwned + Send + 'static>(
     response: Response,
 ) -> Result<T, ClientError> {
-    let body = response.into_body();
+    let (parts, body) = response.into_parts();
     let bytes = body.collect().await.context("collect body")?.to_bytes();
 
     let result = serde_json::from_slice::<T>(&bytes);
     match result {
         Ok(result) => Ok(result),
-        Err(err) => {
-            let problem = serde_json::from_slice::<server::Problem>(&bytes);
-            match problem {
-                Ok(problem) => Err(problem.into()),
-                Err(_err) => Err(err.context("parse problem response").into()),
-            }
-        }
+        Err(_) => Err(bytes_into_error(parts, bytes).await),
+    }
+}
+
+async fn response_into_error(response: Response) -> ClientError {
+    let (parts, body) = response.into_parts();
+    match body.collect().await.context("collect body") {
+        Ok(bytes) => bytes_into_error(parts, bytes.to_bytes()).await,
+        Err(err) => err.into(),
+    }
+}
+
+async fn bytes_into_error(response_parts: Parts, bytes: Bytes) -> ClientError {
+    let problem = serde_json::from_slice::<server::Problem>(&bytes);
+    if let Ok(problem) = problem {
+        problem.into()
+    } else {
+        let body_str = bytes
+            .try_into_string()
+            .await
+            .unwrap_or_else(|err| format!("body collect err post-error: {err}"));
+        OpaqueError::from_display(format!(
+            "Unexpected problem response with status code {}: {}",
+            response_parts.status, body_str
+        ))
+        .into()
     }
 }
 

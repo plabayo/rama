@@ -1,10 +1,13 @@
-use crate::RamaTryFrom;
+use crate::RamaTlsBoringCrateMarker;
 use itertools::Itertools;
+use rama_core::conversion::RamaTryFrom;
 use rama_core::error::{ErrorContext, OpaqueError};
 use rama_core::telemetry::tracing::trace;
 use rama_net::tls::client::{ClientHello, parse_client_hello};
 
-impl<'ssl> RamaTryFrom<rama_boring::ssl::ClientHello<'ssl>> for ClientHello {
+impl<'ssl> RamaTryFrom<rama_boring::ssl::ClientHello<'ssl>, RamaTlsBoringCrateMarker>
+    for ClientHello
+{
     type Error = OpaqueError;
 
     fn rama_try_from(value: rama_boring::ssl::ClientHello<'ssl>) -> Result<Self, Self::Error> {
@@ -12,7 +15,9 @@ impl<'ssl> RamaTryFrom<rama_boring::ssl::ClientHello<'ssl>> for ClientHello {
     }
 }
 
-impl<'ssl> RamaTryFrom<&rama_boring::ssl::ClientHello<'ssl>> for ClientHello {
+impl<'ssl> RamaTryFrom<&rama_boring::ssl::ClientHello<'ssl>, RamaTlsBoringCrateMarker>
+    for ClientHello
+{
     type Error = OpaqueError;
 
     fn rama_try_from(value: &rama_boring::ssl::ClientHello<'ssl>) -> Result<Self, Self::Error> {
@@ -27,7 +32,7 @@ macro_rules! try_from_mapping {
             let $rama_val:ident = $boring_val:ident;
         )+
     ) => {
-        impl RamaTryFrom<rama_net::tls::$rama_ty> for rama_boring::ssl::$boring_ty {
+        impl RamaTryFrom<rama_net::tls::$rama_ty, RamaTlsBoringCrateMarker> for rama_boring::ssl::$boring_ty {
             type Error = rama_net::tls::$rama_ty;
 
             fn rama_try_from(value: rama_net::tls::$rama_ty) -> Result<Self, Self::Error> {
@@ -40,7 +45,7 @@ macro_rules! try_from_mapping {
             }
         }
 
-        impl RamaTryFrom<rama_boring::ssl::$boring_ty> for rama_net::tls::$rama_ty {
+        impl RamaTryFrom<rama_boring::ssl::$boring_ty, RamaTlsBoringCrateMarker> for rama_net::tls::$rama_ty {
                 type Error = rama_boring::ssl::$boring_ty;
 
                 fn rama_try_from(value: rama_boring::ssl::$boring_ty) -> Result<Self, Self::Error> {
@@ -91,7 +96,9 @@ try_from_mapping! {
     let SSLv3 = SSL3;
 }
 
-impl RamaTryFrom<&rama_boring::x509::X509> for rama_net::tls::DataEncoding {
+impl RamaTryFrom<&rama_boring::x509::X509, RamaTlsBoringCrateMarker>
+    for rama_net::tls::DataEncoding
+{
     type Error = OpaqueError;
 
     fn rama_try_from(value: &rama_boring::x509::X509) -> Result<Self, Self::Error> {
@@ -100,7 +107,7 @@ impl RamaTryFrom<&rama_boring::x509::X509> for rama_net::tls::DataEncoding {
     }
 }
 
-impl RamaTryFrom<&rama_boring::stack::StackRef<rama_boring::x509::X509>>
+impl RamaTryFrom<&rama_boring::stack::StackRef<rama_boring::x509::X509>, RamaTlsBoringCrateMarker>
     for rama_net::tls::DataEncoding
 {
     type Error = OpaqueError;

@@ -1,11 +1,10 @@
-use crate::dep::http_body;
-use crate::dep::http_body_util::BodyExt;
+use crate::body::util::BodyExt;
 use crate::layer::har::recorder::Recorder;
 use crate::layer::har::spec::{
     Cache, Entry, Log as HarLog, Request as HarRequest, Response as HarResponse, Timings,
 };
 use crate::layer::har::toggle::Toggle;
-use crate::{Body, Request, Response};
+use crate::{Body, Request, Response, StreamingBody};
 
 use chrono::{DateTime, Utc};
 
@@ -26,8 +25,8 @@ where
     S: Service<Request, Response = Response<ResBody>>,
     S::Error: Into<BoxError> + Send + Sync + 'static,
     W: Toggle,
-    ReqBody: http_body::Body<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
-    ResBody: http_body::Body<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
+    ReqBody: StreamingBody<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
+    ResBody: StreamingBody<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
 {
     type Response = Response;
     type Error = BoxError;
@@ -57,7 +56,7 @@ where
                 .to_bytes();
 
             let har_req_result =
-                HarRequest::from_rama_request_parts(&ctx, &req_parts, &req_body_bytes);
+                HarRequest::from_http_request_parts(&ctx, &req_parts, &req_body_bytes);
             let request = Request::from_parts(req_parts, Body::from(req_body_bytes));
 
             match har_req_result {
@@ -96,7 +95,7 @@ where
                         })?
                         .to_bytes();
 
-                    let maybe_response = match HarResponse::from_rama_response_parts(
+                    let maybe_response = match HarResponse::from_http_response_parts(
                         &resp_parts,
                         &resp_body_bytes,
                     ) {

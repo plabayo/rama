@@ -75,7 +75,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rama_http::{Body, dep::http::Request};
+    use rama_http::{Body, Request};
 
     #[tokio::test]
     async fn test_should_change_if_needed() {

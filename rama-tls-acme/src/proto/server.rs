@@ -63,7 +63,7 @@ pub struct Account {
     /// TODO
     pub external_account_binding: Option<()>,
     /// Url to fetch list of orders created by this account
-    pub orders: String,
+    pub orders: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

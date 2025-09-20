@@ -300,8 +300,7 @@ mod tests {
 
     use super::*;
 
-    use crate::dep::http_body_util::BodyExt;
-    use crate::{Body, Response};
+    use crate::{Body, Response, body::util::BodyExt};
     use rama_core::service::service_fn;
     use rama_core::{Context, Service};
     use std::convert::Infallible;

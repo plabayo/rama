@@ -26,6 +26,10 @@ static_str_error! {
 impl DnsResolver for DenyAllDns {
     type Error = DnsDeniedError;
 
+    async fn txt_lookup(&self, _domain: Domain) -> Result<Vec<Vec<u8>>, Self::Error> {
+        Err(DnsDeniedError)
+    }
+
     async fn ipv4_lookup(&self, _domain: Domain) -> Result<Vec<Ipv4Addr>, Self::Error> {
         Err(DnsDeniedError)
     }

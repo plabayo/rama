@@ -17,6 +17,12 @@
 #![cfg_attr(test, allow(clippy::float_cmp))]
 #![cfg_attr(not(test), warn(clippy::print_stdout, clippy::dbg_macro))]
 
+#[non_exhaustive]
+/// CrateMarker type which is used to identify this crate when working around the orphan rule
+///
+/// More info: <https://ramaproxy.org/book/intro/patterns.html#working-around-the-orphan-rule-in-specific-cases>
+pub struct RamaTlsRustlsCrateMarker;
+
 pub mod client;
 pub mod server;
 pub mod verify;
@@ -24,9 +30,6 @@ pub mod verify;
 pub mod key_log;
 
 mod type_conversion;
-
-use rama_utils::macros::enums::rama_from_into_traits;
-rama_from_into_traits!();
 
 pub mod types {
     //! common tls types

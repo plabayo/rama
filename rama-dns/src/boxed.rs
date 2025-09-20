@@ -16,6 +16,11 @@ use crate::DnsResolver;
 trait DynDnsResolver {
     type Error;
 
+    fn txt_lookup_box(
+        &self,
+        domain: Domain,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<Vec<u8>>, Self::Error>> + Send + '_>>;
+
     fn ipv4_lookup_box(
         &self,
         domain: Domain,
@@ -29,6 +34,13 @@ trait DynDnsResolver {
 
 impl<T: DnsResolver> DynDnsResolver for T {
     type Error = T::Error;
+
+    fn txt_lookup_box(
+        &self,
+        domain: Domain,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<Vec<u8>>, Self::Error>> + Send + '_>> {
+        Box::pin(self.txt_lookup(domain))
+    }
 
     fn ipv4_lookup_box(
         &self,
@@ -79,6 +91,14 @@ impl DnsResolver for BoxDnsResolver {
     type Error = BoxError;
 
     #[inline]
+    fn txt_lookup(
+        &self,
+        domain: Domain,
+    ) -> impl Future<Output = Result<Vec<Vec<u8>>, Self::Error>> + Send + '_ {
+        self.inner.txt_lookup_box(domain)
+    }
+
+    #[inline]
     fn ipv4_lookup(
         &self,
         domain: Domain,
@@ -106,6 +126,11 @@ where
     R: DnsResolver,
 {
     type Error = BoxError;
+
+    #[inline]
+    async fn txt_lookup(&self, domain: Domain) -> Result<Vec<Vec<u8>>, Self::Error> {
+        self.0.txt_lookup(domain).await.map_err(Into::into)
+    }
 
     #[inline]
     async fn ipv4_lookup(&self, domain: Domain) -> Result<Vec<Ipv4Addr>, Self::Error> {

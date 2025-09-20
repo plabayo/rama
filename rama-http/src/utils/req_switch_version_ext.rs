@@ -1,13 +1,13 @@
 use rama_core::telemetry::tracing::trace;
 use rama_error::OpaqueError;
 use rama_http_headers::{HeaderMapExt, Upgrade};
-use rama_http_types::{Method, Version, dep::http};
+use rama_http_types::{Method, Request, Version};
 
 pub trait RequestSwitchVersionExt {
     fn switch_version(&mut self, target_version: Version) -> Result<(), OpaqueError>;
 }
 
-impl<Body> RequestSwitchVersionExt for http::Request<Body> {
+impl<Body> RequestSwitchVersionExt for Request<Body> {
     fn switch_version(&mut self, target_version: Version) -> Result<(), OpaqueError> {
         if self.version() == target_version {
             trace!("request version is already {target_version:?}, no version switching needed",);

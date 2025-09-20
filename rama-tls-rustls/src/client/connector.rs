@@ -1,8 +1,8 @@
 use super::TlsConnectorData;
 use crate::dep::tokio_rustls::{TlsConnector as RustlsConnector, client::TlsStream};
 use crate::types::TlsTunnel;
-use crate::{RamaInto, RamaTryFrom};
 use pin_project_lite::pin_project;
+use rama_core::conversion::{RamaInto, RamaTryFrom};
 use rama_core::error::ErrorContext;
 use rama_core::error::{BoxError, ErrorExt, OpaqueError};
 use rama_core::telemetry::tracing;

@@ -46,17 +46,23 @@
 #![cfg_attr(test, allow(clippy::float_cmp))]
 #![cfg_attr(not(test), warn(clippy::print_stdout, clippy::dbg_macro))]
 
-use rama_core::error::BoxError;
+use rama_core::error::{BoxError, OpaqueError};
 use rama_net::address::Domain;
 use std::{
     net::{Ipv4Addr, Ipv6Addr},
     sync::Arc,
 };
 
-/// A resolver of domains into IP addresses.
+/// A resolver of domains and other dns data.
 pub trait DnsResolver: Sized + Send + Sync + 'static {
     /// Error returned by the [`DnsResolver`]
     type Error: Into<BoxError> + Send + 'static;
+
+    /// Resolve the 'TXT' records accessible by this resolver for the given key.
+    fn txt_lookup(
+        &self,
+        domain: Domain,
+    ) -> impl Future<Output = Result<Vec<Vec<u8>>, Self::Error>> + Send + '_;
 
     /// Resolve the 'A' records accessible by this resolver for the given [`Domain`] into [`Ipv4Addr`]esses.
     fn ipv4_lookup(
@@ -79,6 +85,13 @@ pub trait DnsResolver: Sized + Send + Sync + 'static {
 impl<R: DnsResolver> DnsResolver for Arc<R> {
     type Error = R::Error;
 
+    fn txt_lookup(
+        &self,
+        domain: Domain,
+    ) -> impl Future<Output = Result<Vec<Vec<u8>>, Self::Error>> + Send + '_ {
+        (**self).txt_lookup(domain)
+    }
+
     fn ipv4_lookup(
         &self,
         domain: Domain,
@@ -94,20 +107,38 @@ impl<R: DnsResolver> DnsResolver for Arc<R> {
     }
 }
 
+// TODO: make this a streaming API
+// so we do not need to allocate everything up front
+//
+// (e.g. perhaps only 1 value is desired, so why wait-for/allocate them all???)
+
 impl<R: DnsResolver> DnsResolver for Option<R> {
     type Error = BoxError;
+
+    async fn txt_lookup(&self, domain: Domain) -> Result<Vec<Vec<u8>>, Self::Error> {
+        match self {
+            Some(d) => d.txt_lookup(domain).await.map_err(Into::into),
+            None => Err(
+                OpaqueError::from_display("None resolve cannot resolve TXT record").into_boxed(),
+            ),
+        }
+    }
 
     async fn ipv4_lookup(&self, domain: Domain) -> Result<Vec<Ipv4Addr>, Self::Error> {
         match self {
             Some(d) => d.ipv4_lookup(domain).await.map_err(Into::into),
-            None => Err(DomainNotMappedErr.into()),
+            None => {
+                Err(OpaqueError::from_display("None resolve cannot resolve A record").into_boxed())
+            }
         }
     }
 
     async fn ipv6_lookup(&self, domain: Domain) -> Result<Vec<Ipv6Addr>, Self::Error> {
         match self {
             Some(d) => d.ipv6_lookup(domain).await.map_err(Into::into),
-            None => Err(DomainNotMappedErr.into()),
+            None => Err(
+                OpaqueError::from_display("None resolve cannot resolve AAAA record").into_boxed(),
+            ),
         }
     }
 }
@@ -124,7 +155,7 @@ pub use hickory::HickoryDns;
 
 mod in_memory;
 #[doc(inline)]
-pub use in_memory::{DnsOverwrite, DomainNotMappedErr, InMemoryDns};
+pub use in_memory::{DnsOverwrite, InMemoryDns};
 
 mod deny_all;
 #[doc(inline)]
