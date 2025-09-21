@@ -57,13 +57,12 @@ use rama::{
     },
     graceful,
     http::{
-        Body, Response,
         client::EasyHttpWebClient,
-        headers::{ContentType, HeaderMapExt},
+        headers::ContentType,
         layer::{compression::CompressionLayer, trace::TraceLayer},
         server::HttpServer,
         service::web::WebService,
-        service::web::response::IntoResponse,
+        service::web::response::{Headers, IntoResponse},
     },
     layer::ConsumeErrLayer,
     net::tls::{
@@ -199,14 +198,10 @@ async fn main() {
                 (TraceLayer::new_for_http(), CompressionLayer::new()).into_layer(
                     WebService::default().get(&path, move |_ctx: Context| {
                         let state = state.clone();
-                        async move {
-                            let mut response = Response::new(Body::from(
-                                state.key_authorization.as_str().to_owned(),
-                            ));
-                            let headers = response.headers_mut();
-                            headers.typed_insert(ContentType::octet_stream());
-                            response
-                        }
+                        std::future::ready((
+                            Headers::single(ContentType::octet_stream()),
+                            state.key_authorization.as_str().to_owned(),
+                        ))
                     }),
                 ),
             )
