@@ -17,9 +17,10 @@ path = "src/main.rs"
 
 [dependencies]
 base64 = { workspace = true }
+bb8 = { workspace = true }
+bb8-postgres = { workspace = true }
 chrono = { workspace = true }
 clap = { workspace = true }
-deadpool-postgres = { workspace = true }
 hex = { workspace = true }
 itertools = { workspace = true }
 mimalloc = { workspace = true, optional = true }

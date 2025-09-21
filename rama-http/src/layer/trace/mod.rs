@@ -466,7 +466,7 @@ impl fmt::Display for Latency {
 mod tests {
     use super::*;
 
-    use crate::dep::http_body_util::BodyExt as _;
+    use crate::body::util::BodyExt as _;
     use crate::layer::classify::ServerErrorsFailureClass;
     use crate::{Body, HeaderMap, Request, Response};
     use rama_core::bytes::Bytes;

@@ -17,15 +17,34 @@
 #![cfg_attr(test, allow(clippy::float_cmp))]
 #![cfg_attr(not(test), warn(clippy::print_stdout, clippy::dbg_macro))]
 
-pub(crate) mod body;
-pub use body::{Body, BodyDataStream, BodyExtractExt, BodyLimit, InfiniteReader, sse};
+pub mod body;
+pub use body::{
+    Body, BodyDataStream, BodyExtractExt, BodyLimit, InfiniteReader, StreamingBody, sse,
+};
 
-mod request;
-pub use request::{HttpRequestParts, HttpRequestPartsMut, Request};
+pub mod request;
+pub mod response;
+pub use crate::dep::hyperium::http::method;
+pub use crate::dep::hyperium::http::status;
+pub use crate::dep::hyperium::http::uri;
+pub use crate::dep::hyperium::http::version;
 
-/// Type alias for [`http::Response`] whose body type defaults to [`Body`], the most common body
-/// type used with rama.
-pub type Response<T = Body> = http::Response<T>;
+#[doc(inline)]
+pub use crate::dep::hyperium::http::{Error, Result};
+#[doc(inline)]
+pub use crate::header::{HeaderMap, HeaderName, HeaderValue};
+#[doc(inline)]
+pub use crate::method::Method;
+#[doc(inline)]
+pub use crate::request::{HttpRequestParts, HttpRequestPartsMut, Request};
+#[doc(inline)]
+pub use crate::response::Response;
+#[doc(inline)]
+pub use crate::status::StatusCode;
+#[doc(inline)]
+pub use crate::uri::{Scheme, Uri};
+#[doc(inline)]
+pub use crate::version::Version;
 
 pub mod proto;
 
@@ -33,73 +52,11 @@ pub mod opentelemetry;
 
 pub mod conn;
 
-pub mod dep {
-    //! Dependencies for rama http modules.
-    //!
-    //! Exported for your convenience.
-
-    pub mod http {
-        //! Re-export of the [`http`] crate.
-        //!
-        //! A general purpose library of common HTTP types.
-        //!
-        //! [`http`]: https://docs.rs/http
-
-        #[doc(inline)]
-        pub use http::*;
-    }
-
-    pub mod http_body {
-        //! Re-export of the [`http-body`] crate.
-        //!
-        //! Asynchronous HTTP request or response body.
-        //!
-        //! [`http-body`]: https://docs.rs/http-body
-
-        #[doc(inline)]
-        pub use http_body::*;
-    }
-
-    pub mod http_body_util {
-        //! Re-export of the [`http-body-util`] crate.
-        //!
-        //! Utilities for working with [`http-body`] types.
-        //!
-        //! [`http-body`]: https://docs.rs/http-body
-        //! [`http-body-util`]: https://docs.rs/http-body-util
-
-        #[doc(inline)]
-        pub use http_body_util::*;
-    }
-
-    pub mod mime {
-        //! Re-export of the [`mime`] crate.
-        //!
-        //! Support MIME (Media Types) as strong types in Rust.
-        //!
-        //! [`mime`]: https://docs.rs/mime
-
-        #[doc(inline)]
-        pub use mime::*;
-    }
-
-    pub mod mime_guess {
-        //! Re-export of the [`mime_guess`] crate.
-        //!
-        //! Guessing of MIME types by file extension.
-        //!
-        //! [`mime_guess`]: https://docs.rs/mime_guess
-
-        #[doc(inline)]
-        pub use mime_guess::*;
-    }
-}
-
 pub mod header {
     //! HTTP header types
 
     #[doc(inline)]
-    pub use crate::dep::http::header::*;
+    pub use crate::dep::hyperium::http::header::*;
 
     macro_rules! static_header {
         ($($name_bytes:literal),+ $(,)?) => {
@@ -133,13 +90,66 @@ pub mod header {
     );
 }
 
-#[doc(inline)]
-pub use self::dep::http::header::{HeaderMap, HeaderName, HeaderValue};
-#[doc(inline)]
-pub use self::dep::http::method::Method;
-#[doc(inline)]
-pub use self::dep::http::status::StatusCode;
-#[doc(inline)]
-pub use self::dep::http::uri::{Scheme, Uri};
-#[doc(inline)]
-pub use self::dep::http::version::Version;
+pub mod dep {
+    //! Dependencies for rama http modules.
+    //!
+    //! Exported for your convenience.
+
+    pub(crate) mod hyperium {
+        pub(crate) mod http {
+            //! Re-export of the [`http`] crate incase we need to convert.
+            //!
+            //! A general purpose library of common HTTP types.
+            //!
+            //! [`http`]: https://docs.rs/http
+
+            #[doc(inline)]
+            pub use http::*;
+        }
+
+        pub(crate) mod http_body {
+            //! Re-export of the [`http-body`] crate incase we need to convert.
+            //!
+            //! Asynchronous HTTP request or response body
+            //!
+            //! [`http-body`]: https://docs.rs/http-body
+
+            #[doc(inline)]
+            pub use http_body::*;
+        }
+
+        pub(crate) mod http_body_util {
+            //! Re-export of the [`http-body-util`] crate incase we need to convert.
+            //!
+            //! Utilities for working with [`http-body`] types.
+            //!
+            //! [`http-body`]: https://docs.rs/http-body
+            //! [`http-body-util`]: https://docs.rs/http-body-util
+
+            #[doc(inline)]
+            pub use http_body_util::*;
+        }
+    }
+
+    pub mod mime {
+        //! Re-export of the [`mime`] crate.
+        //!
+        //! Support MIME (Media Types) as strong types in Rust.
+        //!
+        //! [`mime`]: https://docs.rs/mime
+
+        #[doc(inline)]
+        pub use mime::*;
+    }
+
+    pub mod mime_guess {
+        //! Re-export of the [`mime_guess`] crate.
+        //!
+        //! Guessing of MIME types by file extension.
+        //!
+        //! [`mime_guess`]: https://docs.rs/mime_guess
+
+        #[doc(inline)]
+        pub use mime_guess::*;
+    }
+}

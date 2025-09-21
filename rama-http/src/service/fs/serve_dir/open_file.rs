@@ -474,7 +474,7 @@ async fn is_dir(path_to_file: &Path) -> bool {
 }
 
 fn append_slash_on_path(uri: Uri) -> Result<Uri, OpenFileOutput> {
-    let rama_http_types::dep::http::uri::Parts {
+    let rama_http_types::uri::Parts {
         scheme,
         authority,
         path_and_query,

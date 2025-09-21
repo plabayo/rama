@@ -7,6 +7,19 @@ use crate::DnsResolver;
 
 macro_rules! dns_resolver_chain_impl {
     () => {
+        async fn txt_lookup(&self, domain: Domain) -> Result<Vec<Vec<u8>>, Self::Error> {
+            let mut last_err = None;
+            for resolver in self {
+                match resolver.txt_lookup(domain.clone()).await {
+                    Ok(values) => return Ok(values),
+                    Err(err) => last_err = Some(err.into()),
+                }
+            }
+            Err(last_err.unwrap_or_else(|| {
+                OpaqueError::from_display("unknown dns error (erorr missing)").into_boxed()
+            }))
+        }
+
         async fn ipv4_lookup(&self, domain: Domain) -> Result<Vec<Ipv4Addr>, Self::Error> {
             let mut last_err = None;
             for resolver in self {

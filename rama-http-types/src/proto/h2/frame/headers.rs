@@ -3,11 +3,11 @@ use crate::proto::h2::ext::Protocol;
 use crate::proto::h2::frame::{Error, Frame, Head, Kind};
 use crate::proto::h2::hpack::{self, BytesStr};
 
-use crate::dep::http::uri;
 use crate::proto::h1::Http1HeaderMap;
 use crate::proto::h1::headers::Http1HeaderMapIntoIter;
 use crate::proto::h1::headers::original::OriginalHttp1Headers;
 use crate::proto::h2::{PseudoHeader, PseudoHeaderOrder, PseudoHeaderOrderIter};
+use crate::uri;
 use crate::{HeaderMap, HeaderName, Method, Request, StatusCode, Uri, header};
 
 use rama_core::bytes::{Buf, BufMut, Bytes, BytesMut};

@@ -29,7 +29,7 @@ struct OddMatcher;
 
 impl Matcher<u8> for OddMatcher {
     fn matches(&self, ext: Option<&mut Extensions>, _ctx: &Context, req: &u8) -> bool {
-        if *req % 2 != 0 {
+        if !(*req).is_multiple_of(2) {
             if let Some(ext) = ext {
                 ext.insert(marker::Odd);
             }
@@ -44,7 +44,7 @@ struct EvenMatcher;
 
 impl Matcher<u8> for EvenMatcher {
     fn matches(&self, ext: Option<&mut Extensions>, _ctx: &Context, req: &u8) -> bool {
-        if *req % 2 == 0 {
+        if (*req).is_multiple_of(2) {
             if let Some(ext) = ext {
                 ext.insert(marker::Even);
             }
@@ -190,7 +190,7 @@ fn test_match_fn_always() {
 
 #[test]
 fn test_match_fn() {
-    let matcher = match_fn(|req: &u8| *req % 2 != 0);
+    let matcher = match_fn(|req: &u8| !(*req).is_multiple_of(2));
     for i in 0..=255 {
         if i % 2 != 0 {
             assert!(matcher.matches(None, &Context::default(), &i), "i = {i}");

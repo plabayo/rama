@@ -2,6 +2,12 @@
 
 This directory contains example implementations demonstrating various features and capabilities of the Rama framework. The examples are organized by category below.
 
+All these examples are tested. This validates that all tests are functional
+at any time and it can also serve as an additional example on how the client-side
+counterpart of a server-like example looks like.
+
+You can find these integration tests at [../tests/integration/examples](../tests/integration/examples).
+
 ## HTTP Servers and Services
 
 ### Basic HTTP Services
@@ -24,11 +30,19 @@ This directory contains example implementations demonstrating various features a
 - [`http_telemetry.rs`](./http_telemetry.rs) - Telemetry and monitoring
 - [`http_user_agent_classifier.rs`](./http_user_agent_classifier.rs) - User agent classification
 
+### Newline Delimited JSON (ndjson)
+
+- [`http_nd_json`](./http_nd_json.rs) - example demonstrating how one can expose a json stream endpoint (see test of this example to see how client side works)
+
 ### Server-Sent Events (SSE)
 - [`http_sse`](./http_sse.rs) - simple example demonstrating how one can expose an SSE endpoint
 - [`http_sse_json`](./http_sse_json.rs) - same as `http_sse` but using structured _json_ data
 - [`http_sse_datastar_hello`](./http_sse_datastar_hello.rs) - a hello world example for datastar (featuring DIY `CQRS` in action);
 - [`http_sse_datastar_test_suite`](./http_sse_datastar_test_suite.rs) - datastar sdk test suite server
+
+Rama supports also client-side SSE. See the tests of these examples
+at [../tests/integration/examples](../tests/integration/examples) on how the client
+side looks like.
 
 ### Anti-Bot examples
 

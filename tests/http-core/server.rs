@@ -16,10 +16,10 @@ use std::time::Duration;
 use futures_channel::oneshot;
 use rama::error::{BoxError, OpaqueError};
 use rama::futures::future::{self, Either, FutureExt};
+use rama::http::body::util::{BodyExt, Empty, Full, StreamBody, combinators::BoxBody};
 use rama::http::core::h2::client::SendRequest;
 use rama::http::core::h2::{RecvStream, SendStream};
 use rama::http::core::service::RamaHttpService;
-use rama::http::dep::http_body_util::{BodyExt, Empty, Full, StreamBody, combinators::BoxBody};
 use rama::http::header::{HeaderMap, HeaderName, HeaderValue};
 use rama::rt::Executor;
 use rama_core::bytes::Bytes;
@@ -76,6 +76,8 @@ fn get_with_body() {
 }
 
 mod response_body_lengths {
+    use rama_http::StreamingBody;
+
     use super::*;
 
     struct TestCase {
@@ -3018,9 +3020,7 @@ impl ReplyBuilder<'_> {
 
     fn body<T: AsRef<[u8]>>(self, body: T) {
         let chunk = Bytes::copy_from_slice(body.as_ref());
-        let body = BodyExt::boxed(
-            rama::http::dep::http_body_util::Full::new(chunk).map_err(|e| match e {}),
-        );
+        let body = BodyExt::boxed(rama::http::body::util::Full::new(chunk).map_err(|e| match e {}));
         self.tx.lock().unwrap().send(Reply::Body(body)).unwrap();
     }
 

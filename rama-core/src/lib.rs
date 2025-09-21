@@ -47,6 +47,8 @@ pub mod username;
 
 pub mod telemetry;
 
+pub mod conversion;
+
 pub mod bytes {
     //! Re-export of [bytes](https://docs.rs/bytes/latest/bytes/) crate.
     //!
@@ -58,7 +60,7 @@ pub mod bytes {
 
 pub mod futures {
     //! Re-export of the [futures](https://docs.rs/futures/latest/futures/)
-    //! and [async-stream](https://docs.rs/async-stream/latest/async_stream/) crates.
+    //! and [asynk-strim](https://docs.rs/asynk-strim/latest/asynk_strim/) crates.
     //!
     //! Exported for your convenience and because it is so fundamental to rama.
 
@@ -72,7 +74,7 @@ pub mod futures {
     pub use ::futures::*;
 
     #[doc(inline)]
-    pub use ::async_stream;
+    pub use ::asynk_strim as async_stream;
 
     /// Joins two futures, waiting for both to complete.
     ///

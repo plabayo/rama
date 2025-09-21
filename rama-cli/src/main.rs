@@ -5,12 +5,9 @@
 #![cfg_attr(not(test), warn(clippy::print_stdout, clippy::dbg_macro))]
 
 use clap::{Parser, Subcommand};
-use rama::error::BoxError;
 
 pub mod cmd;
 use cmd::{echo, fp, http, ip, proxy, serve, tls, ws};
-
-pub mod error;
 
 pub mod trace;
 pub mod utils;
@@ -46,11 +43,11 @@ enum CliCommands {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), BoxError> {
+async fn main() {
     let cli = Cli::parse();
 
     #[allow(clippy::exit)]
-    match match cli.cmds {
+    if let Err(err) = match cli.cmds {
         CliCommands::Http(cfg) => http::run(cfg).await,
         CliCommands::Ws(cfg) => ws::run(cfg).await,
         CliCommands::Tls(cfg) => tls::run(cfg).await,
@@ -60,15 +57,7 @@ async fn main() -> Result<(), BoxError> {
         CliCommands::Fp(cfg) => fp::run(cfg).await,
         CliCommands::Serve(cfg) => serve::run(cfg).await,
     } {
-        Ok(()) => Ok(()),
-        Err(err) => {
-            if let Some(err) = err.downcast_ref::<error::ErrorWithExitCode>() {
-                eprintln!("🚩 exit with error ({}): {err}", err.exit_code());
-                std::process::exit(err.exit_code());
-            } else {
-                eprintln!("🚩 exit with error: {err}");
-                std::process::exit(1);
-            }
-        }
+        eprintln!("🚩 exit with error: {err}");
+        std::process::exit(1);
     }
 }

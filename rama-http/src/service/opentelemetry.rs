@@ -1,4 +1,4 @@
-use crate::{Request, Response};
+use crate::{Body, Request, Response, body::util::BodyExt};
 use opentelemetry_http::HttpClient;
 use rama_core::{
     Context, Service,
@@ -6,7 +6,6 @@ use rama_core::{
     error::{BoxError, ErrorContext},
     rt::Executor,
 };
-use rama_http_types::{Body, dep::http_body_util::BodyExt};
 use std::{fmt, pin::Pin};
 
 /// Wrapper type which allows you to use an rama http [`Service`]
@@ -77,17 +76,20 @@ impl<S> OtelExporter<S> {
 
 impl<S> HttpClient for OtelExporter<S>
 where
-    S: fmt::Debug + Clone + Service<Request, Response = Response, Error: Into<BoxError>>,
+    S: fmt::Debug
+        + Clone
+        + Service<Request<Body>, Response = Response<Body>, Error: Into<BoxError>>,
 {
     fn send_bytes<'life0, 'async_trait>(
         &'life0 self,
-        request: Request<Bytes>,
-    ) -> Pin<Box<dyn Future<Output = Result<Response<Bytes>, BoxError>> + Send + 'async_trait>>
+        request: http::Request<Bytes>,
+    ) -> Pin<Box<dyn Future<Output = Result<http::Response<Bytes>, BoxError>> + Send + 'async_trait>>
     where
         'life0: 'async_trait,
         Self: 'async_trait,
     {
         let ctx = self.ctx.clone();
+        let request = Request::from(request);
         let request = request.map(Body::from);
 
         let svc = self.service.clone();
@@ -97,7 +99,7 @@ where
             let resp = svc.serve(ctx, request).await.map_err(Into::into)?;
             let (parts, body) = resp.into_parts();
             let body = body.collect().await?.to_bytes();
-            Ok(Response::from_parts(parts, body))
+            Ok(http::Response::from_parts(parts.into(), body))
         });
 
         Box::pin(async move { handle.await.context("await tokio handle to fut exec")? })

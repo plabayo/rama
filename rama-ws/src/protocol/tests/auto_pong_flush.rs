@@ -55,7 +55,10 @@ impl Write for MockWrite {
 
     fn flush(&mut self) -> io::Result<()> {
         self.flush_calls += 1;
-        if self.flush_calls % NUMBER_OF_FLUSHES_TO_GET_IT_TO_WORK == 0 {
+        if self
+            .flush_calls
+            .is_multiple_of(NUMBER_OF_FLUSHES_TO_GET_IT_TO_WORK)
+        {
             mem::swap(&mut self.written_data, &mut self.flushed_data);
             self.written_data.clear();
             eprintln!("flush success");

@@ -6,7 +6,7 @@ use futures_channel::{mpsc, oneshot};
 use rama_core::bytes::Bytes;
 use rama_core::futures::{Stream, stream::FusedStream}; // for mpsc::Receiver
 use rama_http_types::HeaderMap;
-use rama_http_types::dep::http_body::{Body, Frame, SizeHint};
+use rama_http_types::body::{Frame, SizeHint, StreamingBody};
 use std::task::ready;
 
 use super::DecodedLength;
@@ -130,7 +130,7 @@ impl Incoming {
     }
 }
 
-impl Body for Incoming {
+impl StreamingBody for Incoming {
     type Data = Bytes;
     type Error = crate::Error;
 
@@ -358,8 +358,8 @@ mod tests {
     use std::mem;
     use std::task::Poll;
 
-    use super::{Body, DecodedLength, Incoming, Sender, SizeHint};
-    use rama_http_types::dep::http_body_util::BodyExt;
+    use super::{DecodedLength, Incoming, Sender, SizeHint};
+    use rama_http::{StreamingBody, body::util::BodyExt};
 
     #[test]
     fn test_size_of() {

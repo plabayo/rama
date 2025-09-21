@@ -7,12 +7,14 @@ use rama::{
     error::{BoxError, ErrorContext, OpaqueError, error},
     graceful::{self, Shutdown, ShutdownGuard},
     http::{
-        Request, Response, Version,
+        Request, Response, StatusCode, StreamingBody, Version,
+        body::util::BodyExt,
         client::{
             EasyHttpWebClient,
             proxy::layer::{HttpProxyAddressLayer, SetProxyAuthHttpHeaderLayer},
         },
         conn::TargetHttpVersion,
+        convert::curl,
         layer::{
             auth::AddAuthorizationLayer,
             decompression::DecompressionLayer,
@@ -21,14 +23,16 @@ use rama::{
             timeout::TimeoutLayer,
             traffic_writer::WriterMode,
         },
+        service::web::response::IntoResponse,
     },
-    layer::MapResultLayer,
+    layer::{HijackLayer, MapResultLayer},
     net::{
         address::ProxyAddress,
         tls::{KeyLogIntent, client::ServerVerifyMode},
         user::{Basic, Bearer, ProxyCredential},
     },
     rt::Executor,
+    service::service_fn,
     telemetry::tracing::level_filters::LevelFilter,
     tls::boring::client::{EmulateTlsProfileLayer, TlsConnectorDataBuilder},
     ua::{
@@ -43,8 +47,6 @@ use rama::{
 use std::{io::IsTerminal, str::FromStr, sync::Arc, time::Duration};
 use terminal_prompt::Terminal;
 use tokio::sync::oneshot;
-
-use crate::error::ErrorWithExitCode;
 
 mod writer;
 
@@ -125,6 +127,10 @@ pub struct CliCommandHttp {
     #[arg(short = 'v', long)]
     /// print verbose output, alias for --all --print hHbB
     verbose: bool,
+
+    #[arg(long)]
+    /// do not send request but instead print equivalent curl command
+    curl: bool,
 
     #[arg(long)]
     /// show output for all requests/responses (including redirects)
@@ -321,17 +327,18 @@ async fn run_inner(guard: ShutdownGuard, cfg: CliCommandHttp) -> Result<(), BoxE
     if cfg.check_status {
         let status = response.status();
         if status.is_client_error() {
-            return Err(ErrorWithExitCode::new(
-                4,
-                OpaqueError::from_display(format!("client http error, status: {status}")),
-            )
-            .into());
+            // TODO: we need ability to inject data (eg OS exit code) into errors, some kind of extensions,
+            // because wrapping with an error and than trying `downcast_ref` does not work,
+            // it just falls through, and calling `source` first is unreliable...
+            return Err(
+                OpaqueError::from_display(format!("client http error, status: {status}"))
+                    .into_boxed(),
+            );
         } else if status.is_server_error() {
-            return Err(ErrorWithExitCode::new(
-                5,
-                OpaqueError::from_display(format!("server http error, status: {status}")),
-            )
-            .into());
+            return Err(
+                OpaqueError::from_display(format!("server http error, status: {status}"))
+                    .into_boxed(),
+            );
         }
     }
 
@@ -342,7 +349,11 @@ async fn create_client(
     guard: ShutdownGuard,
     mut cfg: CliCommandHttp,
 ) -> Result<impl Service<Request, Response = Response, Error = BoxError>, BoxError> {
-    let (request_writer_mode, response_writer_mode) = if cfg.verbose {
+    let (request_writer_mode, response_writer_mode) = if cfg.curl {
+        cfg.all = false;
+        cfg.verbose = false;
+        (None, None)
+    } else if cfg.verbose {
         cfg.all = true;
         (Some(WriterMode::All), Some(WriterMode::All))
     } else if cfg.body {
@@ -475,6 +486,31 @@ async fn create_client(
             }
         },
         SetProxyAuthHttpHeaderLayer::default(),
+        HijackLayer::new(
+            cfg.curl,
+            service_fn(async |ctx: Context, req: Request| {
+                let Ok((ctx, req)) = UserAgentEmulateHttpRequestModifier::new()
+                    .serve(ctx, req)
+                    .await
+                else {
+                    return Ok(
+                        (StatusCode::INTERNAL_SERVER_ERROR, "failed to emulate UA").into_response()
+                    );
+                };
+
+                let (parts, body) = req.into_parts();
+                let payload = body.collect().await.unwrap().to_bytes();
+                let curl_cmd =
+                    curl::cmd_string_for_request_parts_and_payload(&ctx, &parts, &payload);
+
+                #[allow(clippy::print_stdout)]
+                {
+                    println!("{curl_cmd}");
+                }
+
+                Ok::<_, OpaqueError>(StatusCode::OK.into_response())
+            }),
+        ),
     );
 
     Ok(client_builder.into_layer(inner_client))
@@ -534,10 +570,7 @@ fn map_internal_client_error<E, Body>(
 ) -> Result<Response, BoxError>
 where
     E: Into<BoxError>,
-    Body: rama::http::dep::http_body::Body<Data = rama::bytes::Bytes, Error: Into<BoxError>>
-        + Send
-        + Sync
-        + 'static,
+    Body: StreamingBody<Data = rama::bytes::Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
 {
     match result {
         Ok(response) => Ok(response.map(rama::http::Body::new)),

@@ -174,33 +174,8 @@ detect-biggest-crates:
 mdbook-serve:
 	cd docs/book && mdbook serve
 
-publish:
-    cargo publish -p rama-error
-    cargo publish -p rama-macros
-    cargo publish -p rama-utils
-    cargo publish -p rama-core
-    cargo publish -p rama-crypto
-    cargo publish -p rama-http-types
-    cargo publish -p rama-net
-    cargo publish -p rama-unix
-    cargo publish -p rama-http-headers
-    cargo publish -p rama-ua
-    cargo publish -p rama-dns
-    cargo publish -p rama-tcp
-    cargo publish -p rama-udp
-    cargo publish -p rama-tls-boring
-    cargo publish -p rama-tls-rustls
-    cargo publish -p rama-http
-    cargo publish -p rama-http-core
-    cargo publish -p rama-http-backend
-    cargo publish -p rama-ws
-    cargo publish -p rama-tls-acme
-    cargo publish -p rama-haproxy
-    cargo publish -p rama-proxy
-    cargo publish -p rama-socks5
-    cargo publish -p rama-tower
-    cargo publish -p rama
-    cargo publish -p rama-cli
+publish *ARGS:
+    cargo publish --workspace {{ARGS}}
 
 [working-directory: './rama-cli/manifests/winget/Plabayo/Rama/Preview']
 @submit-rama-cli-winget-preview:

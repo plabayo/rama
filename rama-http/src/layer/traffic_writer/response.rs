@@ -1,8 +1,6 @@
 use super::WriterMode;
-use crate::dep::http_body;
-use crate::dep::http_body_util::BodyExt;
 use crate::io::write_http_response;
-use crate::{Body, Request, Response};
+use crate::{Body, Request, Response, StreamingBody, body::util::BodyExt};
 use rama_core::bytes::Bytes;
 use rama_core::error::{BoxError, ErrorContext, OpaqueError};
 use rama_core::rt::Executor;
@@ -291,7 +289,7 @@ where
     S: Service<Request<ReqBody>, Response = Response<ResBody>, Error: Into<BoxError>>,
     W: ResponseWriter,
     ReqBody: Send + 'static,
-    ResBody: http_body::Body<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
+    ResBody: StreamingBody<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
 {
     type Response = Response;
     type Error = BoxError;

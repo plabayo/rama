@@ -8,6 +8,7 @@ use pin_project_lite::pin_project;
 use rama_core::bytes::{Buf, Bytes};
 use rama_core::error::BoxError;
 use rama_core::telemetry::tracing::{debug, trace};
+use rama_http::StreamingBody;
 use rama_http_types::header::{
     CONNECTION, KEEP_ALIVE, PROXY_CONNECTION, TE, TRANSFER_ENCODING, UPGRADE,
 };
@@ -16,7 +17,6 @@ use rama_http_types::{HeaderMap, HeaderName};
 use std::task::ready;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
-use crate::body::Body;
 use crate::proto::h2::ping::Recorder;
 
 pub(crate) mod ping;
@@ -81,7 +81,7 @@ fn strip_connection_headers(headers: &mut HeaderMap, is_request: bool) {
 pin_project! {
     pub(crate) struct PipeToSendStream<S>
     where
-        S: Body,
+        S: StreamingBody,
     {
         body_tx: SendStream<SendBuf<S::Data>>,
         data_done: bool,
@@ -92,7 +92,7 @@ pin_project! {
 
 impl<S> PipeToSendStream<S>
 where
-    S: Body,
+    S: StreamingBody,
 {
     fn new(stream: S, tx: SendStream<SendBuf<S::Data>>) -> Self {
         Self {
@@ -105,7 +105,7 @@ where
 
 impl<S> Future for PipeToSendStream<S>
 where
-    S: Body,
+    S: StreamingBody,
     S::Error: Into<BoxError>,
 {
     type Output = crate::Result<()>;

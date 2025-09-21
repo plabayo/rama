@@ -8,9 +8,8 @@ use std::time::Duration;
 use httparse::ParserConfig;
 use rama_core::bytes::{Buf, Bytes};
 use rama_core::telemetry::tracing::{debug, error, trace, warn};
-use rama_http::dep::http;
 use rama_http::io::upgrade;
-use rama_http_types::dep::http_body::Frame;
+use rama_http_types::body::Frame;
 use rama_http_types::header::{CONNECTION, TE};
 use rama_http_types::{HeaderMap, HeaderValue, Method, Version};
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -883,7 +882,7 @@ struct State {
     /// State of allowed writes
     writing: Writing,
     /// Last known request extensions encoded
-    encoded_request_extensions: Option<http::Extensions>,
+    encoded_request_extensions: Option<rama_core::context::Extensions>,
     /// An expected pending HTTP upgrade.
     upgrade: Option<upgrade::Pending>,
     /// Either HTTP/1.0 or 1.1 connection

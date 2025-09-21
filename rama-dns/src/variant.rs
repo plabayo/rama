@@ -10,6 +10,19 @@ macro_rules! impl_dns_resolver_either_either {
         {
             type Error = ::rama_core::error::BoxError;
 
+            async fn txt_lookup(
+                &self,
+                domain: Domain,
+            ) -> Result<Vec<Vec<u8>>, Self::Error>{
+                match self {
+                    $(
+                        ::rama_core::combinators::$id::$param(d) => d.txt_lookup(domain)
+                            .await
+                            .map_err(Into::into),
+                    )+
+                }
+            }
+
             async fn ipv4_lookup(
                 &self,
                 domain: Domain,
@@ -56,6 +69,13 @@ mod tests {
     impl DnsResolver for MockResolver1 {
         type Error = BoxError;
 
+        fn txt_lookup(
+            &self,
+            domain: Domain,
+        ) -> impl Future<Output = Result<Vec<Vec<u8>>, Self::Error>> + Send + '_ {
+            std::future::ready(Ok(vec![domain.as_str().as_bytes().to_vec()]))
+        }
+
         fn ipv4_lookup(
             &self,
             _domain: Domain,
@@ -74,6 +94,13 @@ mod tests {
     impl DnsResolver for MockResolver2 {
         type Error = BoxError;
 
+        fn txt_lookup(
+            &self,
+            domain: Domain,
+        ) -> impl Future<Output = Result<Vec<Vec<u8>>, Self::Error>> + Send + '_ {
+            std::future::ready(Ok(vec![domain.as_str().to_uppercase().as_bytes().to_vec()]))
+        }
+
         fn ipv4_lookup(
             &self,
             _domain: Domain,
@@ -87,6 +114,30 @@ mod tests {
         ) -> impl Future<Output = Result<Vec<Ipv6Addr>, Self::Error>> + Send + '_ {
             std::future::ready(Ok(vec![Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 2)]))
         }
+    }
+
+    #[tokio::test]
+    async fn test_either_txt_lookup() {
+        let resolver1 = Either::<MockResolver1, MockResolver2>::A(MockResolver1);
+        let resolver2 = Either::<MockResolver1, MockResolver2>::B(MockResolver2);
+
+        let result1 = resolver1
+            .txt_lookup(Domain::from_static("abc"))
+            .await
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap();
+        assert_eq!(result1, b"abc");
+
+        let result2 = resolver2
+            .txt_lookup(Domain::from_static("abc"))
+            .await
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap();
+        assert_eq!(result2, b"ABC");
     }
 
     #[tokio::test]

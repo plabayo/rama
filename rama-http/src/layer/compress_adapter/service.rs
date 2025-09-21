@@ -6,9 +6,9 @@ use crate::layer::{
 };
 use rama_core::telemetry::tracing;
 use rama_core::{Context, Service, error::BoxError};
+use rama_http_types::StreamingBody;
 use rama_http_types::{
     HeaderValue, Request, Response,
-    dep::http_body::Body,
     header::{CONTENT_ENCODING, CONTENT_LENGTH},
 };
 use rama_utils::macros::define_inner_service_accessors;
@@ -82,8 +82,9 @@ impl<S> CompressAdaptService<S> {
 impl<ReqBody, ResBody, S> Service<Request<ReqBody>> for CompressAdaptService<S>
 where
     S: Service<Request<ReqBody>, Response = Response<ResBody>>,
-    ResBody:
-        Body<Data: Send + 'static, Error: Into<BoxError> + Send + Sync + 'static> + Send + 'static,
+    ResBody: StreamingBody<Data: Send + 'static, Error: Into<BoxError> + Send + Sync + 'static>
+        + Send
+        + 'static,
     ReqBody: Send + 'static,
 {
     type Response = Response<CompressionBody<DecompressionBody<ResBody>>>;

@@ -94,7 +94,16 @@ Rama provides a rich set of examples demonstrating its web service capabilities.
 - [/examples/http_health_check.rs](https://github.com/plabayo/rama/blob/main/examples/http_health_check.rs): A health check service
 - [/examples/http_service_hello.rs](https://github.com/plabayo/rama/blob/main/examples/http_service_hello.rs): Demonstrates transport layer control
 
+### Newline Delimited JSON (ndjson)
+
+- [/examples/http_nd_json.rs](https://github.com/plabayo/rama/blob/main/examples/http_nd_json.rs) - example demonstrating how one can expose a json stream endpoint (see test of this example to see how client side works)
+
+### Server-Sent Events (SSE)
+
+See [./sse.md].
+
 ### Anti-Bot Examples
+
 - [/examples/http_anti_bot_infinite_resource.rs`](https://github.com/plabayo/rama/blob/main/examples/http_anti_bot_infinite_resource.rs): example demonstrating how to serve an infinite resource
 - [/examples/http_anti_bot_zip_bomb.rs`](https://github.com/plabayo/rama/blob/main/examples/http_anti_bot_zip_bomb.rs): example demonstrating how to serve a zip bomb
 
