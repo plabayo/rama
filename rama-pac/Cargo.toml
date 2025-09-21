@@ -14,6 +14,9 @@ rust-version.workspace = true
 rama-http = { workspace = true }
 rama-net = { workspace = true }
 rama-core = { workspace = true }
+rama-http-types = { workspace = true }
+boa_runtime = "0.20.0"
+boa_engine = "0.20.0"
 
 [lints]
 workspace = true
