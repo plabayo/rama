@@ -309,8 +309,10 @@ compression = [
     "rama-tls-boring?/compression",
     "rama-ws?/compression",
 ]
+crypto = ["dep:rama-crypto"]
 tls = [
     "net",
+    "crypto",
     "rama-net?/tls",
     "rama-http?/tls",
     "rama-http-backend?/tls",
@@ -333,7 +335,7 @@ dns = ["net", "dep:rama-dns", "rama-socks5?/dns"]
 tcp = ["dns", "dep:rama-tcp"]
 udp = ["net", "dep:rama-udp"]
 ws = ["dep:rama-ws", "http"]
-acme = ["dep:rama-tls-acme"]
+acme = ["crypto", "dep:rama-tls-acme"]
 http = [
     "dep:rama-http",
     "ua",
@@ -374,7 +376,7 @@ bytes = { workspace = true, optional = true }
 hex = { workspace = true, optional = true }
 pin-project-lite = { workspace = true }
 rama-core = { workspace = true }
-rama-crypto = { workspace = true }
+rama-crypto = { workspace = true, optional = true }
 rama-dns = { workspace = true, optional = true }
 rama-haproxy = { workspace = true, optional = true }
 rama-http = { workspace = true, optional = true }

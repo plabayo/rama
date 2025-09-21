@@ -82,6 +82,9 @@ qa-crate CRATE:
 
 qa-full: qa hack test-ignored fuzz-60s check-links
 
+clean:
+    cargo clean
+
 upgrades:
     @cargo install cargo-upgrades
     cargo upgrades

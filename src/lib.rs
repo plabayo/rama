@@ -378,6 +378,7 @@ pub use ::rama_core::{
     inspect, layer, matcher, rt, service, username,
 };
 
+#[cfg(feature = "crypto")]
 #[doc(inline)]
 pub use ::rama_crypto as crypto;
 
