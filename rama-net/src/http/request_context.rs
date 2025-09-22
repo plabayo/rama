@@ -6,6 +6,7 @@ use crate::{
     address::{Authority, Domain, Host},
 };
 use rama_core::Context;
+use rama_core::context::Extensions;
 use rama_core::error::OpaqueError;
 use rama_core::telemetry::tracing;
 use rama_http_types::{HttpRequestParts, Method};
@@ -68,7 +69,7 @@ impl<T: HttpRequestParts> TryFrom<(&Context, &T)> for RequestContext {
     fn try_from((ctx, req): (&Context, &T)) -> Result<Self, Self::Error> {
         let uri = req.uri();
 
-        let protocol = protocol_from_uri_or_context(ctx, uri, req.method());
+        let protocol = protocol_from_uri_or_extensions(req.extensions(), uri, req.method());
         tracing::trace!(
             url.full = %uri,
             "request context: detected protocol: {protocol} (scheme: {:?}",
@@ -80,11 +81,15 @@ impl<T: HttpRequestParts> TryFrom<(&Context, &T)> for RequestContext {
             .unwrap_or_else(|| protocol.default_port().unwrap_or(80));
         tracing::trace!(url.full = %uri, "request context: detected default port: {default_port}");
 
-        let proxy_authority_opt: Option<Authority> = ctx
+        let proxy_authority_opt: Option<Authority> = req
+            .extensions()
             .get::<ProxyTarget>()
             .and_then(|t| t.0.host().is_domain().then(|| t.0.clone()));
 
-        let sni_host_opt = ctx.get().and_then(try_get_sni_from_secure_transport);
+        let sni_host_opt = req
+            .extensions()
+            .get()
+            .and_then(try_get_sni_from_secure_transport);
         let authority = match (proxy_authority_opt, sni_host_opt) {
             (Some(authority), _) => {
                 tracing::trace!(url.full = %uri, "request context: use proxy target as authority: {authority}");
@@ -101,7 +106,7 @@ impl<T: HttpRequestParts> TryFrom<(&Context, &T)> for RequestContext {
                     (h, default_port).into()
                 }))
                 .or_else(|| {
-                    ctx.get::<Forwarded>().and_then(|f| {
+                    req.extensions().get::<Forwarded>().and_then(|f| {
                         f.client_host().map(|fauth| {
                             let (host, port) = fauth.clone().into_parts();
                             let port = port.unwrap_or(default_port);
@@ -129,7 +134,8 @@ impl<T: HttpRequestParts> TryFrom<(&Context, &T)> for RequestContext {
 
         tracing::trace!(url.full = %uri, "request context: detected authority: {authority}");
 
-        let http_version = ctx
+        let http_version = req
+            .extensions()
             .get::<Forwarded>()
             .and_then(|f| {
                 f.client_version().map(|v| match v {
@@ -152,8 +158,8 @@ impl<T: HttpRequestParts> TryFrom<(&Context, &T)> for RequestContext {
 }
 
 #[allow(clippy::unnecessary_lazy_evaluations)]
-fn protocol_from_uri_or_context(ctx: &Context, uri: &Uri, method: &Method) -> Protocol {
-    Protocol::maybe_from_uri_scheme_str_and_method(uri.scheme(), Some(method)).or_else(|| ctx.get::<Forwarded>()
+fn protocol_from_uri_or_extensions(ext: &Extensions, uri: &Uri, method: &Method) -> Protocol {
+    Protocol::maybe_from_uri_scheme_str_and_method(uri.scheme(), Some(method)).or_else(|| ext.get::<Forwarded>()
         .and_then(|f| f.client_proto().map(|p| {
             tracing::trace!(url.furi = %uri, "request context: detected protocol from forwarded client proto");
             p.into()
@@ -219,6 +225,7 @@ impl TryRefIntoTransportContext for rama_http_types::request::Parts {
 mod tests {
     use super::*;
     use crate::forwarded::{Forwarded, ForwardedElement, NodeId};
+    use rama_core::extensions::ExtensionsMut;
     use rama_http_types::{Request, header::FORWARDED};
 
     #[test]
@@ -315,16 +322,13 @@ mod tests {
                 req_builder = req_builder.header(FORWARDED, header);
             }
 
-            let req = req_builder.body(()).unwrap();
-            let mut ctx = Context::default();
+            let mut req = req_builder.body(()).unwrap();
+            let ctx = Context::default();
 
             let forwarded: Forwarded = req.headers().get(FORWARDED).unwrap().try_into().unwrap();
-            ctx.insert(forwarded);
+            req.extensions_mut().insert(forwarded);
 
-            let req_ctx = ctx
-                .get_or_try_insert_with_ctx::<RequestContext, _>(|ctx| (ctx, &req).try_into())
-                .unwrap()
-                .clone();
+            let req_ctx = RequestContext::try_from((&ctx, &req)).unwrap();
 
             assert_eq!(req_ctx, expected, "Failed for {forwarded_str_vec:?}");
         }
@@ -332,7 +336,7 @@ mod tests {
 
     #[test]
     fn test_request_ctx_https_request_behind_haproxy_plain() {
-        let req = Request::builder()
+        let mut req = Request::builder()
             .uri("/en/reservation/roomdetails")
             .version(Version::HTTP_11)
             .header("host", "echo.ramaproxy.org")
@@ -341,14 +345,13 @@ mod tests {
             .body(())
             .unwrap();
 
-        let mut ctx = Context::default();
-        ctx.insert(Forwarded::new(ForwardedElement::forwarded_for(
-            NodeId::try_from("127.0.0.1:61234").unwrap(),
-        )));
+        let ctx = Context::default();
+        req.extensions_mut()
+            .insert(Forwarded::new(ForwardedElement::forwarded_for(
+                NodeId::try_from("127.0.0.1:61234").unwrap(),
+            )));
 
-        let req_ctx: &mut RequestContext = ctx
-            .get_or_try_insert_with_ctx(|ctx| (ctx, &req).try_into())
-            .unwrap();
+        let req_ctx = RequestContext::try_from((&ctx, &req)).unwrap();
 
         assert_eq!(req_ctx.http_version, Version::HTTP_11);
         assert_eq!(req_ctx.protocol, "http");
@@ -372,10 +375,8 @@ mod tests {
                 .body(())
                 .unwrap();
 
-            let mut ctx = Context::default();
-            let req_ctx: &mut RequestContext = ctx
-                .get_or_try_insert_with_ctx(|ctx| (ctx, &req).try_into())
-                .unwrap();
+            let ctx = Context::default();
+            let req_ctx = RequestContext::try_from((&ctx, &req)).unwrap();
 
             assert_eq!(req_ctx.http_version, Version::HTTP_11);
             assert_eq!(req_ctx.protocol, expected_protocol);
@@ -406,9 +407,7 @@ mod tests {
                 .unwrap();
 
             let mut ctx = Context::default();
-            let req_ctx: &mut RequestContext = ctx
-                .get_or_try_insert_with_ctx(|ctx| (ctx, &req).try_into())
-                .unwrap();
+            let req_ctx = RequestContext::try_from((&ctx, &req)).unwrap();
 
             assert_eq!(req_ctx.http_version, Version::HTTP_11);
             assert_eq!(req_ctx.protocol, expected_protocol);

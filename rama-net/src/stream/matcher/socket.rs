@@ -2,9 +2,7 @@ use rama_core::{Context, context::Extensions};
 use std::net::SocketAddr;
 
 #[cfg(feature = "http")]
-use crate::stream::SocketInfo;
-#[cfg(feature = "http")]
-use rama_http_types::Request;
+use {crate::stream::SocketInfo, rama_core::extensions::ExtensionsRef, rama_http_types::Request};
 
 #[derive(Debug, Clone)]
 /// Matcher based on the [`SocketAddr`] of the peer.
@@ -41,8 +39,9 @@ impl SocketAddressMatcher {
 
 #[cfg(feature = "http")]
 impl<Body> rama_core::matcher::Matcher<Request<Body>> for SocketAddressMatcher {
-    fn matches(&self, _ext: Option<&mut Extensions>, ctx: &Context, _req: &Request<Body>) -> bool {
-        ctx.get::<SocketInfo>()
+    fn matches(&self, _ext: Option<&mut Extensions>, _ctx: &Context, req: &Request<Body>) -> bool {
+        req.extensions()
+            .get::<SocketInfo>()
             .map(|info| info.peer_addr() == &self.addr)
             .unwrap_or(self.optional)
     }
@@ -63,7 +62,7 @@ where
 #[cfg(feature = "http")]
 #[cfg(test)]
 mod test {
-    use rama_core::matcher::Matcher;
+    use rama_core::{extensions::ExtensionsMut, matcher::Matcher};
     use rama_http_types::Body;
 
     use super::*;
@@ -72,8 +71,8 @@ mod test {
     fn test_socket_matcher_http() {
         let matcher = SocketAddressMatcher::new(([127, 0, 0, 1], 8080));
 
-        let mut ctx = Context::default();
-        let req = Request::builder()
+        let ctx = Context::default();
+        let mut req = Request::builder()
             .method("GET")
             .uri("/hello")
             .body(Body::empty())
@@ -83,15 +82,18 @@ mod test {
         assert!(!matcher.matches(None, &ctx, &req));
 
         // test #2: no match: test with different socket info (port difference)
-        ctx.insert(SocketInfo::new(None, ([127, 0, 0, 1], 8081).into()));
+        req.extensions_mut()
+            .insert(SocketInfo::new(None, ([127, 0, 0, 1], 8081).into()));
         assert!(!matcher.matches(None, &ctx, &req));
 
         // test #3: no match: test with different socket info (ip addr difference)
-        ctx.insert(SocketInfo::new(None, ([127, 0, 0, 2], 8080).into()));
+        req.extensions_mut()
+            .insert(SocketInfo::new(None, ([127, 0, 0, 2], 8080).into()));
         assert!(!matcher.matches(None, &ctx, &req));
 
         // test #4: match: test with correct address
-        ctx.insert(SocketInfo::new(None, ([127, 0, 0, 1], 8080).into()));
+        req.extensions_mut()
+            .insert(SocketInfo::new(None, ([127, 0, 0, 1], 8080).into()));
         assert!(matcher.matches(None, &ctx, &req));
 
         // test #5: match: test with missing socket info, but it's seen as optional

@@ -1,3 +1,5 @@
+use super::bytes::BytesRWTracker;
+use rama_core::{Context, Layer, Service, extensions::ExtensionsMut};
 use rama_core::{Context, Layer, Service, stream::Stream};
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
@@ -45,19 +47,20 @@ where
 impl<S, IO> Service<IO> for IncomingBytesTrackerService<S>
 where
     S: Service<BytesRWTracker<IO>>,
-    IO: Stream,
+    IO: Stream + ExtensionsMut,
 {
     type Response = S::Response;
     type Error = S::Error;
 
     fn serve(
         &self,
-        mut ctx: Context,
+        ctx: Context,
         stream: IO,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
-        let tracked_stream = BytesRWTracker::new(stream);
+        let mut tracked_stream = BytesRWTracker::new(stream);
         let handle = tracked_stream.handle();
-        ctx.insert(handle);
+        tracked_stream.extensions_mut().insert(handle);
+
         self.inner.serve(ctx, tracked_stream)
     }
 }

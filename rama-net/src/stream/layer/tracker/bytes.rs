@@ -10,7 +10,11 @@
 //! [`AsyncWrite`]: crate::stream::AsyncWrite
 
 use pin_project_lite::pin_project;
-use rama_core::telemetry::tracing;
+use rama_core::{
+    context::Extensions,
+    extensions::{ExtensionsMut, ExtensionsRef},
+    telemetry::tracing,
+};
 use std::{
     fmt, io,
     pin::Pin,
@@ -37,6 +41,19 @@ pin_project! {
         written: Arc<AtomicUsize>,
         #[pin]
         stream: S,
+        extensions: Extensions,
+    }
+}
+
+impl<S> ExtensionsRef for BytesRWTracker<S> {
+    fn extensions(&self) -> &Extensions {
+        &self.extensions
+    }
+}
+
+impl<S> ExtensionsMut for BytesRWTracker<S> {
+    fn extensions_mut(&mut self) -> &mut Extensions {
+        &mut self.extensions
     }
 }
 
@@ -50,20 +67,27 @@ impl<S: fmt::Debug> fmt::Debug for BytesRWTracker<S> {
     }
 }
 
-impl<S> BytesRWTracker<S> {
+impl BytesRWTracker<()> {
     /// Create a new [`BytesRWTracker`] that wraps the
     /// given [`AsyncRead`] and/or [`AsyncWrite`].
     ///
     /// [`AsyncRead`]: crate::stream::AsyncRead
     /// [`AsyncWrite`]: crate::stream::AsyncWrite
-    pub fn new(stream: S) -> Self {
-        Self {
+    pub fn new<S: ExtensionsMut>(mut stream: S) -> BytesRWTracker<S> {
+        // TODO is this a boundry if so we might want to clone instead of transfering
+        let mut extensions = Extensions::new();
+        stream.transfer_extensions(&mut extensions);
+
+        BytesRWTracker {
             read: Arc::new(AtomicUsize::new(0)),
             written: Arc::new(AtomicUsize::new(0)),
             stream,
+            extensions,
         }
     }
+}
 
+impl<S> BytesRWTracker<S> {
     /// Get the number of bytes read (so far).
     pub fn read(&self) -> usize {
         self.read.load(Ordering::Acquire)
@@ -201,6 +225,7 @@ impl BytesRWTrackerHandle {
 mod tests {
     use super::*;
 
+    use rama_core::generic_request::GenericRequest;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio_test::io::Builder;
 
@@ -212,6 +237,7 @@ mod tests {
             .read(b"baz")
             .build();
 
+        let stream = GenericRequest::new(stream);
         let mut tracker = BytesRWTracker::new(stream);
         let mut buf = [0u8; 3];
 
@@ -236,6 +262,7 @@ mod tests {
             .write(b"baz")
             .build();
 
+        let stream = GenericRequest::new(stream);
         let mut tracker = BytesRWTracker::new(stream);
 
         assert_eq!(tracker.read(), 0);
@@ -262,6 +289,7 @@ mod tests {
             .write(b"baz")
             .build();
 
+        let stream = GenericRequest::new(stream);
         let mut tracker = BytesRWTracker::new(stream);
         let mut buf = [0u8; 3];
 
@@ -298,6 +326,7 @@ mod tests {
             .write(b"baz")
             .build();
 
+        let stream = GenericRequest::new(stream);
         let tracker = BytesRWTracker::new(stream);
         let handle = tracker.handle();
 
