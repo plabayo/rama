@@ -2,6 +2,7 @@ use rama_core::Context;
 use rama_core::Service;
 use rama_core::error::BoxError;
 use rama_core::error::ErrorContext;
+use rama_core::extensions::ExtensionsMut;
 use rama_core::graceful::ShutdownGuard;
 use rama_core::rt::Executor;
 use rama_core::telemetry::tracing::{self, Instrument, trace_root_span};
@@ -281,7 +282,7 @@ impl TcpListener {
                 }
             };
 
-            let socket = TcpStream::new(socket);
+            let mut socket = TcpStream::new(socket);
 
             let service = service.clone();
             let mut ctx = ctx.clone();
@@ -303,7 +304,9 @@ impl TcpListener {
 
             tokio::spawn(
                 async move {
-                    ctx.insert(SocketInfo::new(local_addr, peer_addr));
+                    socket
+                        .extensions_mut()
+                        .insert(SocketInfo::new(local_addr, peer_addr));
 
                     let _ = service.serve(ctx, socket).await;
                 }
@@ -334,9 +337,9 @@ impl TcpListener {
                 result = self.inner.accept() => {
                     match result {
                         Ok((socket, peer_addr)) => {
-                            let socket = TcpStream::new(socket);
+                            let mut socket = TcpStream::new(socket);
                             let service = service.clone();
-                            let mut ctx = ctx.clone();
+                            let  ctx = ctx.clone();
 
                             let local_addr = socket.local_addr().ok();
                             let trace_local_addr = local_addr
@@ -354,7 +357,7 @@ impl TcpListener {
                             );
 
                             guard.spawn_task(async move {
-                                ctx.insert(SocketInfo::new(local_addr, peer_addr));
+                                socket.extensions_mut().insert(SocketInfo::new(local_addr, peer_addr));
                                 let _ = service.serve(ctx, socket).await;
                             }.instrument(span));
                         }

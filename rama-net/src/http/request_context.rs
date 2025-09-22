@@ -406,7 +406,7 @@ mod tests {
                 .body(())
                 .unwrap();
 
-            let mut ctx = Context::default();
+            let ctx = Context::default();
             let req_ctx = RequestContext::try_from((&ctx, &req)).unwrap();
 
             assert_eq!(req_ctx.http_version, Version::HTTP_11);

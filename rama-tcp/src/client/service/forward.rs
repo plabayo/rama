@@ -3,6 +3,7 @@ use crate::client::Request as TcpRequest;
 use rama_core::{
     Context, Service,
     error::{BoxError, ErrorExt, OpaqueError},
+    extensions::ExtensionsRef,
     stream::Stream,
 };
 use rama_net::{
@@ -87,7 +88,7 @@ impl Forwarder<super::TcpConnector> {
 
 impl<T, C> Service<T> for Forwarder<C>
 where
-    T: Stream + Unpin,
+    T: Stream + Unpin + ExtensionsRef,
     C: ConnectorService<crate::client::Request, Connection: Stream + Unpin, Error: Into<BoxError>>,
 {
     type Response = ();
@@ -96,13 +97,13 @@ where
     async fn serve(&self, ctx: Context, source: T) -> Result<Self::Response, Self::Error> {
         let authority = match &self.kind {
             ForwarderKind::Static(target) => target.clone(),
-            ForwarderKind::Dynamic => {
-                ctx.get::<ProxyTarget>()
-                    .map(|f| f.0.clone())
-                    .ok_or_else(|| {
-                        OpaqueError::from_display("missing forward authority").into_boxed()
-                    })?
-            }
+            ForwarderKind::Dynamic => source
+                .extensions()
+                .get::<ProxyTarget>()
+                .map(|f| f.0.clone())
+                .ok_or_else(|| {
+                    OpaqueError::from_display("missing forward authority").into_boxed()
+                })?,
         };
 
         let req = TcpRequest::new(authority.clone());
