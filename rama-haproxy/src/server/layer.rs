@@ -2,6 +2,7 @@ use crate::protocol::{HeaderResult, PartialResult, v1, v2};
 use rama_core::{
     Context, Layer, Service,
     error::{BoxError, ErrorContext, ErrorExt, OpaqueError},
+    extensions::ExtensionsMut,
     stream::{HeapReader, PeekStream, Stream},
     telemetry::tracing,
 };
@@ -97,7 +98,7 @@ impl<S: Clone> Clone for HaProxyService<S> {
 impl<S, IO> Service<IO> for HaProxyService<S>
 where
     S: Service<PeekStream<HeapReader, IO>, Error: Into<BoxError>>,
-    IO: Stream + Unpin,
+    IO: Stream + Unpin + ExtensionsMut,
 {
     type Response = S::Response;
     type Error = BoxError;
@@ -176,21 +177,21 @@ where
                     v1::Addresses::Tcp4(info) => {
                         let peer_addr: SocketAddr = (info.source_address, info.source_port).into();
                         let el = ForwardedElement::forwarded_for(peer_addr);
-                        if let Some(forwarded) = ctx.get_mut::<Forwarded>() {
+                        if let Some(forwarded) = stream.extensions_mut().get_mut::<Forwarded>() {
                             forwarded.append(el);
                         } else {
                             let forwarded = Forwarded::new(el);
-                            ctx.insert(forwarded);
+                            stream.extensions_mut().insert(forwarded);
                         }
                     }
                     v1::Addresses::Tcp6(info) => {
                         let peer_addr: SocketAddr = (info.source_address, info.source_port).into();
                         let el = ForwardedElement::forwarded_for(peer_addr);
-                        if let Some(forwarded) = ctx.get_mut::<Forwarded>() {
+                        if let Some(forwarded) = stream.extensions_mut().get_mut::<Forwarded>() {
                             forwarded.append(el);
                         } else {
                             let forwarded = Forwarded::new(el);
-                            ctx.insert(forwarded);
+                            stream.extensions_mut().insert(forwarded);
                         }
                     }
                     v1::Addresses::Unknown => (),
@@ -202,21 +203,21 @@ where
                     v2::Addresses::IPv4(info) => {
                         let peer_addr: SocketAddr = (info.source_address, info.source_port).into();
                         let el = ForwardedElement::forwarded_for(peer_addr);
-                        if let Some(forwarded) = ctx.get_mut::<Forwarded>() {
+                        if let Some(forwarded) = stream.extensions_mut().get_mut::<Forwarded>() {
                             forwarded.append(el);
                         } else {
                             let forwarded = Forwarded::new(el);
-                            ctx.insert(forwarded);
+                            stream.extensions_mut().insert(forwarded);
                         }
                     }
                     v2::Addresses::IPv6(info) => {
                         let peer_addr: SocketAddr = (info.source_address, info.source_port).into();
                         let el = ForwardedElement::forwarded_for(peer_addr);
-                        if let Some(forwarded) = ctx.get_mut::<Forwarded>() {
+                        if let Some(forwarded) = stream.extensions_mut().get_mut::<Forwarded>() {
                             forwarded.append(el);
                         } else {
                             let forwarded = Forwarded::new(el);
-                            ctx.insert(forwarded);
+                            stream.extensions_mut().insert(forwarded);
                         }
                     }
                     v2::Addresses::Unix(_) | v2::Addresses::Unspecified => (),
@@ -242,7 +243,7 @@ where
 
 #[cfg(test)]
 mod test {
-    use rama_core::service::service_fn;
+    use rama_core::{generic_request::GenericRequest, service::service_fn};
 
     use super::*;
 
@@ -256,20 +257,15 @@ mod test {
     async fn test_haproxy_peek_direct() {
         let proxy_svc = HaProxyService::new(service_fn(echo)).with_peek(true);
 
-        let response = proxy_svc
-            .serve(Context::default(), std::io::Cursor::new(b"foo".to_vec()))
-            .await
-            .unwrap();
+        let request = GenericRequest::new(std::io::Cursor::new(b"foo".to_vec()));
+        let response = proxy_svc.serve(Context::default(), request).await.unwrap();
 
         assert_eq!("foo", String::from_utf8(response).unwrap());
 
-        let response = proxy_svc
-            .serve(
-                Context::default(),
-                std::io::Cursor::new(b"Hello, this is a test to check if it works.".to_vec()),
-            )
-            .await
-            .unwrap();
+        let request = GenericRequest::new(std::io::Cursor::new(
+            b"Hello, this is a test to check if it works.".to_vec(),
+        ));
+        let response = proxy_svc.serve(Context::default(), request).await.unwrap();
 
         assert_eq!(
             "Hello, this is a test to check if it works.",
@@ -281,45 +277,33 @@ mod test {
     async fn test_haproxy_peek_with_haproxy_v1() {
         let proxy_svc = HaProxyService::new(service_fn(echo));
 
-        let response = proxy_svc
-            .serve(
-                Context::default(),
-                std::io::Cursor::new(b"PROXY TCP4 192.0.2.1 198.51.100.1 12345 80\r\n".to_vec()),
-            )
-            .await
-            .unwrap();
+        let request = GenericRequest::new(std::io::Cursor::new(
+            b"PROXY TCP4 192.0.2.1 198.51.100.1 12345 80\r\n".to_vec(),
+        ));
+        let response = proxy_svc.serve(Context::default(), request).await.unwrap();
 
         assert_eq!("", String::from_utf8(response).unwrap());
 
-        let response = proxy_svc
-            .serve(
-                Context::default(),
-                std::io::Cursor::new(b"PROXY TCP4 192.0.2.1 198.51.100.1 12345 80\r\nfoo".to_vec()),
-            )
-            .await
-            .unwrap();
+        let request = GenericRequest::new(std::io::Cursor::new(
+            b"PROXY TCP4 192.0.2.1 198.51.100.1 12345 80\r\nfoo".to_vec(),
+        ));
+        let response = proxy_svc.serve(Context::default(), request).await.unwrap();
 
         assert_eq!("foo", String::from_utf8(response).unwrap());
 
         let proxy_svc = proxy_svc.with_peek(true);
 
-        let response = proxy_svc
-            .serve(
-                Context::default(),
-                std::io::Cursor::new(b"PROXY TCP4 192.0.2.1 198.51.100.1 12345 80\r\n".to_vec()),
-            )
-            .await
-            .unwrap();
+        let request = GenericRequest::new(std::io::Cursor::new(
+            b"PROXY TCP4 192.0.2.1 198.51.100.1 12345 80\r\n".to_vec(),
+        ));
+        let response = proxy_svc.serve(Context::default(), request).await.unwrap();
 
         assert_eq!("", String::from_utf8(response).unwrap());
 
-        let response = proxy_svc
-            .serve(
-                Context::default(),
-                std::io::Cursor::new(b"PROXY TCP4 192.0.2.1 198.51.100.1 12345 80\r\nfoo".to_vec()),
-            )
-            .await
-            .unwrap();
+        let request = GenericRequest::new(std::io::Cursor::new(
+            b"PROXY TCP4 192.0.2.1 198.51.100.1 12345 80\r\nfoo".to_vec(),
+        ));
+        let response = proxy_svc.serve(Context::default(), request).await.unwrap();
 
         assert_eq!("foo", String::from_utf8(response).unwrap());
     }
@@ -341,17 +325,13 @@ mod test {
         ];
 
         let proxy_svc = HaProxyService::new(service_fn(echo));
-        let response = proxy_svc
-            .serve(Context::default(), std::io::Cursor::new(DATA.to_vec()))
-            .await
-            .unwrap();
+        let request = GenericRequest::new(std::io::Cursor::new(DATA.to_vec()));
+        let response = proxy_svc.serve(Context::default(), request).await.unwrap();
         assert_eq!("foo", String::from_utf8(response).unwrap());
 
         let proxy_svc = proxy_svc.with_peek(true);
-        let response = proxy_svc
-            .serve(Context::default(), std::io::Cursor::new(DATA.to_vec()))
-            .await
-            .unwrap();
+        let request = GenericRequest::new(std::io::Cursor::new(DATA.to_vec()));
+        let response = proxy_svc.serve(Context::default(), request).await.unwrap();
         assert_eq!("foo", String::from_utf8(response).unwrap());
     }
 }

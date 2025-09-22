@@ -29,6 +29,15 @@ impl<T> GenericRequest<T> {
     }
 }
 
+impl<T: Clone> Clone for GenericRequest<T> {
+    fn clone(&self) -> Self {
+        Self {
+            request: self.request.clone(),
+            extensions: self.extensions.clone(),
+        }
+    }
+}
+
 impl<T> ExtensionsRef for GenericRequest<T> {
     fn extensions(&self) -> &Extensions {
         &self.extensions
