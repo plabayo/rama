@@ -6,6 +6,7 @@ use rama_core::bytes::Bytes;
 use rama_core::error::{BoxError, OpaqueError};
 use rama_core::telemetry::tracing;
 use rama_core::{Context, Service};
+use rama_utils::include_dir::Dir;
 use std::fmt;
 use std::str::FromStr;
 use std::{
@@ -19,6 +20,13 @@ mod open_file;
 
 #[cfg(test)]
 mod tests;
+
+/// Source of directory content - either filesystem or embedded.
+#[derive(Clone, Debug)]
+enum DirSource {
+    Filesystem(PathBuf),
+    Embedded(Dir<'static>),
+}
 
 // default capacity 64KiB
 const DEFAULT_CAPACITY: usize = 65536;
@@ -37,7 +45,7 @@ const DEFAULT_CAPACITY: usize = 65536;
 /// - We don't have necessary permissions to read the file
 #[derive(Clone, Debug)]
 pub struct ServeDir<F = DefaultServeDirFallback> {
-    base: PathBuf,
+    base: DirSource,
     buf_chunk_size: usize,
     precompressed_variants: Option<PrecompressedVariants>,
     // This is used to specialise implementation for
@@ -56,6 +64,17 @@ impl ServeDir<DefaultServeDirFallback> {
         let mut base = PathBuf::from(".");
         base.push(path.as_ref());
 
+        Self::new_with_base(DirSource::Filesystem(base))
+    }
+
+    /// Create a new [`ServeDir`] that serves files from embedded content.
+    #[must_use]
+    pub fn new_embedded(path: Dir<'static>) -> Self {
+        Self::new_with_base(DirSource::Embedded(path))
+    }
+
+    /// Create a new [`ServeDir`] with the specified directory source and default settings.
+    fn new_with_base(base: DirSource) -> Self {
         Self {
             base,
             buf_chunk_size: DEFAULT_CAPACITY,
@@ -68,12 +87,13 @@ impl ServeDir<DefaultServeDirFallback> {
         }
     }
 
+    /// Create a new [`ServeDir`] configured to serve a single file.
     pub(crate) fn new_single_file<P>(path: P, mime: HeaderValue) -> Self
     where
         P: AsRef<Path>,
     {
         Self {
-            base: path.as_ref().to_owned(),
+            base: DirSource::Filesystem(path.as_ref().to_path_buf()),
             buf_chunk_size: DEFAULT_CAPACITY,
             precompressed_variants: None,
             variant: ServeVariant::SingleFile { mime },
@@ -379,14 +399,14 @@ impl<F> ServeDir<F> {
         .collect();
 
         let variant = self.variant.clone();
-
         let open_file_result = open_file::open_file(
             variant,
             path_to_file,
             req,
             negotiated_encodings,
-            range_header,
+            range_header.as_deref(),
             buf_chunk_size,
+            &self.base,
         )
         .await;
 
@@ -483,7 +503,9 @@ enum ServeVariant {
 }
 
 impl ServeVariant {
-    fn build_and_validate_path(&self, base_path: &Path, requested_path: &str) -> Option<PathBuf> {
+    /// Build and validate the file path based on the serve variant and requested path.
+    /// Returns None if the path is invalid or unsafe.
+    fn build_and_validate_path(&self, source: &DirSource, requested_path: &str) -> Option<PathBuf> {
         match self {
             Self::Directory { serve_mode: _ } => {
                 let path = requested_path.trim_start_matches('/');
@@ -491,7 +513,11 @@ impl ServeVariant {
                 let path_decoded = percent_decode(path.as_ref()).decode_utf8().ok()?;
                 let path_decoded = Path::new(&*path_decoded);
 
-                let mut path_to_file = base_path.to_path_buf();
+                let mut path_to_file = match source {
+                    DirSource::Filesystem(base_path) => base_path.clone(),
+                    DirSource::Embedded(_) => PathBuf::new(), // For embedded files, we don't need a filesystem path
+                };
+
                 for component in path_decoded.components() {
                     match component {
                         Component::Normal(comp) => {
@@ -513,7 +539,10 @@ impl ServeVariant {
                 }
                 Some(path_to_file)
             }
-            Self::SingleFile { mime: _ } => Some(base_path.to_path_buf()),
+            Self::SingleFile { mime: _ } => match source {
+                DirSource::Filesystem(base_path) => Some(base_path.clone()),
+                DirSource::Embedded(_) => Some(PathBuf::new()), // For embedded single file
+            },
         }
     }
 }

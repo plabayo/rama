@@ -1,12 +1,15 @@
 use super::{
-    DirectoryServeMode, ServeVariant,
+    DirSource, DirectoryServeMode, ServeVariant,
     headers::{IfModifiedSince, IfUnmodifiedSince, LastModified},
 };
 use crate::headers::{encoding::Encoding, specifier::QualityValue};
 use crate::{HeaderValue, Method, Request, Uri, header};
 use chrono::{DateTime, Local};
 use http_range_header::RangeUnsatisfiableError;
+use rama_core::combinators::Either;
 use rama_core::telemetry::tracing;
+use rama_utils::include_dir::{Dir, Metadata as EmbeddedMetadata};
+use std::io::Cursor;
 use std::{
     ffi::OsStr,
     fmt,
@@ -16,8 +19,10 @@ use std::{
     path::{Path, PathBuf},
     time::SystemTime,
 };
+use tokio::io::AsyncRead;
 use tokio::{fs::File, io::AsyncSeekExt};
 
+/// Represents the outcome of attempting to open a file for serving.
 pub(super) enum OpenFileOutput {
     FileOpened(Box<FileOpened>),
     Redirect { location: HeaderValue },
@@ -29,6 +34,28 @@ pub(super) enum OpenFileOutput {
     InvalidFilename,
 }
 
+impl OpenFileOutput {
+    /// Create a new FileOpened variant with the given parameters.
+    pub(super) fn new_file_opened(
+        extent: FileRequestExtent,
+        chunk_size: usize,
+        mime: HeaderValue,
+        maybe_encoding: Option<Encoding>,
+        maybe_range: Option<Result<Vec<RangeInclusive<u64>>, RangeUnsatisfiableError>>,
+        last_modified: Option<LastModified>,
+    ) -> Self {
+        Self::FileOpened(Box::new(FileOpened {
+            extent,
+            chunk_size,
+            mime_header_value: mime,
+            maybe_encoding,
+            maybe_range,
+            last_modified,
+        }))
+    }
+}
+
+/// Contains the data for a successfully opened file ready for serving.
 pub(super) struct FileOpened {
     pub(super) extent: FileRequestExtent,
     pub(super) chunk_size: usize,
@@ -38,114 +65,189 @@ pub(super) struct FileOpened {
     pub(super) last_modified: Option<LastModified>,
 }
 
+/// Represents different ways a file can be accessed for serving.
 pub(super) enum FileRequestExtent {
     Full(File, Metadata),
     Head(Metadata),
+    Embedded(Vec<u8>, u64), // Content, original file size
+    EmbeddedHead(u64),      // Content length for HEAD requests on embedded files
 }
 
+impl FileRequestExtent {
+    /// Convert the file extent into an async reader if possible.
+    pub(super) fn into_reader(self) -> Option<impl AsyncRead + Send + Sync + Unpin> {
+        match self {
+            Self::Head(_) | Self::EmbeddedHead(_) => None,
+            Self::Full(file, _) => Some(Either::A(file)),
+            Self::Embedded(content, _) => Some(Either::B(Cursor::new(content))),
+        }
+    }
+
+    pub(super) fn file_size(&self) -> u64 {
+        match self {
+            Self::Head(meta) | Self::Full(_, meta) => meta.len(),
+            Self::Embedded(_, original_size) => *original_size,
+            Self::EmbeddedHead(size) => *size,
+        }
+    }
+}
+
+/// Open a file for serving, handling both filesystem and embedded sources.
+/// Supports precompressed variants, range requests, and conditional headers.
 pub(super) async fn open_file(
     variant: ServeVariant,
     mut path_to_file: PathBuf,
     req: Request,
     negotiated_encodings: Vec<QualityValue<Encoding>>,
-    range_header: Option<String>,
+    range_header: Option<&str>,
     buf_chunk_size: usize,
+    source: &DirSource,
 ) -> io::Result<OpenFileOutput> {
-    let if_unmodified_since = req
-        .headers()
-        .get(header::IF_UNMODIFIED_SINCE)
-        .and_then(IfUnmodifiedSince::from_header_value);
-
-    let if_modified_since = req
-        .headers()
-        .get(header::IF_MODIFIED_SINCE)
-        .and_then(IfModifiedSince::from_header_value);
-
     let mime = match variant {
         ServeVariant::Directory { serve_mode } => {
             // Might already at this point know a redirect or not found result should be
             // returned which corresponds to a Some(output). Otherwise the path might be
             // modified and proceed to the open file/metadata future.
             if let Some(output) =
-                maybe_serve_directory(&mut path_to_file, req.uri(), serve_mode).await?
+                maybe_serve_directory(&mut path_to_file, req.uri(), serve_mode, source).await?
             {
                 return Ok(output);
             }
 
-            mime_guess::from_path(&path_to_file)
-                .first_raw()
-                .map(HeaderValue::from_static)
-                .unwrap_or_else(|| {
-                    HeaderValue::from_str(mime::APPLICATION_OCTET_STREAM.as_ref()).unwrap()
-                })
+            guess_mime_type(&path_to_file)
         }
 
         ServeVariant::SingleFile { mime } => mime,
     };
 
     if req.method() == Method::HEAD {
-        let (meta, maybe_encoding) =
-            file_metadata_with_fallback(path_to_file, negotiated_encodings).await?;
+        match source {
+            DirSource::Filesystem(_) => {
+                let (meta, maybe_encoding) =
+                    file_metadata_with_fallback(path_to_file, negotiated_encodings).await?;
 
-        let last_modified = meta.modified().ok().map(LastModified::from);
-        if let Some(output) = check_modified_headers(
-            last_modified.as_ref(),
-            if_unmodified_since,
-            if_modified_since,
-        ) {
-            return Ok(output);
-        }
-
-        let maybe_range = try_parse_range(range_header.as_deref(), meta.len());
-
-        Ok(OpenFileOutput::FileOpened(Box::new(FileOpened {
-            extent: FileRequestExtent::Head(meta),
-            chunk_size: buf_chunk_size,
-            mime_header_value: mime,
-            maybe_encoding,
-            maybe_range,
-            last_modified,
-        })))
-    } else {
-        let (mut file, maybe_encoding) =
-            match open_file_with_fallback(path_to_file, negotiated_encodings).await {
-                Ok(result) => result,
-
-                Err(err) if is_invalid_filename_error(&err) => {
-                    return Ok(OpenFileOutput::InvalidFilename);
+                let last_modified = meta.modified().ok().map(LastModified::from);
+                if let Some(output) = check_modified_headers(last_modified.as_ref(), &req) {
+                    return Ok(output);
                 }
-                Err(err) => return Err(err),
-            };
-        let meta = file.metadata().await?;
-        let last_modified = meta.modified().ok().map(LastModified::from);
-        if let Some(output) = check_modified_headers(
-            last_modified.as_ref(),
-            if_unmodified_since,
-            if_modified_since,
-        ) {
-            return Ok(output);
-        }
 
-        let maybe_range = try_parse_range(range_header.as_deref(), meta.len());
-        if let Some(Ok(ranges)) = maybe_range.as_ref()
-            && ranges.len() == 1
-        {
-            // if there is any other amount of ranges than 1 we'll return an
-            // unsatisfiable later as there isn't yet support for multipart ranges
-            file.seek(SeekFrom::Start(*ranges[0].start())).await?;
-        }
+                let maybe_range = try_parse_range(range_header, meta.len());
 
-        Ok(OpenFileOutput::FileOpened(Box::new(FileOpened {
-            extent: FileRequestExtent::Full(file, meta),
-            chunk_size: buf_chunk_size,
-            mime_header_value: mime,
-            maybe_encoding,
-            maybe_range,
-            last_modified,
-        })))
+                Ok(OpenFileOutput::new_file_opened(
+                    FileRequestExtent::Head(meta),
+                    buf_chunk_size,
+                    mime,
+                    maybe_encoding,
+                    maybe_range,
+                    last_modified,
+                ))
+            }
+            DirSource::Embedded(base) => {
+                let (contents, metadata, maybe_encoding) = match open_embedded_file_with_fallback(
+                    base,
+                    path_to_file,
+                    negotiated_encodings,
+                ) {
+                    Ok(result) => result,
+                    Err(err) => return Err(err),
+                };
+
+                let last_modified =
+                    metadata.map(|metadata| LastModified::from(metadata.modified()));
+
+                if let Some(output) = check_modified_headers(last_modified.as_ref(), &req) {
+                    return Ok(output);
+                }
+
+                let content_length = contents.len() as u64;
+                let maybe_range = try_parse_range(range_header, content_length);
+
+                Ok(OpenFileOutput::new_file_opened(
+                    FileRequestExtent::EmbeddedHead(content_length),
+                    buf_chunk_size,
+                    mime,
+                    maybe_encoding,
+                    maybe_range,
+                    last_modified,
+                ))
+            }
+        }
+    } else {
+        match source {
+            DirSource::Filesystem(_) => {
+                let (mut file, maybe_encoding) =
+                    match open_file_with_fallback(path_to_file, negotiated_encodings).await {
+                        Ok(result) => result,
+                        Err(err) if is_invalid_filename_error(&err) => {
+                            return Ok(OpenFileOutput::InvalidFilename);
+                        }
+                        Err(err) => return Err(err),
+                    };
+                let meta = file.metadata().await?;
+                let last_modified = meta.modified().ok().map(LastModified::from);
+                if let Some(output) = check_modified_headers(last_modified.as_ref(), &req) {
+                    return Ok(output);
+                }
+
+                let maybe_range = try_parse_range(range_header, meta.len());
+                if let Some(Ok(ranges)) = maybe_range.as_ref()
+                    && ranges.len() == 1
+                {
+                    file.seek(SeekFrom::Start(*ranges[0].start())).await?;
+                }
+
+                Ok(OpenFileOutput::new_file_opened(
+                    FileRequestExtent::Full(file, meta),
+                    buf_chunk_size,
+                    mime,
+                    maybe_encoding,
+                    maybe_range,
+                    last_modified,
+                ))
+            }
+            DirSource::Embedded(base) => {
+                let (contents, metadata, maybe_encoding) = match open_embedded_file_with_fallback(
+                    base,
+                    path_to_file,
+                    negotiated_encodings,
+                ) {
+                    Ok(result) => result,
+                    Err(err) => return Err(err),
+                };
+
+                let last_modified = metadata
+                    .as_ref()
+                    .map(|meta| LastModified::from(meta.modified()));
+
+                if let Some(output) = check_modified_headers(last_modified.as_ref(), &req) {
+                    return Ok(output);
+                }
+
+                let content_length = contents.len() as u64;
+                let maybe_range = try_parse_range(range_header, content_length);
+
+                let mut content = contents;
+                if let Some(Ok(ranges)) = maybe_range.as_ref()
+                    && ranges.len() == 1
+                {
+                    let start = *ranges[0].start() as usize;
+                    content.drain(0..start.min(content.len()));
+                }
+
+                Ok(OpenFileOutput::new_file_opened(
+                    FileRequestExtent::Embedded(content, content_length),
+                    buf_chunk_size,
+                    mime,
+                    maybe_encoding,
+                    maybe_range,
+                    last_modified,
+                ))
+            }
+        }
     }
 }
 
+/// Check if an IO error indicates an invalid filename.
 fn is_invalid_filename_error(err: &io::Error) -> bool {
     // Only applies to NULL bytes
     if err.kind() == ErrorKind::InvalidInput {
@@ -166,11 +268,31 @@ fn is_invalid_filename_error(err: &io::Error) -> bool {
     false
 }
 
+// Common MIME type guessing logic
+/// Guess the MIME type from a file path extension.
+fn guess_mime_type(path: &Path) -> HeaderValue {
+    mime_guess::from_path(path)
+        .first_raw()
+        .map(HeaderValue::from_static)
+        .unwrap_or_else(|| HeaderValue::from_str(mime::APPLICATION_OCTET_STREAM.as_ref()).unwrap())
+}
+
+/// Check conditional request headers (If-Modified-Since, If-Unmodified-Since)
+/// and return appropriate response if conditions are not met.
 fn check_modified_headers(
     modified: Option<&LastModified>,
-    if_unmodified_since: Option<IfUnmodifiedSince>,
-    if_modified_since: Option<IfModifiedSince>,
+    req: &Request,
 ) -> Option<OpenFileOutput> {
+    let if_unmodified_since = req
+        .headers()
+        .get(header::IF_UNMODIFIED_SINCE)
+        .and_then(IfUnmodifiedSince::from_header_value);
+
+    let if_modified_since = req
+        .headers()
+        .get(header::IF_MODIFIED_SINCE)
+        .and_then(IfModifiedSince::from_header_value);
+
     if let Some(since) = if_unmodified_since {
         let precondition = modified
             .as_ref()
@@ -198,6 +320,8 @@ fn check_modified_headers(
 
 // Returns the preferred_encoding encoding and modifies the path extension
 // to the corresponding file extension for the encoding.
+/// Determine the preferred encoding from negotiated encodings and modify the path
+/// to include the appropriate file extension for the encoding.
 fn preferred_encoding(
     path: &mut PathBuf,
     negotiated_encoding: &[QualityValue<Encoding>],
@@ -226,6 +350,8 @@ fn preferred_encoding(
 // Attempts to open the file with any of the possible negotiated_encodings in the
 // preferred order. If none of the negotiated_encodings have a corresponding precompressed
 // file the uncompressed file is used as a fallback.
+/// Attempt to open a file with any of the negotiated encodings in preferred order.
+/// Falls back to uncompressed file if no precompressed variants are found.
 async fn open_file_with_fallback(
     mut path: PathBuf,
     mut negotiated_encoding: Vec<QualityValue<Encoding>>,
@@ -248,9 +374,41 @@ async fn open_file_with_fallback(
     Ok((file, encoding))
 }
 
+/// Attempt to open an embedded file with any of the negotiated encodings.
+/// Falls back to uncompressed file if no precompressed variants are found.
+fn open_embedded_file_with_fallback(
+    base: &Dir<'_>,
+    mut path: PathBuf,
+    mut negotiated_encoding: Vec<QualityValue<Encoding>>,
+) -> io::Result<(Vec<u8>, Option<EmbeddedMetadata>, Option<Encoding>)> {
+    let (file, encoding) = loop {
+        // Get the preferred encoding among the negotiated ones.
+        let encoding = preferred_encoding(&mut path, &negotiated_encoding);
+        match (base.get_file(&path), encoding) {
+            (Some(file), maybe_encoding) => break (file, maybe_encoding),
+            (None, Some(encoding)) => {
+                // Remove the extension corresponding to a precompressed file (.gz, .br, .zz)
+                // to reset the path before the next iteration.
+                path.set_extension(OsStr::new(""));
+                // Remove the encoding from the negotiated_encodings since the file doesn't exist
+                negotiated_encoding.retain(|qv| qv.value != encoding);
+            }
+            (None, None) => {
+                return Err(io::Error::new(io::ErrorKind::NotFound, "file not found"));
+            }
+        };
+    };
+
+    let content = file.contents().to_vec();
+    let metadata = file.metadata().copied();
+
+    Ok((content, metadata, encoding))
+}
+
 // Attempts to get the file metadata with any of the possible negotiated_encodings in the
 // preferred order. If none of the negotiated_encodings have a corresponding precompressed
 // file the uncompressed file is used as a fallback.
+/// Get file metadata with fallback for different encodings.
 async fn file_metadata_with_fallback(
     mut path: PathBuf,
     mut negotiated_encoding: Vec<QualityValue<Encoding>>,
@@ -273,12 +431,21 @@ async fn file_metadata_with_fallback(
     Ok((file, encoding))
 }
 
+/// Handle directory requests based on the configured directory serve mode.
+/// Can append index.html, return 404, or generate HTML file listing.
 async fn maybe_serve_directory(
     path_to_file: &mut PathBuf,
     uri: &Uri,
     mode: DirectoryServeMode,
+    source: &DirSource,
 ) -> Result<Option<OpenFileOutput>, std::io::Error> {
-    if !is_dir(path_to_file).await {
+    // Check if it's a directory based on the source type
+    let is_directory = match source {
+        DirSource::Filesystem(_) => is_dir(path_to_file).await,
+        DirSource::Embedded(base) => is_dir_embedded(path_to_file, base).await,
+    };
+
+    if !is_directory {
         return Ok(None);
     }
 
@@ -298,104 +465,68 @@ async fn maybe_serve_directory(
         }
         DirectoryServeMode::NotFound => Ok(Some(OpenFileOutput::FileNotFound)),
         DirectoryServeMode::HtmlFileList => {
-            let mut rows = vec![];
+            let mut entries = vec![];
 
-            let mut dir = tokio::fs::read_dir(&path_to_file).await?;
-            while let Some(entry) = dir.next_entry().await? {
-                let file_name = entry.file_name();
-                let file_name_str = file_name.to_string_lossy();
+            match source {
+                DirSource::Filesystem(_) => {
+                    let mut dir = tokio::fs::read_dir(&path_to_file).await?;
+                    while let Some(entry) = dir.next_entry().await? {
+                        let file_name = entry.file_name();
+                        let file_name_str = file_name.to_string_lossy().to_string();
 
-                let metadata = entry.metadata().await?;
-                let is_dir = metadata.is_dir();
-                let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-                let datetime: DateTime<Local> = modified.into();
-                let modified_str = datetime.format("%Y-%m-%d %H:%M:%S %:z").to_string();
+                        let metadata = entry.metadata().await?;
+                        let is_dir = metadata.is_dir();
+                        let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+                        let size = if is_dir { 0 } else { metadata.len() };
 
-                let mime = if is_dir {
-                    None
-                } else {
-                    mime_guess::from_path(file_name_str.as_ref()).first()
-                };
-                let emoji = emoji_for_mime(mime.as_ref(), is_dir);
+                        entries.push(DirEntry::new(file_name_str, is_dir, modified, size));
+                    }
+                }
+                DirSource::Embedded(base) => {
+                    let Some(dir) = base.get_dir(path_to_file) else {
+                        return Ok(Some(OpenFileOutput::FileNotFound));
+                    };
 
-                let hs = if metadata.is_dir() {
-                    HumanSize::None
-                } else {
-                    format_size(metadata.len())
-                };
+                    // Process all entries (directories and files)
+                    for entry in dir.entries() {
+                        let file_name_str = entry
+                            .path()
+                            .file_name()
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_default();
 
-                rows.push(format!(
-                    "<tr><td>{5} <a href=\"{1}{2}{0}\">{0}</a></td><td>{3}</td><td>{4}</td></tr>",
-                    file_name_str,
-                    uri.path().trim_end_matches('/'),
-                    if uri.path().trim_start_matches('/').is_empty() {
-                        ""
-                    } else {
-                        "/"
-                    },
-                    modified_str,
-                    hs,
-                    emoji,
-                ));
-            }
+                        if entry.path().is_dir() {
+                            // Directory entry
+                            let modified = SystemTime::UNIX_EPOCH;
+                            entries.push(DirEntry::new(file_name_str, true, modified, 0));
+                        } else {
+                            // File entry
+                            let file = entry
+                                .as_file()
+                                .expect("Entry should be a file if not a directory");
+                            let modified = file
+                                .metadata()
+                                .map(|m| m.modified())
+                                .unwrap_or(SystemTime::UNIX_EPOCH);
 
-            let table = format!(
-                r#"<table style="width:100%; border-collapse:collapse;">
-            <thead>
-            <tr><th align="left">Name</th><th align="left">Last Modified</th><th align="left">Size</th></tr>
-            </thead>
-            <tbody>
-            {0}
-            </tbody>
-            </table>"#,
-                rows.join("\n")
-            );
-
-            let mut nav_parts = vec![];
-            let mut current_path = String::new();
-            for part in uri.path().trim_start_matches('/').split('/') {
-                if !part.is_empty() {
-                    current_path.push('/');
-                    current_path.push_str(part);
-                    nav_parts.push(format!("<a href=\"{current_path}\">{part}</a>"));
+                            entries.push(DirEntry::new(
+                                file_name_str,
+                                false,
+                                modified,
+                                file.contents().len() as u64,
+                            ));
+                        }
+                    }
                 }
             }
-            let breadcrumb = if nav_parts.is_empty() {
-                "<a href=\"/\">/</a>".to_owned()
-            } else {
-                format!(
-                    "<a href=\"/\">/</a> &raquo; {}",
-                    nav_parts.join(" &raquo; ")
-                )
-            };
 
-            let html = format!(
-                r#"<!DOCTYPE HTML>
-            <html lang="en">
-            <head>
-            <meta charset="utf-8">
-            <title>Directory listing for .{0}</title>
-            </head>
-            <body>
-            <h1>Directory listing for .{0}</h1>
-            <div>{2}</div>
-            <hr>
-            <ul>
-            {1}
-            </ul>
-            <hr>
-            </body>
-            </html>"#,
-                uri.path(),
-                table,
-                breadcrumb,
-            );
-
+            let html = generate_directory_html(entries, uri);
             Ok(Some(OpenFileOutput::Html(html)))
         }
     }
 }
 
+/// Human-readable file size representation.
 enum HumanSize {
     None,
     Bytes(u64),
@@ -418,6 +549,7 @@ impl fmt::Display for HumanSize {
     }
 }
 
+/// Format file size in human-readable units (B, KB, MB, GB, TB).
 fn format_size(bytes: u64) -> HumanSize {
     const MAX_UNITS: usize = 5;
 
@@ -437,6 +569,7 @@ fn format_size(bytes: u64) -> HumanSize {
     }
 }
 
+/// Get an appropriate emoji icon for a file based on its MIME type.
 fn emoji_for_mime(mime: Option<&mime::Mime>, is_dir: bool) -> &'static str {
     if is_dir {
         return "📁";
@@ -457,6 +590,7 @@ fn emoji_for_mime(mime: Option<&mime::Mime>, is_dir: bool) -> &'static str {
     }
 }
 
+/// Parse and validate HTTP Range header.
 fn try_parse_range(
     maybe_range_ref: Option<&str>,
     file_size: u64,
@@ -473,6 +607,15 @@ async fn is_dir(path_to_file: &Path) -> bool {
         .is_ok_and(|meta_data| meta_data.is_dir())
 }
 
+async fn is_dir_embedded(path_to_file: &Path, base: &Dir<'_>) -> bool {
+    // Empty path corresponds to the root directory, which is always a directory
+    if path_to_file.as_os_str().is_empty() {
+        return true;
+    }
+    base.get_dir(path_to_file).is_some()
+}
+
+/// Append a trailing slash to a URI path for directory redirection.
 fn append_slash_on_path(uri: Uri) -> Result<Uri, OpenFileOutput> {
     let rama_http_types::uri::Parts {
         scheme,
@@ -505,6 +648,114 @@ fn append_slash_on_path(uri: Uri) -> Result<Uri, OpenFileOutput> {
         tracing::error!("redirect uri failed to build: {err:?}");
         OpenFileOutput::InvalidRedirectUri
     })
+}
+
+/// Represents a directory entry for HTML file listing.
+struct DirEntry {
+    name: String,
+    is_dir: bool,
+    modified: SystemTime,
+    size: u64,
+}
+
+impl DirEntry {
+    fn new(name: String, is_dir: bool, modified: SystemTime, size: u64) -> Self {
+        Self {
+            name,
+            is_dir,
+            modified,
+            size,
+        }
+    }
+}
+
+/// Generate HTML page for directory listing with file details and navigation.
+fn generate_directory_html(entries: Vec<DirEntry>, uri: &Uri) -> String {
+    let mut rows = vec![];
+
+    for entry in entries {
+        let datetime: DateTime<Local> = entry.modified.into();
+        let modified_str = datetime.format("%Y-%m-%d %H:%M:%S %:z").to_string();
+
+        let mime = if entry.is_dir {
+            None
+        } else {
+            mime_guess::from_path(entry.name.as_str()).first()
+        };
+        let emoji = emoji_for_mime(mime.as_ref(), entry.is_dir);
+
+        let hs = if entry.is_dir {
+            HumanSize::None
+        } else {
+            format_size(entry.size)
+        };
+
+        rows.push(format!(
+            "<tr><td>{5} <a href=\"{1}{2}{0}\">{0}</a></td><td>{3}</td><td>{4}</td></tr>",
+            entry.name,
+            uri.path().trim_end_matches('/'),
+            if uri.path().trim_start_matches('/').is_empty() {
+                ""
+            } else {
+                "/"
+            },
+            modified_str,
+            hs,
+            emoji,
+        ));
+    }
+
+    let table = format!(
+        r#"<table style="width:100%; border-collapse:collapse;">
+        <thead>
+        <tr><th align="left">Name</th><th align="left">Last Modified</th><th align="left">Size</th></tr>
+        </thead>
+        <tbody>
+        {0}
+        </tbody>
+        </table>"#,
+        rows.join("\n")
+    );
+
+    let mut nav_parts = vec![];
+    let mut current_path = String::new();
+    for part in uri.path().trim_start_matches('/').split('/') {
+        if !part.is_empty() {
+            current_path.push('/');
+            current_path.push_str(part);
+            nav_parts.push(format!("<a href=\"{current_path}\">{part}</a>"));
+        }
+    }
+    let breadcrumb = if nav_parts.is_empty() {
+        "<a href=\"/\">/</a>".to_owned()
+    } else {
+        format!(
+            "<a href=\"/\">/</a> &raquo; {}",
+            nav_parts.join(" &raquo; ")
+        )
+    };
+
+    format!(
+        r#"<!DOCTYPE HTML>
+        <html lang="en">
+        <head>
+        <meta charset="utf-8">
+        <title>Directory listing for .{0}</title>
+        </head>
+        <body>
+        <h1>Directory listing for .{0}</h1>
+        <div>{2}</div>
+        <hr>
+        <ul>
+        {1}
+        </ul>
+        <hr>
+        </body>
+        </html>"#,
+        uri.path(),
+        table,
+        breadcrumb,
+    )
 }
 
 #[cfg(test)]

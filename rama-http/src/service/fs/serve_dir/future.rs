@@ -1,4 +1,4 @@
-use super::open_file::{FileOpened, FileRequestExtent, OpenFileOutput};
+use super::open_file::{FileOpened, OpenFileOutput};
 use crate::headers::encoding::Encoding;
 use crate::{
     Body, HeaderValue, Request, Response, StatusCode, StreamingBody,
@@ -11,6 +11,8 @@ use rama_core::bytes::Bytes;
 use rama_core::{Context, Service, error::BoxError};
 use std::{convert::Infallible, io};
 
+/// Consume the result of opening a file and create an appropriate HTTP response.
+/// Handles various file opening outcomes including success, redirection, HTML listing, and errors.
 pub(super) async fn consume_open_file_result<ReqBody, ResBody, F>(
     open_file_result: Result<OpenFileOutput, std::io::Error>,
     fallback_and_request: Option<(&F, Context, Request<ReqBody>)>,
@@ -95,6 +97,7 @@ pub(super) fn not_found() -> Response {
     response_with_status(StatusCode::NOT_FOUND)
 }
 
+/// Serve a request using the fallback service and convert the response body.
 pub(super) async fn serve_fallback<F, B, FResBody>(
     fallback: &F,
     ctx: Context,
@@ -116,11 +119,10 @@ where
         .map(Body::new))
 }
 
+/// Build an HTTP response from a successfully opened file.
+/// Handles range requests, content encoding, and appropriate headers.
 fn build_response(output: FileOpened) -> Response {
-    let (maybe_file, size) = match output.extent {
-        FileRequestExtent::Full(file, meta) => (Some(file), meta.len()),
-        FileRequestExtent::Head(meta) => (None, meta.len()),
-    };
+    let size = output.extent.file_size();
 
     let mut builder = Response::builder()
         .header(header::CONTENT_TYPE, output.mime_header_value)
@@ -149,11 +151,11 @@ fn build_response(output: FileOpened) -> Response {
                         )))
                         .unwrap()
                 } else {
-                    let body = if let Some(file) = maybe_file {
-                        let range_size = range.end() - range.start() + 1;
+                    let range_size = range.end() - range.start() + 1;
+                    let body = if let Some(reader) = output.extent.into_reader() {
                         Body::new(
                             AsyncReadBody::with_capacity_limited(
-                                file,
+                                reader,
                                 output.chunk_size,
                                 range_size,
                             )
@@ -198,8 +200,8 @@ fn build_response(output: FileOpened) -> Response {
 
         // Not a range request
         None => {
-            let body = if let Some(file) = maybe_file {
-                Body::new(AsyncReadBody::with_capacity(file, output.chunk_size).boxed())
+            let body = if let Some(reader) = output.extent.into_reader() {
+                Body::new(AsyncReadBody::with_capacity(reader, output.chunk_size).boxed())
             } else {
                 empty_body()
             };
