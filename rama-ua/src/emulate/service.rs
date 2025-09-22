@@ -187,10 +187,10 @@ where
         mut req: Request<Body>,
     ) -> Result<Self::Response, Self::Error> {
         if let Some(fallback) = self.select_fallback {
-            ctx.insert(fallback);
+            req.extensions_mut().insert(fallback);
         }
 
-        if self.try_auto_detect_user_agent && !ctx.contains::<UserAgent>() {
+        if self.try_auto_detect_user_agent && !req.extensions().contains::<UserAgent>() {
             match req
                 .headers()
                 .get(USER_AGENT)
@@ -202,7 +202,7 @@ where
                         user_agent.original = %ua_str,
                         "user agent {user_agent} auto-detected from request"
                     );
-                    ctx.insert(user_agent);
+                    req.extensions_mut().insert(user_agent);
                 }
                 None => {
                     tracing::debug!(
@@ -212,7 +212,7 @@ where
             }
         }
 
-        let Some(profile) = self.provider.select_user_agent_profile(&ctx) else {
+        let Some(profile) = self.provider.select_user_agent_profile(req.extensions()) else {
             return if self.optional {
                 Ok(self.inner.serve(ctx, req).await.map_err(Into::into)?)
             } else {
@@ -231,7 +231,9 @@ where
         );
 
         let preserve_http = matches!(
-            ctx.get::<UserAgent>().and_then(|ua| ua.http_agent()),
+            req.extensions()
+                .get::<UserAgent>()
+                .and_then(|ua| ua.http_agent()),
             Some(HttpAgent::Preserve),
         );
 
@@ -249,7 +251,7 @@ where
                 user_agent.platform = ?profile.platform,
                 "user agent emulation: inject http context data to prepare for HTTP emulation"
             );
-            ctx.insert(profile.http.clone());
+            req.extensions_mut().insert(profile.http.clone());
 
             if let Some(header) = self
                 .input_header_order
@@ -274,7 +276,9 @@ where
             use crate::TlsAgent;
 
             let preserve_tls = matches!(
-                ctx.get::<UserAgent>().and_then(|ua| ua.tls_agent()),
+                req.extensions()
+                    .get::<UserAgent>()
+                    .and_then(|ua| ua.tls_agent()),
                 Some(TlsAgent::Preserve),
             );
             if preserve_tls {
@@ -285,7 +289,7 @@ where
                     "user agent emulation: skip tls settings as tls is instructed to be preserved"
                 );
             } else {
-                ctx.insert(profile.tls.clone());
+                req.extensions_mut().insert(profile.tls.clone());
                 tracing::trace!(
                     user_agent.kind = %profile.ua_kind,
                     user_agent.version = ?profile.ua_version,
@@ -296,7 +300,8 @@ where
         }
 
         // inject the selected user agent profile into the context
-        ctx.insert(SelectedUserAgentProfile::from(profile));
+        req.extensions_mut()
+            .insert(SelectedUserAgentProfile::from(profile));
 
         // serve emulated http(s) request via inner service
         self.inner.serve(ctx, req).await.map_err(Into::into)
@@ -331,7 +336,7 @@ where
         mut ctx: Context,
         mut req: Request<ReqBody>,
     ) -> Result<Self::Response, Self::Error> {
-        match ctx.get().cloned() {
+        match req.extensions().get().cloned() {
             Some(http_profile) => {
                 tracing::trace!(
                     http.version = ?req.version(),
@@ -358,7 +363,7 @@ fn emulate_http_connect_settings<Body>(
     match req.version() {
         Version::HTTP_09 | Version::HTTP_10 | Version::HTTP_11 => {
             tracing::trace!("UA emulation add http1-specific settings",);
-            ctx.insert(Http1ClientContextParams {
+            req.extensions_mut().insert(Http1ClientContextParams {
                 title_header_case: profile.h1.settings.title_case_headers,
             });
         }
@@ -416,7 +421,7 @@ where
         ctx: Context,
         mut req: Request<ReqBody>,
     ) -> Result<Self::Response, Self::Error> {
-        match ctx.get() {
+        match req.extensions().get().cloned() {
             Some(http_profile) => {
                 tracing::trace!(
                     http.version = ?req.version(),
@@ -425,13 +430,17 @@ where
 
                 match get_base_http_headers(&ctx, &req, http_profile) {
                     Some(base_http_headers) => {
-                        let original_http_header_order =
-                            ctx.get().or_else(|| req.extensions().get()).cloned();
+                        let original_http_header_order = req
+                            .extensions()
+                            .get()
+                            .or_else(|| req.extensions().get())
+                            .cloned();
                         let original_headers = req.headers().clone();
 
-                        let preserve_ua_header = ctx.contains::<PreserveHeaderUserAgent>();
+                        let preserve_ua_header =
+                            req.extensions().contains::<PreserveHeaderUserAgent>();
 
-                        let (authority, protocol) = match ctx.get::<RequestContext>() {
+                        let (authority, protocol) = match req.extensions().get::<RequestContext>() {
                             Some(ctx) => (
                                 Some(Cow::Borrowed(&ctx.authority)),
                                 Some(Cow::Borrowed(&ctx.protocol)),
@@ -458,7 +467,9 @@ where
                             authority,
                             protocol,
                             Some(req.method()),
-                            ctx.get::<Vec<ClientHint>>().map(|v| v.as_slice()),
+                            req.extensions()
+                                .get::<Vec<ClientHint>>()
+                                .map(|v| v.as_slice()),
                         );
 
                         tracing::trace!("user agent emulation: http emulated");
@@ -497,7 +508,7 @@ where
 }
 
 fn get_base_http_headers<'a, Body>(
-    ctx: &Context,
+    _ctx: &Context,
     req: &Request<Body>,
     profile: &'a HttpProfile,
 ) -> Option<&'a Http1HeaderMap> {
@@ -512,7 +523,7 @@ fn get_base_http_headers<'a, Body>(
             return None;
         }
     };
-    match ctx.get::<RequestInitiator>().copied() {
+    match req.extensions().get::<RequestInitiator>().copied() {
         Some(req_init) => {
             tracing::trace!(
                 "base http headers defined based on hint from UserAgent (overwrite): {req_init}"
@@ -835,6 +846,7 @@ mod tests {
     use std::{convert::Infallible, str::FromStr, sync::Arc};
 
     use itertools::Itertools as _;
+    use rama_core::context::Extensions;
     use rama_core::{Layer, inspect::RequestInspectorLayer, service::service_fn};
     use rama_http_types::{Body, HeaderValue, header::ETAG, proto::h1::Http1HeaderName};
     use rama_net::address::Host;
@@ -1877,7 +1889,7 @@ mod tests {
             version: Option<Version>,
             method: Option<Method>,
             headers: Option<HeaderMap>,
-            ctx: Option<Context>,
+            extensions: Option<Extensions>,
             expected: &'static str,
         }
 
@@ -1887,7 +1899,7 @@ mod tests {
                 version: None,
                 method: None,
                 headers: None,
-                ctx: None,
+                extensions: None,
                 expected: "navigate",
             },
             TestCase {
@@ -1902,7 +1914,7 @@ mod tests {
                     .into_iter()
                     .collect(),
                 ),
-                ctx: None,
+                extensions: None,
                 expected: "xhr",
             },
             TestCase {
@@ -1910,10 +1922,10 @@ mod tests {
                 version: None,
                 method: None,
                 headers: None,
-                ctx: Some({
-                    let mut ctx = Context::default();
-                    ctx.insert(RequestInitiator::Navigate);
-                    ctx
+                extensions: Some({
+                    let mut extensions = Extensions::default();
+                    extensions.insert(RequestInitiator::Navigate);
+                    extensions
                 }),
                 expected: "navigate",
             },
@@ -1922,10 +1934,10 @@ mod tests {
                 version: None,
                 method: None,
                 headers: None,
-                ctx: Some({
-                    let mut ctx = Context::default();
-                    ctx.insert(RequestInitiator::Form);
-                    ctx
+                extensions: Some({
+                    let mut extensions = Extensions::default();
+                    extensions.insert(RequestInitiator::Form);
+                    extensions
                 }),
                 expected: "form",
             },
@@ -1934,7 +1946,7 @@ mod tests {
                 version: None,
                 method: Some(Method::GET),
                 headers: None,
-                ctx: None,
+                extensions: None,
                 expected: "navigate",
             },
             TestCase {
@@ -1946,7 +1958,7 @@ mod tests {
                         .into_iter()
                         .collect(),
                 ),
-                ctx: None,
+                extensions: None,
                 expected: "ws",
             },
             TestCase {
@@ -1958,7 +1970,7 @@ mod tests {
                         .into_iter()
                         .collect(),
                 ),
-                ctx: None,
+                extensions: None,
                 expected: "ws2",
             },
             TestCase {
@@ -1966,7 +1978,7 @@ mod tests {
                 version: None,
                 method: Some(Method::POST),
                 headers: None,
-                ctx: None,
+                extensions: None,
                 expected: "fetch",
             },
             TestCase {
@@ -1981,7 +1993,7 @@ mod tests {
                     .into_iter()
                     .collect(),
                 ),
-                ctx: None,
+                extensions: None,
                 expected: "xhr",
             },
             TestCase {
@@ -2004,7 +2016,7 @@ mod tests {
                     .into_iter()
                     .collect(),
                 ),
-                ctx: None,
+                extensions: None,
                 expected: "xhr",
             },
             TestCase {
@@ -2025,7 +2037,7 @@ mod tests {
                     .into_iter()
                     .collect(),
                 ),
-                ctx: None,
+                extensions: None,
                 expected: "xhr",
             },
             TestCase {
@@ -2042,7 +2054,7 @@ mod tests {
                     .into_iter()
                     .collect(),
                 ),
-                ctx: None,
+                extensions: None,
                 expected: "form",
             },
             TestCase {
@@ -2057,7 +2069,7 @@ mod tests {
                     .into_iter()
                     .collect(),
                 ),
-                ctx: None,
+                extensions: None,
                 expected: "form",
             },
             TestCase {
@@ -2072,7 +2084,7 @@ mod tests {
                     .into_iter()
                     .collect(),
                 ),
-                ctx: None,
+                extensions: None,
                 expected: "xhr",
             },
             TestCase {
@@ -2080,7 +2092,7 @@ mod tests {
                 version: None,
                 method: Some(Method::DELETE),
                 headers: None,
-                ctx: None,
+                extensions: None,
                 expected: "fetch",
             },
             TestCase {
@@ -2088,10 +2100,10 @@ mod tests {
                 version: None,
                 method: Some(Method::DELETE),
                 headers: None,
-                ctx: Some({
-                    let mut ctx = Context::default();
-                    ctx.insert(RequestInitiator::Xhr);
-                    ctx
+                extensions: Some({
+                    let mut extensions = Extensions::default();
+                    extensions.insert(RequestInitiator::Xhr);
+                    extensions
                 }),
                 expected: "xhr",
             },
@@ -2106,8 +2118,9 @@ mod tests {
             if let Some(headers) = test_case.headers {
                 req.headers_mut().extend(headers);
             }
-            let ctx = test_case.ctx.unwrap_or_default();
-            let res = ua_service.serve(ctx, req).await.unwrap();
+            let extensions = test_case.extensions.unwrap_or_default();
+            *req.extensions_mut() = extensions;
+            let res = ua_service.serve(Context::default(), req).await.unwrap();
             assert_eq!(res, test_case.expected, "{}", test_case.description);
         }
     }
