@@ -85,7 +85,7 @@ mod tests {
 
     use crate::{
         context::Extensions,
-        extensions::ExtensionsRef,
+        generic_request::GenericRequest,
         layer::limit::policy::{ConcurrentCounter, ConcurrentPolicy},
     };
 
@@ -105,31 +105,7 @@ mod tests {
         }
     }
 
-    struct NumberedRequest {
-        pub number: usize,
-        pub extensions: Extensions,
-    }
-
-    impl NumberedRequest {
-        fn new(number: usize) -> Self {
-            Self {
-                number,
-                extensions: Extensions::new(),
-            }
-        }
-    }
-
-    impl ExtensionsRef for NumberedRequest {
-        fn extensions(&self) -> &Extensions {
-            &self.extensions
-        }
-    }
-
-    impl ExtensionsMut for NumberedRequest {
-        fn extensions_mut(&mut self) -> &mut Extensions {
-            &mut self.extensions
-        }
-    }
+    type NumberedRequest = GenericRequest<usize>;
 
     #[tokio::test]
     async fn matcher_policy_empty() {
@@ -178,8 +154,8 @@ mod tests {
             req: &NumberedRequest,
         ) -> bool {
             match self {
-                Self::Const(n) => *n == req.number,
-                Self::Odd => req.number % 2 == 1,
+                Self::Const(n) => *n == req.request,
+                Self::Odd => req.request % 2 == 1,
             }
         }
     }
