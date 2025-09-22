@@ -435,7 +435,6 @@ impl Request {
         let comment = parts
             .extensions
             .get::<RequestComment>()
-            .or_else(|| ctx.get::<RequestComment>())
             .map(|req_comment| req_comment.0.clone());
 
         let cookies = parts

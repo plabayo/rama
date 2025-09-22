@@ -171,7 +171,13 @@ mod test {
         BodyExtractExt, Response, StatusCode, layer::retry::managed::DoNotRetry,
         service::web::response::IntoResponse,
     };
-    use rama_core::{Context, Layer, service::service_fn};
+    use rama_core::{
+        Context, Layer,
+        context::Extensions,
+        extensions::{ExtensionsMut, ExtensionsRef},
+        service::service_fn,
+    };
+    use rama_http_headers::sec_websocket_extensions::Extension;
     use rama_utils::{backoff::ExponentialBackoff, rng::HasherRng};
     use std::{
         sync::{Arc, atomic::AtomicUsize},
@@ -193,30 +199,32 @@ mod test {
             retry_counter: Arc<AtomicUsize>,
         }
 
-        async fn retry<E>(
-            ctx: Context,
+        async fn retry<Body, E>(
+            req: Request<Body>,
             result: Result<Response, E>,
-        ) -> (Context, Result<Response, E>, bool) {
-            if ctx.contains::<DoNotRetry>() {
+        ) -> (Request<Body>, Result<Response, E>, bool) {
+            if req.extensions().contains::<DoNotRetry>() {
                 panic!("unexpected retry: should be disabled");
             }
 
             if let Ok(ref res) = result {
                 if res.status().is_server_error() {
-                    ctx.get::<State>()
+                    req.extensions()
+                        .get::<State>()
                         .unwrap()
                         .retry_counter
                         .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-                    (ctx, result, true)
+                    (req, result, true)
                 } else {
-                    (ctx, result, false)
+                    (req, result, false)
                 }
             } else {
-                ctx.get::<State>()
+                req.extensions()
+                    .get::<State>()
                     .unwrap()
                     .retry_counter
                     .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                (ctx, result, true)
+                (req, result, true)
             }
         }
 
@@ -237,31 +245,34 @@ mod test {
             Request::builder().body(s.into()).unwrap()
         }
 
-        fn ctx() -> Context {
-            let mut ctx = Context::default();
-            ctx.insert(State {
+        fn extensions() -> Extensions {
+            let mut extensions = Extensions::new();
+            extensions.insert(State {
                 retry_counter: Arc::new(AtomicUsize::new(0)),
             });
-            ctx
+            extensions
         }
 
-        fn ctx_do_not_retry() -> Context {
-            let mut ctx = ctx();
-            ctx.insert(DoNotRetry::default());
-            ctx
+        fn do_not_retry_extensions() -> Extensions {
+            let mut extensions = extensions();
+            extensions.insert(DoNotRetry::default());
+            extensions
         }
 
         async fn assert_serve_ok<E: std::fmt::Debug>(
             msg: &'static str,
             input: &'static str,
             output: &'static str,
-            ctx: Context,
+            extensions: Extensions,
             retried: bool,
             service: &impl Service<Request, Response = Response, Error = E>,
         ) {
-            let state = ctx.get::<State>().unwrap().clone();
+            let state = extensions.get::<State>().unwrap().clone();
 
-            let fut = service.serve(ctx, request(input));
+            let mut request = request(input);
+            *request.extensions_mut() = extensions;
+
+            let fut = service.serve(Context::default(), request);
             let res = fut.await.unwrap();
 
             let body = res.try_into_string().await.unwrap();
@@ -288,13 +299,16 @@ mod test {
         async fn assert_serve_err<E: std::fmt::Debug>(
             msg: &'static str,
             input: &'static str,
-            ctx: Context,
+            extensions: Extensions,
             retried: bool,
             service: &impl Service<Request, Response = Response, Error = E>,
         ) {
-            let state = ctx.get::<State>().unwrap().clone();
+            let state = extensions.get::<State>().unwrap().clone();
 
-            let fut = service.serve(ctx, request(input));
+            let mut request = request(input);
+            *request.extensions_mut() = extensions;
+
+            let fut = service.serve(Context::default(), request);
             let res = fut.await;
 
             assert!(res.is_err(), "{msg}");
@@ -321,7 +335,7 @@ mod test {
             "ok response should be aborted as response without retry",
             "hello",
             "hello",
-            ctx(),
+            extensions(),
             false,
             &service,
         )
@@ -330,7 +344,7 @@ mod test {
             "internal will trigger 500 with a retry",
             "internal",
             "",
-            ctx(),
+            extensions(),
             true,
             &service,
         )
@@ -338,7 +352,7 @@ mod test {
         assert_serve_err(
             "error will trigger an actual non-http error with a retry",
             "error",
-            ctx(),
+            extensions(),
             true,
             &service,
         )
@@ -348,7 +362,7 @@ mod test {
             "normally internal will trigger a 500 with retry, but using DoNotRetry will disable retrying",
             "internal",
             "",
-            ctx_do_not_retry(),
+            do_not_retry_extensions(),
             false,
             &service,
         ).await;

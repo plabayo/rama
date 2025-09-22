@@ -1,4 +1,5 @@
 use crate::Request;
+use rama_core::extensions::ExtensionsRef;
 use rama_core::telemetry::tracing;
 use rama_core::{Context, context::Extensions, matcher::Matcher};
 use rama_net::address::{DomainTrie, Host};
@@ -48,7 +49,7 @@ impl<Body> Matcher<Request<Body>> for SubdomainTrieMatcher {
             }
         };
 
-        if let Some(req_ctx) = ctx.get() {
+        if let Some(req_ctx) = req.extensions().get() {
             match_authority(req_ctx)
         } else {
             let req_ctx: RequestContext = match (ctx, req).try_into() {

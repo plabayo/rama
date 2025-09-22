@@ -9,6 +9,7 @@ use crate::{
 };
 use pin_project_lite::pin_project;
 use rama_core::bytes::Bytes;
+use rama_core::extensions::ExtensionsRef;
 use rama_core::telemetry::opentelemetry::metrics::UpDownCounter;
 use rama_core::telemetry::opentelemetry::semantic_conventions::metric::{
     HTTP_SERVER_ACTIVE_REQUESTS, HTTP_SERVER_REQUEST_BODY_SIZE,
@@ -280,13 +281,11 @@ impl<S, F> RequestMetricsService<S, F> {
     {
         let mut attributes = self
             .attributes_factory
-            .attributes(5 + self.base_attributes.len(), ctx);
+            .attributes(5 + self.base_attributes.len(), req.extensions());
         attributes.extend(self.base_attributes.iter().cloned());
 
         // server info
-        let request_ctx: Option<&mut RequestContext> = ctx
-            .get_or_try_insert_with_ctx(|ctx| (ctx, req).try_into())
-            .ok();
+        let request_ctx = RequestContext::try_from((&*ctx, req)).ok();
         if let Some(authority) = request_ctx.as_ref().map(|rc| &rc.authority) {
             attributes.push(KeyValue::new(
                 HTTP_REQUEST_HOST,
@@ -438,6 +437,8 @@ where
 
 #[cfg(test)]
 mod tests {
+    use rama_core::context::Extensions;
+
     use super::*;
 
     #[test]
@@ -553,7 +554,7 @@ mod tests {
             metric_prefix: Some("foo".to_owned()),
             ..Default::default()
         })
-        .with_attributes(|size_hint: usize, _ctx: &Context| {
+        .with_attributes(|size_hint: usize, _extensions: &Extensions| {
             let mut attributes = Vec::with_capacity(size_hint + 1);
             attributes.push(KeyValue::new("test", "attribute_fn"));
             attributes

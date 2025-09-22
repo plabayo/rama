@@ -1,4 +1,5 @@
 use crate::Request;
+use rama_core::extensions::ExtensionsRef;
 use rama_core::telemetry::tracing;
 use rama_core::{Context, context::Extensions};
 use rama_net::address::{Domain, Host};
@@ -31,7 +32,7 @@ impl DomainMatcher {
 
 impl<Body> rama_core::matcher::Matcher<Request<Body>> for DomainMatcher {
     fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context, req: &Request<Body>) -> bool {
-        let host = if let Some(req_ctx) = ctx.get::<RequestContext>() {
+        let host = if let Some(req_ctx) = req.extensions().get::<RequestContext>() {
             req_ctx.authority.host().clone()
         } else {
             let req_ctx: RequestContext = match (ctx, req).try_into() {

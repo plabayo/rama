@@ -48,10 +48,10 @@ where
     type Rejection = PathRejection;
 
     async fn from_request_context_ref_pair(
-        ctx: &Context,
-        _parts: &Parts,
+        _ctx: &Context,
+        parts: &Parts,
     ) -> Result<Self, Self::Rejection> {
-        match ctx.get::<UriParams>() {
+        match parts.extensions.get::<UriParams>() {
             Some(params) => {
                 let params = params.deserialize::<T>()?;
                 Ok(Self(params))

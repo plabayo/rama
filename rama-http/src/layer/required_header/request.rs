@@ -196,11 +196,9 @@ where
         mut req: Request<ReqBody>,
     ) -> Result<Self::Response, Self::Error> {
         if self.overwrite || !req.headers().contains_key(HOST) {
-            let request_ctx: &mut RequestContext = ctx
-                .get_or_try_insert_with_ctx(|ctx| (ctx, &req).try_into())
-                .context(
-                    "AddRequiredRequestHeaders: get/compute RequestContext to set authority",
-                )?;
+            let request_ctx = RequestContext::try_from((&ctx, &req)).context(
+                "AddRequiredRequestHeaders: get/compute RequestContext to set authority",
+            )?;
             if request_ctx.authority_has_default_port() {
                 let host = request_ctx.authority.host().clone();
                 tracing::trace!(
