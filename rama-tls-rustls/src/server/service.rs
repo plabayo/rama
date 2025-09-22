@@ -1,18 +1,18 @@
+use super::TlsAcceptorData;
+use super::TlsStream;
+use super::acceptor_data::ServerConfig;
+use crate::dep::rustls::server::Acceptor;
+use crate::dep::tokio_rustls::LazyConfigAcceptor;
+use crate::types::SecureTransport;
 use rama_core::{
     Context, Service,
     conversion::RamaInto,
     error::{BoxError, ErrorContext, ErrorExt, OpaqueError},
+    extensions::ExtensionsMut,
     stream::Stream,
 };
 use rama_net::tls::{ApplicationProtocol, client::NegotiatedTlsParameters};
 use rama_utils::macros::define_inner_service_accessors;
-
-use crate::dep::rustls::server::Acceptor;
-use crate::dep::tokio_rustls::{LazyConfigAcceptor, server::TlsStream};
-use crate::types::SecureTransport;
-
-use super::TlsAcceptorData;
-use super::acceptor_data::ServerConfig;
 
 /// A [`Service`] which accepts TLS connections and delegates the underlying transport
 /// stream to the given service.
@@ -60,13 +60,19 @@ where
 
 impl<S, IO> Service<IO> for TlsAcceptorService<S>
 where
-    IO: Stream + Unpin + 'static,
+    IO: Stream + Unpin + ExtensionsMut + 'static,
     S: Service<TlsStream<IO>, Error: Into<BoxError>>,
 {
     type Response = S::Response;
     type Error = BoxError;
 
-    async fn serve(&self, mut ctx: Context, stream: IO) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, ctx: Context, stream: IO) -> Result<Self::Response, Self::Error> {
+        let tls_acceptor_data = stream
+            .extensions()
+            .get::<TlsAcceptorData>()
+            .unwrap_or(&self.data)
+            .clone();
+
         let acceptor = LazyConfigAcceptor::new(Acceptor::default(), stream);
 
         let start = acceptor.await?;
@@ -77,15 +83,16 @@ where
             SecureTransport::default()
         };
 
-        let tls_acceptor_data = ctx.get::<TlsAcceptorData>().unwrap_or(&self.data);
         let server_config = match &tls_acceptor_data.server_config {
             ServerConfig::Stored(server_config) => server_config.clone(),
             ServerConfig::Async(dynamic) => dynamic.get_config(start.client_hello()).await?,
         };
 
         let stream = start.into_stream(server_config).await?;
-        let (_, conn_data_ref) = stream.get_ref();
-        ctx.insert(NegotiatedTlsParameters {
+        let mut stream = TlsStream::from(stream);
+
+        let (_, conn_data_ref) = stream.stream.get_ref();
+        let negotiated_tls_params = NegotiatedTlsParameters {
             protocol_version: conn_data_ref
                 .protocol_version()
                 .context("no protocol version available")?
@@ -95,9 +102,11 @@ where
                 .map(ApplicationProtocol::from),
             // Currently not supported as this would mean we need to wrap rustls config
             peer_certificate_chain: None,
-        });
+        };
 
-        ctx.insert(secure_transport);
+        stream.extensions_mut().insert(negotiated_tls_params);
+        stream.extensions_mut().insert(secure_transport);
+
         self.inner.serve(ctx, stream).await.map_err(|err| {
             OpaqueError::from_boxed(err.into())
                 .context("rustls acceptor: service error")

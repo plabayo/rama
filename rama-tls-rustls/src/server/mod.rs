@@ -26,3 +26,7 @@ mod acceptor_data;
 pub use acceptor_data::{
     DynamicConfigProvider, TlsAcceptorData, TlsAcceptorDataBuilder, self_signed_server_auth,
 };
+
+mod stream;
+#[doc(inline)]
+pub use stream::TlsStream;
