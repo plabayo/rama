@@ -15,6 +15,10 @@ use crate::{
     telemetry::tracing,
 };
 use pin_project_lite::pin_project;
+use rama_core::{
+    context::Extensions,
+    extensions::{ExtensionsMut, ExtensionsRef},
+};
 use std::{
     fmt::Debug,
     pin::Pin,
@@ -78,8 +82,11 @@ impl<S> ProxyConnector<S> {
 
 impl<Request, S> Service<Request> for ProxyConnector<S>
 where
-    S: ConnectorService<Request, Connection: Stream + Unpin, Error: Into<BoxError>>,
-    Request: TryRefIntoTransportContext<Error: Into<BoxError> + Send + 'static> + Send + 'static,
+    S: ConnectorService<Request, Connection: Stream + Unpin + ExtensionsMut, Error: Into<BoxError>>,
+    Request: TryRefIntoTransportContext<Error: Into<BoxError> + Send + 'static>
+        + Send
+        + ExtensionsMut
+        + 'static,
 {
     type Response = EstablishedClientConnection<MaybeProxiedConnection<S::Connection>, Request>;
 
@@ -90,7 +97,7 @@ where
         ctx: rama_core::Context,
         req: Request,
     ) -> Result<Self::Response, Self::Error> {
-        let proxy = ctx.get::<ProxyAddress>();
+        let proxy = req.extensions().get::<ProxyAddress>();
 
         match proxy {
             None => {
@@ -100,13 +107,9 @@ where
                 tracing::trace!("no proxy detected in ctx, using inner connector");
                 let EstablishedClientConnection { ctx, req, conn } =
                     self.inner.connect(ctx, req).await.map_err(Into::into)?;
-                Ok(EstablishedClientConnection {
-                    ctx,
-                    req,
-                    conn: MaybeProxiedConnection {
-                        inner: Connection::Direct { conn },
-                    },
-                })
+
+                let conn = MaybeProxiedConnection::direct(conn);
+                Ok(EstablishedClientConnection { ctx, req, conn })
             }
             Some(proxy) => {
                 let protocol = proxy.protocol.as_ref();
@@ -121,24 +124,16 @@ where
                     tracing::trace!("using socks proxy connector");
                     let EstablishedClientConnection { ctx, req, conn } =
                         self.socks.connect(ctx, req).await?;
-                    Ok(EstablishedClientConnection {
-                        ctx,
-                        req,
-                        conn: MaybeProxiedConnection {
-                            inner: Connection::Socks { conn },
-                        },
-                    })
+
+                    let conn = MaybeProxiedConnection::socks(conn);
+                    Ok(EstablishedClientConnection { ctx, req, conn })
                 } else if protocol.is_http() {
                     tracing::trace!("using http proxy connector");
                     let EstablishedClientConnection { ctx, req, conn } =
                         self.http.connect(ctx, req).await?;
-                    Ok(EstablishedClientConnection {
-                        ctx,
-                        req,
-                        conn: MaybeProxiedConnection {
-                            inner: Connection::Http { conn },
-                        },
-                    })
+
+                    let conn = MaybeProxiedConnection::http(conn);
+                    Ok(EstablishedClientConnection { ctx, req, conn })
                 } else {
                     Err(OpaqueError::from_display(format!(
                         "received unsupport proxy protocol {protocol:?}"
@@ -155,6 +150,56 @@ pin_project! {
     pub struct MaybeProxiedConnection<S> {
         #[pin]
         inner: Connection<S>,
+        extensions: Extensions,
+    }
+}
+
+impl<S: ExtensionsMut> MaybeProxiedConnection<S> {
+    pub fn direct(mut conn: S) -> Self {
+        let extensions = conn.take_extensions();
+        Self {
+            inner: Connection::Direct { conn },
+            extensions,
+        }
+    }
+
+    pub fn socks(mut conn: S) -> Self {
+        let extensions = conn.take_extensions();
+        Self {
+            inner: Connection::Socks { conn },
+            extensions,
+        }
+    }
+
+    pub fn http(mut conn: MaybeHttpProxiedConnection<S>) -> Self {
+        let extensions = conn.take_extensions();
+        Self {
+            inner: Connection::Http { conn },
+            extensions,
+        }
+    }
+}
+
+impl<S: ExtensionsMut> MaybeProxiedConnection<S> {
+    pub fn direct_with_fresh_extensions(conn: S) -> Self {
+        Self {
+            inner: Connection::Direct { conn },
+            extensions: Extensions::new(),
+        }
+    }
+
+    pub fn socks_with_fresh_extensions(conn: S) -> Self {
+        Self {
+            inner: Connection::Socks { conn },
+            extensions: Extensions::new(),
+        }
+    }
+
+    pub fn http_with_fresh_extensions(conn: MaybeHttpProxiedConnection<S>) -> Self {
+        Self {
+            inner: Connection::Http { conn },
+            extensions: Extensions::new(),
+        }
     }
 }
 
@@ -162,7 +207,20 @@ impl<S: Debug> Debug for MaybeProxiedConnection<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MaybeProxiedConnection")
             .field("inner", &self.inner)
+            .field("extensions", &self.extensions)
             .finish()
+    }
+}
+
+impl<S> ExtensionsRef for MaybeProxiedConnection<S> {
+    fn extensions(&self) -> &Extensions {
+        &self.extensions
+    }
+}
+
+impl<S> ExtensionsMut for MaybeProxiedConnection<S> {
+    fn extensions_mut(&mut self) -> &mut Extensions {
+        &mut self.extensions
     }
 }
 

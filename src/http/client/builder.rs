@@ -13,6 +13,7 @@ use crate::{
     },
     tcp::client::service::TcpConnector,
 };
+use rama_core::extensions::ExtensionsMut;
 use std::{marker::PhantomData, time::Duration};
 
 #[cfg(feature = "boring")]
@@ -587,6 +588,7 @@ impl<T, S> EasyHttpWebClientBuilder<T, S> {
                 Response = EstablishedClientConnection<ConnResponse, Request<ModifiedBody>>,
                 Error = BoxError,
             >,
+        ConnResponse: ExtensionsMut,
     {
         super::EasyHttpWebClient::new(self.connector.boxed())
     }
