@@ -5,6 +5,7 @@ use crate::{
         tokio::SslStream,
     },
     keylog::new_key_log_file_handle,
+    server::TlsStream,
     types::SecureTransport,
 };
 use parking_lot::Mutex;
@@ -12,9 +13,11 @@ use rama_core::{
     Context, Service,
     conversion::RamaTryInto,
     error::{BoxError, ErrorContext, ErrorExt, OpaqueError},
+    extensions::{ExtensionsMut, ExtensionsRef},
     stream::Stream,
     telemetry::tracing::{debug, trace},
 };
+
 use rama_net::{
     http::RequestContext,
     tls::{ApplicationProtocol, DataEncoding, client::NegotiatedTlsParameters},
@@ -69,8 +72,8 @@ where
 
 impl<S, IO> Service<IO> for TlsAcceptorService<S>
 where
-    IO: Stream + Unpin + 'static,
-    S: Service<SslStream<IO>, Error: Into<BoxError>>,
+    IO: Stream + Unpin + ExtensionsMut + 'static,
+    S: Service<TlsStream<IO>, Error: Into<BoxError>>,
 {
     type Response = S::Response;
     type Error = BoxError;
@@ -79,7 +82,12 @@ where
         // allow tls acceptor data to be injected,
         // e.g. useful for TLS environments where some data (such as server auth, think ACME)
         // is updated at runtime, be it infrequent
-        let tls_config = &ctx.get::<TlsAcceptorData>().unwrap_or(&self.data).config;
+        let tls_config = stream
+            .extensions()
+            .get::<TlsAcceptorData>()
+            .unwrap_or(&self.data)
+            .config
+            .clone();
 
         let mut acceptor_builder = SslAcceptor::mozilla_intermediate_v5(SslMethod::tls_server())
             .context("create boring ssl acceptor")?;
@@ -89,17 +97,22 @@ where
             .set_default_verify_paths()
             .context("build boring ssl acceptor: set default verify paths")?;
 
-        let server_domain = ctx
+        let server_domain = stream
+            .extensions()
             .get::<SecureTransport>()
             .and_then(|t| t.client_hello())
             .and_then(|c| c.ext_server_name().cloned())
             .or_else(|| {
-                ctx.get::<TransportContext>()
-                    .and_then(|ctx| ctx.authority.host().as_domain().cloned())
+                stream
+                    .extensions()
+                    .get::<TransportContext>()
+                    .map(|ctx| ctx.authority.host().clone())
             })
             .or_else(|| {
-                ctx.get::<RequestContext>()
-                    .and_then(|ctx| ctx.authority.host().as_domain().cloned())
+                stream
+                    .extensions()
+                    .get::<RequestContext>()
+                    .map(|ctx| ctx.authority.host().clone())
             });
 
         // We use arc mutex instead of oneshot channel since it is possible that certificate callbacks
@@ -194,7 +207,7 @@ where
                 )),
             })?;
 
-        match stream.ssl().session() {
+        let negotiated_tls_params = match stream.ssl().session() {
             Some(ssl_session) => {
                 let protocol_version =
                     ssl_session
@@ -234,11 +247,11 @@ where
                     None
                 };
 
-                ctx.insert(NegotiatedTlsParameters {
+                NegotiatedTlsParameters {
                     protocol_version,
                     application_layer_protocol,
                     peer_certificate_chain: client_certificate_chain,
-                });
+                }
             }
             None => {
                 return Err(OpaqueError::from_display(
@@ -246,14 +259,17 @@ where
                 )
                 .into_boxed());
             }
-        }
+        };
 
         let secure_transport = maybe_client_hello
             .take()
             .and_then(|maybe_client_hello| maybe_client_hello.lock().take())
             .map(SecureTransport::with_client_hello)
             .unwrap_or_default();
-        ctx.insert(secure_transport);
+
+        let mut stream = TlsStream::new(stream);
+        stream.extensions_mut().insert(secure_transport);
+        stream.extensions_mut().insert(negotiated_tls_params);
 
         self.inner.serve(ctx, stream).await.map_err(|err| {
             OpaqueError::from_boxed(err.into())

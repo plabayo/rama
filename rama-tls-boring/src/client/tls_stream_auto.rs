@@ -3,7 +3,12 @@ use std::fmt;
 use pin_project_lite::pin_project;
 use rama_boring::ssl::SslRef;
 use rama_boring_tokio::SslStream;
-use rama_core::stream::Stream;
+use rama_core::{
+    context::Extensions,
+    extensions::{ExtensionsMut, ExtensionsRef},
+    stream::Stream,
+};
+use rama_net::stream::Stream;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 pin_project! {
@@ -11,19 +16,24 @@ pin_project! {
     pub struct AutoTlsStream<S> {
         #[pin]
         inner: AutoTlsStreamData<S>,
+        extensions: Extensions
     }
 }
 
-impl<S> AutoTlsStream<S> {
-    pub(super) fn secure(inner: SslStream<S>) -> Self {
+impl<S: ExtensionsMut> AutoTlsStream<S> {
+    pub(super) fn secure(mut inner: SslStream<S>) -> Self {
+        let extensions = inner.get_mut().take_extensions();
         Self {
             inner: AutoTlsStreamData::Secure { inner },
+            extensions,
         }
     }
 
-    pub(super) fn plain(inner: S) -> Self {
+    pub(super) fn plain(mut inner: S) -> Self {
+        let extensions = inner.take_extensions();
         Self {
             inner: AutoTlsStreamData::Plain { inner },
+            extensions,
         }
     }
 
@@ -39,6 +49,7 @@ impl<S: fmt::Debug> fmt::Debug for AutoTlsStream<S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("AutoTlsStream")
             .field("inner", &self.inner)
+            .field("extensions", &self.extensions)
             .finish()
     }
 }
@@ -60,6 +71,18 @@ impl<S: fmt::Debug> fmt::Debug for AutoTlsStreamData<S> {
             Self::Secure { inner } => f.debug_tuple("Secure").field(inner).finish(),
             Self::Plain { inner } => f.debug_tuple("Plain").field(inner).finish(),
         }
+    }
+}
+
+impl<S> ExtensionsRef for AutoTlsStream<S> {
+    fn extensions(&self) -> &Extensions {
+        &self.extensions
+    }
+}
+
+impl<S> ExtensionsMut for AutoTlsStream<S> {
+    fn extensions_mut(&mut self) -> &mut Extensions {
+        &mut self.extensions
     }
 }
 
