@@ -1,6 +1,8 @@
 use std::io::ErrorKind;
 
 use rama_core::bytes::{Bytes, BytesMut};
+#[cfg(feature = "dns")]
+use rama_core::context::Extensions;
 use rama_core::error::{BoxError, ErrorExt, OpaqueError};
 use rama_core::telemetry::tracing;
 use rama_net::address::{Authority, Host, SocketAddress};
@@ -399,11 +401,11 @@ impl UdpSocketRelay {
 impl UdpSocketRelay {
     pub(super) fn maybe_with_dns_resolver(
         mut self,
-        ctx: &Context,
+        extensions: &Extensions,
         resolver: Option<BoxDnsResolver>,
     ) -> Self {
         self.dns_resolver = resolver;
-        if let Some(mode) = ctx.get().copied() {
+        if let Some(mode) = extensions.get().copied() {
             self.dns_resolve_mode = mode;
         }
         self

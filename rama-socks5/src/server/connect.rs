@@ -1,3 +1,4 @@
+use rama_core::extensions::ExtensionsMut;
 use rama_core::telemetry::tracing::{self, Instrument, trace_span};
 use rama_core::{Context, Service, error::BoxError, stream::Stream};
 use rama_net::{
@@ -368,7 +369,7 @@ impl<S: Clone> Clone for LazyConnector<S> {
 
 impl<S, StreamService> Socks5ConnectorSeal<S> for LazyConnector<StreamService>
 where
-    S: Stream + Unpin,
+    S: Stream + Unpin + ExtensionsMut,
     StreamService: Service<S, Response = (), Error: Into<BoxError>>,
 {
     async fn accept_connect(
@@ -390,7 +391,7 @@ where
             "socks5 server w/ destination {destination}: lazy connect: reply sent, delegate to inner stream service",
         );
 
-        ctx.insert(ProxyTarget(destination));
+        stream.extensions_mut().insert(ProxyTarget(destination));
 
         self.service
             .serve(ctx, stream)
