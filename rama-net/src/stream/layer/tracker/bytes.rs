@@ -74,9 +74,7 @@ impl BytesRWTracker<()> {
     /// [`AsyncRead`]: crate::stream::AsyncRead
     /// [`AsyncWrite`]: crate::stream::AsyncWrite
     pub fn new<S: ExtensionsMut>(mut stream: S) -> BytesRWTracker<S> {
-        // TODO is this a boundry if so we might want to clone instead of transfering
-        let mut extensions = Extensions::new();
-        stream.transfer_extensions(&mut extensions);
+        let extensions = stream.take_extensions();
 
         BytesRWTracker {
             read: Arc::new(AtomicUsize::new(0)),
