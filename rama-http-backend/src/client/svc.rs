@@ -1,6 +1,6 @@
 use rama_core::{
     Context, Service,
-    context::{self, RequestContextExt},
+    context::{self, Extensions, RequestContextExt},
     error::{BoxError, ErrorContext, OpaqueError},
     extensions::{ExtensionsMut, ExtensionsRef},
     inspect::RequestInspector,
@@ -39,6 +39,7 @@ impl<Body: fmt::Debug> fmt::Debug for SendRequest<Body> {
 pub struct HttpClientService<Body, I = ()> {
     pub(super) sender: SendRequest<Body>,
     pub(super) http_req_inspector: I,
+    pub(super) extensions: Extensions,
 }
 
 impl<BodyIn, BodyOut, I> Service<Request<BodyIn>> for HttpClientService<BodyOut, I>
@@ -150,6 +151,18 @@ where
         }
 
         Ok(resp.map(rama_http_types::Body::new))
+    }
+}
+
+impl<B, I> ExtensionsRef for HttpClientService<B, I> {
+    fn extensions(&self) -> &Extensions {
+        &self.extensions
+    }
+}
+
+impl<B, I> ExtensionsMut for HttpClientService<B, I> {
+    fn extensions_mut(&mut self) -> &mut Extensions {
+        &mut self.extensions
     }
 }
 

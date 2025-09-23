@@ -2,7 +2,7 @@ use super::{HttpClientService, svc::SendRequest};
 use rama_core::{
     Context, Layer, Service,
     error::{BoxError, OpaqueError},
-    extensions::ExtensionsRef,
+    extensions::{ExtensionsMut, ExtensionsRef},
     inspect::RequestInspector,
     stream::Stream,
 };
@@ -98,7 +98,11 @@ where
     I1: RequestInspector<Request<BodyIn>, Error: Into<BoxError>, RequestOut = Request<BodyIn>>,
     I2: RequestInspector<Request<BodyIn>, Error: Into<BoxError>, RequestOut = Request<BodyOut>>
         + Clone,
-    S: ConnectorService<Request<BodyIn>, Connection: Stream + Unpin, Error: Into<BoxError>>,
+    S: ConnectorService<
+            Request<BodyIn>,
+            Connection: Stream + Unpin + ExtensionsMut,
+            Error: Into<BoxError>,
+        >,
     BodyIn: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
     BodyOut: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
 {
@@ -110,7 +114,7 @@ where
         ctx: Context,
         req: Request<BodyIn>,
     ) -> Result<Self::Response, Self::Error> {
-        let EstablishedClientConnection { ctx, req, conn } =
+        let EstablishedClientConnection { ctx, req, mut conn } =
             self.inner.connect(ctx, req).await.map_err(Into::into)?;
 
         let (ctx, req) = self
@@ -132,6 +136,7 @@ where
             })
             .unwrap_or_default();
 
+        let conn_extensions = conn.take_extensions();
         let io = Box::pin(conn);
 
         match req.version() {
@@ -193,6 +198,7 @@ where
                 let svc = HttpClientService {
                     sender: SendRequest::Http2(sender),
                     http_req_inspector: self.http_req_inspector_svc.clone(),
+                    extensions: conn_extensions,
                 };
 
                 Ok(EstablishedClientConnection {
@@ -237,6 +243,7 @@ where
                 let svc = HttpClientService {
                     sender: SendRequest::Http1(Mutex::new(sender)),
                     http_req_inspector: self.http_req_inspector_svc.clone(),
+                    extensions: conn_extensions,
                 };
 
                 Ok(EstablishedClientConnection {
