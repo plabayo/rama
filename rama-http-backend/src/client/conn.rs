@@ -119,7 +119,8 @@ where
             .await
             .map_err(Into::into)?;
 
-        let server_address = ctx
+        let server_address = req
+            .extensions()
             .get::<RequestContext>()
             .map(|ctx| ctx.authority.host().to_str())
             .or_else(|| req.uri().host().map(Into::into))
@@ -145,7 +146,8 @@ where
                     builder.enable_connect_protocol(1);
                 }
 
-                if let Some(params) = ctx
+                if let Some(params) = req
+                    .extensions()
                     .get::<H2ClientContextParams>()
                     .or_else(|| req.extensions().get())
                 {
@@ -202,7 +204,7 @@ where
             Version::HTTP_11 | Version::HTTP_10 | Version::HTTP_09 => {
                 tracing::trace!(url.full = %req.uri(), "create ~h1 client executor");
                 let mut builder = rama_http_core::client::conn::http1::Builder::new();
-                if let Some(params) = ctx.get::<Http1ClientContextParams>() {
+                if let Some(params) = req.extensions().get::<Http1ClientContextParams>() {
                     builder.title_case_headers(params.title_header_case);
                 }
                 let (sender, conn) = builder.handshake(io).await?;

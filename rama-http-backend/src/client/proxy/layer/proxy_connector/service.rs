@@ -4,12 +4,14 @@ use super::InnerHttpProxyConnector;
 use pin_project_lite::pin_project;
 use rama_core::{
     Context, Service,
+    context::Extensions,
     error::{BoxError, ErrorExt, OpaqueError},
+    extensions::{ExtensionsMut, ExtensionsRef},
     stream::Stream,
     telemetry::tracing,
 };
 use rama_http::{HeaderMap, io::upgrade};
-use rama_http_headers::ProxyAuthorization;
+use rama_http_headers::{ProxyAuthorization, sec_websocket_extensions::Extension};
 use rama_http_types::Version;
 use rama_net::{
     address::ProxyAddress,
@@ -118,14 +120,17 @@ impl<S> HttpProxyConnector<S> {
 
 impl<S, Request> Service<Request> for HttpProxyConnector<S>
 where
-    S: ConnectorService<Request, Connection: Stream + Unpin, Error: Into<BoxError>>,
-    Request: TryRefIntoTransportContext<Error: Into<BoxError> + Send + 'static> + Send + 'static,
+    S: ConnectorService<Request, Connection: Stream + Unpin + ExtensionsMut, Error: Into<BoxError>>,
+    Request: TryRefIntoTransportContext<Error: Into<BoxError> + Send + 'static>
+        + Send
+        + ExtensionsMut
+        + 'static,
 {
     type Response = EstablishedClientConnection<MaybeHttpProxiedConnection<S::Connection>, Request>;
     type Error = BoxError;
 
-    async fn serve(&self, mut ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
-        let address = ctx.get::<ProxyAddress>().cloned();
+    async fn serve(&self, ctx: Context, mut req: Request) -> Result<Self::Response, Self::Error> {
+        let address = req.extensions().get::<ProxyAddress>().cloned();
         if !address
             .as_ref()
             .and_then(|addr| addr.protocol.as_ref())
@@ -138,13 +143,10 @@ where
             .into_boxed());
         }
 
-        let transport_ctx = ctx
-            .get_or_try_insert_with_ctx(|ctx| req.try_ref_into_transport_ctx(ctx))
-            .map_err(|err| {
-                OpaqueError::from_boxed(err.into())
-                    .context("http proxy connector: get transport context")
-            })?
-            .clone();
+        let transport_ctx = req.try_ref_into_transport_ctx(&ctx).map_err(|err| {
+            OpaqueError::from_boxed(err.into())
+                .context("http proxy connector: get transport context")
+        })?;
 
         #[cfg(feature = "tls")]
         // in case the provider gave us a proxy info, we insert it into the context
@@ -160,7 +162,7 @@ where
                 server.port = %transport_ctx.authority.port(),
                 "http proxy connector: preparing proxy connection for tls tunnel",
             );
-            ctx.insert(TlsTunnel {
+            req.extensions_mut().insert(TlsTunnel {
                 server_host: address.authority.host().clone(),
             });
         }
@@ -195,9 +197,7 @@ where
                 return Ok(EstablishedClientConnection {
                     ctx,
                     req,
-                    conn: MaybeHttpProxiedConnection {
-                        inner: Connection::Direct { conn },
-                    },
+                    conn: MaybeHttpProxiedConnection::direct(conn),
                 });
             };
         };
@@ -223,9 +223,7 @@ where
             return Ok(EstablishedClientConnection {
                 ctx,
                 req,
-                conn: MaybeHttpProxiedConnection {
-                    inner: Connection::Proxied { conn },
-                },
+                conn: MaybeHttpProxiedConnection::proxied(conn),
             });
         }
 
@@ -251,21 +249,18 @@ where
             .await
             .map_err(|err| OpaqueError::from_std(err).context("http proxy handshake"))?;
 
+        let mut conn = MaybeHttpProxiedConnection::upgraded_proxy(conn);
+
         tracing::trace!("inserting HttpProxyHeaders in context");
-        ctx.insert(HttpProxyConnectResponseHeaders::new(headers));
+        conn.extensions_mut()
+            .insert(HttpProxyConnectResponseHeaders::new(headers));
 
         tracing::trace!(
             server.address = %transport_ctx.authority.host(),
             server.port = %transport_ctx.authority.port(),
             "http proxy connector: connected to proxy: ready secure request",
         );
-        Ok(EstablishedClientConnection {
-            ctx,
-            req,
-            conn: MaybeHttpProxiedConnection {
-                inner: Connection::UpgradedProxy { conn },
-            },
-        })
+        Ok(EstablishedClientConnection { ctx, req, conn })
     }
 }
 
@@ -302,6 +297,37 @@ pin_project! {
     pub struct MaybeHttpProxiedConnection<S> {
         #[pin]
         inner: Connection<S>,
+        extensions: Extensions
+    }
+}
+
+impl<S: ExtensionsMut + Unpin + Stream> MaybeHttpProxiedConnection<S> {
+    fn direct(mut conn: S) -> Self {
+        let extensions = conn.take_extensions();
+        Self {
+            inner: Connection::Direct { conn },
+            extensions,
+        }
+    }
+
+    fn proxied(mut conn: S) -> Self {
+        let extensions = conn.take_extensions();
+        Self {
+            inner: Connection::Proxied { conn },
+            extensions,
+        }
+    }
+
+    fn upgraded_proxy(conn: upgrade::Upgraded) -> Self {
+        // TODO does this always work or should we handle errors here
+        let mut parts = conn.downcast::<S>().expect("original connection type");
+        let extensions = parts.io.take_extensions();
+
+        let conn = upgrade::Upgraded::new(parts.io, parts.read_buf);
+        Self {
+            inner: Connection::UpgradedProxy { conn },
+            extensions,
+        }
     }
 }
 
@@ -309,6 +335,7 @@ impl<S: Debug> Debug for MaybeHttpProxiedConnection<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MaybeHttpProxiedConnection")
             .field("inner", &self.inner)
+            .field("extensions", &self.extensions)
             .finish()
     }
 }
@@ -331,6 +358,18 @@ impl<S: Debug> Debug for Connection<S> {
                 f.debug_struct("UpgradedProxy").field("conn", conn).finish()
             }
         }
+    }
+}
+
+impl<S> ExtensionsRef for MaybeHttpProxiedConnection<S> {
+    fn extensions(&self) -> &Extensions {
+        &self.extensions
+    }
+}
+
+impl<S> ExtensionsMut for MaybeHttpProxiedConnection<S> {
+    fn extensions_mut(&mut self) -> &mut Extensions {
+        &mut self.extensions
     }
 }
 

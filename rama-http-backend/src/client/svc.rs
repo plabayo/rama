@@ -2,7 +2,7 @@ use rama_core::{
     Context, Service,
     context::{self, RequestContextExt},
     error::{BoxError, ErrorContext, OpaqueError},
-    extensions::ExtensionsMut,
+    extensions::{ExtensionsMut, ExtensionsRef},
     inspect::RequestInspector,
     telemetry::tracing,
 };
@@ -56,7 +56,7 @@ where
         mut req: Request<BodyIn>,
     ) -> Result<Self::Response, Self::Error> {
         // Check if this http connection can actually be used for TargetHttpVersion
-        if let Some(target_version) = ctx.get::<TargetHttpVersion>() {
+        if let Some(target_version) = req.extensions().get::<TargetHttpVersion>() {
             match (&self.sender, target_version.0) {
                 (SendRequest::Http1(_), Version::HTTP_10 | Version::HTTP_11)
                 | (SendRequest::Http2(_), Version::HTTP_2) => (),
@@ -119,7 +119,7 @@ where
         // directly instead of here...
         let req = sanitize_client_req_header(&mut ctx, req)?;
 
-        let context::Parts { extensions, .. } = ctx.into_parts();
+        let req_extensions = req.extensions().clone();
 
         let mut resp = match &self.sender {
             SendRequest::Http1(sender) => {
@@ -135,7 +135,7 @@ where
         }?;
 
         resp.extensions_mut()
-            .insert(RequestContextExt::from(extensions));
+            .insert(RequestContextExt::from(req_extensions));
 
         let original_resp_http_version = resp.version();
         if original_resp_http_version == original_http_version {
@@ -153,24 +153,20 @@ where
     }
 }
 
-fn sanitize_client_req_header<B>(
-    ctx: &mut Context,
-    req: Request<B>,
-) -> Result<Request<B>, BoxError> {
+fn sanitize_client_req_header<B>(ctx: &Context, req: Request<B>) -> Result<Request<B>, BoxError> {
     // logic specific to this method
     if req.method() == Method::CONNECT && req.uri().host().is_none() {
         return Err(OpaqueError::from_display("missing host in CONNECT request").into());
     }
 
-    let uses_http_proxy = ctx
+    let uses_http_proxy = req
+        .extensions()
         .get::<ProxyAddress>()
         .and_then(|proxy| proxy.protocol.as_ref())
         .map(|protocol| protocol.is_http())
         .unwrap_or_default();
 
-    let request_ctx = ctx
-        .get_or_try_insert_with_ctx::<RequestContext, _>(|ctx| (ctx, &req).try_into())
-        .context("fetch request context")?;
+    let request_ctx = RequestContext::try_from((ctx, &req)).context("fetch request context")?;
 
     let is_insecure_request_over_http_proxy = !request_ctx.protocol.is_secure() && uses_http_proxy;
 
@@ -251,10 +247,8 @@ fn sanitize_client_req_header<B>(
             // set scheme/host if not defined as otherwise pseudo
             // headers won't be possible to be set in the h2 crate
             let mut req = if req.uri().host().is_none() {
-                let request_ctx = ctx.get::<RequestContext>().ok_or_else(|| {
-                    OpaqueError::from_display("[h2+] add scheme/host: missing RequestCtx")
-                        .into_boxed()
-                })?;
+                let request_ctx = RequestContext::try_from((ctx, &req))
+                    .context("[h2+] add scheme/host: missing RequestCtx")?;
 
                 tracing::trace!(
                     network.protocol.name = "http",
@@ -410,16 +404,16 @@ mod tests {
             .build()
             .unwrap();
 
-        let req = Request::builder().uri(uri).body(()).unwrap();
+        let mut req = Request::builder().uri(uri).body(()).unwrap();
 
-        let mut ctx = Context::default();
-        ctx.insert(ProxyAddress {
+        let ctx = Context::default();
+        req.extensions_mut().insert(ProxyAddress {
             authority: rama_net::address::Authority::new(Host::Name(Domain::example()), 80),
             credential: None,
             protocol: Some(Protocol::HTTP),
         });
 
-        let req = sanitize_client_req_header(&mut ctx, req).unwrap();
+        let req = sanitize_client_req_header(&ctx, req).unwrap();
 
         let (parts, _) = req.into_parts();
         let uri = parts.uri.into_parts();
@@ -437,16 +431,16 @@ mod tests {
             .build()
             .unwrap();
 
-        let req = Request::builder().uri(uri).body(()).unwrap();
+        let mut req = Request::builder().uri(uri).body(()).unwrap();
 
-        let mut ctx = Context::default();
-        ctx.insert(ProxyAddress {
+        let ctx = Context::default();
+        req.extensions_mut().insert(ProxyAddress {
             authority: rama_net::address::Authority::new(Host::Name(Domain::example()), 80),
             credential: None,
             protocol: Some(Protocol::HTTP),
         });
 
-        let req = sanitize_client_req_header(&mut ctx, req).unwrap();
+        let req = sanitize_client_req_header(&ctx, req).unwrap();
 
         let (parts, _) = req.into_parts();
         let uri = parts.uri.into_parts();
@@ -464,16 +458,16 @@ mod tests {
             .build()
             .unwrap();
 
-        let req = Request::builder().uri(uri).body(()).unwrap();
+        let mut req = Request::builder().uri(uri).body(()).unwrap();
 
-        let mut ctx = Context::default();
-        ctx.insert(ProxyAddress {
+        let ctx = Context::default();
+        req.extensions_mut().insert(ProxyAddress {
             authority: rama_net::address::Authority::new(Host::Name(Domain::example()), 80),
             credential: None,
             protocol: Some(Protocol::SOCKS5),
         });
 
-        let req = sanitize_client_req_header(&mut ctx, req).unwrap();
+        let req = sanitize_client_req_header(&ctx, req).unwrap();
 
         let (parts, _) = req.into_parts();
         let uri = parts.uri.into_parts();
