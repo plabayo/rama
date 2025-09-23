@@ -1,6 +1,10 @@
 use std::{convert::Infallible, fmt, net::Ipv4Addr};
 
-use rama_core::{Context, Service};
+use rama_core::{
+    Context, Service,
+    context::Extensions,
+    extensions::{ExtensionsMut, ExtensionsRef},
+};
 use tokio::io::{AsyncRead, AsyncWrite, DuplexStream, duplex};
 
 use crate::{client::EstablishedClientConnection, stream::Socket};
@@ -56,8 +60,8 @@ where
 
     async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
         let (client, server) = duplex(self.max_buffer_size);
-        let client_socket = MockSocket { stream: client };
-        let server_socket = MockSocket { stream: server };
+        let client_socket = MockSocket::new(client);
+        let server_socket = MockSocket::new(server);
 
         let server = (self.create_server)();
         let server_ctx = ctx.clone();
@@ -77,6 +81,28 @@ where
 #[derive(Debug)]
 pub struct MockSocket {
     stream: DuplexStream,
+    extensions: Extensions,
+}
+
+impl MockSocket {
+    pub fn new(stream: DuplexStream) -> Self {
+        Self {
+            stream,
+            extensions: Extensions::new(),
+        }
+    }
+}
+
+impl ExtensionsRef for MockSocket {
+    fn extensions(&self) -> &Extensions {
+        &self.extensions
+    }
+}
+
+impl ExtensionsMut for MockSocket {
+    fn extensions_mut(&mut self) -> &mut Extensions {
+        &mut self.extensions
+    }
 }
 
 impl AsyncRead for MockSocket {
