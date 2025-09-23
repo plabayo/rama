@@ -59,6 +59,7 @@
 use rama::{
     Context, Layer, Service,
     context::{Extensions, RequestContextExt},
+    extensions::ExtensionsMut,
     http::{
         Body, Request, Response, StatusCode,
         client::EasyHttpWebClient,
@@ -86,8 +87,7 @@ use rama::{
     },
     rt::Executor,
     service::service_fn,
-    tcp::client::service::Forwarder,
-    tcp::server::TcpListener,
+    tcp::{client::service::Forwarder, server::TcpListener},
     telemetry::tracing::{self, level_filters::LevelFilter},
     username::{
         UsernameLabelParser, UsernameLabelState, UsernameLabels, UsernameOpaqueLabelParser,
@@ -138,12 +138,12 @@ async fn main() {
                                     "lucky_number": path.number,
                                 }))
                             },
-                            HttpMatcher::get("/*") => async move |ctx: Context, req: Request| {
+                            HttpMatcher::get("/*") => async move |_ctx: Context, req: Request| {
                                 Json(json!({
                                     "method": req.method().as_str(),
                                     "path": req.uri().path(),
-                                    "username_labels": ctx.get::<UsernameLabels>().map(|labels| &labels.0),
-                                    "user_priority": ctx.get::<Priority>().map(|p| match p {
+                                    "username_labels": req.extensions().get::<UsernameLabels>().map(|labels| &labels.0),
+                                    "user_priority": req.extensions().get::<Priority>().map(|p| match p {
                                         Priority::High => "high",
                                         Priority::Medium => "medium",
                                         Priority::Low => "low",
@@ -176,20 +176,17 @@ async fn main() {
 }
 
 async fn http_connect_accept(
-    mut ctx: Context,
-    req: Request,
+    ctx: Context,
+    mut req: Request,
 ) -> Result<(Response, Context, Request), Response> {
-    match ctx
-        .get_or_try_insert_with_ctx::<RequestContext, _>(|ctx| (ctx, &req).try_into())
-        .map(|ctx| ctx.authority.clone())
-    {
+    match RequestContext::try_from((&ctx, &req)).map(|ctx| ctx.authority.clone()) {
         Ok(authority) => {
             tracing::info!(
                 server.address = %authority.host(),
                 server.port = %authority.port(),
                 "accept CONNECT (lazy): insert proxy target into context",
             );
-            ctx.insert(ProxyTarget(authority));
+            req.extensions_mut().insert(ProxyTarget(authority));
         }
         Err(err) => {
             tracing::error!("error extracting authority: {err:?}");

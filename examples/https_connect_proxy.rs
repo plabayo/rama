@@ -25,6 +25,7 @@
 
 use rama::{
     Context, Layer, Service,
+    extensions::{ExtensionsMut, ExtensionsRef},
     graceful::Shutdown,
     http::{
         Body, Request, Response, StatusCode,
@@ -150,20 +151,17 @@ async fn main() {
 }
 
 async fn http_connect_accept(
-    mut ctx: Context,
-    req: Request,
+    ctx: Context,
+    mut req: Request,
 ) -> Result<(Response, Context, Request), Response> {
-    match ctx
-        .get_or_try_insert_with_ctx::<RequestContext, _>(|ctx| (ctx, &req).try_into())
-        .map(|ctx| ctx.authority.clone())
-    {
+    match RequestContext::try_from((&ctx, &req)).map(|ctx| ctx.authority.clone()) {
         Ok(authority) => {
             tracing::info!(
                 server.address = %authority.host(),
                 server.port = %authority.port(),
                 "accept CONNECT (lazy): insert proxy target into context",
             );
-            ctx.insert(ProxyTarget(authority));
+            req.extensions_mut().insert(ProxyTarget(authority));
         }
         Err(err) => {
             tracing::error!("error extracting authority: {err:?}");
@@ -173,7 +171,7 @@ async fn http_connect_accept(
 
     tracing::info!(
         "proxy secure transport ingress: {:?}",
-        ctx.get::<SecureTransport>()
+        req.extensions().get::<SecureTransport>()
     );
 
     Ok((StatusCode::OK.into_response(), ctx, req))

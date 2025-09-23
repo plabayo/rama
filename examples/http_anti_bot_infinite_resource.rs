@@ -30,6 +30,7 @@
 use rama::{
     Context, Layer, Service,
     error::{BoxError, OpaqueError},
+    extensions::ExtensionsRef,
     http::{
         InfiniteReader, StatusCode,
         headers::ContentType,
@@ -48,6 +49,7 @@ use rama::{
     telemetry::tracing::{self, level_filters::LevelFilter},
 };
 
+use rama_http::Request;
 /// Everything else we need is provided by the standard library, community crates or tokio.
 use serde::Deserialize;
 use std::{collections::HashSet, net::IpAddr, sync::Arc, time::Duration};
@@ -124,14 +126,20 @@ struct InfiniteResourceParameters {
 
 async fn infinite_resource(
     Query(parameters): Query<InfiniteResourceParameters>,
-    ctx: Context,
+    request: Request,
 ) -> impl IntoResponse {
-    let Some(socket_info) = ctx.get::<SocketInfo>() else {
+    let Some(socket_info) = request.extensions().get::<SocketInfo>() else {
         tracing::error!("failed to fetch IP from SocketInfo; fail request with 500");
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
     let ip_addr = socket_info.peer_addr().ip();
-    let mut block_list = ctx.get::<State>().unwrap().block_list.lock().await;
+    let mut block_list = request
+        .extensions()
+        .get::<State>()
+        .unwrap()
+        .block_list
+        .lock()
+        .await;
     block_list.insert(ip_addr);
     tracing::info!(
         "blocking bad ip: {ip_addr}; serve content (limit: {:?})",
@@ -169,12 +177,19 @@ where
     type Error = BoxError;
 
     async fn serve(&self, ctx: Context, stream: TcpStream) -> Result<Self::Response, Self::Error> {
-        let ip_addr = ctx
+        let ip_addr = stream
+            .extensions()
             .get::<SocketInfo>()
             .ok_or_else(|| OpaqueError::from_display("no socket info found").into_boxed())?
             .peer_addr()
             .ip();
-        let block_list = ctx.get::<State>().unwrap().block_list.lock().await;
+        let block_list = stream
+            .extensions()
+            .get::<State>()
+            .unwrap()
+            .block_list
+            .lock()
+            .await;
         if block_list.contains(&ip_addr) {
             return Err(OpaqueError::from_display(format!(
                 "drop connection for blocked ip: {ip_addr}"

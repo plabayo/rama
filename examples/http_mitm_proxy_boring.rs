@@ -54,6 +54,7 @@
 use rama::{
     Layer, Service,
     error::{BoxError, ErrorContext, OpaqueError},
+    extensions::ExtensionsMut,
     futures::SinkExt,
     http::{
         Body, Request, Response, StatusCode,
@@ -194,20 +195,17 @@ async fn main() -> Result<(), BoxError> {
 }
 
 async fn http_connect_accept(
-    mut ctx: Context,
-    req: Request,
+    ctx: Context,
+    mut req: Request,
 ) -> Result<(Response, Context, Request), Response> {
-    match ctx
-        .get_or_try_insert_with_ctx::<RequestContext, _>(|ctx| (ctx, &req).try_into())
-        .map(|ctx| ctx.authority.clone())
-    {
+    match RequestContext::try_from((&ctx, &req)).map(|ctx| ctx.authority.clone()) {
         Ok(authority) => {
             tracing::info!(
                 server.address = %authority.host(),
                 server.port = %authority.port(),
                 "accept CONNECT (lazy): insert proxy target into context",
             );
-            ctx.insert(ProxyTarget(authority));
+            req.extensions_mut().insert(ProxyTarget(authority));
         }
         Err(err) => {
             tracing::error!("error extracting authority: {err:?}");
@@ -230,7 +228,7 @@ async fn http_connect_proxy(ctx: Context, upgraded: Upgraded) -> Result<(), Infa
     // as we otherwise might not be able to define the scheme/authority
     // for upstream http requests.
 
-    let state = ctx.get::<State>().unwrap();
+    let state = upgraded.extensions().get::<State>().unwrap();
     let http_service = new_http_mitm_proxy(state);
 
     let mut http_tp = HttpServer::auto(ctx.executor().clone());
@@ -274,7 +272,8 @@ async fn http_mitm_proxy(ctx: Context, req: Request) -> Result<Response, Infalli
     // NOTE: use a custom connector (layers) in case you wish to add custom features,
     // such as upstream proxies or other configurations
 
-    let base_tls_config = if let Some(hello) = ctx
+    let base_tls_config = if let Some(hello) = req
+        .extensions()
         .get::<SecureTransport>()
         .and_then(|st| st.client_hello())
         .cloned()
@@ -349,7 +348,7 @@ fn new_mitm_tls_service_data() -> Result<TlsAcceptorData, OpaqueError> {
         .context("create tls server config")
 }
 
-async fn mitm_websocket<S>(client: &S, mut ctx: Context, req: Request) -> Response
+async fn mitm_websocket<S>(client: &S, ctx: Context, req: Request) -> Response
 where
     S: Service<Request, Response = Response, Error = OpaqueError>,
 {
@@ -358,7 +357,7 @@ where
     let (parts, body) = req.into_parts();
     let parts_copy = parts.clone();
 
-    let req = Request::from_parts(parts, body);
+    let mut req = Request::from_parts(parts, body);
     let guard = ctx.guard().cloned();
     let cancel = async move {
         match guard {
@@ -369,11 +368,13 @@ where
 
     let target_version = req.version();
     tracing::debug!("forcing egress http connection as {target_version:?} to ensure WS upgrade");
-    ctx.insert(TargetHttpVersion(target_version));
+    req.extensions_mut()
+        .insert(TargetHttpVersion(target_version));
 
+    let extensions = req.extensions().clone();
     let mut handshake = match client
         .websocket_with_request(req)
-        .initiate_handshake(ctx)
+        .initiate_handshake(extensions)
         .await
     {
         Ok(socket) => socket,
