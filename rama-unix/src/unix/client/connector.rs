@@ -3,11 +3,12 @@
 use rama_core::{
     Context, Service,
     error::{BoxError, ErrorContext},
+    extensions::ExtensionsMut,
     telemetry::tracing,
 };
 use rama_net::client::EstablishedClientConnection;
 
-use crate::{ClientUnixSocketInfo, UnixSocketInfo, UnixStream};
+use crate::{ClientUnixSocketInfo, TokioUnixStream, UnixSocketInfo, UnixStream};
 use std::{convert::Infallible, path::PathBuf, sync::Arc};
 
 /// A connector which can be used to establish a Unix connection to a server.
@@ -91,28 +92,31 @@ where
     type Error = BoxError;
 
     async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
-        let CreatedUnixStreamConnector { mut ctx, connector } = self
+        let CreatedUnixStreamConnector { ctx, connector } = self
             .connector_factory
             .make_connector(ctx)
             .await
             .map_err(Into::into)?;
 
-        let conn = connector
+        let mut conn = connector
             .connect(self.target.0.clone())
             .await
             .map_err(Into::into)?;
 
-        ctx.insert(ClientUnixSocketInfo(UnixSocketInfo::new(
-            conn.local_addr()
+        let info = ClientUnixSocketInfo(UnixSocketInfo::new(
+            conn.stream
+                .local_addr()
                 .inspect_err(|err| {
                     tracing::debug!(
                         "failed to receive local addr of established connection: {err:?}"
                     )
                 })
                 .ok(),
-            conn.peer_addr()
+            conn.stream
+                .peer_addr()
                 .context("failed to retrieve peer address of established connection")?,
-        )));
+        ));
+        conn.extensions_mut().insert(info);
 
         Ok(EstablishedClientConnection { ctx, req, conn })
     }
@@ -134,11 +138,8 @@ pub trait UnixStreamConnector: Send + Sync + 'static {
 impl UnixStreamConnector for () {
     type Error = std::io::Error;
 
-    fn connect(
-        &self,
-        path: PathBuf,
-    ) -> impl Future<Output = Result<UnixStream, Self::Error>> + Send + '_ {
-        UnixStream::connect(path)
+    async fn connect(&self, path: PathBuf) -> Result<UnixStream, Self::Error> {
+        Ok(TokioUnixStream::connect(path).await?.into())
     }
 }
 
