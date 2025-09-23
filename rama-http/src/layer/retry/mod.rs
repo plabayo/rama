@@ -177,7 +177,6 @@ mod test {
         extensions::{ExtensionsMut, ExtensionsRef},
         service::service_fn,
     };
-    use rama_http_headers::sec_websocket_extensions::Extension;
     use rama_utils::{backoff::ExponentialBackoff, rng::HasherRng};
     use std::{
         sync::{Arc, atomic::AtomicUsize},

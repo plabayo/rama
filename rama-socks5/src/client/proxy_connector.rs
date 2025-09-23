@@ -6,7 +6,6 @@ use rama_core::{
     stream::Stream,
     telemetry::tracing,
 };
-use rama_net::transport::TransportContext;
 use rama_net::{
     address::ProxyAddress,
     client::{ConnectorService, EstablishedClientConnection},

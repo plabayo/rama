@@ -1,23 +1,20 @@
 use super::TlsAcceptorData;
 use crate::{
-    core::{
-        ssl::{AlpnError, SslAcceptor, SslMethod, SslRef},
-        tokio::SslStream,
-    },
+    core::ssl::{AlpnError, SslAcceptor, SslMethod, SslRef},
     keylog::new_key_log_file_handle,
     server::TlsStream,
     types::SecureTransport,
 };
 use parking_lot::Mutex;
+use rama_core::telemetry::tracing::{debug, trace};
 use rama_core::{
     Context, Service,
     conversion::RamaTryInto,
     error::{BoxError, ErrorContext, ErrorExt, OpaqueError},
-    extensions::{ExtensionsMut, ExtensionsRef},
+    extensions::ExtensionsMut,
     stream::Stream,
     telemetry::tracing::{debug, trace},
 };
-
 use rama_net::{
     http::RequestContext,
     tls::{ApplicationProtocol, DataEncoding, client::NegotiatedTlsParameters},
@@ -78,7 +75,7 @@ where
     type Response = S::Response;
     type Error = BoxError;
 
-    async fn serve(&self, mut ctx: Context, stream: IO) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, ctx: Context, stream: IO) -> Result<Self::Response, Self::Error> {
         // allow tls acceptor data to be injected,
         // e.g. useful for TLS environments where some data (such as server auth, think ACME)
         // is updated at runtime, be it infrequent

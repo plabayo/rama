@@ -1,6 +1,6 @@
 use rama_core::{
     Context, Service,
-    context::{self, Extensions, RequestContextExt},
+    context::{Extensions, RequestContextExt},
     error::{BoxError, ErrorContext, OpaqueError},
     extensions::{ExtensionsMut, ExtensionsRef},
     inspect::RequestInspector,

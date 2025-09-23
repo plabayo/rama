@@ -66,7 +66,7 @@ impl RequestContext {
 impl<T: HttpRequestParts> TryFrom<(&Context, &T)> for RequestContext {
     type Error = OpaqueError;
 
-    fn try_from((ctx, req): (&Context, &T)) -> Result<Self, Self::Error> {
+    fn try_from((_ctx, req): (&Context, &T)) -> Result<Self, Self::Error> {
         let uri = req.uri();
 
         let protocol = protocol_from_uri_or_extensions(req.extensions(), uri, req.method());

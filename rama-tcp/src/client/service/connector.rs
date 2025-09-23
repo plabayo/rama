@@ -1,7 +1,7 @@
 use rama_core::{
     Context, Service,
     error::{BoxError, ErrorContext, ErrorExt, OpaqueError},
-    extensions::{ExtensionsMut, ExtensionsRef},
+    extensions::ExtensionsMut,
     telemetry::tracing,
 };
 use rama_dns::{DnsResolver, GlobalDnsResolver};

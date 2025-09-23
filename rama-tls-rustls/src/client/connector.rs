@@ -307,7 +307,7 @@ where
     type Error = BoxError;
 
     async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
-        let EstablishedClientConnection { ctx, req, mut conn } =
+        let EstablishedClientConnection { ctx, req, conn } =
             self.inner.connect(ctx, req).await.map_err(Into::into)?;
 
         let transport_ctx = req.try_ref_into_transport_ctx(&ctx).map_err(|err| {
@@ -344,7 +344,7 @@ where
     type Error = BoxError;
 
     async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
-        let EstablishedClientConnection { ctx, req, mut conn } =
+        let EstablishedClientConnection { ctx, req, conn } =
             self.inner.connect(ctx, req).await.map_err(Into::into)?;
 
         let server_host = if let Some(host) = req
@@ -384,7 +384,7 @@ impl<S, K> TlsConnector<S, K> {
         &self,
         connector_data: Option<TlsConnectorData>,
         server_host: Host,
-        mut stream: T,
+        stream: T,
     ) -> Result<(RustlsTlsStream<T>, NegotiatedTlsParameters), BoxError>
     where
         T: Stream + ExtensionsMut + Unpin,

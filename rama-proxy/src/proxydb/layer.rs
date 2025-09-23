@@ -7,7 +7,7 @@ use rama_core::{
 use rama_net::{
     Protocol,
     address::ProxyAddress,
-    transport::{TransportContext, TransportProtocol, TryRefIntoTransportContext},
+    transport::{TransportProtocol, TryRefIntoTransportContext},
     user::{Basic, ProxyCredential},
 };
 use rama_utils::macros::define_inner_service_accessors;

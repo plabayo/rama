@@ -6,12 +6,12 @@ use rama_core::{
     Context, Service,
     context::Extensions,
     error::{BoxError, ErrorExt, OpaqueError},
-    extensions::{self, ExtensionsMut, ExtensionsRef},
+    extensions::{ExtensionsMut, ExtensionsRef},
     stream::Stream,
     telemetry::tracing,
 };
 use rama_http::{HeaderMap, io::upgrade};
-use rama_http_headers::{ProxyAuthorization, sec_websocket_extensions::Extension};
+use rama_http_headers::ProxyAuthorization;
 use rama_http_types::Version;
 use rama_net::{
     address::ProxyAddress,
@@ -203,7 +203,7 @@ where
         };
         // and do the handshake otherwise...
 
-        let EstablishedClientConnection { mut ctx, req, conn } = established_conn;
+        let EstablishedClientConnection { ctx, req, conn } = established_conn;
 
         tracing::trace!(
             server.address = %transport_ctx.authority.host(),

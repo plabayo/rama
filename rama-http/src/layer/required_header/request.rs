@@ -192,7 +192,7 @@ where
 
     async fn serve(
         &self,
-        mut ctx: Context,
+        ctx: Context,
         mut req: Request<ReqBody>,
     ) -> Result<Self::Response, Self::Error> {
         if self.overwrite || !req.headers().contains_key(HOST) {

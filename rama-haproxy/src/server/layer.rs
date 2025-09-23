@@ -103,7 +103,7 @@ where
     type Response = S::Response;
     type Error = BoxError;
 
-    async fn serve(&self, mut ctx: Context, mut stream: IO) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, ctx: Context, mut stream: IO) -> Result<Self::Response, Self::Error> {
         let (mut buffer, mut read) = if self.peek {
             tracing::trace!("haproxy protocol peeking enabled: start detection");
 

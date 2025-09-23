@@ -401,7 +401,7 @@ impl TryFrom<Request> for crate::Request {
 
 impl Request {
     pub fn from_http_request_parts(
-        ctx: &Context,
+        _ctx: &Context,
         parts: &ReqParts,
         payload: &[u8],
     ) -> Result<Self, OpaqueError> {

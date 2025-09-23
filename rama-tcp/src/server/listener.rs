@@ -285,7 +285,7 @@ impl TcpListener {
             let mut socket = TcpStream::new(socket);
 
             let service = service.clone();
-            let mut ctx = ctx.clone();
+            let ctx = ctx.clone();
 
             let local_addr = socket.local_addr().ok();
             let trace_local_addr = local_addr

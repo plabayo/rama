@@ -382,13 +382,7 @@ pub mod protocol {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rama_core::{
-        Layer,
-        context::Extensions,
-        extensions::{self, ExtensionsMut},
-        generic_request::GenericRequest,
-        service::service_fn,
-    };
+    use rama_core::{Layer, context::Extensions, extensions::ExtensionsMut, service::service_fn};
     use rama_net::forwarded::{ForwardedElement, NodeId};
     use std::{convert::Infallible, net::SocketAddr, pin::Pin};
     use tokio::io::{AsyncRead, AsyncWrite};
@@ -403,6 +397,12 @@ mod tests {
     impl ExtensionsRef for SocketConnection {
         fn extensions(&self) -> &Extensions {
             &self.extensions
+        }
+    }
+
+    impl ExtensionsMut for SocketConnection {
+        fn extensions_mut(&mut self) -> &mut Extensions {
+            &mut self.extensions
         }
     }
 

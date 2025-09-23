@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use rama_core::{Context, combinators::Either3, context::Extensions};
+use rama_core::{combinators::Either3, context::Extensions};
 
 use super::{ClientHelloExtension, merge_client_hello_lists};
 use crate::tls::{CipherSuite, CompressionAlgorithm, DataEncoding, KeyLogIntent, ProtocolVersion};

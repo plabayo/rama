@@ -374,7 +374,7 @@ where
 {
     async fn accept_connect(
         &self,
-        mut ctx: Context,
+        ctx: Context,
         mut stream: S,
         destination: Authority,
     ) -> Result<(), Error> {

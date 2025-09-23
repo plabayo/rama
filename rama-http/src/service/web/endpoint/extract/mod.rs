@@ -23,6 +23,8 @@ pub use query::Query;
 mod method;
 mod request;
 
+mod extensions;
+
 pub mod typed_header;
 #[doc(inline)]
 pub use typed_header::TypedHeader;

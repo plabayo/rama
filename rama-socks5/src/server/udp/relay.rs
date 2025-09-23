@@ -12,7 +12,7 @@ use crate::proto::udp::UdpHeader;
 
 #[cfg(feature = "dns")]
 use ::{
-    rama_core::{Context, error::ErrorContext},
+    rama_core::error::ErrorContext,
     rama_dns::{BoxDnsResolver, DnsResolver},
     rama_net::mode::DnsResolveIpMode,
     rand::seq::IteratorRandom,

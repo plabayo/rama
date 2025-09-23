@@ -1,4 +1,4 @@
-use rama_core::{Context, context::Extensions};
+use rama_core::context::Extensions;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 

@@ -550,7 +550,7 @@ mod test {
             .unwrap();
 
         let inner_service =
-            rama_core::service::service_fn(async |__ctx: Context, req: Request<()>| {
+            rama_core::service::service_fn(async |__ctx: Context, _req: Request<()>| {
                 Ok::<_, std::convert::Infallible>(())
             });
 
@@ -598,7 +598,7 @@ mod test {
             .unwrap();
 
         let inner_service =
-            rama_core::service::service_fn(async |__ctx: Context, req: Request<()>| {
+            rama_core::service::service_fn(async |__ctx: Context, _req: Request<()>| {
                 Ok::<_, std::convert::Infallible>(())
             });
 
@@ -647,7 +647,7 @@ mod test {
             .unwrap();
 
         let inner_service =
-            rama_core::service::service_fn(async |__ctx: Context, req: Request<()>| {
+            rama_core::service::service_fn(async |__ctx: Context, _req: Request<()>| {
                 Ok::<_, std::convert::Infallible>(())
             });
 

@@ -183,7 +183,7 @@ where
 
     async fn serve(
         &self,
-        mut ctx: Context,
+        ctx: Context,
         mut req: Request<Body>,
     ) -> Result<Self::Response, Self::Error> {
         if let Some(fallback) = self.select_fallback {
@@ -356,7 +356,7 @@ where
 }
 
 fn emulate_http_connect_settings<Body>(
-    ctx: &mut Context,
+    _ctx: &mut Context,
     req: &mut Request<Body>,
     profile: &HttpProfile,
 ) {
