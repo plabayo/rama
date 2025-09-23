@@ -22,7 +22,7 @@ impl<S: ExtensionsMut> AutoTlsStream<S> {
     pub fn secure(mut inner: RustlsTlsStream<S>) -> Self {
         let extensions = inner.get_mut().0.take_extensions();
         Self {
-            inner: AutoTlsStreamData::Secure { inner: inner },
+            inner: AutoTlsStreamData::Secure { inner },
             extensions,
         }
     }
@@ -30,7 +30,7 @@ impl<S: ExtensionsMut> AutoTlsStream<S> {
     pub fn plain(mut inner: S) -> Self {
         let extensions = inner.take_extensions();
         Self {
-            inner: AutoTlsStreamData::Plain { inner: inner },
+            inner: AutoTlsStreamData::Plain { inner },
             extensions,
         }
     }
@@ -39,14 +39,14 @@ impl<S: ExtensionsMut> AutoTlsStream<S> {
 impl<S: ExtensionsMut> AutoTlsStream<S> {
     pub fn secure_with_fresh_extensions(inner: RustlsTlsStream<S>) -> Self {
         Self {
-            inner: AutoTlsStreamData::Secure { inner: inner },
+            inner: AutoTlsStreamData::Secure { inner },
             extensions: Extensions::new(),
         }
     }
 
     pub fn plain_with_fresh_extensions(inner: S) -> Self {
         Self {
-            inner: AutoTlsStreamData::Plain { inner: inner },
+            inner: AutoTlsStreamData::Plain { inner },
             extensions: Extensions::new(),
         }
     }

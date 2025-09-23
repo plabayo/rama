@@ -20,6 +20,7 @@ pin_project! {
 }
 
 impl<S: ExtensionsMut> AutoTlsStream<S> {
+    #[must_use]
     pub fn secure(mut inner: BoringTlsStream<S>) -> Self {
         let extensions = inner.get_mut().take_extensions();
         Self {
@@ -28,6 +29,7 @@ impl<S: ExtensionsMut> AutoTlsStream<S> {
         }
     }
 
+    #[must_use]
     pub fn plain(mut inner: S) -> Self {
         let extensions = inner.take_extensions();
         Self {
@@ -38,6 +40,7 @@ impl<S: ExtensionsMut> AutoTlsStream<S> {
 }
 
 impl<S> AutoTlsStream<S> {
+    #[must_use]
     pub fn secure_with_fresh_extensions(inner: BoringTlsStream<S>) -> Self {
         Self {
             inner: AutoTlsStreamData::Secure { inner },
@@ -45,6 +48,7 @@ impl<S> AutoTlsStream<S> {
         }
     }
 
+    #[must_use]
     pub fn plain_with_fresh_extensions(inner: S) -> Self {
         Self {
             inner: AutoTlsStreamData::Plain { inner },

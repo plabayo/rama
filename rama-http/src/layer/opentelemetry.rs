@@ -275,7 +275,7 @@ impl<S: Clone, F: Clone> Clone for RequestMetricsService<S, F> {
 }
 
 impl<S, F> RequestMetricsService<S, F> {
-    fn compute_attributes<Body>(&self, ctx: &mut Context, req: &Request<Body>) -> Vec<KeyValue>
+    fn compute_attributes<Body>(&self, ctx: &Context, req: &Request<Body>) -> Vec<KeyValue>
     where
         F: AttributesFactory,
     {
@@ -285,7 +285,7 @@ impl<S, F> RequestMetricsService<S, F> {
         attributes.extend(self.base_attributes.iter().cloned());
 
         // server info
-        let request_ctx = RequestContext::try_from((&*ctx, req)).ok();
+        let request_ctx = RequestContext::try_from((ctx, req)).ok();
         if let Some(authority) = request_ctx.as_ref().map(|rc| &rc.authority) {
             attributes.push(KeyValue::new(
                 HTTP_REQUEST_HOST,
@@ -324,12 +324,8 @@ where
     type Response = Response;
     type Error = S::Error;
 
-    async fn serve(
-        &self,
-        mut ctx: Context,
-        req: Request<Body>,
-    ) -> Result<Self::Response, Self::Error> {
-        let mut attributes: Vec<KeyValue> = self.compute_attributes(&mut ctx, &req);
+    async fn serve(&self, ctx: Context, req: Request<Body>) -> Result<Self::Response, Self::Error> {
+        let mut attributes: Vec<KeyValue> = self.compute_attributes(&ctx, &req);
 
         self.metrics.http_server_total_requests.add(1, &attributes);
         self.metrics.http_server_active_requests.add(1, &attributes);
@@ -444,13 +440,13 @@ mod tests {
     #[test]
     fn test_default_svc_compute_attributes_default() {
         let svc = RequestMetricsService::new(());
-        let mut ctx = Context::default();
+        let ctx = Context::default();
         let req = Request::builder()
             .uri("http://www.example.com")
             .body(())
             .unwrap();
 
-        let attributes = svc.compute_attributes(&mut ctx, &req);
+        let attributes = svc.compute_attributes(&ctx, &req);
         assert!(
             attributes
                 .iter()
@@ -479,13 +475,13 @@ mod tests {
             ..Default::default()
         })
         .into_layer(());
-        let mut ctx = Context::default();
+        let ctx = Context::default();
         let req = Request::builder()
             .uri("http://www.example.com")
             .body(())
             .unwrap();
 
-        let attributes = svc.compute_attributes(&mut ctx, &req);
+        let attributes = svc.compute_attributes(&ctx, &req);
         assert!(
             attributes
                 .iter()
@@ -515,13 +511,13 @@ mod tests {
         })
         .with_attributes(vec![KeyValue::new("test", "attribute_fn")])
         .into_layer(());
-        let mut ctx = Context::default();
+        let ctx = Context::default();
         let req = Request::builder()
             .uri("http://www.example.com")
             .body(())
             .unwrap();
 
-        let attributes = svc.compute_attributes(&mut ctx, &req);
+        let attributes = svc.compute_attributes(&ctx, &req);
         assert!(
             attributes
                 .iter()
@@ -560,13 +556,13 @@ mod tests {
             attributes
         })
         .into_layer(());
-        let mut ctx = Context::default();
+        let ctx = Context::default();
         let req = Request::builder()
             .uri("http://www.example.com")
             .body(())
             .unwrap();
 
-        let attributes = svc.compute_attributes(&mut ctx, &req);
+        let attributes = svc.compute_attributes(&ctx, &req);
         assert!(
             attributes
                 .iter()

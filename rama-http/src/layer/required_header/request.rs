@@ -207,7 +207,7 @@ where
                 );
                 req.headers_mut().typed_insert(Host::from(host));
             } else {
-                let authority = request_ctx.authority.clone();
+                let authority = request_ctx.authority;
                 tracing::trace!(
                     server.address = %authority.host(),
                     server.port = %authority.port(),

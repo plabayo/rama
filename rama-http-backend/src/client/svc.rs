@@ -104,7 +104,7 @@ where
             }
         }
 
-        let (mut ctx, req) = self
+        let (ctx, req) = self
             .http_req_inspector
             .inspect_request(ctx, req)
             .await
@@ -118,7 +118,7 @@ where
         //
         // TODO: fix this in hyper fork (embedded in rama http core)
         // directly instead of here...
-        let req = sanitize_client_req_header(&mut ctx, req)?;
+        let req = sanitize_client_req_header(&ctx, req)?;
 
         let req_extensions = req.extensions().clone();
 
@@ -222,7 +222,7 @@ fn sanitize_client_req_header<B>(ctx: &Context, req: Request<B>) -> Result<Reque
                         tracing::trace!("add missing host {host} from authority as host header");
                         parts.headers.typed_insert(Host::from(host));
                     } else {
-                        let authority = request_ctx.authority.clone();
+                        let authority = request_ctx.authority;
                         tracing::trace!("add missing authority {authority} as host header");
                         parts.headers.typed_insert(Host::from(authority));
                     }
@@ -234,7 +234,7 @@ fn sanitize_client_req_header<B>(ctx: &Context, req: Request<B>) -> Result<Reque
                 let mut req = req;
 
                 if request_ctx.authority_has_default_port() {
-                    let authority = request_ctx.authority.clone();
+                    let authority = request_ctx.authority;
                     tracing::trace!(
                         url.full = %req.uri(),
                         server.address = %authority.host(),
@@ -373,8 +373,8 @@ mod tests {
                 .unwrap();
 
             let req = Request::builder().uri(uri).method(method).body(()).unwrap();
-            let mut ctx = Context::default();
-            let req = sanitize_client_req_header(&mut ctx, req).unwrap();
+            let ctx = Context::default();
+            let req = sanitize_client_req_header(&ctx, req).unwrap();
 
             let (parts, _) = req.into_parts();
             let uri = parts.uri.into_parts();
@@ -398,8 +398,8 @@ mod tests {
             .uri(uri)
             .body(())
             .unwrap();
-        let mut ctx = Context::default();
-        let req = sanitize_client_req_header(&mut ctx, req).unwrap();
+        let ctx = Context::default();
+        let req = sanitize_client_req_header(&ctx, req).unwrap();
 
         let (parts, _) = req.into_parts();
         let uri = parts.uri.into_parts();

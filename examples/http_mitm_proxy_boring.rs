@@ -198,7 +198,7 @@ async fn http_connect_accept(
     ctx: Context,
     mut req: Request,
 ) -> Result<(Response, Context, Request), Response> {
-    match RequestContext::try_from((&ctx, &req)).map(|ctx| ctx.authority.clone()) {
+    match RequestContext::try_from((&ctx, &req)).map(|ctx| ctx.authority) {
         Ok(authority) => {
             tracing::info!(
                 server.address = %authority.host(),

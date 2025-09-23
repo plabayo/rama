@@ -20,6 +20,7 @@ pin_project! {
 }
 
 impl<S: ExtensionsMut> TlsStream<S> {
+    #[must_use]
     pub fn new(mut inner: BoringTlsStream<S>) -> Self {
         let extensions = inner.get_mut().take_extensions();
         Self { inner, extensions }
@@ -27,6 +28,7 @@ impl<S: ExtensionsMut> TlsStream<S> {
 }
 
 impl<S> TlsStream<S> {
+    #[must_use]
     pub fn new_with_fresh_extensions(inner: BoringTlsStream<S>) -> Self {
         Self {
             inner,

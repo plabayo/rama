@@ -85,6 +85,7 @@ pub struct MockSocket {
 }
 
 impl MockSocket {
+    #[must_use]
     pub fn new(stream: DuplexStream) -> Self {
         Self {
             stream,
