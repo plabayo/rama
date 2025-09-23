@@ -56,8 +56,8 @@ hack:
 	@cargo install cargo-hack
 	cargo hack check --each-feature --no-dev-deps --workspace
 
-test:
-	cargo test --all-features --workspace
+test *ARGS:
+	cargo test --all-features --workspace {{ARGS}}
 
 test-crate CRATE *ARGS:
 	cargo test --all-features -p {{CRATE}} {{ARGS}}
