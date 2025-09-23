@@ -85,23 +85,24 @@ async fn test_tls_rustls_dynamic_config() {
     }
 
     // Connections for unknown or empty sni values should fail
-    let mut ctx = Context::default();
-    ctx.insert(DoNotRetry::default());
 
     let client = http_client(&Some("unknown.value"));
     runner.set_client(client);
     let result = runner
         .get("https://127.0.0.1:64804")
-        .send(ctx.clone())
+        .extension(DoNotRetry::default())
+        .send(Context::default())
         .await;
     assert_err!(result);
 
     let client = http_client(&None);
     runner.set_client(client);
 
-    let mut ctx = Context::default();
-    ctx.insert(DoNotRetry::default());
-    let result = runner.get("https://127.0.0.1:64804").send(ctx).await;
+    let result = runner
+        .get("https://127.0.0.1:64804")
+        .extension(DoNotRetry::default())
+        .send(Context::default())
+        .await;
     assert_err!(result);
 }
 

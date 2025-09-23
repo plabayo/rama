@@ -61,12 +61,11 @@ async fn test_http_client_over_socks5_proxy_connect_with_mitm_cap(
         https_socket_addr,
     );
 
-    let mut ctx = Context::default();
-    ctx.insert(ProxyAddress {
+    let proxy_address = ProxyAddress {
         protocol: Some(Protocol::SOCKS5),
         authority: proxy_socket_addr.into(),
         credential: Some(ProxyCredential::Basic(Basic::new_static("john", "secret"))),
-    });
+    };
 
     let test_uris = [
         format!("http://{http_socket_addr}/ping"),
@@ -86,7 +85,8 @@ async fn test_http_client_over_socks5_proxy_connect_with_mitm_cap(
 
         let resp = runner
             .get(uri)
-            .send(ctx.clone())
+            .extension(proxy_address.clone())
+            .send(Context::default())
             .await
             .expect("make http(s) request via socks5 proxy")
             .try_into_string()

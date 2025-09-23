@@ -1,6 +1,7 @@
 use super::utils;
 use rama::{
     Context,
+    context::Extensions,
     http::{
         BodyExtractExt, StatusCode,
         headers::{ContentType, HeaderMapExt, dep::mime},
@@ -36,14 +37,13 @@ async fn test_ws_tls_server() {
 
     // test the actual ws content
 
-    let mut ctx = Context::default();
-
-    let builder = ctx.get_or_insert_default::<TlsConnectorDataBuilder>();
+    let mut extensions = Extensions::new();
+    let builder = extensions.get_or_insert_default::<TlsConnectorDataBuilder>();
     builder.push_base_config(TlsConnectorDataBuilder::new_http_1().into());
 
     let mut ws = runner
         .websocket("wss://127.0.0.1:62034/echo")
-        .handshake(ctx)
+        .handshake(extensions)
         .await
         .unwrap();
     ws.send_message("hello world".into())
