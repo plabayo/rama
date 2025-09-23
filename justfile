@@ -59,8 +59,8 @@ hack:
 test:
 	cargo test --all-features --workspace
 
-test-crate CRATE:
-	cargo test --all-features -p {{CRATE}}
+test-crate CRATE *ARGS:
+	cargo test --all-features -p {{CRATE}} {{ARGS}}
 
 test-spec-h2 *ARGS:
     bash rama-http-core/ci/h2spec.sh {{ARGS}}
