@@ -243,6 +243,10 @@ pub trait ExtensionsMut: ExtensionsRef {
     fn transfer_extensions<T: ExtensionsMut>(&mut self, target: &mut T) {
         *target.extensions_mut() = std::mem::take(self.extensions_mut());
     }
+
+    fn take_extensions(&mut self) -> Extensions {
+        std::mem::take(self.extensions_mut())
+    }
 }
 
 impl ExtensionsMut for Extensions {
