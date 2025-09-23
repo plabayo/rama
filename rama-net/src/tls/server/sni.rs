@@ -13,6 +13,7 @@ use rama_core::{
     stream::{HeapReader, PeekStream, StackReader},
     telemetry::tracing,
 };
+use rama_core::{extensions::ExtensionsMut, telemetry::tracing};
 use tokio::io::{AsyncBufRead, AsyncRead, AsyncReadExt, AsyncWrite, ReadBuf};
 
 use crate::{address::Domain, tls::client::extract_sni_from_client_hello_handshake};
@@ -75,7 +76,7 @@ impl<S: fmt::Debug, F: fmt::Debug> fmt::Debug for SniRouter<S, F> {
 
 impl<Stream, Response, S, F> Service<Stream> for SniRouter<S, F>
 where
-    Stream: rama_core::stream::Stream + Unpin,
+    Stream: rama_core::stream::Stream + Unpin + ExtensionsMut,
     Response: Send + 'static,
     S: Service<SniRequest<Stream>, Response = Response, Error: Into<BoxError>>,
     F: Service<TlsPeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
@@ -285,7 +286,10 @@ impl<S: fmt::Debug> fmt::Debug for SniRequest<S> {
 
 #[cfg(test)]
 mod test {
-    use rama_core::service::{RejectError, service_fn};
+    use rama_core::{
+        generic_request::GenericRequest,
+        service::{RejectError, service_fn},
+    };
     use std::convert::Infallible;
 
     use rama_core::stream::Stream;
@@ -379,7 +383,10 @@ mod test {
         let peek_tls_svc = SniRouter::new(tls_service).with_fallback(plain_service);
 
         let response = peek_tls_svc
-            .serve(Context::default(), std::io::Cursor::new(b"".to_vec()))
+            .serve(
+                Context::default(),
+                GenericRequest::new(std::io::Cursor::new(b"".to_vec())),
+            )
             .await
             .unwrap();
         assert_eq!(Some("plain".to_owned()), response);
@@ -387,20 +394,17 @@ mod test {
         let response = peek_tls_svc
             .serve(
                 Context::default(),
-                std::io::Cursor::new(CH_ONE_ONE_ONE_ONE.to_vec()),
+                GenericRequest::new(std::io::Cursor::new(CH_ONE_ONE_ONE_ONE.to_vec())),
             )
             .await
             .unwrap();
         assert_eq!(Some("one.one.one.one".to_owned()), response);
 
         let response = peek_tls_svc
-            .serve(Context::default(), std::io::Cursor::new(b"foo".to_vec()))
-            .await
-            .unwrap();
-        assert_eq!(Some("plain".to_owned()), response);
-
-        let response = peek_tls_svc
-            .serve(Context::default(), std::io::Cursor::new(b"foobar".to_vec()))
+            .serve(
+                Context::default(),
+                GenericRequest::new(std::io::Cursor::new(b"foo".to_vec())),
+            )
             .await
             .unwrap();
         assert_eq!(Some("plain".to_owned()), response);
@@ -408,7 +412,16 @@ mod test {
         let response = peek_tls_svc
             .serve(
                 Context::default(),
-                std::io::Cursor::new(TLS_BUT_NO_SNI.to_vec()),
+                GenericRequest::new(std::io::Cursor::new(b"foobar".to_vec())),
+            )
+            .await
+            .unwrap();
+        assert_eq!(Some("plain".to_owned()), response);
+
+        let response = peek_tls_svc
+            .serve(
+                Context::default(),
+                GenericRequest::new(std::io::Cursor::new(TLS_BUT_NO_SNI.to_vec())),
             )
             .await
             .unwrap();
@@ -437,7 +450,7 @@ mod test {
         let response = peek_tls_svc
             .serve(
                 Context::default(),
-                std::io::Cursor::new(CH_ONE_ONE_ONE_ONE.to_vec()),
+                GenericRequest::new(std::io::Cursor::new(CH_ONE_ONE_ONE_ONE.to_vec())),
             )
             .await
             .unwrap();
@@ -467,7 +480,7 @@ mod test {
             let response = peek_tls_svc
                 .serve(
                     Context::default(),
-                    std::io::Cursor::new(content.as_bytes().to_vec()),
+                    GenericRequest::new(std::io::Cursor::new(content.as_bytes().to_vec())),
                 )
                 .await
                 .unwrap();
@@ -497,7 +510,7 @@ mod test {
         let response = peek_tls_svc
             .serve(
                 Context::default(),
-                std::io::Cursor::new(TLS_BUT_NO_SNI.to_vec()),
+                GenericRequest::new(std::io::Cursor::new(TLS_BUT_NO_SNI.to_vec())),
             )
             .await
             .unwrap();

@@ -6,6 +6,10 @@ use std::{
 };
 
 use pin_project_lite::pin_project;
+use rama_core::{
+    context::Extensions,
+    extensions::{ExtensionsMut, ExtensionsRef},
+};
 use tokio::io::{AsyncBufRead, AsyncRead, AsyncWrite, ReadBuf};
 
 pin_project! {
@@ -20,6 +24,23 @@ pin_project! {
         peek: P,
         #[pin]
         inner: S,
+        extensions: Extensions,
+    }
+}
+
+impl<P, S: ExtensionsMut> PeekStream<P, S> {
+    /// Create a new [`PeekStream`] for the given
+    /// peek [`AsyncRead`] and inner [`Stream`].
+    ///
+    /// [`Stream`]: super::Stream
+    pub fn new(peek: P, mut inner: S) -> Self {
+        let extensions = inner.take_extensions();
+        Self {
+            done_peek: false,
+            peek,
+            inner,
+            extensions,
+        }
     }
 }
 
@@ -28,11 +49,12 @@ impl<P, S> PeekStream<P, S> {
     /// peek [`AsyncRead`] and inner [`Stream`].
     ///
     /// [`Stream`]: super::Stream
-    pub fn new(peek: P, inner: S) -> Self {
+    pub fn new_with_fresh_extensions(peek: P, inner: S) -> Self {
         Self {
             done_peek: false,
             peek,
             inner,
+            extensions: Extensions::new(),
         }
     }
 }
@@ -61,7 +83,20 @@ where
             done_peek: self.done_peek,
             peek: self.peek.clone(),
             inner: self.inner.clone(),
+            extensions: self.extensions.clone(),
         }
+    }
+}
+
+impl<P, S> ExtensionsRef for PeekStream<P, S> {
+    fn extensions(&self) -> &Extensions {
+        &self.extensions
+    }
+}
+
+impl<P, S> ExtensionsMut for PeekStream<P, S> {
+    fn extensions_mut(&mut self) -> &mut Extensions {
+        &mut self.extensions
     }
 }
 
@@ -263,7 +298,7 @@ mod tests {
                 let new_stream = || {
                     let peek_data = Cursor::new(self.peek_data);
                     let inner_data = Cursor::new(self.inner_data);
-                    PeekStream::new(peek_data, inner_data)
+                    PeekStream::new_with_fresh_extensions(peek_data, inner_data)
                 };
 
                 test_multi_read_async::<N>(&mut new_stream(), self.expected_reads).await;
@@ -323,7 +358,7 @@ mod tests {
     fn new_peek_write_stream() -> PeekStream<Cursor<Vec<u8>>, Cursor<Vec<u8>>> {
         let peek_data = Cursor::new(Vec::new());
         let inner_data = Cursor::new(Vec::new());
-        PeekStream::new(peek_data, inner_data)
+        PeekStream::new_with_fresh_extensions(peek_data, inner_data)
     }
 
     async fn test_multi_write_async(mut stream: impl AsyncWrite + Unpin, cases: &[&str]) {
