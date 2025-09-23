@@ -4,13 +4,13 @@ use std::{
     task::{Context, Poll, ready},
 };
 
+use rama_core::stream::Stream;
 use rama_core::{
     error::OpaqueError,
     futures::{self, SinkExt, StreamExt},
     telemetry::tracing::{debug, trace},
 };
 use rama_http::io::upgrade;
-use rama_net::stream::Stream;
 
 use crate::{
     Message, ProtocolError,

@@ -5,11 +5,12 @@ use rama_core::{
     Context, Layer, Service,
     bytes::Bytes,
     error::{BoxError, ErrorContext, OpaqueError},
+    stream::Stream,
 };
 use rama_net::{
     client::{ConnectorService, EstablishedClientConnection},
     forwarded::Forwarded,
-    stream::{Socket, SocketInfo, Stream},
+    stream::{Socket, SocketInfo},
 };
 use tokio::io::AsyncWriteExt;
 

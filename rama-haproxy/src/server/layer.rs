@@ -2,12 +2,10 @@ use crate::protocol::{HeaderResult, PartialResult, v1, v2};
 use rama_core::{
     Context, Layer, Service,
     error::{BoxError, ErrorContext, ErrorExt, OpaqueError},
+    stream::{HeapReader, PeekStream, Stream},
     telemetry::tracing,
 };
-use rama_net::{
-    forwarded::{Forwarded, ForwardedElement},
-    stream::{HeapReader, PeekStream, Stream},
-};
+use rama_net::forwarded::{Forwarded, ForwardedElement};
 use rama_utils::macros::generate_set_and_with;
 use std::{fmt, net::SocketAddr};
 use tokio::io::AsyncReadExt;

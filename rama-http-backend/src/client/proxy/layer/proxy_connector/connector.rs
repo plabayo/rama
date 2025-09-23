@@ -5,6 +5,7 @@
 use super::HttpProxyError;
 use rama_core::error::{ErrorContext, OpaqueError};
 use rama_core::rt::Executor;
+use rama_core::stream::Stream;
 use rama_core::telemetry::tracing;
 use rama_http::HeaderMap;
 use rama_http::io::upgrade;
@@ -16,7 +17,7 @@ use rama_http_types::{
     Body, HeaderName, HeaderValue, Method, Request, StatusCode, Version,
     header::{HOST, USER_AGENT},
 };
-use rama_net::{address::Authority, stream::Stream};
+use rama_net::address::Authority;
 
 #[derive(Debug)]
 /// Connector for HTTP proxies.

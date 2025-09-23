@@ -4,9 +4,9 @@ use rama_core::{
     Context, Service,
     error::{BoxError, ErrorContext},
     service::RejectService,
+    stream::{PeekStream, StackReader},
     telemetry::tracing,
 };
-use rama_net::stream::{PeekStream, StackReader};
 use tokio::io::AsyncReadExt;
 
 use crate::proto::{ProtocolVersion, SocksMethod};
@@ -67,7 +67,7 @@ impl<T: fmt::Debug, F: fmt::Debug> fmt::Debug for Socks5PeekRouter<T, F> {
 
 impl<Stream, Response, T, F> Service<Stream> for Socks5PeekRouter<T, F>
 where
-    Stream: rama_net::stream::Stream + Unpin,
+    Stream: rama_core::stream::Stream + Unpin,
     Response: Send + 'static,
     T: Service<Socks5PeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
     F: Service<Socks5PeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
@@ -122,9 +122,8 @@ pub type Socks5PeekStream<S> = PeekStream<StackReader<SOCKS5_HEADER_PEEK_LEN>, S
 #[cfg(test)]
 mod test {
     use rama_core::service::{RejectError, service_fn};
+    use rama_core::stream::Stream;
     use std::convert::Infallible;
-
-    use rama_net::stream::Stream;
 
     use super::*;
 

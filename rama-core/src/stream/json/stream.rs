@@ -2,9 +2,10 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use pin_project_lite::pin_project;
-use rama_core::futures::{Stream, ready};
 use rama_error::{BoxError, ErrorContext as _, OpaqueError};
 use serde::Deserialize;
+
+use crate::futures::{Stream, ready};
 
 use super::config::ParseConfig;
 use super::engine::NdjsonEngine;
@@ -85,12 +86,12 @@ mod tests {
     use std::convert::Infallible;
     use std::pin::pin;
 
-    use rama_core::futures::StreamExt;
-    use rama_core::futures::stream;
+    use crate::futures::StreamExt;
+    use crate::futures::stream;
     use tokio_test::assert_pending;
     use tokio_test::task;
 
-    use crate::body::json::EmptyLineHandling;
+    use crate::stream::json::EmptyLineHandling;
 
     #[derive(Debug, Deserialize, Eq, PartialEq)]
     struct TestStruct {

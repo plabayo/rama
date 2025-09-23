@@ -5,6 +5,7 @@ use pin_project_lite::pin_project;
 use rama_core::{
     Context, Service,
     error::{BoxError, ErrorExt, OpaqueError},
+    stream::Stream,
     telemetry::tracing,
 };
 use rama_http::{HeaderMap, io::upgrade};
@@ -13,7 +14,6 @@ use rama_http_types::Version;
 use rama_net::{
     address::ProxyAddress,
     client::{ConnectorService, EstablishedClientConnection},
-    stream::Stream,
     transport::TryRefIntoTransportContext,
     user::ProxyCredential,
 };

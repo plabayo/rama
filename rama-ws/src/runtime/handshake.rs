@@ -4,8 +4,8 @@ use std::{
     task::{Context, Poll},
 };
 
+use rama_core::stream::Stream;
 use rama_core::telemetry::tracing::trace;
-use rama_net::stream::Stream;
 
 use crate::{
     protocol::WebSocket,

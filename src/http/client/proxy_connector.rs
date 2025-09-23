@@ -8,10 +8,10 @@ use crate::{
         Protocol,
         address::ProxyAddress,
         client::{ConnectorService, EstablishedClientConnection},
-        stream::Stream,
         transport::TryRefIntoTransportContext,
     },
     proxy::socks5::{Socks5ProxyConnector, Socks5ProxyConnectorLayer},
+    stream::Stream,
     telemetry::tracing,
 };
 use pin_project_lite::pin_project;

@@ -14,10 +14,12 @@ pub use stream::JsonStream;
 
 #[cfg(test)]
 mod tests {
-    use rama_core::futures::StreamExt;
-    use serde::Deserialize;
+    use super::*;
 
-    use crate::Body;
+    use std::convert::Infallible;
+
+    use crate::futures::{StreamExt, stream::once};
+    use serde::Deserialize;
 
     #[tokio::test]
     async fn test_json_stream_simple() {
@@ -35,8 +37,7 @@ mod tests {
         .into_iter()
         .enumerate()
         {
-            let body = Body::from(input);
-            let mut stream = body.into_json_stream::<Data>();
+            let mut stream = JsonStream::new(Box::pin(once(async { Ok::<_, Infallible>(input) })));
 
             for expected in ["foo", "qux", "baz"] {
                 assert_eq!(

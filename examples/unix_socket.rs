@@ -26,8 +26,8 @@ mod unix_example {
         error::BoxError,
         graceful::ShutdownGuard,
         layer::AddExtensionLayer,
-        net::stream::Stream,
         service::service_fn,
+        stream::Stream,
         telemetry::tracing::{self, level_filters::LevelFilter},
         unix::server::UnixListener,
     };

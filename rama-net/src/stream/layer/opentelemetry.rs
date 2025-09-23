@@ -241,7 +241,7 @@ impl<S, F, Stream> Service<Stream> for NetworkMetricsService<S, F>
 where
     S: Service<Stream>,
     F: AttributesFactory,
-    Stream: crate::stream::Stream,
+    Stream: rama_core::stream::Stream,
 {
     type Response = S::Response;
     type Error = S::Error;

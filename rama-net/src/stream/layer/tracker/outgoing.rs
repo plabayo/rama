@@ -1,16 +1,14 @@
-use super::bytes::BytesRWTracker;
-use crate::{
-    client::{ConnectorService, EstablishedClientConnection},
-    stream::Stream,
-};
-use rama_core::{Context, Layer, Service};
+use rama_core::{Context, Layer, Service, stream::Stream};
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
+
+use super::bytes::BytesRWTracker;
+use crate::client::{ConnectorService, EstablishedClientConnection};
 
 /// A [`Service`] that wraps a [`Service`]'s output IO [`Stream`] with an atomic R/W tracker.
 ///
 /// [`Service`]: rama_core::Service
-/// [`Stream`]: crate::stream::Stream
+/// [`Stream`]: rama_core::stream::Stream
 pub struct OutgoingBytesTrackerService<S> {
     inner: S,
 }
@@ -67,7 +65,7 @@ where
 ///
 /// [`Layer`]: rama_core::Layer
 /// [`Service`]: rama_core::Service
-/// [`Stream`]: crate::stream::Stream
+/// [`Stream`]: rama_core::stream::Stream
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct OutgoingBytesTrackerLayer;

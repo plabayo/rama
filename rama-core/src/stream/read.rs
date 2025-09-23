@@ -1,5 +1,4 @@
 use pin_project_lite::pin_project;
-use rama_core::bytes::{Buf, Bytes};
 use std::{
     fmt,
     io::{Cursor, Read},
@@ -7,6 +6,8 @@ use std::{
     task::{Context, Poll, ready},
 };
 use tokio::io::{self, AsyncBufRead, AsyncRead, ReadBuf};
+
+use crate::bytes::{Buf, Bytes};
 
 pin_project! {
     /// Reader for reading from a heap-allocated bytes buffer.
@@ -350,6 +351,7 @@ where
 #[cfg(test)]
 mod test {
     use super::*;
+
     use tokio::io::AsyncReadExt;
 
     async fn test_multi_read_async<const N: usize>(

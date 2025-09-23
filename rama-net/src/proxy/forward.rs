@@ -4,7 +4,7 @@ use rama_core::{
     error::{ErrorExt, OpaqueError},
 };
 
-use crate::stream::Stream;
+use rama_core::stream::Stream;
 
 use super::ProxyRequest;
 

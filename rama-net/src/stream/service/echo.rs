@@ -1,7 +1,6 @@
 //! An async service which echoes the incoming bytes back on the same stream.
 
-use crate::stream::Stream;
-use rama_core::{Context, Service, error::BoxError};
+use rama_core::{Context, Service, error::BoxError, stream::Stream};
 
 /// An async service which echoes the incoming bytes back on the same stream.
 ///

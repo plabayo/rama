@@ -8,16 +8,16 @@ use crate::{
     types::SecureTransport,
 };
 use parking_lot::Mutex;
-use rama_core::telemetry::tracing::{debug, trace};
 use rama_core::{
     Context, Service,
     conversion::RamaTryInto,
     error::{BoxError, ErrorContext, ErrorExt, OpaqueError},
+    stream::Stream,
+    telemetry::tracing::{debug, trace},
 };
 use rama_net::{
     address::Host,
     http::RequestContext,
-    stream::Stream,
     tls::{ApplicationProtocol, DataEncoding, client::NegotiatedTlsParameters},
     transport::TransportContext,
 };

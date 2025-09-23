@@ -1,12 +1,13 @@
 use std::{fmt, io, time::Duration};
 
 use rama_core::telemetry::tracing::{self, Instrument};
-use rama_core::{Context, Service, error::BoxError, layer::timeout::DefaultTimeout};
+use rama_core::{
+    Context, Service, error::BoxError, layer::timeout::DefaultTimeout, stream::Stream,
+};
 use rama_net::{
     address::{Authority, Host, SocketAddress},
     proxy::{ProxyRequest, StreamForwardService},
     socket::{Interface, SocketService},
-    stream::Stream,
 };
 use rama_tcp::{TcpStream, server::TcpListener};
 use rama_utils::macros::generate_field_setters;

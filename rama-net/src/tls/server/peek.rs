@@ -1,14 +1,13 @@
 use std::fmt;
 
-use rama_core::telemetry::tracing;
 use rama_core::{
     Context, Service,
     error::{BoxError, ErrorContext},
     service::RejectService,
+    stream::{PeekStream, StackReader},
+    telemetry::tracing,
 };
 use tokio::io::AsyncReadExt;
-
-use crate::stream::{PeekStream, StackReader};
 
 /// A [`Service`] router that can be used to support
 /// tls traffic as well as non-tls traffic.
@@ -63,7 +62,7 @@ impl<T: fmt::Debug, F: fmt::Debug> fmt::Debug for TlsPeekRouter<T, F> {
 
 impl<Stream, Response, T, F> Service<Stream> for TlsPeekRouter<T, F>
 where
-    Stream: crate::stream::Stream + Unpin,
+    Stream: rama_core::stream::Stream + Unpin,
     Response: Send + 'static,
     T: Service<TlsPeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
     F: Service<TlsPeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
@@ -113,7 +112,7 @@ mod test {
     use rama_core::service::{RejectError, service_fn};
     use std::convert::Infallible;
 
-    use crate::stream::Stream;
+    use rama_core::stream::Stream;
 
     use super::*;
 

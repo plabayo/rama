@@ -2592,6 +2592,8 @@ dependencies = [
  "rama-error",
  "rama-macros",
  "rama-utils",
+ "serde",
+ "serde_json",
  "tokio",
  "tokio-graceful",
  "tokio-test",

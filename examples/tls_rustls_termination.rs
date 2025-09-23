@@ -43,12 +43,13 @@ use rama::{
     graceful::Shutdown,
     layer::ConsumeErrLayer,
     net::forwarded::Forwarded,
-    net::stream::{SocketInfo, Stream},
+    net::stream::SocketInfo,
     net::tls::server::SelfSignedData,
     proxy::haproxy::{
         client::HaProxyLayer as HaProxyClientLayer, server::HaProxyLayer as HaProxyServerLayer,
     },
     service::service_fn,
+    stream::Stream,
     tcp::{
         client::service::{Forwarder, TcpConnector},
         server::TcpListener,
