@@ -1,8 +1,9 @@
 use super::conn::{ConnectorService, EstablishedClientConnection};
 use crate::stream::Socket;
 use parking_lot::Mutex;
+use rama_core::context::Extensions;
 use rama_core::error::{BoxError, ErrorContext, OpaqueError};
-use rama_core::extensions::ExtensionsRef;
+use rama_core::extensions::{ExtensionsMut, ExtensionsRef};
 use rama_core::telemetry::tracing::trace;
 use rama_core::{Context, Layer, Service};
 use rama_utils::macros::generate_set_and_with;
@@ -28,7 +29,7 @@ pub mod metrics;
 /// remove one, this results in the storage deciding which mode we use for connection
 /// reuse and dropping (eg FIFO for reuse and LRU for dropping conn when pool is full)
 pub trait Pool<C, ID>: Send + Sync + 'static {
-    type Connection: Send;
+    type Connection: Send + ExtensionsMut;
     type CreatePermit: Send;
 
     /// Get a connection from the pool, if no connection is found a [`Pool::CreatePermit`] is returned
@@ -84,7 +85,7 @@ pub struct NoPool;
 
 impl<C, ID> Pool<C, ID> for NoPool
 where
-    C: Send + 'static,
+    C: Send + ExtensionsMut + 'static,
     ID: Clone + Send + Sync + PartialEq + 'static,
 {
     type Connection = C;
@@ -113,6 +114,7 @@ pub struct LeasedConnection<C, ID> {
     active_slot: ActiveSlot,
     returner: ConnReturner<C, ID>,
     failed: AtomicBool,
+    extensions: Extensions,
 }
 
 impl<C, ID> LeasedConnection<C, ID> {
@@ -126,6 +128,18 @@ impl<C, ID> LeasedConnection<C, ID> {
     }
 }
 
+impl<C, ID> ExtensionsRef for LeasedConnection<C, ID> {
+    fn extensions(&self) -> &Extensions {
+        &self.extensions
+    }
+}
+
+impl<C, ID> ExtensionsMut for LeasedConnection<C, ID> {
+    fn extensions_mut(&mut self) -> &mut Extensions {
+        &mut self.extensions
+    }
+}
+
 /// A connection which is stored in a pool.
 ///
 /// A ID is used to determine which connections can be used for a request.
@@ -135,6 +149,7 @@ struct PooledConnection<C, ID> {
     id: ID,
     pool_slot: PoolSlot,
     last_used: Instant,
+    extensions: Extensions,
 }
 
 #[deprecated = "use LruDropPool instead"]
@@ -271,7 +286,7 @@ impl<C, ID> LruDropPool<C, ID> {
 
 impl<C, ID> Pool<C, ID> for LruDropPool<C, ID>
 where
-    C: Send + 'static,
+    C: Send + ExtensionsMut + 'static,
     ID: ConnID,
 {
     type Connection = LeasedConnection<C, ID>;
@@ -339,11 +354,13 @@ where
                     .record(idx as u64, metric_attrs);
             }
 
+            let extensions = pooled_conn.extensions.clone();
             return Ok(ConnectionResult::Connection(LeasedConnection {
                 active_slot,
                 pooled_conn: Some(pooled_conn),
                 returner: self.returner.clone(),
                 failed: AtomicBool::new(false),
+                extensions,
             }));
         }
 
@@ -372,7 +389,7 @@ where
         Ok(ConnectionResult::CreatePermit((active_slot, pool_slot)))
     }
 
-    async fn create(&self, id: ID, conn: C, permit: Self::CreatePermit) -> Self::Connection {
+    async fn create(&self, id: ID, mut conn: C, permit: Self::CreatePermit) -> Self::Connection {
         trace!("adding new connection (w/ id {id:?}) to pool");
         let (active_slot, pool_slot) = permit;
 
@@ -383,15 +400,18 @@ where
             metrics.created_connections.add(1, &metric_attrs);
         }
 
+        let extensions = conn.take_extensions();
         LeasedConnection {
             active_slot,
             returner: self.returner.clone(),
             failed: false.into(),
+            extensions: extensions.clone(),
             pooled_conn: Some(PooledConnection {
                 id,
                 conn,
                 pool_slot,
                 last_used: Instant::now(),
+                extensions,
             }),
         }
     }
@@ -680,7 +700,7 @@ impl<S, P, R> PooledConnector<S, P, R> {
 
 impl<Request, S, P, R> Service<Request> for PooledConnector<S, P, R>
 where
-    S: ConnectorService<Request, Connection: Send, Error: Send + 'static>,
+    S: ConnectorService<Request, Connection: Send + ExtensionsMut, Error: Send + 'static>,
     Request: Send + ExtensionsRef + 'static,
     P: Pool<S::Connection, R::ID>,
     R: ReqToConnID<Request>,
@@ -784,6 +804,7 @@ impl<S, P: Clone, R: Clone> Layer<S> for PooledConnectorLayer<P, R> {
 mod tests {
     use super::*;
     use crate::client::EstablishedClientConnection;
+    use rama_core::extensions::ExtensionsMut;
     use rama_core::generic_request::GenericRequest;
     use rama_core::{Context, Service, context::Extensions};
     use std::{
@@ -804,17 +825,61 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    struct Conn {
+        items: Vec<u32>,
+        extensions: Extensions,
+    }
+
+    impl Conn {
+        fn new() -> Self {
+            Self {
+                items: vec![],
+                extensions: Extensions::new(),
+            }
+        }
+    }
+
+    impl ExtensionsRef for Conn {
+        fn extensions(&self) -> &Extensions {
+            &self.extensions
+        }
+    }
+
+    impl ExtensionsMut for Conn {
+        fn extensions_mut(&mut self) -> &mut Extensions {
+            &mut self.extensions
+        }
+    }
+
+    impl Deref for Conn {
+        type Target = Vec<u32>;
+
+        fn deref(&self) -> &Self::Target {
+            &self.items
+        }
+    }
+
+    impl DerefMut for Conn {
+        fn deref_mut(&mut self) -> &mut Self::Target {
+            &mut self.items
+        }
+    }
+
     impl<Request> Service<Request> for TestService
     where
         Request: Send + 'static,
     {
-        type Response = EstablishedClientConnection<Vec<u32>, Request>;
+        type Response = EstablishedClientConnection<Conn, Request>;
         type Error = Infallible;
 
         async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
-            let conn = vec![];
             self.created_connection.fetch_add(1, Ordering::Relaxed);
-            Ok(EstablishedClientConnection { ctx, req, conn })
+            Ok(EstablishedClientConnection {
+                ctx,
+                req,
+                conn: Conn::new(),
+            })
         }
     }
 
@@ -875,7 +940,7 @@ mod tests {
                 .conn;
 
             conn.push(1);
-            assert_eq!(conn.as_ref(), &vec![1]);
+            assert_eq!(conn.as_ref().deref(), &vec![1]);
             assert_eq!(svc.inner.created_connection.load(Ordering::Relaxed), 1);
         }
 
@@ -888,7 +953,7 @@ mod tests {
                 .conn;
 
             conn.push(2);
-            assert_eq!(conn.as_ref(), &vec![1, 2]);
+            assert_eq!(conn.as_ref().deref(), &vec![1, 2]);
             assert_eq!(svc.inner.created_connection.load(Ordering::Relaxed), 1);
         }
 
@@ -901,7 +966,7 @@ mod tests {
                 .conn;
 
             conn.push(3);
-            assert_eq!(conn.as_ref(), &vec![3]);
+            assert_eq!(conn.as_ref().deref(), &vec![3]);
             assert_eq!(svc.inner.created_connection.load(Ordering::Relaxed), 2);
         }
 
@@ -914,7 +979,7 @@ mod tests {
                 .conn;
 
             conn.push(4);
-            assert_eq!(conn.as_ref(), &vec![3, 4]);
+            assert_eq!(conn.as_ref().deref(), &vec![3, 4]);
             assert_eq!(svc.inner.created_connection.load(Ordering::Relaxed), 2);
         }
     }
@@ -964,6 +1029,19 @@ mod tests {
     #[derive(Default, Debug)]
     struct InnerService {
         should_error: AtomicBool,
+        extensions: Extensions,
+    }
+
+    impl ExtensionsRef for InnerService {
+        fn extensions(&self) -> &Extensions {
+            &self.extensions
+        }
+    }
+
+    impl ExtensionsMut for InnerService {
+        fn extensions_mut(&mut self) -> &mut Extensions {
+            &mut self.extensions
+        }
     }
 
     impl Service<bool> for InnerService {
