@@ -12,7 +12,7 @@ use super::engine::NdjsonEngine;
 
 pin_project! {
     /// Wraps a [Stream] of [Result]s of data blocks, i.e. types that reference as byte array, and offers
-    /// a [Stream] mplementation over parsed NDJSON-records according to [Deserialize], forwarding
+    /// a [Stream] implementation over parsed NDJSON-records according to [Deserialize], forwarding
     /// potential errors returned by the wrapped iterator.
     pub struct JsonStream<T, S> {
         engine: NdjsonEngine<T>,

@@ -12,6 +12,9 @@ mod stream;
 
 pub use stream::JsonStream;
 
+mod codec;
+pub use codec::{JsonDecoder, JsonEncoder};
+
 #[cfg(test)]
 mod tests {
     use super::*;
