@@ -5,6 +5,7 @@ use rama::{
     Context, Layer, Service,
     cli::args::RequestArgsBuilder,
     error::{BoxError, ErrorContext, OpaqueError, error},
+    extensions::ExtensionsMut,
     graceful::{self, Shutdown, ShutdownGuard},
     http::{
         Request, Response, StatusCode, StreamingBody, Version,
@@ -294,10 +295,9 @@ async fn run_inner(guard: ShutdownGuard, cfg: CliCommandHttp) -> Result<(), BoxE
         request_args_builder.parse_arg(arg);
     }
 
-    let request = request_args_builder.build()?;
+    let mut request = request_args_builder.build()?;
 
     let client = create_client(guard, cfg.clone()).await?;
-    let mut ctx = Context::default();
 
     let forced_version = match (
         cfg.http_09,
@@ -319,10 +319,10 @@ async fn run_inner(guard: ShutdownGuard, cfg: CliCommandHttp) -> Result<(), BoxE
     };
 
     if let Some(forced_version) = forced_version {
-        ctx.insert(forced_version);
+        request.extensions_mut().insert(forced_version);
     }
 
-    let response = client.serve(ctx, request).await?;
+    let response = client.serve(Context::default(), request).await?;
 
     if cfg.check_status {
         let status = response.status();

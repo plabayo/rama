@@ -25,6 +25,7 @@ use crate::{
     tcp::TcpStream,
     telemetry::tracing,
 };
+use rama_core::extensions::{ExtensionsMut, ExtensionsRef};
 use rama_http::service::web::response::IntoResponse;
 use std::{convert::Infallible, marker::PhantomData, time::Duration};
 use tokio::io::AsyncWriteExt;
@@ -212,11 +213,16 @@ impl Service<Request> for HttpEchoService {
     type Response = Response;
     type Error = BoxError;
 
-    async fn serve(&self, ctx: Context, _req: Request) -> Result<Self::Response, Self::Error> {
-        let peer_ip = ctx
+    async fn serve(&self, _ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
+        let peer_ip = req
+            .extensions()
             .get::<Forwarded>()
             .and_then(|f| f.client_ip())
-            .or_else(|| ctx.get::<SocketInfo>().map(|s| s.peer_addr().ip()));
+            .or_else(|| {
+                req.extensions()
+                    .get::<SocketInfo>()
+                    .map(|s| s.peer_addr().ip())
+            });
 
         Ok(match peer_ip {
             Some(ip) => ip.to_string().into_response(),
@@ -232,16 +238,22 @@ pub struct TcpEchoService;
 
 impl<Input> Service<Input> for TcpEchoService
 where
-    Input: Stream + Unpin,
+    Input: Stream + Unpin + ExtensionsMut,
 {
     type Response = ();
     type Error = BoxError;
 
-    async fn serve(&self, ctx: Context, stream: Input) -> Result<Self::Response, Self::Error> {
-        let peer_ip = ctx
+    async fn serve(&self, _ctx: Context, stream: Input) -> Result<Self::Response, Self::Error> {
+        let peer_ip = stream
+            .extensions()
             .get::<Forwarded>()
             .and_then(|f| f.client_ip())
-            .or_else(|| ctx.get::<SocketInfo>().map(|s| s.peer_addr().ip()));
+            .or_else(|| {
+                stream
+                    .extensions()
+                    .get::<SocketInfo>()
+                    .map(|s| s.peer_addr().ip())
+            });
         let Some(peer_ip) = peer_ip else {
             tracing::error!("missing peer information");
             return Ok(());

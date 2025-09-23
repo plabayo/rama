@@ -67,11 +67,12 @@ pub async fn run(cfg: CliCommandTls) -> Result<(), BoxError> {
         .with_connector_data(tls_conn_data)
         .layer(loggin_service);
 
-    let EstablishedClientConnection { ctx, .. } = tls_connector
+    let EstablishedClientConnection { conn, .. } = tls_connector
         .connect(Context::default(), Request::new(authority))
         .await?;
 
-    let params = ctx
+    let params = conn
+        .extensions
         .get::<NegotiatedTlsParameters>()
         .expect("NegotiatedTlsParameters to be available in connector context");
 

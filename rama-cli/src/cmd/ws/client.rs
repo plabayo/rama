@@ -1,5 +1,6 @@
 use rama::{
-    Context, Layer, Service,
+    Layer, Service,
+    context::Extensions,
     error::{BoxError, ErrorContext, OpaqueError},
     http::{
         Request, Response, StreamingBody,
@@ -55,7 +56,7 @@ pub(super) async fn connect(cfg: super::CliCommandWs) -> Result<ClientWebSocket,
 
     builder
         .with_per_message_deflate_overwrite_extensions()
-        .handshake(Context::default())
+        .handshake(Extensions::default())
         .await
         .context("establish WS(S) connection")
 }
