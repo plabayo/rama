@@ -1,15 +1,13 @@
-use std::{
-    io,
-    net::SocketAddr,
-    pin::Pin,
-    task::{Context, Poll},
-};
-
-use crate::dep::tokio_rustls::client::TlsStream as RustlsTlsStream;
+use super::RustlsTlsStream;
 use pin_project_lite::pin_project;
 use rama_core::{
     context::Extensions,
     extensions::{ExtensionsMut, ExtensionsRef},
+};
+use std::{
+    io,
+    pin::Pin,
+    task::{Context, Poll},
 };
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
@@ -22,8 +20,15 @@ pin_project! {
     }
 }
 
+impl<IO: ExtensionsMut> TlsStream<IO> {
+    pub fn new(mut stream: RustlsTlsStream<IO>) -> Self {
+        let extensions = stream.get_mut().0.take_extensions();
+        Self { stream, extensions }
+    }
+}
+
 impl<IO> TlsStream<IO> {
-    pub fn new(stream: RustlsTlsStream<IO>) -> Self {
+    pub fn new_with_fresh_extensions(stream: RustlsTlsStream<IO>) -> Self {
         Self {
             stream,
             extensions: Extensions::new(),
@@ -31,7 +36,7 @@ impl<IO> TlsStream<IO> {
     }
 }
 
-impl<IO> From<RustlsTlsStream<IO>> for TlsStream<IO> {
+impl<IO: ExtensionsMut> From<RustlsTlsStream<IO>> for TlsStream<IO> {
     fn from(value: RustlsTlsStream<IO>) -> Self {
         Self::new(value)
     }

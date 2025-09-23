@@ -1,8 +1,6 @@
-use super::{TlsConnectorData, TlsStream};
+use super::{AutoTlsStream, RustlsTlsStream, TlsConnectorData, TlsStream};
 use crate::dep::tokio_rustls::TlsConnector as RustlsConnector;
 use crate::types::TlsTunnel;
-use pin_project_lite::pin_project;
-use rama_core::context::Extensions;
 use rama_core::conversion::{RamaInto, RamaTryFrom};
 use rama_core::error::ErrorContext;
 use rama_core::error::{BoxError, ErrorExt, OpaqueError};
@@ -16,7 +14,6 @@ use rama_net::tls::ApplicationProtocol;
 use rama_net::tls::client::NegotiatedTlsParameters;
 use rama_net::transport::TryRefIntoTransportContext;
 use std::fmt;
-use tokio::io::{AsyncRead, AsyncWrite};
 
 /// A [`Layer`] which wraps the given service with a [`TlsConnector`].
 ///
@@ -244,11 +241,8 @@ where
     type Error = BoxError;
 
     async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
-        let EstablishedClientConnection {
-            mut ctx,
-            req,
-            mut conn,
-        } = self.inner.connect(ctx, req).await.map_err(Into::into)?;
+        let EstablishedClientConnection { ctx, req, conn } =
+            self.inner.connect(ctx, req).await.map_err(Into::into)?;
 
         let transport_ctx = req.try_ref_into_transport_ctx(&ctx).map_err(|err| {
             OpaqueError::from_boxed(err.into())
@@ -267,16 +261,10 @@ where
                 "TlsConnector(auto): protocol not secure, return inner connection",
             );
 
-            let mut extensions = Extensions::new();
-            conn.transfer_extensions(&mut extensions);
-
             return Ok(EstablishedClientConnection {
                 ctx,
                 req,
-                conn: AutoTlsStream {
-                    inner: AutoTlsStreamData::Plain { inner: conn },
-                    extensions,
-                },
+                conn: AutoTlsStream::plain(conn),
             });
         }
 
@@ -291,8 +279,7 @@ where
 
         let connector_data = req.extensions().get::<TlsConnectorData>().cloned();
 
-        let (mut stream, negotiated_params) =
-            self.handshake(connector_data, server_host, conn).await?;
+        let (stream, negotiated_params) = self.handshake(connector_data, server_host, conn).await?;
 
         tracing::trace!(
             server.address = %transport_ctx.authority.host(),
@@ -301,19 +288,10 @@ where
             transport_ctx.app_protocol,
         );
 
-        // TODO boundary
-        let mut extensions = Extensions::new();
-        stream.transfer_extensions(&mut extensions);
-        extensions.extensions_mut().insert(negotiated_params);
+        let mut conn = AutoTlsStream::secure(stream);
+        conn.extensions_mut().insert(negotiated_params);
 
-        Ok(EstablishedClientConnection {
-            ctx,
-            req,
-            conn: AutoTlsStream {
-                inner: AutoTlsStreamData::Secure { inner: stream },
-                extensions,
-            },
-        })
+        Ok(EstablishedClientConnection { ctx, req, conn })
     }
 }
 
@@ -347,12 +325,11 @@ where
 
         let connector_data = req.extensions().get::<TlsConnectorData>().cloned();
 
-        // TODO see above
-        let mut extensions = Extensions::new();
-        conn.transfer_extensions(&mut extensions);
-
         let (conn, negotiated_params) = self.handshake(connector_data, server_host, conn).await?;
-        extensions.insert(negotiated_params);
+
+        let mut conn = TlsStream::new(conn);
+
+        conn.extensions_mut().insert(negotiated_params);
 
         Ok(EstablishedClientConnection { ctx, req, conn })
     }
@@ -382,38 +359,23 @@ where
             tracing::trace!(
                 "TlsConnector(tunnel): return inner connection: no Tls tunnel is requested"
             );
-            let mut extensions = Extensions::new();
-            conn.transfer_extensions(&mut extensions);
 
             return Ok(EstablishedClientConnection {
                 ctx,
                 req,
-                conn: AutoTlsStream {
-                    inner: AutoTlsStreamData::Plain { inner: conn },
-                    extensions,
-                },
+                conn: AutoTlsStream::plain(conn),
             });
         };
 
         let connector_data = req.extensions().get::<TlsConnectorData>().cloned();
 
-        let (mut conn, negotiated_params) =
-            self.handshake(connector_data, server_host, conn).await?;
+        let (conn, negotiated_params) = self.handshake(connector_data, server_host, conn).await?;
+        let mut conn = AutoTlsStream::secure(conn);
 
-        // TODO boundary
-        let mut extensions = Extensions::new();
-        conn.transfer_extensions(&mut extensions);
-        extensions.extensions_mut().insert(negotiated_params);
+        conn.extensions_mut().insert(negotiated_params);
 
         tracing::trace!("TlsConnector(tunnel): connection secured");
-        Ok(EstablishedClientConnection {
-            ctx,
-            req,
-            conn: AutoTlsStream {
-                inner: AutoTlsStreamData::Secure { inner: conn },
-                extensions,
-            },
-        })
+        Ok(EstablishedClientConnection { ctx, req, conn })
     }
 }
 
@@ -423,7 +385,7 @@ impl<S, K> TlsConnector<S, K> {
         connector_data: Option<TlsConnectorData>,
         server_host: Host,
         mut stream: T,
-    ) -> Result<(TlsStream<T>, NegotiatedTlsParameters), BoxError>
+    ) -> Result<(RustlsTlsStream<T>, NegotiatedTlsParameters), BoxError>
     where
         T: Stream + ExtensionsMut + Unpin,
     {
@@ -437,8 +399,6 @@ impl<S, K> TlsConnector<S, K> {
 
         let connector = RustlsConnector::from(connector_data.client_config);
 
-        let mut extensions = Extensions::new();
-        stream.transfer_extensions(&mut extensions);
         let stream = connector.connect(server_name, stream).await?;
 
         let (_, conn_data_ref) = stream.get_ref();
@@ -460,130 +420,7 @@ impl<S, K> TlsConnector<S, K> {
             peer_certificate_chain: server_certificate_chain,
         };
 
-        let mut stream = TlsStream::from(stream);
-        extensions.transfer_extensions(stream.extensions_mut());
         Ok((stream, params))
-    }
-}
-
-pin_project! {
-    /// A stream which can be either a secure or a plain stream.
-    pub struct AutoTlsStream<S> {
-        #[pin]
-        inner: AutoTlsStreamData<S>,
-        extensions: Extensions,
-    }
-}
-
-impl<S: ExtensionsMut> AutoTlsStream<S> {
-    fn secure(mut inner: TlsStream<S>) -> Self {
-        let mut extensions = Extensions::new();
-        inner.transfer_extensions(&mut extensions);
-        Self {
-            inner: AutoTlsStreamData::Secure { inner: inner },
-            extensions,
-        }
-    }
-
-    fn plain(mut inner: S) -> Self {
-        let mut extensions = Extensions::new();
-        inner.transfer_extensions(&mut extensions);
-        Self {
-            inner: AutoTlsStreamData::Plain { inner: inner },
-            extensions,
-        }
-    }
-}
-
-impl<S: fmt::Debug> fmt::Debug for AutoTlsStream<S> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("AutoTlsStream")
-            .field("inner", &self.inner)
-            .finish()
-    }
-}
-
-pin_project! {
-    #[project = AutoTlsStreamDataProj]
-    /// A stream which can be either a secure or a plain stream.
-    enum AutoTlsStreamData<S> {
-        /// A secure stream.
-        Secure{ #[pin] inner: TlsStream<S> },
-        /// A plain stream.
-        Plain { #[pin] inner: S },
-    }
-}
-
-impl<S: fmt::Debug> fmt::Debug for AutoTlsStreamData<S> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Secure { inner } => f.debug_tuple("Secure").field(inner).finish(),
-            Self::Plain { inner } => f.debug_tuple("Plain").field(inner).finish(),
-        }
-    }
-}
-
-impl<S> AsyncRead for AutoTlsStream<S>
-where
-    S: Stream + Unpin,
-{
-    fn poll_read(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        buf: &mut tokio::io::ReadBuf<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        match self.project().inner.project() {
-            AutoTlsStreamDataProj::Secure { inner } => inner.poll_read(cx, buf),
-            AutoTlsStreamDataProj::Plain { inner } => inner.poll_read(cx, buf),
-        }
-    }
-}
-
-impl<S> AsyncWrite for AutoTlsStream<S>
-where
-    S: Stream + Unpin,
-{
-    fn poll_write(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        buf: &[u8],
-    ) -> std::task::Poll<Result<usize, std::io::Error>> {
-        match self.project().inner.project() {
-            AutoTlsStreamDataProj::Secure { inner } => inner.poll_write(cx, buf),
-            AutoTlsStreamDataProj::Plain { inner } => inner.poll_write(cx, buf),
-        }
-    }
-
-    fn poll_flush(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Result<(), std::io::Error>> {
-        match self.project().inner.project() {
-            AutoTlsStreamDataProj::Secure { inner } => inner.poll_flush(cx),
-            AutoTlsStreamDataProj::Plain { inner } => inner.poll_flush(cx),
-        }
-    }
-
-    fn poll_shutdown(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Result<(), std::io::Error>> {
-        match self.project().inner.project() {
-            AutoTlsStreamDataProj::Secure { inner } => inner.poll_shutdown(cx),
-            AutoTlsStreamDataProj::Plain { inner } => inner.poll_shutdown(cx),
-        }
-    }
-}
-
-impl<S> ExtensionsRef for AutoTlsStream<S> {
-    fn extensions(&self) -> &Extensions {
-        &self.extensions
-    }
-}
-
-impl<S> ExtensionsMut for AutoTlsStream<S> {
-    fn extensions_mut(&mut self) -> &mut Extensions {
-        &mut self.extensions
     }
 }
 

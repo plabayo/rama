@@ -3,8 +3,7 @@
 mod connector;
 #[doc(inline)]
 pub use connector::{
-    AutoTlsStream, ConnectorKindAuto, ConnectorKindSecure, ConnectorKindTunnel, TlsConnector,
-    TlsConnectorLayer,
+    ConnectorKindAuto, ConnectorKindSecure, ConnectorKindTunnel, TlsConnector, TlsConnectorLayer,
 };
 
 mod connector_data;
@@ -13,6 +12,12 @@ pub use connector_data::{
     TlsConnectorData, TlsConnectorDataBuilder, client_root_certs, self_signed_client_auth,
 };
 
-mod stream;
+mod tls_stream;
 #[doc(inline)]
-pub use stream::TlsStream;
+pub use tls_stream::TlsStream;
+
+mod tls_stream_auto;
+#[doc(inline)]
+pub use tls_stream_auto::AutoTlsStream;
+
+use crate::dep::tokio_rustls::client::TlsStream as RustlsTlsStream;
