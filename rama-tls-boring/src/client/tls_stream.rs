@@ -1,29 +1,37 @@
-use std::fmt;
-
+use super::BoringTlsStream;
 use pin_project_lite::pin_project;
 use rama_boring::ssl::SslRef;
-use rama_boring_tokio::SslStream;
 use rama_core::{
     context::Extensions,
     extensions::{ExtensionsMut, ExtensionsRef},
     stream::Stream,
 };
 use rama_net::stream::Stream;
+use std::fmt;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 pin_project! {
     /// A stream which can be either a secure or a plain stream.
     pub struct TlsStream<S> {
         #[pin]
-        pub(super) inner: SslStream<S>,
+        pub(super) inner: BoringTlsStream<S>,
         pub extensions: Extensions
     }
 }
 
 impl<S: ExtensionsMut> TlsStream<S> {
-    pub(super) fn new(mut inner: SslStream<S>) -> Self {
+    pub fn new(mut inner: BoringTlsStream<S>) -> Self {
         let extensions = inner.get_mut().take_extensions();
         Self { inner, extensions }
+    }
+}
+
+impl<S> TlsStream<S> {
+    pub fn new_with_fresh_extensions(inner: BoringTlsStream<S>) -> Self {
+        Self {
+            inner,
+            extensions: Extensions::new(),
+        }
     }
 
     #[must_use]

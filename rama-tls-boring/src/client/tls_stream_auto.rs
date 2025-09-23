@@ -1,14 +1,13 @@
-use std::fmt;
-
+use super::BoringTlsStream;
 use pin_project_lite::pin_project;
 use rama_boring::ssl::SslRef;
-use rama_boring_tokio::SslStream;
 use rama_core::{
     context::Extensions,
     extensions::{ExtensionsMut, ExtensionsRef},
     stream::Stream,
 };
 use rama_net::stream::Stream;
+use std::fmt;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 pin_project! {
@@ -21,7 +20,7 @@ pin_project! {
 }
 
 impl<S: ExtensionsMut> AutoTlsStream<S> {
-    pub(super) fn secure(mut inner: SslStream<S>) -> Self {
+    pub fn secure(mut inner: BoringTlsStream<S>) -> Self {
         let extensions = inner.get_mut().take_extensions();
         Self {
             inner: AutoTlsStreamData::Secure { inner },
@@ -29,11 +28,27 @@ impl<S: ExtensionsMut> AutoTlsStream<S> {
         }
     }
 
-    pub(super) fn plain(mut inner: S) -> Self {
+    pub fn plain(mut inner: S) -> Self {
         let extensions = inner.take_extensions();
         Self {
             inner: AutoTlsStreamData::Plain { inner },
             extensions,
+        }
+    }
+}
+
+impl<S> AutoTlsStream<S> {
+    pub fn secure_with_fresh_extensions(inner: BoringTlsStream<S>) -> Self {
+        Self {
+            inner: AutoTlsStreamData::Secure { inner },
+            extensions: Extensions::new(),
+        }
+    }
+
+    pub fn plain_with_fresh_extensions(inner: S) -> Self {
+        Self {
+            inner: AutoTlsStreamData::Plain { inner },
+            extensions: Extensions::new(),
         }
     }
 
@@ -59,7 +74,7 @@ pin_project! {
     /// A stream which can be either a secure or a plain stream.
     enum AutoTlsStreamData<S> {
         /// A secure stream.
-        Secure{ #[pin] inner: SslStream<S> },
+        Secure{ #[pin] inner: BoringTlsStream<S> },
         /// A plain stream.
         Plain { #[pin] inner: S },
     }
