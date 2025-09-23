@@ -24,7 +24,7 @@ default = []
 rama-core = { workspace = true }
 rama-net = { workspace = true }
 tokio = { workspace = true, features = ["macros", "net"] }
-tokio-util = { workspace = true, features = ["net", "codec"] }
+tokio-util = { workspace = true, features = ["net"] }
 
 [dev-dependencies]
 

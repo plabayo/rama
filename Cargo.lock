@@ -2597,6 +2597,7 @@ dependencies = [
  "tokio",
  "tokio-graceful",
  "tokio-test",
+ "tokio-util",
  "tracing",
  "tracing-opentelemetry",
 ]
@@ -2701,7 +2702,6 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tokio-test",
- "tokio-util",
  "tracing-subscriber",
  "uuid",
  "zstd",
@@ -2754,7 +2754,6 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tokio-test",
- "tokio-util",
  "walkdir",
  "want",
  "webpki-roots",

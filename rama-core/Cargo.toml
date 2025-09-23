@@ -42,6 +42,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["macros", "fs", "io-std"] }
 tokio-graceful = { workspace = true }
+tokio-util = { workspace = true, features = ["codec", "io", "io-util"] }
 tracing = { workspace = true }
 tracing-opentelemetry = { workspace = true, optional = true }
 

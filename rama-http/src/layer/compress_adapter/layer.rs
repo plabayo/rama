@@ -52,11 +52,11 @@ mod tests {
     use crate::layer::set_header::SetResponseHeaderLayer;
     use crate::{Body, Request, Response, body::util::BodyExt, header::ACCEPT_ENCODING};
     use rama_core::service::service_fn;
+    use rama_core::stream::io::ReaderStream;
     use rama_core::{Context, Service};
     use rama_http_types::HeaderValue;
     use std::convert::Infallible;
     use tokio::fs::File;
-    use tokio_util::io::ReaderStream;
     use zstd::zstd_safe::WriteBuf;
 
     async fn handle(_req: Request) -> Result<Response, Infallible> {

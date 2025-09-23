@@ -17,7 +17,7 @@
 //! use rama_core::{Context, Service, Layer};
 //! use std::convert::Infallible;
 //! use tokio::fs::{self, File};
-//! use tokio_util::io::ReaderStream;
+//! use rama_core::stream::io::ReaderStream;
 //!
 //! type BoxBody = InnerBoxBody<Bytes, std::io::Error>;
 //!
@@ -103,13 +103,13 @@ mod tests {
     use async_compression::tokio::write::{BrotliDecoder, BrotliEncoder};
     use flate2::read::GzDecoder;
     use rama_core::service::service_fn;
+    use rama_core::stream::io::StreamReader;
     use rama_core::{Context, Service};
     use rama_http_types::Body;
     use std::convert::Infallible;
     use std::io::Read;
     use std::sync::{Arc, RwLock};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio_util::io::StreamReader;
 
     // Compression filter allows every other request to be compressed
     #[derive(Clone)]
