@@ -6,7 +6,7 @@ use rama_core::{
     Context, Service,
     context::Extensions,
     error::{BoxError, ErrorExt, OpaqueError},
-    extensions::{ExtensionsMut, ExtensionsRef},
+    extensions::{self, ExtensionsMut, ExtensionsRef},
     stream::Stream,
     telemetry::tracing,
 };
@@ -318,12 +318,9 @@ impl<S: ExtensionsMut + Unpin + Stream> MaybeHttpProxiedConnection<S> {
         }
     }
 
-    fn upgraded_proxy(conn: upgrade::Upgraded) -> Self {
+    fn upgraded_proxy(mut conn: upgrade::Upgraded) -> Self {
         // TODO does this always work or should we handle errors here
-        let mut parts = conn.downcast::<S>().expect("original connection type");
-        let extensions = parts.io.take_extensions();
-
-        let conn = upgrade::Upgraded::new(parts.io, parts.read_buf);
+        let extensions = conn.take_extensions();
         Self {
             inner: Connection::UpgradedProxy { conn },
             extensions,
