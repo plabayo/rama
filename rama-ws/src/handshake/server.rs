@@ -9,7 +9,7 @@ use rama_core::{
     Context, Service,
     context::Extensions,
     error::{ErrorContext, OpaqueError},
-    extensions::ExtensionsRef,
+    extensions::{ExtensionsMut, ExtensionsRef},
     futures::{StreamExt, TryStreamExt},
     matcher::Matcher,
     telemetry::tracing::{self, Instrument},
@@ -452,8 +452,8 @@ where
 
     async fn serve(
         &self,
-        mut ctx: Context,
-        req: Request<Body>,
+        ctx: Context,
+        mut req: Request<Body>,
     ) -> Result<Self::Response, Self::Error> {
         match validate_http_client_request(&req) {
             Ok(request_data) => {
@@ -572,7 +572,7 @@ where
                 let protocols_header = match accepted_protocol {
                     Some(p) => {
                         tracing::trace!("inject accepted ws protocol in cfg: {p:?}");
-                        ctx.insert(p.clone());
+                        req.extensions_mut().insert(p.clone());
                         Some(p.into_header())
                     }
                     None => None,
@@ -581,7 +581,7 @@ where
                 let extensions_header = match accepted_extension {
                     Some(ext) => {
                         tracing::trace!("inject accepted ws extension in cfg: {ext:?}");
-                        ctx.insert(ext.clone());
+                        req.extensions_mut().insert(ext.clone());
                         Some(ext.into_header())
                     }
                     None => None,
@@ -775,7 +775,7 @@ where
 
                                     tracing::trace!("check if pmd settings have to be applied to WS cfg...");
 
-                                    if let Some(Extension::PerMessageDeflate(pmd_cfg)) = ctx.get() {
+                                    if let Some(Extension::PerMessageDeflate(pmd_cfg)) = req.extensions().get() {
                                         tracing::trace!(
                                             "apply accepted per-message-deflate cfg into WS server config: {pmd_cfg:?}"
                                         );
@@ -844,10 +844,11 @@ impl Service<AsyncWebSocket> for WebSocketEchoService {
 
     async fn serve(
         &self,
-        ctx: Context,
+        _ctx: Context,
         socket: AsyncWebSocket,
     ) -> Result<Self::Response, Self::Error> {
-        let protocol = ctx
+        let protocol = socket
+            .extensions()
             .get::<headers::sec_websocket_protocol::AcceptedWebSocketProtocol>()
             .map(|p| p.as_str())
             .unwrap_or(ECHO_SERVICE_SUB_PROTOCOL_DEFAULT);
@@ -912,7 +913,7 @@ impl Service<upgrade::Upgraded> for WebSocketEchoService {
     async fn serve(
         &self,
         ctx: Context,
-        io: upgrade::Upgraded,
+        mut io: upgrade::Upgraded,
     ) -> Result<Self::Response, Self::Error> {
         #[cfg(not(feature = "compression"))]
         let maybe_ws_config = {
@@ -930,7 +931,7 @@ impl Service<upgrade::Upgraded> for WebSocketEchoService {
 
             tracing::debug!("check if pmd settings have to be applied to WS cfg...");
 
-            if let Some(Extension::PerMessageDeflate(pmd_cfg)) = ctx.get() {
+            if let Some(Extension::PerMessageDeflate(pmd_cfg)) = io.extensions().get() {
                 tracing::debug!(
                     "apply accepted per-message-deflate cfg into WS server config: {pmd_cfg:?}"
                 );
@@ -943,7 +944,10 @@ impl Service<upgrade::Upgraded> for WebSocketEchoService {
             ws_cfg
         };
 
-        let socket = AsyncWebSocket::from_raw_socket(io, Role::Server, maybe_ws_config).await;
+        // TODO improve extensions handling in AsyncWebSocket
+        let extensions = io.take_extensions();
+        let mut socket = AsyncWebSocket::from_raw_socket(io, Role::Server, maybe_ws_config).await;
+        *socket.extensions_mut() = extensions;
         self.serve(ctx, socket).await
     }
 }
@@ -1093,7 +1097,7 @@ mod tests {
         expected_accepted_protocol: Option<AcceptedWebSocketProtocol>,
     ) {
         let ctx = Context::default();
-        let (resp, ctx, req) = acceptor.serve(ctx, request).await.unwrap();
+        let (resp, _ctx, req) = acceptor.serve(ctx, request).await.unwrap();
         match req.version() {
             Version::HTTP_10 | Version::HTTP_11 => {
                 assert_eq!(StatusCode::SWITCHING_PROTOCOLS, resp.status())
@@ -1112,13 +1116,17 @@ mod tests {
                 "request = {req:?}"
             );
             assert_eq!(
-                ctx.get::<AcceptedWebSocketProtocol>(),
+                req.extensions().get::<AcceptedWebSocketProtocol>(),
                 Some(&expected_accepted_protocol),
                 "request = {req:?}"
             );
         } else {
             assert!(accepted_protocol.is_none());
-            assert!(ctx.get::<AcceptedWebSocketProtocol>().is_none());
+            assert!(
+                req.extensions()
+                    .get::<AcceptedWebSocketProtocol>()
+                    .is_none()
+            );
         }
     }
 
