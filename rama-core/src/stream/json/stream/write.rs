@@ -1,7 +1,7 @@
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use bytes::Bytes;
+use crate::bytes::{BufMut as _, Bytes, BytesMut};
 use pin_project_lite::pin_project;
 use rama_error::{BoxError, OpaqueError};
 use serde::Serialize;
@@ -16,6 +16,7 @@ pin_project! {
         written: bool,
         #[pin]
         item_stream: S,
+        scratch: BytesMut,
     }
 }
 
@@ -26,6 +27,7 @@ impl<S> JsonWriteStream<S> {
         Self {
             written: false,
             item_stream,
+            scratch: BytesMut::with_capacity(1024),
         }
     }
 
@@ -38,6 +40,7 @@ impl<S> JsonWriteStream<S> {
         Self {
             written: true,
             item_stream,
+            scratch: BytesMut::with_capacity(1024),
         }
     }
 
@@ -59,20 +62,19 @@ where
 
         match ready!(this.item_stream.as_mut().poll_next(cx)) {
             Some(Ok(item)) => {
-                let mut v = Vec::new();
+                this.scratch.clear();
+
                 if *this.written {
-                    v.push(b'\n');
+                    this.scratch.put_u8(b'\n');
                 }
 
-                // TODO: in future we probably want to be smarter in this body
-                // regarding allocations... for now this is good enough however
-
                 Poll::Ready(Some(
-                    if let Err(err) = serde_json::to_writer(&mut v, &item) {
+                    if let Err(err) = serde_json::to_writer(this.scratch.writer(), &item) {
                         Err(OpaqueError::from_boxed(err.into()))
                     } else {
                         *this.written = true;
-                        Ok(Bytes::from(v))
+                        let out = this.scratch.split().freeze();
+                        Ok(out)
                     },
                 ))
             }
