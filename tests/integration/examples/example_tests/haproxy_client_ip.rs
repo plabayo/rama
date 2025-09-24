@@ -4,13 +4,13 @@ use super::utils;
 
 use rama::{
     Context, Service,
+    http::layer::required_header::AddRequiredRequestHeaders,
     http::{Body, BodyExtractExt, Request, client::HttpConnector},
     net::client::{ConnectorService, EstablishedClientConnection},
     net::forwarded::{Forwarded, ForwardedElement},
     proxy::haproxy::client::HaProxyService,
     tcp::client::service::TcpConnector,
 };
-use rama_http::layer::required_header::AddRequiredRequestHeaders;
 
 #[tokio::test]
 #[ignore]

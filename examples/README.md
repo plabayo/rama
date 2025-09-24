@@ -130,6 +130,7 @@ The following examples show how you can integrate ACME into you webservices (ACM
 ## Network and Transport
 - [`tcp_listener_hello.rs`](./tcp_listener_hello.rs) - Basic TCP listener example
 - [`tcp_listener_layers.rs`](./tcp_listener_layers.rs) - TCP listener with layers
+- [`tcp_nd_json.rs`](./tcp_nd_json.rs) - TCP listener serving a ndjson (Newline Delimited JSON) stream of data
 - [`udp_codec.rs`](./udp_codec.rs) - UDP codec implementation
 - [`unix_socket.rs`](./unix_socket.rs) - Unix socket server (listener) demonstration of accepting and handling incoming streams
 - [`unix_socket_http.rs`](./unix_socket_http.rs) - Serving HTTP over a unix socket, which is a fast and easy local-first solution

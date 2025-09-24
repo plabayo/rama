@@ -10,7 +10,8 @@ pub use config::{EmptyLineHandling, ParseConfig};
 mod engine;
 mod stream;
 
-pub use stream::JsonStream;
+pub use stream::read::JsonReadStream;
+pub use stream::write::JsonWriteStream;
 
 mod codec;
 pub use codec::{JsonDecoder, JsonEncoder};
@@ -40,7 +41,8 @@ mod tests {
         .into_iter()
         .enumerate()
         {
-            let mut stream = JsonStream::new(Box::pin(once(async { Ok::<_, Infallible>(input) })));
+            let mut stream =
+                JsonReadStream::new(Box::pin(once(async { Ok::<_, Infallible>(input) })));
 
             for expected in ["foo", "qux", "baz"] {
                 assert_eq!(

@@ -410,7 +410,6 @@ bytes = { workspace = true }
 derive_more = { workspace = true, features = ["as_ref"] }
 divan = { workspace = true }
 escargot = { workspace = true }
-futures = { workspace = true }
 futures-channel = { workspace = true }
 h2-support = { path = "rama-http-core/tests/h2-support" }
 indexmap = { workspace = true, features = ["serde"] }
@@ -631,6 +630,10 @@ required-features = ["tcp"]
 
 [[example]]
 name = "tcp_listener_layers"
+required-features = ["tcp"]
+
+[[example]]
+name = "tcp_nd_json"
 required-features = ["tcp"]
 
 [[example]]

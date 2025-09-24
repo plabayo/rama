@@ -2,9 +2,9 @@ use super::utils;
 use rama::{
     Context,
     http::body::util::BodyExt,
+    http::headers::UserAgent,
     http::{BodyExtractExt, StatusCode},
 };
-use rama_http::headers::UserAgent;
 
 const ADDRESS: &str = "127.0.0.1:62036";
 

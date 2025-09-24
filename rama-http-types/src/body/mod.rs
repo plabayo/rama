@@ -172,9 +172,9 @@ impl Body {
     ///
     /// Stream of json objects, each object separated by a newline (`\n`).
     #[must_use]
-    pub fn into_json_stream<T: DeserializeOwned>(self) -> json::JsonStream<T, BodyDataStream> {
+    pub fn into_json_stream<T: DeserializeOwned>(self) -> json::JsonReadStream<T, BodyDataStream> {
         let stream = self.into_data_stream();
-        json::JsonStream::new(stream)
+        json::JsonReadStream::new(stream)
     }
 
     /// Convert the body into a [`JsonStream`].
@@ -184,9 +184,9 @@ impl Body {
     pub fn into_json_stream_with_config<T: DeserializeOwned>(
         self,
         cfg: json::ParseConfig,
-    ) -> json::JsonStream<T, BodyDataStream> {
+    ) -> json::JsonReadStream<T, BodyDataStream> {
         let stream = self.into_data_stream();
-        json::JsonStream::new_with_config(stream, cfg)
+        json::JsonReadStream::new_with_config(stream, cfg)
     }
 
     /// Convert the body into a [`Stream`] of [`sse::Event`]s with optional string data.

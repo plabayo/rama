@@ -68,7 +68,7 @@ fn map_http_core_err_to_result(err: rama_http_core::Error) -> HttpServeResult {
 mod private {
     use crate::server::HttpServeResult;
     use crate::server::hyper_conn::{map_boxed_http_core_result, map_http_core_result};
-    use futures::FutureExt;
+    use rama_core::futures::FutureExt;
     use rama_core::stream::Stream;
     use rama_core::telemetry::tracing;
     use rama_core::{Context, Service};

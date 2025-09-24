@@ -4,9 +4,9 @@ use rama::{
     http::{
         BodyExtractExt, StatusCode,
         headers::{ContentType, HeaderMapExt, dep::mime},
+        ws::protocol::{PerMessageDeflateConfig, WebSocketConfig},
     },
 };
-use rama_ws::protocol::{PerMessageDeflateConfig, WebSocketConfig};
 
 #[tokio::test]
 #[ignore]

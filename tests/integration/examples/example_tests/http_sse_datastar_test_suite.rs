@@ -2,9 +2,8 @@ use std::time::Duration;
 
 use super::utils;
 
+use rama::http::sse::datastar::ElementPatchMode;
 use rama::{Context, futures::StreamExt, http::sse::datastar::DatastarEvent};
-
-use rama_http::sse::datastar::ElementPatchMode;
 use serde_json::json;
 
 #[tokio::test]
