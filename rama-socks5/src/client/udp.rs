@@ -2,10 +2,10 @@ use rama_core::bytes::{BufMut, BytesMut};
 use rama_core::error::{BoxError, OpaqueError};
 use rama_core::futures::Sink;
 use rama_core::futures::Stream;
+use rama_core::stream::codec::{Decoder, Encoder};
 use rama_core::telemetry::tracing;
 use rama_net::{address::SocketAddress, socket::Interface};
 use rama_udp::UdpSocket;
-use rama_udp::codec::{Decoder, Encoder};
 use std::pin::Pin;
 use std::task::{Context, Poll, ready};
 use std::{fmt, io, net::SocketAddr};
@@ -22,7 +22,7 @@ pub struct UdpSocketRelayBinder<S> {
     stream: S,
 }
 
-impl<S: rama_net::stream::Stream + Unpin> UdpSocketRelayBinder<S> {
+impl<S: rama_core::stream::Stream + Unpin> UdpSocketRelayBinder<S> {
     pub(crate) fn new(stream: S) -> Self {
         Self { stream }
     }
@@ -120,7 +120,7 @@ impl<S: fmt::Debug> fmt::Debug for UdpSocketRelay<S> {
     }
 }
 
-impl<S: rama_net::stream::Stream + Unpin> UdpSocketRelay<S> {
+impl<S: rama_core::stream::Stream + Unpin> UdpSocketRelay<S> {
     /// Returns the local address that this socket is bound to.
     #[inline]
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
@@ -304,7 +304,7 @@ pub struct UdpFramedRelay<C, S> {
     current_addr: Option<SocketAddress>,
 }
 
-impl<C, S: rama_net::stream::Stream + Unpin> UdpFramedRelay<C, S> {
+impl<C, S: rama_core::stream::Stream + Unpin> UdpFramedRelay<C, S> {
     /// Returns the local address that this relay's underlying [`UdpSocket`] is bound to.
     #[inline]
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
@@ -353,7 +353,7 @@ impl<C, S: Unpin> Unpin for UdpFramedRelay<C, S> {}
 impl<C, S> Stream for UdpFramedRelay<C, S>
 where
     C: Decoder<Error: Into<BoxError>>,
-    S: rama_net::stream::Stream + Unpin,
+    S: rama_core::stream::Stream + Unpin,
 {
     type Item = Result<(C::Item, SocketAddress), BoxError>;
 
@@ -407,7 +407,7 @@ where
 impl<I, C, S> Sink<(I, SocketAddr)> for UdpFramedRelay<C, S>
 where
     C: Encoder<I, Error: Into<BoxError>>,
-    S: rama_net::stream::Stream + Unpin,
+    S: rama_core::stream::Stream + Unpin,
 {
     type Error = BoxError;
 

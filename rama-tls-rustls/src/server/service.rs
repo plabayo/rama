@@ -1,16 +1,15 @@
-use crate::dep::rustls::server::Acceptor;
-use crate::dep::tokio_rustls::{LazyConfigAcceptor, server::TlsStream};
-use crate::types::SecureTransport;
 use rama_core::{
     Context, Service,
     conversion::RamaInto,
     error::{BoxError, ErrorContext, ErrorExt, OpaqueError},
-};
-use rama_net::{
     stream::Stream,
-    tls::{ApplicationProtocol, client::NegotiatedTlsParameters},
 };
+use rama_net::tls::{ApplicationProtocol, client::NegotiatedTlsParameters};
 use rama_utils::macros::define_inner_service_accessors;
+
+use crate::dep::rustls::server::Acceptor;
+use crate::dep::tokio_rustls::{LazyConfigAcceptor, server::TlsStream};
+use crate::types::SecureTransport;
 
 use super::TlsAcceptorData;
 use super::acceptor_data::ServerConfig;

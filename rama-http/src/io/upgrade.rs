@@ -41,9 +41,9 @@ use std::task::{Context, Poll};
 
 use rama_core::bytes::Bytes;
 use rama_core::error::OpaqueError;
+use rama_core::stream::Stream;
+use rama_core::stream::rewind::Rewind;
 use rama_core::telemetry::tracing::trace;
-use rama_net::stream::Stream;
-use rama_net::stream::rewind::Rewind;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::sync::oneshot;
 

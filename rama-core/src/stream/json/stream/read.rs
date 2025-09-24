@@ -2,25 +2,25 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use pin_project_lite::pin_project;
-use rama_core::futures::{Stream, ready};
 use rama_error::{BoxError, ErrorContext as _, OpaqueError};
 use serde::Deserialize;
 
-use super::config::ParseConfig;
-use super::engine::NdjsonEngine;
+use crate::futures::{Stream, ready};
+use crate::stream::json::config::ParseConfig;
+use crate::stream::json::engine::NdjsonEngine;
 
 pin_project! {
     /// Wraps a [Stream] of [Result]s of data blocks, i.e. types that reference as byte array, and offers
-    /// a [Stream] mplementation over parsed NDJSON-records according to [Deserialize], forwarding
+    /// a [Stream] implementation over parsed NDJSON-records according to [Deserialize], forwarding
     /// potential errors returned by the wrapped iterator.
-    pub struct JsonStream<T, S> {
+    pub struct JsonReadStream<T, S> {
         engine: NdjsonEngine<T>,
         #[pin]
         bytes_stream: S
     }
 }
 
-impl<T, S> JsonStream<T, S> {
+impl<T, S> JsonReadStream<T, S> {
     /// Creates a new fallible NDJSON-stream wrapping the given `bytes_stream` with default
     /// [ParseConfig].
     pub fn new(bytes_stream: S) -> Self {
@@ -38,9 +38,13 @@ impl<T, S> JsonStream<T, S> {
             bytes_stream,
         }
     }
+
+    pub fn into_inner(self) -> S {
+        self.bytes_stream
+    }
 }
 
-impl<T, S, B, E> Stream for JsonStream<T, S>
+impl<T, S, B, E> Stream for JsonReadStream<T, S>
 where
     for<'deserialize> T: Deserialize<'deserialize>,
     E: Into<BoxError>,
@@ -85,12 +89,12 @@ mod tests {
     use std::convert::Infallible;
     use std::pin::pin;
 
-    use rama_core::futures::StreamExt;
-    use rama_core::futures::stream;
+    use crate::futures::StreamExt;
+    use crate::futures::stream;
     use tokio_test::assert_pending;
     use tokio_test::task;
 
-    use crate::body::json::EmptyLineHandling;
+    use crate::stream::json::EmptyLineHandling;
 
     #[derive(Debug, Deserialize, Eq, PartialEq)]
     struct TestStruct {
@@ -112,8 +116,8 @@ mod tests {
 
     #[test]
     fn pending_stream_results_in_pending_item() {
-        let mut ndjson_stream: JsonStream<(), _> =
-            JsonStream::new(stream::pending::<Result<&str, OpaqueError>>());
+        let mut ndjson_stream: JsonReadStream<(), _> =
+            JsonReadStream::new(stream::pending::<Result<&str, OpaqueError>>());
 
         let mut next = task::spawn(ndjson_stream.next());
 
@@ -123,7 +127,7 @@ mod tests {
     #[test]
     fn empty_stream_results_in_empty_results() {
         let collected = tokio_test::block_on(
-            JsonStream::<_, _>::new(stream::empty::<Result<&[u8], OpaqueError>>())
+            JsonReadStream::<_, _>::new(stream::empty::<Result<&[u8], OpaqueError>>())
                 .collect::<Vec<Result<(), OpaqueError>>>(),
         );
         assert!(collected.is_empty());
@@ -134,7 +138,7 @@ mod tests {
         let stream = stream::once(async { Ok::<_, Infallible>("{\"key\":1,\"value\":2}\n") });
 
         let collected = tokio_test::block_on(
-            JsonStream::<_, _>::new(stream).collect::<Vec<Result<TestStruct, OpaqueError>>>(),
+            JsonReadStream::<_, _>::new(stream).collect::<Vec<Result<TestStruct, OpaqueError>>>(),
         );
 
         let mut result = collected.into_iter();
@@ -155,7 +159,7 @@ mod tests {
         ]);
 
         let collected = tokio_test::block_on(
-            JsonStream::<_, _>::new(stream).collect::<Vec<Result<TestStruct, OpaqueError>>>(),
+            JsonReadStream::<_, _>::new(stream).collect::<Vec<Result<TestStruct, OpaqueError>>>(),
         );
 
         let mut result = collected.into_iter();
@@ -171,7 +175,7 @@ mod tests {
         let iter = SingleThenPanicIter {
             data: Some("{\"key\":0,\"value\":0}\n{\"key\":0,\"value\":0}\n".to_owned()),
         };
-        let mut ndjson_stream = JsonStream::<TestStruct, _>::new(stream::iter(iter));
+        let mut ndjson_stream = JsonReadStream::<TestStruct, _>::new(stream::iter(iter));
 
         assert!(ndjson_stream.next().await.is_some());
         assert!(ndjson_stream.next().await.is_some());
@@ -182,7 +186,9 @@ mod tests {
         let stream = stream::once(async { Ok::<_, Infallible>("{\"key\":1,\"value\":2}\n\n") });
         let config =
             ParseConfig::default().with_empty_line_handling(EmptyLineHandling::ParseAlways);
-        let mut ndjson_stream = pin!(JsonStream::<TestStruct, _>::new_with_config(stream, config));
+        let mut ndjson_stream = pin!(JsonReadStream::<TestStruct, _>::new_with_config(
+            stream, config
+        ));
 
         assert!(ndjson_stream.next().await.unwrap().is_ok());
         assert!(ndjson_stream.next().await.unwrap().is_err());
@@ -193,7 +199,9 @@ mod tests {
         let stream = stream::once(async { Ok::<_, Infallible>("{\"key\":1,\"value\":2}\n\n") });
         let config =
             ParseConfig::default().with_empty_line_handling(EmptyLineHandling::IgnoreEmpty);
-        let mut ndjson_stream = pin!(JsonStream::<TestStruct, _>::new_with_config(stream, config));
+        let mut ndjson_stream = pin!(JsonReadStream::<TestStruct, _>::new_with_config(
+            stream, config
+        ));
 
         assert!(ndjson_stream.next().await.unwrap().is_ok());
         assert!(ndjson_stream.next().await.is_none());
@@ -203,7 +211,9 @@ mod tests {
     async fn stream_with_parse_rest_handles_valid_finalization() {
         let stream = stream::once(async { Ok::<_, Infallible>("{\"key\":1,\"value\":2}") });
         let config = ParseConfig::default().with_parse_rest(true);
-        let mut ndjson_stream = pin!(JsonStream::<TestStruct, _>::new_with_config(stream, config));
+        let mut ndjson_stream = pin!(JsonReadStream::<TestStruct, _>::new_with_config(
+            stream, config
+        ));
 
         assert_eq!(
             ndjson_stream.next().await.unwrap().unwrap(),
@@ -216,7 +226,9 @@ mod tests {
     async fn stream_with_parse_rest_handles_invalid_finalization() {
         let stream = stream::once(async { Ok::<_, Infallible>("{\"key\":1,") });
         let config = ParseConfig::default().with_parse_rest(true);
-        let mut ndjson_stream = pin!(JsonStream::<TestStruct, _>::new_with_config(stream, config));
+        let mut ndjson_stream = pin!(JsonReadStream::<TestStruct, _>::new_with_config(
+            stream, config
+        ));
 
         assert!(ndjson_stream.next().await.unwrap().is_err());
         assert!(ndjson_stream.next().await.is_none());
@@ -226,7 +238,9 @@ mod tests {
     async fn stream_without_parse_rest_does_not_handle_finalization() {
         let stream = stream::once(async { Ok::<_, Infallible>("some text") });
         let config = ParseConfig::default().with_parse_rest(false);
-        let mut ndjson_stream = pin!(JsonStream::<TestStruct, _>::new_with_config(stream, config));
+        let mut ndjson_stream = pin!(JsonReadStream::<TestStruct, _>::new_with_config(
+            stream, config
+        ));
 
         assert!(ndjson_stream.next().await.is_none());
     }
@@ -241,7 +255,7 @@ mod tests {
             Ok("{\"key\":55,\"value\":66}\n"),
         ];
         let data_stream = stream::iter(data_vec);
-        let fallible_ndjson_stream = JsonStream::<TestStruct, _>::new(data_stream);
+        let fallible_ndjson_stream = JsonReadStream::<TestStruct, _>::new(data_stream);
 
         let mut iter = tokio_test::block_on(fallible_ndjson_stream.collect::<Vec<_>>()).into_iter();
 

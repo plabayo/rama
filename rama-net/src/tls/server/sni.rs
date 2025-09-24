@@ -6,19 +6,16 @@ use std::{
 };
 
 use pin_project_lite::pin_project;
-use rama_core::telemetry::tracing;
 use rama_core::{
     Context, Service,
     error::{BoxError, ErrorContext, OpaqueError},
     service::RejectService,
+    stream::{HeapReader, PeekStream, StackReader},
+    telemetry::tracing,
 };
 use tokio::io::{AsyncBufRead, AsyncRead, AsyncReadExt, AsyncWrite, ReadBuf};
 
-use crate::{
-    address::Domain,
-    stream::{HeapReader, PeekStream, StackReader},
-    tls::client::extract_sni_from_client_hello_handshake,
-};
+use crate::{address::Domain, tls::client::extract_sni_from_client_hello_handshake};
 
 use super::{NoTlsRejectError, TlsPeekStream};
 
@@ -78,7 +75,7 @@ impl<S: fmt::Debug, F: fmt::Debug> fmt::Debug for SniRouter<S, F> {
 
 impl<Stream, Response, S, F> Service<Stream> for SniRouter<S, F>
 where
-    Stream: crate::stream::Stream + Unpin,
+    Stream: rama_core::stream::Stream + Unpin,
     Response: Send + 'static,
     S: Service<SniRequest<Stream>, Response = Response, Error: Into<BoxError>>,
     F: Service<TlsPeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
@@ -291,7 +288,7 @@ mod test {
     use rama_core::service::{RejectError, service_fn};
     use std::convert::Infallible;
 
-    use crate::stream::Stream;
+    use rama_core::stream::Stream;
 
     use super::*;
 

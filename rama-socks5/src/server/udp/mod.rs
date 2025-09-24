@@ -1,13 +1,12 @@
 use std::{fmt, time::Duration};
 
-use rama_core::telemetry::tracing;
 use rama_core::{
     Context, Service, combinators::Either, error::BoxError, layer::timeout::DefaultTimeout,
+    stream::Stream, telemetry::tracing,
 };
 use rama_net::{
     address::{Authority, Host, SocketAddress},
     socket::{Interface, SocketService},
-    stream::Stream,
 };
 use rama_udp::UdpSocket;
 use rama_utils::macros::generate_field_setters;

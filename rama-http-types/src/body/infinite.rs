@@ -1,3 +1,4 @@
+use rama_core::stream::io::ReaderStream;
 use rama_core::telemetry::tracing;
 use rama_utils::macros::generate_set_and_with;
 use rand::{Rng, RngCore as _, rng};
@@ -11,7 +12,6 @@ use tokio::{
     io::{AsyncRead, ReadBuf},
     time::Sleep,
 };
-use tokio_util::io::ReaderStream;
 
 /// A(n) (in)finite random byte stream implementing [`AsyncRead`].
 ///

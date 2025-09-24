@@ -12,6 +12,7 @@ use rama_core::{
 use async_compression::tokio::bufread::{BrotliEncoder, GzipEncoder, ZlibEncoder, ZstdEncoder};
 use pin_project_lite::pin_project;
 use rama_core::futures::ready;
+use rama_core::stream::io::StreamReader;
 use rama_http_types::StreamingBody;
 use rama_http_types::body::Frame;
 use std::{
@@ -20,7 +21,6 @@ use std::{
     pin::Pin,
     task::{Context, Poll},
 };
-use tokio_util::io::StreamReader;
 
 use super::pin_project_cfg::pin_project_cfg;
 

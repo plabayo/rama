@@ -1,10 +1,10 @@
 use rama_core::telemetry::tracing::{self, Instrument, trace_span};
-use rama_core::{Context, Service, error::BoxError};
+use rama_core::{Context, Service, error::BoxError, stream::Stream};
 use rama_net::{
     address::Authority,
     client::EstablishedClientConnection,
     proxy::{ProxyRequest, ProxyTarget, StreamForwardService},
-    stream::{Socket, Stream},
+    stream::Socket,
 };
 use rama_tcp::client::{
     Request as TcpRequest,

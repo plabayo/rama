@@ -1,8 +1,9 @@
-use rama_core::bytes::{Buf, Bytes};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::{cmp, io};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+
+use crate::bytes::{Buf, Bytes};
 
 /// Combine a buffer with an IO, rewinding reads to use the buffer.
 #[derive(Debug)]
@@ -104,8 +105,8 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::Rewind;
-    use rama_core::bytes::Bytes;
+    use super::*;
+
     use tokio::io::AsyncReadExt;
 
     #[tokio::test]

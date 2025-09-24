@@ -135,11 +135,11 @@ mod tests {
 
     use crate::{Request, Response, body::util::BodyExt, header::ACCEPT_ENCODING};
     use rama_core::service::service_fn;
+    use rama_core::stream::io::ReaderStream;
     use rama_core::{Context, Service};
     use rama_http_types::Body;
     use std::convert::Infallible;
     use tokio::fs::File;
-    use tokio_util::io::ReaderStream;
 
     async fn handle(_req: Request) -> Result<Response, Infallible> {
         // Open the file.

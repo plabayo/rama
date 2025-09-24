@@ -1,5 +1,6 @@
 use crate::service::web::response::IntoResponse;
 use flate2::write::DeflateEncoder;
+use rama_core::stream::io::{ReaderStream, SyncIoBridge};
 use rama_core::telemetry::tracing;
 use rama_core::{bytes::Bytes, futures::Stream};
 use rama_error::{ErrorContext, OpaqueError};
@@ -14,7 +15,6 @@ use std::{
     io::{self, Cursor, Read, Write},
 };
 use tokio::io::{BufReader, duplex};
-use tokio_util::io::{ReaderStream, SyncIoBridge};
 
 #[derive(Debug, Clone)]
 /// A minimal in-memory ZIP archive that acts as

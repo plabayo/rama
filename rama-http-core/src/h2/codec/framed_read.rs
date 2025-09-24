@@ -9,6 +9,8 @@ use rama_http_types::proto::h2::hpack;
 use rama_core::futures::Stream;
 
 use rama_core::bytes::{Buf, BytesMut};
+use rama_core::stream::codec::FramedRead as InnerFramedRead;
+use rama_core::stream::codec::{LengthDelimitedCodec, LengthDelimitedCodecError};
 use rama_core::telemetry::tracing;
 
 use std::io;
@@ -16,8 +18,6 @@ use std::io;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use tokio::io::AsyncRead;
-use tokio_util::codec::FramedRead as InnerFramedRead;
-use tokio_util::codec::{LengthDelimitedCodec, LengthDelimitedCodecError};
 
 // 16 MB "sane default" taken from golang http2
 const DEFAULT_SETTINGS_MAX_HEADER_LIST_SIZE: usize = 16 << 20;

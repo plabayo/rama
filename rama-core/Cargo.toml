@@ -38,13 +38,17 @@ pin-project-lite = { workspace = true }
 rama-error = { workspace = true }
 rama-macros = { workspace = true }
 rama-utils = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 tokio = { workspace = true, features = ["macros", "fs", "io-std"] }
 tokio-graceful = { workspace = true }
+tokio-util = { workspace = true, features = ["codec", "io", "io-util"] }
 tracing = { workspace = true }
 tracing-opentelemetry = { workspace = true, optional = true }
 
 [dev-dependencies]
 quickcheck = { workspace = true }
+rand = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tokio-test = { workspace = true }
 

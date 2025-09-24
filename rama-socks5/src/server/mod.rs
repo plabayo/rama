@@ -13,10 +13,11 @@ use crate::proto::{
     Command, ProtocolError, ReplyKind, SocksMethod, client,
     server::{Header, Reply, UsernamePasswordResponse},
 };
-use rama_core::{Context, Service, context::Extensions, error::BoxError, telemetry::tracing};
+use rama_core::{
+    Context, Service, context::Extensions, error::BoxError, stream::Stream, telemetry::tracing,
+};
 use rama_net::{
     socket::Interface,
-    stream::Stream,
     user::{self, authority::Authorizer},
 };
 use rama_tcp::{TcpStream, server::TcpListener};

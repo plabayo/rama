@@ -7,6 +7,8 @@ pub use rama_http_core::h2::frame::StreamId;
 pub use rama_http_core::h2::server;
 pub use rama_http_core::h2::*;
 
+pub use rama_core::futures;
+
 // Re-export mock
 pub use super::mock::{self, idle_ms};
 
@@ -29,7 +31,7 @@ pub use super::assert::assert_frame_eq;
 
 // Re-export useful crates
 pub use tokio_test::io as mock_io;
-pub use {futures, tokio::io as tokio_io, tracing_subscriber};
+pub use {tokio::io as tokio_io, tracing_subscriber};
 
 // Re-export primary future types
 pub use rama_core::futures::{Future, Sink, Stream};

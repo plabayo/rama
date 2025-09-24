@@ -1,23 +1,24 @@
 //! Http1 or Http2 connection.
 
-use rama_net::stream::rewind::Rewind;
 use std::marker::PhantomPinned;
 use std::mem::MaybeUninit;
 use std::pin::Pin;
 use std::task::ready;
 use std::task::{Context, Poll};
 use std::{io, time::Duration};
+
+use pin_project_lite::pin_project;
 use tokio::io::AsyncRead;
 use tokio::io::AsyncWrite;
 use tokio::io::ReadBuf;
 
-use pin_project_lite::pin_project;
 use rama_core::bytes::Bytes;
+use rama_core::error::BoxError;
+use rama_core::rt::Executor;
+use rama_core::stream::rewind::Rewind;
 
 use crate::body::Incoming;
 use crate::service::HttpService;
-use rama_core::error::BoxError;
-use rama_core::rt::Executor;
 
 use super::{http1, http2};
 

@@ -1,13 +1,13 @@
 use crate::{Socks5Client, client::proxy_error::Socks5ProxyError};
-use rama_core::telemetry::tracing;
 use rama_core::{
     Context, Layer, Service,
     error::{BoxError, ErrorExt, OpaqueError},
+    stream::Stream,
+    telemetry::tracing,
 };
 use rama_net::{
     address::ProxyAddress,
     client::{ConnectorService, EstablishedClientConnection},
-    stream::Stream,
     transport::TryRefIntoTransportContext,
     user::ProxyCredential,
 };

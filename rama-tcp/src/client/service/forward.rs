@@ -3,12 +3,12 @@ use crate::client::Request as TcpRequest;
 use rama_core::{
     Context, Service,
     error::{BoxError, ErrorExt, OpaqueError},
+    stream::Stream,
 };
 use rama_net::{
     address::Authority,
     client::{ConnectorService, EstablishedClientConnection},
     proxy::{ProxyRequest, ProxyTarget, StreamForwardService},
-    stream::Stream,
 };
 use std::fmt;
 

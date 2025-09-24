@@ -1,15 +1,14 @@
 //! types and logic for [`HttpPeekRouter`]
 
-use rama_core::telemetry::tracing;
 use rama_core::{
     Context, Service,
     error::{BoxError, ErrorContext},
     service::RejectService,
+    stream::{PeekStream, StackReader},
+    telemetry::tracing,
 };
 use std::fmt;
 use tokio::io::AsyncReadExt;
-
-use crate::stream::{PeekStream, StackReader};
 
 /// A [`Service`] router that can be used to support
 /// http/1x and h2 traffic as well as non-tls traffic.
@@ -175,7 +174,7 @@ impl<T: fmt::Debug, F: fmt::Debug> fmt::Debug for HttpPeekRouter<T, F> {
 
 impl<Stream, Response, T, F> Service<Stream> for HttpPeekRouter<HttpAutoAcceptor<T>, F>
 where
-    Stream: crate::stream::Stream + Unpin,
+    Stream: rama_core::stream::Stream + Unpin,
     Response: Send + 'static,
     T: Service<HttpPeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
     F: Service<HttpPeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
@@ -201,7 +200,7 @@ where
 
 impl<Stream, Response, T, F> Service<Stream> for HttpPeekRouter<Http1Acceptor<T>, F>
 where
-    Stream: crate::stream::Stream + Unpin,
+    Stream: rama_core::stream::Stream + Unpin,
     Response: Send + 'static,
     T: Service<HttpPeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
     F: Service<HttpPeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
@@ -227,7 +226,7 @@ where
 
 impl<Stream, Response, T, F> Service<Stream> for HttpPeekRouter<H2Acceptor<T>, F>
 where
-    Stream: crate::stream::Stream + Unpin,
+    Stream: rama_core::stream::Stream + Unpin,
     Response: Send + 'static,
     T: Service<HttpPeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
     F: Service<HttpPeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
@@ -253,7 +252,7 @@ where
 
 impl<Stream, Response, T, U, F> Service<Stream> for HttpPeekRouter<HttpDualAcceptor<T, U>, F>
 where
-    Stream: crate::stream::Stream + Unpin,
+    Stream: rama_core::stream::Stream + Unpin,
     Response: Send + 'static,
     T: Service<HttpPeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
     U: Service<HttpPeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
@@ -295,7 +294,7 @@ enum HttpPeekVersion {
     H2,
 }
 
-async fn peek_http_stream<Stream: crate::stream::Stream + Unpin>(
+async fn peek_http_stream<Stream: rama_core::stream::Stream + Unpin>(
     mut stream: Stream,
 ) -> Result<(Option<HttpPeekVersion>, HttpPeekStream<Stream>), BoxError> {
     let mut peek_buf = [0u8; HTTP_HEADER_PEEK_LEN];
@@ -354,7 +353,7 @@ mod test {
     use rama_core::service::{RejectError, service_fn};
     use std::convert::Infallible;
 
-    use crate::stream::Stream;
+    use rama_core::stream::Stream;
 
     use super::*;
 

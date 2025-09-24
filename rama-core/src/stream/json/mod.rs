@@ -10,14 +10,20 @@ pub use config::{EmptyLineHandling, ParseConfig};
 mod engine;
 mod stream;
 
-pub use stream::JsonStream;
+pub use stream::read::JsonReadStream;
+pub use stream::write::JsonWriteStream;
+
+mod codec;
+pub use codec::{JsonDecoder, JsonEncoder};
 
 #[cfg(test)]
 mod tests {
-    use rama_core::futures::StreamExt;
-    use serde::Deserialize;
+    use super::*;
 
-    use crate::Body;
+    use std::convert::Infallible;
+
+    use crate::futures::{StreamExt, stream::once};
+    use serde::Deserialize;
 
     #[tokio::test]
     async fn test_json_stream_simple() {
@@ -35,8 +41,8 @@ mod tests {
         .into_iter()
         .enumerate()
         {
-            let body = Body::from(input);
-            let mut stream = body.into_json_stream::<Data>();
+            let mut stream =
+                JsonReadStream::new(Box::pin(once(async { Ok::<_, Infallible>(input) })));
 
             for expected in ["foo", "qux", "baz"] {
                 assert_eq!(

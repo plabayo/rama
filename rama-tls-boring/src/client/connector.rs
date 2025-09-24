@@ -1,12 +1,12 @@
 use rama_boring_tokio::SslStream;
 use rama_core::conversion::RamaTryInto;
 use rama_core::error::{BoxError, ErrorExt, OpaqueError};
+use rama_core::stream::Stream;
 use rama_core::telemetry::tracing;
 use rama_core::{Context, Layer, Service};
 use rama_http_types::conn::TargetHttpVersion;
 use rama_net::address::Host;
 use rama_net::client::{ConnectorService, EstablishedClientConnection};
-use rama_net::stream::Stream;
 use rama_net::tls::ApplicationProtocol;
 use rama_net::tls::client::NegotiatedTlsParameters;
 use rama_net::transport::TryRefIntoTransportContext;

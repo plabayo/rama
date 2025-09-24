@@ -4,14 +4,13 @@
 //! [`bind-flow`]: crate::proto::Command::Bind
 //! [`Client`]: crate::Socks5Client
 
+use rama_core::stream::Stream;
+use rama_core::telemetry::tracing;
+use rama_net::address::{Authority, SocketAddress};
+use std::fmt;
+
 use super::core::HandshakeError;
 use crate::proto::{ReplyKind, server};
-use rama_core::telemetry::tracing;
-use rama_net::{
-    address::{Authority, SocketAddress},
-    stream::Stream,
-};
-use std::fmt;
 
 /// [`Binder`] is used to await for the socks5 server
 /// as it has to come back with a reply on whether or not

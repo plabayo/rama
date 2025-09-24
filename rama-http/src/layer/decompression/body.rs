@@ -14,9 +14,9 @@ use async_compression::tokio::bufread::ZstdDecoder;
 use pin_project_lite::pin_project;
 use rama_core::bytes::{Buf, Bytes};
 use rama_core::futures::ready;
+use rama_core::stream::io::StreamReader;
 use std::task::Context;
 use std::{io, marker::PhantomData, pin::Pin, task::Poll};
-use tokio_util::io::StreamReader;
 
 pin_project! {
     /// Response body of [`RequestDecompression`] and [`Decompression`].

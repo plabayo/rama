@@ -26,10 +26,11 @@ use rama::{
             udp::{RelayDirection, UdpInspectAction},
         },
     },
+    stream::codec::BytesCodec,
     tcp::client::default_tcp_connect,
     tcp::server::TcpListener,
     telemetry::tracing::{self, level_filters::LevelFilter},
-    udp::{UdpSocket, codec::BytesCodec},
+    udp::UdpSocket,
 };
 
 use std::convert::Infallible;

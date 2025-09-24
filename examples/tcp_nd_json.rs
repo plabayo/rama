@@ -1,73 +1,81 @@
 //! ndjson example showcasing how to stream
-//! a Newline Delimited JSON body. See the test
+//! Newline Delimited JSON objects over a TCP Stream. See the test
 //! for this example to see how it looks like from the client side.
+//!
+//! # json stream
+//!
+//! While this example transports the data over TCP, it is important to highlight
+//! that this kind of NDJson streaming works over any async stream. As such this can also
+//! be done over UDP, Unix, SOCKS5 and so on...
+//!
+//! Given how bare-bones ndjson is however it is recommended to
+//! utilise ndjson over a transport layer which ensures all packets arive
+//! correctly and in order. Otherwise you'll run into errors or if unlucky,
+//! hard to debug issues.
 //!
 //! # Run the example
 //!
 //! ```sh
-//! cargo run --example http_nd_json --features=http-full
+//! cargo run --example tcp_nd_json --features=tcp
 //! ```
 //!
 //! # Expected output
 //!
-//! The server will start and listen on `:62041`. You open the url in your browser to easily interact:
+//! The server will start and listen on `:62042`.
+//! With a utility like `socat`, `nc` or `telnet you can talk to your server:
 //!
 //! ```sh
-//! open http://127.0.0.1:62041/orders
+//! socat - TCP:127.0.0.1:62042
 //! ```
 //!
-//! Your browser will show the text in raw format.
-//! Best to use this however with a client that supports ndjson (e.g. rama).
+//! You should see the items coming through and could also pipe it to
+//! some other tool or directly into your clipboard or a file.
 
 use rama::{
-    Layer,
-    futures::{StreamExt as _, async_stream::stream_fn},
-    http::{
-        Body,
-        headers::ContentType,
-        layer::trace::TraceLayer,
-        server::HttpServer,
-        service::web::{
-            Router,
-            response::{Headers, IntoResponse},
-        },
-    },
+    error::{ErrorContext as _, OpaqueError},
+    futures::SinkExt,
     net::address::SocketAddress,
-    rt::Executor,
-    stream::json::JsonWriteStream,
-    tcp::server::TcpListener,
+    service::service_fn,
+    stream::{codec::FramedWrite, json::JsonEncoder},
+    tcp::{TcpStream, server::TcpListener},
     telemetry::tracing::{self, level_filters::LevelFilter},
 };
 
 use serde::Serialize;
-use std::{borrow::Cow, convert::Infallible, sync::Arc, time::Duration};
+use std::time::Duration;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
-async fn api_json_events_endpoint() -> impl IntoResponse {
-    (
-        Headers::single(ContentType::ndjson()),
-        Body::from_stream(JsonWriteStream::new(
-            stream_fn(move |mut yielder| async move {
-                for (i, item) in SAMPLE_ORDERS.iter().enumerate() {
-                    // emulate random delays :P
-                    tokio::time::sleep(Duration::from_millis(((i as u64) % 7) * 5)).await;
+async fn serve_stream(stream: TcpStream) -> Result<(), OpaqueError> {
+    let mut writer = FramedWrite::new(stream, JsonEncoder::new());
+    for (i, item) in SAMPLE_ORDERS.into_iter().enumerate() {
+        tokio::time::sleep(Duration::from_millis(((i as u64) % 7) * 5)).await;
+        tracing::info!("return item #{i}");
+        writer
+            .send(item)
+            .await
+            .map_err(OpaqueError::from_boxed)
+            .context("write item to stream")?;
+        if i % 3 == 0 {
+            tracing::info!("return extra item @ #{i}");
+            writer
+                .send(OrderEvent {
+                    item: "extra item",
+                    quantity: (i * 2) as u32,
+                    prepaid: i % 6 == 0,
+                })
+                .await
+                .map_err(OpaqueError::from_boxed)
+                .context("write extra item to stream")?;
+        }
+    }
 
-                    yielder.yield_item(Cow::Borrowed(item)).await;
+    writer
+        .close()
+        .await
+        .map_err(OpaqueError::from_boxed)
+        .context("close the writer")?;
 
-                    if i % 3 == 0 {
-                        yielder
-                            .yield_item(Cow::Owned(OrderEvent {
-                                item: "extra item",
-                                quantity: (i * 2) as u32,
-                                prepaid: i % 6 == 0,
-                            }))
-                            .await;
-                    }
-                }
-            })
-            .map(Ok::<_, Infallible>),
-        )),
-    )
+    Ok(())
 }
 
 #[tokio::main]
@@ -83,7 +91,7 @@ async fn main() {
 
     let graceful = rama::graceful::Shutdown::default();
 
-    let listener = TcpListener::bind(SocketAddress::default_ipv4(62041))
+    let listener = TcpListener::bind(SocketAddress::default_ipv4(62042))
         .await
         .expect("tcp port to be bound");
     let bind_address = listener.local_addr().expect("retrieve bind address");
@@ -91,19 +99,15 @@ async fn main() {
     tracing::info!(
         network.local.address = %bind_address.ip(),
         network.local.port = %bind_address.port(),
-        "http's tcp listener ready to serve",
+        "tcp listener ready to serve",
     );
     tracing::info!(
-        "open http://{bind_address}/orders in your browser to see the service in action"
+        "establish a (client) tcp connection to {bind_address} to see the service in action"
     );
 
     graceful.spawn_task_fn(async |guard| {
-        let exec = Executor::graceful(guard.clone());
-        let app = (TraceLayer::new_for_http()).into_layer(Arc::new(
-            Router::new().get("/orders", api_json_events_endpoint),
-        ));
         listener
-            .serve_graceful(guard, HttpServer::auto(exec).service(app))
+            .serve_graceful(guard, service_fn(serve_stream))
             .await;
     });
 

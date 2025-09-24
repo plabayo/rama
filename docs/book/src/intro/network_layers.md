@@ -46,5 +46,7 @@ Here are some examples that demonstrate working with transport layer services:
   an example showing how to create a TCP listener with multiple layers of middleware;
 - [/examples/tcp_listener_hello.rs](https://github.com/plabayo/rama/tree/main/examples/tcp_listener_hello.rs):
   a minimal example demonstrating a TCP listener that responds with a hello message;
+- [/examples/tcp_nd_json.rs](https://github.com/plabayo/rama/tree/main/examples/tcp_nd_json.rs):
+  example demonstrating how to serve a ndjson (Newline Delimited JSON) stream of data over TCP
 - [/examples/udp_codec.rs](https://github.com/plabayo/rama/tree/main/examples/udp_codec.rs):
   an example showing how to work with UDP using codecs for message framing;

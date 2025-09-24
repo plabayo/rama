@@ -18,9 +18,10 @@ use crate::{
     },
     layer::{ConsumeErrLayer, LimitLayer, TimeoutLayer, limit::policy::ConcurrentPolicy},
     net::forwarded::Forwarded,
-    net::stream::{SocketInfo, Stream, layer::http::BodyLimitLayer},
+    net::stream::{SocketInfo, layer::http::BodyLimitLayer},
     proxy::haproxy::server::HaProxyLayer,
     rt::Executor,
+    stream::Stream,
     telemetry::tracing,
 };
 use rama_http::service::web::response::IntoResponse;

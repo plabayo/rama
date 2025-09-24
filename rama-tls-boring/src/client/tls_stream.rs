@@ -3,7 +3,7 @@ use std::fmt;
 use pin_project_lite::pin_project;
 use rama_boring::ssl::SslRef;
 use rama_boring_tokio::SslStream;
-use rama_net::stream::Stream;
+use rama_core::stream::Stream;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 pin_project! {

@@ -3,6 +3,7 @@ use rama_core::{
     Context, Layer, Service,
     error::{BoxError, OpaqueError},
     inspect::RequestInspector,
+    stream::Stream,
 };
 use rama_http::{
     StreamingBody,
@@ -18,7 +19,6 @@ use rama_http_types::{
 use rama_net::{
     client::{ConnectorService, EstablishedClientConnection},
     http::RequestContext,
-    stream::Stream,
 };
 use tokio::sync::Mutex;
 

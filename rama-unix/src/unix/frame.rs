@@ -1,7 +1,7 @@
-use crate::codec::{Decoder, Encoder};
 use rama_core::bytes::{BufMut, BytesMut};
 use rama_core::futures::Sink;
 use rama_core::futures::Stream;
+use rama_core::stream::codec::{Decoder, Encoder};
 use std::borrow::Borrow;
 use std::io;
 use std::pin::Pin;
