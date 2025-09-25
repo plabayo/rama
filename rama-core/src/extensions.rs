@@ -2,6 +2,7 @@ use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::fmt;
 use std::hash::{BuildHasherDefault, Hasher};
+use std::pin::Pin;
 use std::sync::Arc;
 
 #[cfg(feature = "debug-extensions")]
@@ -290,6 +291,15 @@ where
     }
 }
 
+impl<T> ExtensionsRef for Pin<Box<T>>
+where
+    T: ExtensionsRef,
+{
+    fn extensions(&self) -> &Extensions {
+        (**self).extensions()
+    }
+}
+
 impl<T> ExtensionsRef for Arc<T>
 where
     T: ExtensionsRef,
@@ -330,6 +340,44 @@ where
         (**self).extensions_mut()
     }
 }
+
+impl<T> ExtensionsMut for Pin<Box<T>>
+where
+    T: ExtensionsMut + Unpin,
+{
+    fn extensions_mut(&mut self) -> &mut Extensions {
+        (**self).extensions_mut()
+    }
+}
+
+macro_rules! impl_extensions_either {
+    ($id:ident, $($param:ident),+ $(,)?) => {
+        impl<$($param),+,> ExtensionsRef for crate::combinators::$id<$($param),+>
+        where
+            $($param: ExtensionsRef,)+
+        {
+            fn extensions(&self) -> &Extensions {
+                match self {
+                    $(crate::combinators::$id::$param(s) => s.extensions(),)+
+                }
+            }
+        }
+
+        impl<$($param),+,> ExtensionsMut for crate::combinators::$id<$($param),+>
+        where
+            $($param: ExtensionsMut,)+
+        {
+            fn extensions_mut(&mut self) -> &mut Extensions {
+                match self {
+                    $(crate::combinators::$id::$param(s) => s.extensions_mut(),)+
+                }
+            }
+        }
+    };
+}
+
+crate::combinators::impl_either!(impl_extensions_either);
+
 
 trait AnyClone: Any {
     fn clone_box(&self) -> Box<dyn AnyClone + Send + Sync>;
