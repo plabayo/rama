@@ -53,6 +53,7 @@
 
 use rama::{
     Layer, Service,
+    context::Extensions,
     error::{BoxError, ErrorContext, OpaqueError},
     extensions::ExtensionsMut,
     futures::SinkExt,
@@ -357,7 +358,7 @@ where
     let (parts, body) = req.into_parts();
     let parts_copy = parts.clone();
 
-    let mut req = Request::from_parts(parts, body);
+    let req = Request::from_parts(parts, body);
     let guard = ctx.guard().cloned();
     let cancel = async move {
         match guard {
@@ -368,10 +369,9 @@ where
 
     let target_version = req.version();
     tracing::debug!("forcing egress http connection as {target_version:?} to ensure WS upgrade");
-    req.extensions_mut()
-        .insert(TargetHttpVersion(target_version));
+    let mut extensions = Extensions::new();
+    extensions.insert(TargetHttpVersion(target_version));
 
-    let extensions = req.extensions().clone();
     let mut handshake = match client
         .websocket_with_request(req)
         .initiate_handshake(extensions)
@@ -437,11 +437,18 @@ where
 
     tokio::spawn(async move {
         tracing::debug!("egresss websocket active: starting ingress WS upgrade...");
-        let request = Request::from_parts(parts_copy, Body::empty());
-        let ingress_socket = match upgrade::on(request).await {
+        let mut request = Request::from_parts(parts_copy, Body::empty());
+
+        let ingress_socket = match upgrade::on(&mut request).await {
             Ok(upgraded) => {
-                AsyncWebSocket::from_raw_socket(upgraded, Role::Server, Some(ingress_socket_cfg))
-                    .await
+                let mut socket = AsyncWebSocket::from_raw_socket(
+                    upgraded,
+                    Role::Server,
+                    Some(ingress_socket_cfg),
+                )
+                .await;
+                *socket.extensions_mut() = request.take_extensions();
+                socket
             }
             Err(err) => {
                 tracing::error!("error in upgrading ingress websocket: {err:?}");
