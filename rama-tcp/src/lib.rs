@@ -21,4 +21,4 @@ pub mod client;
 pub mod pool;
 pub mod server;
 pub mod stream;
-pub use stream::TcpStream;
+pub use stream::{TcpStream, TokioTcpStream};

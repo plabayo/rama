@@ -12,18 +12,19 @@ use rama_core::{
 };
 use rama_net::stream::Socket;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
-pub use tokio::net::TcpSocket;
+pub use tokio::net::TcpStream as TokioTcpStream;
 
 pin_project! {
+    #[derive(Debug)]
     pub struct TcpStream {
         #[pin]
-        pub stream: tokio::net::TcpStream,
+        pub stream: TokioTcpStream,
         pub extensions: Extensions,
     }
 }
 
 impl TcpStream {
-    pub fn new(stream: tokio::net::TcpStream) -> Self {
+    pub fn new(stream: TokioTcpStream) -> Self {
         Self {
             stream,
             extensions: Extensions::new(),
@@ -31,13 +32,13 @@ impl TcpStream {
     }
 }
 
-impl From<tokio::net::TcpStream> for TcpStream {
-    fn from(value: tokio::net::TcpStream) -> Self {
+impl From<TokioTcpStream> for TcpStream {
+    fn from(value: TokioTcpStream) -> Self {
         Self::new(value)
     }
 }
 
-impl From<TcpStream> for tokio::net::TcpStream {
+impl From<TcpStream> for TokioTcpStream {
     fn from(value: TcpStream) -> Self {
         value.stream
     }
