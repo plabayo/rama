@@ -129,7 +129,7 @@ where
     type Response = EstablishedClientConnection<MaybeHttpProxiedConnection<S::Connection>, Request>;
     type Error = BoxError;
 
-    async fn serve(&self, ctx: Context, mut req: Request) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
         let address = req.extensions().get::<ProxyAddress>().cloned();
         if !address
             .as_ref()
@@ -147,6 +147,9 @@ where
             OpaqueError::from_boxed(err.into())
                 .context("http proxy connector: get transport context")
         })?;
+
+        #[cfg(feature = "tls")]
+        let mut req = req;
 
         #[cfg(feature = "tls")]
         // in case the provider gave us a proxy info, we insert it into the context
