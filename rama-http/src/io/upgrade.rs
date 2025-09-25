@@ -132,7 +132,7 @@ impl Upgraded {
     {
         let extensions = io.take_extensions();
         Self {
-            io: Rewind::new_buffered(Box::new(io), read_buf),
+            io: Rewind::new_buffered_with_fresh_extensions(Box::new(io), read_buf),
             extensions,
         }
     }
@@ -143,7 +143,7 @@ impl Upgraded {
         T: Stream + Unpin,
     {
         Self {
-            io: Rewind::new_buffered(Box::new(io), read_buf),
+            io: Rewind::new_buffered_with_fresh_extensions(Box::new(io), read_buf),
             extensions: Extensions::new(),
         }
     }
@@ -161,7 +161,7 @@ impl Upgraded {
                 extensions: self.extensions,
             }),
             Err(io) => Err(Self {
-                io: Rewind::new_buffered(io, buf),
+                io: Rewind::new_buffered_with_fresh_extensions(io, buf),
                 extensions: self.extensions,
             }),
         }

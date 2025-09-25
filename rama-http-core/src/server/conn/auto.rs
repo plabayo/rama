@@ -105,12 +105,12 @@ impl Builder {
     {
         let state = match self.version {
             Some(Version::H1) => {
-                let io = Rewind::new_buffered(io, Bytes::new());
+                let io = Rewind::new_buffered_with_fresh_extensions(io, Bytes::new());
                 let conn = self.http1.serve_connection(io, service);
                 ConnState::H1 { conn }
             }
             Some(Version::H2) => {
-                let io = Rewind::new_buffered(io, Bytes::new());
+                let io = Rewind::new_buffered_with_fresh_extensions(io, Bytes::new());
                 let conn = self.http2.serve_connection(io, service);
                 ConnState::H2 { conn }
             }
@@ -220,7 +220,7 @@ where
         let buf = buf.filled().to_vec();
         Poll::Ready(Ok((
             *this.version,
-            Rewind::new_buffered(io, Bytes::from(buf)),
+            Rewind::new_buffered_with_fresh_extensions(io, Bytes::from(buf)),
         )))
     }
 }
