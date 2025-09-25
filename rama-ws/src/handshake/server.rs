@@ -791,9 +791,11 @@ where
                                 #[cfg(not(feature = "compression"))]
                                 let maybe_ws_config = None;
 
-                                let socket =
+                                let mut socket =
                                     AsyncWebSocket::from_raw_socket(upgraded, Role::Server, maybe_ws_config)
                                         .await;
+
+                                *socket.extensions_mut() = req.extensions().clone();
 
                                 let (parts, _) = req.into_parts();
 
@@ -901,7 +903,7 @@ impl Service<ServerWebSocket> for WebSocketEchoService {
         ctx: Context,
         socket: ServerWebSocket,
     ) -> Result<Self::Response, Self::Error> {
-        let socket = socket.into_inner();
+        let (socket, _) = socket.into_parts();
         self.serve(ctx, socket).await
     }
 }
