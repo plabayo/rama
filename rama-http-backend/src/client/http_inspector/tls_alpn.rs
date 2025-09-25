@@ -74,11 +74,12 @@ mod tests {
             protocol_version: rama_net::tls::ProtocolVersion::TLSv1_3,
         });
 
-        let (_ctx, mut req) = modifier.serve(Context::default(), req).await.unwrap();
+        let (_ctx, req) = modifier.serve(Context::default(), req).await.unwrap();
 
         let target_version = req.extensions().get::<TargetHttpVersion>().unwrap();
         assert_eq!(target_version.0, Version::HTTP_11);
 
+        let mut req = Request::new(Body::empty());
         req.extensions_mut().insert(NegotiatedTlsParameters {
             application_layer_protocol: Some(rama_net::tls::ApplicationProtocol::HTTP_2),
             peer_certificate_chain: None,

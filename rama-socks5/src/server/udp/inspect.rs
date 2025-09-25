@@ -36,8 +36,8 @@ pub struct DirectUdpRelay;
 impl UdpPacketProxy for DirectUdpRelay {
     async fn proxy_udp_packets(
         &self,
-        #[cfg_attr(not(feature = "dns"), expect(unused_variables))] _ctx: Context,
-        extensions: Extensions,
+        _ctx: Context,
+        #[cfg_attr(not(feature = "dns"), expect(unused_variables))] extensions: Extensions,
         client_address: SocketAddress,
         north: UdpSocket,
         north_read_buf_size: usize,
@@ -344,7 +344,7 @@ where
     async fn proxy_udp_packets(
         &self,
         ctx: Context,
-        extensions: Extensions,
+        #[cfg_attr(not(feature = "dns"), expect(unused_variables))] extensions: Extensions,
         client_address: SocketAddress,
         north: UdpSocket,
         north_read_buf_size: usize,

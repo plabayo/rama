@@ -919,7 +919,7 @@ impl Service<upgrade::Upgraded> for WebSocketEchoService {
     ) -> Result<Self::Response, Self::Error> {
         #[cfg(not(feature = "compression"))]
         let maybe_ws_config = {
-            if let Some(Extension::PerMessageDeflate(_)) = req.extensions().get() {
+            if let Some(Extension::PerMessageDeflate(_)) = io.extensions().get() {
                 return Err(OpaqueError::from_display(
                     "per-message-deflate is used but compression feature is disabled. Enable it if you wish to use this extension.",
                 ));
