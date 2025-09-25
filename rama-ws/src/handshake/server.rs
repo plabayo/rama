@@ -745,7 +745,7 @@ where
         match self.acceptor.serve(ctx, req).await {
             Ok((resp, ctx, mut req)) => {
                 #[cfg(not(feature = "compression"))]
-                if let Some(Extension::PerMessageDeflate(_)) = ctx.get() {
+                if let Some(Extension::PerMessageDeflate(_)) = req.extensions().get() {
                     tracing::error!(
                         "per-message-deflate is used but compression feature is disabled. Enable it if you wish to use this extension."
                     );
@@ -919,7 +919,7 @@ impl Service<upgrade::Upgraded> for WebSocketEchoService {
     ) -> Result<Self::Response, Self::Error> {
         #[cfg(not(feature = "compression"))]
         let maybe_ws_config = {
-            if let Some(Extension::PerMessageDeflate(_)) = ctx.get() {
+            if let Some(Extension::PerMessageDeflate(_)) = req.extensions().get() {
                 return Err(OpaqueError::from_display(
                     "per-message-deflate is used but compression feature is disabled. Enable it if you wish to use this extension.",
                 ));

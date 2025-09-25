@@ -18,7 +18,7 @@
 //!
 //! ```
 //! use rama_core::service::service_fn;
-//! use rama_core::{Context, Service, Layer};
+//! use rama_core::{Context, extensions::ExtensionsRef, Service, Layer};
 //! use rama_http::{Body, Request, Response, StatusCode, header};
 //! use rama_http::layer::follow_redirect::{FollowRedirectLayer, RequestUri};
 //!

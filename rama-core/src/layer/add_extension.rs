@@ -1,13 +1,11 @@
-//! Middleware that clones a value into the incoming [Context].
-//!
-//! [Context]: https://docs.rs/rama/latest/rama/context/struct.Context.html
+//! Middleware that clones a value into the incoming input extensions
 //!
 //! # Example
 //!
 //! ```
 //! use std::{sync::Arc, convert::Infallible};
 //!
-//! use rama_core::{Context, Service, Layer, service::service_fn};
+//! use rama_core::{Context, extensions::{Extensions, ExtensionsRef}, Service, Layer, service::service_fn};
 //! use rama_core::layer::add_extension::AddExtensionLayer;
 //! use rama_core::error::BoxError;
 //!
@@ -21,12 +19,13 @@
 //!     pool: DatabaseConnectionPool,
 //! }
 //!
-//! async fn handle(ctx: Context, req: ()) -> Result<(), Infallible>
+//! // Request can be any type that implements [`ExtensionsRef`]
+//! async fn handle(_ctx: Context, req: Extensions) -> Result<(), Infallible>
 //! {
 //!     // Grab the state from the request extensions.
-//!     let state = ctx.get::<Arc<State>>().unwrap();
+//!     let state = req.extensions().get::<Arc<State>>().unwrap();
 //!
-//!     Ok(req)
+//!     Ok(())
 //! }
 //!
 //! # #[tokio::main]
@@ -43,7 +42,7 @@
 //!
 //! // Call the service.
 //! let response = service
-//!     .serve(Context::default(), ())
+//!     .serve(Context::default(), Extensions::new())
 //!     .await?;
 //! # Ok(())
 //! # }

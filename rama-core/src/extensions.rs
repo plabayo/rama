@@ -1,3 +1,31 @@
+//! Extensions passed to and between services
+//!
+//! # State
+//!
+//! [`rama`] supports two kinds of states:
+//!
+//! 1. static state: this state can be a part of the service struct or captured by a closure
+//! 2. dynamic state: these can be injected as [`Extensions`]s in Requests/Responses/Connections if it [`ExtensionsMut`]
+//!
+//! Any state that is optional, and especially optional state injected by middleware, can be inserted using extensions.
+//! It is however important to try as much as possible to then also consume this state in an approach that deals
+//! gracefully with its absence. Good examples of this are header-related inputs. Headers might be set or not,
+//! and so absence of [`Extensions`]s that might be created as a result of these might reasonably not exist.
+//! It might of course still mean the app returns an error response when it is absent, but it should not unwrap/panic.
+//!
+//! [`rama`]: crate
+//!
+//! # Examples
+//!
+//! ## Example: Extensions
+//! ```
+//! use rama_core::extensions::Extensions;
+//!
+//! let mut ext = Extensions::default();
+//! ext.insert(5i32);
+//! assert_eq!(ext.get::<i32>(), Some(&5i32));
+//! ```
+
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::fmt;

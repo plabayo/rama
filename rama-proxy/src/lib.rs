@@ -65,6 +65,7 @@
 //! };
 //! use rama_core::{
 //!    service::service_fn,
+//!    extensions::{ExtensionsRef, ExtensionsMut},
 //!    Context, Service, Layer,
 //! };
 //! use rama_net::address::ProxyAddress;
@@ -120,26 +121,25 @@
 //!
 //!     let service =
 //!         ProxyDBLayer::new(Arc::new(db)).filter_mode(ProxyFilterMode::Default)
-//!         .into_layer(service_fn(async  |ctx: Context, _: Request| {
-//!             Ok::<_, Infallible>(ctx.get::<ProxyAddress>().unwrap().clone())
+//!         .into_layer(service_fn(async  |ctx: Context, req: Request| {
+//!             Ok::<_, Infallible>(req.extensions().get::<ProxyAddress>().unwrap().clone())
 //!         }));
 //!
-//!     let mut ctx = Context::default();
-//!     ctx.insert(ProxyFilter {
-//!         country: Some(vec!["BE".into()]),
-//!         mobile: Some(true),
-//!         residential: Some(true),
-//!         ..Default::default()
-//!     });
-//!
-//!     let req = Request::builder()
+//!     let mut req = Request::builder()
 //!         .version(Version::HTTP_3)
 //!         .method("GET")
 //!         .uri("https://example.com")
 //!         .body(Body::empty())
 //!         .unwrap();
 //!
-//!     let proxy_address = service.serve(ctx, req).await.unwrap();
+//!     req.extensions_mut().insert(ProxyFilter {
+//!         country: Some(vec!["BE".into()]),
+//!         mobile: Some(true),
+//!         residential: Some(true),
+//!         ..Default::default()
+//!     });
+//!
+//!     let proxy_address = service.serve(Context::default(), req).await.unwrap();
 //!     assert_eq!(proxy_address.authority.to_string(), "12.34.12.34:8080");
 //! }
 //! ```
@@ -162,6 +162,7 @@
 //! };
 //! use rama_core::{
 //!    service::service_fn,
+//!    extensions::{ExtensionsRef, ExtensionsMut},
 //!    Context, Service, Layer,
 //! };
 //! use rama_net::address::ProxyAddress;
@@ -212,25 +213,22 @@
 //!
 //!             (!output.is_empty()).then(|| format!("{username}-{output}"))
 //!         })
-//!         .into_layer(service_fn(async |ctx: Context, _: Request| {
-//!             Ok::<_, Infallible>(ctx.get::<ProxyAddress>().unwrap().clone())
+//!         .into_layer(service_fn(async |_ctx: Context, req: Request| {
+//!             Ok::<_, Infallible>(req.extensions().get::<ProxyAddress>().unwrap().clone())
 //!         }));
 //!
-//!     let mut ctx = Context::default();
-//!     ctx.insert(ProxyFilter {
-//!         country: Some(vec!["BE".into()]),
-//!         residential: Some(true),
-//!         ..Default::default()
-//!     });
-//!
-//!     let req = Request::builder()
+//!     let mut req = Request::builder()
 //!         .version(Version::HTTP_3)
 //!         .method("GET")
 //!         .uri("https://example.com")
 //!         .body(Body::empty())
 //!         .unwrap();
-//!
-//!     let proxy_address = service.serve(ctx, req).await.unwrap();
+//!     req.extensions_mut().insert(ProxyFilter {
+//!         country: Some(vec!["BE".into()]),
+//!         residential: Some(true),
+//!         ..Default::default()
+//!     });
+//!     let proxy_address = service.serve(Context::default(), req).await.unwrap();
 //!     assert_eq!(
 //!         "socks5://john-country-be:secret@proxy.example.com:60000",
 //!         proxy_address.to_string()

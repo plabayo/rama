@@ -8,13 +8,13 @@
 //!     layer::ua::{PlatformKind, UserAgent, UserAgentClassifierLayer, UserAgentKind, UserAgentInfo},
 //!     service::web::response::IntoResponse,
 //! };
-//! use rama_core::{Context, Layer, service::service_fn};
+//! use rama_core::{Context, extensions::ExtensionsRef, Layer, service::service_fn};
 //! use std::convert::Infallible;
 //!
 //! const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.2478.67";
 //!
-//! async fn handle(ctx: Context, _req: Request) -> Result<Response, Infallible> {
-//!     let ua: &UserAgent = ctx.get().unwrap();
+//! async fn handle(_ctx: Context, req: Request) -> Result<Response, Infallible> {
+//!     let ua: &UserAgent = req.extensions().get().unwrap();
 //!
 //!     assert_eq!(ua.header_str(), UA);
 //!     assert_eq!(ua.info(), Some(UserAgentInfo{ kind: UserAgentKind::Chromium, version: Some(124) }));

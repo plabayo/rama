@@ -9,7 +9,7 @@
 //! use rama_http::layer::header_from_str_config::HeaderFromStrConfigLayer;
 //! use rama_http::service::web::{WebService};
 //! use rama_http::{Body, Request, StatusCode, HeaderName};
-//! use rama_core::{Context, Service, Layer};
+//! use rama_core::{Context, extensions::ExtensionsRef, Service, Layer};
 //! use serde::Deserialize;
 //!
 //! #[tokio::main]
@@ -17,7 +17,7 @@
 //!     let service = HeaderFromStrConfigLayer::<String>::required(HeaderName::from_static("x-proxy-labels"))
 //!         .with_repeat(true)
 //!         .into_layer(WebService::default()
-//!             .get("/", async |ctx: Context| {
+//!             .get("/", async |_ctx: Context, req: Request| {
 //!                 // For production-like code you should prefer a custom type
 //!                 // to avoid possible conflicts. Ideally these are also as
 //!                 // cheap as possible to allocate.
