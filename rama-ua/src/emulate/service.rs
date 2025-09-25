@@ -428,13 +428,9 @@ where
                     "http profile found in context to use for emulation, proceed",
                 );
 
-                match get_base_http_headers(&ctx, &req, http_profile) {
+                match get_base_http_headers(&ctx, &req, &http_profile) {
                     Some(base_http_headers) => {
-                        let original_http_header_order = req
-                            .extensions()
-                            .get()
-                            .or_else(|| req.extensions().get())
-                            .cloned();
+                        let original_http_header_order = req.extensions().get().cloned();
                         let original_headers = req.headers().clone();
 
                         let preserve_ua_header =
@@ -2118,8 +2114,10 @@ mod tests {
             if let Some(headers) = test_case.headers {
                 req.headers_mut().extend(headers);
             }
-            let extensions = test_case.extensions.unwrap_or_default();
-            *req.extensions_mut() = extensions;
+            if let Some(extensions) = test_case.extensions {
+                *req.extensions_mut() = extensions;
+            }
+
             let res = ua_service.serve(Context::default(), req).await.unwrap();
             assert_eq!(res, test_case.expected, "{}", test_case.description);
         }
