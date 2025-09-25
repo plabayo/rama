@@ -5,7 +5,7 @@ use rama_core::{
     Context, Layer, Service,
     bytes::Bytes,
     error::{BoxError, ErrorContext, OpaqueError},
-    extensions::ExtensionsRef,
+    extensions::{ChainableExtensions, ExtensionsRef},
     stream::Stream,
 };
 use rama_net::{
@@ -211,7 +211,7 @@ where
             Error: Into<BoxError>,
         >,
     P: Send + 'static,
-    Request: Send + 'static,
+    Request: Send + ExtensionsRef + 'static,
 {
     type Response = EstablishedClientConnection<S::Connection, Request>;
     type Error = BoxError;
@@ -220,18 +220,16 @@ where
         let EstablishedClientConnection { ctx, req, mut conn } =
             self.inner.connect(ctx, req).await.map_err(Into::into)?;
 
-        let src = conn
-            .extensions()
-            .get::<Forwarded>()
-            .and_then(|f| f.client_socket_addr())
-            .or_else(|| {
-                conn.extensions()
-                    .get::<SocketInfo>()
-                    .map(|info| *info.peer_addr())
-            })
-            .ok_or_else(|| {
-                OpaqueError::from_display("PROXY client (v1): missing src socket address")
-            })?;
+        let src = {
+            let ext_chain = (&conn, &req);
+            ext_chain
+                .get::<Forwarded>()
+                .and_then(|f| f.client_socket_addr())
+                .or_else(|| ext_chain.get::<SocketInfo>().map(|info| *info.peer_addr()))
+                .ok_or_else(|| {
+                    OpaqueError::from_display("PROXY client (v1): missing src socket address")
+                })?
+        };
 
         let peer_addr = conn.peer_addr()?;
         let addresses = match (src.ip(), peer_addr.ip()) {
@@ -261,7 +259,7 @@ impl<S, P, Request, T> Service<Request> for HaProxyService<S, P, version::Two>
 where
     S: Service<Request, Response = EstablishedClientConnection<T, Request>, Error: Into<BoxError>>,
     P: protocol::Protocol + Send + 'static,
-    Request: Send + 'static,
+    Request: Send + ExtensionsRef + 'static,
     T: Stream + Socket + Unpin + ExtensionsRef,
 {
     type Response = EstablishedClientConnection<T, Request>;
@@ -271,18 +269,16 @@ where
         let EstablishedClientConnection { ctx, req, mut conn } =
             self.inner.serve(ctx, req).await.map_err(Into::into)?;
 
-        let src = conn
-            .extensions()
-            .get::<Forwarded>()
-            .and_then(|f| f.client_socket_addr())
-            .or_else(|| {
-                conn.extensions()
-                    .get::<SocketInfo>()
-                    .map(|info| *info.peer_addr())
-            })
-            .ok_or_else(|| {
-                OpaqueError::from_display("PROXY client (v2): missing src socket address")
-            })?;
+        let src = {
+            let ext_chain = (&conn, &req);
+            ext_chain
+                .get::<Forwarded>()
+                .and_then(|f| f.client_socket_addr())
+                .or_else(|| ext_chain.get::<SocketInfo>().map(|info| *info.peer_addr()))
+                .ok_or_else(|| {
+                    OpaqueError::from_display("PROXY client (v2): missing src socket address")
+                })?
+        };
 
         let peer_addr = conn.peer_addr()?;
         let builder = match (src.ip(), peer_addr.ip()) {
@@ -382,7 +378,10 @@ pub mod protocol {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rama_core::{Layer, context::Extensions, extensions::ExtensionsMut, service::service_fn};
+    use rama_core::{
+        Layer, context::Extensions, extensions::ExtensionsMut, generic_request::GenericRequest,
+        service::service_fn,
+    };
     use rama_net::forwarded::{ForwardedElement, NodeId};
     use std::{convert::Infallible, net::SocketAddr, pin::Pin};
     use tokio::io::{AsyncRead, AsyncWrite};
@@ -613,7 +612,11 @@ mod tests {
                         },
                     })
                 }));
-            assert!(svc.serve(Context::default(), ()).await.is_err());
+            assert!(
+                svc.serve(Context::default(), GenericRequest::new(()))
+                    .await
+                    .is_err()
+            );
         }
     }
 
@@ -910,7 +913,11 @@ mod tests {
                     },
                 })
             }));
-            assert!(svc.serve(Context::default(), ()).await.is_err());
+            assert!(
+                svc.serve(Context::default(), GenericRequest::new(()))
+                    .await
+                    .is_err()
+            );
 
             // UDP
 
@@ -925,7 +932,11 @@ mod tests {
                     },
                 })
             }));
-            assert!(svc.serve(Context::default(), ()).await.is_err());
+            assert!(
+                svc.serve(Context::default(), GenericRequest::new(()))
+                    .await
+                    .is_err()
+            );
         }
     }
 }
