@@ -16,7 +16,6 @@ use rama_core::{
     telemetry::tracing::{debug, trace},
 };
 use rama_net::{
-    address::Host,
     http::RequestContext,
     tls::{ApplicationProtocol, DataEncoding, client::NegotiatedTlsParameters},
     transport::TransportContext,
@@ -93,14 +92,14 @@ where
         let server_domain = ctx
             .get::<SecureTransport>()
             .and_then(|t| t.client_hello())
-            .and_then(|c| c.ext_server_name().map(|domain| Host::Name(domain.clone())))
+            .and_then(|c| c.ext_server_name().cloned())
             .or_else(|| {
                 ctx.get::<TransportContext>()
-                    .map(|ctx| ctx.authority.host().clone())
+                    .and_then(|ctx| ctx.authority.host().as_domain().cloned())
             })
             .or_else(|| {
                 ctx.get::<RequestContext>()
-                    .map(|ctx| ctx.authority.host().clone())
+                    .and_then(|ctx| ctx.authority.host().as_domain().cloned())
             });
 
         // We use arc mutex instead of oneshot channel since it is possible that certificate callbacks

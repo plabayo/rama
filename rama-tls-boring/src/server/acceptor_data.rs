@@ -21,7 +21,7 @@ use rama_core::conversion::RamaTryFrom;
 use rama_core::error::{ErrorContext, OpaqueError};
 use rama_core::telemetry::tracing;
 use rama_net::{
-    address::{Domain, Host},
+    address::Domain,
     tls::{
         ApplicationProtocol, DataEncoding, KeyLogIntent, ProtocolVersion,
         client::ClientHello as RamaClientHello,
@@ -67,7 +67,7 @@ enum TlsCertSourceKind {
     InMemory(IssuedCert),
     InMemoryIssuer {
         /// Cache for certs already issued
-        cert_cache: Option<Cache<Host, IssuedCert>>,
+        cert_cache: Option<Cache<Domain, IssuedCert>>,
         /// Private Key for issueing
         ca_key: PKey<Private>,
         /// CA Cert to be used for issueing
@@ -76,7 +76,7 @@ enum TlsCertSourceKind {
     DynamicIssuer {
         issuer: DynamicIssuer,
         /// Cache for certs already issued
-        cert_cache: Option<Cache<Host, IssuedCert>>,
+        cert_cache: Option<Cache<Domain, IssuedCert>>,
     },
 }
 
@@ -90,7 +90,7 @@ impl TlsCertSource {
     pub(super) async fn issue_certs(
         self,
         mut builder: SslAcceptorBuilder,
-        server_name: Option<Host>,
+        server_name: Option<Domain>,
         maybe_client_hello: Option<&Arc<Mutex<Option<RamaClientHello>>>>,
     ) -> Result<SslAcceptorBuilder, OpaqueError> {
         match self.kind {
@@ -153,14 +153,14 @@ impl TlsCertSource {
                     let mut client_hello = client_hello;
                     let ssl_ref = client_hello.ssl_mut();
 
-                    let host = to_host(ssl_ref, server_name.as_ref()).map_err(|err| {
+                    let domain = to_domain(ssl_ref, server_name.as_ref()).map_err(|err| {
                         tracing::error!("boring: failed getting host: {err:?}");
                         SelectCertError::ERROR
                     })?;
 
-                    tracing::trace!(%host, "try to use cached issued cert or generate new one");
+                    tracing::trace!(%domain, "try to use cached issued cert or generate new one");
                     let issued_cert = match &cert_cache {
-                        None => issue_cert_for_ca(&host, &ca_cert, &ca_key)
+                        None => issue_cert_for_ca(&domain, &ca_cert, &ca_key)
                             .context("fresh issue of cert")
                             .map_err(|err| {
                                 tracing::error!(
@@ -169,8 +169,8 @@ impl TlsCertSource {
                                 SelectCertError::ERROR
                             })?,
                         Some(cert_cache) => cert_cache
-                            .try_get_with(host.clone(), || {
-                                issue_cert_for_ca(&host, &ca_cert, &ca_key)
+                            .try_get_with(domain.clone(), || {
+                                issue_cert_for_ca(&domain, &ca_cert, &ca_key)
                             })
                             .context("fresh issue of cert + insert")
                             .map_err(|err| {
@@ -181,7 +181,7 @@ impl TlsCertSource {
                             })?,
                     };
 
-                    add_issued_cert_to_ssl_ref(&host, &issued_cert, ssl_ref).map_err(|err| {
+                    add_issued_cert_to_ssl_ref(&domain, &issued_cert, ssl_ref).map_err(|err| {
                         tracing::error!(
                             "boring: select certificate callback: add certs to ssl ref: {err:?}"
                         );
@@ -207,7 +207,7 @@ impl TlsCertSource {
                     }
 
                     let ssl_ref = client_hello.ssl_mut();
-                    let host = to_host(ssl_ref, server_name.as_ref()).map_err(|err| {
+                    let host = to_domain(ssl_ref, server_name.as_ref()).map_err(|err| {
                         tracing::error!("boring: failed getting host: {err:?}");
                         AsyncSelectCertError{}
                     })?;
@@ -359,7 +359,7 @@ impl TryFrom<rama_net::tls::server::ServerConfig> for TlsAcceptorData {
     }
 }
 
-fn to_host(ssl_ref: &SslRef, server_name: Option<&Host>) -> Result<Host, OpaqueError> {
+fn to_domain(ssl_ref: &SslRef, server_name: Option<&Domain>) -> Result<Domain, OpaqueError> {
     let host = match (ssl_ref.servername(NameType::HOST_NAME), server_name) {
         (Some(sni), _) => {
             tracing::trace!("boring: server_name to host: use client SNI: {sni}");
@@ -378,7 +378,7 @@ fn to_host(ssl_ref: &SslRef, server_name: Option<&Host>) -> Result<Host, OpaqueE
             tracing::warn!(
                 "boring: no host found in server_name or ctx: defaulting to 'localhost'"
             );
-            Host::Name(Domain::from_static("localhost")) // fallback
+            Domain::from_static("localhost") // fallback
         }
     };
     Ok(host)
@@ -424,11 +424,11 @@ fn server_auth_data_to_private_key_and_ca_chain(
 }
 
 fn issue_cert_for_ca(
-    host: &Host,
+    domain: &Domain,
     ca_cert: &X509,
     ca_key: &PKey<Private>,
 ) -> Result<IssuedCert, OpaqueError> {
-    tracing::trace!("generate certs for host {host} using in-memory ca cert");
+    tracing::trace!("generate certs for host {domain} using in-memory ca cert");
     let (cert, key) = self_signed_server_auth_gen_cert(
         &SelfSignedData {
             organisation_name: Some(
@@ -440,13 +440,13 @@ fn issue_cert_for_ca(
                     .map(|s| s.to_string())
                     .unwrap_or_else(|| "Anonymous".to_owned()),
             ),
-            common_name: Some(host.clone()),
+            common_name: Some(domain.clone()),
             subject_alternative_names: None,
         },
         ca_cert,
         ca_key,
     )
-    .with_context(|| format!("issue certs in memory for: {host:?}"))?;
+    .with_context(|| format!("issue certs in memory for: {domain:?}"))?;
 
     Ok(IssuedCert {
         cert_chain: vec![cert, ca_cert.clone()],
@@ -455,11 +455,11 @@ fn issue_cert_for_ca(
 }
 
 fn add_issued_cert_to_ssl_ref(
-    host: &Host,
+    domain: &Domain,
     issued_cert: &IssuedCert,
     builder: &mut SslRef,
 ) -> Result<(), OpaqueError> {
-    tracing::trace!("add issued cert for host {host} to (boring) SslAcceptorBuilder");
+    tracing::trace!("add issued cert for host {domain} to (boring) SslAcceptorBuilder");
 
     for (i, ca_cert) in issued_cert.cert_chain.iter().enumerate() {
         if i == 0 {
@@ -509,7 +509,7 @@ fn self_signed_server_auth_gen_cert(
     let common_name = data
         .common_name
         .clone()
-        .unwrap_or(Host::Name(Domain::from_static("localhost")));
+        .unwrap_or(Domain::from_static("localhost"));
 
     let mut x509_name = X509NameBuilder::new().context("create x509 name builder")?;
     x509_name
@@ -587,14 +587,7 @@ fn self_signed_server_auth_gen_cert(
         .context("x509 cert builder: add key usage x509 extension")?;
 
     let mut subject_alt_name = SubjectAlternativeName::new();
-    match common_name {
-        Host::Name(domain) => {
-            subject_alt_name.dns(domain.as_str());
-        }
-        Host::Address(addr) => {
-            subject_alt_name.ip(addr.to_string().as_str());
-        }
-    }
+    subject_alt_name.dns(common_name.as_str());
     let subject_alt_name = subject_alt_name
         .build(&cert_builder.x509v3_context(Some(ca_cert), None))
         .context("x509 cert builder: build subject alt name")?;
@@ -637,7 +630,7 @@ fn self_signed_server_auth_gen_ca(
     let common_name = data
         .common_name
         .clone()
-        .unwrap_or(Host::Name(Domain::from_static("localhost")));
+        .unwrap_or(Domain::from_static("localhost"));
 
     let mut x509_name = X509NameBuilder::new().context("create x509 name builder")?;
     x509_name

@@ -58,7 +58,7 @@ use rama::{
     http::{client::EasyHttpWebClient, server::HttpServer, service::web::response::IntoResponse},
     layer::ConsumeErrLayer,
     net::{
-        address::Host,
+        address::Domain,
         tls::{
             DataEncoding,
             client::{ClientHello, ServerVerifyMode},
@@ -280,7 +280,7 @@ impl DynamicCertIssuer for TlsAcmeIssue {
     async fn issue_cert(
         &self,
         _client_hello: ClientHello,
-        _server_name: Option<Host>,
+        _server_name: Option<Domain>,
     ) -> Result<ServerAuthData, OpaqueError> {
         Ok(self.0.clone())
     }

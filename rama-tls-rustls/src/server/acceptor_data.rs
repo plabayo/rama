@@ -4,7 +4,7 @@ use crate::dep::rustls;
 use crate::key_log::KeyLogFile;
 use ::rcgen::Issuer;
 use rama_core::error::{ErrorContext, OpaqueError};
-use rama_net::address::{Domain, Host};
+use rama_net::address::Domain;
 use rama_net::tls::server::SelfSignedData;
 use rama_net::tls::{ApplicationProtocol, KeyLogIntent};
 use rustls::ALL_VERSIONS;
@@ -218,7 +218,7 @@ pub fn self_signed_server_auth(
     let common_name = data
         .common_name
         .clone()
-        .unwrap_or(Host::Name(Domain::from_static("localhost")));
+        .unwrap_or(Domain::from_static("localhost"));
 
     let mut ca_params =
         rcgen::CertificateParams::new(Vec::new()).context("self-signed: create ca params")?;

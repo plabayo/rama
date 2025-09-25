@@ -1,5 +1,5 @@
 use crate::{
-    address::Host,
+    address::Domain,
     tls::{ApplicationProtocol, DataEncoding, KeyLogIntent, ProtocolVersion, client::ClientHello},
 };
 use rama_core::error::OpaqueError;
@@ -123,9 +123,7 @@ pub struct SelfSignedData {
     /// name of the organisation
     pub organisation_name: Option<String>,
     /// common name (CN): server name protected by the SSL certificate
-    ///
-    /// (usually the host domain name)
-    pub common_name: Option<Host>,
+    pub common_name: Option<Domain>,
     /// Subject Alternative Names (SAN) can be defined
     /// to create a cert which allows multiple hostnames or domains to be secured under one certificate.
     pub subject_alternative_names: Option<Vec<String>>,
@@ -160,7 +158,7 @@ impl DynamicIssuer {
     pub async fn issue_cert(
         &self,
         client_hello: ClientHello,
-        server_name: Option<Host>,
+        server_name: Option<Domain>,
     ) -> Result<ServerAuthData, OpaqueError> {
         self.issuer.issue_cert(client_hello, server_name).await
     }
@@ -178,7 +176,7 @@ pub trait DynamicCertIssuer: Send + Sync + 'static {
     fn issue_cert(
         &self,
         client_hello: ClientHello,
-        server_name: Option<Host>,
+        server_name: Option<Domain>,
     ) -> impl Future<Output = Result<ServerAuthData, OpaqueError>> + Send + Sync + '_;
 }
 
@@ -188,7 +186,7 @@ trait DynDynamicCertIssuer {
     fn issue_cert(
         &self,
         client_hello: ClientHello,
-        server_name: Option<Host>,
+        server_name: Option<Domain>,
     ) -> Pin<Box<dyn Future<Output = Result<ServerAuthData, OpaqueError>> + Send + Sync + '_>>;
 }
 
@@ -199,7 +197,7 @@ where
     fn issue_cert(
         &self,
         client_hello: ClientHello,
-        server_name: Option<Host>,
+        server_name: Option<Domain>,
     ) -> Pin<Box<dyn Future<Output = Result<ServerAuthData, OpaqueError>> + Send + Sync + '_>> {
         Box::pin(self.issue_cert(client_hello, server_name))
     }

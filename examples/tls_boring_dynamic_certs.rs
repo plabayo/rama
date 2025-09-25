@@ -61,7 +61,7 @@ use rama::{
     http::{Request, Response},
     layer::ConsumeErrLayer,
     net::{
-        address::Host,
+        address::Domain,
         tls::server::{ServerAuth, ServerConfig},
         tls::{
             DataEncoding,
@@ -145,7 +145,7 @@ impl DynamicCertIssuer for DynamicIssuer {
     async fn issue_cert(
         &self,
         client_hello: ClientHello,
-        _server_name: Option<Host>,
+        _server_name: Option<Domain>,
     ) -> Result<ServerAuthData, OpaqueError> {
         match client_hello.ext_server_name() {
             Some(domain) => {
