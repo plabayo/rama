@@ -1489,6 +1489,7 @@ mod conn {
 
     use futures_channel::{mpsc, oneshot};
     use rama::bytes::{Buf, Bytes};
+    use rama::context::Extensions;
     use rama::extensions::ExtensionsRef;
     use rama::futures::future::{self, FutureExt, TryFutureExt, poll_fn};
     use rama_http::StreamingBody;
@@ -2232,6 +2233,7 @@ mod conn {
 
                         let service = RamaHttpService::new(
                             rama::Context::default(),
+                            Extensions::new(),
                             service_fn(|_:Request| future::ok::<_, Infallible>(Response::new(rama::http::Body::empty()))));
 
                         let mut shdn_rx = shdn_rx.clone();
@@ -2313,6 +2315,7 @@ mod conn {
 
             let service = RamaHttpService::new(
                 rama::Context::default(),
+                Extensions::new(),
                 service_fn(move |req: Request| {
                     tokio::task::spawn(async move {
                         let io = &mut rama::http::io::upgrade::on(req).await.unwrap();
@@ -2493,6 +2496,7 @@ mod conn {
                     sock,
                     RamaHttpService::new(
                         rama::Context::default(),
+                        Extensions::new(),
                         service_fn(async |req: Request| {
                             tokio::spawn(async move {
                                 let _ = concat(req).await.expect("server req body aggregate");
@@ -2550,6 +2554,7 @@ mod conn {
                     sock,
                     RamaHttpService::new(
                         rama::Context::default(),
+                        Extensions::new(),
                         service_fn(async |_req| {
                             Ok::<_, Infallible>(Response::new(rama::http::Body::from(
                                 "No bread for you!",

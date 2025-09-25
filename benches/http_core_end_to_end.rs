@@ -5,6 +5,7 @@
 use std::convert::Infallible;
 use std::net::SocketAddr;
 
+use rama::context::Extensions;
 use rama::futures::future::join_all;
 use rama::http::body::util::BodyExt;
 use rama::http::{Method, Request, Response};
@@ -424,6 +425,7 @@ fn spawn_server(rt: &tokio::runtime::Runtime, opts: &Opts) -> SocketAddr {
                             sock,
                             rama::http::core::service::RamaHttpService::new(
                                 rama::Context::default(),
+                                Extensions::new(),
                                 service_fn(move |req: Request| async move {
                                     let mut req_body = req.into_body();
                                     while let Some(_chunk) = req_body.frame().await {}
@@ -440,6 +442,7 @@ fn spawn_server(rt: &tokio::runtime::Runtime, opts: &Opts) -> SocketAddr {
                         sock,
                         rama::http::core::service::RamaHttpService::new(
                             rama::Context::default(),
+                            Extensions::new(),
                             service_fn(move |req: Request| async move {
                                 let mut req_body = req.into_body();
                                 while let Some(_chunk) = req_body.frame().await {}

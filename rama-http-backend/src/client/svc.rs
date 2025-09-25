@@ -72,6 +72,8 @@ where
             }
         }
 
+        req.extensions_mut().extend(self.extensions.clone());
+
         let original_http_version = req.version();
 
         match self.sender {
