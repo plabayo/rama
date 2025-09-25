@@ -450,8 +450,10 @@ where
     type Response = EstablishedClientConnection<MockSocket, Request>;
 
     async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
-        let (client_socket, server_socket) = new_mock_sockets();
-
+        // Store request extensions also on our server socket so we have acces to things like state
+        // Be careful with blindly passing all extensions, never use this in a production stack
+        let (client_socket, mut server_socket) = new_mock_sockets();
+        *server_socket.extensions_mut() = req.extensions().clone();
         let server_ctx = ctx.clone();
         let svc = self.serve_svc.clone();
 
