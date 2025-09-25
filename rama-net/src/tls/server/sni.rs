@@ -9,11 +9,11 @@ use pin_project_lite::pin_project;
 use rama_core::{
     Context, Service,
     error::{BoxError, ErrorContext, OpaqueError},
+    extensions::ExtensionsMut,
     service::RejectService,
     stream::{HeapReader, PeekStream, StackReader},
     telemetry::tracing,
 };
-use rama_core::{extensions::ExtensionsMut, telemetry::tracing};
 use tokio::io::{AsyncBufRead, AsyncRead, AsyncReadExt, AsyncWrite, ReadBuf};
 
 use crate::{address::Domain, tls::client::extract_sni_from_client_hello_handshake};

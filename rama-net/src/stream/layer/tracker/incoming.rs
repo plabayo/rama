@@ -1,10 +1,7 @@
 use super::bytes::BytesRWTracker;
-use rama_core::{Context, Layer, Service, extensions::ExtensionsMut};
-use rama_core::{Context, Layer, Service, stream::Stream};
+use rama_core::{Context, Layer, Service, extensions::ExtensionsMut, stream::Stream};
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
-
-use super::bytes::BytesRWTracker;
 
 /// A [`Service`] that wraps a [`Service`]'s input IO [`Stream`] with an atomic R/W tracker.
 ///

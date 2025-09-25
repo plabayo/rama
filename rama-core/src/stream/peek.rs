@@ -5,11 +5,11 @@ use std::{
     task::{Context, Poll, ready},
 };
 
-use pin_project_lite::pin_project;
-use rama_core::{
+use crate::{
     context::Extensions,
     extensions::{ExtensionsMut, ExtensionsRef},
 };
+use pin_project_lite::pin_project;
 use tokio::io::{AsyncBufRead, AsyncRead, AsyncWrite, ReadBuf};
 
 pin_project! {

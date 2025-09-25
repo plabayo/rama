@@ -6,8 +6,8 @@ use rama_boring_tokio::SslStream;
 use rama_core::{
     context::Extensions,
     extensions::{ExtensionsMut, ExtensionsRef},
+    stream::Stream,
 };
-use rama_net::stream::Stream;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 pin_project! {

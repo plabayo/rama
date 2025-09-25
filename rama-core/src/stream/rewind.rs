@@ -6,8 +6,6 @@ use std::task::{Context, Poll};
 use std::{cmp, io};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
-use crate::bytes::{Buf, Bytes};
-
 /// Combine a buffer with an IO, rewinding reads to use the buffer.
 #[derive(Debug)]
 pub struct Rewind<T> {

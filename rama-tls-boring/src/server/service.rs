@@ -6,7 +6,6 @@ use crate::{
     types::SecureTransport,
 };
 use parking_lot::Mutex;
-use rama_core::telemetry::tracing::{debug, trace};
 use rama_core::{
     Context, Service,
     conversion::RamaTryInto,
@@ -103,13 +102,13 @@ where
                 stream
                     .extensions()
                     .get::<TransportContext>()
-                    .map(|ctx| ctx.authority.host().clone())
+                    .and_then(|ctx| ctx.authority.host().as_domain().cloned())
             })
             .or_else(|| {
                 stream
                     .extensions()
                     .get::<RequestContext>()
-                    .map(|ctx| ctx.authority.host().clone())
+                    .and_then(|ctx| ctx.authority.host().as_domain().cloned())
             });
 
         // We use arc mutex instead of oneshot channel since it is possible that certificate callbacks

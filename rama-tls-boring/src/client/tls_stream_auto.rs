@@ -6,7 +6,6 @@ use rama_core::{
     extensions::{ExtensionsMut, ExtensionsRef},
     stream::Stream,
 };
-use rama_net::stream::Stream;
 use std::fmt;
 use tokio::io::{AsyncRead, AsyncWrite};
 

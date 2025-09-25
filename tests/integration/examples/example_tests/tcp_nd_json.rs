@@ -1,5 +1,6 @@
 use super::utils;
 use rama::Context;
+use rama::context::Extensions;
 use rama::futures::StreamExt;
 use rama::graceful::Shutdown;
 use rama::net::address::Authority;
@@ -31,7 +32,13 @@ async fn test_tcp_nd_json() {
     let mut try_count = 0;
     let stream = loop {
         tokio::time::sleep(Duration::from_secs(try_count * 2)).await;
-        match default_tcp_connect(&Context::default(), Authority::local_ipv4(62042)).await {
+        match default_tcp_connect(
+            &Context::default(),
+            &Extensions::default(),
+            Authority::local_ipv4(62042),
+        )
+        .await
+        {
             Ok((stream, _)) => break stream,
             Err(err) => tracing::error!(
                 "#{}: failed to connect to example listener: {err}",

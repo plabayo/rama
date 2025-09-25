@@ -1,5 +1,4 @@
-use rama_core::{Context, Layer, Service, extensions::ExtensionsMut};
-use rama_core::{Context, Layer, Service, stream::Stream};
+use rama_core::{Context, Layer, Service, extensions::ExtensionsMut, stream::Stream};
 use rama_http_types::BodyLimit;
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
