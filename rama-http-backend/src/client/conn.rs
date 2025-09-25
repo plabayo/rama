@@ -114,8 +114,14 @@ where
         ctx: Context,
         req: Request<BodyIn>,
     ) -> Result<Self::Response, Self::Error> {
-        let EstablishedClientConnection { ctx, req, mut conn } =
-            self.inner.connect(ctx, req).await.map_err(Into::into)?;
+        let EstablishedClientConnection {
+            ctx,
+            mut req,
+            mut conn,
+        } = self.inner.connect(ctx, req).await.map_err(Into::into)?;
+
+        let conn_extensions = conn.take_extensions();
+        req.extensions_mut().extend(conn_extensions.clone());
 
         let (ctx, req) = self
             .http_req_inspector_jit
@@ -136,7 +142,6 @@ where
             })
             .unwrap_or_default();
 
-        let conn_extensions = conn.take_extensions();
         let io = Box::pin(conn);
 
         match req.version() {
