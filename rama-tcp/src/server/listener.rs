@@ -302,12 +302,11 @@ impl TcpListener {
                 network.protocol.name = "tcp",
             );
 
+            let socket_info = SocketInfo::new(local_addr, peer_addr);
+            socket.extensions_mut().insert(socket_info);
+
             tokio::spawn(
                 async move {
-                    socket
-                        .extensions_mut()
-                        .insert(SocketInfo::new(local_addr, peer_addr));
-
                     let _ = service.serve(ctx, socket).await;
                 }
                 .instrument(span),
@@ -356,8 +355,9 @@ impl TcpListener {
                                 network.protocol.name = "tcp",
                             );
 
+                            socket.extensions_mut().insert(SocketInfo::new(local_addr, peer_addr));
+
                             guard.spawn_task(async move {
-                                socket.extensions_mut().insert(SocketInfo::new(local_addr, peer_addr));
                                 let _ = service.serve(ctx, socket).await;
                             }.instrument(span));
                         }
