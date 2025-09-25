@@ -378,6 +378,46 @@ macro_rules! impl_extensions_either {
 
 crate::combinators::impl_either!(impl_extensions_either);
 
+pub trait ChainableExtensions {
+    fn contains<T: Send + Sync + 'static>(&self) -> bool;
+    fn get<T: Send + Sync + 'static>(&self) -> Option<&T>;
+}
+
+impl<S, T> ChainableExtensions for (S, T)
+where
+    S: ExtensionsRef,
+    T: ExtensionsRef,
+{
+    fn contains<I: Send + Sync + 'static>(&self) -> bool {
+        self.0.extensions().contains::<I>() || self.1.extensions().contains::<I>()
+    }
+
+    fn get<I: Send + Sync + 'static>(&self) -> Option<&I> {
+        self.0
+            .extensions()
+            .get::<I>()
+            .or_else(|| self.1.extensions().get::<I>())
+    }
+}
+
+impl<S, T, U> ChainableExtensions for (S, T, U)
+where
+    S: ExtensionsRef,
+    T: ExtensionsRef,
+    U: ExtensionsRef,
+{
+    fn contains<I: Send + Sync + 'static>(&self) -> bool {
+        (&self.0, &self.1).contains::<I>() || self.2.extensions().contains::<I>()
+    }
+
+    fn get<I: Send + Sync + 'static>(&self) -> Option<&I> {
+        self.0
+            .extensions()
+            .get::<I>()
+            .or_else(|| self.1.extensions().get::<I>())
+            .or_else(|| self.2.extensions().get::<I>())
+    }
+}
 
 trait AnyClone: Any {
     fn clone_box(&self) -> Box<dyn AnyClone + Send + Sync>;
