@@ -14,15 +14,24 @@ pin_project! {
     /// A stream which can be either a secure or a plain stream.
     pub struct TlsStream<S> {
         #[pin]
-        pub(super) inner: SslStream<S>,
+        pub inner: SslStream<S>,
         pub extensions: Extensions
     }
 }
 
 impl<S: ExtensionsMut> TlsStream<S> {
-    pub(super) fn new(mut inner: SslStream<S>) -> Self {
+    pub fn new(mut inner: SslStream<S>) -> Self {
         let extensions = inner.get_mut().take_extensions();
         Self { inner, extensions }
+    }
+}
+
+impl<S> TlsStream<S> {
+    pub fn new_with_fresh_extesions(inner: SslStream<S>) -> Self {
+        Self {
+            inner,
+            extensions: Extensions::new(),
+        }
     }
 
     #[must_use]

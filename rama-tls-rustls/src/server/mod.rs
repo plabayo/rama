@@ -27,6 +27,6 @@ pub use acceptor_data::{
     DynamicConfigProvider, TlsAcceptorData, TlsAcceptorDataBuilder, self_signed_server_auth,
 };
 
-mod stream;
+mod tls_stream;
 #[doc(inline)]
-pub use stream::TlsStream;
+pub use tls_stream::{RustlsTlsStream, TlsStream};

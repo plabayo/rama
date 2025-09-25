@@ -89,7 +89,7 @@ where
         };
 
         let stream = start.into_stream(server_config).await?;
-        let mut stream = TlsStream::from(stream);
+        let mut stream = TlsStream::new(stream);
 
         let (_, conn_data_ref) = stream.stream.get_ref();
         let negotiated_tls_params = NegotiatedTlsParameters {

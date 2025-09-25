@@ -4,7 +4,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use crate::dep::tokio_rustls::server::TlsStream as RustlsTlsStream;
+pub use crate::dep::tokio_rustls::server::TlsStream as RustlsTlsStream;
 use pin_project_lite::pin_project;
 use rama_core::{
     context::Extensions,
@@ -21,8 +21,15 @@ pin_project! {
     }
 }
 
+impl<IO: ExtensionsMut> TlsStream<IO> {
+    pub fn new(mut stream: RustlsTlsStream<IO>) -> Self {
+        let extensions = stream.get_mut().0.take_extensions();
+        Self { stream, extensions }
+    }
+}
+
 impl<IO> TlsStream<IO> {
-    pub fn new(stream: RustlsTlsStream<IO>) -> Self {
+    pub fn new_with_fresh_extensions(stream: RustlsTlsStream<IO>) -> Self {
         Self {
             stream,
             extensions: Extensions::new(),
@@ -30,7 +37,7 @@ impl<IO> TlsStream<IO> {
     }
 }
 
-impl<IO> From<RustlsTlsStream<IO>> for TlsStream<IO> {
+impl<IO: ExtensionsMut> From<RustlsTlsStream<IO>> for TlsStream<IO> {
     fn from(value: RustlsTlsStream<IO>) -> Self {
         Self::new(value)
     }
