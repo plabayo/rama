@@ -6,9 +6,8 @@ use std::{
 
 use rama_core::stream::Stream;
 use rama_core::{
-    extensions::Extensions,
     error::OpaqueError,
-    extensions::{ExtensionsMut, ExtensionsRef},
+    extensions::{Extensions, ExtensionsMut, ExtensionsRef},
     futures::{self, SinkExt, StreamExt},
     telemetry::tracing::{debug, trace},
 };

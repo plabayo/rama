@@ -30,8 +30,8 @@
 //!
 //! You’ll see output for each test case and potential errors (if any).
 use rama::{
-    extensions::Extensions,
     error::{BoxError, ErrorContext},
+    extensions::Extensions,
     futures::{SinkExt, StreamExt},
     http::{
         client::EasyHttpWebClient,

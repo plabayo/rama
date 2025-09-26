@@ -114,7 +114,7 @@ where
     type Response = EstablishedClientConnection<TcpStream, Request>;
     type Error = BoxError;
 
-    async fn serve(&self, ctx: Context, mut req: Request) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
         let CreatedTcpStreamConnector { ctx, connector } = self
             .connector_factory
             .make_connector(ctx)
@@ -122,7 +122,7 @@ where
             .map_err(Into::into)?;
 
         if let Some(proxy) = req.extensions().get::<ProxyAddress>() {
-            let (conn, addr) = crate::client::tcp_connect(
+            let (mut conn, addr) = crate::client::tcp_connect(
                 &ctx,
                 req.extensions(),
                 proxy.authority.clone(),
@@ -132,7 +132,7 @@ where
             .await
             .context("tcp connector: conncept to proxy")?;
 
-            req.extensions_mut().insert(ClientSocketInfo(SocketInfo::new(
+            let socket_info= ClientSocketInfo(SocketInfo::new(
                 conn.local_addr()
                     .inspect_err(|err| {
                         tracing::debug!(
@@ -141,7 +141,8 @@ where
                     })
                     .ok(),
                 addr,
-            )));
+            ));
+            conn.extensions_mut().insert(socket_info);
 
             return Ok(EstablishedClientConnection { ctx, req, conn });
         }

@@ -98,11 +98,7 @@ where
     I1: RequestInspector<Request<BodyIn>, Error: Into<BoxError>, RequestOut = Request<BodyIn>>,
     I2: RequestInspector<Request<BodyIn>, Error: Into<BoxError>, RequestOut = Request<BodyOut>>
         + Clone,
-    S: ConnectorService<
-            Request<BodyIn>,
-            Connection: Stream + Unpin + ExtensionsMut,
-            Error: Into<BoxError>,
-        >,
+    S: ConnectorService<Request<BodyIn>, Connection: Stream + Unpin>,
     BodyIn: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
     BodyOut: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
 {

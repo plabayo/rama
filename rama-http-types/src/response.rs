@@ -8,8 +8,7 @@ use crate::header::{HeaderMap, HeaderName, HeaderValue};
 use crate::status::StatusCode;
 use crate::version::Version;
 use crate::{Body, Result};
-use rama_core::extensions::Extensions;
-use rama_core::extensions::{ExtensionsMut, ExtensionsRef};
+use rama_core::extensions::{Extensions, ExtensionsMut, ExtensionsRef};
 
 /// Represents an HTTP response
 ///

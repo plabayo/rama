@@ -44,7 +44,7 @@ where
 
 impl<S, Request> Service<Request> for OutgoingBytesTrackerService<S>
 where
-    S: ConnectorService<Request, Connection: Stream + Unpin + ExtensionsMut, Error: Send + 'static>,
+    S: ConnectorService<Request, Connection: Stream + Unpin>,
     Request: Send + 'static,
 {
     type Response = EstablishedClientConnection<BytesRWTracker<S::Connection>, Request>;

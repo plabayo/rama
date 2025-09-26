@@ -3,6 +3,7 @@ use crate::{
     Layer, Service,
     dns::DnsResolver,
     error::{BoxError, OpaqueError},
+    extensions::ExtensionsMut,
     http::{Request, StreamingBody, client::proxy::layer::HttpProxyConnector},
     net::client::{
         EstablishedClientConnection,
@@ -13,7 +14,6 @@ use crate::{
     },
     tcp::client::service::TcpConnector,
 };
-use rama_core::extensions::ExtensionsMut;
 use std::{marker::PhantomData, time::Duration};
 
 #[cfg(feature = "boring")]

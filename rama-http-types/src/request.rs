@@ -5,8 +5,7 @@ use crate::Result;
 use crate::dep::hyperium::http::Extensions as HyperExtensions;
 use crate::dep::hyperium::http::request::{Parts as HyperiumParts, Request as HyperiumRequest};
 use crate::{HeaderMap, HeaderName, HeaderValue, Method, Uri, Version, body::Body};
-use rama_core::extensions::Extensions;
-use rama_core::extensions::{ExtensionsMut, ExtensionsRef};
+use rama_core::extensions::{Extensions, ExtensionsMut, ExtensionsRef};
 
 /// Represents an HTTP request.
 ///

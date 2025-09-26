@@ -1,8 +1,8 @@
 use crate::{Method, Request, Response, Uri};
 use rama_core::{
     Context, Service,
-    extensions::Extensions,
     error::{BoxError, ErrorExt, OpaqueError},
+    extensions::Extensions,
     extensions::ExtensionsMut,
 };
 use rama_http_headers::authorization::Credentials;

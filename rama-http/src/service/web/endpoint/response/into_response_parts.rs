@@ -3,10 +3,7 @@ use crate::{
     Response, StatusCode,
     header::{HeaderMap, HeaderName, HeaderValue},
 };
-use rama_core::{
-    extensions::Extensions,
-    extensions::{ExtensionsMut, ExtensionsRef},
-};
+use rama_core::extensions::{Extensions, ExtensionsMut, ExtensionsRef};
 use rama_utils::macros::all_the_tuples_no_last_special_case;
 use std::{convert::Infallible, fmt};
 

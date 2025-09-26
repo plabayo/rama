@@ -14,7 +14,7 @@ use crate::proto::{
     server::{Header, Reply, UsernamePasswordResponse},
 };
 use rama_core::{
-    Context, Service, extensions::Extensions, error::BoxError, extensions::ExtensionsMut,
+    Context, Service, error::BoxError, extensions::Extensions, extensions::ExtensionsMut,
     stream::Stream, telemetry::tracing,
 };
 use rama_net::{

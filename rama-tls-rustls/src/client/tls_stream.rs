@@ -1,9 +1,6 @@
 use super::RustlsTlsStream;
 use pin_project_lite::pin_project;
-use rama_core::{
-    extensions::Extensions,
-    extensions::{ExtensionsMut, ExtensionsRef},
-};
+use rama_core::extensions::{Extensions, ExtensionsMut, ExtensionsRef};
 use std::{
     io,
     pin::Pin,

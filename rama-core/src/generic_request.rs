@@ -10,6 +10,15 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 pin_project! {
     #[derive(Debug)]
+    /// A generic request that implements all rama traits conditionally
+    ///
+    /// This request type can be used in places where you need a request/stream
+    /// that implements things such as [`ExtensionsRef`] without having to
+    /// create a custom type for it.
+    ///
+    /// This is mainly useful for testing or less import request types. In most
+    /// cases you should create a new type that implements all the needed traits,
+    /// but that is focussed specifically on that use case.
     pub struct GenericRequest<T> {
         #[pin]
         pub request: T,

@@ -53,9 +53,9 @@
 
 use rama::{
     Layer, Service,
-    extensions::Extensions,
     error::{BoxError, ErrorContext, OpaqueError},
-    extensions::ExtensionsMut,
+    extensions::Extensions,
+    extensions::{ExtensionsMut, ExtensionsRef},
     futures::SinkExt,
     http::{
         Body, Request, Response, StatusCode,
@@ -117,7 +117,6 @@ use rama::{
 };
 
 use itertools::Itertools;
-use rama_core::extensions::ExtensionsRef;
 use std::{convert::Infallible, sync::Arc, time::Duration};
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 

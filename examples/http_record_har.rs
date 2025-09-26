@@ -36,7 +36,7 @@
 use rama::{
     Layer, Service,
     error::{BoxError, ErrorContext, OpaqueError},
-    extensions::ExtensionsMut,
+    extensions::{ExtensionsMut, ExtensionsRef},
     http::{
         Body, HeaderValue, Request, Response, StatusCode,
         client::EasyHttpWebClient,
@@ -87,7 +87,6 @@ use rama::{
         profile::UserAgentDatabase,
     },
 };
-use rama_core::extensions::ExtensionsRef;
 
 use std::{
     convert::Infallible,

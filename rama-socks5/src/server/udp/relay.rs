@@ -1,9 +1,9 @@
 use std::io::ErrorKind;
 
 use rama_core::bytes::{Bytes, BytesMut};
+use rama_core::error::{BoxError, ErrorExt, OpaqueError};
 #[cfg(feature = "dns")]
 use rama_core::extensions::Extensions;
-use rama_core::error::{BoxError, ErrorExt, OpaqueError};
 use rama_core::telemetry::tracing;
 use rama_net::address::{Authority, Host, SocketAddress};
 use rama_udp::UdpSocket;

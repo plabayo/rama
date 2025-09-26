@@ -526,7 +526,10 @@ mod tests {
     use super::*;
     use crate::{MemoryProxyDB, Proxy, ProxyCsvRowReader, StringFilter};
     use itertools::Itertools;
-    use rama_core::{extensions::ExtensionsRef, service::service_fn};
+    use rama_core::{
+        extensions::{Extensions, ExtensionsRef},
+        service::service_fn,
+    };
     use rama_http_types::{Body, Request, Version};
     use rama_net::{
         Protocol,
@@ -788,8 +791,11 @@ mod tests {
                 },
             ));
 
-        let mut req = rama_tcp::client::Request::new("www.example.com:443".parse().unwrap())
-            .with_protocol(Protocol::HTTPS);
+        let mut req = rama_tcp::client::Request::new(
+            "www.example.com:443".parse().unwrap(),
+            Extensions::new(),
+        )
+        .with_protocol(Protocol::HTTPS);
 
         req.extensions_mut().insert(ProxyFilter {
             country: Some(vec!["BE".into()]),

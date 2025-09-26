@@ -3,8 +3,7 @@ use std::fmt;
 use super::RustlsTlsStream;
 use pin_project_lite::pin_project;
 use rama_core::{
-    extensions::Extensions,
-    extensions::{ExtensionsMut, ExtensionsRef},
+    extensions::{Extensions, ExtensionsMut, ExtensionsRef},
     stream::Stream,
 };
 use tokio::io::{AsyncRead, AsyncWrite};

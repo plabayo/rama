@@ -4,6 +4,7 @@ use clap::Args;
 use rama::{
     Context, Layer, Service,
     error::{BoxError, ErrorContext},
+    extensions::Extensions,
     net::{
         address::Authority,
         client::{ConnectorService, EstablishedClientConnection},
@@ -13,8 +14,10 @@ use rama::{
             client::{NegotiatedTlsParameters, ServerVerifyMode},
         },
     },
-    tcp::TcpStream,
-    tcp::client::{Request, service::TcpConnector},
+    tcp::{
+        TcpStream,
+        client::{Request, service::TcpConnector},
+    },
     telemetry::tracing::{self, level_filters::LevelFilter},
     tls::boring::{
         client::{TlsConnectorDataBuilder, TlsConnectorLayer},
@@ -68,7 +71,10 @@ pub async fn run(cfg: CliCommandTls) -> Result<(), BoxError> {
         .layer(loggin_service);
 
     let EstablishedClientConnection { conn, .. } = tls_connector
-        .connect(Context::default(), Request::new(authority))
+        .connect(
+            Context::default(),
+            Request::new(authority, Extensions::new()),
+        )
         .await?;
 
     let params = conn

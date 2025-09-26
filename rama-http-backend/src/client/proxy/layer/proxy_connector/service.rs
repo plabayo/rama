@@ -4,9 +4,8 @@ use super::InnerHttpProxyConnector;
 use pin_project_lite::pin_project;
 use rama_core::{
     Context, Service,
-    extensions::Extensions,
     error::{BoxError, ErrorExt, OpaqueError},
-    extensions::{ExtensionsMut, ExtensionsRef},
+    extensions::{Extensions, ExtensionsMut, ExtensionsRef},
     stream::Stream,
     telemetry::tracing,
 };
@@ -120,7 +119,7 @@ impl<S> HttpProxyConnector<S> {
 
 impl<S, Request> Service<Request> for HttpProxyConnector<S>
 where
-    S: ConnectorService<Request, Connection: Stream + Unpin + ExtensionsMut, Error: Into<BoxError>>,
+    S: ConnectorService<Request, Connection: Stream + Unpin>,
     Request: TryRefIntoTransportContext<Error: Into<BoxError> + Send + 'static>
         + Send
         + ExtensionsMut
@@ -322,7 +321,6 @@ impl<S: ExtensionsMut + Unpin + Stream> MaybeHttpProxiedConnection<S> {
     }
 
     fn upgraded_proxy(mut conn: upgrade::Upgraded) -> Self {
-        // TODO does this always work or should we handle errors here
         let extensions = conn.take_extensions();
         Self {
             inner: Connection::UpgradedProxy { conn },

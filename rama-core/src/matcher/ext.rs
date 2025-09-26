@@ -92,6 +92,8 @@ mod private {
 
 #[cfg(test)]
 mod test {
+    use crate::{extensions::ExtensionsMut, generic_request::GenericRequest};
+
     use super::*;
 
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -104,35 +106,35 @@ mod test {
     fn test_extension_matcher() {
         let matcher = ExtensionMatcher::with_const(MyMarker(10));
         let ctx = Context::default();
-        let mut ext = Extensions::new();
+        let mut req = GenericRequest::new(());
 
-        assert!(!matcher.matches(None, &ctx, &ext));
+        assert!(!matcher.matches(None, &ctx, &req));
 
-        ext.insert(MyMarker(20));
-        assert!(!matcher.matches(None, &ctx, &ext));
+        req.extensions_mut().insert(MyMarker(20));
+        assert!(!matcher.matches(None, &ctx, &req));
 
-        ext.insert(MyOtherMarker(10));
-        assert!(!matcher.matches(None, &ctx, &ext));
+        req.extensions_mut().insert(MyOtherMarker(10));
+        assert!(!matcher.matches(None, &ctx, &req));
 
-        ext.insert(MyMarker(10));
-        assert!(matcher.matches(None, &ctx, &ext));
+        req.extensions_mut().insert(MyMarker(10));
+        assert!(matcher.matches(None, &ctx, &req));
     }
 
     #[test]
     fn test_fn_extension_matcher() {
         let matcher = ExtensionMatcher::with_fn(|v: &MyMarker| v.0 % 2 == 0);
         let ctx = Context::default();
-        let mut ext = Extensions::new();
+        let mut req = GenericRequest::new(());
 
-        assert!(!matcher.matches(None, &ctx, &ext));
+        assert!(!matcher.matches(None, &ctx, &req));
 
-        ext.insert(MyMarker(4));
-        assert!(matcher.matches(None, &ctx, &ext));
+        req.extensions_mut().insert(MyMarker(4));
+        assert!(matcher.matches(None, &ctx, &req));
 
-        ext.insert(MyMarker(5));
-        assert!(!matcher.matches(None, &ctx, &ext));
+        req.extensions_mut().insert(MyMarker(5));
+        assert!(!matcher.matches(None, &ctx, &req));
 
-        ext.insert(MyOtherMarker(4));
-        assert!(!matcher.matches(None, &ctx, &ext));
+        req.extensions_mut().insert(MyOtherMarker(4));
+        assert!(!matcher.matches(None, &ctx, &req));
     }
 }

@@ -11,8 +11,7 @@
 
 use pin_project_lite::pin_project;
 use rama_core::{
-    extensions::Extensions,
-    extensions::{ExtensionsMut, ExtensionsRef},
+    extensions::{Extensions, ExtensionsMut, ExtensionsRef},
     telemetry::tracing,
 };
 use std::{

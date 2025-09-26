@@ -205,11 +205,7 @@ impl<S: Clone, P, V: Clone> Clone for HaProxyService<S, P, V> {
 
 impl<S, P, Request> Service<Request> for HaProxyService<S, P, version::One>
 where
-    S: ConnectorService<
-            Request,
-            Connection: Stream + Socket + ExtensionsRef + Unpin,
-            Error: Into<BoxError>,
-        >,
+    S: ConnectorService<Request, Connection: Stream + Socket + Unpin>,
     P: Send + 'static,
     Request: Send + ExtensionsRef + 'static,
 {
@@ -255,19 +251,18 @@ where
     }
 }
 
-impl<S, P, Request, T> Service<Request> for HaProxyService<S, P, version::Two>
+impl<S, P, Request> Service<Request> for HaProxyService<S, P, version::Two>
 where
-    S: Service<Request, Response = EstablishedClientConnection<T, Request>, Error: Into<BoxError>>,
+    S: ConnectorService<Request, Connection: Stream + Socket + Unpin>,
     P: protocol::Protocol + Send + 'static,
     Request: Send + ExtensionsRef + 'static,
-    T: Stream + Socket + Unpin + ExtensionsRef,
 {
-    type Response = EstablishedClientConnection<T, Request>;
+    type Response = EstablishedClientConnection<S::Connection, Request>;
     type Error = BoxError;
 
     async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
         let EstablishedClientConnection { ctx, req, mut conn } =
-            self.inner.serve(ctx, req).await.map_err(Into::into)?;
+            self.inner.connect(ctx, req).await.map_err(Into::into)?;
 
         let src = {
             let ext_chain = (&conn, &req);

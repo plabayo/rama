@@ -7,8 +7,8 @@ use std::{
 
 use rama_core::{
     Context, Service,
-    extensions::Extensions,
     error::{ErrorContext, OpaqueError},
+    extensions::Extensions,
     extensions::{ExtensionsMut, ExtensionsRef},
     futures::{StreamExt, TryStreamExt},
     matcher::Matcher,
@@ -903,7 +903,7 @@ impl Service<ServerWebSocket> for WebSocketEchoService {
         ctx: Context,
         socket: ServerWebSocket,
     ) -> Result<Self::Response, Self::Error> {
-        let (socket, _) = socket.into_parts();
+        let socket = socket.into_inner();
         self.serve(ctx, socket).await
     }
 }

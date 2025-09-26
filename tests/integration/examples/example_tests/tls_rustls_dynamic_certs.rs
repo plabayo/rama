@@ -2,7 +2,7 @@ use super::utils::{self, ClientService};
 use rama::{
     Context, Layer, Service,
     error::BoxError,
-    extensions::RequestContextExt,
+    extensions::{ExtensionsRef, RequestContextExt},
     http::{
         Response, StreamingBody,
         client::EasyHttpWebClient,
@@ -25,7 +25,6 @@ use rama::{
     tls::boring::{client::TlsConnectorDataBuilder, core::x509::X509},
     utils::{backoff::ExponentialBackoff, rng::HasherRng},
 };
-use rama_core::extensions::ExtensionsRef;
 
 use std::{str::FromStr, time::Duration};
 

@@ -8,8 +8,7 @@ use crate::{
 use matchit::Router as MatchitRouter;
 use rama_core::{
     Context,
-    extensions::Extensions,
-    extensions::ExtensionsMut,
+    extensions::{Extensions, ExtensionsMut},
     matcher::Matcher,
     service::{BoxService, Service},
 };

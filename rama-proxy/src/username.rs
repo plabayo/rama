@@ -1,7 +1,7 @@
 use super::ProxyFilter;
 use rama_core::{
-    extensions::Extensions,
     error::{OpaqueError, error},
+    extensions::Extensions,
     telemetry::tracing,
     username::{UsernameLabelParser, UsernameLabelState, UsernameLabelWriter},
 };

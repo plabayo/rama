@@ -151,7 +151,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Context, extensions::Extensions, service::service_fn};
+    use crate::{
+        Context, extensions::ExtensionsMut, generic_request::GenericRequest, service::service_fn,
+    };
     use std::{convert::Infallible, sync::Arc};
 
     #[derive(Debug, Clone)]
@@ -168,15 +170,17 @@ mod tests {
                 cloned_value.store(state.0, std::sync::atomic::Ordering::Release);
             }
         })
-        .into_layer(service_fn(async |_ctx: Context, req: Extensions| {
-            let state = req.extensions().get::<State>().unwrap();
-            Ok::<_, Infallible>(state.0)
-        }));
+        .into_layer(service_fn(
+            async |_ctx: Context, req: GenericRequest<()>| {
+                let state = req.extensions().get::<State>().unwrap();
+                Ok::<_, Infallible>(state.0)
+            },
+        ));
 
-        let mut extensions = Extensions::new();
-        extensions.insert(State(42));
+        let mut request = GenericRequest::new(());
+        request.extensions_mut().insert(State(42));
 
-        let res = svc.serve(Context::default(), extensions).await.unwrap();
+        let res = svc.serve(Context::default(), request).await.unwrap();
         assert_eq!(42, res);
 
         let value = value.load(std::sync::atomic::Ordering::Acquire);

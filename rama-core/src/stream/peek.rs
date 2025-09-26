@@ -5,10 +5,7 @@ use std::{
     task::{Context, Poll, ready},
 };
 
-use crate::{
-    extensions::Extensions,
-    extensions::{ExtensionsMut, ExtensionsRef},
-};
+use crate::extensions::{Extensions, ExtensionsMut, ExtensionsRef};
 use pin_project_lite::pin_project;
 use tokio::io::{AsyncBufRead, AsyncRead, AsyncWrite, ReadBuf};
 
@@ -29,8 +26,8 @@ pin_project! {
 }
 
 impl<P, S: ExtensionsMut> PeekStream<P, S> {
-    /// Create a new [`PeekStream`] for the given
-    /// peek [`AsyncRead`] and inner [`Stream`].
+    /// Create a new [`PeekStream`] for the given peek
+    /// [`AsyncRead`] and inner [`Stream`] which implements [`ExtensionsMut`].
     ///
     /// [`Stream`]: super::Stream
     pub fn new(peek: P, mut inner: S) -> Self {

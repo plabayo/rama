@@ -89,7 +89,7 @@ impl Forwarder<super::TcpConnector> {
 impl<T, C> Service<T> for Forwarder<C>
 where
     T: Stream + Unpin + ExtensionsMut,
-    C: ConnectorService<crate::client::Request, Connection: Stream + Unpin, Error: Into<BoxError>>,
+    C: ConnectorService<crate::client::Request, Connection: Stream + Unpin>,
 {
     type Response = ();
     type Error = BoxError;
@@ -106,9 +106,7 @@ where
                 })?,
         };
 
-        let extensions = source.take_extensions();
-        let mut req = TcpRequest::new(authority.clone());
-        *req.extensions_mut() = extensions;
+        let req = TcpRequest::new(authority.clone(), source.take_extensions());
 
         let EstablishedClientConnection {
             ctx, conn: target, ..

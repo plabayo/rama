@@ -340,7 +340,7 @@ impl<S> Socks5ProxyConnector<S> {
 
 impl<S, Request> Service<Request> for Socks5ProxyConnector<S>
 where
-    S: ConnectorService<Request, Connection: Stream + Unpin, Error: Into<BoxError>>,
+    S: ConnectorService<Request, Connection: Stream + Unpin>,
     Request: TryRefIntoTransportContext<Error: Into<BoxError> + Send + 'static>
         + Send
         + ExtensionsMut

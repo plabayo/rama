@@ -1,6 +1,7 @@
 use rama_core::extensions::ExtensionsMut;
 use rama_core::telemetry::tracing::{self, Instrument, trace_span};
 use rama_core::{Context, Service, error::BoxError, stream::Stream};
+use rama_net::client::ConnectorService;
 use rama_net::{
     address::Authority,
     client::EstablishedClientConnection,
@@ -205,17 +206,13 @@ impl<C: Clone, S: Clone> Clone for Connector<C, S> {
     }
 }
 
-impl<S, T, InnerConnector, StreamService> Socks5ConnectorSeal<S>
+impl<S, InnerConnector, StreamService> Socks5ConnectorSeal<S>
     for Connector<InnerConnector, StreamService>
 where
-    S: Stream + Unpin,
-    T: Stream + Socket + Unpin,
-    InnerConnector: Service<
-            TcpRequest,
-            Response = EstablishedClientConnection<T, TcpRequest>,
-            Error: Into<BoxError>,
-        >,
-    StreamService: Service<ProxyRequest<S, T>, Response = (), Error: Into<BoxError>>,
+    S: Stream + Unpin + ExtensionsMut,
+    InnerConnector: ConnectorService<TcpRequest, Connection: Stream + Socket + Unpin>,
+    StreamService:
+        Service<ProxyRequest<S, InnerConnector::Connection>, Response = (), Error: Into<BoxError>>,
 {
     async fn accept_connect(
         &self,
@@ -229,9 +226,10 @@ where
 
         // TODO: replace with timeout layer once possible
 
-        let connect_future = self
-            .connector
-            .serve(ctx, TcpRequest::new(destination.clone()));
+        let connect_future = self.connector.connect(
+            ctx,
+            TcpRequest::new(destination.clone(), stream.take_extensions()),
+        );
 
         let result = match self.connect_timeout {
             Some(duration) => match tokio::time::timeout(duration, connect_future).await {

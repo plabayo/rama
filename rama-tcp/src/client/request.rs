@@ -27,12 +27,12 @@ pub struct Request {
 impl Request {
     /// Create a new Tcp [`Request`].
     #[must_use]
-    pub const fn new(authority: Authority) -> Self {
+    pub const fn new(authority: Authority, extensions: Extensions) -> Self {
         Self {
             authority,
             protocol: None,
             http_version: None,
-            extensions: Extensions::new(),
+            extensions,
         }
     }
 

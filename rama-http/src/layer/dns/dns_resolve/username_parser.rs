@@ -1,8 +1,8 @@
 use super::DnsResolveMode;
 use rama_core::username::{UsernameLabelParser, UsernameLabelState};
 use rama_core::{
-    extensions::Extensions,
     error::{ErrorContext, OpaqueError, error},
+    extensions::Extensions,
     telemetry::tracing,
 };
 use rama_utils::macros::str::eq_ignore_ascii_case;

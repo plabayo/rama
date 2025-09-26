@@ -34,7 +34,7 @@
 
 use rama::{
     Context, Layer, Service,
-    extensions::{ExtensionsMut, RequestContextExt},
+    extensions::{ExtensionsMut, ExtensionsRef, RequestContextExt},
     http::{
         Body, Request, Response, StatusCode,
         client::EasyHttpWebClient,
@@ -69,7 +69,6 @@ use rama::{
     tcp::{client::service::Forwarder, server::TcpListener},
     telemetry::tracing::{self, level_filters::LevelFilter},
 };
-use rama_core::extensions::ExtensionsRef;
 
 use std::{convert::Infallible, time::Duration};
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};

@@ -167,7 +167,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Context, extensions::Extensions, extensions::ExtensionsRef, service::service_fn};
+    use crate::{
+        Context, extensions::ExtensionsRef, generic_request::GenericRequest, service::service_fn,
+    };
     use std::{convert::Infallible, sync::Arc};
 
     struct State(i32);
@@ -177,14 +179,14 @@ mod tests {
         let state = Arc::new(State(1));
 
         let svc = AddExtensionLayer::new(state).into_layer(service_fn(
-            async |_ctx: Context, req: Extensions| {
+            async |_ctx: Context, req: GenericRequest<()>| {
                 let state = req.extensions().get::<Arc<State>>().unwrap();
                 Ok::<_, Infallible>(state.0)
             },
         ));
 
         let res = svc
-            .serve(Context::default(), Extensions::new())
+            .serve(Context::default(), GenericRequest::new(()))
             .await
             .unwrap();
 

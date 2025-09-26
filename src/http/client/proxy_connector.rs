@@ -1,6 +1,7 @@
 use crate::{
     Layer, Service,
     error::{BoxError, OpaqueError},
+    extensions::{Extensions, ExtensionsMut, ExtensionsRef},
     http::client::proxy::layer::{
         HttpProxyConnector, HttpProxyConnectorLayer, MaybeHttpProxiedConnection,
     },
@@ -15,10 +16,6 @@ use crate::{
     telemetry::tracing,
 };
 use pin_project_lite::pin_project;
-use rama_core::{
-    extensions::Extensions,
-    extensions::{ExtensionsMut, ExtensionsRef},
-};
 use std::{
     fmt::Debug,
     pin::Pin,
@@ -82,7 +79,7 @@ impl<S> ProxyConnector<S> {
 
 impl<Request, S> Service<Request> for ProxyConnector<S>
 where
-    S: ConnectorService<Request, Connection: Stream + Unpin + ExtensionsMut, Error: Into<BoxError>>,
+    S: ConnectorService<Request, Connection: Stream + Unpin>,
     Request: TryRefIntoTransportContext<Error: Into<BoxError> + Send + 'static>
         + Send
         + ExtensionsMut

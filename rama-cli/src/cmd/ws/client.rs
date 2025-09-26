@@ -1,7 +1,7 @@
 use rama::{
     Layer, Service,
-    extensions::Extensions,
     error::{BoxError, ErrorContext, OpaqueError},
+    extensions::Extensions,
     http::{
         Request, Response, StreamingBody,
         client::{

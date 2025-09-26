@@ -1,8 +1,7 @@
 use rama_boring_tokio::SslStream;
-use rama_core::extensions::Extensions;
 use rama_core::conversion::RamaTryInto;
 use rama_core::error::{BoxError, ErrorExt, OpaqueError};
-use rama_core::extensions::ExtensionsMut;
+use rama_core::extensions::{Extensions, ExtensionsMut};
 use rama_core::stream::Stream;
 use rama_core::telemetry::tracing;
 use rama_core::{Context, Layer, Service};
@@ -223,7 +222,7 @@ impl<S> TlsConnector<S, ConnectorKindTunnel> {
 
 impl<S, Request> Service<Request> for TlsConnector<S, ConnectorKindAuto>
 where
-    S: ConnectorService<Request, Connection: Stream + Unpin + ExtensionsMut, Error: Into<BoxError>>,
+    S: ConnectorService<Request, Connection: Stream + Unpin>,
     Request: TryRefIntoTransportContext<Error: Into<BoxError> + Send + 'static>
         + Send
         + ExtensionsMut
@@ -279,7 +278,7 @@ where
 
 impl<S, Request> Service<Request> for TlsConnector<S, ConnectorKindSecure>
 where
-    S: ConnectorService<Request, Connection: Stream + Unpin + ExtensionsMut, Error: Into<BoxError>>,
+    S: ConnectorService<Request, Connection: Stream + Unpin>,
     Request: TryRefIntoTransportContext<Error: Into<BoxError> + Send + 'static>
         + Send
         + ExtensionsMut
@@ -316,7 +315,7 @@ where
 
 impl<S, Request> Service<Request> for TlsConnector<S, ConnectorKindTunnel>
 where
-    S: ConnectorService<Request, Connection: Stream + Unpin + ExtensionsMut, Error: Into<BoxError>>,
+    S: ConnectorService<Request, Connection: Stream + Unpin>,
     Request: Send + ExtensionsMut + 'static,
 {
     type Response = EstablishedClientConnection<AutoTlsStream<S::Connection>, Request>;
