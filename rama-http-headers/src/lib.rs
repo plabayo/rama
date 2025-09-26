@@ -99,6 +99,9 @@ mod map_ext;
 mod req_builder_ext;
 mod resp_builder_ext;
 
+pub mod x_robots_tag;
+pub use x_robots_tag::XRobotsTag;
+
 pub mod specifier;
 
 pub use self::common::*;

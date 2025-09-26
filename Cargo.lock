@@ -2718,6 +2718,7 @@ name = "rama-http-headers"
 version = "0.3.0-alpha.4"
 dependencies = [
  "base64",
+ "chrono",
  "httpdate",
  "mime",
  "rama-core",
@@ -2731,6 +2732,7 @@ dependencies = [
  "sha1",
  "tokio",
  "tokio-test",
+ "tracing-test",
 ]
 
 [[package]]

@@ -1,66 +1,137 @@
-use chrono::{DateTime, FixedOffset, NaiveDateTime, Utc};
+use chrono::{DateTime, FixedOffset, NaiveDateTime, TimeZone, Utc};
 use rama_core::error::{ErrorContext, OpaqueError};
+use rama_core::telemetry::tracing;
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
-use std::ops::Deref;
 use std::str::FromStr;
 use std::sync::OnceLock;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct ValidDate(DateTime<Utc>);
+pub struct DirectiveDateTime {
+    value: DateTime<Utc>,
+    parsed_format: Option<ParsedFormat>,
+}
 
-impl Deref for ValidDate {
-    type Target = DateTime<Utc>;
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ParsedFormat {
+    RFC3339,
+    RFC2822,
+    RFC850,
+}
 
-    fn deref(&self) -> &Self::Target {
-        &self.0
+impl DirectiveDateTime {
+    pub fn try_new_ymd_and_hms(
+        year: i32,
+        month: u32,
+        day: u32,
+        hour: u32,
+        min: u32,
+        sec: u32,
+    ) -> Result<Self, OpaqueError> {
+        Utc.with_ymd_and_hms(year, month, day, hour, min, sec)
+            .single()
+            .context("invalid date-time input")
+            .map(Into::into)
+    }
+
+    pub fn try_new_ymd(year: i32, month: u32, day: u32) -> Result<Self, OpaqueError> {
+        Self::try_new_ymd_and_hms(year, month, day, 0, 0, 0)
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        pub fn format_rfc3339(mut self) -> Self {
+            self.parsed_format = Some(ParsedFormat::RFC3339);
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        pub fn format_rfc2822(mut self) -> Self {
+            self.parsed_format = Some(ParsedFormat::RFC2822);
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        pub fn format_rfc855(mut self) -> Self {
+            self.parsed_format = Some(ParsedFormat::RFC850);
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        pub fn format_default(mut self) -> Self {
+            self.parsed_format = None;
+            self
+        }
+    }
+
+    #[must_use]
+    pub fn date_time(&self) -> &DateTime<Utc> {
+        &self.value
+    }
+
+    #[must_use]
+    pub fn into_date_time(self) -> DateTime<Utc> {
+        self.value
     }
 }
 
-impl From<ValidDate> for DateTime<Utc> {
-    fn from(value: ValidDate) -> Self {
-        value.0
+impl From<DirectiveDateTime> for DateTime<Utc> {
+    fn from(value: DirectiveDateTime) -> Self {
+        value.value
     }
 }
 
-impl From<DateTime<Utc>> for ValidDate {
+impl From<DateTime<Utc>> for DirectiveDateTime {
     fn from(value: DateTime<Utc>) -> Self {
-        Self(value)
+        Self {
+            value,
+            parsed_format: None,
+        }
     }
 }
 
-impl AsRef<DateTime<Utc>> for ValidDate {
+impl AsRef<DateTime<Utc>> for DirectiveDateTime {
     fn as_ref(&self) -> &DateTime<Utc> {
-        &self.0
+        &self.value
     }
 }
 
-impl AsMut<DateTime<Utc>> for ValidDate {
-    fn as_mut(&mut self) -> &mut DateTime<Utc> {
-        &mut self.0
-    }
-}
-
-impl FromStr for ValidDate {
+impl FromStr for DirectiveDateTime {
     type Err = OpaqueError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(ValidDate(
-            DateTime::parse_from_rfc3339(s) // check ISO 8601
-                .or_else(|_| {
-                    DateTime::parse_from_rfc2822(s) // check RFC 822
-                        .or_else(|_| datetime_from_rfc_850(s))
-                    // check RFC 850
-                })
-                .with_context(|| "Failed to parse date")?
-                .with_timezone(&Utc),
-        ))
+        if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
+            return Ok(Self {
+                value: dt.with_timezone(&Utc),
+                parsed_format: Some(ParsedFormat::RFC3339),
+            });
+        }
+        if let Ok(dt) = DateTime::parse_from_rfc2822(s) {
+            return Ok(Self {
+                value: dt.with_timezone(&Utc),
+                parsed_format: Some(ParsedFormat::RFC2822),
+            });
+        }
+        if let Ok(dt) = datetime_from_rfc_850(s) {
+            return Ok(Self {
+                value: dt.with_timezone(&Utc),
+                parsed_format: Some(ParsedFormat::RFC850),
+            });
+        }
+        tracing::debug!("failed to parse datetime value: {s}");
+        Err(OpaqueError::from_display("invalid datetime value"))
     }
 }
 
-impl Display for ValidDate {
+impl Display for DirectiveDateTime {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, "{}", self.0)
+        match self.parsed_format {
+            Some(ParsedFormat::RFC2822) | None => self.value.to_rfc2822().fmt(f),
+            Some(ParsedFormat::RFC3339) => self.value.to_rfc3339().fmt(f),
+            Some(ParsedFormat::RFC850) => self.value.format("%A, %d-%b-%y %T").fmt(f),
+        }
     }
 }
 
@@ -79,7 +150,7 @@ fn datetime_from_rfc_850(s: &str) -> Result<DateTime<FixedOffset>, OpaqueError> 
 fn offset_from_abbreviation(remainder: &str) -> Result<FixedOffset, OpaqueError> {
     get_timezone_map()
         .get(remainder.trim())
-        .ok_or_else(|| OpaqueError::from_display(format!("invalid abbreviation: {}", remainder)))?
+        .ok_or_else(|| OpaqueError::from_display(format!("invalid abbreviation: {remainder}",)))?
         .parse()
         .with_context(|| "failed to parse timezone abbreviation")
 }
@@ -293,15 +364,15 @@ mod tests {
 
     macro_rules! test_valid_date_strings {
         ($($str:literal),+) => {
-            $(assert!(ValidDate::from_str($str).is_ok(),
+            $(assert!(DirectiveDateTime::from_str($str).is_ok(),
             "'{}': {:?}",
-            $str, ValidDate::from_str($str).err());)+
+            $str, DirectiveDateTime::from_str($str).err());)+
         };
     }
 
     macro_rules! test_invalid_date_strings {
         ($($str:literal),+) => {
-            $(assert!(ValidDate::from_str($str).is_err());)+
+            $(assert!(DirectiveDateTime::from_str($str).is_err());)+
         };
     }
 

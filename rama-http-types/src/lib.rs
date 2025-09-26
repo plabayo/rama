@@ -70,7 +70,12 @@ pub mod header {
     }
 
     // non-std conventional
-    static_header!["x-forwarded-host", "x-forwarded-for", "x-forwarded-proto",];
+    static_header![
+        "x-forwarded-host",
+        "x-forwarded-for",
+        "x-forwarded-proto",
+        "x-robots-tag"
+    ];
 
     // standard
     static_header!["keep-alive", "proxy-connection", "last-event-id"];
