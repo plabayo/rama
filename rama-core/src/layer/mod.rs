@@ -985,7 +985,7 @@ crate::combinators::impl_either!(impl_layer_either);
 mod tests {
     use rama_error::OpaqueError;
 
-    use crate::{Context, context::Extensions, service::service_fn};
+    use crate::{Context, extensions::Extensions, service::service_fn};
 
     use super::*;
 

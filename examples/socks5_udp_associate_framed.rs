@@ -15,7 +15,7 @@
 use rama::{
     Context,
     bytes::Bytes,
-    context::Extensions,
+    extensions::Extensions,
     futures::{FutureExt, SinkExt, StreamExt},
     net::{address::SocketAddress, user::Basic},
     proxy::socks5::{

@@ -1,6 +1,6 @@
 use super::utils;
 use rama::Context;
-use rama::context::Extensions;
+use rama::extensions::Extensions;
 use rama::futures::StreamExt;
 use rama::graceful::Shutdown;
 use rama::net::address::Authority;

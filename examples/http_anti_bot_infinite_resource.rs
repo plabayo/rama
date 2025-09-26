@@ -32,7 +32,7 @@ use rama::{
     error::{BoxError, OpaqueError},
     extensions::ExtensionsRef,
     http::{
-        InfiniteReader, StatusCode,
+        InfiniteReader, Request, StatusCode,
         headers::ContentType,
         layer::{required_header::AddRequiredResponseHeadersLayer, trace::TraceLayer},
         server::HttpServer,
@@ -48,8 +48,6 @@ use rama::{
     tcp::{TcpStream, server::TcpListener},
     telemetry::tracing::{self, level_filters::LevelFilter},
 };
-
-use rama_http::Request;
 /// Everything else we need is provided by the standard library, community crates or tokio.
 use serde::Deserialize;
 use std::{collections::HashSet, net::IpAddr, sync::Arc, time::Duration};

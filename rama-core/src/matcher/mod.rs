@@ -14,7 +14,7 @@
 
 use std::sync::Arc;
 
-use super::{Context, context::Extensions};
+use super::{Context, extensions::Extensions};
 use crate::Service;
 use crate::extensions::ExtensionsMut;
 use rama_macros::paste;

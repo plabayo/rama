@@ -4,7 +4,7 @@ use crate::{
     header::{HeaderMap, HeaderName, HeaderValue},
 };
 use rama_core::{
-    context::Extensions,
+    extensions::Extensions,
     extensions::{ExtensionsMut, ExtensionsRef},
 };
 use rama_utils::macros::all_the_tuples_no_last_special_case;

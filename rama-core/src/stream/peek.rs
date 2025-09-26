@@ -6,7 +6,7 @@ use std::{
 };
 
 use crate::{
-    context::Extensions,
+    extensions::Extensions,
     extensions::{ExtensionsMut, ExtensionsRef},
 };
 use pin_project_lite::pin_project;

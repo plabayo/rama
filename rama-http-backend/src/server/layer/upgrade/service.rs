@@ -5,7 +5,7 @@
 use super::Upgraded;
 use rama_core::extensions::ExtensionsMut;
 use rama_core::telemetry::tracing::{self, Instrument};
-use rama_core::{Context, Service, context::Extensions, matcher::Matcher, service::BoxService};
+use rama_core::{Context, Service, extensions::Extensions, matcher::Matcher, service::BoxService};
 use rama_http::opentelemetry::version_as_protocol_version;
 use rama_http_types::Request;
 use rama_utils::macros::define_inner_service_accessors;

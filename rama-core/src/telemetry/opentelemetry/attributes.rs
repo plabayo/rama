@@ -1,4 +1,4 @@
-use crate::context::Extensions;
+use crate::extensions::Extensions;
 use opentelemetry::KeyValue;
 
 /// Trait that can be used to implement your own attributes

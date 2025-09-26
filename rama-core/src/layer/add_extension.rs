@@ -167,7 +167,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Context, context::Extensions, extensions::ExtensionsRef, service::service_fn};
+    use crate::{Context, extensions::Extensions, extensions::ExtensionsRef, service::service_fn};
     use std::{convert::Infallible, sync::Arc};
 
     struct State(i32);

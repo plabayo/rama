@@ -34,8 +34,7 @@
 
 use rama::{
     Context, Layer, Service,
-    context::RequestContextExt,
-    extensions::ExtensionsMut,
+    extensions::{ExtensionsMut, RequestContextExt},
     http::{
         Body, Request, Response, StatusCode,
         client::EasyHttpWebClient,

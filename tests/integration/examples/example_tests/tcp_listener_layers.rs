@@ -1,5 +1,5 @@
 use super::utils;
-use rama::{Context, context::Extensions, tcp::client::default_tcp_connect};
+use rama::{Context, extensions::Extensions, tcp::client::default_tcp_connect};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[tokio::test]

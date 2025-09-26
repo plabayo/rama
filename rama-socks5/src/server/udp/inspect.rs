@@ -3,7 +3,7 @@ use std::fmt;
 use super::relay::{UdpRelayState, UdpSocketRelay};
 use crate::server::Error;
 use rama_core::bytes::Bytes;
-use rama_core::context::Extensions;
+use rama_core::extensions::Extensions;
 use rama_core::extensions::{ExtensionsMut, ExtensionsRef};
 use rama_core::telemetry::tracing;
 use rama_core::{Context, Service, error::BoxError};

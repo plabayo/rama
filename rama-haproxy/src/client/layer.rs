@@ -379,7 +379,7 @@ pub mod protocol {
 mod tests {
     use super::*;
     use rama_core::{
-        Layer, context::Extensions, extensions::ExtensionsMut, generic_request::GenericRequest,
+        Layer, extensions::Extensions, extensions::ExtensionsMut, generic_request::GenericRequest,
         service::service_fn,
     };
     use rama_net::forwarded::{ForwardedElement, NodeId};

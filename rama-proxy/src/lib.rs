@@ -32,7 +32,7 @@
 //! a signal, or more realistically, every x minutes.
 //!
 //! [`Context`]: rama_core::Context
-//! [`Extensions`]: rama_core::context::Extensions
+//! [`Extensions`]: rama_core::extensions::Extensions
 //!
 //! ## ProxyDB layer
 //!

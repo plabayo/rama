@@ -1,6 +1,6 @@
 use httparse::ParserConfig;
 use rama_core::bytes::BytesMut;
-use rama_core::context::Extensions;
+use rama_core::extensions::Extensions;
 use rama_http_types::{HeaderMap, Method, Version};
 
 use crate::body::DecodedLength;

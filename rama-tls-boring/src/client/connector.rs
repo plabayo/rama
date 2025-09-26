@@ -1,5 +1,5 @@
 use rama_boring_tokio::SslStream;
-use rama_core::context::Extensions;
+use rama_core::extensions::Extensions;
 use rama_core::conversion::RamaTryInto;
 use rama_core::error::{BoxError, ErrorExt, OpaqueError};
 use rama_core::extensions::ExtensionsMut;

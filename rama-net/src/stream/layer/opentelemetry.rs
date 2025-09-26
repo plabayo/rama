@@ -3,7 +3,7 @@
 //! [`Layer`]: rama_core::Layer
 
 use crate::stream::SocketInfo;
-use rama_core::context::Extensions;
+use rama_core::extensions::Extensions;
 use rama_core::extensions::ExtensionsRef;
 use rama_core::telemetry::opentelemetry::semantic_conventions::resource::{
     SERVICE_NAME, SERVICE_VERSION,

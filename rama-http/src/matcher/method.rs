@@ -1,5 +1,5 @@
 use crate::{Method, Request};
-use rama_core::{Context, context::Extensions};
+use rama_core::{Context, extensions::Extensions};
 use std::{
     fmt,
     fmt::{Debug, Formatter},

@@ -5,7 +5,7 @@
 use std::convert::Infallible;
 use std::net::SocketAddr;
 
-use rama::context::Extensions;
+use rama::extensions::Extensions;
 use rama::futures::future::join_all;
 use rama::http::body::util::BodyExt;
 use rama::http::{Method, Request, Response};

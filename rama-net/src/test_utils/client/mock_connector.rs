@@ -2,7 +2,7 @@ use std::{convert::Infallible, fmt, net::Ipv4Addr};
 
 use rama_core::{
     Context, Service,
-    context::Extensions,
+    extensions::Extensions,
     extensions::{ExtensionsMut, ExtensionsRef},
 };
 use tokio::io::{AsyncRead, AsyncWrite, DuplexStream, duplex};

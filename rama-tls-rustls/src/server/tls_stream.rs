@@ -7,7 +7,7 @@ use std::{
 pub use crate::dep::tokio_rustls::server::TlsStream as RustlsTlsStream;
 use pin_project_lite::pin_project;
 use rama_core::{
-    context::Extensions,
+    extensions::Extensions,
     extensions::{ExtensionsMut, ExtensionsRef},
 };
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};

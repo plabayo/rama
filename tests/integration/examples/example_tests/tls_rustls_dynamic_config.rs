@@ -1,8 +1,8 @@
 use super::utils::{self, ClientService};
 use rama::{
     Context, Layer, Service,
-    context::RequestContextExt,
     error::BoxError,
+    extensions::RequestContextExt,
     http::{
         Response, StreamingBody,
         client::EasyHttpWebClient,

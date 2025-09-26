@@ -4,7 +4,7 @@ use pin_project_lite::pin_project;
 use rama_boring::ssl::SslRef;
 use rama_boring_tokio::SslStream;
 use rama_core::{
-    context::Extensions,
+    extensions::Extensions,
     extensions::{ExtensionsMut, ExtensionsRef},
     stream::Stream,
 };

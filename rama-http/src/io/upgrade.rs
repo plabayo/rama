@@ -40,7 +40,7 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 
 use rama_core::bytes::Bytes;
-use rama_core::context::Extensions;
+use rama_core::extensions::Extensions;
 use rama_core::error::OpaqueError;
 use rama_core::extensions::ExtensionsMut;
 use rama_core::extensions::ExtensionsRef;

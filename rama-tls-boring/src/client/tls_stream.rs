@@ -2,7 +2,7 @@ use super::BoringTlsStream;
 use pin_project_lite::pin_project;
 use rama_boring::ssl::SslRef;
 use rama_core::{
-    context::Extensions,
+    extensions::Extensions,
     extensions::{ExtensionsMut, ExtensionsRef},
     stream::Stream,
 };

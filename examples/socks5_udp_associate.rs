@@ -14,7 +14,7 @@
 
 use rama::{
     Context,
-    context::Extensions,
+    extensions::Extensions,
     net::{address::SocketAddress, user::Basic},
     proxy::socks5::{
         Socks5Acceptor, Socks5Client,

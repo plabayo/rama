@@ -840,7 +840,7 @@ mod tests {
     use crate::service::RamaHttpService;
     use crate::{body::Bytes, client};
     use rama_core::Context;
-    use rama_core::context::Extensions;
+    use rama_core::extensions::Extensions;
     use rama_core::error::BoxError;
     use rama_core::rt::Executor;
     use rama_core::service::service_fn;

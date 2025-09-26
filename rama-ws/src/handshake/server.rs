@@ -7,7 +7,7 @@ use std::{
 
 use rama_core::{
     Context, Service,
-    context::Extensions,
+    extensions::Extensions,
     error::{ErrorContext, OpaqueError},
     extensions::{ExtensionsMut, ExtensionsRef},
     futures::{StreamExt, TryStreamExt},

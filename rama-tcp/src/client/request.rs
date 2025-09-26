@@ -1,6 +1,6 @@
 use rama_core::{
     Context,
-    context::Extensions,
+    extensions::Extensions,
     extensions::{ExtensionsMut, ExtensionsRef},
 };
 use rama_http_types::Version;

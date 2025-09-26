@@ -17,7 +17,7 @@ use rama_utils::backoff::Backoff;
 ///
 /// This requires the [`ManagedPolicy`] to be used.
 ///
-/// [`Extensions`]: rama_core::context::Extensions
+/// [`Extensions`]: rama_core::extensions::Extensions
 #[non_exhaustive]
 pub struct DoNotRetry;
 

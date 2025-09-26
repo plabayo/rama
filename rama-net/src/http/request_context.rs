@@ -6,7 +6,7 @@ use crate::{
     address::{Authority, Domain, Host},
 };
 use rama_core::Context;
-use rama_core::context::Extensions;
+use rama_core::extensions::Extensions;
 use rama_core::error::OpaqueError;
 use rama_core::telemetry::tracing;
 use rama_http_types::{HttpRequestParts, Method};

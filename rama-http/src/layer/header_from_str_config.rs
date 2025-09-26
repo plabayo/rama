@@ -1,6 +1,6 @@
 //! Extract a header config from a request or response and insert it into the [`Extensions`] of its [`Context`].
 //!
-//! [`Extensions`]: rama_core::context::Extensions
+//! [`Extensions`]: rama_core::extensions::Extensions
 //! [`Context`]: rama_core::Context
 //!
 //! # Example
@@ -52,7 +52,7 @@ use std::{fmt, marker::PhantomData};
 /// A [`Service`] which extracts a header CSV config from a request or response
 /// and inserts it into the [`Extensions`] of that object.
 ///
-/// [`Extensions`]: rama_core::context::Extensions
+/// [`Extensions`]: rama_core::extensions::Extensions
 pub struct HeaderFromStrConfigService<T, S, C = Vec<T>> {
     inner: S,
     header_name: HeaderName,
@@ -200,7 +200,7 @@ where
 /// Layer which extracts a header CSV config for the given HeaderName
 /// from a request or response and inserts it into the [`Extensions`] of that object.
 ///
-/// [`Extensions`]: rama_core::context::Extensions
+/// [`Extensions`]: rama_core::extensions::Extensions
 pub struct HeaderFromStrConfigLayer<T, C = Vec<T>> {
     header_name: HeaderName,
     optional: bool,

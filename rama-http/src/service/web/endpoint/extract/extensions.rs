@@ -1,6 +1,6 @@
 use super::FromRequestContextRefPair;
 use crate::request::Parts;
-use rama_core::{Context, context::Extensions};
+use rama_core::{Context, extensions::Extensions};
 use std::convert::Infallible;
 
 impl FromRequestContextRefPair for Extensions {

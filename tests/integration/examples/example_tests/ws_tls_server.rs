@@ -1,7 +1,7 @@
 use super::utils;
 use rama::{
     Context,
-    context::Extensions,
+    extensions::Extensions,
     http::{
         BodyExtractExt, StatusCode,
         headers::{ContentType, HeaderMapExt, dep::mime},

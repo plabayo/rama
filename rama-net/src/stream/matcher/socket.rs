@@ -1,4 +1,4 @@
-use rama_core::{Context, context::Extensions};
+use rama_core::{Context, extensions::Extensions};
 use std::net::SocketAddr;
 
 #[cfg(feature = "http")]

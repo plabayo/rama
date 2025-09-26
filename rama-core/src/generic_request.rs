@@ -4,10 +4,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use crate::{
-    context::Extensions,
-    extensions::{ExtensionsMut, ExtensionsRef},
-};
+use crate::extensions::{Extensions, ExtensionsMut, ExtensionsRef};
 use pin_project_lite::pin_project;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 

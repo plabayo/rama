@@ -58,8 +58,7 @@
 
 use rama::{
     Context, Layer, Service,
-    context::{Extensions, RequestContextExt},
-    extensions::ExtensionsMut,
+    extensions::{Extensions, ExtensionsMut, ExtensionsRef, RequestContextExt},
     http::{
         Body, Request, Response, StatusCode,
         client::EasyHttpWebClient,
@@ -94,7 +93,6 @@ use rama::{
     },
 };
 
-use rama_core::extensions::ExtensionsRef;
 use serde::Deserialize;
 use serde_json::json;
 use std::{convert::Infallible, sync::Arc, time::Duration};

@@ -1,8 +1,7 @@
 use rama_core::{
     Context, Service,
-    context::{Extensions, RequestContextExt},
     error::{BoxError, ErrorContext, OpaqueError},
-    extensions::{ExtensionsMut, ExtensionsRef},
+    extensions::{Extensions, ExtensionsMut, ExtensionsRef, RequestContextExt},
     inspect::RequestInspector,
     telemetry::tracing,
 };

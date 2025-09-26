@@ -6,7 +6,7 @@ use std::net::{SocketAddr, TcpStream};
 use std::sync::mpsc;
 use std::time::Duration;
 
-use rama::context::Extensions;
+use rama::extensions::Extensions;
 use rama_core::bytes::Bytes;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;

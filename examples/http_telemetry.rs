@@ -38,7 +38,7 @@
 
 use rama::{
     Layer,
-    context::Extensions,
+    extensions::Extensions,
     http::{
         client::EasyHttpWebClient,
         layer::{opentelemetry::RequestMetricsLayer, trace::TraceLayer},

@@ -53,10 +53,10 @@
 
 use rama::{
     Layer,
-    context::Extensions,
+    extensions::Extensions,
     extensions::ExtensionsRef,
     http::{
-        Method, StatusCode,
+        Method, Request, StatusCode,
         layer::{
             compression::CompressionLayer, trace::TraceLayer,
             validate_request::ValidateRequestHeaderLayer,
@@ -75,7 +75,6 @@ use rama::{
     telemetry::tracing::{self, level_filters::LevelFilter},
 };
 
-use rama_http::Request;
 use serde::Deserialize;
 use serde_json::json;
 use std::{collections::HashMap, sync::Arc};

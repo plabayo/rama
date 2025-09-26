@@ -1,5 +1,5 @@
 use crate::bytes::{Buf, Bytes};
-use crate::context::Extensions;
+use crate::extensions::Extensions;
 use crate::extensions::{ExtensionsMut, ExtensionsRef};
 use std::pin::Pin;
 use std::task::{Context, Poll};

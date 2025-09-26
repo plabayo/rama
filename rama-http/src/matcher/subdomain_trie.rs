@@ -1,7 +1,7 @@
 use crate::Request;
 use rama_core::extensions::ExtensionsRef;
 use rama_core::telemetry::tracing;
-use rama_core::{Context, context::Extensions, matcher::Matcher};
+use rama_core::{Context, extensions::Extensions, matcher::Matcher};
 use rama_net::address::{DomainTrie, Host};
 use rama_net::http::RequestContext;
 

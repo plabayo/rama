@@ -1,7 +1,7 @@
 use super::utils;
 use rama::{
     Context, Layer,
-    context::Extensions,
+    extensions::Extensions,
     http::{
         BodyExtractExt, Request,
         matcher::HttpMatcher,

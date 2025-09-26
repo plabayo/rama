@@ -4,7 +4,7 @@ use super::InnerHttpProxyConnector;
 use pin_project_lite::pin_project;
 use rama_core::{
     Context, Service,
-    context::Extensions,
+    extensions::Extensions,
     error::{BoxError, ErrorExt, OpaqueError},
     extensions::{ExtensionsMut, ExtensionsRef},
     stream::Stream,

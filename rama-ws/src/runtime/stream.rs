@@ -6,7 +6,7 @@ use std::{
 
 use rama_core::stream::Stream;
 use rama_core::{
-    context::Extensions,
+    extensions::Extensions,
     error::OpaqueError,
     extensions::{ExtensionsMut, ExtensionsRef},
     futures::{self, SinkExt, StreamExt},

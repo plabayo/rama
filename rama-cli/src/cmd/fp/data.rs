@@ -1,7 +1,8 @@
 use super::{State, StorageAuthorized};
 use rama::{
-    context::{Context, Extensions},
+    context::Context,
     error::{BoxError, ErrorContext, OpaqueError},
+    extensions::Extensions,
     http::{
         self, HeaderMap, HeaderName, Request,
         core::h2::frame::EarlyFrameCapture,

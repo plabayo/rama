@@ -1,7 +1,7 @@
 use super::conn::{ConnectorService, EstablishedClientConnection};
 use crate::stream::Socket;
 use parking_lot::Mutex;
-use rama_core::context::Extensions;
+use rama_core::extensions::Extensions;
 use rama_core::error::{BoxError, ErrorContext, OpaqueError};
 use rama_core::extensions::{ExtensionsMut, ExtensionsRef};
 use rama_core::telemetry::tracing::trace;
@@ -806,7 +806,7 @@ mod tests {
     use crate::client::EstablishedClientConnection;
     use rama_core::extensions::ExtensionsMut;
     use rama_core::generic_request::GenericRequest;
-    use rama_core::{Context, Service, context::Extensions};
+    use rama_core::{Context, Service, extensions::Extensions};
     use std::{
         convert::Infallible,
         sync::atomic::{AtomicI16, Ordering},

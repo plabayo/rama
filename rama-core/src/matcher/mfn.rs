@@ -1,4 +1,4 @@
-use crate::context::Extensions;
+use crate::extensions::Extensions;
 use crate::{Context, matcher::Matcher};
 use std::marker::PhantomData;
 

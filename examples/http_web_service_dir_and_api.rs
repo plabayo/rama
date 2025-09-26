@@ -26,7 +26,7 @@
 // rama provides everything out of the box to build a complete web service.
 use rama::{
     Layer,
-    context::Extensions,
+    extensions::Extensions,
     http::{
         layer::{compression::CompressionLayer, trace::TraceLayer},
         matcher::HttpMatcher,

@@ -1,7 +1,7 @@
 use crate::{Method, Request, Response, Uri};
 use rama_core::{
     Context, Service,
-    context::Extensions,
+    extensions::Extensions,
     error::{BoxError, ErrorExt, OpaqueError},
     extensions::ExtensionsMut,
 };

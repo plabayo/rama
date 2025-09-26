@@ -1,55 +1,7 @@
 //! Context passed to and between services as input.
-
 use crate::graceful::ShutdownGuard;
 use crate::rt::Executor;
-use std::ops::{Deref, DerefMut};
 use tokio::task::JoinHandle;
-
-#[doc(inline)]
-pub use super::extensions::Extensions;
-
-#[derive(Debug, Clone)]
-/// Wrapper type that can be injected into the dynamic extensions of a "Response",
-/// in order to preserve the [`Context`]'s extensions of the _Request_
-/// which was used to produce the _Response_.
-pub struct RequestContextExt(Extensions);
-
-impl From<Extensions> for RequestContextExt {
-    fn from(value: Extensions) -> Self {
-        Self(value)
-    }
-}
-
-impl From<RequestContextExt> for Extensions {
-    fn from(value: RequestContextExt) -> Self {
-        value.0
-    }
-}
-
-impl AsRef<Extensions> for RequestContextExt {
-    fn as_ref(&self) -> &Extensions {
-        &self.0
-    }
-}
-
-impl AsMut<Extensions> for RequestContextExt {
-    fn as_mut(&mut self) -> &mut Extensions {
-        &mut self.0
-    }
-}
-
-impl Deref for RequestContextExt {
-    type Target = Extensions;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-impl DerefMut for RequestContextExt {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
 
 #[derive(Debug, Default, Clone)]
 /// Context passed to and between services as input.

@@ -53,7 +53,7 @@
 
 use rama::{
     Layer, Service,
-    context::Extensions,
+    extensions::Extensions,
     error::{BoxError, ErrorContext, OpaqueError},
     extensions::ExtensionsMut,
     futures::SinkExt,

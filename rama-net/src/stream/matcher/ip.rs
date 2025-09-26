@@ -2,7 +2,7 @@
 
 pub use crate::stream::dep::ipnet::{IpNet, Ipv4Net, Ipv6Net};
 
-use rama_core::{Context, context::Extensions};
+use rama_core::{Context, extensions::Extensions};
 
 #[cfg(feature = "http")]
 use {crate::stream::SocketInfo, rama_core::extensions::ExtensionsRef, rama_http_types::Request};

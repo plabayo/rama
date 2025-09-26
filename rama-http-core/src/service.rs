@@ -1,5 +1,5 @@
 use rama_core::bytes::Bytes;
-use rama_core::context::Extensions;
+use rama_core::extensions::Extensions;
 use rama_core::extensions::ExtensionsMut;
 use rama_core::telemetry::tracing::{Instrument, trace_root_span};
 use rama_core::{Context, Service, error::BoxError};

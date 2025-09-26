@@ -1,6 +1,6 @@
 //! Extract a header config from a request or response and insert it into the [`Extensions`] of its [`Context`].
 //!
-//! [`Extensions`]: rama_core::context::Extensions
+//! [`Extensions`]: rama_core::extensions::Extensions
 //! [`Context`]: rama_core::Context
 //!
 //! # Example
@@ -71,7 +71,7 @@ where
 /// A [`Service`] which extracts a header config from a request or response
 /// and inserts it into the [`Extensions`] of that object.
 ///
-/// [`Extensions`]: rama_core::context::Extensions
+/// [`Extensions`]: rama_core::extensions::Extensions
 pub struct HeaderConfigService<T, S> {
     inner: S,
     header_name: HeaderName,
@@ -172,7 +172,7 @@ where
 /// Layer which extracts a header config for the given HeaderName
 /// from a request or response and inserts it into the [`Extensions`] of that object.
 ///
-/// [`Extensions`]: rama_core::context::Extensions
+/// [`Extensions`]: rama_core::extensions::Extensions
 pub struct HeaderConfigLayer<T> {
     header_name: HeaderName,
     optional: bool,

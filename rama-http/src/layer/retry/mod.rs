@@ -173,7 +173,7 @@ mod test {
     };
     use rama_core::{
         Context, Layer,
-        context::Extensions,
+        extensions::Extensions,
         extensions::{ExtensionsMut, ExtensionsRef},
         service::service_fn,
     };

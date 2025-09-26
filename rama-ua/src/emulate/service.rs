@@ -842,7 +842,7 @@ mod tests {
     use std::{convert::Infallible, str::FromStr, sync::Arc};
 
     use itertools::Itertools as _;
-    use rama_core::context::Extensions;
+    use rama_core::extensions::Extensions;
     use rama_core::{Layer, inspect::RequestInspectorLayer, service::service_fn};
     use rama_http_types::{Body, HeaderValue, header::ETAG, proto::h1::Http1HeaderName};
     use rama_net::address::Host;

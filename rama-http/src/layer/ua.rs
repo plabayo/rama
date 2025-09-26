@@ -54,7 +54,7 @@ pub use rama_ua::{
 /// The [`Extensions`] of the [`Context`] is updated with the [`UserAgent`]
 /// if the [`Request`] contains a valid [`UserAgent`] header.
 ///
-/// [`Extensions`]: rama_core::context::Extensions
+/// [`Extensions`]: rama_core::extensions::Extensions
 /// [`Context`]: rama_core::Context
 pub struct UserAgentClassifier<S> {
     inner: S,

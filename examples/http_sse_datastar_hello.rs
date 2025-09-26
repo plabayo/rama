@@ -153,7 +153,7 @@ impl Service<Request> for GracefulRouter {
 }
 
 pub mod handlers {
-    use rama::{context::Extensions, futures::StreamExt};
+    use rama::{extensions::Extensions, futures::StreamExt};
 
     use super::*;
 

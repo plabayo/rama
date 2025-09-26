@@ -14,7 +14,7 @@ use std::thread;
 use std::time::Duration;
 
 use futures_channel::oneshot;
-use rama::context::Extensions;
+use rama::extensions::Extensions;
 use rama::error::{BoxError, OpaqueError};
 use rama::extensions::ExtensionsMut;
 use rama::futures::future::{self, Either, FutureExt};

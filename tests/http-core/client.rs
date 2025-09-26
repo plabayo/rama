@@ -1489,7 +1489,7 @@ mod conn {
 
     use futures_channel::{mpsc, oneshot};
     use rama::bytes::{Buf, Bytes};
-    use rama::context::Extensions;
+    use rama::extensions::Extensions;
     use rama::extensions::ExtensionsRef;
     use rama::futures::future::{self, FutureExt, TryFutureExt, poll_fn};
     use rama_http::StreamingBody;

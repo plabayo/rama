@@ -1,4 +1,4 @@
-use crate::{Context, context::Extensions, extensions::ExtensionsMut, matcher::Matcher};
+use crate::{Context, extensions::Extensions, extensions::ExtensionsMut, matcher::Matcher};
 
 use super::{Policy, PolicyOutput, PolicyResult};
 
@@ -84,7 +84,7 @@ mod tests {
     use std::sync::Arc;
 
     use crate::{
-        context::Extensions,
+        extensions::Extensions,
         generic_request::GenericRequest,
         layer::limit::policy::{ConcurrentCounter, ConcurrentPolicy},
     };

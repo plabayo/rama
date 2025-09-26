@@ -1,5 +1,5 @@
 use rama::{
-    context::Extensions,
+    extensions::Extensions,
     http::{client::EasyHttpWebClient, ws::handshake::client::HttpClientWebSocketExt},
 };
 use rama_http::headers::SecWebSocketProtocol;

@@ -8,7 +8,7 @@
 //! [`Matcher`]: crate::matcher::Matcher
 
 use crate::{
-    Context, Layer, Service, context::Extensions, extensions::ExtensionsMut, matcher::Matcher,
+    Context, Layer, Service, extensions::Extensions, extensions::ExtensionsMut, matcher::Matcher,
 };
 use rama_utils::macros::define_inner_service_accessors;
 
