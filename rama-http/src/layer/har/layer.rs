@@ -60,7 +60,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use rama_core::context::Extensions;
+    use rama_core::extensions::Extensions;
 
     use super::*;
     use crate::layer::har::recorder::Recorder;

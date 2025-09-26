@@ -120,6 +120,7 @@ use crate::h2::proto::{self, Config, Error, Prioritized};
 use crate::h2::{FlowControl, PingPong, RecvStream, SendStream};
 
 use rama_core::bytes::{Buf, Bytes};
+use rama_core::extensions::ExtensionsMut;
 use rama_core::telemetry::tracing::{
     self,
     instrument::{Instrument, Instrumented},

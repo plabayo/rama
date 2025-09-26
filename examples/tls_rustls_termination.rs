@@ -40,6 +40,7 @@
 // rama provides everything out of the box to build a TLS termination proxy
 use rama::{
     Context, Layer,
+    extensions::ExtensionsRef,
     graceful::Shutdown,
     layer::ConsumeErrLayer,
     net::forwarded::Forwarded,
@@ -116,18 +117,19 @@ async fn main() {
         .expect("graceful shutdown");
 }
 
-async fn internal_tcp_service_fn<S>(ctx: Context, mut stream: S) -> Result<(), Infallible>
+async fn internal_tcp_service_fn<S>(_ctx: Context, mut stream: S) -> Result<(), Infallible>
 where
-    S: Stream + Unpin,
+    S: Stream + Unpin + ExtensionsRef,
 {
     // REMARK: builds on the assumption that we are using the haproxy protocol
-    let client_addr = ctx
+    let client_addr = stream
+        .extensions()
         .get::<Forwarded>()
         .unwrap()
         .client_socket_addr()
         .unwrap();
     // REMARK: builds on the assumption that rama's TCP service sets this for you :)
-    let proxy_addr = ctx.get::<SocketInfo>().unwrap().peer_addr();
+    let proxy_addr = stream.extensions().get::<SocketInfo>().unwrap().peer_addr();
 
     // create the minimal http response
     let payload = format!(

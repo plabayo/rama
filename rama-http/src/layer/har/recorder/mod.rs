@@ -3,7 +3,7 @@ use std::{borrow::Cow, sync::Arc};
 
 mod fs;
 pub use fs::{FileRecorder, HarFilePath};
-use rama_core::context::Extensions;
+use rama_core::extensions::Extensions;
 
 #[derive(Debug, Clone)]
 /// This object represents the root of exported data.

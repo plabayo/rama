@@ -20,14 +20,17 @@
 
 // rama provides everything out of the box to build a complete web service.
 use rama::{
-    Context, Layer,
+    Layer,
+    extensions::ExtensionsRef,
     http::{
         Request,
         layer::trace::TraceLayer,
         matcher::UriParams,
         server::HttpServer,
-        service::web::Router,
-        service::web::response::{Html, Json, Redirect},
+        service::web::{
+            Router,
+            response::{Html, Json, Redirect},
+        },
     },
     rt::Executor,
     telemetry::tracing::{self, level_filters::LevelFilter},
@@ -58,8 +61,8 @@ async fn main() {
     let router = Router::new()
         .get("/", Html(r##"<h1>Rama - Web Router</h1>"##.to_owned()))
         // route with a parameter
-        .post("/greet/{name}", async |ctx: Context, req: Request| {
-            let uri_params = ctx.get::<UriParams>().unwrap();
+        .post("/greet/{name}", async |req: Request| {
+            let uri_params = req.extensions().get::<UriParams>().unwrap();
             let name = uri_params.get("name").unwrap();
             Json(json!({
                 "method": req.method().as_str(),
@@ -67,13 +70,13 @@ async fn main() {
             }))
         })
         // catch-all route
-        .get("/lang/{*code}", async |ctx: Context| {
+        .get("/lang/{*code}", async |req: Request| {
             let translations = [
                 ("en", "Welcome to our site!"),
                 ("fr", "Bienvenue sur notre site!"),
                 ("es", "¡Bienvenido a nuestro sitio!"),
             ];
-            let uri_params = ctx.get::<UriParams>().unwrap();
+            let uri_params = req.extensions().get::<UriParams>().unwrap();
             let code = uri_params.get("code").unwrap();
             let message = translations
                 .iter()

@@ -98,7 +98,7 @@
 //! Setting a header based on the incoming Context and response combined.
 //!
 //! ```
-//! use rama_core::{service::service_fn, Context, Service};
+//! use rama_core::{Context, extensions::{ExtensionsRef, ExtensionsMut}, service::service_fn, Service};
 //! use rama_http::{
 //!     layer::set_header::{response::BoxMakeHeaderValueFn, SetResponseHeader},
 //!     Body, HeaderName, HeaderValue, Request, Response,
@@ -121,8 +121,8 @@
 //!             Ok::<_, Infallible>(res)
 //!         }),
 //!         HeaderName::from_static("x-used-request-id"),
-//!         async |ctx: Context| {
-//!             let factory = ctx.get::<RequestID>().cloned().map(|id| {
+//!         async |ctx: Context, req: Request| {
+//!             let factory = req.extensions().get::<RequestID>().cloned().map(|id| {
 //!                 BoxMakeHeaderValueFn::new(async move |res: Response| {
 //!                     let header_value = res.extensions().get::<Success>().map(|_| {
 //!                         HeaderValue::from_str(id.0.as_str()).unwrap()
@@ -130,16 +130,16 @@
 //!                     (res, header_value)
 //!                 })
 //!             });
-//!             (ctx, factory)
+//!             (ctx, req, factory)
 //!         },
 //!     );
 //!
 //!     const FAKE_USER_ID: &str = "abc123";
 //!
-//!     let mut ctx = Context::default();
-//!     ctx.insert(RequestID(FAKE_USER_ID.to_owned()));
+//!     let mut req = Request::new(Body::empty());
+//!     req.extensions_mut().insert(RequestID(FAKE_USER_ID.to_owned()));
 //!
-//!     let res = svc.serve(ctx, Request::new(Body::empty())).await.unwrap();
+//!     let res = svc.serve(Context::default(), req).await.unwrap();
 //!
 //!     let mut values = res
 //!         .headers()

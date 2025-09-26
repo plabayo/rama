@@ -1,6 +1,7 @@
 use super::utils;
 use rama::{
     Context,
+    extensions::Extensions,
     http::{
         BodyExtractExt, StatusCode,
         headers::{ContentType, HeaderMapExt, dep::mime},
@@ -37,7 +38,7 @@ async fn test_ws_chat_server() {
 
     let mut ws_1 = runner
         .websocket("ws://127.0.0.1:62033/chat")
-        .handshake(Context::default())
+        .handshake(Extensions::default())
         .await
         .unwrap();
     ws_1.send_message(r##"{"type":"join","name":"john"}"##.into())
@@ -55,7 +56,7 @@ async fn test_ws_chat_server() {
 
     let mut ws_2 = runner
         .websocket("ws://127.0.0.1:62033/chat")
-        .handshake(Context::default())
+        .handshake(Extensions::default())
         .await
         .unwrap();
     ws_2.send_message(r##"{"type":"join","name":"nick"}"##.into())

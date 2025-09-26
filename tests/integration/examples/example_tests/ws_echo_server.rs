@@ -1,6 +1,7 @@
 use super::utils;
 use rama::{
     Context,
+    extensions::Extensions,
     http::{
         BodyExtractExt, StatusCode,
         headers::{ContentType, HeaderMapExt, dep::mime},
@@ -37,7 +38,7 @@ async fn test_ws_echo_server() {
 
     let mut ws = runner
         .websocket("ws://127.0.0.1:62032/echo")
-        .handshake(Context::default())
+        .handshake(Extensions::default())
         .await
         .unwrap();
     ws.send_message("hello world".into())

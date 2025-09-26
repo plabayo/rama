@@ -12,7 +12,7 @@ use rama::{
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 use turmoil::{Builder, ToSocketAddrs};
 
-use crate::types::TurmoilTcpConnector;
+use crate::{stream::TcpStream, types::TurmoilTcpConnector};
 
 const ADDRESS: SocketAddress = SocketAddress::default_ipv4(62004);
 
@@ -36,6 +36,7 @@ async fn start_server(
         .context("accept timeout")?;
 
     let (conn, _) = conn_result?;
+    let conn = TcpStream::new(conn);
 
     let server = HttpServer::http1();
     server

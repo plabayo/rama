@@ -1,4 +1,6 @@
-use rama_core::{Context, Service, error::BoxError, service::BoxService};
+use rama_core::{
+    Context, Service, error::BoxError, extensions::ExtensionsMut, service::BoxService,
+};
 use std::fmt;
 
 /// The established connection to a server returned for the http client to be used.
@@ -38,9 +40,9 @@ impl<S: Clone, Request: Clone> Clone for EstablishedClientConnection<S, Request>
 /// but from a Rama POV it is mostly used for UX trait bounds.
 pub trait ConnectorService<Request>: Send + Sync + 'static {
     /// Connection returned by the [`ConnectorService`]
-    type Connection;
+    type Connection: Send + ExtensionsMut;
     /// Error returned in case of connection / setup failure
-    type Error: Into<BoxError>;
+    type Error: Into<BoxError> + Send + 'static;
 
     /// Establish a connection, which often involves some kind of handshake,
     /// or connection revival.
@@ -61,6 +63,7 @@ where
             Response = EstablishedClientConnection<Connection, Request>,
             Error: Into<BoxError>,
         >,
+    Connection: Send + ExtensionsMut,
 {
     type Connection = Connection;
     type Error = S::Error;

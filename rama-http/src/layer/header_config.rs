@@ -1,6 +1,6 @@
 //! Extract a header config from a request or response and insert it into the [`Extensions`] of its [`Context`].
 //!
-//! [`Extensions`]: rama_core::context::Extensions
+//! [`Extensions`]: rama_core::extensions::Extensions
 //! [`Context`]: rama_core::Context
 //!
 //! # Example
@@ -9,7 +9,7 @@
 //! use rama_http::layer::header_config::{HeaderConfigLayer, HeaderConfigService};
 //! use rama_http::service::web::{WebService};
 //! use rama_http::{Body, Request, StatusCode, HeaderName};
-//! use rama_core::{Context, Service, Layer};
+//! use rama_core::{Context, extensions::Extensions, Service, Layer};
 //! use serde::Deserialize;
 //!
 //! #[derive(Debug, Deserialize, Clone)]
@@ -24,8 +24,8 @@
 //! async fn main() {
 //!     let service = HeaderConfigLayer::<Config>::required(HeaderName::from_static("x-proxy-config"))
 //!         .into_layer(WebService::default()
-//!             .get("/", async |ctx: Context| {
-//!                 let cfg = ctx.get::<Config>().unwrap();
+//!             .get("/", async |ext: Extensions| {
+//!                 let cfg = ext.get::<Config>().unwrap();
 //!                 assert_eq!(cfg.s, "E&G");
 //!                 assert_eq!(cfg.n, 1);
 //!                 assert!(cfg.m.is_none());
@@ -48,6 +48,7 @@ use crate::{
     Request,
     utils::{HeaderValueErr, HeaderValueGetter},
 };
+use rama_core::extensions::ExtensionsMut;
 use rama_core::telemetry::tracing;
 use rama_core::{Context, Layer, Service, error::BoxError};
 use rama_utils::macros::define_inner_service_accessors;
@@ -70,7 +71,7 @@ where
 /// A [`Service`] which extracts a header config from a request or response
 /// and inserts it into the [`Extensions`] of that object.
 ///
-/// [`Extensions`]: rama_core::context::Extensions
+/// [`Extensions`]: rama_core::extensions::Extensions
 pub struct HeaderConfigService<T, S> {
     inner: S,
     header_name: HeaderName,
@@ -149,8 +150,8 @@ where
 
     async fn serve(
         &self,
-        mut ctx: Context,
-        request: Request<Body>,
+        ctx: Context,
+        mut request: Request<Body>,
     ) -> Result<Self::Response, Self::Error> {
         let config = match extract_header_config::<_, T, _>(&request, &self.header_name) {
             Ok(config) => config,
@@ -163,7 +164,7 @@ where
                 }
             }
         };
-        ctx.insert(config);
+        request.extensions_mut().insert(config);
         self.inner.serve(ctx, request).await.map_err(Into::into)
     }
 }
@@ -171,7 +172,7 @@ where
 /// Layer which extracts a header config for the given HeaderName
 /// from a request or response and inserts it into the [`Extensions`] of that object.
 ///
-/// [`Extensions`]: rama_core::context::Extensions
+/// [`Extensions`]: rama_core::extensions::Extensions
 pub struct HeaderConfigLayer<T> {
     header_name: HeaderName,
     optional: bool,
@@ -239,6 +240,7 @@ impl<T, S> Layer<S> for HeaderConfigLayer<T> {
 
 #[cfg(test)]
 mod test {
+    use rama_core::extensions::ExtensionsRef;
     use serde::Deserialize;
 
     use crate::Method;
@@ -255,8 +257,8 @@ mod test {
             .unwrap();
 
         let inner_service =
-            rama_core::service::service_fn(async |ctx: Context, _req: Request<()>| {
-                let cfg: &Config = ctx.get().unwrap();
+            rama_core::service::service_fn(async |_ctx: Context, req: Request<()>| {
+                let cfg: &Config = req.extensions().get().unwrap();
                 assert_eq!(cfg.s, "E&G");
                 assert_eq!(cfg.n, 1);
                 assert!(cfg.m.is_none());
@@ -283,8 +285,8 @@ mod test {
             .unwrap();
 
         let inner_service =
-            rama_core::service::service_fn(async |ctx: Context, _req: Request<()>| {
-                let cfg: &Config = ctx.get().unwrap();
+            rama_core::service::service_fn(async |_ctx: Context, req: Request<()>| {
+                let cfg: &Config = req.extensions().get().unwrap();
                 assert_eq!(cfg.s, "E&G");
                 assert_eq!(cfg.n, 1);
                 assert!(cfg.m.is_none());
@@ -310,8 +312,8 @@ mod test {
             .unwrap();
 
         let inner_service =
-            rama_core::service::service_fn(async |ctx: Context, _req: Request<()>| {
-                assert!(ctx.get::<Config>().is_none());
+            rama_core::service::service_fn(async |_ctx: Context, req: Request<()>| {
+                assert!(req.extensions().get::<Config>().is_none());
 
                 Ok::<_, std::convert::Infallible>(())
             });

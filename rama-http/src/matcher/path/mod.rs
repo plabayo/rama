@@ -1,6 +1,6 @@
 use crate::service::web::response::IntoResponse;
 use crate::{Request, StatusCode};
-use rama_core::{Context, context::Extensions};
+use rama_core::{Context, extensions::Extensions};
 use std::collections::HashMap;
 
 mod de;

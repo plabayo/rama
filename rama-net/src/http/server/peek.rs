@@ -3,6 +3,7 @@
 use rama_core::{
     Context, Service,
     error::{BoxError, ErrorContext},
+    extensions::ExtensionsMut,
     service::RejectService,
     stream::{PeekStream, StackReader},
     telemetry::tracing,
@@ -174,7 +175,7 @@ impl<T: fmt::Debug, F: fmt::Debug> fmt::Debug for HttpPeekRouter<T, F> {
 
 impl<Stream, Response, T, F> Service<Stream> for HttpPeekRouter<HttpAutoAcceptor<T>, F>
 where
-    Stream: rama_core::stream::Stream + Unpin,
+    Stream: rama_core::stream::Stream + Unpin + ExtensionsMut,
     Response: Send + 'static,
     T: Service<HttpPeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
     F: Service<HttpPeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
@@ -200,7 +201,7 @@ where
 
 impl<Stream, Response, T, F> Service<Stream> for HttpPeekRouter<Http1Acceptor<T>, F>
 where
-    Stream: rama_core::stream::Stream + Unpin,
+    Stream: rama_core::stream::Stream + Unpin + ExtensionsMut,
     Response: Send + 'static,
     T: Service<HttpPeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
     F: Service<HttpPeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
@@ -226,7 +227,7 @@ where
 
 impl<Stream, Response, T, F> Service<Stream> for HttpPeekRouter<H2Acceptor<T>, F>
 where
-    Stream: rama_core::stream::Stream + Unpin,
+    Stream: rama_core::stream::Stream + Unpin + ExtensionsMut,
     Response: Send + 'static,
     T: Service<HttpPeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
     F: Service<HttpPeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
@@ -252,7 +253,7 @@ where
 
 impl<Stream, Response, T, U, F> Service<Stream> for HttpPeekRouter<HttpDualAcceptor<T, U>, F>
 where
-    Stream: rama_core::stream::Stream + Unpin,
+    Stream: rama_core::stream::Stream + Unpin + ExtensionsMut,
     Response: Send + 'static,
     T: Service<HttpPeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
     U: Service<HttpPeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
@@ -294,7 +295,7 @@ enum HttpPeekVersion {
     H2,
 }
 
-async fn peek_http_stream<Stream: rama_core::stream::Stream + Unpin>(
+async fn peek_http_stream<Stream: rama_core::stream::Stream + Unpin + ExtensionsMut>(
     mut stream: Stream,
 ) -> Result<(Option<HttpPeekVersion>, HttpPeekStream<Stream>), BoxError> {
     let mut peek_buf = [0u8; HTTP_HEADER_PEEK_LEN];
@@ -350,7 +351,10 @@ pub type HttpPeekStream<S> = PeekStream<StackReader<HTTP_HEADER_PEEK_LEN>, S>;
 
 #[cfg(test)]
 mod test {
-    use rama_core::service::{RejectError, service_fn};
+    use rama_core::{
+        generic_request::GenericRequest,
+        service::{RejectError, service_fn},
+    };
     use std::convert::Infallible;
 
     use rama_core::stream::Stream;
@@ -365,7 +369,10 @@ mod test {
         let peek_http_svc = HttpPeekRouter::new(http_service).with_fallback(fallback_service);
 
         let response = peek_http_svc
-            .serve(Context::default(), std::io::Cursor::new(b"".to_vec()))
+            .serve(
+                Context::default(),
+                GenericRequest::new(std::io::Cursor::new(b"".to_vec())),
+            )
             .await
             .unwrap();
         assert_eq!("other", response);
@@ -373,7 +380,9 @@ mod test {
         let response = peek_http_svc
             .serve(
                 Context::default(),
-                std::io::Cursor::new(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n".to_vec()),
+                GenericRequest::new(std::io::Cursor::new(
+                    b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n".to_vec(),
+                )),
             )
             .await
             .unwrap();
@@ -382,7 +391,9 @@ mod test {
         let response = peek_http_svc
             .serve(
                 Context::default(),
-                std::io::Cursor::new(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\nfoo".to_vec()),
+                GenericRequest::new(std::io::Cursor::new(
+                    b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\nfoo".to_vec(),
+                )),
             )
             .await
             .unwrap();
@@ -395,7 +406,9 @@ mod test {
             let response = peek_http_svc
                 .serve(
                     Context::default(),
-                    std::io::Cursor::new(format!("{method} /foobar HTTP/1.1").into_bytes()),
+                    GenericRequest::new(std::io::Cursor::new(
+                        format!("{method} /foobar HTTP/1.1").into_bytes(),
+                    )),
                 )
                 .await
                 .unwrap();
@@ -403,13 +416,19 @@ mod test {
         }
 
         let response = peek_http_svc
-            .serve(Context::default(), std::io::Cursor::new(b"foo".to_vec()))
+            .serve(
+                Context::default(),
+                GenericRequest::new(std::io::Cursor::new(b"foo".to_vec())),
+            )
             .await
             .unwrap();
         assert_eq!("other", response);
 
         let response = peek_http_svc
-            .serve(Context::default(), std::io::Cursor::new(b"foobar".to_vec()))
+            .serve(
+                Context::default(),
+                GenericRequest::new(std::io::Cursor::new(b"foobar".to_vec())),
+            )
             .await
             .unwrap();
         assert_eq!("other", response);
@@ -423,7 +442,10 @@ mod test {
         let peek_http_svc = HttpPeekRouter::new_http1(http_service).with_fallback(fallback_service);
 
         let response = peek_http_svc
-            .serve(Context::default(), std::io::Cursor::new(b"".to_vec()))
+            .serve(
+                Context::default(),
+                GenericRequest::new(std::io::Cursor::new(b"".to_vec())),
+            )
             .await
             .unwrap();
         assert_eq!("other", response);
@@ -431,7 +453,9 @@ mod test {
         let response = peek_http_svc
             .serve(
                 Context::default(),
-                std::io::Cursor::new(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\nfoo".to_vec()),
+                GenericRequest::new(std::io::Cursor::new(
+                    b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\nfoo".to_vec(),
+                )),
             )
             .await
             .unwrap();
@@ -444,7 +468,9 @@ mod test {
             let response = peek_http_svc
                 .serve(
                     Context::default(),
-                    std::io::Cursor::new(format!("{method} /foobar HTTP/1.1").into_bytes()),
+                    GenericRequest::new(std::io::Cursor::new(
+                        format!("{method} /foobar HTTP/1.1").into_bytes(),
+                    )),
                 )
                 .await
                 .unwrap();
@@ -452,13 +478,19 @@ mod test {
         }
 
         let response = peek_http_svc
-            .serve(Context::default(), std::io::Cursor::new(b"foo".to_vec()))
+            .serve(
+                Context::default(),
+                GenericRequest::new(std::io::Cursor::new(b"foo".to_vec())),
+            )
             .await
             .unwrap();
         assert_eq!("other", response);
 
         let response = peek_http_svc
-            .serve(Context::default(), std::io::Cursor::new(b"foobar".to_vec()))
+            .serve(
+                Context::default(),
+                GenericRequest::new(std::io::Cursor::new(b"foobar".to_vec())),
+            )
             .await
             .unwrap();
         assert_eq!("other", response);
@@ -472,7 +504,10 @@ mod test {
         let peek_http_svc = HttpPeekRouter::new_h2(http_service).with_fallback(fallback_service);
 
         let response = peek_http_svc
-            .serve(Context::default(), std::io::Cursor::new(b"".to_vec()))
+            .serve(
+                Context::default(),
+                GenericRequest::new(std::io::Cursor::new(b"".to_vec())),
+            )
             .await
             .unwrap();
         assert_eq!("other", response);
@@ -480,7 +515,9 @@ mod test {
         let response = peek_http_svc
             .serve(
                 Context::default(),
-                std::io::Cursor::new(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\nfoo".to_vec()),
+                GenericRequest::new(std::io::Cursor::new(
+                    b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\nfoo".to_vec(),
+                )),
             )
             .await
             .unwrap();
@@ -493,7 +530,9 @@ mod test {
             let response = peek_http_svc
                 .serve(
                     Context::default(),
-                    std::io::Cursor::new(format!("{method} /foobar HTTP/1.1").into_bytes()),
+                    GenericRequest::new(std::io::Cursor::new(
+                        format!("{method} /foobar HTTP/1.1").into_bytes(),
+                    )),
                 )
                 .await
                 .unwrap();
@@ -501,13 +540,19 @@ mod test {
         }
 
         let response = peek_http_svc
-            .serve(Context::default(), std::io::Cursor::new(b"foo".to_vec()))
+            .serve(
+                Context::default(),
+                GenericRequest::new(std::io::Cursor::new(b"foo".to_vec())),
+            )
             .await
             .unwrap();
         assert_eq!("other", response);
 
         let response = peek_http_svc
-            .serve(Context::default(), std::io::Cursor::new(b"foobar".to_vec()))
+            .serve(
+                Context::default(),
+                GenericRequest::new(std::io::Cursor::new(b"foobar".to_vec())),
+            )
             .await
             .unwrap();
         assert_eq!("other", response);
@@ -523,7 +568,10 @@ mod test {
             HttpPeekRouter::new_dual(http1_service, h2_service).with_fallback(fallback_service);
 
         let response = peek_http_svc
-            .serve(Context::default(), std::io::Cursor::new(b"".to_vec()))
+            .serve(
+                Context::default(),
+                GenericRequest::new(std::io::Cursor::new(b"".to_vec())),
+            )
             .await
             .unwrap();
         assert_eq!("other", response);
@@ -531,7 +579,9 @@ mod test {
         let response = peek_http_svc
             .serve(
                 Context::default(),
-                std::io::Cursor::new(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\nfoo".to_vec()),
+                GenericRequest::new(std::io::Cursor::new(
+                    b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\nfoo".to_vec(),
+                )),
             )
             .await
             .unwrap();
@@ -544,7 +594,9 @@ mod test {
             let response = peek_http_svc
                 .serve(
                     Context::default(),
-                    std::io::Cursor::new(format!("{method} /foobar HTTP/1.1").into_bytes()),
+                    GenericRequest::new(std::io::Cursor::new(
+                        format!("{method} /foobar HTTP/1.1").into_bytes(),
+                    )),
                 )
                 .await
                 .unwrap();
@@ -552,13 +604,19 @@ mod test {
         }
 
         let response = peek_http_svc
-            .serve(Context::default(), std::io::Cursor::new(b"foo".to_vec()))
+            .serve(
+                Context::default(),
+                GenericRequest::new(std::io::Cursor::new(b"foo".to_vec())),
+            )
             .await
             .unwrap();
         assert_eq!("other", response);
 
         let response = peek_http_svc
-            .serve(Context::default(), std::io::Cursor::new(b"foobar".to_vec()))
+            .serve(
+                Context::default(),
+                GenericRequest::new(std::io::Cursor::new(b"foobar".to_vec())),
+            )
             .await
             .unwrap();
         assert_eq!("other", response);
@@ -587,7 +645,10 @@ mod test {
         ));
 
         let response = peek_http_svc
-            .serve(Context::default(), std::io::Cursor::new(CONTENT.to_vec()))
+            .serve(
+                Context::default(),
+                GenericRequest::new(std::io::Cursor::new(CONTENT.to_vec())),
+            )
             .await
             .unwrap();
         assert_eq!("ok", response);
@@ -623,7 +684,7 @@ mod test {
             let response = peek_http_svc
                 .serve(
                     Context::default(),
-                    std::io::Cursor::new(content.as_bytes().to_vec()),
+                    GenericRequest::new(std::io::Cursor::new(content.as_bytes().to_vec())),
                 )
                 .await
                 .unwrap();

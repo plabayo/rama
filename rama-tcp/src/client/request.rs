@@ -1,4 +1,8 @@
-use rama_core::Context;
+use rama_core::{
+    Context,
+    extensions::Extensions,
+    extensions::{ExtensionsMut, ExtensionsRef},
+};
 use rama_http_types::Version;
 use rama_net::{
     Protocol,
@@ -7,6 +11,7 @@ use rama_net::{
 };
 use std::convert::Infallible;
 
+#[non_exhaustive]
 #[derive(Debug, Clone)]
 /// A request to establish a Tcp Connection.
 ///
@@ -16,16 +21,18 @@ pub struct Request {
     authority: Authority,
     protocol: Option<Protocol>,
     http_version: Option<Version>,
+    extensions: Extensions,
 }
 
 impl Request {
     /// Create a new Tcp [`Request`].
     #[must_use]
-    pub const fn new(authority: Authority) -> Self {
+    pub const fn new(authority: Authority, extensions: Extensions) -> Self {
         Self {
             authority,
             protocol: None,
             http_version: None,
+            extensions,
         }
     }
 
@@ -77,6 +84,7 @@ impl Request {
             authority: parts.authority,
             protocol: parts.protocol,
             http_version: parts.http_version,
+            extensions: Extensions::new(),
         }
     }
 
@@ -94,7 +102,20 @@ impl Request {
             authority: self.authority,
             protocol: self.protocol,
             http_version: self.http_version,
+            extensions: self.extensions,
         }
+    }
+}
+
+impl ExtensionsRef for Request {
+    fn extensions(&self) -> &Extensions {
+        &self.extensions
+    }
+}
+
+impl ExtensionsMut for Request {
+    fn extensions_mut(&mut self) -> &mut Extensions {
+        &mut self.extensions
     }
 }
 
@@ -138,6 +159,9 @@ pub struct Parts {
 
     /// Http version hint that application layer can use if possible.
     pub http_version: Option<Version>,
+
+    /// Extensions stored on this request
+    pub extensions: Extensions,
 }
 
 impl From<Request> for Parts {

@@ -1,9 +1,11 @@
-use std::fmt;
-
+use super::BoringTlsStream;
 use pin_project_lite::pin_project;
 use rama_boring::ssl::SslRef;
-use rama_boring_tokio::SslStream;
-use rama_core::stream::Stream;
+use rama_core::{
+    extensions::{Extensions, ExtensionsMut, ExtensionsRef},
+    stream::Stream,
+};
+use std::fmt;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 pin_project! {
@@ -11,19 +13,44 @@ pin_project! {
     pub struct AutoTlsStream<S> {
         #[pin]
         inner: AutoTlsStreamData<S>,
+        extensions: Extensions
+    }
+}
+
+impl<S: ExtensionsMut> AutoTlsStream<S> {
+    #[must_use]
+    pub fn secure(mut inner: BoringTlsStream<S>) -> Self {
+        let extensions = inner.get_mut().take_extensions();
+        Self {
+            inner: AutoTlsStreamData::Secure { inner },
+            extensions,
+        }
+    }
+
+    #[must_use]
+    pub fn plain(mut inner: S) -> Self {
+        let extensions = inner.take_extensions();
+        Self {
+            inner: AutoTlsStreamData::Plain { inner },
+            extensions,
+        }
     }
 }
 
 impl<S> AutoTlsStream<S> {
-    pub(super) fn secure(inner: SslStream<S>) -> Self {
+    #[must_use]
+    pub fn secure_with_fresh_extensions(inner: BoringTlsStream<S>) -> Self {
         Self {
             inner: AutoTlsStreamData::Secure { inner },
+            extensions: Extensions::new(),
         }
     }
 
-    pub(super) fn plain(inner: S) -> Self {
+    #[must_use]
+    pub fn plain_with_fresh_extensions(inner: S) -> Self {
         Self {
             inner: AutoTlsStreamData::Plain { inner },
+            extensions: Extensions::new(),
         }
     }
 
@@ -39,6 +66,7 @@ impl<S: fmt::Debug> fmt::Debug for AutoTlsStream<S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("AutoTlsStream")
             .field("inner", &self.inner)
+            .field("extensions", &self.extensions)
             .finish()
     }
 }
@@ -48,7 +76,7 @@ pin_project! {
     /// A stream which can be either a secure or a plain stream.
     enum AutoTlsStreamData<S> {
         /// A secure stream.
-        Secure{ #[pin] inner: SslStream<S> },
+        Secure{ #[pin] inner: BoringTlsStream<S> },
         /// A plain stream.
         Plain { #[pin] inner: S },
     }
@@ -60,6 +88,18 @@ impl<S: fmt::Debug> fmt::Debug for AutoTlsStreamData<S> {
             Self::Secure { inner } => f.debug_tuple("Secure").field(inner).finish(),
             Self::Plain { inner } => f.debug_tuple("Plain").field(inner).finish(),
         }
+    }
+}
+
+impl<S> ExtensionsRef for AutoTlsStream<S> {
+    fn extensions(&self) -> &Extensions {
+        &self.extensions
+    }
+}
+
+impl<S> ExtensionsMut for AutoTlsStream<S> {
+    fn extensions_mut(&mut self) -> &mut Extensions {
+        &mut self.extensions
     }
 }
 

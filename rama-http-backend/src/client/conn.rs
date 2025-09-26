@@ -2,6 +2,7 @@ use super::{HttpClientService, svc::SendRequest};
 use rama_core::{
     Context, Layer, Service,
     error::{BoxError, OpaqueError},
+    extensions::{ExtensionsMut, ExtensionsRef},
     inspect::RequestInspector,
     stream::Stream,
 };
@@ -97,7 +98,7 @@ where
     I1: RequestInspector<Request<BodyIn>, Error: Into<BoxError>, RequestOut = Request<BodyIn>>,
     I2: RequestInspector<Request<BodyIn>, Error: Into<BoxError>, RequestOut = Request<BodyOut>>
         + Clone,
-    S: ConnectorService<Request<BodyIn>, Connection: Stream + Unpin, Error: Into<BoxError>>,
+    S: ConnectorService<Request<BodyIn>, Connection: Stream + Unpin>,
     BodyIn: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
     BodyOut: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
 {
@@ -109,8 +110,14 @@ where
         ctx: Context,
         req: Request<BodyIn>,
     ) -> Result<Self::Response, Self::Error> {
-        let EstablishedClientConnection { ctx, req, conn } =
-            self.inner.connect(ctx, req).await.map_err(Into::into)?;
+        let EstablishedClientConnection {
+            ctx,
+            mut req,
+            mut conn,
+        } = self.inner.connect(ctx, req).await.map_err(Into::into)?;
+
+        let conn_extensions = conn.take_extensions();
+        req.extensions_mut().extend(conn_extensions.clone());
 
         let (ctx, req) = self
             .http_req_inspector_jit
@@ -118,7 +125,8 @@ where
             .await
             .map_err(Into::into)?;
 
-        let server_address = ctx
+        let server_address = req
+            .extensions()
             .get::<RequestContext>()
             .map(|ctx| ctx.authority.host().to_str())
             .or_else(|| req.uri().host().map(Into::into))
@@ -144,7 +152,8 @@ where
                     builder.enable_connect_protocol(1);
                 }
 
-                if let Some(params) = ctx
+                if let Some(params) = req
+                    .extensions()
                     .get::<H2ClientContextParams>()
                     .or_else(|| req.extensions().get())
                 {
@@ -190,6 +199,7 @@ where
                 let svc = HttpClientService {
                     sender: SendRequest::Http2(sender),
                     http_req_inspector: self.http_req_inspector_svc.clone(),
+                    extensions: conn_extensions,
                 };
 
                 Ok(EstablishedClientConnection {
@@ -201,7 +211,7 @@ where
             Version::HTTP_11 | Version::HTTP_10 | Version::HTTP_09 => {
                 tracing::trace!(url.full = %req.uri(), "create ~h1 client executor");
                 let mut builder = rama_http_core::client::conn::http1::Builder::new();
-                if let Some(params) = ctx.get::<Http1ClientContextParams>() {
+                if let Some(params) = req.extensions().get::<Http1ClientContextParams>() {
                     builder.title_case_headers(params.title_header_case);
                 }
                 let (sender, conn) = builder.handshake(io).await?;
@@ -234,6 +244,7 @@ where
                 let svc = HttpClientService {
                     sender: SendRequest::Http1(Mutex::new(sender)),
                     http_req_inspector: self.http_req_inspector_svc.clone(),
+                    extensions: conn_extensions,
                 };
 
                 Ok(EstablishedClientConnection {

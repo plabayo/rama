@@ -83,7 +83,7 @@ impl From<NonEmptyString> for ProxyID {
 ///
 /// [`Request`]: crate::http::Request
 /// [`Context`]: rama_core::Context
-/// [`Extensions`]: rama_core::context::Extensions
+/// [`Extensions`]: rama_core::extensions::Extensions
 pub struct ProxyFilter {
     /// The ID of the proxy to select.
     pub id: Option<NonEmptyString>,

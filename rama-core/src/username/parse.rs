@@ -1,6 +1,6 @@
 use super::DEFAULT_USERNAME_LABEL_SEPARATOR;
-use crate::context::Extensions;
 use crate::error::{BoxError, OpaqueError};
+use crate::extensions::Extensions;
 use rama_utils::macros::all_the_tuples_no_last_special_case;
 use std::{convert::Infallible, fmt};
 

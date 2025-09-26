@@ -27,7 +27,7 @@ pub struct TlsTunnel {
 /// An [`Extensions`] value that can be added to the [`Context`]
 /// of a transport layer to signal that the transport is secure.
 ///
-/// [`Extensions`]: rama_core::context::Extensions
+/// [`Extensions`]: rama_core::extensions::Extensions
 /// [`Context`]: rama_core::Context
 pub struct SecureTransport {
     client_hello: Option<client::ClientHello>,

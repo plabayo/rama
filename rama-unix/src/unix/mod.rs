@@ -6,12 +6,16 @@ pub use address::UnixSocketAddress;
 pub mod client;
 pub mod server;
 
+mod stream;
+#[doc(inline)]
+pub use stream::{TokioUnixStream, UnixStream};
+
 mod frame;
 #[doc(inline)]
 pub use frame::UnixDatagramFramed;
 
 pub use tokio::net::unix::SocketAddr as TokioSocketAddress;
-pub use tokio::net::{UnixDatagram, UnixSocket, UnixStream};
+pub use tokio::net::{UnixDatagram, UnixSocket};
 
 #[derive(Debug, Clone)]
 /// Information about the socket on the egress end.

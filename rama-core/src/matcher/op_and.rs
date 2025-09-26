@@ -1,5 +1,5 @@
 use super::Matcher;
-use crate::{Context, context::Extensions};
+use crate::{Context, extensions::Extensions};
 use rama_utils::macros::all_the_tuples_no_last_special_case;
 
 /// A matcher that matches if all of the inner matchers match.

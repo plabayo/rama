@@ -6,7 +6,7 @@
 //! [`rama_http_types::Request`]: crate::Request
 //! [`service::matcher` module]: rama_core
 use crate::Request;
-use rama_core::{Context, context::Extensions, matcher::IteratorMatcherExt};
+use rama_core::{Context, extensions::Extensions, matcher::IteratorMatcherExt};
 use rama_net::{address::Domain, stream::matcher::SocketMatcher};
 use std::fmt;
 use std::sync::Arc;

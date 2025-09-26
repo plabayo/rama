@@ -1,6 +1,7 @@
 use super::utils;
 use rama::{
     Context,
+    extensions::Extensions,
     http::{
         BodyExtractExt, StatusCode,
         headers::{ContentType, HeaderMapExt, dep::mime},
@@ -41,7 +42,7 @@ async fn test_ws_echo_server_with_compression() {
         .with_config(
             WebSocketConfig::default().with_per_message_deflate(PerMessageDeflateConfig::default()),
         )
-        .handshake(Context::default())
+        .handshake(Extensions::default())
         .await
         .unwrap();
     ws.send_message("hello world".into())
@@ -61,7 +62,7 @@ async fn test_ws_echo_server_with_compression() {
 
     let mut ws = runner
         .websocket("ws://127.0.0.1:62038/echo")
-        .handshake(Context::default())
+        .handshake(Extensions::default())
         .await
         .unwrap();
     ws.send_message("hello world".into())

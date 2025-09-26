@@ -6,7 +6,7 @@
 //! [`Compression::compress_when`]: super::Compression::compress_when
 //! [`CompressionLayer::compress_when`]: super::CompressionLayer::compress_when
 
-use rama_core::context::Extensions;
+use rama_core::{extensions::Extensions, extensions::ExtensionsRef};
 use rama_http_types::{HeaderMap, StatusCode, StreamingBody, Version, header};
 use std::{fmt, sync::Arc};
 

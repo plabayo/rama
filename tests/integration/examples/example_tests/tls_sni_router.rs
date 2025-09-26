@@ -14,7 +14,6 @@ async fn test_tls_sni_router() {
 
     let runner = utils::ExampleRunner::interactive("tls_sni_router", Some("boring"));
 
-    let mut ctx = Context::default();
     let mut mem_dns = InMemoryDns::new();
     mem_dns.insert_address(
         &Domain::from_static("foo.local"),
@@ -24,7 +23,6 @@ async fn test_tls_sni_router() {
         &Domain::from_static("bar.local"),
         IpAddr::V4([127, 0, 0, 1].into()),
     );
-    ctx.insert(DnsOverwrite::from(mem_dns));
 
     for (uri, expected_response) in [
         ("https://127.0.0.1:63804", "foo"),
@@ -35,7 +33,8 @@ async fn test_tls_sni_router() {
     ] {
         let response = runner
             .get(uri)
-            .send(ctx.clone())
+            .extension(DnsOverwrite::from(mem_dns.clone()))
+            .send(Context::default())
             .await
             .unwrap()
             .try_into_string()

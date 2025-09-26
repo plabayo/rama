@@ -10,6 +10,7 @@ use tokio::sync::oneshot;
 use rama::http::Response;
 use rama::http::core::server::conn::http1;
 use rama::service::service_fn;
+use rama_core::extensions::Extensions;
 
 #[global_allocator]
 static ALLOC: divan::AllocProfiler = divan::AllocProfiler::system();
@@ -55,6 +56,7 @@ macro_rules! bench_server {
                                 stream,
                                 rama::http::core::service::RamaHttpService::new(
                                     rama::Context::default(),
+                                    Extensions::new(),
                                     svc,
                                 ),
                             )

@@ -25,6 +25,7 @@ opentelemetry = [
     "dep:opentelemetry_sdk",
     "dep:tracing-opentelemetry",
 ]
+debug-extensions = []
 
 [dependencies]
 asynk-strim = { workspace = true }

@@ -1,3 +1,4 @@
+use rama_core::extensions::ExtensionsRef;
 use rama_core::telemetry::tracing::trace;
 use rama_core::{Context, Service, error::BoxError};
 use rama_http::utils::RequestSwitchVersionExt;
@@ -43,7 +44,10 @@ where
         ctx: Context,
         mut req: Request<ReqBody>,
     ) -> Result<Self::Response, Self::Error> {
-        match (ctx.get::<TargetHttpVersion>(), self.default_version) {
+        match (
+            req.extensions().get::<TargetHttpVersion>(),
+            self.default_version,
+        ) {
             (Some(version), _) => {
                 trace!(
                     "setting request version to {:?} based on configured TargetHttpVersion (was: {:?})",
@@ -75,25 +79,28 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rama_core::extensions::ExtensionsMut;
     use rama_http::{Body, Request};
 
     #[tokio::test]
     async fn test_should_change_if_needed() {
         let adapter = HttpVersionAdapter::new();
-        let req = Request::new(Body::empty());
-        let mut ctx = Context::default();
+        let mut req = Request::new(Body::empty());
 
         assert_eq!(req.version(), Version::HTTP_11);
 
-        ctx.insert(TargetHttpVersion(Version::HTTP_2));
-        let (mut ctx, req) = adapter.serve(ctx, req).await.unwrap();
+        req.extensions_mut()
+            .insert(TargetHttpVersion(Version::HTTP_2));
+        let (ctx, mut req) = adapter.serve(Context::default(), req).await.unwrap();
         assert_eq!(req.version(), Version::HTTP_2);
 
-        ctx.insert(TargetHttpVersion(Version::HTTP_11));
-        let (mut ctx, req) = adapter.serve(ctx, req).await.unwrap();
+        req.extensions_mut()
+            .insert(TargetHttpVersion(Version::HTTP_11));
+        let (ctx, mut req) = adapter.serve(ctx, req).await.unwrap();
         assert_eq!(req.version(), Version::HTTP_11);
 
-        ctx.insert(TargetHttpVersion(Version::HTTP_3));
+        req.extensions_mut()
+            .insert(TargetHttpVersion(Version::HTTP_3));
         let (_ctx, req) = adapter.serve(ctx, req).await.unwrap();
         assert_eq!(req.version(), Version::HTTP_3);
     }

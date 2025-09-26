@@ -2,7 +2,7 @@ use itertools::Itertools as _;
 use rama_core::telemetry::tracing;
 use std::{borrow::Cow, fmt};
 
-use rama_core::context::Extensions;
+use rama_core::extensions::Extensions;
 
 use crate::{
     fingerprint::ClientHelloProvider,

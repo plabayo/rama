@@ -23,11 +23,12 @@
 //! the socket peer addr.
 
 use rama::{
-    Context, Layer,
+    Layer,
     error::ErrorContext,
+    extensions::ExtensionsRef,
     http::{
-        StatusCode, layer::required_header::AddRequiredResponseHeaders, server::HttpServer,
-        service::web::Router,
+        Request, StatusCode, layer::required_header::AddRequiredResponseHeaders,
+        server::HttpServer, service::web::Router,
     },
     net::{forwarded::Forwarded, stream::SocketInfo},
     proxy::haproxy::server::HaProxyLayer,
@@ -56,11 +57,16 @@ async fn main() {
         let tcp_http_service = HttpServer::auto(Executor::graceful(guard.clone())).service(
             AddRequiredResponseHeaders::new(Router::new().get(
                 "/",
-                async |ctx: Context| -> Result<String, (StatusCode, String)> {
-                    let client_ip = ctx
+                async |req: Request| -> Result<String, (StatusCode, String)> {
+                    let client_ip = req
+                        .extensions()
                         .get::<Forwarded>()
                         .and_then(|f| f.client_ip())
-                        .or_else(|| ctx.get::<SocketInfo>().map(|info| info.peer_addr().ip()))
+                        .or_else(|| {
+                            req.extensions()
+                                .get::<SocketInfo>()
+                                .map(|info| info.peer_addr().ip())
+                        })
                         .context("failed to fetch client IP")
                         .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
                     Ok(client_ip.to_string())

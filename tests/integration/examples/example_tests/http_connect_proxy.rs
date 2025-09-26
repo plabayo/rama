@@ -31,13 +31,11 @@ async fn test_http_connect_proxy() {
 
     let runner = utils::ExampleRunner::interactive("http_connect_proxy", None);
 
-    let mut ctx = Context::default();
-    ctx.insert(ProxyAddress::try_from("http://john:secret@127.0.0.1:62001").unwrap());
-
     // test regular proxy flow
     let result = runner
         .get("http://127.0.0.1:63001/foo/bar")
-        .send(ctx.clone())
+        .extension(ProxyAddress::try_from("http://john:secret@127.0.0.1:62001").unwrap())
+        .send(Context::default())
         .await
         .unwrap()
         .try_into_json::<Value>()
@@ -49,7 +47,8 @@ async fn test_http_connect_proxy() {
     // test proxy pseudo API
     let result = runner
         .post("http://echo.example.internal/lucky/42")
-        .send(ctx)
+        .extension(ProxyAddress::try_from("http://john:secret@127.0.0.1:62001").unwrap())
+        .send(Context::default())
         .await
         .unwrap()
         .try_into_json::<Value>()

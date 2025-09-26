@@ -14,7 +14,8 @@ use crate::proto::{
     server::{Header, Reply, UsernamePasswordResponse},
 };
 use rama_core::{
-    Context, Service, context::Extensions, error::BoxError, stream::Stream, telemetry::tracing,
+    Context, Service, error::BoxError, extensions::Extensions, extensions::ExtensionsMut,
+    stream::Stream, telemetry::tracing,
 };
 use rama_net::{
     socket::Interface,
@@ -359,13 +360,13 @@ impl std::error::Error for Error {
 }
 
 impl<C, B, U, A> Socks5Acceptor<C, B, U, A> {
-    pub async fn accept<S>(&self, mut ctx: Context, mut stream: S) -> Result<(), Error>
+    pub async fn accept<S>(&self, ctx: Context, mut stream: S) -> Result<(), Error>
     where
         C: Socks5Connector<S>,
         U: Socks5UdpAssociator<S>,
         A: Authorizer<user::Basic, Error: fmt::Debug>,
         B: Socks5Binder<S>,
-        S: Stream + Unpin,
+        S: Stream + Unpin + ExtensionsMut,
     {
         let client_header = client::Header::read_from(&mut stream)
             .await
@@ -376,7 +377,7 @@ impl<C, B, U, A> Socks5Acceptor<C, B, U, A> {
             .await?;
 
         if let Some(ext) = maybe_ext {
-            ctx.extend(ext);
+            stream.extensions_mut().extend(ext);
         }
 
         tracing::trace!(
@@ -547,7 +548,7 @@ where
     U: Socks5UdpAssociator<S>,
     A: Authorizer<user::Basic, Error: fmt::Debug>,
     B: Socks5Binder<S>,
-    S: Stream + Unpin,
+    S: Stream + Unpin + ExtensionsMut,
 {
     type Response = ();
     type Error = Error;

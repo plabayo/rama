@@ -4,7 +4,7 @@ use std::fmt::{self, Write as _};
 
 use rama_core::bytes::Bytes;
 use rama_core::bytes::BytesMut;
-use rama_core::context::Extensions;
+use rama_core::extensions::Extensions;
 use rama_core::telemetry::tracing::{debug, error, trace, trace_span, warn};
 use rama_http::proto::{HeaderByteLength, RequestExtensions, RequestHeaders};
 use rama_http_types::header::Entry;

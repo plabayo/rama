@@ -330,6 +330,7 @@ cli = [
     "dep:tokio",
     "http",
 ]
+debug-extensions = ["rama-core/debug-extensions"]
 net = ["dep:rama-net"]
 dns = ["net", "dep:rama-dns", "rama-socks5?/dns"]
 tcp = ["dns", "dep:rama-tcp"]

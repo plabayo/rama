@@ -1,5 +1,6 @@
 use rama_core::Context;
 use rama_core::Service;
+use rama_core::extensions::ExtensionsMut;
 use rama_core::graceful::ShutdownGuard;
 use rama_core::rt::Executor;
 use rama_core::telemetry::tracing::{self, Instrument};
@@ -207,7 +208,7 @@ impl UnixListener {
     #[inline]
     pub async fn accept(&self) -> io::Result<(UnixStream, UnixSocketAddress)> {
         let (stream, addr) = self.inner.accept().await?;
-        Ok((stream, addr.into()))
+        Ok((stream.into(), addr.into()))
     }
 
     /// Serve connections from this listener with the given service.
@@ -231,7 +232,7 @@ impl UnixListener {
             };
 
             let service = service.clone();
-            let mut ctx = ctx.clone();
+            let ctx = ctx.clone();
 
             let peer_addr: UnixSocketAddress = peer_addr.into();
             let local_addr: Option<UnixSocketAddress> = socket.local_addr().ok().map(Into::into);
@@ -244,9 +245,13 @@ impl UnixListener {
                 network.protocol.name = "uds",
             );
 
+            let mut socket = UnixStream::new(socket);
+            socket
+                .extensions_mut()
+                .insert(UnixSocketInfo::new(local_addr, peer_addr));
+
             tokio::spawn(
                 async move {
-                    ctx.insert(UnixSocketInfo::new(socket.local_addr().ok(), peer_addr));
                     let _ = service.serve(ctx, socket).await;
                 }
                 .instrument(serve_span),
@@ -277,7 +282,7 @@ impl UnixListener {
                     match result {
                         Ok((socket, peer_addr)) => {
                             let service = service.clone();
-                            let mut ctx = ctx.clone();
+                            let ctx = ctx.clone();
 
                             let peer_addr: UnixSocketAddress = peer_addr.into();
                             let local_addr: Option<UnixSocketAddress> = socket.local_addr().ok().map(Into::into);
@@ -290,9 +295,10 @@ impl UnixListener {
                                 network.protocol.name = "uds",
                             );
 
-                            guard.spawn_task(async move {
-                                ctx.insert(UnixSocketInfo::new(local_addr, peer_addr));
+                            let mut socket = UnixStream::new(socket);
+                            socket.extensions_mut().insert(UnixSocketInfo::new(local_addr, peer_addr));
 
+                            guard.spawn_task(async move {
                                 let _ = service.serve(ctx, socket).await;
                             }.instrument(serve_span));
                         }

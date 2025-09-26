@@ -24,7 +24,7 @@
 //! See the [`http_rate_limit.rs`] example for a use case.
 //!
 //! [`Matcher`]: crate::matcher::Matcher
-//! [`Extensions`]: crate::context::Extensions
+//! [`Extensions`]: crate::extensions::Extensions
 //! [`http_listener_hello.rs`]: https://github.com/plabayo/rama/blob/main/examples/http_rate_limit.rs
 
 use crate::Context;

@@ -75,7 +75,7 @@ pub(super) struct Stream {
     pub is_pending_push: bool,
 
     /// The extensions map of the last processed encoded http request
-    pub encoded_request_extensions: Option<rama_core::context::Extensions>,
+    pub encoded_request_extensions: Option<rama_core::extensions::Extensions>,
 
     // ===== Fields related to receiving =====
     /// Next node in the accept linked list

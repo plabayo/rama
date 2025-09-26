@@ -136,7 +136,8 @@ fn write_curl_command_for_request_parts(
     payload: Option<&Bytes>,
 ) {
     let mut uri_parts = parts.uri().clone().into_parts();
-    if let Some((authority, protocol)) = ctx
+    if let Some((authority, protocol)) = parts
+        .extensions()
         .get::<RequestContext>()
         .map(|rc| {
             (
@@ -196,7 +197,8 @@ fn write_curl_command_for_request_parts(
         _ => (), // ignore
     }
 
-    if let Some(proxy_addr) = ctx
+    if let Some(proxy_addr) = parts
+        .extensions()
         .get::<ProxyAddress>()
         .or_else(|| parts.extensions().get())
     {
@@ -211,7 +213,7 @@ fn write_curl_command_for_request_parts(
         }
     }
 
-    let original_http_headers = ctx
+    let original_http_headers = parts
         .extensions()
         .get::<OriginalHttp1Headers>()
         .or_else(|| parts.extensions().get())

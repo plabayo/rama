@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use rama_core::extensions::ExtensionsMut;
+
 #[derive(Clone)]
 pub(crate) struct OnInformational(Arc<dyn OnInformationalCallback + Send + Sync>);
 

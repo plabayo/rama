@@ -9,11 +9,14 @@ use std::{
 use futures_channel::mpsc::{Receiver, Sender};
 use futures_channel::{mpsc, oneshot};
 use pin_project_lite::pin_project;
-use rama_core::futures::{Stream, stream::FusedStream};
 use rama_core::rt::Executor;
 use rama_core::telemetry::tracing::{Instrument, debug, trace, trace_root_span, warn};
 use rama_core::{bytes::Bytes, combinators::Either};
 use rama_core::{error::BoxError, futures::future::FusedFuture};
+use rama_core::{
+    extensions::ExtensionsMut,
+    futures::{Stream, stream::FusedStream},
+};
 use rama_http::{
     StreamingBody,
     io::upgrade::{self, Upgraded},
@@ -678,7 +681,7 @@ where
                         recv_stream,
                         buf: Bytes::new(),
                     };
-                    let upgraded = Upgraded::new(io, Bytes::new());
+                    let upgraded = Upgraded::new_with_fresh_extensions(io, Bytes::new());
 
                     pending.fulfill(upgraded);
                     res.extensions_mut().insert(on_upgrade);

@@ -1,4 +1,6 @@
 use rama_core::bytes::Bytes;
+use rama_core::extensions::Extensions;
+use rama_core::extensions::ExtensionsMut;
 use rama_core::telemetry::tracing::{Instrument, trace_root_span};
 use rama_core::{Context, Service, error::BoxError};
 use rama_http::StreamingBody;
@@ -18,11 +20,16 @@ pub trait HttpService<ReqBody>: sealed::Sealed<ReqBody> {
 pub struct RamaHttpService<S> {
     svc: S,
     ctx: Context,
+    extensions: Extensions,
 }
 
 impl<S> RamaHttpService<S> {
-    pub fn new(ctx: Context, svc: S) -> Self {
-        Self { svc, ctx }
+    pub fn new(ctx: Context, extensions: Extensions, svc: S) -> Self {
+        Self {
+            svc,
+            ctx,
+            extensions,
+        }
     }
 }
 
@@ -33,6 +40,7 @@ where
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("RamaHttpService")
             .field("svc", &self.svc)
+            .field("extensions", &self.extensions)
             .field("ctx", &self.ctx)
             .finish()
     }
@@ -45,6 +53,7 @@ where
     fn clone(&self) -> Self {
         Self {
             svc: self.svc.clone(),
+            extensions: self.extensions.clone(),
             ctx: self.ctx.clone(),
         }
     }
@@ -60,9 +69,14 @@ where
         &self,
         req: Request<ReqBody>,
     ) -> impl Future<Output = Result<Response, Infallible>> + Send + 'static {
-        let Self { svc, ctx } = self.clone();
+        let Self {
+            svc,
+            extensions,
+            ctx,
+        } = self.clone();
         async move {
-            let req = req.map(rama_http_types::Body::new);
+            let mut req = req.map(rama_http_types::Body::new);
+            req.extensions_mut().extend(extensions);
 
             let span = trace_root_span!(
                 "http::serve",

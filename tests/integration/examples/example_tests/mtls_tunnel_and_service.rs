@@ -21,11 +21,10 @@ async fn test_mtls_tunnel_and_service() {
 
     assert_eq!(res_str, "<h1>Hello, authorized client!</h1>");
 
-    let mut ctx = Context::default();
-    ctx.insert(DoNotRetry::default());
     let err = runner
         .get("https://127.0.0.1:63014/hello")
-        .send(ctx)
+        .extension(DoNotRetry::default())
+        .send(Context::default())
         .await
         .unwrap_err();
     assert!(err.to_string().contains("https://127.0.0.1:63014/hello"));

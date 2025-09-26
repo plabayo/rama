@@ -1,6 +1,6 @@
 use super::Recorder;
 use crate::layer::har::spec;
-use rama_core::context::Extensions;
+use rama_core::extensions::Extensions;
 use rama_core::telemetry::tracing;
 use rama_error::{ErrorContext, OpaqueError};
 use std::io::Write;

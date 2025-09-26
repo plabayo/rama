@@ -5,6 +5,7 @@ use rama_core::{
     Context, Layer, Service,
     bytes::Bytes,
     error::{BoxError, ErrorContext, OpaqueError},
+    extensions::{ChainableExtensions, ExtensionsRef},
     stream::Stream,
 };
 use rama_net::{
@@ -204,9 +205,9 @@ impl<S: Clone, P, V: Clone> Clone for HaProxyService<S, P, V> {
 
 impl<S, P, Request> Service<Request> for HaProxyService<S, P, version::One>
 where
-    S: ConnectorService<Request, Connection: Stream + Socket + Unpin, Error: Into<BoxError>>,
+    S: ConnectorService<Request, Connection: Stream + Socket + Unpin>,
     P: Send + 'static,
-    Request: Send + 'static,
+    Request: Send + ExtensionsRef + 'static,
 {
     type Response = EstablishedClientConnection<S::Connection, Request>;
     type Error = BoxError;
@@ -215,13 +216,16 @@ where
         let EstablishedClientConnection { ctx, req, mut conn } =
             self.inner.connect(ctx, req).await.map_err(Into::into)?;
 
-        let src = ctx
-            .get::<Forwarded>()
-            .and_then(|f| f.client_socket_addr())
-            .or_else(|| ctx.get::<SocketInfo>().map(|info| *info.peer_addr()))
-            .ok_or_else(|| {
-                OpaqueError::from_display("PROXY client (v1): missing src socket address")
-            })?;
+        let src = {
+            let ext_chain = (&conn, &req);
+            ext_chain
+                .get::<Forwarded>()
+                .and_then(|f| f.client_socket_addr())
+                .or_else(|| ext_chain.get::<SocketInfo>().map(|info| *info.peer_addr()))
+                .ok_or_else(|| {
+                    OpaqueError::from_display("PROXY client (v1): missing src socket address")
+                })?
+        };
 
         let peer_addr = conn.peer_addr()?;
         let addresses = match (src.ip(), peer_addr.ip()) {
@@ -247,27 +251,29 @@ where
     }
 }
 
-impl<S, P, Request, T> Service<Request> for HaProxyService<S, P, version::Two>
+impl<S, P, Request> Service<Request> for HaProxyService<S, P, version::Two>
 where
-    S: Service<Request, Response = EstablishedClientConnection<T, Request>, Error: Into<BoxError>>,
+    S: ConnectorService<Request, Connection: Stream + Socket + Unpin>,
     P: protocol::Protocol + Send + 'static,
-    Request: Send + 'static,
-    T: Stream + Socket + Unpin,
+    Request: Send + ExtensionsRef + 'static,
 {
-    type Response = EstablishedClientConnection<T, Request>;
+    type Response = EstablishedClientConnection<S::Connection, Request>;
     type Error = BoxError;
 
     async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
         let EstablishedClientConnection { ctx, req, mut conn } =
-            self.inner.serve(ctx, req).await.map_err(Into::into)?;
+            self.inner.connect(ctx, req).await.map_err(Into::into)?;
 
-        let src = ctx
-            .get::<Forwarded>()
-            .and_then(|f| f.client_socket_addr())
-            .or_else(|| ctx.get::<SocketInfo>().map(|info| *info.peer_addr()))
-            .ok_or_else(|| {
-                OpaqueError::from_display("PROXY client (v2): missing src socket address")
-            })?;
+        let src = {
+            let ext_chain = (&conn, &req);
+            ext_chain
+                .get::<Forwarded>()
+                .and_then(|f| f.client_socket_addr())
+                .or_else(|| ext_chain.get::<SocketInfo>().map(|info| *info.peer_addr()))
+                .ok_or_else(|| {
+                    OpaqueError::from_display("PROXY client (v2): missing src socket address")
+                })?
+        };
 
         let peer_addr = conn.peer_addr()?;
         let builder = match (src.ip(), peer_addr.ip()) {
@@ -367,7 +373,10 @@ pub mod protocol {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rama_core::{Layer, service::service_fn};
+    use rama_core::{
+        Layer, extensions::Extensions, extensions::ExtensionsMut, generic_request::GenericRequest,
+        service::service_fn,
+    };
     use rama_net::forwarded::{ForwardedElement, NodeId};
     use std::{convert::Infallible, net::SocketAddr, pin::Pin};
     use tokio::io::{AsyncRead, AsyncWrite};
@@ -375,7 +384,20 @@ mod tests {
 
     struct SocketConnection {
         conn: Mock,
+        extensions: Extensions,
         socket: SocketAddr,
+    }
+
+    impl ExtensionsRef for SocketConnection {
+        fn extensions(&self) -> &Extensions {
+            &self.extensions
+        }
+    }
+
+    impl ExtensionsMut for SocketConnection {
+        fn extensions_mut(&mut self) -> &mut Extensions {
+            &mut self.extensions
+        }
     }
 
     impl Socket for SocketConnection {
@@ -424,152 +446,153 @@ mod tests {
 
     #[tokio::test]
     async fn test_v1_tcp() {
-        for (expected_line, input_ctx, target_addr) in [
+        for (expected_line, ext, target_addr) in [
             (
                 "PROXY TCP4 127.0.1.2 192.168.1.101 80 443\r\n",
                 {
-                    let mut ctx = Context::default();
-                    ctx.insert(SocketInfo::new(None, "127.0.1.2:80".parse().unwrap()));
-                    ctx
+                    let mut ext = Extensions::new();
+                    ext.insert(SocketInfo::new(None, "127.0.1.2:80".parse().unwrap()));
+                    ext
                 },
                 "192.168.1.101:443",
             ),
             (
                 "PROXY TCP4 127.0.1.2 192.168.1.101 80 443\r\n",
                 {
-                    let mut ctx = Context::default();
-                    ctx.insert(SocketInfo::new(
+                    let mut ext = Extensions::new();
+                    ext.insert(SocketInfo::new(
                         None,
                         "[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:443"
                             .parse()
                             .unwrap(),
                     ));
-                    ctx.insert(Forwarded::new(ForwardedElement::forwarded_for(
+                    ext.insert(Forwarded::new(ForwardedElement::forwarded_for(
                         NodeId::try_from("127.0.1.2:80").unwrap(),
                     )));
-                    ctx
+                    ext
                 },
                 "192.168.1.101:443",
             ),
             (
                 "PROXY TCP6 1234:5678:90ab:cdef:fedc:ba09:8765:4321 4321:8765:ba09:fedc:cdef:90ab:5678:1234 443 65535\r\n",
                 {
-                    let mut ctx = Context::default();
-                    ctx.insert(SocketInfo::new(
+                    let mut ext = Extensions::new();
+                    ext.insert(SocketInfo::new(
                         None,
                         "[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:443"
                             .parse()
                             .unwrap(),
                     ));
-                    ctx
+                    ext
                 },
                 "[4321:8765:ba09:fedc:cdef:90ab:5678:1234]:65535",
             ),
             (
                 "PROXY TCP6 1234:5678:90ab:cdef:fedc:ba09:8765:4321 4321:8765:ba09:fedc:cdef:90ab:5678:1234 443 65535\r\n",
                 {
-                    let mut ctx = Context::default();
-                    ctx.insert(SocketInfo::new(None, "127.0.1.2:80".parse().unwrap()));
-                    ctx.insert(Forwarded::new(ForwardedElement::forwarded_for(
+                    let mut ext = Extensions::new();
+                    ext.insert(SocketInfo::new(None, "127.0.1.2:80".parse().unwrap()));
+                    ext.insert(Forwarded::new(ForwardedElement::forwarded_for(
                         NodeId::try_from("[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:443").unwrap(),
                     )));
-                    ctx
+                    ext
                 },
                 "[4321:8765:ba09:fedc:cdef:90ab:5678:1234]:65535",
             ),
         ] {
-            let svc = HaProxyLayer::tcp()
-                .v1()
-                .layer(service_fn(async move |ctx, req| {
-                    Ok::<_, Infallible>(EstablishedClientConnection {
-                        ctx,
-                        req,
-                        conn: SocketConnection {
-                            socket: target_addr.parse().unwrap(),
-                            conn: Builder::new().write(expected_line.as_bytes()).build(),
-                        },
-                    })
-                }));
-            svc.serve(input_ctx, ()).await.unwrap();
+            let svc =
+                HaProxyLayer::tcp()
+                    .v1()
+                    .layer(service_fn(async move |ctx, req: Extensions| {
+                        Ok::<_, Infallible>(EstablishedClientConnection {
+                            ctx,
+                            req: req.clone(),
+                            conn: SocketConnection {
+                                socket: target_addr.parse().unwrap(),
+                                conn: Builder::new().write(expected_line.as_bytes()).build(),
+                                extensions: req,
+                            },
+                        })
+                    }));
+            svc.serve(Context::default(), ext).await.unwrap();
         }
     }
 
     #[tokio::test]
     async fn test_v1_tcp_ip_version_mismatch() {
-        for (input_ctx, target_addr) in [
+        for (ext, target_addr) in [
             (
                 {
-                    let mut ctx = Context::default();
-                    ctx.insert(SocketInfo::new(
+                    let mut ext = Extensions::new();
+                    ext.insert(SocketInfo::new(
                         None,
                         "[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:80"
                             .parse()
                             .unwrap(),
                     ));
-                    ctx
+                    ext
                 },
                 "192.168.1.101:443",
             ),
             (
                 {
-                    let mut ctx = Context::default();
-                    ctx.insert(SocketInfo::new(None, "127.0.1.2:80".parse().unwrap()));
-                    ctx.insert(Forwarded::new(ForwardedElement::forwarded_for(
+                    let mut ext = Extensions::new();
+                    ext.insert(SocketInfo::new(None, "127.0.1.2:80".parse().unwrap()));
+                    ext.insert(Forwarded::new(ForwardedElement::forwarded_for(
                         NodeId::try_from("[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:80").unwrap(),
                     )));
-                    ctx
+                    ext
                 },
                 "192.168.1.101:443",
             ),
             (
                 {
-                    let mut ctx = Context::default();
-                    ctx.insert(SocketInfo::new(None, "127.0.1.2:80".parse().unwrap()));
-                    ctx
+                    let mut ext = Extensions::new();
+                    ext.insert(SocketInfo::new(None, "127.0.1.2:80".parse().unwrap()));
+                    ext
                 },
                 "[4321:8765:ba09:fedc:cdef:90ab:5678:1234]:65535",
             ),
             (
                 {
-                    let mut ctx = Context::default();
-                    ctx.insert(SocketInfo::new(
+                    let mut ext = Extensions::new();
+                    ext.insert(SocketInfo::new(
                         None,
                         "[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:80"
                             .parse()
                             .unwrap(),
                     ));
-                    ctx.insert(Forwarded::new(ForwardedElement::forwarded_for(
+                    ext.insert(Forwarded::new(ForwardedElement::forwarded_for(
                         NodeId::try_from("127.0.1.2:80").unwrap(),
                     )));
-                    ctx
+                    ext
                 },
                 "[4321:8765:ba09:fedc:cdef:90ab:5678:1234]:65535",
             ),
         ] {
-            let svc = HaProxyLayer::tcp()
-                .v1()
-                .layer(service_fn(async move |ctx, req| {
-                    Ok::<_, Infallible>(EstablishedClientConnection {
-                        ctx,
-                        req,
-                        conn: SocketConnection {
-                            socket: target_addr.parse().unwrap(),
-                            conn: Builder::new().build(),
-                        },
-                    })
-                }));
-            assert!(svc.serve(input_ctx, ()).await.is_err());
+            let svc =
+                HaProxyLayer::tcp()
+                    .v1()
+                    .layer(service_fn(async move |ctx, req: Extensions| {
+                        Ok::<_, Infallible>(EstablishedClientConnection {
+                            ctx,
+                            req: req.clone(),
+                            conn: SocketConnection {
+                                socket: target_addr.parse().unwrap(),
+                                conn: Builder::new().build(),
+                                extensions: req,
+                            },
+                        })
+                    }));
+            assert!(svc.serve(Context::default(), ext).await.is_err());
         }
     }
 
     #[tokio::test]
     async fn test_v1_tcp_missing_src() {
-        for (input_ctx, target_addr) in [
-            (Context::default(), "192.168.1.101:443"),
-            (
-                Context::default(),
-                "[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:443",
-            ),
+        for target_addr in [
+            "192.168.1.101:443",
+            "[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:443",
         ] {
             let svc = HaProxyLayer::tcp()
                 .v1()
@@ -580,42 +603,48 @@ mod tests {
                         conn: SocketConnection {
                             socket: target_addr.parse().unwrap(),
                             conn: Builder::new().build(),
+                            extensions: Extensions::new(),
                         },
                     })
                 }));
-            assert!(svc.serve(input_ctx, ()).await.is_err());
+            assert!(
+                svc.serve(Context::default(), GenericRequest::new(()))
+                    .await
+                    .is_err()
+            );
         }
     }
 
     #[tokio::test]
     async fn test_v2_tcp4() {
-        for input_ctx in [
+        for ext in [
             {
-                let mut ctx = Context::default();
-                ctx.insert(SocketInfo::new(None, "127.0.0.1:80".parse().unwrap()));
-                ctx
+                let mut ext = Extensions::new();
+                ext.insert(SocketInfo::new(None, "127.0.0.1:80".parse().unwrap()));
+                ext
             },
             {
-                let mut ctx = Context::default();
-                ctx.insert(SocketInfo::new(
+                let mut ext = Extensions::new();
+                ext.insert(SocketInfo::new(
                     None,
                     "[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:443"
                         .parse()
                         .unwrap(),
                 ));
-                ctx.insert(Forwarded::new(ForwardedElement::forwarded_for(
+                ext.insert(Forwarded::new(ForwardedElement::forwarded_for(
                     NodeId::try_from("127.0.0.1:80").unwrap(),
                 )));
-                ctx
+                ext
             },
         ] {
             let svc = HaProxyLayer::tcp().with_payload(vec![42]).layer(service_fn(
-                async move |ctx, req| {
+                async move |ctx, req: Extensions| {
                     Ok::<_, Infallible>(EstablishedClientConnection {
                         ctx,
-                        req,
+                        req: req.clone(),
                         conn: SocketConnection {
                             socket: "192.168.1.1:443".parse().unwrap(),
+                            extensions: req,
                             conn: Builder::new()
                                 .write(&[
                                     b'\r', b'\n', b'\r', b'\n', b'\0', b'\r', b'\n', b'Q', b'U',
@@ -627,39 +656,40 @@ mod tests {
                     })
                 },
             ));
-            svc.serve(input_ctx, ()).await.unwrap();
+            svc.serve(Context::default(), ext).await.unwrap();
         }
     }
 
     #[tokio::test]
     async fn test_v2_udp4() {
-        for input_ctx in [
+        for ext in [
             {
-                let mut ctx = Context::default();
-                ctx.insert(SocketInfo::new(None, "127.0.0.1:80".parse().unwrap()));
-                ctx
+                let mut ext = Extensions::new();
+                ext.insert(SocketInfo::new(None, "127.0.0.1:80".parse().unwrap()));
+                ext
             },
             {
-                let mut ctx = Context::default();
-                ctx.insert(SocketInfo::new(
+                let mut ext = Extensions::new();
+                ext.insert(SocketInfo::new(
                     None,
                     "[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:443"
                         .parse()
                         .unwrap(),
                 ));
-                ctx.insert(Forwarded::new(ForwardedElement::forwarded_for(
+                ext.insert(Forwarded::new(ForwardedElement::forwarded_for(
                     NodeId::try_from("127.0.0.1:80").unwrap(),
                 )));
-                ctx
+                ext
             },
         ] {
             let svc = HaProxyLayer::udp().with_payload(vec![42]).layer(service_fn(
-                async move |ctx, req| {
+                async move |ctx, req: Extensions| {
                     Ok::<_, Infallible>(EstablishedClientConnection {
                         ctx,
-                        req,
+                        req: req.clone(),
                         conn: SocketConnection {
                             socket: "192.168.1.1:443".parse().unwrap(),
+                            extensions: req,
                             conn: Builder::new()
                                 .write(&[
                                     b'\r', b'\n', b'\r', b'\n', b'\0', b'\r', b'\n', b'Q', b'U',
@@ -671,41 +701,42 @@ mod tests {
                     })
                 },
             ));
-            svc.serve(input_ctx, ()).await.unwrap();
+            svc.serve(Context::default(), ext).await.unwrap();
         }
     }
 
     #[tokio::test]
     async fn test_v2_tcp6() {
-        for input_ctx in [
+        for ext in [
             {
-                let mut ctx = Context::default();
-                ctx.insert(SocketInfo::new(
+                let mut ext = Extensions::new();
+                ext.insert(SocketInfo::new(
                     None,
                     "[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:80"
                         .parse()
                         .unwrap(),
                 ));
-                ctx
+                ext
             },
             {
-                let mut ctx = Context::default();
-                ctx.insert(SocketInfo::new(None, "127.0.0.1:80".parse().unwrap()));
-                ctx.insert(Forwarded::new(ForwardedElement::forwarded_for(
+                let mut ext = Extensions::new();
+                ext.insert(SocketInfo::new(None, "127.0.0.1:80".parse().unwrap()));
+                ext.insert(Forwarded::new(ForwardedElement::forwarded_for(
                     NodeId::try_from("[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:80").unwrap(),
                 )));
-                ctx
+                ext
             },
         ] {
             let svc = HaProxyLayer::tcp().with_payload(vec![42]).layer(service_fn(
-                async move |ctx, req| {
+                async move |ctx, req: Extensions| {
                     Ok::<_, Infallible>(EstablishedClientConnection {
                         ctx,
-                        req,
+                        req: req.clone(),
                         conn: SocketConnection {
                             socket: "[4321:8765:ba09:fedc:cdef:90ab:5678:1234]:443"
                                 .parse()
                                 .unwrap(),
+                            extensions: req,
                             conn: Builder::new()
                                 .write(&[
                                     b'\r', b'\n', b'\r', b'\n', b'\0', b'\r', b'\n', b'Q', b'U',
@@ -720,41 +751,42 @@ mod tests {
                     })
                 },
             ));
-            svc.serve(input_ctx, ()).await.unwrap();
+            svc.serve(Context::default(), ext).await.unwrap();
         }
     }
 
     #[tokio::test]
     async fn test_v2_udp6() {
-        for input_ctx in [
+        for ext in [
             {
-                let mut ctx = Context::default();
-                ctx.insert(SocketInfo::new(
+                let mut ext = Extensions::new();
+                ext.insert(SocketInfo::new(
                     None,
                     "[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:80"
                         .parse()
                         .unwrap(),
                 ));
-                ctx
+                ext
             },
             {
-                let mut ctx = Context::default();
-                ctx.insert(SocketInfo::new(None, "127.0.0.1:80".parse().unwrap()));
-                ctx.insert(Forwarded::new(ForwardedElement::forwarded_for(
+                let mut ext = Extensions::new();
+                ext.insert(SocketInfo::new(None, "127.0.0.1:80".parse().unwrap()));
+                ext.insert(Forwarded::new(ForwardedElement::forwarded_for(
                     NodeId::try_from("[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:80").unwrap(),
                 )));
-                ctx
+                ext
             },
         ] {
             let svc = HaProxyLayer::udp().with_payload(vec![42]).layer(service_fn(
-                async move |ctx, req| {
+                async move |ctx, req: Extensions| {
                     Ok::<_, Infallible>(EstablishedClientConnection {
                         ctx,
-                        req,
+                        req: req.clone(),
                         conn: SocketConnection {
                             socket: "[4321:8765:ba09:fedc:cdef:90ab:5678:1234]:443"
                                 .parse()
                                 .unwrap(),
+                            extensions: req,
                             conn: Builder::new()
                                 .write(&[
                                     b'\r', b'\n', b'\r', b'\n', b'\0', b'\r', b'\n', b'Q', b'U',
@@ -769,100 +801,99 @@ mod tests {
                     })
                 },
             ));
-            svc.serve(input_ctx, ()).await.unwrap();
+            svc.serve(Context::default(), ext).await.unwrap();
         }
     }
 
     #[tokio::test]
     async fn test_v2_ip_version_mismatch() {
-        for (input_ctx, target_addr) in [
+        for (ext, target_addr) in [
             (
                 {
-                    let mut ctx = Context::default();
-                    ctx.insert(SocketInfo::new(
+                    let mut ext = Extensions::new();
+                    ext.insert(SocketInfo::new(
                         None,
                         "[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:80"
                             .parse()
                             .unwrap(),
                     ));
-                    ctx
+                    ext
                 },
                 "192.168.1.101:443",
             ),
             (
                 {
-                    let mut ctx = Context::default();
-                    ctx.insert(SocketInfo::new(None, "127.0.1.2:80".parse().unwrap()));
-                    ctx.insert(Forwarded::new(ForwardedElement::forwarded_for(
+                    let mut ext = Extensions::new();
+                    ext.insert(SocketInfo::new(None, "127.0.1.2:80".parse().unwrap()));
+                    ext.insert(Forwarded::new(ForwardedElement::forwarded_for(
                         NodeId::try_from("[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:80").unwrap(),
                     )));
-                    ctx
+                    ext
                 },
                 "192.168.1.101:443",
             ),
             (
                 {
-                    let mut ctx = Context::default();
-                    ctx.insert(SocketInfo::new(None, "127.0.1.2:80".parse().unwrap()));
-                    ctx
+                    let mut ext = Extensions::new();
+                    ext.insert(SocketInfo::new(None, "127.0.1.2:80".parse().unwrap()));
+                    ext
                 },
                 "[4321:8765:ba09:fedc:cdef:90ab:5678:1234]:65535",
             ),
             (
                 {
-                    let mut ctx = Context::default();
-                    ctx.insert(SocketInfo::new(
+                    let mut ext = Extensions::new();
+                    ext.insert(SocketInfo::new(
                         None,
                         "[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:80"
                             .parse()
                             .unwrap(),
                     ));
-                    ctx.insert(Forwarded::new(ForwardedElement::forwarded_for(
+                    ext.insert(Forwarded::new(ForwardedElement::forwarded_for(
                         NodeId::try_from("127.0.1.2:80").unwrap(),
                     )));
-                    ctx
+                    ext
                 },
                 "[4321:8765:ba09:fedc:cdef:90ab:5678:1234]:65535",
             ),
         ] {
             // TCP
 
-            let svc = HaProxyLayer::tcp().layer(service_fn(async move |ctx, req| {
+            let svc = HaProxyLayer::tcp().layer(service_fn(async move |ctx, req: Extensions| {
                 Ok::<_, Infallible>(EstablishedClientConnection {
                     ctx,
-                    req,
+                    req: req.clone(),
                     conn: SocketConnection {
                         socket: target_addr.parse().unwrap(),
+                        extensions: req,
                         conn: Builder::new().build(),
                     },
                 })
             }));
-            assert!(svc.serve(input_ctx.clone(), ()).await.is_err());
+            assert!(svc.serve(Context::default(), ext.clone()).await.is_err());
 
             // UDP
 
-            let svc = HaProxyLayer::udp().layer(service_fn(async move |ctx, req| {
+            let svc = HaProxyLayer::udp().layer(service_fn(async move |ctx, req: Extensions| {
                 Ok::<_, Infallible>(EstablishedClientConnection {
                     ctx,
-                    req,
+                    req: req.clone(),
                     conn: SocketConnection {
                         socket: target_addr.parse().unwrap(),
+                        extensions: req,
                         conn: Builder::new().build(),
                     },
                 })
             }));
-            assert!(svc.serve(input_ctx, ()).await.is_err());
+            assert!(svc.serve(Context::default(), ext).await.is_err());
         }
     }
 
     #[tokio::test]
     async fn test_v2_missing_src() {
-        for (input_ctx, target_addr) in [
-            (Context::default(), "192.168.1.101:443"),
-            (
-                Context::default(),
-                "[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:443",
-            ),
+        for target_addr in [
+            "192.168.1.101:443",
+            "[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:443",
         ] {
             // TCP
 
@@ -872,11 +903,16 @@ mod tests {
                     req,
                     conn: SocketConnection {
                         socket: target_addr.parse().unwrap(),
+                        extensions: Extensions::new(),
                         conn: Builder::new().build(),
                     },
                 })
             }));
-            assert!(svc.serve(input_ctx.clone(), ()).await.is_err());
+            assert!(
+                svc.serve(Context::default(), GenericRequest::new(()))
+                    .await
+                    .is_err()
+            );
 
             // UDP
 
@@ -886,11 +922,16 @@ mod tests {
                     req,
                     conn: SocketConnection {
                         socket: target_addr.parse().unwrap(),
+                        extensions: Extensions::new(),
                         conn: Builder::new().build(),
                     },
                 })
             }));
-            assert!(svc.serve(input_ctx.clone(), ()).await.is_err());
+            assert!(
+                svc.serve(Context::default(), GenericRequest::new(()))
+                    .await
+                    .is_err()
+            );
         }
     }
 }

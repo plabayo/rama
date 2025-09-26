@@ -1,10 +1,10 @@
-use super::TlsConnectorData;
-use crate::dep::tokio_rustls::{TlsConnector as RustlsConnector, client::TlsStream};
+use super::{AutoTlsStream, RustlsTlsStream, TlsConnectorData, TlsStream};
+use crate::dep::tokio_rustls::TlsConnector as RustlsConnector;
 use crate::types::TlsTunnel;
-use pin_project_lite::pin_project;
 use rama_core::conversion::{RamaInto, RamaTryFrom};
 use rama_core::error::ErrorContext;
 use rama_core::error::{BoxError, ErrorExt, OpaqueError};
+use rama_core::extensions::{ExtensionsMut, ExtensionsRef};
 use rama_core::stream::Stream;
 use rama_core::telemetry::tracing;
 use rama_core::{Context, Layer, Service};
@@ -14,7 +14,6 @@ use rama_net::tls::ApplicationProtocol;
 use rama_net::tls::client::NegotiatedTlsParameters;
 use rama_net::transport::TryRefIntoTransportContext;
 use std::fmt;
-use tokio::io::{AsyncRead, AsyncWrite};
 
 /// A [`Layer`] which wraps the given service with a [`TlsConnector`].
 ///
@@ -232,22 +231,23 @@ impl<S> TlsConnector<S, ConnectorKindTunnel> {
 
 impl<S, Request> Service<Request> for TlsConnector<S, ConnectorKindAuto>
 where
-    S: ConnectorService<Request, Connection: Stream + Unpin, Error: Into<BoxError>>,
-    Request: TryRefIntoTransportContext<Error: Into<BoxError> + Send + 'static> + Send + 'static,
+    S: ConnectorService<Request, Connection: Stream + Unpin>,
+    Request: TryRefIntoTransportContext<Error: Into<BoxError> + Send + 'static>
+        + ExtensionsRef
+        + Send
+        + 'static,
 {
     type Response = EstablishedClientConnection<AutoTlsStream<S::Connection>, Request>;
     type Error = BoxError;
 
     async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
-        let EstablishedClientConnection { mut ctx, req, conn } =
+        let EstablishedClientConnection { ctx, req, conn } =
             self.inner.connect(ctx, req).await.map_err(Into::into)?;
-        let transport_ctx = ctx
-            .get_or_try_insert_with_ctx(|ctx| req.try_ref_into_transport_ctx(ctx))
-            .map_err(|err| {
-                OpaqueError::from_boxed(err.into())
-                    .context("TlsConnector(auto): compute transport context")
-            })?
-            .clone();
+
+        let transport_ctx = req.try_ref_into_transport_ctx(&ctx).map_err(|err| {
+            OpaqueError::from_boxed(err.into())
+                .context("TlsConnector(auto): compute transport context")
+        })?;
 
         if !transport_ctx
             .app_protocol
@@ -260,12 +260,11 @@ where
                 server.port = %transport_ctx.authority.port(),
                 "TlsConnector(auto): protocol not secure, return inner connection",
             );
+
             return Ok(EstablishedClientConnection {
                 ctx,
                 req,
-                conn: AutoTlsStream {
-                    inner: AutoTlsStreamData::Plain { inner: conn },
-                },
+                conn: AutoTlsStream::plain(conn),
             });
         }
 
@@ -278,7 +277,8 @@ where
             transport_ctx.app_protocol,
         );
 
-        let connector_data = ctx.get::<TlsConnectorData>().cloned();
+        let connector_data = req.extensions().get::<TlsConnectorData>().cloned();
+
         let (stream, negotiated_params) = self.handshake(connector_data, server_host, conn).await?;
 
         tracing::trace!(
@@ -288,36 +288,32 @@ where
             transport_ctx.app_protocol,
         );
 
-        ctx.insert(negotiated_params);
+        let mut conn = AutoTlsStream::secure(stream);
+        conn.extensions_mut().insert(negotiated_params);
 
-        Ok(EstablishedClientConnection {
-            ctx,
-            req,
-            conn: AutoTlsStream {
-                inner: AutoTlsStreamData::Secure { inner: stream },
-            },
-        })
+        Ok(EstablishedClientConnection { ctx, req, conn })
     }
 }
 
 impl<S, Request> Service<Request> for TlsConnector<S, ConnectorKindSecure>
 where
-    S: ConnectorService<Request, Connection: Stream + Unpin, Error: Into<BoxError>>,
-    Request: TryRefIntoTransportContext<Error: Into<BoxError> + Send + 'static> + Send + 'static,
+    S: ConnectorService<Request, Connection: Stream + Unpin>,
+    Request: TryRefIntoTransportContext<Error: Into<BoxError> + Send + 'static>
+        + Send
+        + ExtensionsRef
+        + 'static,
 {
     type Response = EstablishedClientConnection<TlsStream<S::Connection>, Request>;
     type Error = BoxError;
 
     async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
-        let EstablishedClientConnection { mut ctx, req, conn } =
+        let EstablishedClientConnection { ctx, req, conn } =
             self.inner.connect(ctx, req).await.map_err(Into::into)?;
 
-        let transport_ctx = ctx
-            .get_or_try_insert_with_ctx(|ctx| req.try_ref_into_transport_ctx(ctx))
-            .map_err(|err| {
-                OpaqueError::from_boxed(err.into())
-                    .context("TlsConnector(auto): compute transport context")
-            })?;
+        let transport_ctx = req.try_ref_into_transport_ctx(&ctx).map_err(|err| {
+            OpaqueError::from_boxed(err.into())
+                .context("TlsConnector(auto): compute transport context")
+        })?;
         tracing::trace!(
             server.address = %transport_ctx.authority.host(),
             server.port = %transport_ctx.authority.port(),
@@ -327,9 +323,13 @@ where
 
         let server_host = transport_ctx.authority.host().clone();
 
-        let connector_data = ctx.get::<TlsConnectorData>().cloned();
+        let connector_data = req.extensions().get::<TlsConnectorData>().cloned();
+
         let (conn, negotiated_params) = self.handshake(connector_data, server_host, conn).await?;
-        ctx.insert(negotiated_params);
+
+        let mut conn = TlsStream::new(conn);
+
+        conn.extensions_mut().insert(negotiated_params);
 
         Ok(EstablishedClientConnection { ctx, req, conn })
     }
@@ -337,17 +337,18 @@ where
 
 impl<S, Request> Service<Request> for TlsConnector<S, ConnectorKindTunnel>
 where
-    S: ConnectorService<Request, Connection: Stream + Unpin, Error: Into<BoxError>>,
-    Request: Send + 'static,
+    S: ConnectorService<Request, Connection: Stream + Unpin>,
+    Request: Send + ExtensionsRef + 'static,
 {
     type Response = EstablishedClientConnection<AutoTlsStream<S::Connection>, Request>;
     type Error = BoxError;
 
     async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
-        let EstablishedClientConnection { mut ctx, req, conn } =
+        let EstablishedClientConnection { ctx, req, conn } =
             self.inner.connect(ctx, req).await.map_err(Into::into)?;
 
-        let server_host = if let Some(host) = ctx
+        let server_host = if let Some(host) = req
+            .extensions()
             .get::<TlsTunnel>()
             .as_ref()
             .map(|t| &t.server_host)
@@ -358,27 +359,23 @@ where
             tracing::trace!(
                 "TlsConnector(tunnel): return inner connection: no Tls tunnel is requested"
             );
+
             return Ok(EstablishedClientConnection {
                 ctx,
                 req,
-                conn: AutoTlsStream {
-                    inner: AutoTlsStreamData::Plain { inner: conn },
-                },
+                conn: AutoTlsStream::plain(conn),
             });
         };
 
-        let connector_data = ctx.get::<TlsConnectorData>().cloned();
+        let connector_data = req.extensions().get::<TlsConnectorData>().cloned();
+
         let (conn, negotiated_params) = self.handshake(connector_data, server_host, conn).await?;
-        ctx.insert(negotiated_params);
+        let mut conn = AutoTlsStream::secure(conn);
+
+        conn.extensions_mut().insert(negotiated_params);
 
         tracing::trace!("TlsConnector(tunnel): connection secured");
-        Ok(EstablishedClientConnection {
-            ctx,
-            req,
-            conn: AutoTlsStream {
-                inner: AutoTlsStreamData::Secure { inner: conn },
-            },
-        })
+        Ok(EstablishedClientConnection { ctx, req, conn })
     }
 }
 
@@ -388,9 +385,9 @@ impl<S, K> TlsConnector<S, K> {
         connector_data: Option<TlsConnectorData>,
         server_host: Host,
         stream: T,
-    ) -> Result<(TlsStream<T>, NegotiatedTlsParameters), BoxError>
+    ) -> Result<(RustlsTlsStream<T>, NegotiatedTlsParameters), BoxError>
     where
-        T: Stream + Unpin,
+        T: Stream + ExtensionsMut + Unpin,
     {
         let connector_data = connector_data
             .or(self.connector_data.clone())
@@ -424,94 +421,6 @@ impl<S, K> TlsConnector<S, K> {
         };
 
         Ok((stream, params))
-    }
-}
-
-pin_project! {
-    /// A stream which can be either a secure or a plain stream.
-    pub struct AutoTlsStream<S> {
-        #[pin]
-        inner: AutoTlsStreamData<S>,
-    }
-}
-
-impl<S: fmt::Debug> fmt::Debug for AutoTlsStream<S> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("AutoTlsStream")
-            .field("inner", &self.inner)
-            .finish()
-    }
-}
-
-pin_project! {
-    #[project = AutoTlsStreamDataProj]
-    /// A stream which can be either a secure or a plain stream.
-    enum AutoTlsStreamData<S> {
-        /// A secure stream.
-        Secure{ #[pin] inner: TlsStream<S> },
-        /// A plain stream.
-        Plain { #[pin] inner: S },
-    }
-}
-
-impl<S: fmt::Debug> fmt::Debug for AutoTlsStreamData<S> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Secure { inner } => f.debug_tuple("Secure").field(inner).finish(),
-            Self::Plain { inner } => f.debug_tuple("Plain").field(inner).finish(),
-        }
-    }
-}
-
-impl<S> AsyncRead for AutoTlsStream<S>
-where
-    S: Stream + Unpin,
-{
-    fn poll_read(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        buf: &mut tokio::io::ReadBuf<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        match self.project().inner.project() {
-            AutoTlsStreamDataProj::Secure { inner } => inner.poll_read(cx, buf),
-            AutoTlsStreamDataProj::Plain { inner } => inner.poll_read(cx, buf),
-        }
-    }
-}
-
-impl<S> AsyncWrite for AutoTlsStream<S>
-where
-    S: Stream + Unpin,
-{
-    fn poll_write(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        buf: &[u8],
-    ) -> std::task::Poll<Result<usize, std::io::Error>> {
-        match self.project().inner.project() {
-            AutoTlsStreamDataProj::Secure { inner } => inner.poll_write(cx, buf),
-            AutoTlsStreamDataProj::Plain { inner } => inner.poll_write(cx, buf),
-        }
-    }
-
-    fn poll_flush(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Result<(), std::io::Error>> {
-        match self.project().inner.project() {
-            AutoTlsStreamDataProj::Secure { inner } => inner.poll_flush(cx),
-            AutoTlsStreamDataProj::Plain { inner } => inner.poll_flush(cx),
-        }
-    }
-
-    fn poll_shutdown(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Result<(), std::io::Error>> {
-        match self.project().inner.project() {
-            AutoTlsStreamDataProj::Secure { inner } => inner.poll_shutdown(cx),
-            AutoTlsStreamDataProj::Plain { inner } => inner.poll_shutdown(cx),
-        }
     }
 }
 

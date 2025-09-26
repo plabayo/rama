@@ -14,8 +14,9 @@
 
 use std::sync::Arc;
 
-use super::{Context, context::Extensions};
+use super::{Context, extensions::Extensions};
 use crate::Service;
+use crate::extensions::ExtensionsMut;
 use rama_macros::paste;
 use rama_utils::macros::all_the_tuples_no_last_special_case;
 
@@ -184,7 +185,7 @@ macro_rules! impl_matcher_service_tuple {
             impl<$([<M_ $T>], $T),+, S, Request, Response, Error> Service<Request> for MatcherRouter<($(([<M_ $T>], $T)),+, S)>
             where
 
-                Request: Send + 'static,
+                Request: Send + ExtensionsMut + 'static,
                 Response: Send + 'static,
                 $(
                     [<M_ $T>]: Matcher<Request>,
@@ -198,14 +199,14 @@ macro_rules! impl_matcher_service_tuple {
 
                 async fn serve(
                     &self,
-                    mut ctx: Context,
-                    req: Request,
+                    ctx: Context,
+                    mut req: Request,
                 ) -> Result<Self::Response, Self::Error> {
                     let ($(([<M_ $T>], $T)),+, S) = &self.0;
                     let mut ext = Extensions::new();
                     $(
                         if [<M_ $T>].matches(Some(&mut ext), &ctx, &req) {
-                            ctx.extend(ext);
+                            req.extensions_mut().extend(ext);
                             return $T.serve(ctx, req).await;
                         }
                         ext.clear();

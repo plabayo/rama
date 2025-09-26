@@ -1,4 +1,4 @@
-use rama_core::context::Extensions;
+use rama_core::extensions::Extensions;
 use rama_core::telemetry::tracing;
 use std::{fmt, io};
 

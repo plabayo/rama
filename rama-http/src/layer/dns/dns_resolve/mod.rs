@@ -26,7 +26,7 @@ pub use username_parser::DnsResolveModeUsernameParser;
 #[derive(Debug, Clone, Default, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 /// A vanity [`Extensions`] type for others to easily check if eager DNS resolution is enabled.
 ///
-/// [`Extensions`]: rama_core::context::Extensions
+/// [`Extensions`]: rama_core::extensions::Extensions
 pub struct DnsResolveMode(ResolveMode);
 
 impl fmt::Display for DnsResolveMode {
@@ -123,7 +123,7 @@ impl<const SEPARATOR: char> UsernameLabelWriter<SEPARATOR> for DnsResolveMode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rama_core::context::Extensions;
+    use rama_core::extensions::Extensions;
     use rama_core::username::{compose_username, parse_username};
 
     #[test]

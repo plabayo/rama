@@ -1,10 +1,8 @@
 use crate::stream::dep::ipnet::IpNet;
-use rama_core::{Context, context::Extensions};
+use rama_core::{Context, extensions::Extensions};
 
 #[cfg(feature = "http")]
-use crate::stream::SocketInfo;
-#[cfg(feature = "http")]
-use rama_http_types::Request;
+use {crate::stream::SocketInfo, rama_core::extensions::ExtensionsRef, rama_http_types::Request};
 
 #[derive(Debug, Clone)]
 /// Matcher based on the ip part of the [`SocketAddr`] of the peer,
@@ -122,8 +120,9 @@ impl Default for PrivateIpNetMatcher {
 
 #[cfg(feature = "http")]
 impl<Body> rama_core::matcher::Matcher<Request<Body>> for PrivateIpNetMatcher {
-    fn matches(&self, _ext: Option<&mut Extensions>, ctx: &Context, _req: &Request<Body>) -> bool {
-        ctx.get::<SocketInfo>()
+    fn matches(&self, _ext: Option<&mut Extensions>, _ctx: &Context, req: &Request<Body>) -> bool {
+        req.extensions()
+            .get::<SocketInfo>()
             .map(|info| {
                 let peer_ip = IpNet::from(info.peer_addr().ip());
                 self.matchers.iter().any(|ip_net| ip_net.contains(&peer_ip))
@@ -156,10 +155,12 @@ mod test {
     #[cfg(feature = "http")]
     #[test]
     fn test_local_ip_net_matcher_http() {
+        use rama_core::extensions::ExtensionsMut;
+
         let matcher = PrivateIpNetMatcher::new();
 
-        let mut ctx = Context::default();
-        let req = Request::builder()
+        let ctx = Context::default();
+        let mut req = Request::builder()
             .method("GET")
             .uri("/hello")
             .body(())
@@ -169,26 +170,29 @@ mod test {
         assert!(!matcher.matches(None, &ctx, &req));
 
         // test #2: no match: test with remote network address (ipv4)
-        ctx.insert(SocketInfo::new(None, ([1, 1, 1, 1], 8080).into()));
+        req.extensions_mut()
+            .insert(SocketInfo::new(None, ([1, 1, 1, 1], 8080).into()));
         assert!(!matcher.matches(None, &ctx, &req));
 
         // test #3: no match: test with remote network address (ipv6)
-        ctx.insert(SocketInfo::new(
+        req.extensions_mut().insert(SocketInfo::new(
             None,
             ([1, 1, 1, 1, 1, 1, 1, 1], 8080).into(),
         ));
         assert!(!matcher.matches(None, &ctx, &req));
 
         // test #4: match: test with private address (ipv4)
-        ctx.insert(SocketInfo::new(None, ([127, 0, 0, 1], 8080).into()));
+        req.extensions_mut()
+            .insert(SocketInfo::new(None, ([127, 0, 0, 1], 8080).into()));
         assert!(matcher.matches(None, &ctx, &req));
 
         // test #5: match: test with another private address (ipv4)
-        ctx.insert(SocketInfo::new(None, ([192, 168, 0, 24], 8080).into()));
+        req.extensions_mut()
+            .insert(SocketInfo::new(None, ([192, 168, 0, 24], 8080).into()));
         assert!(matcher.matches(None, &ctx, &req));
 
         // test #6: match: test with private address (ipv6)
-        ctx.insert(SocketInfo::new(
+        req.extensions_mut().insert(SocketInfo::new(
             None,
             ([0, 0, 0, 0, 0, 0, 0, 1], 8080).into(),
         ));

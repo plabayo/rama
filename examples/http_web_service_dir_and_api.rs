@@ -25,13 +25,16 @@
 
 // rama provides everything out of the box to build a complete web service.
 use rama::{
-    Context, Layer,
+    Layer,
+    extensions::Extensions,
     http::{
         layer::{compression::CompressionLayer, trace::TraceLayer},
         matcher::HttpMatcher,
         server::HttpServer,
-        service::web::WebService,
-        service::web::response::{Html, Redirect},
+        service::web::{
+            WebService,
+            response::{Html, Redirect},
+        },
     },
     layer::AddExtensionLayer,
     net::stream::{SocketInfo, matcher::SocketMatcher},
@@ -78,12 +81,12 @@ async fn main() {
                     WebService::default()
                         .not_found(Redirect::temporary("/error.html"))
                         .get("/coin", coin_page)
-                        .post("/coin", async |ctx: Context| {
-                            ctx.get::<Arc<AppState>>()
+                        .post("/coin", async |ext: Extensions| {
+                            ext.get::<Arc<AppState>>()
                                 .unwrap()
                                 .counter
                                 .fetch_add(1, Ordering::AcqRel);
-                            coin_page(ctx).await
+                            coin_page(ext).await
                         })
                         .on(
                             HttpMatcher::get("/home").and_socket(SocketMatcher::loopback()),
@@ -96,8 +99,8 @@ async fn main() {
         .unwrap();
 }
 
-async fn coin_page(ctx: Context) -> Html<String> {
-    let emoji = if ctx
+async fn coin_page(ext: Extensions) -> Html<String> {
+    let emoji = if ext
         .get::<SocketInfo>()
         .unwrap()
         .peer_addr()
@@ -109,7 +112,7 @@ async fn coin_page(ctx: Context) -> Html<String> {
         "🌍"
     };
 
-    let count = ctx
+    let count = ext
         .get::<Arc<AppState>>()
         .unwrap()
         .counter

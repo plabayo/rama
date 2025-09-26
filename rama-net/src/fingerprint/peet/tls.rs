@@ -16,7 +16,7 @@ use crate::tls::{
     ProtocolVersion, SecureTransport, SignatureScheme, SupportedGroup,
 };
 use itertools::Itertools;
-use rama_core::context::Extensions;
+use rama_core::extensions::Extensions;
 use std::fmt;
 
 #[derive(Clone)]

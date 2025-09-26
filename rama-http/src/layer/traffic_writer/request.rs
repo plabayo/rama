@@ -3,6 +3,7 @@ use crate::io::write_http_request;
 use crate::{Body, Request, StreamingBody, body::util::BodyExt};
 use rama_core::bytes::Bytes;
 use rama_core::error::{BoxError, ErrorExt, OpaqueError};
+use rama_core::extensions::ExtensionsRef;
 use rama_core::rt::Executor;
 use rama_core::telemetry::tracing::{self, Instrument};
 use rama_core::{Context, Service};
@@ -179,7 +180,7 @@ where
         ctx: Context,
         req: Request<ReqBody>,
     ) -> Result<(Context, Request), Self::Error> {
-        let req = if ctx.get::<DoNotWriteRequest>().is_some() {
+        let req = if req.extensions().get::<DoNotWriteRequest>().is_some() {
             req.map(Body::new)
         } else {
             let (parts, body) = req.into_parts();

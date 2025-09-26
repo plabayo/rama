@@ -35,6 +35,7 @@ pub trait ContextSmuggler {
 #[cfg(feature = "http")]
 mod http {
     use super::*;
+    use rama_core::extensions::ExtensionsMut;
     use rama_http_types::Request;
 
     impl<B> ContextSmuggler for Request<B> {

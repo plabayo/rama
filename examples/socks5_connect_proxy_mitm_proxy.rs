@@ -24,6 +24,7 @@
 use rama::{
     Context, Layer, Service,
     error::{ErrorContext, OpaqueError},
+    extensions::ExtensionsRef,
     http::{
         Body, Request, Response, StatusCode,
         client::EasyHttpWebClient,
@@ -38,12 +39,14 @@ use rama::{
         server::HttpServer,
     },
     layer::ConsumeErrLayer,
-    net::tls::{
-        ApplicationProtocol, SecureTransport,
-        client::ServerVerifyMode,
-        server::{SelfSignedData, ServerAuth, ServerConfig, TlsPeekRouter},
+    net::{
+        tls::{
+            ApplicationProtocol, SecureTransport,
+            client::ServerVerifyMode,
+            server::{SelfSignedData, ServerAuth, ServerConfig, TlsPeekRouter},
+        },
+        user::Basic,
     },
-    net::user::Basic,
     proxy::socks5::{Socks5Acceptor, server::LazyConnector},
     rt::Executor,
     service::service_fn,
@@ -117,7 +120,8 @@ async fn http_mitm_proxy(ctx: Context, req: Request) -> Result<Response, Infalli
     // NOTE: use a custom connector (layers) in case you wish to add custom features,
     // such as upstream proxies or other configurations
 
-    let base_tls_config = if let Some(hello) = ctx
+    let base_tls_config = if let Some(hello) = req
+        .extensions()
         .get::<SecureTransport>()
         .and_then(|st| st.client_hello())
         .cloned()

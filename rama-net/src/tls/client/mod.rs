@@ -22,8 +22,8 @@ mod config;
 #[doc(inline)]
 pub use config::{
     ClientAuth, ClientAuthData, ClientConfig, ClientConfigChain, ProxyClientConfig,
-    ServerVerifyMode, append_all_client_configs_to_ctx, append_client_config_to_ctx,
-    extract_client_config_from_ctx,
+    ServerVerifyMode, append_all_client_configs_to_extensions, append_client_config_to_extensions,
+    extract_client_config_from_extensions,
 };
 
 use super::{ApplicationProtocol, DataEncoding, ProtocolVersion};

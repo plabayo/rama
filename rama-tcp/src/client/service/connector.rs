@@ -1,13 +1,14 @@
 use rama_core::{
     Context, Service,
     error::{BoxError, ErrorContext, ErrorExt, OpaqueError},
+    extensions::ExtensionsMut,
     telemetry::tracing,
 };
 use rama_dns::{DnsResolver, GlobalDnsResolver};
 use rama_net::{
     address::ProxyAddress,
     client::EstablishedClientConnection,
-    stream::{ClientSocketInfo, SocketInfo},
+    stream::{ClientSocketInfo, Socket, SocketInfo},
     transport::{TransportProtocol, TryRefIntoTransportContext},
 };
 
@@ -102,7 +103,7 @@ impl Default for TcpConnector {
 
 impl<Request, Dns, ConnectorFactory> Service<Request> for TcpConnector<Dns, ConnectorFactory>
 where
-    Request: TryRefIntoTransportContext + Send + 'static,
+    Request: TryRefIntoTransportContext + Send + ExtensionsMut + 'static,
     Request::Error: Into<BoxError> + Send + Sync + 'static,
     Dns: DnsResolver + Clone,
     ConnectorFactory: TcpStreamConnectorFactory<
@@ -114,15 +115,16 @@ where
     type Error = BoxError;
 
     async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
-        let CreatedTcpStreamConnector { mut ctx, connector } = self
+        let CreatedTcpStreamConnector { ctx, connector } = self
             .connector_factory
             .make_connector(ctx)
             .await
             .map_err(Into::into)?;
 
-        if let Some(proxy) = ctx.get::<ProxyAddress>() {
-            let (conn, addr) = crate::client::tcp_connect(
+        if let Some(proxy) = req.extensions().get::<ProxyAddress>() {
+            let (mut conn, addr) = crate::client::tcp_connect(
                 &ctx,
+                req.extensions(),
                 proxy.authority.clone(),
                 self.dns.clone(),
                 connector,
@@ -130,7 +132,7 @@ where
             .await
             .context("tcp connector: conncept to proxy")?;
 
-            ctx.insert(ClientSocketInfo(SocketInfo::new(
+            let socket_info= ClientSocketInfo(SocketInfo::new(
                 conn.local_addr()
                     .inspect_err(|err| {
                         tracing::debug!(
@@ -139,17 +141,16 @@ where
                     })
                     .ok(),
                 addr,
-            )));
+            ));
+            conn.extensions_mut().insert(socket_info);
 
             return Ok(EstablishedClientConnection { ctx, req, conn });
         }
 
-        let transport_ctx = ctx
-            .get_or_try_insert_with_ctx(|ctx| req.try_ref_into_transport_ctx(ctx))
-            .map_err(|err| {
-                OpaqueError::from_boxed(err.into())
-                    .context("tcp connecter: compute transport context to get authority")
-            })?;
+        let transport_ctx = req.try_ref_into_transport_ctx(&ctx).map_err(|err| {
+            OpaqueError::from_boxed(err.into())
+                .context("tcp connecter: compute transport context to get authority")
+        })?;
 
         match transport_ctx.protocol {
             TransportProtocol::Tcp => (), // a-ok :)
@@ -163,11 +164,17 @@ where
         }
 
         let authority = transport_ctx.authority.clone();
-        let (conn, addr) = crate::client::tcp_connect(&ctx, authority, self.dns.clone(), connector)
-            .await
-            .context("tcp connector: connect to server")?;
+        let (mut conn, addr) = crate::client::tcp_connect(
+            &ctx,
+            req.extensions(),
+            authority,
+            self.dns.clone(),
+            connector,
+        )
+        .await
+        .context("tcp connector: connect to server")?;
 
-        ctx.insert(ClientSocketInfo(SocketInfo::new(
+        let socket_info = ClientSocketInfo(SocketInfo::new(
             conn.local_addr()
                 .inspect_err(|err| {
                     tracing::debug!(
@@ -176,7 +183,8 @@ where
                 })
                 .ok(),
             addr,
-        )));
+        ));
+        conn.extensions_mut().insert(socket_info);
 
         Ok(EstablishedClientConnection { ctx, req, conn })
     }

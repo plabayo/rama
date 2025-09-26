@@ -2,6 +2,7 @@ use super::conn::{ConnectorService, EstablishedClientConnection};
 use crate::stream::Socket;
 use parking_lot::Mutex;
 use rama_core::error::{BoxError, ErrorContext, OpaqueError};
+use rama_core::extensions::{Extensions, ExtensionsMut, ExtensionsRef};
 use rama_core::telemetry::tracing::trace;
 use rama_core::{Context, Layer, Service};
 use rama_utils::macros::generate_set_and_with;
@@ -27,7 +28,7 @@ pub mod metrics;
 /// remove one, this results in the storage deciding which mode we use for connection
 /// reuse and dropping (eg FIFO for reuse and LRU for dropping conn when pool is full)
 pub trait Pool<C, ID>: Send + Sync + 'static {
-    type Connection: Send;
+    type Connection: Send + ExtensionsMut;
     type CreatePermit: Send;
 
     /// Get a connection from the pool, if no connection is found a [`Pool::CreatePermit`] is returned
@@ -83,7 +84,7 @@ pub struct NoPool;
 
 impl<C, ID> Pool<C, ID> for NoPool
 where
-    C: Send + 'static,
+    C: Send + ExtensionsMut + 'static,
     ID: Clone + Send + Sync + PartialEq + 'static,
 {
     type Connection = C;
@@ -112,6 +113,7 @@ pub struct LeasedConnection<C, ID> {
     active_slot: ActiveSlot,
     returner: ConnReturner<C, ID>,
     failed: AtomicBool,
+    extensions: Extensions,
 }
 
 impl<C, ID> LeasedConnection<C, ID> {
@@ -125,6 +127,18 @@ impl<C, ID> LeasedConnection<C, ID> {
     }
 }
 
+impl<C, ID> ExtensionsRef for LeasedConnection<C, ID> {
+    fn extensions(&self) -> &Extensions {
+        &self.extensions
+    }
+}
+
+impl<C, ID> ExtensionsMut for LeasedConnection<C, ID> {
+    fn extensions_mut(&mut self) -> &mut Extensions {
+        &mut self.extensions
+    }
+}
+
 /// A connection which is stored in a pool.
 ///
 /// A ID is used to determine which connections can be used for a request.
@@ -134,6 +148,7 @@ struct PooledConnection<C, ID> {
     id: ID,
     pool_slot: PoolSlot,
     last_used: Instant,
+    extensions: Extensions,
 }
 
 #[deprecated = "use LruDropPool instead"]
@@ -270,7 +285,7 @@ impl<C, ID> LruDropPool<C, ID> {
 
 impl<C, ID> Pool<C, ID> for LruDropPool<C, ID>
 where
-    C: Send + 'static,
+    C: Send + ExtensionsMut + 'static,
     ID: ConnID,
 {
     type Connection = LeasedConnection<C, ID>;
@@ -338,11 +353,13 @@ where
                     .record(idx as u64, metric_attrs);
             }
 
+            let extensions = pooled_conn.extensions.clone();
             return Ok(ConnectionResult::Connection(LeasedConnection {
                 active_slot,
                 pooled_conn: Some(pooled_conn),
                 returner: self.returner.clone(),
                 failed: AtomicBool::new(false),
+                extensions,
             }));
         }
 
@@ -371,7 +388,7 @@ where
         Ok(ConnectionResult::CreatePermit((active_slot, pool_slot)))
     }
 
-    async fn create(&self, id: ID, conn: C, permit: Self::CreatePermit) -> Self::Connection {
+    async fn create(&self, id: ID, mut conn: C, permit: Self::CreatePermit) -> Self::Connection {
         trace!("adding new connection (w/ id {id:?}) to pool");
         let (active_slot, pool_slot) = permit;
 
@@ -382,15 +399,18 @@ where
             metrics.created_connections.add(1, &metric_attrs);
         }
 
+        let extensions = conn.take_extensions();
         LeasedConnection {
             active_slot,
             returner: self.returner.clone(),
             failed: false.into(),
+            extensions: extensions.clone(),
             pooled_conn: Some(PooledConnection {
                 id,
                 conn,
                 pool_slot,
                 last_used: Instant::now(),
+                extensions,
             }),
         }
     }
@@ -616,7 +636,7 @@ impl<C, ID: Debug> Debug for LruDropPool<C, ID> {
 /// are not unique and multiple connections can have the same ID. IDs are used
 /// to filter which connections can be used for a specific Request in a way that
 /// is independent of what a Request is.
-pub trait ReqToConnID<Request>: Sized + Clone + Send + Sync + 'static {
+pub trait ReqToConnID<Request: ExtensionsRef>: Sized + Clone + Send + Sync + 'static {
     type ID: ConnID;
 
     fn id(&self, ctx: &Context, request: &Request) -> Result<Self::ID, OpaqueError>;
@@ -639,6 +659,7 @@ impl<Request, ID, F> ReqToConnID<Request> for F
 where
     F: Fn(&Context, &Request) -> Result<ID, OpaqueError> + Clone + Send + Sync + 'static,
     ID: ConnID,
+    Request: ExtensionsRef,
 {
     type ID = ID;
 
@@ -678,8 +699,8 @@ impl<S, P, R> PooledConnector<S, P, R> {
 
 impl<Request, S, P, R> Service<Request> for PooledConnector<S, P, R>
 where
-    S: ConnectorService<Request, Connection: Send, Error: Send + 'static>,
-    Request: Send + 'static,
+    S: ConnectorService<Request>,
+    Request: Send + ExtensionsRef + 'static,
     P: Pool<S::Connection, R::ID>,
     R: ReqToConnID<Request>,
 {
@@ -692,7 +713,7 @@ where
         // Try to get connection from pool, if no connection is found, we will have to create a new
         // one using the returned create permit
         let create_permit = {
-            let pool = if let Some(pool) = ctx.get::<P>() {
+            let pool = if let Some(pool) = req.extensions().get::<P>() {
                 trace!("pooled connector: using pool from ctx");
                 pool
             } else {
@@ -731,7 +752,7 @@ where
             self.inner.connect(ctx, req).await.map_err(Into::into)?;
 
         trace!("pooled connector: returning new pooled connection (w/ conn id: {conn_id:?}");
-        let pool = ctx.get::<P>().unwrap_or(&self.pool);
+        let pool = req.extensions().get::<P>().unwrap_or(&self.pool);
         let conn = pool.create(conn_id, conn, create_permit).await;
         Ok(EstablishedClientConnection { ctx, req, conn })
     }
@@ -782,7 +803,9 @@ impl<S, P: Clone, R: Clone> Layer<S> for PooledConnectorLayer<P, R> {
 mod tests {
     use super::*;
     use crate::client::EstablishedClientConnection;
-    use rama_core::{Context, Service};
+    use rama_core::extensions::ExtensionsMut;
+    use rama_core::generic_request::GenericRequest;
+    use rama_core::{Context, Service, extensions::Extensions};
     use std::{
         convert::Infallible,
         sync::atomic::{AtomicI16, Ordering},
@@ -801,31 +824,79 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    struct Conn {
+        items: Vec<u32>,
+        extensions: Extensions,
+    }
+
+    impl Conn {
+        fn new() -> Self {
+            Self {
+                items: vec![],
+                extensions: Extensions::new(),
+            }
+        }
+    }
+
+    impl ExtensionsRef for Conn {
+        fn extensions(&self) -> &Extensions {
+            &self.extensions
+        }
+    }
+
+    impl ExtensionsMut for Conn {
+        fn extensions_mut(&mut self) -> &mut Extensions {
+            &mut self.extensions
+        }
+    }
+
+    impl Deref for Conn {
+        type Target = Vec<u32>;
+
+        fn deref(&self) -> &Self::Target {
+            &self.items
+        }
+    }
+
+    impl DerefMut for Conn {
+        fn deref_mut(&mut self) -> &mut Self::Target {
+            &mut self.items
+        }
+    }
+
     impl<Request> Service<Request> for TestService
     where
         Request: Send + 'static,
     {
-        type Response = EstablishedClientConnection<Vec<u32>, Request>;
+        type Response = EstablishedClientConnection<Conn, Request>;
         type Error = Infallible;
 
         async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
-            let conn = vec![];
             self.created_connection.fetch_add(1, Ordering::Relaxed);
-            Ok(EstablishedClientConnection { ctx, req, conn })
+            Ok(EstablishedClientConnection {
+                ctx,
+                req,
+                conn: Conn::new(),
+            })
         }
     }
 
     #[derive(Clone)]
-    /// [`StringRequestLengthID`] will map Requests of type String, to usize id representing their
+    /// [`StringRequestLengthID`] will map Requests of type GenericRequest<String>, to usize id representing their
     /// chars length. In practise this will mean that Requests of the same char length will be
     /// able to reuse the same connections
     struct StringRequestLengthID;
 
-    impl ReqToConnID<String> for StringRequestLengthID {
+    impl ReqToConnID<GenericRequest<String>> for StringRequestLengthID {
         type ID = usize;
 
-        fn id(&self, _ctx: &Context, req: &String) -> Result<Self::ID, OpaqueError> {
-            Ok(req.chars().count())
+        fn id(
+            &self,
+            _ctx: &Context,
+            req: &GenericRequest<String>,
+        ) -> Result<Self::ID, OpaqueError> {
+            Ok(req.request.chars().count())
         }
     }
 
@@ -840,13 +911,13 @@ mod tests {
         let svc = PooledConnector::new(
             TestService::default(),
             pool,
-            |_ctx: &Context, _req: &String| Ok(()),
+            |_ctx: &Context, _req: &GenericRequest<String>| Ok(()),
         );
 
         let iterations = 10;
         for _i in 0..iterations {
             let _conn = svc
-                .connect(Context::default(), String::new())
+                .connect(Context::default(), GenericRequest::new(String::new()))
                 .await
                 .unwrap();
         }
@@ -862,52 +933,52 @@ mod tests {
 
         {
             let mut conn = svc
-                .connect(Context::default(), String::from("a"))
+                .connect(Context::default(), GenericRequest::new(String::from("a")))
                 .await
                 .unwrap()
                 .conn;
 
             conn.push(1);
-            assert_eq!(conn.as_ref(), &vec![1]);
+            assert_eq!(conn.as_ref().deref(), &vec![1]);
             assert_eq!(svc.inner.created_connection.load(Ordering::Relaxed), 1);
         }
 
         // Should reuse the same connections
         {
             let mut conn = svc
-                .connect(Context::default(), String::from("B"))
+                .connect(Context::default(), GenericRequest::new(String::from("B")))
                 .await
                 .unwrap()
                 .conn;
 
             conn.push(2);
-            assert_eq!(conn.as_ref(), &vec![1, 2]);
+            assert_eq!(conn.as_ref().deref(), &vec![1, 2]);
             assert_eq!(svc.inner.created_connection.load(Ordering::Relaxed), 1);
         }
 
         // Should make a new one
         {
             let mut conn = svc
-                .connect(Context::default(), String::from("aa"))
+                .connect(Context::default(), GenericRequest::new(String::from("aa")))
                 .await
                 .unwrap()
                 .conn;
 
             conn.push(3);
-            assert_eq!(conn.as_ref(), &vec![3]);
+            assert_eq!(conn.as_ref().deref(), &vec![3]);
             assert_eq!(svc.inner.created_connection.load(Ordering::Relaxed), 2);
         }
 
         // Should reuse
         {
             let mut conn = svc
-                .connect(Context::default(), String::from("bb"))
+                .connect(Context::default(), GenericRequest::new(String::from("bb")))
                 .await
                 .unwrap()
                 .conn;
 
             conn.push(4);
-            assert_eq!(conn.as_ref(), &vec![3, 4]);
+            assert_eq!(conn.as_ref().deref(), &vec![3, 4]);
             assert_eq!(svc.inner.created_connection.load(Ordering::Relaxed), 2);
         }
     }
@@ -919,16 +990,18 @@ mod tests {
             .with_wait_for_pool_timeout(Duration::from_millis(50));
 
         let conn1 = svc
-            .connect(Context::default(), String::from("a"))
+            .connect(Context::default(), GenericRequest::new(String::from("a")))
             .await
             .unwrap();
 
-        let conn2 = svc.connect(Context::default(), String::from("a")).await;
+        let conn2 = svc
+            .connect(Context::default(), GenericRequest::new(String::from("a")))
+            .await;
         assert_err!(conn2);
 
         drop(conn1);
         let _conn3 = svc
-            .connect(Context::default(), String::from("aaa"))
+            .connect(Context::default(), GenericRequest::new(String::from("aaa")))
             .await
             .unwrap();
     }
@@ -955,6 +1028,19 @@ mod tests {
     #[derive(Default, Debug)]
     struct InnerService {
         should_error: AtomicBool,
+        extensions: Extensions,
+    }
+
+    impl ExtensionsRef for InnerService {
+        fn extensions(&self) -> &Extensions {
+            &self.extensions
+        }
+    }
+
+    impl ExtensionsMut for InnerService {
+        fn extensions_mut(&mut self) -> &mut Extensions {
+            &mut self.extensions
+        }
     }
 
     impl Service<bool> for InnerService {
@@ -985,7 +1071,7 @@ mod tests {
         let svc = PooledConnector::new(TestConnector::default(), pool, StringRequestLengthID {});
 
         let conn = svc
-            .connect(Context::default(), String::from(""))
+            .connect(Context::default(), GenericRequest::new(String::from("")))
             .await
             .unwrap();
 
@@ -998,7 +1084,7 @@ mod tests {
         drop(conn);
 
         let conn = svc
-            .connect(Context::default(), String::from(""))
+            .connect(Context::default(), GenericRequest::new(String::from("")))
             .await
             .unwrap();
 
@@ -1009,7 +1095,7 @@ mod tests {
         drop(conn);
 
         let conn = svc
-            .connect(Context::default(), String::from(""))
+            .connect(Context::default(), GenericRequest::new(String::from("")))
             .await
             .unwrap();
 
@@ -1028,7 +1114,7 @@ mod tests {
         let svc = PooledConnector::new(TestService::default(), pool, StringRequestLengthID {});
 
         let conn = svc
-            .connect(Context::default(), String::from(""))
+            .connect(Context::default(), GenericRequest::new(String::from("")))
             .await
             .unwrap()
             .conn;
@@ -1041,7 +1127,7 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(100)).await;
 
         let conn = svc
-            .connect(Context::default(), String::from(""))
+            .connect(Context::default(), GenericRequest::new(String::from("")))
             .await
             .unwrap()
             .conn;
@@ -1065,12 +1151,20 @@ mod tests {
             .unwrap()
             .with_reuse_strategy(strategy);
 
-        let svc = PooledConnector::new(TestService::default(), pool, |_: &Context, _: &()| Ok(()));
+        let svc = PooledConnector::new(
+            TestService::default(),
+            pool,
+            |_: &Context, _: &GenericRequest<()>| Ok(()),
+        );
 
         // Open two concurrent connections and drop them.
         let mut conns = Vec::new();
         for i in 0..2 {
-            let mut conn = svc.connect(Context::default(), ()).await.unwrap().conn;
+            let mut conn = svc
+                .connect(Context::default(), GenericRequest::new(()))
+                .await
+                .unwrap()
+                .conn;
             conn.pooled_conn.as_mut().unwrap().conn.push(i);
             conns.push(conn);
         }
@@ -1081,7 +1175,11 @@ mod tests {
         // from most to least recently used. ([conn2, conn1]). Requesting
         // another connection should return the first or last one depending on
         // the reuse policy.
-        let conn = svc.connect(Context::default(), ()).await.unwrap().conn;
+        let conn = svc
+            .connect(Context::default(), GenericRequest::new(()))
+            .await
+            .unwrap()
+            .conn;
 
         assert_eq!(conn.pooled_conn.as_ref().unwrap().conn[0], expected);
     }

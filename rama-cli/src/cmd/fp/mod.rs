@@ -9,6 +9,7 @@ use rama::{
     cli::ForwardKind,
     combinators::Either7,
     error::{BoxError, ErrorContext, OpaqueError},
+    extensions::{ExtensionsMut, ExtensionsRef},
     http::{
         HeaderName, HeaderValue, Request,
         header::COOKIE,
@@ -413,7 +414,7 @@ where
 
     async fn serve(
         &self,
-        mut ctx: Context,
+        ctx: Context,
         mut req: Request<Body>,
     ) -> Result<Self::Response, Self::Error> {
         if let Some(cookie) = req.headers().typed_get::<Cookie>() {
@@ -421,8 +422,15 @@ where
                 .iter()
                 .filter_map(|(k, v)| {
                     if k.eq_ignore_ascii_case("rama-storage-auth") {
-                        if Some(v) == ctx.get::<Arc<State>>().unwrap().storage_auth.as_deref() {
-                            ctx.insert(StorageAuthorized);
+                        if Some(v)
+                            == req
+                                .extensions()
+                                .get::<Arc<State>>()
+                                .unwrap()
+                                .storage_auth
+                                .as_deref()
+                        {
+                            req.extensions_mut().insert(StorageAuthorized);
                         }
                         Some("rama-storage-auth=xxx".to_owned())
                     } else if !k.starts_with("source-") {

@@ -5,7 +5,7 @@ use crate::Result;
 use crate::dep::hyperium::http::Extensions as HyperExtensions;
 use crate::dep::hyperium::http::request::{Parts as HyperiumParts, Request as HyperiumRequest};
 use crate::{HeaderMap, HeaderName, HeaderValue, Method, Uri, Version, body::Body};
-use rama_core::context::Extensions;
+use rama_core::extensions::{Extensions, ExtensionsMut, ExtensionsRef};
 
 /// Represents an HTTP request.
 ///
@@ -178,6 +178,18 @@ impl From<Parts> for HyperiumParts {
         let request = HyperiumRequest::from(request);
         let (parts, _) = request.into_parts();
         parts
+    }
+}
+
+impl ExtensionsRef for Parts {
+    fn extensions(&self) -> &Extensions {
+        &self.extensions
+    }
+}
+
+impl ExtensionsMut for Parts {
+    fn extensions_mut(&mut self) -> &mut Extensions {
+        &mut self.extensions
     }
 }
 
@@ -570,36 +582,6 @@ impl<T> Request<T> {
         &mut self.head.headers
     }
 
-    /// Returns a reference to the associated extensions.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use http::*;
-    /// let request: Request<()> = Request::default();
-    /// assert!(request.extensions().get::<i32>().is_none());
-    /// ```
-    #[inline]
-    pub fn extensions(&self) -> &Extensions {
-        &self.head.extensions
-    }
-
-    /// Returns a mutable reference to the associated extensions.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use http::*;
-    /// # use http::header::*;
-    /// let mut request: Request<()> = Request::default();
-    /// request.extensions_mut().insert("hello");
-    /// assert_eq!(request.extensions().get(), Some(&"hello"));
-    /// ```
-    #[inline]
-    pub fn extensions_mut(&mut self) -> &mut Extensions {
-        &mut self.head.extensions
-    }
-
     /// Returns a reference to the associated HTTP body.
     ///
     /// # Examples
@@ -701,6 +683,18 @@ impl<T: fmt::Debug> fmt::Debug for Request<T> {
             // omits Extensions because not useful
             .field("body", self.body())
             .finish()
+    }
+}
+
+impl<B> ExtensionsRef for Request<B> {
+    fn extensions(&self) -> &Extensions {
+        &self.head.extensions
+    }
+}
+
+impl<B> ExtensionsMut for Request<B> {
+    fn extensions_mut(&mut self) -> &mut Extensions {
+        &mut self.head.extensions
     }
 }
 
@@ -1062,12 +1056,11 @@ impl Default for Builder {
 ///
 /// [`ReqBody`]: crate::dep::http_body::Body
 /// [`HttpRequest`]: crate::dep::http::Request
-pub trait HttpRequestParts {
+pub trait HttpRequestParts: ExtensionsRef {
     fn method(&self) -> &Method;
     fn uri(&self) -> &Uri;
     fn version(&self) -> Version;
     fn headers(&self) -> &HeaderMap<HeaderValue>;
-    fn extensions(&self) -> &Extensions;
 }
 
 impl<T: HttpRequestParts> HttpRequestParts for &T {
@@ -1085,10 +1078,6 @@ impl<T: HttpRequestParts> HttpRequestParts for &T {
 
     fn headers(&self) -> &HeaderMap<HeaderValue> {
         (*self).headers()
-    }
-
-    fn extensions(&self) -> &Extensions {
-        (*self).extensions()
     }
 }
 
@@ -1108,10 +1097,6 @@ impl<T: HttpRequestParts> HttpRequestParts for &mut T {
     fn headers(&self) -> &HeaderMap<HeaderValue> {
         (**self).headers()
     }
-
-    fn extensions(&self) -> &Extensions {
-        (**self).extensions()
-    }
 }
 
 impl<Body> HttpRequestParts for Request<Body> {
@@ -1129,10 +1114,6 @@ impl<Body> HttpRequestParts for Request<Body> {
 
     fn headers(&self) -> &HeaderMap<HeaderValue> {
         self.headers()
-    }
-
-    fn extensions(&self) -> &Extensions {
-        self.extensions()
     }
 }
 
@@ -1152,19 +1133,14 @@ impl HttpRequestParts for Parts {
     fn headers(&self) -> &HeaderMap<HeaderValue> {
         &self.headers
     }
-
-    fn extensions(&self) -> &Extensions {
-        &self.extensions
-    }
 }
 
 /// Same as [`HttpRequestParts`] but also adding mutable access
-pub trait HttpRequestPartsMut: HttpRequestParts {
+pub trait HttpRequestPartsMut: HttpRequestParts + ExtensionsMut {
     fn method_mut(&mut self) -> &mut Method;
     fn uri_mut(&mut self) -> &mut Uri;
     fn version_mut(&mut self) -> &mut Version;
     fn headers_mut(&mut self) -> &mut HeaderMap<HeaderValue>;
-    fn extensions_mut(&mut self) -> &mut Extensions;
 }
 
 impl<T: HttpRequestPartsMut> HttpRequestPartsMut for &mut T {
@@ -1182,10 +1158,6 @@ impl<T: HttpRequestPartsMut> HttpRequestPartsMut for &mut T {
 
     fn headers_mut(&mut self) -> &mut HeaderMap<HeaderValue> {
         (*self).headers_mut()
-    }
-
-    fn extensions_mut(&mut self) -> &mut Extensions {
-        (*self).extensions_mut()
     }
 }
 
@@ -1205,10 +1177,6 @@ impl<Body> HttpRequestPartsMut for Request<Body> {
     fn headers_mut(&mut self) -> &mut HeaderMap<HeaderValue> {
         self.headers_mut()
     }
-
-    fn extensions_mut(&mut self) -> &mut Extensions {
-        self.extensions_mut()
-    }
 }
 
 impl HttpRequestPartsMut for Parts {
@@ -1226,10 +1194,6 @@ impl HttpRequestPartsMut for Parts {
 
     fn headers_mut(&mut self) -> &mut HeaderMap<HeaderValue> {
         &mut self.headers
-    }
-
-    fn extensions_mut(&mut self) -> &mut Extensions {
-        &mut self.extensions
     }
 }
 

@@ -4,10 +4,13 @@ use super::utils;
 
 use rama::{
     Context, Service,
+    extensions::ExtensionsMut,
     http::layer::required_header::AddRequiredRequestHeaders,
     http::{Body, BodyExtractExt, Request, client::HttpConnector},
-    net::client::{ConnectorService, EstablishedClientConnection},
-    net::forwarded::{Forwarded, ForwardedElement},
+    net::{
+        client::{ConnectorService, EstablishedClientConnection},
+        forwarded::{Forwarded, ForwardedElement},
+    },
     proxy::haproxy::client::HaProxyService,
     tcp::client::service::TcpConnector,
 };
@@ -38,25 +41,26 @@ async fn test_haproxy_client_ip() {
 async fn test_server_with_haproxy_v1() {
     let client = HttpConnector::new(HaProxyService::tcp(TcpConnector::new()).v1());
 
-    let request = Request::builder()
+    let mut request = Request::builder()
         .uri("http://127.0.0.1:62025")
         .method("GET")
         .header("Connection", "close")
         .body(Body::empty())
         .expect("build simple GET request");
 
-    let mut ctx = Context::default();
-    ctx.insert(Forwarded::new(ForwardedElement::forwarded_for((
-        IpAddr::V4([1u8, 2u8, 3u8, 4u8].into()),
-        0,
-    ))));
+    request
+        .extensions_mut()
+        .insert(Forwarded::new(ForwardedElement::forwarded_for((
+            IpAddr::V4([1u8, 2u8, 3u8, 4u8].into()),
+            0,
+        ))));
 
     let EstablishedClientConnection {
         ctx,
         req,
         conn: http_service,
     } = client
-        .connect(ctx, request)
+        .connect(Context::default(), request)
         .await
         .expect("establish a connection to the http server using haproxy v1");
 
@@ -74,25 +78,26 @@ async fn test_server_with_haproxy_v1() {
 async fn test_server_with_haproxy_v2() {
     let client = HttpConnector::new(HaProxyService::tcp(TcpConnector::new()));
 
-    let request = Request::builder()
+    let mut request = Request::builder()
         .uri("http://127.0.0.1:62025")
         .method("GET")
         .header("Connection", "close")
         .body(Body::empty())
         .expect("build simple GET request");
 
-    let mut ctx = Context::default();
-    ctx.insert(Forwarded::new(ForwardedElement::forwarded_for((
-        IpAddr::V4([2u8, 3u8, 4u8, 5u8].into()),
-        0,
-    ))));
+    request
+        .extensions_mut()
+        .insert(Forwarded::new(ForwardedElement::forwarded_for((
+            IpAddr::V4([2u8, 3u8, 4u8, 5u8].into()),
+            0,
+        ))));
 
     let EstablishedClientConnection {
         ctx,
         req,
         conn: http_service,
     } = client
-        .connect(ctx, request)
+        .connect(Context::default(), request)
         .await
         .expect("establish a connection to the http server using haproxy v2");
 

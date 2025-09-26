@@ -1,4 +1,4 @@
-use rama_core::Context;
+use rama_core::extensions::Extensions;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -80,27 +80,27 @@ pub enum UserAgentSelectFallback {
 /// [`UserAgentEmulateService`]: crate::emulate::UserAgentEmulateService
 pub trait UserAgentProvider: Send + Sync + 'static {
     /// Selects a user agent profile based on the current context.
-    fn select_user_agent_profile(&self, ctx: &Context) -> Option<&UserAgentProfile>;
+    fn select_user_agent_profile(&self, extensions: &Extensions) -> Option<&UserAgentProfile>;
 }
 
 impl UserAgentProvider for () {
     #[inline]
-    fn select_user_agent_profile(&self, _ctx: &Context) -> Option<&UserAgentProfile> {
+    fn select_user_agent_profile(&self, _extensions: &Extensions) -> Option<&UserAgentProfile> {
         None
     }
 }
 
 impl UserAgentProvider for UserAgentProfile {
     #[inline]
-    fn select_user_agent_profile(&self, _ctx: &Context) -> Option<&UserAgentProfile> {
+    fn select_user_agent_profile(&self, _extensions: &Extensions) -> Option<&UserAgentProfile> {
         Some(self)
     }
 }
 
 impl UserAgentProvider for UserAgentDatabase {
     #[inline]
-    fn select_user_agent_profile(&self, ctx: &Context) -> Option<&UserAgentProfile> {
-        match (ctx.get(), ctx.get()) {
+    fn select_user_agent_profile(&self, extensions: &Extensions) -> Option<&UserAgentProfile> {
+        match (extensions.get(), extensions.get()) {
             (Some(agent), _) => self.get(agent),
             (None, Some(UserAgentSelectFallback::Random)) => self.rnd(),
             (None, None | Some(UserAgentSelectFallback::Abort)) => None,
@@ -113,8 +113,9 @@ where
     P: UserAgentProvider,
 {
     #[inline]
-    fn select_user_agent_profile(&self, ctx: &Context) -> Option<&UserAgentProfile> {
-        self.as_ref().and_then(|p| p.select_user_agent_profile(ctx))
+    fn select_user_agent_profile(&self, extensions: &Extensions) -> Option<&UserAgentProfile> {
+        self.as_ref()
+            .and_then(|p| p.select_user_agent_profile(extensions))
     }
 }
 
@@ -123,8 +124,8 @@ where
     P: UserAgentProvider,
 {
     #[inline]
-    fn select_user_agent_profile(&self, ctx: &Context) -> Option<&UserAgentProfile> {
-        self.as_ref().select_user_agent_profile(ctx)
+    fn select_user_agent_profile(&self, extensions: &Extensions) -> Option<&UserAgentProfile> {
+        self.as_ref().select_user_agent_profile(extensions)
     }
 }
 
@@ -133,8 +134,8 @@ where
     P: UserAgentProvider,
 {
     #[inline]
-    fn select_user_agent_profile(&self, ctx: &Context) -> Option<&UserAgentProfile> {
-        self.as_ref().select_user_agent_profile(ctx)
+    fn select_user_agent_profile(&self, extensions: &Extensions) -> Option<&UserAgentProfile> {
+        self.as_ref().select_user_agent_profile(extensions)
     }
 }
 
@@ -148,11 +149,11 @@ macro_rules! impl_user_agent_provider_either {
         {
             fn select_user_agent_profile(
                 &self,
-                ctx: &Context,
+                extensions: &Extensions,
             ) -> Option<&UserAgentProfile> {
                 match self {
                     $(
-                        ::rama_core::combinators::$id::$param(s) => s.select_user_agent_profile(ctx),
+                        ::rama_core::combinators::$id::$param(s) => s.select_user_agent_profile(extensions),
                     )+
                 }
             }

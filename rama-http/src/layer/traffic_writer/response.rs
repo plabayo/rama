@@ -3,6 +3,7 @@ use crate::io::write_http_response;
 use crate::{Body, Request, Response, StreamingBody, body::util::BodyExt};
 use rama_core::bytes::Bytes;
 use rama_core::error::{BoxError, ErrorContext, OpaqueError};
+use rama_core::extensions::ExtensionsRef;
 use rama_core::rt::Executor;
 use rama_core::telemetry::tracing::{self, Instrument};
 use rama_core::{Context, Layer, Service};
@@ -299,7 +300,7 @@ where
         ctx: Context,
         req: Request<ReqBody>,
     ) -> Result<Self::Response, Self::Error> {
-        let do_not_print_response: Option<DoNotWriteResponse> = ctx.get().cloned();
+        let do_not_print_response: Option<DoNotWriteResponse> = req.extensions().get().cloned();
         let resp = self.inner.serve(ctx, req).await.map_err(Into::into)?;
         let resp = if do_not_print_response.is_some() {
             resp.map(Body::new)

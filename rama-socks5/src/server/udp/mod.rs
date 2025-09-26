@@ -1,8 +1,8 @@
 use std::{fmt, time::Duration};
 
 use rama_core::{
-    Context, Service, combinators::Either, error::BoxError, layer::timeout::DefaultTimeout,
-    stream::Stream, telemetry::tracing,
+    Context, Service, combinators::Either, error::BoxError, extensions::ExtensionsMut,
+    layer::timeout::DefaultTimeout, stream::Stream, telemetry::tracing,
 };
 use rama_net::{
     address::{Authority, Host, SocketAddress},
@@ -23,8 +23,8 @@ use crate::proto::{ReplyKind, server::Reply};
 mod inspect;
 use inspect::UdpPacketProxy;
 pub use inspect::{
-    AsyncUdpInspector, DirectUdpRelay, RelayDirection, RelayRequest, SyncUdpInspector,
-    UdpInspectAction, UdpInspector,
+    AsyncUdpInspector, DirectUdpRelay, RelayDirection, RelayRequest, RelayResponse,
+    SyncUdpInspector, UdpInspectAction, UdpInspector,
 };
 
 mod relay;
@@ -440,7 +440,7 @@ impl<B, I, S> Socks5UdpAssociatorSeal<S> for UdpRelay<B, I>
 where
     B: SocketService<Socket = UdpSocket>,
     I: UdpPacketProxy,
-    S: Stream + Unpin,
+    S: Stream + Unpin + ExtensionsMut,
 {
     async fn accept_udp_associate(
         &self,
@@ -451,6 +451,8 @@ where
         tracing::trace!(
             "socks5 server w/ destination {destination}: udp associate: try to bind incoming socket to destination {destination}",
         );
+
+        let extensions = stream.take_extensions();
 
         let (dest_host, dest_port) = destination.into_parts();
         let dest_addr = match dest_host {
@@ -556,6 +558,7 @@ where
 
         let udp_relay = self.inspector.proxy_udp_packets(
             ctx,
+            extensions,
             client_address,
             socket_north,
             self.north_buffer_size,
