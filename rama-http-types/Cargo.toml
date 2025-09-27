@@ -44,7 +44,6 @@ smallvec = { workspace = true }
 smol_str = { workspace = true }
 sync_wrapper = { workspace = true }
 tokio = { workspace = true, features = ["macros", "io-std"] }
-tokio-util = { workspace = true, features = ["io"] }
 
 [dev-dependencies]
 hex = { workspace = true }

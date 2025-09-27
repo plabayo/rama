@@ -51,8 +51,5 @@ path = "../rama-http-core/tests/h2-support"
 path = "../rama-http-core"
 features = ["unstable"]
 
-[dependencies.rama-ua]
-path = "../rama-ua"
-
 [lints]
 workspace = true
