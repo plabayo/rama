@@ -12,7 +12,6 @@ pub(crate) use self::iter::IterExt;
 //pub use language_tags::LanguageTag;
 //pub use self::quality_value::{Quality, QualityValue};
 pub use self::seconds::Seconds;
-pub(crate) use self::value_string::HeaderValueString;
 
 //mod charset;
 pub mod csv;
@@ -25,6 +24,8 @@ mod iter;
 //mod quality_value;
 mod seconds;
 mod value_string;
+
+pub use value_string::HeaderValueString;
 
 macro_rules! derive_header {
     ($type:ident(_), name: $name:ident) => {

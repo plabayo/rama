@@ -344,6 +344,21 @@ jobs:
         run: |
           cargo +nightly fuzz run ua_parse -- -max_len=131072 -max_total_time=30
 
+  cargo-fuzz-http-header:
+    needs: [check, check-msrv, check-all-features]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: ${{env.RUST_TOOLCHAIN_NIGHTLY}}
+      - name: Install cargo-fuzz
+        run: |
+          cargo install cargo-fuzz 2>/dev/null || true
+      - name: cargo fuzz check
+        run: |
+          cargo +nightly fuzz run http_header_x_robots_tag -- -max_len=131072 -max_total_time=30
+
   cargo-fuzz-h2:
     needs: [check, check-msrv, check-all-features]
     runs-on: ubuntu-latest

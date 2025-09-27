@@ -4,14 +4,14 @@ use std::{
 };
 
 use rama_core::bytes::Bytes;
-use rama_http_types::header::HeaderValue;
+use rama_http_types::header::{HeaderValue, InvalidHeaderValue};
 
 use super::IterExt;
 use crate::Error;
 
 /// A value that is both a valid `HeaderValue` and `String`.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct HeaderValueString {
+pub struct HeaderValueString {
     /// Care must be taken to only set this value when it is also
     /// a valid `String`, since `as_str` will convert to a `&str`
     /// in an unchecked manner.
@@ -19,7 +19,7 @@ pub(crate) struct HeaderValueString {
 }
 
 impl HeaderValueString {
-    pub(crate) fn from_val(val: &HeaderValue) -> Result<Self, Error> {
+    pub fn from_val(val: &HeaderValue) -> Result<Self, Error> {
         if val.to_str().is_ok() {
             Ok(Self { value: val.clone() })
         } else {
@@ -27,8 +27,8 @@ impl HeaderValueString {
         }
     }
 
-    #[expect(unused)]
-    pub(crate) fn from_string(src: String) -> Option<Self> {
+    #[must_use]
+    pub fn from_string(src: String) -> Option<Self> {
         // A valid `str` (the argument)...
         let bytes = Bytes::from(src);
         HeaderValue::from_maybe_shared(bytes)
@@ -36,14 +36,15 @@ impl HeaderValueString {
             .map(|value| Self { value })
     }
 
-    pub(crate) const fn from_static(src: &'static str) -> Self {
+    #[must_use]
+    pub const fn from_static(src: &'static str) -> Self {
         // A valid `str` (the argument)...
         Self {
             value: HeaderValue::from_static(src),
         }
     }
 
-    pub(crate) fn as_str(&self) -> &str {
+    pub fn as_str(&self) -> &str {
         // HeaderValueString is only created from HeaderValues
         // that have validated they are also UTF-8 strings.
         unsafe { str::from_utf8_unchecked(self.value.as_bytes()) }
@@ -80,16 +81,11 @@ impl<'a> From<&'a HeaderValueString> for HeaderValue {
     }
 }
 
-#[derive(Debug)]
-pub(crate) struct FromStrError(());
-
 impl FromStr for HeaderValueString {
-    type Err = FromStrError;
+    type Err = InvalidHeaderValue;
 
     fn from_str(src: &str) -> Result<Self, Self::Err> {
         // A valid `str` (the argument)...
-        src.parse()
-            .map(|value| Self { value })
-            .map_err(|_| FromStrError(()))
+        src.parse().map(|value| Self { value })
     }
 }
