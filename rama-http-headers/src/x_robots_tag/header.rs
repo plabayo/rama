@@ -40,9 +40,19 @@ impl XRobotsTag {
     }
 
     #[must_use]
+    pub fn tags(&self) -> &[RobotsTag] {
+        &self.0
+    }
+
+    #[must_use]
     pub fn into_first_tag(self) -> RobotsTag {
         // Safety: API guarantees at least one tag
         self.0.into_iter().next().unwrap()
+    }
+
+    #[must_use]
+    pub fn first_tag(&self) -> &RobotsTag {
+        &self.0[0]
     }
 }
 
