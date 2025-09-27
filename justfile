@@ -132,6 +132,12 @@ fuzz-ua:
 fuzz-ua-60s:
 	cargo +nightly fuzz run ua_parse -- -max_len=131072 -max_total_time=60
 
+fuzz-http-headers-x-robots-tag:
+	cargo +nightly fuzz run http_header_x_robots_tag -- -max_len=131072
+
+fuzz-http-headers-x-robots-tag-60s:
+	cargo +nightly fuzz run http_header_x_robots_tag -- -max_len=131072 -max_total_time=60
+
 fuzz-h2-main:
     # cargo install honggfuzz
     cd rama-http-core/tests/h2-fuzz && \
@@ -151,7 +157,7 @@ fuzz-h2-60s:
 	cargo +nightly fuzz run h2_hpack -- -max_total_time=60
 	cargo +nightly fuzz run h2_e2e -- -max_total_time=60
 
-fuzz-60s: fuzz-ua-60s fuzz-h2-60s
+fuzz-60s: fuzz-ua-60s fuzz-h2-60s fuzz-http-headers-x-robots-tag-60s
 
 fuzz-full: fuzz-60s fuzz-h2-main
 
