@@ -370,12 +370,14 @@ opentelemetry = [
     "rama-core/opentelemetry",
     "rama-http?/opentelemetry",
     "rama-net?/opentelemetry",
+    "dep:opentelemetry-otlp",
 ]
 
 [dependencies]
 base64 = { workspace = true, optional = true }
 bytes = { workspace = true, optional = true }
 hex = { workspace = true, optional = true }
+opentelemetry-otlp = { workspace = true, optional = true }
 pin-project-lite = { workspace = true }
 rama-core = { workspace = true }
 rama-crypto = { workspace = true, optional = true }
@@ -400,6 +402,7 @@ serde = { workspace = true, optional = true }
 serde_html_form = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["macros", "io-std"], optional = true }
+tracing-subscriber = { workspace = true, features = ["env-filter", "json", "chrono"] }
 
 [target.'cfg(unix)'.dependencies]
 rama-unix = { workspace = true }
@@ -417,8 +420,6 @@ h2-support = { path = "rama-http-core/tests/h2-support" }
 indexmap = { workspace = true, features = ["serde"] }
 itertools = { workspace = true }
 itoa = { workspace = true }
-opentelemetry-otlp = { workspace = true }
-opentelemetry_sdk = { workspace = true }
 pin-project-lite = { workspace = true }
 regex = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
@@ -427,7 +428,6 @@ serde_json = { workspace = true }
 spmc = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tokio-test = { workspace = true }
-tracing-subscriber = { workspace = true, features = ["env-filter"] }
 turmoil = { workspace = true }
 
 [lints]

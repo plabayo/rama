@@ -1,20 +1,21 @@
-use opentelemetry_otlp::{SpanExporter, WithHttpConfig};
 use rama::{
     http::{client::EasyHttpWebClient, service::opentelemetry::OtelExporter},
     net::client::pool::http::HttpPooledConnectorConfig,
     telemetry::{
         opentelemetry::{
             KeyValue,
+            collector::{SpanExporter, WithHttpConfig},
             sdk::{Resource, trace::SdkTracerProvider},
             trace::TracerProvider,
+        },
+        tracing::subscriber::{
+            EnvFilter, filter::Directive, fmt, layer::SubscriberExt, util::SubscriberInitExt,
         },
         tracing::{self, layer},
     },
 };
+
 use std::io::IsTerminal as _;
-use tracing_subscriber::{
-    EnvFilter, filter::Directive, fmt, layer::SubscriberExt, util::SubscriberInitExt,
-};
 
 pub fn init_tracing(default_directive: impl Into<Directive>) {
     if std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").is_ok() {

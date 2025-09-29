@@ -394,8 +394,7 @@ pub use ::rama_tcp as tcp;
 #[doc(inline)]
 pub use ::rama_udp as udp;
 
-#[doc(inline)]
-pub use ::rama_core::telemetry;
+pub mod telemetry;
 
 #[cfg(any(feature = "rustls", feature = "boring", feature = "acme"))]
 pub mod tls;
