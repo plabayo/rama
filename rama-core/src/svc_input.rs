@@ -9,23 +9,23 @@ use pin_project_lite::pin_project;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 pin_project! {
-    /// A generic request that implements all rama traits conditionally
+    /// A generic service input that implements all rama traits conditionally
     ///
-    /// This request type can be used in places where you need a request/stream
+    /// This input type can be used in places where you need a request/stream
     /// that implements things such as [`ExtensionsRef`] without having to
     /// create a custom type for it.
     ///
     /// This is mainly useful for testing or less import request types. In most
     /// cases you should create a new type that implements all the needed traits,
     /// but that is focussed specifically on that use case.
-    pub struct GenericRequest<T> {
+    pub struct ServiceInput<T> {
         #[pin]
         pub request: T,
         pub extensions: Extensions,
     }
 }
 
-impl<T> GenericRequest<T> {
+impl<T> ServiceInput<T> {
     pub fn new(request: T) -> Self {
         Self {
             request,
@@ -34,16 +34,16 @@ impl<T> GenericRequest<T> {
     }
 }
 
-impl<T: std::fmt::Debug> std::fmt::Debug for GenericRequest<T> {
+impl<T: std::fmt::Debug> std::fmt::Debug for ServiceInput<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("GenericRequest")
+        f.debug_struct("ServiceInput")
             .field("request", &self.request)
             .field("extensions", &self.extensions)
             .finish()
     }
 }
 
-impl<T: Default> Default for GenericRequest<T> {
+impl<T: Default> Default for ServiceInput<T> {
     fn default() -> Self {
         Self {
             request: Default::default(),
@@ -52,7 +52,7 @@ impl<T: Default> Default for GenericRequest<T> {
     }
 }
 
-impl<T: Clone> Clone for GenericRequest<T> {
+impl<T: Clone> Clone for ServiceInput<T> {
     fn clone(&self) -> Self {
         Self {
             request: self.request.clone(),
@@ -61,19 +61,19 @@ impl<T: Clone> Clone for GenericRequest<T> {
     }
 }
 
-impl<T> ExtensionsRef for GenericRequest<T> {
+impl<T> ExtensionsRef for ServiceInput<T> {
     fn extensions(&self) -> &Extensions {
         &self.extensions
     }
 }
 
-impl<T> ExtensionsMut for GenericRequest<T> {
+impl<T> ExtensionsMut for ServiceInput<T> {
     fn extensions_mut(&mut self) -> &mut Extensions {
         &mut self.extensions
     }
 }
 
-impl<T: AsyncRead> AsyncRead for GenericRequest<T> {
+impl<T: AsyncRead> AsyncRead for ServiceInput<T> {
     fn poll_read(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -83,7 +83,7 @@ impl<T: AsyncRead> AsyncRead for GenericRequest<T> {
     }
 }
 
-impl<T: AsyncWrite> AsyncWrite for GenericRequest<T> {
+impl<T: AsyncWrite> AsyncWrite for ServiceInput<T> {
     fn poll_write(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -113,7 +113,7 @@ impl<T: AsyncWrite> AsyncWrite for GenericRequest<T> {
     }
 }
 
-impl<T: Read> Read for GenericRequest<T> {
+impl<T: Read> Read for ServiceInput<T> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         self.request.read(buf)
     }
@@ -135,7 +135,7 @@ impl<T: Read> Read for GenericRequest<T> {
     }
 }
 
-impl<T: Write> Write for GenericRequest<T> {
+impl<T: Write> Write for ServiceInput<T> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         self.request.write(buf)
     }

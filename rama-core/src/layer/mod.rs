@@ -985,7 +985,7 @@ crate::combinators::impl_either!(impl_layer_either);
 mod tests {
     use rama_error::OpaqueError;
 
-    use crate::{Context, generic_request::GenericRequest, service::service_fn};
+    use crate::{Context, ServiceInput, service::service_fn};
 
     use super::*;
 
@@ -994,7 +994,7 @@ mod tests {
         let svc = (GetExtensionLayer::new(async |_: String| {}))
             .into_layer(service_fn(async |_, _| Ok::<_, OpaqueError>(())));
 
-        svc.serve(Context::default(), GenericRequest::new(()))
+        svc.serve(Context::default(), ServiceInput::new(()))
             .await
             .unwrap();
     }
@@ -1005,7 +1005,7 @@ mod tests {
 
         let svc = (maybe_layer).into_layer(service_fn(async |_, _| Ok::<_, OpaqueError>(())));
 
-        svc.serve(Context::default(), GenericRequest::new(()))
+        svc.serve(Context::default(), ServiceInput::new(()))
             .await
             .unwrap();
     }

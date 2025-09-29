@@ -218,7 +218,7 @@ impl BytesRWTrackerHandle {
 mod tests {
     use super::*;
 
-    use rama_core::generic_request::GenericRequest;
+    use rama_core::ServiceInput;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio_test::io::Builder;
 
@@ -230,7 +230,7 @@ mod tests {
             .read(b"baz")
             .build();
 
-        let stream = GenericRequest::new(stream);
+        let stream = ServiceInput::new(stream);
         let mut tracker = BytesRWTracker::new(stream);
         let mut buf = [0u8; 3];
 
@@ -255,7 +255,7 @@ mod tests {
             .write(b"baz")
             .build();
 
-        let stream = GenericRequest::new(stream);
+        let stream = ServiceInput::new(stream);
         let mut tracker = BytesRWTracker::new(stream);
 
         assert_eq!(tracker.read(), 0);
@@ -282,7 +282,7 @@ mod tests {
             .write(b"baz")
             .build();
 
-        let stream = GenericRequest::new(stream);
+        let stream = ServiceInput::new(stream);
         let mut tracker = BytesRWTracker::new(stream);
         let mut buf = [0u8; 3];
 
@@ -319,7 +319,7 @@ mod tests {
             .write(b"baz")
             .build();
 
-        let stream = GenericRequest::new(stream);
+        let stream = ServiceInput::new(stream);
         let tracker = BytesRWTracker::new(stream);
         let handle = tracker.handle();
 

@@ -88,8 +88,8 @@ mod tests {
     use std::sync::Arc;
 
     use crate::{
+        ServiceInput,
         extensions::Extensions,
-        generic_request::GenericRequest,
         layer::limit::policy::{ConcurrentCounter, ConcurrentPolicy},
     };
 
@@ -109,7 +109,7 @@ mod tests {
         }
     }
 
-    type NumberedRequest = GenericRequest<usize>;
+    type NumberedRequest = ServiceInput<usize>;
 
     #[tokio::test]
     async fn matcher_policy_empty() {

@@ -1,4 +1,4 @@
-use rama_core::generic_request::GenericRequest;
+use rama_core::ServiceInput;
 
 use super::*;
 
@@ -19,7 +19,7 @@ async fn test_socks5_acceptor_auth_flow_used_failure_unauthorized() {
         .write(b"\x01\x01")
         .build();
 
-    let stream = GenericRequest::new(stream);
+    let stream = ServiceInput::new(stream);
 
     let server = Socks5Acceptor::new()
         .with_authorizer(user::Basic::new_static("john", "secret").into_authorizer());
@@ -40,7 +40,7 @@ async fn test_socks5_acceptor_auth_flow_used_failure_unauthorized_missing_passwo
         .write(b"\x01\x01")
         .build();
 
-    let stream = GenericRequest::new(stream);
+    let stream = ServiceInput::new(stream);
 
     let server = Socks5Acceptor::new()
         .with_authorizer(user::Basic::new_static("john", "secret").into_authorizer());

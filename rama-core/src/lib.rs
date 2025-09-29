@@ -53,7 +53,8 @@ pub mod telemetry;
 
 pub mod conversion;
 
-pub mod generic_request;
+pub mod svc_input;
+pub use svc_input::ServiceInput;
 
 pub mod bytes {
     //! Re-export of [bytes](https://docs.rs/bytes/latest/bytes/) crate.

@@ -374,8 +374,7 @@ pub mod protocol {
 mod tests {
     use super::*;
     use rama_core::{
-        Layer, extensions::Extensions, extensions::ExtensionsMut, generic_request::GenericRequest,
-        service::service_fn,
+        Layer, ServiceInput, extensions::Extensions, extensions::ExtensionsMut, service::service_fn,
     };
     use rama_net::forwarded::{ForwardedElement, NodeId};
     use std::{convert::Infallible, net::SocketAddr, pin::Pin};
@@ -501,7 +500,7 @@ mod tests {
             ),
         ] {
             let svc = HaProxyLayer::tcp().v1().layer(service_fn(
-                async move |ctx, req: GenericRequest<()>| {
+                async move |ctx, req: ServiceInput<()>| {
                     Ok::<_, Infallible>(EstablishedClientConnection {
                         ctx,
                         req,
@@ -513,7 +512,7 @@ mod tests {
                     })
                 },
             ));
-            let mut req = GenericRequest::new(());
+            let mut req = ServiceInput::new(());
             *req.extensions_mut() = ext;
             svc.serve(Context::default(), req).await.unwrap();
         }
@@ -572,7 +571,7 @@ mod tests {
             ),
         ] {
             let svc = HaProxyLayer::tcp().v1().layer(service_fn(
-                async move |ctx, req: GenericRequest<()>| {
+                async move |ctx, req: ServiceInput<()>| {
                     Ok::<_, Infallible>(EstablishedClientConnection {
                         ctx,
                         req,
@@ -585,7 +584,7 @@ mod tests {
                 },
             ));
 
-            let mut req = GenericRequest::new(());
+            let mut req = ServiceInput::new(());
             *req.extensions_mut() = ext;
             assert!(svc.serve(Context::default(), req).await.is_err());
         }
@@ -611,7 +610,7 @@ mod tests {
                     })
                 }));
             assert!(
-                svc.serve(Context::default(), GenericRequest::new(()))
+                svc.serve(Context::default(), ServiceInput::new(()))
                     .await
                     .is_err()
             );
@@ -641,7 +640,7 @@ mod tests {
             },
         ] {
             let svc = HaProxyLayer::tcp().with_payload(vec![42]).layer(service_fn(
-                async move |ctx, req: GenericRequest<()>| {
+                async move |ctx, req: ServiceInput<()>| {
                     Ok::<_, Infallible>(EstablishedClientConnection {
                         ctx,
                         req,
@@ -660,7 +659,7 @@ mod tests {
                 },
             ));
 
-            let mut req = GenericRequest::new(());
+            let mut req = ServiceInput::new(());
             *req.extensions_mut() = ext;
             svc.serve(Context::default(), req).await.unwrap();
         }
@@ -689,7 +688,7 @@ mod tests {
             },
         ] {
             let svc = HaProxyLayer::udp().with_payload(vec![42]).layer(service_fn(
-                async move |ctx, req: GenericRequest<()>| {
+                async move |ctx, req: ServiceInput<()>| {
                     Ok::<_, Infallible>(EstablishedClientConnection {
                         ctx,
                         req,
@@ -708,7 +707,7 @@ mod tests {
                 },
             ));
 
-            let mut req = GenericRequest::new(());
+            let mut req = ServiceInput::new(());
             *req.extensions_mut() = ext;
             svc.serve(Context::default(), req).await.unwrap();
         }
@@ -737,7 +736,7 @@ mod tests {
             },
         ] {
             let svc = HaProxyLayer::tcp().with_payload(vec![42]).layer(service_fn(
-                async move |ctx, req: GenericRequest<()>| {
+                async move |ctx, req: ServiceInput<()>| {
                     Ok::<_, Infallible>(EstablishedClientConnection {
                         ctx,
                         req,
@@ -761,7 +760,7 @@ mod tests {
                 },
             ));
 
-            let mut req = GenericRequest::new(());
+            let mut req = ServiceInput::new(());
             *req.extensions_mut() = ext;
             svc.serve(Context::default(), req).await.unwrap();
         }
@@ -790,7 +789,7 @@ mod tests {
             },
         ] {
             let svc = HaProxyLayer::udp().with_payload(vec![42]).layer(service_fn(
-                async move |ctx, req: GenericRequest<()>| {
+                async move |ctx, req: ServiceInput<()>| {
                     Ok::<_, Infallible>(EstablishedClientConnection {
                         ctx,
                         req,
@@ -814,7 +813,7 @@ mod tests {
                 },
             ));
 
-            let mut req = GenericRequest::new(());
+            let mut req = ServiceInput::new(());
             *req.extensions_mut() = ext;
             svc.serve(Context::default(), req).await.unwrap();
         }
@@ -875,7 +874,7 @@ mod tests {
             // TCP
 
             let svc =
-                HaProxyLayer::tcp().layer(service_fn(async move |ctx, req: GenericRequest<()>| {
+                HaProxyLayer::tcp().layer(service_fn(async move |ctx, req: ServiceInput<()>| {
                     Ok::<_, Infallible>(EstablishedClientConnection {
                         ctx,
                         req,
@@ -887,14 +886,14 @@ mod tests {
                     })
                 }));
 
-            let mut req = GenericRequest::new(());
+            let mut req = ServiceInput::new(());
             *req.extensions_mut() = ext.clone();
             assert!(svc.serve(Context::default(), req).await.is_err());
 
             // UDP
 
             let svc =
-                HaProxyLayer::udp().layer(service_fn(async move |ctx, req: GenericRequest<()>| {
+                HaProxyLayer::udp().layer(service_fn(async move |ctx, req: ServiceInput<()>| {
                     Ok::<_, Infallible>(EstablishedClientConnection {
                         ctx,
                         req,
@@ -906,7 +905,7 @@ mod tests {
                     })
                 }));
 
-            let mut req = GenericRequest::new(());
+            let mut req = ServiceInput::new(());
             *req.extensions_mut() = ext;
             assert!(svc.serve(Context::default(), req).await.is_err());
         }
@@ -932,7 +931,7 @@ mod tests {
                 })
             }));
             assert!(
-                svc.serve(Context::default(), GenericRequest::new(()))
+                svc.serve(Context::default(), ServiceInput::new(()))
                     .await
                     .is_err()
             );
@@ -951,7 +950,7 @@ mod tests {
                 })
             }));
             assert!(
-                svc.serve(Context::default(), GenericRequest::new(()))
+                svc.serve(Context::default(), ServiceInput::new(()))
                     .await
                     .is_err()
             );

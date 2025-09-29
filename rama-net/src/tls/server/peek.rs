@@ -110,7 +110,7 @@ pub type TlsPeekStream<S> = PeekStream<StackReader<TLS_HEADER_PEEK_LEN>, S>;
 #[cfg(test)]
 mod test {
     use rama_core::{
-        generic_request::GenericRequest,
+        ServiceInput,
         service::{RejectError, service_fn},
     };
     use std::convert::Infallible;
@@ -129,7 +129,7 @@ mod test {
         let response = peek_tls_svc
             .serve(
                 Context::default(),
-                GenericRequest::new(std::io::Cursor::new(b"".to_vec())),
+                ServiceInput::new(std::io::Cursor::new(b"".to_vec())),
             )
             .await
             .unwrap();
@@ -138,7 +138,7 @@ mod test {
         let response = peek_tls_svc
             .serve(
                 Context::default(),
-                GenericRequest::new(std::io::Cursor::new(b"\x16\x03\x03\x00\x2afoo".to_vec())),
+                ServiceInput::new(std::io::Cursor::new(b"\x16\x03\x03\x00\x2afoo".to_vec())),
             )
             .await
             .unwrap();
@@ -147,7 +147,7 @@ mod test {
         let response = peek_tls_svc
             .serve(
                 Context::default(),
-                GenericRequest::new(std::io::Cursor::new(b"foo".to_vec())),
+                ServiceInput::new(std::io::Cursor::new(b"foo".to_vec())),
             )
             .await
             .unwrap();
@@ -156,7 +156,7 @@ mod test {
         let response = peek_tls_svc
             .serve(
                 Context::default(),
-                GenericRequest::new(std::io::Cursor::new(b"foobar".to_vec())),
+                ServiceInput::new(std::io::Cursor::new(b"foobar".to_vec())),
             )
             .await
             .unwrap();
@@ -184,7 +184,7 @@ mod test {
         let response = peek_tls_svc
             .serve(
                 Context::default(),
-                GenericRequest::new(std::io::Cursor::new(CONTENT.to_vec())),
+                ServiceInput::new(std::io::Cursor::new(CONTENT.to_vec())),
             )
             .await
             .unwrap();
@@ -214,7 +214,7 @@ mod test {
             let response = peek_tls_svc
                 .serve(
                     Context::default(),
-                    GenericRequest::new(std::io::Cursor::new(content.as_bytes().to_vec())),
+                    ServiceInput::new(std::io::Cursor::new(content.as_bytes().to_vec())),
                 )
                 .await
                 .unwrap();

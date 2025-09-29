@@ -804,8 +804,8 @@ impl<S, P: Clone, R: Clone> Layer<S> for PooledConnectorLayer<P, R> {
 mod tests {
     use super::*;
     use crate::client::EstablishedClientConnection;
+    use rama_core::ServiceInput;
     use rama_core::extensions::ExtensionsMut;
-    use rama_core::generic_request::GenericRequest;
     use rama_core::{Context, Service, extensions::Extensions};
     use std::{
         convert::Infallible,
@@ -884,19 +884,15 @@ mod tests {
     }
 
     #[derive(Clone)]
-    /// [`StringRequestLengthID`] will map Requests of type GenericRequest<String>, to usize id representing their
+    /// [`StringRequestLengthID`] will map Requests of type ServiceInput<String>, to usize id representing their
     /// chars length. In practise this will mean that Requests of the same char length will be
     /// able to reuse the same connections
     struct StringRequestLengthID;
 
-    impl ReqToConnID<GenericRequest<String>> for StringRequestLengthID {
+    impl ReqToConnID<ServiceInput<String>> for StringRequestLengthID {
         type ID = usize;
 
-        fn id(
-            &self,
-            _ctx: &Context,
-            req: &GenericRequest<String>,
-        ) -> Result<Self::ID, OpaqueError> {
+        fn id(&self, _ctx: &Context, req: &ServiceInput<String>) -> Result<Self::ID, OpaqueError> {
             Ok(req.request.chars().count())
         }
     }
@@ -912,13 +908,13 @@ mod tests {
         let svc = PooledConnector::new(
             TestService::default(),
             pool,
-            |_ctx: &Context, _req: &GenericRequest<String>| Ok(()),
+            |_ctx: &Context, _req: &ServiceInput<String>| Ok(()),
         );
 
         let iterations = 10;
         for _i in 0..iterations {
             let _conn = svc
-                .connect(Context::default(), GenericRequest::new(String::new()))
+                .connect(Context::default(), ServiceInput::new(String::new()))
                 .await
                 .unwrap();
         }
@@ -934,7 +930,7 @@ mod tests {
 
         {
             let mut conn = svc
-                .connect(Context::default(), GenericRequest::new(String::from("a")))
+                .connect(Context::default(), ServiceInput::new(String::from("a")))
                 .await
                 .unwrap()
                 .conn;
@@ -947,7 +943,7 @@ mod tests {
         // Should reuse the same connections
         {
             let mut conn = svc
-                .connect(Context::default(), GenericRequest::new(String::from("B")))
+                .connect(Context::default(), ServiceInput::new(String::from("B")))
                 .await
                 .unwrap()
                 .conn;
@@ -960,7 +956,7 @@ mod tests {
         // Should make a new one
         {
             let mut conn = svc
-                .connect(Context::default(), GenericRequest::new(String::from("aa")))
+                .connect(Context::default(), ServiceInput::new(String::from("aa")))
                 .await
                 .unwrap()
                 .conn;
@@ -973,7 +969,7 @@ mod tests {
         // Should reuse
         {
             let mut conn = svc
-                .connect(Context::default(), GenericRequest::new(String::from("bb")))
+                .connect(Context::default(), ServiceInput::new(String::from("bb")))
                 .await
                 .unwrap()
                 .conn;
@@ -991,18 +987,18 @@ mod tests {
             .with_wait_for_pool_timeout(Duration::from_millis(50));
 
         let conn1 = svc
-            .connect(Context::default(), GenericRequest::new(String::from("a")))
+            .connect(Context::default(), ServiceInput::new(String::from("a")))
             .await
             .unwrap();
 
         let conn2 = svc
-            .connect(Context::default(), GenericRequest::new(String::from("a")))
+            .connect(Context::default(), ServiceInput::new(String::from("a")))
             .await;
         assert_err!(conn2);
 
         drop(conn1);
         let _conn3 = svc
-            .connect(Context::default(), GenericRequest::new(String::from("aaa")))
+            .connect(Context::default(), ServiceInput::new(String::from("aaa")))
             .await
             .unwrap();
     }
@@ -1072,7 +1068,7 @@ mod tests {
         let svc = PooledConnector::new(TestConnector::default(), pool, StringRequestLengthID {});
 
         let conn = svc
-            .connect(Context::default(), GenericRequest::new(String::from("")))
+            .connect(Context::default(), ServiceInput::new(String::from("")))
             .await
             .unwrap();
 
@@ -1085,7 +1081,7 @@ mod tests {
         drop(conn);
 
         let conn = svc
-            .connect(Context::default(), GenericRequest::new(String::from("")))
+            .connect(Context::default(), ServiceInput::new(String::from("")))
             .await
             .unwrap();
 
@@ -1096,7 +1092,7 @@ mod tests {
         drop(conn);
 
         let conn = svc
-            .connect(Context::default(), GenericRequest::new(String::from("")))
+            .connect(Context::default(), ServiceInput::new(String::from("")))
             .await
             .unwrap();
 
@@ -1115,7 +1111,7 @@ mod tests {
         let svc = PooledConnector::new(TestService::default(), pool, StringRequestLengthID {});
 
         let conn = svc
-            .connect(Context::default(), GenericRequest::new(String::from("")))
+            .connect(Context::default(), ServiceInput::new(String::from("")))
             .await
             .unwrap()
             .conn;
@@ -1128,7 +1124,7 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(100)).await;
 
         let conn = svc
-            .connect(Context::default(), GenericRequest::new(String::from("")))
+            .connect(Context::default(), ServiceInput::new(String::from("")))
             .await
             .unwrap()
             .conn;
@@ -1155,14 +1151,14 @@ mod tests {
         let svc = PooledConnector::new(
             TestService::default(),
             pool,
-            |_: &Context, _: &GenericRequest<()>| Ok(()),
+            |_: &Context, _: &ServiceInput<()>| Ok(()),
         );
 
         // Open two concurrent connections and drop them.
         let mut conns = Vec::new();
         for i in 0..2 {
             let mut conn = svc
-                .connect(Context::default(), GenericRequest::new(()))
+                .connect(Context::default(), ServiceInput::new(()))
                 .await
                 .unwrap()
                 .conn;
@@ -1177,7 +1173,7 @@ mod tests {
         // another connection should return the first or last one depending on
         // the reuse policy.
         let conn = svc
-            .connect(Context::default(), GenericRequest::new(()))
+            .connect(Context::default(), ServiceInput::new(()))
             .await
             .unwrap()
             .conn;

@@ -243,7 +243,7 @@ where
 
 #[cfg(test)]
 mod test {
-    use rama_core::{generic_request::GenericRequest, service::service_fn};
+    use rama_core::{ServiceInput, service::service_fn};
 
     use super::*;
 
@@ -257,12 +257,12 @@ mod test {
     async fn test_haproxy_peek_direct() {
         let proxy_svc = HaProxyService::new(service_fn(echo)).with_peek(true);
 
-        let request = GenericRequest::new(std::io::Cursor::new(b"foo".to_vec()));
+        let request = ServiceInput::new(std::io::Cursor::new(b"foo".to_vec()));
         let response = proxy_svc.serve(Context::default(), request).await.unwrap();
 
         assert_eq!("foo", String::from_utf8(response).unwrap());
 
-        let request = GenericRequest::new(std::io::Cursor::new(
+        let request = ServiceInput::new(std::io::Cursor::new(
             b"Hello, this is a test to check if it works.".to_vec(),
         ));
         let response = proxy_svc.serve(Context::default(), request).await.unwrap();
@@ -277,14 +277,14 @@ mod test {
     async fn test_haproxy_peek_with_haproxy_v1() {
         let proxy_svc = HaProxyService::new(service_fn(echo));
 
-        let request = GenericRequest::new(std::io::Cursor::new(
+        let request = ServiceInput::new(std::io::Cursor::new(
             b"PROXY TCP4 192.0.2.1 198.51.100.1 12345 80\r\n".to_vec(),
         ));
         let response = proxy_svc.serve(Context::default(), request).await.unwrap();
 
         assert_eq!("", String::from_utf8(response).unwrap());
 
-        let request = GenericRequest::new(std::io::Cursor::new(
+        let request = ServiceInput::new(std::io::Cursor::new(
             b"PROXY TCP4 192.0.2.1 198.51.100.1 12345 80\r\nfoo".to_vec(),
         ));
         let response = proxy_svc.serve(Context::default(), request).await.unwrap();
@@ -293,14 +293,14 @@ mod test {
 
         let proxy_svc = proxy_svc.with_peek(true);
 
-        let request = GenericRequest::new(std::io::Cursor::new(
+        let request = ServiceInput::new(std::io::Cursor::new(
             b"PROXY TCP4 192.0.2.1 198.51.100.1 12345 80\r\n".to_vec(),
         ));
         let response = proxy_svc.serve(Context::default(), request).await.unwrap();
 
         assert_eq!("", String::from_utf8(response).unwrap());
 
-        let request = GenericRequest::new(std::io::Cursor::new(
+        let request = ServiceInput::new(std::io::Cursor::new(
             b"PROXY TCP4 192.0.2.1 198.51.100.1 12345 80\r\nfoo".to_vec(),
         ));
         let response = proxy_svc.serve(Context::default(), request).await.unwrap();
@@ -325,12 +325,12 @@ mod test {
         ];
 
         let proxy_svc = HaProxyService::new(service_fn(echo));
-        let request = GenericRequest::new(std::io::Cursor::new(DATA.to_vec()));
+        let request = ServiceInput::new(std::io::Cursor::new(DATA.to_vec()));
         let response = proxy_svc.serve(Context::default(), request).await.unwrap();
         assert_eq!("foo", String::from_utf8(response).unwrap());
 
         let proxy_svc = proxy_svc.with_peek(true);
-        let request = GenericRequest::new(std::io::Cursor::new(DATA.to_vec()));
+        let request = ServiceInput::new(std::io::Cursor::new(DATA.to_vec()));
         let response = proxy_svc.serve(Context::default(), request).await.unwrap();
         assert_eq!("foo", String::from_utf8(response).unwrap());
     }

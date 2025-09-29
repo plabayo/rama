@@ -124,7 +124,7 @@ pub type Socks5PeekStream<S> = PeekStream<StackReader<SOCKS5_HEADER_PEEK_LEN>, S
 mod test {
 
     use rama_core::{
-        generic_request::GenericRequest,
+        ServiceInput,
         service::{RejectError, service_fn},
         stream::Stream,
     };
@@ -143,7 +143,7 @@ mod test {
         let response = peek_socks5_svc
             .serve(
                 Context::default(),
-                GenericRequest::new(std::io::Cursor::new(b"".to_vec())),
+                ServiceInput::new(std::io::Cursor::new(b"".to_vec())),
             )
             .await
             .unwrap();
@@ -152,7 +152,7 @@ mod test {
         let response = peek_socks5_svc
             .serve(
                 Context::default(),
-                GenericRequest::new(std::io::Cursor::new(b"\x05\x01\x00".to_vec())),
+                ServiceInput::new(std::io::Cursor::new(b"\x05\x01\x00".to_vec())),
             )
             .await
             .unwrap();
@@ -161,7 +161,7 @@ mod test {
         let response = peek_socks5_svc
             .serve(
                 Context::default(),
-                GenericRequest::new(std::io::Cursor::new(b"\x05\x01\x00foobar".to_vec())),
+                ServiceInput::new(std::io::Cursor::new(b"\x05\x01\x00foobar".to_vec())),
             )
             .await
             .unwrap();
@@ -170,7 +170,7 @@ mod test {
         let response = peek_socks5_svc
             .serve(
                 Context::default(),
-                GenericRequest::new(std::io::Cursor::new(b"\x05\x02\x01\x00".to_vec())),
+                ServiceInput::new(std::io::Cursor::new(b"\x05\x02\x01\x00".to_vec())),
             )
             .await
             .unwrap();
@@ -179,7 +179,7 @@ mod test {
         let response = peek_socks5_svc
             .serve(
                 Context::default(),
-                GenericRequest::new(std::io::Cursor::new(b"fo".to_vec())),
+                ServiceInput::new(std::io::Cursor::new(b"fo".to_vec())),
             )
             .await
             .unwrap();
@@ -188,7 +188,7 @@ mod test {
         let response = peek_socks5_svc
             .serve(
                 Context::default(),
-                GenericRequest::new(std::io::Cursor::new(b"foo".to_vec())),
+                ServiceInput::new(std::io::Cursor::new(b"foo".to_vec())),
             )
             .await
             .unwrap();
@@ -197,7 +197,7 @@ mod test {
         let response = peek_socks5_svc
             .serve(
                 Context::default(),
-                GenericRequest::new(std::io::Cursor::new(b"foobar".to_vec())),
+                ServiceInput::new(std::io::Cursor::new(b"foobar".to_vec())),
             )
             .await
             .unwrap();
@@ -229,7 +229,7 @@ mod test {
         let response = peek_socks5_svc
             .serve(
                 Context::default(),
-                GenericRequest::new(std::io::Cursor::new(CONTENT.to_vec())),
+                ServiceInput::new(std::io::Cursor::new(CONTENT.to_vec())),
             )
             .await
             .unwrap();
@@ -269,7 +269,7 @@ mod test {
             let response = peek_socks5_svc
                 .serve(
                     Context::default(),
-                    GenericRequest::new(std::io::Cursor::new(content.as_bytes().to_vec())),
+                    ServiceInput::new(std::io::Cursor::new(content.as_bytes().to_vec())),
                 )
                 .await
                 .unwrap();

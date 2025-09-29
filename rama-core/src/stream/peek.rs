@@ -210,7 +210,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::generic_request::GenericRequest;
+    use crate::ServiceInput;
 
     use super::*;
 
@@ -278,7 +278,7 @@ mod tests {
                 let new_stream = || {
                     let peek_data = Cursor::new(self.peek_data);
                     let inner_data = Cursor::new(self.inner_data);
-                    PeekStream::new(peek_data, GenericRequest::new(inner_data))
+                    PeekStream::new(peek_data, ServiceInput::new(inner_data))
                 };
 
                 test_multi_read_async::<N>(&mut new_stream(), self.expected_reads).await;
@@ -335,10 +335,10 @@ mod tests {
         .await;
     }
 
-    fn new_peek_write_stream() -> PeekStream<Cursor<Vec<u8>>, GenericRequest<Cursor<Vec<u8>>>> {
+    fn new_peek_write_stream() -> PeekStream<Cursor<Vec<u8>>, ServiceInput<Cursor<Vec<u8>>>> {
         let peek_data = Cursor::new(Vec::new());
         let inner_data = Cursor::new(Vec::new());
-        PeekStream::new(peek_data, GenericRequest::new(inner_data))
+        PeekStream::new(peek_data, ServiceInput::new(inner_data))
     }
 
     async fn test_multi_write_async(mut stream: impl AsyncWrite + Unpin, cases: &[&str]) {

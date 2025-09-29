@@ -2,7 +2,7 @@ use std::io::Result;
 use std::net::SocketAddr;
 use std::ops::{Deref, DerefMut};
 
-use rama_core::generic_request::GenericRequest;
+use rama_core::ServiceInput;
 
 /// Common information exposed by a Socket-like construct.
 ///
@@ -64,7 +64,7 @@ impl Socket for tokio::net::UdpSocket {
     }
 }
 
-impl<T: Socket> Socket for GenericRequest<T> {
+impl<T: Socket> Socket for ServiceInput<T> {
     #[inline]
     fn local_addr(&self) -> std::io::Result<SocketAddr> {
         self.request.local_addr()
