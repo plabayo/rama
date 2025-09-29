@@ -13,44 +13,21 @@ pin_project! {
     pub struct AutoTlsStream<S> {
         #[pin]
         inner: AutoTlsStreamData<S>,
-        extensions: Extensions
     }
 }
 
 impl<S: ExtensionsMut> AutoTlsStream<S> {
     #[must_use]
-    pub fn secure(mut inner: BoringTlsStream<S>) -> Self {
-        let extensions = inner.get_mut().take_extensions();
+    pub fn secure(inner: BoringTlsStream<S>) -> Self {
         Self {
             inner: AutoTlsStreamData::Secure { inner },
-            extensions,
         }
     }
 
     #[must_use]
-    pub fn plain(mut inner: S) -> Self {
-        let extensions = inner.take_extensions();
+    pub fn plain(inner: S) -> Self {
         Self {
             inner: AutoTlsStreamData::Plain { inner },
-            extensions,
-        }
-    }
-}
-
-impl<S> AutoTlsStream<S> {
-    #[must_use]
-    pub fn secure_with_fresh_extensions(inner: BoringTlsStream<S>) -> Self {
-        Self {
-            inner: AutoTlsStreamData::Secure { inner },
-            extensions: Extensions::new(),
-        }
-    }
-
-    #[must_use]
-    pub fn plain_with_fresh_extensions(inner: S) -> Self {
-        Self {
-            inner: AutoTlsStreamData::Plain { inner },
-            extensions: Extensions::new(),
         }
     }
 
@@ -66,7 +43,6 @@ impl<S: fmt::Debug> fmt::Debug for AutoTlsStream<S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("AutoTlsStream")
             .field("inner", &self.inner)
-            .field("extensions", &self.extensions)
             .finish()
     }
 }
@@ -91,15 +67,21 @@ impl<S: fmt::Debug> fmt::Debug for AutoTlsStreamData<S> {
     }
 }
 
-impl<S> ExtensionsRef for AutoTlsStream<S> {
+impl<S: ExtensionsRef> ExtensionsRef for AutoTlsStream<S> {
     fn extensions(&self) -> &Extensions {
-        &self.extensions
+        match &self.inner {
+            AutoTlsStreamData::Secure { inner } => inner.get_ref().extensions(),
+            AutoTlsStreamData::Plain { inner } => inner.extensions(),
+        }
     }
 }
 
-impl<S> ExtensionsMut for AutoTlsStream<S> {
+impl<S: ExtensionsMut> ExtensionsMut for AutoTlsStream<S> {
     fn extensions_mut(&mut self) -> &mut Extensions {
-        &mut self.extensions
+        match &mut self.inner {
+            AutoTlsStreamData::Secure { inner } => inner.get_mut().extensions_mut(),
+            AutoTlsStreamData::Plain { inner } => inner.extensions_mut(),
+        }
     }
 }
 

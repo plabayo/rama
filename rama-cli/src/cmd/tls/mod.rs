@@ -4,7 +4,7 @@ use clap::Args;
 use rama::{
     Context, Layer, Service,
     error::{BoxError, ErrorContext},
-    extensions::Extensions,
+    extensions::{Extensions, ExtensionsRef},
     net::{
         address::Authority,
         client::{ConnectorService, EstablishedClientConnection},
@@ -78,7 +78,7 @@ pub async fn run(cfg: CliCommandTls) -> Result<(), BoxError> {
         .await?;
 
     let params = conn
-        .extensions
+        .extensions()
         .get::<NegotiatedTlsParameters>()
         .expect("NegotiatedTlsParameters to be available in connector context");
 

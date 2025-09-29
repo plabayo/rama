@@ -126,24 +126,12 @@ pub fn pending() -> (Pending, OnUpgrade) {
 
 impl Upgraded {
     /// Create a new [`Upgraded`] from an IO stream and existing buffer.
-    pub fn new<T>(mut io: T, read_buf: Bytes) -> Self
-    where
-        T: Stream + Unpin + ExtensionsMut,
-    {
-        let extensions = io.take_extensions();
-        Self {
-            io: Rewind::new_buffered_with_fresh_extensions(Box::new(io), read_buf),
-            extensions,
-        }
-    }
-
-    /// Create a new [`Upgraded`] from an IO stream and existing buffer.
-    pub fn new_with_fresh_extensions<T>(io: T, read_buf: Bytes) -> Self
+    pub fn new<T>(io: T, read_buf: Bytes) -> Self
     where
         T: Stream + Unpin,
     {
         Self {
-            io: Rewind::new_buffered_with_fresh_extensions(Box::new(io), read_buf),
+            io: Rewind::new_buffered(Box::new(io), read_buf),
             extensions: Extensions::new(),
         }
     }
@@ -161,7 +149,7 @@ impl Upgraded {
                 extensions: self.extensions,
             }),
             Err(io) => Err(Self {
-                io: Rewind::new_buffered_with_fresh_extensions(io, buf),
+                io: Rewind::new_buffered(io, buf),
                 extensions: self.extensions,
             }),
         }
@@ -364,8 +352,7 @@ mod tests {
 
     #[test]
     fn upgraded_downcast() {
-        let upgraded =
-            Upgraded::new_with_fresh_extensions(Builder::default().build(), Bytes::new());
+        let upgraded = Upgraded::new(Builder::default().build(), Bytes::new());
         let upgraded = upgraded.downcast::<std::io::Cursor<Vec<u8>>>().unwrap_err();
         upgraded.downcast::<Mock>().unwrap();
     }

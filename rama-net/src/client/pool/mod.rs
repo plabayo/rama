@@ -113,7 +113,6 @@ pub struct LeasedConnection<C, ID> {
     active_slot: ActiveSlot,
     returner: ConnReturner<C, ID>,
     failed: AtomicBool,
-    extensions: Extensions,
 }
 
 impl<C, ID> LeasedConnection<C, ID> {
@@ -127,15 +126,23 @@ impl<C, ID> LeasedConnection<C, ID> {
     }
 }
 
-impl<C, ID> ExtensionsRef for LeasedConnection<C, ID> {
+impl<C: ExtensionsRef, ID> ExtensionsRef for LeasedConnection<C, ID> {
     fn extensions(&self) -> &Extensions {
-        &self.extensions
+        self.pooled_conn
+            .as_ref()
+            .expect("only None after drop")
+            .conn
+            .extensions()
     }
 }
 
-impl<C, ID> ExtensionsMut for LeasedConnection<C, ID> {
+impl<C: ExtensionsMut, ID> ExtensionsMut for LeasedConnection<C, ID> {
     fn extensions_mut(&mut self) -> &mut Extensions {
-        &mut self.extensions
+        self.pooled_conn
+            .as_mut()
+            .expect("only None after drop")
+            .conn
+            .extensions_mut()
     }
 }
 
@@ -148,7 +155,6 @@ struct PooledConnection<C, ID> {
     id: ID,
     pool_slot: PoolSlot,
     last_used: Instant,
-    extensions: Extensions,
 }
 
 #[deprecated = "use LruDropPool instead"]
@@ -353,13 +359,11 @@ where
                     .record(idx as u64, metric_attrs);
             }
 
-            let extensions = pooled_conn.extensions.clone();
             return Ok(ConnectionResult::Connection(LeasedConnection {
                 active_slot,
                 pooled_conn: Some(pooled_conn),
                 returner: self.returner.clone(),
                 failed: AtomicBool::new(false),
-                extensions,
             }));
         }
 
@@ -388,7 +392,7 @@ where
         Ok(ConnectionResult::CreatePermit((active_slot, pool_slot)))
     }
 
-    async fn create(&self, id: ID, mut conn: C, permit: Self::CreatePermit) -> Self::Connection {
+    async fn create(&self, id: ID, conn: C, permit: Self::CreatePermit) -> Self::Connection {
         trace!("adding new connection (w/ id {id:?}) to pool");
         let (active_slot, pool_slot) = permit;
 
@@ -399,18 +403,15 @@ where
             metrics.created_connections.add(1, &metric_attrs);
         }
 
-        let extensions = conn.take_extensions();
         LeasedConnection {
             active_slot,
             returner: self.returner.clone(),
             failed: false.into(),
-            extensions: extensions.clone(),
             pooled_conn: Some(PooledConnection {
                 id,
                 conn,
                 pool_slot,
                 last_used: Instant::now(),
-                extensions,
             }),
         }
     }

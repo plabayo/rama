@@ -13,25 +13,13 @@ pin_project! {
     pub struct TlsStream<S> {
         #[pin]
         pub(super) inner: BoringTlsStream<S>,
-        pub extensions: Extensions
     }
 }
 
 impl<S: ExtensionsMut> TlsStream<S> {
     #[must_use]
-    pub fn new(mut inner: BoringTlsStream<S>) -> Self {
-        let extensions = inner.get_mut().take_extensions();
-        Self { inner, extensions }
-    }
-}
-
-impl<S> TlsStream<S> {
-    #[must_use]
-    pub fn new_with_fresh_extensions(inner: BoringTlsStream<S>) -> Self {
-        Self {
-            inner,
-            extensions: Extensions::new(),
-        }
+    pub fn new(inner: BoringTlsStream<S>) -> Self {
+        Self { inner }
     }
 
     #[must_use]
@@ -48,15 +36,15 @@ impl<S: fmt::Debug> fmt::Debug for TlsStream<S> {
     }
 }
 
-impl<S> ExtensionsRef for TlsStream<S> {
+impl<S: ExtensionsRef> ExtensionsRef for TlsStream<S> {
     fn extensions(&self) -> &Extensions {
-        &self.extensions
+        self.inner.get_ref().extensions()
     }
 }
 
-impl<S> ExtensionsMut for TlsStream<S> {
+impl<S: ExtensionsMut> ExtensionsMut for TlsStream<S> {
     fn extensions_mut(&mut self) -> &mut Extensions {
-        &mut self.extensions
+        self.inner.get_mut().extensions_mut()
     }
 }
 

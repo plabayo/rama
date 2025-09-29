@@ -555,7 +555,7 @@ mod upgrades {
                 Ok(proto::Dispatched::Shutdown) => Poll::Ready(Ok(())),
                 Ok(proto::Dispatched::Upgrade(pending)) => {
                     let Parts { io, read_buf } = self.inner.take().unwrap().into_parts();
-                    pending.fulfill(Upgraded::new_with_fresh_extensions(io, read_buf));
+                    pending.fulfill(Upgraded::new(io, read_buf));
                     Poll::Ready(Ok(()))
                 }
                 Err(e) => Poll::Ready(Err(e)),

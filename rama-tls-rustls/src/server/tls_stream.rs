@@ -17,23 +17,12 @@ pin_project! {
     pub struct TlsStream<IO> {
         #[pin]
         pub stream: RustlsTlsStream<IO>,
-        pub extensions: Extensions,
     }
 }
 
 impl<IO: ExtensionsMut> TlsStream<IO> {
-    pub fn new(mut stream: RustlsTlsStream<IO>) -> Self {
-        let extensions = stream.get_mut().0.take_extensions();
-        Self { stream, extensions }
-    }
-}
-
-impl<IO> TlsStream<IO> {
-    pub fn new_with_fresh_extensions(stream: RustlsTlsStream<IO>) -> Self {
-        Self {
-            stream,
-            extensions: Extensions::new(),
-        }
+    pub fn new(stream: RustlsTlsStream<IO>) -> Self {
+        Self { stream }
     }
 }
 
@@ -49,15 +38,15 @@ impl<IO> From<TlsStream<IO>> for RustlsTlsStream<IO> {
     }
 }
 
-impl<IO> ExtensionsRef for TlsStream<IO> {
+impl<IO: ExtensionsRef> ExtensionsRef for TlsStream<IO> {
     fn extensions(&self) -> &Extensions {
-        &self.extensions
+        self.stream.get_ref().0.extensions()
     }
 }
 
-impl<IO> ExtensionsMut for TlsStream<IO> {
+impl<IO: ExtensionsMut> ExtensionsMut for TlsStream<IO> {
     fn extensions_mut(&mut self) -> &mut Extensions {
-        &mut self.extensions
+        self.stream.get_mut().0.extensions_mut()
     }
 }
 

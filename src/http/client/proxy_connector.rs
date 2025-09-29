@@ -147,55 +147,25 @@ pin_project! {
     pub struct MaybeProxiedConnection<S> {
         #[pin]
         inner: Connection<S>,
-        extensions: Extensions,
     }
 }
 
 impl<S: ExtensionsMut> MaybeProxiedConnection<S> {
-    pub fn direct(mut conn: S) -> Self {
-        let extensions = conn.take_extensions();
+    pub fn direct(conn: S) -> Self {
         Self {
             inner: Connection::Direct { conn },
-            extensions,
         }
     }
 
-    pub fn socks(mut conn: S) -> Self {
-        let extensions = conn.take_extensions();
+    pub fn socks(conn: S) -> Self {
         Self {
             inner: Connection::Socks { conn },
-            extensions,
         }
     }
 
-    pub fn http(mut conn: MaybeHttpProxiedConnection<S>) -> Self {
-        let extensions = conn.take_extensions();
+    pub fn http(conn: MaybeHttpProxiedConnection<S>) -> Self {
         Self {
             inner: Connection::Http { conn },
-            extensions,
-        }
-    }
-}
-
-impl<S: ExtensionsMut> MaybeProxiedConnection<S> {
-    pub fn direct_with_fresh_extensions(conn: S) -> Self {
-        Self {
-            inner: Connection::Direct { conn },
-            extensions: Extensions::new(),
-        }
-    }
-
-    pub fn socks_with_fresh_extensions(conn: S) -> Self {
-        Self {
-            inner: Connection::Socks { conn },
-            extensions: Extensions::new(),
-        }
-    }
-
-    pub fn http_with_fresh_extensions(conn: MaybeHttpProxiedConnection<S>) -> Self {
-        Self {
-            inner: Connection::Http { conn },
-            extensions: Extensions::new(),
         }
     }
 }
@@ -204,20 +174,25 @@ impl<S: Debug> Debug for MaybeProxiedConnection<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MaybeProxiedConnection")
             .field("inner", &self.inner)
-            .field("extensions", &self.extensions)
             .finish()
     }
 }
 
-impl<S> ExtensionsRef for MaybeProxiedConnection<S> {
+impl<S: ExtensionsRef> ExtensionsRef for MaybeProxiedConnection<S> {
     fn extensions(&self) -> &Extensions {
-        &self.extensions
+        match &self.inner {
+            Connection::Direct { conn } | Connection::Socks { conn } => conn.extensions(),
+            Connection::Http { conn } => conn.extensions(),
+        }
     }
 }
 
-impl<S> ExtensionsMut for MaybeProxiedConnection<S> {
+impl<S: ExtensionsMut> ExtensionsMut for MaybeProxiedConnection<S> {
     fn extensions_mut(&mut self) -> &mut Extensions {
-        &mut self.extensions
+        match &mut self.inner {
+            Connection::Direct { conn } | Connection::Socks { conn } => conn.extensions_mut(),
+            Connection::Http { conn } => conn.extensions_mut(),
+        }
     }
 }
 

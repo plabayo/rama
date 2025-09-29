@@ -455,7 +455,7 @@ where
                 Ok(proto::Dispatched::Shutdown) => Poll::Ready(Ok(())),
                 Ok(proto::Dispatched::Upgrade(pending)) => {
                     let (io, buf, _) = self.inner.take().unwrap().conn.into_inner();
-                    pending.fulfill(Upgraded::new_with_fresh_extensions(io, buf));
+                    pending.fulfill(Upgraded::new(io, buf));
                     Poll::Ready(Ok(()))
                 }
                 Err(e) => Poll::Ready(Err(e)),

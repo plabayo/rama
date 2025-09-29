@@ -1,5 +1,5 @@
 use std::{
-    io,
+    io::{self, Read, Write},
     pin::Pin,
     task::{Context, Poll},
 };
@@ -110,5 +110,49 @@ impl<T: AsyncWrite> AsyncWrite for GenericRequest<T> {
 
     fn is_write_vectored(&self) -> bool {
         self.request.is_write_vectored()
+    }
+}
+
+impl<T: Read> Read for GenericRequest<T> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        self.request.read(buf)
+    }
+
+    fn read_vectored(&mut self, bufs: &mut [io::IoSliceMut<'_>]) -> io::Result<usize> {
+        self.request.read_vectored(bufs)
+    }
+
+    fn read_to_end(&mut self, buf: &mut Vec<u8>) -> io::Result<usize> {
+        self.request.read_to_end(buf)
+    }
+
+    fn read_to_string(&mut self, buf: &mut String) -> io::Result<usize> {
+        self.request.read_to_string(buf)
+    }
+
+    fn read_exact(&mut self, buf: &mut [u8]) -> io::Result<()> {
+        self.request.read_exact(buf)
+    }
+}
+
+impl<T: Write> Write for GenericRequest<T> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.request.write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.request.flush()
+    }
+
+    fn write_all(&mut self, buf: &[u8]) -> io::Result<()> {
+        self.request.write_all(buf)
+    }
+
+    fn write_fmt(&mut self, args: std::fmt::Arguments<'_>) -> io::Result<()> {
+        self.request.write_fmt(args)
+    }
+
+    fn write_vectored(&mut self, bufs: &[io::IoSlice<'_>]) -> io::Result<usize> {
+        self.request.write_vectored(bufs)
     }
 }

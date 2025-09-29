@@ -13,40 +13,19 @@ pin_project! {
     pub struct AutoTlsStream<S> {
         #[pin]
         inner: AutoTlsStreamData<S>,
-        extensions: Extensions,
     }
 }
 
 impl<S: ExtensionsMut> AutoTlsStream<S> {
-    pub fn secure(mut inner: RustlsTlsStream<S>) -> Self {
-        let extensions = inner.get_mut().0.take_extensions();
+    pub fn secure(inner: RustlsTlsStream<S>) -> Self {
         Self {
             inner: AutoTlsStreamData::Secure { inner },
-            extensions,
         }
     }
 
-    pub fn plain(mut inner: S) -> Self {
-        let extensions = inner.take_extensions();
+    pub fn plain(inner: S) -> Self {
         Self {
             inner: AutoTlsStreamData::Plain { inner },
-            extensions,
-        }
-    }
-}
-
-impl<S: ExtensionsMut> AutoTlsStream<S> {
-    pub fn secure_with_fresh_extensions(inner: RustlsTlsStream<S>) -> Self {
-        Self {
-            inner: AutoTlsStreamData::Secure { inner },
-            extensions: Extensions::new(),
-        }
-    }
-
-    pub fn plain_with_fresh_extensions(inner: S) -> Self {
-        Self {
-            inner: AutoTlsStreamData::Plain { inner },
-            extensions: Extensions::new(),
         }
     }
 }
@@ -131,14 +110,20 @@ where
     }
 }
 
-impl<S> ExtensionsRef for AutoTlsStream<S> {
+impl<S: ExtensionsRef> ExtensionsRef for AutoTlsStream<S> {
     fn extensions(&self) -> &Extensions {
-        &self.extensions
+        match &self.inner {
+            AutoTlsStreamData::Secure { inner } => inner.get_ref().0.extensions(),
+            AutoTlsStreamData::Plain { inner } => inner.extensions(),
+        }
     }
 }
 
-impl<S> ExtensionsMut for AutoTlsStream<S> {
+impl<S: ExtensionsMut> ExtensionsMut for AutoTlsStream<S> {
     fn extensions_mut(&mut self) -> &mut Extensions {
-        &mut self.extensions
+        match &mut self.inner {
+            AutoTlsStreamData::Secure { inner } => inner.get_mut().0.extensions_mut(),
+            AutoTlsStreamData::Plain { inner } => inner.extensions_mut(),
+        }
     }
 }

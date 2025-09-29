@@ -681,7 +681,7 @@ where
                         recv_stream,
                         buf: Bytes::new(),
                     };
-                    let upgraded = Upgraded::new_with_fresh_extensions(io, Bytes::new());
+                    let upgraded = Upgraded::new(io, Bytes::new());
 
                     pending.fulfill(upgraded);
                     res.extensions_mut().insert(on_upgrade);

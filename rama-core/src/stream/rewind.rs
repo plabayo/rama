@@ -10,18 +10,6 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 pub struct Rewind<T> {
     pre: Option<Bytes>,
     inner: T,
-    extensions: Extensions,
-}
-
-impl<T: ExtensionsMut> Rewind<T> {
-    pub fn new_buffered(mut io: T, buf: Bytes) -> Self {
-        let extensions = io.take_extensions();
-        Self {
-            pre: Some(buf),
-            inner: io,
-            extensions,
-        }
-    }
 }
 
 impl<T> Rewind<T> {
@@ -30,15 +18,13 @@ impl<T> Rewind<T> {
         Self {
             pre: None,
             inner: io,
-            extensions: Extensions::new(),
         }
     }
 
-    pub fn new_buffered_with_fresh_extensions(io: T, buf: Bytes) -> Self {
+    pub fn new_buffered(io: T, buf: Bytes) -> Self {
         Self {
             pre: Some(buf),
             inner: io,
-            extensions: Extensions::new(),
         }
     }
 
@@ -52,20 +38,20 @@ impl<T> Rewind<T> {
         (self.inner, self.pre.unwrap_or_default())
     }
 
-    // pub fn get_mut(&mut self) -> &mut T {
-    //     &mut self.inner
-    // }
-}
-
-impl<T> ExtensionsRef for Rewind<T> {
-    fn extensions(&self) -> &Extensions {
-        &self.extensions
+    pub fn get_mut(&mut self) -> &mut T {
+        &mut self.inner
     }
 }
 
-impl<T> ExtensionsMut for Rewind<T> {
+impl<T: ExtensionsRef> ExtensionsRef for Rewind<T> {
+    fn extensions(&self) -> &Extensions {
+        self.inner.extensions()
+    }
+}
+
+impl<T: ExtensionsMut> ExtensionsMut for Rewind<T> {
     fn extensions_mut(&mut self) -> &mut Extensions {
-        &mut self.extensions
+        self.inner.extensions_mut()
     }
 }
 

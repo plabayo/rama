@@ -40,19 +40,18 @@ pin_project! {
         written: Arc<AtomicUsize>,
         #[pin]
         stream: S,
-        extensions: Extensions,
     }
 }
 
-impl<S> ExtensionsRef for BytesRWTracker<S> {
+impl<S: ExtensionsRef> ExtensionsRef for BytesRWTracker<S> {
     fn extensions(&self) -> &Extensions {
-        &self.extensions
+        self.stream.extensions()
     }
 }
 
-impl<S> ExtensionsMut for BytesRWTracker<S> {
+impl<S: ExtensionsMut> ExtensionsMut for BytesRWTracker<S> {
     fn extensions_mut(&mut self) -> &mut Extensions {
-        &mut self.extensions
+        self.stream.extensions_mut()
     }
 }
 
@@ -72,14 +71,11 @@ impl<S: ExtensionsMut> BytesRWTracker<S> {
     ///
     /// [`AsyncRead`]: crate::stream::AsyncRead
     /// [`AsyncWrite`]: crate::stream::AsyncWrite
-    pub fn new(mut stream: S) -> Self {
-        let extensions = stream.take_extensions();
-
+    pub fn new(stream: S) -> Self {
         Self {
             read: Arc::new(AtomicUsize::new(0)),
             written: Arc::new(AtomicUsize::new(0)),
             stream,
-            extensions,
         }
     }
 }

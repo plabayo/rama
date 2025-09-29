@@ -21,7 +21,6 @@ pin_project! {
         peek: P,
         #[pin]
         inner: S,
-        extensions: Extensions,
     }
 }
 
@@ -30,28 +29,11 @@ impl<P, S: ExtensionsMut> PeekStream<P, S> {
     /// [`AsyncRead`] and inner [`Stream`] which implements [`ExtensionsMut`].
     ///
     /// [`Stream`]: super::Stream
-    pub fn new(peek: P, mut inner: S) -> Self {
-        let extensions = inner.take_extensions();
+    pub fn new(peek: P, inner: S) -> Self {
         Self {
             done_peek: false,
             peek,
             inner,
-            extensions,
-        }
-    }
-}
-
-impl<P, S> PeekStream<P, S> {
-    /// Create a new [`PeekStream`] for the given
-    /// peek [`AsyncRead`] and inner [`Stream`].
-    ///
-    /// [`Stream`]: super::Stream
-    pub fn new_with_fresh_extensions(peek: P, inner: S) -> Self {
-        Self {
-            done_peek: false,
-            peek,
-            inner,
-            extensions: Extensions::new(),
         }
     }
 }
@@ -80,20 +62,19 @@ where
             done_peek: self.done_peek,
             peek: self.peek.clone(),
             inner: self.inner.clone(),
-            extensions: self.extensions.clone(),
         }
     }
 }
 
-impl<P, S> ExtensionsRef for PeekStream<P, S> {
+impl<P, S: ExtensionsRef> ExtensionsRef for PeekStream<P, S> {
     fn extensions(&self) -> &Extensions {
-        &self.extensions
+        self.inner.extensions()
     }
 }
 
-impl<P, S> ExtensionsMut for PeekStream<P, S> {
+impl<P, S: ExtensionsMut> ExtensionsMut for PeekStream<P, S> {
     fn extensions_mut(&mut self) -> &mut Extensions {
-        &mut self.extensions
+        self.inner.extensions_mut()
     }
 }
 
@@ -229,6 +210,8 @@ where
 
 #[cfg(test)]
 mod tests {
+    use crate::generic_request::GenericRequest;
+
     use super::*;
 
     use std::io::Cursor;
@@ -295,7 +278,7 @@ mod tests {
                 let new_stream = || {
                     let peek_data = Cursor::new(self.peek_data);
                     let inner_data = Cursor::new(self.inner_data);
-                    PeekStream::new_with_fresh_extensions(peek_data, inner_data)
+                    PeekStream::new(peek_data, GenericRequest::new(inner_data))
                 };
 
                 test_multi_read_async::<N>(&mut new_stream(), self.expected_reads).await;
@@ -352,10 +335,10 @@ mod tests {
         .await;
     }
 
-    fn new_peek_write_stream() -> PeekStream<Cursor<Vec<u8>>, Cursor<Vec<u8>>> {
+    fn new_peek_write_stream() -> PeekStream<Cursor<Vec<u8>>, GenericRequest<Cursor<Vec<u8>>>> {
         let peek_data = Cursor::new(Vec::new());
         let inner_data = Cursor::new(Vec::new());
-        PeekStream::new_with_fresh_extensions(peek_data, inner_data)
+        PeekStream::new(peek_data, GenericRequest::new(inner_data))
     }
 
     async fn test_multi_write_async(mut stream: impl AsyncWrite + Unpin, cases: &[&str]) {
@@ -397,7 +380,7 @@ mod tests {
 
                 assert_eq!(
                     self.writes.join(""),
-                    String::from_utf8(stream.inner.into_inner()).unwrap(),
+                    String::from_utf8(stream.inner.request.into_inner()).unwrap(),
                     "[async] writes: {:?}",
                     self.writes,
                 );
@@ -420,7 +403,7 @@ mod tests {
 
                 assert_eq!(
                     self.writes.join(""),
-                    String::from_utf8(stream.inner.into_inner()).unwrap(),
+                    String::from_utf8(stream.inner.request.into_inner()).unwrap(),
                     "[sync] writes: {:?}",
                     self.writes
                 );

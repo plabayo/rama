@@ -299,32 +299,25 @@ pin_project! {
     pub struct MaybeHttpProxiedConnection<S> {
         #[pin]
         inner: Connection<S>,
-        extensions: Extensions
     }
 }
 
 impl<S: ExtensionsMut + Unpin + Stream> MaybeHttpProxiedConnection<S> {
-    fn direct(mut conn: S) -> Self {
-        let extensions = conn.take_extensions();
+    fn direct(conn: S) -> Self {
         Self {
             inner: Connection::Direct { conn },
-            extensions,
         }
     }
 
-    fn proxied(mut conn: S) -> Self {
-        let extensions = conn.take_extensions();
+    fn proxied(conn: S) -> Self {
         Self {
             inner: Connection::Proxied { conn },
-            extensions,
         }
     }
 
-    fn upgraded_proxy(mut conn: upgrade::Upgraded) -> Self {
-        let extensions = conn.take_extensions();
+    fn upgraded_proxy(conn: upgrade::Upgraded) -> Self {
         Self {
             inner: Connection::UpgradedProxy { conn },
-            extensions,
         }
     }
 }
@@ -333,7 +326,6 @@ impl<S: Debug> Debug for MaybeHttpProxiedConnection<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MaybeHttpProxiedConnection")
             .field("inner", &self.inner)
-            .field("extensions", &self.extensions)
             .finish()
     }
 }
@@ -359,15 +351,21 @@ impl<S: Debug> Debug for Connection<S> {
     }
 }
 
-impl<S> ExtensionsRef for MaybeHttpProxiedConnection<S> {
+impl<S: ExtensionsRef> ExtensionsRef for MaybeHttpProxiedConnection<S> {
     fn extensions(&self) -> &Extensions {
-        &self.extensions
+        match &self.inner {
+            Connection::Direct { conn } | Connection::Proxied { conn } => conn.extensions(),
+            Connection::UpgradedProxy { conn } => conn.extensions(),
+        }
     }
 }
 
-impl<S> ExtensionsMut for MaybeHttpProxiedConnection<S> {
+impl<S: ExtensionsMut> ExtensionsMut for MaybeHttpProxiedConnection<S> {
     fn extensions_mut(&mut self) -> &mut Extensions {
-        &mut self.extensions
+        match &mut self.inner {
+            Connection::Direct { conn } | Connection::Proxied { conn } => conn.extensions_mut(),
+            Connection::UpgradedProxy { conn } => conn.extensions_mut(),
+        }
     }
 }
 

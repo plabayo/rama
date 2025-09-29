@@ -409,7 +409,7 @@ where
     T: Stream + Unpin + ExtensionsMut,
 {
     let store_server_certificate_chain = connector_data.store_server_certificate_chain;
-    let TlsStream { inner: stream, .. } =
+    let TlsStream { inner: stream } =
         tls_connect(server_host, stream, Some(connector_data)).await?;
 
     let params = match stream.ssl().session() {
