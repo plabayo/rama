@@ -134,7 +134,6 @@ opentelemetry = { version = "0.31", default-features = false, features = [
 ] }
 opentelemetry-http = { version = "0.31", default-features = false }
 opentelemetry-otlp = { version = "0.31", default-features = false, features = [
-    "http-proto",
     "internal-logs",
     "logs",
     "metrics",
@@ -345,6 +344,7 @@ http = [
     "rama-tcp?/http",
     "rama-tower?/http",
     "rama-tls-boring?/ua",
+    "opentelemetry-otlp?/http-proto",
 ]
 http-full = [
     "http",
