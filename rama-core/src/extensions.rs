@@ -34,11 +34,11 @@ use std::ops::{Deref, DerefMut};
 use std::pin::Pin;
 use std::sync::Arc;
 
-#[cfg(feature = "debug-extensions")]
+#[cfg(debug_assertions)]
 use std::any::type_name;
 
 type AnyMap = HashMap<TypeId, Box<dyn AnyClone + Send + Sync>, BuildHasherDefault<IdHasher>>;
-#[cfg(feature = "debug-extensions")]
+#[cfg(debug_assertions)]
 type TypeIdMap = HashMap<TypeId, String, BuildHasherDefault<IdHasher>>;
 
 // With TypeIds as keys, there's no need to hash them. They are already hashes
@@ -72,7 +72,7 @@ pub struct Extensions {
     // If extensions are never used, no need to carry around an empty HashMap.
     // That's 3 words. Instead, this is only 1 word.
     map: Option<Box<AnyMap>>,
-    #[cfg(feature = "debug-extensions")]
+    #[cfg(debug_assertions)]
     type_map: Option<Box<TypeIdMap>>,
 }
 
@@ -83,7 +83,7 @@ impl Extensions {
     pub const fn new() -> Self {
         Self {
             map: None,
-            #[cfg(feature = "debug-extensions")]
+            #[cfg(debug_assertions)]
             type_map: None,
         }
     }
@@ -93,7 +93,7 @@ impl Extensions {
     /// If a extension of this type already existed, it will
     /// be returned.
     pub fn insert<T: Clone + Send + Sync + 'static>(&mut self, val: T) -> Option<T> {
-        #[cfg(feature = "debug-extensions")]
+        #[cfg(debug_assertions)]
         self.type_map
             .get_or_insert_with(Box::default)
             .insert(TypeId::of::<T>(), type_name::<T>().to_owned());
@@ -116,7 +116,7 @@ impl Extensions {
 
     /// Extend these extensions with another Extensions.
     pub fn extend(&mut self, other: Self) {
-        #[cfg(feature = "debug-extensions")]
+        #[cfg(debug_assertions)]
         if let Some(other_map) = other.type_map {
             let map = self.type_map.get_or_insert_with(Box::default);
             #[allow(clippy::useless_conversion)]
@@ -132,7 +132,7 @@ impl Extensions {
 
     /// Clear the `Extensions` of all inserted extensions.
     pub fn clear(&mut self) {
-        #[cfg(feature = "debug-extensions")]
+        #[cfg(debug_assertions)]
         if let Some(map) = self.type_map.as_mut() {
             map.clear();
         }
@@ -195,7 +195,7 @@ impl Extensions {
         &mut self,
         f: impl FnOnce() -> T,
     ) -> &mut T {
-        #[cfg(feature = "debug-extensions")]
+        #[cfg(debug_assertions)]
         self.type_map
             .get_or_insert_with(Box::default)
             .insert(TypeId::of::<T>(), type_name::<T>().to_owned());
@@ -217,7 +217,7 @@ impl Extensions {
         T: Send + Sync + Clone + 'static,
         U: Into<T>,
     {
-        #[cfg(feature = "debug-extensions")]
+        #[cfg(debug_assertions)]
         self.type_map
             .get_or_insert_with(Box::default)
             .insert(TypeId::of::<T>(), type_name::<T>().to_owned());
@@ -248,7 +248,7 @@ impl Extensions {
 
     /// Remove a type from this `Extensions`.
     pub fn remove<T: Clone + Send + Sync + 'static>(&mut self) -> Option<T> {
-        #[cfg(feature = "debug-extensions")]
+        #[cfg(debug_assertions)]
         self.type_map
             .as_mut()
             .and_then(|map| map.remove(&TypeId::of::<T>()));
@@ -261,7 +261,7 @@ impl Extensions {
 }
 
 impl fmt::Debug for Extensions {
-    #[cfg(feature = "debug-extensions")]
+    #[cfg(debug_assertions)]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let items = self.map.as_ref().map(|map| {
             map.keys()
@@ -277,7 +277,7 @@ impl fmt::Debug for Extensions {
         f.debug_struct("Extensions").field("items", &items).finish()
     }
 
-    #[cfg(not(feature = "debug-extensions"))]
+    #[cfg(not(debug_assertions))]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Extensions").finish()
     }
@@ -341,6 +341,8 @@ where
 pub trait ExtensionsMut: ExtensionsRef {
     fn extensions_mut(&mut self) -> &mut Extensions;
 
+    // TODO once we have a proper solution to travel across boundaries this will be removed
+    // This will happen in the very near future so this api should not be used
     fn take_extensions(&mut self) -> Extensions {
         std::mem::take(self.extensions_mut())
     }
