@@ -12,7 +12,7 @@ pin_project! {
     /// A stream which can be either a secure or a plain stream.
     pub struct AutoTlsStream<S> {
         #[pin]
-        inner: AutoTlsStreamData<S>,
+        pub(super) inner: AutoTlsStreamData<S>,
     }
 }
 

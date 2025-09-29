@@ -15,6 +15,7 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 pub use tokio::net::TcpStream as TokioTcpStream;
 
 pin_project! {
+    #[non_exhaustive]
     #[derive(Debug)]
     pub struct TcpStream {
         #[pin]

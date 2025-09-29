@@ -12,7 +12,7 @@ pin_project! {
     #[derive(Debug)]
     pub struct TlsStream<IO> {
         #[pin]
-        pub stream: RustlsTlsStream<IO>,
+        pub(super) stream: RustlsTlsStream<IO>,
     }
 }
 

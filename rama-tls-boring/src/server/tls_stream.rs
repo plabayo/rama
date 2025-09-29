@@ -11,9 +11,10 @@ use rama_core::{
 use tokio::io::{AsyncRead, AsyncWrite};
 
 pin_project! {
+    #[non_exhaustive]
     pub struct TlsStream<S> {
         #[pin]
-        pub inner: SslStream<S>,
+        pub(super) inner: SslStream<S>,
     }
 }
 
