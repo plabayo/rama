@@ -2,8 +2,6 @@ use std::io::ErrorKind;
 
 use rama_core::bytes::{Bytes, BytesMut};
 use rama_core::error::{BoxError, ErrorExt, OpaqueError};
-#[cfg(feature = "dns")]
-use rama_core::extensions::Extensions;
 use rama_core::telemetry::tracing;
 use rama_net::address::{Authority, Host, SocketAddress};
 use rama_udp::UdpSocket;
@@ -12,7 +10,7 @@ use crate::proto::udp::UdpHeader;
 
 #[cfg(feature = "dns")]
 use ::{
-    rama_core::error::ErrorContext,
+    rama_core::{error::ErrorContext, extensions::Extensions},
     rama_dns::{BoxDnsResolver, DnsResolver},
     rama_net::mode::DnsResolveIpMode,
     rand::seq::IteratorRandom,

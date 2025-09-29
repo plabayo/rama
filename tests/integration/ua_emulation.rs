@@ -1,4 +1,4 @@
-use rama::extensions::{ExtensionsMut, ExtensionsRef};
+use rama::extensions::{Extensions, ExtensionsMut, ExtensionsRef};
 use rama::http::Request;
 use rama::http::client::HttpConnector;
 use rama::http::client::http_inspector::{HttpVersionAdapter, HttpsAlpnModifier};
@@ -325,12 +325,15 @@ async fn test_ua_emulation() {
                 Ok::<_, Infallible>(conn.serve(ctx, req).await.expect(description))
             }));
 
+        let mut server_extensions = Extensions::new();
+        server_extensions.insert(State {
+            expected,
+            description,
+        });
+
         let req = Request::builder()
             .uri(test_case.uri)
-            .extension(State {
-                expected,
-                description,
-            })
+            .extension(ServerExtensions(server_extensions))
             .body(Body::empty())
             .unwrap();
 
@@ -404,11 +407,14 @@ async fn test_ua_embedded_profiles_are_all_resulting_in_correct_traffic_flow() {
             let ctx = Context::default();
             let expect_msg = format!("profile to work: {profile:?}");
 
+            let mut server_extensions = Extensions::new();
+            server_extensions.insert(State {
+                counter: counter.clone(),
+            });
+
             let req = Request::builder()
                 .uri("https://www.example.com")
-                .extension(State {
-                    counter: counter.clone(),
-                })
+                .extension(ServerExtensions(server_extensions))
                 .body(Body::empty())
                 .expect(&expect_msg);
 
@@ -442,6 +448,10 @@ impl<S> MockConnectorService<S> {
     }
 }
 
+#[derive(Clone, Default)]
+/// [`ServerExtensions`] will be transfered from the client extensions to the server side
+struct ServerExtensions(Extensions);
+
 impl<S> Service<Request> for MockConnectorService<S>
 where
     S: Service<Request, Response = Response, Error = Infallible> + Clone,
@@ -450,10 +460,12 @@ where
     type Response = EstablishedClientConnection<MockSocket, Request>;
 
     async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
-        // Store request extensions also on our server socket so we have acces to things like state
-        // Be careful with blindly passing all extensions, never use this in a production stack
         let (client_socket, mut server_socket) = new_mock_sockets();
-        *server_socket.extensions_mut() = req.extensions().clone();
+
+        if let Some(extensions) = req.extensions().get::<ServerExtensions>() {
+            *server_socket.extensions_mut() = extensions.0.clone();
+        }
+
         let server_ctx = ctx.clone();
         let svc = self.serve_svc.clone();
 

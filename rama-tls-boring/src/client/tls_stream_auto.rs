@@ -167,6 +167,9 @@ where
     }
 
     fn is_write_vectored(&self) -> bool {
-        false
+        match &self.inner {
+            AutoTlsStreamData::Secure { inner } => inner.is_write_vectored(),
+            AutoTlsStreamData::Plain { inner } => inner.is_write_vectored(),
+        }
     }
 }

@@ -108,6 +108,6 @@ where
     }
 
     fn is_write_vectored(&self) -> bool {
-        false
+        self.inner.is_write_vectored()
     }
 }

@@ -368,6 +368,11 @@ where
 
     let target_version = req.version();
     tracing::debug!("forcing egress http connection as {target_version:?} to ensure WS upgrade");
+
+    // Todo improve extensions handling here? This feels error prone and easy to forget.
+    // In a better way this should be handled behind the scenes similar to tls alpn works
+    // Now that we can pass extensions all around this will probably just work, but needs
+    // to be looked at individually
     let mut extensions = Extensions::new();
     extensions.insert(TargetHttpVersion(target_version));
 

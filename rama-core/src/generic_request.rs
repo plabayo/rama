@@ -9,7 +9,6 @@ use pin_project_lite::pin_project;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 pin_project! {
-    #[derive(Debug)]
     /// A generic request that implements all rama traits conditionally
     ///
     /// This request type can be used in places where you need a request/stream
@@ -31,6 +30,24 @@ impl<T> GenericRequest<T> {
         Self {
             request,
             extensions: Extensions::new(),
+        }
+    }
+}
+
+impl<T: std::fmt::Debug> std::fmt::Debug for GenericRequest<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GenericRequest")
+            .field("request", &self.request)
+            .field("extensions", &self.extensions)
+            .finish()
+    }
+}
+
+impl<T: Default> Default for GenericRequest<T> {
+    fn default() -> Self {
+        Self {
+            request: Default::default(),
+            extensions: Default::default(),
         }
     }
 }

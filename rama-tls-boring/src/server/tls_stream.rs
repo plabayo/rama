@@ -11,7 +11,6 @@ use rama_core::{
 use tokio::io::{AsyncRead, AsyncWrite};
 
 pin_project! {
-    /// A stream which can be either a secure or a plain stream.
     pub struct TlsStream<S> {
         #[pin]
         pub inner: SslStream<S>,
@@ -110,6 +109,6 @@ where
     }
 
     fn is_write_vectored(&self) -> bool {
-        false
+        self.inner.is_write_vectored()
     }
 }

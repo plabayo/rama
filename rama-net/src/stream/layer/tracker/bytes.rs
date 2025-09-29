@@ -66,16 +66,16 @@ impl<S: fmt::Debug> fmt::Debug for BytesRWTracker<S> {
     }
 }
 
-impl BytesRWTracker<()> {
+impl<S: ExtensionsMut> BytesRWTracker<S> {
     /// Create a new [`BytesRWTracker`] that wraps the
     /// given [`AsyncRead`] and/or [`AsyncWrite`].
     ///
     /// [`AsyncRead`]: crate::stream::AsyncRead
     /// [`AsyncWrite`]: crate::stream::AsyncWrite
-    pub fn new<S: ExtensionsMut>(mut stream: S) -> BytesRWTracker<S> {
+    pub fn new(mut stream: S) -> Self {
         let extensions = stream.take_extensions();
 
-        BytesRWTracker {
+        Self {
             read: Arc::new(AtomicUsize::new(0)),
             written: Arc::new(AtomicUsize::new(0)),
             stream,

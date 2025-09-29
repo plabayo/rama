@@ -55,6 +55,8 @@ where
         ctx: Context,
         mut req: Request<BodyIn>,
     ) -> Result<Self::Response, Self::Error> {
+        req.extensions_mut().extend(self.extensions.clone());
+
         // Check if this http connection can actually be used for TargetHttpVersion
         if let Some(target_version) = req.extensions().get::<TargetHttpVersion>() {
             match (&self.sender, target_version.0) {
@@ -70,8 +72,6 @@ where
                 .into_boxed())?,
             }
         }
-
-        req.extensions_mut().extend(self.extensions.clone());
 
         let original_http_version = req.version();
 
