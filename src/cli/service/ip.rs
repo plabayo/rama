@@ -165,6 +165,7 @@ impl<M> IpServiceBuilder<M> {
 }
 
 impl IpServiceBuilder<mode::Http> {
+    #[allow(unused_mut)]
     #[inline]
     /// build a tcp service ready to echo the client IP back
     pub fn build(
@@ -261,6 +262,7 @@ where
 }
 
 impl IpServiceBuilder<mode::Transport> {
+    #[allow(unused_mut)]
     #[inline]
     /// build a tcp service ready to echo client IP back
     pub fn build(
@@ -389,6 +391,7 @@ impl IpServiceBuilder<mode::Auto> {
     }
 
     /// build a tcp service ready to echo client IP back
+    #[allow(unused_mut)]
     pub fn build(
         mut self,
         executor: Executor,
@@ -427,7 +430,7 @@ impl IpServiceBuilder<mode::Auto> {
 
         #[cfg(not(any(feature = "rustls", feature = "boring")))]
         {
-            Ok(router)
+            Ok(ConsumeErrLayer::trace(tracing::Level::DEBUG).into_layer(router))
         }
     }
 }

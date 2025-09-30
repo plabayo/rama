@@ -60,7 +60,7 @@ impl RamaService {
     }
 
     /// Start the rama echo service with the given port.
-    pub(super) fn echo(port: u16, secure: bool, acme_data: Option<String>) -> Self {
+    pub(super) fn echo(port: u16, secure: bool) -> Self {
         let mut builder = escargot::CargoBuild::new()
             .package("rama-cli")
             .bin("rama")
@@ -68,10 +68,6 @@ impl RamaService {
             .run()
             .unwrap()
             .command();
-
-        if let Some(acme_data) = acme_data {
-            builder.env("RAMA_ACME_DATA", acme_data);
-        }
 
         if secure {
             const BASE64: base64::engine::GeneralPurpose =

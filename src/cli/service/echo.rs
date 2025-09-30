@@ -267,7 +267,7 @@ where
             tcp_forwarded_layer,
             BodyLimitLayer::request_only(self.body_limit),
             #[cfg(any(feature = "rustls", feature = "boring"))]
-            tls_cfg.map(TlsAcceptorLayer::new),
+            tls_cfg.map(|cfg| TlsAcceptorLayer::new(cfg).with_store_client_hello(true)),
         );
 
         let http_transport_service = match self.http_version {

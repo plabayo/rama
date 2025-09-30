@@ -6,23 +6,17 @@ use rama::{
     combinators::Either7,
     error::{BoxError, ErrorContext, OpaqueError},
     http::{
-        HeaderName, HeaderValue, Request, Uri,
-        client::EasyHttpWebClient,
+        HeaderName, HeaderValue, Request,
         header::COOKIE,
         headers::{
-            Authorization, Cookie, HeaderMapExt, SecWebSocketProtocol,
-            all_client_hint_header_name_strings,
+            Cookie, HeaderMapExt, SecWebSocketProtocol, all_client_hint_header_name_strings,
             forwarded::{CFConnectingIp, ClientIp, TrueClientIp, XClientIp, XRealIp},
             sec_websocket_extensions,
         },
         layer::{
-            catch_panic::CatchPanicLayer,
-            compression::CompressionLayer,
-            forwarded::GetForwardedHeaderLayer,
-            required_header::AddRequiredResponseHeadersLayer,
-            set_header::{SetRequestHeaderLayer, SetResponseHeaderLayer},
-            trace::TraceLayer,
-            ua::UserAgentClassifierLayer,
+            catch_panic::CatchPanicLayer, compression::CompressionLayer,
+            forwarded::GetForwardedHeaderLayer, required_header::AddRequiredResponseHeadersLayer,
+            set_header::SetResponseHeaderLayer, trace::TraceLayer, ua::UserAgentClassifierLayer,
         },
         matcher::HttpMatcher,
         server::HttpServer,
@@ -30,22 +24,13 @@ use rama::{
             match_service,
             response::{IntoResponse, Redirect},
         },
-        tls::CertIssuerHttpClient,
         ws::handshake::server::WebSocketAcceptor,
     },
     layer::{
         AddExtensionLayer, ConsumeErrLayer, HijackLayer, Layer, LimitLayer, TimeoutLayer,
         limit::policy::ConcurrentPolicy,
     },
-    net::{
-        socket::Interface,
-        stream::layer::http::BodyLimitLayer,
-        tls::{
-            ApplicationProtocol, DataEncoding,
-            server::{CacheKind, ServerAuth, ServerAuthData, ServerCertIssuerData, ServerConfig},
-        },
-        user::Bearer,
-    },
+    net::{socket::Interface, stream::layer::http::BodyLimitLayer, tls::ApplicationProtocol},
     proxy::haproxy::server::HaProxyLayer,
     rt::Executor,
     service::service_fn,
@@ -55,11 +40,9 @@ use rama::{
     utils::backoff::ExponentialBackoff,
 };
 
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD as ENGINE;
 use clap::Args;
 use itertools::Itertools;
-use std::{convert::Infallible, num::NonZeroU64, sync::Arc, time::Duration};
+use std::{convert::Infallible, sync::Arc, time::Duration};
 
 mod data;
 mod endpoints;
@@ -69,8 +52,7 @@ mod storage;
 #[doc(inline)]
 use state::State;
 
-use self::state::ACMEData;
-use crate::utils::http::HttpVersion;
+use crate::utils::{http::HttpVersion, tls::new_server_config};
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct StorageAuthorized;
@@ -159,98 +141,14 @@ pub async fn run(cfg: CliCommandFingerprint) -> Result<(), BoxError> {
         Some(ForwardKind::HaProxy) => (Some(HaProxyLayer::default()), None),
     };
 
-    let acme_data = if let Ok(raw_acme_data) = std::env::var("RAMA_ACME_DATA") {
-        let acme_data: Vec<_> = raw_acme_data
-            .split(';')
-            .map(|s| {
-                let mut iter = s.trim().splitn(2, ',');
-                let key = iter.next().expect("acme data key");
-                let value = iter.next().expect("acme data value");
-                (key.to_owned(), value.to_owned())
-            })
-            .collect();
-        ACMEData::with_challenges(acme_data)
-    } else {
-        ACMEData::default()
-    };
-
     let maybe_tls_server_config = cfg.secure.then(|| {
-        if cfg.self_signed {
-            return ServerConfig {
-                application_layer_protocol_negotiation: Some(match cfg.http_version {
-                    HttpVersion::H1 => vec![ApplicationProtocol::HTTP_11],
-                    HttpVersion::H2 => vec![ApplicationProtocol::HTTP_2],
-                    HttpVersion::Auto => {
-                        vec![ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11]
-                    }
-                }),
-                ..ServerConfig::new(ServerAuth::default())
-            };
-        }
-
-        if let Ok(uri_raw) = std::env::var("RAMA_TLS_REMOTE") {
-            let uri: Uri = uri_raw.parse().expect("RAMA_TLS_REMOTE to be a valid URI");
-            let client = if let Ok(auth_raw) = std::env::var("RAMA_TLS_REMOTE_AUTH") {
-                CertIssuerHttpClient::new_with_client(
-                    uri,
-                    SetRequestHeaderLayer::overriding_typed(Authorization::new(
-                        Bearer::new(auth_raw)
-                            .expect("RAMA_TLS_REMOTE_AUTH to be a valid Bearer token"),
-                    ))
-                    .into_layer(EasyHttpWebClient::default())
-                    .boxed(),
-                )
-            } else {
-                CertIssuerHttpClient::new(uri)
-            };
-
-            return ServerConfig {
-                application_layer_protocol_negotiation: Some(vec![
-                    ApplicationProtocol::HTTP_2,
-                    ApplicationProtocol::HTTP_11,
-                ]),
-                ..ServerConfig::new(ServerAuth::CertIssuer(ServerCertIssuerData {
-                    kind: client.into(),
-                    cache_kind: CacheKind::MemCache {
-                        max_size: NonZeroU64::new(1).unwrap(),
-                        ttl: Some(Duration::from_secs(60 * 60 * 24 * 89)),
-                    },
-                }))
-            };
-        }
-
-        let tls_key_pem_raw = std::env::var("RAMA_TLS_KEY").expect("RAMA_TLS_KEY");
-        let tls_key_pem_raw = std::str::from_utf8(
-            &ENGINE
-                .decode(tls_key_pem_raw)
-                .expect("base64 decode RAMA_TLS_KEY")[..],
-        )
-        .expect("base64-decoded RAMA_TLS_KEY valid utf-8")
-        .try_into()
-        .expect("tls_key_pem_raw => NonEmptyStr (RAMA_TLS_KEY)");
-        let tls_crt_pem_raw = std::env::var("RAMA_TLS_CRT").expect("RAMA_TLS_CRT");
-        let tls_crt_pem_raw = std::str::from_utf8(
-            &ENGINE
-                .decode(tls_crt_pem_raw)
-                .expect("base64 decode RAMA_TLS_CRT")[..],
-        )
-        .expect("base64-decoded RAMA_TLS_CRT valid utf-8")
-        .try_into()
-        .expect("tls_crt_pem_raw => NonEmptyStr (RAMA_TLS_CRT)");
-        ServerConfig {
-            application_layer_protocol_negotiation: Some(match cfg.http_version {
-                HttpVersion::H1 => vec![ApplicationProtocol::HTTP_11],
-                HttpVersion::H2 => vec![ApplicationProtocol::HTTP_2],
-                HttpVersion::Auto => {
-                    vec![ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11]
-                }
-            }),
-            ..ServerConfig::new(ServerAuth::Single(ServerAuthData {
-                private_key: DataEncoding::Pem(tls_key_pem_raw),
-                cert_chain: DataEncoding::Pem(tls_crt_pem_raw),
-                ocsp: None,
-            }))
-        }
+        new_server_config(Some(match cfg.http_version {
+            HttpVersion::H1 => vec![ApplicationProtocol::HTTP_11],
+            HttpVersion::H2 => vec![ApplicationProtocol::HTTP_2],
+            HttpVersion::Auto => {
+                vec![ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11]
+            }
+        }))
     });
 
     let tls_acceptor_data = match maybe_tls_server_config {
@@ -336,8 +234,6 @@ pub async fn run(cfg: CliCommandFingerprint) -> Result<(), BoxError> {
                     // Navigate
                     HttpMatcher::get("/") => Redirect::temporary("/consent"),
                     HttpMatcher::get("/consent") => endpoints::get_consent,
-                    // ACME
-                    HttpMatcher::get("/.well-known/acme-challenge/:token") => endpoints::get_acme_challenge,
                     // Assets
                     HttpMatcher::get("/assets/style.css") => endpoints::get_assets_style,
                     HttpMatcher::get("/assets/script.js") => endpoints::get_assets_script,
@@ -348,7 +244,7 @@ pub async fn run(cfg: CliCommandFingerprint) -> Result<(), BoxError> {
 
         let tcp_service_builder = (
             AddExtensionLayer::new(Arc::new(
-                State::new(acme_data, pg_url, storage_auth.as_deref())
+                State::new(pg_url, storage_auth.as_deref())
                     .await
                     .expect("create state"),
             )),

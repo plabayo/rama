@@ -12,7 +12,7 @@ use rama::{
     Context,
     error::{ErrorContext, OpaqueError},
     http::{
-        Body, BodyExtractExt, Request, Response, StatusCode,
+        BodyExtractExt, Request, Response, StatusCode,
         proto::h2,
         service::web::{
             extract::Path,
@@ -292,37 +292,6 @@ fn extend_tables_with_h2_settings(h2_settings: Http2Settings, tables: &mut Vec<T
                 },
             });
         }
-    }
-}
-
-//------------------------------------------
-// endpoints: ACME
-//------------------------------------------
-
-#[derive(Debug, Serialize, Deserialize)]
-pub(super) struct AcmeChallengeParams {
-    token: String,
-}
-
-pub(super) async fn get_acme_challenge(
-    Path(params): Path<AcmeChallengeParams>,
-    ctx: Context,
-) -> Response {
-    match ctx
-        .get::<Arc<State>>()
-        .unwrap()
-        .acme
-        .get_challenge(params.token)
-    {
-        Some(challenge) => Response::builder()
-            .status(StatusCode::OK)
-            .header("content-type", "text/plain")
-            .body(challenge.to_owned().into())
-            .expect("build acme challenge response"),
-        None => Response::builder()
-            .status(StatusCode::NOT_FOUND)
-            .body(Body::empty())
-            .expect("build acme challenge response"),
     }
 }
 

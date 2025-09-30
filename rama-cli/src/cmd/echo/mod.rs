@@ -1,38 +1,19 @@
 //! Echo service that echos the http request and tls client config
 
 use rama::{
-    Layer, Service,
     cli::{ForwardKind, service::echo::EchoServiceBuilder},
     error::{BoxError, ErrorContext, OpaqueError},
-    http::{
-        Request, Response, Uri, client::EasyHttpWebClient, headers::Authorization,
-        layer::set_header::SetRequestHeaderLayer, matcher::HttpMatcher,
-        service::web::response::IntoResponse, tls::CertIssuerHttpClient,
-    },
-    layer::HijackLayer,
-    net::{
-        socket::Interface,
-        tls::{
-            ApplicationProtocol, DataEncoding,
-            server::{
-                CacheKind, SelfSignedData, ServerAuth, ServerAuthData, ServerCertIssuerData,
-                ServerConfig,
-            },
-        },
-        user::Bearer,
-    },
+    net::{socket::Interface, tls::ApplicationProtocol},
     rt::Executor,
     tcp::server::TcpListener,
     telemetry::tracing::{self, Instrument, level_filters::LevelFilter},
     ua::profile::UserAgentDatabase,
 };
 
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD as ENGINE;
 use clap::Args;
-use std::{convert::Infallible, num::NonZeroU64, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 
-use crate::utils::http::HttpVersion;
+use crate::utils::{http::HttpVersion, tls::new_server_config};
 
 #[derive(Debug, Args)]
 /// rama echo service (echos the http request and tls client config)
@@ -93,88 +74,15 @@ pub async fn run(cfg: CliCommandEcho) -> Result<(), BoxError> {
     });
 
     let maybe_tls_server_config = cfg.secure.then(|| {
-        if let Ok(uri_raw) = std::env::var("RAMA_TLS_REMOTE") {
-            let uri: Uri = uri_raw.parse().expect("RAMA_TLS_REMOTE to be a valid URI");
-            let client = if let Ok(auth_raw) = std::env::var("RAMA_TLS_REMOTE_AUTH") {
-                CertIssuerHttpClient::new_with_client(
-                    uri,
-                    SetRequestHeaderLayer::overriding_typed(Authorization::new(
-                        Bearer::new(auth_raw)
-                            .expect("RAMA_TLS_REMOTE_AUTH to be a valid Bearer token"),
-                    ))
-                    .into_layer(EasyHttpWebClient::default())
-                    .boxed(),
-                )
-            } else {
-                CertIssuerHttpClient::new(uri)
-            };
-
-            return ServerConfig {
-                application_layer_protocol_negotiation: Some(vec![
-                    ApplicationProtocol::HTTP_2,
-                    ApplicationProtocol::HTTP_11,
-                ]),
-                ..ServerConfig::new(ServerAuth::CertIssuer(ServerCertIssuerData {
-                    kind: client.into(),
-                    cache_kind: CacheKind::MemCache {
-                        max_size: NonZeroU64::new(1).unwrap(),
-                        ttl: Some(Duration::from_secs(60 * 60 * 24 * 89)),
-                    },
-                }))
-            };
-        }
-
-        let Ok(tls_key_pem_raw) = std::env::var("RAMA_TLS_KEY") else {
-            return ServerConfig {
-                application_layer_protocol_negotiation: Some(vec![
-                    ApplicationProtocol::HTTP_2,
-                    ApplicationProtocol::HTTP_11,
-                ]),
-                ..ServerConfig::new(ServerAuth::SelfSigned(SelfSignedData::default()))
-            };
-        };
-        let tls_key_pem_raw = std::str::from_utf8(
-            &ENGINE
-                .decode(tls_key_pem_raw)
-                .expect("base64 decode RAMA_TLS_KEY")[..],
-        )
-        .expect("base64-decoded RAMA_TLS_KEY valid utf-8")
-        .try_into()
-        .expect("tls_key_pem_raw => NonEmptyStr (RAMA_TLS_KEY)");
-        let tls_crt_pem_raw = std::env::var("RAMA_TLS_CRT").expect("RAMA_TLS_CRT");
-        let tls_crt_pem_raw = std::str::from_utf8(
-            &ENGINE
-                .decode(tls_crt_pem_raw)
-                .expect("base64 decode RAMA_TLS_CRT")[..],
-        )
-        .expect("base64-decoded RAMA_TLS_CRT valid utf-8")
-        .try_into()
-        .expect("tls_crt_pem_raw => NonEmptyStr (RAMA_TLS_CRT)");
-        ServerConfig {
-            application_layer_protocol_negotiation: Some(vec![
-                ApplicationProtocol::HTTP_2,
-                ApplicationProtocol::HTTP_11,
-            ]),
-            ..ServerConfig::new(ServerAuth::Single(ServerAuthData {
-                private_key: DataEncoding::Pem(tls_key_pem_raw),
-                cert_chain: DataEncoding::Pem(tls_crt_pem_raw),
-                ocsp: None,
-            }))
-        }
+        tracing::info!("create tls server config...");
+        new_server_config(Some(match cfg.http_version {
+            HttpVersion::H1 => vec![ApplicationProtocol::HTTP_11],
+            HttpVersion::H2 => vec![ApplicationProtocol::HTTP_2],
+            HttpVersion::Auto => {
+                vec![ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11]
+            }
+        }))
     });
-
-    let maybe_acme_service = std::env::var("RAMA_ACME_DATA")
-        .map(|data| {
-            let mut iter = data.trim().splitn(2, ',');
-            let key = iter.next().expect("acme data key");
-            let value = iter.next().expect("acme data value");
-
-            HijackLayer::new(
-                HttpMatcher::path(format!("/.well-known/acme-challenge/{key}")),
-                AcmeService(value.to_owned()),
-            )
-        })
-        .ok();
 
     let graceful = rama::graceful::Shutdown::default();
 
@@ -185,7 +93,6 @@ pub async fn run(cfg: CliCommandEcho) -> Result<(), BoxError> {
         .maybe_with_http_version(cfg.http_version.into())
         .maybe_with_forward(cfg.forward)
         .maybe_with_tls_server_config(maybe_tls_server_config)
-        .with_http_layer(maybe_acme_service)
         .with_user_agent_database(Arc::new(UserAgentDatabase::embedded()))
         .build(Executor::graceful(graceful.guard()))
         .map_err(OpaqueError::from_boxed)
@@ -218,25 +125,7 @@ pub async fn run(cfg: CliCommandEcho) -> Result<(), BoxError> {
             .await;
     });
 
-    graceful
-        .shutdown_with_limit(Duration::from_secs(30))
-        .await?;
+    graceful.shutdown_with_limit(Duration::from_secs(5)).await?;
 
     Ok(())
-}
-
-#[derive(Debug, Clone)]
-struct AcmeService(String);
-
-impl Service<Request> for AcmeService {
-    type Response = Response;
-    type Error = Infallible;
-
-    async fn serve(
-        &self,
-        _ctx: rama::Context,
-        _req: Request,
-    ) -> Result<Self::Response, Self::Error> {
-        Ok(self.0.clone().into_response())
-    }
 }
