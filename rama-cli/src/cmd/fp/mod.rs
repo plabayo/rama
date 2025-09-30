@@ -1,26 +1,28 @@
 //! Echo service that echos the http request and tls client config
 
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD as ENGINE;
-use clap::Args;
-use itertools::Itertools;
 use rama::{
     Context, Service,
     cli::ForwardKind,
     combinators::Either7,
     error::{BoxError, ErrorContext, OpaqueError},
     http::{
-        HeaderName, HeaderValue, Request,
+        HeaderName, HeaderValue, Request, Uri,
+        client::EasyHttpWebClient,
         header::COOKIE,
         headers::{
-            Cookie, HeaderMapExt, SecWebSocketProtocol, all_client_hint_header_name_strings,
+            Authorization, Cookie, HeaderMapExt, SecWebSocketProtocol,
+            all_client_hint_header_name_strings,
             forwarded::{CFConnectingIp, ClientIp, TrueClientIp, XClientIp, XRealIp},
             sec_websocket_extensions,
         },
         layer::{
-            catch_panic::CatchPanicLayer, compression::CompressionLayer,
-            forwarded::GetForwardedHeaderLayer, required_header::AddRequiredResponseHeadersLayer,
-            set_header::SetResponseHeaderLayer, trace::TraceLayer, ua::UserAgentClassifierLayer,
+            catch_panic::CatchPanicLayer,
+            compression::CompressionLayer,
+            forwarded::GetForwardedHeaderLayer,
+            required_header::AddRequiredResponseHeadersLayer,
+            set_header::{SetRequestHeaderLayer, SetResponseHeaderLayer},
+            trace::TraceLayer,
+            ua::UserAgentClassifierLayer,
         },
         matcher::HttpMatcher,
         server::HttpServer,
@@ -28,6 +30,7 @@ use rama::{
             match_service,
             response::{IntoResponse, Redirect},
         },
+        tls::CertIssuerHttpClient,
         ws::handshake::server::WebSocketAcceptor,
     },
     layer::{
@@ -39,8 +42,9 @@ use rama::{
         stream::layer::http::BodyLimitLayer,
         tls::{
             ApplicationProtocol, DataEncoding,
-            server::{ServerAuth, ServerAuthData, ServerConfig},
+            server::{CacheKind, ServerAuth, ServerAuthData, ServerCertIssuerData, ServerConfig},
         },
+        user::Bearer,
     },
     proxy::haproxy::server::HaProxyLayer,
     rt::Executor,
@@ -50,7 +54,12 @@ use rama::{
     tls::boring::server::TlsAcceptorLayer,
     utils::backoff::ExponentialBackoff,
 };
-use std::{convert::Infallible, sync::Arc, time::Duration};
+
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD as ENGINE;
+use clap::Args;
+use itertools::Itertools;
+use std::{convert::Infallible, num::NonZeroU64, sync::Arc, time::Duration};
 
 mod data;
 mod endpoints;
@@ -176,6 +185,37 @@ pub async fn run(cfg: CliCommandFingerprint) -> Result<(), BoxError> {
                     }
                 }),
                 ..ServerConfig::new(ServerAuth::default())
+            };
+        }
+
+        if let Ok(uri_raw) = std::env::var("RAMA_TLS_REMOTE") {
+            let uri: Uri = uri_raw.parse().expect("RAMA_TLS_REMOTE to be a valid URI");
+            let client = if let Ok(auth_raw) = std::env::var("RAMA_TLS_REMOTE_AUTH") {
+                CertIssuerHttpClient::new_with_client(
+                    uri,
+                    SetRequestHeaderLayer::overriding_typed(Authorization::new(
+                        Bearer::new(auth_raw)
+                            .expect("RAMA_TLS_REMOTE_AUTH to be a valid Bearer token"),
+                    ))
+                    .into_layer(EasyHttpWebClient::default())
+                    .boxed(),
+                )
+            } else {
+                CertIssuerHttpClient::new(uri)
+            };
+
+            return ServerConfig {
+                application_layer_protocol_negotiation: Some(vec![
+                    ApplicationProtocol::HTTP_2,
+                    ApplicationProtocol::HTTP_11,
+                ]),
+                ..ServerConfig::new(ServerAuth::CertIssuer(ServerCertIssuerData {
+                    kind: client.into(),
+                    cache_kind: CacheKind::MemCache {
+                        max_size: NonZeroU64::new(1).unwrap(),
+                        ttl: Some(Duration::from_secs(60 * 60 * 24 * 89)),
+                    },
+                }))
             };
         }
 

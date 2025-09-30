@@ -39,3 +39,6 @@ pub use ::rama_http_backend::server;
 #[cfg(feature = "ws")]
 #[doc(inline)]
 pub use ::rama_ws as ws;
+
+#[cfg(feature = "tls")]
+pub mod tls;

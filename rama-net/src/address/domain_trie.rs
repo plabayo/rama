@@ -30,6 +30,30 @@ impl<T> Default for DomainTrie<T> {
     }
 }
 
+/// Result of [`DomainTrie::match_parent`].
+#[non_exhaustive]
+pub struct DomainParentMatch<'a, T> {
+    pub value: &'a T,
+    pub is_exact: bool,
+}
+
+impl<T: fmt::Debug> fmt::Debug for DomainParentMatch<'_, T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DomainParentMatch")
+            .field("value", &self.value)
+            .field("is_exact", &self.is_exact)
+            .finish()
+    }
+}
+
+impl<T: PartialEq> PartialEq for DomainParentMatch<'_, T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.value == other.value && self.is_exact == other.is_exact
+    }
+}
+
+impl<T: PartialEq + Eq> Eq for DomainParentMatch<'_, T> {}
+
 impl<T> DomainTrie<T> {
     #[inline]
     /// Create a new [`DomainTrie`].
@@ -117,9 +141,14 @@ impl<T> DomainTrie<T> {
     /// which is the exact domain or parent domain for a domain in this trie.
     ///
     /// Use [`Self::match_exact`] (first) in case you prefer an exact match instead.
-    pub fn match_parent(&self, domain: impl AsRef<str>) -> Option<&T> {
+    pub fn match_parent(&self, domain: impl AsRef<str>) -> Option<DomainParentMatch<'_, T>> {
         let reversed = reverse_domain(domain.as_ref());
-        self.trie.get_ancestor(&reversed).and_then(|n| n.value())
+        self.trie.get_ancestor(&reversed).and_then(|n| {
+            n.value().map(|value| DomainParentMatch {
+                value,
+                is_exact: n.key().map(|k| k.eq(&reversed)).unwrap_or_default(),
+            })
+        })
     }
 
     #[inline]
@@ -184,16 +213,46 @@ mod test {
             .with_insert_domain("bar.example.com", "bar")
             .with_insert_domain("example.com", "root")
             .with_insert_domain("foo.bar.example.com", "foo.bar");
-        assert_eq!(Some(&"root"), matcher.match_parent("example.com"));
-        assert_eq!(Some(&"bar"), matcher.match_parent("bar.example.com"));
-        assert_eq!(Some(&"bar"), matcher.match_parent("baz.bar.example.com"));
         assert_eq!(
-            Some(&"foo.bar"),
+            Some(DomainParentMatch {
+                value: &"root",
+                is_exact: true,
+            }),
+            matcher.match_parent("example.com")
+        );
+        assert_eq!(
+            Some(DomainParentMatch {
+                value: &"bar",
+                is_exact: true,
+            }),
+            matcher.match_parent("bar.example.com")
+        );
+        assert_eq!(
+            Some(DomainParentMatch {
+                value: &"bar",
+                is_exact: false,
+            }),
+            matcher.match_parent("baz.bar.example.com")
+        );
+        assert_eq!(
+            Some(DomainParentMatch {
+                value: &"foo.bar",
+                is_exact: true
+            }),
             matcher.match_parent("foo.bar.example.com")
         );
-        assert_eq!(Some(&"bar"), matcher.match_parent("bazfoo.bar.example.com"));
         assert_eq!(
-            Some(&"foo.bar"),
+            Some(DomainParentMatch {
+                value: &"bar",
+                is_exact: false
+            }),
+            matcher.match_parent("bazfoo.bar.example.com")
+        );
+        assert_eq!(
+            Some(DomainParentMatch {
+                value: &"foo.bar",
+                is_exact: false
+            }),
             matcher.match_parent("baz.foo.bar.example.com")
         );
     }

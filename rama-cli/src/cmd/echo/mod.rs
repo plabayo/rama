@@ -1,18 +1,25 @@
 //! Echo service that echos the http request and tls client config
 
-use clap::Args;
 use rama::{
-    Service,
+    Layer, Service,
     cli::{ForwardKind, service::echo::EchoServiceBuilder},
     error::{BoxError, ErrorContext, OpaqueError},
-    http::{Request, Response, matcher::HttpMatcher, service::web::response::IntoResponse},
+    http::{
+        Request, Response, Uri, client::EasyHttpWebClient, headers::Authorization,
+        layer::set_header::SetRequestHeaderLayer, matcher::HttpMatcher,
+        service::web::response::IntoResponse, tls::CertIssuerHttpClient,
+    },
     layer::HijackLayer,
     net::{
         socket::Interface,
         tls::{
             ApplicationProtocol, DataEncoding,
-            server::{SelfSignedData, ServerAuth, ServerAuthData, ServerConfig},
+            server::{
+                CacheKind, SelfSignedData, ServerAuth, ServerAuthData, ServerCertIssuerData,
+                ServerConfig,
+            },
         },
+        user::Bearer,
     },
     rt::Executor,
     tcp::server::TcpListener,
@@ -22,8 +29,8 @@ use rama::{
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as ENGINE;
-
-use std::{convert::Infallible, sync::Arc, time::Duration};
+use clap::Args;
+use std::{convert::Infallible, num::NonZeroU64, sync::Arc, time::Duration};
 
 use crate::utils::http::HttpVersion;
 
@@ -86,6 +93,37 @@ pub async fn run(cfg: CliCommandEcho) -> Result<(), BoxError> {
     });
 
     let maybe_tls_server_config = cfg.secure.then(|| {
+        if let Ok(uri_raw) = std::env::var("RAMA_TLS_REMOTE") {
+            let uri: Uri = uri_raw.parse().expect("RAMA_TLS_REMOTE to be a valid URI");
+            let client = if let Ok(auth_raw) = std::env::var("RAMA_TLS_REMOTE_AUTH") {
+                CertIssuerHttpClient::new_with_client(
+                    uri,
+                    SetRequestHeaderLayer::overriding_typed(Authorization::new(
+                        Bearer::new(auth_raw)
+                            .expect("RAMA_TLS_REMOTE_AUTH to be a valid Bearer token"),
+                    ))
+                    .into_layer(EasyHttpWebClient::default())
+                    .boxed(),
+                )
+            } else {
+                CertIssuerHttpClient::new(uri)
+            };
+
+            return ServerConfig {
+                application_layer_protocol_negotiation: Some(vec![
+                    ApplicationProtocol::HTTP_2,
+                    ApplicationProtocol::HTTP_11,
+                ]),
+                ..ServerConfig::new(ServerAuth::CertIssuer(ServerCertIssuerData {
+                    kind: client.into(),
+                    cache_kind: CacheKind::MemCache {
+                        max_size: NonZeroU64::new(1).unwrap(),
+                        ttl: Some(Duration::from_secs(60 * 60 * 24 * 89)),
+                    },
+                }))
+            };
+        }
+
         let Ok(tls_key_pem_raw) = std::env::var("RAMA_TLS_KEY") else {
             return ServerConfig {
                 application_layer_protocol_negotiation: Some(vec![
