@@ -318,6 +318,8 @@ tls = [
     "rama-http?/tls",
     "rama-http-backend?/tls",
     "rama-ua?/tls",
+    "dep:base64",
+    "dep:serde",
 ]
 rustls = ["tls", "dep:rama-tls-rustls"]
 boring = ["tls", "dep:rama-tls-boring"]
