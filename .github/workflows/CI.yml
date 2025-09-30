@@ -458,6 +458,30 @@ jobs:
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
 
+  deploy-rama-ip-ipv4-fly:
+    runs-on: ubuntu-latest
+    needs: deploy-rama-cli-docker
+    steps:
+      - uses: actions/checkout@v4
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - run: |
+          cd rama-fp/infra/deployments/ipv4
+          flyctl deploy --remote-only
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+  deploy-rama-ip-ipv6-fly:
+    runs-on: ubuntu-latest
+    needs: deploy-rama-cli-docker
+    steps:
+      - uses: actions/checkout@v4
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - run: |
+          cd rama-fp/infra/deployments/ipv6
+          flyctl deploy --remote-only
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
   deploy-rama-echo-fly:
     runs-on: ubuntu-latest
     needs: deploy-rama-cli-docker

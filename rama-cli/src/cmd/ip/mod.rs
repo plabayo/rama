@@ -3,7 +3,7 @@
 use clap::Args;
 use rama::{
     cli::{ForwardKind, service::ip::IpServiceBuilder},
-    combinators::Either,
+    combinators::Either3,
     error::{BoxError, ErrorContext, OpaqueError},
     net::socket::Interface,
     rt::Executor,
@@ -25,11 +25,13 @@ pub struct CliCommandIp {
     /// (0 = no limit)
     concurrent: usize,
 
-    #[arg(long, short = 't', default_value = "8")]
+    #[arg(long, short = 't', default_value = "5")]
     /// the timeout in seconds for each connection
-    ///
-    /// (0 = default timeout of 30s)
     timeout: u64,
+
+    #[arg(long, short = 'P', default_value = "1")]
+    /// the timeout in seconds for each connection
+    peek_timeout: u64,
 
     #[arg(long, short = 'a')]
     /// enable HaProxy PROXY Protocol
@@ -52,6 +54,10 @@ pub struct CliCommandIp {
     #[arg(long, short = 'T')]
     /// operate the IP service on transport layer (tcp)
     transport: bool,
+
+    #[arg(long)]
+    /// operate the IP service on transport layer (http)
+    http: bool,
 }
 
 /// run the rama ip service
@@ -60,24 +66,32 @@ pub async fn run(cfg: CliCommandIp) -> Result<(), BoxError> {
 
     let graceful = rama::graceful::Shutdown::default();
 
-    let tcp_service = if cfg.transport {
-        Either::A(
-            IpServiceBuilder::tcp()
-                .concurrent(cfg.concurrent)
-                .timeout(Duration::from_secs(cfg.timeout))
-                .maybe_forward(cfg.forward)
-                .build()
-                .expect("build ip TCP service"),
-        )
-    } else {
-        Either::B(
-            IpServiceBuilder::http()
-                .concurrent(cfg.concurrent)
-                .timeout(Duration::from_secs(cfg.timeout))
-                .maybe_forward(cfg.forward)
+    let tcp_service = match (cfg.transport, cfg.http) {
+        (true, true) | (false, false) => Either3::A(
+            IpServiceBuilder::auto()
+                .with_concurrent(cfg.concurrent)
+                .with_timeout(Duration::from_secs(cfg.timeout))
+                .with_peek_timeout(Duration::from_secs(cfg.peek_timeout))
+                .maybe_with_forward(cfg.forward)
                 .build(Executor::graceful(graceful.guard()))
                 .expect("build ip HTTP service"),
-        )
+        ),
+        (true, false) => Either3::B(
+            IpServiceBuilder::tcp()
+                .with_concurrent(cfg.concurrent)
+                .with_timeout(Duration::from_secs(cfg.timeout))
+                .maybe_with_forward(cfg.forward)
+                .build()
+                .expect("build ip TCP service"),
+        ),
+        (false, true) => Either3::C(
+            IpServiceBuilder::http()
+                .with_concurrent(cfg.concurrent)
+                .with_timeout(Duration::from_secs(cfg.timeout))
+                .maybe_with_forward(cfg.forward)
+                .build(Executor::graceful(graceful.guard()))
+                .expect("build ip HTTP service"),
+        ),
     };
 
     tracing::info!("starting ip service: bind interface = {}", cfg.bind);
@@ -101,9 +115,7 @@ pub async fn run(cfg: CliCommandIp) -> Result<(), BoxError> {
         tcp_listener.serve_graceful(guard, tcp_service).await;
     });
 
-    graceful
-        .shutdown_with_limit(Duration::from_secs(30))
-        .await?;
+    graceful.shutdown_with_limit(Duration::from_secs(5)).await?;
 
     Ok(())
 }

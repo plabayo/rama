@@ -1,5 +1,5 @@
 app = 'rama-fp'
-primary_region = 'lhr'
+primary_region = 'fra'
 
 [processes]
 app_secure = "fp --bind 0.0.0.0:8443 -c 2048 -t 16 -f haproxy --http-version auto -s"

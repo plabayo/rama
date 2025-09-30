@@ -7,7 +7,7 @@ use rama_core::{
     stream::{PeekStream, StackReader},
     telemetry::tracing,
 };
-use std::fmt;
+use std::{fmt, time::Duration};
 use tokio::io::AsyncReadExt;
 
 /// A [`Service`] router that can be used to support
@@ -18,6 +18,7 @@ use tokio::io::AsyncReadExt;
 pub struct HttpPeekRouter<T, F = RejectService<(), NoHttpRejectError>> {
     http_acceptor: T,
     fallback: F,
+    peek_timeout: Option<Duration>,
 }
 
 /// Type wrapper used by [`HttpPeekRouter::new_dual`]
@@ -104,6 +105,7 @@ impl<T> HttpPeekRouter<HttpAutoAcceptor<T>> {
         Self {
             http_acceptor: HttpAutoAcceptor(auto_acceptor),
             fallback: RejectService::new(NoHttpRejectError),
+            peek_timeout: None,
         }
     }
 }
@@ -115,6 +117,7 @@ impl<T> HttpPeekRouter<Http1Acceptor<T>> {
         Self {
             http_acceptor: Http1Acceptor(http1_acceptor),
             fallback: RejectService::new(NoHttpRejectError),
+            peek_timeout: None,
         }
     }
 }
@@ -126,6 +129,7 @@ impl<T> HttpPeekRouter<H2Acceptor<T>> {
         Self {
             http_acceptor: H2Acceptor(h2_acceptor),
             fallback: RejectService::new(NoHttpRejectError),
+            peek_timeout: None,
         }
     }
 }
@@ -136,6 +140,17 @@ impl<T> HttpPeekRouter<T> {
         HttpPeekRouter {
             http_acceptor: self.http_acceptor,
             fallback,
+            peek_timeout: self.peek_timeout,
+        }
+    }
+}
+
+impl<T, F> HttpPeekRouter<T, F> {
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the peek window to timeout on
+        pub fn peek_timeout(mut self, peek_timeout: Option<Duration>) -> Self {
+            self.peek_timeout = peek_timeout;
+            self
         }
     }
 }
@@ -150,6 +165,7 @@ impl<T, U> HttpPeekRouter<HttpDualAcceptor<T, U>> {
                 h2: h2_acceptor,
             },
             fallback: RejectService::new(NoHttpRejectError),
+            peek_timeout: None,
         }
     }
 }
@@ -159,6 +175,7 @@ impl<T: Clone, F: Clone> Clone for HttpPeekRouter<T, F> {
         Self {
             http_acceptor: self.http_acceptor.clone(),
             fallback: self.fallback.clone(),
+            peek_timeout: self.peek_timeout,
         }
     }
 }
@@ -168,6 +185,7 @@ impl<T: fmt::Debug, F: fmt::Debug> fmt::Debug for HttpPeekRouter<T, F> {
         f.debug_struct("HttpPeekRouter")
             .field("http_acceptor", &self.http_acceptor)
             .field("fallback", &self.fallback)
+            .field("peek_timeout", &self.peek_timeout)
             .finish()
     }
 }
@@ -183,7 +201,7 @@ where
     type Error = BoxError;
 
     async fn serve(&self, ctx: Context, stream: Stream) -> Result<Self::Response, Self::Error> {
-        let (version, stream) = peek_http_stream(stream).await?;
+        let (version, stream) = peek_http_stream(stream, self.peek_timeout).await?;
         if version.is_some() {
             tracing::trace!("http peek: serve[auto]: http acceptor; version = {version:?}");
             self.http_acceptor
@@ -209,7 +227,7 @@ where
     type Error = BoxError;
 
     async fn serve(&self, ctx: Context, stream: Stream) -> Result<Self::Response, Self::Error> {
-        let (version, stream) = peek_http_stream(stream).await?;
+        let (version, stream) = peek_http_stream(stream, self.peek_timeout).await?;
         if version == Some(HttpPeekVersion::Http1x) {
             tracing::trace!("http peek: serve[http1]: http/1x acceptor; version = {version:?}");
             self.http_acceptor
@@ -235,7 +253,7 @@ where
     type Error = BoxError;
 
     async fn serve(&self, ctx: Context, stream: Stream) -> Result<Self::Response, Self::Error> {
-        let (version, stream) = peek_http_stream(stream).await?;
+        let (version, stream) = peek_http_stream(stream, self.peek_timeout).await?;
         if version == Some(HttpPeekVersion::H2) {
             tracing::trace!("http peek: serve[h2]: http acceptor; version = {version:?}");
             self.http_acceptor
@@ -262,7 +280,7 @@ where
     type Error = BoxError;
 
     async fn serve(&self, ctx: Context, stream: Stream) -> Result<Self::Response, Self::Error> {
-        let (version, stream) = peek_http_stream(stream).await?;
+        let (version, stream) = peek_http_stream(stream, self.peek_timeout).await?;
         match version {
             Some(HttpPeekVersion::H2) => {
                 tracing::trace!("http peek: serve[dual]: h2 acceptor; version = {version:?}");
@@ -296,12 +314,17 @@ enum HttpPeekVersion {
 
 async fn peek_http_stream<Stream: rama_core::stream::Stream + Unpin>(
     mut stream: Stream,
+    timeout: Option<Duration>,
 ) -> Result<(Option<HttpPeekVersion>, HttpPeekStream<Stream>), BoxError> {
     let mut peek_buf = [0u8; HTTP_HEADER_PEEK_LEN];
-    let n = stream
-        .read(&mut peek_buf)
-        .await
-        .context("try to read http prefix")?;
+
+    let read_fut = stream.read(&mut peek_buf);
+
+    let n = match timeout {
+        Some(d) => tokio::time::timeout(d, read_fut).await.unwrap_or(Ok(0)),
+        None => read_fut.await,
+    }
+    .context("try to read http prefix")?;
 
     const HTTP_METHODS: &[&[u8]] = &[
         b"GET ",

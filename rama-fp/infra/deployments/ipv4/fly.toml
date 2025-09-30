@@ -3,12 +3,12 @@
 # See https://fly.io/docs/reference/configuration/ for information about how to use this file.
 #
 
-app = 'rama-echo'
+app = 'rama-ipv4'
 primary_region = 'fra'
 
 [processes]
-app_secure = "echo --bind 0.0.0.0:8443 -c 2048 -t 300 -f haproxy --ws -s"
-app_insecure = "echo --bind 0.0.0.0:8080 -c 2048 -t 300 -f haproxy --ws"
+# app_secure = "ip --bind 0.0.0.0:8443 -c 2048 -f haproxy"
+app_insecure = "ip --bind 0.0.0.0:8080 -c 2048 -f haproxy"
 
 [build]
 image = 'glendc/rama:latest'
@@ -25,17 +25,17 @@ processes = ['app_insecure']
 handlers = ["proxy_proto"]
 port = 80
 
-[[services]]
-protocol = 'tcp'
-internal_port = 8443
-auto_stop_machines = true
-auto_start_machines = true
-min_machines_running = 1
-processes = ['app_secure']
+# [[services]]
+# protocol = 'tcp'
+# internal_port = 8443
+# auto_stop_machines = true
+# auto_start_machines = true
+# min_machines_running = 1
+# processes = ['app_secure']
 
-[[services.ports]]
-handlers = ["proxy_proto"]
-port = 443
+# [[services.ports]]
+# handlers = ["proxy_proto"]
+# port = 443
 
 [[vm]]
 memory = '256mb'
