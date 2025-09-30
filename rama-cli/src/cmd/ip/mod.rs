@@ -28,11 +28,11 @@ pub struct CliCommandIp {
     /// (0 = no limit)
     concurrent: usize,
 
-    #[arg(long, short = 't', default_value = "5")]
+    #[arg(long, short = 't', default_value = "8")]
     /// the timeout in seconds for each connection
     timeout: u64,
 
-    #[arg(long, short = 'P', default_value = "1")]
+    #[arg(long, short = 'P', default_value = "4")]
     /// the timeout in seconds for each connection
     peek_timeout: u64,
 
