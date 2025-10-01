@@ -78,7 +78,10 @@ pub struct ServerCertIssuerData {
 #[derive(Debug, Clone)]
 /// Cache kind that will be used to cache results of certificate issuers
 pub enum CacheKind {
-    MemCache { max_size: NonZeroU64 },
+    MemCache {
+        max_size: NonZeroU64,
+        ttl: Option<std::time::Duration>,
+    },
     Disabled,
 }
 
@@ -86,6 +89,7 @@ impl Default for CacheKind {
     fn default() -> Self {
         Self::MemCache {
             max_size: NonZeroU64::new(8096).unwrap(),
+            ttl: None,
         }
     }
 }

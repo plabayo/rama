@@ -36,4 +36,4 @@ pub use domain_address::DomainAddress;
 
 mod domain_trie;
 #[doc(inline)]
-pub use domain_trie::DomainTrie;
+pub use domain_trie::{DomainParentMatch, DomainTrie};
