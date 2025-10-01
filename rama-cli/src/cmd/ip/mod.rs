@@ -36,10 +36,6 @@ pub struct CliCommandIp {
     /// the timeout in seconds for each connection
     peek_timeout: u64,
 
-    #[arg(long, short = 'a')]
-    /// enable HaProxy PROXY Protocol
-    ha_proxy: bool,
-
     #[arg(long, short = 'f')]
     /// enable support for one of the following "forward" headers or protocols
     ///

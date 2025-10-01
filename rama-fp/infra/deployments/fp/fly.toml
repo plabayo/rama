@@ -8,6 +8,9 @@ app_insecure = "fp --bind 0.0.0.0:8080 -c 2048 -t 16 -f haproxy --http-version a
 [build]
 image = "glendc/rama:latest"
 
+[env]
+  RUST_LOG = 'debug'
+
 [[services]]
 internal_port = 8080
 protocol = "tcp"
