@@ -69,6 +69,13 @@ pub(super) async fn get_consent() -> impl IntoResponse {
                         <li><a href="https://echo.ramaproxy.org:443">https://echo.ramaproxy.org</a>: echo service, TLS</li>
                     </ul>
                 </p>
+                </p>
+                    Need to lookup your IP Address in html/txt/json:
+                    <ul>
+                        <li><a href="https://ipv4.ramaproxy.org">https://ipv4.ramaproxy.org</a>: return your pubic IPv4 address</li>
+                        <li><a href="https://ipv6.ramaproxy.org">https://ipv6.ramaproxy.org</a>: return your pubic IPv6 address</li>
+                    </ul>
+                </p>
                 <p>You can learn move about rama at in
                     <a href="https://ramaproxy.org/book">the rama book</a>.
                     And the source code for this service is available at
