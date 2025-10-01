@@ -56,6 +56,72 @@ impl CertIssuerHttpClient {
         Self::new_with_client(endpoint, EasyHttpWebClient::default().boxed())
     }
 
+    #[cfg(feature = "boring")]
+    pub fn try_from_env() -> Result<Self, OpaqueError> {
+        use crate::{
+            Layer as _,
+            http::{headers::Authorization, layer::set_header::SetRequestHeaderLayer},
+            net::user::Bearer,
+            tls::boring::{
+                client::TlsConnectorDataBuilder,
+                core::x509::{X509, store::X509StoreBuilder},
+            },
+        };
+        use std::sync::Arc;
+
+        let uri_raw = std::env::var("RAMA_TLS_REMOTE").context("RAMA_TLS_REMOTE is undefined")?;
+
+        let mut tls_config = TlsConnectorDataBuilder::new_http_auto();
+
+        if let Ok(remote_ca_raw) = std::env::var("RAMA_TLS_REMOTE_CA") {
+            let mut store_builder = X509StoreBuilder::new().expect("build x509 store builder");
+            store_builder
+                .add_cert(
+                    X509::from_pem(
+                        &ENGINE
+                            .decode(remote_ca_raw)
+                            .expect("base64 decode RAMA_TLS_REMOTE_CA")[..],
+                    )
+                    .expect("load CA cert"),
+                )
+                .expect("add CA cert to store builder");
+            let store = store_builder.build();
+            tls_config.set_server_verify_cert_store(store);
+        }
+
+        let client = EasyHttpWebClient::builder()
+            .with_default_transport_connector()
+            .without_tls_proxy_support()
+            .without_proxy_support()
+            .with_tls_support_using_boringssl(Some(Arc::new(tls_config)))
+            .build();
+
+        let uri: Uri = uri_raw.parse().expect("RAMA_TLS_REMOTE to be a valid URI");
+        let mut client = if let Ok(auth_raw) = std::env::var("RAMA_TLS_REMOTE_AUTH") {
+            Self::new_with_client(
+                uri,
+                SetRequestHeaderLayer::overriding_typed(Authorization::new(
+                    Bearer::new(auth_raw).expect("RAMA_TLS_REMOTE_AUTH to be a valid Bearer token"),
+                ))
+                .into_layer(client)
+                .boxed(),
+            )
+        } else {
+            Self::new_with_client(uri, client.boxed())
+        };
+
+        if let Ok(allow_cn_csv_raw) = std::env::var("RAMA_TLS_REMOTE_CN_CSV") {
+            for raw_cn_str in allow_cn_csv_raw.split(',') {
+                match raw_cn_str.strip_prefix("*.") {
+                    Some(raw_cn_str) => client.set_allow_parent_domain(raw_cn_str),
+                    None => client.set_allow_exact_domain(raw_cn_str),
+                };
+            }
+        }
+
+        Ok(client)
+    }
+
     /// Create a new [`CertIssuerHttpClient`] using a custom http client.
     ///
     /// The custom http client allows you to add whatever layers and client implementation
