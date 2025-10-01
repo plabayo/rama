@@ -100,7 +100,7 @@ pub async fn run(cfg: CliCommandIp) -> Result<(), BoxError> {
                 .build()
                 .expect("build ip TCP service"),
         ),
-        (false, true) | (false, false) => Either3::C(
+        (false, true | false) => Either3::C(
             IpServiceBuilder::http()
                 .with_concurrent(cfg.concurrent)
                 .with_timeout(Duration::from_secs(cfg.timeout))
