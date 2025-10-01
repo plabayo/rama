@@ -9,13 +9,15 @@ use crate::{
     error::{BoxError, OpaqueError},
     http::{
         Request, Response, StatusCode,
+        dep::mime,
         headers::forwarded::{CFConnectingIp, ClientIp, TrueClientIp, XClientIp, XRealIp},
+        headers::{Accept, HeaderMapExt},
         layer::{
             forwarded::GetForwardedHeaderLayer, required_header::AddRequiredResponseHeadersLayer,
             trace::TraceLayer, ua::UserAgentClassifierLayer,
         },
         server::HttpServer,
-        service::web::response::IntoResponse,
+        service::web::response::{Html, IntoResponse, Json},
     },
     layer::{ConsumeErrLayer, LimitLayer, TimeoutLayer, limit::policy::ConcurrentPolicy},
     net::forwarded::Forwarded,
@@ -43,9 +45,9 @@ type TlsConfig = ServerConfig;
 type TlsConfig = TlsAcceptorData;
 
 #[cfg(any(feature = "rustls", feature = "boring"))]
-use rama_core::{combinators::Either, layer::MapRequestLayer};
+use crate::{combinators::Either, layer::MapRequestLayer};
 
-use std::{convert::Infallible, marker::PhantomData, time::Duration};
+use std::{convert::Infallible, marker::PhantomData, net::IpAddr, time::Duration};
 use tokio::{io::AsyncWriteExt, net::TcpStream};
 
 #[derive(Debug, Clone)]
@@ -206,16 +208,54 @@ impl Service<Request> for HttpIpService {
     type Response = Response;
     type Error = BoxError;
 
-    async fn serve(&self, ctx: Context, _req: Request) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
         let peer_ip = ctx
             .get::<Forwarded>()
             .and_then(|f| f.client_ip())
             .or_else(|| ctx.get::<SocketInfo>().map(|s| s.peer_addr().ip()));
 
         Ok(match peer_ip {
-            Some(ip) => ip.to_string().into_response(),
+            Some(ip) => match HttpBodyContentFormat::derive_from_req(&req) {
+                HttpBodyContentFormat::Txt => ip.to_string().into_response(),
+                HttpBodyContentFormat::Html => format_html_page(ip).into_response(),
+                HttpBodyContentFormat::Json => Json(serde_json::json!({
+                    "ip": ip,
+                }))
+                .into_response(),
+            },
             None => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
         })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum HttpBodyContentFormat {
+    #[default]
+    Txt,
+    Html,
+    Json,
+}
+
+impl HttpBodyContentFormat {
+    fn derive_from_req(req: &Request) -> Self {
+        let Some(accept) = req.headers().typed_get::<Accept>() else {
+            return Self::default();
+        };
+        accept
+            .iter()
+            .find_map(|qv| {
+                let r#type = qv.value.subtype();
+                if r#type == mime::JSON {
+                    Some(Self::Json)
+                } else if r#type == mime::HTML {
+                    Some(Self::Html)
+                } else if r#type == mime::TEXT {
+                    Some(Self::Txt)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_default()
     }
 }
 
@@ -374,9 +414,6 @@ impl<M> IpServiceBuilder<M> {
         )
             .into_layer(HttpIpService);
 
-        // TODO: enable TLS once we make use of our remote ACME provider
-        // TlsPeekRouter::new(TlsAcceptorLayer::new(TlsAcceptorDataBuilder::new(cert_chain, key_der)))
-
         Ok(tcp_service_builder.into_layer(HttpServer::auto(executor).service(http_service)))
     }
 }
@@ -453,4 +490,11 @@ pub mod mode {
     /// Default mode of the Ip service, echo'ng the IP over
     /// http if that was detected, otherwise over tcp directly.
     pub struct Auto;
+}
+
+fn format_html_page(ip: IpAddr) -> Html<String> {
+    Html(format!(
+        r##"<!doctype html> <html lang="en"> <head> <meta charset="utf-8" /> <meta name="viewport" content="width=device-width,initial-scale=1" /> <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='0.9em' font-size='90'>🦙</text></svg>" /> <title>Rama IP</title> <style> :root{{ --bg:#000; --panel:#0f0f0f; --green:#45d23a; --muted:#bfbfbf; }} html,body{{height:100%;margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,"Helvetica Neue",Arial;}} body{{ background:var(--bg); color:var(--muted); display:flex; align-items:center; justify-content:center; padding:32px; box-sizing:border-box; }} .card{{ width:100%; max-width:760px; text-align:center; }} .logo{{ display:flex; align-items:center; justify-content:center; gap:12px; margin-bottom:18px; }} .ramatext{{ color:var(--green); font-weight:700; font-size:40px; letter-spacing:0.6px; }} .subtitle{{ font-size:18px; margin:6px 0 28px 0; color:var(--muted); }} .panel{{ background:linear-gradient(180deg,#0b0b0b 0%, #111 100%); border-radius:12px; padding:28px; box-shadow:0 6px 24px rgba(0,0,0,0.7), inset 0 1px 0 rgba(255,255,255,0.02); border:2px solid rgba(69,210,58,0.06); }} .ip{{ background:transparent; border-radius:8px; padding:18px 16px; font-family: ui-monospace,SFMono-Regular,Menlo,monospace; font-size:20px; color:#e6ffe6; margin:10px auto 18px auto; max-width:520px; word-break:break-all; border:1px solid rgba(69,210,58,0.12); }} .muted{{ color:var(--muted); font-size:14px; margin-bottom:12px; }} .controls{{display:flex;gap:12px;justify-content:center;flex-wrap:wrap;}} button{{ background:transparent; color:var(--green); padding:12px 18px; border-radius:8px; font-weight:700; border:2px solid rgba(69,210,58,0.9); cursor:pointer; min-width:120px; transition:transform .08s ease,box-shadow .08s ease; }} button.primary{{ background:var(--green); color:#032; box-shadow:0 6px 18px rgba(69,210,58,0.08); }} button:active{{transform:translateY(1px);}} .note{{font-size:13px;color:#9aa; margin-top:14px;}} .small{{font-size:12px;color:#808080;margin-top:10px}} </style> </head> <body> <div class="card"> <div class="logo"> <div style="font-size:46px;color:var(--green)">🍜</div> <div class="ramatext">Rama</div> </div> <div class="panel" role="region" aria-label="ip panel"> <div class="muted">Your public ip</div> <pre id="ip" class="ip" aria-live="polite">{}</pre> <div class="controls" aria-hidden="false"> <button id="copyBtn" class="primary" title="Copy ip to clipboard">Copy IP</button></div> </div> <script> (async function(){{ const ipEl = document.getElementById('ip'); const copyBtn = document.getElementById('copyBtn'); copyBtn.addEventListener('click', async ()=>{{ const txt = ipEl.textContent.trim(); try{{ await navigator.clipboard.writeText(txt); copyBtn.textContent = 'Copied'; setTimeout(()=> copyBtn.textContent = 'Copy IP', 1400); }}catch(e){{ const ta = document.createElement('textarea'); ta.value = txt; document.body.appendChild(ta); ta.select(); try{{ document.execCommand('copy'); copyBtn.textContent = 'Copied'; }} catch(e){{ alert('Copy failed. Select and copy manually.'); }} ta.remove(); setTimeout(()=> copyBtn.textContent = 'Copy IP', 1400); }} }}); }})(); </script> </body> </html>"##,
+        ip
+    ))
 }

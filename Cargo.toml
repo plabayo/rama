@@ -225,9 +225,7 @@ tokio-util = "0.7"
 tower-layer = "0.3"
 tower-service = "0.3"
 tracing = "0.1"
-# tracing-opentelemetry = "0.31"
-# TODO: switch to 0.32 once released, for now this will at least bring us to latest
-tracing-opentelemetry = { git = "https://github.com/tokio-rs/tracing-opentelemetry", rev = "4ebae2c53792e76c71d47c0f651b8fb059094540" }
+tracing-opentelemetry = "0.32"
 tracing-subscriber = "0.3"
 tracing-test = "0.2"
 tracing-tree = "0.4"
