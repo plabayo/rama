@@ -7,7 +7,10 @@
 //! [`service::matcher` module]: rama_core
 use crate::Request;
 use rama_core::{Context, extensions::Extensions, matcher::IteratorMatcherExt};
-use rama_net::{address::Domain, stream::matcher::SocketMatcher};
+use rama_net::{
+    address::{AsDomainRef, Domain},
+    stream::matcher::SocketMatcher,
+};
 use std::fmt;
 use std::sync::Arc;
 
@@ -708,7 +711,7 @@ impl<Body> HttpMatcher<Body> {
     pub fn any_subdomain<I, S>(domains: I) -> Self
     where
         I: IntoIterator<Item = S>,
-        S: AsRef<str>,
+        S: AsDomainRef,
     {
         Self {
             kind: HttpMatcherKind::SubdomainTrie(SubdomainTrieMatcher::new(domains)),
@@ -723,7 +726,7 @@ impl<Body> HttpMatcher<Body> {
     pub fn and_any_subdomain<I, S>(self, domains: I) -> Self
     where
         I: IntoIterator<Item = S>,
-        S: AsRef<str>,
+        S: AsDomainRef,
     {
         self.and(Self::any_subdomain(domains))
     }
@@ -735,7 +738,7 @@ impl<Body> HttpMatcher<Body> {
     pub fn or_any_subdomain<I, S>(self, domains: I) -> Self
     where
         I: IntoIterator<Item = S>,
-        S: AsRef<str>,
+        S: AsDomainRef,
     {
         self.or(Self::any_subdomain(domains))
     }

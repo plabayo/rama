@@ -17,6 +17,7 @@ use crate::{Context, Service, combinators::Either, service::BoxService};
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as ENGINE;
+use rama_net::address::AsDomainRef;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -112,9 +113,10 @@ impl CertIssuerHttpClient {
 
         if let Ok(allow_cn_csv_raw) = std::env::var("RAMA_TLS_REMOTE_CN_CSV") {
             for raw_cn_str in allow_cn_csv_raw.split(',') {
-                match raw_cn_str.strip_prefix("*.") {
-                    Some(raw_cn_str) => client.set_allow_parent_domain(raw_cn_str),
-                    None => client.set_allow_exact_domain(raw_cn_str),
+                let cn: Domain = raw_cn_str.parse().expect("CN to be a valid domain");
+                match cn.as_wildcard_parent() {
+                    Some(parent_cn) => client.set_allow_parent_domain(parent_cn),
+                    None => client.set_allow_exact_domain(cn),
                 };
             }
         }
@@ -143,7 +145,7 @@ impl CertIssuerHttpClient {
         ///
         /// By default, if none of the `allow_*` setters are called
         /// the client will fetch for any client.
-        pub fn allow_exact_domain(mut self, domain: impl AsRef<str>) -> Self {
+        pub fn allow_exact_domain(mut self, domain: impl AsDomainRef) -> Self {
             self.allow_list.get_or_insert_default().insert_domain(domain, DomainAllowMode::Exact);
             self
         }
@@ -154,7 +156,7 @@ impl CertIssuerHttpClient {
         ///
         /// By default, if none of the `allow_*` setters are called
         /// the client will fetch for any client.
-        pub fn allow_exact_domains(mut self, domains: impl Iterator<Item: AsRef<str>>) -> Self {
+        pub fn allow_exact_domains(mut self, domains: impl Iterator<Item: AsDomainRef>) -> Self {
             self.allow_list.get_or_insert_default().insert_domain_iter(domains, DomainAllowMode::Exact);
             self
         }
@@ -165,7 +167,7 @@ impl CertIssuerHttpClient {
         ///
         /// By default, if none of the `allow_*` setters are called
         /// the client will fetch for any client.
-        pub fn allow_parent_domain(mut self, domain: impl AsRef<str>) -> Self {
+        pub fn allow_parent_domain(mut self, domain: impl AsDomainRef) -> Self {
             self.allow_list.get_or_insert_default().insert_domain(domain, DomainAllowMode::Parent);
             self
         }
@@ -176,7 +178,7 @@ impl CertIssuerHttpClient {
         ///
         /// By default, if none of the `allow_*` setters are called
         /// the client will fetch for any client.
-        pub fn allow_parent_domains(mut self, domains: impl Iterator<Item: AsRef<str>>) -> Self {
+        pub fn allow_parent_domains(mut self, domains: impl Iterator<Item: AsDomainRef>) -> Self {
             self.allow_list.get_or_insert_default().insert_domain_iter(domains, DomainAllowMode::Parent);
             self
         }
@@ -192,7 +194,7 @@ impl DynamicCertIssuer for CertIssuerHttpClient {
         let domain = match client_hello.ext_server_name() {
             Some(domain) => {
                 if let Some(ref allow_list) = self.allow_list {
-                    match allow_list.match_parent(domain.as_str()) {
+                    match allow_list.match_parent(domain) {
                         None => {
                             return Either::A(std::future::ready(Err(OpaqueError::from_display(
                                 "sni found: unexpected unknown domain",

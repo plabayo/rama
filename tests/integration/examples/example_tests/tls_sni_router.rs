@@ -3,7 +3,6 @@ use rama::{
     Context,
     dns::{DnsOverwrite, InMemoryDns},
     http::BodyExtractExt,
-    net::address::Domain,
 };
 use std::net::IpAddr;
 
@@ -15,14 +14,8 @@ async fn test_tls_sni_router() {
     let runner = utils::ExampleRunner::interactive("tls_sni_router", Some("boring"));
 
     let mut mem_dns = InMemoryDns::new();
-    mem_dns.insert_address(
-        &Domain::from_static("foo.local"),
-        IpAddr::V4([127, 0, 0, 1].into()),
-    );
-    mem_dns.insert_address(
-        &Domain::from_static("bar.local"),
-        IpAddr::V4([127, 0, 0, 1].into()),
-    );
+    mem_dns.insert_address("foo.local", IpAddr::V4([127, 0, 0, 1].into()));
+    mem_dns.insert_address("bar.local", IpAddr::V4([127, 0, 0, 1].into()));
 
     for (uri, expected_response) in [
         ("https://127.0.0.1:63804", "foo"),

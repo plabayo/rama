@@ -463,6 +463,46 @@ const fn is_valid_name(name: &[u8]) -> bool {
     }
 }
 
+#[allow(private_bounds)]
+/// A trait which is used by the `rama-net` crate
+/// for places where we wish to have access to
+/// a reference to a Domain, directly or indirectly,
+/// for non-move purposes.
+///
+/// For example to compare it, or use it in a derived form.
+pub trait AsDomainRef: seal::AsDomainRefPrivate {}
+
+impl AsDomainRef for &'static str {}
+impl AsDomainRef for Domain {}
+impl<T: seal::AsDomainRefPrivate> AsDomainRef for &T {}
+
+pub(super) mod seal {
+    pub(in crate::address) trait AsDomainRefPrivate {
+        fn domain_as_str(&self) -> &str;
+    }
+
+    impl AsDomainRefPrivate for &'static str {
+        fn domain_as_str(&self) -> &str {
+            if !super::is_valid_name(self.as_bytes()) {
+                panic!("static str is an invalid domain");
+            }
+            self
+        }
+    }
+
+    impl AsDomainRefPrivate for super::Domain {
+        fn domain_as_str(&self) -> &str {
+            self.as_str()
+        }
+    }
+
+    impl<T: AsDomainRefPrivate> AsDomainRefPrivate for &T {
+        fn domain_as_str(&self) -> &str {
+            (**self).domain_as_str()
+        }
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_fun_call)]
 mod tests {

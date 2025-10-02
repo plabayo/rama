@@ -1,6 +1,8 @@
 use radix_trie::{Trie, TrieCommon};
 use std::fmt;
 
+use crate::address::AsDomainRef;
+
 /// An efficient radix tree that can be used to match (sub)domains.
 pub struct DomainTrie<T> {
     trie: Trie<String, T>,
@@ -66,8 +68,8 @@ impl<T> DomainTrie<T> {
     ///
     /// This overwrites any existing value already in the tree for that (trie) node.
     #[must_use]
-    pub fn with_insert_domain(mut self, domain: impl AsRef<str>, value: T) -> Self {
-        let reversed = reverse_domain(domain.as_ref());
+    pub fn with_insert_domain(mut self, domain: impl AsDomainRef, value: T) -> Self {
+        let reversed = reverse_domain(domain.domain_as_str());
         self.trie.insert(reversed, value);
         self
     }
@@ -75,8 +77,8 @@ impl<T> DomainTrie<T> {
     /// Insert the given domain paired with the input value `T`.
     ///
     /// This overwrites any existing value already in the tree for that (trie) node.
-    pub fn insert_domain(&mut self, domain: impl AsRef<str>, value: T) -> &mut Self {
-        let reversed = reverse_domain(domain.as_ref());
+    pub fn insert_domain(&mut self, domain: impl AsDomainRef, value: T) -> &mut Self {
+        let reversed = reverse_domain(domain.domain_as_str());
         self.trie.insert(reversed, value);
         self
     }
@@ -88,7 +90,7 @@ impl<T> DomainTrie<T> {
     pub fn with_insert_domain_iter<I, S>(mut self, domains: I, value: T) -> Self
     where
         I: IntoIterator<Item = S>,
-        S: AsRef<str>,
+        S: AsDomainRef,
         T: Clone,
     {
         self.insert_domain_iter(domains, value);
@@ -101,17 +103,17 @@ impl<T> DomainTrie<T> {
     pub fn insert_domain_iter<I, S>(&mut self, domains: I, value: T) -> &mut Self
     where
         I: IntoIterator<Item = S>,
-        S: AsRef<str>,
+        S: AsDomainRef,
         T: Clone,
     {
         let mut iter = domains.into_iter();
         if let Some(mut prev) = iter.next() {
             for curr in iter {
-                let reversed = reverse_domain(prev.as_ref());
+                let reversed = reverse_domain(prev.domain_as_str());
                 self.trie.insert(reversed, value.clone());
                 prev = curr;
             }
-            let reversed = reverse_domain(prev.as_ref());
+            let reversed = reverse_domain(prev.domain_as_str());
             self.trie.insert(reversed, value);
         }
 
@@ -122,7 +124,7 @@ impl<T> DomainTrie<T> {
     pub fn extend<I, S>(&mut self, iter: I) -> &mut Self
     where
         I: IntoIterator<Item = (S, T)>,
-        S: AsRef<str>,
+        S: AsDomainRef,
     {
         for (domain, value) in iter {
             self.insert_domain(domain, value);
@@ -133,7 +135,7 @@ impl<T> DomainTrie<T> {
     #[inline]
     /// Returns true if the input domain is a subdomain of
     /// at least one node found in this [`DomainTrie`].
-    pub fn is_match_parent(&self, domain: impl AsRef<str>) -> bool {
+    pub fn is_match_parent(&self, domain: impl AsDomainRef) -> bool {
         self.match_parent(domain).is_some()
     }
 
@@ -141,8 +143,8 @@ impl<T> DomainTrie<T> {
     /// which is the exact domain or parent domain for a domain in this trie.
     ///
     /// Use [`Self::match_exact`] (first) in case you prefer an exact match instead.
-    pub fn match_parent(&self, domain: impl AsRef<str>) -> Option<DomainParentMatch<'_, T>> {
-        let reversed = reverse_domain(domain.as_ref());
+    pub fn match_parent(&self, domain: impl AsDomainRef) -> Option<DomainParentMatch<'_, T>> {
+        let reversed = reverse_domain(domain.domain_as_str());
         self.trie.get_ancestor(&reversed).and_then(|n| {
             n.value().map(|value| DomainParentMatch {
                 value,
@@ -154,13 +156,13 @@ impl<T> DomainTrie<T> {
     #[inline]
     /// Returns true if the input domain is an exact domain
     /// stored in this [`DomainTrie`].
-    pub fn is_match_exact(&self, domain: impl AsRef<str>) -> bool {
+    pub fn is_match_exact(&self, domain: impl AsDomainRef) -> bool {
         self.match_exact(domain).is_some()
     }
 
     /// Returns the value that is stored for a given exact domain as stored in this trie.
-    pub fn match_exact(&self, domain: impl AsRef<str>) -> Option<&T> {
-        let reversed = reverse_domain(domain.as_ref());
+    pub fn match_exact(&self, domain: impl AsDomainRef) -> Option<&T> {
+        let reversed = reverse_domain(domain.domain_as_str());
         self.trie.get(&reversed)
     }
 
@@ -179,7 +181,7 @@ fn reverse_domain(domain: &str) -> String {
 
 impl<S, T> FromIterator<(S, T)> for DomainTrie<T>
 where
-    S: AsRef<str>,
+    S: AsDomainRef,
 {
     #[inline]
     fn from_iter<I: IntoIterator<Item = (S, T)>>(iter: I) -> Self {
@@ -270,7 +272,6 @@ mod test {
         assert!(matcher.is_match_parent("foo.bar.sub.example.com"));
         assert!(!matcher.is_match_parent("domain.org"));
         assert!(!matcher.is_match_parent("other.com"));
-        assert!(!matcher.is_match_parent(""));
         assert!(!matcher.is_match_parent("localhost"));
     }
 
@@ -287,7 +288,6 @@ mod test {
         assert!(!matcher.is_match_exact("foo.bar.sub.example.com"));
         assert!(!matcher.is_match_exact("domain.org"));
         assert!(!matcher.is_match_exact("other.com"));
-        assert!(!matcher.is_match_exact(""));
         assert!(!matcher.is_match_exact("localhost"));
     }
 }

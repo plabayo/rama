@@ -5,7 +5,7 @@ use rama_core::{
     extensions::{Extensions, ExtensionsRef},
     matcher::Matcher,
 };
-use rama_net::address::{DomainTrie, Host};
+use rama_net::address::{AsDomainRef, DomainTrie, Host};
 use rama_net::http::RequestContext;
 
 #[derive(Debug, Clone)]
@@ -21,7 +21,7 @@ impl SubdomainTrieMatcher {
     pub fn new<I, S>(domains: I) -> Self
     where
         I: IntoIterator<Item = S>,
-        S: AsRef<str>,
+        S: AsDomainRef,
     {
         let mut trie = DomainTrie::new();
         trie.insert_domain_iter(domains, ());
@@ -29,7 +29,7 @@ impl SubdomainTrieMatcher {
     }
 
     // Returns true if a domain is a subdomain of any domain lineage in this [`SubdomainTrieMatcher`].
-    pub fn is_match(&self, domain: impl AsRef<str>) -> bool {
+    pub fn is_match(&self, domain: impl AsDomainRef) -> bool {
         self.trie.is_match_parent(domain)
     }
 }
@@ -38,7 +38,7 @@ impl<Body> Matcher<Request<Body>> for SubdomainTrieMatcher {
     fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context, req: &Request<Body>) -> bool {
         let match_authority = |ctx: &RequestContext| match ctx.authority.host() {
             Host::Name(domain) => {
-                let is_match = self.is_match(domain.as_str());
+                let is_match = self.is_match(domain);
                 tracing::trace!(
                     "SubdomainTrieMatcher: matching domain = {}, matched = {}",
                     domain,
@@ -75,7 +75,7 @@ impl<Body> Matcher<Request<Body>> for SubdomainTrieMatcher {
 
 impl<S> FromIterator<S> for SubdomainTrieMatcher
 where
-    S: AsRef<str>,
+    S: AsDomainRef,
 {
     #[inline]
     fn from_iter<I: IntoIterator<Item = S>>(iter: I) -> Self {
@@ -96,13 +96,12 @@ mod subdomain_trie_tests {
         assert!(matcher.is_match("sub.example.com"));
         assert!(!matcher.is_match("domain.org"));
         assert!(!matcher.is_match("other.com"));
-        assert!(!matcher.is_match(""));
         assert!(!matcher.is_match("localhost"));
     }
 
     #[test]
     fn test_path_matching_with_trie() {
-        let domains: Vec<String> = vec!["example.com".to_owned(), "sub.domain.org".to_owned()];
+        let domains = ["example.com", "sub.domain.org"];
         let matcher: SubdomainTrieMatcher = domains.into_iter().collect();
 
         let path = "sub.example.com";
@@ -115,7 +114,7 @@ mod subdomain_trie_tests {
 
     #[test]
     fn test_non_matching_path() {
-        let domains: Vec<String> = vec!["example.com".to_owned()];
+        let domains = ["example.com"];
         let matcher: SubdomainTrieMatcher = domains.into_iter().collect();
 
         let path = "nonmatching.com";
