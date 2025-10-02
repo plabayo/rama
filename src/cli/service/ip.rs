@@ -372,6 +372,7 @@ impl<M> IpServiceBuilder<M> {
             tcp_forwarded_layer,
             // Limit the body size to 1MB for requests
             BodyLimitLayer::request_only(1024 * 1024),
+            #[cfg(any(feature = "rustls", feature = "boring"))]
             maybe_tls_accept_layer,
         );
 
