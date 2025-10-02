@@ -14,10 +14,10 @@ use crate::{
         headers::{Accept, HeaderMapExt},
         layer::{
             forwarded::GetForwardedHeaderLayer, required_header::AddRequiredResponseHeadersLayer,
-            trace::TraceLayer, ua::UserAgentClassifierLayer,
+            trace::TraceLayer,
         },
         server::HttpServer,
-        service::web::response::{Html, IntoResponse, Json},
+        service::web::response::{Html, IntoResponse, Json, Redirect},
     },
     layer::{ConsumeErrLayer, LimitLayer, TimeoutLayer, limit::policy::ConcurrentPolicy},
     net::forwarded::Forwarded,
@@ -175,6 +175,12 @@ impl Service<Request> for HttpIpService {
     type Error = BoxError;
 
     async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
+        let norm_req_path = req.uri().path().trim_matches('/');
+        if !norm_req_path.is_empty() {
+            tracing::debug!("unexpected request path '{norm_req_path}', redirect to root");
+            return Ok(Redirect::permanent("/").into_response());
+        }
+
         let peer_ip = ctx
             .get::<Forwarded>()
             .and_then(|f| f.client_ip())
@@ -379,7 +385,6 @@ impl<M> IpServiceBuilder<M> {
         let http_service = (
             TraceLayer::new_for_http(),
             AddRequiredResponseHeadersLayer::default(),
-            UserAgentClassifierLayer::new(),
             ConsumeErrLayer::default(),
             http_forwarded_layer,
         )
