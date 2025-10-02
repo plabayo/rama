@@ -15,7 +15,7 @@ use std::{
     sync::Arc,
 };
 
-pub use hickory_resolver::config;
+pub use hickory_resolver as resolver;
 
 #[derive(Debug, Clone)]
 /// [`DnsResolver`] using the [`hickory_resolver`] crate
@@ -126,47 +126,53 @@ impl From<TokioResolver> for HickoryDns {
 #[derive(Debug, Clone, Default)]
 /// A [`Builder`] to [`build`][`Self::build`] a [`HickoryDns`] instance.
 pub struct HickoryDnsBuilder {
-    config: Option<config::ResolverConfig>,
-    options: Option<config::ResolverOpts>,
+    config: Option<self::resolver::config::ResolverConfig>,
+    options: Option<self::resolver::config::ResolverOpts>,
 }
 
 impl HickoryDnsBuilder {
     /// Replace `self` with a hickory [`ResolverConfig`][`config::ResolverConfig`] defined.
     #[must_use]
-    pub fn with_config(mut self, config: config::ResolverConfig) -> Self {
+    pub fn with_config(mut self, config: self::resolver::config::ResolverConfig) -> Self {
         self.config = Some(config);
         self
     }
 
     /// Replace `self` with an [`Option`]al hickory [`ResolverConfig`][`config::ResolverConfig`] defined.
     #[must_use]
-    pub fn maybe_with_config(mut self, config: Option<config::ResolverConfig>) -> Self {
+    pub fn maybe_with_config(
+        mut self,
+        config: Option<self::resolver::config::ResolverConfig>,
+    ) -> Self {
         self.config = config;
         self
     }
 
     /// Set a hickory [`ResolverConfig`][`config::ResolverConfig`].
-    pub fn set_config(&mut self, config: config::ResolverConfig) -> &mut Self {
+    pub fn set_config(&mut self, config: self::resolver::config::ResolverConfig) -> &mut Self {
         self.config = Some(config);
         self
     }
 
     /// Replace `self` with a hickory [`ResolverOpts`][`config::ResolverOpts`] defined.
     #[must_use]
-    pub fn with_options(mut self, options: config::ResolverOpts) -> Self {
+    pub fn with_options(mut self, options: self::resolver::config::ResolverOpts) -> Self {
         self.options = Some(options);
         self
     }
 
     /// Replace `self` with an [`Option`]al hickory [`ResolverOpts`][`config::ResolverOpts`] defined.
     #[must_use]
-    pub fn maybe_with_options(mut self, options: Option<config::ResolverOpts>) -> Self {
+    pub fn maybe_with_options(
+        mut self,
+        options: Option<self::resolver::config::ResolverOpts>,
+    ) -> Self {
         self.options = options;
         self
     }
 
     /// Set a hickory [`ResolverOpts`][`config::ResolverOpts`].
-    pub fn set_options(&mut self, options: config::ResolverOpts) -> &mut Self {
+    pub fn set_options(&mut self, options: self::resolver::config::ResolverOpts) -> &mut Self {
         self.options = Some(options);
         self
     }
@@ -178,7 +184,7 @@ impl HickoryDnsBuilder {
     pub fn build(self) -> HickoryDns {
         let mut resolver_builder = TokioResolver::builder_with_config(
             self.config
-                .unwrap_or_else(config::ResolverConfig::cloudflare),
+                .unwrap_or_else(self::resolver::config::ResolverConfig::cloudflare),
             TokioConnectionProvider::default(),
         );
         if let Some(options) = self.options {

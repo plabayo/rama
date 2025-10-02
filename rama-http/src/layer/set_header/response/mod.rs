@@ -319,6 +319,29 @@ pub struct SetResponseHeader<S, M> {
     mode: InsertHeaderMode,
 }
 
+impl<S> SetResponseHeader<S, HeaderValue> {
+    /// Create a new [`SetResponseHeader`] from a typed [`HeaderEncode`].
+    ///
+    /// See [`SetResponseHeader::overriding`] for more details.
+    pub fn overriding_typed<H: HeaderEncode>(inner: S, header: H) -> Self {
+        Self::overriding(inner, H::name().clone(), header.encode_to_value())
+    }
+
+    /// Create a new [`SetResponseHeader`] from a typed [`HeaderEncode`].
+    ///
+    /// See [`SetResponseHeader::appending`] for more details.
+    pub fn appending_typed<H: HeaderEncode>(inner: S, header: H) -> Self {
+        Self::appending(inner, H::name().clone(), header.encode_to_value())
+    }
+
+    /// Create a new [`SetResponseHeader`] from a typed [`HeaderEncode`].
+    ///
+    /// See [`SetResponseHeader::if_not_present`] for more details.
+    pub fn if_not_present_typed<H: HeaderEncode>(inner: S, header: H) -> Self {
+        Self::if_not_present(inner, H::name().clone(), header.encode_to_value())
+    }
+}
+
 impl<S, M> SetResponseHeader<S, M> {
     /// Create a new [`SetResponseHeader`].
     ///

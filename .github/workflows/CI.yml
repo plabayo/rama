@@ -344,6 +344,21 @@ jobs:
         run: |
           cargo +nightly fuzz run ua_parse -- -max_len=131072 -max_total_time=30
 
+  cargo-fuzz-http-header:
+    needs: [check, check-msrv, check-all-features]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: ${{env.RUST_TOOLCHAIN_NIGHTLY}}
+      - name: Install cargo-fuzz
+        run: |
+          cargo install cargo-fuzz 2>/dev/null || true
+      - name: cargo fuzz check
+        run: |
+          cargo +nightly fuzz run http_header_x_robots_tag -- -max_len=131072 -max_total_time=30
+
   cargo-fuzz-h2:
     needs: [check, check-msrv, check-all-features]
     runs-on: ubuntu-latest
@@ -439,6 +454,30 @@ jobs:
       - uses: superfly/flyctl-actions/setup-flyctl@master
       - run: |
           cd rama-fp/infra/deployments/fp-h1
+          flyctl deploy --remote-only
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+  deploy-rama-ip-ipv4-fly:
+    runs-on: ubuntu-latest
+    needs: deploy-rama-cli-docker
+    steps:
+      - uses: actions/checkout@v4
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - run: |
+          cd rama-fp/infra/deployments/ipv4
+          flyctl deploy --remote-only
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+  deploy-rama-ip-ipv6-fly:
+    runs-on: ubuntu-latest
+    needs: deploy-rama-cli-docker
+    steps:
+      - uses: actions/checkout@v4
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - run: |
+          cd rama-fp/infra/deployments/ipv6
           flyctl deploy --remote-only
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}

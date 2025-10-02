@@ -13,7 +13,7 @@ use rama::{
     error::{ErrorContext, OpaqueError},
     extensions::ExtensionsRef,
     http::{
-        Body, BodyExtractExt, Request, Response, StatusCode,
+        BodyExtractExt, Request, Response, StatusCode,
         proto::h2,
         service::web::{
             extract::Path,
@@ -68,6 +68,13 @@ pub(super) async fn get_consent() -> impl IntoResponse {
                     <ul>
                         <li><a href="http://echo.ramaproxy.org:80">http://echo.ramaproxy.org</a>: echo service, plain-text</li>
                         <li><a href="https://echo.ramaproxy.org:443">https://echo.ramaproxy.org</a>: echo service, TLS</li>
+                    </ul>
+                </p>
+                </p>
+                    Need to lookup your IP Address in html/txt/json:
+                    <ul>
+                        <li><a href="https://ipv4.ramaproxy.org">https://ipv4.ramaproxy.org</a>: return your pubic IPv4 address</li>
+                        <li><a href="https://ipv6.ramaproxy.org">https://ipv6.ramaproxy.org</a>: return your pubic IPv6 address</li>
                     </ul>
                 </p>
                 <p>You can learn move about rama at in
@@ -298,39 +305,6 @@ fn extend_tables_with_h2_settings(h2_settings: Http2Settings, tables: &mut Vec<T
                 },
             });
         }
-    }
-}
-
-//------------------------------------------
-// endpoints: ACME
-//------------------------------------------
-
-#[derive(Debug, Serialize, Deserialize)]
-pub(super) struct AcmeChallengeParams {
-    token: String,
-}
-
-pub(super) async fn get_acme_challenge(
-    Path(params): Path<AcmeChallengeParams>,
-    _ctx: Context,
-    req: Request,
-) -> Response {
-    match req
-        .extensions()
-        .get::<Arc<State>>()
-        .unwrap()
-        .acme
-        .get_challenge(params.token)
-    {
-        Some(challenge) => Response::builder()
-            .status(StatusCode::OK)
-            .header("content-type", "text/plain")
-            .body(challenge.to_owned().into())
-            .expect("build acme challenge response"),
-        None => Response::builder()
-            .status(StatusCode::NOT_FOUND)
-            .body(Body::empty())
-            .expect("build acme challenge response"),
     }
 }
 

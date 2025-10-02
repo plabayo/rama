@@ -37,7 +37,6 @@ pin-project-lite = { workspace = true }
 rama-core = { workspace = true }
 rama-http = { workspace = true }
 rama-http-types = { workspace = true }
-rama-net = { workspace = true }
 slab = { workspace = true }
 smallvec = { workspace = true }
 tokio = { workspace = true, features = ["io-util"] }

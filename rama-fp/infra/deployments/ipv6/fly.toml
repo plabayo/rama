@@ -1,15 +1,20 @@
-app = 'rama-fp-h1'
+# fly.toml app configuration file generated for rama-echo on 2024-03-19T23:16:07+01:00
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
+
+app = 'rama-ipv6'
 primary_region = 'fra'
 
 [processes]
-app_secure = "fp --bind 0.0.0.0:8443 -c 2048 -t 16 -f haproxy --http-version h1 -s"
-app_insecure = "fp --bind 0.0.0.0:8080 -c 2048 -t 16 -f haproxy --http-version h1"
+app_secure = "ip --bind '[::]:8443' -c 2048 -f haproxy -s"
+app_insecure = "ip --bind '[::]:8080' -c 2048 -f haproxy"
 
 [build]
-image = "glendc/rama:latest"
+image = 'glendc/rama:latest'
 
 [env]
-  RUST_LOG = 'debug'
+RUST_LOG = 'debug'
 
 [[services]]
 protocol = 'tcp'
@@ -24,9 +29,8 @@ handlers = ["proxy_proto"]
 port = 80
 
 [[services]]
+protocol = 'tcp'
 internal_port = 8443
-protocol = "tcp"
-force_https = false
 auto_stop_machines = true
 auto_start_machines = true
 min_machines_running = 1
@@ -34,7 +38,7 @@ processes = ['app_secure']
 
 [[services.ports]]
 handlers = ["proxy_proto"]
-port = "443"
+port = 443
 
 [[vm]]
 memory = '256mb'

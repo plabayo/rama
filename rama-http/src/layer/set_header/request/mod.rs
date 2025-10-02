@@ -247,6 +247,31 @@ pub struct SetRequestHeader<S, M> {
     mode: InsertHeaderMode,
 }
 
+impl<S> SetRequestHeader<S, HeaderValue> {
+    /// Create a new [`SetRequestHeader`] using a typed header.
+    ///
+    /// If a previous value exists for the same header, it is removed and replaced with the new
+    /// header value.
+    pub fn overriding_typed<H: HeaderEncode>(inner: S, header: H) -> Self {
+        Self::overriding(inner, H::name().clone(), header.encode_to_value())
+    }
+
+    /// Create a new [`SetRequestHeader`] using a typed header.
+    ///
+    /// The new header is always added, preserving any existing values. If previous values exist,
+    /// the header will have multiple values.
+    pub fn appending_typed<H: HeaderEncode>(inner: S, header: H) -> Self {
+        Self::appending(inner, H::name().clone(), header.encode_to_value())
+    }
+
+    /// Create a new [`SetRequestHeader`] using a typed header.
+    ///
+    /// If a previous value exists for the header, the new value is not inserted.
+    pub fn if_not_present_typed<H: HeaderEncode>(inner: S, header: H) -> Self {
+        Self::if_not_present(inner, H::name().clone(), header.encode_to_value())
+    }
+}
+
 impl<S, M> SetRequestHeader<S, M> {
     /// Create a new [`SetRequestHeader`].
     ///

@@ -1,5 +1,5 @@
 app = 'rama-fp'
-primary_region = 'lhr'
+primary_region = 'fra'
 
 [processes]
 app_secure = "fp --bind 0.0.0.0:8443 -c 2048 -t 16 -f haproxy --http-version auto -s"
@@ -7,6 +7,9 @@ app_insecure = "fp --bind 0.0.0.0:8080 -c 2048 -t 16 -f haproxy --http-version a
 
 [build]
 image = "glendc/rama:latest"
+
+[env]
+  RUST_LOG = 'debug'
 
 [[services]]
 internal_port = 8080

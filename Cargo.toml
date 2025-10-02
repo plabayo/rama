@@ -129,21 +129,20 @@ mime = "0.3.17"
 mime_guess = { version = "2", default-features = false }
 moka = "0.12"
 nom = "8.0.0"
-opentelemetry = { version = "0.30", default-features = false, features = [
+opentelemetry = { version = "0.31", default-features = false, features = [
     "trace",
 ] }
-opentelemetry-http = { version = "0.30", default-features = false }
-opentelemetry-otlp = { version = "0.30", default-features = false, features = [
-    "http-proto",
+opentelemetry-http = { version = "0.31", default-features = false }
+opentelemetry-otlp = { version = "0.31", default-features = false, features = [
     "internal-logs",
     "logs",
     "metrics",
     "trace",
 ] }
-opentelemetry-semantic-conventions = { version = "0.30", features = [
+opentelemetry-semantic-conventions = { version = "0.31", features = [
     "semconv_experimental",
 ] }
-opentelemetry_sdk = { version = "0.30", default-features = false, features = [
+opentelemetry_sdk = { version = "0.31", default-features = false, features = [
     "trace",
     "rt-tokio",
 ] }
@@ -226,7 +225,7 @@ tokio-util = "0.7"
 tower-layer = "0.3"
 tower-service = "0.3"
 tracing = "0.1"
-tracing-opentelemetry = "0.31"
+tracing-opentelemetry = "0.32"
 tracing-subscriber = "0.3"
 tracing-test = "0.2"
 tracing-tree = "0.4"
@@ -317,6 +316,8 @@ tls = [
     "rama-http?/tls",
     "rama-http-backend?/tls",
     "rama-ua?/tls",
+    "dep:base64",
+    "dep:serde",
 ]
 rustls = ["tls", "dep:rama-tls-rustls"]
 boring = ["tls", "dep:rama-tls-boring"]
@@ -343,6 +344,7 @@ http = [
     "rama-tcp?/http",
     "rama-tower?/http",
     "rama-tls-boring?/ua",
+    "opentelemetry-otlp?/http-proto",
 ]
 http-full = [
     "http",
@@ -368,12 +370,14 @@ opentelemetry = [
     "rama-core/opentelemetry",
     "rama-http?/opentelemetry",
     "rama-net?/opentelemetry",
+    "dep:opentelemetry-otlp",
 ]
 
 [dependencies]
 base64 = { workspace = true, optional = true }
 bytes = { workspace = true, optional = true }
 hex = { workspace = true, optional = true }
+opentelemetry-otlp = { workspace = true, optional = true }
 pin-project-lite = { workspace = true }
 rama-core = { workspace = true }
 rama-crypto = { workspace = true, optional = true }
@@ -398,6 +402,7 @@ serde = { workspace = true, optional = true }
 serde_html_form = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["macros", "io-std"], optional = true }
+tracing-subscriber = { workspace = true, features = ["env-filter", "json", "chrono"] }
 
 [target.'cfg(unix)'.dependencies]
 rama-unix = { workspace = true }
@@ -415,8 +420,6 @@ h2-support = { path = "rama-http-core/tests/h2-support" }
 indexmap = { workspace = true, features = ["serde"] }
 itertools = { workspace = true }
 itoa = { workspace = true }
-opentelemetry-otlp = { workspace = true }
-opentelemetry_sdk = { workspace = true }
 pin-project-lite = { workspace = true }
 regex = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
@@ -425,7 +428,6 @@ serde_json = { workspace = true }
 spmc = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tokio-test = { workspace = true }
-tracing-subscriber = { workspace = true, features = ["env-filter"] }
 turmoil = { workspace = true }
 
 [lints]

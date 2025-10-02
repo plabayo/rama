@@ -11,7 +11,7 @@ use super::utils;
 async fn test_http_echo() {
     utils::init_tracing();
 
-    let _guard = utils::RamaService::echo(63101, false, None);
+    let _guard = utils::RamaService::echo(63101, false);
 
     let lines = utils::RamaService::http(vec!["http://127.0.0.1:63101"]).unwrap();
     assert!(lines.contains("HTTP/1.1 200 OK"), "lines: {lines:?}");
@@ -73,20 +73,6 @@ async fn test_http_echo() {
     );
 }
 
-#[tokio::test]
-#[ignore]
-async fn test_http_echo_acme_data() {
-    utils::init_tracing();
-
-    let _guard = utils::RamaService::echo(63102, false, Some("hello,world".to_owned()));
-    let lines = utils::RamaService::http(vec![
-        "http://127.0.0.1:63102/.well-known/acme-challenge/hello",
-    ])
-    .unwrap();
-    assert!(lines.contains("HTTP/1.1 200 OK"), "lines: {lines:?}");
-    assert!(lines.contains("world"), "lines: {lines:?}");
-}
-
 #[cfg(feature = "boring")]
 #[tokio::test]
 #[ignore]
@@ -98,7 +84,7 @@ async fn test_http_echo_secure() {
 
     utils::init_tracing();
 
-    let _guard = utils::RamaService::echo(63103, true, None);
+    let _guard = utils::RamaService::echo(63103, true);
 
     let lines = utils::RamaService::http(vec!["https://127.0.0.1:63103", "foo:bar", "a=4", "q==1"])
         .unwrap();
@@ -177,7 +163,7 @@ async fn test_http_echo_secure() {
 async fn test_http_forced_version() {
     utils::init_tracing();
 
-    let _guard = utils::RamaService::echo(63104, true, None);
+    let _guard = utils::RamaService::echo(63104, true);
 
     struct Test {
         cli_flag: &'static str,

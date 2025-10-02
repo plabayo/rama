@@ -10,6 +10,7 @@ use crate::{
     cli::ForwardKind,
     combinators::{Either3, Either7},
     error::{BoxError, OpaqueError},
+    extensions::ExtensionsRef,
     http::{
         Request, Response, Version,
         body::util::BodyExt,
@@ -36,6 +37,21 @@ use crate::{
     telemetry::tracing,
     ua::profile::UserAgentDatabase,
 };
+use rama_core::error::ErrorContext;
+use rama_http::{
+    convert::curl,
+    service::web::{extract::Json, response::IntoResponse},
+};
+use rama_http_backend::server::layer::upgrade::UpgradeLayer;
+use rama_http_core::h2::frame::EarlyFrameCapture;
+use rama_ws::handshake::server::{WebSocketAcceptor, WebSocketEchoService, WebSocketMatcher};
+use serde::Serialize;
+use serde_json::json;
+use std::{convert::Infallible, time::Duration};
+
+#[cfg(all(feature = "rustls", not(feature = "boring")))]
+use crate::tls::rustls::server::{TlsAcceptorData, TlsAcceptorLayer};
+
 #[cfg(any(feature = "rustls", feature = "boring"))]
 use crate::{
     net::fingerprint::{Ja3, Ja4, PeetPrint},
@@ -50,20 +66,6 @@ use crate::{
     net::tls::server::ServerConfig,
     tls::boring::server::{TlsAcceptorData, TlsAcceptorLayer},
 };
-use rama_core::{error::ErrorContext, extensions::ExtensionsRef};
-use rama_http::{
-    convert::curl,
-    service::web::{extract::Json, response::IntoResponse},
-};
-use rama_http_backend::server::layer::upgrade::UpgradeLayer;
-use rama_http_core::h2::frame::EarlyFrameCapture;
-use rama_ws::handshake::server::{WebSocketAcceptor, WebSocketEchoService, WebSocketMatcher};
-use serde::Serialize;
-use serde_json::json;
-use std::{convert::Infallible, time::Duration};
-
-#[cfg(all(feature = "rustls", not(feature = "boring")))]
-use crate::tls::rustls::server::{TlsAcceptorData, TlsAcceptorLayer};
 
 #[cfg(feature = "boring")]
 type TlsConfig = ServerConfig;
@@ -266,12 +268,7 @@ where
             tcp_forwarded_layer,
             BodyLimitLayer::request_only(self.body_limit),
             #[cfg(any(feature = "rustls", feature = "boring"))]
-            tls_cfg.map(|cfg| {
-                #[cfg(feature = "boring")]
-                return TlsAcceptorLayer::new(cfg).with_store_client_hello(true);
-                #[cfg(all(feature = "rustls", not(feature = "boring")))]
-                TlsAcceptorLayer::new(cfg).with_store_client_hello(true)
-            }),
+            tls_cfg.map(|cfg| TlsAcceptorLayer::new(cfg).with_store_client_hello(true)),
         );
 
         let http_transport_service = match self.http_version {

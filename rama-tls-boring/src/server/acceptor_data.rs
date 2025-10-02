@@ -305,9 +305,14 @@ impl TryFrom<rama_net::tls::server::ServerConfig> for TlsAcceptorData {
             ServerAuth::CertIssuer(data) => {
                 let cert_cache = match data.cache_kind {
                     CacheKind::Disabled => None,
-                    CacheKind::MemCache { max_size } => Some(
+                    CacheKind::MemCache { max_size, ttl } => Some(
                         Cache::builder()
-                            .time_to_live(Duration::from_secs(60 * 60 * 24 * 89))
+                            .time_to_live(match ttl {
+                                None | Some(Duration::ZERO) => {
+                                    Duration::from_secs(60 * 60 * 24 * 89)
+                                }
+                                Some(custom) => custom,
+                            })
                             .max_capacity(max_size.into())
                             .build(),
                     ),
