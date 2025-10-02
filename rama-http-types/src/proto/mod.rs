@@ -5,7 +5,7 @@
 
 use std::{ops::Deref, sync::Arc};
 
-use rama_core::context::Extensions;
+use rama_core::extensions::Extensions;
 
 pub mod h1;
 pub mod h2;

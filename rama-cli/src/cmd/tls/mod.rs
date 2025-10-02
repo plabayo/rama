@@ -4,22 +4,26 @@ use clap::Args;
 use rama::{
     Context, Layer, Service,
     error::{BoxError, ErrorContext},
+    extensions::{Extensions, ExtensionsRef},
     net::{
         address::Authority,
         client::{ConnectorService, EstablishedClientConnection},
+        stream::Socket,
         tls::{
             DataEncoding,
             client::{NegotiatedTlsParameters, ServerVerifyMode},
         },
     },
-    tcp::client::{Request, service::TcpConnector},
+    tcp::{
+        TcpStream,
+        client::{Request, service::TcpConnector},
+    },
     telemetry::tracing::{self, level_filters::LevelFilter},
     tls::boring::{
         client::{TlsConnectorDataBuilder, TlsConnectorLayer},
         core::x509::X509,
     },
 };
-use tokio::net::TcpStream;
 
 #[derive(Args, Debug, Clone)]
 /// rama tls support
@@ -66,11 +70,15 @@ pub async fn run(cfg: CliCommandTls) -> Result<(), BoxError> {
         .with_connector_data(tls_conn_data)
         .layer(loggin_service);
 
-    let EstablishedClientConnection { ctx, .. } = tls_connector
-        .connect(Context::default(), Request::new(authority))
+    let EstablishedClientConnection { conn, .. } = tls_connector
+        .connect(
+            Context::default(),
+            Request::new(authority, Extensions::new()),
+        )
         .await?;
 
-    let params = ctx
+    let params = conn
+        .extensions()
         .get::<NegotiatedTlsParameters>()
         .expect("NegotiatedTlsParameters to be available in connector context");
 

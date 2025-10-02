@@ -61,7 +61,10 @@ use crate::{
     Request, Response,
     header::{HeaderName, HeaderValue},
 };
-use rama_core::{Context, Layer, Service};
+use rama_core::{
+    Context, Layer, Service,
+    extensions::{ExtensionsMut, ExtensionsRef},
+};
 use rama_utils::macros::define_inner_service_accessors;
 
 use rand::Rng;

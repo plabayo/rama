@@ -2,6 +2,8 @@ use crate::{Method, Request, Response, Uri};
 use rama_core::{
     Context, Service,
     error::{BoxError, ErrorExt, OpaqueError},
+    extensions::Extensions,
+    extensions::ExtensionsMut,
 };
 use rama_http_headers::authorization::Credentials;
 
@@ -572,6 +574,18 @@ where
                 self.state = state;
                 self
             }
+        }
+    }
+
+    /// Get mutable access to the underlying [`Extensions`]
+    ///
+    /// This function will return None if [`Extensions`] are not available,
+    /// or if this builder is in an error state
+    pub fn extensions_mut(&mut self) -> Option<&mut Extensions> {
+        match &mut self.state {
+            RequestBuilderState::PreBody(builder) => builder.extensions_mut(),
+            RequestBuilderState::PostBody(request) => Some(request.extensions_mut()),
+            RequestBuilderState::Error(_) => None,
         }
     }
 

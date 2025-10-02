@@ -3,6 +3,7 @@ use std::fmt;
 use rama_core::{
     Context, Service,
     error::{BoxError, ErrorContext},
+    extensions::ExtensionsMut,
     service::RejectService,
     stream::{PeekStream, StackReader},
     telemetry::tracing,
@@ -67,7 +68,7 @@ impl<T: fmt::Debug, F: fmt::Debug> fmt::Debug for Socks5PeekRouter<T, F> {
 
 impl<Stream, Response, T, F> Service<Stream> for Socks5PeekRouter<T, F>
 where
-    Stream: rama_core::stream::Stream + Unpin,
+    Stream: rama_core::stream::Stream + Unpin + ExtensionsMut,
     Response: Send + 'static,
     T: Service<Socks5PeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
     F: Service<Socks5PeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
@@ -121,8 +122,13 @@ pub type Socks5PeekStream<S> = PeekStream<StackReader<SOCKS5_HEADER_PEEK_LEN>, S
 
 #[cfg(test)]
 mod test {
-    use rama_core::service::{RejectError, service_fn};
-    use rama_core::stream::Stream;
+
+    use rama_core::{
+        ServiceInput,
+        service::{RejectError, service_fn},
+        stream::Stream,
+    };
+
     use std::convert::Infallible;
 
     use super::*;
@@ -135,7 +141,10 @@ mod test {
         let peek_socks5_svc = Socks5PeekRouter::new(socks5_service).with_fallback(other_service);
 
         let response = peek_socks5_svc
-            .serve(Context::default(), std::io::Cursor::new(b"".to_vec()))
+            .serve(
+                Context::default(),
+                ServiceInput::new(std::io::Cursor::new(b"".to_vec())),
+            )
             .await
             .unwrap();
         assert_eq!("other", response);
@@ -143,7 +152,7 @@ mod test {
         let response = peek_socks5_svc
             .serve(
                 Context::default(),
-                std::io::Cursor::new(b"\x05\x01\x00".to_vec()),
+                ServiceInput::new(std::io::Cursor::new(b"\x05\x01\x00".to_vec())),
             )
             .await
             .unwrap();
@@ -152,7 +161,7 @@ mod test {
         let response = peek_socks5_svc
             .serve(
                 Context::default(),
-                std::io::Cursor::new(b"\x05\x01\x00foobar".to_vec()),
+                ServiceInput::new(std::io::Cursor::new(b"\x05\x01\x00foobar".to_vec())),
             )
             .await
             .unwrap();
@@ -161,26 +170,35 @@ mod test {
         let response = peek_socks5_svc
             .serve(
                 Context::default(),
-                std::io::Cursor::new(b"\x05\x02\x01\x00".to_vec()),
+                ServiceInput::new(std::io::Cursor::new(b"\x05\x02\x01\x00".to_vec())),
             )
             .await
             .unwrap();
         assert_eq!("socks5", response);
 
         let response = peek_socks5_svc
-            .serve(Context::default(), std::io::Cursor::new(b"fo".to_vec()))
+            .serve(
+                Context::default(),
+                ServiceInput::new(std::io::Cursor::new(b"fo".to_vec())),
+            )
             .await
             .unwrap();
         assert_eq!("other", response);
 
         let response = peek_socks5_svc
-            .serve(Context::default(), std::io::Cursor::new(b"foo".to_vec()))
+            .serve(
+                Context::default(),
+                ServiceInput::new(std::io::Cursor::new(b"foo".to_vec())),
+            )
             .await
             .unwrap();
         assert_eq!("other", response);
 
         let response = peek_socks5_svc
-            .serve(Context::default(), std::io::Cursor::new(b"foobar".to_vec()))
+            .serve(
+                Context::default(),
+                ServiceInput::new(std::io::Cursor::new(b"foobar".to_vec())),
+            )
             .await
             .unwrap();
         assert_eq!("other", response);
@@ -209,7 +227,10 @@ mod test {
         ));
 
         let response = peek_socks5_svc
-            .serve(Context::default(), std::io::Cursor::new(CONTENT.to_vec()))
+            .serve(
+                Context::default(),
+                ServiceInput::new(std::io::Cursor::new(CONTENT.to_vec())),
+            )
             .await
             .unwrap();
         assert_eq!("ok", response);
@@ -248,7 +269,7 @@ mod test {
             let response = peek_socks5_svc
                 .serve(
                     Context::default(),
-                    std::io::Cursor::new(content.as_bytes().to_vec()),
+                    ServiceInput::new(std::io::Cursor::new(content.as_bytes().to_vec())),
                 )
                 .await
                 .unwrap();

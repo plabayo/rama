@@ -41,6 +41,9 @@ use std::task::{Context, Poll};
 
 use rama_core::bytes::Bytes;
 use rama_core::error::OpaqueError;
+use rama_core::extensions::Extensions;
+use rama_core::extensions::ExtensionsMut;
+use rama_core::extensions::ExtensionsRef;
 use rama_core::stream::Stream;
 use rama_core::stream::rewind::Rewind;
 use rama_core::telemetry::tracing::trace;
@@ -57,6 +60,7 @@ use tokio::sync::oneshot;
 /// into its parts.
 pub struct Upgraded {
     io: Rewind<Box<dyn Io>>,
+    extensions: Extensions,
 }
 
 /// A future for a possible HTTP upgrade.
@@ -85,6 +89,8 @@ pub struct Parts<T> {
     /// You will want to check for any existing bytes if you plan to continue
     /// communicating on the IO object.
     pub read_buf: Bytes,
+    /// Extensions associated with this upgrade
+    pub extensions: Extensions,
 }
 
 /// Gets a pending HTTP upgrade from this message.
@@ -126,6 +132,7 @@ impl Upgraded {
     {
         Self {
             io: Rewind::new_buffered(Box::new(io), read_buf),
+            extensions: Extensions::new(),
         }
     }
 
@@ -139,9 +146,11 @@ impl Upgraded {
             Ok(t) => Ok(Parts {
                 io: *t,
                 read_buf: buf,
+                extensions: self.extensions,
             }),
             Err(io) => Err(Self {
                 io: Rewind::new_buffered(io, buf),
+                extensions: self.extensions,
             }),
         }
     }
@@ -171,6 +180,18 @@ impl dyn Io {
         } else {
             Err(self)
         }
+    }
+}
+
+impl ExtensionsRef for Upgraded {
+    fn extensions(&self) -> &Extensions {
+        &self.extensions
+    }
+}
+
+impl ExtensionsMut for Upgraded {
+    fn extensions_mut(&mut self) -> &mut Extensions {
+        &mut self.extensions
     }
 }
 
@@ -281,6 +302,7 @@ impl Pending {
 }
 
 mod sealed {
+    use rama_core::extensions::ExtensionsMut;
     use rama_http_types::{Request, Response};
 
     use super::OnUpgrade;

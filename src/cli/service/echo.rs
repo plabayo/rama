@@ -10,6 +10,7 @@ use crate::{
     cli::ForwardKind,
     combinators::{Either3, Either7},
     error::{BoxError, OpaqueError},
+    extensions::ExtensionsRef,
     http::{
         Request, Response, Version,
         body::util::BodyExt,
@@ -32,6 +33,7 @@ use crate::{
     net::stream::{SocketInfo, layer::http::BodyLimitLayer},
     proxy::haproxy::server::HaProxyLayer,
     rt::Executor,
+    tcp::TcpStream,
     telemetry::tracing,
     ua::profile::UserAgentDatabase,
 };
@@ -46,7 +48,6 @@ use rama_ws::handshake::server::{WebSocketAcceptor, WebSocketEchoService, WebSoc
 use serde::Serialize;
 use serde_json::json;
 use std::{convert::Infallible, time::Duration};
-use tokio::net::TcpStream;
 
 #[cfg(all(feature = "rustls", not(feature = "boring")))]
 use crate::tls::rustls::server::{TlsAcceptorData, TlsAcceptorLayer};
@@ -368,8 +369,9 @@ impl Service<Request> for EchoService {
     type Response = Response;
     type Error = BoxError;
 
-    async fn serve(&self, mut ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
-        let user_agent_info = ctx
+    async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
+        let user_agent_info = req
+            .extensions()
             .get()
             .map(|ua: &UserAgent| {
                 json!({
@@ -381,8 +383,8 @@ impl Service<Request> for EchoService {
             })
             .unwrap_or_default();
 
-        let request_context =
-            ctx.get_or_try_insert_with_ctx::<RequestContext, _>(|ctx| (ctx, &req).try_into())?;
+        let request_context = RequestContext::try_from((&ctx, &req))?;
+
         let authority = request_context.authority.to_string();
         let scheme = request_context.protocol.to_string();
 
@@ -477,11 +479,12 @@ impl Service<Request> for EchoService {
         let body = hex::encode(body.as_ref());
 
         #[cfg(any(feature = "rustls", feature = "boring"))]
-        let tls_info = ctx
+        let tls_info = parts
+            .extensions
             .get::<SecureTransport>()
             .and_then(|st| st.client_hello())
             .map(|hello| {
-                let ja4 = Ja4::compute(ctx.extensions())
+                let ja4 = Ja4::compute(parts.extensions.extensions())
                     .inspect_err(|err| tracing::trace!("ja4 computation: {err:?}"))
                     .ok();
 
@@ -494,7 +497,9 @@ impl Service<Request> for EchoService {
                     let matched_ja4 = profile
                         .tls
                         .compute_ja4(
-                            ctx.get::<NegotiatedTlsParameters>()
+                            parts
+                                .extensions
+                                .get::<NegotiatedTlsParameters>()
                                 .map(|param| param.protocol_version),
                         )
                         .inspect_err(|err| {
@@ -520,7 +525,7 @@ impl Service<Request> for EchoService {
                     })
                 });
 
-                let ja3 = Ja3::compute(ctx.extensions())
+                let ja3 = Ja3::compute(parts.extensions.extensions())
                     .inspect_err(|err| tracing::trace!("ja3 computation: {err:?}"))
                     .ok();
 
@@ -533,7 +538,9 @@ impl Service<Request> for EchoService {
                     let matched_ja3 = profile
                         .tls
                         .compute_ja3(
-                            ctx.get::<NegotiatedTlsParameters>()
+                            parts
+                                .extensions
+                                .get::<NegotiatedTlsParameters>()
                                 .map(|param| param.protocol_version),
                         )
                         .inspect_err(|err| {
@@ -559,7 +566,7 @@ impl Service<Request> for EchoService {
                     })
                 });
 
-                let peet = PeetPrint::compute(ctx.extensions())
+                let peet = PeetPrint::compute(parts.extensions.extensions())
                     .inspect_err(|err| tracing::trace!("peet computation: {err:?}"))
                     .ok();
 
@@ -713,11 +720,11 @@ impl Service<Request> for EchoService {
                 "curl": curl_request,
             },
             "tls": tls_info,
-            "socket_addr": ctx.get::<Forwarded>()
+            "socket_addr": parts.extensions.get::<Forwarded>()
                 .and_then(|f|
                         f.client_socket_addr().map(|addr| addr.to_string())
                             .or_else(|| f.client_ip().map(|ip| ip.to_string()))
-                ).or_else(|| ctx.get::<SocketInfo>().map(|v| v.peer_addr().to_string())),
+                ).or_else(|| parts.extensions.get::<SocketInfo>().map(|v| v.peer_addr().to_string())),
         }))
         .into_response())
     }

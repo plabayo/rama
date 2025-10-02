@@ -1,6 +1,7 @@
 //! Pieces pertaining to the HTTP message protocol.
 
-use rama_core::context::Extensions;
+use rama_core::extensions::Extensions;
+use rama_core::extensions::ExtensionsMut;
 use rama_http::io::upgrade;
 use rama_http_types::{HeaderMap, Method, Response, StatusCode, Uri, Version};
 

@@ -7,6 +7,7 @@ use std::{
 use rama_core::stream::Stream;
 use rama_core::{
     error::OpaqueError,
+    extensions::{Extensions, ExtensionsMut, ExtensionsRef},
     futures::{self, SinkExt, StreamExt},
     telemetry::tracing::{debug, trace},
 };
@@ -38,6 +39,7 @@ pub struct AsyncWebSocket<S = upgrade::Upgraded> {
     /// `false` once start_send hits `WouldBlock` errors.
     /// `true` initially and after `flush`ing.
     ready: bool,
+    extensions: Extensions,
 }
 
 impl<S> AsyncWebSocket<S> {
@@ -76,6 +78,7 @@ impl<S> AsyncWebSocket<S> {
             closing: false,
             ended: false,
             ready: true,
+            extensions: Extensions::new(),
         }
     }
 
@@ -119,6 +122,18 @@ impl<S> AsyncWebSocket<S> {
         S: Stream + Unpin,
     {
         self.send(Message::Close(msg)).await
+    }
+}
+
+impl<S> ExtensionsRef for AsyncWebSocket<S> {
+    fn extensions(&self) -> &Extensions {
+        &self.extensions
+    }
+}
+
+impl<S> ExtensionsMut for AsyncWebSocket<S> {
+    fn extensions_mut(&mut self) -> &mut Extensions {
+        &mut self.extensions
     }
 }
 

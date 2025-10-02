@@ -10,7 +10,7 @@ use crate::proto::udp::UdpHeader;
 
 #[cfg(feature = "dns")]
 use ::{
-    rama_core::{Context, error::ErrorContext},
+    rama_core::{error::ErrorContext, extensions::Extensions},
     rama_dns::{BoxDnsResolver, DnsResolver},
     rama_net::mode::DnsResolveIpMode,
     rand::seq::IteratorRandom,
@@ -399,11 +399,11 @@ impl UdpSocketRelay {
 impl UdpSocketRelay {
     pub(super) fn maybe_with_dns_resolver(
         mut self,
-        ctx: &Context,
+        extensions: &Extensions,
         resolver: Option<BoxDnsResolver>,
     ) -> Self {
         self.dns_resolver = resolver;
-        if let Some(mode) = ctx.get().copied() {
+        if let Some(mode) = extensions.get().copied() {
             self.dns_resolve_mode = mode;
         }
         self

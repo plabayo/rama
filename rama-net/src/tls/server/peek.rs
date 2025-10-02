@@ -1,12 +1,12 @@
-use std::fmt;
-
 use rama_core::{
     Context, Service,
     error::{BoxError, ErrorContext},
+    extensions::ExtensionsMut,
     service::RejectService,
     stream::{PeekStream, StackReader},
     telemetry::tracing,
 };
+use std::fmt;
 use tokio::io::AsyncReadExt;
 
 /// A [`Service`] router that can be used to support
@@ -62,7 +62,7 @@ impl<T: fmt::Debug, F: fmt::Debug> fmt::Debug for TlsPeekRouter<T, F> {
 
 impl<Stream, Response, T, F> Service<Stream> for TlsPeekRouter<T, F>
 where
-    Stream: rama_core::stream::Stream + Unpin,
+    Stream: rama_core::stream::Stream + Unpin + ExtensionsMut,
     Response: Send + 'static,
     T: Service<TlsPeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
     F: Service<TlsPeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
@@ -109,7 +109,10 @@ pub type TlsPeekStream<S> = PeekStream<StackReader<TLS_HEADER_PEEK_LEN>, S>;
 
 #[cfg(test)]
 mod test {
-    use rama_core::service::{RejectError, service_fn};
+    use rama_core::{
+        ServiceInput,
+        service::{RejectError, service_fn},
+    };
     use std::convert::Infallible;
 
     use rama_core::stream::Stream;
@@ -124,7 +127,10 @@ mod test {
         let peek_tls_svc = TlsPeekRouter::new(tls_service).with_fallback(plain_service);
 
         let response = peek_tls_svc
-            .serve(Context::default(), std::io::Cursor::new(b"".to_vec()))
+            .serve(
+                Context::default(),
+                ServiceInput::new(std::io::Cursor::new(b"".to_vec())),
+            )
             .await
             .unwrap();
         assert_eq!("plain", response);
@@ -132,20 +138,26 @@ mod test {
         let response = peek_tls_svc
             .serve(
                 Context::default(),
-                std::io::Cursor::new(b"\x16\x03\x03\x00\x2afoo".to_vec()),
+                ServiceInput::new(std::io::Cursor::new(b"\x16\x03\x03\x00\x2afoo".to_vec())),
             )
             .await
             .unwrap();
         assert_eq!("tls", response);
 
         let response = peek_tls_svc
-            .serve(Context::default(), std::io::Cursor::new(b"foo".to_vec()))
+            .serve(
+                Context::default(),
+                ServiceInput::new(std::io::Cursor::new(b"foo".to_vec())),
+            )
             .await
             .unwrap();
         assert_eq!("plain", response);
 
         let response = peek_tls_svc
-            .serve(Context::default(), std::io::Cursor::new(b"foobar".to_vec()))
+            .serve(
+                Context::default(),
+                ServiceInput::new(std::io::Cursor::new(b"foobar".to_vec())),
+            )
             .await
             .unwrap();
         assert_eq!("plain", response);
@@ -170,7 +182,10 @@ mod test {
             );
 
         let response = peek_tls_svc
-            .serve(Context::default(), std::io::Cursor::new(CONTENT.to_vec()))
+            .serve(
+                Context::default(),
+                ServiceInput::new(std::io::Cursor::new(CONTENT.to_vec())),
+            )
             .await
             .unwrap();
         assert_eq!("ok", response);
@@ -199,7 +214,7 @@ mod test {
             let response = peek_tls_svc
                 .serve(
                     Context::default(),
-                    std::io::Cursor::new(content.as_bytes().to_vec()),
+                    ServiceInput::new(std::io::Cursor::new(content.as_bytes().to_vec())),
                 )
                 .await
                 .unwrap();

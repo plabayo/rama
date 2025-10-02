@@ -3,6 +3,7 @@ use std::fmt;
 use super::relay::{UdpRelayState, UdpSocketRelay};
 use crate::server::Error;
 use rama_core::bytes::Bytes;
+use rama_core::extensions::{Extensions, ExtensionsMut, ExtensionsRef};
 use rama_core::telemetry::tracing;
 use rama_core::{Context, Service, error::BoxError};
 use rama_net::address::SocketAddress;
@@ -16,6 +17,7 @@ pub(super) trait UdpPacketProxy: Send + Sync + 'static {
     fn proxy_udp_packets(
         &self,
         ctx: Context,
+        extensions: Extensions,
         client_address: SocketAddress,
         north: UdpSocket,
         north_read_buf_size: usize,
@@ -33,7 +35,8 @@ pub struct DirectUdpRelay;
 impl UdpPacketProxy for DirectUdpRelay {
     async fn proxy_udp_packets(
         &self,
-        #[cfg_attr(not(feature = "dns"), expect(unused_variables))] ctx: Context,
+        _ctx: Context,
+        #[cfg_attr(not(feature = "dns"), expect(unused_variables))] extensions: Extensions,
         client_address: SocketAddress,
         north: UdpSocket,
         north_read_buf_size: usize,
@@ -50,7 +53,7 @@ impl UdpPacketProxy for DirectUdpRelay {
         );
 
         #[cfg(feature = "dns")]
-        let relay = relay.maybe_with_dns_resolver(&ctx, dns_resolver);
+        let relay = relay.maybe_with_dns_resolver(&extensions, dns_resolver);
 
         let mut relay = relay;
 
@@ -93,6 +96,37 @@ pub struct RelayRequest {
     pub direction: RelayDirection,
     pub server_address: SocketAddress,
     pub payload: Bytes,
+    pub extensions: Extensions,
+}
+
+impl ExtensionsRef for RelayRequest {
+    fn extensions(&self) -> &Extensions {
+        &self.extensions
+    }
+}
+
+impl ExtensionsMut for RelayRequest {
+    fn extensions_mut(&mut self) -> &mut Extensions {
+        &mut self.extensions
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct RelayResponse {
+    pub maybe_payload: Option<Bytes>,
+    pub extensions: Extensions,
+}
+
+impl ExtensionsRef for RelayResponse {
+    fn extensions(&self) -> &Extensions {
+        &self.extensions
+    }
+}
+
+impl ExtensionsMut for RelayResponse {
+    fn extensions_mut(&mut self) -> &mut Extensions {
+        &mut self.extensions
+    }
 }
 
 /// Wrapper used for Async udp inspectors.
@@ -115,11 +149,12 @@ impl<S: Clone> Clone for AsyncUdpInspector<S> {
 
 impl<S> UdpPacketProxy for AsyncUdpInspector<S>
 where
-    S: Service<RelayRequest, Response = (Context, Option<Bytes>), Error: Into<BoxError>>,
+    S: Service<RelayRequest, Response = (Context, RelayResponse), Error: Into<BoxError>>,
 {
     async fn proxy_udp_packets(
         &self,
         mut ctx: Context,
+        mut extensions: Extensions,
         client_address: SocketAddress,
         north: UdpSocket,
         north_read_buf_size: usize,
@@ -136,7 +171,7 @@ where
         );
 
         #[cfg(feature = "dns")]
-        let relay = relay.maybe_with_dns_resolver(&ctx, dns_resolver);
+        let relay = relay.maybe_with_dns_resolver(&extensions, dns_resolver);
 
         let mut relay = relay;
 
@@ -149,10 +184,10 @@ where
                         direction: RelayDirection::South,
                         server_address,
                         payload: Bytes::copy_from_slice(relay.north_read_buf_slice()),
+                        extensions,
                     };
 
-                    let maybe_payload;
-                    (ctx, maybe_payload) = self
+                    let result = self
                         .0
                         .serve(ctx, request)
                         .await
@@ -163,6 +198,15 @@ where
                             );
                         })
                         .map_err(Error::service)?;
+
+                    let maybe_payload;
+                    (
+                        ctx,
+                        RelayResponse {
+                            extensions,
+                            maybe_payload,
+                        },
+                    ) = result;
 
                     match maybe_payload {
                         Some(payload) => relay
@@ -183,10 +227,10 @@ where
                         direction: RelayDirection::North,
                         server_address,
                         payload: Bytes::copy_from_slice(relay.south_read_buf_slice()),
+                        extensions,
                     };
 
-                    let maybe_payload;
-                    (ctx, maybe_payload) = self
+                    let result = self
                         .0
                         .serve(ctx, request)
                         .await
@@ -197,6 +241,15 @@ where
                             );
                         })
                         .map_err(Error::service)?;
+
+                    let maybe_payload;
+                    (
+                        ctx,
+                        RelayResponse {
+                            extensions,
+                            maybe_payload,
+                        },
+                    ) = result;
 
                     match maybe_payload {
                         Some(payload) => relay
@@ -290,6 +343,7 @@ where
     async fn proxy_udp_packets(
         &self,
         ctx: Context,
+        #[cfg_attr(not(feature = "dns"), expect(unused_variables))] extensions: Extensions,
         client_address: SocketAddress,
         north: UdpSocket,
         north_read_buf_size: usize,
@@ -306,7 +360,7 @@ where
         );
 
         #[cfg(feature = "dns")]
-        let relay = relay.maybe_with_dns_resolver(&ctx, dns_resolver);
+        let relay = relay.maybe_with_dns_resolver(&extensions, dns_resolver);
 
         let mut relay = relay;
 

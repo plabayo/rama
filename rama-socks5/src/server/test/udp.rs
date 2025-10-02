@@ -1,5 +1,6 @@
 use crate::server::udp::MockUdpAssociator;
 use crate::server::*;
+use rama_core::ServiceInput;
 use rama_net::address::Authority;
 
 #[tokio::test]
@@ -14,6 +15,8 @@ async fn test_socks5_acceptor_no_auth_client_udp_associate_failure_method_not_su
         // server reply
         .write(b"\x05\x07\x00\x01\x00\x00\x00\x00\x00\x00")
         .build();
+
+    let stream = ServiceInput::new(stream);
 
     let server = Socks5Acceptor::new();
     let result = server.accept(Context::default(), stream).await;
@@ -32,6 +35,8 @@ async fn test_socks5_acceptor_auth_flow_declined_udp_associate_failure_method_no
         // server reply
         .write(b"\x05\x07\x00\x01\x00\x00\x00\x00\x00\x00")
         .build();
+
+    let stream = ServiceInput::new(stream);
 
     let server = Socks5Acceptor::new();
     let result = server.accept(Context::default(), stream).await;
@@ -54,6 +59,8 @@ async fn test_socks5_acceptor_auth_flow_used_udp_associate_failure_method_not_su
         // server reply
         .write(b"\x05\x07\x00\x01\x00\x00\x00\x00\x00\x00")
         .build();
+
+    let stream = ServiceInput::new(stream);
 
     let server = Socks5Acceptor::new()
         .with_authorizer(user::Basic::new_static("john", "secret").into_authorizer());
@@ -78,6 +85,8 @@ async fn test_socks5_acceptor_auth_flow_username_only_udp_associate_failure_meth
         .write(b"\x05\x07\x00\x01\x00\x00\x00\x00\x00\x00")
         .build();
 
+    let stream = ServiceInput::new(stream);
+
     let server = Socks5Acceptor::new()
         .with_authorizer(user::Basic::new_static_insecure("john").into_authorizer());
     let result = server.accept(Context::default(), stream).await;
@@ -97,6 +106,8 @@ async fn test_socks5_acceptor_no_auth_client_udp_associate_mock_failure() {
         .write(b"\x05\x05\x00\x01\x00\x00\x00\x00\x00\x00")
         .build();
 
+    let stream = ServiceInput::new(stream);
+
     let server = Socks5Acceptor::new()
         .with_udp_associator(MockUdpAssociator::new_err(ReplyKind::ConnectionRefused));
     let result = server.accept(Context::default(), stream).await;
@@ -115,6 +126,8 @@ async fn test_socks5_acceptor_no_auth_client_udp_associate_mock_success_no_data(
         // server reply
         .write(&[b'\x05', b'\x00', b'\x00', b'\x01', 127, 0, 0, 1, 0, 42])
         .build();
+
+    let stream = ServiceInput::new(stream);
 
     let server = Socks5Acceptor::new()
         .with_udp_associator(MockUdpAssociator::new(Authority::local_ipv4(42)));

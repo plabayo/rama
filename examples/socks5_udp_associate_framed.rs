@@ -15,12 +15,11 @@
 use rama::{
     Context,
     bytes::Bytes,
+    extensions::Extensions,
     futures::{FutureExt, SinkExt, StreamExt},
-    net::address::SocketAddress,
-    net::user::Basic,
-    proxy::socks5::Socks5Acceptor,
+    net::{address::SocketAddress, user::Basic},
     proxy::socks5::{
-        Socks5Client,
+        Socks5Acceptor, Socks5Client,
         server::{
             DefaultUdpRelay,
             udp::{RelayDirection, UdpInspectAction},
@@ -49,8 +48,9 @@ async fn main() {
 
     let socks5_socket_addr = spawn_socks5_server().await;
 
+    let ext = Extensions::default();
     let (proxy_client_stream, _) =
-        default_tcp_connect(&Context::default(), socks5_socket_addr.into())
+        default_tcp_connect(&Context::default(), &ext, socks5_socket_addr.into())
             .await
             .expect("establish connection to socks5 server (from client)");
 

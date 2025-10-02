@@ -54,6 +54,8 @@
 use rama::{
     Layer, Service,
     error::{BoxError, ErrorContext, OpaqueError},
+    extensions::Extensions,
+    extensions::{ExtensionsMut, ExtensionsRef},
     futures::SinkExt,
     http::{
         Body, Request, Response, StatusCode,
@@ -193,20 +195,17 @@ async fn main() -> Result<(), BoxError> {
 }
 
 async fn http_connect_accept(
-    mut ctx: Context,
-    req: Request,
+    ctx: Context,
+    mut req: Request,
 ) -> Result<(Response, Context, Request), Response> {
-    match ctx
-        .get_or_try_insert_with_ctx::<RequestContext, _>(|ctx| (ctx, &req).try_into())
-        .map(|ctx| ctx.authority.clone())
-    {
+    match RequestContext::try_from((&ctx, &req)).map(|ctx| ctx.authority) {
         Ok(authority) => {
             tracing::info!(
                 server.address = %authority.host(),
                 server.port = %authority.port(),
                 "accept CONNECT (lazy): insert proxy target into context",
             );
-            ctx.insert(ProxyTarget(authority));
+            req.extensions_mut().insert(ProxyTarget(authority));
         }
         Err(err) => {
             tracing::error!("error extracting authority: {err:?}");
@@ -229,7 +228,7 @@ async fn http_connect_proxy(ctx: Context, upgraded: Upgraded) -> Result<(), Infa
     // as we otherwise might not be able to define the scheme/authority
     // for upstream http requests.
 
-    let state = ctx.get::<State>().unwrap();
+    let state = upgraded.extensions().get::<State>().unwrap();
     let http_service = new_http_mitm_proxy(state);
 
     let mut http_tp = HttpServer::auto(ctx.executor().clone());
@@ -273,7 +272,8 @@ async fn http_mitm_proxy(ctx: Context, req: Request) -> Result<Response, Infalli
     // NOTE: use a custom connector (layers) in case you wish to add custom features,
     // such as upstream proxies or other configurations
 
-    let base_tls_config = if let Some(hello) = ctx
+    let base_tls_config = if let Some(hello) = req
+        .extensions()
         .get::<SecureTransport>()
         .and_then(|st| st.client_hello())
         .cloned()
@@ -348,7 +348,7 @@ fn new_mitm_tls_service_data() -> Result<TlsAcceptorData, OpaqueError> {
         .context("create tls server config")
 }
 
-async fn mitm_websocket<S>(client: &S, mut ctx: Context, req: Request) -> Response
+async fn mitm_websocket<S>(client: &S, ctx: Context, req: Request) -> Response
 where
     S: Service<Request, Response = Response, Error = OpaqueError>,
 {
@@ -368,11 +368,17 @@ where
 
     let target_version = req.version();
     tracing::debug!("forcing egress http connection as {target_version:?} to ensure WS upgrade");
-    ctx.insert(TargetHttpVersion(target_version));
+
+    // Todo improve extensions handling here? This feels error prone and easy to forget.
+    // In a better way this should be handled behind the scenes similar to tls alpn works
+    // Now that we can pass extensions all around this will probably just work, but needs
+    // to be looked at individually
+    let mut extensions = Extensions::new();
+    extensions.insert(TargetHttpVersion(target_version));
 
     let mut handshake = match client
         .websocket_with_request(req)
-        .initiate_handshake(ctx)
+        .initiate_handshake(extensions)
         .await
     {
         Ok(socket) => socket,
@@ -435,11 +441,18 @@ where
 
     tokio::spawn(async move {
         tracing::debug!("egresss websocket active: starting ingress WS upgrade...");
-        let request = Request::from_parts(parts_copy, Body::empty());
-        let ingress_socket = match upgrade::on(request).await {
+        let mut request = Request::from_parts(parts_copy, Body::empty());
+
+        let ingress_socket = match upgrade::on(&mut request).await {
             Ok(upgraded) => {
-                AsyncWebSocket::from_raw_socket(upgraded, Role::Server, Some(ingress_socket_cfg))
-                    .await
+                let mut socket = AsyncWebSocket::from_raw_socket(
+                    upgraded,
+                    Role::Server,
+                    Some(ingress_socket_cfg),
+                )
+                .await;
+                *socket.extensions_mut() = request.take_extensions();
+                socket
             }
             Err(err) => {
                 tracing::error!("error in upgrading ingress websocket: {err:?}");

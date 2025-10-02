@@ -8,6 +8,7 @@ use crate::{Body, Request, Response, StreamingBody};
 
 use chrono::{DateTime, Utc};
 
+use rama_core::extensions::ExtensionsMut;
 use rama_core::telemetry::tracing;
 use rama_core::{Context, Service, bytes::Bytes, error::BoxError};
 use rama_error::{ErrorExt, OpaqueError};

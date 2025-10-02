@@ -30,8 +30,8 @@
 //!
 //! You’ll see output for each test case and potential errors (if any).
 use rama::{
-    Context,
     error::{BoxError, ErrorContext},
+    extensions::Extensions,
     futures::{SinkExt, StreamExt},
     http::{
         client::EasyHttpWebClient,
@@ -73,7 +73,7 @@ async fn get_case_count() -> Result<u32, BoxError> {
     let client = EasyHttpWebClient::default();
     let mut socket = client
         .websocket("ws://localhost:9001/getCaseCount")
-        .handshake(Context::default())
+        .handshake(Extensions::default())
         .await
         .context("get case count")?;
 
@@ -90,7 +90,7 @@ async fn update_reports() -> Result<(), BoxError> {
 
     let mut socket = client
         .websocket(format!("ws://localhost:9001/updateReports?agent={AGENT}"))
-        .handshake(Context::default())
+        .handshake(Extensions::default())
         .await
         .context("update reports")?;
 
@@ -107,7 +107,7 @@ async fn run_test(case: u32) -> Result<(), BoxError> {
         .websocket(format!(
             "ws://localhost:9001/runCase?case={case}&agent={AGENT}"
         ))
-        .handshake(Context::default())
+        .handshake(Extensions::default())
         .await
         .context("get case socket")?;
 

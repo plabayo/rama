@@ -18,7 +18,7 @@
 //!
 //! ```
 //! use rama_core::service::service_fn;
-//! use rama_core::{Context, Service, Layer};
+//! use rama_core::{Context, extensions::ExtensionsRef, Service, Layer};
 //! use rama_http::{Body, Request, Response, StatusCode, header};
 //! use rama_http::layer::follow_redirect::{FollowRedirectLayer, RequestUri};
 //!
@@ -103,7 +103,7 @@ pub mod policy;
 
 use crate::{Method, Request, Response, StatusCode, StreamingBody, Uri, header::LOCATION};
 use iri_string::types::{UriAbsoluteString, UriReferenceStr};
-use rama_core::{Context, Layer, Service};
+use rama_core::{Context, Layer, Service, extensions::ExtensionsMut};
 use rama_http_types::{
     HeaderMap,
     header::{CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_TYPE, TRANSFER_ENCODING},
@@ -396,6 +396,7 @@ mod tests {
     use super::{policy::*, *};
     use crate::{Body, header::LOCATION};
     use rama_core::Layer;
+    use rama_core::extensions::ExtensionsRef;
     use rama_core::service::service_fn;
     use std::convert::Infallible;
 

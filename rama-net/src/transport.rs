@@ -52,11 +52,13 @@ impl<T: HttpRequestParts> TryFrom<(&Context, &T)> for TransportContext {
     type Error = OpaqueError;
 
     fn try_from((ctx, req): (&Context, &T)) -> Result<Self, Self::Error> {
-        Ok(if let Some(req_ctx) = ctx.get::<RequestContext>() {
-            req_ctx.into()
-        } else {
-            let req_ctx = RequestContext::try_from((ctx, req))?;
-            req_ctx.into()
-        })
+        Ok(
+            if let Some(req_ctx) = req.extensions().get::<RequestContext>() {
+                req_ctx.into()
+            } else {
+                let req_ctx = RequestContext::try_from((ctx, req))?;
+                req_ctx.into()
+            },
+        )
     }
 }

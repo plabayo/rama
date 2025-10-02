@@ -8,7 +8,7 @@ use crate::header::{HeaderMap, HeaderName, HeaderValue};
 use crate::status::StatusCode;
 use crate::version::Version;
 use crate::{Body, Result};
-use rama_core::context::Extensions;
+use rama_core::extensions::{Extensions, ExtensionsMut, ExtensionsRef};
 
 /// Represents an HTTP response
 ///
@@ -196,6 +196,18 @@ impl From<Parts> for HyperiumParts {
     }
 }
 
+impl ExtensionsRef for Parts {
+    fn extensions(&self) -> &Extensions {
+        &self.extensions
+    }
+}
+
+impl ExtensionsMut for Parts {
+    fn extensions_mut(&mut self) -> &mut Extensions {
+        &mut self.extensions
+    }
+}
+
 /// An HTTP response builder
 ///
 /// This type can be used to construct an instance of `Response` through a
@@ -359,36 +371,6 @@ impl<T> Response<T> {
         &mut self.head.headers
     }
 
-    /// Returns a reference to the associated extensions.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use http::*;
-    /// let response: Response<()> = Response::default();
-    /// assert!(response.extensions().get::<i32>().is_none());
-    /// ```
-    #[inline]
-    pub fn extensions(&self) -> &Extensions {
-        &self.head.extensions
-    }
-
-    /// Returns a mutable reference to the associated extensions.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use http::*;
-    /// # use http::header::*;
-    /// let mut response: Response<()> = Response::default();
-    /// response.extensions_mut().insert("hello");
-    /// assert_eq!(response.extensions().get(), Some(&"hello"));
-    /// ```
-    #[inline]
-    pub fn extensions_mut(&mut self) -> &mut Extensions {
-        &mut self.head.extensions
-    }
-
     /// Returns a reference to the associated HTTP body.
     ///
     /// # Examples
@@ -490,6 +472,18 @@ impl<T: fmt::Debug> fmt::Debug for Response<T> {
             // omits Extensions because not useful
             .field("body", self.body())
             .finish()
+    }
+}
+
+impl<T> ExtensionsRef for Response<T> {
+    fn extensions(&self) -> &Extensions {
+        &self.head.extensions
+    }
+}
+
+impl<T> ExtensionsMut for Response<T> {
+    fn extensions_mut(&mut self) -> &mut Extensions {
+        &mut self.head.extensions
     }
 }
 

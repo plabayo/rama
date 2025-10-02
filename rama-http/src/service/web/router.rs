@@ -8,7 +8,7 @@ use crate::{
 use matchit::Router as MatchitRouter;
 use rama_core::{
     Context,
-    context::Extensions,
+    extensions::{Extensions, ExtensionsMut},
     matcher::Matcher,
     service::{BoxService, Service},
 };
@@ -202,12 +202,8 @@ impl Service<Request> for NestedRouterService {
     type Response = Response;
     type Error = Infallible;
 
-    async fn serve(
-        &self,
-        mut ctx: Context,
-        mut req: Request,
-    ) -> Result<Self::Response, Self::Error> {
-        let params: UriParams = match ctx.remove::<UriParams>() {
+    async fn serve(&self, ctx: Context, mut req: Request) -> Result<Self::Response, Self::Error> {
+        let params: UriParams = match req.extensions_mut().remove::<UriParams>() {
             Some(params) => {
                 let nested_path = params.get("nest").unwrap_or_default();
 
@@ -223,7 +219,7 @@ impl Service<Request> for NestedRouterService {
             None => UriParams::default(),
         };
 
-        ctx.insert(params);
+        req.extensions_mut().insert(params);
 
         self.nested.serve(ctx, req).await
     }
@@ -239,24 +235,25 @@ impl Service<Request> for Router {
     type Response = Response;
     type Error = Infallible;
 
-    async fn serve(&self, mut ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, ctx: Context, mut req: Request) -> Result<Self::Response, Self::Error> {
         let mut ext = Extensions::new();
 
-        if let Ok(matched) = self.routes.at(req.uri().path()) {
+        let uri = req.uri().path().to_owned();
+        if let Ok(matched) = self.routes.at(&uri) {
             let uri_params = matched.params.iter();
 
-            let params: UriParams = match ctx.remove::<UriParams>() {
+            let params: UriParams = match req.extensions_mut().remove::<UriParams>() {
                 Some(mut params) => {
                     params.extend(uri_params);
                     params
                 }
                 None => uri_params.collect(),
             };
-            ctx.insert(params);
+            req.extensions_mut().insert(params);
 
             for (matcher, service) in matched.value.iter() {
                 if matcher.matches(Some(&mut ext), &ctx, &req) {
-                    ctx.extend(ext);
+                    req.extensions_mut().extend(ext);
                     return service.serve(ctx, req).await;
                 }
                 ext.clear();
@@ -279,7 +276,7 @@ mod tests {
     use crate::matcher::UriParams;
 
     use super::*;
-    use rama_core::service::service_fn;
+    use rama_core::{extensions::ExtensionsRef, service::service_fn};
     use rama_http_types::{Body, Method, Request, StatusCode, body::util::BodyExt};
 
     fn root_service() -> impl Service<Request, Response = Response, Error = Infallible> {
@@ -310,8 +307,8 @@ mod tests {
     }
 
     fn get_user_service() -> impl Service<Request, Response = Response, Error = Infallible> {
-        service_fn(|ctx: Context, _req| async move {
-            let uri_params = ctx.get::<UriParams>().unwrap();
+        service_fn(|_ctx: Context, req: Request| async move {
+            let uri_params = req.extensions().get::<UriParams>().unwrap();
             let id = uri_params.get("user_id").unwrap();
             Ok(Response::builder()
                 .status(200)
@@ -321,8 +318,8 @@ mod tests {
     }
 
     fn delete_user_service() -> impl Service<Request, Response = Response, Error = Infallible> {
-        service_fn(|ctx: Context, _req| async move {
-            let uri_params = ctx.get::<UriParams>().unwrap();
+        service_fn(|_ctx: Context, req: Request| async move {
+            let uri_params = req.extensions().get::<UriParams>().unwrap();
             let id = uri_params.get("user_id").unwrap();
             Ok(Response::builder()
                 .status(200)
@@ -332,8 +329,8 @@ mod tests {
     }
 
     fn serve_assets_service() -> impl Service<Request, Response = Response, Error = Infallible> {
-        service_fn(|ctx: Context, _req| async move {
-            let uri_params = ctx.get::<UriParams>().unwrap();
+        service_fn(|_ctx: Context, req: Request| async move {
+            let uri_params = req.extensions().get::<UriParams>().unwrap();
             let path = uri_params.get("path").unwrap();
             Ok(Response::builder()
                 .status(200)
@@ -352,8 +349,8 @@ mod tests {
     }
 
     fn get_user_order_service() -> impl Service<Request, Response = Response, Error = Infallible> {
-        service_fn(|ctx: Context, _req| async move {
-            let uri_params = ctx.get::<UriParams>().unwrap();
+        service_fn(|_ctx: Context, req: Request| async move {
+            let uri_params = req.extensions().get::<UriParams>().unwrap();
             let user_id = uri_params.get("user_id").unwrap();
             let order_id = uri_params.get("order_id").unwrap();
             Ok(Response::builder()

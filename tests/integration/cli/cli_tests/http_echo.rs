@@ -1,5 +1,5 @@
 use rama::{
-    Context,
+    extensions::Extensions,
     http::{client::EasyHttpWebClient, ws::handshake::client::HttpClientWebSocketExt},
 };
 use rama_http::headers::SecWebSocketProtocol;
@@ -35,7 +35,7 @@ async fn test_http_echo() {
 
     let mut ws = client
         .websocket("ws://127.0.0.1:63101")
-        .handshake(Context::default())
+        .handshake(Extensions::default())
         .await
         .expect("ws handshake to work");
     ws.send_message("Cheerios".into())
@@ -56,7 +56,7 @@ async fn test_http_echo() {
     let mut ws = client
         .websocket("ws://127.0.0.1:63101")
         .with_protocols(SecWebSocketProtocol::new("echo-upper"))
-        .handshake(Context::default())
+        .handshake(Extensions::default())
         .await
         .expect("ws handshake to work");
     ws.send_message("Cheerios".into())
@@ -119,7 +119,7 @@ async fn test_http_echo_secure() {
 
     let mut ws = client
         .websocket("wss://127.0.0.1:63103")
-        .handshake(Context::default())
+        .handshake(Extensions::default())
         .await
         .expect("ws handshake to work");
     ws.send_message("Cheerios".into())
@@ -140,7 +140,7 @@ async fn test_http_echo_secure() {
     let mut ws = client
         .websocket("wss://127.0.0.1:63103")
         .with_protocols(SecWebSocketProtocol::new("echo-upper"))
-        .handshake(Context::default())
+        .handshake(Extensions::default())
         .await
         .expect("ws handshake to work");
     ws.send_message("Cheerios".into())

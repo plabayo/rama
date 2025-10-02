@@ -20,12 +20,11 @@ async fn test_proxy_connectivity_check() {
 
     let runner = utils::ExampleRunner::interactive("proxy_connectivity_check", Some("socks5,tls"));
 
-    let mut ctx = Context::default();
-    ctx.insert(ProxyAddress::try_from("http://tom:clancy@127.0.0.1:62030").unwrap());
     // test regular proxy flow
     let result = runner
         .get("http://example.com")
-        .send(ctx.clone())
+        .extension(ProxyAddress::try_from("http://tom:clancy@127.0.0.1:62030").unwrap())
+        .send(Context::default())
         .await
         .unwrap()
         .try_into_string()
@@ -46,16 +45,16 @@ async fn test_http_client_over_socks5_proxy_connect(runner: ExampleRunner) {
         "local servers up and running",
     );
 
-    let mut ctx = Context::default();
-    ctx.insert(ProxyAddress {
+    let proxy_address = ProxyAddress {
         protocol: Some(Protocol::SOCKS5),
         authority: proxy_socket_addr.into(),
         credential: Some(ProxyCredential::Basic(Basic::new_static("john", "secret"))),
-    });
+    };
 
     let resp = runner
         .get("http://example.com")
-        .send(ctx)
+        .extension(proxy_address)
+        .send(Context::default())
         .await
         .expect("make http request via socks5 proxy")
         .try_into_string()

@@ -29,14 +29,13 @@ impl FromRequestContextRefPair for Host {
         ctx: &Context,
         parts: &Parts,
     ) -> Result<Self, Self::Rejection> {
-        Ok(Self(match ctx.get::<RequestContext>() {
-            Some(ctx) => ctx.authority.host().clone(),
-            None => RequestContext::try_from((ctx, parts))
+        Ok(Self(
+            RequestContext::try_from((ctx, parts))
                 .map_err(|_| MissingHost)?
                 .authority
                 .host()
                 .clone(),
-        }))
+        ))
     }
 }
 

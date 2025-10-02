@@ -26,7 +26,7 @@ pub mod ip;
 #[doc(inline)]
 pub use ip::IpNetMatcher;
 
-use rama_core::{Context, context::Extensions, matcher::IteratorMatcherExt};
+use rama_core::{Context, extensions::Extensions, matcher::IteratorMatcherExt};
 use std::{fmt, sync::Arc};
 
 #[cfg(feature = "http")]

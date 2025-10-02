@@ -43,7 +43,7 @@ pub use compose::{
 
 #[cfg(test)]
 mod tests {
-    use crate::context::Extensions;
+    use crate::extensions::Extensions;
 
     use super::*;
 

@@ -37,7 +37,8 @@
 //! You can now use tools like grafana to collect metrics from the collector running at 127.0.0.1:4317 over GRPC.
 
 use rama::{
-    Context, Layer,
+    Layer,
+    extensions::Extensions,
     http::{
         client::EasyHttpWebClient,
         layer::{opentelemetry::RequestMetricsLayer, trace::TraceLayer},
@@ -144,8 +145,8 @@ async fn main() {
         let exec = Executor::graceful(guard.clone());
         let http_service = HttpServer::auto(exec).service(
             (TraceLayer::new_for_http(), RequestMetricsLayer::default()).into_layer(
-                WebService::default().get("/", async |ctx: Context| {
-                    ctx.get::<Arc<Metrics>>().unwrap().counter.add(1, &[]);
+                WebService::default().get("/", async |ext: Extensions| {
+                    ext.get::<Arc<Metrics>>().unwrap().counter.add(1, &[]);
                     Html("<h1>Hello!</h1>")
                 }),
             ),

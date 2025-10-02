@@ -27,6 +27,8 @@
 pub mod context;
 pub use context::Context;
 
+pub mod extensions;
+
 pub use ::rama_error as error;
 
 pub mod graceful;
@@ -50,6 +52,9 @@ pub mod username;
 pub mod telemetry;
 
 pub mod conversion;
+
+pub mod svc_input;
+pub use svc_input::ServiceInput;
 
 pub mod bytes {
     //! Re-export of [bytes](https://docs.rs/bytes/latest/bytes/) crate.

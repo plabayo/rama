@@ -1,6 +1,7 @@
 use rama_boring_tokio::SslStream;
 use rama_core::conversion::RamaTryInto;
 use rama_core::error::{BoxError, ErrorExt, OpaqueError};
+use rama_core::extensions::{Extensions, ExtensionsMut};
 use rama_core::stream::Stream;
 use rama_core::telemetry::tracing;
 use rama_core::{Context, Layer, Service};
@@ -221,23 +222,23 @@ impl<S> TlsConnector<S, ConnectorKindTunnel> {
 
 impl<S, Request> Service<Request> for TlsConnector<S, ConnectorKindAuto>
 where
-    S: ConnectorService<Request, Connection: Stream + Unpin, Error: Into<BoxError>>,
-    Request: TryRefIntoTransportContext<Error: Into<BoxError> + Send + 'static> + Send + 'static,
+    S: ConnectorService<Request, Connection: Stream + Unpin>,
+    Request: TryRefIntoTransportContext<Error: Into<BoxError> + Send + 'static>
+        + Send
+        + ExtensionsMut
+        + 'static,
 {
     type Response = EstablishedClientConnection<AutoTlsStream<S::Connection>, Request>;
     type Error = BoxError;
 
     async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
-        let EstablishedClientConnection { mut ctx, req, conn } =
+        let EstablishedClientConnection { ctx, mut req, conn } =
             self.inner.connect(ctx, req).await.map_err(Into::into)?;
 
-        let transport_ctx = ctx
-            .get_or_try_insert_with_ctx(|ctx| req.try_ref_into_transport_ctx(ctx))
-            .map_err(|err| {
-                OpaqueError::from_boxed(err.into())
-                    .context("TlsConnector(auto): compute transport context")
-            })?
-            .clone();
+        let transport_ctx = req.try_ref_into_transport_ctx(&ctx).map_err(|err| {
+            OpaqueError::from_boxed(err.into())
+                .context("TlsConnector(auto): compute transport context")
+        })?;
 
         if !transport_ctx
             .app_protocol
@@ -259,7 +260,7 @@ where
 
         let host = transport_ctx.authority.host().clone();
 
-        let connector_data = self.connector_data(&mut ctx)?;
+        let connector_data = self.connector_data(req.extensions_mut())?;
         let (stream, negotiated_params) = handshake(connector_data, host, conn).await?;
 
         tracing::trace!(
@@ -268,34 +269,32 @@ where
             "TlsConnector(auto): protocol secure, established tls connection",
         );
 
-        ctx.insert(negotiated_params);
+        let mut conn = AutoTlsStream::secure(stream);
+        conn.extensions_mut().insert(negotiated_params);
 
-        Ok(EstablishedClientConnection {
-            ctx,
-            req,
-            conn: AutoTlsStream::secure(stream),
-        })
+        Ok(EstablishedClientConnection { ctx, req, conn })
     }
 }
 
 impl<S, Request> Service<Request> for TlsConnector<S, ConnectorKindSecure>
 where
-    S: ConnectorService<Request, Connection: Stream + Unpin, Error: Into<BoxError>>,
-    Request: TryRefIntoTransportContext<Error: Into<BoxError> + Send + 'static> + Send + 'static,
+    S: ConnectorService<Request, Connection: Stream + Unpin>,
+    Request: TryRefIntoTransportContext<Error: Into<BoxError> + Send + 'static>
+        + Send
+        + ExtensionsMut
+        + 'static,
 {
     type Response = EstablishedClientConnection<TlsStream<S::Connection>, Request>;
     type Error = BoxError;
 
     async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
-        let EstablishedClientConnection { mut ctx, req, conn } =
+        let EstablishedClientConnection { ctx, mut req, conn } =
             self.inner.connect(ctx, req).await.map_err(Into::into)?;
 
-        let transport_ctx = ctx
-            .get_or_try_insert_with_ctx(|ctx| req.try_ref_into_transport_ctx(ctx))
-            .map_err(|err| {
-                OpaqueError::from_boxed(err.into())
-                    .context("TlsConnector(auto): compute transport context")
-            })?;
+        let transport_ctx = req.try_ref_into_transport_ctx(&ctx).map_err(|err| {
+            OpaqueError::from_boxed(err.into())
+                .context("TlsConnector(auto): compute transport context")
+        })?;
         tracing::trace!(
             server.address = %transport_ctx.authority.host(),
             server.port = %transport_ctx.authority.port(),
@@ -305,10 +304,10 @@ where
 
         let host = transport_ctx.authority.host().clone();
 
-        let connector_data = self.connector_data(&mut ctx)?;
+        let connector_data = self.connector_data(req.extensions_mut())?;
         let (conn, negotiated_params) = handshake(connector_data, host, conn).await?;
-        let conn = TlsStream::new(conn);
-        ctx.insert(negotiated_params);
+        let mut conn = TlsStream::new(conn);
+        conn.extensions_mut().insert(negotiated_params);
 
         Ok(EstablishedClientConnection { ctx, req, conn })
     }
@@ -316,17 +315,18 @@ where
 
 impl<S, Request> Service<Request> for TlsConnector<S, ConnectorKindTunnel>
 where
-    S: ConnectorService<Request, Connection: Stream + Unpin, Error: Into<BoxError>>,
-    Request: Send + 'static,
+    S: ConnectorService<Request, Connection: Stream + Unpin>,
+    Request: Send + ExtensionsMut + 'static,
 {
     type Response = EstablishedClientConnection<AutoTlsStream<S::Connection>, Request>;
     type Error = BoxError;
 
     async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
-        let EstablishedClientConnection { mut ctx, req, conn } =
+        let EstablishedClientConnection { ctx, mut req, conn } =
             self.inner.connect(ctx, req).await.map_err(Into::into)?;
 
-        let host = if let Some(host) = ctx
+        let host = if let Some(host) = req
+            .extensions()
             .get::<TlsTunnel>()
             .as_ref()
             .map(|t| &t.server_host)
@@ -344,27 +344,24 @@ where
             });
         };
 
-        let connector_data = self.connector_data(&mut ctx)?;
+        let connector_data = self.connector_data(req.extensions_mut())?;
         let (stream, negotiated_params) = handshake(connector_data, host, conn).await?;
-        ctx.insert(negotiated_params);
+        let mut conn = AutoTlsStream::secure(stream);
+        conn.extensions_mut().insert(negotiated_params);
 
         tracing::trace!("TlsConnector(tunnel): connection secured");
-        Ok(EstablishedClientConnection {
-            ctx,
-            req,
-            conn: AutoTlsStream::secure(stream),
-        })
+        Ok(EstablishedClientConnection { ctx, req, conn })
     }
 }
 
 impl<S, K> TlsConnector<S, K> {
-    fn connector_data(&self, ctx: &mut Context) -> Result<TlsConnectorData, OpaqueError> {
-        let target_version = ctx
+    fn connector_data(&self, extensions: &mut Extensions) -> Result<TlsConnectorData, OpaqueError> {
+        let target_version = extensions
             .get::<TargetHttpVersion>()
             .map(|version| ApplicationProtocol::try_from(version.0))
             .transpose()?;
 
-        let builder = ctx.get_or_insert_default::<TlsConnectorDataBuilder>();
+        let builder = extensions.get_or_insert_default::<TlsConnectorDataBuilder>();
 
         if let Some(base_builder) = self.connector_data.clone() {
             builder.prepend_base_config(base_builder);
@@ -383,7 +380,7 @@ pub async fn tls_connect<T>(
     connector_data: Option<TlsConnectorData>,
 ) -> Result<TlsStream<T>, OpaqueError>
 where
-    T: Stream + Unpin,
+    T: Stream + Unpin + ExtensionsMut,
 {
     let data = match connector_data {
         Some(connector_data) => connector_data,
@@ -409,7 +406,7 @@ async fn handshake<T>(
     stream: T,
 ) -> Result<(SslStream<T>, NegotiatedTlsParameters), BoxError>
 where
-    T: Stream + Unpin,
+    T: Stream + Unpin + ExtensionsMut,
 {
     let store_server_certificate_chain = connector_data.store_server_certificate_chain;
     let TlsStream { inner: stream } =

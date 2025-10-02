@@ -1,3 +1,4 @@
+use rama_core::ServiceInput;
 use rama_net::address::Authority;
 
 use crate::server::connect::MockConnector;
@@ -16,6 +17,8 @@ async fn test_socks5_acceptor_no_auth_client_connect_failure_method_not_supporte
         .write(b"\x05\x07\x00\x01\x00\x00\x00\x00\x00\x00")
         .build();
 
+    let stream = ServiceInput::new(stream);
+
     let server = Socks5Acceptor::new();
     let result = server.accept(Context::default(), stream).await;
     assert!(result.is_err());
@@ -33,6 +36,8 @@ async fn test_socks5_acceptor_auth_flow_declined_connect_failure_method_not_supp
         // server reply
         .write(b"\x05\x07\x00\x01\x00\x00\x00\x00\x00\x00")
         .build();
+
+    let stream = ServiceInput::new(stream);
 
     let server = Socks5Acceptor::new();
     let result = server.accept(Context::default(), stream).await;
@@ -55,6 +60,8 @@ async fn test_socks5_acceptor_auth_flow_used_connect_failure_method_not_supporte
         // server reply
         .write(b"\x05\x07\x00\x01\x00\x00\x00\x00\x00\x00")
         .build();
+
+    let stream = ServiceInput::new(stream);
 
     let server = Socks5Acceptor::new()
         .with_authorizer(user::Basic::new_static("john", "secret").into_authorizer());
@@ -79,6 +86,8 @@ async fn test_socks5_acceptor_auth_flow_username_only_connect_failure_method_not
         .write(b"\x05\x07\x00\x01\x00\x00\x00\x00\x00\x00")
         .build();
 
+    let stream = ServiceInput::new(stream);
+
     let server = Socks5Acceptor::new()
         .with_authorizer(user::Basic::new_static_insecure("john").into_authorizer());
     let result = server.accept(Context::default(), stream).await;
@@ -98,6 +107,8 @@ async fn test_socks5_acceptor_no_auth_client_connect_mock_failure() {
         .write(b"\x05\x05\x00\x01\x00\x00\x00\x00\x00\x00")
         .build();
 
+    let stream = ServiceInput::new(stream);
+
     let server =
         Socks5Acceptor::new().with_connector(MockConnector::new_err(ReplyKind::ConnectionRefused));
     let result = server.accept(Context::default(), stream).await;
@@ -116,6 +127,8 @@ async fn test_socks5_acceptor_no_auth_client_connect_mock_success_no_data() {
         // server reply
         .write(&[b'\x05', b'\x00', b'\x00', b'\x01', 127, 0, 0, 1, 0, 42])
         .build();
+
+    let stream = ServiceInput::new(stream);
 
     let server =
         Socks5Acceptor::new().with_connector(MockConnector::new(Authority::local_ipv4(42)));
@@ -139,6 +152,8 @@ async fn test_socks5_acceptor_no_auth_client_connect_mock_success_with_data() {
         // server data
         .write(b"pong")
         .build();
+
+    let stream = ServiceInput::new(stream);
 
     let server = Socks5Acceptor::new().with_connector(
         MockConnector::new(Authority::local_ipv4(42)).with_proxy_data(
@@ -174,6 +189,8 @@ async fn test_socks5_acceptor_with_auth_flow_client_connect_mock_success_with_da
         // server data
         .write(b"pong")
         .build();
+
+    let stream = ServiceInput::new(stream);
 
     let server = Socks5Acceptor::new()
         .with_authorizer(user::Basic::new_static("john", "secret").into_authorizer())
@@ -211,6 +228,8 @@ async fn test_socks5_acceptor_with_auth_flow_username_only_client_connect_mock_s
         // server data
         .write(b"pong")
         .build();
+
+    let stream = ServiceInput::new(stream);
 
     let server = Socks5Acceptor::new()
         .with_authorizer(user::Basic::new_static_insecure("john").into_authorizer())

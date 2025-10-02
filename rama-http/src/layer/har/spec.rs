@@ -11,6 +11,7 @@ use crate::response::Parts as RespParts;
 use crate::service::web::extract::Query;
 
 use rama_core::Context;
+use rama_core::extensions::ExtensionsMut;
 use rama_core::telemetry::tracing;
 use rama_error::{ErrorContext, OpaqueError};
 use rama_http_headers::{ContentType, Cookie as RamaCookie, HeaderMapExt, Location};
@@ -400,7 +401,7 @@ impl TryFrom<Request> for crate::Request {
 
 impl Request {
     pub fn from_http_request_parts(
-        ctx: &Context,
+        _ctx: &Context,
         parts: &ReqParts,
         payload: &[u8],
     ) -> Result<Self, OpaqueError> {
@@ -434,7 +435,6 @@ impl Request {
         let comment = parts
             .extensions
             .get::<RequestComment>()
-            .or_else(|| ctx.get::<RequestComment>())
             .map(|req_comment| req_comment.0.clone());
 
         let cookies = parts

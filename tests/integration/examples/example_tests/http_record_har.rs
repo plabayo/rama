@@ -33,13 +33,13 @@ async fn test_http_record_har() {
 
     let runner = utils::ExampleRunner::interactive("http_record_har", Some("boring"));
 
-    let mut ctx = Context::default();
-    ctx.insert(ProxyAddress::try_from("http://john:secret@127.0.0.1:62040").unwrap());
+    let proxy_address = ProxyAddress::try_from("http://john:secret@127.0.0.1:62040").unwrap();
 
     // test regular proxy flow w/o har recording enabled
     let response = runner
         .get("http://127.0.0.1:63007/fetch/1")
-        .send(ctx.clone())
+        .extension(proxy_address.clone())
+        .send(Context::default())
         .await
         .unwrap();
 
@@ -52,7 +52,8 @@ async fn test_http_record_har() {
     // toggle har recording on
     let status_code = runner
         .post("http://har.toggle.internal/switch")
-        .send(ctx.clone())
+        .extension(proxy_address.clone())
+        .send(Context::default())
         .await
         .unwrap()
         .status();
@@ -62,7 +63,8 @@ async fn test_http_record_har() {
 
     let response = runner
         .get("http://127.0.0.1:63007/fetch/2")
-        .send(ctx.clone())
+        .extension(proxy_address.clone())
+        .send(Context::default())
         .await
         .unwrap();
 
@@ -81,7 +83,8 @@ async fn test_http_record_har() {
 
     let response = runner
         .get("http://127.0.0.1:63007/fetch/3")
-        .send(ctx.clone())
+        .extension(proxy_address.clone())
+        .send(Context::default())
         .await
         .unwrap();
 
@@ -100,7 +103,8 @@ async fn test_http_record_har() {
     // toggle recording off again
     let status_code = runner
         .post("http://har.toggle.internal/switch")
-        .send(ctx.clone())
+        .extension(proxy_address.clone())
+        .send(Context::default())
         .await
         .unwrap()
         .status();
@@ -109,7 +113,8 @@ async fn test_http_record_har() {
     // test regular proxy flow once again w/o har recording enabled
     let response = runner
         .get("http://127.0.0.1:63007/fetch/4")
-        .send(ctx.clone())
+        .extension(proxy_address.clone())
+        .send(Context::default())
         .await
         .unwrap();
 

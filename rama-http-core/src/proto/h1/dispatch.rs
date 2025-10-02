@@ -6,6 +6,7 @@ use std::{
 
 use rama_core::bytes::{Buf, Bytes};
 use rama_core::error::BoxError;
+use rama_core::extensions::ExtensionsMut;
 use rama_core::telemetry::tracing::{debug, error, trace};
 use rama_http::{StreamingBody, io::upgrade::OnUpgrade};
 use rama_http_types::{Request, Response, StatusCode};

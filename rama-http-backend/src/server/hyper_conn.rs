@@ -68,6 +68,7 @@ fn map_http_core_err_to_result(err: rama_http_core::Error) -> HttpServeResult {
 mod private {
     use crate::server::HttpServeResult;
     use crate::server::hyper_conn::{map_boxed_http_core_result, map_http_core_result};
+    use rama_core::extensions::ExtensionsMut;
     use rama_core::futures::FutureExt;
     use rama_core::stream::Stream;
     use rama_core::telemetry::tracing;
@@ -87,7 +88,7 @@ mod private {
             service: S,
         ) -> impl Future<Output = HttpServeResult> + Send + '_
         where
-            IO: Stream,
+            IO: Stream + ExtensionsMut,
             S: Service<Request, Response = Response, Error = Infallible> + Clone,
             Response: IntoResponse + Send + 'static;
     }
@@ -97,16 +98,17 @@ mod private {
         async fn http_core_serve_connection<IO, S, Response>(
             &self,
             ctx: Context,
-            io: IO,
+            mut io: IO,
             service: S,
         ) -> HttpServeResult
         where
-            IO: Stream,
+            IO: Stream + ExtensionsMut,
             S: Service<Request, Response = Response, Error = Infallible> + Clone,
             Response: IntoResponse + Send + 'static,
         {
             let guard = ctx.guard().cloned();
-            let service = RamaHttpService::new(ctx, service);
+            let extensions = io.take_extensions();
+            let service = RamaHttpService::new(ctx, extensions, service);
 
             let stream = Box::pin(io);
 
@@ -140,17 +142,19 @@ mod private {
         async fn http_core_serve_connection<IO, S, Response>(
             &self,
             ctx: Context,
-            io: IO,
+            mut io: IO,
             service: S,
         ) -> HttpServeResult
         where
-            IO: Stream,
+            IO: Stream + ExtensionsMut,
             S: Service<Request, Response = Response, Error = Infallible> + Clone,
             Response: IntoResponse + Send + 'static,
         {
+            let extensions = io.take_extensions();
             let stream = Box::pin(io);
             let guard = ctx.guard().cloned();
-            let service = RamaHttpService::new(ctx, service);
+
+            let service = RamaHttpService::new(ctx, extensions, service);
 
             let mut conn = pin!(self.serve_connection(stream, service));
 
@@ -182,17 +186,19 @@ mod private {
         async fn http_core_serve_connection<IO, S, Response>(
             &self,
             ctx: Context,
-            io: IO,
+            mut io: IO,
             service: S,
         ) -> HttpServeResult
         where
-            IO: Stream,
+            IO: Stream + ExtensionsMut,
             S: Service<Request, Response = Response, Error = Infallible> + Clone,
             Response: IntoResponse + Send + 'static,
         {
+            let extensions = io.take_extensions();
             let stream = Box::pin(io);
             let guard = ctx.guard().cloned();
-            let service = RamaHttpService::new(ctx, service);
+
+            let service = RamaHttpService::new(ctx, extensions, service);
 
             let mut conn = pin!(self.serve_connection_with_upgrades(stream, service));
 

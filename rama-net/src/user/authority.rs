@@ -1,6 +1,6 @@
 use std::{fmt, sync::Arc};
 
-use rama_core::context::Extensions;
+use rama_core::extensions::Extensions;
 
 /// Result of [`Authorizer::authorize`].
 pub struct AuthorizeResult<C, E> {

@@ -45,9 +45,9 @@
 use rama::{
     Context, Layer, Service,
     error::OpaqueError,
+    extensions::ExtensionsMut,
     graceful::{Shutdown, ShutdownGuard},
-    http::layer::trace::TraceLayer,
-    http::{server::HttpServer, service::web::Router},
+    http::{layer::trace::TraceLayer, server::HttpServer, service::web::Router},
     net::{
         address::{Domain, SocketAddress},
         tls::server::{SelfSignedData, ServerAuth, ServerConfig, SniRequest, SniRouter},
@@ -117,7 +117,7 @@ async fn sni_router<S>(
     SniRequest { stream, sni }: SniRequest<S>,
 ) -> Result<(), OpaqueError>
 where
-    S: Stream + Unpin,
+    S: Stream + ExtensionsMut + Unpin,
 {
     // NOTE: for production settings you probably want to use a tri-like structure,
     // rama provided or bring your own

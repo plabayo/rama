@@ -1,3 +1,4 @@
+use rama_core::extensions::Extensions;
 use rama_core::telemetry::tracing::{self, Instrument, trace_span};
 use rama_core::{
     Context,
@@ -42,11 +43,9 @@ pub trait TcpStreamConnector: Clone + Send + Sync + 'static {
 impl TcpStreamConnector for () {
     type Error = std::io::Error;
 
-    fn connect(
-        &self,
-        addr: SocketAddr,
-    ) -> impl Future<Output = Result<TcpStream, Self::Error>> + Send + '_ {
-        TcpStream::connect(addr)
+    async fn connect(&self, addr: SocketAddr) -> Result<TcpStream, Self::Error> {
+        let stream = tokio::net::TcpStream::connect(addr).await?;
+        Ok(stream.into())
     }
 }
 
@@ -126,8 +125,10 @@ fn tcp_connect_with_socket_opts(
     socket
         .set_nonblocking(true)
         .context("set socket non-blocking")?;
-    TcpStream::from_std(std::net::TcpStream::from(socket))
-        .context("create tokio tcp stream from created raw (tcp) socket")
+    let stream = tokio::net::TcpStream::from_std(std::net::TcpStream::from(socket))
+        .context("create tokio tcp stream from created raw (tcp) socket")?;
+
+    Ok(stream.into())
 }
 
 impl<ConnectFn, ConnectFnFut, ConnectFnErr> TcpStreamConnector for ConnectFn
@@ -180,16 +181,18 @@ macro_rules! impl_stream_connector_either {
 /// or use a [`rama_net::client::ConnectorService`] for even more advanced possibilities.
 pub async fn default_tcp_connect(
     ctx: &Context,
+    extensions: &Extensions,
     authority: Authority,
 ) -> Result<(TcpStream, SocketAddr), OpaqueError>
 where
 {
-    tcp_connect(ctx, authority, GlobalDnsResolver::default(), ()).await
+    tcp_connect(ctx, extensions, authority, GlobalDnsResolver::default(), ()).await
 }
 
 /// Establish a [`TcpStream`] connection for the given [`Authority`].
 pub async fn tcp_connect<Dns, Connector>(
     ctx: &Context,
+    extensions: &Extensions,
     authority: Authority,
     dns: Dns,
     connector: Connector,
@@ -198,8 +201,8 @@ where
     Dns: DnsResolver + Clone,
     Connector: TcpStreamConnector<Error: Into<BoxError> + Send + 'static> + Clone,
 {
-    let ip_mode = ctx.get().copied().unwrap_or_default();
-    let dns_mode = ctx.get().copied().unwrap_or_default();
+    let ip_mode = extensions.get().copied().unwrap_or_default();
+    let dns_mode = extensions.get().copied().unwrap_or_default();
 
     let (host, port) = authority.into_parts();
     let domain = match host {
@@ -227,7 +230,7 @@ where
         }
     };
 
-    if let Some(dns_overwrite) = ctx.get::<DnsOverwrite>()
+    if let Some(dns_overwrite) = extensions.get::<DnsOverwrite>()
         && let Ok(tuple) = tcp_connect_inner(
             ctx,
             domain.clone(),

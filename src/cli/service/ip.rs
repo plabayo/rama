@@ -7,6 +7,7 @@ use crate::{
     cli::ForwardKind,
     combinators::Either7,
     error::{BoxError, OpaqueError},
+    extensions::ExtensionsRef,
     http::{
         Request, Response, StatusCode,
         dep::mime,
@@ -25,6 +26,7 @@ use crate::{
     proxy::haproxy::server::HaProxyLayer,
     rt::Executor,
     stream::Stream,
+    tcp::TcpStream,
     telemetry::tracing,
 };
 
@@ -43,8 +45,9 @@ type TlsConfig = ServerConfig;
 #[cfg(all(feature = "rustls", not(feature = "boring")))]
 type TlsConfig = TlsAcceptorData;
 
+use rama_core::extensions::ExtensionsMut;
 use std::{convert::Infallible, marker::PhantomData, net::IpAddr, time::Duration};
-use tokio::{io::AsyncWriteExt, net::TcpStream};
+use tokio::io::AsyncWriteExt;
 
 #[derive(Debug, Clone)]
 /// Builder that can be used to run your own ip [`Service`],
@@ -174,17 +177,22 @@ impl Service<Request> for HttpIpService {
     type Response = Response;
     type Error = BoxError;
 
-    async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, _ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
         let norm_req_path = req.uri().path().trim_matches('/');
         if !norm_req_path.is_empty() {
             tracing::debug!("unexpected request path '{norm_req_path}', redirect to root");
             return Ok(Redirect::permanent("/").into_response());
         }
 
-        let peer_ip = ctx
+        let peer_ip = req
+            .extensions()
             .get::<Forwarded>()
             .and_then(|f| f.client_ip())
-            .or_else(|| ctx.get::<SocketInfo>().map(|s| s.peer_addr().ip()));
+            .or_else(|| {
+                req.extensions()
+                    .get::<SocketInfo>()
+                    .map(|s| s.peer_addr().ip())
+            });
 
         Ok(match peer_ip {
             Some(ip) => match HttpBodyContentFormat::derive_from_req(&req) {
@@ -238,17 +246,23 @@ struct TcpIpService;
 
 impl<Input> Service<Input> for TcpIpService
 where
-    Input: Stream + Unpin,
+    Input: Stream + Unpin + ExtensionsRef,
 {
     type Response = ();
     type Error = BoxError;
 
-    async fn serve(&self, ctx: Context, stream: Input) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, _ctx: Context, stream: Input) -> Result<Self::Response, Self::Error> {
         tracing::info!("connection received");
-        let peer_ip = ctx
+        let peer_ip = stream
+            .extensions()
             .get::<Forwarded>()
             .and_then(|f| f.client_ip())
-            .or_else(|| ctx.get::<SocketInfo>().map(|s| s.peer_addr().ip()));
+            .or_else(|| {
+                stream
+                    .extensions()
+                    .get::<SocketInfo>()
+                    .map(|s| s.peer_addr().ip())
+            });
         let Some(peer_ip) = peer_ip else {
             tracing::error!("missing peer information");
             return Ok(());
@@ -301,7 +315,7 @@ impl IpServiceBuilder<mode::Transport> {
 }
 
 impl<M> IpServiceBuilder<M> {
-    fn build_tcp<S: Stream + Unpin + Send + Sync + 'static>(
+    fn build_tcp<S: Stream + ExtensionsMut + Unpin + Send + Sync + 'static>(
         self,
         #[cfg(any(feature = "rustls", feature = "boring"))] maybe_tls_accept_layer: Option<
             TlsAcceptorLayer,
@@ -331,7 +345,7 @@ impl<M> IpServiceBuilder<M> {
         Ok(tcp_service_builder.into_layer(TcpIpService))
     }
 
-    fn build_http<S: Stream + Unpin + Send + Sync + 'static>(
+    fn build_http<S: Stream + Unpin + Send + Sync + ExtensionsMut + 'static>(
         self,
         executor: Executor,
         #[cfg(any(feature = "rustls", feature = "boring"))] maybe_tls_accept_layer: Option<

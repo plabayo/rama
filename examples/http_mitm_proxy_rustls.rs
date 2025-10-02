@@ -35,11 +35,12 @@
 use rama::{
     Layer, Service,
     error::{BoxError, ErrorContext, OpaqueError},
-    http::layer::compress_adapter::CompressAdaptLayer,
+    extensions::{ExtensionsMut, ExtensionsRef},
     http::{
         Body, Request, Response, StatusCode,
         client::EasyHttpWebClient,
         layer::{
+            compress_adapter::CompressAdaptLayer,
             map_response_body::MapResponseBodyLayer,
             proxy_auth::ProxyAuthLayer,
             remove_header::{RemoveRequestHeaderLayer, RemoveResponseHeaderLayer},
@@ -141,20 +142,17 @@ async fn main() -> Result<(), BoxError> {
 }
 
 async fn http_connect_accept(
-    mut ctx: Context,
-    req: Request,
+    ctx: Context,
+    mut req: Request,
 ) -> Result<(Response, Context, Request), Response> {
-    match ctx
-        .get_or_try_insert_with_ctx::<RequestContext, _>(|ctx| (ctx, &req).try_into())
-        .map(|ctx| ctx.authority.clone())
-    {
+    match RequestContext::try_from((&ctx, &req)).map(|ctx| ctx.authority) {
         Ok(authority) => {
             tracing::info!(
                 server.address = %authority.host(),
                 server.port = %authority.port(),
                 "accept CONNECT (lazy): insert proxy target into context",
             );
-            ctx.insert(ProxyTarget(authority));
+            req.extensions_mut().insert(ProxyTarget(authority));
         }
         Err(err) => {
             tracing::error!("error extracting authority: {err:?}");
@@ -181,10 +179,16 @@ async fn http_connect_proxy(ctx: Context, upgraded: Upgraded) -> Result<(), Infa
 
     let http_transport_service = HttpServer::auto(ctx.executor().clone()).service(http_service);
 
-    let https_service =
-        TlsAcceptorLayer::new(ctx.get::<State>().unwrap().mitm_tls_service_data.clone())
-            .with_store_client_hello(true)
-            .into_layer(http_transport_service);
+    let https_service = TlsAcceptorLayer::new(
+        upgraded
+            .extensions()
+            .get::<State>()
+            .unwrap()
+            .mitm_tls_service_data
+            .clone(),
+    )
+    .with_store_client_hello(true)
+    .into_layer(http_transport_service);
 
     https_service
         .serve(ctx, upgraded)

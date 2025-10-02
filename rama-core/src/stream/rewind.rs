@@ -1,9 +1,9 @@
+use crate::bytes::{Buf, Bytes};
+use crate::extensions::{Extensions, ExtensionsMut, ExtensionsRef};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::{cmp, io};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
-
-use crate::bytes::{Buf, Bytes};
 
 /// Combine a buffer with an IO, rewinding reads to use the buffer.
 #[derive(Debug)]
@@ -38,9 +38,21 @@ impl<T> Rewind<T> {
         (self.inner, self.pre.unwrap_or_default())
     }
 
-    // pub fn get_mut(&mut self) -> &mut T {
-    //     &mut self.inner
-    // }
+    pub fn get_mut(&mut self) -> &mut T {
+        &mut self.inner
+    }
+}
+
+impl<T: ExtensionsRef> ExtensionsRef for Rewind<T> {
+    fn extensions(&self) -> &Extensions {
+        self.inner.extensions()
+    }
+}
+
+impl<T: ExtensionsMut> ExtensionsMut for Rewind<T> {
+    fn extensions_mut(&mut self) -> &mut Extensions {
+        self.inner.extensions_mut()
+    }
 }
 
 impl<T> AsyncRead for Rewind<T>

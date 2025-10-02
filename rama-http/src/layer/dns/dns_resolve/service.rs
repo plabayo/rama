@@ -1,6 +1,6 @@
 use super::DnsResolveMode;
 use crate::{HeaderName, Request};
-use rama_core::{Context, Service, error::OpaqueError};
+use rama_core::{Context, Service, error::OpaqueError, extensions::ExtensionsMut};
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
 
@@ -54,12 +54,12 @@ where
 
     async fn serve(
         &self,
-        mut ctx: Context,
-        request: Request<Body>,
+        ctx: Context,
+        mut request: Request<Body>,
     ) -> Result<Self::Response, Self::Error> {
         if let Some(header_value) = request.headers().get(&self.header_name) {
             let dns_resolve_mode: DnsResolveMode = header_value.try_into()?;
-            ctx.insert(dns_resolve_mode);
+            request.extensions_mut().insert(dns_resolve_mode);
         }
 
         self.inner

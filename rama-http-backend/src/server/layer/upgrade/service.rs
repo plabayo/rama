@@ -3,8 +3,9 @@
 //! See [`UpgradeService`] for more details.
 
 use super::Upgraded;
+use rama_core::extensions::ExtensionsMut;
 use rama_core::telemetry::tracing::{self, Instrument};
-use rama_core::{Context, Service, context::Extensions, matcher::Matcher, service::BoxService};
+use rama_core::{Context, Service, extensions::Extensions, matcher::Matcher, service::BoxService};
 use rama_http::opentelemetry::version_as_protocol_version;
 use rama_http_types::Request;
 use rama_utils::macros::define_inner_service_accessors;
@@ -84,14 +85,14 @@ where
     type Response = O;
     type Error = E;
 
-    async fn serve(&self, mut ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, ctx: Context, mut req: Request) -> Result<Self::Response, Self::Error> {
         let mut ext = Extensions::new();
         for handler in &self.handlers {
             if !handler.matcher.matches(Some(&mut ext), &ctx, &req) {
                 ext.clear();
                 continue;
             }
-            ctx.extend(ext);
+            req.extensions_mut().extend(ext);
             let exec = ctx.executor().clone();
             return match handler.responder.serve(ctx, req).await {
                 Ok((resp, ctx, mut req)) => {
@@ -112,7 +113,8 @@ where
                     exec.spawn_task(
                         async move {
                             match rama_http::io::upgrade::on(&mut req).await {
-                                Ok(upgraded) => {
+                                Ok(mut upgraded) => {
+                                    upgraded.extensions_mut().extend(req.take_extensions());
                                     let _ = handler.serve(ctx, upgraded).await;
                                 }
                                 Err(e) => {
