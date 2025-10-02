@@ -89,8 +89,6 @@ mod header;
 #[doc(inline)]
 pub use header::{Error, HeaderDecode, HeaderEncode, TypedHeader};
 
-pub use mime::Mime;
-
 #[macro_use]
 pub mod util;
 
@@ -116,9 +114,3 @@ mod client_hints;
 pub use client_hints::{
     ClientHint, all_client_hint_header_name_strings, all_client_hint_header_names, all_client_hints,
 };
-
-pub mod dep {
-    //! dependencies rama-http-headers
-
-    pub use mime;
-}

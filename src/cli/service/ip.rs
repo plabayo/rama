@@ -7,16 +7,16 @@ use crate::{
     cli::ForwardKind,
     combinators::Either7,
     error::{BoxError, OpaqueError},
-    extensions::ExtensionsRef,
+    extensions::{ExtensionsMut, ExtensionsRef},
     http::{
         Request, Response, StatusCode,
-        dep::mime,
         headers::forwarded::{CFConnectingIp, ClientIp, TrueClientIp, XClientIp, XRealIp},
         headers::{Accept, HeaderMapExt},
         layer::{
             forwarded::GetForwardedHeaderLayer, required_header::AddRequiredResponseHeadersLayer,
             trace::TraceLayer,
         },
+        mime,
         server::HttpServer,
         service::web::response::{Html, IntoResponse, Json, Redirect},
     },
@@ -33,6 +33,9 @@ use crate::{
 #[cfg(all(feature = "rustls", not(feature = "boring")))]
 use crate::tls::rustls::server::{TlsAcceptorData, TlsAcceptorLayer};
 
+#[cfg(any(feature = "rustls", feature = "boring"))]
+use crate::http::{headers::StrictTransportSecurity, layer::set_header::SetResponseHeaderLayer};
+
 #[cfg(feature = "boring")]
 use crate::{
     net::tls::server::ServerConfig,
@@ -45,7 +48,6 @@ type TlsConfig = ServerConfig;
 #[cfg(all(feature = "rustls", not(feature = "boring")))]
 type TlsConfig = TlsAcceptorData;
 
-use rama_core::extensions::ExtensionsMut;
 use std::{convert::Infallible, marker::PhantomData, net::IpAddr, time::Duration};
 use tokio::io::AsyncWriteExt;
 
@@ -384,6 +386,13 @@ impl<M> IpServiceBuilder<M> {
             Some(ForwardKind::HaProxy) => (Some(HaProxyLayer::default()), None),
         };
 
+        #[cfg(any(feature = "rustls", feature = "boring"))]
+        let hsts_layer = maybe_tls_accept_layer.is_some().then(|| {
+            SetResponseHeaderLayer::if_not_present_typed(
+                StrictTransportSecurity::excluding_subdomains(Duration::from_secs(31536000)),
+            )
+        });
+
         let tcp_service_builder = (
             ConsumeErrLayer::trace(tracing::Level::DEBUG),
             (self.concurrent_limit > 0)
@@ -400,6 +409,8 @@ impl<M> IpServiceBuilder<M> {
             TraceLayer::new_for_http(),
             AddRequiredResponseHeadersLayer::default(),
             ConsumeErrLayer::default(),
+            #[cfg(any(feature = "rustls", feature = "boring"))]
+            hsts_layer,
             http_forwarded_layer,
         )
             .into_layer(HttpIpService);

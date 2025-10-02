@@ -1,8 +1,7 @@
 use super::ValidateRequest;
 use crate::{
-    Body, Request, Response, StatusCode,
-    dep::mime::{Mime, MimeIter},
-    header,
+    Body, Request, Response, StatusCode, header,
+    mime::{Mime, MimeIter},
 };
 use rama_core::Context;
 use std::{fmt, marker::PhantomData, sync::Arc};
@@ -79,8 +78,8 @@ where
                             let subtype = self.header_value.subtype();
                             match (mim.type_(), mim.subtype()) {
                                 (t, s) if t == typ && s == subtype => true,
-                                (t, mime::STAR) if t == typ => true,
-                                (mime::STAR, mime::STAR) => true,
+                                (t, crate::mime::STAR) if t == typ => true,
+                                (crate::mime::STAR, crate::mime::STAR) => true,
                                 _ => false,
                             }
                         } else {

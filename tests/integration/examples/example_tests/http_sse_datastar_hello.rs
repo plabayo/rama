@@ -7,7 +7,8 @@ use rama::{
     futures::StreamExt,
     http::{
         BodyExtractExt, StatusCode,
-        headers::{ContentType, HeaderMapExt, dep::mime},
+        headers::{ContentType, HeaderMapExt},
+        mime,
         sse::{
             JsonEventData,
             datastar::{DatastarEvent, EventType, PatchElements},

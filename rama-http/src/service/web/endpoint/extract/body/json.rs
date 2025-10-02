@@ -86,7 +86,7 @@ fn json_content_type(headers: &HeaderMap) -> bool {
     headers
         .get(header::CONTENT_TYPE)
         .and_then(|content_type| content_type.to_str().ok())
-        .and_then(|content_type| content_type.parse::<mime::Mime>().ok())
+        .and_then(|content_type| content_type.parse::<crate::mime::Mime>().ok())
         .is_some_and(|mime| {
             mime.type_() == "application"
                 && (mime.subtype() == "json" || mime.suffix().is_some_and(|name| name == "json"))

@@ -42,8 +42,6 @@ http-range-header = { workspace = true }
 httpdate = { workspace = true }
 iri-string = { workspace = true }
 matchit = { workspace = true }
-mime = { workspace = true }
-mime_guess = { workspace = true }
 opentelemetry-http = { workspace = true, optional = true }
 percent-encoding = { workspace = true }
 pin-project-lite = { workspace = true }

@@ -4,7 +4,8 @@ use rama::{
     extensions::Extensions,
     http::{
         BodyExtractExt, StatusCode,
-        headers::{ContentType, HeaderMapExt, dep::mime},
+        headers::{ContentType, HeaderMapExt},
+        mime,
     },
     tls::boring::client::TlsConnectorDataBuilder,
 };

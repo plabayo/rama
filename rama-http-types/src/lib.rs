@@ -95,6 +95,20 @@ pub mod header {
     );
 }
 
+pub mod mime {
+    //! Re-export of the [`mime`] crate.
+    //!
+    //! Support MIME (Media Types) as strong types in Rust.
+    //!
+    //! [`mime`]: https://docs.rs/mime
+
+    #[doc(inline)]
+    pub use mime::*;
+
+    #[doc(inline)]
+    pub use mime_guess as guess;
+}
+
 pub mod dep {
     //! Dependencies for rama http modules.
     //!
@@ -134,27 +148,5 @@ pub mod dep {
             #[doc(inline)]
             pub use http_body_util::*;
         }
-    }
-
-    pub mod mime {
-        //! Re-export of the [`mime`] crate.
-        //!
-        //! Support MIME (Media Types) as strong types in Rust.
-        //!
-        //! [`mime`]: https://docs.rs/mime
-
-        #[doc(inline)]
-        pub use mime::*;
-    }
-
-    pub mod mime_guess {
-        //! Re-export of the [`mime_guess`] crate.
-        //!
-        //! Guessing of MIME types by file extension.
-        //!
-        //! [`mime_guess`]: https://docs.rs/mime_guess
-
-        #[doc(inline)]
-        pub use mime_guess::*;
     }
 }

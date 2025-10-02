@@ -321,7 +321,7 @@ impl Service<Request> for WebService {
 macro_rules! __match_service {
     ($($M:expr_2021 => $S:expr_2021),+, _ => $F:expr $(,)?) => {{
         use $crate::service::web::IntoEndpointService;
-        use $crate::dep::core::matcher::MatcherRouter;
+        use $crate::__macro_dep::__core::matcher::MatcherRouter;
         MatcherRouter(($(($M, $S.into_endpoint_service())),+, $F.into_endpoint_service()))
     }};
 }

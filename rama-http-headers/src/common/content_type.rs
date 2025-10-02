@@ -1,7 +1,9 @@
 use std::{fmt, str::FromStr};
 
-use mime::Mime;
-use rama_http_types::{HeaderName, HeaderValue};
+use rama_http_types::{
+    HeaderName, HeaderValue,
+    mime::{self, Mime},
+};
 
 use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
 

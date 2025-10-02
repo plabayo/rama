@@ -1,7 +1,7 @@
 //! Service that serves a file.
 
 use super::ServeDir;
-use crate::dep::{mime::Mime, mime_guess};
+use crate::mime::{Mime, guess as mime_guess};
 use crate::{HeaderValue, Request, Response};
 use rama_core::{Context, Service};
 use std::path::Path;
@@ -21,7 +21,7 @@ impl ServeFile {
             .first_raw()
             .map(HeaderValue::from_static)
             .unwrap_or_else(|| {
-                HeaderValue::from_str(mime::APPLICATION_OCTET_STREAM.as_ref()).unwrap()
+                HeaderValue::from_str(crate::mime::APPLICATION_OCTET_STREAM.as_ref()).unwrap()
             });
 
         Self(ServeDir::new_single_file(path, mime))
@@ -175,8 +175,8 @@ mod compression_tests {
 #[cfg(test)]
 mod tests {
     use crate::Method;
-    use crate::dep::mime::Mime;
     use crate::header;
+    use crate::mime::Mime;
     use crate::service::fs::ServeFile;
     use crate::{Body, body::util::BodyExt};
     use crate::{Request, StatusCode};

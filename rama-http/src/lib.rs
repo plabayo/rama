@@ -21,8 +21,8 @@
 pub use ::rama_http_types::{
     Body, BodyDataStream, BodyExtractExt, BodyLimit, Error as HttpError, HeaderMap, HeaderName,
     HeaderValue, InfiniteReader, Method, Request, Response, Result as HttpResult, Scheme,
-    StatusCode, StreamingBody, Uri, Version, conn, header, method, opentelemetry, proto, request,
-    response, sse, status, uri, version,
+    StatusCode, StreamingBody, Uri, Version, conn, header, method, mime, opentelemetry, proto,
+    request, response, sse, status, uri, version,
 };
 
 pub use ::rama_http_headers as headers;
@@ -40,13 +40,8 @@ pub mod io;
 
 pub mod utils;
 
-pub mod dep {
-    //! Dependencies for rama http modules.
-    //!
-    //! Exported for your convenience.
-
-    pub use rama_core as core;
-
-    #[doc(inline)]
-    pub use ::rama_http_types::dep::{mime, mime_guess};
+#[doc(hidden)]
+pub mod __macro_dep {
+    #[doc(hidden)]
+    pub use rama_core as __core;
 }

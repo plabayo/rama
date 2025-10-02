@@ -48,7 +48,7 @@ where
         async fn extract_form_body_bytes(req: Request) -> Result<Bytes, FormRejection> {
             if !crate::service::web::extract::has_any_content_type(
                 req.headers(),
-                &[&mime::APPLICATION_WWW_FORM_URLENCODED],
+                &[&crate::mime::APPLICATION_WWW_FORM_URLENCODED],
             ) {
                 return Err(InvalidFormContentType.into());
             }

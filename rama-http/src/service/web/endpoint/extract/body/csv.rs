@@ -47,7 +47,7 @@ where
         async fn req_to_csv_bytes(req: Request) -> Result<Bytes, CsvRejection> {
             if !crate::service::web::extract::has_any_content_type(
                 req.headers(),
-                &[&mime::TEXT_CSV],
+                &[&crate::mime::TEXT_CSV],
             ) {
                 return Err(InvalidCsvContentType.into());
             }

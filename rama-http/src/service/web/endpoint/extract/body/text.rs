@@ -44,8 +44,10 @@ impl FromRequest for Text {
     type Rejection = TextRejection;
 
     async fn from_request(req: Request) -> Result<Self, Self::Rejection> {
-        if !crate::service::web::extract::has_any_content_type(req.headers(), &[&mime::TEXT_PLAIN])
-        {
+        if !crate::service::web::extract::has_any_content_type(
+            req.headers(),
+            &[&crate::mime::TEXT_PLAIN],
+        ) {
             return Err(InvalidTextContentType.into());
         }
 

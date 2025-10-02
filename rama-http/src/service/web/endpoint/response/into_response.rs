@@ -1,7 +1,6 @@
 use super::{IntoResponseParts, ResponseParts};
 use crate::Response;
 use crate::body::{Body, Frame, SizeHint, StreamingBody};
-use crate::dep::mime;
 use crate::service::web::response::Headers;
 use crate::{
     StatusCode,
@@ -14,6 +13,7 @@ use rama_core::telemetry::tracing;
 use rama_error::OpaqueError;
 use rama_http_headers::{ContentDisposition, ContentType};
 use rama_http_types::InfiniteReader;
+use rama_http_types::mime;
 use rama_utils::macros::all_the_tuples_no_last_special_case;
 use std::{
     borrow::Cow,

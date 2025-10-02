@@ -1,6 +1,6 @@
-use crate::dep::mime::{self, Mime};
 use crate::specifier::QualityValue;
 use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader, util};
+use rama_http_types::mime::{self, Mime};
 use rama_http_types::{HeaderName, HeaderValue, header};
 use std::iter::FromIterator;
 
@@ -37,7 +37,7 @@ fn qitem(mime: Mime) -> QualityValue<Mime> {
 /// ```
 /// use std::iter::FromIterator;
 /// use rama_http_headers::{Accept, specifier::QualityValue, HeaderMapExt};
-/// use rama_http_headers::dep::mime;
+/// use rama_http_types::mime;
 ///
 /// let mut headers = rama_http_types::HeaderMap::new();
 ///
@@ -51,7 +51,7 @@ fn qitem(mime: Mime) -> QualityValue<Mime> {
 /// ```
 /// use std::iter::FromIterator;
 /// use rama_http_headers::{Accept, specifier::QualityValue, HeaderMapExt};
-/// use rama_http_headers::dep::mime;
+/// use rama_http_types::mime;
 ///
 /// let mut headers = rama_http_types::HeaderMap::new();
 /// headers.typed_insert(
@@ -63,7 +63,7 @@ fn qitem(mime: Mime) -> QualityValue<Mime> {
 /// ```
 /// use std::iter::FromIterator;
 /// use rama_http_headers::{Accept, specifier::QualityValue, HeaderMapExt};
-/// use rama_http_headers::dep::mime;
+/// use rama_http_types::mime;
 ///
 /// let mut headers = rama_http_types::HeaderMap::new();
 ///
@@ -163,10 +163,8 @@ impl Accept {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        dep::mime::{TEXT_HTML, TEXT_PLAIN, TEXT_PLAIN_UTF_8},
-        specifier::Quality,
-    };
+    use crate::specifier::Quality;
+    use rama_http_types::mime::{TEXT_HTML, TEXT_PLAIN, TEXT_PLAIN_UTF_8};
 
     macro_rules! test_header {
         ($name: ident, $input: expr, $expected: expr) => {

@@ -16,6 +16,7 @@ use rama_core::telemetry::tracing;
 use rama_error::{ErrorContext, OpaqueError};
 use rama_http_headers::{ContentType, Cookie as RamaCookie, HeaderMapExt, Location};
 use rama_http_headers::{HeaderEncode, SetCookie};
+use rama_http_types::mime::Mime;
 use rama_http_types::proto::h1::Http1HeaderName;
 use rama_http_types::{HeaderMap, Version as RamaHttpVersion, proto::h1::Http1HeaderMap};
 use rama_net::address::SocketAddress;
@@ -23,11 +24,10 @@ use rama_net::address::SocketAddress;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as ENGINE;
 use chrono::{DateTime, Utc};
-use mime::Mime;
 use serde::{Deserialize, Serialize};
 
 mod mime_serde {
-    use mime::Mime;
+    use rama_http_types::mime::Mime;
     use serde::{Deserialize, Deserializer, Serializer, de::Error};
     use std::{borrow::Cow, str::FromStr};
 
@@ -409,7 +409,7 @@ impl Request {
             let mime_type = get_mime(&parts.headers);
             let params = if mime_type
                 .as_ref()
-                .map(|m| m.subtype() == mime::WWW_FORM_URLENCODED)
+                .map(|m| m.subtype() == crate::mime::WWW_FORM_URLENCODED)
                 .unwrap_or_default()
             {
                 Some(serde_html_form::from_bytes(payload).context("decode form body payload")?)
