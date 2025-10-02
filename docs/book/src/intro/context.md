@@ -46,4 +46,4 @@ TODO: once https://github.com/plabayo/rama/issues/462 is finished and `Context` 
 
 [`Context`]: https://ramaproxy.org/docs/rama/context/struct.Context.html
 [`Context::insert`]: https://ramaproxy.org/docs/rama/context/struct.Context.html#method.insert
-[`Extensions`]: https://ramaproxy.org/docs/rama/context/struct.Extensions.html
+[`Extensions`]: https://ramaproxy.org/docs/rama/extensions/struct.Extensions.html
