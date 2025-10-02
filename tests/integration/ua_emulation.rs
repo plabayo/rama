@@ -28,6 +28,7 @@ use rama::ua::profile::{
 };
 use rama::ua::profile::{TlsProfile, UserAgentProfile};
 use rama::ua::{PlatformKind, UserAgentKind};
+use rama::utils::macros::traits::impl_inner_traits;
 use rama::{Context, Layer, Service};
 use rama_ua::emulate::SelectedUserAgentProfile;
 use std::convert::Infallible;
@@ -495,6 +496,18 @@ struct MockSocket {
     stream: DuplexStream,
 }
 
+impl_inner_traits! {
+    AsyncWrite for MockSocket
+    target: { &stream }
+    target_mut: { &mut stream };
+
+    // AsyncRead for MockSocket where {
+    //     C: AsyncRead + Unpin,
+    //     ID: Unpin,
+    // }
+    // target_mut: {pooled_conn.as_mut().expect("only None after drop").conn};
+}
+
 impl AsyncRead for MockSocket {
     fn poll_read(
         mut self: std::pin::Pin<&mut Self>,
@@ -505,29 +518,29 @@ impl AsyncRead for MockSocket {
     }
 }
 
-impl AsyncWrite for MockSocket {
-    fn poll_write(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        buf: &[u8],
-    ) -> std::task::Poll<std::io::Result<usize>> {
-        std::pin::Pin::new(&mut self.stream).poll_write(cx, buf)
-    }
+// impl AsyncWrite for MockSocket {
+//     fn poll_write(
+//         mut self: std::pin::Pin<&mut Self>,
+//         cx: &mut std::task::Context<'_>,
+//         buf: &[u8],
+//     ) -> std::task::Poll<std::io::Result<usize>> {
+//         std::pin::Pin::new(&mut self.stream).poll_write(cx, buf)
+//     }
 
-    fn poll_flush(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        std::pin::Pin::new(&mut self.stream).poll_flush(cx)
-    }
+//     fn poll_flush(
+//         mut self: std::pin::Pin<&mut Self>,
+//         cx: &mut std::task::Context<'_>,
+//     ) -> std::task::Poll<std::io::Result<()>> {
+//         std::pin::Pin::new(&mut self.stream).poll_flush(cx)
+//     }
 
-    fn poll_shutdown(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        std::pin::Pin::new(&mut self.stream).poll_shutdown(cx)
-    }
-}
+//     fn poll_shutdown(
+//         mut self: std::pin::Pin<&mut Self>,
+//         cx: &mut std::task::Context<'_>,
+//     ) -> std::task::Poll<std::io::Result<()>> {
+//         std::pin::Pin::new(&mut self.stream).poll_shutdown(cx)
+//     }
+// }
 
 impl Socket for MockSocket {
     fn local_addr(&self) -> std::io::Result<std::net::SocketAddr> {

@@ -3,18 +3,20 @@
 macro_rules! __impl_inner_traits {
     (
         $(
-            $trait:ident for $struct:ident <$($generic:ident),*>
+            $trait:ident for $struct:ident $(<$($generic:ident),*>
             where
                 {$($where_clause:tt)*}
+            )?
                 $(target: {$($target:tt)*})?
                 $(target_mut: {$($target_mut:tt)*})?
         ); *$(;)?
     ) => {
         $(
             $crate::macros::traits::impl_inner_traits!{
-                @$trait for $struct<$($generic),*>
+                @$trait for $struct$(<$($generic),*>
                 where
                     {$($where_clause)*}
+                )?
                     $(target: {$($target)*})?
                     $(target_mut: {$($target_mut)*})?
             }
@@ -22,16 +24,18 @@ macro_rules! __impl_inner_traits {
 
     };
     (
-        @Socket for $struct:ident <$($generic:ident),*>
+        @Socket for $struct:ident $(<$($generic:ident),*>
         where
             {$($where_clause:tt)*}
+        )?
             target: {$($target:tt)*}
 
     ) => {
         #[warn(clippy::missing_trait_methods)]
-        impl<$($generic),*> Socket for $struct<$($generic),*>
+        impl$(<$($generic),*>)? Socket for $struct$(<$($generic),*>
         where
             $($where_clause)*
+        )?
         {
             fn local_addr(&self) -> std::io::Result<SocketAddr> {
                 self.$($target)*.local_addr()
@@ -65,16 +69,18 @@ macro_rules! __impl_inner_traits {
     };
 
     (
-        @AsyncWrite for $struct:ident <$($generic:ident),*>
+        @AsyncWrite for $struct:ident $(<$($generic:ident),*>
         where
             {$($where_clause:tt)*}
+        )?
             target: {$($target:tt)*}
             target_mut: {$($target_mut:tt)*}
     ) => {
         #[warn(clippy::missing_trait_methods)]
-        impl<$($generic),*> AsyncWrite for $struct<$($generic),*>
+        impl$(<$($generic),*>)? AsyncWrite for $struct$(<$($generic),*>
         where
             $($where_clause)*
+        )?
         {
             fn poll_write(
                 mut self: std::pin::Pin<&mut Self>,
