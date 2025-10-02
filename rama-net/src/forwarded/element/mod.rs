@@ -1,9 +1,10 @@
 use super::{ForwardedProtocol, ForwardedVersion, NodeId};
 use crate::address::{Authority, Host};
+use ahash::HashMap;
 use rama_core::error::{ErrorContext, OpaqueError};
 use std::fmt;
+use std::net::IpAddr;
 use std::net::SocketAddr;
-use std::{collections::HashMap, net::IpAddr};
 
 #[cfg(feature = "http")]
 use rama_http_types::HeaderValue;
@@ -477,7 +478,8 @@ mod tests {
                                 quoted: false,
                             },
                         )]
-                        .into(),
+                        .into_iter()
+                        .collect(),
                     ),
                 },
             ),

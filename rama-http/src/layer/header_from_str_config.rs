@@ -304,7 +304,8 @@ mod test {
 
     use super::*;
     use crate::Method;
-    use std::collections::{HashSet, LinkedList};
+    use ahash::HashSet;
+    use std::collections::LinkedList;
 
     #[tokio::test]
     async fn test_header_config_required_happy_path() {

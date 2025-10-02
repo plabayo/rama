@@ -81,7 +81,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
+    use ahash::{HashSet, HashSetExt as _};
 
     use rama_net::address::SocketAddress;
 

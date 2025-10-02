@@ -21,6 +21,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 default = []
 
 [dependencies]
+ahash = { workspace = true }
 hickory-resolver = { workspace = true }
 rama-core = { workspace = true }
 rama-net = { workspace = true }

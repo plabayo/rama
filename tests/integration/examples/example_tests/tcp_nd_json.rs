@@ -1,4 +1,5 @@
 use super::utils;
+use ahash::{HashSet, HashSetExt as _};
 use rama::Context;
 use rama::extensions::Extensions;
 use rama::futures::StreamExt;
@@ -9,7 +10,6 @@ use rama::stream::json::JsonDecoder;
 use rama::tcp::client::default_tcp_connect;
 use rama::telemetry::tracing;
 use serde::Deserialize;
-use std::collections::HashSet;
 use std::time::Duration;
 use tokio::sync::oneshot;
 

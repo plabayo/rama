@@ -1,9 +1,10 @@
 use crate::DnsResolver;
+use ahash::{HashMap, HashMapExt as _};
 use rama_core::error::{ErrorContext as _, OpaqueError};
 use rama_net::address::{AsDomainRef, Domain, DomainTrie};
 use serde::{Deserialize, Serialize};
+
 use std::{
-    collections::HashMap,
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
     ops::Deref,
     sync::Arc,

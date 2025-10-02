@@ -86,11 +86,12 @@ where
 mod tests {
     use super::*;
     use crate::service::{client::HttpClientExt as _, web::Router};
+    use ahash::{HashMap, HashMapExt as _};
     use rama_core::futures::stream;
     use rama_core::{Service as _, combinators::Either};
     use rama_http_types::sse::JsonEventData;
     use smol_str::SmolStr;
-    use std::{collections::HashMap, convert::Infallible, time::Duration};
+    use std::{convert::Infallible, time::Duration};
     use tokio_stream::StreamExt as _;
 
     #[tokio::test]

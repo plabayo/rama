@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_types)]
 //! Extensions passed to and between services
 //!
 //! # State

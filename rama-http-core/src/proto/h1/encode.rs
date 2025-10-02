@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use ahash::{HashMap, HashMapExt as _};
 use std::fmt;
 use std::io::IoSlice;
 

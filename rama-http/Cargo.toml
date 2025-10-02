@@ -24,6 +24,7 @@ compression = ["dep:async-compression", "dep:rawzip", "dep:flate2"]
 tls = ["rama-net/tls"]
 
 [dependencies]
+ahash = { workspace = true }
 async-compression = { workspace = true, features = [
     "tokio",
     "brotli",

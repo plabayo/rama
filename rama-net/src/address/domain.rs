@@ -507,7 +507,7 @@ pub(super) mod seal {
 #[allow(clippy::expect_fun_call)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
+    use ahash::{HashMap, HashMapExt as _};
 
     #[test]
     fn test_specials() {

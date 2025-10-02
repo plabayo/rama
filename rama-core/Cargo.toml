@@ -27,6 +27,7 @@ opentelemetry = [
 ]
 
 [dependencies]
+ahash = { workspace = true }
 asynk-strim = { workspace = true }
 bytes = { workspace = true }
 futures = { workspace = true }

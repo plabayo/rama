@@ -137,7 +137,7 @@ impl<T: DeserializeOwned> crate::stream::codec::Decoder for JsonDecoder<T> {
 }
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
+    use ahash::{HashSet, HashSetExt as _};
 
     use super::*;
     use crate::stream::codec::{Decoder as _, Encoder as _};
