@@ -70,7 +70,7 @@ pub struct CliCommandFingerprint {
     /// (0 = no limit)
     concurrent: usize,
 
-    #[arg(short = 't', long, default_value_t = 8)]
+    #[arg(short = 't', long, default_value_t = 300)]
     /// the timeout in seconds for each connection
     ///
     /// (0 = no timeout)

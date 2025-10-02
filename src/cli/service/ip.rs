@@ -21,7 +21,6 @@ use crate::{
     },
     layer::{ConsumeErrLayer, LimitLayer, TimeoutLayer, limit::policy::ConcurrentPolicy},
     net::forwarded::Forwarded,
-    net::http::server::HttpPeekRouter,
     net::stream::{SocketInfo, layer::http::BodyLimitLayer},
     proxy::haproxy::server::HaProxyLayer,
     rt::Executor,
@@ -44,9 +43,6 @@ type TlsConfig = ServerConfig;
 #[cfg(all(feature = "rustls", not(feature = "boring")))]
 type TlsConfig = TlsAcceptorData;
 
-#[cfg(any(feature = "rustls", feature = "boring"))]
-use crate::{combinators::Either, layer::MapRequestLayer};
-
 use std::{convert::Infallible, marker::PhantomData, net::IpAddr, time::Duration};
 use tokio::{io::AsyncWriteExt, net::TcpStream};
 
@@ -58,31 +54,8 @@ pub struct IpServiceBuilder<M> {
     tls_server_config: Option<TlsConfig>,
     concurrent_limit: usize,
     timeout: Duration,
-    peek_timeout: Duration,
     forward: Option<ForwardKind>,
     _mode: PhantomData<fn(M)>,
-}
-
-impl Default for IpServiceBuilder<mode::Auto> {
-    fn default() -> Self {
-        Self {
-            #[cfg(any(feature = "rustls", feature = "boring"))]
-            tls_server_config: None,
-            concurrent_limit: 0,
-            timeout: Duration::ZERO,
-            peek_timeout: Duration::ZERO,
-            forward: None,
-            _mode: PhantomData,
-        }
-    }
-}
-
-impl IpServiceBuilder<mode::Auto> {
-    /// Create a new [`IpServiceBuilder`], echoing the IP back over HTTP.
-    #[must_use]
-    pub fn auto() -> Self {
-        Self::default()
-    }
 }
 
 impl IpServiceBuilder<mode::Http> {
@@ -94,7 +67,6 @@ impl IpServiceBuilder<mode::Http> {
             tls_server_config: None,
             concurrent_limit: 0,
             timeout: Duration::ZERO,
-            peek_timeout: Duration::ZERO,
             forward: None,
             _mode: PhantomData,
         }
@@ -110,7 +82,6 @@ impl IpServiceBuilder<mode::Transport> {
             tls_server_config: None,
             concurrent_limit: 0,
             timeout: Duration::ZERO,
-            peek_timeout: Duration::ZERO,
             forward: None,
             _mode: PhantomData,
         }
@@ -184,14 +155,9 @@ impl IpServiceBuilder<mode::Http> {
         };
 
         #[cfg(any(feature = "rustls", feature = "boring"))]
-        match tls_cfg {
-            Some(tls_cfg) => Ok((
-                ConsumeErrLayer::trace(tracing::Level::DEBUG),
-                TlsAcceptorLayer::new(tls_cfg),
-            )
-                .into_layer(self.build_http(executor)?)
-                .boxed()),
-            None => Ok(self.build_http(executor)?.boxed()),
+        {
+            let maybe_tls_acceptor_layer = tls_cfg.map(TlsAcceptorLayer::new);
+            self.build_http(executor, maybe_tls_acceptor_layer)
         }
 
         #[cfg(not(any(feature = "rustls", feature = "boring")))]
@@ -318,14 +284,9 @@ impl IpServiceBuilder<mode::Transport> {
         };
 
         #[cfg(any(feature = "rustls", feature = "boring"))]
-        match tls_cfg {
-            Some(tls_cfg) => Ok((
-                ConsumeErrLayer::trace(tracing::Level::DEBUG),
-                TlsAcceptorLayer::new(tls_cfg),
-            )
-                .into_layer(self.build_tcp()?)
-                .boxed()),
-            None => Ok(self.build_tcp()?.boxed()),
+        {
+            let maybe_tls_acceptor_layer = tls_cfg.map(TlsAcceptorLayer::new);
+            self.build_tcp(maybe_tls_acceptor_layer)
         }
 
         #[cfg(not(any(feature = "rustls", feature = "boring")))]
@@ -336,6 +297,9 @@ impl IpServiceBuilder<mode::Transport> {
 impl<M> IpServiceBuilder<M> {
     fn build_tcp<S: Stream + Unpin + Send + Sync + 'static>(
         self,
+        #[cfg(any(feature = "rustls", feature = "boring"))] maybe_tls_accept_layer: Option<
+            TlsAcceptorLayer,
+        >,
     ) -> Result<impl Service<S, Response = (), Error = Infallible>, BoxError> {
         let tcp_forwarded_layer = match &self.forward {
             None => None,
@@ -354,6 +318,8 @@ impl<M> IpServiceBuilder<M> {
                 .then(|| LimitLayer::new(ConcurrentPolicy::max(self.concurrent_limit))),
             (!self.timeout.is_zero()).then(|| TimeoutLayer::new(self.timeout)),
             tcp_forwarded_layer,
+            #[cfg(any(feature = "rustls", feature = "boring"))]
+            maybe_tls_accept_layer,
         );
 
         Ok(tcp_service_builder.into_layer(TcpIpService))
@@ -362,6 +328,9 @@ impl<M> IpServiceBuilder<M> {
     fn build_http<S: Stream + Unpin + Send + Sync + 'static>(
         self,
         executor: Executor,
+        #[cfg(any(feature = "rustls", feature = "boring"))] maybe_tls_accept_layer: Option<
+            TlsAcceptorLayer,
+        >,
     ) -> Result<impl Service<S, Response = (), Error = Infallible>, BoxError> {
         let (tcp_forwarded_layer, http_forwarded_layer) = match &self.forward {
             None => (None, None),
@@ -403,6 +372,7 @@ impl<M> IpServiceBuilder<M> {
             tcp_forwarded_layer,
             // Limit the body size to 1MB for requests
             BodyLimitLayer::request_only(1024 * 1024),
+            maybe_tls_accept_layer,
         );
 
         let http_service = (
@@ -418,60 +388,6 @@ impl<M> IpServiceBuilder<M> {
     }
 }
 
-impl IpServiceBuilder<mode::Auto> {
-    crate::utils::macros::generate_set_and_with! {
-        /// Set the peek window to timeout on (to wait for http traffic)
-        pub fn peek_timeout(mut self, peek_timeout: Duration) -> Self {
-            self.peek_timeout = peek_timeout;
-            self
-        }
-    }
-
-    /// build a tcp service ready to echo client IP back
-    #[allow(unused_mut)]
-    pub fn build(
-        mut self,
-        executor: Executor,
-    ) -> Result<impl Service<TcpStream, Response = (), Error = Infallible>, BoxError> {
-        #[cfg(all(feature = "rustls", not(feature = "boring")))]
-        let tls_cfg = self.tls_server_config.take();
-
-        #[cfg(feature = "boring")]
-        let tls_cfg: Option<TlsAcceptorData> = match self.tls_server_config.take() {
-            Some(cfg) => Some(cfg.try_into()?),
-            None => None,
-        };
-
-        let svc_http = self.clone().build_http(executor)?;
-        let peek_timeout = self.peek_timeout;
-        let svc_tcp = self.build_tcp()?;
-
-        let router = HttpPeekRouter::new(svc_http)
-            .with_fallback(svc_tcp)
-            .maybe_with_peek_timeout((!peek_timeout.is_zero()).then_some(peek_timeout));
-
-        #[cfg(any(feature = "rustls", feature = "boring"))]
-        {
-            Ok((
-                ConsumeErrLayer::trace(tracing::Level::DEBUG),
-                match tls_cfg {
-                    Some(tls_cfg) => Either::A((
-                        TlsAcceptorLayer::new(tls_cfg),
-                        MapRequestLayer::new(Either::A),
-                    )),
-                    None => Either::B(MapRequestLayer::new(Either::B)),
-                },
-            )
-                .into_layer(router))
-        }
-
-        #[cfg(not(any(feature = "rustls", feature = "boring")))]
-        {
-            Ok(ConsumeErrLayer::trace(tracing::Level::DEBUG).into_layer(router))
-        }
-    }
-}
-
 pub mod mode {
     //! operation modes of the ip service
 
@@ -484,16 +400,10 @@ pub mod mode {
     #[non_exhaustive]
     /// Alternative mode of the Ip service, echo'ng the ip info over tcp
     pub struct Transport;
-
-    #[derive(Debug, Clone)]
-    #[non_exhaustive]
-    /// Default mode of the Ip service, echo'ng the IP over
-    /// http if that was detected, otherwise over tcp directly.
-    pub struct Auto;
 }
 
 fn format_html_page(ip: IpAddr) -> Html<String> {
     Html(format!(
-        r##"<!doctype html> <html lang="en"> <head> <meta charset="utf-8" /> <meta name="viewport" content="width=device-width,initial-scale=1" /> <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='0.9em' font-size='90'>🦙</text></svg>" /> <title>Rama IP</title> <style> :root{{ --bg:#000; --panel:#0f0f0f; --green:#45d23a; --muted:#bfbfbf; }} html,body{{height:100%;margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,"Helvetica Neue",Arial;}} body{{ background:var(--bg); color:var(--muted); display:flex; align-items:center; justify-content:center; padding:32px; box-sizing:border-box; }} .card{{ width:100%; max-width:760px; text-align:center; }} .logo{{ display:flex; align-items:center; justify-content:center; gap:12px; margin-bottom:18px; }} .ramatext{{ color:var(--green); font-weight:700; font-size:40px; letter-spacing:0.6px; }} .subtitle{{ font-size:18px; margin:6px 0 28px 0; color:var(--muted); }} .panel{{ background:linear-gradient(180deg,#0b0b0b 0%, #111 100%); border-radius:12px; padding:28px; box-shadow:0 6px 24px rgba(0,0,0,0.7), inset 0 1px 0 rgba(255,255,255,0.02); border:2px solid rgba(69,210,58,0.06); }} .ip{{ background:transparent; border-radius:8px; padding:18px 16px; font-family: ui-monospace,SFMono-Regular,Menlo,monospace; font-size:20px; color:#e6ffe6; margin:10px auto 18px auto; max-width:520px; word-break:break-all; border:1px solid rgba(69,210,58,0.12); }} .muted{{ color:var(--muted); font-size:14px; margin-bottom:12px; }} .controls{{display:flex;gap:12px;justify-content:center;flex-wrap:wrap;}} button{{ background:transparent; color:var(--green); padding:12px 18px; border-radius:8px; font-weight:700; border:2px solid rgba(69,210,58,0.9); cursor:pointer; min-width:120px; transition:transform .08s ease,box-shadow .08s ease; }} button.primary{{ background:var(--green); color:#032; box-shadow:0 6px 18px rgba(69,210,58,0.08); }} button:active{{transform:translateY(1px);}} .note{{font-size:13px;color:#9aa; margin-top:14px;}} .small{{font-size:12px;color:#808080;margin-top:10px}} </style> </head> <body> <div class="card"> <div class="logo"> <div style="font-size:46px;color:var(--green)">🍜</div> <div class="ramatext">Rama</div> </div> <div class="panel" role="region" aria-label="ip panel"> <div class="muted">Your public ip</div> <pre id="ip" class="ip" aria-live="polite">{ip}</pre> <div class="controls" aria-hidden="false"> <button id="copyBtn" class="primary" title="Copy ip to clipboard">Copy IP</button></div> </div> <script> (async function(){{ const ipEl = document.getElementById('ip'); const copyBtn = document.getElementById('copyBtn'); copyBtn.addEventListener('click', async ()=>{{ const txt = ipEl.textContent.trim(); try{{ await navigator.clipboard.writeText(txt); copyBtn.textContent = 'Copied'; setTimeout(()=> copyBtn.textContent = 'Copy IP', 1400); }}catch(e){{ const ta = document.createElement('textarea'); ta.value = txt; document.body.appendChild(ta); ta.select(); try{{ document.execCommand('copy'); copyBtn.textContent = 'Copied'; }} catch(e){{ alert('Copy failed. Select and copy manually.'); }} ta.remove(); setTimeout(()=> copyBtn.textContent = 'Copy IP', 1400); }} }}); }})(); </script> </body> </html>"##,
+        r##"<!doctype html> <html lang="en"> <head> <meta charset="utf-8" /> <meta name="viewport" content="width=device-width,initial-scale=1" /> <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='0.9em' font-size='90'>🦙</text></svg>" /> <title>Rama IP</title> <style> *, *::before, *::after {{ box-sizing: border-box; }} :root{{ --bg:#000; --panel:#0f0f0f; --green:#45d23a; --muted:#bfbfbf; }} html,body{{height:100%;margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,"Helvetica Neue",Arial;}} body{{ background:var(--bg); color:var(--muted); display:flex; align-items:center; justify-content:center; padding:2.8rem; }} .card{{ text-align:center; }} .logo{{ display:flex; align-items:center; justify-content:center; gap:0.8rem; margin-bottom:1.1rem; }} .logo, .logo a, .logo a:hover {{ color:var(--green); font-weight:700; font-size:2rem; letter-spacing:0.4rem; }} .logo a {{ text-decoration: none; }} .logo a:hover {{ text-decoration: underline; }} .subtitle{{ font-size:1.1rem; margin:0.3rem 0 2rem 0; color:var(--muted); }} .panel{{ background:linear-gradient(180deg,#0b0b0b 0%, #111 100%); border-radius:0.8rem; padding:2rem; box-shadow:0 0.3rem 2rem rgba(0,0,0,0.7), inset 0 0.05rem 0 rgba(255,255,255,0.02); border:0.1rem solid rgba(69,210,58,0.06); }} .ip{{ background:transparent; border-radius:0.6rem; padding:1rem 1.1rem; font-family: ui-monospace,SFMono-Regular,Menlo,monospace; font-size:1.1rem; color:#fff139; margin:0.6rem auto 1.1rem auto; word-break:break-all; border:0.05rem solid rgba(69,210,58,0.12); }} .muted{{ color:var(--muted); font-size:1rem; margin-bottom:0.9rem; }} .controls{{display:flex;gap:0.8rem;justify-content:center;flex-wrap:wrap;}} button{{ background:transparent; color:var(--green); padding:0.8rem 1.1rem; border-radius:0.6rem; font-weight:700; border:0.1rem solid rgba(69,210,58,0.9); cursor:pointer; }} button.primary{{ background:var(--green); color:#032; box-shadow:0 0.4rem 1.2rem rgba(69,210,58,0.08); }} .note{{font-size:0.95rem;color:#9aa; margin-top:1rem;}} .small{{font-size:0.9rem;color:#808080;margin-top:0.7rem}} </style> </head> <body> <div class="card"> <div class="logo"> <div>🦙</div> <div><a href="https://ramaproxy.org">ラマ</a></div> </div> <div class="panel" role="region" aria-label="ip panel"> <div class="muted">Your public ip</div><div id="ip" class="ip"> <code>{ip}</code> </div> <div class="controls"> <button id="copyBtn" class="primary" title="Copy ip to clipboard">📋 Copy IP</button></div> </div> <script> (async function(){{ const ipEl = document.getElementById('ip'); const copyBtn = document.getElementById('copyBtn'); copyBtn.addEventListener('click', async ()=>{{ const txt = ipEl.textContent.trim(); try{{ await navigator.clipboard.writeText(txt); copyBtn.textContent = 'Copied'; setTimeout(()=> copyBtn.textContent = 'Copy IP', 1400); }}catch(e){{ const ta = document.createElement('textarea'); ta.value = txt; document.body.appendChild(ta); ta.select(); try{{ document.execCommand('copy'); copyBtn.textContent = 'Copied'; }} catch(e){{ alert('Copy failed. Select and copy manually.'); }} ta.remove(); setTimeout(()=> copyBtn.textContent = 'Copy IP', 1400); }} }}); }})(); </script> </body> </html>"##,
     ))
 }

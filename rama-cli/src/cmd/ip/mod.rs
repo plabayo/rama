@@ -2,7 +2,7 @@
 
 use rama::{
     cli::{ForwardKind, service::ip::IpServiceBuilder},
-    combinators::Either3,
+    combinators::Either,
     error::{BoxError, ErrorContext, OpaqueError},
     net::{socket::Interface, tls::ApplicationProtocol},
     rt::Executor,
@@ -28,13 +28,9 @@ pub struct CliCommandIp {
     /// (0 = no limit)
     concurrent: usize,
 
-    #[arg(long, short = 't', default_value = "8")]
+    #[arg(long, short = 't', default_value = "300")]
     /// the timeout in seconds for each connection
     timeout: u64,
-
-    #[arg(long, short = 'P', default_value = "4")]
-    /// the timeout in seconds for each connection
-    peek_timeout: u64,
 
     #[arg(long, short = 'f')]
     /// enable support for one of the following "forward" headers or protocols
@@ -76,18 +72,8 @@ pub async fn run(cfg: CliCommandIp) -> Result<(), BoxError> {
 
     let graceful = rama::graceful::Shutdown::default();
 
-    let tcp_service = match (cfg.transport, cfg.http) {
-        (true, true) => Either3::A(
-            IpServiceBuilder::auto()
-                .with_concurrent(cfg.concurrent)
-                .with_timeout(Duration::from_secs(cfg.timeout))
-                .with_peek_timeout(Duration::from_secs(cfg.peek_timeout))
-                .maybe_with_forward(cfg.forward)
-                .maybe_with_tls_server_config(maybe_tls_server_config)
-                .build(Executor::graceful(graceful.guard()))
-                .expect("build ip HTTP service"),
-        ),
-        (true, false) => Either3::B(
+    let tcp_service = if cfg.transport {
+        Either::A(
             IpServiceBuilder::tcp()
                 .with_concurrent(cfg.concurrent)
                 .with_timeout(Duration::from_secs(cfg.timeout))
@@ -95,8 +81,9 @@ pub async fn run(cfg: CliCommandIp) -> Result<(), BoxError> {
                 .maybe_with_tls_server_config(maybe_tls_server_config)
                 .build()
                 .expect("build ip TCP service"),
-        ),
-        (false, true | false) => Either3::C(
+        )
+    } else {
+        Either::B(
             IpServiceBuilder::http()
                 .with_concurrent(cfg.concurrent)
                 .with_timeout(Duration::from_secs(cfg.timeout))
@@ -104,7 +91,7 @@ pub async fn run(cfg: CliCommandIp) -> Result<(), BoxError> {
                 .maybe_with_tls_server_config(maybe_tls_server_config)
                 .build(Executor::graceful(graceful.guard()))
                 .expect("build ip HTTP service"),
-        ),
+        )
     };
 
     tracing::info!("starting ip service: bind interface = {}", cfg.bind);
