@@ -65,10 +65,12 @@ impl<T> DomainTrie<T> {
     }
 
     /// Determine if the Trie contains 0 key-value pairs.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.trie.is_empty()
     }
 
+    #[must_use]
     pub fn len(&self) -> usize {
         self.trie.len()
     }
