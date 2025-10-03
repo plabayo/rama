@@ -1,4 +1,3 @@
-use rama_core::Context;
 use rama_core::Service;
 use rama_core::extensions::ExtensionsMut;
 use rama_core::graceful::ShutdownGuard;
@@ -231,7 +230,6 @@ impl UnixListener {
             };
 
             let service = service.clone();
-            let ctx = Context::default();
 
             let peer_addr: UnixSocketAddress = peer_addr.into();
             let local_addr: Option<UnixSocketAddress> = socket.local_addr().ok().map(Into::into);
@@ -252,7 +250,7 @@ impl UnixListener {
 
             tokio::spawn(
                 async move {
-                    let _ = service.serve(ctx, socket).await;
+                    let _ = service.serve(socket).await;
                 }
                 .instrument(serve_span),
             );
@@ -281,7 +279,6 @@ impl UnixListener {
                     match result {
                         Ok((socket, peer_addr)) => {
                             let service = service.clone();
-                            let ctx = Context::default();
 
                             let peer_addr: UnixSocketAddress = peer_addr.into();
                             let local_addr: Option<UnixSocketAddress> = socket.local_addr().ok().map(Into::into);
@@ -299,7 +296,7 @@ impl UnixListener {
                             socket.extensions_mut().insert(Executor::graceful(guard.clone()));
 
                             guard.spawn_task(async move {
-                                let _ = service.serve(ctx, socket).await;
+                                let _ = service.serve(socket).await;
                             }.instrument(serve_span));
                         }
                         Err(err) => {
