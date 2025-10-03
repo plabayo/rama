@@ -5,7 +5,6 @@ use crate::{
     Protocol,
     address::{Authority, Domain, Host},
 };
-use rama_core::Context;
 use rama_core::error::OpaqueError;
 use rama_core::extensions::Extensions;
 use rama_core::telemetry::tracing;
@@ -63,10 +62,10 @@ impl RequestContext {
     }
 }
 
-impl<T: HttpRequestParts> TryFrom<(&Context, &T)> for RequestContext {
+impl<T: HttpRequestParts> TryFrom<(&T,)> for RequestContext {
     type Error = OpaqueError;
 
-    fn try_from((_ctx, req): (&Context, &T)) -> Result<Self, Self::Error> {
+    fn try_from((req,): (&T,)) -> Result<Self, Self::Error> {
         let uri = req.uri();
 
         let protocol = protocol_from_uri_or_extensions(req.extensions(), uri, req.method());
@@ -208,16 +207,16 @@ impl From<&RequestContext> for TransportContext {
 impl<Body> TryRefIntoTransportContext for rama_http_types::Request<Body> {
     type Error = OpaqueError;
 
-    fn try_ref_into_transport_ctx(&self, ctx: &Context) -> Result<TransportContext, Self::Error> {
-        (ctx, self).try_into()
+    fn try_ref_into_transport_ctx(&self) -> Result<TransportContext, Self::Error> {
+        (self,).try_into()
     }
 }
 
 impl TryRefIntoTransportContext for rama_http_types::request::Parts {
     type Error = OpaqueError;
 
-    fn try_ref_into_transport_ctx(&self, ctx: &Context) -> Result<TransportContext, Self::Error> {
-        (ctx, self).try_into()
+    fn try_ref_into_transport_ctx(&self) -> Result<TransportContext, Self::Error> {
+        (self,).try_into()
     }
 }
 
@@ -236,9 +235,7 @@ mod tests {
             .body(())
             .unwrap();
 
-        let ctx = Context::default();
-
-        let req_ctx = RequestContext::try_from((&ctx, &req)).unwrap();
+        let req_ctx = RequestContext::try_from((&req,)).unwrap();
 
         assert_eq!(req_ctx.http_version, Version::HTTP_11);
         assert_eq!(req_ctx.protocol, Protocol::HTTP);
@@ -255,8 +252,7 @@ mod tests {
 
         let (parts, _) = req.into_parts();
 
-        let ctx = Context::default();
-        let req_ctx = RequestContext::try_from((&ctx, &parts)).unwrap();
+        let req_ctx = RequestContext::try_from((&parts,)).unwrap();
 
         assert_eq!(req_ctx.http_version, Version::HTTP_11);
         assert_eq!(req_ctx.protocol, Protocol::HTTP);
@@ -323,12 +319,11 @@ mod tests {
             }
 
             let mut req = req_builder.body(()).unwrap();
-            let ctx = Context::default();
 
             let forwarded: Forwarded = req.headers().get(FORWARDED).unwrap().try_into().unwrap();
             req.extensions_mut().insert(forwarded);
 
-            let req_ctx = RequestContext::try_from((&ctx, &req)).unwrap();
+            let req_ctx = RequestContext::try_from((&req,)).unwrap();
 
             assert_eq!(req_ctx, expected, "Failed for {forwarded_str_vec:?}");
         }
@@ -345,13 +340,12 @@ mod tests {
             .body(())
             .unwrap();
 
-        let ctx = Context::default();
         req.extensions_mut()
             .insert(Forwarded::new(ForwardedElement::forwarded_for(
                 NodeId::try_from("127.0.0.1:61234").unwrap(),
             )));
 
-        let req_ctx = RequestContext::try_from((&ctx, &req)).unwrap();
+        let req_ctx = RequestContext::try_from((&req,)).unwrap();
 
         assert_eq!(req_ctx.http_version, Version::HTTP_11);
         assert_eq!(req_ctx.protocol, "http");
@@ -375,8 +369,7 @@ mod tests {
                 .body(())
                 .unwrap();
 
-            let ctx = Context::default();
-            let req_ctx = RequestContext::try_from((&ctx, &req)).unwrap();
+            let req_ctx = RequestContext::try_from((&req,)).unwrap();
 
             assert_eq!(req_ctx.http_version, Version::HTTP_11);
             assert_eq!(req_ctx.protocol, expected_protocol);
@@ -406,8 +399,7 @@ mod tests {
                 .body(())
                 .unwrap();
 
-            let ctx = Context::default();
-            let req_ctx = RequestContext::try_from((&ctx, &req)).unwrap();
+            let req_ctx = RequestContext::try_from((&req,)).unwrap();
 
             assert_eq!(req_ctx.http_version, Version::HTTP_11);
             assert_eq!(req_ctx.protocol, expected_protocol);

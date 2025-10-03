@@ -1,5 +1,5 @@
 use crate::stream::dep::ipnet::IpNet;
-use rama_core::{Context, extensions::Extensions};
+use rama_core::extensions::Extensions;
 
 #[cfg(feature = "http")]
 use {crate::stream::SocketInfo, rama_core::extensions::ExtensionsRef, rama_http_types::Request};
@@ -120,7 +120,7 @@ impl Default for PrivateIpNetMatcher {
 
 #[cfg(feature = "http")]
 impl<Body> rama_core::matcher::Matcher<Request<Body>> for PrivateIpNetMatcher {
-    fn matches(&self, _ext: Option<&mut Extensions>, _ctx: &Context, req: &Request<Body>) -> bool {
+    fn matches(&self, _ext: Option<&mut Extensions>, req: &Request<Body>) -> bool {
         req.extensions()
             .get::<SocketInfo>()
             .map(|info| {
@@ -135,7 +135,7 @@ impl<Socket> rama_core::matcher::Matcher<Socket> for PrivateIpNetMatcher
 where
     Socket: crate::stream::Socket,
 {
-    fn matches(&self, _ext: Option<&mut Extensions>, _ctx: &Context, stream: &Socket) -> bool {
+    fn matches(&self, _ext: Option<&mut Extensions>, stream: &Socket) -> bool {
         stream
             .peer_addr()
             .map(|addr| {
@@ -159,7 +159,6 @@ mod test {
 
         let matcher = PrivateIpNetMatcher::new();
 
-        let ctx = Context::default();
         let mut req = Request::builder()
             .method("GET")
             .uri("/hello")
@@ -167,48 +166,45 @@ mod test {
             .unwrap();
 
         // test #1: no match: test with no socket info registered
-        assert!(!matcher.matches(None, &ctx, &req));
+        assert!(!matcher.matches(None, &req));
 
         // test #2: no match: test with remote network address (ipv4)
         req.extensions_mut()
             .insert(SocketInfo::new(None, ([1, 1, 1, 1], 8080).into()));
-        assert!(!matcher.matches(None, &ctx, &req));
+        assert!(!matcher.matches(None, &req));
 
         // test #3: no match: test with remote network address (ipv6)
         req.extensions_mut().insert(SocketInfo::new(
             None,
             ([1, 1, 1, 1, 1, 1, 1, 1], 8080).into(),
         ));
-        assert!(!matcher.matches(None, &ctx, &req));
+        assert!(!matcher.matches(None, &req));
 
         // test #4: match: test with private address (ipv4)
         req.extensions_mut()
             .insert(SocketInfo::new(None, ([127, 0, 0, 1], 8080).into()));
-        assert!(matcher.matches(None, &ctx, &req));
+        assert!(matcher.matches(None, &req));
 
         // test #5: match: test with another private address (ipv4)
         req.extensions_mut()
             .insert(SocketInfo::new(None, ([192, 168, 0, 24], 8080).into()));
-        assert!(matcher.matches(None, &ctx, &req));
+        assert!(matcher.matches(None, &req));
 
         // test #6: match: test with private address (ipv6)
         req.extensions_mut().insert(SocketInfo::new(
             None,
             ([0, 0, 0, 0, 0, 0, 0, 1], 8080).into(),
         ));
-        assert!(matcher.matches(None, &ctx, &req));
+        assert!(matcher.matches(None, &req));
 
         // test #7: match: test with missing socket info, but it's seen as optional
         let matcher = PrivateIpNetMatcher::optional();
-        let ctx = Context::default();
-        assert!(matcher.matches(None, &ctx, &req));
+        assert!(matcher.matches(None, &req));
     }
 
     #[test]
     fn test_local_ip_net_matcher_socket_trait() {
         let matcher = PrivateIpNetMatcher::new();
-
-        let ctx = Context::default();
 
         struct FakeSocket {
             local_addr: Option<SocketAddr>,
@@ -237,31 +233,31 @@ mod test {
         };
 
         // test #1: no match: test with no socket info registered
-        assert!(!matcher.matches(None, &ctx, &socket));
+        assert!(!matcher.matches(None, &socket));
 
         // test #2: no match: test with network address (ipv4)
         socket.peer_addr = Some(([1, 1, 1, 1], 8080).into());
-        assert!(!matcher.matches(None, &ctx, &socket));
+        assert!(!matcher.matches(None, &socket));
 
         // test #3: no match: test with another network address (ipv6)
         socket.peer_addr = Some(([1, 1, 1, 1, 1, 1, 1, 1], 8080).into());
-        assert!(!matcher.matches(None, &ctx, &socket));
+        assert!(!matcher.matches(None, &socket));
 
         // test #4: match: test with private address (ipv4)
         socket.peer_addr = Some(([192, 168, 0, 0], 8080).into());
-        assert!(matcher.matches(None, &ctx, &socket));
+        assert!(matcher.matches(None, &socket));
 
         // test #5: match: test with another private address (ipv4)
         socket.peer_addr = Some(([127, 3, 2, 1], 8080).into());
-        assert!(matcher.matches(None, &ctx, &socket));
+        assert!(matcher.matches(None, &socket));
 
         // test #6: match: test with yet another private address (ipv6)
         socket.peer_addr = Some(([0, 0, 0, 0, 0, 0, 0, 1], 8080).into());
-        assert!(matcher.matches(None, &ctx, &socket));
+        assert!(matcher.matches(None, &socket));
 
         // test #7: match: test with missing socket info, but it's seen as optional
         let matcher = PrivateIpNetMatcher::optional();
         socket.peer_addr = None;
-        assert!(matcher.matches(None, &ctx, &socket));
+        assert!(matcher.matches(None, &socket));
     }
 }

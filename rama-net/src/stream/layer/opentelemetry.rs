@@ -16,7 +16,7 @@ use rama_core::telemetry::opentelemetry::{
     metrics::{Counter, Histogram, Meter},
     semantic_conventions,
 };
-use rama_core::{Context, Layer, Service};
+use rama_core::{Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
 use std::borrow::Cow;
 use std::net::IpAddr;
@@ -247,7 +247,7 @@ where
     type Response = S::Response;
     type Error = S::Error;
 
-    async fn serve(&self, ctx: Context, stream: Stream) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, stream: Stream) -> Result<Self::Response, Self::Error> {
         let attributes: Vec<KeyValue> = self.compute_attributes(stream.extensions());
 
         self.metrics.network_total_connections.add(1, &attributes);
@@ -255,7 +255,7 @@ where
         // used to compute the duration of the connection
         let timer = SystemTime::now();
 
-        let result = self.inner.serve(ctx, stream).await;
+        let result = self.inner.serve(stream).await;
 
         match result {
             Ok(res) => {

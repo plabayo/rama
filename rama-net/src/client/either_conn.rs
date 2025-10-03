@@ -1,4 +1,3 @@
-use rama_core::Context;
 use rama_core::Service;
 use rama_core::combinators::{define_either, impl_async_read_write_either, impl_iterator_either};
 use rama_core::error::BoxError;
@@ -48,14 +47,13 @@ macro_rules! impl_service_either_conn {
                 type Response = EstablishedClientConnection<[<$id Connected>]<$([<Conn $param>]),+,>, Request>;
                 type Error = BoxError;
 
-                async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
+                async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
                     match self {
                         $(
                             $id::$param(s) => {
-                                let resp = s.serve(ctx, req).await.map_err(Into::into)?;
+                                let resp = s.serve(req).await.map_err(Into::into)?;
                                 Ok(EstablishedClientConnection {
                                     conn: [<$id Connected>]::$param(resp.conn),
-                                    ctx: resp.ctx,
                                     req: resp.req,
                                 })
                             },
@@ -102,10 +100,10 @@ macro_rules! impl_service_either_conn_connected {
             type Response = Response;
             type Error = BoxError;
 
-            async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
+            async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
                 match self {
                     $(
-                        $id::$param(s) => s.serve(ctx, req).await.map_err(Into::into),
+                        $id::$param(s) => s.serve(req).await.map_err(Into::into),
                     )+
                 }
             }

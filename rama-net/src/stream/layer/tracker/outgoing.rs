@@ -1,6 +1,6 @@
 use super::bytes::BytesRWTracker;
 use crate::client::{ConnectorService, EstablishedClientConnection};
-use rama_core::{Context, Layer, Service, extensions::ExtensionsMut, stream::Stream};
+use rama_core::{Layer, Service, extensions::ExtensionsMut, stream::Stream};
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
 
@@ -50,12 +50,12 @@ where
     type Response = EstablishedClientConnection<BytesRWTracker<S::Connection>, Request>;
     type Error = S::Error;
 
-    async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
-        let EstablishedClientConnection { ctx, req, conn } = self.inner.connect(ctx, req).await?;
+    async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
+        let EstablishedClientConnection { req, conn } = self.inner.connect(req).await?;
         let mut conn = BytesRWTracker::new(conn);
         let handle = conn.handle();
         conn.extensions_mut().insert(handle);
-        Ok(EstablishedClientConnection { ctx, req, conn })
+        Ok(EstablishedClientConnection { req, conn })
     }
 }
 

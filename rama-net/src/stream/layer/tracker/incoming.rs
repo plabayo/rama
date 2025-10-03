@@ -1,5 +1,5 @@
 use super::bytes::BytesRWTracker;
-use rama_core::{Context, Layer, Service, extensions::ExtensionsMut, stream::Stream};
+use rama_core::{Layer, Service, extensions::ExtensionsMut, stream::Stream};
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
 
@@ -51,14 +51,13 @@ where
 
     fn serve(
         &self,
-        ctx: Context,
         stream: IO,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
         let mut tracked_stream = BytesRWTracker::new(stream);
         let handle = tracked_stream.handle();
         tracked_stream.extensions_mut().insert(handle);
 
-        self.inner.serve(ctx, tracked_stream)
+        self.inner.serve(tracked_stream)
     }
 }
 

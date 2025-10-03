@@ -1,4 +1,4 @@
-use rama_core::{Context, extensions::Extensions};
+use rama_core::extensions::Extensions;
 use std::net::SocketAddr;
 
 #[cfg(feature = "http")]
@@ -39,7 +39,7 @@ impl SocketAddressMatcher {
 
 #[cfg(feature = "http")]
 impl<Body> rama_core::matcher::Matcher<Request<Body>> for SocketAddressMatcher {
-    fn matches(&self, _ext: Option<&mut Extensions>, _ctx: &Context, req: &Request<Body>) -> bool {
+    fn matches(&self, _ext: Option<&mut Extensions>, req: &Request<Body>) -> bool {
         req.extensions()
             .get::<SocketInfo>()
             .map(|info| info.peer_addr() == &self.addr)
@@ -51,7 +51,7 @@ impl<Socket> rama_core::matcher::Matcher<Socket> for SocketAddressMatcher
 where
     Socket: crate::stream::Socket,
 {
-    fn matches(&self, _ext: Option<&mut Extensions>, _ctx: &Context, stream: &Socket) -> bool {
+    fn matches(&self, _ext: Option<&mut Extensions>, stream: &Socket) -> bool {
         stream
             .peer_addr()
             .map(|addr| addr == self.addr)
@@ -71,7 +71,6 @@ mod test {
     fn test_socket_matcher_http() {
         let matcher = SocketAddressMatcher::new(([127, 0, 0, 1], 8080));
 
-        let ctx = Context::default();
         let mut req = Request::builder()
             .method("GET")
             .uri("/hello")
@@ -79,34 +78,31 @@ mod test {
             .unwrap();
 
         // test #1: no match: test with no socket info registered
-        assert!(!matcher.matches(None, &ctx, &req));
+        assert!(!matcher.matches(None, &req));
 
         // test #2: no match: test with different socket info (port difference)
         req.extensions_mut()
             .insert(SocketInfo::new(None, ([127, 0, 0, 1], 8081).into()));
-        assert!(!matcher.matches(None, &ctx, &req));
+        assert!(!matcher.matches(None, &req));
 
         // test #3: no match: test with different socket info (ip addr difference)
         req.extensions_mut()
             .insert(SocketInfo::new(None, ([127, 0, 0, 2], 8080).into()));
-        assert!(!matcher.matches(None, &ctx, &req));
+        assert!(!matcher.matches(None, &req));
 
         // test #4: match: test with correct address
         req.extensions_mut()
             .insert(SocketInfo::new(None, ([127, 0, 0, 1], 8080).into()));
-        assert!(matcher.matches(None, &ctx, &req));
+        assert!(matcher.matches(None, &req));
 
         // test #5: match: test with missing socket info, but it's seen as optional
         let matcher = SocketAddressMatcher::optional(([127, 0, 0, 1], 8080));
-        let ctx = Context::default();
-        assert!(matcher.matches(None, &ctx, &req));
+        assert!(matcher.matches(None, &req));
     }
 
     #[test]
     fn test_socket_matcher_socket_trait() {
         let matcher = SocketAddressMatcher::new(([127, 0, 0, 1], 8080));
-
-        let ctx = Context::default();
 
         struct FakeSocket {
             local_addr: Option<SocketAddr>,
@@ -135,19 +131,19 @@ mod test {
         };
 
         // test #1: no match: test with different socket info (port difference)
-        assert!(!matcher.matches(None, &ctx, &socket));
+        assert!(!matcher.matches(None, &socket));
 
         // test #2: no match: test with different socket info (ip addr difference)
         socket.peer_addr = Some(([127, 0, 0, 2], 8080).into());
-        assert!(!matcher.matches(None, &ctx, &socket));
+        assert!(!matcher.matches(None, &socket));
 
         // test #3: match: test with correct address
         socket.peer_addr = Some(([127, 0, 0, 1], 8080).into());
-        assert!(matcher.matches(None, &ctx, &socket));
+        assert!(matcher.matches(None, &socket));
 
         // test #5: match: test with missing socket info, but it's seen as optional
         let matcher = SocketAddressMatcher::optional(([127, 0, 0, 1], 8080));
         socket.peer_addr = None;
-        assert!(matcher.matches(None, &ctx, &socket));
+        assert!(matcher.matches(None, &socket));
     }
 }

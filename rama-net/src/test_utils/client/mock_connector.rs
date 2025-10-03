@@ -1,7 +1,7 @@
 use std::{convert::Infallible, fmt, net::Ipv4Addr};
 
 use rama_core::{
-    Context, Service,
+    Service,
     extensions::{Extensions, ExtensionsMut, ExtensionsRef},
 };
 use tokio::io::{AsyncRead, AsyncWrite, DuplexStream, duplex};
@@ -57,20 +57,18 @@ where
     type Error = Infallible;
     type Response = EstablishedClientConnection<MockSocket, Request>;
 
-    async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
         let (client, server) = duplex(self.max_buffer_size);
         let client_socket = MockSocket::new(client);
         let server_socket = MockSocket::new(server);
 
         let server = (self.create_server)();
-        let server_ctx = ctx.clone();
 
         tokio::spawn(async move {
-            server.serve(server_ctx, server_socket).await.unwrap();
+            server.serve(server_socket).await.unwrap();
         });
 
         Ok(EstablishedClientConnection {
-            ctx,
             req,
             conn: client_socket,
         })

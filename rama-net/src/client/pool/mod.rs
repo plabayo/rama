@@ -4,7 +4,7 @@ use parking_lot::Mutex;
 use rama_core::error::{BoxError, ErrorContext, OpaqueError};
 use rama_core::extensions::{Extensions, ExtensionsMut, ExtensionsRef};
 use rama_core::telemetry::tracing::trace;
-use rama_core::{Context, Layer, Service};
+use rama_core::{Layer, Service};
 use rama_utils::macros::generate_set_and_with;
 use std::collections::VecDeque;
 use std::fmt::Debug;
@@ -580,8 +580,8 @@ where
     type Response = C::Response;
     type Error = C::Error;
 
-    async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
-        let result = self.as_ref().serve(ctx, req).await;
+    async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
+        let result = self.as_ref().serve(req).await;
         if result.is_err() {
             let id = &self.pooled_conn.as_ref().expect("msg").id;
             trace!(
@@ -640,7 +640,7 @@ impl<C, ID: Debug> Debug for LruDropPool<C, ID> {
 pub trait ReqToConnID<Request: ExtensionsRef>: Sized + Clone + Send + Sync + 'static {
     type ID: ConnID;
 
-    fn id(&self, ctx: &Context, request: &Request) -> Result<Self::ID, OpaqueError>;
+    fn id(&self, request: &Request) -> Result<Self::ID, OpaqueError>;
 }
 
 /// [`ConnID`] is used to identify a connection in a connection pool. These IDs
@@ -658,14 +658,14 @@ pub trait ConnID: Send + Sync + PartialEq + Clone + Debug + 'static {
 
 impl<Request, ID, F> ReqToConnID<Request> for F
 where
-    F: Fn(&Context, &Request) -> Result<ID, OpaqueError> + Clone + Send + Sync + 'static,
+    F: Fn(&Request) -> Result<ID, OpaqueError> + Clone + Send + Sync + 'static,
     ID: ConnID,
     Request: ExtensionsRef,
 {
     type ID = ID;
 
-    fn id(&self, ctx: &Context, request: &Request) -> Result<Self::ID, OpaqueError> {
-        self(ctx, request)
+    fn id(&self, request: &Request) -> Result<Self::ID, OpaqueError> {
+        self(request)
     }
 }
 
@@ -708,8 +708,8 @@ where
     type Response = EstablishedClientConnection<P::Connection, Request>;
     type Error = BoxError;
 
-    async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
-        let conn_id = self.req_to_conn_id.id(&ctx, &req)?;
+    async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
+        let conn_id = self.req_to_conn_id.id(&req)?;
 
         // Try to get connection from pool, if no connection is found, we will have to create a new
         // one using the returned create permit
@@ -738,7 +738,7 @@ where
                     trace!(
                         "pooled connector: got connection (w/ conn id: {conn_id:?}) from pool, returning"
                     );
-                    return Ok(EstablishedClientConnection { ctx, conn: c, req });
+                    return Ok(EstablishedClientConnection { conn: c, req });
                 }
                 ConnectionResult::CreatePermit(permit) => {
                     trace!(
@@ -749,13 +749,13 @@ where
             }
         };
 
-        let EstablishedClientConnection { ctx, req, conn } =
-            self.inner.connect(ctx, req).await.map_err(Into::into)?;
+        let EstablishedClientConnection { req, conn } =
+            self.inner.connect(req).await.map_err(Into::into)?;
 
         trace!("pooled connector: returning new pooled connection (w/ conn id: {conn_id:?}");
         let pool = req.extensions().get::<P>().unwrap_or(&self.pool);
         let conn = pool.create(conn_id, conn, create_permit).await;
-        Ok(EstablishedClientConnection { ctx, req, conn })
+        Ok(EstablishedClientConnection { req, conn })
     }
 }
 
@@ -806,7 +806,7 @@ mod tests {
     use crate::client::EstablishedClientConnection;
     use rama_core::ServiceInput;
     use rama_core::extensions::ExtensionsMut;
-    use rama_core::{Context, Service, extensions::Extensions};
+    use rama_core::{Service, extensions::Extensions};
     use std::{
         convert::Infallible,
         sync::atomic::{AtomicI16, Ordering},
@@ -873,10 +873,9 @@ mod tests {
         type Response = EstablishedClientConnection<Conn, Request>;
         type Error = Infallible;
 
-        async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
+        async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
             self.created_connection.fetch_add(1, Ordering::Relaxed);
             Ok(EstablishedClientConnection {
-                ctx,
                 req,
                 conn: Conn::new(),
             })
@@ -892,7 +891,7 @@ mod tests {
     impl ReqToConnID<ServiceInput<String>> for StringRequestLengthID {
         type ID = usize;
 
-        fn id(&self, _ctx: &Context, req: &ServiceInput<String>) -> Result<Self::ID, OpaqueError> {
+        fn id(&self, req: &ServiceInput<String>) -> Result<Self::ID, OpaqueError> {
             Ok(req.request.chars().count())
         }
     }
@@ -908,15 +907,12 @@ mod tests {
         let svc = PooledConnector::new(
             TestService::default(),
             pool,
-            |_ctx: &Context, _req: &ServiceInput<String>| Ok(()),
+            |__req: &ServiceInput<String>| Ok(()),
         );
 
         let iterations = 10;
         for _i in 0..iterations {
-            let _conn = svc
-                .connect(Context::default(), ServiceInput::new(String::new()))
-                .await
-                .unwrap();
+            let _conn = svc.connect(ServiceInput::new(String::new())).await.unwrap();
         }
 
         let created_connection = svc.inner.created_connection.load(Ordering::Relaxed);
@@ -930,7 +926,7 @@ mod tests {
 
         {
             let mut conn = svc
-                .connect(Context::default(), ServiceInput::new(String::from("a")))
+                .connect(ServiceInput::new(String::from("a")))
                 .await
                 .unwrap()
                 .conn;
@@ -943,7 +939,7 @@ mod tests {
         // Should reuse the same connections
         {
             let mut conn = svc
-                .connect(Context::default(), ServiceInput::new(String::from("B")))
+                .connect(ServiceInput::new(String::from("B")))
                 .await
                 .unwrap()
                 .conn;
@@ -956,7 +952,7 @@ mod tests {
         // Should make a new one
         {
             let mut conn = svc
-                .connect(Context::default(), ServiceInput::new(String::from("aa")))
+                .connect(ServiceInput::new(String::from("aa")))
                 .await
                 .unwrap()
                 .conn;
@@ -969,7 +965,7 @@ mod tests {
         // Should reuse
         {
             let mut conn = svc
-                .connect(Context::default(), ServiceInput::new(String::from("bb")))
+                .connect(ServiceInput::new(String::from("bb")))
                 .await
                 .unwrap()
                 .conn;
@@ -987,18 +983,16 @@ mod tests {
             .with_wait_for_pool_timeout(Duration::from_millis(50));
 
         let conn1 = svc
-            .connect(Context::default(), ServiceInput::new(String::from("a")))
+            .connect(ServiceInput::new(String::from("a")))
             .await
             .unwrap();
 
-        let conn2 = svc
-            .connect(Context::default(), ServiceInput::new(String::from("a")))
-            .await;
+        let conn2 = svc.connect(ServiceInput::new(String::from("a"))).await;
         assert_err!(conn2);
 
         drop(conn1);
         let _conn3 = svc
-            .connect(Context::default(), ServiceInput::new(String::from("aaa")))
+            .connect(ServiceInput::new(String::from("aaa")))
             .await
             .unwrap();
     }
@@ -1015,10 +1009,10 @@ mod tests {
         type Response = EstablishedClientConnection<InnerService, Request>;
         type Error = Infallible;
 
-        async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
+        async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
             let conn = InnerService::default();
             self.created_connection.fetch_add(1, Ordering::Relaxed);
-            Ok(EstablishedClientConnection { ctx, req, conn })
+            Ok(EstablishedClientConnection { req, conn })
         }
     }
 
@@ -1044,11 +1038,7 @@ mod tests {
         type Response = ();
         type Error = OpaqueError;
 
-        async fn serve(
-            &self,
-            _ctx: Context,
-            should_error: bool,
-        ) -> Result<Self::Response, Self::Error> {
+        async fn serve(&self, should_error: bool) -> Result<Self::Response, Self::Error> {
             // Once this service is broken it will stay in this state, similar to a closed tcp connection
             if should_error {
                 self.should_error.store(true, Ordering::Relaxed);
@@ -1068,35 +1058,35 @@ mod tests {
         let svc = PooledConnector::new(TestConnector::default(), pool, StringRequestLengthID {});
 
         let conn = svc
-            .connect(Context::default(), ServiceInput::new(String::from("")))
+            .connect(ServiceInput::new(String::from("")))
             .await
             .unwrap();
 
-        let result = conn.conn.serve(Context::default(), false).await;
+        let result = conn.conn.serve(false).await;
         assert_ok!(result);
-        let result = conn.conn.serve(Context::default(), true).await;
+        let result = conn.conn.serve(true).await;
         assert_err!(result);
 
         // this dropped connection should not return to the pool, otherwise it will be permanently broken
         drop(conn);
 
         let conn = svc
-            .connect(Context::default(), ServiceInput::new(String::from("")))
+            .connect(ServiceInput::new(String::from("")))
             .await
             .unwrap();
 
-        let result = conn.conn.serve(Context::default(), false).await;
+        let result = conn.conn.serve(false).await;
         assert_ok!(result);
 
         // this connection is not broken so it should return to the pool
         drop(conn);
 
         let conn = svc
-            .connect(Context::default(), ServiceInput::new(String::from("")))
+            .connect(ServiceInput::new(String::from("")))
             .await
             .unwrap();
 
-        let result = conn.conn.serve(Context::default(), false).await;
+        let result = conn.conn.serve(false).await;
         assert_ok!(result);
 
         assert_eq!(svc.inner.created_connection.load(Ordering::Relaxed), 2);
@@ -1111,7 +1101,7 @@ mod tests {
         let svc = PooledConnector::new(TestService::default(), pool, StringRequestLengthID {});
 
         let conn = svc
-            .connect(Context::default(), ServiceInput::new(String::from("")))
+            .connect(ServiceInput::new(String::from("")))
             .await
             .unwrap()
             .conn;
@@ -1124,7 +1114,7 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(100)).await;
 
         let conn = svc
-            .connect(Context::default(), ServiceInput::new(String::from("")))
+            .connect(ServiceInput::new(String::from("")))
             .await
             .unwrap()
             .conn;
@@ -1148,20 +1138,12 @@ mod tests {
             .unwrap()
             .with_reuse_strategy(strategy);
 
-        let svc = PooledConnector::new(
-            TestService::default(),
-            pool,
-            |_: &Context, _: &ServiceInput<()>| Ok(()),
-        );
+        let svc = PooledConnector::new(TestService::default(), pool, |_: &ServiceInput<()>| Ok(()));
 
         // Open two concurrent connections and drop them.
         let mut conns = Vec::new();
         for i in 0..2 {
-            let mut conn = svc
-                .connect(Context::default(), ServiceInput::new(()))
-                .await
-                .unwrap()
-                .conn;
+            let mut conn = svc.connect(ServiceInput::new(())).await.unwrap().conn;
             conn.pooled_conn.as_mut().unwrap().conn.push(i);
             conns.push(conn);
         }
@@ -1172,11 +1154,7 @@ mod tests {
         // from most to least recently used. ([conn2, conn1]). Requesting
         // another connection should return the first or last one depending on
         // the reuse policy.
-        let conn = svc
-            .connect(Context::default(), ServiceInput::new(()))
-            .await
-            .unwrap()
-            .conn;
+        let conn = svc.connect(ServiceInput::new(())).await.unwrap().conn;
 
         assert_eq!(conn.pooled_conn.as_ref().unwrap().conn[0], expected);
     }
