@@ -11,6 +11,7 @@ use crate::net::tls::{
     client::ClientHello,
     server::{DynamicCertIssuer, ServerAuthData},
 };
+use crate::rt::Executor;
 use crate::telemetry::tracing;
 use crate::utils::str::NonEmptyString;
 use crate::{Context, Service, combinators::Either, service::BoxService};
@@ -44,10 +45,10 @@ pub struct CertIssuerHttpClient {
     http_client: BoxService<Request, Response, OpaqueError>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 enum DomainAllowMode {
     Exact,
-    Parent,
+    Parent(Domain),
 }
 
 impl CertIssuerHttpClient {
@@ -143,7 +144,9 @@ impl CertIssuerHttpClient {
         /// the client will fetch for any client.
         pub fn allow_domain(mut self, domain: impl AsDomainRef) -> Self {
             if let Some(parent) = domain.as_wildcard_parent() {
-                self.allow_list.get_or_insert_default().insert_domain(parent, DomainAllowMode::Parent);
+                // unwrap should be fine given we were a wildcard to begin with
+                let domain = parent.try_as_wildcard().unwrap();
+                self.allow_list.get_or_insert_default().insert_domain(parent, DomainAllowMode::Parent(domain));
             } else {
                 self.allow_list.get_or_insert_default().insert_domain(domain, DomainAllowMode::Exact);
             }
@@ -164,25 +167,26 @@ impl CertIssuerHttpClient {
         }
     }
 
-    crate::utils::macros::generate_set_and_with! {
-        /// Only allow fetching certs for the given domain.
-        ///
-        /// By default, if none of the `allow_*` setters are called
-        /// the client will fetch for any client.
-        pub fn allow_parent_domain(mut self, domain: impl AsDomainRef) -> Self {
-            self.allow_list.get_or_insert_default().insert_domain(domain, DomainAllowMode::Parent);
-            self
-        }
-    }
-
-    crate::utils::macros::generate_set_and_with! {
-        /// Only allow fetching certs for the given domains.
-        ///
-        /// By default, if none of the `allow_*` setters are called
-        /// the client will fetch for any client.
-        pub fn allow_parent_domains(mut self, domains: impl Iterator<Item: AsDomainRef>) -> Self {
-            self.allow_list.get_or_insert_default().insert_domain_iter(domains, DomainAllowMode::Parent);
-            self
+    /// Prefetch all certificates, useful to warm them up at startup time.
+    pub fn prefetch_certs_in_background(&self, exec: &Executor) {
+        if let Some(allow_list) = &self.allow_list {
+            for (raw_domain, mode) in allow_list.iter() {
+                let domain = match mode {
+                    // assumption: only valid domains in trie possible
+                    DomainAllowMode::Exact => raw_domain.parse().unwrap(),
+                    DomainAllowMode::Parent(domain) => domain.clone(),
+                };
+                let http_client = self.http_client.clone();
+                let uri = self.endpoint.clone();
+                exec.spawn_task(async move {
+                    match fetch_certs(http_client, domain.clone(), uri).await {
+                        Ok(_) => tracing::debug!("prefetched certificates for domain: {domain}"),
+                        Err(err) => tracing::error!(
+                            "failed to prefetch certificates for domain '{domain}': {err}"
+                        ),
+                    }
+                });
+            }
         }
     }
 }
@@ -208,7 +212,7 @@ impl DynamicCertIssuer for CertIssuerHttpClient {
                             ..
                         }) => {
                             if is_exact {
-                                domain
+                                domain.clone()
                             } else {
                                 return Either::A(std::future::ready(Err(
                                     OpaqueError::from_display("sni found: unexpected child domain"),
@@ -216,12 +220,12 @@ impl DynamicCertIssuer for CertIssuerHttpClient {
                             }
                         }
                         Some(DomainParentMatch {
-                            value: &DomainAllowMode::Parent,
+                            value: DomainAllowMode::Parent(wildcard_domain),
                             ..
-                        }) => domain,
+                        }) => wildcard_domain.clone(),
                     }
                 } else {
-                    domain
+                    domain.clone()
                 }
             }
             None => {
@@ -234,7 +238,6 @@ impl DynamicCertIssuer for CertIssuerHttpClient {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let http_client = self.http_client.clone();
         let uri = self.endpoint.clone();
-        let domain = domain.clone();
 
         tokio::spawn(async move {
             if let Err(err) = tx.send(fetch_certs(http_client, domain, uri).await) {

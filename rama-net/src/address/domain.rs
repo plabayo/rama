@@ -145,6 +145,19 @@ impl Domain {
         Ok(Self(sub))
     }
 
+    /// Promote this [`Domain`] to a wildcard.
+    ///
+    /// E.g. turn `example.com` in `*.example.com`.
+    ///
+    /// This can fail, e.g. because the domain becomes too long.
+    pub fn try_as_wildcard(&self) -> Result<Self, OpaqueError> {
+        let sub = smol_str::format_smolstr!("*.{}", self.0);
+        if !is_valid_name(sub.as_bytes()) {
+            return Err(OpaqueError::from_display("invalid subdomain"));
+        }
+        Ok(Self(sub))
+    }
+
     /// Try to strip the subdomain (prefix) from the current domain.
     pub fn strip_sub(&self, prefix: impl AsDomainRef) -> Option<Self> {
         self.0
@@ -752,6 +765,23 @@ mod tests {
             let a = Domain::from_static(a);
             let b = Domain::from_static(b);
             assert!(a.is_parent_of(&b), "({a:?}).is_parent_of({b})");
+        }
+    }
+
+    #[test]
+    fn as_wildcard_sub() {
+        let test_cases = vec![
+            ("example.com", "*.example.com"),
+            ("fp.ramaproxy.org", "*.fp.ramaproxy.org"),
+            ("print.co.uk", "*.print.co.uk"),
+        ];
+        for (domain_raw, expected_output) in test_cases.into_iter() {
+            let domain = Domain::from_static(domain_raw);
+            let msg = format!("{:?}", (domain_raw, expected_output));
+            let subdomain = domain.try_as_wildcard().expect(&msg);
+            assert_eq!(expected_output, subdomain);
+            assert!(subdomain.is_wildcard());
+            assert_eq!(Some(domain), subdomain.as_wildcard_parent())
         }
     }
 
