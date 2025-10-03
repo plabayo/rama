@@ -983,7 +983,7 @@ mod tests {
         let builder = auto::Builder::new(Executor::new());
         let connection = builder.serve_connection(
             stream,
-            RamaHttpService::new(Context::default(), Extensions::new(), service_fn(hello)),
+            RamaHttpService::new(Extensions::new(), service_fn(hello)),
         );
 
         pin!(connection);
@@ -1045,7 +1045,7 @@ mod tests {
                             .serve_connection(
                                 stream,
                                 RamaHttpService::new(
-                                    Context::default(),
+                                   
                                     Extensions::new(),
                                     service_fn(hello),
                                 ),
@@ -1057,7 +1057,7 @@ mod tests {
                             .serve_connection(
                                 stream,
                                 RamaHttpService::new(
-                                    Context::default(),
+                                   
                                     Extensions::new(),
                                     service_fn(hello),
                                 ),
@@ -1070,7 +1070,7 @@ mod tests {
                             .serve_connection_with_upgrades(
                                 stream,
                                 RamaHttpService::new(
-                                    Context::default(),
+                                   
                                     Extensions::new(),
                                     service_fn(hello),
                                 ),

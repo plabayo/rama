@@ -19,17 +19,12 @@ pub trait HttpService<ReqBody>: sealed::Sealed<ReqBody> {
 
 pub struct RamaHttpService<S> {
     svc: S,
-    ctx: Context,
     extensions: Extensions,
 }
 
 impl<S> RamaHttpService<S> {
-    pub fn new(ctx: Context, extensions: Extensions, svc: S) -> Self {
-        Self {
-            svc,
-            ctx,
-            extensions,
-        }
+    pub fn new(extensions: Extensions, svc: S) -> Self {
+        Self { svc, extensions }
     }
 }
 
@@ -54,7 +49,6 @@ where
         Self {
             svc: self.svc.clone(),
             extensions: self.extensions.clone(),
-            ctx: self.ctx.clone(),
         }
     }
 }
@@ -69,11 +63,7 @@ where
         &self,
         req: Request<ReqBody>,
     ) -> impl Future<Output = Result<Response, Infallible>> + Send + 'static {
-        let Self {
-            svc,
-            extensions,
-            ctx,
-        } = self.clone();
+        let Self { svc, extensions } = self.clone();
         async move {
             let mut req = req.map(rama_http_types::Body::new);
             req.extensions_mut().extend(extensions);
@@ -90,7 +80,7 @@ where
                 network.protocol.version = version_as_protocol_version(req.version()),
             );
 
-            Ok(svc.serve(ctx, req).instrument(span).await?.into_response())
+            Ok(svc.serve(req).instrument(span).await?.into_response())
         }
     }
 }
