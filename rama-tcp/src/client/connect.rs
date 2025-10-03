@@ -1,7 +1,6 @@
 use rama_core::extensions::Extensions;
 use rama_core::telemetry::tracing::{self, Instrument, trace_span};
 use rama_core::{
-    Context,
     combinators::Either,
     error::{BoxError, ErrorContext, OpaqueError},
     rt::Executor,
@@ -181,18 +180,16 @@ macro_rules! impl_stream_connector_either {
 /// Use [`tcp_connect`] in case you want to customise any of these settings,
 /// or use a [`rama_net::client::ConnectorService`] for even more advanced possibilities.
 pub async fn default_tcp_connect(
-    ctx: &Context,
     extensions: &Extensions,
     authority: Authority,
 ) -> Result<(TcpStream, SocketAddr), OpaqueError>
 where
 {
-    tcp_connect(ctx, extensions, authority, GlobalDnsResolver::default(), ()).await
+    tcp_connect(extensions, authority, GlobalDnsResolver::default(), ()).await
 }
 
 /// Establish a [`TcpStream`] connection for the given [`Authority`].
 pub async fn tcp_connect<Dns, Connector>(
-    _ctx: &Context,
     extensions: &Extensions,
     authority: Authority,
     dns: Dns,

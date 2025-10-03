@@ -1,4 +1,3 @@
-use rama_core::Context;
 use rama_core::Service;
 use rama_core::error::BoxError;
 use rama_core::error::ErrorContext;
@@ -284,7 +283,6 @@ impl TcpListener {
             let mut socket = TcpStream::new(socket);
 
             let service = service.clone();
-            let ctx = Context::default();
 
             let local_addr = socket.local_addr().ok();
             let trace_local_addr = local_addr
@@ -307,7 +305,7 @@ impl TcpListener {
 
             tokio::spawn(
                 async move {
-                    let _ = service.serve(ctx, socket).await;
+                    let _ = service.serve(socket).await;
                 }
                 .instrument(span),
             );
@@ -337,7 +335,6 @@ impl TcpListener {
                         Ok((socket, peer_addr)) => {
                             let mut socket = TcpStream::new(socket);
                             let service = service.clone();
-                            let ctx = Context::default();
 
                             let local_addr = socket.local_addr().ok();
                             let trace_local_addr = local_addr
@@ -358,7 +355,7 @@ impl TcpListener {
                             socket.extensions_mut().insert(Executor::graceful(guard.clone()));
 
                             guard.spawn_task(async move {
-                                let _ = service.serve(ctx, socket).await;
+                                let _ = service.serve(socket).await;
                             }.instrument(span));
                         }
                         Err(err) => {
