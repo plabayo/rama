@@ -23,7 +23,7 @@ async fn test_socks5_acceptor_auth_flow_used_failure_unauthorized() {
 
     let server = Socks5Acceptor::new()
         .with_authorizer(user::Basic::new_static("john", "secret").into_authorizer());
-    let result = server.accept(Context::default(), stream).await;
+    let result = server.accept(stream).await;
     assert!(result.is_err());
 }
 
@@ -44,6 +44,6 @@ async fn test_socks5_acceptor_auth_flow_used_failure_unauthorized_missing_passwo
 
     let server = Socks5Acceptor::new()
         .with_authorizer(user::Basic::new_static("john", "secret").into_authorizer());
-    let result = server.accept(Context::default(), stream).await;
+    let result = server.accept(stream).await;
     assert!(result.is_err());
 }

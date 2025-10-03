@@ -1,6 +1,6 @@
 use rama_core::extensions::ExtensionsMut;
 use rama_core::telemetry::tracing::{self, Instrument, trace_span};
-use rama_core::{Context, Service, error::BoxError, stream::Stream};
+use rama_core::{Service, error::BoxError, stream::Stream};
 use rama_net::client::ConnectorService;
 use rama_net::{
     address::Authority,
@@ -37,7 +37,7 @@ impl<S, C> Socks5Connector<S> for C where C: Socks5ConnectorSeal<S> {}
 pub trait Socks5ConnectorSeal<S>: Send + Sync + 'static {
     fn accept_connect(
         &self,
-        ctx: Context,
+
         stream: S,
         destination: Authority,
     ) -> impl Future<Output = Result<(), Error>> + Send + '_;
@@ -47,12 +47,7 @@ impl<S> Socks5ConnectorSeal<S> for ()
 where
     S: Stream + Unpin,
 {
-    async fn accept_connect(
-        &self,
-        _ctx: Context,
-        mut stream: S,
-        destination: Authority,
-    ) -> Result<(), Error> {
+    async fn accept_connect(&self, mut stream: S, destination: Authority) -> Result<(), Error> {
         tracing::trace!(
             "socks5 server w/ destination {destination}: abort: command not supported: Connect",
         );
@@ -214,22 +209,17 @@ where
     StreamService:
         Service<ProxyRequest<S, InnerConnector::Connection>, Response = (), Error: Into<BoxError>>,
 {
-    async fn accept_connect(
-        &self,
-        ctx: Context,
-        mut stream: S,
-        destination: Authority,
-    ) -> Result<(), Error> {
+    async fn accept_connect(&self, mut stream: S, destination: Authority) -> Result<(), Error> {
         tracing::trace!(
             "socks5 server w/ destination {destination}: connect: try to establish connection",
         );
 
         // TODO: replace with timeout layer once possible
 
-        let connect_future = self.connector.connect(
-            ctx,
-            TcpRequest::new(destination.clone(), stream.take_extensions()),
-        );
+        let connect_future = self.connector.connect(TcpRequest::new(
+            destination.clone(),
+            stream.take_extensions(),
+        ));
 
         let result = match self.connect_timeout {
             Some(duration) => match tokio::time::timeout(duration, connect_future).await {
@@ -249,9 +239,7 @@ where
             None => connect_future.await,
         };
 
-        let EstablishedClientConnection {
-            ctx, conn: target, ..
-        } = match result {
+        let EstablishedClientConnection { conn: target, .. } = match result {
             Ok(ecs) => ecs,
             Err(err) => {
                 let err: BoxError = err.into();
@@ -301,13 +289,10 @@ where
         );
 
         self.service
-            .serve(
-                ctx,
-                ProxyRequest {
-                    source: stream,
-                    target,
-                },
-            )
+            .serve(ProxyRequest {
+                source: stream,
+                target,
+            })
             .instrument(trace_span!("socks5::connect::proxy::serve"))
             .await
             .map_err(|err| Error::service(err).with_context("serve connect pipe"))
@@ -370,12 +355,7 @@ where
     S: Stream + Unpin + ExtensionsMut,
     StreamService: Service<S, Response = (), Error: Into<BoxError>>,
 {
-    async fn accept_connect(
-        &self,
-        ctx: Context,
-        mut stream: S,
-        destination: Authority,
-    ) -> Result<(), Error> {
+    async fn accept_connect(&self, mut stream: S, destination: Authority) -> Result<(), Error> {
         tracing::trace!(
             "socks5 server w/ destination {destination}: lazy connect: try to establish connection",
         );
@@ -392,7 +372,7 @@ where
         stream.extensions_mut().insert(ProxyTarget(destination));
 
         self.service
-            .serve(ctx, stream)
+            .serve(stream)
             .instrument(trace_span!("socks5::connect::lazy::serve"))
             .await
             .map_err(|err| Error::service(err).with_context("inner stream (proxy) service"))
@@ -455,7 +435,6 @@ mod test {
     {
         async fn accept_connect(
             &self,
-            _ctx: Context,
             mut stream: S,
             _destination: Authority,
         ) -> Result<(), Error> {

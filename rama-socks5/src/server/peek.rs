@@ -1,7 +1,7 @@
 use std::fmt;
 
 use rama_core::{
-    Context, Service,
+    Service,
     error::{BoxError, ErrorContext},
     extensions::ExtensionsMut,
     service::RejectService,
@@ -76,7 +76,7 @@ where
     type Response = Response;
     type Error = BoxError;
 
-    async fn serve(&self, ctx: Context, mut stream: Stream) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut stream: Stream) -> Result<Self::Response, Self::Error> {
         let mut peek_buf = [0u8; SOCKS5_HEADER_PEEK_LEN];
         let n = stream
             .read(&mut peek_buf)
@@ -105,12 +105,9 @@ where
         let stream = PeekStream::new(peek, stream);
 
         if is_socks5 {
-            self.socks5_acceptor
-                .serve(ctx, stream)
-                .await
-                .map_err(Into::into)
+            self.socks5_acceptor.serve(stream).await.map_err(Into::into)
         } else {
-            self.fallback.serve(ctx, stream).await.map_err(Into::into)
+            self.fallback.serve(stream).await.map_err(Into::into)
         }
     }
 }
@@ -135,70 +132,55 @@ mod test {
 
     #[tokio::test]
     async fn test_peek_router() {
-        let socks5_service = service_fn(async |_, _| Ok::<_, Infallible>("socks5"));
-        let other_service = service_fn(async |_, _| Ok::<_, Infallible>("other"));
+        let socks5_service = service_fn(async || Ok::<_, Infallible>("socks5"));
+        let other_service = service_fn(async || Ok::<_, Infallible>("other"));
 
         let peek_socks5_svc = Socks5PeekRouter::new(socks5_service).with_fallback(other_service);
 
         let response = peek_socks5_svc
-            .serve(
-                Context::default(),
-                ServiceInput::new(std::io::Cursor::new(b"".to_vec())),
-            )
+            .serve(ServiceInput::new(std::io::Cursor::new(b"".to_vec())))
             .await
             .unwrap();
         assert_eq!("other", response);
 
         let response = peek_socks5_svc
-            .serve(
-                Context::default(),
-                ServiceInput::new(std::io::Cursor::new(b"\x05\x01\x00".to_vec())),
-            )
+            .serve(ServiceInput::new(std::io::Cursor::new(
+                b"\x05\x01\x00".to_vec(),
+            )))
             .await
             .unwrap();
         assert_eq!("socks5", response);
 
         let response = peek_socks5_svc
-            .serve(
-                Context::default(),
-                ServiceInput::new(std::io::Cursor::new(b"\x05\x01\x00foobar".to_vec())),
-            )
+            .serve(ServiceInput::new(std::io::Cursor::new(
+                b"\x05\x01\x00foobar".to_vec(),
+            )))
             .await
             .unwrap();
         assert_eq!("socks5", response);
 
         let response = peek_socks5_svc
-            .serve(
-                Context::default(),
-                ServiceInput::new(std::io::Cursor::new(b"\x05\x02\x01\x00".to_vec())),
-            )
+            .serve(ServiceInput::new(std::io::Cursor::new(
+                b"\x05\x02\x01\x00".to_vec(),
+            )))
             .await
             .unwrap();
         assert_eq!("socks5", response);
 
         let response = peek_socks5_svc
-            .serve(
-                Context::default(),
-                ServiceInput::new(std::io::Cursor::new(b"fo".to_vec())),
-            )
+            .serve(ServiceInput::new(std::io::Cursor::new(b"fo".to_vec())))
             .await
             .unwrap();
         assert_eq!("other", response);
 
         let response = peek_socks5_svc
-            .serve(
-                Context::default(),
-                ServiceInput::new(std::io::Cursor::new(b"foo".to_vec())),
-            )
+            .serve(ServiceInput::new(std::io::Cursor::new(b"foo".to_vec())))
             .await
             .unwrap();
         assert_eq!("other", response);
 
         let response = peek_socks5_svc
-            .serve(
-                Context::default(),
-                ServiceInput::new(std::io::Cursor::new(b"foobar".to_vec())),
-            )
+            .serve(ServiceInput::new(std::io::Cursor::new(b"foobar".to_vec())))
             .await
             .unwrap();
         assert_eq!("other", response);
@@ -227,10 +209,7 @@ mod test {
         ));
 
         let response = peek_socks5_svc
-            .serve(
-                Context::default(),
-                ServiceInput::new(std::io::Cursor::new(CONTENT.to_vec())),
-            )
+            .serve(ServiceInput::new(std::io::Cursor::new(CONTENT.to_vec())))
             .await
             .unwrap();
         assert_eq!("ok", response);
@@ -267,10 +246,9 @@ mod test {
                 Socks5PeekRouter::new(socks5_service).with_fallback(other_service);
 
             let response = peek_socks5_svc
-                .serve(
-                    Context::default(),
-                    ServiceInput::new(std::io::Cursor::new(content.as_bytes().to_vec())),
-                )
+                .serve(ServiceInput::new(std::io::Cursor::new(
+                    content.as_bytes().to_vec(),
+                )))
                 .await
                 .unwrap();
 

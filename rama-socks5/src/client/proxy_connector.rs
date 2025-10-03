@@ -1,6 +1,6 @@
 use crate::{Socks5Client, client::proxy_error::Socks5ProxyError};
 use rama_core::{
-    Context, Layer, Service,
+    Layer, Service,
     error::{BoxError, ErrorExt, OpaqueError},
     extensions::ExtensionsMut,
     stream::Stream,
@@ -349,7 +349,7 @@ where
     type Response = EstablishedClientConnection<S::Connection, Request>;
     type Error = BoxError;
 
-    async fn serve(&self, ctx: Context, mut req: Request) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut req: Request) -> Result<Self::Response, Self::Error> {
         let address = req.extensions_mut().remove::<ProxyAddress>();
         if !address
             .as_ref()
@@ -380,7 +380,7 @@ where
 
         let established_conn =
             self.inner
-                .connect(ctx, req)
+                .connect(req)
                 .await
                 .map_err(|err| match address.as_ref() {
                     Some(address) => OpaqueError::from_std(Socks5ProxyError::Transport(
@@ -409,9 +409,9 @@ where
         };
         // and do the handshake otherwise...
 
-        let EstablishedClientConnection { ctx, req, mut conn } = established_conn;
+        let EstablishedClientConnection { req, mut conn } = established_conn;
 
-        let transport_ctx = req.try_ref_into_transport_ctx(&ctx).map_err(|err| {
+        let transport_ctx = req.try_ref_into_transport_ctx().map_err(|err| {
             OpaqueError::from_boxed(err.into())
                 .context("socks5 proxy connector: get transport context")
         })?;
@@ -472,6 +472,6 @@ where
             Err(err) => return Err(Box::new(Socks5ProxyError::Handshake(err))),
         }
 
-        Ok(EstablishedClientConnection { ctx, req, conn })
+        Ok(EstablishedClientConnection { req, conn })
     }
 }

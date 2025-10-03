@@ -1,7 +1,7 @@
 use std::{fmt, time::Duration};
 
 use rama_core::{
-    Context, Service, combinators::Either, error::BoxError, extensions::ExtensionsMut,
+    Service, combinators::Either, error::BoxError, extensions::ExtensionsMut,
     layer::timeout::DefaultTimeout, stream::Stream, telemetry::tracing,
 };
 use rama_net::{
@@ -46,7 +46,7 @@ impl<S, C> Socks5UdpAssociator<S> for C where C: Socks5UdpAssociatorSeal<S> {}
 pub trait Socks5UdpAssociatorSeal<S>: Send + Sync + 'static {
     fn accept_udp_associate(
         &self,
-        ctx: Context,
+
         stream: S,
         destination: Authority,
     ) -> impl Future<Output = Result<(), Error>> + Send + '_
@@ -60,7 +60,7 @@ where
 {
     async fn accept_udp_associate(
         &self,
-        _ctx: Context,
+
         mut stream: S,
         destination: Authority,
     ) -> Result<(), Error> {
@@ -85,16 +85,12 @@ where
 pub struct DefaultUdpBinder;
 
 impl Service<Interface> for DefaultUdpBinder {
-    type Response = (UdpSocket, Context);
+    type Response = UdpSocket;
     type Error = BoxError;
 
-    async fn serve(
-        &self,
-        ctx: Context,
-        interface: Interface,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, interface: Interface) -> Result<Self::Response, Self::Error> {
         let socket = UdpSocket::bind(interface).await?;
-        Ok((socket, ctx))
+        Ok(socket)
     }
 }
 
@@ -444,7 +440,7 @@ where
 {
     async fn accept_udp_associate(
         &self,
-        ctx: Context,
+
         mut stream: S,
         destination: Authority,
     ) -> Result<(), Error> {
@@ -473,11 +469,7 @@ where
         };
         let client_address = SocketAddress::new(dest_addr, dest_port);
 
-        let (socket_north, ctx) = match self
-            .binder
-            .bind(ctx, self.bind_north_interface.clone())
-            .await
-        {
+        let socket_north = match self.binder.bind(self.bind_north_interface.clone()).await {
             Ok(twin) => twin,
             Err(err) => {
                 let err = err.into();
@@ -516,11 +508,7 @@ where
             }
         };
 
-        let (socket_south, ctx) = match self
-            .binder
-            .bind(ctx, self.bind_south_interface.clone())
-            .await
-        {
+        let socket_south = match self.binder.bind(self.bind_south_interface.clone()).await {
             Ok(twin) => twin,
             Err(err) => {
                 let err = err.into();
@@ -557,7 +545,6 @@ where
         });
 
         let udp_relay = self.inspector.proxy_udp_packets(
-            ctx,
             extensions,
             client_address,
             socket_north,
