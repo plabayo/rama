@@ -80,6 +80,16 @@ impl Domain {
         self.0.strip_prefix("*.").map(|s| Self(s.into()))
     }
 
+    /// Try to create a subdomain from the current [`Domain`] with the given
+    /// subdomain prefixed to it
+    pub fn try_as_sub(&self, sub: impl AsDomainRef) -> Result<Self, OpaqueError> {
+        let sub = smol_str::format_smolstr!("{}.{}", sub.domain_as_str(), self.0);
+        if !is_valid_name(sub.as_bytes()) {
+            return Err(OpaqueError::from_display("invalid subdomain"));
+        }
+        Ok(Self(sub))
+    }
+
     /// Returns `true` if this [`Domain`] is a parent of the other.
     ///
     /// Note that a [`Domain`] is a sub of itself.
@@ -674,6 +684,42 @@ mod tests {
             let a = Domain::from_static(a);
             let b = Domain::from_static(b);
             assert!(a.is_parent_of(&b), "({a:?}).is_parent_of({b})");
+        }
+    }
+
+    #[test]
+    fn as_sub_success() {
+        let test_cases = vec![
+            ("example.com", "www", "www.example.com"),
+            ("fp.ramaproxy.org", "h1", "h1.fp.ramaproxy.org"),
+            (
+                // long, but just within limit (251+2)
+                "dadadadadadadadadad.llgwyngyllgogerychwyrndrobwllllantysiliogogogoch.llanfairpwllgwyngyllgogerychwyrndrobwllllantysiliogogogoch.llanfairpwllgwyngyllgogerychwyrndrobwllllantysiliogogogoch.llanfairpwllgwyngyllgogerychwyrndrobwllllantysiliogogogoch.co.uk",
+                "a",
+                "a.dadadadadadadadadad.llgwyngyllgogerychwyrndrobwllllantysiliogogogoch.llanfairpwllgwyngyllgogerychwyrndrobwllllantysiliogogogoch.llanfairpwllgwyngyllgogerychwyrndrobwllllantysiliogogogoch.llanfairpwllgwyngyllgogerychwyrndrobwllllantysiliogogogoch.co.uk",
+            ),
+        ];
+        for (domain_raw, sub, expected_output) in test_cases.into_iter() {
+            let domain = Domain::from_static(domain_raw);
+            let msg = format!("{:?}", (domain_raw, sub, expected_output));
+            let subdomain = domain.try_as_sub(sub).expect(&msg);
+            assert_eq!(expected_output, subdomain);
+        }
+    }
+
+    #[test]
+    fn as_sub_failure() {
+        let test_cases = vec![
+            // too long (254 > 253)
+            (
+                "adadadadadadadadadad.llgwyngyllgogerychwyrndrobwllllantysiliogogogoch.llanfairpwllgwyngyllgogerychwyrndrobwllllantysiliogogogoch.llanfairpwllgwyngyllgogerychwyrndrobwllllantysiliogogogoch.llanfairpwllgwyngyllgogerychwyrndrobwllllantysiliogogogoch.co.uk",
+                "a",
+            ),
+        ];
+        for (domain_raw, sub) in test_cases.into_iter() {
+            let domain = Domain::from_static(domain_raw);
+            let msg = format!("{:?}", (domain_raw, sub));
+            let _ = domain.try_as_sub(sub).expect_err(&msg);
         }
     }
 
