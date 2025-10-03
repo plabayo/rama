@@ -91,17 +91,17 @@ mod tests {
 
         req.extensions_mut()
             .insert(TargetHttpVersion(Version::HTTP_2));
-        let (ctx, mut req) = adapter.serve(Context::default(), req).await.unwrap();
+        let (ctx, mut req) = adapter.serve(req).await.unwrap();
         assert_eq!(req.version(), Version::HTTP_2);
 
         req.extensions_mut()
             .insert(TargetHttpVersion(Version::HTTP_11));
-        let (ctx, mut req) = adapter.serve(ctx, req).await.unwrap();
+        let (ctx, mut req) = adapter.serve(req).await.unwrap();
         assert_eq!(req.version(), Version::HTTP_11);
 
         req.extensions_mut()
             .insert(TargetHttpVersion(Version::HTTP_3));
-        let (_ctx, req) = adapter.serve(ctx, req).await.unwrap();
+        let (_ctx, req) = adapter.serve(req).await.unwrap();
         assert_eq!(req.version(), Version::HTTP_3);
     }
 
@@ -112,7 +112,7 @@ mod tests {
         *req.version_mut() = Version::HTTP_2;
 
         assert_eq!(req.version(), Version::HTTP_2);
-        let (_ctx, req) = adapter.serve(Context::default(), req).await.unwrap();
+        let (_ctx, req) = adapter.serve(req).await.unwrap();
         assert_eq!(req.version(), Version::HTTP_11);
     }
 }

@@ -1,5 +1,5 @@
 use rama_core::{
-    Context, Layer, Service,
+    Layer, Service,
     error::{ErrorContext, OpaqueError},
     extensions::ExtensionsMut,
     telemetry::tracing,
@@ -199,6 +199,6 @@ where
             );
             req.extensions_mut().insert(address.clone());
         }
-        self.inner.serve(ctx, req)
+        self.inner.serve(req)
     }
 }

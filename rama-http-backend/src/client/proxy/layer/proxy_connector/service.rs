@@ -128,7 +128,7 @@ where
     type Response = EstablishedClientConnection<MaybeHttpProxiedConnection<S::Connection>, Request>;
     type Error = BoxError;
 
-    async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
         let address = req.extensions().get::<ProxyAddress>().cloned();
         if !address
             .as_ref()
@@ -142,7 +142,7 @@ where
             .into_boxed());
         }
 
-        let transport_ctx = req.try_ref_into_transport_ctx(&ctx).map_err(|err| {
+        let transport_ctx = req.try_ref_into_transport_ctx().map_err(|err| {
             OpaqueError::from_boxed(err.into())
                 .context("http proxy connector: get transport context")
         })?;
@@ -171,7 +171,7 @@ where
 
         let established_conn =
             self.inner
-                .connect(ctx, req)
+                .connect(req)
                 .await
                 .map_err(|err| match address.as_ref() {
                     Some(address) => OpaqueError::from_std(HttpProxyError::Transport(
@@ -195,9 +195,8 @@ where
                 tracing::trace!(
                     "http proxy connector: no proxy required or set: proceed with direct connection"
                 );
-                let EstablishedClientConnection { ctx, req, conn } = established_conn;
+                let EstablishedClientConnection { req, conn } = established_conn;
                 return Ok(EstablishedClientConnection {
-                    ctx,
                     req,
                     conn: MaybeHttpProxiedConnection::direct(conn),
                 });
@@ -205,7 +204,7 @@ where
         };
         // and do the handshake otherwise...
 
-        let EstablishedClientConnection { ctx, req, conn } = established_conn;
+        let EstablishedClientConnection { req, conn } = established_conn;
 
         tracing::trace!(
             server.address = %transport_ctx.authority.host(),
@@ -223,7 +222,6 @@ where
             // we do however need to add authorization headers if credentials are present
             // => for this the user has to use another middleware as we do not have access to that here
             return Ok(EstablishedClientConnection {
-                ctx,
                 req,
                 conn: MaybeHttpProxiedConnection::proxied(conn),
             });
@@ -262,7 +260,7 @@ where
             server.port = %transport_ctx.authority.port(),
             "http proxy connector: connected to proxy: ready secure request",
         );
-        Ok(EstablishedClientConnection { ctx, req, conn })
+        Ok(EstablishedClientConnection { req, conn })
     }
 }
 

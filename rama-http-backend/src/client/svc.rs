@@ -119,7 +119,7 @@ where
         //
         // TODO: fix this in hyper fork (embedded in rama http core)
         // directly instead of here...
-        let req = sanitize_client_req_header(&ctx, req)?;
+        let req = sanitize_client_req_header(req)?;
 
         let req_extensions = req.extensions().clone();
 
@@ -167,7 +167,7 @@ impl<B, I> ExtensionsMut for HttpClientService<B, I> {
     }
 }
 
-fn sanitize_client_req_header<B>(ctx: &Context, req: Request<B>) -> Result<Request<B>, BoxError> {
+fn sanitize_client_req_header<B>(req: Request<B>) -> Result<Request<B>, BoxError> {
     // logic specific to this method
     if req.method() == Method::CONNECT && req.uri().host().is_none() {
         return Err(OpaqueError::from_display("missing host in CONNECT request").into());
@@ -375,7 +375,7 @@ mod tests {
 
             let req = Request::builder().uri(uri).method(method).body(()).unwrap();
             let ctx = Context::default();
-            let req = sanitize_client_req_header(&ctx, req).unwrap();
+            let req = sanitize_client_req_header(req).unwrap();
 
             let (parts, _) = req.into_parts();
             let uri = parts.uri.into_parts();
@@ -400,7 +400,7 @@ mod tests {
             .body(())
             .unwrap();
         let ctx = Context::default();
-        let req = sanitize_client_req_header(&ctx, req).unwrap();
+        let req = sanitize_client_req_header(req).unwrap();
 
         let (parts, _) = req.into_parts();
         let uri = parts.uri.into_parts();
@@ -427,7 +427,7 @@ mod tests {
             protocol: Some(Protocol::HTTP),
         });
 
-        let req = sanitize_client_req_header(&ctx, req).unwrap();
+        let req = sanitize_client_req_header(req).unwrap();
 
         let (parts, _) = req.into_parts();
         let uri = parts.uri.into_parts();
@@ -454,7 +454,7 @@ mod tests {
             protocol: Some(Protocol::HTTP),
         });
 
-        let req = sanitize_client_req_header(&ctx, req).unwrap();
+        let req = sanitize_client_req_header(req).unwrap();
 
         let (parts, _) = req.into_parts();
         let uri = parts.uri.into_parts();
@@ -481,7 +481,7 @@ mod tests {
             protocol: Some(Protocol::SOCKS5),
         });
 
-        let req = sanitize_client_req_header(&ctx, req).unwrap();
+        let req = sanitize_client_req_header(req).unwrap();
 
         let (parts, _) = req.into_parts();
         let uri = parts.uri.into_parts();

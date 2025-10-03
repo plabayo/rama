@@ -89,7 +89,7 @@ where
     async fn serve(&self, ctx: Context, mut req: Request) -> Result<Self::Response, Self::Error> {
         let mut ext = Extensions::new();
         for handler in &self.handlers {
-            if !handler.matcher.matches(Some(&mut ext), &ctx, &req) {
+            if !handler.matcher.matches(Some(&mut ext), &req) {
                 ext.clear();
                 continue;
             }
@@ -100,7 +100,7 @@ where
                 .cloned()
                 .unwrap_or_default();
 
-            return match handler.responder.serve(ctx, req).await {
+            return match handler.responder.serve(req).await {
                 Ok((resp, ctx, mut req)) => {
                     let handler = handler.handler.clone();
 
@@ -121,7 +121,7 @@ where
                             match rama_http::io::upgrade::on(&mut req).await {
                                 Ok(mut upgraded) => {
                                     upgraded.extensions_mut().extend(req.take_extensions());
-                                    let _ = handler.serve(ctx, upgraded).await;
+                                    let _ = handler.serve(upgraded).await;
                                 }
                                 Err(e) => {
                                     // TODO: do we need to allow the user to hook into this?
@@ -136,7 +136,7 @@ where
                 Err(e) => Ok(e),
             };
         }
-        self.inner.serve(ctx, req).await
+        self.inner.serve(req).await
     }
 }
 

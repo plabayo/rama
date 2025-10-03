@@ -74,7 +74,7 @@ mod tests {
             protocol_version: rama_net::tls::ProtocolVersion::TLSv1_3,
         });
 
-        let (_ctx, req) = modifier.serve(Context::default(), req).await.unwrap();
+        let (_ctx, req) = modifier.serve(req).await.unwrap();
 
         let target_version = req.extensions().get::<TargetHttpVersion>().unwrap();
         assert_eq!(target_version.0, Version::HTTP_11);
@@ -86,7 +86,7 @@ mod tests {
             protocol_version: rama_net::tls::ProtocolVersion::TLSv1_3,
         });
 
-        let (_ctx, req) = modifier.serve(Context::default(), req).await.unwrap();
+        let (_ctx, req) = modifier.serve(req).await.unwrap();
 
         let target_version = req.extensions().get::<TargetHttpVersion>().unwrap();
         assert_eq!(target_version.0, Version::HTTP_2);
@@ -105,7 +105,7 @@ mod tests {
         req.extensions_mut()
             .insert(TargetHttpVersion(Version::HTTP_2));
 
-        let result = modifier.serve(Context::default(), req).await;
+        let result = modifier.serve(req).await;
         assert_err!(result);
     }
 }

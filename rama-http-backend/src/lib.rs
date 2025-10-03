@@ -52,8 +52,8 @@ mod tests {
         // For http1.1 this will result in pipelining (http2 will still be multiplexed)
         let start = Instant::now();
         let (res1, res2) = join(
-            conn.serve(Context::default(), create_test_request(Version::HTTP_11)),
-            conn.serve(Context::default(), create_test_request(Version::HTTP_11)),
+            conn.serve(create_test_request(Version::HTTP_11)),
+            conn.serve(create_test_request(Version::HTTP_11)),
         )
         .await;
         let duration = start.elapsed();
@@ -80,8 +80,8 @@ mod tests {
         // We have an artificial sleep of 100ms, so multiplexing should be < 200ms
         let start = Instant::now();
         let (res1, res2) = join(
-            conn.serve(Context::default(), create_test_request(Version::HTTP_2)),
-            conn.serve(Context::default(), create_test_request(Version::HTTP_2)),
+            conn.serve(create_test_request(Version::HTTP_2)),
+            conn.serve(create_test_request(Version::HTTP_2)),
         )
         .await;
 

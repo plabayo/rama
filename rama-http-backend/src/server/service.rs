@@ -164,7 +164,7 @@ where
         IO: Stream + ExtensionsMut,
     {
         self.builder
-            .http_core_serve_connection(ctx, stream, service)
+            .http_core_serve_connection(stream, service)
             .await
     }
 
@@ -260,6 +260,6 @@ where
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
         let service = self.service.clone();
         self.builder
-            .http_core_serve_connection(ctx, stream, service)
+            .http_core_serve_connection(stream, service)
     }
 }
