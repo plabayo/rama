@@ -231,7 +231,13 @@ async fn http_connect_proxy(ctx: Context, upgraded: Upgraded) -> Result<(), Infa
     let state = upgraded.extensions().get::<State>().unwrap();
     let http_service = new_http_mitm_proxy(state);
 
-    let mut http_tp = HttpServer::auto(ctx.executor().clone());
+    let executor = upgraded
+        .extensions()
+        .get::<Executor>()
+        .cloned()
+        .unwrap_or_default();
+
+    let mut http_tp = HttpServer::auto(executor);
     http_tp.h2_mut().enable_connect_protocol();
 
     let http_transport_service = http_tp.service(http_service);
@@ -285,6 +291,12 @@ async fn http_mitm_proxy(ctx: Context, req: Request) -> Result<Response, Infalli
     };
     let base_tls_config = base_tls_config.with_server_verify_mode(ServerVerifyMode::Disable);
 
+    let executor = req
+        .extensions()
+        .get::<Executor>()
+        .cloned()
+        .unwrap_or_default();
+
     // NOTE: in a production proxy you most likely
     // wouldn't want to build this each invocation,
     // but instead have a pre-built one as a struct local
@@ -303,7 +315,7 @@ async fn http_mitm_proxy(ctx: Context, req: Request) -> Result<Response, Infalli
             // you also usually do not want it as a layer, but instead plug the inspector
             // directly JIT-style into your http (client) connector.
             RequestWriterInspector::stdout_unbounded(
-                ctx.executor(),
+                &executor,
                 Some(traffic_writer::WriterMode::Headers),
             ),
         ))
@@ -348,7 +360,7 @@ fn new_mitm_tls_service_data() -> Result<TlsAcceptorData, OpaqueError> {
         .context("create tls server config")
 }
 
-async fn mitm_websocket<S>(client: &S, ctx: Context, req: Request) -> Response
+async fn mitm_websocket<S>(client: &S, _ctx: Context, req: Request) -> Response
 where
     S: Service<Request, Response = Response, Error = OpaqueError>,
 {
@@ -358,7 +370,11 @@ where
     let parts_copy = parts.clone();
 
     let req = Request::from_parts(parts, body);
-    let guard = ctx.guard().cloned();
+    let guard = req
+        .extensions()
+        .get::<Executor>()
+        .and_then(|exec| exec.guard())
+        .cloned();
     let cancel = async move {
         match guard {
             Some(guard) => guard.downgrade().into_cancelled().await,

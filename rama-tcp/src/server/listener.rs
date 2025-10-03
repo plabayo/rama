@@ -270,7 +270,6 @@ impl TcpListener {
     where
         S: Service<TcpStream>,
     {
-        let ctx = Context::new(Executor::new());
         let service = Arc::new(service);
 
         loop {
@@ -285,7 +284,7 @@ impl TcpListener {
             let mut socket = TcpStream::new(socket);
 
             let service = service.clone();
-            let ctx = ctx.clone();
+            let ctx = Context::default();
 
             let local_addr = socket.local_addr().ok();
             let trace_local_addr = local_addr
@@ -304,6 +303,7 @@ impl TcpListener {
 
             let socket_info = SocketInfo::new(local_addr, peer_addr);
             socket.extensions_mut().insert(socket_info);
+            socket.extensions_mut().insert(Executor::new());
 
             tokio::spawn(
                 async move {
@@ -323,7 +323,6 @@ impl TcpListener {
     where
         S: Service<TcpStream>,
     {
-        let ctx: Context = Context::new(Executor::graceful(guard.clone()));
         let service = Arc::new(service);
         let mut cancelled_fut = pin!(guard.cancelled());
 
@@ -338,7 +337,7 @@ impl TcpListener {
                         Ok((socket, peer_addr)) => {
                             let mut socket = TcpStream::new(socket);
                             let service = service.clone();
-                            let  ctx = ctx.clone();
+                            let ctx = Context::default();
 
                             let local_addr = socket.local_addr().ok();
                             let trace_local_addr = local_addr
@@ -356,6 +355,7 @@ impl TcpListener {
                             );
 
                             socket.extensions_mut().insert(SocketInfo::new(local_addr, peer_addr));
+                            socket.extensions_mut().insert(Executor::graceful(guard.clone()));
 
                             guard.spawn_task(async move {
                                 let _ = service.serve(ctx, socket).await;

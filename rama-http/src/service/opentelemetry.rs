@@ -4,7 +4,6 @@ use rama_core::{
     Context, Service,
     bytes::Bytes,
     error::{BoxError, ErrorContext},
-    rt::Executor,
 };
 use std::{fmt, pin::Pin};
 
@@ -50,27 +49,6 @@ impl<S> OtelExporter<S> {
             ctx: Context::default(),
             handle: tokio::runtime::Handle::current(),
         }
-    }
-
-    /// Set a new [`Executor`] to the [`OtelExporter`].
-    ///
-    /// Useful in acse you want to make it graceful,
-    /// most likely it is however not what you really want to do,
-    /// given most exporters live on their own island.
-    pub fn set_executor(&mut self, exec: Executor) -> &mut Self {
-        self.ctx.set_executor(exec);
-        self
-    }
-
-    /// Set a new [`Executor`] to the [`OtelExporter`].
-    ///
-    /// Useful in acse you want to make it graceful,
-    /// most likely it is however not what you really want to do,
-    /// given most exporters live on their own island.
-    #[must_use]
-    pub fn with_executor(mut self, exec: Executor) -> Self {
-        self.ctx.set_executor(exec);
-        self
     }
 }
 

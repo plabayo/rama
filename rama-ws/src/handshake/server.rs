@@ -8,10 +8,10 @@ use std::{
 use rama_core::{
     Context, Service,
     error::{ErrorContext, OpaqueError},
-    extensions::Extensions,
-    extensions::{ExtensionsMut, ExtensionsRef},
+    extensions::{Extensions, ExtensionsMut, ExtensionsRef},
     futures::{StreamExt, TryStreamExt},
     matcher::Matcher,
+    rt::Executor,
     telemetry::tracing::{self, Instrument},
 };
 #[cfg(feature = "compression")]
@@ -763,7 +763,11 @@ where
                     network.protocol.name = "ws",
                 );
 
-                let exec = ctx.executor().clone();
+                let exec = req
+                    .extensions()
+                    .get::<Executor>()
+                    .cloned()
+                    .unwrap_or_default();
 
                 exec.spawn_task(
                     async move {

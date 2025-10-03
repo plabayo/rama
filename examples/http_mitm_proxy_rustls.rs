@@ -177,7 +177,12 @@ async fn http_connect_proxy(ctx: Context, upgraded: Upgraded) -> Result<(), Infa
 
     let http_service = new_http_mitm_proxy();
 
-    let http_transport_service = HttpServer::auto(ctx.executor().clone()).service(http_service);
+    let executor = upgraded
+        .extensions()
+        .get::<Executor>()
+        .cloned()
+        .unwrap_or_default();
+    let http_transport_service = HttpServer::auto(executor).service(http_service);
 
     let https_service = TlsAcceptorLayer::new(
         upgraded

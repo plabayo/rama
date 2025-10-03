@@ -135,6 +135,12 @@ async fn http_mitm_proxy(ctx: Context, req: Request) -> Result<Response, Infalli
         .with_server_verify_mode(ServerVerifyMode::Disable)
         .into_shared_builder();
 
+    let executor = req
+        .extensions()
+        .get::<Executor>()
+        .cloned()
+        .unwrap_or_default();
+
     let client = EasyHttpWebClient::builder()
         .with_default_transport_connector()
         .with_tls_proxy_support_using_boringssl()
@@ -148,7 +154,7 @@ async fn http_mitm_proxy(ctx: Context, req: Request) -> Result<Response, Infalli
             // you also usually do not want it as a layer, but instead plug the inspector
             // directly JIT-style into your http (client) connector.
             RequestWriterInspector::stdout_unbounded(
-                ctx.executor(),
+                &executor,
                 Some(traffic_writer::WriterMode::Headers),
             ),
         ))
