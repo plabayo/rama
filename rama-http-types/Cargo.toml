@@ -21,6 +21,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 default = []
 
 [dependencies]
+ahash = { workspace = true }
 bytes = { workspace = true }
 const_format = { workspace = true }
 fnv = { workspace = true }

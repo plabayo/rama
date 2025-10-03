@@ -1,7 +1,7 @@
+use ahash::HashMap;
 use chrono::{DateTime, FixedOffset, NaiveDateTime, TimeZone, Utc};
 use rama_core::error::{ErrorContext, OpaqueError};
 use rama_core::telemetry::tracing;
-use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
 use std::str::FromStr;
 use std::sync::OnceLock;

@@ -27,6 +27,7 @@ default = []
 unstable = []
 
 [dependencies]
+ahash = { workspace = true }
 atomic-waker = { workspace = true }
 futures-channel = { workspace = true }
 httparse = { workspace = true }

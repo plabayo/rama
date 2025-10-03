@@ -23,6 +23,7 @@ compression = ["dep:flate2", "dep:brotli", "dep:zstd"]
 ua = ["dep:rama-ua"]
 
 [dependencies]
+ahash = { workspace = true }
 brotli = { workspace = true, optional = true }
 flate2 = { workspace = true, optional = true }
 flume = { workspace = true, features = ["async"] }

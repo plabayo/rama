@@ -75,9 +75,10 @@ use rama::{
     telemetry::tracing::{self, level_filters::LevelFilter},
 };
 
+use ahash::HashMap;
 use serde::Deserialize;
 use serde_json::json;
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;

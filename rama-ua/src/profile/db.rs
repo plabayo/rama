@@ -1,6 +1,6 @@
+use ahash::HashMap;
 use itertools::Itertools as _;
 use rand::seq::IndexedRandom as _;
-use std::collections::HashMap;
 
 use crate::{DeviceKind, PlatformKind, UserAgent, UserAgentKind, profile::UserAgentProfile};
 
@@ -268,6 +268,7 @@ impl FromIterator<UserAgentProfile> for UserAgentDatabase {
 mod tests {
     use std::sync::Arc;
 
+    use ahash::{HashSet, HashSetExt as _};
     use rama_http_types::{HeaderValue, header::USER_AGENT, proto::h1::Http1HeaderMap};
 
     use super::*;
@@ -459,7 +460,7 @@ mod tests {
     fn test_ua_db_rnd() {
         let db = get_dummy_ua_db();
 
-        let mut set = std::collections::HashSet::new();
+        let mut set = HashSet::new();
         for _ in 0..db.len() * 1000 {
             let rnd = db.rnd().unwrap();
             set.insert(

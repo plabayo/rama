@@ -48,9 +48,11 @@ use rama::{
     tcp::{TcpStream, server::TcpListener},
     telemetry::tracing::{self, level_filters::LevelFilter},
 };
+
+use ahash::HashSet;
 /// Everything else we need is provided by the standard library, community crates or tokio.
 use serde::Deserialize;
-use std::{collections::HashSet, net::IpAddr, sync::Arc, time::Duration};
+use std::{net::IpAddr, sync::Arc, time::Duration};
 use tokio::sync::Mutex;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;

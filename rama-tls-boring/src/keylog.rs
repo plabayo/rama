@@ -4,11 +4,12 @@
 //! Center to this module is the `KeyLogger` which is a wrapper around
 //! a FS file
 
+use ahash::HashMap;
 use parking_lot::RwLock;
 use rama_core::error::{ErrorContext, OpaqueError};
 use rama_core::telemetry::tracing;
 use std::{
-    collections::{HashMap, hash_map::Entry},
+    collections::hash_map::Entry,
     fs::OpenOptions,
     io::Write,
     path::{Component, Path, PathBuf},

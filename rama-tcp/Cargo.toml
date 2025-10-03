@@ -32,6 +32,7 @@ rand = { workspace = true }
 tokio = { workspace = true, features = ["macros", "net"] }
 
 [dev-dependencies]
+ahash = { workspace = true }
 
 [lints]
 workspace = true

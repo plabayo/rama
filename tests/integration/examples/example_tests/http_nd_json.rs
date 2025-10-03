@@ -9,8 +9,8 @@ use rama::{
     },
 };
 
+use ahash::{HashSet, HashSetExt as _};
 use serde::Deserialize;
-use std::collections::HashSet;
 
 #[tokio::test]
 #[ignore]

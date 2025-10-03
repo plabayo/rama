@@ -1,6 +1,6 @@
+use ahash::HashMap;
 use walkdir::WalkDir;
 
-use std::collections::HashMap;
 use std::env;
 use std::path::Path;
 

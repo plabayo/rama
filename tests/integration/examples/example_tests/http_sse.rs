@@ -1,6 +1,5 @@
-use std::collections::HashSet;
-
 use super::utils;
+use ahash::{HashSet, HashSetExt as _};
 use rama::{
     Context,
     futures::StreamExt,
