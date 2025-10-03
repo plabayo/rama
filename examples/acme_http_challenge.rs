@@ -156,7 +156,7 @@ async fn main() {
         .new_order(
             Context::default(),
             NewOrderPayload {
-                identifiers: vec![Identifier::Dns("example.com".into())],
+                identifiers: vec![Identifier::dns("example.com")],
                 ..Default::default()
             },
         )

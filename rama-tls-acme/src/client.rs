@@ -758,7 +758,7 @@ impl<'a> Order<'a> {
     ) -> Result<(PrivatePkcs8KeyDer<'_>, Certificate), OpaqueError> {
         let key_authorization = self.create_key_authorization(challenge)?;
 
-        let mut cert_params = rcgen::CertificateParams::new(vec![identifier.clone().into()])
+        let mut cert_params = rcgen::CertificateParams::new(vec![identifier.to_string()])
             .context("create certificate params")?;
         cert_params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
         cert_params.custom_extensions = vec![rcgen::CustomExtension::new_acme_identifier(

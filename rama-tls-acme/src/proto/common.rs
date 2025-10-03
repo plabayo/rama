@@ -1,19 +1,33 @@
-use std::borrow::Cow;
+use std::{borrow::Cow, fmt::Display};
 
 use rama_crypto::jose::{JWA, JWK};
+use rama_net::address::{Domain, IntoDomain};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
 #[serde(tag = "type", content = "value", rename_all = "camelCase")]
 /// Represent an identifier in an ACME order
 pub enum Identifier {
-    Dns(String),
+    Dns(Domain),
 }
 
-impl From<Identifier> for String {
-    fn from(identifier: Identifier) -> Self {
-        match identifier {
-            Identifier::Dns(value) => value,
+impl Identifier {
+    pub fn dns(domain: impl IntoDomain) -> Self {
+        Self::Dns(domain.into_domain())
+    }
+
+    #[must_use]
+    pub fn as_domain(&self) -> Option<&Domain> {
+        match self {
+            Self::Dns(domain) => Some(domain),
+        }
+    }
+}
+
+impl Display for Identifier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Dns(domain) => domain.fmt(f),
         }
     }
 }

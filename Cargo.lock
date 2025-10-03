@@ -2877,6 +2877,7 @@ dependencies = [
  "rama-core",
  "rama-crypto",
  "rama-http",
+ "rama-net",
  "rama-utils",
  "serde",
  "serde_json",

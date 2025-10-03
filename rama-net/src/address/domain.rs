@@ -476,6 +476,13 @@ impl AsDomainRef for &'static str {}
 impl AsDomainRef for Domain {}
 impl<T: seal::AsDomainRefPrivate> AsDomainRef for &T {}
 
+/// A trait which can be use by crates where a Domain is expected,
+/// it can however only be implemented by the rama-net rate.
+pub trait IntoDomain: seal::IntoDomainImpl {}
+
+impl IntoDomain for &'static str {}
+impl IntoDomain for Domain {}
+
 pub(super) mod seal {
     pub(in crate::address) trait AsDomainRefPrivate {
         fn domain_as_str(&self) -> &str;
@@ -499,6 +506,24 @@ pub(super) mod seal {
     impl<T: AsDomainRefPrivate> AsDomainRefPrivate for &T {
         fn domain_as_str(&self) -> &str {
             (**self).domain_as_str()
+        }
+    }
+
+    pub trait IntoDomainImpl {
+        fn into_domain(self) -> super::Domain;
+    }
+
+    impl IntoDomainImpl for &'static str {
+        #[inline]
+        fn into_domain(self) -> super::Domain {
+            super::Domain::from_static(self)
+        }
+    }
+
+    impl IntoDomainImpl for super::Domain {
+        #[inline]
+        fn into_domain(self) -> super::Domain {
+            self
         }
     }
 }

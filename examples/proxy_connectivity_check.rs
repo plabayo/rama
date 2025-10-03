@@ -53,7 +53,7 @@ use rama::{
     },
     layer::{ConsumeErrLayer, HijackLayer},
     net::{
-        address::{Domain, SocketAddress},
+        address::SocketAddress,
         http::{RequestContext, server::HttpPeekRouter},
         proxy::ProxyTarget,
         stream::ClientSocketInfo,
@@ -148,7 +148,7 @@ async fn main() {
         RemoveResponseHeaderLayer::hop_by_hop(),
         RemoveRequestHeaderLayer::hop_by_hop(),
         HijackLayer::new(
-            DomainMatcher::exact(Domain::from_static("example.com")),
+            DomainMatcher::exact("example.com"),
             new_example_hijack_svc(),
         ),
     )

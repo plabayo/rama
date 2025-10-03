@@ -23,6 +23,7 @@ parking_lot = { workspace = true }
 rama-core = { workspace = true }
 rama-crypto = { workspace = true }
 rama-http = { workspace = true }
+rama-net = { workspace = true }
 rama-utils = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

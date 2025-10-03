@@ -4,7 +4,7 @@ use rama_core::{
     Context,
     extensions::{Extensions, ExtensionsRef},
 };
-use rama_net::address::{Domain, Host};
+use rama_net::address::{Domain, Host, IntoDomain};
 use rama_net::http::RequestContext;
 
 #[derive(Debug, Clone)]
@@ -19,16 +19,22 @@ impl DomainMatcher {
     ///
     /// If the host is an Ip it will not match.
     #[must_use]
-    pub fn exact(domain: Domain) -> Self {
-        Self { domain, sub: false }
+    pub fn exact(domain: impl IntoDomain) -> Self {
+        Self {
+            domain: domain.into_domain(),
+            sub: false,
+        }
     }
     /// create a new domain matcher to match on a subdomain of the URI host match.
     ///
     /// Note that a domain is also a subdomain of itself, so this will also
     /// include all matches that [`Self::exact`] would capture.
     #[must_use]
-    pub fn sub(domain: Domain) -> Self {
-        Self { domain, sub: true }
+    pub fn sub(domain: impl IntoDomain) -> Self {
+        Self {
+            domain: domain.into_domain(),
+            sub: true,
+        }
     }
 }
 

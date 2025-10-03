@@ -414,7 +414,7 @@ mod tests {
 
         let obj = serde_json::from_str::<Authorization>(EXAMPLE).unwrap();
         assert_eq!(obj.status, AuthorizationStatus::Valid);
-        assert_eq!(obj.identifier, Identifier::Dns("www.example.org".into()));
+        assert_eq!(obj.identifier, Identifier::dns("www.example.org"));
         assert_eq!(obj.challenges.len(), 1);
         assert_eq!(obj.challenges[0].r#type, ChallengeType::Http01);
         assert_eq!(obj.challenges[0].status, ChallengeStatus::Valid);
