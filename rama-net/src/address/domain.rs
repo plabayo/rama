@@ -69,6 +69,61 @@ impl Domain {
         self.0.starts_with("*.")
     }
 
+    /// Returns `true` if this domain is Top-Level [`Domain`] (TLD).
+    ///
+    /// Note that we consider a country-level TLD (ccTLD) such as `org.uk`
+    /// also a TLD. That is we consider any `ccTLD` also `TLD`. While
+    /// not technically correct, in practice it is at least for the purposes
+    /// that we are aware of a non-meaningful distinction to make.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use rama_net::address::Domain;
+    ///
+    /// assert!(Domain::from_static("com").is_tld());
+    /// assert!(Domain::from_static(".com").is_tld());
+    /// assert!(Domain::from_static("co.uk").is_tld());
+    ///
+    /// assert!(!Domain::from_static("example.com").is_tld());
+    /// assert!(!Domain::from_static("example.co.uk").is_tld());
+    /// ```
+    #[must_use]
+    pub fn is_tld(&self) -> bool {
+        self.suffix()
+            .map(|s| cmp_domain(&self.0, s).is_eq())
+            .unwrap_or_default()
+    }
+
+    /// Returns `true` if this domain is Second-Level [`Domain`] (SLD).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use rama_net::address::Domain;
+    ///
+    /// assert!(!Domain::from_static("com").is_sld());
+    /// assert!(!Domain::from_static(".com").is_sld());
+    /// assert!(!Domain::from_static("co.uk").is_sld());
+    /// assert!(!Domain::from_static(".co.uk").is_sld());
+    ///
+    /// assert!(Domain::from_static(".example.com").is_sld());
+    /// assert!(Domain::from_static(".example.co.uk").is_sld());
+    ///
+    /// assert!(!Domain::from_static("foo.example.com").is_sld());
+    /// assert!(!Domain::from_static("foo.example.co.uk").is_sld());
+    /// ```
+    #[must_use]
+    pub fn is_sld(&self) -> bool {
+        self.suffix()
+            .and_then(|s| self.0.strip_suffix(s))
+            .map(|s| {
+                let s = s.trim_matches('.');
+                !(s.is_empty() || s.contains('.'))
+            })
+            .unwrap_or_default()
+    }
+
     /// Returns the parent of this wildcard domain,
     /// in case it is indeed a wildcast domain,
     /// otherwise `None` is returned.
@@ -487,7 +542,13 @@ const fn is_valid_name(name: &[u8]) -> bool {
 /// for non-move purposes.
 ///
 /// For example to compare it, or use it in a derived form.
-pub trait AsDomainRef: seal::AsDomainRefPrivate {}
+pub trait AsDomainRef: seal::AsDomainRefPrivate {
+    fn as_wildcard_parent(&self) -> Option<Domain> {
+        self.domain_as_str()
+            .strip_prefix("*.")
+            .and_then(|s| s.parse().ok())
+    }
+}
 
 impl AsDomainRef for &'static str {}
 impl AsDomainRef for Domain {}
@@ -776,6 +837,44 @@ mod tests {
             assert_eq!(Domain::from_static(a), Domain::from_static(b));
             assert_eq!(a, Domain::from_static(b));
             assert_eq!(a.to_owned(), Domain::from_static(b));
+        }
+    }
+
+    #[test]
+    fn is_tld() {
+        for (expected, input) in [
+            (true, ".com"),
+            (true, "com"),
+            (true, "co.uk"),
+            (true, ".co.uk"),
+            (false, "example.com"),
+            (false, "foo.uk"),
+            (false, "foo.example.com"),
+        ] {
+            assert_eq!(
+                expected,
+                Domain::from_static(input).is_tld(),
+                "input: {input}"
+            )
+        }
+    }
+
+    #[test]
+    fn is_sld() {
+        for (expected, input) in [
+            (false, "com"),
+            (false, "co.uk"),
+            (true, "example.com"),
+            (true, ".example.com"),
+            (true, "foo.uk"),
+            (true, ".foo.uk"),
+            (false, "foo.example.com"),
+        ] {
+            assert_eq!(
+                expected,
+                Domain::from_static(input).is_sld(),
+                "input: {input}"
+            )
         }
     }
 

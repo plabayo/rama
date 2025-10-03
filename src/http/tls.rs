@@ -5,7 +5,7 @@ use crate::http::{
     BodyExtractExt as _, Request, Response, StatusCode, Uri, client::EasyHttpWebClient,
     service::client::HttpClientExt as _,
 };
-use crate::net::address::{Domain, DomainParentMatch, DomainTrie};
+use crate::net::address::{AsDomainRef, Domain, DomainParentMatch, DomainTrie};
 use crate::net::tls::{
     DataEncoding,
     client::ClientHello,
@@ -17,7 +17,6 @@ use crate::{Context, Service, combinators::Either, service::BoxService};
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as ENGINE;
-use rama_net::address::AsDomainRef;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -114,10 +113,7 @@ impl CertIssuerHttpClient {
         if let Ok(allow_cn_csv_raw) = std::env::var("RAMA_TLS_REMOTE_CN_CSV") {
             for raw_cn_str in allow_cn_csv_raw.split(',') {
                 let cn: Domain = raw_cn_str.parse().expect("CN to be a valid domain");
-                match cn.as_wildcard_parent() {
-                    Some(parent_cn) => client.set_allow_parent_domain(parent_cn),
-                    None => client.set_allow_exact_domain(cn),
-                };
+                client.set_allow_domain(cn);
             }
         }
 
@@ -145,8 +141,12 @@ impl CertIssuerHttpClient {
         ///
         /// By default, if none of the `allow_*` setters are called
         /// the client will fetch for any client.
-        pub fn allow_exact_domain(mut self, domain: impl AsDomainRef) -> Self {
-            self.allow_list.get_or_insert_default().insert_domain(domain, DomainAllowMode::Exact);
+        pub fn allow_domain(mut self, domain: impl AsDomainRef) -> Self {
+            if let Some(parent) = domain.as_wildcard_parent() {
+                self.allow_list.get_or_insert_default().insert_domain(parent, DomainAllowMode::Parent);
+            } else {
+                self.allow_list.get_or_insert_default().insert_domain(domain, DomainAllowMode::Exact);
+            }
             self
         }
     }
@@ -156,8 +156,10 @@ impl CertIssuerHttpClient {
         ///
         /// By default, if none of the `allow_*` setters are called
         /// the client will fetch for any client.
-        pub fn allow_exact_domains(mut self, domains: impl Iterator<Item: AsDomainRef>) -> Self {
-            self.allow_list.get_or_insert_default().insert_domain_iter(domains, DomainAllowMode::Exact);
+        pub fn allow_domains(mut self, domains: impl IntoIterator<Item: AsDomainRef>) -> Self {
+            for domain in domains {
+                self.set_allow_domain(domain);
+            }
             self
         }
     }
