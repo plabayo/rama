@@ -286,14 +286,20 @@ impl Handle {
     }
 }
 
+#[warn(clippy::missing_trait_methods)]
 impl Stream for Handle {
     type Item = Result<Frame, Error>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         Pin::new(&mut self.codec).poll_next(cx)
     }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.codec.size_hint()
+    }
 }
 
+#[warn(clippy::missing_trait_methods)]
 impl AsyncRead for Handle {
     fn poll_read(
         mut self: Pin<&mut Self>,
@@ -304,6 +310,7 @@ impl AsyncRead for Handle {
     }
 }
 
+#[warn(clippy::missing_trait_methods)]
 impl AsyncWrite for Handle {
     fn poll_write(
         mut self: Pin<&mut Self>,
@@ -322,6 +329,18 @@ impl AsyncWrite for Handle {
         cx: &mut Context<'_>,
     ) -> Poll<Result<(), io::Error>> {
         Pin::new(self.codec.get_mut()).poll_shutdown(cx)
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        self.codec.get_ref().is_write_vectored()
+    }
+
+    fn poll_write_vectored(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bufs: &[io::IoSlice<'_>],
+    ) -> Poll<Result<usize, io::Error>> {
+        Pin::new(self.codec.get_mut()).poll_write_vectored(cx, bufs)
     }
 }
 

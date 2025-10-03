@@ -367,6 +367,7 @@ impl<T, B> FramedWrite<T, B> {
     }
 }
 
+#[warn(clippy::missing_trait_methods)]
 impl<T: AsyncRead + Unpin, B> AsyncRead for FramedWrite<T, B> {
     fn poll_read(
         mut self: Pin<&mut Self>,

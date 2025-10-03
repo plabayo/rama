@@ -216,6 +216,7 @@ impl<S: Debug> Debug for Connection<S> {
     }
 }
 
+#[warn(clippy::missing_trait_methods)]
 impl<Conn: AsyncWrite> AsyncWrite for MaybeProxiedConnection<Conn> {
     fn poll_write(
         self: Pin<&mut Self>,
@@ -273,6 +274,7 @@ impl<Conn: AsyncWrite> AsyncWrite for MaybeProxiedConnection<Conn> {
     }
 }
 
+#[warn(clippy::missing_trait_methods)]
 impl<Conn: AsyncRead> AsyncRead for MaybeProxiedConnection<Conn> {
     fn poll_read(
         self: Pin<&mut Self>,

@@ -195,6 +195,7 @@ impl ExtensionsMut for Upgraded {
     }
 }
 
+#[warn(clippy::missing_trait_methods)]
 impl AsyncRead for Upgraded {
     fn poll_read(
         mut self: Pin<&mut Self>,
@@ -205,6 +206,7 @@ impl AsyncRead for Upgraded {
     }
 }
 
+#[warn(clippy::missing_trait_methods)]
 impl AsyncWrite for Upgraded {
     fn poll_write(
         mut self: Pin<&mut Self>,

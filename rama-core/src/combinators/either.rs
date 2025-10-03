@@ -162,6 +162,7 @@ impl_either!(impl_iterator_either);
 #[doc(hidden)]
 macro_rules! __impl_async_read_write_either {
     ($id:ident, $($param:ident),+ $(,)?) => {
+        #[warn(clippy::missing_trait_methods)]
         impl<$($param),+> AsyncRead for $id<$($param),+>
         where
             $($param: AsyncRead),+,
@@ -179,6 +180,7 @@ macro_rules! __impl_async_read_write_either {
             }
         }
 
+        #[warn(clippy::missing_trait_methods)]
         impl<$($param),+> AsyncWrite for $id<$($param),+>
         where
             $($param: AsyncWrite),+,

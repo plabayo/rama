@@ -85,6 +85,7 @@ impl<S: ExtensionsMut> ExtensionsMut for AutoTlsStream<S> {
     }
 }
 
+#[warn(clippy::missing_trait_methods)]
 impl<S> AsyncRead for AutoTlsStream<S>
 where
     S: Stream + Unpin,
@@ -101,6 +102,7 @@ where
     }
 }
 
+#[warn(clippy::missing_trait_methods)]
 impl<S> AsyncWrite for AutoTlsStream<S>
 where
     S: Stream + Unpin,
