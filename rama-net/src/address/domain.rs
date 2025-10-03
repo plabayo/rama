@@ -90,6 +90,13 @@ impl Domain {
         Ok(Self(sub))
     }
 
+    /// Try to strip the subdomain (prefix) from the current domain.
+    pub fn strip_sub(&self, prefix: impl AsDomainRef) -> Option<Self> {
+        self.0
+            .strip_prefix(prefix.domain_as_str())
+            .and_then(|s| s.trim_start_matches('.').parse().ok())
+    }
+
     /// Returns `true` if this [`Domain`] is a parent of the other.
     ///
     /// Note that a [`Domain`] is a sub of itself.
@@ -720,6 +727,21 @@ mod tests {
             let domain = Domain::from_static(domain_raw);
             let msg = format!("{:?}", (domain_raw, sub));
             let _ = domain.try_as_sub(sub).expect_err(&msg);
+        }
+    }
+
+    #[test]
+    fn strip_sub() {
+        let test_cases = vec![
+            ("www.example.com", "www", Some("example.com")),
+            ("example.com", "www", None),
+            ("www.www.example.com", "www", Some("www.example.com")),
+        ];
+        for (sub_raw, prefix, expected_output) in test_cases.into_iter() {
+            let sub = Domain::from_static(sub_raw);
+            let result = sub.strip_sub(prefix);
+            let expected_result = expected_output.map(Domain::from_static);
+            assert_eq!(expected_result, result);
         }
     }
 
