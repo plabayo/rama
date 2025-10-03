@@ -4,8 +4,8 @@
 
 use std::fmt;
 
+use crate::Service;
 use crate::error::BoxError;
-use crate::{Context, Service};
 use into_response::{ErrorIntoResponse, ErrorIntoResponseFn};
 use rama_utils::macros::define_inner_service_accessors;
 
@@ -99,20 +99,16 @@ where
     type Response = T::Response;
     type Error = BoxError;
 
-    async fn serve(
-        &self,
-        mut ctx: Context,
-        mut request: Request,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut request: Request) -> Result<Self::Response, Self::Error> {
         loop {
-            let result = self.policy.check(ctx, request).await;
-            ctx = result.ctx;
+            let result = self.policy.check(request).await;
+
             request = result.request;
 
             match result.output {
                 policy::PolicyOutput::Ready(guard) => {
                     let _ = guard;
-                    return self.inner.serve(ctx, request).await.map_err(Into::into);
+                    return self.inner.serve(request).await.map_err(Into::into);
                 }
                 policy::PolicyOutput::Abort(err) => return Err(err.into()),
                 policy::PolicyOutput::Retry => (),
@@ -133,20 +129,16 @@ where
     type Response = T::Response;
     type Error = T::Error;
 
-    async fn serve(
-        &self,
-        mut ctx: Context,
-        mut request: Request,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut request: Request) -> Result<Self::Response, Self::Error> {
         loop {
-            let result = self.policy.check(ctx, request).await;
-            ctx = result.ctx;
+            let result = self.policy.check(request).await;
+
             request = result.request;
 
             match result.output {
                 policy::PolicyOutput::Ready(guard) => {
                     let _ = guard;
-                    return self.inner.serve(ctx, request).await;
+                    return self.inner.serve(request).await;
                 }
                 policy::PolicyOutput::Abort(err) => {
                     return match self.error_into_response.error_into_response(err) {
@@ -166,15 +158,12 @@ mod tests {
     use super::*;
 
     use crate::futures::zip;
-    use crate::{Context, Layer, Service, service::service_fn};
+    use crate::{Layer, Service, service::service_fn};
     use std::convert::Infallible;
 
     #[tokio::test]
     async fn test_limit() {
-        async fn handle_request<Request>(
-            _ctx: Context,
-            req: Request,
-        ) -> Result<Request, Infallible> {
+        async fn handle_request<Request>(req: Request) -> Result<Request, Infallible> {
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             Ok(req)
         }
@@ -184,8 +173,8 @@ mod tests {
         let service_1 = layer.layer(service_fn(handle_request));
         let service_2 = layer.layer(service_fn(handle_request));
 
-        let future_1 = service_1.serve(Context::default(), "Hello");
-        let future_2 = service_2.serve(Context::default(), "Hello");
+        let future_1 = service_1.serve("Hello");
+        let future_2 = service_2.serve("Hello");
 
         let (result_1, result_2) = zip(future_1, future_2).await;
 
@@ -200,10 +189,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_with_error_into_response_fn() {
-        async fn handle_request<Request>(
-            _ctx: Context,
-            _req: Request,
-        ) -> Result<&'static str, Infallible> {
+        async fn handle_request<Request>(_req: Request) -> Result<&'static str, Infallible> {
             Ok("good")
         }
 
@@ -213,23 +199,20 @@ mod tests {
 
         let service = layer.layer(service_fn(handle_request));
 
-        let resp = service.serve(Context::default(), "Hello").await.unwrap();
+        let resp = service.serve("Hello").await.unwrap();
         assert_eq!("bad", resp);
     }
 
     #[tokio::test]
     async fn test_zero_limit() {
-        async fn handle_request<Request>(
-            _ctx: Context,
-            req: Request,
-        ) -> Result<Request, Infallible> {
+        async fn handle_request<Request>(req: Request) -> Result<Request, Infallible> {
             Ok(req)
         }
 
         let layer: LimitLayer<ConcurrentPolicy<_, _>> = LimitLayer::new(ConcurrentPolicy::max(0));
 
         let service_1 = layer.layer(service_fn(handle_request));
-        let result_1 = service_1.serve(Context::default(), "Hello").await;
+        let result_1 = service_1.serve("Hello").await;
         assert!(result_1.is_err());
     }
 }

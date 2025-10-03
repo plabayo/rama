@@ -1,4 +1,4 @@
-use crate::{Context, Service};
+use crate::Service;
 
 /// A special kind of [`Service`] which has access only to the Request,
 /// but not to the Response.
@@ -14,14 +14,13 @@ pub trait RequestInspector<RequestIn>: Send + Sync + 'static {
     /// Inspect the request, modify it if needed or desired, and return it.
     fn inspect_request(
         &self,
-        ctx: Context,
         req: RequestIn,
-    ) -> impl Future<Output = Result<(Context, Self::RequestOut), Self::Error>> + Send + '_;
+    ) -> impl Future<Output = Result<Self::RequestOut, Self::Error>> + Send + '_;
 }
 
 impl<S, RequestIn, RequestOut> RequestInspector<RequestIn> for S
 where
-    S: Service<RequestIn, Response = (Context, RequestOut)>,
+    S: Service<RequestIn, Response = RequestOut>,
     RequestIn: Send + 'static,
     RequestOut: Send + 'static,
 {
@@ -30,9 +29,8 @@ where
 
     fn inspect_request(
         &self,
-        ctx: Context,
         req: RequestIn,
-    ) -> impl Future<Output = Result<(Context, Self::RequestOut), Self::Error>> + Send + '_ {
-        self.serve(ctx, req)
+    ) -> impl Future<Output = Result<Self::RequestOut, Self::Error>> + Send + '_ {
+        self.serve(req)
     }
 }

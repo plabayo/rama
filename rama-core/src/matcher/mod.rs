@@ -14,7 +14,7 @@
 
 use std::sync::Arc;
 
-use super::{Context, extensions::Extensions};
+use super::extensions::Extensions;
 use crate::Service;
 use crate::extensions::ExtensionsMut;
 use rama_macros::paste;
@@ -52,7 +52,7 @@ pub trait Matcher<Request>: Send + Sync + 'static {
     /// `ext` is None in case the callee is not interested in collecting potential
     /// match metadata gathered during the matching process. An example of this
     /// path parameters for an http Uri matcher.
-    fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context, req: &Request) -> bool;
+    fn matches(&self, ext: Option<&mut Extensions>, req: &Request) -> bool;
 
     /// Provide an alternative matcher to match if the current one does not match.
     fn or<M>(self, other: M) -> impl Matcher<Request>
@@ -85,8 +85,8 @@ impl<Request, T> Matcher<Request> for Arc<T>
 where
     T: Matcher<Request>,
 {
-    fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context, req: &Request) -> bool {
-        (**self).matches(ext, ctx, req)
+    fn matches(&self, ext: Option<&mut Extensions>, req: &Request) -> bool {
+        (**self).matches(ext, req)
     }
 }
 
@@ -94,8 +94,8 @@ impl<Request, T> Matcher<Request> for &'static T
 where
     T: Matcher<Request>,
 {
-    fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context, req: &Request) -> bool {
-        (**self).matches(ext, ctx, req)
+    fn matches(&self, ext: Option<&mut Extensions>, req: &Request) -> bool {
+        (**self).matches(ext, req)
     }
 }
 
@@ -103,9 +103,9 @@ impl<Request, T> Matcher<Request> for Option<T>
 where
     T: Matcher<Request>,
 {
-    fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context, req: &Request) -> bool {
+    fn matches(&self, ext: Option<&mut Extensions>, req: &Request) -> bool {
         match self {
-            Some(inner) => inner.matches(ext, ctx, req),
+            Some(inner) => inner.matches(ext, req),
             None => false,
         }
     }
@@ -115,8 +115,8 @@ impl<Request, T> Matcher<Request> for Box<T>
 where
     T: Matcher<Request>,
 {
-    fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context, req: &Request) -> bool {
-        (**self).matches(ext, ctx, req)
+    fn matches(&self, ext: Option<&mut Extensions>, req: &Request) -> bool {
+        (**self).matches(ext, req)
     }
 }
 
@@ -124,13 +124,13 @@ impl<Request> Matcher<Request> for Box<dyn Matcher<Request> + 'static>
 where
     Request: Send + 'static,
 {
-    fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context, req: &Request) -> bool {
-        (**self).matches(ext, ctx, req)
+    fn matches(&self, ext: Option<&mut Extensions>, req: &Request) -> bool {
+        (**self).matches(ext, req)
     }
 }
 
 impl<Request> Matcher<Request> for bool {
-    fn matches(&self, _: Option<&mut Extensions>, _: &Context, _: &Request) -> bool {
+    fn matches(&self, _: Option<&mut Extensions>, _: &Request) -> bool {
         *self
     }
 }
@@ -146,12 +146,12 @@ macro_rules! impl_matcher_either {
             fn matches(
                 &self,
                 ext: Option<&mut Extensions>,
-                ctx: &Context,
+
                 req: &Request
             ) -> bool{
                 match self {
                     $(
-                        crate::combinators::$id::$param(layer) => layer.matches(ext, ctx, req),
+                        crate::combinators::$id::$param(layer) => layer.matches(ext, req),
                     )+
                 }
             }
@@ -199,19 +199,19 @@ macro_rules! impl_matcher_service_tuple {
 
                 async fn serve(
                     &self,
-                    ctx: Context,
+
                     mut req: Request,
                 ) -> Result<Self::Response, Self::Error> {
                     let ($(([<M_ $T>], $T)),+, S) = &self.0;
                     let mut ext = Extensions::new();
                     $(
-                        if [<M_ $T>].matches(Some(&mut ext), &ctx, &req) {
+                        if [<M_ $T>].matches(Some(&mut ext), &req) {
                             req.extensions_mut().extend(ext);
-                            return $T.serve(ctx, req).await;
+                            return $T.serve(req).await;
                         }
                         ext.clear();
                     )+
-                    S.serve(ctx, req).await
+                    S.serve(req).await
                 }
             }
         }

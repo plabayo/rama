@@ -1,4 +1,4 @@
-use crate::{Context, Layer, Service, error::BoxError};
+use crate::{Layer, Service, error::BoxError};
 use rama_utils::macros::define_inner_service_accessors;
 use std::{convert::Infallible, fmt};
 
@@ -92,8 +92,8 @@ where
     type Response = S::Response;
     type Error = Infallible;
 
-    async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
-        match self.inner.serve(ctx, req).await {
+    async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
+        match self.inner.serve(req).await {
             Ok(resp) => Ok(resp),
             Err(err) => {
                 (self.f)(err);
@@ -113,8 +113,8 @@ where
     type Response = S::Response;
     type Error = Infallible;
 
-    async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
-        match self.inner.serve(ctx, req).await {
+    async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
+        match self.inner.serve(req).await {
             Ok(resp) => Ok(resp),
             Err(err) => {
                 (self.f)(err);
@@ -132,8 +132,8 @@ where
     type Response = S::Response;
     type Error = Infallible;
 
-    async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
-        match self.inner.serve(ctx, req).await {
+    async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
+        match self.inner.serve(req).await {
             Ok(resp) => Ok(resp),
             Err(err) => {
                 const MESSAGE: &str = "unhandled service error consumed";
@@ -169,8 +169,8 @@ where
     type Response = S::Response;
     type Error = Infallible;
 
-    async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
-        match self.inner.serve(ctx, req).await {
+    async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
+        match self.inner.serve(req).await {
             Ok(resp) => Ok(resp),
             Err(err) => {
                 const MESSAGE: &str = "unhandled service error consumed";

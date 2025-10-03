@@ -4,7 +4,7 @@
 //! will be aborted.
 
 use super::{LayerErrorFn, LayerErrorStatic, MakeLayerError};
-use crate::{Context, Service};
+use crate::Service;
 use rama_utils::macros::define_inner_service_accessors;
 use std::{fmt, time::Duration};
 
@@ -119,9 +119,9 @@ where
     type Response = T::Response;
     type Error = T::Error;
 
-    async fn serve(&self, ctx: Context, request: Request) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, request: Request) -> Result<Self::Response, Self::Error> {
         tokio::select! {
-            res = self.inner.serve(ctx, request) => res,
+            res = self.inner.serve(request) => res,
             _ = tokio::time::sleep(self.timeout) => Err(self.into_error.make_layer_error().into()),
         }
     }

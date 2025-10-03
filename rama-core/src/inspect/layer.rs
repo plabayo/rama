@@ -2,7 +2,7 @@ use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
 
 use super::RequestInspector;
-use crate::{Context, Layer, Service};
+use crate::{Layer, Service};
 
 /// wrapper to turn any [`RequestInspector`] into a [`Layer`].
 pub struct RequestInspectorLayer<I>(I);
@@ -87,8 +87,8 @@ where
     type Response = S::Response;
     type Error = I::Error;
 
-    async fn serve(&self, ctx: Context, req: RequestIn) -> Result<Self::Response, Self::Error> {
-        let (ctx, req) = self.request_inspector.inspect_request(ctx, req).await?;
-        self.inner.serve(ctx, req).await.map_err(Into::into)
+    async fn serve(&self, req: RequestIn) -> Result<Self::Response, Self::Error> {
+        let req = self.request_inspector.inspect_request(req).await?;
+        self.inner.serve(req).await.map_err(Into::into)
     }
 }

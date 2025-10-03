@@ -1,4 +1,4 @@
-use crate::{Context, Layer, Service};
+use crate::{Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
 
@@ -84,8 +84,8 @@ where
     type Response = Response;
     type Error = S::Error;
 
-    async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
-        match self.inner.serve(ctx, req).await {
+    async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
+        match self.inner.serve(req).await {
             Ok(resp) => Ok((self.f)(resp)),
             Err(err) => Err(err),
         }

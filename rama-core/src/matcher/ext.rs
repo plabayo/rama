@@ -1,5 +1,4 @@
 use crate::{
-    Context,
     extensions::ExtensionsRef,
     matcher::{Extensions, Matcher},
 };
@@ -49,7 +48,7 @@ where
     T: Clone + Send + Sync + 'static,
     P: private::ExtensionPredicate<T>,
 {
-    fn matches(&self, _ext: Option<&mut Extensions>, _ctx: &Context, req: &Request) -> bool {
+    fn matches(&self, _ext: Option<&mut Extensions>, req: &Request) -> bool {
         req.extensions()
             .get::<T>()
             .map(|v| self.predicate.call(v))
@@ -105,36 +104,34 @@ mod test {
     #[test]
     fn test_extension_matcher() {
         let matcher = ExtensionMatcher::with_const(MyMarker(10));
-        let ctx = Context::default();
         let mut req = ServiceInput::new(());
 
-        assert!(!matcher.matches(None, &ctx, &req));
+        assert!(!matcher.matches(None, &req));
 
         req.extensions_mut().insert(MyMarker(20));
-        assert!(!matcher.matches(None, &ctx, &req));
+        assert!(!matcher.matches(None, &req));
 
         req.extensions_mut().insert(MyOtherMarker(10));
-        assert!(!matcher.matches(None, &ctx, &req));
+        assert!(!matcher.matches(None, &req));
 
         req.extensions_mut().insert(MyMarker(10));
-        assert!(matcher.matches(None, &ctx, &req));
+        assert!(matcher.matches(None, &req));
     }
 
     #[test]
     fn test_fn_extension_matcher() {
         let matcher = ExtensionMatcher::with_fn(|v: &MyMarker| v.0 % 2 == 0);
-        let ctx = Context::default();
         let mut req = ServiceInput::new(());
 
-        assert!(!matcher.matches(None, &ctx, &req));
+        assert!(!matcher.matches(None, &req));
 
         req.extensions_mut().insert(MyMarker(4));
-        assert!(matcher.matches(None, &ctx, &req));
+        assert!(matcher.matches(None, &req));
 
         req.extensions_mut().insert(MyMarker(5));
-        assert!(!matcher.matches(None, &ctx, &req));
+        assert!(!matcher.matches(None, &req));
 
         req.extensions_mut().insert(MyOtherMarker(4));
-        assert!(!matcher.matches(None, &ctx, &req));
+        assert!(!matcher.matches(None, &req));
     }
 }
