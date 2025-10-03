@@ -2749,6 +2749,7 @@ mod conn {
         shutdown_called: bool,
     }
 
+    #[warn(clippy::missing_trait_methods)]
     impl AsyncWrite for DebugStream {
         fn poll_shutdown(
             mut self: Pin<&mut Self>,
@@ -2772,8 +2773,21 @@ mod conn {
         ) -> Poll<Result<usize, io::Error>> {
             Pin::new(&mut self.tcp).poll_write(cx, buf)
         }
+
+        fn is_write_vectored(&self) -> bool {
+            self.tcp.is_write_vectored()
+        }
+
+        fn poll_write_vectored(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            bufs: &[io::IoSlice<'_>],
+        ) -> Poll<Result<usize, io::Error>> {
+            Pin::new(&mut self.tcp).poll_write_vectored(cx, bufs)
+        }
     }
 
+    #[warn(clippy::missing_trait_methods)]
     impl AsyncRead for DebugStream {
         fn poll_read(
             mut self: Pin<&mut Self>,

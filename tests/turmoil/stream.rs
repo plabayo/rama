@@ -55,6 +55,7 @@ impl ExtensionsMut for TcpStream {
     }
 }
 
+#[warn(clippy::missing_trait_methods)]
 impl AsyncRead for TcpStream {
     fn poll_read(
         self: Pin<&mut Self>,
@@ -65,6 +66,7 @@ impl AsyncRead for TcpStream {
     }
 }
 
+#[warn(clippy::missing_trait_methods)]
 impl AsyncWrite for TcpStream {
     fn poll_write(
         self: Pin<&mut Self>,

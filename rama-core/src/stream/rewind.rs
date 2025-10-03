@@ -55,6 +55,7 @@ impl<T: ExtensionsMut> ExtensionsMut for Rewind<T> {
     }
 }
 
+#[warn(clippy::missing_trait_methods)]
 impl<T> AsyncRead for Rewind<T>
 where
     T: AsyncRead + Unpin,
@@ -82,6 +83,7 @@ where
     }
 }
 
+#[warn(clippy::missing_trait_methods)]
 impl<T> AsyncWrite for Rewind<T>
 where
     T: AsyncWrite + Unpin,

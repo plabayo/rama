@@ -409,6 +409,7 @@ mod tests {
         }
     }
 
+    #[warn(clippy::missing_trait_methods)]
     impl AsyncWrite for SocketConnection {
         fn poll_write(
             mut self: std::pin::Pin<&mut Self>,
@@ -431,8 +432,21 @@ mod tests {
         ) -> std::task::Poll<Result<(), std::io::Error>> {
             Pin::new(&mut self.conn).poll_shutdown(cx)
         }
+
+        fn is_write_vectored(&self) -> bool {
+            self.conn.is_write_vectored()
+        }
+
+        fn poll_write_vectored(
+            mut self: Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+            bufs: &[std::io::IoSlice<'_>],
+        ) -> std::task::Poll<Result<usize, std::io::Error>> {
+            Pin::new(&mut self.conn).poll_write_vectored(cx, bufs)
+        }
     }
 
+    #[warn(clippy::missing_trait_methods)]
     impl AsyncRead for SocketConnection {
         fn poll_read(
             mut self: Pin<&mut Self>,

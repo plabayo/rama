@@ -50,6 +50,7 @@ impl<IO: ExtensionsMut> ExtensionsMut for TlsStream<IO> {
     }
 }
 
+#[warn(clippy::missing_trait_methods)]
 impl<IO: AsyncRead + AsyncWrite + Unpin> AsyncRead for TlsStream<IO> {
     fn poll_read(
         self: Pin<&mut Self>,
@@ -60,6 +61,7 @@ impl<IO: AsyncRead + AsyncWrite + Unpin> AsyncRead for TlsStream<IO> {
     }
 }
 
+#[warn(clippy::missing_trait_methods)]
 impl<IO: AsyncRead + AsyncWrite + Unpin> AsyncWrite for TlsStream<IO> {
     fn poll_write(
         self: Pin<&mut Self>,
