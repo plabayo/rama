@@ -4,6 +4,7 @@ use rama_core::{
     Context,
     combinators::Either,
     error::{BoxError, ErrorContext, OpaqueError},
+    rt::Executor,
 };
 use rama_dns::{DnsOverwrite, DnsResolver, GlobalDnsResolver};
 use rama_net::{
@@ -191,7 +192,7 @@ where
 
 /// Establish a [`TcpStream`] connection for the given [`Authority`].
 pub async fn tcp_connect<Dns, Connector>(
-    ctx: &Context,
+    _ctx: &Context,
     extensions: &Extensions,
     authority: Authority,
     dns: Dns,
@@ -232,7 +233,7 @@ where
 
     if let Some(dns_overwrite) = extensions.get::<DnsOverwrite>()
         && let Ok(tuple) = tcp_connect_inner(
-            ctx,
+            extensions,
             domain.clone(),
             port,
             dns_mode,
@@ -248,11 +249,11 @@ where
     //... otherwise we'll try to establish a connection,
     // with dual-stack parallel connections...
 
-    tcp_connect_inner(ctx, domain, port, dns_mode, dns, connector, ip_mode).await
+    tcp_connect_inner(extensions, domain, port, dns_mode, dns, connector, ip_mode).await
 }
 
 async fn tcp_connect_inner<Dns, Connector>(
-    ctx: &Context,
+    extensions: &Extensions,
     domain: Domain,
     port: u16,
     dns_mode: DnsResolveIpMode,
@@ -268,8 +269,10 @@ where
     let connected = Arc::new(AtomicBool::new(false));
     let sem = Arc::new(Semaphore::new(3));
 
+    let executor = extensions.get::<Executor>().cloned().unwrap_or_default();
+
     if dns_mode.ipv4_supported() {
-        ctx.spawn(
+        executor.spawn_task(
             tcp_connect_inner_branch(
                 dns_mode,
                 dns.clone(),
@@ -291,7 +294,7 @@ where
     }
 
     if dns_mode.ipv6_supported() {
-        ctx.spawn(
+        executor.spawn_task(
             tcp_connect_inner_branch(
                 dns_mode,
                 dns.clone(),

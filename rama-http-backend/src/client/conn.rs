@@ -4,6 +4,7 @@ use rama_core::{
     error::{BoxError, OpaqueError},
     extensions::{ExtensionsMut, ExtensionsRef},
     inspect::RequestInspector,
+    rt::Executor,
     stream::Stream,
 };
 use rama_http::{
@@ -140,12 +141,18 @@ where
 
         let io = Box::pin(conn);
 
+        let executor = req
+            .extensions()
+            .get::<Executor>()
+            .cloned()
+            .unwrap_or_default();
+
         match req.version() {
             Version::HTTP_2 => {
                 tracing::trace!(url.full = %req.uri(), "create h2 client executor");
 
-                let executor = ctx.executor().clone();
-                let mut builder = rama_http_core::client::conn::http2::Builder::new(executor);
+                let mut builder =
+                    rama_http_core::client::conn::http2::Builder::new(executor.clone());
 
                 if req.extensions().get::<Protocol>().is_some() {
                     // e.g. used for h2 bootstrap support for WebSocket
@@ -187,7 +194,7 @@ where
                     server.service.name = %server_address,
                 );
 
-                ctx.spawn(
+                executor.spawn_task(
                     async move {
                         if let Err(err) = conn.await {
                             tracing::debug!("connection failed: {err:?}");
@@ -232,7 +239,7 @@ where
                     server.service.name = %server_address,
                 );
 
-                ctx.spawn(
+                executor.spawn_task(
                     async move {
                         if let Err(err) = conn.await {
                             tracing::debug!("connection failed: {err:?}");

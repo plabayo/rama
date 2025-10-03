@@ -70,6 +70,7 @@ mod private {
     use crate::server::hyper_conn::{map_boxed_http_core_result, map_http_core_result};
     use rama_core::extensions::ExtensionsMut;
     use rama_core::futures::FutureExt;
+    use rama_core::rt::Executor;
     use rama_core::stream::Stream;
     use rama_core::telemetry::tracing;
     use rama_core::{Context, Service};
@@ -106,7 +107,11 @@ mod private {
             S: Service<Request, Response = Response, Error = Infallible> + Clone,
             Response: IntoResponse + Send + 'static,
         {
-            let guard = ctx.guard().cloned();
+            let guard = io
+                .extensions()
+                .get::<Executor>()
+                .and_then(|exec| exec.guard())
+                .cloned();
             let extensions = io.take_extensions();
             let service = RamaHttpService::new(ctx, extensions, service);
 
@@ -152,7 +157,10 @@ mod private {
         {
             let extensions = io.take_extensions();
             let stream = Box::pin(io);
-            let guard = ctx.guard().cloned();
+            let guard = extensions
+                .get::<Executor>()
+                .and_then(|exec| exec.guard())
+                .cloned();
 
             let service = RamaHttpService::new(ctx, extensions, service);
 
@@ -196,7 +204,10 @@ mod private {
         {
             let extensions = io.take_extensions();
             let stream = Box::pin(io);
-            let guard = ctx.guard().cloned();
+            let guard = extensions
+                .get::<Executor>()
+                .and_then(|exec| exec.guard())
+                .cloned();
 
             let service = RamaHttpService::new(ctx, extensions, service);
 

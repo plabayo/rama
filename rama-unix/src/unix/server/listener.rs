@@ -219,7 +219,6 @@ impl UnixListener {
     where
         S: Service<UnixStream>,
     {
-        let ctx = Context::new(Executor::new());
         let service = Arc::new(service);
 
         loop {
@@ -232,7 +231,7 @@ impl UnixListener {
             };
 
             let service = service.clone();
-            let ctx = ctx.clone();
+            let ctx = Context::default();
 
             let peer_addr: UnixSocketAddress = peer_addr.into();
             let local_addr: Option<UnixSocketAddress> = socket.local_addr().ok().map(Into::into);
@@ -249,6 +248,7 @@ impl UnixListener {
             socket
                 .extensions_mut()
                 .insert(UnixSocketInfo::new(local_addr, peer_addr));
+            socket.extensions_mut().insert(Executor::new());
 
             tokio::spawn(
                 async move {
@@ -268,7 +268,6 @@ impl UnixListener {
     where
         S: Service<UnixStream>,
     {
-        let ctx: Context = Context::new(Executor::graceful(guard.clone()));
         let service = Arc::new(service);
         let mut cancelled_fut = pin!(guard.cancelled());
 
@@ -282,7 +281,7 @@ impl UnixListener {
                     match result {
                         Ok((socket, peer_addr)) => {
                             let service = service.clone();
-                            let ctx = ctx.clone();
+                            let ctx = Context::default();
 
                             let peer_addr: UnixSocketAddress = peer_addr.into();
                             let local_addr: Option<UnixSocketAddress> = socket.local_addr().ok().map(Into::into);
@@ -297,6 +296,7 @@ impl UnixListener {
 
                             let mut socket = UnixStream::new(socket);
                             socket.extensions_mut().insert(UnixSocketInfo::new(local_addr, peer_addr));
+                            socket.extensions_mut().insert(Executor::graceful(guard.clone()));
 
                             guard.spawn_task(async move {
                                 let _ = service.serve(ctx, socket).await;

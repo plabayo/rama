@@ -3,7 +3,8 @@
 //! See [`UpgradeService`] for more details.
 
 use super::Upgraded;
-use rama_core::extensions::ExtensionsMut;
+use rama_core::extensions::{ExtensionsMut, ExtensionsRef};
+use rama_core::rt::Executor;
 use rama_core::telemetry::tracing::{self, Instrument};
 use rama_core::{Context, Service, extensions::Extensions, matcher::Matcher, service::BoxService};
 use rama_http::opentelemetry::version_as_protocol_version;
@@ -93,7 +94,12 @@ where
                 continue;
             }
             req.extensions_mut().extend(ext);
-            let exec = ctx.executor().clone();
+            let exec = req
+                .extensions()
+                .get::<Executor>()
+                .cloned()
+                .unwrap_or_default();
+
             return match handler.responder.serve(ctx, req).await {
                 Ok((resp, ctx, mut req)) => {
                     let handler = handler.handler.clone();
