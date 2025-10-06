@@ -11,7 +11,7 @@
 //! use rama_http::layer::auth::AddAuthorizationLayer;
 //! use rama_http::{Body, Request, Response, StatusCode, header::AUTHORIZATION};
 //! use rama_core::service::service_fn;
-//! use rama_core::{Context, Service, Layer};
+//! use rama_core::{Service, Layer};
 //! use rama_core::error::BoxError;
 //! use rama_net::user::Basic;
 //!

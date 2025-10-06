@@ -31,7 +31,7 @@ use crate::{Request, Scheme, StatusCode, Uri};
 ///
 /// ```
 /// use std::collections::HashSet;
-/// /// use rama_http::{Request, Uri};
+/// use rama_http::{Request, Uri};
 /// use rama_http::layer::follow_redirect::policy::{Action, Attempt, Policy};
 ///
 /// #[derive(Clone)]
@@ -40,7 +40,7 @@ use crate::{Request, Scheme, StatusCode, Uri};
 /// }
 ///
 /// impl< B, E> Policy< B, E> for DetectCycle {
-///     fn redirect(&mut self, _: &Context, attempt: &Attempt<'_>) -> Result<Action, E> {
+///     fn redirect(&mut self, attempt: &Attempt<'_>) -> Result<Action, E> {
 ///         if self.uris.contains(attempt.location()) {
 ///             Ok(Action::Stop)
 ///         } else {

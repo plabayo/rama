@@ -66,7 +66,7 @@
 //! use rama_core::{
 //!    service::service_fn,
 //!    extensions::{ExtensionsRef, ExtensionsMut},
-//!    Context, Service, Layer,
+//!    Service, Layer,
 //! };
 //! use rama_net::address::ProxyAddress;
 //! use rama_utils::str::NonEmptyString;
@@ -163,7 +163,7 @@
 //! use rama_core::{
 //!    service::service_fn,
 //!    extensions::{ExtensionsRef, ExtensionsMut},
-//!    Context, Service, Layer,
+//!    Service, Layer,
 //! };
 //! use rama_net::address::ProxyAddress;
 //! use rama_utils::str::NonEmptyString;
@@ -213,7 +213,7 @@
 //!
 //!             (!output.is_empty()).then(|| format!("{username}-{output}"))
 //!         })
-//!         .into_layer(service_fn(async |_req: Request| {
+//!         .into_layer(service_fn(async |req: Request| {
 //!             Ok::<_, Infallible>(req.extensions().get::<ProxyAddress>().unwrap().clone())
 //!         }));
 //!

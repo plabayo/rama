@@ -6,7 +6,7 @@ use crate::Request;
 /// # Example
 ///
 /// ```
-/// /// use rama_http::Request;
+/// use rama_http::Request;
 /// use rama_http::layer::retry::{Policy, PolicyResult, RetryBody};
 /// use std::sync::Arc;
 /// use parking_lot::Mutex;
@@ -32,7 +32,7 @@ use crate::Request;
 ///                 if *attempts > 0 {
 ///                     // Try again!
 ///                     *attempts -= 1;
-///                     PolicyResult::Retry { ctx, req }
+///                     PolicyResult::Retry { req }
 ///                 } else {
 ///                     // Used all our attempts, no retry...
 ///                     PolicyResult::Abort(result)
@@ -41,8 +41,8 @@ use crate::Request;
 ///         }
 ///     }
 ///
-///     fn clone_input(&self, req: &Request<RetryBody>) -> Option<(Context, Request<RetryBody>)> {
-///         Some((ctx.clone(), req.clone()))
+///     fn clone_input(&self, req: &Request<RetryBody>) -> Option<Request<RetryBody>> {
+///         Some(req.clone())
 ///     }
 /// }
 /// ```

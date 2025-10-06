@@ -6,7 +6,7 @@
 //! use rama_http::layer::validate_request::ValidateRequestHeaderLayer;
 //! use rama_http::{Body, Request, Response, StatusCode, header::ACCEPT};
 //! use rama_core::service::service_fn;
-//! use rama_core::{Context, Service, Layer};
+//! use rama_core::{Service, Layer};
 //! use rama_core::error::BoxError;
 //!
 //! async fn handle(request: Request) -> Result<Response, BoxError> {
@@ -53,7 +53,7 @@
 //! use rama_http::layer::validate_request::{ValidateRequestHeaderLayer, ValidateRequest};
 //! use rama_http::{Body, Request, Response, StatusCode, header::ACCEPT};
 //! use rama_core::service::service_fn;
-//! use rama_core::{Context, Service, Layer};
+//! use rama_core::{Service, Layer};
 //! use rama_core::error::BoxError;
 //!
 //! #[derive(Clone, Copy)]
@@ -67,11 +67,10 @@
 //!
 //!     async fn validate(
 //!         &self,
-//!         ctx: Context,
 //!         req: Request<B>,
-//!     ) -> Result<(Context, Request<B>), Response<Self::ResponseBody>> {
+//!     ) -> Result<Request<B>, Response<Self::ResponseBody>> {
 //!         // validate the request...
-//!         # Ok::<_, Response>((ctx, req))
+//!         # Ok::<_, Response>(req)
 //!     }
 //! }
 //!
@@ -107,7 +106,7 @@
 //! use rama_http::{Body, Request, Response, StatusCode, header::ACCEPT};
 //! use rama_http::layer::validate_request::{ValidateRequestHeaderLayer, ValidateRequest};
 //! use rama_core::service::service_fn;
-//! use rama_core::{Context, Service, Layer};
+//! use rama_core::{Service, Layer};
 //! use rama_core::error::BoxError;
 //!
 //! async fn handle(request: Request) -> Result<Response, BoxError> {

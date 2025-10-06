@@ -7,7 +7,7 @@
 //! use rama_core::bytes::Bytes;
 //! use std::convert::Infallible;
 //! use std::{pin::Pin, task::{ready, Context, Poll}};
-//! use rama_core::{Layer, Service, context};
+//! use rama_core::{Layer, Service};
 //! use rama_core::service::service_fn;
 //! use rama_http::layer::map_request_body::MapRequestBodyLayer;
 //! use rama_core::error::BoxError;
@@ -50,7 +50,7 @@
 //! // Call the service
 //! let request = Request::new(Body::default());
 //!
-//! svc.serve(context::request).await?;
+//! svc.serve(request).await?;
 //! # Ok(())
 //! # }
 //! ```

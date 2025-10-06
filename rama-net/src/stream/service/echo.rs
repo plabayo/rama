@@ -7,7 +7,7 @@ use rama_core::{Service, error::BoxError, stream::Stream};
 /// # Example
 ///
 /// ```rust
-/// use rama_core::{error::BoxError, Context, Service};
+/// use rama_core::{error::BoxError, Service};
 /// use rama_net::stream::service::EchoService;
 ///
 /// # #[tokio::main]

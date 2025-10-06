@@ -5,7 +5,7 @@
 //! ```
 //! use rama_core::{
 //!     service::service_fn,
-//!     Context, Service, Layer,
+//!     Service, Layer,
 //!     telemetry::tracing,
 //! };
 //! use rama_http::{
@@ -21,7 +21,7 @@
 //! #     Ok(())
 //! # }
 //!
-//! async fn handler(_ctx: Context, _req: Request) -> Result<Response, std::io::Error> {
+//! async fn handler(_req: Request) -> Result<Response, std::io::Error> {
 //!     some_expensive_io_operation().await?;
 //!     Ok(StatusCode::OK.into_response())
 //! }

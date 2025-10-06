@@ -7,18 +7,18 @@
 //! ```
 //! use rama_core::layer::limit::{Limit, policy::ConcurrentPolicy};
 //! use rama_core::service::service_fn;
-//! use rama_core::{Service};
+//! use rama_core::{Service, ServiceInput};
 //! # use std::convert::Infallible;
 //!
 //! # #[tokio::main]
 //! # async fn main() {
 //!
-//! let service = service_fn(async |_, _| {
+//! let service = service_fn(async || {
 //!     Ok::<_, Infallible>(())
 //! });
 //! let mut service = Limit::new(service, ConcurrentPolicy::max(2));
 //!
-//! let response = service.serve( ()).await;
+//! let response = service.serve(ServiceInput::new(())).await;
 //! assert!(response.is_ok());
 //! # }
 //! ```

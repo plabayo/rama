@@ -66,7 +66,7 @@ use std::marker::PhantomData;
 ///
 /// # #[tokio::main]
 /// # async fn main() {
-/// async fn svc(_ctx: Context, request: Request<Body>) -> Result<(), Infallible> {
+/// async fn svc(request: Request<Body>) -> Result<(), Infallible> {
 ///     // ...
 ///     # assert_eq!(
 ///     #     request.headers().get("X-Real-Ip").unwrap(),
@@ -79,7 +79,6 @@ use std::marker::PhantomData;
 ///     .into_layer(service_fn(svc));
 ///
 /// # let mut req = Request::builder().uri("example.com").body(()).unwrap();
-/// # let ctx = Context::default();
 /// # req.extensions_mut().insert(SocketInfo::new(None, "42.37.100.50:62345".parse().unwrap()));
 /// service.serve(req).await.unwrap();
 /// # }

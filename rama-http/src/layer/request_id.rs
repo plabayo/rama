@@ -8,7 +8,7 @@
 //! };
 //! use rama_http::{Body, Request, Response, header::HeaderName};
 //! use rama_core::service::service_fn;
-//! use rama_core::{Context, Service, Layer};
+//! use rama_core::{Service, Layer};
 //! use rama_core::error::BoxError;
 //! use std::sync::{Arc, atomic::{AtomicU64, Ordering}};
 //!

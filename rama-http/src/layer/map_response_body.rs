@@ -7,7 +7,7 @@
 //! use rama_http::{Body, Request, Response, StreamingBody, body::{Frame, SizeHint}};
 //! use std::convert::Infallible;
 //! use std::{pin::Pin, task::{Context, Poll}};
-//! use rama_core::{Layer, Service, context};
+//! use rama_core::{Layer, Service};
 //! use rama_core::service::service_fn;
 //! use rama_http::layer::map_response_body::MapResponseBodyLayer;
 //! use rama_core::error::BoxError;
@@ -74,7 +74,7 @@
 //! // Call the service
 //! let request = Request::new(Body::from("foobar"));
 //!
-//! svc.serve(context::request).await?;
+//! svc.serve(request).await?;
 //! # Ok(())
 //! # }
 //! ```

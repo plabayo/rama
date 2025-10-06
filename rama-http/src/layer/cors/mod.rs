@@ -9,7 +9,7 @@
 //! use rama_http::{Body, Request, Response, Method, header};
 //! use rama_http::layer::cors::{Any, CorsLayer};
 //! use rama_core::service::service_fn;
-//! use rama_core::{Context, Service, Layer};
+//! use rama_core::{Service, Layer};
 //!
 //! async fn handle(request: Request) -> Result<Response, Infallible> {
 //!     Ok(Response::new(Body::default()))

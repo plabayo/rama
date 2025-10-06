@@ -58,7 +58,7 @@
 //! # use std::convert::Infallible;
 //! use rama_core::service::service_fn;
 //! use rama_core::layer::MapErrLayer;
-//! use rama_core::{Context, Service, Layer};
+//! use rama_core::{Service, Layer};
 //! use rama_http::{Body, Request, Response};
 //! use rama_http::layer::follow_redirect::{
 //!     policy::{self, PolicyExt},

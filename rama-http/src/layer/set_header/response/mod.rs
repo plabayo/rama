@@ -12,7 +12,7 @@
 //! use rama_http::layer::set_header::SetResponseHeaderLayer;
 //! use rama_http::{Body, Request, Response, header::{self, HeaderValue}};
 //! use rama_core::service::service_fn;
-//! use rama_core::{Context, Service, Layer};
+//! use rama_core::{Service, Layer};
 //! use rama_core::error::BoxError;
 //!
 //! # #[tokio::main]
@@ -130,7 +130,7 @@
 //!                     (res, header_value)
 //!                 })
 //!             });
-//!             (ctx, req, factory)
+//!             (req, factory)
 //!         },
 //!     );
 //!

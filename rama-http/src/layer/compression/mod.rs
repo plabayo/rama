@@ -14,7 +14,7 @@
 //! use rama_http::layer::compression::CompressionLayer;
 //! use rama_http::{Body, Request, Response, header::ACCEPT_ENCODING};
 //! use rama_core::service::service_fn;
-//! use rama_core::{Context, Service, Layer};
+//! use rama_core::{Service, Layer};
 //! use std::convert::Infallible;
 //! use tokio::fs::{self, File};
 //! use rama_core::stream::io::ReaderStream;

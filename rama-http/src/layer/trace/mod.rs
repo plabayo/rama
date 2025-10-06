@@ -47,7 +47,7 @@
 //! ```rust
 //! use rama_http::{Body, Request, Response, HeaderMap, StatusCode};
 //! use rama_core::service::service_fn;
-//! use rama_core::{Context, Service, Layer};
+//! use rama_core::{Service, Layer};
 //! use rama_core::telemetry::tracing::Level;
 //! use rama_http::layer::trace::{
 //!     TraceLayer, DefaultMakeSpan, DefaultOnRequest, DefaultOnResponse,
@@ -91,7 +91,7 @@
 //! ```rust
 //! use rama_http::{Body, Request, Response, HeaderMap, StatusCode};
 //! use rama_core::service::service_fn;
-//! use rama_core::{Context, Service, Layer};
+//! use rama_core::{Service, Layer};
 //! use rama_core::telemetry::tracing::{self, Span};
 //! use rama_http::layer::{classify::ServerErrorsFailureClass, trace::TraceLayer};
 //! use std::time::Duration;
@@ -145,7 +145,7 @@
 //! ```rust
 //! use rama_http::{Body, Request, Response, StatusCode};
 //! use rama_core::service::service_fn;
-//! use rama_core::{Context, Service, Layer};
+//! use rama_core::{Service, Layer};
 //! use rama_core::telemetry::tracing::{self, Span};
 //! use rama_http::layer::{classify::ServerErrorsFailureClass, trace::TraceLayer};
 //! use std::time::Duration;

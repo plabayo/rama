@@ -13,7 +13,7 @@
 //!
 //! const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.2478.67";
 //!
-//! async fn handle(_req: Request) -> Result<Response, Infallible> {
+//! async fn handle(req: Request) -> Result<Response, Infallible> {
 //!     let ua: &UserAgent = req.extensions().get().unwrap();
 //!
 //!     assert_eq!(ua.header_str(), UA);

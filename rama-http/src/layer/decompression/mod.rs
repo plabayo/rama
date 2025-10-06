@@ -11,7 +11,7 @@
 //!
 //! use rama_http::{Body, header, HeaderValue, Request, Response};
 //! use rama_core::service::service_fn;
-//! use rama_core::{Context, Service, Layer};
+//! use rama_core::{Service, Layer};
 //! use rama_http::layer::decompression::{DecompressionBody, RequestDecompressionLayer};
 //! use rama_http::body::util::BodyExt;
 //! use rama_core::error::BoxError;
@@ -53,7 +53,7 @@
 //!
 //! use rama_http::{Body, Request, Response};
 //! use rama_core::service::service_fn;
-//! use rama_core::{Context, Service, Layer};
+//! use rama_core::{Service, Layer};
 //! use rama_http::layer::{compression::Compression, decompression::DecompressionLayer};
 //! use rama_http::body::util::BodyExt;
 //! use rama_core::error::BoxError;

@@ -11,7 +11,7 @@
 //! use rama_http::{Request, Response, Body, header::HeaderName};
 //! use rama_http::layer::catch_panic::CatchPanicLayer;
 //! use rama_core::service::service_fn;
-//! use rama_core::{Context, Service, Layer};
+//! use rama_core::{Service, Layer};
 //! use rama_core::error::BoxError;
 //!
 //! # #[tokio::main]
