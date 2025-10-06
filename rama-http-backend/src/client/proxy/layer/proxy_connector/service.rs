@@ -367,6 +367,7 @@ impl<S: ExtensionsMut> ExtensionsMut for MaybeHttpProxiedConnection<S> {
     }
 }
 
+#[warn(clippy::missing_trait_methods)]
 impl<Conn: AsyncWrite> AsyncWrite for MaybeHttpProxiedConnection<Conn> {
     fn poll_write(
         self: Pin<&mut Self>,
@@ -426,6 +427,7 @@ impl<Conn: AsyncWrite> AsyncWrite for MaybeHttpProxiedConnection<Conn> {
     }
 }
 
+#[warn(clippy::missing_trait_methods)]
 impl<Conn: AsyncRead> AsyncRead for MaybeHttpProxiedConnection<Conn> {
     fn poll_read(
         self: Pin<&mut Self>,

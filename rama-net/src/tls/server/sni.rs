@@ -161,6 +161,7 @@ pin_project! {
     }
 }
 
+#[warn(clippy::missing_trait_methods)]
 impl<S> AsyncRead for SniRequest<S>
 where
     S: AsyncRead,
@@ -176,6 +177,7 @@ where
     }
 }
 
+#[warn(clippy::missing_trait_methods)]
 impl<S> AsyncBufRead for SniRequest<S>
 where
     S: AsyncBufRead,
@@ -204,8 +206,25 @@ where
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         self.stream.read(buf)
     }
+
+    fn read_exact(&mut self, buf: &mut [u8]) -> std::io::Result<()> {
+        self.stream.read_exact(buf)
+    }
+
+    fn read_to_end(&mut self, buf: &mut Vec<u8>) -> std::io::Result<usize> {
+        self.stream.read_to_end(buf)
+    }
+
+    fn read_to_string(&mut self, buf: &mut String) -> std::io::Result<usize> {
+        self.stream.read_to_string(buf)
+    }
+
+    fn read_vectored(&mut self, bufs: &mut [std::io::IoSliceMut<'_>]) -> std::io::Result<usize> {
+        self.stream.read_vectored(bufs)
+    }
 }
 
+#[warn(clippy::missing_trait_methods)]
 impl<S> AsyncWrite for SniRequest<S>
 where
     S: AsyncWrite,
@@ -260,6 +279,21 @@ where
     #[inline]
     fn flush(&mut self) -> std::io::Result<()> {
         self.stream.flush()
+    }
+
+    #[inline]
+    fn write_all(&mut self, buf: &[u8]) -> std::io::Result<()> {
+        self.stream.write_all(buf)
+    }
+
+    #[inline]
+    fn write_fmt(&mut self, args: fmt::Arguments<'_>) -> std::io::Result<()> {
+        self.stream.write_fmt(args)
+    }
+
+    #[inline]
+    fn write_vectored(&mut self, bufs: &[IoSlice<'_>]) -> std::io::Result<usize> {
+        self.stream.write_vectored(bufs)
     }
 }
 

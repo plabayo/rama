@@ -3370,6 +3370,22 @@ impl<T: Read, D> Read for DebugStream<T, D> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         self.stream.read(buf)
     }
+
+    fn read_exact(&mut self, buf: &mut [u8]) -> io::Result<()> {
+        self.stream.read_exact(buf)
+    }
+
+    fn read_to_end(&mut self, buf: &mut Vec<u8>) -> io::Result<usize> {
+        self.stream.read_to_end(buf)
+    }
+
+    fn read_to_string(&mut self, buf: &mut String) -> io::Result<usize> {
+        self.stream.read_to_string(buf)
+    }
+
+    fn read_vectored(&mut self, bufs: &mut [io::IoSliceMut<'_>]) -> io::Result<usize> {
+        self.stream.read_vectored(bufs)
+    }
 }
 
 impl<T: Write, D> Write for DebugStream<T, D> {
@@ -3380,8 +3396,21 @@ impl<T: Write, D> Write for DebugStream<T, D> {
     fn flush(&mut self) -> io::Result<()> {
         self.stream.flush()
     }
+
+    fn write_all(&mut self, mut buf: &[u8]) -> io::Result<()> {
+        self.stream.write_all(buf)
+    }
+
+    fn write_fmt(&mut self, args: std::fmt::Arguments<'_>) -> io::Result<()> {
+        self.stream.write_fmt(args)
+    }
+
+    fn write_vectored(&mut self, bufs: &[io::IoSlice<'_>]) -> io::Result<usize> {
+        self.stream.write_vectored(bufs)
+    }
 }
 
+#[warn(clippy::missing_trait_methods)]
 impl<T: AsyncWrite + Unpin, D> AsyncWrite for DebugStream<T, D> {
     fn poll_write(
         mut self: Pin<&mut Self>,
@@ -3401,8 +3430,21 @@ impl<T: AsyncWrite + Unpin, D> AsyncWrite for DebugStream<T, D> {
     ) -> Poll<Result<(), io::Error>> {
         Pin::new(&mut self.stream).poll_shutdown(cx)
     }
+
+    fn is_write_vectored(&self) -> bool {
+        self.stream.is_write_vectored()
+    }
+
+    fn poll_write_vectored(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bufs: &[io::IoSlice<'_>],
+    ) -> Poll<Result<usize, io::Error>> {
+        Pin::new(&mut self.stream).poll_write_vectored(cx, bufs)
+    }
 }
 
+#[warn(clippy::missing_trait_methods)]
 impl<T: AsyncRead + Unpin, D: Unpin> AsyncRead for DebugStream<T, D> {
     fn poll_read(
         mut self: Pin<&mut Self>,

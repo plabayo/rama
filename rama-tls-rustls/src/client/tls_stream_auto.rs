@@ -58,6 +58,7 @@ impl<S: fmt::Debug> fmt::Debug for AutoTlsStreamData<S> {
     }
 }
 
+#[warn(clippy::missing_trait_methods)]
 impl<S> AsyncRead for AutoTlsStream<S>
 where
     S: Stream + Unpin,
@@ -74,6 +75,7 @@ where
     }
 }
 
+#[warn(clippy::missing_trait_methods)]
 impl<S> AsyncWrite for AutoTlsStream<S>
 where
     S: Stream + Unpin,
@@ -106,6 +108,24 @@ where
         match self.project().inner.project() {
             AutoTlsStreamDataProj::Secure { inner } => inner.poll_shutdown(cx),
             AutoTlsStreamDataProj::Plain { inner } => inner.poll_shutdown(cx),
+        }
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        match &self.inner {
+            AutoTlsStreamData::Secure { inner } => inner.is_write_vectored(),
+            AutoTlsStreamData::Plain { inner } => inner.is_write_vectored(),
+        }
+    }
+
+    fn poll_write_vectored(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        bufs: &[std::io::IoSlice<'_>],
+    ) -> std::task::Poll<Result<usize, std::io::Error>> {
+        match self.project().inner.project() {
+            AutoTlsStreamDataProj::Secure { inner } => inner.poll_write_vectored(cx, bufs),
+            AutoTlsStreamDataProj::Plain { inner } => inner.poll_write_vectored(cx, bufs),
         }
     }
 }

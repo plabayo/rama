@@ -64,6 +64,17 @@ impl<T> DomainTrie<T> {
         Self::default()
     }
 
+    /// Determine if the Trie contains 0 key-value pairs.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.trie.is_empty()
+    }
+
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.trie.len()
+    }
+
     /// Consume `self` and insert the given domain paired with the input value `T`.
     ///
     /// This overwrites any existing value already in the tree for that (trie) node.

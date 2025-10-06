@@ -517,6 +517,7 @@ where
     }
 }
 
+#[warn(clippy::missing_trait_methods)]
 impl<C, ID> AsyncWrite for LeasedConnection<C, ID>
 where
     C: AsyncWrite + Unpin,
@@ -557,6 +558,7 @@ where
     }
 }
 
+#[warn(clippy::missing_trait_methods)]
 impl<C, ID> AsyncRead for LeasedConnection<C, ID>
 where
     C: AsyncRead + Unpin,

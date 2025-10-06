@@ -78,6 +78,7 @@ impl<P, S: ExtensionsMut> ExtensionsMut for PeekStream<P, S> {
     }
 }
 
+#[warn(clippy::missing_trait_methods)]
 impl<P, S> AsyncRead for PeekStream<P, S>
 where
     P: AsyncRead,
@@ -103,6 +104,7 @@ where
     }
 }
 
+#[warn(clippy::missing_trait_methods)]
 impl<P, S> AsyncBufRead for PeekStream<P, S>
 where
     P: AsyncBufRead,
@@ -150,6 +152,7 @@ where
     }
 }
 
+#[warn(clippy::missing_trait_methods)]
 impl<P, S> AsyncWrite for PeekStream<P, S>
 where
     S: AsyncWrite,
@@ -205,6 +208,21 @@ where
     #[inline]
     fn flush(&mut self) -> std::io::Result<()> {
         self.inner.flush()
+    }
+
+    #[inline]
+    fn write_all(&mut self, buf: &[u8]) -> std::io::Result<()> {
+        self.inner.write_all(buf)
+    }
+
+    #[inline]
+    fn write_fmt(&mut self, args: fmt::Arguments<'_>) -> std::io::Result<()> {
+        self.inner.write_fmt(args)
+    }
+
+    #[inline]
+    fn write_vectored(&mut self, bufs: &[IoSlice<'_>]) -> std::io::Result<usize> {
+        self.inner.write_vectored(bufs)
     }
 }
 

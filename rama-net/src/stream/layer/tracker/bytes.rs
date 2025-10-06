@@ -115,6 +115,7 @@ impl<S> BytesRWTracker<S> {
     }
 }
 
+#[warn(clippy::missing_trait_methods)]
 impl<S> AsyncRead for BytesRWTracker<S>
 where
     S: AsyncRead,
@@ -148,6 +149,7 @@ where
     }
 }
 
+#[warn(clippy::missing_trait_methods)]
 impl<S> AsyncWrite for BytesRWTracker<S>
 where
     S: AsyncWrite,

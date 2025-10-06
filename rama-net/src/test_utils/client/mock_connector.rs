@@ -103,6 +103,7 @@ impl ExtensionsMut for MockSocket {
     }
 }
 
+#[warn(clippy::missing_trait_methods)]
 impl AsyncRead for MockSocket {
     fn poll_read(
         mut self: std::pin::Pin<&mut Self>,
@@ -113,6 +114,7 @@ impl AsyncRead for MockSocket {
     }
 }
 
+#[warn(clippy::missing_trait_methods)]
 impl AsyncWrite for MockSocket {
     fn poll_write(
         mut self: std::pin::Pin<&mut Self>,

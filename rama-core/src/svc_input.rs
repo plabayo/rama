@@ -73,6 +73,7 @@ impl<T> ExtensionsMut for ServiceInput<T> {
     }
 }
 
+#[warn(clippy::missing_trait_methods)]
 impl<T: AsyncRead> AsyncRead for ServiceInput<T> {
     fn poll_read(
         self: Pin<&mut Self>,
@@ -83,6 +84,7 @@ impl<T: AsyncRead> AsyncRead for ServiceInput<T> {
     }
 }
 
+#[warn(clippy::missing_trait_methods)]
 impl<T: AsyncWrite> AsyncWrite for ServiceInput<T> {
     fn poll_write(
         self: Pin<&mut Self>,
