@@ -9,7 +9,6 @@ use super::{
 use crate::cmd::fp::{StorageAuthorized, data::TlsDisplayInfoExtensionData};
 use itertools::Itertools as _;
 use rama::{
-    Context,
     error::{ErrorContext, OpaqueError},
     extensions::ExtensionsRef,
     http::{
@@ -101,7 +100,7 @@ pub(super) async fn get_consent() -> impl IntoResponse {
     )
 }
 
-pub(super) async fn get_report(ctx: Context, req: Request) -> Result<Html, Response> {
+pub(super) async fn get_report(req: Request) -> Result<Html, Response> {
     let ja4h = get_ja4h_info(&req);
 
     let (mut parts, _) = req.into_parts();
@@ -112,7 +111,6 @@ pub(super) async fn get_report(ctx: Context, req: Request) -> Result<Html, Respo
         FetchMode::Navigate,
         ResourceType::Document,
         Initiator::Navigator,
-        &ctx,
         &parts,
     )
     .await
@@ -328,7 +326,6 @@ pub(super) struct APINumberRequest {
 
 pub(super) async fn post_api_fetch_number(
     Path(params): Path<APINumberParams>,
-    ctx: Context,
     req: Request,
 ) -> Result<Json<serde_json::Value>, Response> {
     let ja4h = get_ja4h_info(&req);
@@ -343,7 +340,6 @@ pub(super) async fn post_api_fetch_number(
         FetchMode::SameOrigin,
         ResourceType::Xhr,
         Initiator::Fetch,
-        &ctx,
         &parts,
     )
     .await
@@ -415,7 +411,6 @@ pub(super) async fn post_api_fetch_number(
 
 pub(super) async fn post_api_xml_http_request_number(
     Path(params): Path<APINumberParams>,
-    ctx: Context,
     req: Request,
 ) -> Result<Json<serde_json::Value>, Response> {
     let ja4h = get_ja4h_info(&req);
@@ -430,7 +425,6 @@ pub(super) async fn post_api_xml_http_request_number(
         FetchMode::SameOrigin,
         ResourceType::Xhr,
         Initiator::Fetch,
-        &ctx,
         &parts,
     )
     .await
@@ -469,7 +463,7 @@ pub(super) async fn post_api_xml_http_request_number(
 // endpoints: form
 //------------------------------------------
 
-pub(super) async fn form(ctx: Context, req: Request) -> Result<Html, Response> {
+pub(super) async fn form(req: Request) -> Result<Html, Response> {
     let ja4h = get_ja4h_info(&req);
 
     let (mut parts, _) = req.into_parts();
@@ -482,7 +476,6 @@ pub(super) async fn form(ctx: Context, req: Request) -> Result<Html, Response> {
         FetchMode::SameOrigin,
         ResourceType::Form,
         Initiator::Form,
-        &ctx,
         &parts,
     )
     .await
@@ -568,7 +561,7 @@ pub(super) async fn form(ctx: Context, req: Request) -> Result<Html, Response> {
 // endpoints: WS(S)
 //------------------------------------------
 
-pub(super) async fn ws_api(_ctx: Context, ws: ServerWebSocket) -> Result<(), OpaqueError> {
+pub(super) async fn ws_api(ws: ServerWebSocket) -> Result<(), OpaqueError> {
     tracing::debug!("ws api called");
     let (mut ws, mut parts) = ws.into_parts();
 

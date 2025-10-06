@@ -2,7 +2,7 @@
 
 use std::{fmt, marker::PhantomData};
 
-use rama_core::{Context, extensions::ExtensionsMut, telemetry::tracing};
+use rama_core::{extensions::ExtensionsMut, telemetry::tracing};
 use rama_http_headers::{Authorization, HeaderMapExt, authorization::Credentials};
 use rama_http_types::{Body, HeaderValue, Request, Response, StatusCode, header};
 use rama_net::user::{
@@ -134,9 +134,8 @@ where
 
     async fn validate(
         &self,
-        ctx: Context,
         mut request: Request<ReqBody>,
-    ) -> Result<(Context, Request<ReqBody>), Response<Self::ResponseBody>> {
+    ) -> Result<Request<ReqBody>, Response<Self::ResponseBody>> {
         match request.headers().typed_get::<Authorization<C>>() {
             Some(auth) => {
                 let AuthorizeResult { result, .. } = self.authorize(auth.into_inner()).await;
@@ -145,7 +144,7 @@ where
                         if let Some(ext) = maybe_ext {
                             request.extensions_mut().extend(ext);
                         }
-                        Ok((ctx, request))
+                        Ok(request)
                     }
                     Err(response) => Err(response),
                 }
@@ -153,7 +152,7 @@ where
             None => {
                 if self.allow_anonymous {
                     request.extensions_mut().insert(UserId::Anonymous);
-                    Ok((ctx, request))
+                    Ok(request)
                 } else {
                     Err(StatusCode::UNAUTHORIZED.into_response())
                 }

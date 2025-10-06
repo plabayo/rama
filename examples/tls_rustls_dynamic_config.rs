@@ -49,7 +49,7 @@
 
 // rama provides everything out of the box to build a TLS termination proxy with a dynamic rustls config
 use rama::{
-    Context, Layer,
+    Layer,
     error::{ErrorContext, OpaqueError},
     graceful::Shutdown,
     http::{Request, Response, server::HttpServer, service::web::response::IntoResponse},
@@ -179,7 +179,7 @@ fn parse_certificate(
     Ok((cert_chain, priv_key_der))
 }
 
-async fn http_service(_ctx: Context, _request: Request) -> Result<Response, Infallible> {
+async fn http_service(_request: Request) -> Result<Response, Infallible> {
     Ok(
         "hello client, you were served by rustls tls terminator proxy issuing a dynamic config"
             .into_response(),

@@ -15,7 +15,6 @@ pub trait SocketService: Send + Sync + 'static {
     /// Create a binding to a Unix/Linux/Windows socket.
     fn bind(
         &self,
-
         interface: impl Into<Interface>,
     ) -> impl Future<Output = Result<Self::Socket, Self::Error>> + Send + '_;
 }
@@ -30,7 +29,6 @@ where
 
     fn bind(
         &self,
-
         interface: impl Into<Interface>,
     ) -> impl Future<Output = Result<Self::Socket, Self::Error>> + Send + '_ {
         self.serve(interface.into())

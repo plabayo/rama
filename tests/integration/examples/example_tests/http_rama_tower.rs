@@ -1,8 +1,5 @@
 use super::utils;
-use rama::{
-    Context,
-    http::{BodyExtractExt, StatusCode},
-};
+use rama::http::{BodyExtractExt, StatusCode};
 
 const ADDRESS: &str = "127.0.0.1:62020";
 
@@ -14,7 +11,7 @@ async fn test_http_rama_tower() {
     let runner = utils::ExampleRunner::interactive("http_rama_tower", Some("tower"));
 
     let req_uri = format!("http://{ADDRESS}");
-    let response = runner.get(req_uri).send(Context::default()).await.unwrap();
+    let response = runner.get(req_uri).send().await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let homepage = response.try_into_string().await.unwrap();
     assert!(homepage.contains("Rama"));

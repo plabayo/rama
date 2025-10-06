@@ -20,7 +20,7 @@
     - [🍔 Middlewares and ☘️ Leaf Services](./intro/terminology.md)
     - [Network Layers](./intro/network_layers.md)
     - [⛌ Service Branches](./intro/service_branches.md)
-    - [☀️ Context](./intro/context.md)
+    - [☀️ State](./intro/state.md)
     - [🧱 Modular](./intro/modular.md)
     - [🚚 Dynamic Dispatch](./intro/dynamic_dispatch.md)
     - [🚫 Errors](./intro/errors.md)

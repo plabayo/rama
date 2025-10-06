@@ -13,7 +13,7 @@ use crate::net::tls::{
 };
 use crate::telemetry::tracing;
 use crate::utils::str::NonEmptyString;
-use crate::{Context, Service, combinators::Either, service::BoxService};
+use crate::{Service, combinators::Either, service::BoxService};
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as ENGINE;
@@ -252,7 +252,7 @@ async fn fetch_certs(
     let response = client
         .post(uri)
         .json(&CertOrderInput { domain })
-        .send(Context::default())
+        .send()
         .await
         .context("send order request")?;
 

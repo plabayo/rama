@@ -4,10 +4,10 @@ use std::fmt;
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 
+use rama_core::Service;
 use rama_core::error::{BoxError, ErrorContext, OpaqueError};
 use rama_core::extensions::{Extensions, ExtensionsMut};
 use rama_core::telemetry::tracing;
-use rama_core::{Context, Service};
 use rama_http::conn::TargetHttpVersion;
 use rama_http::headers::sec_websocket_extensions::{Extension, PerMessageDeflateConfig};
 use rama_http::headers::sec_websocket_protocol::AcceptedWebSocketProtocol;
@@ -792,7 +792,7 @@ where
         }
 
         let response = builder
-            .send(Context::default())
+            .send()
             .await
             .context("send initial websocket handshake request (upgrade)")
             .map_err(HandshakeError::HttpRequestError)?;

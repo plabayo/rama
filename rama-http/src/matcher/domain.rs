@@ -1,9 +1,6 @@
 use crate::Request;
+use rama_core::extensions::{Extensions, ExtensionsRef};
 use rama_core::telemetry::tracing;
-use rama_core::{
-    Context,
-    extensions::{Extensions, ExtensionsRef},
-};
 use rama_net::address::{Domain, Host, IntoDomain};
 use rama_net::http::RequestContext;
 
@@ -39,11 +36,11 @@ impl DomainMatcher {
 }
 
 impl<Body> rama_core::matcher::Matcher<Request<Body>> for DomainMatcher {
-    fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context, req: &Request<Body>) -> bool {
+    fn matches(&self, ext: Option<&mut Extensions>, req: &Request<Body>) -> bool {
         let host = if let Some(req_ctx) = req.extensions().get::<RequestContext>() {
             req_ctx.authority.host().clone()
         } else {
-            let req_ctx: RequestContext = match (ctx, req).try_into() {
+            let req_ctx = match RequestContext::try_from((req,)) {
                 Ok(req_ctx) => req_ctx,
                 Err(err) => {
                     tracing::error!("DomainMatcher: failed to lazy-make the request ctx: {err:?}");

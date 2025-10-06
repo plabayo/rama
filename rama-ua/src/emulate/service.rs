@@ -1,7 +1,7 @@
 use std::{borrow::Cow, fmt};
 
 use rama_core::{
-    Context, Service,
+    Service,
     error::{BoxError, ErrorContext, OpaqueError},
     extensions::{ExtensionsMut, ExtensionsRef},
     telemetry::tracing,
@@ -181,11 +181,7 @@ where
     type Response = S::Response;
     type Error = BoxError;
 
-    async fn serve(
-        &self,
-        ctx: Context,
-        mut req: Request<Body>,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut req: Request<Body>) -> Result<Self::Response, Self::Error> {
         if let Some(fallback) = self.select_fallback {
             req.extensions_mut().insert(fallback);
         }
@@ -214,7 +210,7 @@ where
 
         let Some(profile) = self.provider.select_user_agent_profile(req.extensions()) else {
             return if self.optional {
-                Ok(self.inner.serve(ctx, req).await.map_err(Into::into)?)
+                Ok(self.inner.serve(req).await.map_err(Into::into)?)
             } else {
                 Err(OpaqueError::from_display(
                     "requirement not fulfilled: user agent profile could not be selected",
@@ -304,7 +300,7 @@ where
             .insert(SelectedUserAgentProfile::from(profile));
 
         // serve emulated http(s) request via inner service
-        self.inner.serve(ctx, req).await.map_err(Into::into)
+        self.inner.serve(req).await.map_err(Into::into)
     }
 }
 
@@ -329,20 +325,16 @@ where
     ReqBody: Send + 'static,
 {
     type Error = BoxError;
-    type Response = (Context, Request<ReqBody>);
+    type Response = Request<ReqBody>;
 
-    async fn serve(
-        &self,
-        mut ctx: Context,
-        mut req: Request<ReqBody>,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
         match req.extensions().get().cloned() {
             Some(http_profile) => {
                 tracing::trace!(
                     http.version = ?req.version(),
                     "http profile found in context to use for http connection emulation, proceed",
                 );
-                emulate_http_connect_settings(&mut ctx, &mut req, &http_profile);
+                emulate_http_connect_settings(&mut req, &http_profile);
             }
             None => {
                 tracing::trace!(
@@ -351,15 +343,11 @@ where
                 );
             }
         }
-        Ok((ctx, req))
+        Ok(req)
     }
 }
 
-fn emulate_http_connect_settings<Body>(
-    _ctx: &mut Context,
-    req: &mut Request<Body>,
-    profile: &HttpProfile,
-) {
+fn emulate_http_connect_settings<Body>(req: &mut Request<Body>, profile: &HttpProfile) {
     match req.version() {
         Version::HTTP_09 | Version::HTTP_10 | Version::HTTP_11 => {
             tracing::trace!("UA emulation add http1-specific settings",);
@@ -414,13 +402,9 @@ where
     ReqBody: Send + 'static,
 {
     type Error = BoxError;
-    type Response = (Context, Request<ReqBody>);
+    type Response = Request<ReqBody>;
 
-    async fn serve(
-        &self,
-        ctx: Context,
-        mut req: Request<ReqBody>,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
         match req.extensions().get().cloned() {
             Some(http_profile) => {
                 tracing::trace!(
@@ -428,7 +412,7 @@ where
                     "http profile found in context to use for emulation, proceed",
                 );
 
-                match get_base_http_headers(&ctx, &req, &http_profile) {
+                match get_base_http_headers(&req, &http_profile) {
                     Some(base_http_headers) => {
                         let original_http_header_order = req.extensions().get().cloned();
                         let original_headers = req.headers().clone();
@@ -441,7 +425,7 @@ where
                                 Some(Cow::Borrowed(&ctx.authority)),
                                 Some(Cow::Borrowed(&ctx.protocol)),
                             ),
-                            None => match RequestContext::try_from((&ctx, &req)) {
+                            None => match RequestContext::try_from((&req,)) {
                                 Ok(ctx) => (
                                     Some(Cow::Owned(ctx.authority)),
                                     Some(Cow::Owned(ctx.protocol)),
@@ -499,12 +483,11 @@ where
                 );
             }
         }
-        Ok((ctx, req))
+        Ok(req)
     }
 }
 
 fn get_base_http_headers<'a, Body>(
-    _ctx: &Context,
     req: &Request<Body>,
     profile: &'a HttpProfile,
 ) -> Option<&'a Http1HeaderMap> {
@@ -1547,7 +1530,7 @@ mod tests {
             .method(Method::GET)
             .body(Body::empty())
             .unwrap();
-        let res = ua_service.serve(Context::default(), req).await.unwrap();
+        let res = ua_service.serve(req).await.unwrap();
         assert_eq!(res, "");
 
         let req = Request::builder()
@@ -1555,7 +1538,7 @@ mod tests {
             .version(Version::HTTP_2)
             .body(Body::empty())
             .unwrap();
-        let res = ua_service.serve(Context::default(), req).await.unwrap();
+        let res = ua_service.serve(req).await.unwrap();
         assert_eq!(res, "navigate");
     }
 
@@ -1620,7 +1603,7 @@ mod tests {
             .method(Method::DELETE)
             .body(Body::empty())
             .unwrap();
-        let res = ua_service.serve(Context::default(), req).await.unwrap();
+        let res = ua_service.serve(req).await.unwrap();
         assert_eq!(res, "navigate");
     }
 
@@ -1695,7 +1678,7 @@ mod tests {
             .method(Method::DELETE)
             .body(Body::empty())
             .unwrap();
-        let res = ua_service.serve(Context::default(), req).await.unwrap();
+        let res = ua_service.serve(req).await.unwrap();
         assert_eq!(res, "xhr");
     }
 
@@ -1774,7 +1757,7 @@ mod tests {
             )
             .body(Body::empty())
             .unwrap();
-        let res = ua_service.serve(Context::default(), req).await.unwrap();
+        let res = ua_service.serve(req).await.unwrap();
         assert_eq!(res, "fetch");
     }
 
@@ -2118,7 +2101,7 @@ mod tests {
                 *req.extensions_mut() = extensions;
             }
 
-            let res = ua_service.serve(Context::default(), req).await.unwrap();
+            let res = ua_service.serve(req).await.unwrap();
             assert_eq!(res, test_case.expected, "{}", test_case.description);
         }
     }

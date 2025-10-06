@@ -46,11 +46,7 @@ where
 
     type Error = BoxError;
 
-    async fn serve(
-        &self,
-        ctx: rama_core::Context,
-        mut req: Request,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut req: Request) -> Result<Self::Response, Self::Error> {
         let tls_profile = req.extensions().get::<TlsProfile>().cloned();
 
         // Right now this is very simple, but it will get a lot more complex, which is why it is separated from the connector itself
@@ -58,7 +54,7 @@ where
             let mut domain_overwrite = None;
             let mut emulate_config = Cow::Borrowed(profile.client_config.as_ref());
 
-            let transport_ctx = req.try_ref_into_transport_ctx(&ctx).map_err(|err| {
+            let transport_ctx = req.try_ref_into_transport_ctx().map_err(|err| {
                 OpaqueError::from_boxed(err.into())
                     .context("UA TLS Emulator: compute transport context to get authority")
             })?;
@@ -137,7 +133,7 @@ where
             }
         }
 
-        self.inner.serve(ctx, req).await.map_err(Into::into)
+        self.inner.serve(req).await.map_err(Into::into)
     }
 }
 

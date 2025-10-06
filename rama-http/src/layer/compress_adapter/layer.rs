@@ -51,9 +51,9 @@ mod tests {
     use crate::layer::compression::CompressionLayer;
     use crate::layer::set_header::SetResponseHeaderLayer;
     use crate::{Body, Request, Response, body::util::BodyExt, header::ACCEPT_ENCODING};
+    use rama_core::Service;
     use rama_core::service::service_fn;
     use rama_core::stream::io::ReaderStream;
-    use rama_core::{Context, Service};
     use rama_http_types::HeaderValue;
     use std::convert::Infallible;
     use tokio::fs::File;
@@ -86,7 +86,7 @@ mod tests {
             .header(ACCEPT_ENCODING, "deflate")
             .body(Body::empty())?;
 
-        let response = service.serve(Context::default(), request).await?;
+        let response = service.serve(request).await?;
 
         assert!(!response.headers().contains_key("content-encoding"));
 
@@ -112,7 +112,7 @@ mod tests {
 
         let request = Request::builder().body(Body::empty())?;
 
-        let response = service.serve(Context::default(), request).await?;
+        let response = service.serve(request).await?;
 
         assert!(!response.headers().contains_key("content-encoding"));
 
@@ -144,7 +144,7 @@ mod tests {
             .header(ACCEPT_ENCODING, "deflate")
             .body(Body::empty())?;
 
-        let response = service.serve(Context::default(), request).await?;
+        let response = service.serve(request).await?;
 
         assert_eq!(response.headers()["content-encoding"], "deflate");
 
@@ -176,7 +176,7 @@ mod tests {
             .header(ACCEPT_ENCODING, "gzip")
             .body(Body::empty())?;
 
-        let response = service.serve(Context::default(), request).await?;
+        let response = service.serve(request).await?;
 
         assert!(!response.headers().contains_key("content-encoding"));
 
@@ -204,7 +204,7 @@ mod tests {
             .header(ACCEPT_ENCODING, "deflate")
             .body(Body::empty())?;
 
-        let response = service.serve(Context::default(), request).await?;
+        let response = service.serve(request).await?;
 
         assert_eq!(response.headers()["content-encoding"], "deflate");
 
@@ -229,7 +229,7 @@ mod tests {
 
         let request = Request::builder().body(Body::empty())?;
 
-        let response = service.serve(Context::default(), request).await?;
+        let response = service.serve(request).await?;
 
         assert!(!response.headers().contains_key("content-encoding"));
 

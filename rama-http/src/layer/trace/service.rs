@@ -8,7 +8,7 @@ use crate::layer::classify::{
     ServerErrorsAsFailures, SharedClassifier,
 };
 use crate::{Request, Response, StreamingBody};
-use rama_core::{Context, Service, telemetry::tracing::Instrument};
+use rama_core::{Service, telemetry::tracing::Instrument};
 use rama_utils::macros::define_inner_service_accessors;
 use std::{fmt, time::Instant};
 
@@ -315,11 +315,7 @@ where
         Response<ResponseBody<ResBody, M::ClassifyEos, OnBodyChunkT, OnEosT, OnFailureT>>;
     type Error = S::Error;
 
-    async fn serve(
-        &self,
-        ctx: Context,
-        req: Request<ReqBody>,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
         let start = Instant::now();
 
         let span = self.make_span.make_span(&req);
@@ -327,7 +323,7 @@ where
         let classifier = self.make_classifier.make_classifier(&req);
 
         span.in_scope(|| self.on_request.on_request(&req, &span));
-        let result = self.inner.serve(ctx, req).instrument(span.clone()).await;
+        let result = self.inner.serve(req).instrument(span.clone()).await;
         let latency = start.elapsed();
 
         match result {

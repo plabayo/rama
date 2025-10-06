@@ -5,7 +5,6 @@ use super::utils;
 use std::sync::Arc;
 
 use rama::{
-    Context,
     http::{BodyExtractExt, server::HttpServer, service::web::Router},
     net::{
         Protocol,
@@ -31,7 +30,7 @@ async fn test_socks5_and_http_proxy() {
     let result = runner
         .get(uri)
         .extension(ProxyAddress::try_from("http://tom:clancy@127.0.0.1:62023").unwrap())
-        .send(Context::default())
+        .send()
         .await
         .unwrap()
         .try_into_string()
@@ -72,7 +71,7 @@ async fn test_http_client_over_socks5_proxy_connect(
     let resp = runner
         .get(uri)
         .extension(proxy_address)
-        .send(Context::default())
+        .send()
         .await
         .expect("make http request via socks5 proxy")
         .try_into_string()

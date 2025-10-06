@@ -27,7 +27,7 @@
 //!     .unwrap();
 //!
 //! let response = service
-//!     .serve(Context::default(), request)
+//!     .serve(request)
 //!     .await?;
 //!
 //! assert_eq!(StatusCode::OK, response.status());
@@ -39,7 +39,7 @@
 //!     .unwrap();
 //!
 //! let response = service
-//!     .serve(Context::default(), request)
+//!     .serve(request)
 //!     .await?;
 //!
 //! assert_eq!(StatusCode::NOT_ACCEPTABLE, response.status());
@@ -93,7 +93,7 @@
 //! #     .unwrap();
 //!
 //! let response = service
-//!     .serve(Context::default(), request)
+//!     .serve(request)
 //!     .await?;
 //!
 //! # Ok(())
@@ -129,7 +129,7 @@
 //! #     .unwrap();
 //!
 //! let response = service
-//!     .serve(Context::default(), request)
+//!     .serve(request)
 //!     .await?;
 //!
 //! # Ok(())

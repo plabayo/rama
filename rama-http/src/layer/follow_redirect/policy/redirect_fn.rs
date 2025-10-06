@@ -1,5 +1,4 @@
 use super::{Action, Attempt, Policy};
-use rama_core::Context;
 use std::fmt;
 
 /// A redirection [`Policy`] created from a closure.
@@ -22,7 +21,7 @@ impl<B, E, F> Policy<B, E> for RedirectFn<F>
 where
     F: FnMut(&Attempt<'_>) -> Result<Action, E> + Send + Sync + 'static,
 {
-    fn redirect(&mut self, _: &Context, attempt: &Attempt<'_>) -> Result<Action, E> {
+    fn redirect(&mut self, attempt: &Attempt<'_>) -> Result<Action, E> {
         (self.f)(attempt)
     }
 }

@@ -2,7 +2,7 @@ use crate::Request;
 use crate::headers::HeaderMapExt;
 use crate::headers::forwarded::ForwardHeader;
 use rama_core::error::BoxError;
-use rama_core::{Context, Layer, Service, extensions::ExtensionsRef};
+use rama_core::{Layer, Service, extensions::ExtensionsRef};
 use rama_net::address::Domain;
 use rama_net::forwarded::{Forwarded, ForwardedElement, NodeId};
 use rama_net::http::RequestContext;
@@ -142,7 +142,6 @@ macro_rules! set_forwarded_service_for_tuple {
 
             async fn serve(
                 &self,
-                ctx: Context,
                 mut req: Request<Body>,
             ) -> Result<Self::Response, Self::Error> {
                 let forwarded: Option<Forwarded> = req.extensions().get().cloned();
@@ -153,7 +152,7 @@ macro_rules! set_forwarded_service_for_tuple {
                     forwarded_element.set_forwarded_for(peer_addr);
                 }
 
-                let request_ctx = RequestContext::try_from((&ctx, &req))?;
+                let request_ctx = RequestContext::try_from((&req,))?;
 
                 forwarded_element.set_forwarded_host(request_ctx.authority.clone());
 
@@ -177,7 +176,7 @@ macro_rules! set_forwarded_service_for_tuple {
                     )*
                 }
 
-                self.inner.serve(ctx, req).await.map_err(Into::into)
+                self.inner.serve(req).await.map_err(Into::into)
             }
         }
     };
@@ -233,6 +232,6 @@ mod tests {
                 service_fn(svc),
             );
         let req = Request::builder().uri("example.com").body(()).unwrap();
-        service.serve(Context::default(), req).await.unwrap();
+        service.serve(req).await.unwrap();
     }
 }

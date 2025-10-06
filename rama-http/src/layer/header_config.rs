@@ -9,7 +9,7 @@
 //! use rama_http::layer::header_config::{HeaderConfigLayer, HeaderConfigService};
 //! use rama_http::service::web::{WebService};
 //! use rama_http::{Body, Request, StatusCode, HeaderName};
-//! use rama_core::{Context, extensions::Extensions, Service, Layer};
+//! use rama_core::{extensions::Extensions, Service, Layer};
 //! use serde::Deserialize;
 //!
 //! #[derive(Debug, Deserialize, Clone)]
@@ -38,7 +38,7 @@
 //!         .body(Body::empty())
 //!         .unwrap();
 //!
-//!     let resp = service.serve(Context::default(), request).await.unwrap();
+//!     let resp = service.serve(request).await.unwrap();
 //!     assert_eq!(resp.status(), StatusCode::OK);
 //! }
 //! ```
@@ -50,7 +50,7 @@ use crate::{
 };
 use rama_core::extensions::ExtensionsMut;
 use rama_core::telemetry::tracing;
-use rama_core::{Context, Layer, Service, error::BoxError};
+use rama_core::{Layer, Service, error::BoxError};
 use rama_utils::macros::define_inner_service_accessors;
 use serde::de::DeserializeOwned;
 use std::{fmt, marker::PhantomData};
@@ -148,24 +148,20 @@ where
     type Response = S::Response;
     type Error = BoxError;
 
-    async fn serve(
-        &self,
-        ctx: Context,
-        mut request: Request<Body>,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut request: Request<Body>) -> Result<Self::Response, Self::Error> {
         let config = match extract_header_config::<_, T, _>(&request, &self.header_name) {
             Ok(config) => config,
             Err(err) => {
                 if self.optional && matches!(err, crate::utils::HeaderValueErr::HeaderMissing(_)) {
                     tracing::debug!("failed to extract header config: {err:?}");
-                    return self.inner.serve(ctx, request).await.map_err(Into::into);
+                    return self.inner.serve(request).await.map_err(Into::into);
                 } else {
                     return Err(err.into());
                 }
             }
         };
         request.extensions_mut().insert(config);
-        self.inner.serve(ctx, request).await.map_err(Into::into)
+        self.inner.serve(request).await.map_err(Into::into)
     }
 }
 
@@ -256,23 +252,22 @@ mod test {
             .body(())
             .unwrap();
 
-        let inner_service =
-            rama_core::service::service_fn(async |_ctx: Context, req: Request<()>| {
-                let cfg: &Config = req.extensions().get().unwrap();
-                assert_eq!(cfg.s, "E&G");
-                assert_eq!(cfg.n, 1);
-                assert!(cfg.m.is_none());
-                assert!(cfg.b);
+        let inner_service = rama_core::service::service_fn(async |req: Request<()>| {
+            let cfg: &Config = req.extensions().get().unwrap();
+            assert_eq!(cfg.s, "E&G");
+            assert_eq!(cfg.n, 1);
+            assert!(cfg.m.is_none());
+            assert!(cfg.b);
 
-                Ok::<_, std::convert::Infallible>(())
-            });
+            Ok::<_, std::convert::Infallible>(())
+        });
 
         let service = HeaderConfigService::<Config, _>::required(
             inner_service,
             HeaderName::from_static("x-proxy-config"),
         );
 
-        service.serve(Context::default(), request).await.unwrap();
+        service.serve(request).await.unwrap();
     }
 
     #[tokio::test]
@@ -284,23 +279,22 @@ mod test {
             .body(())
             .unwrap();
 
-        let inner_service =
-            rama_core::service::service_fn(async |_ctx: Context, req: Request<()>| {
-                let cfg: &Config = req.extensions().get().unwrap();
-                assert_eq!(cfg.s, "E&G");
-                assert_eq!(cfg.n, 1);
-                assert!(cfg.m.is_none());
-                assert!(cfg.b);
+        let inner_service = rama_core::service::service_fn(async |req: Request<()>| {
+            let cfg: &Config = req.extensions().get().unwrap();
+            assert_eq!(cfg.s, "E&G");
+            assert_eq!(cfg.n, 1);
+            assert!(cfg.m.is_none());
+            assert!(cfg.b);
 
-                Ok::<_, std::convert::Infallible>(())
-            });
+            Ok::<_, std::convert::Infallible>(())
+        });
 
         let service = HeaderConfigService::<Config, _>::optional(
             inner_service,
             HeaderName::from_static("x-proxy-config"),
         );
 
-        service.serve(Context::default(), request).await.unwrap();
+        service.serve(request).await.unwrap();
     }
 
     #[tokio::test]
@@ -311,19 +305,18 @@ mod test {
             .body(())
             .unwrap();
 
-        let inner_service =
-            rama_core::service::service_fn(async |_ctx: Context, req: Request<()>| {
-                assert!(req.extensions().get::<Config>().is_none());
+        let inner_service = rama_core::service::service_fn(async |req: Request<()>| {
+            assert!(req.extensions().get::<Config>().is_none());
 
-                Ok::<_, std::convert::Infallible>(())
-            });
+            Ok::<_, std::convert::Infallible>(())
+        });
 
         let service = HeaderConfigService::<Config, _>::optional(
             inner_service,
             HeaderName::from_static("x-proxy-config"),
         );
 
-        service.serve(Context::default(), request).await.unwrap();
+        service.serve(request).await.unwrap();
     }
 
     #[tokio::test]
@@ -343,7 +336,7 @@ mod test {
             HeaderName::from_static("x-proxy-config"),
         );
 
-        let result = service.serve(Context::default(), request).await;
+        let result = service.serve(request).await;
         assert!(result.is_err());
     }
 
@@ -365,7 +358,7 @@ mod test {
             HeaderName::from_static("x-proxy-config"),
         );
 
-        let result = service.serve(Context::default(), request).await;
+        let result = service.serve(request).await;
         assert!(result.is_err());
     }
 
@@ -387,7 +380,7 @@ mod test {
             HeaderName::from_static("x-proxy-config"),
         );
 
-        let result = service.serve(Context::default(), request).await;
+        let result = service.serve(request).await;
         assert!(result.is_err());
     }
 

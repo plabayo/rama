@@ -3,7 +3,7 @@
 use super::ServeDir;
 use crate::mime::{Mime, guess as mime_guess};
 use crate::{HeaderValue, Request, Response};
-use rama_core::{Context, Service};
+use rama_core::Service;
 use std::path::Path;
 
 /// Service that serves a file.
@@ -112,15 +112,11 @@ impl ServeFile {
     ///
     /// See [`ServeDir::try_call`] for more details.
     #[inline]
-    pub async fn try_call<ReqBody>(
-        &self,
-        ctx: Context,
-        req: Request<ReqBody>,
-    ) -> Result<Response, std::io::Error>
+    pub async fn try_call<ReqBody>(&self, req: Request<ReqBody>) -> Result<Response, std::io::Error>
     where
         ReqBody: Send + 'static,
     {
-        self.0.try_call(ctx, req).await
+        self.0.try_call(req).await
     }
 }
 
@@ -132,12 +128,8 @@ where
     type Response = <ServeDir as Service<Request<ReqBody>>>::Response;
 
     #[inline]
-    async fn serve(
-        &self,
-        ctx: Context,
-        req: Request<ReqBody>,
-    ) -> Result<Self::Response, Self::Error> {
-        self.0.serve(ctx, req).await
+    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
+        self.0.serve(req).await
     }
 }
 
@@ -159,7 +151,7 @@ mod compression_tests {
             .header("Accept-Encoding", "zstd,br")
             .body(Body::empty())
             .unwrap();
-        let res = svc.serve(Context::default(), request).await.unwrap();
+        let res = svc.serve(request).await.unwrap();
 
         assert_eq!(res.headers()["content-type"], "text/plain");
         assert_eq!(res.headers()["content-encoding"], "zstd");
@@ -183,7 +175,7 @@ mod tests {
     use brotli::BrotliDecompress;
     use flate2::bufread::DeflateDecoder;
     use flate2::bufread::GzDecoder;
-    use rama_core::{Context, Service};
+    use rama_core::Service;
     use std::io::Read;
     use std::str::FromStr;
 
@@ -191,10 +183,7 @@ mod tests {
     async fn basic() {
         let svc = ServeFile::new("../README.md");
 
-        let res = svc
-            .serve(Context::default(), Request::new(Body::empty()))
-            .await
-            .unwrap();
+        let res = svc.serve(Request::new(Body::empty())).await.unwrap();
 
         assert_eq!(res.headers()["content-type"], "text/markdown");
 
@@ -208,10 +197,7 @@ mod tests {
     async fn basic_with_mime() {
         let svc = ServeFile::new_with_mime("../README.md", &Mime::from_str("image/jpg").unwrap());
 
-        let res = svc
-            .serve(Context::default(), Request::new(Body::empty()))
-            .await
-            .unwrap();
+        let res = svc.serve(Request::new(Body::empty())).await.unwrap();
 
         assert_eq!(res.headers()["content-type"], "image/jpg");
 
@@ -227,7 +213,7 @@ mod tests {
 
         let mut request = Request::new(Body::empty());
         *request.method_mut() = Method::HEAD;
-        let res = svc.serve(Context::default(), request).await.unwrap();
+        let res = svc.serve(request).await.unwrap();
 
         assert_eq!(res.headers()["content-type"], "text/plain");
 
@@ -248,7 +234,7 @@ mod tests {
             .method(Method::HEAD)
             .body(Body::empty())
             .unwrap();
-        let res = svc.serve(Context::default(), request).await.unwrap();
+        let res = svc.serve(request).await.unwrap();
 
         assert_eq!(res.headers()["content-type"], "text/plain");
         assert_eq!(res.headers()["content-encoding"], "gzip");
@@ -265,7 +251,7 @@ mod tests {
             .header("Accept-Encoding", "gzip")
             .body(Body::empty())
             .unwrap();
-        let res = svc.serve(Context::default(), request).await.unwrap();
+        let res = svc.serve(request).await.unwrap();
 
         assert_eq!(res.headers()["content-type"], "text/plain");
         assert_eq!(res.headers()["content-encoding"], "gzip");
@@ -285,7 +271,7 @@ mod tests {
             .header("Accept-Encoding", "br")
             .body(Body::empty())
             .unwrap();
-        let res = svc.serve(Context::default(), request).await.unwrap();
+        let res = svc.serve(request).await.unwrap();
 
         assert_eq!(res.headers()["content-type"], "text/plain");
         assert!(res.headers().get("content-encoding").is_none());
@@ -303,7 +289,7 @@ mod tests {
             .header("Accept-Encoding", "gzip")
             .body(Body::empty())
             .unwrap();
-        let res = svc.serve(Context::default(), request).await.unwrap();
+        let res = svc.serve(request).await.unwrap();
 
         assert_eq!(res.headers()["content-type"], "text/plain");
         // Uncompressed file is served because compressed version is missing
@@ -323,7 +309,7 @@ mod tests {
             .method(Method::HEAD)
             .body(Body::empty())
             .unwrap();
-        let res = svc.serve(Context::default(), request).await.unwrap();
+        let res = svc.serve(request).await.unwrap();
 
         assert_eq!(res.headers()["content-type"], "text/plain");
         #[cfg(target_os = "windows")]
@@ -341,11 +327,7 @@ mod tests {
         let svc = ServeFile::new("../test-files/only_gzipped.txt").precompressed_gzip();
 
         let request = Request::builder().body(Body::empty()).unwrap();
-        let res = svc
-            .clone()
-            .serve(Context::default(), request)
-            .await
-            .unwrap();
+        let res = svc.clone().serve(request).await.unwrap();
 
         assert_eq!(res.status(), StatusCode::NOT_FOUND);
 
@@ -354,7 +336,7 @@ mod tests {
             .header("Accept-Encoding", "gzip")
             .body(Body::empty())
             .unwrap();
-        let res = svc.serve(Context::default(), request).await.unwrap();
+        let res = svc.serve(request).await.unwrap();
 
         assert_eq!(res.headers()["content-type"], "text/plain");
         assert_eq!(res.headers()["content-encoding"], "gzip");
@@ -374,7 +356,7 @@ mod tests {
             .header("Accept-Encoding", "gzip,br")
             .body(Body::empty())
             .unwrap();
-        let res = svc.serve(Context::default(), request).await.unwrap();
+        let res = svc.serve(request).await.unwrap();
 
         assert_eq!(res.headers()["content-type"], "text/plain");
         assert_eq!(res.headers()["content-encoding"], "br");
@@ -393,7 +375,7 @@ mod tests {
             .header("Accept-Encoding", "deflate,br")
             .body(Body::empty())
             .unwrap();
-        let res = svc.serve(Context::default(), request).await.unwrap();
+        let res = svc.serve(request).await.unwrap();
 
         assert_eq!(res.headers()["content-type"], "text/plain");
         assert_eq!(res.headers()["content-encoding"], "deflate");
@@ -415,11 +397,7 @@ mod tests {
             .header("Accept-Encoding", "gzip")
             .body(Body::empty())
             .unwrap();
-        let res = svc
-            .clone()
-            .serve(Context::default(), request)
-            .await
-            .unwrap();
+        let res = svc.clone().serve(request).await.unwrap();
 
         assert_eq!(res.headers()["content-type"], "text/plain");
         assert_eq!(res.headers()["content-encoding"], "gzip");
@@ -434,11 +412,7 @@ mod tests {
             .header("Accept-Encoding", "br")
             .body(Body::empty())
             .unwrap();
-        let res = svc
-            .clone()
-            .serve(Context::default(), request)
-            .await
-            .unwrap();
+        let res = svc.clone().serve(request).await.unwrap();
 
         assert_eq!(res.headers()["content-type"], "text/plain");
         assert_eq!(res.headers()["content-encoding"], "br");
@@ -454,10 +428,7 @@ mod tests {
     async fn with_custom_chunk_size() {
         let svc = ServeFile::new("../README.md").with_buf_chunk_size(1024 * 32);
 
-        let res = svc
-            .serve(Context::default(), Request::new(Body::empty()))
-            .await
-            .unwrap();
+        let res = svc.serve(Request::new(Body::empty())).await.unwrap();
 
         assert_eq!(res.headers()["content-type"], "text/markdown");
 
@@ -478,7 +449,7 @@ mod tests {
             .header("Accept-Encoding", "gzip,deflate,br")
             .body(Body::empty())
             .unwrap();
-        let res = svc.serve(Context::default(), request).await.unwrap();
+        let res = svc.serve(request).await.unwrap();
 
         assert_eq!(res.headers()["content-type"], "text/plain");
         assert_eq!(res.headers()["content-encoding"], "br");
@@ -502,7 +473,7 @@ mod tests {
             .method(Method::HEAD)
             .body(Body::empty())
             .unwrap();
-        let res = svc.serve(Context::default(), request).await.unwrap();
+        let res = svc.serve(request).await.unwrap();
 
         assert_eq!(res.headers()["content-type"], "text/plain");
         assert_eq!(res.headers()["content-length"], "15");
@@ -515,10 +486,7 @@ mod tests {
     async fn returns_404_if_file_doesnt_exist() {
         let svc = ServeFile::new("../this-doesnt-exist.md");
 
-        let res = svc
-            .serve(Context::default(), Request::new(Body::empty()))
-            .await
-            .unwrap();
+        let res = svc.serve(Request::new(Body::empty())).await.unwrap();
 
         assert_eq!(res.status(), StatusCode::NOT_FOUND);
         assert!(res.headers().get(header::CONTENT_TYPE).is_none());
@@ -532,7 +500,7 @@ mod tests {
             .header("Accept-Encoding", "deflate")
             .body(Body::empty())
             .unwrap();
-        let res = svc.serve(Context::default(), request).await.unwrap();
+        let res = svc.serve(request).await.unwrap();
 
         assert_eq!(res.status(), StatusCode::NOT_FOUND);
         assert!(res.headers().get(header::CONTENT_TYPE).is_none());
@@ -543,7 +511,7 @@ mod tests {
         let svc = ServeFile::new("../README.md");
 
         let req = Request::builder().body(Body::empty()).unwrap();
-        let res = svc.serve(Context::default(), req).await.unwrap();
+        let res = svc.serve(req).await.unwrap();
 
         assert_eq!(res.status(), StatusCode::OK);
 
@@ -560,7 +528,7 @@ mod tests {
             .body(Body::empty())
             .unwrap();
 
-        let res = svc.serve(Context::default(), req).await.unwrap();
+        let res = svc.serve(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::NOT_MODIFIED);
         assert!(res.into_body().frame().await.is_none());
 
@@ -570,7 +538,7 @@ mod tests {
             .body(Body::empty())
             .unwrap();
 
-        let res = svc.serve(Context::default(), req).await.unwrap();
+        let res = svc.serve(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
         let readme_bytes = include_bytes!("../../../../README.md");
         let body = res.into_body().collect().await.unwrap().to_bytes();
@@ -584,7 +552,7 @@ mod tests {
             .body(Body::empty())
             .unwrap();
 
-        let res = svc.serve(Context::default(), req).await.unwrap();
+        let res = svc.serve(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
         let body = res.into_body().collect().await.unwrap().to_bytes();
         assert_eq!(body.as_ref(), readme_bytes);
@@ -595,7 +563,7 @@ mod tests {
             .body(Body::empty())
             .unwrap();
 
-        let res = svc.serve(Context::default(), req).await.unwrap();
+        let res = svc.serve(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::PRECONDITION_FAILED);
         assert!(res.into_body().frame().await.is_none());
     }

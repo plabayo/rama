@@ -1,5 +1,4 @@
 use super::{Action, Attempt, Policy, eq_origin};
-use rama_core::Context;
 use std::fmt;
 
 /// A redirection [`Policy`] that stops cross-origin redirections.
@@ -23,7 +22,7 @@ impl fmt::Debug for SameOrigin {
 }
 
 impl<B, E> Policy<B, E> for SameOrigin {
-    fn redirect(&mut self, _: &Context, attempt: &Attempt<'_>) -> Result<Action, E> {
+    fn redirect(&mut self, attempt: &Attempt<'_>) -> Result<Action, E> {
         if eq_origin(attempt.previous(), attempt.location()) {
             Ok(Action::Follow)
         } else {
@@ -45,10 +44,8 @@ mod tests {
         let same_origin = Uri::from_static("http://example.com/new");
         let cross_origin = Uri::from_static("https://example.com/new");
 
-        let mut ctx = Context::default();
-
         let mut request = Request::builder().uri(initial).body(()).unwrap();
-        Policy::<(), ()>::on_request(&mut policy, &mut ctx, &mut request);
+        Policy::<(), ()>::on_request(&mut policy, &mut request);
 
         let attempt = Attempt {
             status: Default::default(),
@@ -56,13 +53,13 @@ mod tests {
             previous: request.uri(),
         };
         assert!(
-            Policy::<(), ()>::redirect(&mut policy, &ctx, &attempt)
+            Policy::<(), ()>::redirect(&mut policy, &attempt)
                 .unwrap()
                 .is_follow()
         );
 
         let mut request = Request::builder().uri(same_origin).body(()).unwrap();
-        Policy::<(), ()>::on_request(&mut policy, &mut ctx, &mut request);
+        Policy::<(), ()>::on_request(&mut policy, &mut request);
 
         let attempt = Attempt {
             status: Default::default(),
@@ -70,7 +67,7 @@ mod tests {
             previous: request.uri(),
         };
         assert!(
-            Policy::<(), ()>::redirect(&mut policy, &ctx, &attempt)
+            Policy::<(), ()>::redirect(&mut policy, &attempt)
                 .unwrap()
                 .is_stop()
         );

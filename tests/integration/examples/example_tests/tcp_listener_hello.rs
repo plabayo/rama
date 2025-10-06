@@ -1,5 +1,5 @@
 use super::utils;
-use rama::{Context, http::BodyExtractExt};
+use rama::http::BodyExtractExt;
 
 const EXPECTED_FILE_CONTENT: &str = include_str!("../../../../examples/tcp_listener_hello.rs");
 
@@ -12,7 +12,7 @@ async fn test_tcp_listener_hello() {
 
     let file_content = runner
         .get("http://127.0.0.1:62500")
-        .send(Context::default())
+        .send()
         .await
         .unwrap()
         .try_into_string()

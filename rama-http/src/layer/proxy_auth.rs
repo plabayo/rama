@@ -7,7 +7,7 @@ use crate::headers::authorization::Authority;
 use crate::headers::{HeaderMapExt, ProxyAuthorization, authorization::Credentials};
 use crate::{Request, Response, StatusCode};
 use rama_core::extensions::{ExtensionsMut, ExtensionsRef};
-use rama_core::{Context, Layer, Service};
+use rama_core::{Layer, Service};
 use rama_net::user::UserId;
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
@@ -181,11 +181,7 @@ where
     type Response = S::Response;
     type Error = S::Error;
 
-    async fn serve(
-        &self,
-        ctx: Context,
-        mut req: Request<ReqBody>,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
         if let Some(credentials) = req
             .headers()
             .typed_get::<ProxyAuthorization<C>>()
@@ -194,7 +190,7 @@ where
         {
             if let Some(ext) = self.proxy_auth.authorized(credentials).await {
                 req.extensions_mut().extend(ext);
-                self.inner.serve(ctx, req).await
+                self.inner.serve(req).await
             } else {
                 Ok(Response::builder()
                     .status(StatusCode::PROXY_AUTHENTICATION_REQUIRED)
@@ -204,7 +200,7 @@ where
             }
         } else if self.allow_anonymous {
             req.extensions_mut().insert(UserId::Anonymous);
-            self.inner.serve(ctx, req).await
+            self.inner.serve(req).await
         } else {
             Ok(Response::builder()
                 .status(StatusCode::PROXY_AUTHENTICATION_REQUIRED)

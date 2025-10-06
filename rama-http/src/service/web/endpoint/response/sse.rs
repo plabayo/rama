@@ -118,11 +118,7 @@ mod tests {
             })
             .boxed();
 
-        let response = client
-            .get("http://example.com")
-            .send(rama_core::Context::default())
-            .await
-            .unwrap();
+        let response = client.get("http://example.com").send().await.unwrap();
 
         assert_eq!(response.headers()["content-type"], "text/event-stream");
         assert_eq!(response.headers()["cache-control"], "no-cache");
@@ -170,7 +166,7 @@ mod tests {
 
         let mut stream = client
             .get("http://example.com")
-            .send(rama_core::Context::default())
+            .send()
             .await
             .unwrap()
             .into_body();
@@ -214,7 +210,7 @@ mod tests {
 
         let mut stream = client
             .get("http://example.com")
-            .send(rama_core::Context::default())
+            .send()
             .await
             .unwrap()
             .into_body();

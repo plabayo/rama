@@ -424,7 +424,6 @@ fn spawn_server(rt: &tokio::runtime::Runtime, opts: &Opts) -> SocketAddr {
                         .serve_connection(
                             sock,
                             rama::http::core::service::RamaHttpService::new(
-                                rama::Context::default(),
                                 Extensions::new(),
                                 service_fn(move |req: Request| async move {
                                     let mut req_body = req.into_body();
@@ -441,7 +440,6 @@ fn spawn_server(rt: &tokio::runtime::Runtime, opts: &Opts) -> SocketAddr {
                     rama::http::core::server::conn::http1::Builder::new().serve_connection(
                         sock,
                         rama::http::core::service::RamaHttpService::new(
-                            rama::Context::default(),
                             Extensions::new(),
                             service_fn(move |req: Request| async move {
                                 let mut req_body = req.into_body();

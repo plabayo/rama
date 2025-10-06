@@ -1,12 +1,12 @@
 use super::WriterMode;
 use crate::io::write_http_request;
 use crate::{Body, Request, StreamingBody, body::util::BodyExt};
+use rama_core::Service;
 use rama_core::bytes::Bytes;
 use rama_core::error::{BoxError, ErrorExt, OpaqueError};
 use rama_core::extensions::ExtensionsRef;
 use rama_core::rt::Executor;
 use rama_core::telemetry::tracing::{self, Instrument};
-use rama_core::{Context, Service};
 use std::fmt::Debug;
 use tokio::io::{AsyncWrite, AsyncWriteExt, stderr, stdout};
 use tokio::sync::mpsc::{Sender, UnboundedSender, channel, unbounded_channel};
@@ -173,13 +173,9 @@ where
     ReqBody: StreamingBody<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
 {
     type Error = BoxError;
-    type Response = (Context, Request);
+    type Response = Request;
 
-    async fn serve(
-        &self,
-        ctx: Context,
-        req: Request<ReqBody>,
-    ) -> Result<(Context, Request), Self::Error> {
+    async fn serve(&self, req: Request<ReqBody>) -> Result<Request, Self::Error> {
         let req = if req.extensions().get::<DoNotWriteRequest>().is_some() {
             req.map(Body::new)
         } else {
@@ -196,7 +192,7 @@ where
             self.writer.write_request(req).await;
             Request::from_parts(parts, Body::from(body_bytes))
         };
-        Ok((ctx, req))
+        Ok(req)
     }
 }
 

@@ -117,7 +117,7 @@ mod tests {
     use crate::{Body, HeaderName, HeaderValue, Request, Response, header::ORIGIN, request::Parts};
     use rama_core::error::BoxError;
     use rama_core::service::service_fn;
-    use rama_core::{Context, Layer, Service};
+    use rama_core::{Layer, Service};
 
     static REQUEST_PRIVATE_NETWORK: HeaderName =
         HeaderName::from_static("access-control-request-private-network");
@@ -137,12 +137,12 @@ mod tests {
             .header(REQUEST_PRIVATE_NETWORK.clone(), TRUE.clone())
             .body(Body::empty())
             .unwrap();
-        let res = service.serve(Context::default(), req).await.unwrap();
+        let res = service.serve(req).await.unwrap();
 
         assert_eq!(res.headers().get(&ALLOW_PRIVATE_NETWORK).unwrap(), TRUE);
 
         let req = Request::builder().body(Body::empty()).unwrap();
-        let res = service.serve(Context::default(), req).await.unwrap();
+        let res = service.serve(req).await.unwrap();
 
         assert!(res.headers().get(&ALLOW_PRIVATE_NETWORK).is_none());
     }
@@ -164,7 +164,7 @@ mod tests {
             .body(Body::empty())
             .unwrap();
 
-        let res = service.serve(Context::default(), req).await.unwrap();
+        let res = service.serve(req).await.unwrap();
         assert_eq!(res.headers().get(&ALLOW_PRIVATE_NETWORK).unwrap(), TRUE);
 
         let req = Request::builder()
@@ -174,7 +174,7 @@ mod tests {
             .body(Body::empty())
             .unwrap();
 
-        let res = service.serve(Context::default(), req).await.unwrap();
+        let res = service.serve(req).await.unwrap();
 
         assert!(res.headers().get(&ALLOW_PRIVATE_NETWORK).is_none());
 
@@ -185,7 +185,7 @@ mod tests {
             .body(Body::empty())
             .unwrap();
 
-        let res = service.serve(Context::default(), req).await.unwrap();
+        let res = service.serve(req).await.unwrap();
 
         assert!(res.headers().get(&ALLOW_PRIVATE_NETWORK).is_none());
     }

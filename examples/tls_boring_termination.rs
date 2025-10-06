@@ -30,7 +30,7 @@
 
 // rama provides everything out of the box to build a TLS termination proxy
 use rama::{
-    Context, Layer,
+    Layer,
     extensions::ExtensionsRef,
     graceful::Shutdown,
     http::{Request, Response, server::HttpServer},
@@ -119,7 +119,7 @@ async fn main() {
         .expect("graceful shutdown");
 }
 
-async fn http_service(_ctx: Context, req: Request) -> Result<Response, Infallible> {
+async fn http_service(req: Request) -> Result<Response, Infallible> {
     // REMARK: builds on the assumption that we are using the haproxy protocol
     let client_addr = req
         .extensions()

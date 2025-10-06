@@ -10,7 +10,6 @@ use crate::request::Parts as ReqParts;
 use crate::response::Parts as RespParts;
 use crate::service::web::extract::Query;
 
-use rama_core::Context;
 use rama_core::extensions::ExtensionsMut;
 use rama_core::telemetry::tracing;
 use rama_error::{ErrorContext, OpaqueError};
@@ -400,11 +399,7 @@ impl TryFrom<Request> for crate::Request {
 }
 
 impl Request {
-    pub fn from_http_request_parts(
-        _ctx: &Context,
-        parts: &ReqParts,
-        payload: &[u8],
-    ) -> Result<Self, OpaqueError> {
+    pub fn from_http_request_parts(parts: &ReqParts, payload: &[u8]) -> Result<Self, OpaqueError> {
         let post_data = if !payload.is_empty() {
             let mime_type = get_mime(&parts.headers);
             let params = if mime_type

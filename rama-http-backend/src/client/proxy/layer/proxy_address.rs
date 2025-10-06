@@ -186,7 +186,6 @@ where
 
     fn serve(
         &self,
-        ctx: Context,
         mut req: Request,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
         if let Some(ref address) = self.address

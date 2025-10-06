@@ -75,8 +75,6 @@ struct State {
     mitm_tls_service_data: TlsAcceptorData,
 }
 
-type Context = rama::Context;
-
 #[tokio::main]
 async fn main() -> Result<(), BoxError> {
     tracing_subscriber::registry()
@@ -141,11 +139,8 @@ async fn main() -> Result<(), BoxError> {
     Ok(())
 }
 
-async fn http_connect_accept(
-    ctx: Context,
-    mut req: Request,
-) -> Result<(Response, Context, Request), Response> {
-    match RequestContext::try_from((&ctx, &req)).map(|ctx| ctx.authority) {
+async fn http_connect_accept(mut req: Request) -> Result<(Response, Request), Response> {
+    match RequestContext::try_from((&req,)).map(|ctx| ctx.authority) {
         Ok(authority) => {
             tracing::info!(
                 server.address = %authority.host(),
@@ -160,10 +155,10 @@ async fn http_connect_accept(
         }
     }
 
-    Ok((StatusCode::OK.into_response(), ctx, req))
+    Ok((StatusCode::OK.into_response(), req))
 }
 
-async fn http_connect_proxy(ctx: Context, upgraded: Upgraded) -> Result<(), Infallible> {
+async fn http_connect_proxy(upgraded: Upgraded) -> Result<(), Infallible> {
     // In the past we deleted the request context here, as such:
     // ```
     // ctx.remove::<RequestContext>();
@@ -195,10 +190,7 @@ async fn http_connect_proxy(ctx: Context, upgraded: Upgraded) -> Result<(), Infa
     .with_store_client_hello(true)
     .into_layer(http_transport_service);
 
-    https_service
-        .serve(ctx, upgraded)
-        .await
-        .expect("infallible");
+    https_service.serve(upgraded).await.expect("infallible");
 
     Ok(())
 }
@@ -216,7 +208,7 @@ fn new_http_mitm_proxy() -> impl Service<Request, Response = Response, Error = I
         .into_layer(service_fn(http_mitm_proxy))
 }
 
-async fn http_mitm_proxy(ctx: Context, req: Request) -> Result<Response, Infallible> {
+async fn http_mitm_proxy(req: Request) -> Result<Response, Infallible> {
     // This function will receive all requests going through this proxy,
     // be it sent via HTTP or HTTPS, both are equally visible. Hence... MITM
 
@@ -236,7 +228,7 @@ async fn http_mitm_proxy(ctx: Context, req: Request) -> Result<Response, Infalli
         .with_tls_support_using_rustls(Some(tls_config))
         .build();
 
-    match client.serve(ctx, req).await {
+    match client.serve(req).await {
         Ok(resp) => Ok(resp),
         Err(err) => {
             tracing::error!("error in client request: {err:?}");

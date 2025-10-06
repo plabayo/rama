@@ -7,7 +7,7 @@
 //! ```
 //! use rama_core::layer::limit::{Limit, policy::ConcurrentPolicy};
 //! use rama_core::service::service_fn;
-//! use rama_core::{Context, Service};
+//! use rama_core::{Service};
 //! # use std::convert::Infallible;
 //!
 //! # #[tokio::main]

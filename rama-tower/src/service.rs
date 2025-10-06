@@ -67,7 +67,6 @@ where
 
     fn serve(
         &self,
-        _ctx: rama_core::Context,
         req: Request,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
         let svc = self.0.clone();
@@ -143,7 +142,6 @@ where
 
     fn serve(
         &self,
-        _ctx: rama_core::Context,
         req: Request,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
         let svc = self.0.clone();

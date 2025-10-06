@@ -1,6 +1,6 @@
 use super::utils;
 use rama::{
-    Context, Layer,
+    Layer,
     http::service::web::response::Json,
     http::{BodyExtractExt, Request, server::HttpServer},
     net::address::ProxyAddress,
@@ -67,7 +67,7 @@ async fn test_http_mitm_proxy() {
     let result = runner
         .get("http://127.0.0.1:63005/foo/bar")
         .extension(ProxyAddress::try_from("http://john:secret@127.0.0.1:62019").unwrap())
-        .send(Context::default())
+        .send()
         .await
         .unwrap()
         .try_into_json::<Value>()
@@ -80,7 +80,7 @@ async fn test_http_mitm_proxy() {
     let result = runner
         .get("https://127.0.0.1:63006/foo/bar")
         .extension(ProxyAddress::try_from("http://john:secret@127.0.0.1:62019").unwrap())
-        .send(Context::default())
+        .send()
         .await
         .unwrap()
         .try_into_json::<Value>()

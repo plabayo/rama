@@ -1,5 +1,5 @@
 use crate::{Body, Request, Response, matcher::HttpMatcher};
-use rama_core::{Context, Layer, Service, layer::MapResponseLayer, service::BoxService};
+use rama_core::{Layer, Service, layer::MapResponseLayer, service::BoxService};
 use std::{convert::Infallible, fmt};
 
 pub mod extract;
@@ -81,7 +81,7 @@ where
     type Response = Response;
     type Error = Infallible;
 
-    async fn serve(&self, _: Context, _: Request) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, _: Request) -> Result<Self::Response, Self::Error> {
         Ok(self.0.clone().into_response())
     }
 }
@@ -127,8 +127,8 @@ where
     type Response = Response;
     type Error = Infallible;
 
-    async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
-        Ok(self.inner.call(ctx, req).await)
+    async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
+        Ok(self.inner.call(req).await)
     }
 }
 
@@ -155,22 +155,6 @@ mod private {
     impl<S, R> Sealed<(R,)> for S
     where
         S: Service<Request, Response = R, Error = Infallible>,
-        R: IntoResponse + Send + Sync + 'static,
-    {
-    }
-
-    impl<F, Fut, R> Sealed<(F, Context, Fut, R)> for F
-    where
-        F: Fn(Context) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = R> + Send + 'static,
-        R: IntoResponse + Send + Sync + 'static,
-    {
-    }
-
-    impl<F, Fut, R> Sealed<(F, Context, Request, Fut, R)> for F
-    where
-        F: Fn(Context, Request) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = R> + Send + 'static,
         R: IntoResponse + Send + Sync + 'static,
     {
     }
@@ -208,11 +192,7 @@ mod tests {
             type Response = StatusCode;
             type Error = Infallible;
 
-            async fn serve(
-                &self,
-                _ctx: Context,
-                _req: Request,
-            ) -> Result<Self::Response, Self::Error> {
+            async fn serve(&self, _req: Request) -> Result<Self::Response, Self::Error> {
                 Ok(StatusCode::OK)
             }
         }
@@ -220,7 +200,6 @@ mod tests {
         let svc = OkService;
         let resp = svc
             .serve(
-                Context::default(),
                 Request::builder()
                     .uri("http://example.com")
                     .body(Body::empty())
@@ -246,7 +225,6 @@ mod tests {
 
         let resp = svc
             .serve(
-                Context::default(),
                 Request::builder()
                     .uri("http://example.com")
                     .body(Body::empty())
@@ -264,7 +242,6 @@ mod tests {
 
         let resp = svc
             .serve(
-                Context::default(),
                 Request::builder()
                     .uri("http://example.com")
                     .body(Body::empty())
@@ -284,7 +261,6 @@ mod tests {
 
         let resp = svc
             .serve(
-                Context::default(),
                 Request::builder()
                     .uri("http://example.com")
                     .body(Body::empty())
@@ -314,7 +290,6 @@ mod tests {
 
         let resp = svc
             .serve(
-                Context::default(),
                 Request::builder()
                     .uri("http://example.com/42/bar")
                     .body(Body::empty())

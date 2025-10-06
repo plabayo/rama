@@ -2,7 +2,7 @@
 
 use crate::{Body, Request, Response, StreamingBody, body::util::BodyExt};
 use rama_core::{
-    Context, Layer, Service,
+    Layer, Service,
     error::{BoxError, ErrorContext, OpaqueError},
 };
 use rama_utils::macros::define_inner_service_accessors;
@@ -55,14 +55,10 @@ where
     type Response = Response;
     type Error = BoxError;
 
-    async fn serve(
-        &self,
-        ctx: Context,
-        req: Request<ReqBody>,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
         let resp = self
             .inner
-            .serve(ctx, req)
+            .serve(req)
             .await
             .map_err(|err| OpaqueError::from_boxed(err.into()))
             .context("CollectBody::inner:serve")?;

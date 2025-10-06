@@ -1,5 +1,5 @@
 use super::utils;
-use rama::{Context, http::BodyExtractExt};
+use rama::http::BodyExtractExt;
 use serde::Serialize;
 
 #[tokio::test]
@@ -21,7 +21,7 @@ async fn test_example_http_form() {
             name: "John",
             age: 32,
         })
-        .send(Context::default())
+        .send()
         .await
         .unwrap()
         .try_into_string()

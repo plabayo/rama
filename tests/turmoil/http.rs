@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use rama::{
-    Context, Layer, Service,
+    Layer, Service,
     error::ErrorContext,
     http::{
         Body, BodyExtractExt, Request, Version, client::EasyHttpWebClientBuilder,
@@ -41,7 +41,6 @@ async fn start_server(
     let server = HttpServer::http1();
     server
         .serve(
-            Context::default(),
             conn,
             TraceLayer::new_for_http().into_layer(WebService::default().get("/", "Hello, World")),
         )
@@ -62,7 +61,6 @@ async fn run_client(address: impl Into<SocketAddress>) -> Result<(), Box<dyn std
 
     let resp = client
         .serve(
-            Context::default(),
             Request::builder()
                 .uri(format!("http://{address}/", address = address.into()))
                 .method("GET")

@@ -1,8 +1,5 @@
 use super::utils;
-use rama::{
-    Context,
-    http::{BodyExtractExt, StatusCode},
-};
+use rama::http::{BodyExtractExt, StatusCode};
 
 const ADDRESS: &str = "127.0.0.1:62018";
 
@@ -14,7 +11,7 @@ async fn test_http_web_router() {
     let runner = utils::ExampleRunner::interactive("http_web_router", None);
 
     let req_uri = format!("http://{ADDRESS}");
-    let response = runner.get(req_uri).send(Context::default()).await.unwrap();
+    let response = runner.get(req_uri).send().await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let homepage = response.try_into_string().await.unwrap();
     assert!(homepage.contains("<h1>Rama - Web Router</h1>"));
@@ -26,7 +23,7 @@ async fn test_http_web_router() {
     }
 
     let req_uri = format!("http://{ADDRESS}/greet/world");
-    let response = runner.post(req_uri).send(Context::default()).await.unwrap();
+    let response = runner.post(req_uri).send().await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let json: Greet = response.try_into_json().await.unwrap();
     assert_eq!(json.message, "Hello, world!");
@@ -46,7 +43,7 @@ async fn test_http_web_router() {
 
     for (code, expected_message) in test_cases.iter() {
         let req_uri = format!("http://{ADDRESS}/lang/{code}");
-        let response = runner.get(req_uri).send(Context::default()).await.unwrap();
+        let response = runner.get(req_uri).send().await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let json: Lang = response.try_into_json().await.unwrap();
         assert_eq!(json.message, *expected_message);
@@ -64,7 +61,7 @@ async fn test_http_web_router() {
 
     for (path, expected_status) in test_cases.iter() {
         let req_uri = format!("http://{ADDRESS}{path}");
-        let response = runner.get(req_uri).send(Context::default()).await.unwrap();
+        let response = runner.get(req_uri).send().await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let json: ApiStatus = response.try_into_json().await.unwrap();
         assert_eq!(json.status, *expected_status);

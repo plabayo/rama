@@ -1,6 +1,5 @@
 use super::{Action, Attempt, Policy};
 use crate::Request;
-use rama_core::Context;
 
 /// A redirection [`Policy`] that combines the results of two `Policy`s.
 ///
@@ -52,22 +51,20 @@ where
     A: Policy<Bd, E>,
     B: Policy<Bd, E>,
 {
-    fn redirect(&mut self, ctx: &Context, attempt: &Attempt<'_>) -> Result<Action, E> {
-        match self.a.redirect(ctx, attempt) {
-            Ok(Action::Stop) | Err(_) => self.b.redirect(ctx, attempt),
+    fn redirect(&mut self, attempt: &Attempt<'_>) -> Result<Action, E> {
+        match self.a.redirect(attempt) {
+            Ok(Action::Stop) | Err(_) => self.b.redirect(attempt),
             a => a,
         }
     }
 
-    fn on_request(&mut self, ctx: &mut Context, request: &mut Request<Bd>) {
-        self.a.on_request(ctx, request);
-        self.b.on_request(ctx, request);
+    fn on_request(&mut self, request: &mut Request<Bd>) {
+        self.a.on_request(request);
+        self.b.on_request(request);
     }
 
-    fn clone_body(&mut self, ctx: &Context, body: &Bd) -> Option<Bd> {
-        self.a
-            .clone_body(ctx, body)
-            .or_else(|| self.b.clone_body(ctx, body))
+    fn clone_body(&mut self, body: &Bd) -> Option<Bd> {
+        self.a.clone_body(body).or_else(|| self.b.clone_body(body))
     }
 }
 
@@ -75,7 +72,6 @@ where
 mod tests {
     use super::*;
     use crate::Uri;
-    use rama_core::Context;
 
     struct Taint<P> {
         policy: P,
@@ -95,9 +91,9 @@ mod tests {
     where
         P: Policy<B, E>,
     {
-        fn redirect(&mut self, ctx: &Context, attempt: &Attempt<'_>) -> Result<Action, E> {
+        fn redirect(&mut self, attempt: &Attempt<'_>) -> Result<Action, E> {
             self.used = true;
-            self.policy.redirect(ctx, attempt)
+            self.policy.redirect(attempt)
         }
     }
 
@@ -109,13 +105,11 @@ mod tests {
             previous: &Uri::from_static("*"),
         };
 
-        let ctx = Context::default();
-
         let a = Taint::new(Action::Follow);
         let b = Taint::new(Action::Follow);
         let mut policy = Or::new::<(), ()>(a, b);
         assert!(
-            Policy::<(), ()>::redirect(&mut policy, &ctx, &attempt)
+            Policy::<(), ()>::redirect(&mut policy, &attempt)
                 .unwrap()
                 .is_follow()
         );
@@ -126,7 +120,7 @@ mod tests {
         let b = Taint::new(Action::Follow);
         let mut policy = Or::new::<(), ()>(a, b);
         assert!(
-            Policy::<(), ()>::redirect(&mut policy, &ctx, &attempt)
+            Policy::<(), ()>::redirect(&mut policy, &attempt)
                 .unwrap()
                 .is_follow()
         );
@@ -137,7 +131,7 @@ mod tests {
         let b = Taint::new(Action::Stop);
         let mut policy = Or::new::<(), ()>(a, b);
         assert!(
-            Policy::<(), ()>::redirect(&mut policy, &ctx, &attempt)
+            Policy::<(), ()>::redirect(&mut policy, &attempt)
                 .unwrap()
                 .is_follow()
         );
@@ -148,7 +142,7 @@ mod tests {
         let b = Taint::new(Action::Stop);
         let mut policy = Or::new::<(), ()>(a, b);
         assert!(
-            Policy::<(), ()>::redirect(&mut policy, &ctx, &attempt)
+            Policy::<(), ()>::redirect(&mut policy, &attempt)
                 .unwrap()
                 .is_stop()
         );

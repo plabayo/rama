@@ -28,7 +28,7 @@ use rama::ua::profile::{
 };
 use rama::ua::profile::{TlsProfile, UserAgentProfile};
 use rama::ua::{PlatformKind, UserAgentKind};
-use rama::{Context, Layer, Service};
+use rama::{Layer, Service};
 use rama_ua::emulate::SelectedUserAgentProfile;
 use std::convert::Infallible;
 use std::fmt;
@@ -258,7 +258,7 @@ async fn test_ua_emulation() {
             description: &'static str,
         }
 
-        async fn server_svc_fn(_ctx: Context, req: Request) -> Result<Response, Infallible> {
+        async fn server_svc_fn(req: Request) -> Result<Response, Infallible> {
             let state = req.extensions().get::<State>().unwrap();
             let expected = state.expected;
             let description = state.description;
@@ -301,14 +301,14 @@ async fn test_ua_emulation() {
             UserAgentEmulateLayer::new(Arc::new(profile)),
             EmulateTlsProfileLayer::new(),
         )
-            .into_layer(service_fn(async |ctx: Context, mut req: Request| {
+            .into_layer(service_fn(async |mut req: Request| {
                 // We can edit our current builder directly or create a new one if needed
                 let builder = req
                     .extensions_mut()
                     .get_or_insert_default::<TlsConnectorDataBuilder>();
                 builder.set_server_verify_mode(ServerVerifyMode::Disable);
 
-                // We dont need to set connector data on TlsConnector as it will get it from ctx
+                // We dont need to set connector data on TlsConnector as it will get it from extensions
                 let connector = HttpConnector::new(TlsConnector::secure(
                     MockConnectorService::new(service_fn(server_svc_fn)),
                 ))
@@ -319,10 +319,10 @@ async fn test_ua_emulation() {
                 ))
                 .with_svc_req_inspector(UserAgentEmulateHttpRequestModifier::default());
 
-                let EstablishedClientConnection { ctx, req, conn } =
-                    connector.serve(ctx, req).await.expect(description);
+                let EstablishedClientConnection { req, conn } =
+                    connector.serve(req).await.expect(description);
 
-                Ok::<_, Infallible>(conn.serve(ctx, req).await.expect(description))
+                Ok::<_, Infallible>(conn.serve(req).await.expect(description))
             }));
 
         let mut server_extensions = Extensions::new();
@@ -337,10 +337,7 @@ async fn test_ua_emulation() {
             .body(Body::empty())
             .unwrap();
 
-        client
-            .serve(Context::default(), req)
-            .await
-            .expect(description);
+        client.serve(req).await.expect(description);
     }
 }
 
@@ -362,7 +359,7 @@ async fn test_ua_embedded_profiles_are_all_resulting_in_correct_traffic_flow() {
                 counter: Arc<AtomicUsize>,
             }
 
-            async fn server_svc_fn(_ctx: Context, req: Request) -> Result<Response, Infallible> {
+            async fn server_svc_fn(req: Request) -> Result<Response, Infallible> {
                 req.extensions()
                     .get::<State>()
                     .unwrap()
@@ -382,7 +379,7 @@ async fn test_ua_embedded_profiles_are_all_resulting_in_correct_traffic_flow() {
                 UserAgentEmulateLayer::new(profile.clone()),
                 EmulateTlsProfileLayer::new().with_builder_overwrites(tls_config),
             )
-                .into_layer(service_fn(async |ctx: Context, req: Request| {
+                .into_layer(service_fn(async |req: Request| {
                     // We dont set base emulator data here since we always use EmulateTlsProfileLayer, but we could
                     // set a base config here in case EmulateTlsProfileLayer would not always set a config.
                     let connector = HttpConnector::new(TlsConnector::secure(
@@ -398,13 +395,12 @@ async fn test_ua_embedded_profiles_are_all_resulting_in_correct_traffic_flow() {
                     let profile = req.extensions().get::<SelectedUserAgentProfile>().unwrap();
                     let expect_msg = format!("selected profile to work: {profile:?}");
 
-                    let EstablishedClientConnection { ctx, req, conn } =
-                        connector.serve(ctx, req).await.expect(&expect_msg);
+                    let EstablishedClientConnection { req, conn } =
+                        connector.serve(req).await.expect(&expect_msg);
 
-                    Ok::<_, Infallible>(conn.serve(ctx, req).await.expect(&expect_msg))
+                    Ok::<_, Infallible>(conn.serve(req).await.expect(&expect_msg))
                 }));
 
-            let ctx = Context::default();
             let expect_msg = format!("profile to work: {profile:?}");
 
             let mut server_extensions = Extensions::new();
@@ -418,7 +414,7 @@ async fn test_ua_embedded_profiles_are_all_resulting_in_correct_traffic_flow() {
                 .body(Body::empty())
                 .expect(&expect_msg);
 
-            client.serve(ctx, req).await.expect(&expect_msg);
+            client.serve(req).await.expect(&expect_msg);
         });
     }
 
@@ -459,14 +455,13 @@ where
     type Error = S::Error;
     type Response = EstablishedClientConnection<MockSocket, Request>;
 
-    async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
         let (client_socket, mut server_socket) = new_mock_sockets();
 
         if let Some(extensions) = req.extensions().get::<ServerExtensions>() {
             *server_socket.extensions_mut() = extensions.0.clone();
         }
 
-        let server_ctx = ctx.clone();
         let svc = self.serve_svc.clone();
 
         tokio::spawn(async move {
@@ -483,11 +478,10 @@ where
             )
             .with_store_client_hello(true)
             .into_layer(HttpServer::auto(Executor::default()).service(svc));
-            server.serve(server_ctx, server_socket).await.unwrap();
+            server.serve(server_socket).await.unwrap();
         });
 
         Ok(EstablishedClientConnection {
-            ctx,
             req,
             conn: client_socket,
         })

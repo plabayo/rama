@@ -3,7 +3,6 @@ use crate::examples::example_tests::utils::ExampleRunner;
 use super::utils;
 
 use rama::{
-    Context,
     http::BodyExtractExt,
     net::{
         Protocol,
@@ -24,7 +23,7 @@ async fn test_proxy_connectivity_check() {
     let result = runner
         .get("http://example.com")
         .extension(ProxyAddress::try_from("http://tom:clancy@127.0.0.1:62030").unwrap())
-        .send(Context::default())
+        .send()
         .await
         .unwrap()
         .try_into_string()
@@ -54,7 +53,7 @@ async fn test_http_client_over_socks5_proxy_connect(runner: ExampleRunner) {
     let resp = runner
         .get("http://example.com")
         .extension(proxy_address)
-        .send(Context::default())
+        .send()
         .await
         .expect("make http request via socks5 proxy")
         .try_into_string()

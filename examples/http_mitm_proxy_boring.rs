@@ -126,8 +126,6 @@ struct State {
     ua_db: Arc<UserAgentDatabase>,
 }
 
-type Context = rama::Context;
-
 #[tokio::main]
 async fn main() -> Result<(), BoxError> {
     tracing_subscriber::registry()
@@ -194,11 +192,8 @@ async fn main() -> Result<(), BoxError> {
     Ok(())
 }
 
-async fn http_connect_accept(
-    ctx: Context,
-    mut req: Request,
-) -> Result<(Response, Context, Request), Response> {
-    match RequestContext::try_from((&ctx, &req)).map(|ctx| ctx.authority) {
+async fn http_connect_accept(mut req: Request) -> Result<(Response, Request), Response> {
+    match RequestContext::try_from((&req,)).map(|ctx| ctx.authority) {
         Ok(authority) => {
             tracing::info!(
                 server.address = %authority.host(),
@@ -213,10 +208,10 @@ async fn http_connect_accept(
         }
     }
 
-    Ok((StatusCode::OK.into_response(), ctx, req))
+    Ok((StatusCode::OK.into_response(), req))
 }
 
-async fn http_connect_proxy(ctx: Context, upgraded: Upgraded) -> Result<(), Infallible> {
+async fn http_connect_proxy(upgraded: Upgraded) -> Result<(), Infallible> {
     // In the past we deleted the request context here, as such:
     // ```
     // ctx.remove::<RequestContext>();
@@ -246,10 +241,7 @@ async fn http_connect_proxy(ctx: Context, upgraded: Upgraded) -> Result<(), Infa
         .with_store_client_hello(true)
         .into_layer(http_transport_service);
 
-    https_service
-        .serve(ctx, upgraded)
-        .await
-        .expect("infallible");
+    https_service.serve(upgraded).await.expect("infallible");
 
     Ok(())
 }
@@ -271,7 +263,7 @@ fn new_http_mitm_proxy(
         .into_layer(service_fn(http_mitm_proxy))
 }
 
-async fn http_mitm_proxy(ctx: Context, req: Request) -> Result<Response, Infallible> {
+async fn http_mitm_proxy(req: Request) -> Result<Response, Infallible> {
     // This function will receive all requests going through this proxy,
     // be it sent via HTTP or HTTPS, both are equally visible. Hence... MITM
 
@@ -321,8 +313,8 @@ async fn http_mitm_proxy(ctx: Context, req: Request) -> Result<Response, Infalli
         ))
         .build();
 
-    if WebSocketMatcher::new().matches(None, &ctx, &req) {
-        return Ok(mitm_websocket(&client, ctx, req).await);
+    if WebSocketMatcher::new().matches(None, &req) {
+        return Ok(mitm_websocket(&client, req).await);
     }
 
     // these are not desired for WS MITM flow, but they are for regular HTTP flow
@@ -332,7 +324,7 @@ async fn http_mitm_proxy(ctx: Context, req: Request) -> Result<Response, Infalli
     )
         .into_layer(client);
 
-    match client.serve(ctx, req).await {
+    match client.serve(req).await {
         Ok(resp) => Ok(resp),
         Err(err) => {
             tracing::error!("error in client request: {err:?}");
@@ -360,7 +352,7 @@ fn new_mitm_tls_service_data() -> Result<TlsAcceptorData, OpaqueError> {
         .context("create tls server config")
 }
 
-async fn mitm_websocket<S>(client: &S, _ctx: Context, req: Request) -> Response
+async fn mitm_websocket<S>(client: &S, req: Request) -> Response
 where
     S: Service<Request, Response = Response, Error = OpaqueError>,
 {

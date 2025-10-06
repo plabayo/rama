@@ -1,7 +1,6 @@
 use crate::Request;
 use rama_core::telemetry::tracing;
 use rama_core::{
-    Context,
     extensions::{Extensions, ExtensionsRef},
     matcher::Matcher,
 };
@@ -35,7 +34,7 @@ impl SubdomainTrieMatcher {
 }
 
 impl<Body> Matcher<Request<Body>> for SubdomainTrieMatcher {
-    fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context, req: &Request<Body>) -> bool {
+    fn matches(&self, ext: Option<&mut Extensions>, req: &Request<Body>) -> bool {
         let match_authority = |ctx: &RequestContext| match ctx.authority.host() {
             Host::Name(domain) => {
                 let is_match = self.is_match(domain);
@@ -55,7 +54,7 @@ impl<Body> Matcher<Request<Body>> for SubdomainTrieMatcher {
         if let Some(req_ctx) = req.extensions().get() {
             match_authority(req_ctx)
         } else {
-            let req_ctx: RequestContext = match (ctx, req).try_into() {
+            let req_ctx = match RequestContext::try_from((&req,)) {
                 Ok(rc) => rc,
                 Err(err) => {
                     tracing::debug!(
@@ -107,9 +106,7 @@ mod subdomain_trie_tests {
         let path = "sub.example.com";
 
         let request = Request::builder().uri(path).body(()).unwrap();
-        let ctx = Context::default();
-
-        assert!(matcher.matches(None, &ctx, &request));
+        assert!(matcher.matches(None, &request));
     }
 
     #[test]
@@ -120,8 +117,6 @@ mod subdomain_trie_tests {
         let path = "nonmatching.com";
 
         let request = Request::builder().uri(path).body(()).unwrap();
-        let ctx = Context::default();
-
-        assert!(!matcher.matches(None, &ctx, &request));
+        assert!(!matcher.matches(None, &request));
     }
 }

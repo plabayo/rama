@@ -1,6 +1,5 @@
 use super::utils;
 use rama::{
-    Context,
     http::layer::har::{self},
     http::service::web::response::Json,
     http::{BodyExtractExt, Request, StatusCode, server::HttpServer},
@@ -39,7 +38,7 @@ async fn test_http_record_har() {
     let response = runner
         .get("http://127.0.0.1:63007/fetch/1")
         .extension(proxy_address.clone())
-        .send(Context::default())
+        .send()
         .await
         .unwrap();
 
@@ -53,7 +52,7 @@ async fn test_http_record_har() {
     let status_code = runner
         .post("http://har.toggle.internal/switch")
         .extension(proxy_address.clone())
-        .send(Context::default())
+        .send()
         .await
         .unwrap()
         .status();
@@ -64,7 +63,7 @@ async fn test_http_record_har() {
     let response = runner
         .get("http://127.0.0.1:63007/fetch/2")
         .extension(proxy_address.clone())
-        .send(Context::default())
+        .send()
         .await
         .unwrap();
 
@@ -84,7 +83,7 @@ async fn test_http_record_har() {
     let response = runner
         .get("http://127.0.0.1:63007/fetch/3")
         .extension(proxy_address.clone())
-        .send(Context::default())
+        .send()
         .await
         .unwrap();
 
@@ -104,7 +103,7 @@ async fn test_http_record_har() {
     let status_code = runner
         .post("http://har.toggle.internal/switch")
         .extension(proxy_address.clone())
-        .send(Context::default())
+        .send()
         .await
         .unwrap()
         .status();
@@ -114,7 +113,7 @@ async fn test_http_record_har() {
     let response = runner
         .get("http://127.0.0.1:63007/fetch/4")
         .extension(proxy_address.clone())
-        .send(Context::default())
+        .send()
         .await
         .unwrap();
 

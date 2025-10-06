@@ -55,7 +55,6 @@ macro_rules! bench_server {
                             .serve_connection(
                                 stream,
                                 rama::http::core::service::RamaHttpService::new(
-                                    rama::Context::default(),
                                     Extensions::new(),
                                     svc,
                                 ),

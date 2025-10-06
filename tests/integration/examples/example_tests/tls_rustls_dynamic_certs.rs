@@ -1,6 +1,6 @@
 use super::utils::{self, ClientService};
 use rama::{
-    Context, Layer, Service,
+    Layer, Service,
     error::BoxError,
     extensions::{ExtensionsRef, RequestContextExt},
     http::{
@@ -67,11 +67,7 @@ async fn test_tls_rustls_dynamic_certs() {
         let client = http_client(&host);
         runner.set_client(client);
 
-        let response = runner
-            .get("https://127.0.0.1:64802")
-            .send(Context::default())
-            .await
-            .unwrap();
+        let response = runner.get("https://127.0.0.1:64802").send().await.unwrap();
 
         let certificates = response
             .extensions()

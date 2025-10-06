@@ -1,5 +1,5 @@
 use rama_core::{
-    Context, Service,
+    Service,
     error::{BoxError, ErrorContext, OpaqueError},
     extensions::{Extensions, ExtensionsMut, ExtensionsRef, RequestContextExt},
     inspect::RequestInspector,
@@ -50,11 +50,7 @@ where
     type Response = Response;
     type Error = BoxError;
 
-    async fn serve(
-        &self,
-        ctx: Context,
-        mut req: Request<BodyIn>,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut req: Request<BodyIn>) -> Result<Self::Response, Self::Error> {
         req.extensions_mut().extend(self.extensions.clone());
 
         // Check if this http connection can actually be used for TargetHttpVersion
@@ -105,9 +101,9 @@ where
             }
         }
 
-        let (ctx, req) = self
+        let req = self
             .http_req_inspector
-            .inspect_request(ctx, req)
+            .inspect_request(req)
             .await
             .map_err(Into::into)?;
 
@@ -180,7 +176,7 @@ fn sanitize_client_req_header<B>(req: Request<B>) -> Result<Request<B>, BoxError
         .map(|protocol| protocol.is_http())
         .unwrap_or_default();
 
-    let request_ctx = RequestContext::try_from((ctx, &req)).context("fetch request context")?;
+    let request_ctx = RequestContext::try_from((&req,)).context("fetch request context")?;
 
     let is_insecure_request_over_http_proxy = !request_ctx.protocol.is_secure() && uses_http_proxy;
 
@@ -261,7 +257,7 @@ fn sanitize_client_req_header<B>(req: Request<B>) -> Result<Request<B>, BoxError
             // set scheme/host if not defined as otherwise pseudo
             // headers won't be possible to be set in the h2 crate
             let mut req = if req.uri().host().is_none() {
-                let request_ctx = RequestContext::try_from((ctx, &req))
+                let request_ctx = RequestContext::try_from((&req,))
                     .context("[h2+] add scheme/host: missing RequestCtx")?;
 
                 tracing::trace!(
@@ -374,7 +370,6 @@ mod tests {
                 .unwrap();
 
             let req = Request::builder().uri(uri).method(method).body(()).unwrap();
-            let ctx = Context::default();
             let req = sanitize_client_req_header(req).unwrap();
 
             let (parts, _) = req.into_parts();
@@ -399,7 +394,6 @@ mod tests {
             .uri(uri)
             .body(())
             .unwrap();
-        let ctx = Context::default();
         let req = sanitize_client_req_header(req).unwrap();
 
         let (parts, _) = req.into_parts();
@@ -420,7 +414,6 @@ mod tests {
 
         let mut req = Request::builder().uri(uri).body(()).unwrap();
 
-        let ctx = Context::default();
         req.extensions_mut().insert(ProxyAddress {
             authority: rama_net::address::Authority::new(Host::Name(Domain::example()), 80),
             credential: None,
@@ -447,7 +440,6 @@ mod tests {
 
         let mut req = Request::builder().uri(uri).body(()).unwrap();
 
-        let ctx = Context::default();
         req.extensions_mut().insert(ProxyAddress {
             authority: rama_net::address::Authority::new(Host::Name(Domain::example()), 80),
             credential: None,
@@ -474,7 +466,6 @@ mod tests {
 
         let mut req = Request::builder().uri(uri).body(()).unwrap();
 
-        let ctx = Context::default();
         req.extensions_mut().insert(ProxyAddress {
             authority: rama_net::address::Authority::new(Host::Name(Domain::example()), 80),
             credential: None,

@@ -15,7 +15,7 @@
 //! +-----------+         +-----------+         +-----------+
 //! | serviceA  |         | serviceB  |         | serviceC  |
 //! |           |         |           |         |           |
-//! | serve(ctx, req)     | call(req) |         | serve(ctx, req)
+//! | serve(req)     | call(req) |         | serve(req)
 //! |   |                 |    |      |         |     |
 //! |   |                 |    |      |         |     |
 //! |   +--> [ctx]        |    |      |         |     |

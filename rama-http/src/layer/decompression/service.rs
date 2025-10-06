@@ -7,7 +7,7 @@ use crate::{
     Request, Response, StreamingBody,
     header::{self, ACCEPT_ENCODING},
 };
-use rama_core::{Context, Service};
+use rama_core::Service;
 use rama_utils::macros::define_inner_service_accessors;
 
 /// Decompresses response bodies of the underlying service.
@@ -112,18 +112,14 @@ where
     type Response = Response<DecompressionBody<ResBody>>;
     type Error = S::Error;
 
-    async fn serve(
-        &self,
-        ctx: Context,
-        mut req: Request<ReqBody>,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
         if let header::Entry::Vacant(entry) = req.headers_mut().entry(ACCEPT_ENCODING)
             && let Some(accept) = self.accept.maybe_to_header_value()
         {
             entry.insert(accept);
         }
 
-        let res = self.inner.serve(ctx, req).await?;
+        let res = self.inner.serve(req).await?;
 
         let (mut parts, body) = res.into_parts();
 

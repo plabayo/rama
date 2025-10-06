@@ -106,18 +106,14 @@ where
     type Response = EstablishedClientConnection<HttpClientService<BodyOut, I2>, I1::RequestOut>;
     type Error = BoxError;
 
-    async fn serve(
-        &self,
-        ctx: Context,
-        req: Request<BodyIn>,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, req: Request<BodyIn>) -> Result<Self::Response, Self::Error> {
         let EstablishedClientConnection { mut req, mut conn } =
             self.inner.connect(req).await.map_err(Into::into)?;
 
         let conn_extensions = conn.take_extensions();
         req.extensions_mut().extend(conn_extensions.clone());
 
-        let (ctx, req) = self
+        let req = self
             .http_req_inspector_jit
             .inspect_request(req)
             .await

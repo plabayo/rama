@@ -1,5 +1,4 @@
 use crate::{HeaderName, HeaderValue, Request, Response};
-use rama_core::Context;
 use std::{
     future::{Future, ready},
     marker::PhantomData,
@@ -27,9 +26,9 @@ pub trait MakeHeaderValueFactory<ReqBody, ResBody>: Send + Sync + 'static {
     /// Try to create a header value from the request or response.
     fn make_header_value_maker(
         &self,
-        ctx: Context,
+
         request: Request<ReqBody>,
-    ) -> impl Future<Output = (Context, Request<ReqBody>, Self::Maker)> + Send + '_;
+    ) -> impl Future<Output = (Request<ReqBody>, Self::Maker)> + Send + '_;
 }
 
 /// Trait for producing header values, created by a `MakeHeaderValueFactory`.
@@ -83,10 +82,9 @@ where
 
     fn make_header_value_maker(
         &self,
-        ctx: Context,
         req: Request<ReqBody>,
-    ) -> impl Future<Output = (Context, Request<ReqBody>, Self::Maker)> + Send + '_ {
-        ready((ctx, req, self.clone()))
+    ) -> impl Future<Output = (Request<ReqBody>, Self::Maker)> + Send + '_ {
+        ready((req, self.clone()))
     }
 }
 
@@ -99,10 +97,10 @@ where
 
     fn make_header_value_maker(
         &self,
-        ctx: Context,
+
         req: Request<ReqBody>,
-    ) -> impl Future<Output = (Context, Request<ReqBody>, Self::Maker)> + Send + '_ {
-        ready((ctx, req, self.clone()))
+    ) -> impl Future<Output = (Request<ReqBody>, Self::Maker)> + Send + '_ {
+        ready((req, self.clone()))
     }
 }
 
@@ -113,9 +111,9 @@ pub trait MakeHeaderValueFactoryFn<ReqBody, ResBody, A>: Send + Sync + 'static {
     /// Try to create a header value from the request or response.
     fn call(
         &self,
-        ctx: Context,
+
         request: Request<ReqBody>,
-    ) -> impl Future<Output = (Context, Request<ReqBody>, Self::Maker)> + Send + '_;
+    ) -> impl Future<Output = (Request<ReqBody>, Self::Maker)> + Send + '_;
 }
 
 impl<F, Fut, ReqBody, ResBody, M> MakeHeaderValueFactoryFn<ReqBody, ResBody, ()> for F
@@ -129,13 +127,9 @@ where
 {
     type Maker = M;
 
-    async fn call(
-        &self,
-        ctx: Context,
-        request: Request<ReqBody>,
-    ) -> (Context, Request<ReqBody>, M) {
+    async fn call(&self, request: Request<ReqBody>) -> (Request<ReqBody>, M) {
         let maker = self().await;
-        (ctx, request, maker)
+        (request, maker)
     }
 }
 
@@ -151,54 +145,9 @@ where
 {
     type Maker = M;
 
-    async fn call(
-        &self,
-        ctx: Context,
-        request: Request<ReqBody>,
-    ) -> (Context, Request<ReqBody>, M) {
+    async fn call(&self, request: Request<ReqBody>) -> (Request<ReqBody>, M) {
         let (request, maker) = self(request).await;
-        (ctx, request, maker)
-    }
-}
-
-impl<F, Fut, ReqBody, ResBody, M> MakeHeaderValueFactoryFn<ReqBody, ResBody, (Context,)> for F
-where
-    ReqBody: Send + 'static,
-    ResBody: Send + 'static,
-    M: MakeHeaderValue<ResBody>,
-    F: Fn(Context) -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = (Context, M)> + Send + 'static,
-    M: MakeHeaderValue<ResBody>,
-{
-    type Maker = M;
-
-    async fn call(
-        &self,
-        ctx: Context,
-        request: Request<ReqBody>,
-    ) -> (Context, Request<ReqBody>, M) {
-        let (ctx, maker) = self(ctx).await;
-        (ctx, request, maker)
-    }
-}
-
-impl<F, Fut, ReqBody, ResBody, M> MakeHeaderValueFactoryFn<ReqBody, ResBody, (Context, M)> for F
-where
-    ReqBody: Send + 'static,
-    ResBody: Send + 'static,
-    M: MakeHeaderValue<ResBody>,
-    F: Fn(Context, Request<ReqBody>) -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = (Context, Request<ReqBody>, M)> + Send + 'static,
-    M: MakeHeaderValue<ResBody>,
-{
-    type Maker = M;
-
-    fn call(
-        &self,
-        ctx: Context,
-        request: Request<ReqBody>,
-    ) -> impl Future<Output = (Context, Request<ReqBody>, M)> + Send + '_ {
-        self(ctx, request)
+        (request, maker)
     }
 }
 
@@ -251,10 +200,10 @@ where
 
     fn make_header_value_maker(
         &self,
-        ctx: Context,
+
         request: Request<ReqBody>,
-    ) -> impl Future<Output = (Context, Request<ReqBody>, Self::Maker)> + Send + '_ {
-        self.f.call(ctx, request)
+    ) -> impl Future<Output = (Request<ReqBody>, Self::Maker)> + Send + '_ {
+        self.f.call(request)
     }
 }
 
@@ -354,13 +303,9 @@ where
 {
     type Maker = BoxMakeHeaderValueFn<F, ()>;
 
-    async fn call(
-        &self,
-        ctx: Context,
-        request: Request<ReqBody>,
-    ) -> (Context, Request<ReqBody>, Self::Maker) {
+    async fn call(&self, request: Request<ReqBody>) -> (Request<ReqBody>, Self::Maker) {
         let maker = self.clone();
-        (ctx, request, BoxMakeHeaderValueFn::new(maker))
+        (request, BoxMakeHeaderValueFn::new(maker))
     }
 }
 
@@ -374,13 +319,9 @@ where
 {
     type Maker = BoxMakeHeaderValueFn<F, Response<ResBody>>;
 
-    async fn call(
-        &self,
-        ctx: Context,
-        request: Request<ReqBody>,
-    ) -> (Context, Request<ReqBody>, Self::Maker) {
+    async fn call(&self, request: Request<ReqBody>) -> (Request<ReqBody>, Self::Maker) {
         let maker = self.clone();
-        (ctx, request, BoxMakeHeaderValueFn::new(maker))
+        (request, BoxMakeHeaderValueFn::new(maker))
     }
 }
 

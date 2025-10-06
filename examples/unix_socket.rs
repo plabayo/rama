@@ -22,7 +22,7 @@
 #[cfg(target_family = "unix")]
 mod unix_example {
     use rama::{
-        Context, Layer,
+        Layer,
         error::BoxError,
         extensions::ExtensionsRef,
         graceful::ShutdownGuard,
@@ -57,7 +57,6 @@ mod unix_example {
 
         graceful.spawn_task_fn(async |guard| {
             async fn handle(
-                _ctx: Context,
                 mut stream: impl Stream + Unpin + ExtensionsRef,
             ) -> Result<(), BoxError> {
                 let mut buf = [0u8; 1024];

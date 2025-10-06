@@ -5,7 +5,7 @@ use crate::layer::{
     util::compression::WrapBody,
 };
 use rama_core::telemetry::tracing;
-use rama_core::{Context, Service, error::BoxError};
+use rama_core::{Service, error::BoxError};
 use rama_http_types::StreamingBody;
 use rama_http_types::{
     HeaderValue, Request, Response,
@@ -91,15 +91,11 @@ where
     type Error = S::Error;
 
     #[allow(unreachable_code, unused_mut, unused_variables, unreachable_patterns)]
-    async fn serve(
-        &self,
-        ctx: Context,
-        req: Request<ReqBody>,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
         let requested_encoding =
             parse_accept_encoding_headers(req.headers(), true).collect::<Vec<_>>();
 
-        let res = self.inner.serve(ctx, req).await?;
+        let res = self.inner.serve(req).await?;
         let (mut parts, body) = res.into_parts();
 
         match Encoding::maybe_from_content_encoding_header(&parts.headers, true) {

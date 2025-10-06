@@ -184,11 +184,7 @@ impl Service<Request> for AcmeService {
     type Response = Response;
     type Error = Infallible;
 
-    async fn serve(
-        &self,
-        _ctx: rama::Context,
-        _req: Request,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, _req: Request) -> Result<Self::Response, Self::Error> {
         Ok(self.0.clone().into_response())
     }
 }

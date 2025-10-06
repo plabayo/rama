@@ -1,5 +1,5 @@
 use super::*;
-use rama::{Context, http::StatusCode};
+use rama::http::StatusCode;
 
 #[tokio::test]
 #[ignore]
@@ -10,7 +10,7 @@ async fn test_http_conn_state() {
 
     let response = runner
         .get("http://127.0.0.1:62005/k8s/ready")
-        .send(Context::default())
+        .send()
         .await
         .unwrap();
 

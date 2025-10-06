@@ -3,7 +3,7 @@ use crate::client::proxy::layer::HttpProxyError;
 use super::InnerHttpProxyConnector;
 use pin_project_lite::pin_project;
 use rama_core::{
-    Context, Service,
+    Service,
     error::{BoxError, ErrorExt, OpaqueError},
     extensions::{Extensions, ExtensionsMut, ExtensionsRef},
     stream::Stream,

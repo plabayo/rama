@@ -1,6 +1,6 @@
 use crate::{Method, Request, Response, Uri};
 use rama_core::{
-    Context, Service,
+    Service,
     error::{BoxError, ErrorExt, OpaqueError},
     extensions::Extensions,
     extensions::ExtensionsMut,
@@ -109,7 +109,7 @@ pub trait HttpClientExt: private::HttpClientExtSealed + Sized + Send + Sync + 's
     /// This method fails if there was an error while sending request.
     fn execute(
         &self,
-        ctx: Context,
+
         request: Request,
     ) -> impl Future<Output = Result<Self::ExecuteResponse, Self::ExecuteError>>;
 }
@@ -187,10 +187,10 @@ where
 
     fn execute(
         &self,
-        ctx: Context,
+
         request: Request,
     ) -> impl Future<Output = Result<Self::ExecuteResponse, Self::ExecuteError>> {
-        Service::serve(self, ctx, request)
+        Service::serve(self, request)
     }
 }
 
@@ -742,7 +742,7 @@ where
     /// # Errors
     ///
     /// This method fails if there was an error while sending [`Request`].
-    pub async fn send(self, ctx: Context) -> Result<Response<Body>, OpaqueError> {
+    pub async fn send(self) -> Result<Response<Body>, OpaqueError> {
         let request = match self.state {
             RequestBuilderState::PreBody(builder) => builder
                 .body(crate::Body::empty())
@@ -752,7 +752,7 @@ where
         };
 
         let uri = request.uri().clone();
-        match self.http_client_service.serve(ctx, request).await {
+        match self.http_client_service.serve(request).await {
             Ok(response) => Ok(response),
             Err(err) => Err(OpaqueError::from_boxed(err.into()).context(uri.to_string())),
         }
@@ -780,10 +780,7 @@ mod test {
     use rama_utils::backoff::ExponentialBackoff;
     use std::convert::Infallible;
 
-    async fn fake_client_fn<Body>(
-        _ctx: Context,
-        request: Request<Body>,
-    ) -> Result<Response, Infallible>
+    async fn fake_client_fn<Body>(request: Request<Body>) -> Result<Response, Infallible>
     where
         Body: StreamingBody<Data: Send + 'static, Error: Send + 'static> + Send + 'static,
     {
@@ -838,11 +835,7 @@ mod test {
 
     #[tokio::test]
     async fn test_client_happy_path() {
-        let response = client()
-            .get("http://127.0.0.1:8080")
-            .send(Context::default())
-            .await
-            .unwrap();
+        let response = client().get("http://127.0.0.1:8080").send().await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
     }
 }

@@ -3,7 +3,7 @@ use crate::headers::forwarded::{
     ForwardHeader, Via, XForwardedFor, XForwardedHost, XForwardedProto,
 };
 use rama_core::extensions::ExtensionsMut;
-use rama_core::{Context, Layer, Service};
+use rama_core::{Layer, Service};
 use rama_http_headers::HeaderMapExt;
 use rama_http_headers::forwarded::Forwarded;
 use rama_net::forwarded::ForwardedElement;
@@ -53,7 +53,7 @@ use std::marker::PhantomData;
 /// #[tokio::main]
 /// async fn main() {
 ///     let service = GetForwardedHeaderLayer::x_forwarded_for()
-///         .into_layer(service_fn(async |_ctx: Context, req: Request<()>| {
+///         .into_layer(service_fn(async |_req: Request<()>| {
 ///             let forwarded = req.extensions().get::<rama_net::forwarded::Forwarded>().unwrap();
 ///             assert_eq!(forwarded.client_ip(), Some(IpAddr::from([12, 23, 34, 45])));
 ///             assert!(forwarded.client_proto().is_none());
@@ -68,7 +68,7 @@ use std::marker::PhantomData;
 ///         .body(())
 ///         .unwrap();
 ///
-///     service.serve(Context::default(), req).await.unwrap();
+///     service.serve(req).await.unwrap();
 /// }
 /// ```
 pub struct GetForwardedHeaderLayer<T = rama_http_headers::forwarded::Forwarded> {
@@ -253,7 +253,6 @@ where
 
     fn serve(
         &self,
-        ctx: Context,
         mut req: Request<Body>,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
         let mut forwarded_elements: Vec<ForwardedElement> = Vec::with_capacity(1);
@@ -273,7 +272,7 @@ where
             }
         }
 
-        self.inner.serve(ctx, req)
+        self.inner.serve(req)
     }
 }
 
@@ -321,8 +320,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_forwarded_header_forwarded() {
-        let service = GetForwardedHeaderLayer::forwarded().into_layer(service_fn(
-            async |_ctx: Context, req: Request<()>| {
+        let service =
+            GetForwardedHeaderLayer::forwarded().into_layer(service_fn(async |req: Request<()>| {
                 let forwarded = req
                     .extensions()
                     .get::<rama_net::forwarded::Forwarded>()
@@ -330,21 +329,20 @@ mod tests {
                 assert_eq!(forwarded.client_ip(), Some(IpAddr::from([12, 23, 34, 45])));
                 assert_eq!(forwarded.client_proto(), Some(ForwardedProtocol::HTTP));
                 Ok::<_, Infallible>(())
-            },
-        ));
+            }));
 
         let req = Request::builder()
             .header("Forwarded", "for=\"12.23.34.45:5000\";proto=http")
             .body(())
             .unwrap();
 
-        service.serve(Context::default(), req).await.unwrap();
+        service.serve(req).await.unwrap();
     }
 
     #[tokio::test]
     async fn test_get_forwarded_header_via() {
-        let service = GetForwardedHeaderLayer::via().into_layer(service_fn(
-            async |_ctx: Context, req: Request<()>| {
+        let service =
+            GetForwardedHeaderLayer::via().into_layer(service_fn(async |req: Request<()>| {
                 let forwarded = req
                     .extensions()
                     .get::<rama_net::forwarded::Forwarded>()
@@ -357,21 +355,20 @@ mod tests {
                 assert!(forwarded.client_proto().is_none());
                 assert_eq!(forwarded.client_version(), Some(ForwardedVersion::HTTP_11));
                 Ok::<_, Infallible>(())
-            },
-        ));
+            }));
 
         let req = Request::builder()
             .header("Via", "1.1 12.23.34.45:5000")
             .body(())
             .unwrap();
 
-        service.serve(Context::default(), req).await.unwrap();
+        service.serve(req).await.unwrap();
     }
 
     #[tokio::test]
     async fn test_get_forwarded_header_x_forwarded_for() {
         let service = GetForwardedHeaderLayer::x_forwarded_for().into_layer(service_fn(
-            async |_ctx: Context, req: Request<()>| {
+            async |req: Request<()>| {
                 let forwarded = req
                     .extensions()
                     .get::<rama_net::forwarded::Forwarded>()
@@ -387,6 +384,6 @@ mod tests {
             .body(())
             .unwrap();
 
-        service.serve(Context::default(), req).await.unwrap();
+        service.serve(req).await.unwrap();
     }
 }

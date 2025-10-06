@@ -1,6 +1,5 @@
 use super::utils;
 use rama::{
-    Context,
     dns::{DnsOverwrite, InMemoryDns},
     http::BodyExtractExt,
 };
@@ -27,7 +26,7 @@ async fn test_tls_sni_router() {
         let response = runner
             .get(uri)
             .extension(DnsOverwrite::from(mem_dns.clone()))
-            .send(Context::default())
+            .send()
             .await
             .unwrap()
             .try_into_string()

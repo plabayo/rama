@@ -3,7 +3,7 @@ use std::{sync::Arc, time::Duration};
 use super::utils;
 
 use rama::{
-    Context, Service,
+    Service,
     error::{ErrorContext, OpaqueError},
     extensions::ExtensionsMut,
     http::{
@@ -55,7 +55,7 @@ async fn test_http_https_socks5_and_socks5h_connect_proxy() {
         let result = runner
             .get(uri)
             .extension(ProxyAddress::try_from("http://tom:clancy@127.0.0.1:62029").unwrap())
-            .send(Context::default())
+            .send()
             .await
             .unwrap()
             .try_into_string()
@@ -70,7 +70,7 @@ async fn test_http_https_socks5_and_socks5h_connect_proxy() {
         let result = runner
             .get(uri)
             .extension(ProxyAddress::try_from("https://tom:clancy@127.0.0.1:62029").unwrap())
-            .send(Context::default())
+            .send()
             .await
             .unwrap()
             .try_into_string()
@@ -135,7 +135,7 @@ async fn test_http_client_over_socks5_proxy_connect(
         );
 
         let resp = client
-            .serve(Context::default(), request)
+            .serve(request)
             .await
             .expect("make http(s) request via socks5 proxy")
             .try_into_string()

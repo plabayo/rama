@@ -7,7 +7,7 @@ use crate::{
     header::{self, DATE, RAMA_ID_HEADER_VALUE, SERVER},
     headers::{Date, HeaderMapExt},
 };
-use rama_core::{Context, Layer, Service};
+use rama_core::{Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
 use std::{fmt, time::SystemTime};
 
@@ -183,12 +183,8 @@ where
     type Response = S::Response;
     type Error = S::Error;
 
-    async fn serve(
-        &self,
-        ctx: Context,
-        req: Request<ReqBody>,
-    ) -> Result<Self::Response, Self::Error> {
-        let mut resp = self.inner.serve(ctx, req).await?;
+    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
+        let mut resp = self.inner.serve(req).await?;
 
         if self.overwrite {
             resp.headers_mut().insert(
@@ -226,7 +222,7 @@ mod tests {
     #[tokio::test]
     async fn add_required_response_headers() {
         let svc = AddRequiredResponseHeadersLayer::default().into_layer(service_fn(
-            async |_ctx: Context, req: Request| {
+            async |req: Request| {
                 assert!(!req.headers().contains_key(SERVER));
                 assert!(!req.headers().contains_key(DATE));
                 Ok::<_, Infallible>(Response::new(Body::empty()))
@@ -234,7 +230,7 @@ mod tests {
         ));
 
         let req = Request::new(Body::empty());
-        let resp = svc.serve(Context::default(), req).await.unwrap();
+        let resp = svc.serve(req).await.unwrap();
 
         assert_eq!(
             resp.headers().get(SERVER).unwrap(),
@@ -247,14 +243,14 @@ mod tests {
     async fn add_required_response_headers_custom_server() {
         let svc = AddRequiredResponseHeadersLayer::default()
             .server_header_value(HeaderValue::from_static("foo"))
-            .into_layer(service_fn(async |_ctx: Context, req: Request| {
+            .into_layer(service_fn(async |req: Request| {
                 assert!(!req.headers().contains_key(SERVER));
                 assert!(!req.headers().contains_key(DATE));
                 Ok::<_, Infallible>(Response::new(Body::empty()))
             }));
 
         let req = Request::new(Body::empty());
-        let resp = svc.serve(Context::default(), req).await.unwrap();
+        let resp = svc.serve(req).await.unwrap();
 
         assert_eq!(
             resp.headers().get(SERVER).and_then(|v| v.to_str().ok()),
@@ -267,7 +263,7 @@ mod tests {
     async fn add_required_response_headers_overwrite() {
         let svc = AddRequiredResponseHeadersLayer::new()
             .overwrite(true)
-            .into_layer(service_fn(async |_ctx: Context, req: Request| {
+            .into_layer(service_fn(async |req: Request| {
                 assert!(!req.headers().contains_key(SERVER));
                 assert!(!req.headers().contains_key(DATE));
                 Ok::<_, Infallible>(
@@ -280,7 +276,7 @@ mod tests {
             }));
 
         let req = Request::new(Body::empty());
-        let resp = svc.serve(Context::default(), req).await.unwrap();
+        let resp = svc.serve(req).await.unwrap();
 
         assert_eq!(
             resp.headers().get(SERVER).unwrap(),
@@ -294,7 +290,7 @@ mod tests {
         let svc = AddRequiredResponseHeadersLayer::new()
             .overwrite(true)
             .server_header_value(HeaderValue::from_static("foo"))
-            .into_layer(service_fn(async |_ctx: Context, req: Request| {
+            .into_layer(service_fn(async |req: Request| {
                 assert!(!req.headers().contains_key(SERVER));
                 assert!(!req.headers().contains_key(DATE));
                 Ok::<_, Infallible>(
@@ -307,7 +303,7 @@ mod tests {
             }));
 
         let req = Request::new(Body::empty());
-        let resp = svc.serve(Context::default(), req).await.unwrap();
+        let resp = svc.serve(req).await.unwrap();
 
         assert_eq!(
             resp.headers().get(SERVER).and_then(|v| v.to_str().ok()),

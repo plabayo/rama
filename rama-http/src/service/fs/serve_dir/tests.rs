@@ -5,9 +5,9 @@ use crate::{Body, Request, StatusCode, StreamingBody};
 use crate::{Method, Response, header};
 use brotli::BrotliDecompress;
 use flate2::bufread::{DeflateDecoder, GzDecoder};
+use rama_core::Service;
 use rama_core::bytes::Bytes;
 use rama_core::service::service_fn;
-use rama_core::{Context, Service};
 use rama_http_types::BodyExtractExt;
 use rama_utils::include_dir::{Dir, include_dir};
 use std::convert::Infallible;
@@ -30,7 +30,7 @@ async fn test_basic(svc: ServeDir) {
         .uri("/README.md")
         .body(Body::empty())
         .unwrap();
-    let res = svc.serve(Context::default(), req).await.unwrap();
+    let res = svc.serve(req).await.unwrap();
 
     assert_eq!(res.status(), StatusCode::OK);
     assert_eq!(res.headers()["content-type"], "text/markdown");
@@ -56,7 +56,7 @@ async fn basic_with_index_embedded() {
 
 async fn test_basic_with_index(svc: ServeDir) {
     let req = Request::new(Body::empty());
-    let res = svc.serve(Context::default(), req).await.unwrap();
+    let res = svc.serve(req).await.unwrap();
 
     assert_eq!(res.status(), StatusCode::OK);
     assert_eq!(res.headers()[header::CONTENT_TYPE], "text/html");
@@ -89,7 +89,7 @@ async fn test_head_request(svc: ServeDir) {
         .body(Body::empty())
         .unwrap();
 
-    let res = svc.serve(Context::default(), req).await.unwrap();
+    let res = svc.serve(req).await.unwrap();
 
     assert_eq!(res.headers()["content-type"], "text/plain");
     #[cfg(target_os = "windows")]
@@ -120,7 +120,7 @@ async fn test_precompresed_head_request(svc: ServeDir) {
         .method(Method::HEAD)
         .body(Body::empty())
         .unwrap();
-    let res = svc.serve(Context::default(), req).await.unwrap();
+    let res = svc.serve(req).await.unwrap();
 
     assert_eq!(res.headers()["content-type"], "text/plain");
     assert_eq!(res.headers()["content-encoding"], "gzip");
@@ -147,7 +147,7 @@ async fn test_with_custom_chunk_size(svc: ServeDir) {
         .uri("/README.md")
         .body(Body::empty())
         .unwrap();
-    let res = svc.serve(Context::default(), req).await.unwrap();
+    let res = svc.serve(req).await.unwrap();
 
     assert_eq!(res.status(), StatusCode::OK);
     assert_eq!(res.headers()["content-type"], "text/markdown");
@@ -177,7 +177,7 @@ async fn test_precompressed_gzip(svc: ServeDir) {
         .header("Accept-Encoding", "gzip")
         .body(Body::empty())
         .unwrap();
-    let res = svc.serve(Context::default(), req).await.unwrap();
+    let res = svc.serve(req).await.unwrap();
 
     assert_eq!(res.headers()["content-type"], "text/plain");
     assert_eq!(res.headers()["content-encoding"], "gzip");
@@ -208,7 +208,7 @@ async fn test_precompressed_br(svc: ServeDir) {
         .header("Accept-Encoding", "br")
         .body(Body::empty())
         .unwrap();
-    let res = svc.serve(Context::default(), req).await.unwrap();
+    let res = svc.serve(req).await.unwrap();
 
     assert_eq!(res.headers()["content-type"], "text/plain");
     assert_eq!(res.headers()["content-encoding"], "br");
@@ -239,7 +239,7 @@ async fn test_precompressed_deflate(svc: ServeDir) {
         .header("Accept-Encoding", "deflate,br")
         .body(Body::empty())
         .unwrap();
-    let res = svc.serve(Context::default(), request).await.unwrap();
+    let res = svc.serve(request).await.unwrap();
 
     assert_eq!(res.headers()["content-type"], "text/plain");
     assert_eq!(res.headers()["content-encoding"], "deflate");
@@ -270,7 +270,7 @@ async fn test_unsupported_precompression_algorithm_fallbacks_to_uncompressed(svc
         .header("Accept-Encoding", "br")
         .body(Body::empty())
         .unwrap();
-    let res = svc.serve(Context::default(), request).await.unwrap();
+    let res = svc.serve(request).await.unwrap();
 
     assert_eq!(res.headers()["content-type"], "text/plain");
     assert!(res.headers().get("content-encoding").is_none());
@@ -298,11 +298,7 @@ async fn test_only_precompressed_variant_existing(svc: ServeDir) {
         .uri("/only_gzipped.txt")
         .body(Body::empty())
         .unwrap();
-    let res = svc
-        .clone()
-        .serve(Context::default(), request)
-        .await
-        .unwrap();
+    let res = svc.clone().serve(request).await.unwrap();
 
     assert_eq!(res.status(), StatusCode::NOT_FOUND);
 
@@ -312,7 +308,7 @@ async fn test_only_precompressed_variant_existing(svc: ServeDir) {
         .header("Accept-Encoding", "gzip")
         .body(Body::empty())
         .unwrap();
-    let res = svc.serve(Context::default(), request).await.unwrap();
+    let res = svc.serve(request).await.unwrap();
 
     assert_eq!(res.headers()["content-type"], "text/plain");
     assert_eq!(res.headers()["content-encoding"], "gzip");
@@ -343,7 +339,7 @@ async fn test_missing_precompressed_variant_fallbacks_to_uncompressed(svc: Serve
         .header("Accept-Encoding", "gzip")
         .body(Body::empty())
         .unwrap();
-    let res = svc.serve(Context::default(), request).await.unwrap();
+    let res = svc.serve(request).await.unwrap();
 
     assert_eq!(res.headers()["content-type"], "text/plain");
     // Uncompressed file is served because compressed version is missing
@@ -376,7 +372,7 @@ async fn test_missing_precompressed_variant_fallbacks_to_uncompressed_for_head_r
         .method(Method::HEAD)
         .body(Body::empty())
         .unwrap();
-    let res = svc.serve(Context::default(), request).await.unwrap();
+    let res = svc.serve(request).await.unwrap();
 
     assert_eq!(res.headers()["content-type"], "text/plain");
     #[cfg(target_os = "windows")]
@@ -407,7 +403,7 @@ async fn test_access_to_sub_dirs(svc: ServeDir) {
         .uri("/Cargo.toml")
         .body(Body::empty())
         .unwrap();
-    let res = svc.serve(Context::default(), req).await.unwrap();
+    let res = svc.serve(req).await.unwrap();
 
     assert_eq!(res.status(), StatusCode::OK);
     assert_eq!(res.headers()["content-type"], "text/x-toml");
@@ -436,7 +432,7 @@ async fn test_not_found(svc: ServeDir) {
         .uri("/not-found")
         .body(Body::empty())
         .unwrap();
-    let res = svc.serve(Context::default(), req).await.unwrap();
+    let res = svc.serve(req).await.unwrap();
 
     assert_eq!(res.status(), StatusCode::NOT_FOUND);
     assert!(res.headers().get(header::CONTENT_TYPE).is_none());
@@ -456,7 +452,7 @@ async fn not_found_when_not_a_directory() {
         .uri("/index.html/some_file")
         .body(Body::empty())
         .unwrap();
-    let res = svc.serve(Context::default(), req).await.unwrap();
+    let res = svc.serve(req).await.unwrap();
 
     // This should lead to a 404
     assert_eq!(res.status(), StatusCode::NOT_FOUND);
@@ -485,7 +481,7 @@ async fn test_not_found_precompressed(svc: ServeDir) {
         .header("Accept-Encoding", "gzip")
         .body(Body::empty())
         .unwrap();
-    let res = svc.serve(Context::default(), req).await.unwrap();
+    let res = svc.serve(req).await.unwrap();
 
     assert_eq!(res.status(), StatusCode::NOT_FOUND);
     assert!(res.headers().get(header::CONTENT_TYPE).is_none());
@@ -520,7 +516,7 @@ async fn test_fallbacks_to_different_precompressed_variant_if_not_found_for_head
         .method(Method::HEAD)
         .body(Body::empty())
         .unwrap();
-    let res = svc.serve(Context::default(), req).await.unwrap();
+    let res = svc.serve(req).await.unwrap();
 
     assert_eq!(res.headers()["content-type"], "text/plain");
     assert_eq!(res.headers()["content-encoding"], "br");
@@ -552,7 +548,7 @@ async fn test_fallbacks_to_different_precompressed_variant_if_not_found(svc: Ser
         .header("Accept-Encoding", "gzip,br,deflate")
         .body(Body::empty())
         .unwrap();
-    let res = svc.serve(Context::default(), req).await.unwrap();
+    let res = svc.serve(req).await.unwrap();
 
     assert_eq!(res.headers()["content-type"], "text/plain");
     assert_eq!(res.headers()["content-encoding"], "br");
@@ -569,7 +565,7 @@ async fn redirect_to_trailing_slash_on_dir() {
     let svc = ServeDir::new("..");
 
     let req = Request::builder().uri("/src").body(Body::empty()).unwrap();
-    let res = svc.serve(Context::default(), req).await.unwrap();
+    let res = svc.serve(req).await.unwrap();
 
     assert_eq!(res.status(), StatusCode::TEMPORARY_REDIRECT);
 
@@ -582,7 +578,7 @@ async fn empty_directory_without_index() {
     let svc = ServeDir::new("..").with_directory_serve_mode(DirectoryServeMode::NotFound);
 
     let req = Request::new(Body::empty());
-    let res = svc.serve(Context::default(), req).await.unwrap();
+    let res = svc.serve(req).await.unwrap();
 
     assert_eq!(res.status(), StatusCode::NOT_FOUND);
     assert!(res.headers().get(header::CONTENT_TYPE).is_none());
@@ -597,7 +593,7 @@ async fn serve_directory_as_file_tree() {
         ServeDir::new("../test-files").with_directory_serve_mode(DirectoryServeMode::HtmlFileList);
 
     let req = Request::new(Body::empty());
-    let res = svc.serve(Context::default(), req).await.unwrap();
+    let res = svc.serve(req).await.unwrap();
 
     assert_eq!(res.status(), StatusCode::OK);
     assert_eq!(res.headers()["content-type"], "text/html; charset=utf-8");
@@ -616,7 +612,7 @@ async fn empty_directory_without_index_no_information_leak() {
         .uri("/test-files")
         .body(Body::empty())
         .unwrap();
-    let res = svc.serve(Context::default(), req).await.unwrap();
+    let res = svc.serve(req).await.unwrap();
 
     assert_eq!(res.status(), StatusCode::NOT_FOUND);
     assert!(res.headers().get(header::CONTENT_TYPE).is_none());
@@ -654,7 +650,7 @@ async fn test_access_cjk_percent_encoded_uri_path(svc: ServeDir) {
         .uri(format!("/{cjk_filename_encoded}"))
         .body(Body::empty())
         .unwrap();
-    let res = svc.serve(Context::default(), req).await.unwrap();
+    let res = svc.serve(req).await.unwrap();
 
     assert_eq!(res.status(), StatusCode::OK);
     assert_eq!(res.headers()["content-type"], "text/plain");
@@ -680,7 +676,7 @@ async fn test_access_space_percent_encoded_uri_path(svc: ServeDir) {
         .uri(format!("/{encoded_filename}"))
         .body(Body::empty())
         .unwrap();
-    let res = svc.serve(Context::default(), req).await.unwrap();
+    let res = svc.serve(req).await.unwrap();
 
     assert_eq!(res.status(), StatusCode::OK);
     assert_eq!(res.headers()["content-type"], "text/plain");
@@ -706,7 +702,7 @@ async fn test_read_partial_empty(svc: ServeDir) {
         .body(Body::empty())
         .unwrap();
 
-    let res = svc.serve(Context::default(), req).await.unwrap();
+    let res = svc.serve(req).await.unwrap();
     assert_eq!(res.status(), StatusCode::PARTIAL_CONTENT);
     assert_eq!(res.headers()["content-length"], "0");
     assert_eq!(res.headers()["content-range"], "bytes 0-0/0");
@@ -740,7 +736,7 @@ async fn test_read_partial_in_bounds(svc: ServeDir) {
         )
         .body(Body::empty())
         .unwrap();
-    let res = svc.serve(Context::default(), req).await.unwrap();
+    let res = svc.serve(req).await.unwrap();
 
     let file_contents = std::fs::read("../rama-http/README.md").unwrap();
     assert_eq!(res.status(), StatusCode::PARTIAL_CONTENT);
@@ -792,7 +788,7 @@ async fn test_read_partial_accepts_out_of_bounds_range(svc: ServeDir) {
         )
         .body(Body::empty())
         .unwrap();
-    let res = svc.serve(Context::default(), req).await.unwrap();
+    let res = svc.serve(req).await.unwrap();
 
     assert_eq!(res.status(), StatusCode::PARTIAL_CONTENT);
     let file_contents = std::fs::read("../rama-http/README.md").unwrap();
@@ -825,7 +821,7 @@ async fn test_read_partial_errs_on_garbage_header(svc: ServeDir) {
         .header("Range", "bad_format")
         .body(Body::empty())
         .unwrap();
-    let res = svc.serve(Context::default(), req).await.unwrap();
+    let res = svc.serve(req).await.unwrap();
     assert_eq!(res.status(), StatusCode::RANGE_NOT_SATISFIABLE);
     let file_contents = std::fs::read("../rama-http/README.md").unwrap();
     assert_eq!(
@@ -853,7 +849,7 @@ async fn test_read_partial_errs_on_bad_range(svc: ServeDir) {
         .header("Range", "bytes=-1-15")
         .body(Body::empty())
         .unwrap();
-    let res = svc.serve(Context::default(), req).await.unwrap();
+    let res = svc.serve(req).await.unwrap();
     assert_eq!(res.status(), StatusCode::RANGE_NOT_SATISFIABLE);
     let file_contents = std::fs::read("../rama-http/README.md").unwrap();
     assert_eq!(
@@ -881,7 +877,7 @@ async fn test_accept_encoding_identity(svc: ServeDir) {
         .header("Accept-Encoding", "identity")
         .body(Body::empty())
         .unwrap();
-    let res = svc.serve(Context::default(), req).await.unwrap();
+    let res = svc.serve(req).await.unwrap();
     assert_eq!(res.status(), StatusCode::OK);
     // Identity encoding should not be included in the response headers
     assert!(res.headers().get("content-encoding").is_none());
@@ -905,7 +901,7 @@ async fn test_last_modified(svc: ServeDir) {
         .uri("/README.md")
         .body(Body::empty())
         .unwrap();
-    let res = svc.serve(Context::default(), req).await.unwrap();
+    let res = svc.serve(req).await.unwrap();
     assert_eq!(res.status(), StatusCode::OK);
 
     let last_modified = res
@@ -922,7 +918,7 @@ async fn test_last_modified(svc: ServeDir) {
         .body(Body::empty())
         .unwrap();
 
-    let res = svc_clone.serve(Context::default(), req).await.unwrap();
+    let res = svc_clone.serve(req).await.unwrap();
     assert_eq!(res.status(), StatusCode::NOT_MODIFIED);
     assert!(res.into_body().frame().await.is_none());
 
@@ -933,7 +929,7 @@ async fn test_last_modified(svc: ServeDir) {
         .body(Body::empty())
         .unwrap();
 
-    let res = svc_clone.serve(Context::default(), req).await.unwrap();
+    let res = svc_clone.serve(req).await.unwrap();
     assert_eq!(res.status(), StatusCode::OK);
     let readme_content = std::fs::read("../rama-http/README.md").unwrap();
     let body = res.into_body().collect().await.unwrap().to_bytes();
@@ -948,7 +944,7 @@ async fn test_last_modified(svc: ServeDir) {
         .body(Body::empty())
         .unwrap();
 
-    let res = svc_clone.serve(Context::default(), req).await.unwrap();
+    let res = svc_clone.serve(req).await.unwrap();
     assert_eq!(res.status(), StatusCode::OK);
     let body = res.into_body().collect().await.unwrap().to_bytes();
     assert_eq!(body.as_ref(), &readme_content);
@@ -959,7 +955,7 @@ async fn test_last_modified(svc: ServeDir) {
         .body(Body::empty())
         .unwrap();
 
-    let res = svc.serve(Context::default(), req).await.unwrap();
+    let res = svc.serve(req).await.unwrap();
     assert_eq!(res.status(), StatusCode::PRECONDITION_FAILED);
     assert!(res.into_body().frame().await.is_none());
 }
@@ -991,7 +987,7 @@ async fn test_with_fallback_svc(svc: ServeDir) {
         .uri("/doesnt-exist")
         .body(Body::empty())
         .unwrap();
-    let res = svc.serve(Context::default(), req).await.unwrap();
+    let res = svc.serve(req).await.unwrap();
 
     assert_eq!(res.status(), StatusCode::OK);
 
@@ -1007,7 +1003,7 @@ async fn with_fallback_serve_file() {
         .uri("/doesnt-exist")
         .body(Body::empty())
         .unwrap();
-    let res = svc.serve(Context::default(), req).await.unwrap();
+    let res = svc.serve(req).await.unwrap();
 
     assert_eq!(res.status(), StatusCode::OK);
     assert_eq!(res.headers()["content-type"], "text/markdown");
@@ -1037,7 +1033,7 @@ async fn test_method_not_allowed(svc: ServeDir) {
         .uri("/README.md")
         .body(Body::empty())
         .unwrap();
-    let res = svc.serve(Context::default(), req).await.unwrap();
+    let res = svc.serve(req).await.unwrap();
 
     assert_eq!(res.status(), StatusCode::METHOD_NOT_ALLOWED);
     assert_eq!(res.headers()[ALLOW], "GET,HEAD");
@@ -1061,7 +1057,7 @@ async fn calling_fallback_on_not_allowed() {
         .uri("/doesnt-exist")
         .body(Body::empty())
         .unwrap();
-    let res = svc.serve(Context::default(), req).await.unwrap();
+    let res = svc.serve(req).await.unwrap();
 
     assert_eq!(res.status(), StatusCode::OK);
 
@@ -1083,7 +1079,7 @@ async fn with_fallback_svc_and_not_append_index_html_on_directories() {
         .fallback(service_fn(fallback));
 
     let req = Request::builder().uri("/").body(Body::empty()).unwrap();
-    let res = svc.serve(Context::default(), req).await.unwrap();
+    let res = svc.serve(req).await.unwrap();
 
     assert_eq!(res.status(), StatusCode::OK);
 
@@ -1107,7 +1103,7 @@ async fn calls_fallback_on_invalid_paths() {
         .body(Body::empty())
         .unwrap();
 
-    let res = svc.serve(Context::default(), req).await.unwrap();
+    let res = svc.serve(req).await.unwrap();
 
     assert_eq!(res.headers()["from-fallback"], "1");
 }
@@ -1128,7 +1124,7 @@ async fn calls_fallback_on_invalid_filenames() {
         .body(Body::empty())
         .unwrap();
 
-    let res = svc.serve(Context::default(), req).await.unwrap();
+    let res = svc.serve(req).await.unwrap();
 
     assert_eq!(res.headers()["from-fallback"], "1");
 }
@@ -1149,7 +1145,7 @@ async fn calls_fallback_on_null() {
         .body(Body::empty())
         .unwrap();
 
-    let res = svc.serve(Context::default(), req).await.unwrap();
+    let res = svc.serve(req).await.unwrap();
 
     assert_eq!(res.headers()["from-fallback"], "1");
 }

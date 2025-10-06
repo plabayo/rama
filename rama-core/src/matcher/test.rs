@@ -71,44 +71,44 @@ impl Matcher<u8> for ConstMatcher {
 
 #[test]
 fn test_option() {
-    assert!(!Option::<ConstMatcher>::None.matches(None, &&0));
-    assert!(Some(ConstMatcher(0)).matches(None, &&0));
-    assert!(!Some(ConstMatcher(1)).matches(None, &&0));
+    assert!(!Option::<ConstMatcher>::None.matches(None, &0));
+    assert!(Some(ConstMatcher(0)).matches(None, &0));
+    assert!(!Some(ConstMatcher(1)).matches(None, &0));
 }
 
 #[test]
 fn test_and() {
     let matcher = And::new((ConstMatcher(1), OddMatcher));
-    assert!(!matcher.matches(None, &&0));
-    assert!(matcher.matches(None, &&1));
-    assert!(!matcher.matches(None, &&2));
+    assert!(!matcher.matches(None, &0));
+    assert!(matcher.matches(None, &1));
+    assert!(!matcher.matches(None, &2));
     for i in 3..=255 {
-        assert!(!matcher.matches(None, &&i), "i = {i}");
+        assert!(!matcher.matches(None, &i), "i = {i}");
     }
 }
 
 #[test]
 fn test_and_builder() {
     let matcher = ConstMatcher(1).and(OddMatcher);
-    assert!(!matcher.matches(None, &&0));
-    assert!(matcher.matches(None, &&1));
-    assert!(!matcher.matches(None, &&2));
+    assert!(!matcher.matches(None, &0));
+    assert!(matcher.matches(None, &1));
+    assert!(!matcher.matches(None, &2));
     for i in 3..=255 {
-        assert!(!matcher.matches(None, &&i), "i = {i}");
+        assert!(!matcher.matches(None, &i), "i = {i}");
     }
 }
 
 #[test]
 fn test_or() {
     let matcher = Or::new((ConstMatcher(1), EvenMatcher));
-    assert!(matcher.matches(None, &&0));
-    assert!(matcher.matches(None, &&1));
-    assert!(matcher.matches(None, &&2));
+    assert!(matcher.matches(None, &0));
+    assert!(matcher.matches(None, &1));
+    assert!(matcher.matches(None, &2));
     for i in 3..=255 {
         if i % 2 == 0 {
-            assert!(matcher.matches(None, &&i), "i = {i}");
+            assert!(matcher.matches(None, &i), "i = {i}");
         } else {
-            assert!(!matcher.matches(None, &&i), "i = {i}");
+            assert!(!matcher.matches(None, &i), "i = {i}");
         }
     }
 }
@@ -128,12 +128,12 @@ fn test_or_builder() {
         .or(ConstMatcher(11))
         .or(ConstMatcher(12));
 
-    assert!(!matcher.matches(None, &&0));
+    assert!(!matcher.matches(None, &0));
     for i in 1..=12 {
-        assert!(matcher.matches(None, &&i), "i = {i}");
+        assert!(matcher.matches(None, &i), "i = {i}");
     }
     for i in 13..=255 {
-        assert!(!matcher.matches(None, &&i), "i = {i}");
+        assert!(!matcher.matches(None, &i), "i = {i}");
     }
 }
 
@@ -141,7 +141,7 @@ fn test_or_builder() {
 fn test_and_never() {
     for i in 0..=255 {
         assert!(
-            !And::new((OddMatcher, EvenMatcher)).matches(None, &&i),
+            !And::new((OddMatcher, EvenMatcher)).matches(None, &i),
             "i = {i}"
         );
     }
@@ -151,7 +151,7 @@ fn test_and_never() {
 fn test_or_never() {
     for i in 0..=255 {
         assert!(
-            Or::new((OddMatcher, EvenMatcher)).matches(None, &&i),
+            Or::new((OddMatcher, EvenMatcher)).matches(None, &i),
             "i = {i}",
         );
     }
@@ -162,10 +162,10 @@ fn test_and_or() {
     let matcher = ConstMatcher(1)
         .or(ConstMatcher(2))
         .and(OddMatcher.or(EvenMatcher));
-    assert!(matcher.matches(None, &&1));
-    assert!(matcher.matches(None, &&2));
+    assert!(matcher.matches(None, &1));
+    assert!(matcher.matches(None, &2));
     for i in 3..=255 {
-        assert!(!matcher.matches(None, &&i), "i = {i}");
+        assert!(!matcher.matches(None, &i), "i = {i}");
     }
 }
 
@@ -175,10 +175,10 @@ fn test_match_fn_always() {
     assert!(match_fn(|| true).matches(None, &&()));
     assert!(match_fn(|_: Option<&mut Extensions>| true).matches(None, &&()));
     assert!(match_fn(|_: Option<&mut Extensions>| true).matches(None, &()));
-    assert!(match_fn(|_: &()| true).matches(None, &&()));
-    assert!(match_fn(|_: &u8| true).matches(None, &&0));
-    assert!(match_fn(|_: &bool| true).matches(None, &&false));
-    assert!(match_fn(|_: &&str| true).matches(None, &&"foo"));
+    assert!(match_fn(|_: &()| true).matches(None, &()));
+    assert!(match_fn(|_: &u8| true).matches(None, &0));
+    assert!(match_fn(|_: &bool| true).matches(None, &false));
+    assert!(match_fn(|_: &&str| true).matches(None, &"foo"));
 }
 
 #[test]
@@ -186,9 +186,9 @@ fn test_match_fn() {
     let matcher = match_fn(|req: &u8| !(*req).is_multiple_of(2));
     for i in 0..=255 {
         if i % 2 != 0 {
-            assert!(matcher.matches(None, &&i), "i = {i}");
+            assert!(matcher.matches(None, &i), "i = {i}");
         } else {
-            assert!(!matcher.matches(None, &&i), "i = {i}");
+            assert!(!matcher.matches(None, &i), "i = {i}");
         }
     }
 }
@@ -213,12 +213,12 @@ impl Matcher<u8> for TestMatchers {
 
 #[test]
 fn test_enum_matcher() {
-    assert!(!TestMatchers::Const(ConstMatcher(1)).matches(None, &&0));
-    assert!(TestMatchers::Const(ConstMatcher(1)).matches(None, &&1));
-    assert!(!TestMatchers::Even(EvenMatcher).matches(None, &&1));
-    assert!(TestMatchers::Even(EvenMatcher).matches(None, &&2));
-    assert!(!TestMatchers::Odd(OddMatcher).matches(None, &&2));
-    assert!(TestMatchers::Odd(OddMatcher).matches(None, &&3));
+    assert!(!TestMatchers::Const(ConstMatcher(1)).matches(None, &0));
+    assert!(TestMatchers::Const(ConstMatcher(1)).matches(None, &1));
+    assert!(!TestMatchers::Even(EvenMatcher).matches(None, &1));
+    assert!(TestMatchers::Even(EvenMatcher).matches(None, &2));
+    assert!(!TestMatchers::Odd(OddMatcher).matches(None, &2));
+    assert!(TestMatchers::Odd(OddMatcher).matches(None, &3));
 }
 
 #[test]
@@ -228,24 +228,24 @@ fn test_iter_enum_and() {
         TestMatchers::Odd(OddMatcher),
     ];
 
-    assert!(matchers[0].matches(None, &&1));
-    assert!(matchers[1].matches(None, &&1));
+    assert!(matchers[0].matches(None, &1));
+    assert!(matchers[1].matches(None, &1));
 
     for matcher in matchers.iter() {
-        assert!(matcher.matches(None, &&1));
+        assert!(matcher.matches(None, &1));
     }
 
-    assert!(matchers.iter().matches_and(None, &&1));
-    assert!(!matchers.iter().matches_and(None, &&3));
-    assert!(!matchers.iter().matches_and(None, &&4));
+    assert!(matchers.iter().matches_and(None, &1));
+    assert!(!matchers.iter().matches_and(None, &3));
+    assert!(!matchers.iter().matches_and(None, &4));
 }
 
 #[test]
 fn test_iter_empty() {
     let matchers: Vec<ConstMatcher> = Vec::new();
     for i in 0..=255 {
-        assert!(matchers.iter().matches_and(None, &&i));
-        assert!(matchers.iter().matches_or(None, &&i));
+        assert!(matchers.iter().matches_and(None, &i));
+        assert!(matchers.iter().matches_or(None, &i));
     }
 }
 
@@ -257,18 +257,18 @@ fn test_iter_enum_or() {
         TestMatchers::Odd(OddMatcher),
     ];
 
-    assert!(matchers[0].matches(None, &&0));
-    assert!(matchers[1].matches(None, &&2));
-    assert!(matchers[2].matches(None, &&1));
+    assert!(matchers[0].matches(None, &0));
+    assert!(matchers[1].matches(None, &2));
+    assert!(matchers[2].matches(None, &1));
 
     for i in 0..=2 {
-        assert!(matchers.iter().matches_or(None, &&i), "i = {i}",);
+        assert!(matchers.iter().matches_or(None, &i), "i = {i}",);
     }
     for i in 3..=255 {
         if i % 2 == 1 {
-            assert!(matchers.iter().matches_or(None, &&i), "i = {i}",);
+            assert!(matchers.iter().matches_or(None, &i), "i = {i}",);
         } else {
-            assert!(!matchers.iter().matches_or(None, &&i), "i = {i}",);
+            assert!(!matchers.iter().matches_or(None, &i), "i = {i}",);
         }
     }
 }
@@ -276,24 +276,24 @@ fn test_iter_enum_or() {
 #[test]
 #[allow(unused_allocation)]
 fn test_box() {
-    assert!(Box::new(ConstMatcher(0)).matches(None, &&0));
-    assert!(!Box::new(ConstMatcher(1)).matches(None, &&0));
+    assert!(Box::new(ConstMatcher(0)).matches(None, &0));
+    assert!(!Box::new(ConstMatcher(1)).matches(None, &0));
 }
 
 #[test]
 fn test_iter_box_and() {
     let matchers: Vec<Box<dyn Matcher<_>>> = vec![Box::new(ConstMatcher(1)), Box::new(OddMatcher)];
 
-    assert!(matchers[0].matches(None, &&1));
-    assert!(matchers[1].matches(None, &&1));
+    assert!(matchers[0].matches(None, &1));
+    assert!(matchers[1].matches(None, &1));
 
     for matcher in matchers.iter() {
-        assert!(matcher.matches(None, &&1));
+        assert!(matcher.matches(None, &1));
     }
 
-    assert!(matchers.iter().matches_and(None, &&1));
-    assert!(!matchers.iter().matches_and(None, &&3));
-    assert!(!matchers.iter().matches_and(None, &&4));
+    assert!(matchers.iter().matches_and(None, &1));
+    assert!(!matchers.iter().matches_and(None, &3));
+    assert!(!matchers.iter().matches_and(None, &4));
 }
 
 #[test]
@@ -304,18 +304,18 @@ fn test_iter_box_or() {
         Box::new(OddMatcher),
     ];
 
-    assert!(matchers[0].matches(None, &&0));
-    assert!(matchers[1].matches(None, &&2));
-    assert!(matchers[2].matches(None, &&1));
+    assert!(matchers[0].matches(None, &0));
+    assert!(matchers[1].matches(None, &2));
+    assert!(matchers[2].matches(None, &1));
 
     for i in 0..=2 {
-        assert!(matchers.iter().matches_or(None, &&i), "i = {i}",);
+        assert!(matchers.iter().matches_or(None, &i), "i = {i}",);
     }
     for i in 3..=255 {
         if i % 2 == 1 {
-            assert!(matchers.iter().matches_or(None, &&i), "i = {i}",);
+            assert!(matchers.iter().matches_or(None, &i), "i = {i}",);
         } else {
-            assert!(!matchers.iter().matches_or(None, &&i), "i = {i}",);
+            assert!(!matchers.iter().matches_or(None, &i), "i = {i}",);
         }
     }
 }

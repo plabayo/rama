@@ -1,6 +1,5 @@
 use super::utils;
 use rama::{
-    Context,
     http::body::util::BodyExt,
     http::client::EasyHttpWebClient,
     http::service::client::HttpClientExt,
@@ -19,7 +18,7 @@ async fn test_http_anti_bot_infinite_resource() {
     // test index
     {
         let req_uri = format!("http://{ADDRESS}");
-        let response = runner.get(req_uri).send(Context::default()).await.unwrap();
+        let response = runner.get(req_uri).send().await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let homepage = response.try_into_string().await.unwrap();
         assert!(homepage.contains("<h1>Hello, Human!?</h1>"));
@@ -28,7 +27,7 @@ async fn test_http_anti_bot_infinite_resource() {
     // test robots.txt
     {
         let req_uri = format!("http://{ADDRESS}/robots.txt");
-        let response = runner.get(req_uri).send(Context::default()).await.unwrap();
+        let response = runner.get(req_uri).send().await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let homepage = response.try_into_string().await.unwrap();
         assert!(homepage.contains("/internal/clients.csv"));
@@ -37,7 +36,7 @@ async fn test_http_anti_bot_infinite_resource() {
     // test infinite resource
     {
         let req_uri = format!("http://{ADDRESS}/internal/clients.csv?_test_limit=42");
-        let response = runner.get(req_uri).send(Context::default()).await.unwrap();
+        let response = runner.get(req_uri).send().await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let fake_content = response.into_body().collect().await.unwrap().to_bytes();
         assert!(!fake_content.is_empty());
@@ -47,6 +46,6 @@ async fn test_http_anti_bot_infinite_resource() {
     {
         let client = EasyHttpWebClient::default();
         let req_uri = format!("http://{ADDRESS}");
-        assert!(client.get(req_uri).send(Context::default()).await.is_err());
+        assert!(client.get(req_uri).send().await.is_err());
     }
 }

@@ -1,6 +1,5 @@
 use super::{State, StorageAuthorized};
 use rama::{
-    context::Context,
     error::{BoxError, ErrorContext, OpaqueError},
     extensions::Extensions,
     http::{
@@ -161,11 +160,10 @@ pub(super) async fn get_request_info(
     fetch_mode: FetchMode,
     resource_type: ResourceType,
     initiator: Initiator,
-    ctx: &Context,
     parts: &Parts,
 ) -> Result<RequestInfo, BoxError> {
     let request_context =
-        RequestContext::try_from((ctx, parts)).context("get or compose RequestContext")?;
+        RequestContext::try_from((parts,)).context("get or compose RequestContext")?;
 
     let authority = request_context.authority.to_string();
     let scheme = request_context.protocol.to_string();

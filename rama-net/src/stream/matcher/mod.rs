@@ -550,7 +550,7 @@ mod test {
             let matcher = a.and(b).and(c);
             let req = Request::builder().body(()).unwrap();
             assert_eq!(
-                matcher.matches(None, &&req),
+                matcher.matches(None, &req),
                 expected,
                 "({matcher:#?}).matches({req:#?})",
             );
@@ -568,7 +568,7 @@ mod test {
             let matcher = a.negate().and(b).and(c);
             let req = Request::builder().body(()).unwrap();
             assert_eq!(
-                matcher.matches(None, &&req),
+                matcher.matches(None, &req),
                 expected,
                 "({matcher:#?}).matches({req:#?})",
             );
@@ -586,7 +586,7 @@ mod test {
             let matcher = a.and(b).and(c).negate();
             let req = Request::builder().body(()).unwrap();
             assert_eq!(
-                matcher.matches(None, &&req),
+                matcher.matches(None, &req),
                 expected,
                 "({matcher:#?}).matches({req:#?})",
             );
@@ -604,7 +604,7 @@ mod test {
             let matcher = a.or(b).or(c);
             let req = Request::builder().body(()).unwrap();
             assert_eq!(
-                matcher.matches(None, &&req),
+                matcher.matches(None, &req),
                 expected,
                 "({matcher:#?}).matches({req:#?})",
             );
@@ -622,7 +622,7 @@ mod test {
             let matcher = a.negate().or(b).or(c);
             let req = Request::builder().body(()).unwrap();
             assert_eq!(
-                matcher.matches(None, &&req),
+                matcher.matches(None, &req),
                 expected,
                 "({matcher:#?}).matches({req:#?})",
             );
@@ -640,7 +640,7 @@ mod test {
             let matcher = a.or(b).or(c).negate();
             let req = Request::builder().body(()).unwrap();
             assert_eq!(
-                matcher.matches(None, &&req),
+                matcher.matches(None, &req),
                 expected,
                 "({matcher:#?}).matches({req:#?})",
             );
@@ -660,7 +660,7 @@ mod test {
             let matcher = (a.or(b)).and(c.or(d)).and(e.negate());
             let req = Request::builder().body(()).unwrap();
             assert_eq!(
-                matcher.matches(None, &&req),
+                matcher.matches(None, &req),
                 expected,
                 "({matcher:#?}).matches({req:#?})",
             );

@@ -7,8 +7,8 @@ mod tests {
 
     use crate::layer::decompression::DecompressionBody;
     use crate::{Request, Response, StatusCode, body::util::BodyExt, header};
+    use rama_core::Service;
     use rama_core::service::service_fn;
-    use rama_core::{Context, Service};
 
     use flate2::{Compression, write::GzEncoder};
     use rama_http_types::Body;
@@ -18,21 +18,21 @@ mod tests {
     async fn decompress_accepted_encoding() {
         let req = request_gzip();
         let svc = RequestDecompression::new(service_fn(assert_request_is_decompressed));
-        let _ = svc.serve(Context::default(), req).await.unwrap();
+        let _ = svc.serve(req).await.unwrap();
     }
 
     #[tokio::test]
     async fn support_unencoded_body() {
         let req = Request::builder().body(Body::from("Hello?")).unwrap();
         let svc = RequestDecompression::new(service_fn(assert_request_is_decompressed));
-        let _ = svc.serve(Context::default(), req).await.unwrap();
+        let _ = svc.serve(req).await.unwrap();
     }
 
     #[tokio::test]
     async fn unaccepted_content_encoding_returns_unsupported_media_type() {
         let req = request_gzip();
         let svc = RequestDecompression::new(service_fn(should_not_be_called)).gzip(false);
-        let res = svc.serve(Context::default(), req).await.unwrap();
+        let res = svc.serve(req).await.unwrap();
         assert_eq!(StatusCode::UNSUPPORTED_MEDIA_TYPE, res.status());
     }
 
@@ -42,7 +42,7 @@ mod tests {
         let svc = RequestDecompression::new(service_fn(assert_request_is_passed_through))
             .pass_through_unaccepted(true)
             .gzip(false);
-        let _ = svc.serve(Context::default(), req).await.unwrap();
+        let _ = svc.serve(req).await.unwrap();
     }
 
     async fn assert_request_is_decompressed(

@@ -13,7 +13,7 @@
 // rama provides everything out of the box to build a complete web service.
 
 use rama::{
-    Context, Layer, Service,
+    Layer, Service,
     http::{
         Body, BodyExtractExt, Request, StatusCode,
         client::EasyHttpWebClient,
@@ -89,7 +89,6 @@ async fn main() {
 
     let resp = client
         .serve(
-            Context::default(),
             Request::builder()
                 .uri(format!("http://{ADDRESS}/"))
                 .method("GET")
@@ -120,7 +119,7 @@ async fn main() {
         .get(format!("http://{ADDRESS}/info"))
         .header("x-magic", "42")
         .typed_header(Accept::json())
-        .send(Context::default())
+        .send()
         .await
         .unwrap()
         .try_into_json()
@@ -137,7 +136,7 @@ async fn main() {
         .post(format!("http://{ADDRESS}/introduce"))
         .json(&json!({"name": "Rama"}))
         .typed_header(Accept::text())
-        .send(Context::default())
+        .send()
         .await
         .unwrap()
         .try_into_string()
@@ -152,7 +151,7 @@ async fn main() {
     let resp = client
         .get(format!("http://{ADDRESS}/info"))
         .auth(Basic::new_static("joe", "456"))
-        .send(Context::default())
+        .send()
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);

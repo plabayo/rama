@@ -10,7 +10,7 @@ use super::proto::{
 use base64::{Engine as _, prelude::BASE64_URL_SAFE_NO_PAD};
 use parking_lot::Mutex;
 use rama_core::{
-    Context, Service,
+    Service,
     bytes::Bytes,
     error::{ErrorContext, OpaqueError},
     service::BoxService,
@@ -50,11 +50,7 @@ pub struct AcmeClient {
 
 impl AcmeClient {
     /// Create a new acme [`AcmeClient`] for the given directory url and using the provided https client
-    pub async fn new<S>(
-        directory_url: &str,
-        https_client: S,
-        ctx: Context,
-    ) -> Result<Self, OpaqueError>
+    pub async fn new<S>(directory_url: &str, https_client: S) -> Result<Self, OpaqueError>
     where
         S: Service<Request, Response = Response, Error = OpaqueError>,
     {
@@ -62,7 +58,7 @@ impl AcmeClient {
 
         let directory = https_client
             .get(directory_url)
-            .send(ctx)
+            .send()
             .await?
             .try_into_json::<server::Directory>()
             .await?;
@@ -79,12 +75,11 @@ impl AcmeClient {
     pub async fn new_for_provider<S>(
         provider: &AcmeProvider,
         https_client: S,
-        ctx: Context,
     ) -> Result<Self, OpaqueError>
     where
         S: Service<Request, Response = Response, Error = OpaqueError>,
     {
-        Self::new(provider.as_directory_url(), https_client, ctx).await
+        Self::new(provider.as_directory_url(), https_client).await
     }
 
     generate_set_and_with! {
@@ -96,11 +91,11 @@ impl AcmeClient {
     }
 
     /// Fetch a nonce for making requests
-    pub async fn fetch_nonce(&self, ctx: Context) -> Result<String, OpaqueError> {
+    pub async fn fetch_nonce(&self) -> Result<String, OpaqueError> {
         let response = self
             .https_client
             .head(&self.directory.new_nonce)
-            .send(ctx)
+            .send()
             .await
             .context("fetch new nonce")?;
 
@@ -122,17 +117,12 @@ impl AcmeClient {
     /// [`Self::load_account`] instead.
     pub async fn create_or_load_account(
         &self,
-        ctx: Context,
+
         account_key: EcdsaKey,
         options: CreateAccountOptions,
     ) -> Result<Account<'_>, ClientError> {
-        self.create_or_load_account_inner(
-            ctx,
-            account_key,
-            options,
-            CreateAccountMode::CreateOrLoad,
-        )
-        .await
+        self.create_or_load_account_inner(account_key, options, CreateAccountMode::CreateOrLoad)
+            .await
     }
 
     /// Create a new acme account
@@ -140,33 +130,28 @@ impl AcmeClient {
     /// Internally this will generate a new [`EcdsaKey`] which will be associated with this account
     pub async fn create_account(
         &self,
-        ctx: Context,
+
         options: CreateAccountOptions,
     ) -> Result<Account<'_>, ClientError> {
         let account_key = EcdsaKey::generate().expect("generate key for account");
-        self.create_or_load_account_inner(ctx, account_key, options, CreateAccountMode::Create)
+        self.create_or_load_account_inner(account_key, options, CreateAccountMode::Create)
             .await
     }
 
     /// Create a new acme account using the provided [`EcdsaKey`]
     pub async fn create_account_with_key(
         &self,
-        ctx: Context,
+
         account_key: EcdsaKey,
         options: CreateAccountOptions,
     ) -> Result<Account<'_>, ClientError> {
-        self.create_or_load_account_inner(ctx, account_key, options, CreateAccountMode::Create)
+        self.create_or_load_account_inner(account_key, options, CreateAccountMode::Create)
             .await
     }
 
     /// Load acme account which is associated with the given [`EcdsaKey`]
-    pub async fn load_account(
-        &self,
-        ctx: Context,
-        account_key: EcdsaKey,
-    ) -> Result<Account<'_>, ClientError> {
+    pub async fn load_account(&self, account_key: EcdsaKey) -> Result<Account<'_>, ClientError> {
         self.create_or_load_account_inner(
-            ctx,
             account_key,
             CreateAccountOptions {
                 only_return_existing: Some(true),
@@ -179,21 +164,14 @@ impl AcmeClient {
 
     async fn create_or_load_account_inner(
         &self,
-        ctx: Context,
+
         account_key: EcdsaKey,
         options: CreateAccountOptions,
         mode: CreateAccountMode,
     ) -> Result<Account<'_>, ClientError> {
         let do_request = async || {
-            let ctx = ctx.clone();
-
             let response = self
-                .post(
-                    ctx,
-                    &self.directory.new_account,
-                    Some(&options),
-                    &account_key,
-                )
+                .post(&self.directory.new_account, Some(&options), &account_key)
                 .await
                 .context("create account request")?;
 
@@ -231,7 +209,7 @@ impl AcmeClient {
 
     async fn post(
         &self,
-        ctx: Context,
+
         url: &str,
         payload: Option<&impl Serialize>,
         signer: &impl Signer,
@@ -245,7 +223,7 @@ impl AcmeClient {
         let nonce = if let Some(nonce) = self.nonce.lock().take() {
             nonce
         } else {
-            self.fetch_nonce(ctx.clone()).await?
+            self.fetch_nonce().await?
         };
 
         builder.try_set_protected_headers(ProtectedHeaderAcme {
@@ -262,7 +240,7 @@ impl AcmeClient {
             .typed_header(ContentType::jose_json())
             .json(&jws);
 
-        let response = request.send(ctx).await?;
+        let response = request.send().await?;
 
         match Self::get_nonce_from_response(&response) {
             Ok(nonce) => {
@@ -331,15 +309,10 @@ impl<'a> Account<'a> {
     }
 
     /// Place a new [`Order`] using this [`Account`]
-    pub async fn new_order(
-        &self,
-        ctx: Context,
-        new_order: NewOrderPayload,
-    ) -> Result<Order<'_>, ClientError> {
+    pub async fn new_order(&self, new_order: NewOrderPayload) -> Result<Order<'_>, ClientError> {
         let do_request = async || {
-            let ctx = ctx.clone();
             let response = self
-                .post(ctx, &self.client.directory.new_order, Some(&new_order))
+                .post(&self.client.directory.new_order, Some(&new_order))
                 .await?;
 
             let location = response
@@ -365,15 +338,10 @@ impl<'a> Account<'a> {
     }
 
     /// Get a list of all the order urls, associated to this [`Account`]
-    pub async fn orders(&self, ctx: Context) -> Result<server::OrdersList, ClientError> {
+    pub async fn orders(&self) -> Result<server::OrdersList, ClientError> {
         let do_request = async || {
-            let ctx = ctx.clone();
             let response = self
-                .post(
-                    ctx,
-                    self.inner.orders.as_deref().unwrap_or_default(),
-                    NO_PAYLOAD,
-                )
+                .post(self.inner.orders.as_deref().unwrap_or_default(), NO_PAYLOAD)
                 .await?;
 
             let orders = parse_response::<server::OrdersList>(response).await?;
@@ -385,10 +353,9 @@ impl<'a> Account<'a> {
     }
 
     /// Get [`Order`] which is stored on the given url
-    pub async fn get_order(&self, ctx: Context, order_url: &str) -> Result<Order<'_>, ClientError> {
+    pub async fn get_order(&self, order_url: &str) -> Result<Order<'_>, ClientError> {
         let do_request = async || {
-            let ctx = ctx.clone();
-            let response = self.post(ctx, order_url, NO_PAYLOAD).await?;
+            let response = self.post(order_url, NO_PAYLOAD).await?;
 
             let location = response
                 .header_str(Location::name())
@@ -414,11 +381,11 @@ impl<'a> Account<'a> {
 
     async fn post(
         &self,
-        ctx: Context,
+
         url: &str,
         payload: Option<&impl Serialize>,
     ) -> Result<Response, ClientError> {
-        self.client.post(ctx, url, payload, &self.credentials).await
+        self.client.post(url, payload, &self.credentials).await
     }
 }
 
@@ -466,13 +433,9 @@ impl<'a> Order<'a> {
     /// Refresh [`Order`] state, and return it (and potential retry-after delay in case we want to refresh again)
     ///
     /// This also returns a duration which the server has requested to wait before calling this again if any
-    pub async fn refresh(
-        &mut self,
-        ctx: Context,
-    ) -> Result<(&server::Order, Option<Duration>), ClientError> {
+    pub async fn refresh(&mut self) -> Result<(&server::Order, Option<Duration>), ClientError> {
         let do_request = async || {
-            let ctx = ctx.clone();
-            let response = self.account.post(ctx, &self.url, NO_PAYLOAD).await?;
+            let response = self.account.post(&self.url, NO_PAYLOAD).await?;
             let retry_after = get_retry_after_duration(&response);
             let order = parse_response::<server::Order>(response).await?;
             Ok((order, retry_after))
@@ -484,17 +447,12 @@ impl<'a> Order<'a> {
     }
 
     /// Get list of [`server::Authorization`]s linked to this [`Order`]
-    pub async fn get_authorizations(
-        &self,
-        ctx: Context,
-    ) -> Result<Vec<server::Authorization>, ClientError> {
+    pub async fn get_authorizations(&self) -> Result<Vec<server::Authorization>, ClientError> {
         let mut authz: Vec<server::Authorization> =
             Vec::with_capacity(self.inner.authorizations.len());
 
         for auth_url in self.inner.authorizations.iter() {
-            let auth = self
-                .get_authorization(ctx.clone(), auth_url.as_str())
-                .await?;
+            let auth = self.get_authorization(auth_url.as_str()).await?;
             authz.push(auth);
         }
 
@@ -504,15 +462,11 @@ impl<'a> Order<'a> {
     /// Get [`server::Authorization`] which is stored on the given url
     pub async fn get_authorization(
         &self,
-        ctx: Context,
+
         authorization_url: &str,
     ) -> Result<server::Authorization, ClientError> {
         let do_request = async || {
-            let ctx = ctx.clone();
-            let response = self
-                .account
-                .post(ctx, authorization_url, NO_PAYLOAD)
-                .await?;
+            let response = self.account.post(authorization_url, NO_PAYLOAD).await?;
 
             let authorization = parse_response::<server::Authorization>(response).await?;
             Ok(authorization)
@@ -536,11 +490,11 @@ impl<'a> Order<'a> {
     /// An error (underlying http 403) is returned in case the challenge is not ready.
     pub async fn finish_challenge(
         &self,
-        ctx: Context,
+
         challenge: &mut server::Challenge,
     ) -> Result<(), ClientError> {
-        self.notify_challenge_ready(ctx.clone(), challenge).await?;
-        self.wait_until_challenge_finished(ctx, challenge).await
+        self.notify_challenge_ready(challenge).await?;
+        self.wait_until_challenge_finished(challenge).await
     }
 
     /// Notify ACME server that the given challenge is ready
@@ -549,12 +503,11 @@ impl<'a> Order<'a> {
     /// with [`Self::wait_until_challenge_finished()`] to wait for the result.
     pub async fn notify_challenge_ready(
         &self,
-        ctx: Context,
+
         challenge: &server::Challenge,
     ) -> Result<(), ClientError> {
         let do_request = async || {
-            let ctx = ctx.clone();
-            let response = self.post(ctx, &challenge.url, EMPTY_PAYLOAD).await?;
+            let response = self.post(&challenge.url, EMPTY_PAYLOAD).await?;
 
             parse_response::<Empty>(response).await?;
             Ok(())
@@ -570,13 +523,12 @@ impl<'a> Order<'a> {
     /// This returns a duration which the server has requested to wait before calling this again if any
     pub async fn refresh_challenge(
         &self,
-        ctx: Context,
+
         challenge: &mut server::Challenge,
     ) -> Result<Option<Duration>, ClientError> {
         let do_request = async || {
-            let ctx = ctx.clone();
             let response = self
-                .post(ctx, &challenge.url, NO_PAYLOAD)
+                .post(&challenge.url, NO_PAYLOAD)
                 .await
                 .context("refresh challenge request")?;
 
@@ -593,11 +545,11 @@ impl<'a> Order<'a> {
     /// Poll acme server until the challenge is finished (challenge.status == server::ChallengeStatus::Valid | server::ChallengeStatus::Invalid)
     pub async fn wait_until_challenge_finished(
         &self,
-        ctx: Context,
+
         challenge: &mut server::Challenge,
     ) -> Result<(), ClientError> {
         loop {
-            let retry_wait = self.refresh_challenge(ctx.clone(), challenge).await?;
+            let retry_wait = self.refresh_challenge(challenge).await?;
 
             match challenge.status {
                 server::ChallengeStatus::Pending | server::ChallengeStatus::Processing => (),
@@ -618,10 +570,8 @@ impl<'a> Order<'a> {
     /// Note for this to work each [`server::Authorization`] needs to have one valid challenge
     pub async fn wait_until_all_authorizations_finished(
         &mut self,
-        ctx: Context,
     ) -> Result<&server::Order, ClientError> {
-        self.wait_until_status(ctx, server::OrderStatus::Ready)
-            .await
+        self.wait_until_status(server::OrderStatus::Ready).await
     }
 
     /// Finalize the order and request ACME server to generate a certifcate from the provided certificate params
@@ -629,17 +579,16 @@ impl<'a> Order<'a> {
     /// Note: for this to work all [`server::Authorization`]s need to have finished (order.status == server::OrderStatus::Ready)
     pub async fn finalize<T: AsRef<[u8]>>(
         &mut self,
-        ctx: Context,
+
         csr_der: T,
     ) -> Result<&server::Order, ClientError> {
         let csr = BASE64_URL_SAFE_NO_PAD.encode(csr_der.as_ref());
         let payload = FinalizePayload { csr };
 
         let do_request = async || {
-            let ctx = ctx.clone();
             let response = self
                 .account
-                .post(ctx, &self.inner.finalize, Some(&payload))
+                .post(&self.inner.finalize, Some(&payload))
                 .await?;
 
             let order = parse_response::<server::Order>(response).await?;
@@ -652,12 +601,8 @@ impl<'a> Order<'a> {
     }
 
     /// Keep polling acme server until the certificate is ready (order.status == server::OrderStatus::Valid)
-    pub async fn wait_until_certificate_ready(
-        &mut self,
-        ctx: Context,
-    ) -> Result<&server::Order, ClientError> {
-        self.wait_until_status(ctx, server::OrderStatus::Valid)
-            .await
+    pub async fn wait_until_certificate_ready(&mut self) -> Result<&server::Order, ClientError> {
+        self.wait_until_status(server::OrderStatus::Valid).await
     }
 
     /// Download the certificate generated by the server
@@ -666,9 +611,8 @@ impl<'a> Order<'a> {
     /// Use [`Self::download_certificate`] instead to also wait for this correct status before downloading.
     pub async fn download_certificate_no_checks_as_pem_stack(
         &self,
-        ctx: Context,
     ) -> Result<Vec<Pem>, ClientError> {
-        let bytes = self.download_certificate_no_checks(ctx).await?;
+        let bytes = self.download_certificate_no_checks().await?;
 
         let certificate = str::from_utf8(bytes.as_ref())
             .context("parse response to pem")?
@@ -685,13 +629,13 @@ impl<'a> Order<'a> {
     ///
     /// Note: for this to work the certificate needs to be ready (order.status == server::OrderStatus::Valid).
     /// Use [`Self::download_certificate`] instead to also wait for this correct status before downloading.
-    pub async fn download_certificate_no_checks(&self, ctx: Context) -> Result<Bytes, ClientError> {
+    pub async fn download_certificate_no_checks(&self) -> Result<Bytes, ClientError> {
         let certificate_url = self
             .inner
             .certificate
             .as_ref()
             .context("read stored certificate url")?;
-        let response = self.account.post(ctx, certificate_url, NO_PAYLOAD).await?;
+        let response = self.account.post(certificate_url, NO_PAYLOAD).await?;
 
         let body = response.into_body();
         let bytes = body.collect().await.context("collect body")?.to_bytes();
@@ -703,31 +647,28 @@ impl<'a> Order<'a> {
     ///
     /// To directly download the certificate without waiting for the correct status
     /// use [`Self::download_certificate_no_checks`] instead
-    pub async fn download_certificate(&mut self, ctx: Context) -> Result<Bytes, ClientError> {
-        self.wait_until_certificate_ready(ctx.clone()).await?;
-        self.download_certificate_no_checks(ctx).await
+    pub async fn download_certificate(&mut self) -> Result<Bytes, ClientError> {
+        self.wait_until_certificate_ready().await?;
+        self.download_certificate_no_checks().await
     }
 
     /// Wait until certificate is ready and then download it
     ///
     /// To directly download the certificate without waiting for the correct status
     /// use [`Self::download_certificate_no_checks`] instead
-    pub async fn download_certificate_as_pem_stack(
-        &mut self,
-        ctx: Context,
-    ) -> Result<Vec<Pem>, ClientError> {
-        self.wait_until_certificate_ready(ctx.clone()).await?;
-        self.download_certificate_no_checks_as_pem_stack(ctx).await
+    pub async fn download_certificate_as_pem_stack(&mut self) -> Result<Vec<Pem>, ClientError> {
+        self.wait_until_certificate_ready().await?;
+        self.download_certificate_no_checks_as_pem_stack().await
     }
 
     /// Keep polling until the order has reached the given status
     pub async fn wait_until_status(
         &mut self,
-        ctx: Context,
+
         status: server::OrderStatus,
     ) -> Result<&server::Order, ClientError> {
         loop {
-            let (_, retry_wait) = self.refresh(ctx.clone()).await?;
+            let (_, retry_wait) = self.refresh().await?;
             if self.inner.status == status {
                 return Ok::<_, ClientError>(&self.inner);
             }
@@ -777,11 +718,11 @@ impl<'a> Order<'a> {
 
     async fn post(
         &self,
-        ctx: Context,
+
         url: &str,
         payload: Option<&impl Serialize>,
     ) -> Result<Response, ClientError> {
-        self.account.post(ctx, url, payload).await
+        self.account.post(url, payload).await
     }
 }
 

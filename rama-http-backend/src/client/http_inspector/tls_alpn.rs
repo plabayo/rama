@@ -1,7 +1,7 @@
 use rama_core::error::OpaqueError;
 use rama_core::extensions::{ExtensionsMut, ExtensionsRef};
 use rama_core::telemetry::tracing::trace;
-use rama_core::{Context, Service, error::BoxError};
+use rama_core::{Service, error::BoxError};
 use rama_http::Version;
 use rama_http::conn::TargetHttpVersion;
 use rama_http_types::Request;
@@ -26,13 +26,9 @@ where
     ReqBody: Send + 'static,
 {
     type Error = BoxError;
-    type Response = (Context, Request<ReqBody>);
+    type Response = Request<ReqBody>;
 
-    async fn serve(
-        &self,
-        ctx: Context,
-        mut req: Request<ReqBody>,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
         if let Some(proto) = req
             .extensions()
             .get::<NegotiatedTlsParameters>()
@@ -53,7 +49,7 @@ where
             );
             req.extensions_mut().insert(TargetHttpVersion(neg_version));
         }
-        Ok((ctx, req))
+        Ok(req)
     }
 }
 
@@ -74,7 +70,7 @@ mod tests {
             protocol_version: rama_net::tls::ProtocolVersion::TLSv1_3,
         });
 
-        let (_ctx, req) = modifier.serve(req).await.unwrap();
+        let req = modifier.serve(req).await.unwrap();
 
         let target_version = req.extensions().get::<TargetHttpVersion>().unwrap();
         assert_eq!(target_version.0, Version::HTTP_11);
@@ -86,7 +82,7 @@ mod tests {
             protocol_version: rama_net::tls::ProtocolVersion::TLSv1_3,
         });
 
-        let (_ctx, req) = modifier.serve(req).await.unwrap();
+        let req = modifier.serve(req).await.unwrap();
 
         let target_version = req.extensions().get::<TargetHttpVersion>().unwrap();
         assert_eq!(target_version.0, Version::HTTP_2);

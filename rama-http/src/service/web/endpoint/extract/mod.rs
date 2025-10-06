@@ -2,7 +2,6 @@
 
 use super::IntoResponse;
 use crate::{HeaderMap, header, mime, request::Parts};
-use rama_core::Context;
 
 pub mod host;
 #[doc(inline)]
@@ -56,7 +55,6 @@ pub trait FromRequestContextRefPair: Sized + Send + Sync + 'static {
 
     /// Perform the extraction.
     fn from_request_context_ref_pair(
-        ctx: &Context,
         parts: &Parts,
     ) -> impl Future<Output = Result<Self, Self::Rejection>> + Send;
 }

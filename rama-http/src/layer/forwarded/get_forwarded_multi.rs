@@ -1,6 +1,6 @@
 use crate::Request;
 use crate::headers::forwarded::ForwardHeader;
-use rama_core::{Context, Layer, Service, extensions::ExtensionsMut};
+use rama_core::{Layer, Service, extensions::ExtensionsMut};
 use rama_http_headers::HeaderMapExt;
 use rama_net::forwarded::Forwarded;
 use rama_net::forwarded::ForwardedElement;
@@ -141,7 +141,6 @@ macro_rules! get_forwarded_service_for_tuple {
 
             fn serve(
                 &self,
-                ctx: Context,
                 mut req: Request<Body>,
             ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
                 let mut forwarded_elements: Vec<ForwardedElement> = Vec::with_capacity(1);
@@ -178,7 +177,7 @@ macro_rules! get_forwarded_service_for_tuple {
                     }
                 }
 
-                self.inner.serve(ctx, req)
+                self.inner.serve(req)
             }
         }
     }
@@ -223,7 +222,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_forwarded_headers() {
         let service = GetForwardedHeadersLayer::<(rama_http_headers::forwarded::Forwarded,)>::new()
-            .into_layer(service_fn(async |_: Context, req: Request<()>| {
+            .into_layer(service_fn(async |req: Request<()>| {
                 let forwarded = req.extensions().get::<Forwarded>().unwrap();
                 assert_eq!(forwarded.client_ip(), Some(IpAddr::from([12, 23, 34, 45])));
                 assert_eq!(forwarded.client_proto(), Some(ForwardedProtocol::HTTP));
@@ -235,6 +234,6 @@ mod tests {
             .body(())
             .unwrap();
 
-        service.serve(Context::default(), req).await.unwrap();
+        service.serve(req).await.unwrap();
     }
 }

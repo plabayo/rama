@@ -2,7 +2,7 @@ use rama_core::bytes::Bytes;
 use rama_core::extensions::Extensions;
 use rama_core::extensions::ExtensionsMut;
 use rama_core::telemetry::tracing::{Instrument, trace_root_span};
-use rama_core::{Context, Service, error::BoxError};
+use rama_core::{Service, error::BoxError};
 use rama_http::StreamingBody;
 use rama_http::opentelemetry::version_as_protocol_version;
 use rama_http::service::web::response::IntoResponse;
@@ -36,7 +36,6 @@ where
         f.debug_struct("RamaHttpService")
             .field("svc", &self.svc)
             .field("extensions", &self.extensions)
-            .field("ctx", &self.ctx)
             .finish()
     }
 }
