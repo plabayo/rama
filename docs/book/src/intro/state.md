@@ -30,9 +30,6 @@ It might of course still mean the app returns an error response when it is absen
 `Extensions` is what this chapter is about, and its documemtation can be consumed at <https://ramaproxy.org/docs/rama/extensions/struct.Extensions.html>.
 
 - access `Extensions` that can be used to dynamically get and set extra (optional) data, to be passed for usage by inner service(s).
-- spawn tasks for the given (async) executor, doing so gracefully if configured to do so.
-- abrubt tasks early in a graceful manner in case of a shutdown using the gracuful `ShutdownGuard` if defined.
-
 
 [`Extensions`]: https://ramaproxy.org/docs/rama/extensions/struct.Extensions.html
 [`Extensions::insert`]: https://ramaproxy.org/docs/rama/extensions/struct.Extensions.html#method.insert
