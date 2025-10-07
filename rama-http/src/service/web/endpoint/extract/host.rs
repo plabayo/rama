@@ -26,7 +26,7 @@ impl FromRequestContextRefPair for Host {
 
     async fn from_request_context_ref_pair(parts: &Parts) -> Result<Self, Self::Rejection> {
         Ok(Self(
-            RequestContext::try_from((parts,))
+            RequestContext::try_from(parts)
                 .map_err(|_| MissingHost)?
                 .authority
                 .host()

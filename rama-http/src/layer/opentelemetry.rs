@@ -285,7 +285,7 @@ impl<S, F> RequestMetricsService<S, F> {
         attributes.extend(self.base_attributes.iter().cloned());
 
         // server info
-        let request_ctx = RequestContext::try_from((req,)).ok();
+        let request_ctx = RequestContext::try_from(req).ok();
         if let Some(authority) = request_ctx.as_ref().map(|rc| &rc.authority) {
             attributes.push(KeyValue::new(
                 HTTP_REQUEST_HOST,

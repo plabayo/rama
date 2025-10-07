@@ -33,7 +33,7 @@ where
     type Error = Infallible;
 
     async fn serve(&self, req: Request<Body>) -> Result<Self::Response, Self::Error> {
-        let req_ctx = match RequestContext::try_from((&req,)) {
+        let req_ctx = match RequestContext::try_from(&req) {
             Ok(req_ctx) => req_ctx,
             Err(err) => {
                 tracing::error!("failed to get RequestContext for insecure incoming req: {err}");

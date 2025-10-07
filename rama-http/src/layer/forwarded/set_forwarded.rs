@@ -334,7 +334,7 @@ where
         {
             forwarded_element.set_forwarded_for(peer_addr);
         }
-        let request_ctx = RequestContext::try_from((&req,))?;
+        let request_ctx = RequestContext::try_from(&req)?;
 
         forwarded_element.set_forwarded_host(request_ctx.authority.clone());
 

@@ -383,7 +383,7 @@ impl Service<Request> for EchoService {
             })
             .unwrap_or_default();
 
-        let request_context = RequestContext::try_from((&req,))?;
+        let request_context = RequestContext::try_from(&req)?;
 
         let authority = request_context.authority.to_string();
         let scheme = request_context.protocol.to_string();

@@ -152,7 +152,7 @@ macro_rules! set_forwarded_service_for_tuple {
                     forwarded_element.set_forwarded_for(peer_addr);
                 }
 
-                let request_ctx = RequestContext::try_from((&req,))?;
+                let request_ctx = RequestContext::try_from(&req)?;
 
                 forwarded_element.set_forwarded_host(request_ctx.authority.clone());
 

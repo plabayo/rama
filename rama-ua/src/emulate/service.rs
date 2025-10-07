@@ -425,7 +425,7 @@ where
                                 Some(Cow::Borrowed(&ctx.authority)),
                                 Some(Cow::Borrowed(&ctx.protocol)),
                             ),
-                            None => match RequestContext::try_from((&req,)) {
+                            None => match RequestContext::try_from(&req) {
                                 Ok(ctx) => (
                                     Some(Cow::Owned(ctx.authority)),
                                     Some(Cow::Owned(ctx.protocol)),

@@ -176,7 +176,7 @@ fn sanitize_client_req_header<B>(req: Request<B>) -> Result<Request<B>, BoxError
         .map(|protocol| protocol.is_http())
         .unwrap_or_default();
 
-    let request_ctx = RequestContext::try_from((&req,)).context("fetch request context")?;
+    let request_ctx = RequestContext::try_from(&req).context("fetch request context")?;
 
     let is_insecure_request_over_http_proxy = !request_ctx.protocol.is_secure() && uses_http_proxy;
 
@@ -257,7 +257,7 @@ fn sanitize_client_req_header<B>(req: Request<B>) -> Result<Request<B>, BoxError
             // set scheme/host if not defined as otherwise pseudo
             // headers won't be possible to be set in the h2 crate
             let mut req = if req.uri().host().is_none() {
-                let request_ctx = RequestContext::try_from((&req,))
+                let request_ctx = RequestContext::try_from(&req)
                     .context("[h2+] add scheme/host: missing RequestCtx")?;
 
                 tracing::trace!(

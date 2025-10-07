@@ -192,7 +192,7 @@ where
 
     async fn serve(&self, mut req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
         if self.overwrite || !req.headers().contains_key(HOST) {
-            let request_ctx = RequestContext::try_from((&req,)).context(
+            let request_ctx = RequestContext::try_from(&req).context(
                 "AddRequiredRequestHeaders: get/compute RequestContext to set authority",
             )?;
             if request_ctx.authority_has_default_port() {

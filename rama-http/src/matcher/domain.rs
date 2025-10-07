@@ -40,7 +40,7 @@ impl<Body> rama_core::matcher::Matcher<Request<Body>> for DomainMatcher {
         let host = if let Some(req_ctx) = req.extensions().get::<RequestContext>() {
             req_ctx.authority.host().clone()
         } else {
-            let req_ctx = match RequestContext::try_from((req,)) {
+            let req_ctx = match RequestContext::try_from(req) {
                 Ok(req_ctx) => req_ctx,
                 Err(err) => {
                     tracing::error!("DomainMatcher: failed to lazy-make the request ctx: {err:?}");

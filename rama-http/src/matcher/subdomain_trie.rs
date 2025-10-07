@@ -54,7 +54,7 @@ impl<Body> Matcher<Request<Body>> for SubdomainTrieMatcher {
         if let Some(req_ctx) = req.extensions().get() {
             match_authority(req_ctx)
         } else {
-            let req_ctx = match RequestContext::try_from((&req,)) {
+            let req_ctx = match RequestContext::try_from(req) {
                 Ok(rc) => rc,
                 Err(err) => {
                     tracing::debug!(

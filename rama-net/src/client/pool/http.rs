@@ -28,7 +28,7 @@ impl<Body> ReqToConnID<Request<Body>> for BasicHttpConnIdentifier {
     fn id(&self, req: &Request<Body>) -> Result<Self::ID, OpaqueError> {
         let req_ctx = match req.extensions().get::<RequestContext>() {
             Some(ctx) => ctx,
-            None => &RequestContext::try_from((req,))?,
+            None => &RequestContext::try_from(req)?,
         };
 
         Ok((req_ctx.protocol.clone(), req_ctx.authority.clone()))

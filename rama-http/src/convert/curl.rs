@@ -14,7 +14,7 @@ use crate::{Method, Uri, Version, request};
 use rama_core::bytes::Bytes;
 use rama_http_types::HttpRequestParts;
 use rama_net::address::ProxyAddress;
-use rama_net::http::RequestContext;
+use rama_net::http::{RequestContext, try_request_ctx_from_http_parts};
 use rama_net::user::ProxyCredential;
 
 /// Create a `curl` command string for the given [`HttpRequestParts`].
@@ -140,7 +140,7 @@ fn write_curl_command_for_request_parts(
             )
         })
         .or_else(|| {
-            RequestContext::try_from((parts,)).ok().map(|rc| {
+            try_request_ctx_from_http_parts(parts).ok().map(|rc| {
                 (
                     if rc.authority_has_default_port() {
                         rc.authority.host().to_string()
