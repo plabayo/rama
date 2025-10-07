@@ -5,7 +5,7 @@ use {Header, HttpDate, Raw};
 
 /// `Warning` header, defined in [RFC7234](https://tools.ietf.org/html/rfc7234#section-5.5)
 ///
-/// The `Warning` header field can be be used to carry additional information
+/// The `Warning` header field can be used to carry additional information
 /// about the status or transformation of a message that might not be reflected
 /// in the status code. This header is sometimes used as backwards
 /// compatible way to notify of a deprecated API.

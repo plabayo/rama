@@ -19,14 +19,14 @@ as a distant relative.
     - Original: <https://github.com/hyperium/hyper/blob/b8affd8a2ee5d77dec0c32050a7234e4f2f3751b/LICENSE>
     - Type: MIT
     - Copy: [./licenses/hyper](./licenses/hyper)
-- hyper-util: <https://github.com/hyperium/hyper-util/tree/00911ecd3d57c7ab130d19e6ec4f5dceb54b81b9>
+- hyper-util: <https://github.com/hyperium/hyper-util/tree/66afc93debef02548c86e8454e6bc01cf4fca280>
   - License:
-    - Original: <https://github.com/hyperium/hyper-util/blob/00911ecd3d57c7ab130d19e6ec4f5dceb54b81b9/LICENSE>
+    - Original: <https://github.com/hyperium/hyper-util/blob/66afc93debef02548c86e8454e6bc01cf4fca280/LICENSE>
     - Type: MIT
     - Copy: [./licenses/hyper-util](./licenses/hyper-util)
-- headers: <https://github.com/hyperium/headers/tree/8db1b786d414cc43e4d77e73b0f7afdcf061be59>
+- headers: <https://github.com/hyperium/headers/tree/c91416787b689b6ad838d4579556e10fac474d14>
   - License:
-    - Original: <https://github.com/hyperium/headers/blob/8db1b786d414cc43e4d77e73b0f7afdcf061be59/LICENSE>
+    - Original: <https://github.com/hyperium/headers/blob/c91416787b689b6ad838d4579556e10fac474d14/LICENSE>
     - Type: MIT
     - Copy: [./licenses/headers](./licenses/headers)
 

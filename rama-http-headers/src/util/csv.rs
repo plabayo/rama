@@ -24,10 +24,30 @@ where
 pub(crate) fn split_csv_str<T: std::str::FromStr>(
     string: &str,
 ) -> impl Iterator<Item = Result<T, Error>> + use<'_, T> {
-    string.split(',').filter_map(|x| match x.trim() {
-        "" => None,
-        y => Some(y.parse().map_err(|_| Error::invalid())),
-    })
+    let mut in_quotes = false;
+    string
+        .split(move |c| {
+            #[allow(clippy::collapsible_else_if)]
+            if in_quotes {
+                if c == '"' {
+                    in_quotes = false;
+                }
+                false // dont split
+            } else {
+                if c == ',' {
+                    true // split
+                } else {
+                    if c == '"' {
+                        in_quotes = true;
+                    }
+                    false // dont split
+                }
+            }
+        })
+        .filter_map(|x| match x.trim() {
+            "" => None,
+            y => Some(y.parse().map_err(|_| Error::invalid())),
+        })
 }
 
 /// Format an array into a comma-delimited string.
