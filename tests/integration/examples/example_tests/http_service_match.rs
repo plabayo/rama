@@ -1,5 +1,5 @@
 use super::utils;
-use rama::{Context, http::BodyExtractExt};
+use rama::http::BodyExtractExt;
 
 const ADDRESS: &str = "127.0.0.1:62011";
 
@@ -12,7 +12,7 @@ async fn test_http_service_match() {
 
     let homepage = runner
         .get(format!("http://{ADDRESS}"))
-        .send(Context::default())
+        .send()
         .await
         .unwrap()
         .try_into_string()
@@ -28,7 +28,7 @@ async fn test_http_service_match() {
 
     let echo: Echo = runner
         .post(format!("http://{ADDRESS}/echo"))
-        .send(Context::default())
+        .send()
         .await
         .unwrap()
         .try_into_json()

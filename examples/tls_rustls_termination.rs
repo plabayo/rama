@@ -39,7 +39,7 @@
 
 // rama provides everything out of the box to build a TLS termination proxy
 use rama::{
-    Context, Layer,
+    Layer,
     extensions::ExtensionsRef,
     graceful::Shutdown,
     layer::ConsumeErrLayer,
@@ -117,7 +117,7 @@ async fn main() {
         .expect("graceful shutdown");
 }
 
-async fn internal_tcp_service_fn<S>(_ctx: Context, mut stream: S) -> Result<(), Infallible>
+async fn internal_tcp_service_fn<S>(mut stream: S) -> Result<(), Infallible>
 where
     S: Stream + Unpin + ExtensionsRef,
 {

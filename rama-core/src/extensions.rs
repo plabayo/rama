@@ -285,6 +285,7 @@ impl fmt::Debug for Extensions {
 }
 
 pub trait ExtensionsRef {
+    /// Get reference to the underlying [`Extensions`] store
     fn extensions(&self) -> &Extensions;
 }
 
@@ -340,6 +341,7 @@ where
 }
 
 pub trait ExtensionsMut: ExtensionsRef {
+    /// Get mutable reference to the underlying [`Extensions`] store
     fn extensions_mut(&mut self) -> &mut Extensions;
 
     // TODO once we have a proper solution to travel across boundaries this will be removed

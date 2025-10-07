@@ -43,7 +43,7 @@
 
 // rama provides everything out of the box to build a TLS termination proxy
 use rama::{
-    Context, Layer, Service,
+    Layer, Service,
     error::OpaqueError,
     extensions::ExtensionsMut,
     graceful::{Shutdown, ShutdownGuard},
@@ -112,10 +112,7 @@ const INTERFACE_BAR: SocketAddress = SocketAddress::local_ipv4(63805);
 const NAME_BAZ: &str = "baz";
 const INTERFACE_BAZ: SocketAddress = SocketAddress::local_ipv4(63806);
 
-async fn sni_router<S>(
-    ctx: Context,
-    SniRequest { stream, sni }: SniRequest<S>,
-) -> Result<(), OpaqueError>
+async fn sni_router<S>(SniRequest { stream, sni }: SniRequest<S>) -> Result<(), OpaqueError>
 where
     S: Stream + ExtensionsMut + Unpin,
 {
@@ -146,7 +143,7 @@ where
     );
 
     Forwarder::new(fwd_interface)
-        .serve(ctx, stream)
+        .serve(stream)
         .await
         .map_err(OpaqueError::from_boxed)
 }

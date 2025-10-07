@@ -1,13 +1,13 @@
 //! An async service which echoes the incoming bytes back on the same stream.
 
-use rama_core::{Context, Service, error::BoxError, stream::Stream};
+use rama_core::{Service, error::BoxError, stream::Stream};
 
 /// An async service which echoes the incoming bytes back on the same stream.
 ///
 /// # Example
 ///
 /// ```rust
-/// use rama_core::{error::BoxError, Context, Service};
+/// use rama_core::{error::BoxError, Service};
 /// use rama_net::stream::service::EchoService;
 ///
 /// # #[tokio::main]
@@ -15,7 +15,7 @@ use rama_core::{Context, Service, error::BoxError, stream::Stream};
 /// # let stream = tokio_test::io::Builder::new().read(b"hello world").write(b"hello world").build();
 /// let service = EchoService::new();
 ///
-/// let bytes_copied = service.serve(Context::default(), stream).await?;
+/// let bytes_copied = service.serve(stream).await?;
 /// # assert_eq!(bytes_copied, 11);
 /// # Ok(())
 /// # }
@@ -46,7 +46,7 @@ where
     type Response = u64;
     type Error = BoxError;
 
-    async fn serve(&self, _ctx: Context, stream: S) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, stream: S) -> Result<Self::Response, Self::Error> {
         let (mut reader, mut writer) = tokio::io::split(stream);
         tokio::io::copy(&mut reader, &mut writer)
             .await
@@ -69,9 +69,6 @@ mod tests {
             .write(b"two")
             .build();
 
-        EchoService::new()
-            .serve(Context::default(), stream)
-            .await
-            .unwrap();
+        EchoService::new().serve(stream).await.unwrap();
     }
 }

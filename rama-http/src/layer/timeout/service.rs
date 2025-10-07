@@ -1,6 +1,6 @@
 use super::TimeoutBody;
 use crate::{Request, Response, StatusCode};
-use rama_core::{Context, Layer, Service};
+use rama_core::{Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
 use std::time::Duration;
@@ -78,13 +78,9 @@ where
     type Response = S::Response;
     type Error = S::Error;
 
-    async fn serve(
-        &self,
-        ctx: Context,
-        req: Request<ReqBody>,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
         tokio::select! {
-            res = self.inner.serve(ctx, req) => res,
+            res = self.inner.serve(req) => res,
             _ = tokio::time::sleep(self.timeout) => {
                 let mut res = Response::new(ResBody::default());
                 *res.status_mut() = StatusCode::REQUEST_TIMEOUT;
@@ -151,13 +147,9 @@ where
     type Response = S::Response;
     type Error = S::Error;
 
-    async fn serve(
-        &self,
-        ctx: Context,
-        req: Request<ReqBody>,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
         let req = req.map(|body| TimeoutBody::new(self.timeout, body));
-        self.inner.serve(ctx, req).await
+        self.inner.serve(req).await
     }
 }
 
@@ -199,12 +191,8 @@ where
     type Response = Response<TimeoutBody<ResBody>>;
     type Error = S::Error;
 
-    async fn serve(
-        &self,
-        ctx: Context,
-        req: Request<ReqBody>,
-    ) -> Result<Self::Response, Self::Error> {
-        let res = self.inner.serve(ctx, req).await?;
+    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
+        let res = self.inner.serve(req).await?;
         let res = res.map(|body| TimeoutBody::new(self.timeout, body));
         Ok(res)
     }

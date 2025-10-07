@@ -1,6 +1,6 @@
 use super::{AcceptHeader, BoxValidateRequestFn, ValidateRequest};
 use crate::{Request, Response};
-use rama_core::{Context, Layer, Service};
+use rama_core::{Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
 
@@ -172,13 +172,9 @@ where
     type Response = Response<ResBody>;
     type Error = S::Error;
 
-    async fn serve(
-        &self,
-        ctx: Context,
-        req: Request<ReqBody>,
-    ) -> Result<Self::Response, Self::Error> {
-        match self.validate.validate(ctx, req).await {
-            Ok((ctx, req)) => self.inner.serve(ctx, req).await,
+    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
+        match self.validate.validate(req).await {
+            Ok(req) => self.inner.serve(req).await,
             Err(res) => Ok(res),
         }
     }
@@ -202,7 +198,7 @@ mod tests {
             .body(Body::empty())
             .unwrap();
 
-        let res = service.serve(Context::default(), request).await.unwrap();
+        let res = service.serve(request).await.unwrap();
 
         assert_eq!(res.status(), StatusCode::OK);
     }
@@ -217,7 +213,7 @@ mod tests {
             .body(Body::empty())
             .unwrap();
 
-        let res = service.serve(Context::default(), request).await.unwrap();
+        let res = service.serve(request).await.unwrap();
 
         assert_eq!(res.status(), StatusCode::OK);
     }
@@ -232,7 +228,7 @@ mod tests {
             .body(Body::empty())
             .unwrap();
 
-        let res = service.serve(Context::default(), request).await.unwrap();
+        let res = service.serve(request).await.unwrap();
 
         assert_eq!(res.status(), StatusCode::OK);
     }
@@ -247,7 +243,7 @@ mod tests {
             .body(Body::empty())
             .unwrap();
 
-        let res = service.serve(Context::default(), request).await.unwrap();
+        let res = service.serve(request).await.unwrap();
 
         assert_eq!(res.status(), StatusCode::NOT_ACCEPTABLE);
     }
@@ -261,7 +257,7 @@ mod tests {
             .body(Body::empty())
             .unwrap();
 
-        let res = service.serve(Context::default(), request).await.unwrap();
+        let res = service.serve(request).await.unwrap();
 
         assert_eq!(res.status(), StatusCode::NOT_ACCEPTABLE);
     }
@@ -276,7 +272,7 @@ mod tests {
             .body(Body::empty())
             .unwrap();
 
-        let res = service.serve(Context::default(), request).await.unwrap();
+        let res = service.serve(request).await.unwrap();
 
         assert_eq!(res.status(), StatusCode::NOT_ACCEPTABLE);
     }
@@ -292,7 +288,7 @@ mod tests {
             .body(Body::empty())
             .unwrap();
 
-        let res = service.serve(Context::default(), request).await.unwrap();
+        let res = service.serve(request).await.unwrap();
 
         assert_eq!(res.status(), StatusCode::OK);
     }
@@ -307,7 +303,7 @@ mod tests {
             .body(Body::empty())
             .unwrap();
 
-        let res = service.serve(Context::default(), request).await.unwrap();
+        let res = service.serve(request).await.unwrap();
 
         assert_eq!(res.status(), StatusCode::OK);
     }
@@ -323,7 +319,7 @@ mod tests {
             .body(Body::empty())
             .unwrap();
 
-        let res = service.serve(Context::default(), request).await.unwrap();
+        let res = service.serve(request).await.unwrap();
 
         assert_eq!(res.status(), StatusCode::OK);
     }
@@ -338,7 +334,7 @@ mod tests {
             .body(Body::empty())
             .unwrap();
 
-        let res = service.serve(Context::default(), request).await.unwrap();
+        let res = service.serve(request).await.unwrap();
 
         assert_eq!(res.status(), StatusCode::NOT_ACCEPTABLE);
     }

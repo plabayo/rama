@@ -33,13 +33,13 @@ impl<S> Layer<S> for DnsResolveModeLayer {
 mod tests {
     use super::*;
     use crate::{Request, layer::dns::DnsResolveMode};
-    use rama_core::{Context, Service, extensions::ExtensionsRef, service::service_fn};
+    use rama_core::{Service, extensions::ExtensionsRef, service::service_fn};
     use std::convert::Infallible;
 
     #[tokio::test]
     async fn test_dns_resolve_mode_layer() {
         let svc = DnsResolveModeLayer::new(HeaderName::from_static("x-dns-resolve")).into_layer(
-            service_fn(async |_ctx: Context, req: Request<()>| {
+            service_fn(async |req: Request<()>| {
                 assert_eq!(
                     req.extensions().get::<DnsResolveMode>().unwrap(),
                     &DnsResolveMode::eager()
@@ -48,13 +48,12 @@ mod tests {
             }),
         );
 
-        let ctx = Context::default();
         let req = Request::builder()
             .header("x-dns-resolve", "eager")
             .uri("http://example.com")
             .body(())
             .unwrap();
 
-        svc.serve(ctx, req).await.unwrap();
+        svc.serve(req).await.unwrap();
     }
 }

@@ -1,12 +1,8 @@
-use rama_core::{
-    Context, Service, error::BoxError, extensions::ExtensionsMut, service::BoxService,
-};
+use rama_core::{Service, error::BoxError, extensions::ExtensionsMut, service::BoxService};
 use std::fmt;
 
 /// The established connection to a server returned for the http client to be used.
 pub struct EstablishedClientConnection<S, Request> {
-    /// The [`Context`] of the `Request` for which a connection was established.
-    pub ctx: Context,
     /// The `Request` for which a connection was established.
     pub req: Request,
     /// The established connection stream/service/... to the server.
@@ -16,7 +12,6 @@ pub struct EstablishedClientConnection<S, Request> {
 impl<S: fmt::Debug, Request: fmt::Debug> fmt::Debug for EstablishedClientConnection<S, Request> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("EstablishedClientConnection")
-            .field("ctx", &self.ctx)
             .field("req", &self.req)
             .field("conn", &self.conn)
             .finish()
@@ -26,7 +21,6 @@ impl<S: fmt::Debug, Request: fmt::Debug> fmt::Debug for EstablishedClientConnect
 impl<S: Clone, Request: Clone> Clone for EstablishedClientConnection<S, Request> {
     fn clone(&self) -> Self {
         Self {
-            ctx: self.ctx.clone(),
             req: self.req.clone(),
             conn: self.conn.clone(),
         }
@@ -48,7 +42,6 @@ pub trait ConnectorService<Request>: Send + Sync + 'static {
     /// or connection revival.
     fn connect(
         &self,
-        ctx: Context,
         req: Request,
     ) -> impl Future<
         Output = Result<EstablishedClientConnection<Self::Connection, Request>, Self::Error>,
@@ -70,13 +63,13 @@ where
 
     fn connect(
         &self,
-        ctx: Context,
+
         req: Request,
     ) -> impl Future<
         Output = Result<EstablishedClientConnection<Self::Connection, Request>, Self::Error>,
     > + Send
     + '_ {
-        self.serve(ctx, req)
+        self.serve(req)
     }
 }
 
@@ -119,14 +112,9 @@ where
         EstablishedClientConnection<BoxService<Request, Svc::Response, Svc::Error>, Request>;
     type Error = S::Error;
 
-    async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
-        let EstablishedClientConnection {
-            ctx,
-            req,
-            conn: svc,
-        } = self.0.serve(ctx, req).await?;
+    async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
+        let EstablishedClientConnection { req, conn: svc } = self.0.serve(req).await?;
         Ok(EstablishedClientConnection {
-            ctx,
             req,
             conn: svc.boxed(),
         })

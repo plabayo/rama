@@ -1,5 +1,5 @@
 use super::stream::TcpStream;
-use rama::{Context, Service, error::BoxError, extensions::ExtensionsMut, telemetry::tracing};
+use rama::{Service, error::BoxError, extensions::ExtensionsMut, telemetry::tracing};
 use rama_net::{
     client::EstablishedClientConnection,
     stream::{ClientSocketInfo, SocketInfo},
@@ -18,8 +18,8 @@ where
     type Response = EstablishedClientConnection<TcpStream, Request>;
     type Error = BoxError;
 
-    async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
-        let transport_context = req.try_ref_into_transport_ctx(&ctx).map_err(Into::into)?;
+    async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
+        let transport_context = req.try_ref_into_transport_ctx().map_err(Into::into)?;
         let authority = &transport_context.authority;
         let host = authority.host();
         let port = authority.port();
@@ -47,7 +47,6 @@ where
         conn.extensions_mut().insert(info);
 
         Ok(EstablishedClientConnection {
-            ctx,
             req,
             conn, // Raw turmoil::net::TcpStream
         })

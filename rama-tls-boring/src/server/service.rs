@@ -7,7 +7,7 @@ use crate::{
 };
 use parking_lot::Mutex;
 use rama_core::{
-    Context, Service,
+    Service,
     conversion::RamaTryInto,
     error::{BoxError, ErrorContext, ErrorExt, OpaqueError},
     extensions::ExtensionsMut,
@@ -74,7 +74,7 @@ where
     type Response = S::Response;
     type Error = BoxError;
 
-    async fn serve(&self, ctx: Context, stream: IO) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, stream: IO) -> Result<Self::Response, Self::Error> {
         // allow tls acceptor data to be injected,
         // e.g. useful for TLS environments where some data (such as server auth, think ACME)
         // is updated at runtime, be it infrequent
@@ -267,7 +267,7 @@ where
         stream.extensions_mut().insert(secure_transport);
         stream.extensions_mut().insert(negotiated_tls_params);
 
-        self.inner.serve(ctx, stream).await.map_err(|err| {
+        self.inner.serve(stream).await.map_err(|err| {
             OpaqueError::from_boxed(err.into())
                 .context("boring acceptor: service error")
                 .into_boxed()

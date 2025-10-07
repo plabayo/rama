@@ -2,7 +2,7 @@
 
 use clap::Args;
 use rama::{
-    Context, Layer, Service,
+    Layer, Service,
     error::{BoxError, ErrorContext},
     extensions::{Extensions, ExtensionsRef},
     net::{
@@ -71,10 +71,7 @@ pub async fn run(cfg: CliCommandTls) -> Result<(), BoxError> {
         .layer(loggin_service);
 
     let EstablishedClientConnection { conn, .. } = tls_connector
-        .connect(
-            Context::default(),
-            Request::new(authority, Extensions::new()),
-        )
+        .connect(Request::new(authority, Extensions::new()))
         .await?;
 
     let params = conn
@@ -125,8 +122,8 @@ where
     type Response = EstablishedClientConnection<TcpStream, Req>;
     type Error = S::Error;
 
-    async fn serve(&self, ctx: Context, req: Req) -> Result<Self::Response, Self::Error> {
-        let result = self.inner.serve(ctx, req).await;
+    async fn serve(&self, req: Req) -> Result<Self::Response, Self::Error> {
+        let result = self.inner.serve(req).await;
 
         if let Ok(ref established_conn) = result
             && let Ok(Some(peer_addr)) = established_conn.conn.peer_addr().map(Some)

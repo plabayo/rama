@@ -1,7 +1,7 @@
 //! Unix (domain) socket client module for Rama.
 
 use rama_core::{
-    Context, Service,
+    Service,
     error::{BoxError, ErrorContext},
     extensions::ExtensionsMut,
     telemetry::tracing,
@@ -91,10 +91,10 @@ where
     type Response = EstablishedClientConnection<UnixStream, Request>;
     type Error = BoxError;
 
-    async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
-        let CreatedUnixStreamConnector { ctx, connector } = self
+    async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
+        let CreatedUnixStreamConnector { connector } = self
             .connector_factory
-            .make_connector(ctx)
+            .make_connector()
             .await
             .map_err(Into::into)?;
 
@@ -118,7 +118,7 @@ where
         ));
         conn.extensions_mut().insert(info);
 
-        Ok(EstablishedClientConnection { ctx, req, conn })
+        Ok(EstablishedClientConnection { req, conn })
     }
 }
 
@@ -183,7 +183,6 @@ macro_rules! impl_stream_connector_either {
 /// Contains a `Connector` created by a [`UnixStreamConnectorFactory`],
 /// together with the [`Context`] used to create it in relation to.
 pub struct CreatedUnixStreamConnector<Connector> {
-    pub ctx: Context,
     pub connector: Connector,
 }
 
@@ -193,7 +192,6 @@ where
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CreatedUnixStreamConnector")
-            .field("ctx", &self.ctx)
             .field("connector", &self.connector)
             .finish()
     }
@@ -205,7 +203,6 @@ where
 {
     fn clone(&self) -> Self {
         Self {
-            ctx: self.ctx.clone(),
             connector: self.connector.clone(),
         }
     }
@@ -228,7 +225,6 @@ pub trait UnixStreamConnectorFactory: Send + Sync + 'static {
     /// Try to create a [`UnixStreamConnector`], and return an error or otherwise.
     fn make_connector(
         &self,
-        ctx: Context,
     ) -> impl Future<Output = Result<CreatedUnixStreamConnector<Self::Connector>, Self::Error>> + Send + '_;
 }
 
@@ -238,10 +234,9 @@ impl UnixStreamConnectorFactory for () {
 
     fn make_connector(
         &self,
-        ctx: Context,
     ) -> impl Future<Output = Result<CreatedUnixStreamConnector<Self::Connector>, Self::Error>> + Send + '_
     {
-        std::future::ready(Ok(CreatedUnixStreamConnector { ctx, connector: () }))
+        std::future::ready(Ok(CreatedUnixStreamConnector { connector: () }))
     }
 }
 
@@ -282,11 +277,9 @@ where
 
     fn make_connector(
         &self,
-        ctx: Context,
     ) -> impl Future<Output = Result<CreatedUnixStreamConnector<Self::Connector>, Self::Error>> + Send + '_
     {
         std::future::ready(Ok(CreatedUnixStreamConnector {
-            ctx,
             connector: self.0.clone(),
         }))
     }
@@ -301,10 +294,9 @@ where
 
     fn make_connector(
         &self,
-        ctx: Context,
     ) -> impl Future<Output = Result<CreatedUnixStreamConnector<Self::Connector>, Self::Error>> + Send + '_
     {
-        (**self).make_connector(ctx)
+        (**self).make_connector()
     }
 }
 
@@ -322,14 +314,12 @@ macro_rules! impl_stream_connector_factory_either {
 
             async fn make_connector(
                 &self,
-                ctx: Context,
             ) -> Result<CreatedUnixStreamConnector< Self::Connector>, Self::Error> {
                 match self {
                     $(
-                        ::rama_core::combinators::$id::$param(s) => match s.make_connector(ctx).await {
+                        ::rama_core::combinators::$id::$param(s) => match s.make_connector().await {
                             Err(e) => Err(e.into()),
-                            Ok(CreatedUnixStreamConnector{ ctx, connector }) => Ok(CreatedUnixStreamConnector{
-                                ctx,
+                            Ok(CreatedUnixStreamConnector{ connector }) => Ok(CreatedUnixStreamConnector {
                                 connector: ::rama_core::combinators::$id::$param(connector),
                             }),
                         },

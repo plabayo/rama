@@ -6,7 +6,7 @@
 //! [`tls`]: crate::tls
 
 use crate::{
-    Context, Layer, Service,
+    Layer, Service,
     cli::ForwardKind,
     combinators::{Either3, Either7},
     error::{BoxError, OpaqueError},
@@ -369,7 +369,7 @@ impl Service<Request> for EchoService {
     type Response = Response;
     type Error = BoxError;
 
-    async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
         let user_agent_info = req
             .extensions()
             .get()
@@ -383,7 +383,7 @@ impl Service<Request> for EchoService {
             })
             .unwrap_or_default();
 
-        let request_context = RequestContext::try_from((&ctx, &req))?;
+        let request_context = RequestContext::try_from(&req)?;
 
         let authority = request_context.authority.to_string();
         let scheme = request_context.protocol.to_string();
@@ -462,7 +462,7 @@ impl Service<Request> for EchoService {
             .context("collect request body for echo purposes")?
             .to_bytes();
 
-        let curl_request = curl::cmd_string_for_request_parts_and_payload(&ctx, &parts, &body);
+        let curl_request = curl::cmd_string_for_request_parts_and_payload(&parts, &body);
 
         let headers: Vec<_> = Http1HeaderMap::new(parts.headers, Some(&mut parts.extensions))
             .into_iter()

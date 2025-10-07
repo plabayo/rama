@@ -1,8 +1,8 @@
 //! Middleware for retrying "failed" requests.
 
 use crate::{Request, StreamingBody, body::util::BodyExt};
+use rama_core::Service;
 use rama_core::error::BoxError;
-use rama_core::{Context, Service};
 use rama_utils::macros::define_inner_service_accessors;
 
 mod layer;
@@ -115,13 +115,7 @@ where
     type Response = S::Response;
     type Error = RetryError;
 
-    async fn serve(
-        &self,
-        ctx: Context,
-        request: Request<Body>,
-    ) -> Result<Self::Response, Self::Error> {
-        let mut ctx = ctx;
-
+    async fn serve(&self, request: Request<Body>) -> Result<Self::Response, Self::Error> {
         // consume body so we can clone the request if desired
         let (parts, body) = request.into_parts();
         let body = body.collect().await.map_err(|e| RetryError {
@@ -131,25 +125,23 @@ where
         let body = RetryBody::new(body.to_bytes());
         let mut request = Request::from_parts(parts, body);
 
-        let mut cloned = self.policy.clone_input(&ctx, &request);
+        let mut cloned = self.policy.clone_input(&request);
 
         loop {
-            let resp = self.inner.serve(ctx, request).await;
+            let resp = self.inner.serve(request).await;
             match cloned.take() {
-                Some((cloned_ctx, cloned_req)) => {
-                    let (cloned_ctx, cloned_req) =
-                        match self.policy.retry(cloned_ctx, cloned_req, resp).await {
-                            PolicyResult::Abort(result) => {
-                                return result.map_err(|e| RetryError {
-                                    kind: RetryErrorKind::Service,
-                                    inner: Some(e.into()),
-                                });
-                            }
-                            PolicyResult::Retry { ctx, req } => (ctx, req),
-                        };
+                Some(cloned_req) => {
+                    let cloned_req = match self.policy.retry(cloned_req, resp).await {
+                        PolicyResult::Abort(result) => {
+                            return result.map_err(|e| RetryError {
+                                kind: RetryErrorKind::Service,
+                                inner: Some(e.into()),
+                            });
+                        }
+                        PolicyResult::Retry { req } => req,
+                    };
 
-                    cloned = self.policy.clone_input(&cloned_ctx, &cloned_req);
-                    ctx = cloned_ctx;
+                    cloned = self.policy.clone_input(&cloned_req);
                     request = cloned_req;
                 }
                 // no clone was made, so no possibility to retry
@@ -172,7 +164,7 @@ mod test {
         service::web::response::IntoResponse,
     };
     use rama_core::{
-        Context, Layer,
+        Layer,
         extensions::Extensions,
         extensions::{ExtensionsMut, ExtensionsRef},
         service::service_fn,
@@ -230,7 +222,7 @@ mod test {
         let retry_policy = ManagedPolicy::new(retry).with_backoff(backoff);
 
         let service = RetryLayer::new(retry_policy).into_layer(service_fn(
-            async |_ctx, req: Request<RetryBody>| {
+            async |req: Request<RetryBody>| {
                 let txt = req.try_into_string().await.unwrap();
                 match txt.as_str() {
                     "internal" => Ok(StatusCode::INTERNAL_SERVER_ERROR.into_response()),
@@ -271,7 +263,7 @@ mod test {
             let mut request = request(input);
             *request.extensions_mut() = extensions;
 
-            let fut = service.serve(Context::default(), request);
+            let fut = service.serve(request);
             let res = fut.await.unwrap();
 
             let body = res.try_into_string().await.unwrap();
@@ -307,7 +299,7 @@ mod test {
             let mut request = request(input);
             *request.extensions_mut() = extensions;
 
-            let fut = service.serve(Context::default(), request);
+            let fut = service.serve(request);
             let res = fut.await;
 
             assert!(res.is_err(), "{msg}");

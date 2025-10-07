@@ -1,6 +1,5 @@
 use super::utils;
 use rama::{
-    Context,
     extensions::Extensions,
     http::{
         BodyExtractExt, StatusCode,
@@ -19,11 +18,7 @@ async fn test_ws_over_h2() {
     // basic html page sanity checks,
     // to at least give some basic guarantees for the human experience
 
-    let index_response = runner
-        .get("https://127.0.0.1:62035")
-        .send(Context::default())
-        .await
-        .unwrap();
+    let index_response = runner.get("https://127.0.0.1:62035").send().await.unwrap();
     assert_eq!(StatusCode::OK, index_response.status());
     assert!(
         index_response

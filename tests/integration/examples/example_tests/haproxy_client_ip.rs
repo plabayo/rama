@@ -3,7 +3,7 @@ use std::net::IpAddr;
 use super::utils;
 
 use rama::{
-    Context, Service,
+    Service,
     extensions::ExtensionsMut,
     http::layer::required_header::AddRequiredRequestHeaders,
     http::{Body, BodyExtractExt, Request, client::HttpConnector},
@@ -25,7 +25,7 @@ async fn test_haproxy_client_ip() {
     // try direct
     let resp = runner
         .get("http://127.0.0.1:62025")
-        .send(Context::default())
+        .send()
         .await
         .expect("make http request")
         .try_into_string()
@@ -56,16 +56,15 @@ async fn test_server_with_haproxy_v1() {
         ))));
 
     let EstablishedClientConnection {
-        ctx,
         req,
         conn: http_service,
     } = client
-        .connect(Context::default(), request)
+        .connect(request)
         .await
         .expect("establish a connection to the http server using haproxy v1");
 
     let resp = AddRequiredRequestHeaders::new(http_service)
-        .serve(ctx, req)
+        .serve(req)
         .await
         .expect("make http request")
         .try_into_string()
@@ -93,16 +92,15 @@ async fn test_server_with_haproxy_v2() {
         ))));
 
     let EstablishedClientConnection {
-        ctx,
         req,
         conn: http_service,
     } = client
-        .connect(Context::default(), request)
+        .connect(request)
         .await
         .expect("establish a connection to the http server using haproxy v2");
 
     let resp = AddRequiredRequestHeaders::new(http_service)
-        .serve(ctx, req)
+        .serve(req)
         .await
         .expect("make http request")
         .try_into_string()

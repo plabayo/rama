@@ -5,7 +5,6 @@ use crate::examples::example_tests::utils::ExampleRunner;
 use super::utils;
 
 use rama::{
-    Context,
     http::{BodyExtractExt, server::HttpServer, service::web::Router},
     net::{
         Protocol,
@@ -62,7 +61,7 @@ async fn test_http_client_over_socks5_proxy_connect(
             authority: proxy_socket_addr.into(),
             credential: Some(ProxyCredential::Basic(Basic::new_static("john", "secret"))),
         })
-        .send(Context::default())
+        .send()
         .await
         .expect("make http request via socks5 proxy")
         .try_into_string()

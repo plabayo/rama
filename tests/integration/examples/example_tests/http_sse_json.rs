@@ -1,7 +1,6 @@
 use super::utils;
 
 use rama::{
-    Context,
     futures::StreamExt,
     http::{
         BodyExtractExt, StatusCode,
@@ -24,11 +23,7 @@ async fn test_http_sse_json() {
     // basic html page sanity checks,
     // to at least give some basic guarantees for the human experience
 
-    let index_response = runner
-        .get("http://127.0.0.1:62028")
-        .send(Context::default())
-        .await
-        .unwrap();
+    let index_response = runner.get("http://127.0.0.1:62028").send().await.unwrap();
     assert_eq!(StatusCode::OK, index_response.status());
     assert!(
         index_response
@@ -54,7 +49,7 @@ async fn test_http_sse_json() {
     let mut event_count = 0;
     let mut stream = runner
         .get("http://127.0.0.1:62028/api/events")
-        .send(Context::default())
+        .send()
         .await
         .unwrap()
         .into_body()

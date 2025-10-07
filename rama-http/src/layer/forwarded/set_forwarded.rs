@@ -5,7 +5,7 @@ use crate::headers::forwarded::{
 };
 use rama_core::error::BoxError;
 use rama_core::extensions::ExtensionsRef;
-use rama_core::{Context, Layer, Service};
+use rama_core::{Layer, Service};
 use rama_http_headers::forwarded::Forwarded;
 use rama_net::address::Domain;
 use rama_net::forwarded::{ForwardedElement, NodeId};
@@ -58,7 +58,7 @@ use std::marker::PhantomData;
 /// use rama_http::Request;
 /// use rama_core::service::service_fn;
 /// use rama_http::{headers::forwarded::XRealIp, layer::forwarded::SetForwardedHeaderLayer};
-/// use rama_core::{Context, extensions::ExtensionsMut, Service, Layer};
+/// use rama_core::{extensions::ExtensionsMut, Service, Layer};
 /// use std::convert::Infallible;
 ///
 /// # type Body = ();
@@ -66,7 +66,7 @@ use std::marker::PhantomData;
 ///
 /// # #[tokio::main]
 /// # async fn main() {
-/// async fn svc(_ctx: Context, request: Request<Body>) -> Result<(), Infallible> {
+/// async fn svc(request: Request<Body>) -> Result<(), Infallible> {
 ///     // ...
 ///     # assert_eq!(
 ///     #     request.headers().get("X-Real-Ip").unwrap(),
@@ -79,9 +79,8 @@ use std::marker::PhantomData;
 ///     .into_layer(service_fn(svc));
 ///
 /// # let mut req = Request::builder().uri("example.com").body(()).unwrap();
-/// # let ctx = Context::default();
 /// # req.extensions_mut().insert(SocketInfo::new(None, "42.37.100.50:62345".parse().unwrap()));
-/// service.serve(ctx, req).await.unwrap();
+/// service.serve(req).await.unwrap();
 /// # }
 /// ```
 pub struct SetForwardedHeaderLayer<T = Forwarded> {
@@ -323,11 +322,7 @@ where
     type Response = S::Response;
     type Error = BoxError;
 
-    async fn serve(
-        &self,
-        ctx: Context,
-        mut req: Request<Body>,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut req: Request<Body>) -> Result<Self::Response, Self::Error> {
         let forwarded: Option<rama_net::forwarded::Forwarded> = req.extensions().get().cloned();
 
         let mut forwarded_element = ForwardedElement::forwarded_by(self.by_node.clone());
@@ -339,7 +334,7 @@ where
         {
             forwarded_element.set_forwarded_for(peer_addr);
         }
-        let request_ctx = RequestContext::try_from((&ctx, &req))?;
+        let request_ctx = RequestContext::try_from(&req)?;
 
         forwarded_element.set_forwarded_host(request_ctx.authority.clone());
 
@@ -361,7 +356,7 @@ where
             req.headers_mut().typed_insert(header);
         }
 
-        self.inner.serve(ctx, req).await.map_err(Into::into)
+        self.inner.serve(req).await.map_err(Into::into)
     }
 }
 
@@ -418,7 +413,7 @@ mod tests {
 
         let service = SetForwardedHeaderService::forwarded(service_fn(svc));
         let req = Request::builder().uri("example.com").body(()).unwrap();
-        service.serve(Context::default(), req).await.unwrap();
+        service.serve(req).await.unwrap();
     }
 
     #[tokio::test]
@@ -442,7 +437,7 @@ mod tests {
             ));
         req.extensions_mut()
             .insert(SocketInfo::new(None, "127.0.0.1:62345".parse().unwrap()));
-        service.serve(Context::default(), req).await.unwrap();
+        service.serve(req).await.unwrap();
     }
 
     #[tokio::test]
@@ -466,7 +461,7 @@ mod tests {
             ));
         req.extensions_mut()
             .insert(SocketInfo::new(None, "127.0.0.1:62345".parse().unwrap()));
-        service.serve(Context::default(), req).await.unwrap();
+        service.serve(req).await.unwrap();
     }
 
     #[tokio::test]
@@ -487,7 +482,7 @@ mod tests {
             .unwrap();
         req.extensions_mut()
             .insert(SocketInfo::new(None, "127.0.0.1:62345".parse().unwrap()));
-        service.serve(Context::default(), req).await.unwrap();
+        service.serve(req).await.unwrap();
     }
 
     #[tokio::test]
@@ -507,6 +502,6 @@ mod tests {
             .unwrap();
         req.extensions_mut()
             .insert(SocketInfo::new(None, "127.0.0.1:62345".parse().unwrap()));
-        service.serve(Context::default(), req).await.unwrap();
+        service.serve(req).await.unwrap();
     }
 }

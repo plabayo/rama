@@ -1,6 +1,6 @@
 use rama_core::extensions::ExtensionsRef;
 use rama_core::telemetry::tracing::trace;
-use rama_core::{Context, Service, error::BoxError};
+use rama_core::{Service, error::BoxError};
 use rama_http::utils::RequestSwitchVersionExt;
 use rama_http::{Request, Version, conn::TargetHttpVersion};
 use rama_utils::macros::generate_set_and_with;
@@ -37,13 +37,9 @@ where
     ReqBody: Send + 'static,
 {
     type Error = BoxError;
-    type Response = (Context, Request<ReqBody>);
+    type Response = Request<ReqBody>;
 
-    async fn serve(
-        &self,
-        ctx: Context,
-        mut req: Request<ReqBody>,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
         match (
             req.extensions().get::<TargetHttpVersion>(),
             self.default_version,
@@ -72,7 +68,7 @@ where
             }
         }
 
-        Ok((ctx, req))
+        Ok(req)
     }
 }
 
@@ -91,17 +87,17 @@ mod tests {
 
         req.extensions_mut()
             .insert(TargetHttpVersion(Version::HTTP_2));
-        let (ctx, mut req) = adapter.serve(Context::default(), req).await.unwrap();
+        let mut req = adapter.serve(req).await.unwrap();
         assert_eq!(req.version(), Version::HTTP_2);
 
         req.extensions_mut()
             .insert(TargetHttpVersion(Version::HTTP_11));
-        let (ctx, mut req) = adapter.serve(ctx, req).await.unwrap();
+        let mut req = adapter.serve(req).await.unwrap();
         assert_eq!(req.version(), Version::HTTP_11);
 
         req.extensions_mut()
             .insert(TargetHttpVersion(Version::HTTP_3));
-        let (_ctx, req) = adapter.serve(ctx, req).await.unwrap();
+        let req = adapter.serve(req).await.unwrap();
         assert_eq!(req.version(), Version::HTTP_3);
     }
 
@@ -112,7 +108,7 @@ mod tests {
         *req.version_mut() = Version::HTTP_2;
 
         assert_eq!(req.version(), Version::HTTP_2);
-        let (_ctx, req) = adapter.serve(Context::default(), req).await.unwrap();
+        let req = adapter.serve(req).await.unwrap();
         assert_eq!(req.version(), Version::HTTP_11);
     }
 }

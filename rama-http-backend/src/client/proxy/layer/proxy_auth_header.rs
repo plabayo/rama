@@ -1,6 +1,6 @@
 use rama_core::extensions::ExtensionsRef;
 use rama_core::telemetry::tracing;
-use rama_core::{Context, Layer, Service};
+use rama_core::{Layer, Service};
 use rama_http_headers::{HeaderMapExt, ProxyAuthorization};
 use rama_http_types::Request;
 use rama_net::{address::ProxyAddress, http::RequestContext, user::ProxyCredential};
@@ -67,7 +67,6 @@ where
 
     fn serve(
         &self,
-        ctx: Context,
         mut req: Request<Body>,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
         if let Some(pa) = req.extensions().get::<ProxyAddress>()
@@ -75,7 +74,7 @@ where
         {
             match credential {
                 ProxyCredential::Basic(basic) => {
-                    let maybe_request_ctx = RequestContext::try_from((&ctx, &req)).ok();
+                    let maybe_request_ctx = RequestContext::try_from(&req).ok();
 
                     if !maybe_request_ctx
                         .map(|ctx| ctx.protocol.is_secure())
@@ -93,6 +92,6 @@ where
             }
         }
 
-        self.inner.serve(ctx, req)
+        self.inner.serve(req)
     }
 }

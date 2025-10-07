@@ -2,7 +2,7 @@ use std::{fmt, marker::PhantomData, net::IpAddr};
 
 use crate::protocol::{v1, v2};
 use rama_core::{
-    Context, Layer, Service,
+    Layer, Service,
     bytes::Bytes,
     error::{BoxError, ErrorContext, OpaqueError},
     extensions::{ChainableExtensions, ExtensionsRef},
@@ -212,9 +212,9 @@ where
     type Response = EstablishedClientConnection<S::Connection, Request>;
     type Error = BoxError;
 
-    async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
-        let EstablishedClientConnection { ctx, req, mut conn } =
-            self.inner.connect(ctx, req).await.map_err(Into::into)?;
+    async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
+        let EstablishedClientConnection { req, mut conn } =
+            self.inner.connect(req).await.map_err(Into::into)?;
 
         let src = {
             let ext_chain = (&conn, &req);
@@ -247,7 +247,7 @@ where
             .await
             .context("PROXY client (v1): write addresses")?;
 
-        Ok(EstablishedClientConnection { ctx, req, conn })
+        Ok(EstablishedClientConnection { req, conn })
     }
 }
 
@@ -260,9 +260,9 @@ where
     type Response = EstablishedClientConnection<S::Connection, Request>;
     type Error = BoxError;
 
-    async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
-        let EstablishedClientConnection { ctx, req, mut conn } =
-            self.inner.connect(ctx, req).await.map_err(Into::into)?;
+    async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
+        let EstablishedClientConnection { req, mut conn } =
+            self.inner.connect(req).await.map_err(Into::into)?;
 
         let src = {
             let ext_chain = (&conn, &req);
@@ -310,7 +310,7 @@ where
             .await
             .context("PROXY client (v2): write header")?;
 
-        Ok(EstablishedClientConnection { ctx, req, conn })
+        Ok(EstablishedClientConnection { req, conn })
     }
 }
 
@@ -513,22 +513,22 @@ mod tests {
                 "[4321:8765:ba09:fedc:cdef:90ab:5678:1234]:65535",
             ),
         ] {
-            let svc = HaProxyLayer::tcp().v1().layer(service_fn(
-                async move |ctx, req: ServiceInput<()>| {
-                    Ok::<_, Infallible>(EstablishedClientConnection {
-                        ctx,
-                        req,
-                        conn: SocketConnection {
-                            socket: target_addr.parse().unwrap(),
-                            conn: Builder::new().write(expected_line.as_bytes()).build(),
-                            extensions: Extensions::new(),
-                        },
-                    })
-                },
-            ));
+            let svc =
+                HaProxyLayer::tcp()
+                    .v1()
+                    .layer(service_fn(async move |req: ServiceInput<()>| {
+                        Ok::<_, Infallible>(EstablishedClientConnection {
+                            req,
+                            conn: SocketConnection {
+                                socket: target_addr.parse().unwrap(),
+                                conn: Builder::new().write(expected_line.as_bytes()).build(),
+                                extensions: Extensions::new(),
+                            },
+                        })
+                    }));
             let mut req = ServiceInput::new(());
             *req.extensions_mut() = ext;
-            svc.serve(Context::default(), req).await.unwrap();
+            svc.serve(req).await.unwrap();
         }
     }
 
@@ -584,23 +584,23 @@ mod tests {
                 "[4321:8765:ba09:fedc:cdef:90ab:5678:1234]:65535",
             ),
         ] {
-            let svc = HaProxyLayer::tcp().v1().layer(service_fn(
-                async move |ctx, req: ServiceInput<()>| {
-                    Ok::<_, Infallible>(EstablishedClientConnection {
-                        ctx,
-                        req,
-                        conn: SocketConnection {
-                            socket: target_addr.parse().unwrap(),
-                            conn: Builder::new().build(),
-                            extensions: Extensions::new(),
-                        },
-                    })
-                },
-            ));
+            let svc =
+                HaProxyLayer::tcp()
+                    .v1()
+                    .layer(service_fn(async move |req: ServiceInput<()>| {
+                        Ok::<_, Infallible>(EstablishedClientConnection {
+                            req,
+                            conn: SocketConnection {
+                                socket: target_addr.parse().unwrap(),
+                                conn: Builder::new().build(),
+                                extensions: Extensions::new(),
+                            },
+                        })
+                    }));
 
             let mut req = ServiceInput::new(());
             *req.extensions_mut() = ext;
-            assert!(svc.serve(Context::default(), req).await.is_err());
+            assert!(svc.serve(req).await.is_err());
         }
     }
 
@@ -610,24 +610,17 @@ mod tests {
             "192.168.1.101:443",
             "[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:443",
         ] {
-            let svc = HaProxyLayer::tcp()
-                .v1()
-                .layer(service_fn(async move |ctx, req| {
-                    Ok::<_, Infallible>(EstablishedClientConnection {
-                        ctx,
-                        req,
-                        conn: SocketConnection {
-                            socket: target_addr.parse().unwrap(),
-                            conn: Builder::new().build(),
-                            extensions: Extensions::new(),
-                        },
-                    })
-                }));
-            assert!(
-                svc.serve(Context::default(), ServiceInput::new(()))
-                    .await
-                    .is_err()
-            );
+            let svc = HaProxyLayer::tcp().v1().layer(service_fn(async move |req| {
+                Ok::<_, Infallible>(EstablishedClientConnection {
+                    req,
+                    conn: SocketConnection {
+                        socket: target_addr.parse().unwrap(),
+                        conn: Builder::new().build(),
+                        extensions: Extensions::new(),
+                    },
+                })
+            }));
+            assert!(svc.serve(ServiceInput::new(())).await.is_err());
         }
     }
 
@@ -654,9 +647,8 @@ mod tests {
             },
         ] {
             let svc = HaProxyLayer::tcp().with_payload(vec![42]).layer(service_fn(
-                async move |ctx, req: ServiceInput<()>| {
+                async move |req: ServiceInput<()>| {
                     Ok::<_, Infallible>(EstablishedClientConnection {
-                        ctx,
                         req,
                         conn: SocketConnection {
                             socket: "192.168.1.1:443".parse().unwrap(),
@@ -675,7 +667,7 @@ mod tests {
 
             let mut req = ServiceInput::new(());
             *req.extensions_mut() = ext;
-            svc.serve(Context::default(), req).await.unwrap();
+            svc.serve(req).await.unwrap();
         }
     }
 
@@ -702,9 +694,8 @@ mod tests {
             },
         ] {
             let svc = HaProxyLayer::udp().with_payload(vec![42]).layer(service_fn(
-                async move |ctx, req: ServiceInput<()>| {
+                async move |req: ServiceInput<()>| {
                     Ok::<_, Infallible>(EstablishedClientConnection {
-                        ctx,
                         req,
                         conn: SocketConnection {
                             socket: "192.168.1.1:443".parse().unwrap(),
@@ -723,7 +714,7 @@ mod tests {
 
             let mut req = ServiceInput::new(());
             *req.extensions_mut() = ext;
-            svc.serve(Context::default(), req).await.unwrap();
+            svc.serve(req).await.unwrap();
         }
     }
 
@@ -750,9 +741,8 @@ mod tests {
             },
         ] {
             let svc = HaProxyLayer::tcp().with_payload(vec![42]).layer(service_fn(
-                async move |ctx, req: ServiceInput<()>| {
+                async move |req: ServiceInput<()>| {
                     Ok::<_, Infallible>(EstablishedClientConnection {
-                        ctx,
                         req,
                         conn: SocketConnection {
                             socket: "[4321:8765:ba09:fedc:cdef:90ab:5678:1234]:443"
@@ -776,7 +766,7 @@ mod tests {
 
             let mut req = ServiceInput::new(());
             *req.extensions_mut() = ext;
-            svc.serve(Context::default(), req).await.unwrap();
+            svc.serve(req).await.unwrap();
         }
     }
 
@@ -803,9 +793,8 @@ mod tests {
             },
         ] {
             let svc = HaProxyLayer::udp().with_payload(vec![42]).layer(service_fn(
-                async move |ctx, req: ServiceInput<()>| {
+                async move |req: ServiceInput<()>| {
                     Ok::<_, Infallible>(EstablishedClientConnection {
-                        ctx,
                         req,
                         conn: SocketConnection {
                             socket: "[4321:8765:ba09:fedc:cdef:90ab:5678:1234]:443"
@@ -829,7 +818,7 @@ mod tests {
 
             let mut req = ServiceInput::new(());
             *req.extensions_mut() = ext;
-            svc.serve(Context::default(), req).await.unwrap();
+            svc.serve(req).await.unwrap();
         }
     }
 
@@ -887,41 +876,37 @@ mod tests {
         ] {
             // TCP
 
-            let svc =
-                HaProxyLayer::tcp().layer(service_fn(async move |ctx, req: ServiceInput<()>| {
-                    Ok::<_, Infallible>(EstablishedClientConnection {
-                        ctx,
-                        req,
-                        conn: SocketConnection {
-                            socket: target_addr.parse().unwrap(),
-                            extensions: Extensions::new(),
-                            conn: Builder::new().build(),
-                        },
-                    })
-                }));
+            let svc = HaProxyLayer::tcp().layer(service_fn(async move |req: ServiceInput<()>| {
+                Ok::<_, Infallible>(EstablishedClientConnection {
+                    req,
+                    conn: SocketConnection {
+                        socket: target_addr.parse().unwrap(),
+                        extensions: Extensions::new(),
+                        conn: Builder::new().build(),
+                    },
+                })
+            }));
 
             let mut req = ServiceInput::new(());
             *req.extensions_mut() = ext.clone();
-            assert!(svc.serve(Context::default(), req).await.is_err());
+            assert!(svc.serve(req).await.is_err());
 
             // UDP
 
-            let svc =
-                HaProxyLayer::udp().layer(service_fn(async move |ctx, req: ServiceInput<()>| {
-                    Ok::<_, Infallible>(EstablishedClientConnection {
-                        ctx,
-                        req,
-                        conn: SocketConnection {
-                            socket: target_addr.parse().unwrap(),
-                            extensions: Extensions::new(),
-                            conn: Builder::new().build(),
-                        },
-                    })
-                }));
+            let svc = HaProxyLayer::udp().layer(service_fn(async move |req: ServiceInput<()>| {
+                Ok::<_, Infallible>(EstablishedClientConnection {
+                    req,
+                    conn: SocketConnection {
+                        socket: target_addr.parse().unwrap(),
+                        extensions: Extensions::new(),
+                        conn: Builder::new().build(),
+                    },
+                })
+            }));
 
             let mut req = ServiceInput::new(());
             *req.extensions_mut() = ext;
-            assert!(svc.serve(Context::default(), req).await.is_err());
+            assert!(svc.serve(req).await.is_err());
         }
     }
 
@@ -933,9 +918,8 @@ mod tests {
         ] {
             // TCP
 
-            let svc = HaProxyLayer::tcp().layer(service_fn(async move |ctx, req| {
+            let svc = HaProxyLayer::tcp().layer(service_fn(async move |req| {
                 Ok::<_, Infallible>(EstablishedClientConnection {
-                    ctx,
                     req,
                     conn: SocketConnection {
                         socket: target_addr.parse().unwrap(),
@@ -944,17 +928,12 @@ mod tests {
                     },
                 })
             }));
-            assert!(
-                svc.serve(Context::default(), ServiceInput::new(()))
-                    .await
-                    .is_err()
-            );
+            assert!(svc.serve(ServiceInput::new(())).await.is_err());
 
             // UDP
 
-            let svc = HaProxyLayer::udp().layer(service_fn(async move |ctx, req| {
+            let svc = HaProxyLayer::udp().layer(service_fn(async move |req| {
                 Ok::<_, Infallible>(EstablishedClientConnection {
-                    ctx,
                     req,
                     conn: SocketConnection {
                         socket: target_addr.parse().unwrap(),
@@ -963,11 +942,7 @@ mod tests {
                     },
                 })
             }));
-            assert!(
-                svc.serve(Context::default(), ServiceInput::new(()))
-                    .await
-                    .is_err()
-            );
+            assert!(svc.serve(ServiceInput::new(())).await.is_err());
         }
     }
 }

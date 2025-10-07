@@ -67,7 +67,7 @@ mod tests {
     /// for users that want to declare a Layer without implementing the Layer trait explicitly themselves.
     #[tokio::test]
     async fn test_layer_fn() {
-        use crate::{Context, Service, service::service_fn};
+        use crate::{Service, service::service_fn};
         use std::convert::Infallible;
 
         struct ToUpper<S>(S);
@@ -98,30 +98,23 @@ mod tests {
             type Response = String;
             type Error = S::Error;
 
-            async fn serve(
-                &self,
-                ctx: Context,
-                req: Request,
-            ) -> Result<Self::Response, Self::Error> {
-                let res = self.0.serve(ctx, req).await;
+            async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
+                let res = self.0.serve(req).await;
                 res.map(|msg| msg.to_uppercase())
             }
         }
 
         let layer = layer_fn(ToUpper);
-        let f = async |_, req| Ok::<_, Infallible>(req);
+        let f = async |req| Ok::<_, Infallible>(req);
 
-        let res = layer
-            .layer(service_fn(f))
-            .serve(Context::default(), "hello")
-            .await;
+        let res = layer.layer(service_fn(f)).serve("hello").await;
         assert_eq!(res, Ok("HELLO".to_owned()));
 
         // can be cloned the layer, and the service
         let svc = layer.layer(service_fn(f));
-        let res = svc.serve(Context::default(), "hello").await;
+        let res = svc.serve("hello").await;
         assert_eq!(res, Ok("HELLO".to_owned()));
-        let res = svc.clone().serve(Context::default(), "hello").await;
+        let res = svc.clone().serve("hello").await;
         assert_eq!(res, Ok("HELLO".to_owned()));
     }
 

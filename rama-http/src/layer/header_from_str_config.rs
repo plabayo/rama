@@ -9,7 +9,7 @@
 //! use rama_http::layer::header_from_str_config::HeaderFromStrConfigLayer;
 //! use rama_http::service::web::{WebService};
 //! use rama_http::{Body, Request, StatusCode, HeaderName};
-//! use rama_core::{Context, extensions::ExtensionsRef, Service, Layer};
+//! use rama_core::{extensions::ExtensionsRef, Service, Layer};
 //! use serde::Deserialize;
 //!
 //! #[tokio::main]
@@ -17,7 +17,7 @@
 //!     let service = HeaderFromStrConfigLayer::<String>::required(HeaderName::from_static("x-proxy-labels"))
 //!         .with_repeat(true)
 //!         .into_layer(WebService::default()
-//!             .get("/", async |_ctx: Context, req: Request| {
+//!             .get("/", async |req: Request| {
 //!                 // For production-like code you should prefer a custom type
 //!                 // to avoid possible conflicts. Ideally these are also as
 //!                 // cheap as possible to allocate.
@@ -32,7 +32,7 @@
 //!         .body(Body::empty())
 //!         .unwrap();
 //!
-//!     let resp = service.serve(Context::default(), request).await.unwrap();
+//!     let resp = service.serve(request).await.unwrap();
 //!     assert_eq!(resp.status(), StatusCode::OK);
 //! }
 //! ```
@@ -43,7 +43,7 @@ use crate::{
     utils::{HeaderValueErr, HeaderValueGetter},
 };
 use rama_core::extensions::ExtensionsMut;
-use rama_core::{Context, Layer, Service, error::BoxError};
+use rama_core::{Layer, Service, error::BoxError};
 use rama_utils::macros::define_inner_service_accessors;
 use std::iter::FromIterator;
 use std::str::FromStr;
@@ -150,11 +150,7 @@ where
     type Response = S::Response;
     type Error = BoxError;
 
-    async fn serve(
-        &self,
-        ctx: Context,
-        mut request: Request<Body>,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut request: Request<Body>) -> Result<Self::Response, Self::Error> {
         if self.repeat {
             let headers = request.headers().get_all(&self.header_name);
             let mut parsed_values = headers
@@ -193,7 +189,7 @@ where
             }
         }
 
-        self.inner.serve(ctx, request).await.map_err(Into::into)
+        self.inner.serve(request).await.map_err(Into::into)
     }
 }
 
@@ -316,20 +312,19 @@ mod test {
             .body(())
             .unwrap();
 
-        let inner_service =
-            rama_core::service::service_fn(async |_ctx: Context, req: Request<()>| {
-                let id: &usize = req.extensions().get().unwrap();
-                assert_eq!(*id, 42);
+        let inner_service = rama_core::service::service_fn(async |req: Request<()>| {
+            let id: &usize = req.extensions().get().unwrap();
+            assert_eq!(*id, 42);
 
-                Ok::<_, std::convert::Infallible>(())
-            });
+            Ok::<_, std::convert::Infallible>(())
+        });
 
         let service = HeaderFromStrConfigService::<usize, _>::required(
             inner_service,
             HeaderName::from_static("x-proxy-id"),
         );
 
-        service.serve(Context::default(), request).await.unwrap();
+        service.serve(request).await.unwrap();
     }
 
     #[tokio::test]
@@ -341,13 +336,12 @@ mod test {
             .body(())
             .unwrap();
 
-        let inner_service =
-            rama_core::service::service_fn(async |_ctx: Context, req: Request<()>| {
-                let labels: &Vec<String> = req.extensions().get().unwrap();
-                assert_eq!("foo+bar+baz+fin", labels.join("+"));
+        let inner_service = rama_core::service::service_fn(async |req: Request<()>| {
+            let labels: &Vec<String> = req.extensions().get().unwrap();
+            assert_eq!("foo+bar+baz+fin", labels.join("+"));
 
-                Ok::<_, std::convert::Infallible>(())
-            });
+            Ok::<_, std::convert::Infallible>(())
+        });
 
         let service = HeaderFromStrConfigService::<String, _>::required(
             inner_service,
@@ -355,7 +349,7 @@ mod test {
         )
         .with_repeat(true);
 
-        service.serve(Context::default(), request).await.unwrap();
+        service.serve(request).await.unwrap();
     }
 
     #[tokio::test]
@@ -367,16 +361,15 @@ mod test {
             .body(())
             .unwrap();
 
-        let inner_service =
-            rama_core::service::service_fn(async |_ctx: Context, req: Request<()>| {
-                let labels: &HashSet<String> = req.extensions().get().unwrap();
-                assert_eq!(3, labels.len());
-                assert!(labels.contains("foo"));
-                assert!(labels.contains("bar"));
-                assert!(labels.contains("baz"));
+        let inner_service = rama_core::service::service_fn(async |req: Request<()>| {
+            let labels: &HashSet<String> = req.extensions().get().unwrap();
+            assert_eq!(3, labels.len());
+            assert!(labels.contains("foo"));
+            assert!(labels.contains("bar"));
+            assert!(labels.contains("baz"));
 
-                Ok::<_, std::convert::Infallible>(())
-            });
+            Ok::<_, std::convert::Infallible>(())
+        });
 
         let service = HeaderFromStrConfigService::<String, _, HashSet<String>>::required(
             inner_service,
@@ -384,7 +377,7 @@ mod test {
         )
         .with_repeat(true);
 
-        service.serve(Context::default(), request).await.unwrap();
+        service.serve(request).await.unwrap();
     }
 
     #[tokio::test]
@@ -396,17 +389,16 @@ mod test {
             .body(())
             .unwrap();
 
-        let inner_service =
-            rama_core::service::service_fn(async |_ctx: Context, req: Request<()>| {
-                let labels: &LinkedList<String> = req.extensions().get().unwrap();
-                let mut iter = labels.iter();
-                assert_eq!(Some("foo"), iter.next().map(|x| x.as_str()));
-                assert_eq!(Some("bar"), iter.next().map(|x| x.as_str()));
-                assert_eq!(Some("baz"), iter.next().map(|x| x.as_str()));
-                assert_eq!(None, iter.next());
+        let inner_service = rama_core::service::service_fn(async |req: Request<()>| {
+            let labels: &LinkedList<String> = req.extensions().get().unwrap();
+            let mut iter = labels.iter();
+            assert_eq!(Some("foo"), iter.next().map(|x| x.as_str()));
+            assert_eq!(Some("bar"), iter.next().map(|x| x.as_str()));
+            assert_eq!(Some("baz"), iter.next().map(|x| x.as_str()));
+            assert_eq!(None, iter.next());
 
-                Ok::<_, std::convert::Infallible>(())
-            });
+            Ok::<_, std::convert::Infallible>(())
+        });
 
         let service = HeaderFromStrConfigService::<String, _, LinkedList<String>>::required(
             inner_service,
@@ -414,7 +406,7 @@ mod test {
         )
         .with_repeat(true);
 
-        service.serve(Context::default(), request).await.unwrap();
+        service.serve(request).await.unwrap();
     }
 
     #[tokio::test]
@@ -428,13 +420,12 @@ mod test {
             .body(())
             .unwrap();
 
-        let inner_service =
-            rama_core::service::service_fn(async |_ctx: Context, req: Request<()>| {
-                let labels: &Vec<String> = req.extensions().get().unwrap();
-                assert_eq!("foo+bar+baz+fin", labels.join("+"));
+        let inner_service = rama_core::service::service_fn(async |req: Request<()>| {
+            let labels: &Vec<String> = req.extensions().get().unwrap();
+            assert_eq!("foo+bar+baz+fin", labels.join("+"));
 
-                Ok::<_, std::convert::Infallible>(())
-            });
+            Ok::<_, std::convert::Infallible>(())
+        });
 
         let service = HeaderFromStrConfigService::<String, _>::required(
             inner_service,
@@ -442,7 +433,7 @@ mod test {
         )
         .with_repeat(true);
 
-        service.serve(Context::default(), request).await.unwrap();
+        service.serve(request).await.unwrap();
     }
 
     #[tokio::test]
@@ -454,20 +445,19 @@ mod test {
             .body(())
             .unwrap();
 
-        let inner_service =
-            rama_core::service::service_fn(async |_ctx: Context, req: Request<()>| {
-                let id: usize = *req.extensions().get().unwrap();
-                assert_eq!(id, 42);
+        let inner_service = rama_core::service::service_fn(async |req: Request<()>| {
+            let id: usize = *req.extensions().get().unwrap();
+            assert_eq!(id, 42);
 
-                Ok::<_, std::convert::Infallible>(())
-            });
+            Ok::<_, std::convert::Infallible>(())
+        });
 
         let service = HeaderFromStrConfigService::<usize, _>::optional(
             inner_service,
             HeaderName::from_static("x-proxy-id"),
         );
 
-        service.serve(Context::default(), request).await.unwrap();
+        service.serve(request).await.unwrap();
     }
 
     #[tokio::test]
@@ -479,13 +469,12 @@ mod test {
             .body(())
             .unwrap();
 
-        let inner_service =
-            rama_core::service::service_fn(async |_ctx: Context, req: Request<()>| {
-                let labels: &Vec<String> = req.extensions().get().unwrap();
-                assert_eq!("foo+bar+baz+fin", labels.join("+"));
+        let inner_service = rama_core::service::service_fn(async |req: Request<()>| {
+            let labels: &Vec<String> = req.extensions().get().unwrap();
+            assert_eq!("foo+bar+baz+fin", labels.join("+"));
 
-                Ok::<_, std::convert::Infallible>(())
-            });
+            Ok::<_, std::convert::Infallible>(())
+        });
 
         let service = HeaderFromStrConfigService::<String, _>::optional(
             inner_service,
@@ -493,7 +482,7 @@ mod test {
         )
         .with_repeat(true);
 
-        service.serve(Context::default(), request).await.unwrap();
+        service.serve(request).await.unwrap();
     }
 
     #[tokio::test]
@@ -504,18 +493,17 @@ mod test {
             .body(())
             .unwrap();
 
-        let inner_service =
-            rama_core::service::service_fn(async |_ctx: Context, req: Request<()>| {
-                assert!(req.extensions().get::<usize>().is_none());
-                Ok::<_, std::convert::Infallible>(())
-            });
+        let inner_service = rama_core::service::service_fn(async |req: Request<()>| {
+            assert!(req.extensions().get::<usize>().is_none());
+            Ok::<_, std::convert::Infallible>(())
+        });
 
         let service = HeaderFromStrConfigService::<usize, _>::optional(
             inner_service,
             HeaderName::from_static("x-proxy-id"),
         );
 
-        service.serve(Context::default(), request).await.unwrap();
+        service.serve(request).await.unwrap();
     }
 
     #[tokio::test]
@@ -526,12 +514,11 @@ mod test {
             .body(())
             .unwrap();
 
-        let inner_service =
-            rama_core::service::service_fn(async |_ctx: Context, req: Request<()>| {
-                assert!(req.extensions().get::<Vec<String>>().is_none());
+        let inner_service = rama_core::service::service_fn(async |req: Request<()>| {
+            assert!(req.extensions().get::<Vec<String>>().is_none());
 
-                Ok::<_, std::convert::Infallible>(())
-            });
+            Ok::<_, std::convert::Infallible>(())
+        });
 
         let service = HeaderFromStrConfigService::<String, _>::optional(
             inner_service,
@@ -539,7 +526,7 @@ mod test {
         )
         .with_repeat(true);
 
-        service.serve(Context::default(), request).await.unwrap();
+        service.serve(request).await.unwrap();
     }
 
     #[tokio::test]
@@ -550,17 +537,16 @@ mod test {
             .body(())
             .unwrap();
 
-        let inner_service =
-            rama_core::service::service_fn(async |__ctx: Context, _req: Request<()>| {
-                Ok::<_, std::convert::Infallible>(())
-            });
+        let inner_service = rama_core::service::service_fn(async |_req: Request<()>| {
+            Ok::<_, std::convert::Infallible>(())
+        });
 
         let service = HeaderFromStrConfigService::<usize, _>::required(
             inner_service,
             HeaderName::from_static("x-proxy-id"),
         );
 
-        let result = service.serve(Context::default(), request).await;
+        let result = service.serve(request).await;
         assert!(result.is_err());
     }
 
@@ -572,12 +558,11 @@ mod test {
             .body(())
             .unwrap();
 
-        let inner_service =
-            rama_core::service::service_fn(async |_ctx: Context, req: Request<()>| {
-                assert!(req.extensions().get::<Vec<String>>().is_none());
+        let inner_service = rama_core::service::service_fn(async |req: Request<()>| {
+            assert!(req.extensions().get::<Vec<String>>().is_none());
 
-                Ok::<_, std::convert::Infallible>(())
-            });
+            Ok::<_, std::convert::Infallible>(())
+        });
 
         let service = HeaderFromStrConfigService::<String, _>::required(
             inner_service,
@@ -585,7 +570,7 @@ mod test {
         )
         .with_repeat(true);
 
-        let result = service.serve(Context::default(), request).await;
+        let result = service.serve(request).await;
         assert!(result.is_err());
     }
 
@@ -598,17 +583,16 @@ mod test {
             .body(())
             .unwrap();
 
-        let inner_service =
-            rama_core::service::service_fn(async |__ctx: Context, _req: Request<()>| {
-                Ok::<_, std::convert::Infallible>(())
-            });
+        let inner_service = rama_core::service::service_fn(async |_req: Request<()>| {
+            Ok::<_, std::convert::Infallible>(())
+        });
 
         let service = HeaderFromStrConfigService::<usize, _>::required(
             inner_service,
             HeaderName::from_static("x-proxy-id"),
         );
 
-        let result = service.serve(Context::default(), request).await;
+        let result = service.serve(request).await;
         assert!(result.is_err());
     }
 
@@ -621,12 +605,11 @@ mod test {
             .body(())
             .unwrap();
 
-        let inner_service =
-            rama_core::service::service_fn(async |_ctx: Context, req: Request<()>| {
-                assert!(req.extensions().get::<Vec<String>>().is_none());
+        let inner_service = rama_core::service::service_fn(async |req: Request<()>| {
+            assert!(req.extensions().get::<Vec<String>>().is_none());
 
-                Ok::<_, std::convert::Infallible>(())
-            });
+            Ok::<_, std::convert::Infallible>(())
+        });
 
         let service = HeaderFromStrConfigService::<usize, _>::required(
             inner_service,
@@ -634,7 +617,7 @@ mod test {
         )
         .with_repeat(true);
 
-        let result = service.serve(Context::default(), request).await;
+        let result = service.serve(request).await;
         assert!(result.is_err());
     }
 
@@ -647,17 +630,16 @@ mod test {
             .body(())
             .unwrap();
 
-        let inner_service =
-            rama_core::service::service_fn(async |__ctx: Context, _req: Request<()>| {
-                Ok::<_, std::convert::Infallible>(())
-            });
+        let inner_service = rama_core::service::service_fn(async |_req: Request<()>| {
+            Ok::<_, std::convert::Infallible>(())
+        });
 
         let service = HeaderFromStrConfigService::<usize, _>::optional(
             inner_service,
             HeaderName::from_static("x-proxy-id"),
         );
 
-        let result = service.serve(Context::default(), request).await;
+        let result = service.serve(request).await;
         assert!(result.is_err());
     }
 
@@ -670,12 +652,11 @@ mod test {
             .body(())
             .unwrap();
 
-        let inner_service =
-            rama_core::service::service_fn(async |_ctx: Context, req: Request<()>| {
-                assert!(req.extensions().get::<Vec<String>>().is_none());
+        let inner_service = rama_core::service::service_fn(async |req: Request<()>| {
+            assert!(req.extensions().get::<Vec<String>>().is_none());
 
-                Ok::<_, std::convert::Infallible>(())
-            });
+            Ok::<_, std::convert::Infallible>(())
+        });
 
         let service = HeaderFromStrConfigService::<usize, _>::optional(
             inner_service,
@@ -683,7 +664,7 @@ mod test {
         )
         .with_repeat(true);
 
-        let result = service.serve(Context::default(), request).await;
+        let result = service.serve(request).await;
         assert!(result.is_err());
     }
 }

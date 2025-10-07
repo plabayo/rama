@@ -66,7 +66,7 @@
 //! use rama_core::{
 //!    service::service_fn,
 //!    extensions::{ExtensionsRef, ExtensionsMut},
-//!    Context, Service, Layer,
+//!    Service, Layer,
 //! };
 //! use rama_net::address::ProxyAddress;
 //! use rama_utils::str::NonEmptyString;
@@ -121,7 +121,7 @@
 //!
 //!     let service =
 //!         ProxyDBLayer::new(Arc::new(db)).filter_mode(ProxyFilterMode::Default)
-//!         .into_layer(service_fn(async  |ctx: Context, req: Request| {
+//!         .into_layer(service_fn(async  |req: Request| {
 //!             Ok::<_, Infallible>(req.extensions().get::<ProxyAddress>().unwrap().clone())
 //!         }));
 //!
@@ -139,7 +139,7 @@
 //!         ..Default::default()
 //!     });
 //!
-//!     let proxy_address = service.serve(Context::default(), req).await.unwrap();
+//!     let proxy_address = service.serve(req).await.unwrap();
 //!     assert_eq!(proxy_address.authority.to_string(), "12.34.12.34:8080");
 //! }
 //! ```
@@ -163,7 +163,7 @@
 //! use rama_core::{
 //!    service::service_fn,
 //!    extensions::{ExtensionsRef, ExtensionsMut},
-//!    Context, Service, Layer,
+//!    Service, Layer,
 //! };
 //! use rama_net::address::ProxyAddress;
 //! use rama_utils::str::NonEmptyString;
@@ -195,7 +195,7 @@
 //!
 //!     let service = ProxyDBLayer::new(Arc::new(proxy))
 //!         .filter_mode(ProxyFilterMode::Default)
-//!         .username_formatter(|_ctx: &Context, proxy: &Proxy, filter: &ProxyFilter, username: &str| {
+//!         .username_formatter(|_proxy: &Proxy, filter: &ProxyFilter, username: &str| {
 //!             use std::fmt::Write;
 //!
 //!             let mut output = String::new();
@@ -213,7 +213,7 @@
 //!
 //!             (!output.is_empty()).then(|| format!("{username}-{output}"))
 //!         })
-//!         .into_layer(service_fn(async |_ctx: Context, req: Request| {
+//!         .into_layer(service_fn(async |req: Request| {
 //!             Ok::<_, Infallible>(req.extensions().get::<ProxyAddress>().unwrap().clone())
 //!         }));
 //!
@@ -228,7 +228,7 @@
 //!         residential: Some(true),
 //!         ..Default::default()
 //!     });
-//!     let proxy_address = service.serve(Context::default(), req).await.unwrap();
+//!     let proxy_address = service.serve(req).await.unwrap();
 //!     assert_eq!(
 //!         "socks5://john-country-be:secret@proxy.example.com:60000",
 //!         proxy_address.to_string()

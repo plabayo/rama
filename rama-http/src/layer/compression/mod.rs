@@ -14,7 +14,7 @@
 //! use rama_http::layer::compression::CompressionLayer;
 //! use rama_http::{Body, Request, Response, header::ACCEPT_ENCODING};
 //! use rama_core::service::service_fn;
-//! use rama_core::{Context, Service, Layer};
+//! use rama_core::{Service, Layer};
 //! use std::convert::Infallible;
 //! use tokio::fs::{self, File};
 //! use rama_core::stream::io::ReaderStream;
@@ -52,7 +52,7 @@
 //!     .body(Body::default())?;
 //!
 //! let response = service
-//!     .serve(Context::default(), request)
+//!     .serve(request)
 //!     .await?;
 //!
 //! assert_eq!(response.headers()["content-encoding"], "gzip");
@@ -102,9 +102,9 @@ mod tests {
     use crate::{HeaderValue, Request, Response, StreamingBody, body::util::BodyExt};
     use async_compression::tokio::write::{BrotliDecoder, BrotliEncoder};
     use flate2::read::GzDecoder;
+    use rama_core::Service;
     use rama_core::service::service_fn;
     use rama_core::stream::io::StreamReader;
-    use rama_core::{Context, Service};
     use rama_http_types::Body;
     use std::convert::Infallible;
     use std::io::Read;
@@ -134,7 +134,7 @@ mod tests {
             .header("accept-encoding", "gzip")
             .body(Body::empty())
             .unwrap();
-        let res = svc.serve(Context::default(), req).await.unwrap();
+        let res = svc.serve(req).await.unwrap();
 
         // read the compressed body
         let collected = res.into_body().collect().await.unwrap();
@@ -160,7 +160,7 @@ mod tests {
             .header("accept-encoding", "x-gzip")
             .body(Body::empty())
             .unwrap();
-        let res = svc.serve(Context::default(), req).await.unwrap();
+        let res = svc.serve(req).await.unwrap();
 
         // we treat x-gzip as equivalent to gzip and don't have to return x-gzip
         // taking extra caution by checking all headers with this name
@@ -196,7 +196,7 @@ mod tests {
             .header("accept-encoding", "zstd")
             .body(Body::empty())
             .unwrap();
-        let res = svc.serve(Context::default(), req).await.unwrap();
+        let res = svc.serve(req).await.unwrap();
 
         // read the compressed body
         let body = res.into_body();
@@ -239,7 +239,7 @@ mod tests {
             .header("accept-encoding", "gzip")
             .body(Body::empty())
             .unwrap();
-        let res = svc.serve(Context::default(), req).await.unwrap();
+        let res = svc.serve(req).await.unwrap();
 
         // check we didn't recompress
         assert_eq!(
@@ -310,7 +310,7 @@ mod tests {
             .header("accept-encoding", "br")
             .body(Body::empty())
             .unwrap();
-        let res = svc.serve(Context::default(), req).await.unwrap();
+        let res = svc.serve(req).await.unwrap();
 
         // read the uncompressed body
         let body = res.into_body();
@@ -323,7 +323,7 @@ mod tests {
             .header("accept-encoding", "br")
             .body(Body::empty())
             .unwrap();
-        let res = svc.serve(Context::default(), req).await.unwrap();
+        let res = svc.serve(req).await.unwrap();
 
         // read the compressed body
         let body = res.into_body();
@@ -346,7 +346,6 @@ mod tests {
 
         let res = svc
             .serve(
-                Context::default(),
                 Request::builder()
                     .header(ACCEPT_ENCODING, "gzip")
                     .body(Body::empty())
@@ -372,7 +371,6 @@ mod tests {
 
         let res = svc
             .serve(
-                Context::default(),
                 Request::builder()
                     .header(ACCEPT_ENCODING, "gzip")
                     .body(Body::empty())
@@ -402,7 +400,7 @@ mod tests {
             .header("accept-encoding", "br")
             .body(Body::empty())
             .unwrap();
-        let res = svc.serve(Context::default(), req).await.unwrap();
+        let res = svc.serve(req).await.unwrap();
 
         // read the compressed body
         let body = res.into_body();
@@ -447,7 +445,7 @@ mod tests {
             .header(RANGE, "bytes=0-4")
             .body(Body::empty())
             .unwrap();
-        let res = svc.serve(Context::default(), req).await.unwrap();
+        let res = svc.serve(req).await.unwrap();
         let headers = res.headers().clone();
 
         // read the uncompressed body
@@ -473,7 +471,7 @@ mod tests {
             .header(ACCEPT_ENCODING, "gzip")
             .body(Body::empty())
             .unwrap();
-        let res = svc.serve(Context::default(), req).await.unwrap();
+        let res = svc.serve(req).await.unwrap();
         let headers = res.headers().clone();
 
         // read the compressed body
@@ -499,7 +497,7 @@ mod tests {
         let svc = Compression::new(svc);
 
         let req = Request::new(Body::empty());
-        let res = svc.serve(Context::default(), req).await.unwrap();
+        let res = svc.serve(req).await.unwrap();
         let body = res.into_body();
         assert_eq!(body.size_hint().exact().unwrap(), MSG.len() as u64);
     }

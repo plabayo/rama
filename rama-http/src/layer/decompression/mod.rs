@@ -11,7 +11,7 @@
 //!
 //! use rama_http::{Body, header, HeaderValue, Request, Response};
 //! use rama_core::service::service_fn;
-//! use rama_core::{Context, Service, Layer};
+//! use rama_core::{Service, Layer};
 //! use rama_http::layer::decompression::{DecompressionBody, RequestDecompressionLayer};
 //! use rama_http::body::util::BodyExt;
 //! use rama_core::error::BoxError;
@@ -32,7 +32,7 @@
 //! ).into_layer(service_fn(handler));
 //!
 //! // Send the request, with the gzip encoded body, to our server.
-//! let _response = server.serve(Context::default(), request).await?;
+//! let _response = server.serve(request).await?;
 //!
 //! // Handler receives request whose body is decoded when read
 //! async fn handler(mut req: Request<DecompressionBody<Body>>) -> Result<Response, BoxError>{
@@ -53,7 +53,7 @@
 //!
 //! use rama_http::{Body, Request, Response};
 //! use rama_core::service::service_fn;
-//! use rama_core::{Context, Service, Layer};
+//! use rama_core::{Service, Layer};
 //! use rama_http::layer::{compression::Compression, decompression::DecompressionLayer};
 //! use rama_http::body::util::BodyExt;
 //! use rama_core::error::BoxError;
@@ -81,7 +81,7 @@
 //! let request = Request::new(Body::default());
 //!
 //! let response = client
-//!     .serve(Context::default(), request)
+//!     .serve(request)
 //!     .await?;
 //!
 //! // Read the body
@@ -118,8 +118,8 @@ mod tests {
 
     use crate::layer::compression::Compression;
     use crate::{Body, HeaderMap, HeaderName, Request, Response, body::util::BodyExt};
+    use rama_core::Service;
     use rama_core::service::service_fn;
-    use rama_core::{Context, Service};
 
     use flate2::write::GzEncoder;
 
@@ -131,7 +131,7 @@ mod tests {
             .header("accept-encoding", "gzip")
             .body(Body::empty())
             .unwrap();
-        let res = client.serve(Context::default(), req).await.unwrap();
+        let res = client.serve(req).await.unwrap();
 
         // read the body, it will be decompressed automatically
         let body = res.into_body();
@@ -156,7 +156,7 @@ mod tests {
             .header("accept-encoding", "gzip")
             .body(Body::empty())
             .unwrap();
-        let res = client.serve(Context::default(), req).await.unwrap();
+        let res = client.serve(req).await.unwrap();
 
         // read the body, it will be decompressed automatically
         let body = res.into_body();
@@ -174,7 +174,7 @@ mod tests {
             .header("accept-encoding", "zstd")
             .body(Body::empty())
             .unwrap();
-        let res = client.serve(Context::default(), req).await.unwrap();
+        let res = client.serve(req).await.unwrap();
 
         // read the body, it will be decompressed automatically
         let body = res.into_body();

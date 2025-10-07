@@ -2,12 +2,12 @@
 
 use super::HttpServeResult;
 use super::hyper_conn::HttpCoreConnServer;
+use rama_core::Service;
 use rama_core::error::BoxError;
 use rama_core::extensions::ExtensionsMut;
 use rama_core::graceful::ShutdownGuard;
 use rama_core::rt::Executor;
 use rama_core::stream::Stream;
-use rama_core::{Context, Service};
 use rama_http::service::web::response::IntoResponse;
 use rama_http_core::server::conn::auto::Builder as AutoConnBuilder;
 use rama_http_core::server::conn::auto::Http1Builder as InnerAutoHttp1Builder;
@@ -152,19 +152,14 @@ where
     }
 
     /// Serve a single IO Byte Stream (e.g. a TCP Stream) as HTTP.
-    pub async fn serve<S, Response, IO>(
-        &self,
-        ctx: Context,
-        stream: IO,
-        service: S,
-    ) -> HttpServeResult
+    pub async fn serve<S, Response, IO>(&self, stream: IO, service: S) -> HttpServeResult
     where
         S: Service<Request, Response = Response, Error = Infallible> + Clone,
         Response: IntoResponse + Send + 'static,
         IO: Stream + ExtensionsMut,
     {
         self.builder
-            .http_core_serve_connection(ctx, stream, service)
+            .http_core_serve_connection(stream, service)
             .await
     }
 
@@ -255,11 +250,9 @@ where
 
     fn serve(
         &self,
-        ctx: Context,
         stream: IO,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
         let service = self.service.clone();
-        self.builder
-            .http_core_serve_connection(ctx, stream, service)
+        self.builder.http_core_serve_connection(stream, service)
     }
 }

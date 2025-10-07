@@ -5,7 +5,7 @@ use crate::dep::rustls::server::Acceptor;
 use crate::dep::tokio_rustls::LazyConfigAcceptor;
 use crate::types::SecureTransport;
 use rama_core::{
-    Context, Service,
+    Service,
     conversion::RamaInto,
     error::{BoxError, ErrorContext, ErrorExt, OpaqueError},
     extensions::ExtensionsMut,
@@ -66,7 +66,7 @@ where
     type Response = S::Response;
     type Error = BoxError;
 
-    async fn serve(&self, ctx: Context, stream: IO) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, stream: IO) -> Result<Self::Response, Self::Error> {
         let tls_acceptor_data = stream
             .extensions()
             .get::<TlsAcceptorData>()
@@ -107,7 +107,7 @@ where
         stream.extensions_mut().insert(negotiated_tls_params);
         stream.extensions_mut().insert(secure_transport);
 
-        self.inner.serve(ctx, stream).await.map_err(|err| {
+        self.inner.serve(stream).await.map_err(|err| {
             OpaqueError::from_boxed(err.into())
                 .context("rustls acceptor: service error")
                 .into_boxed()

@@ -22,7 +22,7 @@
 //! You should see in all the above examples the responses from the server.
 
 use rama::{
-    Context, Layer, Service,
+    Layer, Service,
     error::{ErrorContext, OpaqueError},
     extensions::ExtensionsRef,
     http::{
@@ -113,7 +113,7 @@ fn new_http_mitm_proxy() -> impl Service<Request, Response = Response, Error = I
         .into_layer(service_fn(http_mitm_proxy))
 }
 
-async fn http_mitm_proxy(ctx: Context, req: Request) -> Result<Response, Infallible> {
+async fn http_mitm_proxy(req: Request) -> Result<Response, Infallible> {
     // This function will receive all requests going through this proxy,
     // be it sent via HTTP or HTTPS, both are equally visible. Hence... MITM
 
@@ -160,7 +160,7 @@ async fn http_mitm_proxy(ctx: Context, req: Request) -> Result<Response, Infalli
         ))
         .build();
 
-    match client.serve(ctx, req).await {
+    match client.serve(req).await {
         Ok(resp) => Ok(resp),
         Err(err) => {
             tracing::error!("error in client request: {err:?}");

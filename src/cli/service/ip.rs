@@ -3,7 +3,7 @@
 //! [`Service`]: crate::Service
 
 use crate::{
-    Context, Layer, Service,
+    Layer, Service,
     cli::ForwardKind,
     combinators::Either7,
     error::{BoxError, OpaqueError},
@@ -179,7 +179,7 @@ impl Service<Request> for HttpIpService {
     type Response = Response;
     type Error = BoxError;
 
-    async fn serve(&self, _ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
         let norm_req_path = req.uri().path().trim_matches('/');
         if !norm_req_path.is_empty() {
             tracing::debug!("unexpected request path '{norm_req_path}', redirect to root");
@@ -253,7 +253,7 @@ where
     type Response = ();
     type Error = BoxError;
 
-    async fn serve(&self, _ctx: Context, stream: Input) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, stream: Input) -> Result<Self::Response, Self::Error> {
         tracing::info!("connection received");
         let peer_ip = stream
             .extensions()

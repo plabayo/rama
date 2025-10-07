@@ -3,7 +3,7 @@
 use crate::Request;
 use crate::service::web::response;
 use crate::{Response, header};
-use rama_core::{Context, Service};
+use rama_core::Service;
 use std::{convert::Infallible, fmt, marker::PhantomData};
 
 /// Service that redirects all requests.
@@ -78,11 +78,7 @@ where
     type Response = Response<ResBody>;
     type Error = Infallible;
 
-    async fn serve(
-        &self,
-        _ctx: Context,
-        _req: Request<Body>,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, _req: Request<Body>) -> Result<Self::Response, Self::Error> {
         let mut res = Response::default();
         *res.status_mut() = self.resp.status_code();
         res.headers_mut()

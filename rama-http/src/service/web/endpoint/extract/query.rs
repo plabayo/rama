@@ -3,7 +3,6 @@
 use super::{FromRequestContextRefPair, OptionalFromRequestContextRefPair};
 use crate::request::Parts;
 use crate::utils::macros::define_http_rejection;
-use rama_core::Context;
 use serde::de::DeserializeOwned;
 
 /// Extractor that deserializes query strings into some type.
@@ -51,10 +50,7 @@ where
 {
     type Rejection = FailedToDeserializeQueryString;
 
-    async fn from_request_context_ref_pair(
-        _ctx: &Context,
-        parts: &Parts,
-    ) -> Result<Self, Self::Rejection> {
+    async fn from_request_context_ref_pair(parts: &Parts) -> Result<Self, Self::Rejection> {
         let query = parts.uri.query().unwrap_or_default();
         Self::parse_query_str(query)
     }
@@ -66,10 +62,7 @@ where
 {
     type Rejection = FailedToDeserializeQueryString;
 
-    async fn from_request_context_ref_pair(
-        _ctx: &Context,
-        parts: &Parts,
-    ) -> Result<Option<Self>, Self::Rejection> {
+    async fn from_request_context_ref_pair(parts: &Parts) -> Result<Option<Self>, Self::Rejection> {
         match parts.uri.query() {
             Some(query) => {
                 let params = serde_html_form::from_str(query)

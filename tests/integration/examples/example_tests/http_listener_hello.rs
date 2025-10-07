@@ -1,5 +1,4 @@
 use super::utils;
-use rama::Context;
 use rama::http::BodyExtractExt;
 use serde_json::{self, Value, json};
 
@@ -12,7 +11,7 @@ async fn test_http_listener_hello() {
 
     let value = runner
         .post("http://127.0.0.1:62007/foo/bar")
-        .send(Context::default())
+        .send()
         .await
         .unwrap()
         .try_into_json::<Value>()

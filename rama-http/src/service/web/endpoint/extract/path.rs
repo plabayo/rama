@@ -4,7 +4,6 @@ use super::FromRequestContextRefPair;
 use crate::matcher::{UriParams, UriParamsDeserializeError};
 use crate::request::Parts;
 use crate::utils::macros::{composite_http_rejection, define_http_rejection};
-use rama_core::Context;
 use serde::de::DeserializeOwned;
 use std::ops::{Deref, DerefMut};
 
@@ -47,10 +46,7 @@ where
 {
     type Rejection = PathRejection;
 
-    async fn from_request_context_ref_pair(
-        _ctx: &Context,
-        parts: &Parts,
-    ) -> Result<Self, Self::Rejection> {
+    async fn from_request_context_ref_pair(parts: &Parts) -> Result<Self, Self::Rejection> {
         match parts.extensions.get::<UriParams>() {
             Some(params) => {
                 let params = params.deserialize::<T>()?;
@@ -103,7 +99,7 @@ mod tests {
             .uri("http://example.com/a/hello/42/b/extra");
         let req = builder.body(Body::empty()).unwrap();
 
-        let resp = svc.serve(Context::default(), req).await.unwrap();
+        let resp = svc.serve(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
     }
 }

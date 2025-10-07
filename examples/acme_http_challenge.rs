@@ -45,7 +45,7 @@
 //! TODO: once Rama has an ACME server implementation (https://github.com/plabayo/rama/issues/649) migrate
 //! this example to use that instead of Pebble so we can test everything automatically
 use rama::{
-    Context, Layer, Service,
+    Layer, Service,
     crypto::{
         dep::{
             aws_lc_rs::rand::SystemRandom,
@@ -123,18 +123,15 @@ async fn main() {
         .build()
         .boxed();
 
-    let client = AcmeClient::new(TEST_DIRECTORY_URL, client, Context::default())
+    let client = AcmeClient::new(TEST_DIRECTORY_URL, client)
         .await
         .expect("create acme client");
 
     let account = client
-        .create_account(
-            Context::default(),
-            CreateAccountOptions {
-                terms_of_service_agreed: Some(true),
-                ..Default::default()
-            },
-        )
+        .create_account(CreateAccountOptions {
+            terms_of_service_agreed: Some(true),
+            ..Default::default()
+        })
         .await
         .expect("create account");
 
@@ -148,23 +145,20 @@ async fn main() {
 
     // Load account associated with the given account key, if acme server doesn't have this account yet this will fail
     let account = client
-        .load_account(Context::default(), account_key)
+        .load_account(account_key)
         .await
         .expect("create account");
 
     let mut order = account
-        .new_order(
-            Context::default(),
-            NewOrderPayload {
-                identifiers: vec![Identifier::dns("example.com")],
-                ..Default::default()
-            },
-        )
+        .new_order(NewOrderPayload {
+            identifiers: vec![Identifier::dns("example.com")],
+            ..Default::default()
+        })
         .await
         .expect("create order");
 
     let authz = order
-        .get_authorizations(Context::default())
+        .get_authorizations()
         .await
         .expect("get order authorizations");
 
@@ -196,7 +190,7 @@ async fn main() {
             .listen(
                 ADDR,
                 (TraceLayer::new_for_http(), CompressionLayer::new()).into_layer(
-                    WebService::default().get(&path, move |_ctx: Context| {
+                    WebService::default().get(&path, move || {
                         let state = state.clone();
                         std::future::ready((
                             Headers::single(ContentType::octet_stream()),
@@ -212,12 +206,12 @@ async fn main() {
     sleep(Duration::from_millis(1000)).await;
 
     order
-        .finish_challenge(Context::default(), &mut challenge)
+        .finish_challenge(&mut challenge)
         .await
         .expect("finish challenge");
 
     let state = order
-        .wait_until_all_authorizations_finished(Context::default())
+        .wait_until_all_authorizations_finished()
         .await
         .expect("wait until authorizations are finished");
 
@@ -225,13 +219,10 @@ async fn main() {
 
     let (key_pair, csr) = create_csr();
 
-    order
-        .finalize(Context::default(), csr.der())
-        .await
-        .expect("finalize order");
+    order.finalize(csr.der()).await.expect("finalize order");
 
     let cert = order
-        .download_certificate_as_pem_stack(Context::default())
+        .download_certificate_as_pem_stack()
         .await
         .expect("download certificate");
 

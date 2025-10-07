@@ -1,6 +1,6 @@
 use super::utils;
 use rama::{
-    Context, Service,
+    Service,
     http::{Body, BodyExtractExt, Method, Request, client::HttpConnector},
     net::client::{ConnectorService, EstablishedClientConnection},
     unix::client::UnixConnector,
@@ -22,10 +22,10 @@ async fn test_unix_socket_http() {
                 .expect("build request");
 
             match HttpConnector::new(UnixConnector::fixed("/tmp/rama_example_unix_http.socket"))
-                .connect(Context::default(), request)
+                .connect(request)
                 .await
             {
-                Ok(EstablishedClientConnection { conn, req, .. }) => return Some((req, conn)),
+                Ok(EstablishedClientConnection { conn, req }) => return Some((req, conn)),
                 Err(e) => {
                     eprintln!("unix connect error: {e}");
                     tokio::time::sleep(std::time::Duration::from_millis(500 + 250 * i)).await;
@@ -38,7 +38,7 @@ async fn test_unix_socket_http() {
     .unwrap();
 
     let response = svc
-        .serve(Context::default(), request)
+        .serve(request)
         .await
         .unwrap()
         .try_into_string()

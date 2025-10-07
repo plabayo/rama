@@ -1,6 +1,5 @@
 use super::utils;
 use rama::{
-    Context,
     http::body::util::BodyExt,
     http::headers::UserAgent,
     http::{BodyExtractExt, StatusCode},
@@ -18,7 +17,7 @@ async fn test_http_anti_bot_zip_bomb() {
     // test index
     {
         let req_uri = format!("http://{ADDRESS}");
-        let response = runner.get(req_uri).send(Context::default()).await.unwrap();
+        let response = runner.get(req_uri).send().await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let homepage = response.try_into_string().await.unwrap();
         assert!(homepage.contains("<h1>Rates Catalogue</h1>"));
@@ -28,7 +27,7 @@ async fn test_http_anti_bot_zip_bomb() {
 
     let real_file_content = {
         let req_uri = format!("http://{ADDRESS}/api/rates/2024.csv");
-        let response = runner.get(req_uri).send(Context::default()).await.unwrap();
+        let response = runner.get(req_uri).send().await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let content = response.into_body().collect().await.unwrap().to_bytes();
         assert!(!content.is_empty());
@@ -41,7 +40,7 @@ async fn test_http_anti_bot_zip_bomb() {
         let response = runner
             .get(req_uri)
             .typed_header(UserAgent::from_static("curl/42"))
-            .send(Context::default())
+            .send()
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);

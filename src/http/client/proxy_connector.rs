@@ -89,11 +89,7 @@ where
 
     type Error = BoxError;
 
-    async fn serve(
-        &self,
-        ctx: rama_core::Context,
-        req: Request,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
         let proxy = req.extensions().get::<ProxyAddress>();
 
         match proxy {
@@ -102,11 +98,11 @@ where
                     return Err("proxy required but none is defined".into());
                 }
                 tracing::trace!("no proxy detected in ctx, using inner connector");
-                let EstablishedClientConnection { ctx, req, conn } =
-                    self.inner.connect(ctx, req).await.map_err(Into::into)?;
+                let EstablishedClientConnection { req, conn } =
+                    self.inner.connect(req).await.map_err(Into::into)?;
 
                 let conn = MaybeProxiedConnection::direct(conn);
-                Ok(EstablishedClientConnection { ctx, req, conn })
+                Ok(EstablishedClientConnection { req, conn })
             }
             Some(proxy) => {
                 let protocol = proxy.protocol.as_ref();
@@ -119,18 +115,16 @@ where
 
                 if protocol.is_socks5() {
                     tracing::trace!("using socks proxy connector");
-                    let EstablishedClientConnection { ctx, req, conn } =
-                        self.socks.connect(ctx, req).await?;
+                    let EstablishedClientConnection { req, conn } = self.socks.connect(req).await?;
 
                     let conn = MaybeProxiedConnection::socks(conn);
-                    Ok(EstablishedClientConnection { ctx, req, conn })
+                    Ok(EstablishedClientConnection { req, conn })
                 } else if protocol.is_http() {
                     tracing::trace!("using http proxy connector");
-                    let EstablishedClientConnection { ctx, req, conn } =
-                        self.http.connect(ctx, req).await?;
+                    let EstablishedClientConnection { req, conn } = self.http.connect(req).await?;
 
                     let conn = MaybeProxiedConnection::http(conn);
-                    Ok(EstablishedClientConnection { ctx, req, conn })
+                    Ok(EstablishedClientConnection { req, conn })
                 } else {
                     Err(OpaqueError::from_display(format!(
                         "received unsupport proxy protocol {protocol:?}"

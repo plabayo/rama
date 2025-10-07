@@ -5,7 +5,6 @@ use super::{FromRequestContextRefPair, OptionalFromRequestContextRefPair};
 use crate::headers::{self, HeaderDecode};
 use crate::request::Parts;
 use crate::{HeaderName, Response};
-use rama_core::Context;
 use std::ops::Deref;
 
 /// Extractor to get a TypedHeader from the request.
@@ -29,10 +28,7 @@ where
 {
     type Rejection = TypedHeaderRejection;
 
-    async fn from_request_context_ref_pair(
-        _ctx: &Context,
-        parts: &Parts,
-    ) -> Result<Self, Self::Rejection> {
+    async fn from_request_context_ref_pair(parts: &Parts) -> Result<Self, Self::Rejection> {
         let mut values = parts.headers.get_all(H::name()).iter();
         let is_missing = values.size_hint() == (0, Some(0));
         H::decode(&mut values)
@@ -55,10 +51,7 @@ where
 {
     type Rejection = TypedHeaderRejection;
 
-    async fn from_request_context_ref_pair(
-        _ctx: &Context,
-        parts: &Parts,
-    ) -> Result<Option<Self>, Self::Rejection> {
+    async fn from_request_context_ref_pair(parts: &Parts) -> Result<Option<Self>, Self::Rejection> {
         let mut values = parts.headers.get_all(H::name()).iter();
         let is_missing = values.size_hint() == (0, Some(0));
         match H::decode(&mut values) {
@@ -164,7 +157,6 @@ mod tests {
         headers::ContentType,
         service::web::extract::{FromRequestContextRefPair, TypedHeader},
     };
-    use rama_core::Context;
 
     #[tokio::test]
     async fn test_get_typed_header() {
@@ -175,10 +167,8 @@ mod tests {
 
         let (parts, _) = req.into_parts();
 
-        let ctx = Context::default();
-
         let typed_header =
-            match TypedHeader::<ContentType>::from_request_context_ref_pair(&ctx, &parts).await {
+            match TypedHeader::<ContentType>::from_request_context_ref_pair(&parts).await {
                 Ok(typed_header) => Some(typed_header),
                 Err(_) => panic!("Expected Ok"),
             };

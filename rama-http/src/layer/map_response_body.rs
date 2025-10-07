@@ -7,7 +7,7 @@
 //! use rama_http::{Body, Request, Response, StreamingBody, body::{Frame, SizeHint}};
 //! use std::convert::Infallible;
 //! use std::{pin::Pin, task::{Context, Poll}};
-//! use rama_core::{Layer, Service, context};
+//! use rama_core::{Layer, Service};
 //! use rama_core::service::service_fn;
 //! use rama_http::layer::map_response_body::MapResponseBodyLayer;
 //! use rama_core::error::BoxError;
@@ -74,13 +74,13 @@
 //! // Call the service
 //! let request = Request::new(Body::from("foobar"));
 //!
-//! svc.serve(context::Context::default(), request).await?;
+//! svc.serve(request).await?;
 //! # Ok(())
 //! # }
 //! ```
 
 use crate::{Request, Response};
-use rama_core::{Context, Layer, Service};
+use rama_core::{Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
 
@@ -155,12 +155,8 @@ where
     type Response = Response<NewResBody>;
     type Error = S::Error;
 
-    async fn serve(
-        &self,
-        ctx: Context,
-        req: Request<ReqBody>,
-    ) -> Result<Self::Response, Self::Error> {
-        let res = self.inner.serve(ctx, req).await?;
+    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
+        let res = self.inner.serve(req).await?;
         Ok(res.map(self.f.clone()))
     }
 }

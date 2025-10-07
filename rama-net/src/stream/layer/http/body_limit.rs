@@ -1,4 +1,4 @@
-use rama_core::{Context, Layer, Service, extensions::ExtensionsMut, stream::Stream};
+use rama_core::{Layer, Service, extensions::ExtensionsMut, stream::Stream};
 use rama_http_types::BodyLimit;
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
@@ -125,9 +125,9 @@ where
     type Response = S::Response;
     type Error = S::Error;
 
-    async fn serve(&self, ctx: Context, mut stream: IO) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut stream: IO) -> Result<Self::Response, Self::Error> {
         stream.extensions_mut().insert(self.limit);
-        self.inner.serve(ctx, stream).await
+        self.inner.serve(stream).await
     }
 }
 

@@ -1,5 +1,5 @@
+use crate::Service;
 use crate::error::BoxError;
-use crate::{Context, Service};
 
 use super::RequestInspector;
 
@@ -9,10 +9,10 @@ where
     RequestIn: Send + 'static,
 {
     type Error = BoxError;
-    type Response = (Context, I1::RequestOut);
+    type Response = I1::RequestOut;
 
-    async fn serve(&self, ctx: Context, req: RequestIn) -> Result<Self::Response, Self::Error> {
-        self.0.inspect_request(ctx, req).await.map_err(Into::into)
+    async fn serve(&self, req: RequestIn) -> Result<Self::Response, Self::Error> {
+        self.0.inspect_request(req).await.map_err(Into::into)
     }
 }
 
@@ -23,11 +23,11 @@ where
     RequestIn: Send + 'static,
 {
     type Error = BoxError;
-    type Response = (Context, I2::RequestOut);
+    type Response = I2::RequestOut;
 
-    async fn serve(&self, ctx: Context, req: RequestIn) -> Result<Self::Response, Self::Error> {
-        let (ctx, req) = self.0.inspect_request(ctx, req).await.map_err(Into::into)?;
-        self.1.inspect_request(ctx, req).await.map_err(Into::into)
+    async fn serve(&self, req: RequestIn) -> Result<Self::Response, Self::Error> {
+        let req = self.0.inspect_request(req).await.map_err(Into::into)?;
+        self.1.inspect_request(req).await.map_err(Into::into)
     }
 }
 
@@ -39,12 +39,12 @@ where
     RequestIn: Send + 'static,
 {
     type Error = BoxError;
-    type Response = (Context, I3::RequestOut);
+    type Response = I3::RequestOut;
 
-    async fn serve(&self, ctx: Context, req: RequestIn) -> Result<Self::Response, Self::Error> {
-        let (ctx, req) = self.0.inspect_request(ctx, req).await.map_err(Into::into)?;
-        let (ctx, req) = self.1.inspect_request(ctx, req).await.map_err(Into::into)?;
-        self.2.inspect_request(ctx, req).await.map_err(Into::into)
+    async fn serve(&self, req: RequestIn) -> Result<Self::Response, Self::Error> {
+        let req = self.0.inspect_request(req).await.map_err(Into::into)?;
+        let req = self.1.inspect_request(req).await.map_err(Into::into)?;
+        self.2.inspect_request(req).await.map_err(Into::into)
     }
 }
 
@@ -57,13 +57,13 @@ where
     RequestIn: Send + 'static,
 {
     type Error = BoxError;
-    type Response = (Context, I4::RequestOut);
+    type Response = I4::RequestOut;
 
-    async fn serve(&self, ctx: Context, req: RequestIn) -> Result<Self::Response, Self::Error> {
-        let (ctx, req) = self.0.inspect_request(ctx, req).await.map_err(Into::into)?;
-        let (ctx, req) = self.1.inspect_request(ctx, req).await.map_err(Into::into)?;
-        let (ctx, req) = self.2.inspect_request(ctx, req).await.map_err(Into::into)?;
-        self.3.inspect_request(ctx, req).await.map_err(Into::into)
+    async fn serve(&self, req: RequestIn) -> Result<Self::Response, Self::Error> {
+        let req = self.0.inspect_request(req).await.map_err(Into::into)?;
+        let req = self.1.inspect_request(req).await.map_err(Into::into)?;
+        let req = self.2.inspect_request(req).await.map_err(Into::into)?;
+        self.3.inspect_request(req).await.map_err(Into::into)
     }
 }
 
@@ -77,14 +77,14 @@ where
     RequestIn: Send + 'static,
 {
     type Error = BoxError;
-    type Response = (Context, I5::RequestOut);
+    type Response = I5::RequestOut;
 
-    async fn serve(&self, ctx: Context, req: RequestIn) -> Result<Self::Response, Self::Error> {
-        let (ctx, req) = self.0.inspect_request(ctx, req).await.map_err(Into::into)?;
-        let (ctx, req) = self.1.inspect_request(ctx, req).await.map_err(Into::into)?;
-        let (ctx, req) = self.2.inspect_request(ctx, req).await.map_err(Into::into)?;
-        let (ctx, req) = self.3.inspect_request(ctx, req).await.map_err(Into::into)?;
-        self.4.inspect_request(ctx, req).await.map_err(Into::into)
+    async fn serve(&self, req: RequestIn) -> Result<Self::Response, Self::Error> {
+        let req = self.0.inspect_request(req).await.map_err(Into::into)?;
+        let req = self.1.inspect_request(req).await.map_err(Into::into)?;
+        let req = self.2.inspect_request(req).await.map_err(Into::into)?;
+        let req = self.3.inspect_request(req).await.map_err(Into::into)?;
+        self.4.inspect_request(req).await.map_err(Into::into)
     }
 }
 
@@ -99,15 +99,15 @@ where
     RequestIn: Send + 'static,
 {
     type Error = BoxError;
-    type Response = (Context, I6::RequestOut);
+    type Response = I6::RequestOut;
 
-    async fn serve(&self, ctx: Context, req: RequestIn) -> Result<Self::Response, Self::Error> {
-        let (ctx, req) = self.0.inspect_request(ctx, req).await.map_err(Into::into)?;
-        let (ctx, req) = self.1.inspect_request(ctx, req).await.map_err(Into::into)?;
-        let (ctx, req) = self.2.inspect_request(ctx, req).await.map_err(Into::into)?;
-        let (ctx, req) = self.3.inspect_request(ctx, req).await.map_err(Into::into)?;
-        let (ctx, req) = self.4.inspect_request(ctx, req).await.map_err(Into::into)?;
-        self.5.inspect_request(ctx, req).await.map_err(Into::into)
+    async fn serve(&self, req: RequestIn) -> Result<Self::Response, Self::Error> {
+        let req = self.0.inspect_request(req).await.map_err(Into::into)?;
+        let req = self.1.inspect_request(req).await.map_err(Into::into)?;
+        let req = self.2.inspect_request(req).await.map_err(Into::into)?;
+        let req = self.3.inspect_request(req).await.map_err(Into::into)?;
+        let req = self.4.inspect_request(req).await.map_err(Into::into)?;
+        self.5.inspect_request(req).await.map_err(Into::into)
     }
 }
 
@@ -123,16 +123,16 @@ where
     RequestIn: Send + 'static,
 {
     type Error = BoxError;
-    type Response = (Context, I7::RequestOut);
+    type Response = I7::RequestOut;
 
-    async fn serve(&self, ctx: Context, req: RequestIn) -> Result<Self::Response, Self::Error> {
-        let (ctx, req) = self.0.inspect_request(ctx, req).await.map_err(Into::into)?;
-        let (ctx, req) = self.1.inspect_request(ctx, req).await.map_err(Into::into)?;
-        let (ctx, req) = self.2.inspect_request(ctx, req).await.map_err(Into::into)?;
-        let (ctx, req) = self.3.inspect_request(ctx, req).await.map_err(Into::into)?;
-        let (ctx, req) = self.4.inspect_request(ctx, req).await.map_err(Into::into)?;
-        let (ctx, req) = self.5.inspect_request(ctx, req).await.map_err(Into::into)?;
-        self.6.inspect_request(ctx, req).await.map_err(Into::into)
+    async fn serve(&self, req: RequestIn) -> Result<Self::Response, Self::Error> {
+        let req = self.0.inspect_request(req).await.map_err(Into::into)?;
+        let req = self.1.inspect_request(req).await.map_err(Into::into)?;
+        let req = self.2.inspect_request(req).await.map_err(Into::into)?;
+        let req = self.3.inspect_request(req).await.map_err(Into::into)?;
+        let req = self.4.inspect_request(req).await.map_err(Into::into)?;
+        let req = self.5.inspect_request(req).await.map_err(Into::into)?;
+        self.6.inspect_request(req).await.map_err(Into::into)
     }
 }
 
@@ -150,17 +150,17 @@ where
     RequestIn: Send + 'static,
 {
     type Error = BoxError;
-    type Response = (Context, I8::RequestOut);
+    type Response = I8::RequestOut;
 
-    async fn serve(&self, ctx: Context, req: RequestIn) -> Result<Self::Response, Self::Error> {
-        let (ctx, req) = self.0.inspect_request(ctx, req).await.map_err(Into::into)?;
-        let (ctx, req) = self.1.inspect_request(ctx, req).await.map_err(Into::into)?;
-        let (ctx, req) = self.2.inspect_request(ctx, req).await.map_err(Into::into)?;
-        let (ctx, req) = self.3.inspect_request(ctx, req).await.map_err(Into::into)?;
-        let (ctx, req) = self.4.inspect_request(ctx, req).await.map_err(Into::into)?;
-        let (ctx, req) = self.5.inspect_request(ctx, req).await.map_err(Into::into)?;
-        let (ctx, req) = self.6.inspect_request(ctx, req).await.map_err(Into::into)?;
-        self.7.inspect_request(ctx, req).await.map_err(Into::into)
+    async fn serve(&self, req: RequestIn) -> Result<Self::Response, Self::Error> {
+        let req = self.0.inspect_request(req).await.map_err(Into::into)?;
+        let req = self.1.inspect_request(req).await.map_err(Into::into)?;
+        let req = self.2.inspect_request(req).await.map_err(Into::into)?;
+        let req = self.3.inspect_request(req).await.map_err(Into::into)?;
+        let req = self.4.inspect_request(req).await.map_err(Into::into)?;
+        let req = self.5.inspect_request(req).await.map_err(Into::into)?;
+        let req = self.6.inspect_request(req).await.map_err(Into::into)?;
+        self.7.inspect_request(req).await.map_err(Into::into)
     }
 }
 
@@ -179,18 +179,18 @@ where
     RequestIn: Send + 'static,
 {
     type Error = BoxError;
-    type Response = (Context, I9::RequestOut);
+    type Response = I9::RequestOut;
 
-    async fn serve(&self, ctx: Context, req: RequestIn) -> Result<Self::Response, Self::Error> {
-        let (ctx, req) = self.0.inspect_request(ctx, req).await.map_err(Into::into)?;
-        let (ctx, req) = self.1.inspect_request(ctx, req).await.map_err(Into::into)?;
-        let (ctx, req) = self.2.inspect_request(ctx, req).await.map_err(Into::into)?;
-        let (ctx, req) = self.3.inspect_request(ctx, req).await.map_err(Into::into)?;
-        let (ctx, req) = self.4.inspect_request(ctx, req).await.map_err(Into::into)?;
-        let (ctx, req) = self.5.inspect_request(ctx, req).await.map_err(Into::into)?;
-        let (ctx, req) = self.6.inspect_request(ctx, req).await.map_err(Into::into)?;
-        let (ctx, req) = self.7.inspect_request(ctx, req).await.map_err(Into::into)?;
-        self.8.inspect_request(ctx, req).await.map_err(Into::into)
+    async fn serve(&self, req: RequestIn) -> Result<Self::Response, Self::Error> {
+        let req = self.0.inspect_request(req).await.map_err(Into::into)?;
+        let req = self.1.inspect_request(req).await.map_err(Into::into)?;
+        let req = self.2.inspect_request(req).await.map_err(Into::into)?;
+        let req = self.3.inspect_request(req).await.map_err(Into::into)?;
+        let req = self.4.inspect_request(req).await.map_err(Into::into)?;
+        let req = self.5.inspect_request(req).await.map_err(Into::into)?;
+        let req = self.6.inspect_request(req).await.map_err(Into::into)?;
+        let req = self.7.inspect_request(req).await.map_err(Into::into)?;
+        self.8.inspect_request(req).await.map_err(Into::into)
     }
 }
 
@@ -210,19 +210,19 @@ where
     RequestIn: Send + 'static,
 {
     type Error = BoxError;
-    type Response = (Context, I10::RequestOut);
+    type Response = I10::RequestOut;
 
-    async fn serve(&self, ctx: Context, req: RequestIn) -> Result<Self::Response, Self::Error> {
-        let (ctx, req) = self.0.inspect_request(ctx, req).await.map_err(Into::into)?;
-        let (ctx, req) = self.1.inspect_request(ctx, req).await.map_err(Into::into)?;
-        let (ctx, req) = self.2.inspect_request(ctx, req).await.map_err(Into::into)?;
-        let (ctx, req) = self.3.inspect_request(ctx, req).await.map_err(Into::into)?;
-        let (ctx, req) = self.4.inspect_request(ctx, req).await.map_err(Into::into)?;
-        let (ctx, req) = self.5.inspect_request(ctx, req).await.map_err(Into::into)?;
-        let (ctx, req) = self.6.inspect_request(ctx, req).await.map_err(Into::into)?;
-        let (ctx, req) = self.7.inspect_request(ctx, req).await.map_err(Into::into)?;
-        let (ctx, req) = self.8.inspect_request(ctx, req).await.map_err(Into::into)?;
-        self.9.inspect_request(ctx, req).await.map_err(Into::into)
+    async fn serve(&self, req: RequestIn) -> Result<Self::Response, Self::Error> {
+        let req = self.0.inspect_request(req).await.map_err(Into::into)?;
+        let req = self.1.inspect_request(req).await.map_err(Into::into)?;
+        let req = self.2.inspect_request(req).await.map_err(Into::into)?;
+        let req = self.3.inspect_request(req).await.map_err(Into::into)?;
+        let req = self.4.inspect_request(req).await.map_err(Into::into)?;
+        let req = self.5.inspect_request(req).await.map_err(Into::into)?;
+        let req = self.6.inspect_request(req).await.map_err(Into::into)?;
+        let req = self.7.inspect_request(req).await.map_err(Into::into)?;
+        let req = self.8.inspect_request(req).await.map_err(Into::into)?;
+        self.9.inspect_request(req).await.map_err(Into::into)
     }
 }
 
@@ -243,20 +243,20 @@ where
     RequestIn: Send + 'static,
 {
     type Error = BoxError;
-    type Response = (Context, I11::RequestOut);
+    type Response = I11::RequestOut;
 
-    async fn serve(&self, ctx: Context, req: RequestIn) -> Result<Self::Response, Self::Error> {
-        let (ctx, req) = self.0.inspect_request(ctx, req).await.map_err(Into::into)?;
-        let (ctx, req) = self.1.inspect_request(ctx, req).await.map_err(Into::into)?;
-        let (ctx, req) = self.2.inspect_request(ctx, req).await.map_err(Into::into)?;
-        let (ctx, req) = self.3.inspect_request(ctx, req).await.map_err(Into::into)?;
-        let (ctx, req) = self.4.inspect_request(ctx, req).await.map_err(Into::into)?;
-        let (ctx, req) = self.5.inspect_request(ctx, req).await.map_err(Into::into)?;
-        let (ctx, req) = self.6.inspect_request(ctx, req).await.map_err(Into::into)?;
-        let (ctx, req) = self.7.inspect_request(ctx, req).await.map_err(Into::into)?;
-        let (ctx, req) = self.8.inspect_request(ctx, req).await.map_err(Into::into)?;
-        let (ctx, req) = self.9.inspect_request(ctx, req).await.map_err(Into::into)?;
-        self.10.inspect_request(ctx, req).await.map_err(Into::into)
+    async fn serve(&self, req: RequestIn) -> Result<Self::Response, Self::Error> {
+        let req = self.0.inspect_request(req).await.map_err(Into::into)?;
+        let req = self.1.inspect_request(req).await.map_err(Into::into)?;
+        let req = self.2.inspect_request(req).await.map_err(Into::into)?;
+        let req = self.3.inspect_request(req).await.map_err(Into::into)?;
+        let req = self.4.inspect_request(req).await.map_err(Into::into)?;
+        let req = self.5.inspect_request(req).await.map_err(Into::into)?;
+        let req = self.6.inspect_request(req).await.map_err(Into::into)?;
+        let req = self.7.inspect_request(req).await.map_err(Into::into)?;
+        let req = self.8.inspect_request(req).await.map_err(Into::into)?;
+        let req = self.9.inspect_request(req).await.map_err(Into::into)?;
+        self.10.inspect_request(req).await.map_err(Into::into)
     }
 }
 
@@ -278,24 +278,20 @@ where
     RequestIn: Send + 'static,
 {
     type Error = BoxError;
-    type Response = (Context, I12::RequestOut);
+    type Response = I12::RequestOut;
 
-    async fn serve(&self, ctx: Context, req: RequestIn) -> Result<Self::Response, Self::Error> {
-        let (ctx, req) = self.0.inspect_request(ctx, req).await.map_err(Into::into)?;
-        let (ctx, req) = self.1.inspect_request(ctx, req).await.map_err(Into::into)?;
-        let (ctx, req) = self.2.inspect_request(ctx, req).await.map_err(Into::into)?;
-        let (ctx, req) = self.3.inspect_request(ctx, req).await.map_err(Into::into)?;
-        let (ctx, req) = self.4.inspect_request(ctx, req).await.map_err(Into::into)?;
-        let (ctx, req) = self.5.inspect_request(ctx, req).await.map_err(Into::into)?;
-        let (ctx, req) = self.6.inspect_request(ctx, req).await.map_err(Into::into)?;
-        let (ctx, req) = self.7.inspect_request(ctx, req).await.map_err(Into::into)?;
-        let (ctx, req) = self.8.inspect_request(ctx, req).await.map_err(Into::into)?;
-        let (ctx, req) = self.9.inspect_request(ctx, req).await.map_err(Into::into)?;
-        let (ctx, req) = self
-            .10
-            .inspect_request(ctx, req)
-            .await
-            .map_err(Into::into)?;
-        self.11.inspect_request(ctx, req).await.map_err(Into::into)
+    async fn serve(&self, req: RequestIn) -> Result<Self::Response, Self::Error> {
+        let req = self.0.inspect_request(req).await.map_err(Into::into)?;
+        let req = self.1.inspect_request(req).await.map_err(Into::into)?;
+        let req = self.2.inspect_request(req).await.map_err(Into::into)?;
+        let req = self.3.inspect_request(req).await.map_err(Into::into)?;
+        let req = self.4.inspect_request(req).await.map_err(Into::into)?;
+        let req = self.5.inspect_request(req).await.map_err(Into::into)?;
+        let req = self.6.inspect_request(req).await.map_err(Into::into)?;
+        let req = self.7.inspect_request(req).await.map_err(Into::into)?;
+        let req = self.8.inspect_request(req).await.map_err(Into::into)?;
+        let req = self.9.inspect_request(req).await.map_err(Into::into)?;
+        let req = self.10.inspect_request(req).await.map_err(Into::into)?;
+        self.11.inspect_request(req).await.map_err(Into::into)
     }
 }

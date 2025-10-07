@@ -1,4 +1,4 @@
-use crate::{Context, Layer, Service};
+use crate::{Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
 
@@ -64,9 +64,9 @@ where
     type Error = S::Error;
 
     #[inline]
-    async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
         let level = self.level;
-        let res = self.inner.serve(ctx, req).await;
+        let res = self.inner.serve(req).await;
         if let Err(ref err) = res {
             match level {
                 tracing::Level::TRACE => tracing::trace!("rama service failed: {err}"),

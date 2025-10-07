@@ -1,9 +1,7 @@
 use std::{fmt, io, time::Duration};
 
 use rama_core::telemetry::tracing::{self, Instrument};
-use rama_core::{
-    Context, Service, error::BoxError, layer::timeout::DefaultTimeout, stream::Stream,
-};
+use rama_core::{Service, error::BoxError, layer::timeout::DefaultTimeout, stream::Stream};
 use rama_net::{
     address::{Authority, Host, SocketAddress},
     proxy::{ProxyRequest, StreamForwardService},
@@ -32,7 +30,7 @@ impl<S, C> Socks5Binder<S> for C where C: Socks5BinderSeal<S> {}
 pub trait Socks5BinderSeal<S>: Send + Sync + 'static {
     fn accept_bind(
         &self,
-        ctx: Context,
+
         stream: S,
         destination: Authority,
     ) -> impl Future<Output = Result<(), Error>> + Send + '_;
@@ -42,12 +40,7 @@ impl<S> Socks5BinderSeal<S> for ()
 where
     S: Stream + Unpin,
 {
-    async fn accept_bind(
-        &self,
-        _ctx: Context,
-        mut stream: S,
-        destination: Authority,
-    ) -> Result<(), Error> {
+    async fn accept_bind(&self, mut stream: S, destination: Authority) -> Result<(), Error> {
         tracing::debug!(
             server.address = %destination.host(),
             server.port = %destination.port(),
@@ -201,16 +194,12 @@ impl<A: Clone, S: Clone> Clone for Binder<A, S> {
 pub struct DefaultAcceptorFactory;
 
 impl Service<Interface> for DefaultAcceptorFactory {
-    type Response = (TcpListener, Context);
+    type Response = TcpListener;
     type Error = BoxError;
 
-    async fn serve(
-        &self,
-        ctx: Context,
-        interface: Interface,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, interface: Interface) -> Result<Self::Response, Self::Error> {
         let acceptor = TcpListener::bind(interface).await?;
-        Ok((acceptor, ctx))
+        Ok(acceptor)
     }
 }
 
@@ -266,7 +255,6 @@ where
 {
     async fn accept_bind(
         &self,
-        ctx: Context,
         mut stream: S,
         requested_bind_address: Authority,
     ) -> Result<(), Error> {
@@ -301,7 +289,7 @@ where
             requested_interface.into()
         };
 
-        let (acceptor, ctx) = match self.acceptor.bind(ctx, bind_interface.clone()).await {
+        let acceptor = match self.acceptor.bind(bind_interface.clone()).await {
             Ok(twin) => twin,
             Err(err) => {
                 let err = err.into();
@@ -398,13 +386,10 @@ where
         );
 
         self.service
-            .serve(
-                ctx,
-                ProxyRequest {
-                    source: stream,
-                    target,
-                },
-            )
+            .serve(ProxyRequest {
+                source: stream,
+                target,
+            })
             .instrument(tracing::trace_span!("socks5::bind::serve"))
             .await
             .map_err(|err| Error::service(err).with_context("serve bind pipe"))
@@ -497,7 +482,6 @@ mod test {
     {
         async fn accept_bind(
             &self,
-            _ctx: Context,
             mut stream: S,
             _requested_bind_address: Authority,
         ) -> Result<(), Error> {

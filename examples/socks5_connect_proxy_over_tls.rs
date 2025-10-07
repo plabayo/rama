@@ -21,7 +21,7 @@
 //! that goes through Tls, with the power of rama. Be empowered, be brave, go forward.
 
 use rama::{
-    Context, Service,
+    Service,
     extensions::ExtensionsMut,
     http::{
         Body, BodyExtractExt, Request,
@@ -104,11 +104,10 @@ async fn main() {
     });
 
     let EstablishedClientConnection {
-        ctx,
         req,
         conn: http_service,
     } = client
-        .connect(Context::default(), request)
+        .connect(request)
         .await
         .expect("establish a proxied connection ready to make http requests");
 
@@ -118,7 +117,7 @@ async fn main() {
     );
 
     let resp = http_service
-        .serve(ctx, req)
+        .serve(req)
         .await
         .expect("make http request via socks5 proxy within TLS tunnel")
         .try_into_string()

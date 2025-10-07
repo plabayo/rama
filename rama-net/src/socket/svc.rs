@@ -1,5 +1,5 @@
 use super::Interface;
-use rama_core::{Context, Service, error::BoxError};
+use rama_core::{Service, error::BoxError};
 
 /// Glue trait that is used as the trait bound for
 /// code creating/preparing a socket on one layer or another.
@@ -15,14 +15,13 @@ pub trait SocketService: Send + Sync + 'static {
     /// Create a binding to a Unix/Linux/Windows socket.
     fn bind(
         &self,
-        ctx: Context,
         interface: impl Into<Interface>,
-    ) -> impl Future<Output = Result<(Self::Socket, Context), Self::Error>> + Send + '_;
+    ) -> impl Future<Output = Result<Self::Socket, Self::Error>> + Send + '_;
 }
 
 impl<S, Socket> SocketService for S
 where
-    S: Service<Interface, Response = (Socket, Context), Error: Into<BoxError> + Send + 'static>,
+    S: Service<Interface, Response = Socket, Error: Into<BoxError> + Send + 'static>,
     Socket: Send + 'static,
 {
     type Socket = Socket;
@@ -30,9 +29,8 @@ where
 
     fn bind(
         &self,
-        ctx: Context,
         interface: impl Into<Interface>,
-    ) -> impl Future<Output = Result<(Self::Socket, Context), Self::Error>> + Send + '_ {
-        self.serve(ctx, interface.into())
+    ) -> impl Future<Output = Result<Self::Socket, Self::Error>> + Send + '_ {
+        self.serve(interface.into())
     }
 }

@@ -28,7 +28,7 @@
 
 // rama provides everything out of the box to build a complete web service.
 use rama::{
-    Context, Layer, Service,
+    Layer, Service,
     error::{BoxError, OpaqueError},
     extensions::ExtensionsRef,
     http::{
@@ -176,7 +176,7 @@ where
     type Response = S::Response;
     type Error = BoxError;
 
-    async fn serve(&self, ctx: Context, stream: TcpStream) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, stream: TcpStream) -> Result<Self::Response, Self::Error> {
         let ip_addr = stream
             .extensions()
             .get::<SocketInfo>()
@@ -197,6 +197,6 @@ where
             .into_boxed());
         }
         std::mem::drop(block_list);
-        self.0.serve(ctx, stream).await.map_err(Into::into)
+        self.0.serve(stream).await.map_err(Into::into)
     }
 }

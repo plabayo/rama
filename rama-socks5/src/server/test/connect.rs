@@ -20,7 +20,7 @@ async fn test_socks5_acceptor_no_auth_client_connect_failure_method_not_supporte
     let stream = ServiceInput::new(stream);
 
     let server = Socks5Acceptor::new();
-    let result = server.accept(Context::default(), stream).await;
+    let result = server.accept(stream).await;
     assert!(result.is_err());
 }
 
@@ -40,7 +40,7 @@ async fn test_socks5_acceptor_auth_flow_declined_connect_failure_method_not_supp
     let stream = ServiceInput::new(stream);
 
     let server = Socks5Acceptor::new();
-    let result = server.accept(Context::default(), stream).await;
+    let result = server.accept(stream).await;
     assert!(result.is_err());
 }
 
@@ -65,7 +65,7 @@ async fn test_socks5_acceptor_auth_flow_used_connect_failure_method_not_supporte
 
     let server = Socks5Acceptor::new()
         .with_authorizer(user::Basic::new_static("john", "secret").into_authorizer());
-    let result = server.accept(Context::default(), stream).await;
+    let result = server.accept(stream).await;
     assert!(result.is_err());
 }
 
@@ -90,7 +90,7 @@ async fn test_socks5_acceptor_auth_flow_username_only_connect_failure_method_not
 
     let server = Socks5Acceptor::new()
         .with_authorizer(user::Basic::new_static_insecure("john").into_authorizer());
-    let result = server.accept(Context::default(), stream).await;
+    let result = server.accept(stream).await;
     assert!(result.is_err());
 }
 
@@ -111,7 +111,7 @@ async fn test_socks5_acceptor_no_auth_client_connect_mock_failure() {
 
     let server =
         Socks5Acceptor::new().with_connector(MockConnector::new_err(ReplyKind::ConnectionRefused));
-    let result = server.accept(Context::default(), stream).await;
+    let result = server.accept(stream).await;
     assert!(result.is_err());
 }
 
@@ -132,7 +132,7 @@ async fn test_socks5_acceptor_no_auth_client_connect_mock_success_no_data() {
 
     let server =
         Socks5Acceptor::new().with_connector(MockConnector::new(Authority::local_ipv4(42)));
-    let result = server.accept(Context::default(), stream).await;
+    let result = server.accept(stream).await;
     assert!(result.is_ok());
 }
 
@@ -165,7 +165,7 @@ async fn test_socks5_acceptor_no_auth_client_connect_mock_success_with_data() {
                 .build(),
         ),
     );
-    let result = server.accept(Context::default(), stream).await;
+    let result = server.accept(stream).await;
     assert!(result.is_ok());
 }
 
@@ -204,7 +204,7 @@ async fn test_socks5_acceptor_with_auth_flow_client_connect_mock_success_with_da
                     .build(),
             ),
         );
-    let result = server.accept(Context::default(), stream).await;
+    let result = server.accept(stream).await;
     assert!(result.is_ok());
 }
 
@@ -243,6 +243,6 @@ async fn test_socks5_acceptor_with_auth_flow_username_only_client_connect_mock_s
                     .build(),
             ),
         );
-    let result = server.accept(Context::default(), stream).await;
+    let result = server.accept(stream).await;
     assert!(result.is_ok());
 }

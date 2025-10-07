@@ -8,7 +8,7 @@
 //! use rama_http::layer::set_status::SetStatusLayer;
 //! use rama_http::{Body, Request, Response, StatusCode};
 //! use rama_core::service::service_fn;
-//! use rama_core::{Context, Layer, Service};
+//! use rama_core::{Layer, Service};
 //! use rama_core::error::BoxError;
 //!
 //! async fn handle(req: Request) -> Result<Response, Infallible> {
@@ -26,7 +26,7 @@
 //! // Call the service.
 //! let request = Request::builder().body(Body::empty())?;
 //!
-//! let response = service.serve(Context::default(), request).await?;
+//! let response = service.serve(request).await?;
 //!
 //! assert_eq!(response.status(), StatusCode::NOT_FOUND);
 //! #
@@ -37,7 +37,7 @@
 use std::fmt;
 
 use crate::{Request, Response, StatusCode};
-use rama_core::{Context, Layer, Service};
+use rama_core::{Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
 
 /// Layer that applies [`SetStatus`] which overrides the status codes.
@@ -127,12 +127,8 @@ where
     type Response = S::Response;
     type Error = S::Error;
 
-    async fn serve(
-        &self,
-        ctx: Context,
-        req: Request<ReqBody>,
-    ) -> Result<Self::Response, Self::Error> {
-        let mut response = self.inner.serve(ctx, req).await?;
+    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
+        let mut response = self.inner.serve(req).await?;
         *response.status_mut() = self.status;
         Ok(response)
     }

@@ -7,7 +7,7 @@ use std::{
 
 use pin_project_lite::pin_project;
 use rama_core::{
-    Context, Service,
+    Service,
     error::{BoxError, ErrorContext, OpaqueError},
     extensions::ExtensionsMut,
     service::RejectService,
@@ -84,7 +84,7 @@ where
     type Response = Response;
     type Error = BoxError;
 
-    async fn serve(&self, ctx: Context, mut stream: Stream) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut stream: Stream) -> Result<Self::Response, Self::Error> {
         let mut peek_buf = [0u8; TLS_HEADER_PEEK_LEN];
         let n = stream
             .read(&mut peek_buf)
@@ -108,7 +108,7 @@ where
             let stream = PeekStream::new(peek, stream);
 
             tracing::trace!("fallback to non-tls service");
-            return self.fallback.serve(ctx, stream).await.map_err(Into::into);
+            return self.fallback.serve(stream).await.map_err(Into::into);
         }
 
         let n = ((peek_buf[3] as usize) << 8) | (peek_buf[4] as usize);
@@ -137,13 +137,10 @@ where
         let peek_stream = PeekStream::new(mem_reader, stream);
 
         self.service
-            .serve(
-                ctx,
-                SniRequest {
-                    stream: peek_stream,
-                    sni,
-                },
-            )
+            .serve(SniRequest {
+                stream: peek_stream,
+                sni,
+            })
             .await
             .map_err(Into::into)
     }
@@ -408,55 +405,44 @@ mod test {
 
     #[tokio::test]
     async fn test_sni_router() {
-        let tls_service = service_fn(async |_, req: SniRequest<_>| {
+        let tls_service = service_fn(async |req: SniRequest<_>| {
             let sni = req.sni.map(|sni| sni.to_string());
             Ok::<_, Infallible>(sni)
         });
-        let plain_service = service_fn(async |_, _| Ok::<_, Infallible>(Some("plain".to_owned())));
+        let plain_service = service_fn(async || Ok::<_, Infallible>(Some("plain".to_owned())));
 
         let peek_tls_svc = SniRouter::new(tls_service).with_fallback(plain_service);
 
         let response = peek_tls_svc
-            .serve(
-                Context::default(),
-                ServiceInput::new(std::io::Cursor::new(b"".to_vec())),
-            )
+            .serve(ServiceInput::new(std::io::Cursor::new(b"".to_vec())))
             .await
             .unwrap();
         assert_eq!(Some("plain".to_owned()), response);
 
         let response = peek_tls_svc
-            .serve(
-                Context::default(),
-                ServiceInput::new(std::io::Cursor::new(CH_ONE_ONE_ONE_ONE.to_vec())),
-            )
+            .serve(ServiceInput::new(std::io::Cursor::new(
+                CH_ONE_ONE_ONE_ONE.to_vec(),
+            )))
             .await
             .unwrap();
         assert_eq!(Some("one.one.one.one".to_owned()), response);
 
         let response = peek_tls_svc
-            .serve(
-                Context::default(),
-                ServiceInput::new(std::io::Cursor::new(b"foo".to_vec())),
-            )
+            .serve(ServiceInput::new(std::io::Cursor::new(b"foo".to_vec())))
             .await
             .unwrap();
         assert_eq!(Some("plain".to_owned()), response);
 
         let response = peek_tls_svc
-            .serve(
-                Context::default(),
-                ServiceInput::new(std::io::Cursor::new(b"foobar".to_vec())),
-            )
+            .serve(ServiceInput::new(std::io::Cursor::new(b"foobar".to_vec())))
             .await
             .unwrap();
         assert_eq!(Some("plain".to_owned()), response);
 
         let response = peek_tls_svc
-            .serve(
-                Context::default(),
-                ServiceInput::new(std::io::Cursor::new(TLS_BUT_NO_SNI.to_vec())),
-            )
+            .serve(ServiceInput::new(std::io::Cursor::new(
+                TLS_BUT_NO_SNI.to_vec(),
+            )))
             .await
             .unwrap();
         assert_eq!(None, response);
@@ -482,10 +468,9 @@ mod test {
             );
 
         let response = peek_tls_svc
-            .serve(
-                Context::default(),
-                ServiceInput::new(std::io::Cursor::new(CH_ONE_ONE_ONE_ONE.to_vec())),
-            )
+            .serve(ServiceInput::new(std::io::Cursor::new(
+                CH_ONE_ONE_ONE_ONE.to_vec(),
+            )))
             .await
             .unwrap();
         assert_eq!("ok", response);
@@ -512,10 +497,9 @@ mod test {
             let peek_tls_svc = SniRouter::new(tls_service).with_fallback(plain_service);
 
             let response = peek_tls_svc
-                .serve(
-                    Context::default(),
-                    ServiceInput::new(std::io::Cursor::new(content.as_bytes().to_vec())),
-                )
+                .serve(ServiceInput::new(std::io::Cursor::new(
+                    content.as_bytes().to_vec(),
+                )))
                 .await
                 .unwrap();
 
@@ -542,10 +526,9 @@ mod test {
             );
 
         let response = peek_tls_svc
-            .serve(
-                Context::default(),
-                ServiceInput::new(std::io::Cursor::new(TLS_BUT_NO_SNI.to_vec())),
-            )
+            .serve(ServiceInput::new(std::io::Cursor::new(
+                TLS_BUT_NO_SNI.to_vec(),
+            )))
             .await
             .unwrap();
         assert_eq!("ok", response);

@@ -4,7 +4,7 @@ use rama_core::error::{BoxError, ErrorExt, OpaqueError};
 use rama_core::extensions::{Extensions, ExtensionsMut};
 use rama_core::stream::Stream;
 use rama_core::telemetry::tracing;
-use rama_core::{Context, Layer, Service};
+use rama_core::{Layer, Service};
 use rama_http_types::conn::TargetHttpVersion;
 use rama_net::address::Host;
 use rama_net::client::{ConnectorService, EstablishedClientConnection};
@@ -231,11 +231,11 @@ where
     type Response = EstablishedClientConnection<AutoTlsStream<S::Connection>, Request>;
     type Error = BoxError;
 
-    async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
-        let EstablishedClientConnection { ctx, mut req, conn } =
-            self.inner.connect(ctx, req).await.map_err(Into::into)?;
+    async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
+        let EstablishedClientConnection { mut req, conn } =
+            self.inner.connect(req).await.map_err(Into::into)?;
 
-        let transport_ctx = req.try_ref_into_transport_ctx(&ctx).map_err(|err| {
+        let transport_ctx = req.try_ref_into_transport_ctx().map_err(|err| {
             OpaqueError::from_boxed(err.into())
                 .context("TlsConnector(auto): compute transport context")
         })?;
@@ -252,7 +252,6 @@ where
                 "TlsConnector(auto): protocol not secure, return inner connection",
             );
             return Ok(EstablishedClientConnection {
-                ctx,
                 req,
                 conn: AutoTlsStream::plain(conn),
             });
@@ -272,7 +271,7 @@ where
         let mut conn = AutoTlsStream::secure(stream);
         conn.extensions_mut().insert(negotiated_params);
 
-        Ok(EstablishedClientConnection { ctx, req, conn })
+        Ok(EstablishedClientConnection { req, conn })
     }
 }
 
@@ -287,11 +286,11 @@ where
     type Response = EstablishedClientConnection<TlsStream<S::Connection>, Request>;
     type Error = BoxError;
 
-    async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
-        let EstablishedClientConnection { ctx, mut req, conn } =
-            self.inner.connect(ctx, req).await.map_err(Into::into)?;
+    async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
+        let EstablishedClientConnection { mut req, conn } =
+            self.inner.connect(req).await.map_err(Into::into)?;
 
-        let transport_ctx = req.try_ref_into_transport_ctx(&ctx).map_err(|err| {
+        let transport_ctx = req.try_ref_into_transport_ctx().map_err(|err| {
             OpaqueError::from_boxed(err.into())
                 .context("TlsConnector(auto): compute transport context")
         })?;
@@ -309,7 +308,7 @@ where
         let mut conn = TlsStream::new(conn);
         conn.extensions_mut().insert(negotiated_params);
 
-        Ok(EstablishedClientConnection { ctx, req, conn })
+        Ok(EstablishedClientConnection { req, conn })
     }
 }
 
@@ -321,9 +320,9 @@ where
     type Response = EstablishedClientConnection<AutoTlsStream<S::Connection>, Request>;
     type Error = BoxError;
 
-    async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
-        let EstablishedClientConnection { ctx, mut req, conn } =
-            self.inner.connect(ctx, req).await.map_err(Into::into)?;
+    async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
+        let EstablishedClientConnection { mut req, conn } =
+            self.inner.connect(req).await.map_err(Into::into)?;
 
         let host = if let Some(host) = req
             .extensions()
@@ -338,7 +337,6 @@ where
                 "TlsConnector(tunnel): return inner connection: no Tls tunnel is requested"
             );
             return Ok(EstablishedClientConnection {
-                ctx,
                 req,
                 conn: AutoTlsStream::plain(conn),
             });
@@ -350,7 +348,7 @@ where
         conn.extensions_mut().insert(negotiated_params);
 
         tracing::trace!("TlsConnector(tunnel): connection secured");
-        Ok(EstablishedClientConnection { ctx, req, conn })
+        Ok(EstablishedClientConnection { req, conn })
     }
 }
 

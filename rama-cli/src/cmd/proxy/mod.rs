@@ -2,7 +2,7 @@
 
 use clap::Args;
 use rama::{
-    Context, Layer, Service,
+    Layer, Service,
     error::{BoxError, ErrorContext, OpaqueError},
     extensions::ExtensionsMut,
     http::{
@@ -104,11 +104,8 @@ pub async fn run(cfg: CliCommandProxy) -> Result<(), BoxError> {
     Ok(())
 }
 
-async fn http_connect_accept(
-    ctx: Context,
-    mut req: Request,
-) -> Result<(Response, Context, Request), Response> {
-    match RequestContext::try_from((&ctx, &req)).map(|ctx| ctx.authority) {
+async fn http_connect_accept(mut req: Request) -> Result<(Response, Request), Response> {
+    match RequestContext::try_from(&req).map(|ctx| ctx.authority) {
         Ok(authority) => {
             tracing::info!(
                 server.address = %authority.host(),
@@ -123,12 +120,12 @@ async fn http_connect_accept(
         }
     }
 
-    Ok((StatusCode::OK.into_response(), ctx, req))
+    Ok((StatusCode::OK.into_response(), req))
 }
 
-async fn http_plain_proxy(ctx: Context, req: Request) -> Result<Response, Infallible> {
+async fn http_plain_proxy(req: Request) -> Result<Response, Infallible> {
     let client = EasyHttpWebClient::default();
-    match client.serve(ctx, req).await {
+    match client.serve(req).await {
         Ok(resp) => Ok(resp),
         Err(err) => {
             tracing::error!("error in client request: {err:?}");

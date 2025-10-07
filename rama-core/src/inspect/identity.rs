@@ -1,15 +1,15 @@
 use std::convert::Infallible;
 
-use crate::{Context, Service};
+use crate::Service;
 
 impl<Request> Service<Request> for ()
 where
     Request: Send + 'static,
 {
     type Error = Infallible;
-    type Response = (Context, Request);
+    type Response = Request;
 
-    async fn serve(&self, ctx: Context, req: Request) -> Result<(Context, Request), Self::Error> {
-        Ok((ctx, req))
+    async fn serve(&self, req: Request) -> Result<Request, Self::Error> {
+        Ok(req)
     }
 }

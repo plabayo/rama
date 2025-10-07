@@ -57,7 +57,7 @@
 //! ```
 
 use rama::{
-    Context, Layer, Service,
+    Layer, Service,
     extensions::{Extensions, ExtensionsMut, ExtensionsRef, RequestContextExt},
     http::{
         Body, Request, Response, StatusCode,
@@ -135,7 +135,7 @@ async fn main() {
                                     "lucky_number": path.number,
                                 }))
                             },
-                            HttpMatcher::get("/*") => async move |_ctx: Context, req: Request| {
+                            HttpMatcher::get("/*") => async move |req: Request| {
                                 Json(json!({
                                     "method": req.method().as_str(),
                                     "path": req.uri().path(),
@@ -172,11 +172,8 @@ async fn main() {
         .expect("graceful shutdown");
 }
 
-async fn http_connect_accept(
-    ctx: Context,
-    mut req: Request,
-) -> Result<(Response, Context, Request), Response> {
-    match RequestContext::try_from((&ctx, &req)).map(|ctx| ctx.authority) {
+async fn http_connect_accept(mut req: Request) -> Result<(Response, Request), Response> {
+    match RequestContext::try_from(&req).map(|ctx| ctx.authority) {
         Ok(authority) => {
             tracing::info!(
                 server.address = %authority.host(),
@@ -191,12 +188,12 @@ async fn http_connect_accept(
         }
     }
 
-    Ok((StatusCode::OK.into_response(), ctx, req))
+    Ok((StatusCode::OK.into_response(), req))
 }
 
-async fn http_plain_proxy(ctx: Context, req: Request) -> Result<Response, Infallible> {
+async fn http_plain_proxy(req: Request) -> Result<Response, Infallible> {
     let client = EasyHttpWebClient::default();
-    match client.serve(ctx, req).await {
+    match client.serve(req).await {
         Ok(resp) => {
             if let Some(client_socket_info) = resp
                 .extensions()

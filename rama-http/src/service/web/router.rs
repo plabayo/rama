@@ -7,7 +7,6 @@ use crate::{
 
 use matchit::Router as MatchitRouter;
 use rama_core::{
-    Context,
     extensions::{Extensions, ExtensionsMut},
     matcher::Matcher,
     service::{BoxService, Service},
@@ -202,7 +201,7 @@ impl Service<Request> for NestedRouterService {
     type Response = Response;
     type Error = Infallible;
 
-    async fn serve(&self, ctx: Context, mut req: Request) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut req: Request) -> Result<Self::Response, Self::Error> {
         let params: UriParams = match req.extensions_mut().remove::<UriParams>() {
             Some(params) => {
                 let nested_path = params.get("nest").unwrap_or_default();
@@ -221,7 +220,7 @@ impl Service<Request> for NestedRouterService {
 
         req.extensions_mut().insert(params);
 
-        self.nested.serve(ctx, req).await
+        self.nested.serve(req).await
     }
 }
 
@@ -235,7 +234,7 @@ impl Service<Request> for Router {
     type Response = Response;
     type Error = Infallible;
 
-    async fn serve(&self, ctx: Context, mut req: Request) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut req: Request) -> Result<Self::Response, Self::Error> {
         let mut ext = Extensions::new();
 
         let uri = req.uri().path().to_owned();
@@ -252,16 +251,16 @@ impl Service<Request> for Router {
             req.extensions_mut().insert(params);
 
             for (matcher, service) in matched.value.iter() {
-                if matcher.matches(Some(&mut ext), &ctx, &req) {
+                if matcher.matches(Some(&mut ext), &req) {
                     req.extensions_mut().extend(ext);
-                    return service.serve(ctx, req).await;
+                    return service.serve(req).await;
                 }
                 ext.clear();
             }
         }
 
         if let Some(not_found) = &self.not_found {
-            not_found.serve(ctx, req).await
+            not_found.serve(req).await
         } else {
             Ok(Response::builder()
                 .status(StatusCode::NOT_FOUND)
@@ -280,7 +279,7 @@ mod tests {
     use rama_http_types::{Body, Method, Request, StatusCode, body::util::BodyExt};
 
     fn root_service() -> impl Service<Request, Response = Response, Error = Infallible> {
-        service_fn(|_ctx, _req| async {
+        service_fn(|_req| async {
             Ok(Response::builder()
                 .status(200)
                 .body(Body::from("Hello, World!"))
@@ -289,7 +288,7 @@ mod tests {
     }
 
     fn create_user_service() -> impl Service<Request, Response = Response, Error = Infallible> {
-        service_fn(|_ctx, _req| async {
+        service_fn(|_req| async {
             Ok(Response::builder()
                 .status(200)
                 .body(Body::from("Create User"))
@@ -298,7 +297,7 @@ mod tests {
     }
 
     fn get_users_service() -> impl Service<Request, Response = Response, Error = Infallible> {
-        service_fn(|_ctx, _req| async {
+        service_fn(|_req| async {
             Ok(Response::builder()
                 .status(200)
                 .body(Body::from("List Users"))
@@ -307,7 +306,7 @@ mod tests {
     }
 
     fn get_user_service() -> impl Service<Request, Response = Response, Error = Infallible> {
-        service_fn(|_ctx: Context, req: Request| async move {
+        service_fn(|req: Request| async move {
             let uri_params = req.extensions().get::<UriParams>().unwrap();
             let id = uri_params.get("user_id").unwrap();
             Ok(Response::builder()
@@ -318,7 +317,7 @@ mod tests {
     }
 
     fn delete_user_service() -> impl Service<Request, Response = Response, Error = Infallible> {
-        service_fn(|_ctx: Context, req: Request| async move {
+        service_fn(|req: Request| async move {
             let uri_params = req.extensions().get::<UriParams>().unwrap();
             let id = uri_params.get("user_id").unwrap();
             Ok(Response::builder()
@@ -329,7 +328,7 @@ mod tests {
     }
 
     fn serve_assets_service() -> impl Service<Request, Response = Response, Error = Infallible> {
-        service_fn(|_ctx: Context, req: Request| async move {
+        service_fn(|req: Request| async move {
             let uri_params = req.extensions().get::<UriParams>().unwrap();
             let path = uri_params.get("path").unwrap();
             Ok(Response::builder()
@@ -340,7 +339,7 @@ mod tests {
     }
 
     fn not_found_service() -> impl Service<Request, Response = Response, Error = Infallible> {
-        service_fn(|_ctx, _req| async {
+        service_fn(|_req| async {
             Ok(Response::builder()
                 .status(StatusCode::NOT_FOUND)
                 .body(Body::from("Not Found"))
@@ -349,7 +348,7 @@ mod tests {
     }
 
     fn get_user_order_service() -> impl Service<Request, Response = Response, Error = Infallible> {
-        service_fn(|_ctx: Context, req: Request| async move {
+        service_fn(|req: Request| async move {
             let uri_params = req.extensions().get::<UriParams>().unwrap();
             let user_id = uri_params.get("user_id").unwrap();
             let order_id = uri_params.get("order_id").unwrap();
@@ -426,7 +425,7 @@ mod tests {
                 .body(Body::empty())
                 .unwrap();
 
-                let res = router.serve(Context::default(), req).await.unwrap();
+                let res = router.serve(req).await.unwrap();
                 assert_eq!(
                     res.status(),
                     *expected_status,
@@ -494,7 +493,7 @@ mod tests {
                 .body(Body::empty())
                 .unwrap();
 
-                let res = app.serve(Context::default(), req).await.unwrap();
+                let res = app.serve(req).await.unwrap();
                 assert_eq!(
                     res.status(),
                     *expected_status,

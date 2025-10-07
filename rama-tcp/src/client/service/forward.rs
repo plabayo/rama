@@ -1,7 +1,7 @@
 use super::TcpConnector;
 use crate::client::Request as TcpRequest;
 use rama_core::{
-    Context, Service,
+    Service,
     error::{BoxError, ErrorExt, OpaqueError},
     extensions::ExtensionsMut,
     stream::Stream,
@@ -94,7 +94,7 @@ where
     type Response = ();
     type Error = BoxError;
 
-    async fn serve(&self, ctx: Context, mut source: T) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut source: T) -> Result<Self::Response, Self::Error> {
         let authority = match &self.kind {
             ForwarderKind::Static(target) => target.clone(),
             ForwarderKind::Dynamic => source
@@ -108,17 +108,16 @@ where
 
         let req = TcpRequest::new(authority.clone(), source.take_extensions());
 
-        let EstablishedClientConnection {
-            ctx, conn: target, ..
-        } = self.connector.connect(ctx, req).await.map_err(|err| {
-            OpaqueError::from_boxed(err.into())
-                .with_context(|| format!("establish tcp connection to {authority}"))
-        })?;
+        let EstablishedClientConnection { conn: target, .. } =
+            self.connector.connect(req).await.map_err(|err| {
+                OpaqueError::from_boxed(err.into())
+                    .with_context(|| format!("establish tcp connection to {authority}"))
+            })?;
 
         let proxy_req = ProxyRequest { source, target };
 
         StreamForwardService::default()
-            .serve(ctx, proxy_req)
+            .serve(proxy_req)
             .await
             .map_err(Into::into)
     }

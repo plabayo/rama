@@ -46,7 +46,7 @@
 //! TODO: once Rama has an ACME server implementation (https://github.com/plabayo/rama/issues/649) migrate
 //! this example to use that instead of Pebble so we can test everything automatically
 use rama::{
-    Context, Layer, Service,
+    Layer, Service,
     crypto::{
         dep::rcgen::{
             self, CertificateParams, CertificateSigningRequest, DistinguishedName, DnType,
@@ -122,7 +122,7 @@ async fn main() {
         .build()
         .boxed();
 
-    let client = AcmeClient::new(TEST_DIRECTORY_URL, client, Context::default())
+    let client = AcmeClient::new(TEST_DIRECTORY_URL, client)
         .await
         .expect("create acme client");
 
@@ -131,7 +131,6 @@ async fn main() {
     let account_key = EcdsaKey::generate().expect("generate key for account");
     let account = client
         .create_or_load_account(
-            Context::default(),
             account_key,
             CreateAccountOptions {
                 terms_of_service_agreed: Some(true),
@@ -142,18 +141,15 @@ async fn main() {
         .expect("create account");
 
     let mut order = account
-        .new_order(
-            Context::default(),
-            NewOrderPayload {
-                identifiers: vec![Identifier::dns("example.com")],
-                ..Default::default()
-            },
-        )
+        .new_order(NewOrderPayload {
+            identifiers: vec![Identifier::dns("example.com")],
+            ..Default::default()
+        })
         .await
         .expect("create order");
 
     let mut authz = order
-        .get_authorizations(Context::default())
+        .get_authorizations()
         .await
         .expect("get order authorizations");
     let auth = &mut authz[0];
@@ -211,12 +207,12 @@ async fn main() {
     sleep(Duration::from_millis(1000)).await;
 
     order
-        .finish_challenge(Context::default(), challenge)
+        .finish_challenge(challenge)
         .await
         .expect("finish challenge");
 
     order
-        .wait_until_all_authorizations_finished(Context::default())
+        .wait_until_all_authorizations_finished()
         .await
         .expect("wait until all authorizations are finished");
 
@@ -224,13 +220,10 @@ async fn main() {
 
     let (key_pair, csr) = create_csr();
 
-    order
-        .finalize(Context::default(), csr.der())
-        .await
-        .expect("finalize order");
+    order.finalize(csr.der()).await.expect("finalize order");
 
     let cert = order
-        .download_certificate_as_pem_stack(Context::default())
+        .download_certificate_as_pem_stack()
         .await
         .expect("download certificate");
 
@@ -286,7 +279,7 @@ impl DynamicCertIssuer for TlsAcmeIssue {
     }
 }
 
-async fn internal_tcp_service_fn<S>(_ctx: Context, _stream: S) -> Result<(), Infallible> {
+async fn internal_tcp_service_fn<S>(_stream: S) -> Result<(), Infallible> {
     Ok(())
 }
 

@@ -3,7 +3,7 @@ use std::time::Duration;
 use super::utils;
 
 use rama::http::sse::datastar::ElementPatchMode;
-use rama::{Context, futures::StreamExt, http::sse::datastar::DatastarEvent};
+use rama::{futures::StreamExt, http::sse::datastar::DatastarEvent};
 use serde_json::json;
 
 #[tokio::test]
@@ -17,7 +17,7 @@ async fn test_http_sse_datastar_test_suite() {
 
     let mut stream = runner
         .get("http://127.0.0.1:62036/test?datastar=%7b%0a++%22events%22%3a+%5b%0a++++%7b%0a++++++%22type%22%3a+%22executeScript%22%2c%0a++++++%22script%22%3a+%22console.log%28%27hello%27%29%3b%22%2c%0a++++++%22eventId%22%3a+%22event1%22%2c%0a++++++%22retryDuration%22%3a+2000%2c%0a++++++%22attributes%22%3a+%7b%0a++++++++%22type%22%3a+%22text%2fjavascript%22%2c%0a++++++++%22blocking%22%3a+false%0a++++++%7d%2c%0a++++++%22autoRemove%22%3a+false%0a++++%7d%0a++%5d%0a%7d")
-        .send(Context::default())
+        .send()
         .await
         .unwrap()
         .into_body()
@@ -49,7 +49,7 @@ async fn test_http_sse_datastar_test_suite() {
             }
           ]
         }))
-        .send(Context::default())
+        .send()
         .await
         .unwrap()
         .into_body()

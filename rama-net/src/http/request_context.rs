@@ -5,11 +5,11 @@ use crate::{
     Protocol,
     address::{Authority, Domain, Host},
 };
-use rama_core::Context;
 use rama_core::error::OpaqueError;
 use rama_core::extensions::Extensions;
 use rama_core::telemetry::tracing;
-use rama_http_types::{HttpRequestParts, Method};
+use rama_http_types::request::Parts;
+use rama_http_types::{HttpRequestParts, Method, Request};
 use rama_http_types::{Uri, Version};
 
 #[cfg(feature = "tls")]
@@ -63,34 +63,49 @@ impl RequestContext {
     }
 }
 
-impl<T: HttpRequestParts> TryFrom<(&Context, &T)> for RequestContext {
+impl TryFrom<&Parts> for RequestContext {
     type Error = OpaqueError;
 
-    fn try_from((_ctx, req): (&Context, &T)) -> Result<Self, Self::Error> {
-        let uri = req.uri();
+    fn try_from(parts: &Parts) -> Result<Self, Self::Error> {
+        try_request_ctx_from_http_parts(parts)
+    }
+}
 
-        let protocol = protocol_from_uri_or_extensions(req.extensions(), uri, req.method());
-        tracing::trace!(
-            url.full = %uri,
-            "request context: detected protocol: {protocol} (scheme: {:?}",
-            uri.scheme(),
-        );
+impl<Body> TryFrom<&Request<Body>> for RequestContext {
+    type Error = OpaqueError;
 
-        let default_port = uri
-            .port_u16()
-            .unwrap_or_else(|| protocol.default_port().unwrap_or(80));
-        tracing::trace!(url.full = %uri, "request context: detected default port: {default_port}");
+    fn try_from(req: &Request<Body>) -> Result<Self, Self::Error> {
+        try_request_ctx_from_http_parts(req)
+    }
+}
 
-        let proxy_authority_opt: Option<Authority> = req
-            .extensions()
-            .get::<ProxyTarget>()
-            .and_then(|t| t.0.host().is_domain().then(|| t.0.clone()));
+pub fn try_request_ctx_from_http_parts(
+    parts: impl HttpRequestParts,
+) -> Result<RequestContext, OpaqueError> {
+    let uri = parts.uri();
 
-        let sni_host_opt = req
-            .extensions()
-            .get()
-            .and_then(try_get_sni_from_secure_transport);
-        let authority = match (proxy_authority_opt, sni_host_opt) {
+    let protocol = protocol_from_uri_or_extensions(parts.extensions(), uri, parts.method());
+    tracing::trace!(
+        url.full = %uri,
+        "request context: detected protocol: {protocol} (scheme: {:?}",
+        uri.scheme(),
+    );
+
+    let default_port = uri
+        .port_u16()
+        .unwrap_or_else(|| protocol.default_port().unwrap_or(80));
+    tracing::trace!(url.full = %uri, "request context: detected default port: {default_port}");
+
+    let proxy_authority_opt: Option<Authority> = parts
+        .extensions()
+        .get::<ProxyTarget>()
+        .and_then(|t| t.0.host().is_domain().then(|| t.0.clone()));
+
+    let sni_host_opt = parts
+        .extensions()
+        .get()
+        .and_then(try_get_sni_from_secure_transport);
+    let authority = match (proxy_authority_opt, sni_host_opt) {
             (Some(authority), _) => {
                 tracing::trace!(url.full = %uri, "request context: use proxy target as authority: {authority}");
                 authority
@@ -106,7 +121,7 @@ impl<T: HttpRequestParts> TryFrom<(&Context, &T)> for RequestContext {
                     (h, default_port).into()
                 }))
                 .or_else(|| {
-                    req.extensions().get::<Forwarded>().and_then(|f| {
+                    parts.extensions().get::<Forwarded>().and_then(|f| {
                         f.client_host().map(|fauth| {
                             let (host, port) = fauth.clone().into_parts();
                             let port = port.unwrap_or(default_port);
@@ -116,7 +131,7 @@ impl<T: HttpRequestParts> TryFrom<(&Context, &T)> for RequestContext {
                     })
                 })
                 .or_else(|| {
-                    req.headers()
+                    parts.headers()
                         .get(rama_http_types::header::HOST)
                         .and_then(|host| {
                             host.try_into() // try to consume as Authority, otherwise as Host
@@ -132,29 +147,28 @@ impl<T: HttpRequestParts> TryFrom<(&Context, &T)> for RequestContext {
                 })?
         };
 
-        tracing::trace!(url.full = %uri, "request context: detected authority: {authority}");
+    tracing::trace!(url.full = %uri, "request context: detected authority: {authority}");
 
-        let http_version = req
-            .extensions()
-            .get::<Forwarded>()
-            .and_then(|f| {
-                f.client_version().map(|v| match v {
-                    crate::forwarded::ForwardedVersion::HTTP_09 => Version::HTTP_09,
-                    crate::forwarded::ForwardedVersion::HTTP_10 => Version::HTTP_10,
-                    crate::forwarded::ForwardedVersion::HTTP_11 => Version::HTTP_11,
-                    crate::forwarded::ForwardedVersion::HTTP_2 => Version::HTTP_2,
-                    crate::forwarded::ForwardedVersion::HTTP_3 => Version::HTTP_3,
-                })
+    let http_version = parts
+        .extensions()
+        .get::<Forwarded>()
+        .and_then(|f| {
+            f.client_version().map(|v| match v {
+                crate::forwarded::ForwardedVersion::HTTP_09 => Version::HTTP_09,
+                crate::forwarded::ForwardedVersion::HTTP_10 => Version::HTTP_10,
+                crate::forwarded::ForwardedVersion::HTTP_11 => Version::HTTP_11,
+                crate::forwarded::ForwardedVersion::HTTP_2 => Version::HTTP_2,
+                crate::forwarded::ForwardedVersion::HTTP_3 => Version::HTTP_3,
             })
-            .unwrap_or_else(|| req.version());
-        tracing::trace!(url.full = %uri, "request context: maybe detected http version: {http_version:?}");
-
-        Ok(Self {
-            http_version,
-            protocol,
-            authority,
         })
-    }
+        .unwrap_or_else(|| parts.version());
+    tracing::trace!(url.full = %uri, "request context: maybe detected http version: {http_version:?}");
+
+    Ok(RequestContext {
+        http_version,
+        protocol,
+        authority,
+    })
 }
 
 #[allow(clippy::unnecessary_lazy_evaluations)]
@@ -208,16 +222,16 @@ impl From<&RequestContext> for TransportContext {
 impl<Body> TryRefIntoTransportContext for rama_http_types::Request<Body> {
     type Error = OpaqueError;
 
-    fn try_ref_into_transport_ctx(&self, ctx: &Context) -> Result<TransportContext, Self::Error> {
-        (ctx, self).try_into()
+    fn try_ref_into_transport_ctx(&self) -> Result<TransportContext, Self::Error> {
+        self.try_into()
     }
 }
 
 impl TryRefIntoTransportContext for rama_http_types::request::Parts {
     type Error = OpaqueError;
 
-    fn try_ref_into_transport_ctx(&self, ctx: &Context) -> Result<TransportContext, Self::Error> {
-        (ctx, self).try_into()
+    fn try_ref_into_transport_ctx(&self) -> Result<TransportContext, Self::Error> {
+        self.try_into()
     }
 }
 
@@ -236,9 +250,7 @@ mod tests {
             .body(())
             .unwrap();
 
-        let ctx = Context::default();
-
-        let req_ctx = RequestContext::try_from((&ctx, &req)).unwrap();
+        let req_ctx = RequestContext::try_from(&req).unwrap();
 
         assert_eq!(req_ctx.http_version, Version::HTTP_11);
         assert_eq!(req_ctx.protocol, Protocol::HTTP);
@@ -255,8 +267,7 @@ mod tests {
 
         let (parts, _) = req.into_parts();
 
-        let ctx = Context::default();
-        let req_ctx = RequestContext::try_from((&ctx, &parts)).unwrap();
+        let req_ctx = RequestContext::try_from(&parts).unwrap();
 
         assert_eq!(req_ctx.http_version, Version::HTTP_11);
         assert_eq!(req_ctx.protocol, Protocol::HTTP);
@@ -323,12 +334,11 @@ mod tests {
             }
 
             let mut req = req_builder.body(()).unwrap();
-            let ctx = Context::default();
 
             let forwarded: Forwarded = req.headers().get(FORWARDED).unwrap().try_into().unwrap();
             req.extensions_mut().insert(forwarded);
 
-            let req_ctx = RequestContext::try_from((&ctx, &req)).unwrap();
+            let req_ctx = RequestContext::try_from(&req).unwrap();
 
             assert_eq!(req_ctx, expected, "Failed for {forwarded_str_vec:?}");
         }
@@ -345,13 +355,12 @@ mod tests {
             .body(())
             .unwrap();
 
-        let ctx = Context::default();
         req.extensions_mut()
             .insert(Forwarded::new(ForwardedElement::forwarded_for(
                 NodeId::try_from("127.0.0.1:61234").unwrap(),
             )));
 
-        let req_ctx = RequestContext::try_from((&ctx, &req)).unwrap();
+        let req_ctx = RequestContext::try_from(&req).unwrap();
 
         assert_eq!(req_ctx.http_version, Version::HTTP_11);
         assert_eq!(req_ctx.protocol, "http");
@@ -375,8 +384,7 @@ mod tests {
                 .body(())
                 .unwrap();
 
-            let ctx = Context::default();
-            let req_ctx = RequestContext::try_from((&ctx, &req)).unwrap();
+            let req_ctx = RequestContext::try_from(&req).unwrap();
 
             assert_eq!(req_ctx.http_version, Version::HTTP_11);
             assert_eq!(req_ctx.protocol, expected_protocol);
@@ -406,8 +414,7 @@ mod tests {
                 .body(())
                 .unwrap();
 
-            let ctx = Context::default();
-            let req_ctx = RequestContext::try_from((&ctx, &req)).unwrap();
+            let req_ctx = RequestContext::try_from(&req).unwrap();
 
             assert_eq!(req_ctx.http_version, Version::HTTP_11);
             assert_eq!(req_ctx.protocol, expected_protocol);

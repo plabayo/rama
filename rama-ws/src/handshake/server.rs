@@ -6,7 +6,7 @@ use std::{
 };
 
 use rama_core::{
-    Context, Service,
+    Service,
     error::{ErrorContext, OpaqueError},
     extensions::{Extensions, ExtensionsMut, ExtensionsRef},
     futures::{StreamExt, TryStreamExt},
@@ -57,7 +57,7 @@ impl<Body> Matcher<Request<Body>> for WebSocketMatcher
 where
     Body: Send + 'static,
 {
-    fn matches(&self, _ext: Option<&mut Extensions>, _ctx: &Context, req: &Request<Body>) -> bool {
+    fn matches(&self, _ext: Option<&mut Extensions>, req: &Request<Body>) -> bool {
         match req.version() {
             version @ (Version::HTTP_10 | Version::HTTP_11) => {
                 match req.method() {
@@ -447,14 +447,10 @@ impl<Body> Service<Request<Body>> for WebSocketAcceptor
 where
     Body: Send + 'static,
 {
-    type Response = (Response, Context, Request<Body>);
+    type Response = (Response, Request<Body>);
     type Error = Response;
 
-    async fn serve(
-        &self,
-        ctx: Context,
-        mut req: Request<Body>,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut req: Request<Body>) -> Result<Self::Response, Self::Error> {
         match validate_http_client_request(&req) {
             Ok(request_data) => {
                 let accepted_protocol = match (
@@ -608,7 +604,7 @@ where
                         if let Some(extensions) = extensions_header {
                             response.headers_mut().typed_insert(extensions);
                         }
-                        Ok((response, ctx, req))
+                        Ok((response, req))
                     }
                     Version::HTTP_2 => {
                         let mut response = Response::builder()
@@ -622,7 +618,7 @@ where
                         if let Some(extensions) = extensions_header {
                             response.headers_mut().typed_insert(extensions);
                         }
-                        Ok((response, ctx, req))
+                        Ok((response, req))
                     }
                     version => {
                         tracing::debug!(
@@ -741,9 +737,9 @@ where
     type Response = Response;
     type Error = S::Error;
 
-    async fn serve(&self, ctx: Context, req: Request<Body>) -> Result<Self::Response, Self::Error> {
-        match self.acceptor.serve(ctx, req).await {
-            Ok((resp, ctx, mut req)) => {
+    async fn serve(&self, req: Request<Body>) -> Result<Self::Response, Self::Error> {
+        match self.acceptor.serve(req).await {
+            Ok((resp, mut req)) => {
                 #[cfg(not(feature = "compression"))]
                 if let Some(Extension::PerMessageDeflate(_)) = req.extensions().get() {
                     tracing::error!(
@@ -808,7 +804,7 @@ where
                                     request: parts,
                                 };
 
-                                let _ = handler.serve(ctx, server_socket).await;
+                                let _ = handler.serve( server_socket).await;
                             }
                             Err(e) => {
                                 tracing::error!("ws upgrade error: {e:?}");
@@ -848,11 +844,7 @@ impl Service<AsyncWebSocket> for WebSocketEchoService {
     type Response = ();
     type Error = OpaqueError;
 
-    async fn serve(
-        &self,
-        _ctx: Context,
-        socket: AsyncWebSocket,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, socket: AsyncWebSocket) -> Result<Self::Response, Self::Error> {
         let protocol = socket
             .extensions()
             .get::<headers::sec_websocket_protocol::AcceptedWebSocketProtocol>()
@@ -902,13 +894,9 @@ impl Service<ServerWebSocket> for WebSocketEchoService {
     type Response = ();
     type Error = OpaqueError;
 
-    async fn serve(
-        &self,
-        ctx: Context,
-        socket: ServerWebSocket,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, socket: ServerWebSocket) -> Result<Self::Response, Self::Error> {
         let socket = socket.into_inner();
-        self.serve(ctx, socket).await
+        self.serve(socket).await
     }
 }
 
@@ -916,11 +904,7 @@ impl Service<upgrade::Upgraded> for WebSocketEchoService {
     type Response = ();
     type Error = OpaqueError;
 
-    async fn serve(
-        &self,
-        ctx: Context,
-        mut io: upgrade::Upgraded,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut io: upgrade::Upgraded) -> Result<Self::Response, Self::Error> {
         #[cfg(not(feature = "compression"))]
         let maybe_ws_config = {
             if let Some(Extension::PerMessageDeflate(_)) = io.extensions().get() {
@@ -954,7 +938,7 @@ impl Service<upgrade::Upgraded> for WebSocketEchoService {
         let extensions = io.take_extensions();
         let mut socket = AsyncWebSocket::from_raw_socket(io, Role::Server, maybe_ws_config).await;
         *socket.extensions_mut() = extensions;
-        self.serve(ctx, socket).await
+        self.serve(socket).await
     }
 }
 
@@ -1017,14 +1001,14 @@ mod tests {
 
     fn assert_websocket_no_match(request: &Request, matcher: &WebSocketMatcher) {
         assert!(
-            !matcher.matches(None, &Context::default(), request),
+            !matcher.matches(None, request),
             "!({matcher:?}).matches({request:?})"
         );
     }
 
     fn assert_websocket_match(request: &Request, matcher: &WebSocketMatcher) {
         assert!(
-            matcher.matches(None, &Context::default(), request),
+            matcher.matches(None, request),
             "({matcher:?}).matches({request:?})"
         );
     }
@@ -1102,8 +1086,7 @@ mod tests {
         acceptor: &WebSocketAcceptor,
         expected_accepted_protocol: Option<AcceptedWebSocketProtocol>,
     ) {
-        let ctx = Context::default();
-        let (resp, _ctx, req) = acceptor.serve(ctx, request).await.unwrap();
+        let (resp, req) = acceptor.serve(request).await.unwrap();
         match req.version() {
             Version::HTTP_10 | Version::HTTP_11 => {
                 assert_eq!(StatusCode::SWITCHING_PROTOCOLS, resp.status())
@@ -1137,10 +1120,7 @@ mod tests {
     }
 
     async fn assert_websocket_acceptor_bad_request(request: Request, acceptor: &WebSocketAcceptor) {
-        let resp = acceptor
-            .serve(Context::default(), request)
-            .await
-            .unwrap_err();
+        let resp = acceptor.serve(request).await.unwrap_err();
         assert_eq!(StatusCode::BAD_REQUEST, resp.status());
     }
 

@@ -1,6 +1,6 @@
 use rama_core::telemetry::tracing;
 use rama_core::{
-    Context, Service,
+    Service,
     error::{ErrorExt, OpaqueError},
 };
 
@@ -34,7 +34,6 @@ where
 
     async fn serve(
         &self,
-        _ctx: Context,
         ProxyRequest {
             mut source,
             mut target,

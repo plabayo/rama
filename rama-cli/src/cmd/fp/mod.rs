@@ -1,7 +1,7 @@
 //! Echo service that echos the http request and tls client config
 
 use rama::{
-    Context, Service,
+    Service,
     cli::ForwardKind,
     combinators::Either7,
     error::{BoxError, ErrorContext, OpaqueError},
@@ -348,11 +348,7 @@ where
     type Response = S::Response;
     type Error = S::Error;
 
-    async fn serve(
-        &self,
-        ctx: Context,
-        mut req: Request<Body>,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut req: Request<Body>) -> Result<Self::Response, Self::Error> {
         if let Some(cookie) = req.headers().typed_get::<Cookie>() {
             let cookie = cookie
                 .iter()
@@ -382,6 +378,6 @@ where
             }
         }
 
-        self.inner.serve(ctx, req).await
+        self.inner.serve(req).await
     }
 }

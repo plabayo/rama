@@ -3,7 +3,6 @@ use crate::{
     Request,
     header::{self, HeaderName},
 };
-use rama_core::Context;
 
 /// A redirection [`Policy`] that removes credentials from requests in redirections.
 #[derive(Debug)]
@@ -119,13 +118,13 @@ impl Clone for FilterCredentials {
 }
 
 impl<B, E> Policy<B, E> for FilterCredentials {
-    fn redirect(&mut self, _: &Context, attempt: &Attempt<'_>) -> Result<Action, E> {
+    fn redirect(&mut self, attempt: &Attempt<'_>) -> Result<Action, E> {
         self.blocked = self.block_any
             || (self.block_cross_origin && !eq_origin(attempt.previous(), attempt.location()));
         Ok(Action::Follow)
     }
 
-    fn on_request(&mut self, _: &mut Context, request: &mut Request<B>) {
+    fn on_request(&mut self, request: &mut Request<B>) {
         if self.blocked {
             let headers = request.headers_mut();
             if self.remove_all {
@@ -152,14 +151,12 @@ mod tests {
         let same_origin = Uri::from_static("http://example.com/new");
         let cross_origin = Uri::from_static("https://example.com/new");
 
-        let mut ctx = Context::default();
-
         let mut request = Request::builder()
             .uri(initial)
             .header(header::COOKIE, "42")
             .body(())
             .unwrap();
-        Policy::<(), ()>::on_request(&mut policy, &mut ctx, &mut request);
+        Policy::<(), ()>::on_request(&mut policy, &mut request);
         assert!(request.headers().contains_key(header::COOKIE));
 
         let attempt = Attempt {
@@ -168,7 +165,7 @@ mod tests {
             previous: request.uri(),
         };
         assert!(
-            Policy::<(), ()>::redirect(&mut policy, &ctx, &attempt)
+            Policy::<(), ()>::redirect(&mut policy, &attempt)
                 .unwrap()
                 .is_follow()
         );
@@ -178,7 +175,7 @@ mod tests {
             .header(header::COOKIE, "42")
             .body(())
             .unwrap();
-        Policy::<(), ()>::on_request(&mut policy, &mut ctx, &mut request);
+        Policy::<(), ()>::on_request(&mut policy, &mut request);
         assert!(request.headers().contains_key(header::COOKIE));
 
         let attempt = Attempt {
@@ -187,7 +184,7 @@ mod tests {
             previous: request.uri(),
         };
         assert!(
-            Policy::<(), ()>::redirect(&mut policy, &ctx, &attempt)
+            Policy::<(), ()>::redirect(&mut policy, &attempt)
                 .unwrap()
                 .is_follow()
         );
@@ -197,7 +194,7 @@ mod tests {
             .header(header::COOKIE, "42")
             .body(())
             .unwrap();
-        Policy::<(), ()>::on_request(&mut policy, &mut ctx, &mut request);
+        Policy::<(), ()>::on_request(&mut policy, &mut request);
         assert!(!request.headers().contains_key(header::COOKIE));
     }
 }

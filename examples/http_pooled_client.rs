@@ -15,7 +15,7 @@
 // rama provides everything out of the box to build a complete web service.
 
 use rama::{
-    Context, Layer,
+    Layer,
     error::OpaqueError,
     http::{
         BodyExtractExt,
@@ -64,7 +64,7 @@ async fn main() {
 
     let resp = client
         .get(format!("http://{ADDRESS}/"))
-        .send(Context::default())
+        .send()
         .await
         .unwrap();
 
@@ -76,17 +76,14 @@ async fn main() {
     // an existing connection from the pool, and will fail if we would open a new one
     let _resp = client
         .get(format!("http://{ADDRESS}/"))
-        .send(Context::default())
+        .send()
         .await
         .unwrap();
 
     // If we dont use a connection pool now we should get an error from the server as we
     // will need to open a new connection
     let client = EasyHttpWebClient::default();
-    let result = client
-        .get(format!("http://{ADDRESS}/"))
-        .send(Context::default())
-        .await;
+    let result = client.get(format!("http://{ADDRESS}/")).send().await;
 
     assert_err!(result);
 }
@@ -137,21 +134,13 @@ where
 
     type Error = OpaqueError;
 
-    async fn check(
-        &self,
-        ctx: Context,
-        request: Request,
-    ) -> PolicyResult<Request, Self::Guard, Self::Error> {
+    async fn check(&self, request: Request) -> PolicyResult<Request, Self::Guard, Self::Error> {
         let output = match !self.0.swap(true, Ordering::AcqRel) {
             true => PolicyOutput::Ready(()),
             false => PolicyOutput::Abort(OpaqueError::from_display(
                 "Only first connection is allowed",
             )),
         };
-        PolicyResult {
-            ctx,
-            request,
-            output,
-        }
+        PolicyResult { request, output }
     }
 }

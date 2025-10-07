@@ -1,6 +1,6 @@
 use crate::protocol::{HeaderResult, PartialResult, v1, v2};
 use rama_core::{
-    Context, Layer, Service,
+    Layer, Service,
     error::{BoxError, ErrorContext, ErrorExt, OpaqueError},
     extensions::ExtensionsMut,
     stream::{HeapReader, PeekStream, Stream},
@@ -103,7 +103,7 @@ where
     type Response = S::Response;
     type Error = BoxError;
 
-    async fn serve(&self, ctx: Context, mut stream: IO) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut stream: IO) -> Result<Self::Response, Self::Error> {
         let (mut buffer, mut read) = if self.peek {
             tracing::trace!("haproxy protocol peeking enabled: start detection");
 
@@ -139,7 +139,7 @@ where
 
                 let mem = HeapReader::new(peek_buf[..n].into());
                 let stream = PeekStream::new(mem, stream);
-                return self.inner.serve(ctx, stream).await.map_err(Into::into);
+                return self.inner.serve(stream).await.map_err(Into::into);
             }
         } else {
             tracing::trace!("haproxy protocol enforced: skip peeking");
@@ -237,7 +237,7 @@ where
         let stream = PeekStream::new(mem, stream);
 
         // read the rest of the data
-        self.inner.serve(ctx, stream).await.map_err(Into::into)
+        self.inner.serve(stream).await.map_err(Into::into)
     }
 }
 
@@ -258,14 +258,14 @@ mod test {
         let proxy_svc = HaProxyService::new(service_fn(echo)).with_peek(true);
 
         let request = ServiceInput::new(std::io::Cursor::new(b"foo".to_vec()));
-        let response = proxy_svc.serve(Context::default(), request).await.unwrap();
+        let response = proxy_svc.serve(request).await.unwrap();
 
         assert_eq!("foo", String::from_utf8(response).unwrap());
 
         let request = ServiceInput::new(std::io::Cursor::new(
             b"Hello, this is a test to check if it works.".to_vec(),
         ));
-        let response = proxy_svc.serve(Context::default(), request).await.unwrap();
+        let response = proxy_svc.serve(request).await.unwrap();
 
         assert_eq!(
             "Hello, this is a test to check if it works.",
@@ -280,14 +280,14 @@ mod test {
         let request = ServiceInput::new(std::io::Cursor::new(
             b"PROXY TCP4 192.0.2.1 198.51.100.1 12345 80\r\n".to_vec(),
         ));
-        let response = proxy_svc.serve(Context::default(), request).await.unwrap();
+        let response = proxy_svc.serve(request).await.unwrap();
 
         assert_eq!("", String::from_utf8(response).unwrap());
 
         let request = ServiceInput::new(std::io::Cursor::new(
             b"PROXY TCP4 192.0.2.1 198.51.100.1 12345 80\r\nfoo".to_vec(),
         ));
-        let response = proxy_svc.serve(Context::default(), request).await.unwrap();
+        let response = proxy_svc.serve(request).await.unwrap();
 
         assert_eq!("foo", String::from_utf8(response).unwrap());
 
@@ -296,14 +296,14 @@ mod test {
         let request = ServiceInput::new(std::io::Cursor::new(
             b"PROXY TCP4 192.0.2.1 198.51.100.1 12345 80\r\n".to_vec(),
         ));
-        let response = proxy_svc.serve(Context::default(), request).await.unwrap();
+        let response = proxy_svc.serve(request).await.unwrap();
 
         assert_eq!("", String::from_utf8(response).unwrap());
 
         let request = ServiceInput::new(std::io::Cursor::new(
             b"PROXY TCP4 192.0.2.1 198.51.100.1 12345 80\r\nfoo".to_vec(),
         ));
-        let response = proxy_svc.serve(Context::default(), request).await.unwrap();
+        let response = proxy_svc.serve(request).await.unwrap();
 
         assert_eq!("foo", String::from_utf8(response).unwrap());
     }
@@ -326,12 +326,12 @@ mod test {
 
         let proxy_svc = HaProxyService::new(service_fn(echo));
         let request = ServiceInput::new(std::io::Cursor::new(DATA.to_vec()));
-        let response = proxy_svc.serve(Context::default(), request).await.unwrap();
+        let response = proxy_svc.serve(request).await.unwrap();
         assert_eq!("foo", String::from_utf8(response).unwrap());
 
         let proxy_svc = proxy_svc.with_peek(true);
         let request = ServiceInput::new(std::io::Cursor::new(DATA.to_vec()));
-        let response = proxy_svc.serve(Context::default(), request).await.unwrap();
+        let response = proxy_svc.serve(request).await.unwrap();
         assert_eq!("foo", String::from_utf8(response).unwrap());
     }
 }

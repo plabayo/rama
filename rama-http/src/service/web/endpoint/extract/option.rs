@@ -1,5 +1,3 @@
-use rama_core::Context;
-
 use crate::service::web::endpoint::IntoResponse;
 use crate::{Request, request::Parts};
 
@@ -15,7 +13,6 @@ pub trait OptionalFromRequestContextRefPair: Sized + Send + Sync + 'static {
 
     /// Perform the extraction.
     fn from_request_context_ref_pair(
-        ctx: &Context,
         parts: &Parts,
     ) -> impl Future<Output = Result<Option<Self>, Self::Rejection>> + Send;
 }
@@ -40,10 +37,9 @@ where
     type Rejection = T::Rejection;
 
     fn from_request_context_ref_pair(
-        ctx: &Context,
         parts: &Parts,
     ) -> impl Future<Output = Result<Self, Self::Rejection>> + Send {
-        T::from_request_context_ref_pair(ctx, parts)
+        T::from_request_context_ref_pair(parts)
     }
 }
 

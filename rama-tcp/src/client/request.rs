@@ -1,5 +1,4 @@
 use rama_core::{
-    Context,
     extensions::Extensions,
     extensions::{ExtensionsMut, ExtensionsRef},
 };
@@ -196,7 +195,7 @@ impl From<Parts> for TransportContext {
 impl TryRefIntoTransportContext for Request {
     type Error = Infallible;
 
-    fn try_ref_into_transport_ctx(&self, _ctx: &Context) -> Result<TransportContext, Self::Error> {
+    fn try_ref_into_transport_ctx(&self) -> Result<TransportContext, Self::Error> {
         Ok(self.into())
     }
 }
@@ -204,7 +203,7 @@ impl TryRefIntoTransportContext for Request {
 impl TryRefIntoTransportContext for Parts {
     type Error = Infallible;
 
-    fn try_ref_into_transport_ctx(&self, _ctx: &Context) -> Result<TransportContext, Self::Error> {
+    fn try_ref_into_transport_ctx(&self) -> Result<TransportContext, Self::Error> {
         Ok(self.into())
     }
 }

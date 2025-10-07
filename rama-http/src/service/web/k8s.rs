@@ -5,7 +5,7 @@ use crate::{
     service::web::endpoint::response::IntoResponse,
 };
 use rama_core::{
-    Context, Service,
+    Service,
     service::{BoxService, service_fn},
 };
 use std::{convert::Infallible, fmt, sync::Arc};
@@ -136,7 +136,7 @@ where
     type Response = Response;
     type Error = Infallible;
 
-    async fn serve(&self, _: Context, _: Request) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, _: Request) -> Result<Self::Response, Self::Error> {
         Ok(if (self.f)() {
             StatusCode::OK
         } else {

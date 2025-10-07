@@ -6,7 +6,7 @@
 //! [`rama_http_types::Request`]: crate::Request
 //! [`service::matcher` module]: rama_core
 use crate::Request;
-use rama_core::{Context, extensions::Extensions, matcher::IteratorMatcherExt};
+use rama_core::{extensions::Extensions, matcher::IteratorMatcherExt};
 use rama_net::{
     address::{AsDomainRef, Domain},
     stream::matcher::SocketMatcher,
@@ -836,8 +836,8 @@ impl<Body> rama_core::matcher::Matcher<Request<Body>> for HttpMatcher<Body>
 where
     Body: Send + 'static,
 {
-    fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context, req: &Request<Body>) -> bool {
-        let matches = self.kind.matches(ext, ctx, req);
+    fn matches(&self, ext: Option<&mut Extensions>, req: &Request<Body>) -> bool {
+        let matches = self.kind.matches(ext, req);
         if self.negate { !matches } else { matches }
     }
 }
@@ -846,19 +846,19 @@ impl<Body> rama_core::matcher::Matcher<Request<Body>> for HttpMatcherKind<Body>
 where
     Body: Send + 'static,
 {
-    fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context, req: &Request<Body>) -> bool {
+    fn matches(&self, ext: Option<&mut Extensions>, req: &Request<Body>) -> bool {
         match self {
-            Self::All(all) => all.iter().matches_and(ext, ctx, req),
-            Self::Method(method) => method.matches(ext, ctx, req),
-            Self::Path(path) => path.matches(ext, ctx, req),
-            Self::Domain(domain) => domain.matches(ext, ctx, req),
-            Self::Version(version) => version.matches(ext, ctx, req),
-            Self::Uri(uri) => uri.matches(ext, ctx, req),
-            Self::Header(header) => header.matches(ext, ctx, req),
-            Self::Socket(socket) => socket.matches(ext, ctx, req),
-            Self::Any(all) => all.iter().matches_or(ext, ctx, req),
-            Self::SubdomainTrie(subdomain_trie) => subdomain_trie.matches(ext, ctx, req),
-            Self::Custom(matcher) => matcher.matches(ext, ctx, req),
+            Self::All(all) => all.iter().matches_and(ext, req),
+            Self::Method(method) => method.matches(ext, req),
+            Self::Path(path) => path.matches(ext, req),
+            Self::Domain(domain) => domain.matches(ext, req),
+            Self::Version(version) => version.matches(ext, req),
+            Self::Uri(uri) => uri.matches(ext, req),
+            Self::Header(header) => header.matches(ext, req),
+            Self::Socket(socket) => socket.matches(ext, req),
+            Self::Any(all) => all.iter().matches_or(ext, req),
+            Self::SubdomainTrie(subdomain_trie) => subdomain_trie.matches(ext, req),
+            Self::Custom(matcher) => matcher.matches(ext, req),
         }
     }
 }
@@ -874,12 +874,7 @@ mod test {
     struct BooleanMatcher(bool);
 
     impl Matcher<Request<()>> for BooleanMatcher {
-        fn matches(
-            &self,
-            _ext: Option<&mut Extensions>,
-            _ctx: &Context,
-            _req: &Request<()>,
-        ) -> bool {
+        fn matches(&self, _ext: Option<&mut Extensions>, _req: &Request<()>) -> bool {
             self.0
         }
     }
@@ -895,7 +890,7 @@ mod test {
             let matcher = a.and(b).and(c);
             let req = Request::builder().body(()).unwrap();
             assert_eq!(
-                matcher.matches(None, &Context::default(), &req),
+                matcher.matches(None, &req),
                 expected,
                 "({matcher:#?}).matches({req:#?})",
             );
@@ -913,7 +908,7 @@ mod test {
             let matcher = a.negate().and(b).and(c);
             let req = Request::builder().body(()).unwrap();
             assert_eq!(
-                matcher.matches(None, &Context::default(), &req),
+                matcher.matches(None, &req),
                 expected,
                 "({matcher:#?}).matches({req:#?})",
             );
@@ -931,7 +926,7 @@ mod test {
             let matcher = a.and(b).and(c).negate();
             let req = Request::builder().body(()).unwrap();
             assert_eq!(
-                matcher.matches(None, &Context::default(), &req),
+                matcher.matches(None, &req),
                 expected,
                 "({matcher:#?}).matches({req:#?})",
             );
@@ -949,7 +944,7 @@ mod test {
             let matcher = a.or(b).or(c);
             let req = Request::builder().body(()).unwrap();
             assert_eq!(
-                matcher.matches(None, &Context::default(), &req),
+                matcher.matches(None, &req),
                 expected,
                 "({matcher:#?}).matches({req:#?})",
             );
@@ -967,7 +962,7 @@ mod test {
             let matcher = a.negate().or(b).or(c);
             let req = Request::builder().body(()).unwrap();
             assert_eq!(
-                matcher.matches(None, &Context::default(), &req),
+                matcher.matches(None, &req),
                 expected,
                 "({matcher:#?}).matches({req:#?})",
             );
@@ -985,7 +980,7 @@ mod test {
             let matcher = a.or(b).or(c).negate();
             let req = Request::builder().body(()).unwrap();
             assert_eq!(
-                matcher.matches(None, &Context::default(), &req),
+                matcher.matches(None, &req),
                 expected,
                 "({matcher:#?}).matches({req:#?})",
             );
@@ -1005,7 +1000,7 @@ mod test {
             let matcher = (a.or(b)).and(c.or(d)).and(e.negate());
             let req = Request::builder().body(()).unwrap();
             assert_eq!(
-                matcher.matches(None, &Context::default(), &req),
+                matcher.matches(None, &req),
                 expected,
                 "({matcher:#?}).matches({req:#?})",
             );

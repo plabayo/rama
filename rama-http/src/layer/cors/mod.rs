@@ -9,7 +9,7 @@
 //! use rama_http::{Body, Request, Response, Method, header};
 //! use rama_http::layer::cors::{Any, CorsLayer};
 //! use rama_core::service::service_fn;
-//! use rama_core::{Context, Service, Layer};
+//! use rama_core::{Service, Layer};
 //!
 //! async fn handle(request: Request) -> Result<Response, Infallible> {
 //!     Ok(Response::new(Body::default()))
@@ -31,7 +31,7 @@
 //!     .unwrap();
 //!
 //! let response = service
-//!     .serve(Context::default(), request)
+//!     .serve(request)
 //!     .await?;
 //!
 //! assert_eq!(
@@ -51,7 +51,7 @@ use crate::{
     header::{self, HeaderName},
 };
 use rama_core::{
-    Context, Layer, Service,
+    Layer, Service,
     bytes::{BufMut, BytesMut},
 };
 use rama_utils::macros::define_inner_service_accessors;
@@ -686,11 +686,7 @@ where
     type Response = S::Response;
     type Error = S::Error;
 
-    async fn serve(
-        &self,
-        ctx: Context,
-        req: Request<ReqBody>,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
         let (parts, body) = req.into_parts();
         let origin = parts.headers.get(&header::ORIGIN);
 
@@ -715,7 +711,7 @@ where
             Ok(if self.layer.handle_options_request {
                 let req = Request::from_parts(parts, body);
 
-                let mut response: Response<ResBody> = self.inner.serve(ctx, req).await?;
+                let mut response: Response<ResBody> = self.inner.serve(req).await?;
                 let response_headers = response.headers_mut();
 
                 // vary header can have multiple values, don't overwrite
@@ -739,7 +735,7 @@ where
 
             let req = Request::from_parts(parts, body);
 
-            let mut response: Response<ResBody> = self.inner.serve(ctx, req).await?;
+            let mut response: Response<ResBody> = self.inner.serve(req).await?;
             let response_headers = response.headers_mut();
 
             // vary header can have multiple values, don't overwrite

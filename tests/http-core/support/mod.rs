@@ -6,7 +6,6 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-use rama::Context;
 use rama::futures::FutureExt;
 use rama::http::StatusCode;
 use rama::http::body::util::{BodyExt, Full};
@@ -365,7 +364,6 @@ async fn async_test(cfg: __TestConfig) {
             // Move a clone into the service_fn
             let serve_handles = serve_handles.clone();
             let service = RamaHttpService::new(
-                Context::default(),
                 Extensions::new(),
                 service_fn(move |req: Request| {
                     let (sreq, sres) = serve_handles.lock().unwrap().remove(0);
@@ -530,7 +528,6 @@ async fn naive_proxy(cfg: ProxyConfig) -> (SocketAddr, impl Future<Output = ()>)
                 let (stream, _) = listener.accept().await.unwrap();
 
                 let service = RamaHttpService::new(
-                    Context::default(),
                     Extensions::new(),
                     service_fn(move |mut req: Request| {
                         async move {

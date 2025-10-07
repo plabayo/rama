@@ -44,7 +44,7 @@ mod test {
     use super::*;
     use crate::service::web::WebService;
     use crate::{Method, Request, StatusCode, body::util::BodyExt};
-    use rama_core::{Context, Service};
+    use rama_core::Service;
 
     #[tokio::test]
     async fn test_body() {
@@ -57,7 +57,7 @@ mod test {
             .method(Method::GET)
             .body("test".into())
             .unwrap();
-        let resp = service.serve(Context::default(), req).await.unwrap();
+        let resp = service.serve(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
     }
 }

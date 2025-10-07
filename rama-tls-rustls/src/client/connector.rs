@@ -7,7 +7,7 @@ use rama_core::error::{BoxError, ErrorExt, OpaqueError};
 use rama_core::extensions::{ExtensionsMut, ExtensionsRef};
 use rama_core::stream::Stream;
 use rama_core::telemetry::tracing;
-use rama_core::{Context, Layer, Service};
+use rama_core::{Layer, Service};
 use rama_net::address::Host;
 use rama_net::client::{ConnectorService, EstablishedClientConnection};
 use rama_net::tls::ApplicationProtocol;
@@ -240,11 +240,11 @@ where
     type Response = EstablishedClientConnection<AutoTlsStream<S::Connection>, Request>;
     type Error = BoxError;
 
-    async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
-        let EstablishedClientConnection { ctx, req, conn } =
-            self.inner.connect(ctx, req).await.map_err(Into::into)?;
+    async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
+        let EstablishedClientConnection { req, conn } =
+            self.inner.connect(req).await.map_err(Into::into)?;
 
-        let transport_ctx = req.try_ref_into_transport_ctx(&ctx).map_err(|err| {
+        let transport_ctx = req.try_ref_into_transport_ctx().map_err(|err| {
             OpaqueError::from_boxed(err.into())
                 .context("TlsConnector(auto): compute transport context")
         })?;
@@ -262,7 +262,6 @@ where
             );
 
             return Ok(EstablishedClientConnection {
-                ctx,
                 req,
                 conn: AutoTlsStream::plain(conn),
             });
@@ -291,7 +290,7 @@ where
         let mut conn = AutoTlsStream::secure(stream);
         conn.extensions_mut().insert(negotiated_params);
 
-        Ok(EstablishedClientConnection { ctx, req, conn })
+        Ok(EstablishedClientConnection { req, conn })
     }
 }
 
@@ -306,11 +305,11 @@ where
     type Response = EstablishedClientConnection<TlsStream<S::Connection>, Request>;
     type Error = BoxError;
 
-    async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
-        let EstablishedClientConnection { ctx, req, conn } =
-            self.inner.connect(ctx, req).await.map_err(Into::into)?;
+    async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
+        let EstablishedClientConnection { req, conn } =
+            self.inner.connect(req).await.map_err(Into::into)?;
 
-        let transport_ctx = req.try_ref_into_transport_ctx(&ctx).map_err(|err| {
+        let transport_ctx = req.try_ref_into_transport_ctx().map_err(|err| {
             OpaqueError::from_boxed(err.into())
                 .context("TlsConnector(auto): compute transport context")
         })?;
@@ -331,7 +330,7 @@ where
 
         conn.extensions_mut().insert(negotiated_params);
 
-        Ok(EstablishedClientConnection { ctx, req, conn })
+        Ok(EstablishedClientConnection { req, conn })
     }
 }
 
@@ -343,9 +342,9 @@ where
     type Response = EstablishedClientConnection<AutoTlsStream<S::Connection>, Request>;
     type Error = BoxError;
 
-    async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
-        let EstablishedClientConnection { ctx, req, conn } =
-            self.inner.connect(ctx, req).await.map_err(Into::into)?;
+    async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
+        let EstablishedClientConnection { req, conn } =
+            self.inner.connect(req).await.map_err(Into::into)?;
 
         let server_host = if let Some(host) = req
             .extensions()
@@ -361,7 +360,6 @@ where
             );
 
             return Ok(EstablishedClientConnection {
-                ctx,
                 req,
                 conn: AutoTlsStream::plain(conn),
             });
@@ -375,7 +373,7 @@ where
         conn.extensions_mut().insert(negotiated_params);
 
         tracing::trace!("TlsConnector(tunnel): connection secured");
-        Ok(EstablishedClientConnection { ctx, req, conn })
+        Ok(EstablishedClientConnection { req, conn })
     }
 }
 

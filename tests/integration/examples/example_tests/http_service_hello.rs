@@ -1,5 +1,5 @@
 use super::utils;
-use rama::{Context, http::BodyExtractExt};
+use rama::http::BodyExtractExt;
 use regex::Regex;
 
 #[tokio::test]
@@ -11,7 +11,7 @@ async fn test_http_service_fs() {
 
     let res_str = runner
         .get("http://127.0.0.1:62010")
-        .send(Context::default())
+        .send()
         .await
         .unwrap()
         .try_into_string()

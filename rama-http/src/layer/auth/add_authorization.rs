@@ -11,7 +11,7 @@
 //! use rama_http::layer::auth::AddAuthorizationLayer;
 //! use rama_http::{Body, Request, Response, StatusCode, header::AUTHORIZATION};
 //! use rama_core::service::service_fn;
-//! use rama_core::{Context, Service, Layer};
+//! use rama_core::{Service, Layer};
 //! use rama_core::error::BoxError;
 //! use rama_net::user::Basic;
 //!
@@ -32,7 +32,7 @@
 //!
 //! // Make a request, we don't have to add the `Authorization` header manually
 //! let response = client
-//!     .serve(Context::default(), Request::new(Body::default()))
+//!     .serve(Request::new(Body::default()))
 //!     .await?;
 //!
 //! assert_eq!(StatusCode::OK, response.status());
@@ -41,7 +41,7 @@
 //! ```
 
 use crate::{HeaderValue, Request, Response};
-use rama_core::{Context, Layer, Service};
+use rama_core::{Layer, Service};
 use rama_http_headers::authorization::Credentials;
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
@@ -251,11 +251,7 @@ where
     type Response = S::Response;
     type Error = S::Error;
 
-    async fn serve(
-        &self,
-        ctx: Context,
-        mut req: Request<ReqBody>,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
         if let Some(value) = &self.value
             && (!self.if_not_present
                 || !req
@@ -265,7 +261,7 @@ where
             req.headers_mut()
                 .insert(rama_http_types::header::AUTHORIZATION, value.clone());
         }
-        self.inner.serve(ctx, req).await
+        self.inner.serve(req).await
     }
 }
 
@@ -276,9 +272,9 @@ mod tests {
 
     use crate::layer::validate_request::ValidateRequestHeaderLayer;
     use crate::{Body, Request, Response, StatusCode};
+    use rama_core::Service;
     use rama_core::error::BoxError;
     use rama_core::service::service_fn;
-    use rama_core::{Context, Service};
     use rama_net::user::{Basic, Bearer};
     use std::convert::Infallible;
 
@@ -291,10 +287,7 @@ mod tests {
         // make a client that adds auth
         let client = AddAuthorization::new(svc, Basic::new_static("foo", "bar"));
 
-        let res = client
-            .serve(Context::default(), Request::new(Body::empty()))
-            .await
-            .unwrap();
+        let res = client.serve(Request::new(Body::empty())).await.unwrap();
 
         assert_eq!(res.status(), StatusCode::OK);
     }
@@ -308,10 +301,7 @@ mod tests {
         // make a client that adds auth
         let client = AddAuthorization::new(svc, Bearer::new_static("foo"));
 
-        let res = client
-            .serve(Context::default(), Request::new(Body::empty()))
-            .await
-            .unwrap();
+        let res = client.serve(Request::new(Body::empty())).await.unwrap();
 
         assert_eq!(res.status(), StatusCode::OK);
     }
@@ -332,10 +322,7 @@ mod tests {
 
         let client = AddAuthorization::new(svc, Bearer::new_static("foo")).as_sensitive(true);
 
-        let res = client
-            .serve(Context::default(), Request::new(Body::empty()))
-            .await
-            .unwrap();
+        let res = client.serve(Request::new(Body::empty())).await.unwrap();
 
         assert_eq!(res.status(), StatusCode::OK);
     }

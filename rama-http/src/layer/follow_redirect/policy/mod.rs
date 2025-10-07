@@ -18,7 +18,6 @@ pub use self::{
     same_origin::SameOrigin,
 };
 use crate::{Request, Scheme, StatusCode, Uri};
-use rama_core::Context;
 
 /// Trait for the policy on handling redirection responses.
 ///
@@ -32,7 +31,6 @@ use rama_core::Context;
 ///
 /// ```
 /// use std::collections::HashSet;
-/// use rama_core::Context;
 /// use rama_http::{Request, Uri};
 /// use rama_http::layer::follow_redirect::policy::{Action, Attempt, Policy};
 ///
@@ -42,7 +40,7 @@ use rama_core::Context;
 /// }
 ///
 /// impl< B, E> Policy< B, E> for DetectCycle {
-///     fn redirect(&mut self, _: &Context, attempt: &Attempt<'_>) -> Result<Action, E> {
+///     fn redirect(&mut self, attempt: &Attempt<'_>) -> Result<Action, E> {
 ///         if self.uris.contains(attempt.location()) {
 ///             Ok(Action::Stop)
 ///         } else {
@@ -57,7 +55,7 @@ pub trait Policy<B, E>: Send + Sync + 'static {
     ///
     /// This method returns an [`Action`] which indicates whether the service should follow
     /// the redirection.
-    fn redirect(&mut self, ctx: &Context, attempt: &Attempt<'_>) -> Result<Action, E>;
+    fn redirect(&mut self, attempt: &Attempt<'_>) -> Result<Action, E>;
 
     /// Invoked right before the service makes a request, regardless of whether it is redirected
     /// or not.
@@ -66,7 +64,7 @@ pub trait Policy<B, E>: Send + Sync + 'static {
     /// or prepare the request in other ways.
     ///
     /// The default implementation does nothing.
-    fn on_request(&mut self, _ctx: &mut Context, _request: &mut Request<B>) {}
+    fn on_request(&mut self, _request: &mut Request<B>) {}
 
     /// Try to clone a request body before the service makes a redirected request.
     ///
@@ -76,7 +74,7 @@ pub trait Policy<B, E>: Send + Sync + 'static {
     /// in which case `B::default()` will be used to create a new request body.
     ///
     /// The default implementation returns `None`.
-    fn clone_body(&mut self, _ctx: &Context, _body: &B) -> Option<B> {
+    fn clone_body(&mut self, __body: &B) -> Option<B> {
         None
     }
 }
@@ -85,16 +83,16 @@ impl<B, E, P> Policy<B, E> for Box<P>
 where
     P: Policy<B, E> + ?Sized,
 {
-    fn redirect(&mut self, ctx: &Context, attempt: &Attempt<'_>) -> Result<Action, E> {
-        (**self).redirect(ctx, attempt)
+    fn redirect(&mut self, attempt: &Attempt<'_>) -> Result<Action, E> {
+        (**self).redirect(attempt)
     }
 
-    fn on_request(&mut self, ctx: &mut Context, request: &mut Request<B>) {
-        (**self).on_request(ctx, request)
+    fn on_request(&mut self, request: &mut Request<B>) {
+        (**self).on_request(request)
     }
 
-    fn clone_body(&mut self, ctx: &Context, body: &B) -> Option<B> {
-        (**self).clone_body(ctx, body)
+    fn clone_body(&mut self, body: &B) -> Option<B> {
+        (**self).clone_body(body)
     }
 }
 
@@ -236,7 +234,7 @@ impl Action {
 }
 
 impl<B, E> Policy<B, E> for Action {
-    fn redirect(&mut self, _: &Context, _: &Attempt<'_>) -> Result<Action, E> {
+    fn redirect(&mut self, _: &Attempt<'_>) -> Result<Action, E> {
         Ok(*self)
     }
 }
@@ -245,7 +243,7 @@ impl<B, E> Policy<B, E> for Result<Action, E>
 where
     E: Clone + Send + Sync + 'static,
 {
-    fn redirect(&mut self, _: &Context, _: &Attempt<'_>) -> Self {
+    fn redirect(&mut self, _: &Attempt<'_>) -> Self {
         self.clone()
     }
 }

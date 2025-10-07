@@ -2232,7 +2232,6 @@ mod conn {
                         let (stream, _) = res.unwrap();
 
                         let service = RamaHttpService::new(
-                            rama::Context::default(),
                             Extensions::new(),
                             service_fn(|_:Request| future::ok::<_, Infallible>(Response::new(rama::http::Body::empty()))));
 
@@ -2314,7 +2313,6 @@ mod conn {
             let (stream, _) = res.unwrap();
 
             let service = RamaHttpService::new(
-                rama::Context::default(),
                 Extensions::new(),
                 service_fn(move |req: Request| {
                     tokio::task::spawn(async move {
@@ -2495,7 +2493,6 @@ mod conn {
                 .serve_connection(
                     sock,
                     RamaHttpService::new(
-                        rama::Context::default(),
                         Extensions::new(),
                         service_fn(async |req: Request| {
                             tokio::spawn(async move {
@@ -2553,7 +2550,6 @@ mod conn {
                 .serve_connection(
                     sock,
                     RamaHttpService::new(
-                        rama::Context::default(),
                         Extensions::new(),
                         service_fn(async |_req| {
                             Ok::<_, Infallible>(Response::new(rama::http::Body::from(

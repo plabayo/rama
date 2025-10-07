@@ -3,7 +3,6 @@ use crate::{
     Body, Request, Response, StatusCode, header,
     mime::{Mime, MimeIter},
 };
-use rama_core::Context;
 use std::{fmt, marker::PhantomData, sync::Arc};
 
 /// Type that performs validation of the Accept header.
@@ -57,13 +56,9 @@ where
 {
     type ResponseBody = ResBody;
 
-    async fn validate(
-        &self,
-        ctx: Context,
-        req: Request<B>,
-    ) -> Result<(Context, Request<B>), Response<Self::ResponseBody>> {
+    async fn validate(&self, req: Request<B>) -> Result<Request<B>, Response<Self::ResponseBody>> {
         if !req.headers().contains_key(header::ACCEPT) {
-            return Ok((ctx, req));
+            return Ok(req);
         }
         if req
             .headers()
@@ -90,7 +85,7 @@ where
                     .unwrap_or(false)
             })
         {
-            return Ok((ctx, req));
+            return Ok(req);
         }
         let mut res = Response::new(ResBody::default());
         *res.status_mut() = StatusCode::NOT_ACCEPTABLE;

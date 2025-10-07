@@ -1,5 +1,5 @@
 use super::utils;
-use rama::{Context, http::BodyExtractExt};
+use rama::http::BodyExtractExt;
 
 const EXPECTED_FILE_CONTENT: &str = include_str!("../../../../test-files/index.html");
 
@@ -12,7 +12,7 @@ async fn test_http_service_include_dir() {
 
     let file_content = runner
         .get("http://127.0.0.1:62037/test-files/index.html")
-        .send(Context::default())
+        .send()
         .await
         .unwrap()
         .try_into_string()

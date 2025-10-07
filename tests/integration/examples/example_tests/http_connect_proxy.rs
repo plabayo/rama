@@ -1,6 +1,5 @@
 use super::utils;
 use rama::{
-    Context,
     http::service::web::response::Json,
     http::{BodyExtractExt, Request, server::HttpServer},
     net::address::ProxyAddress,
@@ -35,7 +34,7 @@ async fn test_http_connect_proxy() {
     let result = runner
         .get("http://127.0.0.1:63001/foo/bar")
         .extension(ProxyAddress::try_from("http://john:secret@127.0.0.1:62001").unwrap())
-        .send(Context::default())
+        .send()
         .await
         .unwrap()
         .try_into_json::<Value>()
@@ -48,7 +47,7 @@ async fn test_http_connect_proxy() {
     let result = runner
         .post("http://echo.example.internal/lucky/42")
         .extension(ProxyAddress::try_from("http://john:secret@127.0.0.1:62001").unwrap())
-        .send(Context::default())
+        .send()
         .await
         .unwrap()
         .try_into_json::<Value>()

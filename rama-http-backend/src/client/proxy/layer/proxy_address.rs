@@ -1,5 +1,5 @@
 use rama_core::{
-    Context, Layer, Service,
+    Layer, Service,
     error::{ErrorContext, OpaqueError},
     extensions::ExtensionsMut,
     telemetry::tracing,
@@ -186,7 +186,6 @@ where
 
     fn serve(
         &self,
-        ctx: Context,
         mut req: Request,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
         if let Some(ref address) = self.address
@@ -199,6 +198,6 @@ where
             );
             req.extensions_mut().insert(address.clone());
         }
-        self.inner.serve(ctx, req)
+        self.inner.serve(req)
     }
 }

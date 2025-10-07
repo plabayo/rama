@@ -5,7 +5,7 @@
 //! ```
 //! use std::{sync::Arc, convert::Infallible};
 //!
-//! use rama_core::{Context, extensions::{Extensions, ExtensionsRef}, Service, Layer, service::service_fn};
+//! use rama_core::{extensions::{Extensions, ExtensionsRef}, Service, Layer, service::service_fn};
 //! use rama_core::layer::add_extension::AddExtensionLayer;
 //! use rama_core::error::BoxError;
 //!
@@ -20,7 +20,7 @@
 //! }
 //!
 //! // Request can be any type that implements [`ExtensionsRef`]
-//! async fn handle(_ctx: Context, req: Extensions) -> Result<(), Infallible>
+//! async fn handle(req: Extensions) -> Result<(), Infallible>
 //! {
 //!     // Grab the state from the request extensions.
 //!     let state = req.extensions().get::<Arc<State>>().unwrap();
@@ -42,13 +42,13 @@
 //!
 //! // Call the service.
 //! let response = service
-//!     .serve(Context::default(), Extensions::new())
+//!     .serve(Extensions::new())
 //!     .await?;
 //! # Ok(())
 //! # }
 //! ```
 
-use crate::{Context, Layer, Service, extensions::ExtensionsMut};
+use crate::{Layer, Service, extensions::ExtensionsMut};
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
 
@@ -156,18 +156,18 @@ where
 
     fn serve(
         &self,
-        ctx: Context,
+
         mut req: Request,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
         req.extensions_mut().insert(self.value.clone());
-        self.inner.serve(ctx, req)
+        self.inner.serve(req)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Context, ServiceInput, extensions::ExtensionsRef, service::service_fn};
+    use crate::{ServiceInput, extensions::ExtensionsRef, service::service_fn};
     use std::{convert::Infallible, sync::Arc};
 
     struct State(i32);
@@ -176,17 +176,13 @@ mod tests {
     async fn basic() {
         let state = Arc::new(State(1));
 
-        let svc = AddExtensionLayer::new(state).into_layer(service_fn(
-            async |_ctx: Context, req: ServiceInput<()>| {
+        let svc =
+            AddExtensionLayer::new(state).into_layer(service_fn(async |req: ServiceInput<()>| {
                 let state = req.extensions().get::<Arc<State>>().unwrap();
                 Ok::<_, Infallible>(state.0)
-            },
-        ));
+            }));
 
-        let res = svc
-            .serve(Context::default(), ServiceInput::new(()))
-            .await
-            .unwrap();
+        let res = svc.serve(ServiceInput::new(())).await.unwrap();
 
         assert_eq!(1, res);
     }

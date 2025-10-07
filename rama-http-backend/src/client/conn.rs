@@ -1,6 +1,6 @@
 use super::{HttpClientService, svc::SendRequest};
 use rama_core::{
-    Context, Layer, Service,
+    Layer, Service,
     error::{BoxError, OpaqueError},
     extensions::{ExtensionsMut, ExtensionsRef},
     inspect::RequestInspector,
@@ -106,23 +106,16 @@ where
     type Response = EstablishedClientConnection<HttpClientService<BodyOut, I2>, I1::RequestOut>;
     type Error = BoxError;
 
-    async fn serve(
-        &self,
-        ctx: Context,
-        req: Request<BodyIn>,
-    ) -> Result<Self::Response, Self::Error> {
-        let EstablishedClientConnection {
-            ctx,
-            mut req,
-            mut conn,
-        } = self.inner.connect(ctx, req).await.map_err(Into::into)?;
+    async fn serve(&self, req: Request<BodyIn>) -> Result<Self::Response, Self::Error> {
+        let EstablishedClientConnection { mut req, mut conn } =
+            self.inner.connect(req).await.map_err(Into::into)?;
 
         let conn_extensions = conn.take_extensions();
         req.extensions_mut().extend(conn_extensions.clone());
 
-        let (ctx, req) = self
+        let req = self
             .http_req_inspector_jit
-            .inspect_request(ctx, req)
+            .inspect_request(req)
             .await
             .map_err(Into::into)?;
 
@@ -209,11 +202,7 @@ where
                     extensions: conn_extensions,
                 };
 
-                Ok(EstablishedClientConnection {
-                    ctx,
-                    req,
-                    conn: svc,
-                })
+                Ok(EstablishedClientConnection { req, conn: svc })
             }
             Version::HTTP_11 | Version::HTTP_10 | Version::HTTP_09 => {
                 tracing::trace!(url.full = %req.uri(), "create ~h1 client executor");
@@ -254,11 +243,7 @@ where
                     extensions: conn_extensions,
                 };
 
-                Ok(EstablishedClientConnection {
-                    ctx,
-                    req,
-                    conn: svc,
-                })
+                Ok(EstablishedClientConnection { req, conn: svc })
             }
             version => Err(OpaqueError::from_display(format!(
                 "unsupported Http version: {version:?}",

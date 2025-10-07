@@ -40,7 +40,7 @@
 //! This will open a web page which will be a simple hello world data app.
 
 use rama::{
-    Context, Layer, Service,
+    Layer, Service,
     error::OpaqueError,
     extensions::ExtensionsRef,
     futures::async_stream::stream_fn,
@@ -143,12 +143,12 @@ impl Service<Request> for GracefulRouter {
     type Response = Response;
     type Error = Infallible;
 
-    async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
         if req.extensions().get::<Controller>().unwrap().is_closed() {
             tracing::debug!("router received request while shutting down: returning 401");
             return Ok(StatusCode::GONE.into_response());
         }
-        self.0.serve(ctx, req).await
+        self.0.serve(req).await
     }
 }
 

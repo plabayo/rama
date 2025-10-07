@@ -1,5 +1,4 @@
 use crate::{Request, Response};
-use rama_core::Context;
 
 /// Trait for validating requests.
 pub trait ValidateRequest<B>: Send + Sync + 'static {
@@ -11,7 +10,6 @@ pub trait ValidateRequest<B>: Send + Sync + 'static {
     /// If `Ok(())` is returned then the request is allowed through, otherwise not.
     fn validate(
         &self,
-        ctx: Context,
         request: Request<B>,
-    ) -> impl Future<Output = Result<(Context, Request<B>), Response<Self::ResponseBody>>> + Send + '_;
+    ) -> impl Future<Output = Result<Request<B>, Response<Self::ResponseBody>>> + Send + '_;
 }
