@@ -170,10 +170,10 @@ impl CertIssuerHttpClient {
     /// Prefetch all certificates, useful to warm them up at startup time.
     pub fn prefetch_certs_in_background(&self, exec: &Executor) {
         if let Some(allow_list) = &self.allow_list {
-            for (raw_domain, mode) in allow_list.iter() {
+            for (domain_key, mode) in allow_list.iter() {
                 let domain = match mode {
                     // assumption: only valid domains in trie possible
-                    DomainAllowMode::Exact => raw_domain.parse().unwrap(),
+                    DomainAllowMode::Exact => domain_key,
                     DomainAllowMode::Parent(domain) => domain.clone(),
                 };
                 let http_client = self.http_client.clone();

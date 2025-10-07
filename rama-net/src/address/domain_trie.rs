@@ -1,7 +1,7 @@
 use radix_trie::{Trie, TrieCommon};
 use std::fmt;
 
-use crate::address::AsDomainRef;
+use crate::address::{AsDomainRef, Domain};
 
 /// An efficient radix tree that can be used to match (sub)domains.
 pub struct DomainTrie<T> {
@@ -178,8 +178,12 @@ impl<T> DomainTrie<T> {
     }
 
     /// Iterate over the domains and values stored in this Trie.
-    pub fn iter(&self) -> impl Iterator<Item = (&str, &T)> {
-        self.trie.iter().map(|(s, v)| (s.as_ref(), v))
+    pub fn iter(&self) -> impl Iterator<Item = (Domain, &T)> {
+        self.trie.iter().map(|(s, v)| {
+            let from = s.trim_matches('.');
+            let domain = from.split('.').rev().collect::<Vec<&str>>().join(".");
+            (domain.parse().unwrap(), v)
+        })
     }
 }
 
@@ -300,5 +304,22 @@ mod test {
         assert!(!matcher.is_match_exact("domain.org"));
         assert!(!matcher.is_match_exact("other.com"));
         assert!(!matcher.is_match_exact("localhost"));
+    }
+
+    #[test]
+    fn test_trie_iter_domain_correct_direction() {
+        let matcher = DomainTrie::new()
+            .with_insert_domain_iter(["example.com", "sub.domain.org", "foo.example.com"], ());
+
+        let mut domains: Vec<_> = matcher
+            .iter()
+            .map(|(domain, _)| domain.to_string())
+            .collect();
+        domains.sort();
+
+        assert_eq!(
+            "example.com,foo.example.com,sub.domain.org",
+            domains.join(","),
+        );
     }
 }
