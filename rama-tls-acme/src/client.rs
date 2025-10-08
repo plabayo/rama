@@ -26,7 +26,8 @@ use rama_crypto::{
 use rama_http::{
     BodyExtractExt, Request, Response,
     body::util::BodyExt,
-    headers::{ContentType, HeaderMapExt, Location, RetryAfter, TypedHeader, UserAgent},
+    header::{RAMA_ID_HEADER_VALUE, USER_AGENT},
+    headers::{ContentType, HeaderMapExt, Location, RetryAfter, TypedHeader},
     response::Parts,
     service::client::HttpClientExt,
     utils::HeaderValueGetter,
@@ -236,7 +237,7 @@ impl AcmeClient {
         let request = self
             .https_client
             .post(url)
-            .typed_header(UserAgent::from_static("rama-tls-acme"))
+            .header(USER_AGENT, RAMA_ID_HEADER_VALUE.clone())
             .typed_header(ContentType::jose_json())
             .json(&jws);
 
