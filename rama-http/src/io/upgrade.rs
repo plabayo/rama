@@ -316,7 +316,8 @@ mod sealed {
     impl<B> CanUpgrade for Request<B> {
         fn on_upgrade(mut self) -> OnUpgrade {
             self.extensions_mut()
-                .remove::<OnUpgrade>()
+                .get::<OnUpgrade>()
+                .cloned()
                 .unwrap_or_else(OnUpgrade::none)
         }
     }
@@ -324,7 +325,8 @@ mod sealed {
     impl<B> CanUpgrade for &'_ mut Request<B> {
         fn on_upgrade(self) -> OnUpgrade {
             self.extensions_mut()
-                .remove::<OnUpgrade>()
+                .get::<OnUpgrade>()
+                .cloned()
                 .unwrap_or_else(OnUpgrade::none)
         }
     }
@@ -332,7 +334,8 @@ mod sealed {
     impl<B> CanUpgrade for Response<B> {
         fn on_upgrade(mut self) -> OnUpgrade {
             self.extensions_mut()
-                .remove::<OnUpgrade>()
+                .get::<OnUpgrade>()
+                .cloned()
                 .unwrap_or_else(OnUpgrade::none)
         }
     }
@@ -340,7 +343,8 @@ mod sealed {
     impl<B> CanUpgrade for &'_ mut Response<B> {
         fn on_upgrade(self) -> OnUpgrade {
             self.extensions_mut()
-                .remove::<OnUpgrade>()
+                .get::<OnUpgrade>()
+                .cloned()
                 .unwrap_or_else(OnUpgrade::none)
         }
     }

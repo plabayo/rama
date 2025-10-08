@@ -6,7 +6,7 @@ use crate::h2::proto::{Error, Initiator, Open, Peer, WindowSize, peer};
 use crate::h2::{client, proto, server};
 
 use rama_core::bytes::{Buf, Bytes};
-use rama_core::extensions::{Extensions, ExtensionsMut, ExtensionsRef};
+use rama_core::extensions::{ExtensionsMut, ExtensionsRef};
 use rama_core::telemetry::tracing;
 use rama_http::proto::RequestHeaders;
 use rama_http::proto::h1::Http1HeaderMap;
@@ -114,20 +114,20 @@ struct SendBuffer<B> {
     inner: Mutex<Buffer<Frame<B>>>,
 }
 
-fn clear_extensions_safely(ext: &mut Extensions) {
-    let pseudo_order: Option<PseudoHeaderOrder> = ext.remove();
-    let field_order: Option<OriginalHttp1Headers> = ext.remove();
+// fn clear_extensions_safely(ext: &mut Extensions) {
+//     let pseudo_order: Option<PseudoHeaderOrder> = ext.remove();
+//     let field_order: Option<OriginalHttp1Headers> = ext.remove();
 
-    ext.clear();
+//     ext.clear();
 
-    if let Some(pseudo_order) = pseudo_order {
-        ext.insert(pseudo_order);
-    }
+//     if let Some(pseudo_order) = pseudo_order {
+//         ext.insert(pseudo_order);
+//     }
 
-    if let Some(field_order) = field_order {
-        ext.insert(field_order);
-    }
-}
+//     if let Some(field_order) = field_order {
+//         ext.insert(field_order);
+//     }
+// }
 
 // ===== impl Streams =====
 
@@ -300,10 +300,12 @@ where
         use super::stream::ContentLength;
         use rama_http_types::Method;
 
-        let protocol = request.extensions_mut().remove::<Protocol>();
+        let protocol = request.extensions_mut().get::<Protocol>().cloned();
+
+        // TODO why do we even need to clean this? Could be a design mistake?
 
         // Clear before taking lock, incase extensions contain a StreamRef.
-        clear_extensions_safely(request.extensions_mut());
+        // clear_extensions_safely(request.extensions_mut());
 
         // TODO: There is a hazard with assigning a stream ID before the
         // prioritize layer. If prioritization reorders new streams, this
@@ -1264,11 +1266,13 @@ impl<B> StreamRef<B> {
     #[allow(clippy::needless_pass_by_ref_mut)]
     pub(crate) fn send_response(
         &mut self,
-        mut response: Response<()>,
+        response: Response<()>,
         end_of_stream: bool,
     ) -> Result<(), UserError> {
+        // TODO see other remark
         // Clear before taking lock, incase extensions contain a StreamRef.
-        clear_extensions_safely(response.extensions_mut());
+        // clear_extensions_safely(response.extensions_mut());
+
         let mut me = self.opaque.inner.lock().unwrap();
         let me = &mut *me;
 
@@ -1287,12 +1291,10 @@ impl<B> StreamRef<B> {
     }
 
     #[allow(clippy::needless_pass_by_ref_mut)]
-    pub(crate) fn send_push_promise(
-        &mut self,
-        mut request: Request<()>,
-    ) -> Result<Self, UserError> {
+    pub(crate) fn send_push_promise(&mut self, request: Request<()>) -> Result<Self, UserError> {
+        // TODO see other remark
         // Clear before taking lock, incase extensions contain a StreamRef.
-        clear_extensions_safely(request.extensions_mut());
+        // clear_extensions_safely(request.extensions_mut());
         let mut me = self.opaque.inner.lock().unwrap();
         let me = &mut *me;
 

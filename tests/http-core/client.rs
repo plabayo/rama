@@ -385,7 +385,7 @@ macro_rules! test {
             // Always check that HttpConnector has set the "extra" info...
             let extra = resp
                 .extensions_mut()
-                .remove::<HttpInfo>()
+                .get::<HttpInfo>()
                 .expect("HttpConnector should set HttpInfo");
 
             assert_eq!(extra.remote_addr, addr, "HttpInfo should have server addr");
