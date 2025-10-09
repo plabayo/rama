@@ -348,7 +348,7 @@ pub fn validate_http_server_response<Body>(
                                 (None, None | Some(_)) => None,
                                 (Some(srv), maybe_offered) => {
                                     if !(8..=15).contains(&srv) || maybe_offered.map(|offered| srv > offered).unwrap_or_default() {
-                                        tracing::debug!("server offered invaoid client_max_window_bits (pmd)... ext mismatch!");
+                                        tracing::debug!("server offered invalid client_max_window_bits (pmd)... ext mismatch!");
                                         return Some(Err(
                                             ResponseValidateError::ExtensionMismatch(Some(
                                                 Extension::PerMessageDeflate(server_cfg.clone()),

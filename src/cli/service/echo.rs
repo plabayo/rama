@@ -9,11 +9,13 @@ use crate::{
     Layer, Service,
     cli::ForwardKind,
     combinators::{Either3, Either7},
-    error::{BoxError, OpaqueError},
+    error::{BoxError, ErrorContext, OpaqueError},
     extensions::ExtensionsRef,
     http::{
         Request, Response, Version,
         body::util::BodyExt,
+        convert::curl,
+        core::h2::frame::EarlyFrameCapture,
         header::USER_AGENT,
         headers::forwarded::{CFConnectingIp, ClientIp, TrueClientIp, XClientIp, XRealIp},
         layer::{
@@ -24,7 +26,9 @@ use crate::{
         },
         proto::h1::Http1HeaderMap,
         proto::h2::PseudoHeaderOrder,
-        server::HttpServer,
+        server::{HttpServer, layer::upgrade::UpgradeLayer},
+        service::web::{extract::Json, response::IntoResponse},
+        ws::handshake::server::{WebSocketAcceptor, WebSocketEchoService, WebSocketMatcher},
     },
     layer::{ConsumeErrLayer, LimitLayer, TimeoutLayer, limit::policy::ConcurrentPolicy},
     net::fingerprint::Ja4H,
@@ -37,14 +41,7 @@ use crate::{
     telemetry::tracing,
     ua::profile::UserAgentDatabase,
 };
-use rama_core::error::ErrorContext;
-use rama_http::{
-    convert::curl,
-    service::web::{extract::Json, response::IntoResponse},
-};
-use rama_http_backend::server::layer::upgrade::UpgradeLayer;
-use rama_http_core::h2::frame::EarlyFrameCapture;
-use rama_ws::handshake::server::{WebSocketAcceptor, WebSocketEchoService, WebSocketMatcher};
+
 use serde::Serialize;
 use serde_json::json;
 use std::{convert::Infallible, time::Duration};
