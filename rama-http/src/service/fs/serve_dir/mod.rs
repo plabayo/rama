@@ -1,6 +1,7 @@
 use crate::headers::encoding::{SupportedEncodings, parse_accept_encoding_headers};
 use crate::layer::set_status::SetStatus;
-use crate::{Body, HeaderValue, Method, Request, Response, StatusCode, StreamingBody, header};
+use crate::mime::Mime;
+use crate::{Body, Method, Request, Response, StatusCode, StreamingBody, header};
 use percent_encoding::percent_decode;
 use rama_core::Service;
 use rama_core::bytes::Bytes;
@@ -89,7 +90,7 @@ impl ServeDir<DefaultServeDirFallback> {
     }
 
     /// Create a new [`ServeDir`] configured to serve a single file.
-    pub(crate) fn new_single_file<P>(path: P, mime: HeaderValue) -> Self
+    pub(crate) fn new_single_file<P>(path: P, mime: Mime) -> Self
     where
         P: AsRef<Path>,
     {
@@ -495,7 +496,7 @@ impl TryFrom<&str> for DirectoryServeMode {
 #[derive(Clone, Debug)]
 enum ServeVariant {
     Directory { serve_mode: DirectoryServeMode },
-    SingleFile { mime: HeaderValue },
+    SingleFile { mime: Mime },
 }
 
 impl ServeVariant {

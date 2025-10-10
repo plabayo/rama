@@ -9,6 +9,7 @@ use crate::{
 };
 use rama_core::bytes::Bytes;
 use rama_core::{Service, error::BoxError};
+use rama_http_headers::{AcceptRanges, ContentType, HttpResponseBuilderExt};
 use std::{convert::Infallible, io};
 
 /// Consume the result of opening a file and create an appropriate HTTP response.
@@ -124,8 +125,8 @@ fn build_response(output: FileOpened) -> Response {
     let size = output.extent.file_size();
 
     let mut builder = Response::builder()
-        .header(header::CONTENT_TYPE, output.mime_header_value)
-        .header(header::ACCEPT_RANGES, "bytes");
+        .typed_header(ContentType::new(output.mime_value))
+        .typed_header(AcceptRanges::bytes());
 
     if let Some(encoding) = output
         .maybe_encoding

@@ -2,7 +2,7 @@
 
 use super::ServeDir;
 use crate::mime::{Mime, guess as mime_guess};
-use crate::{HeaderValue, Request, Response};
+use crate::{Request, Response};
 use rama_core::Service;
 use std::path::Path;
 
@@ -18,12 +18,8 @@ impl ServeFile {
     pub fn new<P: AsRef<Path>>(path: P) -> Self {
         let guess = mime_guess::from_path(path.as_ref());
         let mime = guess
-            .first_raw()
-            .map(HeaderValue::from_static)
-            .unwrap_or_else(|| {
-                HeaderValue::from_str(crate::mime::APPLICATION_OCTET_STREAM.as_ref()).unwrap()
-            });
-
+            .first()
+            .unwrap_or(crate::mime::APPLICATION_OCTET_STREAM);
         Self(ServeDir::new_single_file(path, mime))
     }
 
@@ -34,8 +30,7 @@ impl ServeFile {
     /// Will panic if the mime type isn't a valid [header value].
     ///
     /// [header value]: https://docs.rs/http/latest/http/header/struct.HeaderValue.html
-    pub fn new_with_mime<P: AsRef<Path>>(path: P, mime: &Mime) -> Self {
-        let mime = HeaderValue::from_str(mime.as_ref()).expect("mime isn't a valid header value");
+    pub fn new_with_mime<P: AsRef<Path>>(path: P, mime: Mime) -> Self {
         Self(ServeDir::new_single_file(path, mime))
     }
 
@@ -168,7 +163,6 @@ mod compression_tests {
 mod tests {
     use crate::Method;
     use crate::header;
-    use crate::mime::Mime;
     use crate::service::fs::ServeFile;
     use crate::{Body, body::util::BodyExt};
     use crate::{Request, StatusCode};
@@ -176,8 +170,8 @@ mod tests {
     use flate2::bufread::DeflateDecoder;
     use flate2::bufread::GzDecoder;
     use rama_core::Service;
+    use rama_http_types::mime::guess::mime;
     use std::io::Read;
-    use std::str::FromStr;
 
     #[tokio::test]
     async fn basic() {
@@ -195,11 +189,11 @@ mod tests {
 
     #[tokio::test]
     async fn basic_with_mime() {
-        let svc = ServeFile::new_with_mime("../README.md", &Mime::from_str("image/jpg").unwrap());
+        let svc = ServeFile::new_with_mime("../README.md", mime::IMAGE_JPEG);
 
         let res = svc.serve(Request::new(Body::empty())).await.unwrap();
 
-        assert_eq!(res.headers()["content-type"], "image/jpg");
+        assert_eq!(res.headers()["content-type"], "image/jpeg");
 
         let body = res.into_body().collect().await.unwrap().to_bytes();
         let body = String::from_utf8(body.to_vec()).unwrap();

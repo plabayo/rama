@@ -1,7 +1,7 @@
-use super::{IntoEndpointService, endpoint::Endpoint};
 use crate::{
     Body, Request, Response, StatusCode, Uri,
     matcher::{HttpMatcher, UriParams},
+    mime::Mime,
     service::fs::ServeDir,
     service::web::endpoint::response::IntoResponse,
 };
@@ -11,7 +11,11 @@ use rama_core::{
     matcher::Matcher,
     service::{BoxService, Service, service_fn},
 };
-use std::{convert::Infallible, fmt, sync::Arc};
+use rama_utils::include_dir;
+
+use std::{convert::Infallible, fmt, path::Path, sync::Arc};
+
+use super::{IntoEndpointService, endpoint::Endpoint};
 
 /// A basic web service that can be used to serve HTTP requests.
 ///
@@ -144,10 +148,24 @@ impl WebService {
         self.on(matcher, service)
     }
 
+    /// serve the given file under the given path.
+    #[must_use]
+    pub fn file(self, prefix: &str, path: impl AsRef<Path>, mime: Mime) -> Self {
+        let service = ServeDir::new_single_file(path, mime).fallback(self.not_found.clone());
+        self.nest(prefix, service)
+    }
+
     /// serve the given directory under the given path.
     #[must_use]
-    pub fn dir(self, prefix: &str, dir: &str) -> Self {
-        let service = ServeDir::new(dir).fallback(self.not_found.clone());
+    pub fn dir(self, prefix: &str, path: impl AsRef<Path>) -> Self {
+        let service = ServeDir::new(path).fallback(self.not_found.clone());
+        self.nest(prefix, service)
+    }
+
+    /// serve the given embedded directory under the given path.
+    #[must_use]
+    pub fn dir_embed(self, prefix: &str, dir: include_dir::Dir<'static>) -> Self {
+        let service = ServeDir::new_embedded(dir).fallback(self.not_found.clone());
         self.nest(prefix, service)
     }
 
@@ -277,7 +295,7 @@ impl Service<Request> for WebService {
 ///   };
 ///
 ///   let resp = svc.serve(
-///      
+///
 ///       Request::post("https://www.test.io/world").body(Body::empty()).unwrap(),
 ///   ).await.unwrap();
 ///   assert_eq!(resp.status(), StatusCode::OK);
@@ -306,7 +324,7 @@ impl Service<Request> for WebService {
 ///   ));
 ///
 ///   let resp = svc.serve(
-///     
+///
 ///      Request::post("https://www.test.io/world").body(Body::empty()).unwrap(),
 ///   ).await.unwrap();
 ///   assert_eq!(resp.status(), StatusCode::OK);
