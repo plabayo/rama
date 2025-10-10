@@ -1,8 +1,12 @@
-use std::{convert::Infallible, sync::Arc};
+use std::{convert::Infallible, path::Path, sync::Arc};
 
 use crate::{
     Request, Response,
     matcher::{HttpMatcher, MethodMatcher, UriParams},
+    service::{
+        fs::{DirectoryServeMode, ServeDir},
+        web::response::IntoResponse,
+    },
 };
 
 use matchit::Router as MatchitRouter;
@@ -11,7 +15,8 @@ use rama_core::{
     matcher::Matcher,
     service::{BoxService, Service},
 };
-use rama_http_types::{Body, StatusCode};
+use rama_http_types::{Body, StatusCode, mime::Mime};
+use rama_utils::include_dir;
 
 use super::IntoEndpointService;
 
@@ -131,6 +136,62 @@ impl Router {
     {
         let matcher = HttpMatcher::method(MethodMatcher::CONNECT);
         self.match_route(path, matcher, service)
+    }
+
+    /// serve the given file under the given path.
+    #[must_use]
+    pub fn file(self, path: &str, file: impl AsRef<Path>, mime: Mime) -> Self {
+        let service = ServeDir::new_single_file(file, mime);
+        match self.not_found.clone() {
+            Some(not_found) => self.sub(path, service.fallback(not_found)),
+            None => self.sub(path, service),
+        }
+    }
+
+    /// serve the given directory under the given path.
+    #[inline]
+    #[must_use]
+    pub fn dir(self, path: &str, dir: impl AsRef<Path>) -> Self {
+        self.dir_with_serve_mode(path, dir, Default::default())
+    }
+
+    /// serve the given directory under the given path,
+    /// with a custom serve move.
+    #[must_use]
+    pub fn dir_with_serve_mode(
+        self,
+        path: &str,
+        dir: impl AsRef<Path>,
+        mode: DirectoryServeMode,
+    ) -> Self {
+        let service = ServeDir::new(dir).with_directory_serve_mode(mode);
+        match self.not_found.clone() {
+            Some(not_found) => self.sub(path, service.fallback(not_found)),
+            None => self.sub(path, service),
+        }
+    }
+
+    /// serve the given embedded directory under the given path.
+    #[inline]
+    #[must_use]
+    pub fn dir_embed(self, path: &str, dir: include_dir::Dir<'static>) -> Self {
+        self.dir_embed_with_serve_mode(path, dir, Default::default())
+    }
+
+    /// serve the given embedded directory under the given path
+    /// with a custom serve move.
+    #[must_use]
+    pub fn dir_embed_with_serve_mode(
+        self,
+        path: &str,
+        dir: include_dir::Dir<'static>,
+        mode: DirectoryServeMode,
+    ) -> Self {
+        let service = ServeDir::new_embedded(dir).with_directory_serve_mode(mode);
+        match self.not_found.clone() {
+            Some(not_found) => self.sub(path, service.fallback(not_found)),
+            None => self.sub(path, service),
+        }
     }
 
     /// register a nested router under a prefix.
@@ -262,10 +323,7 @@ impl Service<Request> for Router {
         if let Some(not_found) = &self.not_found {
             not_found.serve(req).await
         } else {
-            Ok(Response::builder()
-                .status(StatusCode::NOT_FOUND)
-                .body(Body::from("Not Found"))
-                .unwrap())
+            Ok(StatusCode::NOT_FOUND.into_response())
         }
     }
 }
