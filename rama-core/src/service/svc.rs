@@ -1,6 +1,5 @@
 //! [`Service`] and [`BoxService`] traits.
 
-use crate::error::BoxError;
 use std::fmt;
 use std::marker::PhantomData;
 use std::pin::Pin;
@@ -170,24 +169,25 @@ where
 }
 
 macro_rules! impl_service_either {
-    ($id:ident, $($param:ident),+ $(,)?) => {
-        impl<$($param),+, Request, Response> Service<Request> for crate::combinators::$id<$($param),+>
+    ($id:ident, $first:ident $(, $param:ident)* $(,)?) => {
+        impl<$first, $($param,)* Request, Response> Service<Request> for crate::combinators::$id<$first $(,$param)*>
         where
+            $first: Service<Request, Response = Response>,
             $(
-                $param: Service<Request, Response = Response, Error: Into<BoxError>>,
-            )+
+                $param: Service<Request, Response = Response, Error: Into<$first::Error>>,
+            )*
             Request: Send + 'static,
-
             Response: Send + 'static,
         {
             type Response = Response;
-            type Error = BoxError;
+            type Error = $first::Error;
 
             async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
                 match self {
+                    crate::combinators::$id::$first(s) => s.serve(req).await,
                     $(
                         crate::combinators::$id::$param(s) => s.serve(req).await.map_err(Into::into),
-                    )+
+                    )*
                 }
             }
         }
