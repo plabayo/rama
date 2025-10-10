@@ -244,6 +244,7 @@ zstd = "0.13"
 
 [workspace.lints.rust]
 unreachable_pub = "deny"
+unused_imports = "warn"
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }
 
 [workspace.lints.clippy]
