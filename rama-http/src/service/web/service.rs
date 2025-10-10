@@ -2,8 +2,10 @@ use crate::{
     Body, Request, Response, StatusCode, Uri,
     matcher::{HttpMatcher, UriParams},
     mime::Mime,
-    service::fs::ServeDir,
-    service::web::endpoint::response::IntoResponse,
+    service::{
+        fs::{DirectoryServeMode, ServeDir},
+        web::endpoint::response::IntoResponse,
+    },
 };
 use rama_core::{
     extensions::Extensions,
@@ -156,16 +158,46 @@ impl WebService {
     }
 
     /// serve the given directory under the given path.
+    #[inline]
     #[must_use]
     pub fn dir(self, prefix: &str, path: impl AsRef<Path>) -> Self {
-        let service = ServeDir::new(path).fallback(self.not_found.clone());
+        self.dir_with_serve_mode(prefix, path, Default::default())
+    }
+
+    /// serve the given directory under the given path,
+    /// with a custom serve move.
+    #[must_use]
+    pub fn dir_with_serve_mode(
+        self,
+        prefix: &str,
+        path: impl AsRef<Path>,
+        mode: DirectoryServeMode,
+    ) -> Self {
+        let service = ServeDir::new(path)
+            .fallback(self.not_found.clone())
+            .with_directory_serve_mode(mode);
         self.nest(prefix, service)
     }
 
     /// serve the given embedded directory under the given path.
+    #[inline]
     #[must_use]
     pub fn dir_embed(self, prefix: &str, dir: include_dir::Dir<'static>) -> Self {
-        let service = ServeDir::new_embedded(dir).fallback(self.not_found.clone());
+        self.dir_embed_with_serve_mode(prefix, dir, Default::default())
+    }
+
+    /// serve the given embedded directory under the given path
+    /// with a custom serve move.
+    #[must_use]
+    pub fn dir_embed_with_serve_mode(
+        self,
+        prefix: &str,
+        dir: include_dir::Dir<'static>,
+        mode: DirectoryServeMode,
+    ) -> Self {
+        let service = ServeDir::new_embedded(dir)
+            .fallback(self.not_found.clone())
+            .with_directory_serve_mode(mode);
         self.nest(prefix, service)
     }
 
