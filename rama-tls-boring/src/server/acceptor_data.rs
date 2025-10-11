@@ -218,7 +218,9 @@ impl TlsCertSource {
                     let server_name = server_name.clone();
 
                     Ok(Box::pin(async move {
-                        let issued_cert = if let Some(cached_cert) = cert_cache.as_ref().and_then(|cert_cache| cert_cache.get(&host)) {
+                        let cache_key = issuer.norm_cn(&host).unwrap_or(&host);
+
+                        let issued_cert = if let Some(cached_cert) = cert_cache.as_ref().and_then(|cert_cache| cert_cache.get(cache_key)) {
                             cached_cert
                         } else {
                             let auth_data = issuer.issue_cert(rama_client_hello, server_name).await.map_err(|err| {
@@ -232,7 +234,7 @@ impl TlsCertSource {
                         };
 
                         if let Some(cert_cache) = cert_cache {
-                            cert_cache.insert(host.clone(), issued_cert.clone());
+                            cert_cache.insert(cache_key.clone(), issued_cert.clone());
                         }
 
                         let apply_cert = Box::new(move |client_hello: ClientHello<'_>| {

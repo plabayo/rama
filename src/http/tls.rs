@@ -247,6 +247,24 @@ impl DynamicCertIssuer for CertIssuerHttpClient {
 
         Either::B(async move { rx.await.context("await crt order result")? })
     }
+
+    fn norm_cn(&self, domain: &Domain) -> Option<&Domain> {
+        if let Some(ref allow_list) = self.allow_list {
+            match allow_list.match_parent(domain) {
+                None
+                | Some(DomainParentMatch {
+                    value: &DomainAllowMode::Exact,
+                    ..
+                }) => None,
+                Some(DomainParentMatch {
+                    value: DomainAllowMode::Parent(wildcard_domain),
+                    ..
+                }) => Some(wildcard_domain),
+            }
+        } else {
+            None
+        }
+    }
 }
 
 async fn fetch_certs(
@@ -295,4 +313,30 @@ async fn fetch_certs(
         ),
         ocsp: None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_issuer_kind_norm_cn() {
+        let issuer = CertIssuerHttpClient::new(Uri::from_static("http://example.com"))
+            .with_allow_domains(["*.foo.com", "bar.org", "*.example.io", "example.net"]);
+        for (input, expected) in [
+            ("example.com", None),
+            ("www.foo.com", Some("*.foo.com")),
+            ("bar.foo.com", Some("*.foo.com")),
+            ("bar.example.io", Some("*.example.io")),
+            ("example.net", None),
+            ("foo.example.net", None),
+            ("foo.bar.org", None),
+            ("bar.org", None),
+        ] {
+            let output = issuer
+                .norm_cn(&Domain::from_static(input))
+                .map(|d| d.as_str());
+            assert_eq!(output, expected, "{input:?} ; {expected:?}")
+        }
+    }
 }
