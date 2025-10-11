@@ -50,7 +50,7 @@ impl Http1HeaderMap {
 
     #[must_use]
     pub fn new(headers: HeaderMap, ext: Option<&mut Extensions>) -> Self {
-        let original_headers = ext.and_then(|ext| ext.remove()).unwrap_or_default();
+        let original_headers = ext.and_then(|ext| ext.get()).cloned().unwrap_or_default();
         Self {
             headers,
             original_headers,

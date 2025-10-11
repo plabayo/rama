@@ -350,7 +350,7 @@ where
     type Error = BoxError;
 
     async fn serve(&self, mut req: Request) -> Result<Self::Response, Self::Error> {
-        let address = req.extensions_mut().remove::<ProxyAddress>();
+        let address = req.extensions_mut().get::<ProxyAddress>().cloned();
         if !address
             .as_ref()
             .and_then(|addr| addr.protocol.as_ref())

@@ -933,8 +933,9 @@ impl Http1Transaction for Client {
 
             extensions.insert(HeaderByteLength(len));
 
-            if let Some(mut request_ext) = ctx.encoded_request_extensions.take() {
-                if let Some(request_headers) = request_ext.remove::<RequestHeaders>() {
+            if let Some(request_ext) = ctx.encoded_request_extensions.take() {
+                // TODO same remark here for parent extensions
+                if let Some(request_headers) = request_ext.get::<RequestHeaders>().cloned() {
                     extensions.insert(request_headers);
                 }
                 extensions.insert(RequestExtensions::from(request_ext));

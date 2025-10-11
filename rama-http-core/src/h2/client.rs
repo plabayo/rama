@@ -1716,7 +1716,7 @@ impl Peer {
                 uri,
                 headers,
                 version,
-                mut extensions,
+                extensions,
                 ..
             },
             _,
@@ -1730,14 +1730,15 @@ impl Peer {
 
         // reuse order if defined
         if let Some(order) = extensions
-            .remove::<PseudoHeaderOrder>()
+            .get::<PseudoHeaderOrder>()
+            .cloned()
             .or(headers_pseudo_order)
             && !order.is_empty()
         {
             pseudo.order = order;
         }
 
-        let header_order: OriginalHttp1Headers = extensions.remove().unwrap_or_default();
+        let header_order: OriginalHttp1Headers = extensions.get().cloned().unwrap_or_default();
 
         if pseudo.scheme.is_none() {
             // If the scheme is not set, then there are a two options.

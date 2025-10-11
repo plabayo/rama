@@ -1445,7 +1445,7 @@ impl Peer {
             Parts {
                 status,
                 headers,
-                mut extensions,
+                extensions,
                 ..
             },
             _,
@@ -1456,13 +1456,13 @@ impl Peer {
         let mut pseudo = Pseudo::response(status);
 
         // reuse order if defined
-        if let Some(order) = extensions.remove::<PseudoHeaderOrder>()
+        if let Some(order) = extensions.get::<PseudoHeaderOrder>().cloned()
             && !order.is_empty()
         {
             pseudo.order = order;
         }
 
-        let header_order: OriginalHttp1Headers = extensions.remove().unwrap_or_default();
+        let header_order: OriginalHttp1Headers = extensions.get().cloned().unwrap_or_default();
 
         // Create the HEADERS frame
         let mut frame = frame::Headers::new(id, pseudo, headers, header_order, None);
@@ -1503,7 +1503,7 @@ impl Peer {
                 method,
                 uri,
                 headers,
-                mut extensions,
+                extensions,
                 ..
             },
             _,
@@ -1512,13 +1512,13 @@ impl Peer {
         let mut pseudo = Pseudo::request(method, uri, None);
 
         // reuse order if defined
-        if let Some(order) = extensions.remove::<PseudoHeaderOrder>()
+        if let Some(order) = extensions.get::<PseudoHeaderOrder>().cloned()
             && !order.is_empty()
         {
             pseudo.order = order;
         }
 
-        let header_order: OriginalHttp1Headers = extensions.remove().unwrap_or_default();
+        let header_order: OriginalHttp1Headers = extensions.get().cloned().unwrap_or_default();
 
         Ok(frame::PushPromise::new(
             stream_id,
