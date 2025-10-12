@@ -28,6 +28,12 @@ derive_header! {
     name: LOCATION
 }
 
+impl Location {
+    pub fn new(value: HeaderValue) -> Self {
+        Self(value)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::test_decode;

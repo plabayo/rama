@@ -36,3 +36,14 @@ pub mod str;
 
 #[doc(hidden)]
 pub mod test_helpers;
+
+pub mod thirdparty {
+    //! Thirdparty utilities.
+    //!
+    //! These are external dependencies which are used throughout
+    //! the rama ecosystem and which are stable enough
+    //! to be re-exported here for your utility.
+
+    pub use ::regex;
+    pub use ::wildcard;
+}

@@ -2410,7 +2410,6 @@ dependencies = [
  "rama-unix",
  "rama-utils",
  "rama-ws",
- "regex",
  "rustversion",
  "serde",
  "serde_html_form",
@@ -2602,7 +2601,6 @@ dependencies = [
  "rama-utils",
  "rand 0.9.2",
  "rawzip",
- "regex",
  "serde",
  "serde_html_form",
  "serde_json",
@@ -2932,12 +2930,14 @@ dependencies = [
  "pin-project-lite",
  "quickcheck",
  "rama-macros",
+ "regex",
  "serde",
  "serde_json",
  "smol_str",
  "tokio",
  "tokio-test",
  "trybuild",
+ "wildcard",
 ]
 
 [[package]]
@@ -4458,6 +4458,15 @@ name = "widestring"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72069c3113ab32ab29e5584db3c6ec55d416895e60715417b5b883a357c3e471"
+
+[[package]]
+name = "wildcard"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f9b0540e91e49de3817c314da0dd3bc518093ceacc6ea5327cb0e1eb073e5189"
+dependencies = [
+ "thiserror",
+]
 
 [[package]]
 name = "winapi"

@@ -6,6 +6,9 @@ use crate::{Response, header};
 use rama_core::Service;
 use std::{convert::Infallible, fmt, marker::PhantomData};
 
+mod r#static;
+pub use r#static::RedirectStatic;
+
 /// Service that redirects all requests.
 pub struct Redirect<ResBody> {
     resp: response::Redirect,

@@ -1,10 +1,11 @@
 use super::{ForwardedProtocol, ForwardedVersion, NodeId};
+use crate::address::Domain;
 use crate::address::{Authority, Host};
 use ahash::HashMap;
 use rama_core::error::{ErrorContext, OpaqueError};
 use std::fmt;
-use std::net::IpAddr;
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr};
+use std::net::{Ipv6Addr, SocketAddr};
 
 #[cfg(feature = "http")]
 use rama_http_types::HeaderValue;
@@ -73,6 +74,60 @@ impl From<Host> for ForwardedAuthority {
     fn from(value: Host) -> Self {
         Self {
             host: value,
+            port: None,
+        }
+    }
+}
+
+impl From<Domain> for ForwardedAuthority {
+    fn from(value: Domain) -> Self {
+        Self {
+            host: value.into(),
+            port: None,
+        }
+    }
+}
+
+impl From<IpAddr> for ForwardedAuthority {
+    fn from(value: IpAddr) -> Self {
+        Self {
+            host: value.into(),
+            port: None,
+        }
+    }
+}
+
+impl From<Ipv4Addr> for ForwardedAuthority {
+    fn from(value: Ipv4Addr) -> Self {
+        Self {
+            host: value.into(),
+            port: None,
+        }
+    }
+}
+
+impl From<[u8; 4]> for ForwardedAuthority {
+    fn from(value: [u8; 4]) -> Self {
+        Self {
+            host: Ipv4Addr::from(value).into(),
+            port: None,
+        }
+    }
+}
+
+impl From<[u8; 16]> for ForwardedAuthority {
+    fn from(value: [u8; 16]) -> Self {
+        Self {
+            host: Ipv6Addr::from(value).into(),
+            port: None,
+        }
+    }
+}
+
+impl From<Ipv6Addr> for ForwardedAuthority {
+    fn from(value: Ipv6Addr) -> Self {
+        Self {
+            host: value.into(),
             port: None,
         }
     }

@@ -68,6 +68,7 @@ use rama_core::{
 use rama_utils::macros::define_inner_service_accessors;
 
 use rand::Rng;
+use smol_str::ToSmolStr as _;
 use std::fmt;
 use uuid::Uuid;
 
@@ -403,7 +404,7 @@ pub struct MakeRequestUuid;
 
 impl MakeRequestId for MakeRequestUuid {
     fn make_request_id<B>(&self, _request: &Request<B>) -> Option<RequestId> {
-        let request_id = Uuid::new_v4().to_string().parse().unwrap();
+        let request_id = Uuid::new_v4().to_smolstr().parse().unwrap();
         Some(RequestId::new(request_id))
     }
 }

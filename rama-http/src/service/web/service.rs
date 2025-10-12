@@ -261,7 +261,8 @@ where
         let path_and_query = uri_parts.path_and_query.take().unwrap();
         match path_and_query.query() {
             Some(query) => {
-                uri_parts.path_and_query = Some(format!("{path}?{query}").parse().unwrap());
+                uri_parts.path_and_query =
+                    Some(smol_str::format_smolstr!("{path}?{query}").parse().unwrap());
             }
             None => {
                 uri_parts.path_and_query = Some(path.parse().unwrap());

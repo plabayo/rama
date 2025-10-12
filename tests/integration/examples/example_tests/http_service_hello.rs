@@ -1,6 +1,6 @@
 use super::utils;
 use rama::http::BodyExtractExt;
-use regex::Regex;
+use rama::utils::thirdparty::regex::Regex;
 
 #[tokio::test]
 #[ignore]
