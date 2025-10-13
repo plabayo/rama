@@ -56,17 +56,15 @@ impl ContentDisposition {
         Self(HeaderValue::from_static("inline"))
     }
 
-    /*
     pub fn attachment(filename: &str) -> ContentDisposition {
-        let full = Bytes::from(format!("attachment; filename={}", filename));
-        match ::HeaderValue::from_maybe_shared(full) {
+        let full = format!("attachment; filename={}", filename);
+        match HeaderValue::from_maybe_shared(full) {
             Ok(val) => ContentDisposition(val),
             Err(_) => {
                 unimplemented!("filename that isn't ASCII");
             }
         }
     }
-    */
 
     /// Check if the disposition-type is `inline`.
     pub fn is_inline(&self) -> bool {

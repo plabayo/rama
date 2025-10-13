@@ -1,5 +1,7 @@
-use super::IntoResponse;
-use crate::{Body, Response, HeaderValue, header};
+use super::{Headers, IntoResponse};
+use crate::headers::ContentType;
+use crate::{Body, Response};
+use rama_http_headers::ContentDisposition;
 use std::fmt;
 
 /// An octet-stream response for serving arbitrary binary data.
@@ -93,23 +95,22 @@ where
     T: Into<Body>,
 {
     fn into_response(self) -> Response {
-        let mut builder = Response::builder();
+        let body = self.data.into();
 
-        // Add Content-Type header
-        builder = builder.header(header::CONTENT_TYPE, HeaderValue::from_static("application/octet-stream"));
-
-        // Add Content-Disposition if filename is set
         if let Some(filename) = self.filename {
-            let disposition = format!("attachment; filename=\"{}\"", filename);
-            builder = builder.header(
-                header::CONTENT_DISPOSITION,
-                HeaderValue::from_str(&disposition).unwrap_or_else(|_| {
-                    HeaderValue::from_static("attachment")
-                }),
-            );
+            // With Content-Disposition header
+            (
+                Headers((
+                    ContentType::octet_stream(),
+                    ContentDisposition::attachment(filename.as_str()),
+                )),
+                body,
+            )
+                .into_response()
+        } else {
+            // Simple case without Content-Disposition
+            (Headers::single(ContentType::octet_stream()), body).into_response()
         }
-
-        builder.body(self.data.into()).unwrap()
     }
 }
 
