@@ -19,7 +19,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 default = []
-http = ["dep:rama-http-types", "dep:sha2", "dep:itertools", "dep:hex"]
+http = ["dep:rama-http-types", "dep:sha2", "dep:itertools", "dep:hex", "dep:md5"]
 tls = ["dep:hex", "dep:md5", "dep:sha2", "dep:itertools"]
 opentelemetry = ["rama-core/opentelemetry"]
 

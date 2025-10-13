@@ -1,5 +1,11 @@
 //! fingerprint implementations for the network surface
 
+#[cfg(feature = "http")]
+mod akamai;
+
+#[cfg(feature = "http")]
+pub use akamai::{AkamaiH2, AkamaiH2ComputeError};
+
 #[cfg(any(feature = "tls", feature = "http"))]
 mod ja4;
 

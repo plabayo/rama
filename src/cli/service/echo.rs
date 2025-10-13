@@ -37,7 +37,7 @@ use crate::{
 };
 #[cfg(any(feature = "rustls", feature = "boring"))]
 use crate::{
-    net::fingerprint::{Ja3, Ja4, PeetPrint},
+    net::fingerprint::{AkamaiH2, Ja3, Ja4, PeetPrint},
     net::tls::{
         SecureTransport,
         client::ClientHelloExtension,
@@ -458,6 +458,19 @@ impl Service<Request> for EchoService {
 
         let (mut parts, body) = req.into_parts();
 
+        let mut akamai_h2 = None;
+        if parts.version == Version::HTTP_2 {
+            akamai_h2 = AkamaiH2::compute(&parts.extensions)
+                .inspect_err(|err| tracing::trace!("akamai h2 compute failure: {err:?}"))
+                .ok()
+                .map(|akamai| {
+                    json!({
+                        "hash": format!("{akamai}"),
+                        "verbose": format!("{akamai:?}"),
+                    })
+                })
+        };
+
         let body = body
             .collect()
             .await
@@ -711,6 +724,7 @@ impl Service<Request> for EchoService {
                 "path": parts.uri.path().to_owned(),
                 "query": parts.uri.query().map(str::to_owned),
                 "h2": h2,
+                "akamai_h2": akamai_h2,
                 "headers": headers,
                 "payload": body,
                 "ja4h": ja4h,

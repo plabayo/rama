@@ -2,8 +2,8 @@ use super::{
     State,
     data::{
         DataSource, FetchMode, Initiator, RequestInfo, ResourceType, TlsDisplayInfo, UserAgentInfo,
-        get_and_store_http_info, get_ja4h_info, get_request_info, get_tls_display_info_and_store,
-        get_user_agent_info,
+        get_akamai_h2_info, get_and_store_http_info, get_ja4h_info, get_request_info,
+        get_tls_display_info_and_store, get_user_agent_info,
     },
 };
 use crate::cmd::fp::{StorageAuthorized, data::TlsDisplayInfoExtensionData};
@@ -12,7 +12,7 @@ use rama::{
     Context,
     error::{ErrorContext, OpaqueError},
     http::{
-        Body, BodyExtractExt, Request, Response, StatusCode,
+        Body, BodyExtractExt, Request, Response, StatusCode, Version,
         proto::h2,
         service::web::{
             extract::Path,
@@ -141,6 +141,18 @@ pub(super) async fn get_report(mut ctx: Context, req: Request) -> Result<Html, R
             rows: vec![
                 ("HTTP Client Fingerprint".to_owned(), ja4h.hash),
                 ("Raw (Debug) String".to_owned(), ja4h.human_str),
+            ],
+        })
+    }
+
+    if parts.version == Version::HTTP_2
+        && let Some(akamai_h2) = get_akamai_h2_info(&parts.extensions)
+    {
+        tables.push(Table {
+            title: "🆔 Akamai H2".to_owned(),
+            rows: vec![
+                ("Akamai HTTP2 Client Fingerprint".to_owned(), akamai_h2.hash),
+                ("Raw (Debug) String".to_owned(), akamai_h2.human_str),
             ],
         })
     }
@@ -548,6 +560,18 @@ pub(super) async fn form(mut ctx: Context, req: Request) -> Result<Html, Respons
             rows: vec![
                 ("HTTP Client Fingerprint".to_owned(), ja4h.hash),
                 ("Raw (Debug) String".to_owned(), ja4h.human_str),
+            ],
+        })
+    }
+
+    if parts.version == Version::HTTP_2
+        && let Some(akamai_h2) = get_akamai_h2_info(&parts.extensions)
+    {
+        tables.push(Table {
+            title: "🆔 Akamai H2".to_owned(),
+            rows: vec![
+                ("Akamai HTTP2 Client Fingerprint".to_owned(), akamai_h2.hash),
+                ("Raw (Debug) String".to_owned(), akamai_h2.human_str),
             ],
         })
     }
