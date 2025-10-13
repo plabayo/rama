@@ -114,21 +114,6 @@ struct SendBuffer<B> {
     inner: Mutex<Buffer<Frame<B>>>,
 }
 
-// fn clear_extensions_safely(ext: &mut Extensions) {
-//     let pseudo_order: Option<PseudoHeaderOrder> = ext.remove();
-//     let field_order: Option<OriginalHttp1Headers> = ext.remove();
-
-//     ext.clear();
-
-//     if let Some(pseudo_order) = pseudo_order {
-//         ext.insert(pseudo_order);
-//     }
-
-//     if let Some(field_order) = field_order {
-//         ext.insert(field_order);
-//     }
-// }
-
 // ===== impl Streams =====
 
 impl<B, P> Streams<B, P>
@@ -302,11 +287,6 @@ where
 
         let protocol = request.extensions_mut().get::<Protocol>().cloned();
 
-        // TODO why do we even need to clean this? Could be a design mistake?
-
-        // Clear before taking lock, incase extensions contain a StreamRef.
-        // clear_extensions_safely(request.extensions_mut());
-
         // TODO: There is a hazard with assigning a stream ID before the
         // prioritize layer. If prioritization reorders new streams, this
         // implicitly closes the earlier stream IDs.
@@ -358,7 +338,7 @@ where
         let request_headers = Http1HeaderMap::new(request_headers, Some(&mut request_ext));
 
         request_ext.insert(RequestHeaders::from(request_headers));
-        stream.encoded_request_extensions = Some(request_ext);
+        stream.encoded_extensions = Some(request_ext);
 
         // Convert the message
         let headers = client::Peer::convert_send_message(
@@ -1269,10 +1249,6 @@ impl<B> StreamRef<B> {
         response: Response<()>,
         end_of_stream: bool,
     ) -> Result<(), UserError> {
-        // TODO see other remark
-        // Clear before taking lock, incase extensions contain a StreamRef.
-        // clear_extensions_safely(response.extensions_mut());
-
         let mut me = self.opaque.inner.lock().unwrap();
         let me = &mut *me;
 
@@ -1282,6 +1258,7 @@ impl<B> StreamRef<B> {
         let send_buffer = &mut *send_buffer;
 
         me.counts.transition(stream, |counts, stream| {
+            stream.encoded_extensions = Some(response.extensions().clone());
             let frame = server::Peer::convert_send_message(stream.id, response, end_of_stream);
 
             actions
@@ -1292,9 +1269,6 @@ impl<B> StreamRef<B> {
 
     #[allow(clippy::needless_pass_by_ref_mut)]
     pub(crate) fn send_push_promise(&mut self, request: Request<()>) -> Result<Self, UserError> {
-        // TODO see other remark
-        // Clear before taking lock, incase extensions contain a StreamRef.
-        // clear_extensions_safely(request.extensions_mut());
         let mut me = self.opaque.inner.lock().unwrap();
         let me = &mut *me;
 
@@ -1320,6 +1294,8 @@ impl<B> StreamRef<B> {
 
         let pushed = {
             let mut stream = me.store.resolve(self.opaque.key);
+
+            stream.encoded_extensions = Some(request.extensions().clone());
 
             let frame =
                 crate::h2::server::Peer::convert_push_message(stream.id, promised_id, request)?;
