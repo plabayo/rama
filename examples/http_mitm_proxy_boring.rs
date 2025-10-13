@@ -451,15 +451,7 @@ where
         tracing::debug!("egresss websocket active: starting ingress WS upgrade...");
         let mut request = Request::from_parts(parts_copy, Body::empty());
 
-        let upgrade = match upgrade::on(&request) {
-            Ok(upgrade) => upgrade,
-            Err(err) => {
-                tracing::error!("error in upgrading ingress websocket: {err:?}");
-                return;
-            }
-        };
-
-        let ingress_socket = match upgrade.await {
+        let ingress_socket = match upgrade::handle_upgrade(&request).await {
             Ok(upgraded) => {
                 let mut socket = AsyncWebSocket::from_raw_socket(
                     upgraded,

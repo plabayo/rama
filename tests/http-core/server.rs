@@ -1292,7 +1292,7 @@ async fn http1_graceful_shutdown_after_upgrade() {
     let svc = RamaHttpService::new(
         Extensions::new(),
         service_fn(move |req: Request| {
-            let on_upgrade = rama::http::io::upgrade::on(req);
+            let on_upgrade = rama::http::io::upgrade::handle_upgrade(req);
             let _ = upgrades_tx.send(on_upgrade);
             future::ok::<_, Infallible>(
                 Response::builder()
@@ -1316,10 +1316,7 @@ async fn http1_graceful_shutdown_after_upgrade() {
     // wait so that we don't write until other side saw 101 response
     read_101_rx.await.unwrap();
 
-    let upgraded = on_upgrade
-        .expect("start upgrade")
-        .await
-        .expect("on_upgrade");
+    let upgraded = on_upgrade.await.expect("on_upgrade");
     let parts = upgraded.downcast::<TkTcpStream>().unwrap();
     assert_eq!(parts.read_buf, "eagerly optimistic");
 
@@ -1818,7 +1815,7 @@ async fn upgrades_new() {
     let svc = RamaHttpService::new(
         Extensions::new(),
         service_fn(move |req: Request| {
-            let on_upgrade = rama::http::io::upgrade::on(req);
+            let on_upgrade = rama::http::io::upgrade::handle_upgrade(req);
             let _ = upgrades_tx.send(on_upgrade);
             future::ok::<_, Infallible>(
                 Response::builder()
@@ -1842,10 +1839,7 @@ async fn upgrades_new() {
     // wait so that we don't write until other side saw 101 response
     read_101_rx.await.unwrap();
 
-    let upgraded = on_upgrade
-        .expect("create on_upgrade")
-        .await
-        .expect("on_upgrade");
+    let upgraded = on_upgrade.await.expect("on_upgrade");
     let parts = upgraded.downcast::<TkTcpStream>().unwrap();
     assert_eq!(parts.read_buf, "eagerly optimistic");
 
@@ -1931,7 +1925,7 @@ async fn http_connect_new() {
     let svc = RamaHttpService::new(
         Extensions::new(),
         service_fn(move |req: Request| {
-            let on_upgrade = rama::http::io::upgrade::on(req);
+            let on_upgrade = rama::http::io::upgrade::handle_upgrade(req);
             let _ = upgrades_tx.send(on_upgrade);
             future::ok::<_, Infallible>(
                 Response::builder()
@@ -1954,10 +1948,7 @@ async fn http_connect_new() {
     // wait so that we don't write until other side saw 200
     read_200_rx.await.unwrap();
 
-    let upgraded = on_upgrade
-        .expect("create on_upgrade")
-        .await
-        .expect("on_upgrade");
+    let upgraded = on_upgrade.await.expect("on_upgrade");
     let parts = upgraded.downcast::<TkTcpStream>().unwrap();
     assert_eq!(parts.read_buf, "eagerly optimistic");
 
@@ -2006,13 +1997,10 @@ async fn h2_connect() {
     let svc = RamaHttpService::new(
         Extensions::new(),
         service_fn(move |req: Request| {
-            let on_upgrade = rama::http::io::upgrade::on(req);
+            let on_upgrade = rama::http::io::upgrade::handle_upgrade(req);
 
             tokio::spawn(async move {
-                let mut upgraded = on_upgrade
-                    .expect("create on_upgrade")
-                    .await
-                    .expect("on_upgrade");
+                let mut upgraded = on_upgrade.await.expect("on_upgrade");
                 upgraded.write_all(b"Bread?").await.unwrap();
 
                 let mut vec = vec![];
@@ -2099,7 +2087,7 @@ async fn h2_connect_multiplex() {
         Extensions::new(),
         service_fn(move |req: Request| {
             let authority = req.uri().authority().unwrap().to_string();
-            let on_upgrade = rama::http::io::upgrade::on(req).unwrap();
+            let on_upgrade = rama::http::io::upgrade::handle_upgrade(req);
 
             tokio::spawn(async move {
                 let upgrade_res = on_upgrade.await;
@@ -2194,13 +2182,10 @@ async fn h2_connect_large_body() {
     let svc = RamaHttpService::new(
         Extensions::new(),
         service_fn(move |req: Request| {
-            let on_upgrade = rama::http::io::upgrade::on(req);
+            let on_upgrade = rama::http::io::upgrade::handle_upgrade(req);
 
             tokio::spawn(async move {
-                let mut upgraded = on_upgrade
-                    .expect("create on_upgrade")
-                    .await
-                    .expect("on_upgrade");
+                let mut upgraded = on_upgrade.await.expect("on_upgrade");
                 upgraded.write_all(b"Bread?").await.unwrap();
 
                 let mut vec = vec![];
@@ -2271,13 +2256,10 @@ async fn h2_connect_empty_frames() {
     let svc = RamaHttpService::new(
         Extensions::new(),
         service_fn(move |req: Request| {
-            let on_upgrade = rama::http::io::upgrade::on(req);
+            let on_upgrade = rama::http::io::upgrade::handle_upgrade(req);
 
             tokio::spawn(async move {
-                let mut upgraded = on_upgrade
-                    .expect("create on_upgrade")
-                    .await
-                    .expect("on_upgrade");
+                let mut upgraded = on_upgrade.await.expect("on_upgrade");
                 upgraded.write_all(b"Bread?").await.unwrap();
 
                 let mut vec = vec![];

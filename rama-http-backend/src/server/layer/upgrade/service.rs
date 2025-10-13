@@ -118,14 +118,7 @@ where
 
                     exec.spawn_task(
                         async move {
-                            let upgrade = match rama_http::io::upgrade::on(&req) {
-                                Ok(upgrade) => upgrade,
-                                Err(e) => {
-                                    tracing::error!("upgrade error: {e:?}");
-                                    return;
-                                }
-                            };
-                            match upgrade.await {
+                            match rama_http::io::upgrade::handle_upgrade(&req).await {
                                 Ok(mut upgraded) => {
                                     upgraded.extensions_mut().extend(req.take_extensions());
                                     let _ = handler.serve(upgraded).await;

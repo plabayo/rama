@@ -106,8 +106,7 @@ impl InnerHttpProxyConnector {
         };
 
         match response.status() {
-            StatusCode::OK => upgrade::on(&response)
-                .map_err(|err| HttpProxyError::Transport(err.into_boxed()))?
+            StatusCode::OK => upgrade::handle_upgrade(&response)
                 .await
                 .map(|upgraded| {
                     let (parts, _) = response.into_parts();

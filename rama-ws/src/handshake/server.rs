@@ -767,14 +767,7 @@ where
 
                 exec.spawn_task(
                     async move {
-                        let upgrade = match upgrade::on(&req) {
-                            Ok(upgrade) => upgrade,
-                            Err(e) =>{
-                                tracing::error!("ws upgrade error: {e:?}");
-                                return
-                            },
-                        };
-                        match upgrade.await {
+                        match upgrade::handle_upgrade(&req).await {
                             Ok(upgraded) => {
                                 #[cfg(feature = "compression")]
                                 let maybe_ws_config = {
