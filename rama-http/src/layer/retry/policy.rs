@@ -1,13 +1,11 @@
 use super::RetryBody;
 use crate::Request;
-use rama_core::Context;
 
 /// A "retry policy" to classify if a request should be retried.
 ///
 /// # Example
 ///
 /// ```
-/// use rama_core::Context;
 /// use rama_http::Request;
 /// use rama_http::layer::retry::{Policy, PolicyResult, RetryBody};
 /// use std::sync::Arc;
@@ -20,7 +18,7 @@ use rama_core::Context;
 ///         R: Send + 'static,
 ///         E: Send + Sync + 'static,
 /// {
-///     async fn retry(&self, ctx: Context, req: Request<RetryBody>, result: Result<R, E>) -> PolicyResult<R, E> {
+///     async fn retry(&self, req: Request<RetryBody>, result: Result<R, E>) -> PolicyResult<R, E> {
 ///         match result {
 ///             Ok(_) => {
 ///                 // Treat all `Response`s as success,
@@ -34,7 +32,7 @@ use rama_core::Context;
 ///                 if *attempts > 0 {
 ///                     // Try again!
 ///                     *attempts -= 1;
-///                     PolicyResult::Retry { ctx, req }
+///                     PolicyResult::Retry { req }
 ///                 } else {
 ///                     // Used all our attempts, no retry...
 ///                     PolicyResult::Abort(result)
@@ -43,8 +41,8 @@ use rama_core::Context;
 ///         }
 ///     }
 ///
-///     fn clone_input(&self, ctx: &Context, req: &Request<RetryBody>) -> Option<(Context, Request<RetryBody>)> {
-///         Some((ctx.clone(), req.clone()))
+///     fn clone_input(&self, req: &Request<RetryBody>) -> Option<Request<RetryBody>> {
+///         Some(req.clone())
 ///     }
 /// }
 /// ```
@@ -84,7 +82,7 @@ pub trait Policy<R, E>: Send + Sync + 'static {
     /// [`Service::Error`]: rama_core::Service::Error
     fn retry(
         &self,
-        ctx: Context,
+
         req: Request<RetryBody>,
         result: Result<R, E>,
     ) -> impl Future<Output = PolicyResult<R, E>> + Send + '_;
@@ -93,11 +91,7 @@ pub trait Policy<R, E>: Send + Sync + 'static {
     ///
     /// If the request cannot be cloned, return [`None`]. Moreover, the retry
     /// function will not be called if the [`None`] is returned.
-    fn clone_input(
-        &self,
-        ctx: &Context,
-        req: &Request<RetryBody>,
-    ) -> Option<(Context, Request<RetryBody>)>;
+    fn clone_input(&self, req: &Request<RetryBody>) -> Option<Request<RetryBody>>;
 }
 
 impl<P, R, E> Policy<R, E> for &'static P
@@ -106,19 +100,14 @@ where
 {
     fn retry(
         &self,
-        ctx: Context,
         req: Request<RetryBody>,
         result: Result<R, E>,
     ) -> impl Future<Output = PolicyResult<R, E>> + Send + '_ {
-        (**self).retry(ctx, req, result)
+        (**self).retry(req, result)
     }
 
-    fn clone_input(
-        &self,
-        ctx: &Context,
-        req: &Request<RetryBody>,
-    ) -> Option<(Context, Request<RetryBody>)> {
-        (**self).clone_input(ctx, req)
+    fn clone_input(&self, req: &Request<RetryBody>) -> Option<Request<RetryBody>> {
+        (**self).clone_input(req)
     }
 }
 
@@ -128,19 +117,15 @@ where
 {
     fn retry(
         &self,
-        ctx: Context,
+
         req: Request<RetryBody>,
         result: Result<R, E>,
     ) -> impl Future<Output = PolicyResult<R, E>> + Send + '_ {
-        (**self).retry(ctx, req, result)
+        (**self).retry(req, result)
     }
 
-    fn clone_input(
-        &self,
-        ctx: &Context,
-        req: &Request<RetryBody>,
-    ) -> Option<(Context, Request<RetryBody>)> {
-        (**self).clone_input(ctx, req)
+    fn clone_input(&self, req: &Request<RetryBody>) -> Option<Request<RetryBody>> {
+        (**self).clone_input(req)
     }
 }
 
@@ -156,8 +141,6 @@ pub enum PolicyResult<R, E> {
     /// The result should be retried,
     /// and the request should be passed to the inner service again.
     Retry {
-        /// The context of the request.
-        ctx: Context,
         /// The request to be retried, with the above context.
         req: Request<RetryBody>,
     },
@@ -171,8 +154,8 @@ where
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Abort(err) => write!(f, "PolicyResult::Abort({err:?})"),
-            Self::Retry { ctx, req } => {
-                write!(f, "PolicyResult::Retry {{ ctx: {ctx:?}, req: {req:?} }}",)
+            Self::Retry { req } => {
+                write!(f, "PolicyResult::Retry {{ req: {req:?} }}",)
             }
         }
     }
@@ -189,25 +172,23 @@ macro_rules! impl_retry_policy_either {
         {
             async fn retry(
                 &self,
-                ctx: Context,
                 req: rama_http_types::Request<RetryBody>,
                 result: Result<Response, Error>,
             ) -> PolicyResult< Response, Error> {
                 match self {
                     $(
-                        rama_core::combinators::$id::$param(policy) => policy.retry(ctx, req, result).await,
+                        rama_core::combinators::$id::$param(policy) => policy.retry(req, result).await,
                     )+
                 }
             }
 
             fn clone_input(
                 &self,
-                ctx: &Context,
                 req: &rama_http_types::Request<RetryBody>,
-            ) -> Option<(Context, rama_http_types::Request<RetryBody>)> {
+            ) -> Option<rama_http_types::Request<RetryBody>> {
                 match self {
                     $(
-                        rama_core::combinators::$id::$param(policy) => policy.clone_input(ctx, req),
+                        rama_core::combinators::$id::$param(policy) => policy.clone_input(req),
                     )+
                 }
             }

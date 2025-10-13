@@ -134,12 +134,12 @@ mod tests {
     use super::*;
 
     use crate::{Request, Response, body::util::BodyExt, header::ACCEPT_ENCODING};
+    use rama_core::Service;
     use rama_core::service::service_fn;
-    use rama_core::{Context, Service};
+    use rama_core::stream::io::ReaderStream;
     use rama_http_types::Body;
     use std::convert::Infallible;
     use tokio::fs::File;
-    use tokio_util::io::ReaderStream;
 
     async fn handle(_req: Request) -> Result<Response, Infallible> {
         // Open the file.
@@ -167,7 +167,7 @@ mod tests {
             .header(ACCEPT_ENCODING, "gzip, deflate, br")
             .body(Body::empty())?;
 
-        let response = service.serve(Context::default(), request).await?;
+        let response = service.serve(request).await?;
 
         assert_eq!(response.headers()["content-encoding"], "deflate");
 
@@ -190,7 +190,7 @@ mod tests {
             .header(ACCEPT_ENCODING, "gzip, deflate, br")
             .body(Body::empty())?;
 
-        let response = service.serve(Context::default(), request).await?;
+        let response = service.serve(request).await?;
 
         assert_eq!(response.headers()["content-encoding"], "br");
 
@@ -231,7 +231,7 @@ mod tests {
             .header(ACCEPT_ENCODING, "zstd")
             .body(Body::empty())?;
 
-        let response = service.serve(Context::default(), request).await?;
+        let response = service.serve(request).await?;
 
         assert_eq!(response.headers()["content-encoding"], "zstd");
 

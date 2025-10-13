@@ -1,5 +1,5 @@
 use super::utils;
-use rama::{Context, http::StatusCode};
+use rama::http::StatusCode;
 use std::sync::Arc;
 
 #[tokio::test]
@@ -30,14 +30,10 @@ async fn assert_endpoint_concurrent_runs(
     for _ in 0..n {
         let runner = runner.clone();
         let endpoint = endpoint.clone();
-        handles.push(local_set.spawn_local(async move {
-            runner
-                .get(endpoint)
-                .send(Context::default())
-                .await
-                .unwrap()
-                .status()
-        }));
+        handles.push(
+            local_set
+                .spawn_local(async move { runner.get(endpoint).send().await.unwrap().status() }),
+        );
     }
 
     local_set.await;

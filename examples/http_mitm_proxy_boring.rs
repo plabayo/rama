@@ -54,6 +54,8 @@
 use rama::{
     Layer, Service,
     error::{BoxError, ErrorContext, OpaqueError},
+    extensions::Extensions,
+    extensions::{ExtensionsMut, ExtensionsRef},
     futures::SinkExt,
     http::{
         Body, Request, Response, StatusCode,
@@ -124,8 +126,6 @@ struct State {
     ua_db: Arc<UserAgentDatabase>,
 }
 
-type Context = rama::Context;
-
 #[tokio::main]
 async fn main() -> Result<(), BoxError> {
     tracing_subscriber::registry()
@@ -192,21 +192,15 @@ async fn main() -> Result<(), BoxError> {
     Ok(())
 }
 
-async fn http_connect_accept(
-    mut ctx: Context,
-    req: Request,
-) -> Result<(Response, Context, Request), Response> {
-    match ctx
-        .get_or_try_insert_with_ctx::<RequestContext, _>(|ctx| (ctx, &req).try_into())
-        .map(|ctx| ctx.authority.clone())
-    {
+async fn http_connect_accept(mut req: Request) -> Result<(Response, Request), Response> {
+    match RequestContext::try_from(&req).map(|ctx| ctx.authority) {
         Ok(authority) => {
             tracing::info!(
                 server.address = %authority.host(),
                 server.port = %authority.port(),
                 "accept CONNECT (lazy): insert proxy target into context",
             );
-            ctx.insert(ProxyTarget(authority));
+            req.extensions_mut().insert(ProxyTarget(authority));
         }
         Err(err) => {
             tracing::error!("error extracting authority: {err:?}");
@@ -214,10 +208,10 @@ async fn http_connect_accept(
         }
     }
 
-    Ok((StatusCode::OK.into_response(), ctx, req))
+    Ok((StatusCode::OK.into_response(), req))
 }
 
-async fn http_connect_proxy(ctx: Context, upgraded: Upgraded) -> Result<(), Infallible> {
+async fn http_connect_proxy(upgraded: Upgraded) -> Result<(), Infallible> {
     // In the past we deleted the request context here, as such:
     // ```
     // ctx.remove::<RequestContext>();
@@ -229,10 +223,16 @@ async fn http_connect_proxy(ctx: Context, upgraded: Upgraded) -> Result<(), Infa
     // as we otherwise might not be able to define the scheme/authority
     // for upstream http requests.
 
-    let state = ctx.get::<State>().unwrap();
+    let state = upgraded.extensions().get::<State>().unwrap();
     let http_service = new_http_mitm_proxy(state);
 
-    let mut http_tp = HttpServer::auto(ctx.executor().clone());
+    let executor = upgraded
+        .extensions()
+        .get::<Executor>()
+        .cloned()
+        .unwrap_or_default();
+
+    let mut http_tp = HttpServer::auto(executor);
     http_tp.h2_mut().enable_connect_protocol();
 
     let http_transport_service = http_tp.service(http_service);
@@ -241,10 +241,7 @@ async fn http_connect_proxy(ctx: Context, upgraded: Upgraded) -> Result<(), Infa
         .with_store_client_hello(true)
         .into_layer(http_transport_service);
 
-    https_service
-        .serve(ctx, upgraded)
-        .await
-        .expect("infallible");
+    https_service.serve(upgraded).await.expect("infallible");
 
     Ok(())
 }
@@ -266,14 +263,15 @@ fn new_http_mitm_proxy(
         .into_layer(service_fn(http_mitm_proxy))
 }
 
-async fn http_mitm_proxy(ctx: Context, req: Request) -> Result<Response, Infallible> {
+async fn http_mitm_proxy(req: Request) -> Result<Response, Infallible> {
     // This function will receive all requests going through this proxy,
     // be it sent via HTTP or HTTPS, both are equally visible. Hence... MITM
 
     // NOTE: use a custom connector (layers) in case you wish to add custom features,
     // such as upstream proxies or other configurations
 
-    let base_tls_config = if let Some(hello) = ctx
+    let base_tls_config = if let Some(hello) = req
+        .extensions()
         .get::<SecureTransport>()
         .and_then(|st| st.client_hello())
         .cloned()
@@ -284,6 +282,12 @@ async fn http_mitm_proxy(ctx: Context, req: Request) -> Result<Response, Infalli
         TlsConnectorDataBuilder::new_http_auto()
     };
     let base_tls_config = base_tls_config.with_server_verify_mode(ServerVerifyMode::Disable);
+
+    let executor = req
+        .extensions()
+        .get::<Executor>()
+        .cloned()
+        .unwrap_or_default();
 
     // NOTE: in a production proxy you most likely
     // wouldn't want to build this each invocation,
@@ -303,14 +307,14 @@ async fn http_mitm_proxy(ctx: Context, req: Request) -> Result<Response, Infalli
             // you also usually do not want it as a layer, but instead plug the inspector
             // directly JIT-style into your http (client) connector.
             RequestWriterInspector::stdout_unbounded(
-                ctx.executor(),
+                &executor,
                 Some(traffic_writer::WriterMode::Headers),
             ),
         ))
         .build();
 
-    if WebSocketMatcher::new().matches(None, &ctx, &req) {
-        return Ok(mitm_websocket(&client, ctx, req).await);
+    if WebSocketMatcher::new().matches(None, &req) {
+        return Ok(mitm_websocket(&client, req).await);
     }
 
     // these are not desired for WS MITM flow, but they are for regular HTTP flow
@@ -320,7 +324,7 @@ async fn http_mitm_proxy(ctx: Context, req: Request) -> Result<Response, Infalli
     )
         .into_layer(client);
 
-    match client.serve(ctx, req).await {
+    match client.serve(req).await {
         Ok(resp) => Ok(resp),
         Err(err) => {
             tracing::error!("error in client request: {err:?}");
@@ -348,7 +352,7 @@ fn new_mitm_tls_service_data() -> Result<TlsAcceptorData, OpaqueError> {
         .context("create tls server config")
 }
 
-async fn mitm_websocket<S>(client: &S, mut ctx: Context, req: Request) -> Response
+async fn mitm_websocket<S>(client: &S, req: Request) -> Response
 where
     S: Service<Request, Response = Response, Error = OpaqueError>,
 {
@@ -358,7 +362,11 @@ where
     let parts_copy = parts.clone();
 
     let req = Request::from_parts(parts, body);
-    let guard = ctx.guard().cloned();
+    let guard = req
+        .extensions()
+        .get::<Executor>()
+        .and_then(|exec| exec.guard())
+        .cloned();
     let cancel = async move {
         match guard {
             Some(guard) => guard.downgrade().into_cancelled().await,
@@ -368,11 +376,17 @@ where
 
     let target_version = req.version();
     tracing::debug!("forcing egress http connection as {target_version:?} to ensure WS upgrade");
-    ctx.insert(TargetHttpVersion(target_version));
+
+    // Todo improve extensions handling here? This feels error prone and easy to forget.
+    // In a better way this should be handled behind the scenes similar to tls alpn works
+    // Now that we can pass extensions all around this will probably just work, but needs
+    // to be looked at individually
+    let mut extensions = Extensions::new();
+    extensions.insert(TargetHttpVersion(target_version));
 
     let mut handshake = match client
         .websocket_with_request(req)
-        .initiate_handshake(ctx)
+        .initiate_handshake(extensions)
         .await
     {
         Ok(socket) => socket,
@@ -435,11 +449,18 @@ where
 
     tokio::spawn(async move {
         tracing::debug!("egresss websocket active: starting ingress WS upgrade...");
-        let request = Request::from_parts(parts_copy, Body::empty());
-        let ingress_socket = match upgrade::on(request).await {
+        let mut request = Request::from_parts(parts_copy, Body::empty());
+
+        let ingress_socket = match upgrade::on(&mut request).await {
             Ok(upgraded) => {
-                AsyncWebSocket::from_raw_socket(upgraded, Role::Server, Some(ingress_socket_cfg))
-                    .await
+                let mut socket = AsyncWebSocket::from_raw_socket(
+                    upgraded,
+                    Role::Server,
+                    Some(ingress_socket_cfg),
+                )
+                .await;
+                *socket.extensions_mut() = request.take_extensions();
+                socket
             }
             Err(err) => {
                 tracing::error!("error in upgrading ingress websocket: {err:?}");

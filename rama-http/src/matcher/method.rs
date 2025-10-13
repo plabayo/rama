@@ -1,5 +1,5 @@
 use crate::{Method, Request};
-use rama_core::{Context, context::Extensions};
+use rama_core::extensions::Extensions;
 use std::{
     fmt,
     fmt::{Debug, Formatter},
@@ -51,7 +51,7 @@ impl MethodMatcher {
 
 impl<Body> rama_core::matcher::Matcher<Request<Body>> for MethodMatcher {
     /// returns true on a match, false otherwise
-    fn matches(&self, _ext: Option<&mut Extensions>, _ctx: &Context, req: &Request<Body>) -> bool {
+    fn matches(&self, _ext: Option<&mut Extensions>, req: &Request<Body>) -> bool {
         Self::try_from(req.method())
             .ok()
             .map(|method| self.contains(method))

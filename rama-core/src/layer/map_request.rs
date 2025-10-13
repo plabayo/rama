@@ -1,4 +1,4 @@
-use crate::{Context, Layer, Service};
+use crate::{Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
 
@@ -44,10 +44,10 @@ where
     #[inline]
     fn serve(
         &self,
-        ctx: Context,
+
         request: R1,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
-        self.inner.serve(ctx, (self.f)(request))
+        self.inner.serve((self.f)(request))
     }
 }
 

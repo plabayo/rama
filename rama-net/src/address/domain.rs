@@ -69,6 +69,61 @@ impl Domain {
         self.0.starts_with("*.")
     }
 
+    /// Returns `true` if this domain is Top-Level [`Domain`] (TLD).
+    ///
+    /// Note that we consider a country-level TLD (ccTLD) such as `org.uk`
+    /// also a TLD. That is we consider any `ccTLD` also `TLD`. While
+    /// not technically correct, in practice it is at least for the purposes
+    /// that we are aware of a non-meaningful distinction to make.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use rama_net::address::Domain;
+    ///
+    /// assert!(Domain::from_static("com").is_tld());
+    /// assert!(Domain::from_static(".com").is_tld());
+    /// assert!(Domain::from_static("co.uk").is_tld());
+    ///
+    /// assert!(!Domain::from_static("example.com").is_tld());
+    /// assert!(!Domain::from_static("example.co.uk").is_tld());
+    /// ```
+    #[must_use]
+    pub fn is_tld(&self) -> bool {
+        self.suffix()
+            .map(|s| cmp_domain(&self.0, s).is_eq())
+            .unwrap_or_default()
+    }
+
+    /// Returns `true` if this domain is Second-Level [`Domain`] (SLD).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use rama_net::address::Domain;
+    ///
+    /// assert!(!Domain::from_static("com").is_sld());
+    /// assert!(!Domain::from_static(".com").is_sld());
+    /// assert!(!Domain::from_static("co.uk").is_sld());
+    /// assert!(!Domain::from_static(".co.uk").is_sld());
+    ///
+    /// assert!(Domain::from_static(".example.com").is_sld());
+    /// assert!(Domain::from_static(".example.co.uk").is_sld());
+    ///
+    /// assert!(!Domain::from_static("foo.example.com").is_sld());
+    /// assert!(!Domain::from_static("foo.example.co.uk").is_sld());
+    /// ```
+    #[must_use]
+    pub fn is_sld(&self) -> bool {
+        self.suffix()
+            .and_then(|s| self.0.strip_suffix(s))
+            .map(|s| {
+                let s = s.trim_matches('.');
+                !(s.is_empty() || s.contains('.'))
+            })
+            .unwrap_or_default()
+    }
+
     /// Returns the parent of this wildcard domain,
     /// in case it is indeed a wildcast domain,
     /// otherwise `None` is returned.
@@ -78,6 +133,36 @@ impl Domain {
     #[must_use]
     pub fn as_wildcard_parent(&self) -> Option<Self> {
         self.0.strip_prefix("*.").map(|s| Self(s.into()))
+    }
+
+    /// Try to create a subdomain from the current [`Domain`] with the given
+    /// subdomain prefixed to it
+    pub fn try_as_sub(&self, sub: impl AsDomainRef) -> Result<Self, OpaqueError> {
+        let sub = smol_str::format_smolstr!("{}.{}", sub.domain_as_str(), self.0);
+        if !is_valid_name(sub.as_bytes()) {
+            return Err(OpaqueError::from_display("invalid subdomain"));
+        }
+        Ok(Self(sub))
+    }
+
+    /// Promote this [`Domain`] to a wildcard.
+    ///
+    /// E.g. turn `example.com` in `*.example.com`.
+    ///
+    /// This can fail, e.g. because the domain becomes too long.
+    pub fn try_as_wildcard(&self) -> Result<Self, OpaqueError> {
+        let sub = smol_str::format_smolstr!("*.{}", self.0);
+        if !is_valid_name(sub.as_bytes()) {
+            return Err(OpaqueError::from_display("invalid subdomain"));
+        }
+        Ok(Self(sub))
+    }
+
+    /// Try to strip the subdomain (prefix) from the current domain.
+    pub fn strip_sub(&self, prefix: impl AsDomainRef) -> Option<Self> {
+        self.0
+            .strip_prefix(prefix.domain_as_str())
+            .and_then(|s| s.trim_start_matches('.').parse().ok())
     }
 
     /// Returns `true` if this [`Domain`] is a parent of the other.
@@ -463,11 +548,82 @@ const fn is_valid_name(name: &[u8]) -> bool {
     }
 }
 
+#[allow(private_bounds)]
+/// A trait which is used by the `rama-net` crate
+/// for places where we wish to have access to
+/// a reference to a Domain, directly or indirectly,
+/// for non-move purposes.
+///
+/// For example to compare it, or use it in a derived form.
+pub trait AsDomainRef: seal::AsDomainRefPrivate {
+    fn as_wildcard_parent(&self) -> Option<Domain> {
+        self.domain_as_str()
+            .strip_prefix("*.")
+            .and_then(|s| s.parse().ok())
+    }
+}
+
+impl AsDomainRef for &'static str {}
+impl AsDomainRef for Domain {}
+impl<T: seal::AsDomainRefPrivate> AsDomainRef for &T {}
+
+/// A trait which can be use by crates where a Domain is expected,
+/// it can however only be implemented by the rama-net rate.
+pub trait IntoDomain: seal::IntoDomainImpl {}
+
+impl IntoDomain for &'static str {}
+impl IntoDomain for Domain {}
+
+pub(super) mod seal {
+    pub(in crate::address) trait AsDomainRefPrivate {
+        fn domain_as_str(&self) -> &str;
+    }
+
+    impl AsDomainRefPrivate for &'static str {
+        fn domain_as_str(&self) -> &str {
+            if !super::is_valid_name(self.as_bytes()) {
+                panic!("static str is an invalid domain");
+            }
+            self
+        }
+    }
+
+    impl AsDomainRefPrivate for super::Domain {
+        fn domain_as_str(&self) -> &str {
+            self.as_str()
+        }
+    }
+
+    impl<T: AsDomainRefPrivate> AsDomainRefPrivate for &T {
+        fn domain_as_str(&self) -> &str {
+            (**self).domain_as_str()
+        }
+    }
+
+    pub trait IntoDomainImpl {
+        fn into_domain(self) -> super::Domain;
+    }
+
+    impl IntoDomainImpl for &'static str {
+        #[inline]
+        fn into_domain(self) -> super::Domain {
+            super::Domain::from_static(self)
+        }
+    }
+
+    impl IntoDomainImpl for super::Domain {
+        #[inline]
+        fn into_domain(self) -> super::Domain {
+            self
+        }
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_fun_call)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
+    use ahash::{HashMap, HashMapExt as _};
 
     #[test]
     fn test_specials() {
@@ -613,6 +769,74 @@ mod tests {
     }
 
     #[test]
+    fn as_wildcard_sub() {
+        let test_cases = vec![
+            ("example.com", "*.example.com"),
+            ("fp.ramaproxy.org", "*.fp.ramaproxy.org"),
+            ("print.co.uk", "*.print.co.uk"),
+        ];
+        for (domain_raw, expected_output) in test_cases.into_iter() {
+            let domain = Domain::from_static(domain_raw);
+            let msg = format!("{:?}", (domain_raw, expected_output));
+            let subdomain = domain.try_as_wildcard().expect(&msg);
+            assert_eq!(expected_output, subdomain);
+            assert!(subdomain.is_wildcard());
+            assert_eq!(Some(domain), subdomain.as_wildcard_parent())
+        }
+    }
+
+    #[test]
+    fn as_sub_success() {
+        let test_cases = vec![
+            ("example.com", "www", "www.example.com"),
+            ("fp.ramaproxy.org", "h1", "h1.fp.ramaproxy.org"),
+            (
+                // long, but just within limit (251+2)
+                "dadadadadadadadadad.llgwyngyllgogerychwyrndrobwllllantysiliogogogoch.llanfairpwllgwyngyllgogerychwyrndrobwllllantysiliogogogoch.llanfairpwllgwyngyllgogerychwyrndrobwllllantysiliogogogoch.llanfairpwllgwyngyllgogerychwyrndrobwllllantysiliogogogoch.co.uk",
+                "a",
+                "a.dadadadadadadadadad.llgwyngyllgogerychwyrndrobwllllantysiliogogogoch.llanfairpwllgwyngyllgogerychwyrndrobwllllantysiliogogogoch.llanfairpwllgwyngyllgogerychwyrndrobwllllantysiliogogogoch.llanfairpwllgwyngyllgogerychwyrndrobwllllantysiliogogogoch.co.uk",
+            ),
+        ];
+        for (domain_raw, sub, expected_output) in test_cases.into_iter() {
+            let domain = Domain::from_static(domain_raw);
+            let msg = format!("{:?}", (domain_raw, sub, expected_output));
+            let subdomain = domain.try_as_sub(sub).expect(&msg);
+            assert_eq!(expected_output, subdomain);
+        }
+    }
+
+    #[test]
+    fn as_sub_failure() {
+        let test_cases = vec![
+            // too long (254 > 253)
+            (
+                "adadadadadadadadadad.llgwyngyllgogerychwyrndrobwllllantysiliogogogoch.llanfairpwllgwyngyllgogerychwyrndrobwllllantysiliogogogoch.llanfairpwllgwyngyllgogerychwyrndrobwllllantysiliogogogoch.llanfairpwllgwyngyllgogerychwyrndrobwllllantysiliogogogoch.co.uk",
+                "a",
+            ),
+        ];
+        for (domain_raw, sub) in test_cases.into_iter() {
+            let domain = Domain::from_static(domain_raw);
+            let msg = format!("{:?}", (domain_raw, sub));
+            let _ = domain.try_as_sub(sub).expect_err(&msg);
+        }
+    }
+
+    #[test]
+    fn strip_sub() {
+        let test_cases = vec![
+            ("www.example.com", "www", Some("example.com")),
+            ("example.com", "www", None),
+            ("www.www.example.com", "www", Some("www.example.com")),
+        ];
+        for (sub_raw, prefix, expected_output) in test_cases.into_iter() {
+            let sub = Domain::from_static(sub_raw);
+            let result = sub.strip_sub(prefix);
+            let expected_result = expected_output.map(Domain::from_static);
+            assert_eq!(expected_result, result);
+        }
+    }
+
+    #[test]
     fn is_not_parent() {
         let test_cases = vec![
             ("www.example.com", "www.example.co"),
@@ -643,6 +867,44 @@ mod tests {
             assert_eq!(Domain::from_static(a), Domain::from_static(b));
             assert_eq!(a, Domain::from_static(b));
             assert_eq!(a.to_owned(), Domain::from_static(b));
+        }
+    }
+
+    #[test]
+    fn is_tld() {
+        for (expected, input) in [
+            (true, ".com"),
+            (true, "com"),
+            (true, "co.uk"),
+            (true, ".co.uk"),
+            (false, "example.com"),
+            (false, "foo.uk"),
+            (false, "foo.example.com"),
+        ] {
+            assert_eq!(
+                expected,
+                Domain::from_static(input).is_tld(),
+                "input: {input}"
+            )
+        }
+    }
+
+    #[test]
+    fn is_sld() {
+        for (expected, input) in [
+            (false, "com"),
+            (false, "co.uk"),
+            (true, "example.com"),
+            (true, ".example.com"),
+            (true, "foo.uk"),
+            (true, ".foo.uk"),
+            (false, "foo.example.com"),
+        ] {
+            assert_eq!(
+                expected,
+                Domain::from_static(input).is_sld(),
+                "input: {input}"
+            )
         }
     }
 

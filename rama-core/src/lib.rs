@@ -20,12 +20,11 @@
     html_favicon_url = "https://raw.githubusercontent.com/plabayo/rama/main/docs/img/old_logo.png"
 )]
 #![doc(html_logo_url = "https://raw.githubusercontent.com/plabayo/rama/main/docs/img/old_logo.png")]
-#![cfg_attr(docsrs, feature(doc_auto_cfg, doc_cfg))]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(test, allow(clippy::float_cmp))]
 #![cfg_attr(not(test), warn(clippy::print_stdout, clippy::dbg_macro))]
 
-pub mod context;
-pub use context::Context;
+pub mod extensions;
 
 pub use ::rama_error as error;
 
@@ -38,6 +37,8 @@ pub use service::Service;
 pub mod layer;
 pub use layer::Layer;
 
+pub mod stream;
+
 pub mod inspect;
 
 pub mod combinators;
@@ -48,6 +49,9 @@ pub mod username;
 pub mod telemetry;
 
 pub mod conversion;
+
+pub mod svc_input;
+pub use svc_input::ServiceInput;
 
 pub mod bytes {
     //! Re-export of [bytes](https://docs.rs/bytes/latest/bytes/) crate.

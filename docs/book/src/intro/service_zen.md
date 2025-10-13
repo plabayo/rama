@@ -54,7 +54,7 @@ you are essentially reinventing the service concept that rama is build around.
 
 Instead keep your service stack as flat as possible by allowing these configurations to instead be chained as you do with all your other layers,
 and getting the optional configurations to be set and get via the [`Extension`]
-that you can set via the [`Context`].
+that you can set via service inputs.
 
 When doing so also try to keep these configurations as generic as possible.
 Examples in rama are things like the [`ProxyAddress`] that can be set to configure
@@ -77,8 +77,7 @@ Speaking about `Connectors`, those are a nice example of a type of [`Service`][s
 
 [a Limit layer]: https://ramaproxy.org/docs/rama/layer/limit/struct.Limit.html
 
-[`Extension`]: https://ramaproxy.org/docs/rama/context/struct.Extensions.html
-[`Context`]: https://ramaproxy.org/docs/rama/context/struct.Context.html
+[`Extension`]: https://ramaproxy.org/docs/rama/extensions/struct.Extensions.html
 
 [`ProxyAddress`]: https://ramaproxy.org/docs/rama/net/address/struct.ProxyAddress.html
 

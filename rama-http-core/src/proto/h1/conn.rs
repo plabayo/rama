@@ -882,7 +882,7 @@ struct State {
     /// State of allowed writes
     writing: Writing,
     /// Last known request extensions encoded
-    encoded_request_extensions: Option<rama_core::context::Extensions>,
+    encoded_request_extensions: Option<rama_core::extensions::Extensions>,
     /// An expected pending HTTP upgrade.
     upgrade: Option<upgrade::Pending>,
     /// Either HTTP/1.0 or 1.1 connection

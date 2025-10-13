@@ -40,8 +40,9 @@
 //! This will open a web page which will be a simple hello world data app.
 
 use rama::{
-    Context, Layer, Service,
+    Layer, Service,
     error::OpaqueError,
+    extensions::ExtensionsRef,
     futures::async_stream::stream_fn,
     graceful::ShutdownGuard,
     http::{
@@ -142,22 +143,22 @@ impl Service<Request> for GracefulRouter {
     type Response = Response;
     type Error = Infallible;
 
-    async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
-        if ctx.get::<Controller>().unwrap().is_closed() {
+    async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
+        if req.extensions().get::<Controller>().unwrap().is_closed() {
             tracing::debug!("router received request while shutting down: returning 401");
             return Ok(StatusCode::GONE.into_response());
         }
-        self.0.serve(ctx, req).await
+        self.0.serve(req).await
     }
 }
 
 pub mod handlers {
-    use rama::futures::StreamExt;
+    use rama::{extensions::Extensions, futures::StreamExt};
 
     use super::*;
 
-    pub async fn index(ctx: Context) -> Html<String> {
-        let content = ctx.get::<Controller>().unwrap().render_index();
+    pub async fn index(req: Request) -> Html<String> {
+        let content = req.extensions().get::<Controller>().unwrap().render_index();
         Html(content)
     }
 
@@ -190,15 +191,15 @@ pub mod handlers {
     }
 
     pub async fn start(
-        ctx: Context,
+        ext: Extensions,
         ReadSignals(Signals { delay }): ReadSignals<Signals>,
     ) -> impl IntoResponse {
-        ctx.get::<Controller>().unwrap().reset(delay).await;
+        ext.get::<Controller>().unwrap().reset(delay).await;
         StatusCode::OK
     }
 
-    pub async fn hello_world(ctx: Context) -> impl IntoResponse {
-        let mut stream = ctx.get::<Controller>().unwrap().subscribe();
+    pub async fn hello_world(ext: Extensions) -> impl IntoResponse {
+        let mut stream = ext.get::<Controller>().unwrap().subscribe();
 
         Sse::new(KeepAliveStream::new(
             KeepAlive::new(),

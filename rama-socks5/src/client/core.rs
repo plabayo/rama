@@ -1,3 +1,9 @@
+use rama_core::error::BoxError;
+use rama_core::stream::Stream;
+use rama_core::telemetry::tracing;
+use rama_net::address::{Authority, Host, SocketAddress};
+use std::fmt;
+
 use crate::{
     Socks5Auth,
     client::udp::UdpSocketRelayBinder,
@@ -8,13 +14,6 @@ use crate::{
         server::{self, Reply},
     },
 };
-use rama_core::error::BoxError;
-use rama_core::telemetry::tracing;
-use rama_net::{
-    address::{Authority, Host, SocketAddress},
-    stream::Stream,
-};
-use std::fmt;
 
 use super::bind::Binder;
 

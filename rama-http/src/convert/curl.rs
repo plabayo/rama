@@ -11,46 +11,37 @@ use crate::proto::h1::headers::original::OriginalHttp1Headers;
 use crate::proto::h1::{Http1HeaderMap, Http1HeaderName};
 use crate::{Method, Uri, Version, request};
 
-use rama_core::Context;
 use rama_core::bytes::Bytes;
 use rama_http_types::HttpRequestParts;
 use rama_net::address::ProxyAddress;
-use rama_net::http::RequestContext;
+use rama_net::http::{RequestContext, try_request_ctx_from_http_parts};
 use rama_net::user::ProxyCredential;
 
 /// Create a `curl` command string for the given [`HttpRequestParts`].
-pub fn cmd_string_for_request_parts(ctx: &Context, parts: &impl HttpRequestParts) -> String {
+pub fn cmd_string_for_request_parts(parts: &impl HttpRequestParts) -> String {
     let mut cmd = "curl".to_owned();
-    write_curl_command_for_request_parts(&mut cmd, ctx, parts, None);
+    write_curl_command_for_request_parts(&mut cmd, parts, None);
     cmd
 }
 
 /// Create a `curl` command string for the given [`HttpRequestParts`] and payload bytes.
-pub fn cmd_string_for_request_parts_and_payload(
-    ctx: &Context,
-    parts: &request::Parts,
-    payload: &Bytes,
-) -> String {
+pub fn cmd_string_for_request_parts_and_payload(parts: &request::Parts, payload: &Bytes) -> String {
     let mut cmd = "curl".to_owned();
-    write_curl_command_for_request_parts(&mut cmd, ctx, parts, Some(payload));
+    write_curl_command_for_request_parts(&mut cmd, parts, Some(payload));
     cmd
 }
 
 /// Create a `curl` [`Command`] for the given [`HttpRequestParts`].
-pub fn cmd_for_request_parts(ctx: &Context, parts: &impl HttpRequestParts) -> Command {
+pub fn cmd_for_request_parts(parts: &impl HttpRequestParts) -> Command {
     let mut cmd = Command::new("curl");
-    write_curl_command_for_request_parts(&mut cmd, ctx, parts, None);
+    write_curl_command_for_request_parts(&mut cmd, parts, None);
     cmd
 }
 
 /// Create a `curl` [`Command`] for the given [`HttpRequestParts`] and payload bytes.
-pub fn cmd_for_request_parts_and_payload(
-    ctx: &Context,
-    parts: &request::Parts,
-    payload: &Bytes,
-) -> Command {
+pub fn cmd_for_request_parts_and_payload(parts: &request::Parts, payload: &Bytes) -> Command {
     let mut cmd = Command::new("curl");
-    write_curl_command_for_request_parts(&mut cmd, ctx, parts, Some(payload));
+    write_curl_command_for_request_parts(&mut cmd, parts, Some(payload));
     cmd
 }
 
@@ -131,12 +122,12 @@ impl CurlCommandWriter for String {
 
 fn write_curl_command_for_request_parts(
     writer: &mut impl CurlCommandWriter,
-    ctx: &Context,
     parts: &impl HttpRequestParts,
     payload: Option<&Bytes>,
 ) {
     let mut uri_parts = parts.uri().clone().into_parts();
-    if let Some((authority, protocol)) = ctx
+    if let Some((authority, protocol)) = parts
+        .extensions()
         .get::<RequestContext>()
         .map(|rc| {
             (
@@ -149,7 +140,7 @@ fn write_curl_command_for_request_parts(
             )
         })
         .or_else(|| {
-            RequestContext::try_from((ctx, parts)).ok().map(|rc| {
+            try_request_ctx_from_http_parts(parts).ok().map(|rc| {
                 (
                     if rc.authority_has_default_port() {
                         rc.authority.host().to_string()
@@ -196,7 +187,8 @@ fn write_curl_command_for_request_parts(
         _ => (), // ignore
     }
 
-    if let Some(proxy_addr) = ctx
+    if let Some(proxy_addr) = parts
+        .extensions()
         .get::<ProxyAddress>()
         .or_else(|| parts.extensions().get())
     {
@@ -211,7 +203,7 @@ fn write_curl_command_for_request_parts(
         }
     }
 
-    let original_http_headers = ctx
+    let original_http_headers = parts
         .extensions()
         .get::<OriginalHttp1Headers>()
         .or_else(|| parts.extensions().get())
@@ -478,14 +470,13 @@ mod tests {
                 )
             });
 
-            let ctx = Context::default();
             let (parts, body) = request.into_parts();
             let payload = body.collect().await.unwrap().to_bytes();
 
             let cmd_string = if payload.is_empty() {
-                cmd_string_for_request_parts(&ctx, &parts)
+                cmd_string_for_request_parts(&parts)
             } else {
-                cmd_string_for_request_parts_and_payload(&ctx, &parts, &payload)
+                cmd_string_for_request_parts_and_payload(&parts, &payload)
             };
 
             assert_eq!(
@@ -510,7 +501,7 @@ mod tests {
             credential: None,
         });
 
-        let s = cmd_string_for_request_parts(&Context::default(), &parts);
+        let s = cmd_string_for_request_parts(&&parts);
         assert_eq!(
             s,
             format!(
@@ -534,7 +525,7 @@ mod tests {
             credential: Some(ProxyCredential::Basic(Basic::new_insecure("john"))),
         });
 
-        let s = cmd_string_for_request_parts(&Context::default(), &parts);
+        let s = cmd_string_for_request_parts(&&parts);
         assert_eq!(
             s,
             format!(
@@ -558,7 +549,7 @@ mod tests {
             credential: Some(ProxyCredential::Basic(Basic::new("john", "secret"))),
         });
 
-        let s = cmd_string_for_request_parts(&Context::default(), &parts);
+        let s = cmd_string_for_request_parts(&&parts);
         assert_eq!(
             s,
             format!(
@@ -582,7 +573,7 @@ mod tests {
             credential: Some(ProxyCredential::Bearer(Bearer::new_static("abc123"))),
         });
 
-        let s = cmd_string_for_request_parts(&Context::default(), &parts);
+        let s = cmd_string_for_request_parts(&&parts);
         assert_eq!(
             s,
             format!(
@@ -607,7 +598,7 @@ mod tests {
             credential: Some(ProxyCredential::Basic(Basic::new("user", "pass"))),
         });
 
-        let s = cmd_string_for_request_parts(&Context::default(), &parts);
+        let s = cmd_string_for_request_parts(&&parts);
         assert_eq!(
             s,
             format!(

@@ -22,8 +22,9 @@
 //! You should see in all the above examples the responses from the server.
 
 use rama::{
-    Context, Layer, Service,
+    Layer, Service,
     error::{ErrorContext, OpaqueError},
+    extensions::ExtensionsRef,
     http::{
         Body, Request, Response, StatusCode,
         client::EasyHttpWebClient,
@@ -38,12 +39,14 @@ use rama::{
         server::HttpServer,
     },
     layer::ConsumeErrLayer,
-    net::tls::{
-        ApplicationProtocol, SecureTransport,
-        client::ServerVerifyMode,
-        server::{SelfSignedData, ServerAuth, ServerConfig, TlsPeekRouter},
+    net::{
+        tls::{
+            ApplicationProtocol, SecureTransport,
+            client::ServerVerifyMode,
+            server::{SelfSignedData, ServerAuth, ServerConfig, TlsPeekRouter},
+        },
+        user::Basic,
     },
-    net::user::Basic,
     proxy::socks5::{Socks5Acceptor, server::LazyConnector},
     rt::Executor,
     service::service_fn,
@@ -110,14 +113,15 @@ fn new_http_mitm_proxy() -> impl Service<Request, Response = Response, Error = I
         .into_layer(service_fn(http_mitm_proxy))
 }
 
-async fn http_mitm_proxy(ctx: Context, req: Request) -> Result<Response, Infallible> {
+async fn http_mitm_proxy(req: Request) -> Result<Response, Infallible> {
     // This function will receive all requests going through this proxy,
     // be it sent via HTTP or HTTPS, both are equally visible. Hence... MITM
 
     // NOTE: use a custom connector (layers) in case you wish to add custom features,
     // such as upstream proxies or other configurations
 
-    let base_tls_config = if let Some(hello) = ctx
+    let base_tls_config = if let Some(hello) = req
+        .extensions()
         .get::<SecureTransport>()
         .and_then(|st| st.client_hello())
         .cloned()
@@ -130,6 +134,12 @@ async fn http_mitm_proxy(ctx: Context, req: Request) -> Result<Response, Infalli
     let base_tls_config = base_tls_config
         .with_server_verify_mode(ServerVerifyMode::Disable)
         .into_shared_builder();
+
+    let executor = req
+        .extensions()
+        .get::<Executor>()
+        .cloned()
+        .unwrap_or_default();
 
     let client = EasyHttpWebClient::builder()
         .with_default_transport_connector()
@@ -144,13 +154,13 @@ async fn http_mitm_proxy(ctx: Context, req: Request) -> Result<Response, Infalli
             // you also usually do not want it as a layer, but instead plug the inspector
             // directly JIT-style into your http (client) connector.
             RequestWriterInspector::stdout_unbounded(
-                ctx.executor(),
+                &executor,
                 Some(traffic_writer::WriterMode::Headers),
             ),
         ))
         .build();
 
-    match client.serve(ctx, req).await {
+    match client.serve(req).await {
         Ok(resp) => Ok(resp),
         Err(err) => {
             tracing::error!("error in client request: {err:?}");

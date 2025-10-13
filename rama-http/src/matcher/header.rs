@@ -1,5 +1,5 @@
 use crate::{HeaderName, HeaderValue, Request};
-use rama_core::{Context, context::Extensions, matcher::Matcher};
+use rama_core::{extensions::Extensions, matcher::Matcher};
 
 #[derive(Debug, Clone)]
 /// Matcher based on the [`Request`]'s headers.
@@ -44,7 +44,7 @@ impl HeaderMatcher {
 }
 
 impl<Body> Matcher<Request<Body>> for HeaderMatcher {
-    fn matches(&self, _ext: Option<&mut Extensions>, _ctx: &Context, req: &Request<Body>) -> bool {
+    fn matches(&self, _ext: Option<&mut Extensions>, req: &Request<Body>) -> bool {
         let headers = req.headers();
         match self.kind {
             HeaderMatcherKind::Exists => headers.contains_key(&self.name),
@@ -67,14 +67,14 @@ mod test {
             .header("content-type", "text/plain")
             .body(())
             .unwrap();
-        assert!(matcher.matches(None, &Context::default(), &req));
+        assert!(matcher.matches(None, &req));
     }
 
     #[test]
     fn test_header_matcher_exists_no_match() {
         let matcher = HeaderMatcher::exists("content-type".parse().unwrap());
         let req = Request::builder().body(()).unwrap();
-        assert!(!matcher.matches(None, &Context::default(), &req));
+        assert!(!matcher.matches(None, &req));
     }
 
     #[test]
@@ -87,7 +87,7 @@ mod test {
             .header("content-type", "text/plain")
             .body(())
             .unwrap();
-        assert!(matcher.matches(None, &Context::default(), &req));
+        assert!(matcher.matches(None, &req));
     }
 
     #[test]
@@ -100,7 +100,7 @@ mod test {
             .header("content-type", "text/html")
             .body(())
             .unwrap();
-        assert!(!matcher.matches(None, &Context::default(), &req));
+        assert!(!matcher.matches(None, &req));
     }
 
     #[test]
@@ -113,7 +113,7 @@ mod test {
             .header("content-type", "text/plain")
             .body(())
             .unwrap();
-        assert!(matcher.matches(None, &Context::default(), &req));
+        assert!(matcher.matches(None, &req));
     }
 
     #[test]
@@ -126,7 +126,7 @@ mod test {
             .header("content-type", "text/html")
             .body(())
             .unwrap();
-        assert!(!matcher.matches(None, &Context::default(), &req));
+        assert!(!matcher.matches(None, &req));
     }
 
     #[test]
@@ -140,7 +140,7 @@ mod test {
             .header("content-type", "text/plain")
             .body(())
             .unwrap();
-        assert!(matcher.matches(None, &Context::default(), &req));
+        assert!(matcher.matches(None, &req));
     }
 
     #[test]
@@ -154,6 +154,6 @@ mod test {
             .header("content-type", "text/xml")
             .body(())
             .unwrap();
-        assert!(!matcher.matches(None, &Context::default(), &req));
+        assert!(!matcher.matches(None, &req));
     }
 }

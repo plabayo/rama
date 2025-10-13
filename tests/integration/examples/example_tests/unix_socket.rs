@@ -1,6 +1,5 @@
 use super::utils;
 use rama::{
-    Context,
     net::client::{ConnectorService, EstablishedClientConnection},
     unix::client::UnixConnector,
 };
@@ -16,7 +15,7 @@ async fn test_unix_socket() {
     let mut stream = None;
     for i in 0..5 {
         match UnixConnector::fixed("/tmp/rama_example_unix.socket")
-            .connect(Context::default(), ())
+            .connect(())
             .await
         {
             Ok(EstablishedClientConnection { conn, .. }) => stream = Some(conn),

@@ -8,7 +8,7 @@
 //! use rama_http::layer::sensitive_headers::SetSensitiveHeadersLayer;
 //! use rama_http::{Body, Request, Response, header::AUTHORIZATION};
 //! use rama_core::service::service_fn;
-//! use rama_core::{Context, Service, Layer};
+//! use rama_core::{Service, Layer};
 //! use rama_core::error::BoxError;
 //! use std::{iter::once, convert::Infallible};
 //!
@@ -32,14 +32,14 @@
 //!
 //! // Call the service.
 //! let response = service
-//!     .serve(Context::default(), Request::new(Body::empty()))
+//!     .serve(Request::new(Body::empty()))
 //!     .await?;
 //! # Ok(())
 //! # }
 //! ```
 
 use crate::{HeaderName, Request, Response, header};
-use rama_core::{Context, Layer, Service};
+use rama_core::{Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
 use std::sync::Arc;
 
@@ -180,11 +180,7 @@ where
     type Response = S::Response;
     type Error = S::Error;
 
-    async fn serve(
-        &self,
-        ctx: Context,
-        mut req: Request<ReqBody>,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
         let headers = req.headers_mut();
         for header in &*self.headers {
             if let header::Entry::Occupied(mut entry) = headers.entry(header) {
@@ -194,7 +190,7 @@ where
             }
         }
 
-        self.inner.serve(ctx, req).await
+        self.inner.serve(req).await
     }
 }
 
@@ -282,12 +278,8 @@ where
     type Response = S::Response;
     type Error = S::Error;
 
-    async fn serve(
-        &self,
-        ctx: Context,
-        req: Request<ReqBody>,
-    ) -> Result<Self::Response, Self::Error> {
-        let mut res = self.inner.serve(ctx, req).await?;
+    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
+        let mut res = self.inner.serve(req).await?;
 
         let headers = res.headers_mut();
         for header in self.headers.iter() {
@@ -343,7 +335,7 @@ mod tests {
         req.headers_mut()
             .append(header::COOKIE, HeaderValue::from_static("cookie+2"));
 
-        let resp = service.serve(Context::default(), req).await.unwrap();
+        let resp = service.serve(req).await.unwrap();
 
         assert!(
             !resp

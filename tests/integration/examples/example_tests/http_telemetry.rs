@@ -1,5 +1,5 @@
 use super::utils;
-use rama::{Context, http::BodyExtractExt};
+use rama::http::BodyExtractExt;
 
 #[tokio::test]
 #[ignore]
@@ -10,7 +10,7 @@ async fn test_http_telemetry() {
 
     let homepage = runner
         .get("http://127.0.0.1:62012")
-        .send(Context::default())
+        .send()
         .await
         .unwrap()
         .try_into_string()

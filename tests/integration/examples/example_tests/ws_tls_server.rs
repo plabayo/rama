@@ -1,9 +1,10 @@
 use super::utils;
 use rama::{
-    Context,
+    extensions::Extensions,
     http::{
         BodyExtractExt, StatusCode,
-        headers::{ContentType, HeaderMapExt, dep::mime},
+        headers::{ContentType, HeaderMapExt},
+        mime,
     },
     tls::boring::client::TlsConnectorDataBuilder,
 };
@@ -18,11 +19,7 @@ async fn test_ws_tls_server() {
     // basic html page sanity checks,
     // to at least give some basic guarantees for the human experience
 
-    let index_response = runner
-        .get("https://127.0.0.1:62034")
-        .send(Context::default())
-        .await
-        .unwrap();
+    let index_response = runner.get("https://127.0.0.1:62034").send().await.unwrap();
     assert_eq!(StatusCode::OK, index_response.status());
     assert!(
         index_response
@@ -36,14 +33,13 @@ async fn test_ws_tls_server() {
 
     // test the actual ws content
 
-    let mut ctx = Context::default();
-
-    let builder = ctx.get_or_insert_default::<TlsConnectorDataBuilder>();
+    let mut extensions = Extensions::new();
+    let builder = extensions.get_or_insert_default::<TlsConnectorDataBuilder>();
     builder.push_base_config(TlsConnectorDataBuilder::new_http_1().into());
 
     let mut ws = runner
         .websocket("wss://127.0.0.1:62034/echo")
-        .handshake(ctx)
+        .handshake(extensions)
         .await
         .unwrap();
     ws.send_message("hello world".into())

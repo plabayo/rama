@@ -1,4 +1,4 @@
-use crate::{Context, Layer, Service};
+use crate::{Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
 
@@ -17,7 +17,7 @@ use std::fmt;
 /// may be used to implement error recovery, by turning some [`Err`]
 /// responses from the service into [`Ok`] responses. Similarly, some
 /// successful responses from the service could be rejected, by returning an
-/// [`Err`] conditionally, depending on the value inside the [`Ok`.] Finally,
+/// [`Err`] conditionally, depending on the value inside the [`Ok`]. Finally,
 /// this method can also be used to implement behaviors that must run when a
 /// service's future completes, regardless of whether it succeeded or failed.
 ///
@@ -101,8 +101,8 @@ where
     type Response = Response;
     type Error = Error;
 
-    async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
-        let result = self.inner.serve(ctx, req).await;
+    async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
+        let result = self.inner.serve(req).await;
         (self.f)(result)
     }
 }

@@ -4,7 +4,7 @@ use crate::Request;
 use crate::StatusCode;
 use crate::service::web::response::IntoResponse;
 use crate::{Response, header};
-use rama_core::{Context, Service, telemetry::tracing};
+use rama_core::{Service, telemetry::tracing};
 use rama_net::{Protocol, http::RequestContext};
 use rama_utils::macros::generate_set_and_with;
 use std::convert::Infallible;
@@ -32,14 +32,8 @@ where
     type Response = Response;
     type Error = Infallible;
 
-    async fn serve(
-        &self,
-        mut ctx: Context,
-        req: Request<Body>,
-    ) -> Result<Self::Response, Self::Error> {
-        let req_ctx: &mut RequestContext = match ctx
-            .get_or_try_insert_with_ctx(|ctx| (ctx, &req).try_into())
-        {
+    async fn serve(&self, req: Request<Body>) -> Result<Self::Response, Self::Error> {
+        let req_ctx = match RequestContext::try_from(&req) {
             Ok(req_ctx) => req_ctx,
             Err(err) => {
                 tracing::error!("failed to get RequestContext for insecure incoming req: {err}");

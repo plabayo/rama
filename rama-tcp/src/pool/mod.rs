@@ -6,7 +6,7 @@ use std::sync::{
 use rama_core::error::OpaqueError;
 use rand::RngCore;
 
-use crate::client::TcpStreamConnector;
+use crate::{TcpStream, client::TcpStreamConnector};
 
 /// Selection algorithms
 #[derive(Debug, Clone)]
@@ -71,10 +71,7 @@ where
 {
     type Error = <C as TcpStreamConnector>::Error;
 
-    async fn connect(
-        &self,
-        addr: std::net::SocketAddr,
-    ) -> Result<tokio::net::TcpStream, Self::Error> {
+    async fn connect(&self, addr: std::net::SocketAddr) -> Result<TcpStream, Self::Error> {
         let connector = self.selector.next(&self.connectors).ok_or_else(|| {
             OpaqueError::from_display("TcpStreamConnectorPool has empty connectors collection")
         })?;
@@ -84,7 +81,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
+    use ahash::{HashSet, HashSetExt as _};
 
     use rama_net::address::SocketAddress;
 

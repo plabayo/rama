@@ -1,12 +1,13 @@
 use super::utils;
 use rama::{
-    Context,
+    extensions::Extensions,
     http::{
         BodyExtractExt, StatusCode,
-        headers::{ContentType, HeaderMapExt, dep::mime},
+        headers::{ContentType, HeaderMapExt},
+        mime,
+        ws::protocol::{PerMessageDeflateConfig, WebSocketConfig},
     },
 };
-use rama_ws::protocol::{PerMessageDeflateConfig, WebSocketConfig};
 
 #[tokio::test]
 #[ignore]
@@ -18,11 +19,7 @@ async fn test_ws_echo_server_with_compression() {
     // basic html page sanity checks,
     // to at least give some basic guarantees for the human experience
 
-    let index_response = runner
-        .get("http://127.0.0.1:62038")
-        .send(Context::default())
-        .await
-        .unwrap();
+    let index_response = runner.get("http://127.0.0.1:62038").send().await.unwrap();
     assert_eq!(StatusCode::OK, index_response.status());
     assert!(
         index_response
@@ -41,7 +38,7 @@ async fn test_ws_echo_server_with_compression() {
         .with_config(
             WebSocketConfig::default().with_per_message_deflate(PerMessageDeflateConfig::default()),
         )
-        .handshake(Context::default())
+        .handshake(Extensions::default())
         .await
         .unwrap();
     ws.send_message("hello world".into())
@@ -61,7 +58,7 @@ async fn test_ws_echo_server_with_compression() {
 
     let mut ws = runner
         .websocket("ws://127.0.0.1:62038/echo")
-        .handshake(Context::default())
+        .handshake(Extensions::default())
         .await
         .unwrap();
     ws.send_message("hello world".into())

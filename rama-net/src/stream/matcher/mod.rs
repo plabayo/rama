@@ -26,7 +26,7 @@ pub mod ip;
 #[doc(inline)]
 pub use ip::IpNetMatcher;
 
-use rama_core::{Context, context::Extensions, matcher::IteratorMatcherExt};
+use rama_core::{extensions::Extensions, matcher::IteratorMatcherExt};
 use std::{fmt, sync::Arc};
 
 #[cfg(feature = "http")]
@@ -470,16 +470,16 @@ impl<Body> rama_core::matcher::Matcher<Request<Body>> for SocketMatcherKind<Requ
 where
     Body: 'static,
 {
-    fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context, req: &Request<Body>) -> bool {
+    fn matches(&self, ext: Option<&mut Extensions>, req: &Request<Body>) -> bool {
         match self {
-            Self::SocketAddress(matcher) => matcher.matches(ext, ctx, req),
-            Self::IpNet(matcher) => matcher.matches(ext, ctx, req),
-            Self::Loopback(matcher) => matcher.matches(ext, ctx, req),
-            Self::PrivateIpNet(matcher) => matcher.matches(ext, ctx, req),
-            Self::All(matchers) => matchers.iter().matches_and(ext, ctx, req),
-            Self::Any(matchers) => matchers.iter().matches_or(ext, ctx, req),
-            Self::Port(matcher) => matcher.matches(ext, ctx, req),
-            Self::Custom(matcher) => matcher.matches(ext, ctx, req),
+            Self::SocketAddress(matcher) => matcher.matches(ext, req),
+            Self::IpNet(matcher) => matcher.matches(ext, req),
+            Self::Loopback(matcher) => matcher.matches(ext, req),
+            Self::PrivateIpNet(matcher) => matcher.matches(ext, req),
+            Self::All(matchers) => matchers.iter().matches_and(ext, req),
+            Self::Any(matchers) => matchers.iter().matches_or(ext, req),
+            Self::Port(matcher) => matcher.matches(ext, req),
+            Self::Custom(matcher) => matcher.matches(ext, req),
         }
     }
 }
@@ -489,8 +489,8 @@ impl<Body> rama_core::matcher::Matcher<Request<Body>> for SocketMatcher<Request<
 where
     Body: 'static,
 {
-    fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context, req: &Request<Body>) -> bool {
-        let result = self.kind.matches(ext, ctx, req);
+    fn matches(&self, ext: Option<&mut Extensions>, req: &Request<Body>) -> bool {
+        let result = self.kind.matches(ext, req);
         if self.negate { !result } else { result }
     }
 }
@@ -499,16 +499,16 @@ impl<Socket> rama_core::matcher::Matcher<Socket> for SocketMatcherKind<Socket>
 where
     Socket: crate::stream::Socket,
 {
-    fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context, stream: &Socket) -> bool {
+    fn matches(&self, ext: Option<&mut Extensions>, stream: &Socket) -> bool {
         match self {
-            Self::SocketAddress(matcher) => matcher.matches(ext, ctx, stream),
-            Self::IpNet(matcher) => matcher.matches(ext, ctx, stream),
-            Self::Loopback(matcher) => matcher.matches(ext, ctx, stream),
-            Self::PrivateIpNet(matcher) => matcher.matches(ext, ctx, stream),
-            Self::Port(matcher) => matcher.matches(ext, ctx, stream),
-            Self::All(matchers) => matchers.iter().matches_and(ext, ctx, stream),
-            Self::Any(matchers) => matchers.iter().matches_or(ext, ctx, stream),
-            Self::Custom(matcher) => matcher.matches(ext, ctx, stream),
+            Self::SocketAddress(matcher) => matcher.matches(ext, stream),
+            Self::IpNet(matcher) => matcher.matches(ext, stream),
+            Self::Loopback(matcher) => matcher.matches(ext, stream),
+            Self::PrivateIpNet(matcher) => matcher.matches(ext, stream),
+            Self::Port(matcher) => matcher.matches(ext, stream),
+            Self::All(matchers) => matchers.iter().matches_and(ext, stream),
+            Self::Any(matchers) => matchers.iter().matches_or(ext, stream),
+            Self::Custom(matcher) => matcher.matches(ext, stream),
         }
     }
 }
@@ -517,8 +517,8 @@ impl<Socket> rama_core::matcher::Matcher<Socket> for SocketMatcher<Socket>
 where
     Socket: crate::stream::Socket,
 {
-    fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context, stream: &Socket) -> bool {
-        let result = self.kind.matches(ext, ctx, stream);
+    fn matches(&self, ext: Option<&mut Extensions>, stream: &Socket) -> bool {
+        let result = self.kind.matches(ext, stream);
         if self.negate { !result } else { result }
     }
 }
@@ -534,12 +534,7 @@ mod test {
     struct BooleanMatcher(bool);
 
     impl Matcher<Request<()>> for BooleanMatcher {
-        fn matches(
-            &self,
-            _ext: Option<&mut Extensions>,
-            _ctx: &Context,
-            _req: &Request<()>,
-        ) -> bool {
+        fn matches(&self, _ext: Option<&mut Extensions>, _req: &Request<()>) -> bool {
             self.0
         }
     }
@@ -555,7 +550,7 @@ mod test {
             let matcher = a.and(b).and(c);
             let req = Request::builder().body(()).unwrap();
             assert_eq!(
-                matcher.matches(None, &Context::default(), &req),
+                matcher.matches(None, &req),
                 expected,
                 "({matcher:#?}).matches({req:#?})",
             );
@@ -573,7 +568,7 @@ mod test {
             let matcher = a.negate().and(b).and(c);
             let req = Request::builder().body(()).unwrap();
             assert_eq!(
-                matcher.matches(None, &Context::default(), &req),
+                matcher.matches(None, &req),
                 expected,
                 "({matcher:#?}).matches({req:#?})",
             );
@@ -591,7 +586,7 @@ mod test {
             let matcher = a.and(b).and(c).negate();
             let req = Request::builder().body(()).unwrap();
             assert_eq!(
-                matcher.matches(None, &Context::default(), &req),
+                matcher.matches(None, &req),
                 expected,
                 "({matcher:#?}).matches({req:#?})",
             );
@@ -609,7 +604,7 @@ mod test {
             let matcher = a.or(b).or(c);
             let req = Request::builder().body(()).unwrap();
             assert_eq!(
-                matcher.matches(None, &Context::default(), &req),
+                matcher.matches(None, &req),
                 expected,
                 "({matcher:#?}).matches({req:#?})",
             );
@@ -627,7 +622,7 @@ mod test {
             let matcher = a.negate().or(b).or(c);
             let req = Request::builder().body(()).unwrap();
             assert_eq!(
-                matcher.matches(None, &Context::default(), &req),
+                matcher.matches(None, &req),
                 expected,
                 "({matcher:#?}).matches({req:#?})",
             );
@@ -645,7 +640,7 @@ mod test {
             let matcher = a.or(b).or(c).negate();
             let req = Request::builder().body(()).unwrap();
             assert_eq!(
-                matcher.matches(None, &Context::default(), &req),
+                matcher.matches(None, &req),
                 expected,
                 "({matcher:#?}).matches({req:#?})",
             );
@@ -665,7 +660,7 @@ mod test {
             let matcher = (a.or(b)).and(c.or(d)).and(e.negate());
             let req = Request::builder().body(()).unwrap();
             assert_eq!(
-                matcher.matches(None, &Context::default(), &req),
+                matcher.matches(None, &req),
                 expected,
                 "({matcher:#?}).matches({req:#?})",
             );

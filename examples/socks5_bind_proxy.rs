@@ -13,14 +13,12 @@
 //! and client combined.
 
 use rama::{
-    Context,
-    net::address::SocketAddress,
-    net::user::Basic,
+    extensions::Extensions,
+    net::{address::SocketAddress, user::Basic},
     proxy::socks5::{
         Socks5Acceptor, Socks5Client, client::bind::BindOutput, server::DefaultBinder,
     },
-    tcp::client::default_tcp_connect,
-    tcp::server::TcpListener,
+    tcp::{client::default_tcp_connect, server::TcpListener},
     telemetry::tracing::{self, level_filters::LevelFilter},
 };
 
@@ -40,10 +38,10 @@ async fn main() {
 
     let socks5_socket_addr = spawn_socks5_server().await;
 
-    let (proxy_client_stream, _) =
-        default_tcp_connect(&Context::default(), socks5_socket_addr.into())
-            .await
-            .expect("establish connection to socks5 server (from client)");
+    let ext = Extensions::default();
+    let (proxy_client_stream, _) = default_tcp_connect(&ext, socks5_socket_addr.into())
+        .await
+        .expect("establish connection to socks5 server (from client)");
 
     let socks5_client = Socks5Client::new().with_auth(Basic::new_static("john", "secret"));
 
@@ -57,7 +55,7 @@ async fn main() {
     tokio::spawn(async move {
         // the server application is supposed to do this,
         // after it received the selected bind address from the client
-        let (mut stream, _) = default_tcp_connect(&Context::default(), bind_addr.into())
+        let (mut stream, _) = default_tcp_connect(&ext, bind_addr.into())
             .await
             .expect("establish connection to socks5 server (from server)");
 

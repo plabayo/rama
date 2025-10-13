@@ -1,21 +1,24 @@
-use std::fmt;
-
+use super::BoringTlsStream;
 use pin_project_lite::pin_project;
 use rama_boring::ssl::SslRef;
-use rama_boring_tokio::SslStream;
-use rama_net::stream::Stream;
+use rama_core::{
+    extensions::{Extensions, ExtensionsMut, ExtensionsRef},
+    stream::Stream,
+};
+use std::fmt;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 pin_project! {
     /// A stream which can be either a secure or a plain stream.
     pub struct TlsStream<S> {
         #[pin]
-        pub(super) inner: SslStream<S>,
+        pub(super) inner: BoringTlsStream<S>,
     }
 }
 
-impl<S> TlsStream<S> {
-    pub(super) fn new(inner: SslStream<S>) -> Self {
+impl<S: ExtensionsMut> TlsStream<S> {
+    #[must_use]
+    pub fn new(inner: BoringTlsStream<S>) -> Self {
         Self { inner }
     }
 
@@ -33,6 +36,19 @@ impl<S: fmt::Debug> fmt::Debug for TlsStream<S> {
     }
 }
 
+impl<S: ExtensionsRef> ExtensionsRef for TlsStream<S> {
+    fn extensions(&self) -> &Extensions {
+        self.inner.get_ref().extensions()
+    }
+}
+
+impl<S: ExtensionsMut> ExtensionsMut for TlsStream<S> {
+    fn extensions_mut(&mut self) -> &mut Extensions {
+        self.inner.get_mut().extensions_mut()
+    }
+}
+
+#[warn(clippy::missing_trait_methods)]
 impl<S> AsyncRead for TlsStream<S>
 where
     S: Stream + Unpin,
@@ -46,6 +62,7 @@ where
     }
 }
 
+#[warn(clippy::missing_trait_methods)]
 impl<S> AsyncWrite for TlsStream<S>
 where
     S: Stream + Unpin,
@@ -81,6 +98,6 @@ where
     }
 
     fn is_write_vectored(&self) -> bool {
-        false
+        self.inner.is_write_vectored()
     }
 }

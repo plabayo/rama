@@ -6,7 +6,7 @@
 //! use std::convert::Infallible;
 //! use rama_core::error::BoxError;
 //! use rama_core::service::service_fn;
-//! use rama_core::{Context, Service, Layer};
+//! use rama_core::{Service, Layer};
 //! use rama_http::{Body, Request, Response, header::HeaderName};
 //! use rama_http::layer::propagate_headers::PropagateHeaderLayer;
 //!
@@ -27,7 +27,7 @@
 //!     .header("x-request-id", "1337")
 //!     .body(Body::default())?;
 //!
-//! let response = svc.serve(Context::default(), request).await?;
+//! let response = svc.serve(request).await?;
 //!
 //! assert_eq!(response.headers()["x-request-id"], "1337");
 //! #
@@ -36,7 +36,7 @@
 //! ```
 
 use crate::{Request, Response, header::HeaderName};
-use rama_core::{Context, Layer, Service};
+use rama_core::{Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
 
 /// Layer that applies [`PropagateHeader`] which propagates headers from requests to responses.
@@ -105,14 +105,10 @@ where
     type Response = S::Response;
     type Error = S::Error;
 
-    async fn serve(
-        &self,
-        ctx: Context,
-        req: Request<ReqBody>,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
         let value = req.headers().get(&self.header).cloned();
 
-        let mut res = self.inner.serve(ctx, req).await?;
+        let mut res = self.inner.serve(req).await?;
 
         if let Some(value) = value {
             res.headers_mut().insert(self.header.clone(), value);

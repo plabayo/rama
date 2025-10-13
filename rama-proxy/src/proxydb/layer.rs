@@ -1,7 +1,8 @@
 use super::{Proxy, ProxyContext, ProxyDB, ProxyFilter, ProxyQueryPredicate};
 use rama_core::{
-    Context, Layer, Service,
+    Layer, Service,
     error::{BoxError, ErrorContext, ErrorExt, OpaqueError},
+    extensions::ExtensionsMut,
 };
 use rama_net::{
     Protocol,
@@ -181,39 +182,49 @@ where
     D: ProxyDB<Error: Into<BoxError> + Send + Sync + 'static>,
     P: ProxyQueryPredicate,
     F: UsernameFormatter,
-    Request: TryRefIntoTransportContext<Error: Into<BoxError> + Send + 'static> + Send + 'static,
+    Request: TryRefIntoTransportContext<Error: Into<BoxError> + Send + 'static>
+        + ExtensionsMut
+        + Send
+        + 'static,
 {
     type Response = S::Response;
     type Error = BoxError;
 
-    async fn serve(&self, mut ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
-        if self.preserve && ctx.contains::<ProxyAddress>() {
+    async fn serve(&self, mut req: Request) -> Result<Self::Response, Self::Error> {
+        if self.preserve && req.extensions().contains::<ProxyAddress>() {
             // shortcut in case a proxy address is already set,
             // and we wish to preserve it
-            return self.inner.serve(ctx, req).await.map_err(Into::into);
+            return self.inner.serve(req).await.map_err(Into::into);
         }
 
         let maybe_filter = match self.mode {
-            ProxyFilterMode::Optional => ctx.get::<ProxyFilter>().cloned(),
-            ProxyFilterMode::Default => Some(ctx.get_or_insert_default::<ProxyFilter>().clone()),
+            ProxyFilterMode::Optional => req.extensions().get::<ProxyFilter>().cloned(),
+            ProxyFilterMode::Default => Some(
+                req.extensions_mut()
+                    .get_or_insert_default::<ProxyFilter>()
+                    .clone(),
+            ),
             ProxyFilterMode::Required => Some(
-                ctx.get::<ProxyFilter>()
+                req.extensions()
+                    .get::<ProxyFilter>()
                     .cloned()
                     .context("missing proxy filter")?,
             ),
-            ProxyFilterMode::Fallback(ref filter) => {
-                Some(ctx.get_or_insert_with(|| filter.clone()).clone())
-            }
+            ProxyFilterMode::Fallback(ref filter) => Some(
+                req.extensions_mut()
+                    .get_or_insert_with(|| filter.clone())
+                    .clone(),
+            ),
         };
 
         if let Some(filter) = maybe_filter {
-            let proxy_ctx: ProxyContext = (&*ctx
-                .get_or_try_insert_with_ctx(|ctx| req.try_ref_into_transport_ctx(ctx))
-                .map_err(|err| {
-                    OpaqueError::from_boxed(err.into())
-                        .context("proxydb: select proxy: get transport context")
-                })?)
-                .into();
+            let transport_ctx = req.try_ref_into_transport_ctx().map_err(|err| {
+                OpaqueError::from_boxed(err.into())
+                    .context("proxydb: select proxy: get transport context")
+            })?;
+
+            let proxy_ctx = ProxyContext::from(transport_ctx);
+
             let transport_protocol = proxy_ctx.protocol;
 
             let proxy = self
@@ -234,7 +245,6 @@ where
                 match credential {
                     ProxyCredential::Basic(ref basic) => {
                         match self.username_formatter.fmt_username(
-                            &ctx,
                             &proxy,
                             &filter,
                             basic.username(),
@@ -292,16 +302,17 @@ where
             }
 
             // insert proxy address in context so it will be used
-            ctx.insert(proxy_address);
+            req.extensions_mut().insert(proxy_address);
 
             // insert the id of the selected proxy
-            ctx.insert(super::ProxyID::from(proxy.id.clone()));
+            req.extensions_mut()
+                .insert(super::ProxyID::from(proxy.id.clone()));
 
             // insert the entire proxy also in there, for full "Context"
-            ctx.insert(proxy);
+            req.extensions_mut().insert(proxy);
         }
 
-        self.inner.serve(ctx, req).await.map_err(Into::into)
+        self.inner.serve(req).await.map_err(Into::into)
     }
 }
 
@@ -473,19 +484,12 @@ where
 /// e.g. to allow proxy routers to have proxy config labels in the username.
 pub trait UsernameFormatter: Send + Sync + 'static {
     /// format the username based on the root properties of the given proxy.
-    fn fmt_username(
-        &self,
-        ctx: &Context,
-        proxy: &Proxy,
-        filter: &ProxyFilter,
-        username: &str,
-    ) -> Option<String>;
+    fn fmt_username(&self, proxy: &Proxy, filter: &ProxyFilter, username: &str) -> Option<String>;
 }
 
 impl UsernameFormatter for () {
     fn fmt_username(
         &self,
-        _ctx: &Context,
         _proxy: &Proxy,
         _filter: &ProxyFilter,
         _username: &str,
@@ -496,16 +500,10 @@ impl UsernameFormatter for () {
 
 impl<F> UsernameFormatter for F
 where
-    F: Fn(&Context, &Proxy, &ProxyFilter, &str) -> Option<String> + Send + Sync + 'static,
+    F: Fn(&Proxy, &ProxyFilter, &str) -> Option<String> + Send + Sync + 'static,
 {
-    fn fmt_username(
-        &self,
-        ctx: &Context,
-        proxy: &Proxy,
-        filter: &ProxyFilter,
-        username: &str,
-    ) -> Option<String> {
-        (self)(ctx, proxy, filter, username)
+    fn fmt_username(&self, proxy: &Proxy, filter: &ProxyFilter, username: &str) -> Option<String> {
+        (self)(proxy, filter, username)
     }
 }
 
@@ -514,7 +512,10 @@ mod tests {
     use super::*;
     use crate::{MemoryProxyDB, Proxy, ProxyCsvRowReader, StringFilter};
     use itertools::Itertools;
-    use rama_core::service::service_fn;
+    use rama_core::{
+        extensions::{Extensions, ExtensionsRef},
+        service::service_fn,
+    };
     use rama_http_types::{Body, Request, Version};
     use rama_net::{
         Protocol,
@@ -572,26 +573,25 @@ mod tests {
 
         let service = ProxyDBLayer::new(Arc::new(db))
             .filter_mode(ProxyFilterMode::Default)
-            .into_layer(service_fn(async |ctx: Context, _: Request| {
-                Ok::<_, Infallible>(ctx.get::<ProxyAddress>().unwrap().clone())
+            .into_layer(service_fn(async |req: Request| {
+                Ok::<_, Infallible>(req.extensions().get::<ProxyAddress>().unwrap().clone())
             }));
 
-        let mut ctx = Context::default();
-        ctx.insert(ProxyFilter {
-            country: Some(vec!["BE".into()]),
-            mobile: Some(true),
-            residential: Some(true),
-            ..Default::default()
-        });
-
-        let req = Request::builder()
+        let mut req = Request::builder()
             .version(Version::HTTP_3)
             .method("GET")
             .uri("https://example.com")
             .body(Body::empty())
             .unwrap();
 
-        let proxy_address = service.serve(ctx, req).await.unwrap();
+        req.extensions_mut().insert(ProxyFilter {
+            country: Some(vec!["BE".into()]),
+            mobile: Some(true),
+            residential: Some(true),
+            ..Default::default()
+        });
+
+        let proxy_address = service.serve(req).await.unwrap();
         assert_eq!(
             proxy_address.authority,
             Authority::try_from("12.34.12.34:8080").unwrap()
@@ -623,26 +623,25 @@ mod tests {
 
         let service = ProxyDBLayer::new(Arc::new(proxy))
             .filter_mode(ProxyFilterMode::Default)
-            .into_layer(service_fn(async |ctx: Context, _: Request| {
-                Ok::<_, Infallible>(ctx.get::<ProxyAddress>().unwrap().clone())
+            .into_layer(service_fn(async |req: Request| {
+                Ok::<_, Infallible>(req.extensions().get::<ProxyAddress>().unwrap().clone())
             }));
 
-        let mut ctx = Context::default();
-        ctx.insert(ProxyFilter {
-            country: Some(vec!["BE".into()]),
-            mobile: Some(true),
-            residential: Some(true),
-            ..Default::default()
-        });
-
-        let req = Request::builder()
+        let mut req = Request::builder()
             .version(Version::HTTP_3)
             .method("GET")
             .uri("https://example.com")
             .body(Body::empty())
             .unwrap();
 
-        let proxy_address = service.serve(ctx, req).await.unwrap();
+        req.extensions_mut().insert(ProxyFilter {
+            country: Some(vec!["BE".into()]),
+            mobile: Some(true),
+            residential: Some(true),
+            ..Default::default()
+        });
+
+        let proxy_address = service.serve(req).await.unwrap();
         assert_eq!(
             proxy_address.authority,
             Authority::try_from("12.34.12.34:8080").unwrap()
@@ -674,51 +673,48 @@ mod tests {
 
         let service = ProxyDBLayer::new(Arc::new(proxy))
             .filter_mode(ProxyFilterMode::Default)
-            .username_formatter(
-                |_ctx: &Context, proxy: &Proxy, filter: &ProxyFilter, username: &str| {
-                    if proxy
-                        .pool_id
-                        .as_ref()
-                        .map(|id| id.as_ref() == "routers")
-                        .unwrap_or_default()
-                    {
-                        use std::fmt::Write;
+            .username_formatter(|proxy: &Proxy, filter: &ProxyFilter, username: &str| {
+                if proxy
+                    .pool_id
+                    .as_ref()
+                    .map(|id| id.as_ref() == "routers")
+                    .unwrap_or_default()
+                {
+                    use std::fmt::Write;
 
-                        let mut output = String::new();
+                    let mut output = String::new();
 
-                        if let Some(countries) = filter.country.as_ref().filter(|t| !t.is_empty()) {
-                            let _ = write!(output, "country-{}", countries[0]);
-                        }
-                        if let Some(states) = filter.state.as_ref().filter(|t| !t.is_empty()) {
-                            let _ = write!(output, "state-{}", states[0]);
-                        }
-
-                        return (!output.is_empty()).then(|| format!("{username}-{output}"));
+                    if let Some(countries) = filter.country.as_ref().filter(|t| !t.is_empty()) {
+                        let _ = write!(output, "country-{}", countries[0]);
+                    }
+                    if let Some(states) = filter.state.as_ref().filter(|t| !t.is_empty()) {
+                        let _ = write!(output, "state-{}", states[0]);
                     }
 
-                    None
-                },
-            )
-            .into_layer(service_fn(async |ctx: Context, _: Request| {
-                Ok::<_, Infallible>(ctx.get::<ProxyAddress>().unwrap().clone())
+                    return (!output.is_empty()).then(|| format!("{username}-{output}"));
+                }
+
+                None
+            })
+            .into_layer(service_fn(async |req: Request| {
+                Ok::<_, Infallible>(req.extensions().get::<ProxyAddress>().unwrap().clone())
             }));
 
-        let mut ctx = Context::default();
-        ctx.insert(ProxyFilter {
-            country: Some(vec!["BE".into()]),
-            mobile: Some(true),
-            residential: Some(true),
-            ..Default::default()
-        });
-
-        let req = Request::builder()
+        let mut req = Request::builder()
             .version(Version::HTTP_3)
             .method("GET")
             .uri("https://example.com")
             .body(Body::empty())
             .unwrap();
 
-        let proxy_address = service.serve(ctx, req).await.unwrap();
+        req.extensions_mut().insert(ProxyFilter {
+            country: Some(vec!["BE".into()]),
+            mobile: Some(true),
+            residential: Some(true),
+            ..Default::default()
+        });
+
+        let proxy_address = service.serve(req).await.unwrap();
         assert_eq!(
             "socks5://john-country-be:secret@12.34.12.34:8080",
             proxy_address.to_string()
@@ -773,22 +769,24 @@ mod tests {
 
         let service = ProxyDBLayer::new(Arc::new(db))
             .filter_mode(ProxyFilterMode::Default)
-            .into_layer(service_fn(async |ctx: Context, _| {
-                Ok::<_, Infallible>(ctx.get::<ProxyAddress>().unwrap().clone())
+            .into_layer(service_fn(async |req: rama_tcp::client::Request| {
+                Ok::<_, Infallible>(req.extensions().get::<ProxyAddress>().unwrap().clone())
             }));
 
-        let mut ctx = Context::default();
-        ctx.insert(ProxyFilter {
+        let mut req = rama_tcp::client::Request::new(
+            "www.example.com:443".parse().unwrap(),
+            Extensions::new(),
+        )
+        .with_protocol(Protocol::HTTPS);
+
+        req.extensions_mut().insert(ProxyFilter {
             country: Some(vec!["BE".into()]),
             mobile: Some(true),
             residential: Some(true),
             ..Default::default()
         });
 
-        let req = rama_tcp::client::Request::new("www.example.com:443".parse().unwrap())
-            .with_protocol(Protocol::HTTPS);
-
-        let proxy_address = service.serve(ctx, req).await.unwrap();
+        let proxy_address = service.serve(req).await.unwrap();
         assert_eq!(
             proxy_address.authority,
             Authority::try_from("12.34.12.34:8080").unwrap()
@@ -813,21 +811,21 @@ mod tests {
         let service = ProxyDBLayer::new(Arc::new(db))
             .preserve_proxy(true)
             .filter_mode(ProxyFilterMode::Default)
-            .into_layer(service_fn(async |ctx: Context, _: Request| {
-                Ok::<_, Infallible>(ctx.get::<ProxyAddress>().unwrap().clone())
+            .into_layer(service_fn(async |req: Request| {
+                Ok::<_, Infallible>(req.extensions().get::<ProxyAddress>().unwrap().clone())
             }));
 
-        let mut ctx = Context::default();
-        ctx.insert(ProxyAddress::try_from("http://john:secret@1.2.3.4:1234").unwrap());
-
-        let req = Request::builder()
+        let mut req = Request::builder()
             .version(Version::HTTP_11)
             .method("GET")
             .uri("http://example.com")
             .body(Body::empty())
             .unwrap();
 
-        let proxy_address = service.serve(ctx, req).await.unwrap();
+        req.extensions_mut()
+            .insert(ProxyAddress::try_from("http://john:secret@1.2.3.4:1234").unwrap());
+
+        let proxy_address = service.serve(req).await.unwrap();
 
         assert_eq!(proxy_address.authority.to_string(), "1.2.3.4:1234");
     }
@@ -836,13 +834,12 @@ mod tests {
     async fn test_proxy_db_service_optional() {
         let db = memproxydb().await;
 
-        let service = ProxyDBLayer::new(Arc::new(db)).into_layer(service_fn(
-            async |ctx: Context, _: Request| {
-                Ok::<_, Infallible>(ctx.get::<ProxyAddress>().cloned())
-            },
-        ));
+        let service =
+            ProxyDBLayer::new(Arc::new(db)).into_layer(service_fn(async |req: Request| {
+                Ok::<_, Infallible>(req.extensions().get::<ProxyAddress>().cloned())
+            }));
 
-        for (filter, expected_authority, req) in [
+        for (filter, expected_authority, mut req) in [
             (
                 None,
                 None,
@@ -882,10 +879,9 @@ mod tests {
                     .unwrap(),
             ),
         ] {
-            let mut ctx = Context::default();
-            ctx.maybe_insert(filter);
+            req.extensions_mut().maybe_insert(filter);
 
-            let maybe_proxy_address = service.serve(ctx, req).await.unwrap();
+            let maybe_proxy_address = service.serve(req).await.unwrap();
 
             assert_eq!(
                 maybe_proxy_address.map(|p| p.authority),
@@ -900,8 +896,8 @@ mod tests {
 
         let service = ProxyDBLayer::new(Arc::new(db))
             .filter_mode(ProxyFilterMode::Default)
-            .into_layer(service_fn(async |ctx: Context, _: Request| {
-                Ok::<_, Infallible>(ctx.get::<ProxyAddress>().unwrap().clone())
+            .into_layer(service_fn(async |req: Request| {
+                Ok::<_, Infallible>(req.extensions().get::<ProxyAddress>().unwrap().clone())
             }));
 
         for (filter, expected_addresses, req_info) in [
@@ -923,17 +919,17 @@ mod tests {
         ] {
             let mut seen_addresses = Vec::new();
             for _ in 0..5000 {
-                let mut ctx = Context::default();
-                ctx.maybe_insert(filter.clone());
-
-                let req = Request::builder()
+                let mut req = Request::builder()
                     .version(req_info.0)
                     .method(req_info.1)
                     .uri(req_info.2)
                     .body(Body::empty())
                     .unwrap();
 
-                let proxy_address = service.serve(ctx, req).await.unwrap().authority.to_string();
+                req.extensions_mut().maybe_insert(filter.clone());
+
+                let proxy_address = service.serve(req).await.unwrap().authority.to_string();
+
                 if !seen_addresses.contains(&proxy_address) {
                     seen_addresses.push(proxy_address);
                 }
@@ -955,8 +951,8 @@ mod tests {
                 mobile: Some(false),
                 ..Default::default()
             }))
-            .into_layer(service_fn(async |ctx: Context, _: Request| {
-                Ok::<_, Infallible>(ctx.get::<ProxyAddress>().unwrap().clone())
+            .into_layer(service_fn(async |req: Request| {
+                Ok::<_, Infallible>(req.extensions().get::<ProxyAddress>().unwrap().clone())
             }));
 
         for (filter, expected_addresses, req_info) in [
@@ -978,17 +974,17 @@ mod tests {
         ] {
             let mut seen_addresses = Vec::new();
             for _ in 0..5000 {
-                let mut ctx = Context::default();
-                ctx.maybe_insert(filter.clone());
-
-                let req = Request::builder()
+                let mut req = Request::builder()
                     .version(req_info.0)
                     .method(req_info.1)
                     .uri(req_info.2)
                     .body(Body::empty())
                     .unwrap();
 
-                let proxy_address = service.serve(ctx, req).await.unwrap().authority.to_string();
+                req.extensions_mut().maybe_insert(filter.clone());
+
+                let proxy_address = service.serve(req).await.unwrap().authority.to_string();
+
                 if !seen_addresses.contains(&proxy_address) {
                     seen_addresses.push(proxy_address);
                 }
@@ -1005,11 +1001,11 @@ mod tests {
 
         let service = ProxyDBLayer::new(Arc::new(db))
             .filter_mode(ProxyFilterMode::Required)
-            .into_layer(service_fn(async |ctx: Context, _: Request| {
-                Ok::<_, Infallible>(ctx.get::<ProxyAddress>().unwrap().clone())
+            .into_layer(service_fn(async |req: Request| {
+                Ok::<_, Infallible>(req.extensions().get::<ProxyAddress>().unwrap().clone())
             }));
 
-        for (filter, expected_address, req) in [
+        for (filter, expected_address, mut req) in [
             (
                 None,
                 None,
@@ -1065,10 +1061,9 @@ mod tests {
                     .unwrap(),
             ),
         ] {
-            let mut ctx = Context::default();
-            ctx.maybe_insert(filter.clone());
+            req.extensions_mut().maybe_insert(filter.clone());
 
-            let proxy_address_result = service.serve(ctx, req).await;
+            let proxy_address_result = service.serve(req).await;
             match expected_address {
                 Some(expected_address) => {
                     assert_eq!(
@@ -1090,11 +1085,11 @@ mod tests {
         let service = ProxyDBLayer::new(Arc::new(db))
             .filter_mode(ProxyFilterMode::Required)
             .select_predicate(|proxy: &Proxy| proxy.mobile)
-            .into_layer(service_fn(async |ctx: Context, _: Request| {
-                Ok::<_, Infallible>(ctx.get::<ProxyAddress>().unwrap().clone())
+            .into_layer(service_fn(async |req: Request| {
+                Ok::<_, Infallible>(req.extensions().get::<ProxyAddress>().unwrap().clone())
             }));
 
-        for (filter, expected, req) in [
+        for (filter, expected, mut req) in [
             (
                 None,
                 None,
@@ -1164,10 +1159,9 @@ mod tests {
                     .unwrap(),
             ),
         ] {
-            let mut ctx = Context::default();
-            ctx.maybe_insert(filter);
+            req.extensions_mut().maybe_insert(filter);
 
-            let proxy_result = service.serve(ctx, req).await;
+            let proxy_result = service.serve(req).await;
             match expected {
                 Some(expected_address) => {
                     assert_eq!(

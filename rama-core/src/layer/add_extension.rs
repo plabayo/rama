@@ -1,13 +1,11 @@
-//! Middleware that clones a value into the incoming [Context].
-//!
-//! [Context]: https://docs.rs/rama/latest/rama/context/struct.Context.html
+//! Middleware that clones a value into the incoming input extensions
 //!
 //! # Example
 //!
 //! ```
 //! use std::{sync::Arc, convert::Infallible};
 //!
-//! use rama_core::{Context, Service, Layer, service::service_fn};
+//! use rama_core::{extensions::{Extensions, ExtensionsRef}, Service, Layer, service::service_fn};
 //! use rama_core::layer::add_extension::AddExtensionLayer;
 //! use rama_core::error::BoxError;
 //!
@@ -21,12 +19,13 @@
 //!     pool: DatabaseConnectionPool,
 //! }
 //!
-//! async fn handle(ctx: Context, req: ()) -> Result<(), Infallible>
+//! // Request can be any type that implements [`ExtensionsRef`]
+//! async fn handle(req: Extensions) -> Result<(), Infallible>
 //! {
 //!     // Grab the state from the request extensions.
-//!     let state = ctx.get::<Arc<State>>().unwrap();
+//!     let state = req.extensions().get::<Arc<State>>().unwrap();
 //!
-//!     Ok(req)
+//!     Ok(())
 //! }
 //!
 //! # #[tokio::main]
@@ -43,13 +42,13 @@
 //!
 //! // Call the service.
 //! let response = service
-//!     .serve(Context::default(), ())
+//!     .serve(Extensions::new())
 //!     .await?;
 //! # Ok(())
 //! # }
 //! ```
 
-use crate::{Context, Layer, Service};
+use crate::{Layer, Service, extensions::ExtensionsMut};
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
 
@@ -148,7 +147,7 @@ impl<S, T> AddExtension<S, T> {
 
 impl<Request, S, T> Service<Request> for AddExtension<S, T>
 where
-    Request: Send + 'static,
+    Request: Send + ExtensionsMut + 'static,
     S: Service<Request>,
     T: Clone + Send + Sync + 'static,
 {
@@ -157,18 +156,18 @@ where
 
     fn serve(
         &self,
-        mut ctx: Context,
-        req: Request,
+
+        mut req: Request,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
-        ctx.insert(self.value.clone());
-        self.inner.serve(ctx, req)
+        req.extensions_mut().insert(self.value.clone());
+        self.inner.serve(req)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Context, service::service_fn};
+    use crate::{ServiceInput, extensions::ExtensionsRef, service::service_fn};
     use std::{convert::Infallible, sync::Arc};
 
     struct State(i32);
@@ -178,12 +177,12 @@ mod tests {
         let state = Arc::new(State(1));
 
         let svc =
-            AddExtensionLayer::new(state).into_layer(service_fn(async |ctx: Context, _req: ()| {
-                let state = ctx.get::<Arc<State>>().unwrap();
+            AddExtensionLayer::new(state).into_layer(service_fn(async |req: ServiceInput<()>| {
+                let state = req.extensions().get::<Arc<State>>().unwrap();
                 Ok::<_, Infallible>(state.0)
             }));
 
-        let res = svc.serve(Context::default(), ()).await.unwrap();
+        let res = svc.serve(ServiceInput::new(())).await.unwrap();
 
         assert_eq!(1, res);
     }

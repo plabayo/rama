@@ -6,19 +6,17 @@ use std::{
 };
 
 use pin_project_lite::pin_project;
-use rama_core::telemetry::tracing;
 use rama_core::{
-    Context, Service,
+    Service,
     error::{BoxError, ErrorContext, OpaqueError},
+    extensions::ExtensionsMut,
     service::RejectService,
+    stream::{HeapReader, PeekStream, StackReader},
+    telemetry::tracing,
 };
 use tokio::io::{AsyncBufRead, AsyncRead, AsyncReadExt, AsyncWrite, ReadBuf};
 
-use crate::{
-    address::Domain,
-    stream::{HeapReader, PeekStream, StackReader},
-    tls::client::extract_sni_from_client_hello_handshake,
-};
+use crate::{address::Domain, tls::client::extract_sni_from_client_hello_handshake};
 
 use super::{NoTlsRejectError, TlsPeekStream};
 
@@ -78,7 +76,7 @@ impl<S: fmt::Debug, F: fmt::Debug> fmt::Debug for SniRouter<S, F> {
 
 impl<Stream, Response, S, F> Service<Stream> for SniRouter<S, F>
 where
-    Stream: crate::stream::Stream + Unpin,
+    Stream: rama_core::stream::Stream + Unpin + ExtensionsMut,
     Response: Send + 'static,
     S: Service<SniRequest<Stream>, Response = Response, Error: Into<BoxError>>,
     F: Service<TlsPeekStream<Stream>, Response = Response, Error: Into<BoxError>>,
@@ -86,7 +84,7 @@ where
     type Response = Response;
     type Error = BoxError;
 
-    async fn serve(&self, ctx: Context, mut stream: Stream) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut stream: Stream) -> Result<Self::Response, Self::Error> {
         let mut peek_buf = [0u8; TLS_HEADER_PEEK_LEN];
         let n = stream
             .read(&mut peek_buf)
@@ -110,7 +108,7 @@ where
             let stream = PeekStream::new(peek, stream);
 
             tracing::trace!("fallback to non-tls service");
-            return self.fallback.serve(ctx, stream).await.map_err(Into::into);
+            return self.fallback.serve(stream).await.map_err(Into::into);
         }
 
         let n = ((peek_buf[3] as usize) << 8) | (peek_buf[4] as usize);
@@ -139,13 +137,10 @@ where
         let peek_stream = PeekStream::new(mem_reader, stream);
 
         self.service
-            .serve(
-                ctx,
-                SniRequest {
-                    stream: peek_stream,
-                    sni,
-                },
-            )
+            .serve(SniRequest {
+                stream: peek_stream,
+                sni,
+            })
             .await
             .map_err(Into::into)
     }
@@ -166,6 +161,7 @@ pin_project! {
     }
 }
 
+#[warn(clippy::missing_trait_methods)]
 impl<S> AsyncRead for SniRequest<S>
 where
     S: AsyncRead,
@@ -181,6 +177,7 @@ where
     }
 }
 
+#[warn(clippy::missing_trait_methods)]
 impl<S> AsyncBufRead for SniRequest<S>
 where
     S: AsyncBufRead,
@@ -209,8 +206,25 @@ where
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         self.stream.read(buf)
     }
+
+    fn read_exact(&mut self, buf: &mut [u8]) -> std::io::Result<()> {
+        self.stream.read_exact(buf)
+    }
+
+    fn read_to_end(&mut self, buf: &mut Vec<u8>) -> std::io::Result<usize> {
+        self.stream.read_to_end(buf)
+    }
+
+    fn read_to_string(&mut self, buf: &mut String) -> std::io::Result<usize> {
+        self.stream.read_to_string(buf)
+    }
+
+    fn read_vectored(&mut self, bufs: &mut [std::io::IoSliceMut<'_>]) -> std::io::Result<usize> {
+        self.stream.read_vectored(bufs)
+    }
 }
 
+#[warn(clippy::missing_trait_methods)]
 impl<S> AsyncWrite for SniRequest<S>
 where
     S: AsyncWrite,
@@ -266,6 +280,21 @@ where
     fn flush(&mut self) -> std::io::Result<()> {
         self.stream.flush()
     }
+
+    #[inline]
+    fn write_all(&mut self, buf: &[u8]) -> std::io::Result<()> {
+        self.stream.write_all(buf)
+    }
+
+    #[inline]
+    fn write_fmt(&mut self, args: fmt::Arguments<'_>) -> std::io::Result<()> {
+        self.stream.write_fmt(args)
+    }
+
+    #[inline]
+    fn write_vectored(&mut self, bufs: &[IoSlice<'_>]) -> std::io::Result<usize> {
+        self.stream.write_vectored(bufs)
+    }
 }
 
 impl<S: Clone> Clone for SniRequest<S> {
@@ -288,10 +317,13 @@ impl<S: fmt::Debug> fmt::Debug for SniRequest<S> {
 
 #[cfg(test)]
 mod test {
-    use rama_core::service::{RejectError, service_fn};
+    use rama_core::{
+        ServiceInput,
+        service::{RejectError, service_fn},
+    };
     use std::convert::Infallible;
 
-    use crate::stream::Stream;
+    use rama_core::stream::Stream;
 
     use super::*;
 
@@ -373,46 +405,44 @@ mod test {
 
     #[tokio::test]
     async fn test_sni_router() {
-        let tls_service = service_fn(async |_, req: SniRequest<_>| {
+        let tls_service = service_fn(async |req: SniRequest<_>| {
             let sni = req.sni.map(|sni| sni.to_string());
             Ok::<_, Infallible>(sni)
         });
-        let plain_service = service_fn(async |_, _| Ok::<_, Infallible>(Some("plain".to_owned())));
+        let plain_service = service_fn(async || Ok::<_, Infallible>(Some("plain".to_owned())));
 
         let peek_tls_svc = SniRouter::new(tls_service).with_fallback(plain_service);
 
         let response = peek_tls_svc
-            .serve(Context::default(), std::io::Cursor::new(b"".to_vec()))
+            .serve(ServiceInput::new(std::io::Cursor::new(b"".to_vec())))
             .await
             .unwrap();
         assert_eq!(Some("plain".to_owned()), response);
 
         let response = peek_tls_svc
-            .serve(
-                Context::default(),
-                std::io::Cursor::new(CH_ONE_ONE_ONE_ONE.to_vec()),
-            )
+            .serve(ServiceInput::new(std::io::Cursor::new(
+                CH_ONE_ONE_ONE_ONE.to_vec(),
+            )))
             .await
             .unwrap();
         assert_eq!(Some("one.one.one.one".to_owned()), response);
 
         let response = peek_tls_svc
-            .serve(Context::default(), std::io::Cursor::new(b"foo".to_vec()))
+            .serve(ServiceInput::new(std::io::Cursor::new(b"foo".to_vec())))
             .await
             .unwrap();
         assert_eq!(Some("plain".to_owned()), response);
 
         let response = peek_tls_svc
-            .serve(Context::default(), std::io::Cursor::new(b"foobar".to_vec()))
+            .serve(ServiceInput::new(std::io::Cursor::new(b"foobar".to_vec())))
             .await
             .unwrap();
         assert_eq!(Some("plain".to_owned()), response);
 
         let response = peek_tls_svc
-            .serve(
-                Context::default(),
-                std::io::Cursor::new(TLS_BUT_NO_SNI.to_vec()),
-            )
+            .serve(ServiceInput::new(std::io::Cursor::new(
+                TLS_BUT_NO_SNI.to_vec(),
+            )))
             .await
             .unwrap();
         assert_eq!(None, response);
@@ -438,10 +468,9 @@ mod test {
             );
 
         let response = peek_tls_svc
-            .serve(
-                Context::default(),
-                std::io::Cursor::new(CH_ONE_ONE_ONE_ONE.to_vec()),
-            )
+            .serve(ServiceInput::new(std::io::Cursor::new(
+                CH_ONE_ONE_ONE_ONE.to_vec(),
+            )))
             .await
             .unwrap();
         assert_eq!("ok", response);
@@ -468,10 +497,9 @@ mod test {
             let peek_tls_svc = SniRouter::new(tls_service).with_fallback(plain_service);
 
             let response = peek_tls_svc
-                .serve(
-                    Context::default(),
-                    std::io::Cursor::new(content.as_bytes().to_vec()),
-                )
+                .serve(ServiceInput::new(std::io::Cursor::new(
+                    content.as_bytes().to_vec(),
+                )))
                 .await
                 .unwrap();
 
@@ -498,10 +526,9 @@ mod test {
             );
 
         let response = peek_tls_svc
-            .serve(
-                Context::default(),
-                std::io::Cursor::new(TLS_BUT_NO_SNI.to_vec()),
-            )
+            .serve(ServiceInput::new(std::io::Cursor::new(
+                TLS_BUT_NO_SNI.to_vec(),
+            )))
             .await
             .unwrap();
         assert_eq!("ok", response);

@@ -522,6 +522,15 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_quoted_comma() {
+        assert_eq!(
+            test_decode::<CacheControl>(&["foo=\"a, private, immutable, b\", no-cache"]).unwrap(),
+            CacheControl::new().with_no_cache(),
+            "unknown extensions are ignored but shouldn't fail parsing",
+        )
+    }
+
+    #[test]
     fn test_parse_extension() {
         assert_eq!(
             test_decode::<CacheControl>(&["foo, no-cache, bar=baz"]).unwrap(),

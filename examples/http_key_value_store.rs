@@ -52,9 +52,11 @@
 //! ```
 
 use rama::{
-    Context, Layer,
+    Layer,
+    extensions::Extensions,
+    extensions::ExtensionsRef,
     http::{
-        Method, StatusCode,
+        Method, Request, StatusCode,
         layer::{
             compression::CompressionLayer, trace::TraceLayer,
             validate_request::ValidateRequestHeaderLayer,
@@ -73,9 +75,10 @@ use rama::{
     telemetry::tracing::{self, level_filters::LevelFilter},
 };
 
+use ahash::HashMap;
 use serde::Deserialize;
 use serde_json::json;
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -129,11 +132,11 @@ async fn main() {
                         .get("/keys", list_keys)
                         .nest("/admin", ValidateRequestHeaderLayer::auth(Bearer::new_static("secret-token"))
                             .into_layer(WebService::default()
-                                .delete("/keys", async |ctx: Context| {
-                                    ctx.get::<Arc<AppState>>().unwrap().db.write().await.clear();
+                                .delete("/keys", async |req: Request| {
+                                    req.extensions().get::<Arc<AppState>>().unwrap().db.write().await.clear();
                                 })
-                                .delete("/item/:key", async |Path(params): Path<ItemParam>, ctx: Context| {
-                                    match ctx.get::<Arc<AppState>>().unwrap().db.write().await.remove(&params.key) {
+                                .delete("/item/:key", async |Path(params): Path<ItemParam>, req: Request| {
+                                    match req.extensions().get::<Arc<AppState>>().unwrap().db.write().await.remove(&params.key) {
                                         Some(_) => StatusCode::OK,
                                         None => StatusCode::NOT_FOUND,
                                     }
@@ -142,16 +145,16 @@ async fn main() {
                             HttpMatcher::method_get().or_method_head().and_path("/item/:key"),
                             // only compress the get Action, not the Post Action
                             CompressionLayer::new()
-                                .into_layer((async |Path(params): Path<ItemParam>, method: Method, ctx: Context| {
+                                .into_layer((async |Path(params): Path<ItemParam>, method: Method, req: Request| {
                                     match method {
                                         Method::GET => {
-                                            match ctx.get::<Arc<AppState>>().unwrap().db.read().await.get(&params.key) {
+                                            match req.extensions().get::<Arc<AppState>>().unwrap().db.read().await.get(&params.key) {
                                                 Some(b) => b.clone().into_response(),
                                                 None => StatusCode::NOT_FOUND.into_response(),
                                             }
                                         }
                                         Method::HEAD => {
-                                            if ctx.get::<Arc<AppState>>().unwrap().db.read().await.contains_key(&params.key) {
+                                            if req.extensions().get::<Arc<AppState>>().unwrap().db.read().await.contains_key(&params.key) {
                                                 StatusCode::OK
                                             } else {
                                                 StatusCode::NOT_FOUND
@@ -161,19 +164,19 @@ async fn main() {
                                     }
                                 }).into_endpoint_service()),
                         )
-                        .post("/items", async |ctx: Context, Json(dict): Json<HashMap<String, String>>| {
-                            let mut db = ctx.get::<Arc<AppState>>().unwrap().db.write().await;
+                        .post("/items", async |ext: Extensions, Json(dict): Json<HashMap<String, String>>| {
+                            let mut db = ext.get::<Arc<AppState>>().unwrap().db.write().await;
                             for (k, v) in dict {
                                 db.insert(k, bytes::Bytes::from(v));
                             }
                             StatusCode::OK
                         })
 
-                        .post("/item/:key", async |Path(params): Path<ItemParam>, ctx: Context, Bytes(value): Bytes| {
+                        .post("/item/:key", async |Path(params): Path<ItemParam>, ext: Extensions, Bytes(value): Bytes| {
                             if value.is_empty() {
                                 return StatusCode::BAD_REQUEST;
                             }
-                            ctx.get::<Arc<AppState>>().unwrap().db.write().await.insert(params.key, value);
+                            ext.get::<Arc<AppState>>().unwrap().db.write().await.insert(params.key, value);
                             StatusCode::OK
                         }),
                 ),
@@ -183,8 +186,9 @@ async fn main() {
 }
 
 /// a service_fn can be a regular fn, instead of a closure
-async fn list_keys(ctx: Context) -> impl IntoResponse {
-    ctx.get::<Arc<AppState>>()
+async fn list_keys(req: Request) -> impl IntoResponse {
+    req.extensions()
+        .get::<Arc<AppState>>()
         .unwrap()
         .db
         .read()

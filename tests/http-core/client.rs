@@ -9,6 +9,7 @@ use std::pin::Pin;
 use std::thread;
 use std::time::Duration;
 
+use rama::extensions::ExtensionsMut;
 use rama::http::body::util::{BodyExt, StreamBody};
 use rama::http::core::body::Frame;
 use rama::http::header::{HeaderMap, HeaderName, HeaderValue};
@@ -1488,6 +1489,8 @@ mod conn {
 
     use futures_channel::{mpsc, oneshot};
     use rama::bytes::{Buf, Bytes};
+    use rama::extensions::Extensions;
+    use rama::extensions::ExtensionsRef;
     use rama::futures::future::{self, FutureExt, TryFutureExt, poll_fn};
     use rama_http::StreamingBody;
     use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _, ReadBuf};
@@ -2229,7 +2232,7 @@ mod conn {
                         let (stream, _) = res.unwrap();
 
                         let service = RamaHttpService::new(
-                            rama::Context::default(),
+                            Extensions::new(),
                             service_fn(|_:Request| future::ok::<_, Infallible>(Response::new(rama::http::Body::empty()))));
 
                         let mut shdn_rx = shdn_rx.clone();
@@ -2310,7 +2313,7 @@ mod conn {
             let (stream, _) = res.unwrap();
 
             let service = RamaHttpService::new(
-                rama::Context::default(),
+                Extensions::new(),
                 service_fn(move |req: Request| {
                     tokio::task::spawn(async move {
                         let io = &mut rama::http::io::upgrade::on(req).await.unwrap();
@@ -2490,7 +2493,7 @@ mod conn {
                 .serve_connection(
                     sock,
                     RamaHttpService::new(
-                        rama::Context::default(),
+                        Extensions::new(),
                         service_fn(async |req: Request| {
                             tokio::spawn(async move {
                                 let _ = concat(req).await.expect("server req body aggregate");
@@ -2547,7 +2550,7 @@ mod conn {
                 .serve_connection(
                     sock,
                     RamaHttpService::new(
-                        rama::Context::default(),
+                        Extensions::new(),
                         service_fn(async |_req| {
                             Ok::<_, Infallible>(Response::new(rama::http::Body::from(
                                 "No bread for you!",
@@ -2742,6 +2745,7 @@ mod conn {
         shutdown_called: bool,
     }
 
+    #[warn(clippy::missing_trait_methods)]
     impl AsyncWrite for DebugStream {
         fn poll_shutdown(
             mut self: Pin<&mut Self>,
@@ -2765,8 +2769,21 @@ mod conn {
         ) -> Poll<Result<usize, io::Error>> {
             Pin::new(&mut self.tcp).poll_write(cx, buf)
         }
+
+        fn is_write_vectored(&self) -> bool {
+            self.tcp.is_write_vectored()
+        }
+
+        fn poll_write_vectored(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            bufs: &[io::IoSlice<'_>],
+        ) -> Poll<Result<usize, io::Error>> {
+            Pin::new(&mut self.tcp).poll_write_vectored(cx, bufs)
+        }
     }
 
+    #[warn(clippy::missing_trait_methods)]
     impl AsyncRead for DebugStream {
         fn poll_read(
             mut self: Pin<&mut Self>,

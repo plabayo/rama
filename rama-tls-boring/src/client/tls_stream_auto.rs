@@ -1,27 +1,31 @@
-use std::fmt;
-
+use super::BoringTlsStream;
 use pin_project_lite::pin_project;
 use rama_boring::ssl::SslRef;
-use rama_boring_tokio::SslStream;
-use rama_net::stream::Stream;
+use rama_core::{
+    extensions::{Extensions, ExtensionsMut, ExtensionsRef},
+    stream::Stream,
+};
+use std::fmt;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 pin_project! {
     /// A stream which can be either a secure or a plain stream.
     pub struct AutoTlsStream<S> {
         #[pin]
-        inner: AutoTlsStreamData<S>,
+        pub(super) inner: AutoTlsStreamData<S>,
     }
 }
 
-impl<S> AutoTlsStream<S> {
-    pub(super) fn secure(inner: SslStream<S>) -> Self {
+impl<S: ExtensionsMut> AutoTlsStream<S> {
+    #[must_use]
+    pub fn secure(inner: BoringTlsStream<S>) -> Self {
         Self {
             inner: AutoTlsStreamData::Secure { inner },
         }
     }
 
-    pub(super) fn plain(inner: S) -> Self {
+    #[must_use]
+    pub fn plain(inner: S) -> Self {
         Self {
             inner: AutoTlsStreamData::Plain { inner },
         }
@@ -48,7 +52,7 @@ pin_project! {
     /// A stream which can be either a secure or a plain stream.
     enum AutoTlsStreamData<S> {
         /// A secure stream.
-        Secure{ #[pin] inner: SslStream<S> },
+        Secure{ #[pin] inner: BoringTlsStream<S> },
         /// A plain stream.
         Plain { #[pin] inner: S },
     }
@@ -63,6 +67,25 @@ impl<S: fmt::Debug> fmt::Debug for AutoTlsStreamData<S> {
     }
 }
 
+impl<S: ExtensionsRef> ExtensionsRef for AutoTlsStream<S> {
+    fn extensions(&self) -> &Extensions {
+        match &self.inner {
+            AutoTlsStreamData::Secure { inner } => inner.get_ref().extensions(),
+            AutoTlsStreamData::Plain { inner } => inner.extensions(),
+        }
+    }
+}
+
+impl<S: ExtensionsMut> ExtensionsMut for AutoTlsStream<S> {
+    fn extensions_mut(&mut self) -> &mut Extensions {
+        match &mut self.inner {
+            AutoTlsStreamData::Secure { inner } => inner.get_mut().extensions_mut(),
+            AutoTlsStreamData::Plain { inner } => inner.extensions_mut(),
+        }
+    }
+}
+
+#[warn(clippy::missing_trait_methods)]
 impl<S> AsyncRead for AutoTlsStream<S>
 where
     S: Stream + Unpin,
@@ -79,6 +102,7 @@ where
     }
 }
 
+#[warn(clippy::missing_trait_methods)]
 impl<S> AsyncWrite for AutoTlsStream<S>
 where
     S: Stream + Unpin,
@@ -127,6 +151,9 @@ where
     }
 
     fn is_write_vectored(&self) -> bool {
-        false
+        match &self.inner {
+            AutoTlsStreamData::Secure { inner } => inner.is_write_vectored(),
+            AutoTlsStreamData::Plain { inner } => inner.is_write_vectored(),
+        }
     }
 }

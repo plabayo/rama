@@ -1,6 +1,7 @@
 use rama_core::{
-    Context, Layer, Service,
+    Layer, Service,
     error::{ErrorContext, OpaqueError},
+    extensions::ExtensionsMut,
     telemetry::tracing,
 };
 use rama_net::address::ProxyAddress;
@@ -177,6 +178,7 @@ impl<S> HttpProxyAddressService<S> {
 
 impl<S, Request> Service<Request> for HttpProxyAddressService<S>
 where
+    Request: ExtensionsMut,
     S: Service<Request>,
 {
     type Response = S::Response;
@@ -184,19 +186,18 @@ where
 
     fn serve(
         &self,
-        mut ctx: Context,
-        req: Request,
+        mut req: Request,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
         if let Some(ref address) = self.address
-            && (!self.preserve || !ctx.contains::<ProxyAddress>())
+            && (!self.preserve || !req.extensions().contains::<ProxyAddress>())
         {
             tracing::trace!(
                 server.address = %address.authority.host(),
                 server.port = %address.authority.port(),
                 "setting proxy address",
             );
-            ctx.insert(address.clone());
+            req.extensions_mut().insert(address.clone());
         }
-        self.inner.serve(ctx, req)
+        self.inner.serve(req)
     }
 }

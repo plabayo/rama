@@ -6,7 +6,7 @@ use crate::h2::proto::{Error, Initiator, Open, Peer, WindowSize, peer};
 use crate::h2::{client, proto, server};
 
 use rama_core::bytes::{Buf, Bytes};
-use rama_core::context::Extensions;
+use rama_core::extensions::{Extensions, ExtensionsMut, ExtensionsRef};
 use rama_core::telemetry::tracing;
 use rama_http::proto::RequestHeaders;
 use rama_http::proto::h1::Http1HeaderMap;

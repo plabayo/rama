@@ -30,15 +30,19 @@
 //!
 //! You’ll see output for each test case and potential errors (if any).
 use rama::{
-    Context,
     error::{BoxError, ErrorContext},
+    extensions::Extensions,
     futures::{SinkExt, StreamExt},
     http::{
         client::EasyHttpWebClient,
-        ws::{ProtocolError, handshake::client::HttpClientWebSocketExt},
+        ws::{
+            ProtocolError, handshake::client::HttpClientWebSocketExt,
+            protocol::PerMessageDeflateConfig,
+        },
     },
     telemetry::tracing::{error, info},
 };
+use serde::Deserialize;
 use tracing_subscriber::{
     EnvFilter, filter::LevelFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt,
 };
@@ -73,7 +77,7 @@ async fn get_case_count() -> Result<u32, BoxError> {
     let client = EasyHttpWebClient::default();
     let mut socket = client
         .websocket("ws://localhost:9001/getCaseCount")
-        .handshake(Context::default())
+        .handshake(Extensions::default())
         .await
         .context("get case count")?;
 
@@ -85,12 +89,30 @@ async fn get_case_count() -> Result<u32, BoxError> {
         .expect("Can't parse case count"))
 }
 
+#[derive(Debug, Deserialize)]
+struct CaseInfo {
+    description: String,
+}
+
+async fn get_case_info(case: u32) -> Result<CaseInfo, BoxError> {
+    let client = EasyHttpWebClient::default();
+    let mut socket = client
+        .websocket(format!("ws://localhost:9001/getCaseInfo?case={case}"))
+        .handshake(Extensions::default())
+        .await
+        .context("get case count")?;
+
+    let msg = socket.next().await.expect("Can't fetch case count")?;
+    socket.close(None).await.context("close ws socket")?;
+    Ok(serde_json::from_str(msg.to_text()?).expect("Can't parse case count"))
+}
+
 async fn update_reports() -> Result<(), BoxError> {
     let client = EasyHttpWebClient::default();
 
     let mut socket = client
         .websocket(format!("ws://localhost:9001/updateReports?agent={AGENT}"))
-        .handshake(Context::default())
+        .handshake(Extensions::default())
         .await
         .context("update reports")?;
 
@@ -101,13 +123,33 @@ async fn update_reports() -> Result<(), BoxError> {
 async fn run_test(case: u32) -> Result<(), BoxError> {
     info!("Running test case {}", case);
 
+    let case_info = get_case_info(case).await?;
+    info!("case info: {case_info:?}");
+
+    let client_info_vec = parse_client_offers_no_regex(&case_info.description);
+    let mut configs = offers_to_configs(&client_info_vec);
+
+    if configs.is_empty()
+        && case_info
+            .description
+            .contains("Use default permessage-deflate offer")
+    {
+        configs.push(PerMessageDeflateConfig::default());
+    }
+
     let client = EasyHttpWebClient::default();
 
-    let mut socket = client
-        .websocket(format!(
-            "ws://localhost:9001/runCase?case={case}&agent={AGENT}"
-        ))
-        .handshake(Context::default())
+    let mut ws_builder = client.websocket(format!(
+        "ws://localhost:9001/runCase?case={case}&agent={AGENT}"
+    ));
+
+    for config in configs {
+        info!("set config to builder: {config:?}");
+        let _ = ws_builder.set_per_message_deflate_with_config(config);
+    }
+
+    let mut socket = ws_builder
+        .handshake(Extensions::default())
         .await
         .context("get case socket")?;
 
@@ -119,4 +161,99 @@ async fn run_test(case: u32) -> Result<(), BoxError> {
     }
 
     Ok(())
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ClientOffer {
+    request_no_context_takeover: bool,
+    request_max_window_bits: u8, // 0 means token without a value
+}
+
+fn parse_client_offers_no_regex(line: &str) -> Vec<ClientOffer> {
+    // Extract the list inside [ ... ]
+    let start = match line.find('[') {
+        Some(i) => i + 1,
+        None => return Vec::new(),
+    };
+    let Some(end) = line.rfind(']') else {
+        return Vec::new();
+    };
+    let list = &line[start..end];
+
+    let mut i = 0usize;
+    let b = list.as_bytes();
+    let len = b.len();
+    let mut out = Vec::new();
+
+    fn skip_ws(b: &[u8], i: &mut usize) {
+        while *i < b.len() && b[*i].is_ascii_whitespace() {
+            *i += 1;
+        }
+    }
+
+    while i < len {
+        skip_ws(b, &mut i);
+        if i >= len {
+            break;
+        }
+        if b[i] != b'(' {
+            // skip until next tuple
+            i += 1;
+            continue;
+        }
+        i += 1; // past '('
+        skip_ws(b, &mut i);
+
+        // parse True or False until comma
+        let bool_start = i;
+        while i < len && b[i] != b',' && b[i] != b')' {
+            i += 1;
+        }
+        let bool_tok = list[bool_start..i].trim();
+        let noc = matches!(bool_tok, "True" | "true");
+
+        // expect comma then parse number until ')'
+        if i < len && b[i] == b',' {
+            i += 1;
+        }
+        skip_ws(b, &mut i);
+
+        let num_start = i;
+        while i < len && b[i] != b')' {
+            i += 1;
+        }
+        let num_tok = list[num_start..i].trim();
+        let bits = num_tok.parse::<u8>().unwrap_or(0);
+
+        // consume ')'
+        if i < len && b[i] == b')' {
+            i += 1;
+        }
+
+        out.push(ClientOffer {
+            request_no_context_takeover: noc,
+            request_max_window_bits: bits,
+        });
+
+        // optional trailing comma and spaces before next tuple
+        skip_ws(b, &mut i);
+        if i < len && b[i] == b',' {
+            i += 1;
+        }
+    }
+
+    out
+}
+
+fn offers_to_configs(offers: &[ClientOffer]) -> Vec<PerMessageDeflateConfig> {
+    offers
+        .iter()
+        .map(|o| PerMessageDeflateConfig {
+            server_no_context_takeover: true,
+            server_max_window_bits: Some(15),
+            client_no_context_takeover: o.request_no_context_takeover,
+            // Some(0) means advertise client_max_window_bits without a value
+            client_max_window_bits: Some(o.request_max_window_bits),
+        })
+        .collect()
 }

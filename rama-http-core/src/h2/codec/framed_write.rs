@@ -4,11 +4,12 @@ use rama_http_types::proto::h2::frame::{self, Frame, FrameSize};
 use rama_http_types::proto::h2::hpack;
 
 use rama_core::bytes::{Buf, BufMut, BytesMut};
+use rama_core::stream::io::poll_write_buf;
 use rama_core::telemetry::tracing;
+
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
-use tokio_util::io::poll_write_buf;
 
 use std::io::{self, Cursor};
 
@@ -366,6 +367,7 @@ impl<T, B> FramedWrite<T, B> {
     }
 }
 
+#[warn(clippy::missing_trait_methods)]
 impl<T: AsyncRead + Unpin, B> AsyncRead for FramedWrite<T, B> {
     fn poll_read(
         mut self: Pin<&mut Self>,

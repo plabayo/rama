@@ -1,5 +1,5 @@
 use super::Matcher;
-use crate::{Context, context::Extensions};
+use crate::extensions::Extensions;
 
 /// A matcher that matches if the inner matcher does not match.
 pub struct Not<T>(T);
@@ -27,7 +27,7 @@ impl<Request, T> Matcher<Request> for Not<T>
 where
     T: Matcher<Request>,
 {
-    fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context, req: &Request) -> bool {
-        !self.0.matches(ext, ctx, req)
+    fn matches(&self, ext: Option<&mut Extensions>, req: &Request) -> bool {
+        !self.0.matches(ext, req)
     }
 }

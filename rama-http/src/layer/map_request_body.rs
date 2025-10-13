@@ -7,7 +7,7 @@
 //! use rama_core::bytes::Bytes;
 //! use std::convert::Infallible;
 //! use std::{pin::Pin, task::{ready, Context, Poll}};
-//! use rama_core::{Layer, Service, context};
+//! use rama_core::{Layer, Service};
 //! use rama_core::service::service_fn;
 //! use rama_http::layer::map_request_body::MapRequestBodyLayer;
 //! use rama_core::error::BoxError;
@@ -50,13 +50,13 @@
 //! // Call the service
 //! let request = Request::new(Body::default());
 //!
-//! svc.serve(context::Context::default(), request).await?;
+//! svc.serve(request).await?;
 //! # Ok(())
 //! # }
 //! ```
 
 use crate::{Request, Response};
-use rama_core::{Context, Layer, Service};
+use rama_core::{Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
 
@@ -131,13 +131,9 @@ where
     type Response = S::Response;
     type Error = S::Error;
 
-    async fn serve(
-        &self,
-        ctx: Context,
-        req: Request<ReqBody>,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
         let req = req.map(&self.f);
-        self.inner.serve(ctx, req).await
+        self.inner.serve(req).await
     }
 }
 

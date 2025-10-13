@@ -3,8 +3,9 @@ use std::fmt;
 use super::relay::{UdpRelayState, UdpSocketRelay};
 use crate::server::Error;
 use rama_core::bytes::Bytes;
+use rama_core::extensions::{Extensions, ExtensionsMut, ExtensionsRef};
 use rama_core::telemetry::tracing;
-use rama_core::{Context, Service, error::BoxError};
+use rama_core::{Service, error::BoxError};
 use rama_net::address::SocketAddress;
 use rama_udp::UdpSocket;
 
@@ -15,14 +16,15 @@ use ::rama_dns::BoxDnsResolver;
 pub(super) trait UdpPacketProxy: Send + Sync + 'static {
     fn proxy_udp_packets(
         &self,
-        ctx: Context,
+
+        extensions: Extensions,
         client_address: SocketAddress,
         north: UdpSocket,
         north_read_buf_size: usize,
         south: UdpSocket,
         south_read_buf_size: usize,
         #[cfg(feature = "dns")] dns_resolver: Option<BoxDnsResolver>,
-    ) -> impl Future<Output = Result<Context, Error>> + Send;
+    ) -> impl Future<Output = Result<(), Error>> + Send;
 }
 
 #[derive(Debug, Clone, Default)]
@@ -33,14 +35,14 @@ pub struct DirectUdpRelay;
 impl UdpPacketProxy for DirectUdpRelay {
     async fn proxy_udp_packets(
         &self,
-        #[cfg_attr(not(feature = "dns"), expect(unused_variables))] ctx: Context,
+        #[cfg_attr(not(feature = "dns"), expect(unused_variables))] extensions: Extensions,
         client_address: SocketAddress,
         north: UdpSocket,
         north_read_buf_size: usize,
         south: UdpSocket,
         south_read_buf_size: usize,
         #[cfg(feature = "dns")] dns_resolver: Option<BoxDnsResolver>,
-    ) -> Result<Context, Error> {
+    ) -> Result<(), Error> {
         let relay = UdpSocketRelay::new(
             client_address,
             north,
@@ -50,7 +52,7 @@ impl UdpPacketProxy for DirectUdpRelay {
         );
 
         #[cfg(feature = "dns")]
-        let relay = relay.maybe_with_dns_resolver(&ctx, dns_resolver);
+        let relay = relay.maybe_with_dns_resolver(&extensions, dns_resolver);
 
         let mut relay = relay;
 
@@ -93,6 +95,37 @@ pub struct RelayRequest {
     pub direction: RelayDirection,
     pub server_address: SocketAddress,
     pub payload: Bytes,
+    pub extensions: Extensions,
+}
+
+impl ExtensionsRef for RelayRequest {
+    fn extensions(&self) -> &Extensions {
+        &self.extensions
+    }
+}
+
+impl ExtensionsMut for RelayRequest {
+    fn extensions_mut(&mut self) -> &mut Extensions {
+        &mut self.extensions
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct RelayResponse {
+    pub maybe_payload: Option<Bytes>,
+    pub extensions: Extensions,
+}
+
+impl ExtensionsRef for RelayResponse {
+    fn extensions(&self) -> &Extensions {
+        &self.extensions
+    }
+}
+
+impl ExtensionsMut for RelayResponse {
+    fn extensions_mut(&mut self) -> &mut Extensions {
+        &mut self.extensions
+    }
 }
 
 /// Wrapper used for Async udp inspectors.
@@ -115,18 +148,19 @@ impl<S: Clone> Clone for AsyncUdpInspector<S> {
 
 impl<S> UdpPacketProxy for AsyncUdpInspector<S>
 where
-    S: Service<RelayRequest, Response = (Context, Option<Bytes>), Error: Into<BoxError>>,
+    S: Service<RelayRequest, Response = RelayResponse, Error: Into<BoxError>>,
 {
     async fn proxy_udp_packets(
         &self,
-        mut ctx: Context,
+
+        mut extensions: Extensions,
         client_address: SocketAddress,
         north: UdpSocket,
         north_read_buf_size: usize,
         south: UdpSocket,
         south_read_buf_size: usize,
         #[cfg(feature = "dns")] dns_resolver: Option<BoxDnsResolver>,
-    ) -> Result<Context, Error> {
+    ) -> Result<(), Error> {
         let relay = UdpSocketRelay::new(
             client_address,
             north,
@@ -136,7 +170,7 @@ where
         );
 
         #[cfg(feature = "dns")]
-        let relay = relay.maybe_with_dns_resolver(&ctx, dns_resolver);
+        let relay = relay.maybe_with_dns_resolver(&extensions, dns_resolver);
 
         let mut relay = relay;
 
@@ -149,12 +183,12 @@ where
                         direction: RelayDirection::South,
                         server_address,
                         payload: Bytes::copy_from_slice(relay.north_read_buf_slice()),
+                        extensions,
                     };
 
-                    let maybe_payload;
-                    (ctx, maybe_payload) = self
+                    let result = self
                         .0
-                        .serve(ctx, request)
+                        .serve(request)
                         .await
                         .map_err(Into::into)
                         .inspect_err(|err| {
@@ -163,6 +197,12 @@ where
                             );
                         })
                         .map_err(Error::service)?;
+
+                    let maybe_payload;
+                    RelayResponse {
+                        extensions,
+                        maybe_payload,
+                    } = result;
 
                     match maybe_payload {
                         Some(payload) => relay
@@ -183,12 +223,12 @@ where
                         direction: RelayDirection::North,
                         server_address,
                         payload: Bytes::copy_from_slice(relay.south_read_buf_slice()),
+                        extensions,
                     };
 
-                    let maybe_payload;
-                    (ctx, maybe_payload) = self
+                    let result = self
                         .0
-                        .serve(ctx, request)
+                        .serve(request)
                         .await
                         .map_err(Into::into)
                         .inspect_err(|err| {
@@ -197,6 +237,13 @@ where
                             );
                         })
                         .map_err(Error::service)?;
+
+                    let maybe_payload;
+
+                    RelayResponse {
+                        extensions,
+                        maybe_payload,
+                    } = result;
 
                     match maybe_payload {
                         Some(payload) => relay
@@ -237,7 +284,7 @@ pub trait UdpInspector: Send + Sync + 'static {
     /// Inspect a relayed udp packet respond with a [`UdpInspectAction`].
     fn inspect_packet(
         &self,
-        ctx: &Context,
+
         direction: RelayDirection,
         server_address: SocketAddress,
         payload: &[u8],
@@ -246,7 +293,7 @@ pub trait UdpInspector: Send + Sync + 'static {
 
 impl<F, E> UdpInspector for F
 where
-    F: Fn(&Context, RelayDirection, SocketAddress, &[u8]) -> Result<UdpInspectAction, E>
+    F: Fn(RelayDirection, SocketAddress, &[u8]) -> Result<UdpInspectAction, E>
         + Send
         + Sync
         + 'static,
@@ -256,12 +303,12 @@ where
 
     fn inspect_packet(
         &self,
-        ctx: &Context,
+
         direction: RelayDirection,
         server_address: SocketAddress,
         payload: &[u8],
     ) -> Result<UdpInspectAction, Self::Error> {
-        (self)(ctx, direction, server_address, payload)
+        (self)(direction, server_address, payload)
     }
 }
 
@@ -289,14 +336,14 @@ where
 {
     async fn proxy_udp_packets(
         &self,
-        ctx: Context,
+        #[cfg_attr(not(feature = "dns"), expect(unused_variables))] extensions: Extensions,
         client_address: SocketAddress,
         north: UdpSocket,
         north_read_buf_size: usize,
         south: UdpSocket,
         south_read_buf_size: usize,
         #[cfg(feature = "dns")] dns_resolver: Option<BoxDnsResolver>,
-    ) -> Result<Context, Error> {
+    ) -> Result<(), Error> {
         let relay = UdpSocketRelay::new(
             client_address,
             north,
@@ -306,7 +353,7 @@ where
         );
 
         #[cfg(feature = "dns")]
-        let relay = relay.maybe_with_dns_resolver(&ctx, dns_resolver);
+        let relay = relay.maybe_with_dns_resolver(&extensions, dns_resolver);
 
         let mut relay = relay;
 
@@ -318,7 +365,6 @@ where
                     let action = self
                         .0
                         .inspect_packet(
-                            &ctx,
                             RelayDirection::South,
                             server_address,
                             relay.north_read_buf_slice(),
@@ -364,7 +410,6 @@ where
                     let action = self
                         .0
                         .inspect_packet(
-                            &ctx,
                             RelayDirection::North,
                             server_address,
                             relay.south_read_buf_slice(),

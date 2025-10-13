@@ -15,6 +15,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "http_header_x_robots_tag"
+path = "fuzz_targets/http_header_x_robots_tag.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "h2_client"
 path = "fuzz_targets/h2_client.rs"
 test = false
@@ -43,9 +50,6 @@ path = "../rama-http-core/tests/h2-support"
 [dependencies.rama-http-core]
 path = "../rama-http-core"
 features = ["unstable"]
-
-[dependencies.rama-ua]
-path = "../rama-ua"
 
 [lints]
 workspace = true

@@ -4,13 +4,13 @@ use crate::{StreamingBody, body::Frame};
 use pin_project_lite::pin_project;
 use rama_core::bytes::Bytes;
 use rama_core::futures::Stream;
+use rama_core::stream::io::ReaderStream;
 use std::{
     fmt, io,
     pin::Pin,
     task::{Context, Poll},
 };
 use tokio::io::{AsyncRead, AsyncReadExt, Take};
-use tokio_util::io::ReaderStream;
 
 mod serve_dir;
 mod serve_file;

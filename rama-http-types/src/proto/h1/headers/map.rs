@@ -1,10 +1,8 @@
-use std::{
-    borrow::Cow,
-    collections::{self, HashMap},
-};
+use ahash::HashMap;
+use std::borrow::Cow;
 
 use crate::header::AsHeaderName;
-use rama_core::context::Extensions;
+use rama_core::{extensions::Extensions, extensions::ExtensionsRef};
 use serde::{Deserialize, Serialize, de::Error as _, ser::Error as _};
 
 use super::{
@@ -315,7 +313,7 @@ pub struct HeaderMapValueRemoverIntoIter {
     cached_header_name: Option<HeaderName>,
     cached_headers: Option<std::iter::Peekable<std::vec::IntoIter<HeaderValue>>>,
     removed_headers:
-        Option<collections::hash_map::IntoIter<HeaderName, std::vec::IntoIter<HeaderValue>>>,
+        Option<std::collections::hash_map::IntoIter<HeaderName, std::vec::IntoIter<HeaderValue>>>,
     remaining_headers: std::iter::Peekable<header::IntoIter<HeaderValue>>,
 }
 

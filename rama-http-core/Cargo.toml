@@ -27,6 +27,7 @@ default = []
 unstable = []
 
 [dependencies]
+ahash = { workspace = true }
 atomic-waker = { workspace = true }
 futures-channel = { workspace = true }
 httparse = { workspace = true }
@@ -37,12 +38,10 @@ pin-project-lite = { workspace = true }
 rama-core = { workspace = true }
 rama-http = { workspace = true }
 rama-http-types = { workspace = true }
-rama-net = { workspace = true }
 slab = { workspace = true }
 smallvec = { workspace = true }
 tokio = { workspace = true, features = ["io-util"] }
 tokio-test = { workspace = true }
-tokio-util = { workspace = true, features = ["codec", "io"] }
 want = { workspace = true }
 
 [dev-dependencies]

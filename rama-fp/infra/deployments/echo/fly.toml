@@ -4,7 +4,7 @@
 #
 
 app = 'rama-echo'
-primary_region = 'lhr'
+primary_region = 'fra'
 
 [processes]
 app_secure = "echo --bind 0.0.0.0:8443 -c 2048 -t 300 -f haproxy --ws -s"
@@ -12,6 +12,9 @@ app_insecure = "echo --bind 0.0.0.0:8080 -c 2048 -t 300 -f haproxy --ws"
 
 [build]
 image = 'glendc/rama:latest'
+
+[env]
+  RUST_LOG = 'debug'
 
 [[services]]
 protocol = 'tcp'

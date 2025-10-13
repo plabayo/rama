@@ -1,5 +1,5 @@
 use crate::{Request, Version};
-use rama_core::{Context, context::Extensions};
+use rama_core::extensions::Extensions;
 use std::fmt::{self, Debug, Formatter};
 
 /// A matcher that matches one or more HTTP methods.
@@ -44,7 +44,7 @@ impl VersionMatcher {
 
 impl<Body> rama_core::matcher::Matcher<Request<Body>> for VersionMatcher {
     /// returns true on a match, false otherwise
-    fn matches(&self, _ext: Option<&mut Extensions>, _ctx: &Context, req: &Request<Body>) -> bool {
+    fn matches(&self, _ext: Option<&mut Extensions>, req: &Request<Body>) -> bool {
         Self::try_from(req.version())
             .ok()
             .map(|version| self.contains(version))
@@ -100,7 +100,7 @@ mod test {
             .version(Version::HTTP_11)
             .body(())
             .unwrap();
-        assert!(matcher.matches(None, &Context::default(), &req));
+        assert!(matcher.matches(None, &req));
     }
 
     #[test]
@@ -113,19 +113,19 @@ mod test {
             .version(Version::HTTP_10)
             .body(())
             .unwrap();
-        assert!(matcher.matches(None, &Context::default(), &req));
+        assert!(matcher.matches(None, &req));
 
         let req = Request::builder()
             .version(Version::HTTP_11)
             .body(())
             .unwrap();
-        assert!(matcher.matches(None, &Context::default(), &req));
+        assert!(matcher.matches(None, &req));
 
         let req = Request::builder()
             .version(Version::HTTP_2)
             .body(())
             .unwrap();
-        assert!(!matcher.matches(None, &Context::default(), &req));
+        assert!(!matcher.matches(None, &req));
     }
 
     #[test]
@@ -135,6 +135,6 @@ mod test {
             .version(Version::HTTP_10)
             .body(())
             .unwrap();
-        assert!(!matcher.matches(None, &Context::default(), &req));
+        assert!(!matcher.matches(None, &req));
     }
 }

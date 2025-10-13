@@ -36,6 +36,7 @@
 use rama::{
     Layer, Service,
     error::{BoxError, ErrorContext, OpaqueError},
+    extensions::{ExtensionsMut, ExtensionsRef},
     http::{
         Body, HeaderValue, Request, Response, StatusCode,
         client::EasyHttpWebClient,
@@ -59,7 +60,6 @@ use rama::{
     },
     layer::{AddExtensionLayer, ConsumeErrLayer, HijackLayer},
     net::{
-        address::Domain,
         http::RequestContext,
         proxy::ProxyTarget,
         stream::layer::http::BodyLimitLayer,
@@ -102,8 +102,6 @@ struct State {
     har_layer: HARExportLayer<FileRecorder, Arc<AtomicBool>>,
     har_toggle_ctl: mpsc::Sender<()>,
 }
-
-type Context = rama::Context;
 
 #[tokio::main]
 async fn main() -> Result<(), BoxError> {
@@ -156,9 +154,9 @@ async fn main() -> Result<(), BoxError> {
                 // ...
                 // Remember kids: authentication != security
                 HijackLayer::new(
-                    DomainMatcher::exact(Domain::from_static("har.toggle.internal")),
-                    Arc::new(WebService::default().post("/switch", async |ctx: Context| {
-                        let state = ctx.get::<State>().unwrap();
+                    DomainMatcher::exact("har.toggle.internal"),
+                    Arc::new(WebService::default().post("/switch", async |req: Request| {
+                        let state = req.extensions().get::<State>().unwrap();
                         if let Err(err) = state.har_toggle_ctl.send(()).await {
                             tracing::error!("failed to toggle HAR Recording: {err}");
                             return StatusCode::INTERNAL_SERVER_ERROR;
@@ -201,21 +199,15 @@ async fn main() -> Result<(), BoxError> {
     Ok(())
 }
 
-async fn http_connect_accept(
-    mut ctx: Context,
-    req: Request,
-) -> Result<(Response, Context, Request), Response> {
-    match ctx
-        .get_or_try_insert_with_ctx::<RequestContext, _>(|ctx| (ctx, &req).try_into())
-        .map(|ctx| ctx.authority.clone())
-    {
+async fn http_connect_accept(mut req: Request) -> Result<(Response, Request), Response> {
+    match RequestContext::try_from(&req).map(|ctx| ctx.authority) {
         Ok(authority) => {
             tracing::info!(
                 server.address = %authority.host(),
                 server.port = %authority.port(),
                 "accept CONNECT (lazy): insert proxy target into context",
             );
-            ctx.insert(ProxyTarget(authority));
+            req.extensions_mut().insert(ProxyTarget(authority));
         }
         Err(err) => {
             tracing::error!("error extracting authority: {err:?}");
@@ -223,10 +215,10 @@ async fn http_connect_accept(
         }
     }
 
-    Ok((StatusCode::OK.into_response(), ctx, req))
+    Ok((StatusCode::OK.into_response(), req))
 }
 
-async fn http_connect_proxy(ctx: Context, upgraded: Upgraded) -> Result<(), Infallible> {
+async fn http_connect_proxy(upgraded: Upgraded) -> Result<(), Infallible> {
     // In the past we deleted the request context here, as such:
     // ```
     // ctx.remove::<RequestContext>();
@@ -238,10 +230,16 @@ async fn http_connect_proxy(ctx: Context, upgraded: Upgraded) -> Result<(), Infa
     // as we otherwise might not be able to define the scheme/authority
     // for upstream http requests.
 
-    let state = ctx.get::<State>().unwrap();
+    let state = upgraded.extensions().get::<State>().unwrap();
     let http_service = new_http_mitm_proxy(state);
 
-    let mut http_tp = HttpServer::auto(ctx.executor().clone());
+    let executor = upgraded
+        .extensions()
+        .get::<Executor>()
+        .cloned()
+        .unwrap_or_default();
+
+    let mut http_tp = HttpServer::auto(executor);
     http_tp.h2_mut().enable_connect_protocol();
 
     let http_transport_service = http_tp.service(http_service);
@@ -250,10 +248,7 @@ async fn http_connect_proxy(ctx: Context, upgraded: Upgraded) -> Result<(), Infa
         .with_store_client_hello(true)
         .into_layer(http_transport_service);
 
-    https_service
-        .serve(ctx, upgraded)
-        .await
-        .expect("infallible");
+    https_service.serve(upgraded).await.expect("infallible");
 
     Ok(())
 }
@@ -275,14 +270,15 @@ fn new_http_mitm_proxy(
         .into_layer(service_fn(http_mitm_proxy))
 }
 
-async fn http_mitm_proxy(ctx: Context, req: Request) -> Result<Response, Infallible> {
+async fn http_mitm_proxy(req: Request) -> Result<Response, Infallible> {
     // This function will receive all requests going through this proxy,
     // be it sent via HTTP or HTTPS, both are equally visible. Hence... MITM
 
     // NOTE: use a custom connector (layers) in case you wish to add custom features,
     // such as upstream proxies or other configurations
 
-    let base_tls_config = if let Some(hello) = ctx
+    let base_tls_config = if let Some(hello) = req
+        .extensions()
         .get::<SecureTransport>()
         .and_then(|st| st.client_hello())
         .cloned()
@@ -306,7 +302,7 @@ async fn http_mitm_proxy(ctx: Context, req: Request) -> Result<Response, Infalli
         .with_svc_req_inspector(UserAgentEmulateHttpRequestModifier::default())
         .build();
 
-    let state = ctx.get::<State>().unwrap();
+    let state = req.extensions().get::<State>().unwrap();
 
     // these are not desired for WS MITM flow, but they are for regular HTTP flow
     let client = (
@@ -316,7 +312,7 @@ async fn http_mitm_proxy(ctx: Context, req: Request) -> Result<Response, Infalli
     )
         .into_layer(client);
 
-    match client.serve(ctx, req).await {
+    match client.serve(req).await {
         Ok(mut resp) => {
             if let Some(har_fp) = resp
                 .extensions()

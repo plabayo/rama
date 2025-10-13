@@ -128,7 +128,6 @@ pub struct WebSocketConfig {
 ///
 /// [`RFC7692`]: https://datatracker.ietf.org/doc/html/rfc7692
 #[derive(Debug, Clone, Copy)]
-#[non_exhaustive]
 pub struct PerMessageDeflateConfig {
     /// Prevents Server Context Takeover
     ///

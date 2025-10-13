@@ -24,7 +24,8 @@
 //! you'll need to first import and trust the generated certificate.
 
 use rama::{
-    Context, Layer, Service,
+    Layer, Service,
+    extensions::{ExtensionsMut, ExtensionsRef},
     graceful::Shutdown,
     http::{
         Body, Request, Response, StatusCode,
@@ -149,21 +150,15 @@ async fn main() {
         .expect("graceful shutdown");
 }
 
-async fn http_connect_accept(
-    mut ctx: Context,
-    req: Request,
-) -> Result<(Response, Context, Request), Response> {
-    match ctx
-        .get_or_try_insert_with_ctx::<RequestContext, _>(|ctx| (ctx, &req).try_into())
-        .map(|ctx| ctx.authority.clone())
-    {
+async fn http_connect_accept(mut req: Request) -> Result<(Response, Request), Response> {
+    match RequestContext::try_from(&req).map(|ctx| ctx.authority) {
         Ok(authority) => {
             tracing::info!(
                 server.address = %authority.host(),
                 server.port = %authority.port(),
                 "accept CONNECT (lazy): insert proxy target into context",
             );
-            ctx.insert(ProxyTarget(authority));
+            req.extensions_mut().insert(ProxyTarget(authority));
         }
         Err(err) => {
             tracing::error!("error extracting authority: {err:?}");
@@ -173,20 +168,20 @@ async fn http_connect_accept(
 
     tracing::info!(
         "proxy secure transport ingress: {:?}",
-        ctx.get::<SecureTransport>()
+        req.extensions().get::<SecureTransport>()
     );
 
-    Ok((StatusCode::OK.into_response(), ctx, req))
+    Ok((StatusCode::OK.into_response(), req))
 }
 
-async fn http_plain_proxy(ctx: Context, req: Request) -> Result<Response, Infallible> {
+async fn http_plain_proxy(req: Request) -> Result<Response, Infallible> {
     let client = EasyHttpWebClient::default();
     let uri = req.uri().clone();
     tracing::debug!(
         url.full = %req.uri(),
         "proxy connect plain text request",
     );
-    match client.serve(ctx, req).await {
+    match client.serve(req).await {
         Ok(resp) => Ok(resp),
         Err(err) => {
             tracing::error!(

@@ -1,8 +1,8 @@
 //! Middleware for retrying "failed" requests.
 
 use crate::{Request, StreamingBody, body::util::BodyExt};
+use rama_core::Service;
 use rama_core::error::BoxError;
-use rama_core::{Context, Service};
 use rama_utils::macros::define_inner_service_accessors;
 
 mod layer;
@@ -115,13 +115,7 @@ where
     type Response = S::Response;
     type Error = RetryError;
 
-    async fn serve(
-        &self,
-        ctx: Context,
-        request: Request<Body>,
-    ) -> Result<Self::Response, Self::Error> {
-        let mut ctx = ctx;
-
+    async fn serve(&self, request: Request<Body>) -> Result<Self::Response, Self::Error> {
         // consume body so we can clone the request if desired
         let (parts, body) = request.into_parts();
         let body = body.collect().await.map_err(|e| RetryError {
@@ -131,25 +125,23 @@ where
         let body = RetryBody::new(body.to_bytes());
         let mut request = Request::from_parts(parts, body);
 
-        let mut cloned = self.policy.clone_input(&ctx, &request);
+        let mut cloned = self.policy.clone_input(&request);
 
         loop {
-            let resp = self.inner.serve(ctx, request).await;
+            let resp = self.inner.serve(request).await;
             match cloned.take() {
-                Some((cloned_ctx, cloned_req)) => {
-                    let (cloned_ctx, cloned_req) =
-                        match self.policy.retry(cloned_ctx, cloned_req, resp).await {
-                            PolicyResult::Abort(result) => {
-                                return result.map_err(|e| RetryError {
-                                    kind: RetryErrorKind::Service,
-                                    inner: Some(e.into()),
-                                });
-                            }
-                            PolicyResult::Retry { ctx, req } => (ctx, req),
-                        };
+                Some(cloned_req) => {
+                    let cloned_req = match self.policy.retry(cloned_req, resp).await {
+                        PolicyResult::Abort(result) => {
+                            return result.map_err(|e| RetryError {
+                                kind: RetryErrorKind::Service,
+                                inner: Some(e.into()),
+                            });
+                        }
+                        PolicyResult::Retry { req } => req,
+                    };
 
-                    cloned = self.policy.clone_input(&cloned_ctx, &cloned_req);
-                    ctx = cloned_ctx;
+                    cloned = self.policy.clone_input(&cloned_req);
                     request = cloned_req;
                 }
                 // no clone was made, so no possibility to retry
@@ -171,7 +163,12 @@ mod test {
         BodyExtractExt, Response, StatusCode, layer::retry::managed::DoNotRetry,
         service::web::response::IntoResponse,
     };
-    use rama_core::{Context, Layer, service::service_fn};
+    use rama_core::{
+        Layer,
+        extensions::Extensions,
+        extensions::{ExtensionsMut, ExtensionsRef},
+        service::service_fn,
+    };
     use rama_utils::{backoff::ExponentialBackoff, rng::HasherRng};
     use std::{
         sync::{Arc, atomic::AtomicUsize},
@@ -193,37 +190,39 @@ mod test {
             retry_counter: Arc<AtomicUsize>,
         }
 
-        async fn retry<E>(
-            ctx: Context,
+        async fn retry<Body, E>(
+            req: Request<Body>,
             result: Result<Response, E>,
-        ) -> (Context, Result<Response, E>, bool) {
-            if ctx.contains::<DoNotRetry>() {
+        ) -> (Request<Body>, Result<Response, E>, bool) {
+            if req.extensions().contains::<DoNotRetry>() {
                 panic!("unexpected retry: should be disabled");
             }
 
             if let Ok(ref res) = result {
                 if res.status().is_server_error() {
-                    ctx.get::<State>()
+                    req.extensions()
+                        .get::<State>()
                         .unwrap()
                         .retry_counter
                         .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-                    (ctx, result, true)
+                    (req, result, true)
                 } else {
-                    (ctx, result, false)
+                    (req, result, false)
                 }
             } else {
-                ctx.get::<State>()
+                req.extensions()
+                    .get::<State>()
                     .unwrap()
                     .retry_counter
                     .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                (ctx, result, true)
+                (req, result, true)
             }
         }
 
         let retry_policy = ManagedPolicy::new(retry).with_backoff(backoff);
 
         let service = RetryLayer::new(retry_policy).into_layer(service_fn(
-            async |_ctx, req: Request<RetryBody>| {
+            async |req: Request<RetryBody>| {
                 let txt = req.try_into_string().await.unwrap();
                 match txt.as_str() {
                     "internal" => Ok(StatusCode::INTERNAL_SERVER_ERROR.into_response()),
@@ -237,31 +236,34 @@ mod test {
             Request::builder().body(s.into()).unwrap()
         }
 
-        fn ctx() -> Context {
-            let mut ctx = Context::default();
-            ctx.insert(State {
+        fn extensions() -> Extensions {
+            let mut extensions = Extensions::new();
+            extensions.insert(State {
                 retry_counter: Arc::new(AtomicUsize::new(0)),
             });
-            ctx
+            extensions
         }
 
-        fn ctx_do_not_retry() -> Context {
-            let mut ctx = ctx();
-            ctx.insert(DoNotRetry::default());
-            ctx
+        fn do_not_retry_extensions() -> Extensions {
+            let mut extensions = extensions();
+            extensions.insert(DoNotRetry::default());
+            extensions
         }
 
         async fn assert_serve_ok<E: std::fmt::Debug>(
             msg: &'static str,
             input: &'static str,
             output: &'static str,
-            ctx: Context,
+            extensions: Extensions,
             retried: bool,
             service: &impl Service<Request, Response = Response, Error = E>,
         ) {
-            let state = ctx.get::<State>().unwrap().clone();
+            let state = extensions.get::<State>().unwrap().clone();
 
-            let fut = service.serve(ctx, request(input));
+            let mut request = request(input);
+            *request.extensions_mut() = extensions;
+
+            let fut = service.serve(request);
             let res = fut.await.unwrap();
 
             let body = res.try_into_string().await.unwrap();
@@ -288,13 +290,16 @@ mod test {
         async fn assert_serve_err<E: std::fmt::Debug>(
             msg: &'static str,
             input: &'static str,
-            ctx: Context,
+            extensions: Extensions,
             retried: bool,
             service: &impl Service<Request, Response = Response, Error = E>,
         ) {
-            let state = ctx.get::<State>().unwrap().clone();
+            let state = extensions.get::<State>().unwrap().clone();
 
-            let fut = service.serve(ctx, request(input));
+            let mut request = request(input);
+            *request.extensions_mut() = extensions;
+
+            let fut = service.serve(request);
             let res = fut.await;
 
             assert!(res.is_err(), "{msg}");
@@ -321,7 +326,7 @@ mod test {
             "ok response should be aborted as response without retry",
             "hello",
             "hello",
-            ctx(),
+            extensions(),
             false,
             &service,
         )
@@ -330,7 +335,7 @@ mod test {
             "internal will trigger 500 with a retry",
             "internal",
             "",
-            ctx(),
+            extensions(),
             true,
             &service,
         )
@@ -338,7 +343,7 @@ mod test {
         assert_serve_err(
             "error will trigger an actual non-http error with a retry",
             "error",
-            ctx(),
+            extensions(),
             true,
             &service,
         )
@@ -348,7 +353,7 @@ mod test {
             "normally internal will trigger a 500 with retry, but using DoNotRetry will disable retrying",
             "internal",
             "",
-            ctx_do_not_retry(),
+            do_not_retry_extensions(),
             false,
             &service,
         ).await;

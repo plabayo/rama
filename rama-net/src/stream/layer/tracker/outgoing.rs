@@ -1,16 +1,13 @@
 use super::bytes::BytesRWTracker;
-use crate::{
-    client::{ConnectorService, EstablishedClientConnection},
-    stream::Stream,
-};
-use rama_core::{Context, Layer, Service};
+use crate::client::{ConnectorService, EstablishedClientConnection};
+use rama_core::{Layer, Service, extensions::ExtensionsMut, stream::Stream};
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
 
 /// A [`Service`] that wraps a [`Service`]'s output IO [`Stream`] with an atomic R/W tracker.
 ///
 /// [`Service`]: rama_core::Service
-/// [`Stream`]: crate::stream::Stream
+/// [`Stream`]: rama_core::stream::Stream
 pub struct OutgoingBytesTrackerService<S> {
     inner: S,
 }
@@ -47,19 +44,18 @@ where
 
 impl<S, Request> Service<Request> for OutgoingBytesTrackerService<S>
 where
-    S: ConnectorService<Request, Connection: Stream + Unpin, Error: Send + 'static>,
+    S: ConnectorService<Request, Connection: Stream + Unpin>,
     Request: Send + 'static,
 {
     type Response = EstablishedClientConnection<BytesRWTracker<S::Connection>, Request>;
     type Error = S::Error;
 
-    async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
-        let EstablishedClientConnection { mut ctx, req, conn } =
-            self.inner.connect(ctx, req).await?;
-        let conn = BytesRWTracker::new(conn);
+    async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
+        let EstablishedClientConnection { req, conn } = self.inner.connect(req).await?;
+        let mut conn = BytesRWTracker::new(conn);
         let handle = conn.handle();
-        ctx.insert(handle);
-        Ok(EstablishedClientConnection { ctx, req, conn })
+        conn.extensions_mut().insert(handle);
+        Ok(EstablishedClientConnection { req, conn })
     }
 }
 
@@ -67,7 +63,7 @@ where
 ///
 /// [`Layer`]: rama_core::Layer
 /// [`Service`]: rama_core::Service
-/// [`Stream`]: crate::stream::Stream
+/// [`Stream`]: rama_core::stream::Stream
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct OutgoingBytesTrackerLayer;

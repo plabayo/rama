@@ -1,5 +1,4 @@
 use super::{Action, Attempt, Policy};
-use rama_core::Context;
 use std::fmt;
 
 /// A redirection [`Policy`] created from a closure.
@@ -22,11 +21,11 @@ impl<F, B, E> Policy<B, E> for CloneBodyFn<F>
 where
     F: FnMut(&B) -> Option<B> + Send + Sync + 'static,
 {
-    fn redirect(&mut self, _: &Context, _: &Attempt<'_>) -> Result<Action, E> {
+    fn redirect(&mut self, _: &Attempt<'_>) -> Result<Action, E> {
         Ok(Action::Follow)
     }
 
-    fn clone_body(&mut self, _: &Context, body: &B) -> Option<B> {
+    fn clone_body(&mut self, body: &B) -> Option<B> {
         (self.f)(body)
     }
 }

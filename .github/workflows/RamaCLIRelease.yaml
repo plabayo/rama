@@ -47,7 +47,7 @@ jobs:
           - name: arm-unknown-linux-gnueabihf
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@master
         with:
@@ -103,7 +103,7 @@ jobs:
           - x86_64-apple-darwin
           - aarch64-apple-darwin
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install GNU tar
         if: runner.os == 'macOS'
@@ -164,7 +164,7 @@ jobs:
 
     steps:
       - uses: ilammy/setup-nasm@v1
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}

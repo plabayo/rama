@@ -12,7 +12,7 @@
 //! use rama_http::layer::set_header::SetRequestHeaderLayer;
 //! use rama_http::{Body, Request, Response, header::{self, HeaderValue}};
 //! use rama_core::service::service_fn;
-//! use rama_core::{Context, Service, Layer};
+//! use rama_core::{Service, Layer};
 //! use rama_core::error::BoxError;
 //!
 //! # #[tokio::main]
@@ -34,7 +34,7 @@
 //!
 //! let request = Request::new(Body::empty());
 //!
-//! let response = svc.serve(Context::default(), request).await?;
+//! let response = svc.serve(request).await?;
 //! #
 //! # Ok(())
 //! # }
@@ -46,7 +46,7 @@
 //! use rama_http::{Body, Request, Response, header::{self, HeaderValue}};
 //! use rama_http::layer::set_header::SetRequestHeaderLayer;
 //! use rama_core::service::service_fn;
-//! use rama_core::{Context, Service, Layer};
+//! use rama_core::{Service, Layer};
 //! use rama_core::error::BoxError;
 //!
 //! # #[tokio::main]
@@ -74,14 +74,14 @@
 //!
 //! let request = Request::new(Body::default());
 //!
-//! let response = svc.serve(Context::default(), request).await?;
+//! let response = svc.serve(request).await?;
 //! #
 //! # Ok(())
 //! # }
 //! ```
 
 use crate::{HeaderValue, Request, Response, header::HeaderName, headers::HeaderEncode};
-use rama_core::{Context, Layer, Service};
+use rama_core::{Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
 
@@ -247,6 +247,31 @@ pub struct SetRequestHeader<S, M> {
     mode: InsertHeaderMode,
 }
 
+impl<S> SetRequestHeader<S, HeaderValue> {
+    /// Create a new [`SetRequestHeader`] using a typed header.
+    ///
+    /// If a previous value exists for the same header, it is removed and replaced with the new
+    /// header value.
+    pub fn overriding_typed<H: HeaderEncode>(inner: S, header: H) -> Self {
+        Self::overriding(inner, H::name().clone(), header.encode_to_value())
+    }
+
+    /// Create a new [`SetRequestHeader`] using a typed header.
+    ///
+    /// The new header is always added, preserving any existing values. If previous values exist,
+    /// the header will have multiple values.
+    pub fn appending_typed<H: HeaderEncode>(inner: S, header: H) -> Self {
+        Self::appending(inner, H::name().clone(), header.encode_to_value())
+    }
+
+    /// Create a new [`SetRequestHeader`] using a typed header.
+    ///
+    /// If a previous value exists for the header, the new value is not inserted.
+    pub fn if_not_present_typed<H: HeaderEncode>(inner: S, header: H) -> Self {
+        Self::if_not_present(inner, H::name().clone(), header.encode_to_value())
+    }
+}
+
 impl<S, M> SetRequestHeader<S, M> {
     /// Create a new [`SetRequestHeader`].
     ///
@@ -345,15 +370,8 @@ where
     type Response = S::Response;
     type Error = S::Error;
 
-    async fn serve(
-        &self,
-        ctx: Context,
-        req: Request<ReqBody>,
-    ) -> Result<Self::Response, Self::Error> {
-        let (ctx, req) = self
-            .mode
-            .apply(&self.header_name, ctx, req, &self.make)
-            .await;
-        self.inner.serve(ctx, req).await
+    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
+        let req = self.mode.apply(&self.header_name, req, &self.make).await;
+        self.inner.serve(req).await
     }
 }

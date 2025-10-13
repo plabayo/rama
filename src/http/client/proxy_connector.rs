@@ -1,6 +1,7 @@
 use crate::{
     Layer, Service,
     error::{BoxError, OpaqueError},
+    extensions::{Extensions, ExtensionsMut, ExtensionsRef},
     http::client::proxy::layer::{
         HttpProxyConnector, HttpProxyConnectorLayer, MaybeHttpProxiedConnection,
     },
@@ -8,10 +9,10 @@ use crate::{
         Protocol,
         address::ProxyAddress,
         client::{ConnectorService, EstablishedClientConnection},
-        stream::Stream,
         transport::TryRefIntoTransportContext,
     },
     proxy::socks5::{Socks5ProxyConnector, Socks5ProxyConnectorLayer},
+    stream::Stream,
     telemetry::tracing,
 };
 use pin_project_lite::pin_project;
@@ -78,19 +79,18 @@ impl<S> ProxyConnector<S> {
 
 impl<Request, S> Service<Request> for ProxyConnector<S>
 where
-    S: ConnectorService<Request, Connection: Stream + Unpin, Error: Into<BoxError>>,
-    Request: TryRefIntoTransportContext<Error: Into<BoxError> + Send + 'static> + Send + 'static,
+    S: ConnectorService<Request, Connection: Stream + Unpin>,
+    Request: TryRefIntoTransportContext<Error: Into<BoxError> + Send + 'static>
+        + Send
+        + ExtensionsMut
+        + 'static,
 {
     type Response = EstablishedClientConnection<MaybeProxiedConnection<S::Connection>, Request>;
 
     type Error = BoxError;
 
-    async fn serve(
-        &self,
-        ctx: rama_core::Context,
-        req: Request,
-    ) -> Result<Self::Response, Self::Error> {
-        let proxy = ctx.get::<ProxyAddress>();
+    async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
+        let proxy = req.extensions().get::<ProxyAddress>();
 
         match proxy {
             None => {
@@ -98,15 +98,11 @@ where
                     return Err("proxy required but none is defined".into());
                 }
                 tracing::trace!("no proxy detected in ctx, using inner connector");
-                let EstablishedClientConnection { ctx, req, conn } =
-                    self.inner.connect(ctx, req).await.map_err(Into::into)?;
-                Ok(EstablishedClientConnection {
-                    ctx,
-                    req,
-                    conn: MaybeProxiedConnection {
-                        inner: Connection::Direct { conn },
-                    },
-                })
+                let EstablishedClientConnection { req, conn } =
+                    self.inner.connect(req).await.map_err(Into::into)?;
+
+                let conn = MaybeProxiedConnection::direct(conn);
+                Ok(EstablishedClientConnection { req, conn })
             }
             Some(proxy) => {
                 let protocol = proxy.protocol.as_ref();
@@ -119,26 +115,16 @@ where
 
                 if protocol.is_socks5() {
                     tracing::trace!("using socks proxy connector");
-                    let EstablishedClientConnection { ctx, req, conn } =
-                        self.socks.connect(ctx, req).await?;
-                    Ok(EstablishedClientConnection {
-                        ctx,
-                        req,
-                        conn: MaybeProxiedConnection {
-                            inner: Connection::Socks { conn },
-                        },
-                    })
+                    let EstablishedClientConnection { req, conn } = self.socks.connect(req).await?;
+
+                    let conn = MaybeProxiedConnection::socks(conn);
+                    Ok(EstablishedClientConnection { req, conn })
                 } else if protocol.is_http() {
                     tracing::trace!("using http proxy connector");
-                    let EstablishedClientConnection { ctx, req, conn } =
-                        self.http.connect(ctx, req).await?;
-                    Ok(EstablishedClientConnection {
-                        ctx,
-                        req,
-                        conn: MaybeProxiedConnection {
-                            inner: Connection::Http { conn },
-                        },
-                    })
+                    let EstablishedClientConnection { req, conn } = self.http.connect(req).await?;
+
+                    let conn = MaybeProxiedConnection::http(conn);
+                    Ok(EstablishedClientConnection { req, conn })
                 } else {
                     Err(OpaqueError::from_display(format!(
                         "received unsupport proxy protocol {protocol:?}"
@@ -158,11 +144,49 @@ pin_project! {
     }
 }
 
+impl<S: ExtensionsMut> MaybeProxiedConnection<S> {
+    pub fn direct(conn: S) -> Self {
+        Self {
+            inner: Connection::Direct { conn },
+        }
+    }
+
+    pub fn socks(conn: S) -> Self {
+        Self {
+            inner: Connection::Socks { conn },
+        }
+    }
+
+    pub fn http(conn: MaybeHttpProxiedConnection<S>) -> Self {
+        Self {
+            inner: Connection::Http { conn },
+        }
+    }
+}
+
 impl<S: Debug> Debug for MaybeProxiedConnection<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MaybeProxiedConnection")
             .field("inner", &self.inner)
             .finish()
+    }
+}
+
+impl<S: ExtensionsRef> ExtensionsRef for MaybeProxiedConnection<S> {
+    fn extensions(&self) -> &Extensions {
+        match &self.inner {
+            Connection::Direct { conn } | Connection::Socks { conn } => conn.extensions(),
+            Connection::Http { conn } => conn.extensions(),
+        }
+    }
+}
+
+impl<S: ExtensionsMut> ExtensionsMut for MaybeProxiedConnection<S> {
+    fn extensions_mut(&mut self) -> &mut Extensions {
+        match &mut self.inner {
+            Connection::Direct { conn } | Connection::Socks { conn } => conn.extensions_mut(),
+            Connection::Http { conn } => conn.extensions_mut(),
+        }
     }
 }
 
@@ -186,6 +210,7 @@ impl<S: Debug> Debug for Connection<S> {
     }
 }
 
+#[warn(clippy::missing_trait_methods)]
 impl<Conn: AsyncWrite> AsyncWrite for MaybeProxiedConnection<Conn> {
     fn poll_write(
         self: Pin<&mut Self>,
@@ -243,6 +268,7 @@ impl<Conn: AsyncWrite> AsyncWrite for MaybeProxiedConnection<Conn> {
     }
 }
 
+#[warn(clippy::missing_trait_methods)]
 impl<Conn: AsyncRead> AsyncRead for MaybeProxiedConnection<Conn> {
     fn poll_read(
         self: Pin<&mut Self>,

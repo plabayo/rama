@@ -1,6 +1,8 @@
 use rama_core::bytes::Bytes;
+use rama_core::extensions::Extensions;
+use rama_core::extensions::ExtensionsMut;
 use rama_core::telemetry::tracing::{Instrument, trace_root_span};
-use rama_core::{Context, Service, error::BoxError};
+use rama_core::{Service, error::BoxError};
 use rama_http::StreamingBody;
 use rama_http::opentelemetry::version_as_protocol_version;
 use rama_http::service::web::response::IntoResponse;
@@ -17,12 +19,12 @@ pub trait HttpService<ReqBody>: sealed::Sealed<ReqBody> {
 
 pub struct RamaHttpService<S> {
     svc: S,
-    ctx: Context,
+    extensions: Extensions,
 }
 
 impl<S> RamaHttpService<S> {
-    pub fn new(ctx: Context, svc: S) -> Self {
-        Self { svc, ctx }
+    pub fn new(extensions: Extensions, svc: S) -> Self {
+        Self { svc, extensions }
     }
 }
 
@@ -33,7 +35,7 @@ where
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("RamaHttpService")
             .field("svc", &self.svc)
-            .field("ctx", &self.ctx)
+            .field("extensions", &self.extensions)
             .finish()
     }
 }
@@ -45,7 +47,7 @@ where
     fn clone(&self) -> Self {
         Self {
             svc: self.svc.clone(),
-            ctx: self.ctx.clone(),
+            extensions: self.extensions.clone(),
         }
     }
 }
@@ -60,9 +62,10 @@ where
         &self,
         req: Request<ReqBody>,
     ) -> impl Future<Output = Result<Response, Infallible>> + Send + 'static {
-        let Self { svc, ctx } = self.clone();
+        let Self { svc, extensions } = self.clone();
         async move {
-            let req = req.map(rama_http_types::Body::new);
+            let mut req = req.map(rama_http_types::Body::new);
+            req.extensions_mut().extend(extensions);
 
             let span = trace_root_span!(
                 "http::serve",
@@ -76,7 +79,7 @@ where
                 network.protocol.version = version_as_protocol_version(req.version()),
             );
 
-            Ok(svc.serve(ctx, req).instrument(span).await?.into_response())
+            Ok(svc.serve(req).instrument(span).await?.into_response())
         }
     }
 }

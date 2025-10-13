@@ -5,7 +5,7 @@ use super::predicate::{DefaultPredicate, Predicate};
 use crate::headers::encoding::{AcceptEncoding, Encoding};
 use crate::layer::util::compression::WrapBody;
 use crate::{Request, Response, header};
-use rama_core::{Context, Service};
+use rama_core::Service;
 use rama_http_types::HeaderValue;
 use rama_http_types::StreamingBody;
 use rama_utils::macros::define_inner_service_accessors;
@@ -194,14 +194,10 @@ where
     type Error = S::Error;
 
     #[allow(unreachable_code, unused_mut, unused_variables, unreachable_patterns)]
-    async fn serve(
-        &self,
-        ctx: Context,
-        req: Request<ReqBody>,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
         let encoding = Encoding::from_accept_encoding_headers(req.headers(), self.accept);
 
-        let res = self.inner.serve(ctx, req).await?;
+        let res = self.inner.serve(req).await?;
 
         // never recompress responses that are already compressed
         let should_compress = !res.headers().contains_key(header::CONTENT_ENCODING)

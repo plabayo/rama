@@ -1,12 +1,11 @@
-use std::collections::HashSet;
-
 use super::utils;
+use ahash::{HashSet, HashSetExt as _};
 use rama::{
-    Context,
     futures::StreamExt,
     http::{
         BodyExtractExt, StatusCode,
-        headers::{ContentType, HeaderMapExt, dep::mime},
+        headers::{ContentType, HeaderMapExt},
+        mime,
     },
 };
 
@@ -20,11 +19,7 @@ async fn test_http_sse() {
     // basic html page sanity checks,
     // to at least give some basic guarantees for the human experience
 
-    let index_response = runner
-        .get("http://127.0.0.1:62027")
-        .send(Context::default())
-        .await
-        .unwrap();
+    let index_response = runner.get("http://127.0.0.1:62027").send().await.unwrap();
     assert_eq!(StatusCode::OK, index_response.status());
     assert!(
         index_response
@@ -42,7 +37,7 @@ async fn test_http_sse() {
     let mut event_count = 0;
     let mut stream = runner
         .get("http://127.0.0.1:62027/api/events")
-        .send(Context::default())
+        .send()
         .await
         .unwrap()
         .into_body()

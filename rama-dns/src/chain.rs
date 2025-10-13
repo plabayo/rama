@@ -106,10 +106,7 @@ mod tests {
     #[tokio::test]
     async fn test_chain_ok_err_ipv4() {
         let mut dns = InMemoryDns::new();
-        dns.insert_address(
-            &Domain::from_static("example.com"),
-            Ipv4Addr::new(127, 0, 0, 1),
-        );
+        dns.insert_address("example.com", Ipv4Addr::new(127, 0, 0, 1));
         let v = vec![Either::A(dns), Either::B(DenyAllDns::new())];
 
         let result = v
@@ -122,10 +119,7 @@ mod tests {
     #[tokio::test]
     async fn test_chain_err_ok_ipv6() {
         let mut dns = InMemoryDns::new();
-        dns.insert_address(
-            &Domain::from_static("example.com"),
-            Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1),
-        );
+        dns.insert_address("example.com", Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1));
         let v = vec![Either::B(DenyAllDns::new()), Either::A(dns)];
 
         let result = v
@@ -139,14 +133,8 @@ mod tests {
     async fn test_chain_ok_ok_ipv6() {
         let mut dns1 = InMemoryDns::new();
         let mut dns2 = InMemoryDns::new();
-        dns1.insert_address(
-            &Domain::from_static("example.com"),
-            Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1),
-        );
-        dns2.insert_address(
-            &Domain::from_static("example.com"),
-            Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 2),
-        );
+        dns1.insert_address("example.com", Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1));
+        dns2.insert_address("example.com", Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 2));
 
         let v = vec![dns1, dns2];
         let result = v
@@ -160,10 +148,7 @@ mod tests {
     #[tokio::test]
     async fn test_chain_err_err_ok_ipv4() {
         let mut dns = InMemoryDns::new();
-        dns.insert_address(
-            &Domain::from_static("example.com"),
-            Ipv4Addr::new(127, 0, 0, 1),
-        );
+        dns.insert_address("example.com", Ipv4Addr::new(127, 0, 0, 1));
 
         let v = vec![
             Either::B(DenyAllDns::new()),

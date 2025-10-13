@@ -783,8 +783,8 @@ enum KeyOrIdx<'de> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ahash::HashMap;
     use serde::Deserialize;
-    use std::collections::HashMap;
 
     #[derive(Debug, Deserialize, Eq, PartialEq)]
     enum MyEnum {

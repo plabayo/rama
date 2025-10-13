@@ -8,7 +8,7 @@
 //! };
 //! use rama_http::{Body, Request, Response, header::HeaderName};
 //! use rama_core::service::service_fn;
-//! use rama_core::{Context, Service, Layer};
+//! use rama_core::{Service, Layer};
 //! use rama_core::error::BoxError;
 //! use std::sync::{Arc, atomic::{AtomicU64, Ordering}};
 //!
@@ -49,7 +49,7 @@
 //! ).into_layer(handler);
 //!
 //! let request = Request::new(Body::empty());
-//! let response = svc.serve(Context::default(), request).await?;
+//! let response = svc.serve(request).await?;
 //!
 //! assert_eq!(response.headers()["x-request-id"], "0");
 //! #
@@ -61,7 +61,10 @@ use crate::{
     Request, Response,
     header::{HeaderName, HeaderValue},
 };
-use rama_core::{Context, Layer, Service};
+use rama_core::{
+    Layer, Service,
+    extensions::{ExtensionsMut, ExtensionsRef},
+};
 use rama_utils::macros::define_inner_service_accessors;
 
 use rand::Rng;
@@ -261,11 +264,7 @@ where
     type Response = S::Response;
     type Error = S::Error;
 
-    async fn serve(
-        &self,
-        ctx: Context,
-        mut req: Request<ReqBody>,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
         if let Some(request_id) = req.headers().get(&self.header_name) {
             if req.extensions().get::<RequestId>().is_none() {
                 let request_id = request_id.clone();
@@ -277,7 +276,7 @@ where
                 .insert(self.header_name.clone(), request_id.0);
         }
 
-        self.inner.serve(ctx, req).await
+        self.inner.serve(req).await
     }
 }
 
@@ -373,18 +372,14 @@ where
     type Response = S::Response;
     type Error = S::Error;
 
-    async fn serve(
-        &self,
-        ctx: Context,
-        req: Request<ReqBody>,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
         let request_id = req
             .headers()
             .get(&self.header_name)
             .cloned()
             .map(RequestId::new);
 
-        let mut response = self.inner.serve(ctx, req).await?;
+        let mut response = self.inner.serve(req).await?;
 
         if let Some(current_id) = response.headers().get(&self.header_name) {
             if response.extensions().get::<RequestId>().is_none() {
@@ -484,11 +479,11 @@ mod tests {
 
         // header on response
         let req = Request::builder().body(Body::empty()).unwrap();
-        let res = svc.serve(Context::default(), req).await.unwrap();
+        let res = svc.serve(req).await.unwrap();
         assert_eq!(res.headers()["x-request-id"], "0");
 
         let req = Request::builder().body(Body::empty()).unwrap();
-        let res = svc.serve(Context::default(), req).await.unwrap();
+        let res = svc.serve(req).await.unwrap();
         assert_eq!(res.headers()["x-request-id"], "1");
 
         // doesn't override if header is already there
@@ -496,12 +491,12 @@ mod tests {
             .header("x-request-id", "foo")
             .body(Body::empty())
             .unwrap();
-        let res = svc.serve(Context::default(), req).await.unwrap();
+        let res = svc.serve(req).await.unwrap();
         assert_eq!(res.headers()["x-request-id"], "foo");
 
         // extension propagated
         let req = Request::builder().body(Body::empty()).unwrap();
-        let res = svc.serve(Context::default(), req).await.unwrap();
+        let res = svc.serve(req).await.unwrap();
         assert_eq!(res.extensions().get::<RequestId>().unwrap().0, "2");
     }
 
@@ -515,11 +510,11 @@ mod tests {
 
         // header on response
         let req = Request::builder().body(Body::empty()).unwrap();
-        let res = svc.serve(Context::default(), req).await.unwrap();
+        let res = svc.serve(req).await.unwrap();
         assert_eq!(res.headers()["request-id"], "0");
 
         let req = Request::builder().body(Body::empty()).unwrap();
-        let res = svc.serve(Context::default(), req).await.unwrap();
+        let res = svc.serve(req).await.unwrap();
         assert_eq!(res.headers()["request-id"], "1");
 
         // doesn't override if header is already there
@@ -527,12 +522,12 @@ mod tests {
             .header("request-id", "foo")
             .body(Body::empty())
             .unwrap();
-        let res = svc.serve(Context::default(), req).await.unwrap();
+        let res = svc.serve(req).await.unwrap();
         assert_eq!(res.headers()["request-id"], "foo");
 
         // extension propagated
         let req = Request::builder().body(Body::empty()).unwrap();
-        let res = svc.serve(Context::default(), req).await.unwrap();
+        let res = svc.serve(req).await.unwrap();
         assert_eq!(res.extensions().get::<RequestId>().unwrap().0, "2");
     }
 
@@ -552,7 +547,7 @@ mod tests {
             .header("x-request-id", "foo")
             .body(Body::empty())
             .unwrap();
-        let res = svc.serve(Context::default(), req).await.unwrap();
+        let res = svc.serve(req).await.unwrap();
         assert_eq!(res.headers()["x-request-id"], "foo");
         assert_eq!(res.extensions().get::<RequestId>().unwrap().0, "foo");
     }
@@ -582,7 +577,7 @@ mod tests {
 
         // header on response
         let req = Request::builder().body(Body::empty()).unwrap();
-        let mut res = svc.serve(Context::default(), req).await.unwrap();
+        let mut res = svc.serve(req).await.unwrap();
         let id = res.headers_mut().remove("x-request-id").unwrap();
         id.to_str().unwrap().parse::<Uuid>().unwrap();
     }
@@ -597,7 +592,7 @@ mod tests {
 
         // header on response
         let req = Request::builder().body(Body::empty()).unwrap();
-        let mut res = svc.serve(Context::default(), req).await.unwrap();
+        let mut res = svc.serve(req).await.unwrap();
         let id = res.headers_mut().remove("x-request-id").unwrap();
         assert_eq!(id.to_str().unwrap().chars().count(), 21);
     }

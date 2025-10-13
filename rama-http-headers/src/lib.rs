@@ -81,15 +81,13 @@
     html_favicon_url = "https://raw.githubusercontent.com/plabayo/rama/main/docs/img/old_logo.png"
 )]
 #![doc(html_logo_url = "https://raw.githubusercontent.com/plabayo/rama/main/docs/img/old_logo.png")]
-#![cfg_attr(docsrs, feature(doc_auto_cfg, doc_cfg))]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(test, allow(clippy::float_cmp))]
 #![cfg_attr(not(test), warn(clippy::print_stdout, clippy::dbg_macro))]
 
 mod header;
 #[doc(inline)]
 pub use header::{Error, HeaderDecode, HeaderEncode, TypedHeader};
-
-pub use mime::Mime;
 
 #[macro_use]
 pub mod util;
@@ -98,6 +96,9 @@ mod common;
 mod map_ext;
 mod req_builder_ext;
 mod resp_builder_ext;
+
+pub mod x_robots_tag;
+pub use x_robots_tag::XRobotsTag;
 
 pub mod specifier;
 
@@ -113,9 +114,3 @@ mod client_hints;
 pub use client_hints::{
     ClientHint, all_client_hint_header_name_strings, all_client_hint_header_names, all_client_hints,
 };
-
-pub mod dep {
-    //! dependencies rama-http-headers
-
-    pub use mime;
-}

@@ -1,7 +1,7 @@
 use super::{State, StorageAuthorized};
 use rama::{
-    context::{Context, Extensions},
     error::{BoxError, ErrorContext, OpaqueError},
+    extensions::Extensions,
     http::{
         self, HeaderMap, HeaderName, Request,
         core::h2::frame::EarlyFrameCapture,
@@ -144,8 +144,9 @@ pub(super) struct RequestInfo {
     pub(super) peer_addr: Option<String>,
 }
 
-pub(super) async fn get_user_agent_info(ctx: &Context) -> UserAgentInfo {
-    ctx.get()
+pub(super) async fn get_user_agent_info(extensions: &Extensions) -> UserAgentInfo {
+    extensions
+        .get()
         .map(|ua: &UserAgent| UserAgentInfo {
             user_agent: ua.header_str().to_owned(),
             kind: ua.info().map(|info| info.kind.to_string()),
@@ -159,12 +160,10 @@ pub(super) async fn get_request_info(
     fetch_mode: FetchMode,
     resource_type: ResourceType,
     initiator: Initiator,
-    ctx: &mut Context,
     parts: &Parts,
 ) -> Result<RequestInfo, BoxError> {
-    let request_context = ctx
-        .get_or_try_insert_with_ctx::<RequestContext, _>(|ctx| (ctx, parts).try_into())
-        .context("get or compose RequestContext")?;
+    let request_context =
+        RequestContext::try_from(parts).context("get or compose RequestContext")?;
 
     let authority = request_context.authority.to_string();
     let scheme = request_context.protocol.to_string();
@@ -184,14 +183,20 @@ pub(super) async fn get_request_info(
         initiator,
         path: parts.uri.path().to_owned(),
         uri: parts.uri.to_string(),
-        peer_addr: ctx
+        peer_addr: parts
+            .extensions
             .get::<Forwarded>()
             .and_then(|f| {
                 f.client_socket_addr()
                     .map(|addr| addr.to_string())
                     .or_else(|| f.client_ip().map(|ip| ip.to_string()))
             })
-            .or_else(|| ctx.get::<SocketInfo>().map(|v| v.peer_addr().to_string())),
+            .or_else(|| {
+                parts
+                    .extensions
+                    .get::<SocketInfo>()
+                    .map(|v| v.peer_addr().to_string())
+            }),
     })
 }
 
@@ -234,7 +239,6 @@ pub(super) struct HttpInfo {
 }
 
 pub(super) async fn get_and_store_http_info(
-    ctx: &Context,
     headers: HeaderMap,
     ext: &mut Extensions,
     http_version: http::Version,
@@ -251,8 +255,8 @@ pub(super) async fn get_and_store_http_info(
         _ => None,
     };
 
-    if let Some(storage) = ctx.get::<Arc<State>>().unwrap().storage.as_ref() {
-        let auth = ctx.contains::<StorageAuthorized>();
+    if let Some(storage) = ext.get::<Arc<State>>().unwrap().storage.as_ref() {
+        let auth = ext.contains::<StorageAuthorized>();
 
         match http_version {
             http::Version::HTTP_09 | http::Version::HTTP_10 | http::Version::HTTP_11 => {
@@ -419,10 +423,10 @@ pub(super) enum TlsDisplayInfoExtensionData {
 }
 
 pub(super) async fn get_tls_display_info_and_store(
-    ctx: &Context,
+    extensions: &Extensions,
     ua: String,
 ) -> Result<Option<TlsDisplayInfo>, OpaqueError> {
-    let hello: &ClientHello = match ctx
+    let hello: &ClientHello = match extensions
         .get::<SecureTransport>()
         .and_then(|st| st.client_hello())
     {
@@ -430,17 +434,17 @@ pub(super) async fn get_tls_display_info_and_store(
         None => return Ok(None),
     };
 
-    if let Some(storage) = ctx.get::<Arc<State>>().unwrap().storage.as_ref() {
-        let auth = ctx.contains::<StorageAuthorized>();
+    if let Some(storage) = extensions.get::<Arc<State>>().unwrap().storage.as_ref() {
+        let auth = extensions.contains::<StorageAuthorized>();
         storage
             .store_tls_client_hello(ua, auth, hello.clone())
             .await
             .context("store tls client hello")?;
     }
 
-    let ja4 = Ja4::compute(ctx.extensions()).context("ja4 compute")?;
-    let ja3 = Ja3::compute(ctx.extensions()).context("ja3 compute")?;
-    let peet = PeetPrint::compute(ctx.extensions()).context("peet print compute")?;
+    let ja4 = Ja4::compute(extensions).context("ja4 compute")?;
+    let ja3 = Ja3::compute(extensions).context("ja3 compute")?;
+    let peet = PeetPrint::compute(extensions).context("peet print compute")?;
 
     Ok(Some(TlsDisplayInfo {
         ja4: Ja4DisplayInfo {

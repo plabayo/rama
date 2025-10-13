@@ -6,7 +6,7 @@
 use std::fmt;
 
 use crate::{
-    Context, Service,
+    Service,
     error::{BoxError, ErrorContext, OpaqueError},
     http::{Request, Response, StreamingBody},
     net::client::EstablishedClientConnection,
@@ -135,14 +135,14 @@ where
 
     type Error = OpaqueError;
 
-    async fn serve(&self, ctx: Context, req: Request<Body>) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, req: Request<Body>) -> Result<Self::Response, Self::Error> {
         let uri = req.uri().clone();
 
-        let EstablishedClientConnection { ctx, req, conn } = self.connector.serve(ctx, req).await?;
+        let EstablishedClientConnection { req, conn } = self.connector.serve(req).await?;
         // NOTE: stack might change request version based on connector data,
         tracing::trace!(url.full = %uri, "send http req to connector stack");
 
-        let result = conn.serve(ctx, req).await;
+        let result = conn.serve(req).await;
 
         let resp = result
             .map_err(OpaqueError::from_boxed)

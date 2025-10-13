@@ -8,13 +8,13 @@
 //!     layer::ua::{PlatformKind, UserAgent, UserAgentClassifierLayer, UserAgentKind, UserAgentInfo},
 //!     service::web::response::IntoResponse,
 //! };
-//! use rama_core::{Context, Layer, service::service_fn};
+//! use rama_core::{extensions::ExtensionsRef, Layer, service::service_fn};
 //! use std::convert::Infallible;
 //!
 //! const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.2478.67";
 //!
-//! async fn handle(ctx: Context, _req: Request) -> Result<Response, Infallible> {
-//!     let ua: &UserAgent = ctx.get().unwrap();
+//! async fn handle(req: Request) -> Result<Response, Infallible> {
+//!     let ua: &UserAgent = req.extensions().get().unwrap();
 //!
 //!     assert_eq!(ua.header_str(), UA);
 //!     assert_eq!(ua.info(), Some(UserAgentInfo{ kind: UserAgentKind::Chromium, version: Some(124) }));
@@ -30,7 +30,7 @@
 //! let _ = service
 //!     .get("http://www.example.com")
 //!     .typed_header(rama_http::headers::UserAgent::from_static(UA))
-//!     .send(Context::default())
+//!     .send()
 //!     .await
 //!     .unwrap();
 //! # }
@@ -40,7 +40,7 @@ use crate::{
     HeaderName, Request,
     headers::{self, HeaderMapExt},
 };
-use rama_core::{Context, Layer, Service};
+use rama_core::{Layer, Service, extensions::ExtensionsMut};
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt::{self, Debug};
 
@@ -54,7 +54,7 @@ pub use rama_ua::{
 /// The [`Extensions`] of the [`Context`] is updated with the [`UserAgent`]
 /// if the [`Request`] contains a valid [`UserAgent`] header.
 ///
-/// [`Extensions`]: rama_core::context::Extensions
+/// [`Extensions`]: rama_core::extensions::Extensions
 /// [`Context`]: rama_core::Context
 pub struct UserAgentClassifier<S> {
     inner: S,
@@ -117,8 +117,8 @@ where
 
     fn serve(
         &self,
-        mut ctx: Context,
-        req: Request<Body>,
+
+        mut req: Request<Body>,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
         let overwrites = self
             .overwrite_header
@@ -147,10 +147,10 @@ where
                 }
             }
 
-            ctx.insert(ua);
+            req.extensions_mut().insert(ua);
         }
 
-        self.inner.serve(ctx, req)
+        self.inner.serve(req)
     }
 }
 
@@ -206,14 +206,14 @@ mod tests {
     use crate::service::client::HttpClientExt;
     use crate::service::web::response::IntoResponse;
     use crate::{Response, StatusCode, headers};
-    use rama_core::Context;
+    use rama_core::extensions::ExtensionsRef;
     use rama_core::service::service_fn;
     use std::convert::Infallible;
 
     #[tokio::test]
     async fn test_user_agent_classifier_layer_ua_rama() {
-        async fn handle(ctx: Context, _req: Request) -> Result<Response, Infallible> {
-            let ua: &UserAgent = ctx.get().unwrap();
+        async fn handle(req: Request) -> Result<Response, Infallible> {
+            let ua: &UserAgent = req.extensions().get().unwrap();
 
             assert_eq!(
                 ua.header_str(),
@@ -231,19 +231,15 @@ mod tests {
         )
             .into_layer(service_fn(handle));
 
-        let _ = service
-            .get("http://www.example.com")
-            .send(Context::default())
-            .await
-            .unwrap();
+        let _ = service.get("http://www.example.com").send().await.unwrap();
     }
 
     #[tokio::test]
     async fn test_user_agent_classifier_layer_ua_iphone_app() {
         const UA: &str = "iPhone App/1.0";
 
-        async fn handle(ctx: Context, _req: Request) -> Result<Response, Infallible> {
-            let ua: &UserAgent = ctx.get().unwrap();
+        async fn handle(req: Request) -> Result<Response, Infallible> {
+            let ua: &UserAgent = req.extensions().get().unwrap();
 
             assert_eq!(ua.header_str(), UA);
             assert!(ua.info().is_none());
@@ -259,7 +255,7 @@ mod tests {
         let _ = service
             .get("http://www.example.com")
             .typed_header(headers::UserAgent::from_static(UA))
-            .send(Context::default())
+            .send()
             .await
             .unwrap();
     }
@@ -268,8 +264,8 @@ mod tests {
     async fn test_user_agent_classifier_layer_ua_chrome() {
         const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.2478.67";
 
-        async fn handle(ctx: Context, _req: Request) -> Result<Response, Infallible> {
-            let ua: &UserAgent = ctx.get().unwrap();
+        async fn handle(req: Request) -> Result<Response, Infallible> {
+            let ua: &UserAgent = req.extensions().get().unwrap();
 
             assert_eq!(ua.header_str(), UA);
             let ua_info = ua.info().unwrap();
@@ -285,7 +281,7 @@ mod tests {
         let _ = service
             .get("http://www.example.com")
             .typed_header(headers::UserAgent::from_static(UA))
-            .send(Context::default())
+            .send()
             .await
             .unwrap();
     }
@@ -294,8 +290,8 @@ mod tests {
     async fn test_user_agent_classifier_layer_overwrite_ua() {
         const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.2478.67";
 
-        async fn handle(ctx: Context, _req: Request) -> Result<Response, Infallible> {
-            let ua: &UserAgent = ctx.get().unwrap();
+        async fn handle(req: Request) -> Result<Response, Infallible> {
+            let ua: &UserAgent = req.extensions().get().unwrap();
 
             assert_eq!(ua.header_str(), UA);
             let ua_info = ua.info().unwrap();
@@ -320,7 +316,7 @@ mod tests {
                 })
                 .unwrap(),
             )
-            .send(Context::default())
+            .send()
             .await
             .unwrap();
     }
@@ -329,8 +325,8 @@ mod tests {
     async fn test_user_agent_classifier_layer_overwrite_ua_all() {
         const UA: &str = "iPhone App/1.0";
 
-        async fn handle(ctx: Context, _req: Request) -> Result<Response, Infallible> {
-            let ua: &UserAgent = ctx.get().unwrap();
+        async fn handle(req: Request) -> Result<Response, Infallible> {
+            let ua: &UserAgent = req.extensions().get().unwrap();
 
             assert_eq!(ua.header_str(), UA);
             assert!(ua.info().is_none());
@@ -356,7 +352,7 @@ mod tests {
                 })
                 .unwrap(),
             )
-            .send(Context::default())
+            .send()
             .await
             .unwrap();
     }

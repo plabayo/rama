@@ -3,11 +3,11 @@ use std::time::Instant;
 use super::utils;
 
 use rama::{
-    Context,
     futures::StreamExt,
     http::{
         BodyExtractExt, StatusCode,
-        headers::{ContentType, HeaderMapExt, dep::mime},
+        headers::{ContentType, HeaderMapExt},
+        mime,
         sse::{
             JsonEventData,
             datastar::{DatastarEvent, EventType, PatchElements},
@@ -29,11 +29,7 @@ async fn test_http_sse_datastar_hello() {
     // basic html page and script sanity checks,
     // to at least give some basic guarantees for the human experience
 
-    let index_response = runner
-        .get("http://127.0.0.1:62031")
-        .send(Context::default())
-        .await
-        .unwrap();
+    let index_response = runner.get("http://127.0.0.1:62031").send().await.unwrap();
     assert_eq!(StatusCode::OK, index_response.status());
     assert!(
         index_response
@@ -47,7 +43,7 @@ async fn test_http_sse_datastar_hello() {
 
     let script_rsponse = runner
         .get("http://127.0.0.1:62031/assets/datastar.js")
-        .send(Context::default())
+        .send()
         .await
         .unwrap();
     assert_eq!(StatusCode::OK, script_rsponse.status());
@@ -67,7 +63,7 @@ async fn test_http_sse_datastar_hello() {
 
     let mut hotreload_stream = runner
         .get("http://127.0.0.1:62031/hotreload")
-        .send(Context::default())
+        .send()
         .await
         .unwrap()
         .into_body()
@@ -127,7 +123,7 @@ async fn test_http_sse_datastar_hello() {
 
     let mut stream = runner
         .get("http://127.0.0.1:62031/hello-world")
-        .send(Context::default())
+        .send()
         .await
         .unwrap()
         .into_body()
@@ -139,7 +135,7 @@ async fn test_http_sse_datastar_hello() {
         .json(&json!({
             "delay": 1,
         }))
-        .send(Context::default())
+        .send()
         .await
         .unwrap();
     assert_eq!(StatusCode::OK, response.status());

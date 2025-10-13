@@ -28,10 +28,11 @@
 
 // rama provides everything out of the box to build a complete web service.
 use rama::{
-    Context, Layer, Service,
+    Layer, Service,
     error::{BoxError, OpaqueError},
+    extensions::ExtensionsRef,
     http::{
-        InfiniteReader, StatusCode,
+        InfiniteReader, Request, StatusCode,
         headers::ContentType,
         layer::{required_header::AddRequiredResponseHeadersLayer, trace::TraceLayer},
         server::HttpServer,
@@ -48,9 +49,10 @@ use rama::{
     telemetry::tracing::{self, level_filters::LevelFilter},
 };
 
+use ahash::HashSet;
 /// Everything else we need is provided by the standard library, community crates or tokio.
 use serde::Deserialize;
-use std::{collections::HashSet, net::IpAddr, sync::Arc, time::Duration};
+use std::{net::IpAddr, sync::Arc, time::Duration};
 use tokio::sync::Mutex;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -124,14 +126,20 @@ struct InfiniteResourceParameters {
 
 async fn infinite_resource(
     Query(parameters): Query<InfiniteResourceParameters>,
-    ctx: Context,
+    request: Request,
 ) -> impl IntoResponse {
-    let Some(socket_info) = ctx.get::<SocketInfo>() else {
+    let Some(socket_info) = request.extensions().get::<SocketInfo>() else {
         tracing::error!("failed to fetch IP from SocketInfo; fail request with 500");
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
     let ip_addr = socket_info.peer_addr().ip();
-    let mut block_list = ctx.get::<State>().unwrap().block_list.lock().await;
+    let mut block_list = request
+        .extensions()
+        .get::<State>()
+        .unwrap()
+        .block_list
+        .lock()
+        .await;
     block_list.insert(ip_addr);
     tracing::info!(
         "blocking bad ip: {ip_addr}; serve content (limit: {:?})",
@@ -168,13 +176,20 @@ where
     type Response = S::Response;
     type Error = BoxError;
 
-    async fn serve(&self, ctx: Context, stream: TcpStream) -> Result<Self::Response, Self::Error> {
-        let ip_addr = ctx
+    async fn serve(&self, stream: TcpStream) -> Result<Self::Response, Self::Error> {
+        let ip_addr = stream
+            .extensions()
             .get::<SocketInfo>()
             .ok_or_else(|| OpaqueError::from_display("no socket info found").into_boxed())?
             .peer_addr()
             .ip();
-        let block_list = ctx.get::<State>().unwrap().block_list.lock().await;
+        let block_list = stream
+            .extensions()
+            .get::<State>()
+            .unwrap()
+            .block_list
+            .lock()
+            .await;
         if block_list.contains(&ip_addr) {
             return Err(OpaqueError::from_display(format!(
                 "drop connection for blocked ip: {ip_addr}"
@@ -182,6 +197,6 @@ where
             .into_boxed());
         }
         std::mem::drop(block_list);
-        self.0.serve(ctx, stream).await.map_err(Into::into)
+        self.0.serve(stream).await.map_err(Into::into)
     }
 }

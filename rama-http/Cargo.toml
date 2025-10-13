@@ -24,6 +24,7 @@ compression = ["dep:async-compression", "dep:rawzip", "dep:flate2"]
 tls = ["rama-net/tls"]
 
 [dependencies]
+ahash = { workspace = true }
 async-compression = { workspace = true, features = [
     "tokio",
     "brotli",
@@ -42,8 +43,6 @@ http-range-header = { workspace = true }
 httpdate = { workspace = true }
 iri-string = { workspace = true }
 matchit = { workspace = true }
-mime = { workspace = true }
-mime_guess = { workspace = true }
 opentelemetry-http = { workspace = true, optional = true }
 percent-encoding = { workspace = true }
 pin-project-lite = { workspace = true }
@@ -62,7 +61,6 @@ serde_html_form = { workspace = true }
 serde_json = { workspace = true }
 smol_str = { workspace = true }
 tokio = { workspace = true, features = ["macros", "fs", "io-std"] }
-tokio-util = { workspace = true, features = ["io", "io-util"] }
 uuid = { workspace = true, features = ["v4"] }
 
 [dev-dependencies]

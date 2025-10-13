@@ -1,3 +1,4 @@
+use rama::extensions::{Extensions, ExtensionsMut, ExtensionsRef};
 use rama::http::Request;
 use rama::http::client::HttpConnector;
 use rama::http::client::http_inspector::{HttpVersionAdapter, HttpsAlpnModifier};
@@ -7,7 +8,6 @@ use rama::http::{Body, Response};
 use rama::http::{HeaderName, HeaderValue};
 use rama::net::client::EstablishedClientConnection;
 use rama::net::fingerprint::{Ja3, Ja4, Ja4H};
-use rama::net::stream::Socket;
 use rama::net::tls::ApplicationProtocol;
 use rama::net::tls::client::ServerVerifyMode;
 use rama::net::tls::client::parse_client_hello;
@@ -28,14 +28,13 @@ use rama::ua::profile::{
 };
 use rama::ua::profile::{TlsProfile, UserAgentProfile};
 use rama::ua::{PlatformKind, UserAgentKind};
-use rama::{Context, Layer, Service};
+use rama::{Layer, Service};
 use rama_ua::emulate::SelectedUserAgentProfile;
 use std::convert::Infallible;
 use std::fmt;
-use std::net::Ipv4Addr;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
-use tokio::io::{AsyncRead, AsyncWrite, DuplexStream, duplex};
+use tokio::io::duplex;
 use tokio::task::JoinSet;
 
 #[derive(Debug)]
@@ -259,8 +258,8 @@ async fn test_ua_emulation() {
             description: &'static str,
         }
 
-        async fn server_svc_fn(ctx: Context, req: Request) -> Result<Response, Infallible> {
-            let state = ctx.get::<State>().unwrap();
+        async fn server_svc_fn(req: Request) -> Result<Response, Infallible> {
+            let state = req.extensions().get::<State>().unwrap();
             let expected = state.expected;
             let description = state.description;
 
@@ -273,11 +272,11 @@ async fn test_ua_emulation() {
             // TODO: enable ja3 + ja4 tests
             // once we support more tls extensions
 
-            let ja4 = Ja4::compute(ctx.extensions()).expect(description);
+            let ja4 = Ja4::compute(req.extensions()).expect(description);
             println!("server receives {description}: ja4: {ja4:?}");
             // assert_eq!(ja4.to_string(), expected.ja4, "{}", description);
 
-            let ja3 = format!("{:x}", Ja3::compute(ctx.extensions()).expect(description));
+            let ja3 = format!("{:x}", Ja3::compute(req.extensions()).expect(description));
             println!("server receives {description}: ja3: {ja3:?}");
             // assert_eq!(ja3, expected.ja3, "{}", description);
 
@@ -302,12 +301,14 @@ async fn test_ua_emulation() {
             UserAgentEmulateLayer::new(Arc::new(profile)),
             EmulateTlsProfileLayer::new(),
         )
-            .into_layer(service_fn(async |mut ctx: Context, req: Request| {
+            .into_layer(service_fn(async |mut req: Request| {
                 // We can edit our current builder directly or create a new one if needed
-                let builder = ctx.get_or_insert_default::<TlsConnectorDataBuilder>();
+                let builder = req
+                    .extensions_mut()
+                    .get_or_insert_default::<TlsConnectorDataBuilder>();
                 builder.set_server_verify_mode(ServerVerifyMode::Disable);
 
-                // We dont need to set connector data on TlsConnector as it will get it from ctx
+                // We dont need to set connector data on TlsConnector as it will get it from extensions
                 let connector = HttpConnector::new(TlsConnector::secure(
                     MockConnectorService::new(service_fn(server_svc_fn)),
                 ))
@@ -318,27 +319,25 @@ async fn test_ua_emulation() {
                 ))
                 .with_svc_req_inspector(UserAgentEmulateHttpRequestModifier::default());
 
-                let EstablishedClientConnection { ctx, req, conn } =
-                    connector.serve(ctx, req).await.expect(description);
+                let EstablishedClientConnection { req, conn } =
+                    connector.serve(req).await.expect(description);
 
-                Ok::<_, Infallible>(conn.serve(ctx, req).await.expect(description))
+                Ok::<_, Infallible>(conn.serve(req).await.expect(description))
             }));
 
-        let mut ctx = Context::default();
-        ctx.insert(State {
+        let mut server_extensions = Extensions::new();
+        server_extensions.insert(State {
             expected,
             description,
         });
-        client
-            .serve(
-                ctx,
-                Request::builder()
-                    .uri(test_case.uri)
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .expect(description);
+
+        let req = Request::builder()
+            .uri(test_case.uri)
+            .extension(ServerExtensions(server_extensions))
+            .body(Body::empty())
+            .unwrap();
+
+        client.serve(req).await.expect(description);
     }
 }
 
@@ -360,8 +359,9 @@ async fn test_ua_embedded_profiles_are_all_resulting_in_correct_traffic_flow() {
                 counter: Arc<AtomicUsize>,
             }
 
-            async fn server_svc_fn(ctx: Context, _req: Request) -> Result<Response, Infallible> {
-                ctx.get::<State>()
+            async fn server_svc_fn(req: Request) -> Result<Response, Infallible> {
+                req.extensions()
+                    .get::<State>()
                     .unwrap()
                     .counter
                     .fetch_add(1, std::sync::atomic::Ordering::Release);
@@ -379,7 +379,7 @@ async fn test_ua_embedded_profiles_are_all_resulting_in_correct_traffic_flow() {
                 UserAgentEmulateLayer::new(profile.clone()),
                 EmulateTlsProfileLayer::new().with_builder_overwrites(tls_config),
             )
-                .into_layer(service_fn(async |ctx: Context, req: Request| {
+                .into_layer(service_fn(async |req: Request| {
                     // We dont set base emulator data here since we always use EmulateTlsProfileLayer, but we could
                     // set a base config here in case EmulateTlsProfileLayer would not always set a config.
                     let connector = HttpConnector::new(TlsConnector::secure(
@@ -392,32 +392,29 @@ async fn test_ua_embedded_profiles_are_all_resulting_in_correct_traffic_flow() {
                     ))
                     .with_svc_req_inspector(UserAgentEmulateHttpRequestModifier::default());
 
-                    let profile = ctx.get::<SelectedUserAgentProfile>().unwrap();
+                    let profile = req.extensions().get::<SelectedUserAgentProfile>().unwrap();
                     let expect_msg = format!("selected profile to work: {profile:?}");
 
-                    let EstablishedClientConnection { ctx, req, conn } =
-                        connector.serve(ctx, req).await.expect(&expect_msg);
+                    let EstablishedClientConnection { req, conn } =
+                        connector.serve(req).await.expect(&expect_msg);
 
-                    Ok::<_, Infallible>(conn.serve(ctx, req).await.expect(&expect_msg))
+                    Ok::<_, Infallible>(conn.serve(req).await.expect(&expect_msg))
                 }));
-
-            let mut ctx = Context::default();
-            ctx.insert(State {
-                counter: counter.clone(),
-            });
 
             let expect_msg = format!("profile to work: {profile:?}");
 
-            client
-                .serve(
-                    ctx,
-                    Request::builder()
-                        .uri("https://www.example.com")
-                        .body(Body::empty())
-                        .expect(&expect_msg),
-                )
-                .await
+            let mut server_extensions = Extensions::new();
+            server_extensions.insert(State {
+                counter: counter.clone(),
+            });
+
+            let req = Request::builder()
+                .uri("https://www.example.com")
+                .extension(ServerExtensions(server_extensions))
+                .body(Body::empty())
                 .expect(&expect_msg);
+
+            client.serve(req).await.expect(&expect_msg);
         });
     }
 
@@ -447,6 +444,10 @@ impl<S> MockConnectorService<S> {
     }
 }
 
+#[derive(Clone, Default)]
+/// [`ServerExtensions`] will be transfered from the client extensions to the server side
+struct ServerExtensions(Extensions);
+
 impl<S> Service<Request> for MockConnectorService<S>
 where
     S: Service<Request, Response = Response, Error = Infallible> + Clone,
@@ -454,10 +455,13 @@ where
     type Error = S::Error;
     type Response = EstablishedClientConnection<MockSocket, Request>;
 
-    async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
-        let (client_socket, server_socket) = new_mock_sockets();
+    async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
+        let (client_socket, mut server_socket) = new_mock_sockets();
 
-        let server_ctx = ctx.clone();
+        if let Some(extensions) = req.extensions().get::<ServerExtensions>() {
+            *server_socket.extensions_mut() = extensions.0.clone();
+        }
+
         let svc = self.serve_svc.clone();
 
         tokio::spawn(async move {
@@ -474,73 +478,19 @@ where
             )
             .with_store_client_hello(true)
             .into_layer(HttpServer::auto(Executor::default()).service(svc));
-            server.serve(server_ctx, server_socket).await.unwrap();
+            server.serve(server_socket).await.unwrap();
         });
 
         Ok(EstablishedClientConnection {
-            ctx,
             req,
             conn: client_socket,
         })
     }
 }
 
+use rama::net::test_utils::client::MockSocket;
+
 fn new_mock_sockets() -> (MockSocket, MockSocket) {
     let (client, server) = duplex(1024);
-    (MockSocket { stream: client }, MockSocket { stream: server })
-}
-
-#[derive(Debug)]
-struct MockSocket {
-    stream: DuplexStream,
-}
-
-impl AsyncRead for MockSocket {
-    fn poll_read(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        buf: &mut tokio::io::ReadBuf<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        std::pin::Pin::new(&mut self.stream).poll_read(cx, buf)
-    }
-}
-
-impl AsyncWrite for MockSocket {
-    fn poll_write(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        buf: &[u8],
-    ) -> std::task::Poll<std::io::Result<usize>> {
-        std::pin::Pin::new(&mut self.stream).poll_write(cx, buf)
-    }
-
-    fn poll_flush(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        std::pin::Pin::new(&mut self.stream).poll_flush(cx)
-    }
-
-    fn poll_shutdown(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        std::pin::Pin::new(&mut self.stream).poll_shutdown(cx)
-    }
-}
-
-impl Socket for MockSocket {
-    fn local_addr(&self) -> std::io::Result<std::net::SocketAddr> {
-        Ok(std::net::SocketAddr::V4(std::net::SocketAddrV4::new(
-            Ipv4Addr::new(127, 0, 0, 1),
-            0,
-        )))
-    }
-
-    fn peer_addr(&self) -> std::io::Result<std::net::SocketAddr> {
-        Ok(std::net::SocketAddr::V4(std::net::SocketAddrV4::new(
-            Ipv4Addr::new(127, 0, 0, 1),
-            0,
-        )))
-    }
+    (MockSocket::new(client), MockSocket::new(server))
 }

@@ -53,7 +53,7 @@
 
 // rama provides everything out of the box to build a TLS termination proxy
 use rama::{
-    Context, Layer,
+    Layer,
     error::OpaqueError,
     graceful::Shutdown,
     http::server::HttpServer,
@@ -61,7 +61,7 @@ use rama::{
     http::{Request, Response},
     layer::ConsumeErrLayer,
     net::{
-        address::Host,
+        address::Domain,
         tls::server::{ServerAuth, ServerConfig},
         tls::{
             DataEncoding,
@@ -145,7 +145,7 @@ impl DynamicCertIssuer for DynamicIssuer {
     async fn issue_cert(
         &self,
         client_hello: ClientHello,
-        _server_name: Option<Host>,
+        _server_name: Option<Domain>,
     ) -> Result<ServerAuthData, OpaqueError> {
         match client_hello.ext_server_name() {
             Some(domain) => {
@@ -195,7 +195,7 @@ pub fn second_example_self_signed_auth() -> Result<ServerAuthData, OpaqueError> 
     })
 }
 
-async fn http_service(_ctx: Context, _request: Request) -> Result<Response, Infallible> {
+async fn http_service(_request: Request) -> Result<Response, Infallible> {
     Ok(
         "hello client, you were served by boring tls terminator proxy issuing a dynamic certificate"
             .into_response(),

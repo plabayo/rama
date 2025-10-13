@@ -1,7 +1,9 @@
 use std::{fmt, str::FromStr};
 
-use mime::Mime;
-use rama_http_types::{HeaderName, HeaderValue};
+use rama_http_types::{
+    HeaderName, HeaderValue,
+    mime::{self, Mime},
+};
 
 use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
 
@@ -42,11 +44,24 @@ use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
 pub struct ContentType(Mime);
 
 impl ContentType {
+    /// Create a new [`ContentType`] from any [`Mime`].
+    #[inline]
+    #[must_use]
+    pub fn new(mime: Mime) -> Self {
+        Self(mime)
+    }
+
     /// A constructor to easily create a `Content-Type: application/json` header.
     #[inline]
     #[must_use]
     pub fn json() -> Self {
         Self(mime::APPLICATION_JSON)
+    }
+
+    #[inline]
+    #[must_use]
+    pub fn ndjson() -> Self {
+        Self(Mime::from_str("application/x-ndjson").unwrap())
     }
 
     /// A constructor to easily create a `Content-Type: text/plain` header.
@@ -164,7 +179,7 @@ impl ContentType {
     #[inline]
     #[must_use]
     pub fn jose_json() -> Self {
-        Self(mime::Mime::from_str("application/jose+json").unwrap())
+        Self(Mime::from_str("application/jose+json").unwrap())
     }
 
     /// Reference to the internal [`Mime`].

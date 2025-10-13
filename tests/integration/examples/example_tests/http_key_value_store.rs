@@ -1,7 +1,6 @@
 use super::utils;
 use itertools::Itertools;
 use rama::{
-    Context,
     http::{BodyExtractExt, StatusCode},
     net::user::Bearer,
 };
@@ -21,7 +20,7 @@ async fn test_example_http_form() {
             "key1": "value1",
             "key2": "value2",
         }))
-        .send(Context::default())
+        .send()
         .await
         .unwrap();
     assert_eq!(StatusCode::OK, response.status());
@@ -29,7 +28,7 @@ async fn test_example_http_form() {
     // list all keys
     let keys = runner
         .get("http://127.0.0.1:62006/keys")
-        .send(Context::default())
+        .send()
         .await
         .unwrap()
         .try_into_string()
@@ -45,7 +44,7 @@ async fn test_example_http_form() {
     let response = runner
         .post("http://127.0.0.1:62006/item/key3")
         .body("value3")
-        .send(Context::default())
+        .send()
         .await
         .unwrap();
     assert_eq!(StatusCode::OK, response.status());
@@ -53,7 +52,7 @@ async fn test_example_http_form() {
     // get a single key value pair
     let value = runner
         .get("http://127.0.0.1:62006/item/key3")
-        .send(Context::default())
+        .send()
         .await
         .unwrap()
         .try_into_string()
@@ -64,7 +63,7 @@ async fn test_example_http_form() {
     // check existence for a key
     let response = runner
         .head("http://127.0.0.1:62006/item/key3")
-        .send(Context::default())
+        .send()
         .await
         .unwrap();
     assert_eq!(StatusCode::OK, response.status());
@@ -73,7 +72,7 @@ async fn test_example_http_form() {
     let response = runner
         .delete("http://127.0.0.1:62006/admin/item/key3")
         .auth(Bearer::new_static("secret-token"))
-        .send(Context::default())
+        .send()
         .await
         .unwrap();
     assert_eq!(StatusCode::OK, response.status());
@@ -81,7 +80,7 @@ async fn test_example_http_form() {
     // check existence for that same key again
     let response = runner
         .head("http://127.0.0.1:62006/item/key3")
-        .send(Context::default())
+        .send()
         .await
         .unwrap();
     assert_eq!(StatusCode::NOT_FOUND, response.status());

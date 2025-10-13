@@ -1,113 +1,8 @@
 use super::service_ready::Ready;
 use crate::core::Layer as TowerLayer;
 use crate::core::Service as TowerService;
-use rama_core::error::{BoxError, ErrorContext};
-use std::{
-    fmt,
-    ops::{Deref, DerefMut},
-    pin::Pin,
-    sync::Arc,
-};
-
-#[derive(Clone, Debug)]
-/// Wrapper type that can be used to smuggle a ctx into a request's extensions.
-pub struct ContextWrap(pub rama_core::Context);
-
-/// Trait to be implemented for any request that can "smuggle" [`Context`]s.
-///
-/// - if the `http` feature is enabled it will already be implemented for
-///   [`rama_http_types::Request`];
-/// - for types that do have this capability and you work with tower services
-///   which do not care about the specific type of the request that passes through it,
-///   you can make use of [`RequestStatePair`] using the tower map-request capabilities,
-///   to easily swap between the pair and direct request format.
-///
-/// [`Context`]: rama_core::Context
-pub trait ContextSmuggler {
-    /// inject the context into the smuggler.
-    fn inject_ctx(&mut self, ctx: rama_core::Context);
-
-    /// try to extract the smuggled context out of the smuggle,
-    /// which is only possible once.
-    fn try_extract_ctx(&mut self) -> Option<rama_core::Context>;
-}
-
-#[cfg(feature = "http")]
-mod http {
-    use super::*;
-    use rama_http_types::Request;
-
-    impl<B> ContextSmuggler for Request<B> {
-        fn inject_ctx(&mut self, ctx: rama_core::Context) {
-            let wrap = ContextWrap(ctx);
-            self.extensions_mut().insert(wrap);
-        }
-
-        fn try_extract_ctx(&mut self) -> Option<rama_core::Context> {
-            let wrap: ContextWrap = self.extensions_mut().remove()?;
-            Some(wrap.0)
-        }
-    }
-}
-
-/// Simple implementation of a [`ContextSmuggler`].
-pub struct RequestStatePair<R> {
-    /// the inner reuqest
-    pub request: R,
-    /// the storage to "smuggle" the ctx"
-    pub ctx: Option<rama_core::Context>,
-}
-
-impl<R: fmt::Debug> fmt::Debug for RequestStatePair<R> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("RequestStatePair")
-            .field("request", &self.request)
-            .field("ctx", &self.ctx)
-            .finish()
-    }
-}
-
-impl<R: Clone> Clone for RequestStatePair<R> {
-    fn clone(&self) -> Self {
-        Self {
-            request: self.request.clone(),
-            ctx: self.ctx.clone(),
-        }
-    }
-}
-
-impl<R> RequestStatePair<R> {
-    pub const fn new(req: R) -> Self {
-        Self {
-            request: req,
-            ctx: None,
-        }
-    }
-}
-
-impl<R> Deref for RequestStatePair<R> {
-    type Target = R;
-
-    fn deref(&self) -> &Self::Target {
-        &self.request
-    }
-}
-
-impl<R> DerefMut for RequestStatePair<R> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.request
-    }
-}
-
-impl<R> ContextSmuggler for RequestStatePair<R> {
-    fn inject_ctx(&mut self, ctx: rama_core::Context) {
-        self.ctx = Some(ctx);
-    }
-
-    fn try_extract_ctx(&mut self) -> Option<rama_core::Context> {
-        self.ctx.take()
-    }
-}
+use rama_core::error::BoxError;
+use std::{fmt, pin::Pin, sync::Arc};
 
 /// Adapter to use a [`tower::Layer`]-[`tower::Service`] as a [`rama::Layer`]-[`rama::Service`].
 ///
@@ -221,7 +116,7 @@ where
 impl<T, Request> TowerService<Request> for TowerAdapterService<T>
 where
     T: rama_core::Service<Request, Error: Into<BoxError>>,
-    Request: ContextSmuggler + Send + 'static,
+    Request: Send + 'static,
 {
     type Response = T::Response;
     type Error = BoxError;
@@ -235,14 +130,9 @@ where
         std::task::Poll::Ready(Ok(()))
     }
 
-    fn call(&mut self, mut req: Request) -> Self::Future {
+    fn call(&mut self, req: Request) -> Self::Future {
         let svc = self.inner.clone();
-        Box::pin(async move {
-            let ctx: rama_core::Context = req
-                .try_extract_ctx()
-                .context("extract context from req smuggler")?;
-            svc.serve(ctx, req).await.map_err(Into::into)
-        })
+        Box::pin(async move { svc.serve(req).await.map_err(Into::into) })
     }
 }
 
@@ -253,17 +143,15 @@ where
         + Send
         + Sync
         + 'static,
-    Request: ContextSmuggler + Send + 'static,
+    Request: Send + 'static,
 {
     type Response = T::Response;
     type Error = T::Error;
 
     fn serve(
         &self,
-        ctx: rama_core::Context,
-        mut req: Request,
+        req: Request,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
-        req.inject_ctx(ctx);
         let svc = self.0.clone();
         async move {
             let mut svc = svc;

@@ -6,7 +6,7 @@
 
 use super::{Policy, PolicyResult, RetryBody};
 use crate::{Request, Response};
-use rama_core::Context;
+use rama_core::extensions::ExtensionsRef;
 use rama_core::telemetry::tracing;
 use rama_utils::backoff::Backoff;
 
@@ -16,7 +16,7 @@ use rama_utils::backoff::Backoff;
 ///
 /// This requires the [`ManagedPolicy`] to be used.
 ///
-/// [`Extensions`]: rama_core::context::Extensions
+/// [`Extensions`]: rama_core::extensions::Extensions
 #[non_exhaustive]
 pub struct DoNotRetry;
 
@@ -36,39 +36,34 @@ impl<B, C, R, Response, Error> Policy<Response, Error> for ManagedPolicy<B, C, R
 where
     B: Backoff,
     C: CloneInput,
-    R: RetryRule<Response, Error>,
+    R: RetryRule<Request<RetryBody>, Response, Error>,
     Response: Send + 'static,
     Error: Send + 'static,
 {
     async fn retry(
         &self,
-        ctx: Context,
         req: Request<RetryBody>,
         result: Result<Response, Error>,
     ) -> PolicyResult<Response, Error> {
-        if ctx.get::<DoNotRetry>().is_some() {
+        if req.extensions().get::<DoNotRetry>().is_some() {
             // Custom extension to signal that the request should not be retried.
             return PolicyResult::Abort(result);
         }
 
-        let (ctx, result, retry) = self.retry.retry(ctx, result).await;
+        let (req, result, retry) = self.retry.retry(req, result).await;
         if retry && self.backoff.next_backoff().await {
-            PolicyResult::Retry { ctx, req }
+            PolicyResult::Retry { req }
         } else {
             self.backoff.reset().await;
             PolicyResult::Abort(result)
         }
     }
 
-    fn clone_input(
-        &self,
-        ctx: &Context,
-        req: &Request<RetryBody>,
-    ) -> Option<(Context, Request<RetryBody>)> {
-        if ctx.get::<DoNotRetry>().is_some() {
+    fn clone_input(&self, req: &Request<RetryBody>) -> Option<Request<RetryBody>> {
+        if req.extensions().get::<DoNotRetry>().is_some() {
             None
         } else {
-            self.clone.clone_input(ctx, req)
+            self.clone.clone_input(req)
         }
     }
 }
@@ -161,25 +156,28 @@ impl<B, C> ManagedPolicy<B, C, Undefined> {
 
 /// A trait that is used to umbrella-cover all possible
 /// implementation kinds for the retry rule functionality.
-pub trait RetryRule<R, E>: private::Sealed<(R, E)> + Send + Sync + 'static {
+pub trait RetryRule<Request, R, E>:
+    private::Sealed<(Request, R, E)> + Send + Sync + 'static
+{
     /// Check if the given result should be retried.
     fn retry(
         &self,
-        ctx: Context,
+        request: Request,
         result: Result<R, E>,
-    ) -> impl Future<Output = (Context, Result<R, E>, bool)> + Send + '_;
+    ) -> impl Future<Output = (Request, Result<R, E>, bool)> + Send + '_;
 }
 
-impl<Body, E> RetryRule<Response<Body>, E> for Undefined
+impl<Request, Body, E> RetryRule<Request, Response<Body>, E> for Undefined
 where
     E: std::fmt::Debug + Send + Sync + 'static,
     Body: Send + 'static,
+    Request: ExtensionsRef + Send + 'static,
 {
     async fn retry(
         &self,
-        ctx: Context,
+        request: Request,
         result: Result<Response<Body>, E>,
-    ) -> (Context, Result<Response<Body>, E>, bool) {
+    ) -> (Request, Result<Response<Body>, E>, bool) {
         match &result {
             Ok(response) => {
                 let status = response.status();
@@ -188,28 +186,29 @@ where
                         "retrying server error http status code: {status} ({})",
                         status.as_u16()
                     );
-                    (ctx, result, true)
+                    (request, result, true)
                 } else {
-                    (ctx, result, false)
+                    (request, result, false)
                 }
             }
             Err(error) => {
                 tracing::debug!("retrying error: {:?}", error);
-                (ctx, result, true)
+                (request, result, true)
             }
         }
     }
 }
 
-impl<F, Fut, R, E> RetryRule<R, E> for F
+impl<F, Fut, Request, R, E> RetryRule<Request, R, E> for F
 where
-    F: Fn(Context, Result<R, E>) -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = (Context, Result<R, E>, bool)> + Send + 'static,
+    F: Fn(Request, Result<R, E>) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = (Request, Result<R, E>, bool)> + Send + 'static,
+    Request: Send + 'static,
     R: Send + 'static,
     E: Send + Sync + 'static,
 {
-    async fn retry(&self, ctx: Context, result: Result<R, E>) -> (Context, Result<R, E>, bool) {
-        self(ctx, result).await
+    async fn retry(&self, request: Request, result: Result<R, E>) -> (Request, Result<R, E>, bool) {
+        self(request, result).await
     }
 }
 
@@ -221,36 +220,21 @@ pub trait CloneInput: private::Sealed<()> + Send + Sync + 'static {
     /// See [`Policy::clone_input`] for more details.
     ///
     /// [`Policy::clone_input`]: super::Policy::clone_input
-    fn clone_input(
-        &self,
-        ctx: &Context,
-        req: &Request<RetryBody>,
-    ) -> Option<(Context, Request<RetryBody>)>;
+    fn clone_input(&self, req: &Request<RetryBody>) -> Option<Request<RetryBody>>;
 }
 
 impl CloneInput for Undefined {
-    fn clone_input(
-        &self,
-        ctx: &Context,
-        req: &Request<RetryBody>,
-    ) -> Option<(Context, Request<RetryBody>)> {
-        Some((ctx.clone(), req.clone()))
+    fn clone_input(&self, req: &Request<RetryBody>) -> Option<Request<RetryBody>> {
+        Some(req.clone())
     }
 }
 
 impl<F> CloneInput for F
 where
-    F: Fn(&Context, &Request<RetryBody>) -> Option<(Context, Request<RetryBody>)>
-        + Send
-        + Sync
-        + 'static,
+    F: Fn(&Request<RetryBody>) -> Option<Request<RetryBody>> + Send + Sync + 'static,
 {
-    fn clone_input(
-        &self,
-        ctx: &Context,
-        req: &Request<RetryBody>,
-    ) -> Option<(Context, Request<RetryBody>)> {
-        self(ctx, req)
+    fn clone_input(&self, req: &Request<RetryBody>) -> Option<Request<RetryBody>> {
+        self(req)
     }
 }
 
@@ -282,16 +266,13 @@ mod private {
 
     impl<S> Sealed<S> for Undefined {}
     impl<F> Sealed<()> for F where
-        F: Fn(&Context, &Request<RetryBody>) -> Option<(Context, Request<RetryBody>)>
-            + Send
-            + Sync
-            + 'static
+        F: Fn(&Request<RetryBody>) -> Option<Request<RetryBody>> + Send + Sync + 'static
     {
     }
-    impl<F, Fut, R, E> Sealed<(R, E)> for F
+    impl<F, Fut, Request, R, E> Sealed<(Request, R, E)> for F
     where
-        F: Fn(Context, Result<R, E>) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = (Context, Result<R, E>, bool)> + Send + 'static,
+        F: Fn(Request, Result<R, E>) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = (Request, Result<R, E>, bool)> + Send + 'static,
     {
     }
 }
@@ -300,44 +281,35 @@ mod private {
 mod tests {
     use super::*;
     use crate::{StatusCode, service::web::response::IntoResponse};
+    use rama_core::extensions::ExtensionsMut;
     use rama_utils::{backoff::ExponentialBackoff, rng::HasherRng};
     use std::time::Duration;
 
-    fn assert_clone_input_none(
-        ctx: &Context,
-        req: &Request<RetryBody>,
-        policy: &impl Policy<Response, ()>,
-    ) {
-        assert!(policy.clone_input(ctx, req).is_none());
+    fn assert_clone_input_none(req: &Request<RetryBody>, policy: &impl Policy<Response, ()>) {
+        assert!(policy.clone_input(req).is_none());
     }
 
-    fn assert_clone_input_some(
-        ctx: &Context,
-        req: &Request<RetryBody>,
-        policy: &impl Policy<Response, ()>,
-    ) {
-        assert!(policy.clone_input(ctx, req).is_some());
+    fn assert_clone_input_some(req: &Request<RetryBody>, policy: &impl Policy<Response, ()>) {
+        assert!(policy.clone_input(req).is_some());
     }
 
     async fn assert_retry(
-        ctx: Context,
         req: Request<RetryBody>,
         result: Result<Response, ()>,
         policy: &impl Policy<Response, ()>,
     ) {
-        match policy.retry(ctx, req, result).await {
+        match policy.retry(req, result).await {
             PolicyResult::Retry { .. } => (),
             PolicyResult::Abort(_) => panic!("expected retry"),
         };
     }
 
     async fn assert_abort(
-        ctx: Context,
         req: Request<RetryBody>,
         result: Result<Response, ()>,
         policy: &impl Policy<Response, ()>,
     ) {
-        match policy.retry(ctx, req, result).await {
+        match policy.retry(req, result).await {
             PolicyResult::Retry { .. } => panic!("expected abort"),
             PolicyResult::Abort(_) => (),
         };
@@ -353,20 +325,13 @@ mod tests {
 
         let policy = ManagedPolicy::default();
 
-        assert_clone_input_some(&Context::default(), &request, &policy);
+        assert_clone_input_some(&request, &policy);
 
         // do not retry HTTP Ok
-        assert_abort(
-            Context::default(),
-            request.clone(),
-            Ok(StatusCode::OK.into_response()),
-            &policy,
-        )
-        .await;
+        assert_abort(request.clone(), Ok(StatusCode::OK.into_response()), &policy).await;
 
         // do retry HTTP InternalServerError
         assert_retry(
-            Context::default(),
             request.clone(),
             Ok(StatusCode::INTERNAL_SERVER_ERROR.into_response()),
             &policy,
@@ -374,12 +339,12 @@ mod tests {
         .await;
 
         // also retry any error case
-        assert_retry(Context::default(), request, Err(()), &policy).await;
+        assert_retry(request, Err(()), &policy).await;
     }
 
     #[tokio::test]
     async fn managed_policy_default_do_not_retry() {
-        let req = Request::builder()
+        let mut req = Request::builder()
             .method("GET")
             .uri("http://example.com")
             .body(RetryBody::empty())
@@ -387,23 +352,15 @@ mod tests {
 
         let policy = ManagedPolicy::default();
 
-        let mut ctx = Context::default();
-        ctx.insert(DoNotRetry);
+        req.extensions_mut().insert(DoNotRetry);
 
-        assert_clone_input_none(&ctx, &req, &policy);
+        assert_clone_input_none(&req, &policy);
 
         // do not retry HTTP Ok (.... Of course)
-        assert_abort(
-            ctx.clone(),
-            req.clone(),
-            Ok(StatusCode::OK.into_response()),
-            &policy,
-        )
-        .await;
+        assert_abort(req.clone(), Ok(StatusCode::OK.into_response()), &policy).await;
 
         // do not retry HTTP InternalServerError
         assert_abort(
-            ctx.clone(),
             req.clone(),
             Ok(StatusCode::INTERNAL_SERVER_ERROR.into_response()),
             &policy,
@@ -411,7 +368,7 @@ mod tests {
         .await;
 
         // also do not retry any error case
-        assert_abort(ctx, req, Err(()), &policy).await;
+        assert_abort(req, Err(()), &policy).await;
     }
 
     #[tokio::test]
@@ -422,22 +379,16 @@ mod tests {
             .body(RetryBody::empty())
             .unwrap();
 
-        fn clone_fn(_: &Context, _: &Request<RetryBody>) -> Option<(Context, Request<RetryBody>)> {
+        fn clone_fn(_: &Request<RetryBody>) -> Option<Request<RetryBody>> {
             None
         }
 
         let policy = ManagedPolicy::default().with_clone(clone_fn);
 
-        assert_clone_input_none(&Context::default(), &req, &policy);
+        assert_clone_input_none(&req, &policy);
 
         // retry should still be the default
-        assert_abort(
-            Context::default(),
-            req,
-            Ok(StatusCode::OK.into_response()),
-            &policy,
-        )
-        .await;
+        assert_abort(req, Ok(StatusCode::OK.into_response()), &policy).await;
     }
 
     #[tokio::test]
@@ -448,37 +399,30 @@ mod tests {
             .body(RetryBody::empty())
             .unwrap();
 
-        async fn retry_fn<R, E>(
-            ctx: Context,
+        async fn retry_fn<Body, R, E>(
+            request: Request<Body>,
             result: Result<R, E>,
-        ) -> (Context, Result<R, E>, bool) {
+        ) -> (Request<Body>, Result<R, E>, bool) {
             match result {
-                Ok(_) => (ctx, result, false),
-                Err(_) => (ctx, result, true),
+                Ok(_) => (request, result, false),
+                Err(_) => (request, result, true),
             }
         }
 
         let policy = ManagedPolicy::new(retry_fn);
 
         // default clone should be used
-        assert_clone_input_some(&Context::default(), &req, &policy);
+        assert_clone_input_some(&req, &policy);
 
         // retry should be the custom one
+        assert_abort(req.clone(), Ok(StatusCode::OK.into_response()), &policy).await;
         assert_abort(
-            Context::default(),
-            req.clone(),
-            Ok(StatusCode::OK.into_response()),
-            &policy,
-        )
-        .await;
-        assert_abort(
-            Context::default(),
             req.clone(),
             Ok(StatusCode::INTERNAL_SERVER_ERROR.into_response()),
             &policy,
         )
         .await;
-        assert_retry(Context::default(), req, Err(()), &policy).await;
+        assert_retry(req, Err(()), &policy).await;
     }
 
     #[tokio::test]
@@ -489,17 +433,17 @@ mod tests {
             .body(RetryBody::empty())
             .unwrap();
 
-        fn clone_fn(_: &Context, _: &Request<RetryBody>) -> Option<(Context, Request<RetryBody>)> {
+        fn clone_fn(_: &Request<RetryBody>) -> Option<Request<RetryBody>> {
             None
         }
 
-        async fn retry_fn<R, E>(
-            ctx: Context,
+        async fn retry_fn<Body, R, E>(
+            req: Request<Body>,
             result: Result<R, E>,
-        ) -> (Context, Result<R, E>, bool) {
+        ) -> (Request<Body>, Result<R, E>, bool) {
             match result {
-                Ok(_) => (ctx, result, false),
-                Err(_) => (ctx, result, true),
+                Ok(_) => (req, result, false),
+                Err(_) => (req, result, true),
             }
         }
 
@@ -516,23 +460,16 @@ mod tests {
             .with_clone(clone_fn)
             .with_retry(retry_fn);
 
-        assert_clone_input_none(&Context::default(), &req, &policy);
+        assert_clone_input_none(&req, &policy);
 
         // retry should be the custom one
+        assert_abort(req.clone(), Ok(StatusCode::OK.into_response()), &policy).await;
         assert_abort(
-            Context::default(),
-            req.clone(),
-            Ok(StatusCode::OK.into_response()),
-            &policy,
-        )
-        .await;
-        assert_abort(
-            Context::default(),
             req.clone(),
             Ok(StatusCode::INTERNAL_SERVER_ERROR.into_response()),
             &policy,
         )
         .await;
-        assert_retry(Context::default(), req, Err(()), &policy).await;
+        assert_retry(req, Err(()), &policy).await;
     }
 }

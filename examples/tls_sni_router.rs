@@ -43,18 +43,18 @@
 
 // rama provides everything out of the box to build a TLS termination proxy
 use rama::{
-    Context, Layer, Service,
+    Layer, Service,
     error::OpaqueError,
+    extensions::ExtensionsMut,
     graceful::{Shutdown, ShutdownGuard},
-    http::layer::trace::TraceLayer,
-    http::{server::HttpServer, service::web::Router},
+    http::{layer::trace::TraceLayer, server::HttpServer, service::web::Router},
     net::{
         address::{Domain, SocketAddress},
-        stream::Stream,
         tls::server::{SelfSignedData, ServerAuth, ServerConfig, SniRequest, SniRouter},
     },
     rt::Executor,
     service::service_fn,
+    stream::Stream,
     tcp::{client::service::Forwarder, server::TcpListener},
     telemetry::tracing::{self, Instrument, level_filters::LevelFilter},
     tls::boring::server::{TlsAcceptorData, TlsAcceptorLayer},
@@ -112,12 +112,9 @@ const INTERFACE_BAR: SocketAddress = SocketAddress::local_ipv4(63805);
 const NAME_BAZ: &str = "baz";
 const INTERFACE_BAZ: SocketAddress = SocketAddress::local_ipv4(63806);
 
-async fn sni_router<S>(
-    ctx: Context,
-    SniRequest { stream, sni }: SniRequest<S>,
-) -> Result<(), OpaqueError>
+async fn sni_router<S>(SniRequest { stream, sni }: SniRequest<S>) -> Result<(), OpaqueError>
 where
-    S: Stream + Unpin,
+    S: Stream + ExtensionsMut + Unpin,
 {
     // NOTE: for production settings you probably want to use a tri-like structure,
     // rama provided or bring your own
@@ -146,7 +143,7 @@ where
     );
 
     Forwarder::new(fwd_interface)
-        .serve(ctx, stream)
+        .serve(stream)
         .await
         .map_err(OpaqueError::from_boxed)
 }

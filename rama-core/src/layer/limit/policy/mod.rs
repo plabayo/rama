@@ -24,10 +24,9 @@
 //! See the [`http_rate_limit.rs`] example for a use case.
 //!
 //! [`Matcher`]: crate::matcher::Matcher
-//! [`Extensions`]: crate::context::Extensions
+//! [`Extensions`]: crate::extensions::Extensions
 //! [`http_listener_hello.rs`]: https://github.com/plabayo/rama/blob/main/examples/http_rate_limit.rs
 
-use crate::Context;
 use crate::error::BoxError;
 use std::{convert::Infallible, fmt, sync::Arc};
 
@@ -39,8 +38,6 @@ mod matcher;
 
 /// The full result of a limit policy.
 pub struct PolicyResult<Request, Guard, Error> {
-    /// The input context
-    pub ctx: Context,
     /// The input request
     pub request: Request,
     /// The output part of the limit policy.
@@ -52,7 +49,6 @@ impl<Request: fmt::Debug, Guard: fmt::Debug, Error: fmt::Debug> std::fmt::Debug
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PolicyResult")
-            .field("ctx", &self.ctx)
             .field("request", &self.request)
             .field("output", &self.output)
             .finish()
@@ -101,7 +97,6 @@ pub trait Policy<Request>: Send + Sync + 'static {
     /// was handled by this limit policy.
     fn check(
         &self,
-        ctx: Context,
         request: Request,
     ) -> impl Future<Output = PolicyResult<Request, Self::Guard, Self::Error>> + Send + '_;
 }
@@ -114,34 +109,26 @@ where
     type Guard = Option<P::Guard>;
     type Error = P::Error;
 
-    async fn check(
-        &self,
-        ctx: Context,
-        request: Request,
-    ) -> PolicyResult<Request, Self::Guard, Self::Error> {
+    async fn check(&self, request: Request) -> PolicyResult<Request, Self::Guard, Self::Error> {
         match self {
             Some(policy) => {
-                let result = policy.check(ctx, request).await;
+                let result = policy.check(request).await;
                 match result.output {
                     PolicyOutput::Ready(guard) => PolicyResult {
-                        ctx: result.ctx,
                         request: result.request,
                         output: PolicyOutput::Ready(Some(guard)),
                     },
                     PolicyOutput::Abort(err) => PolicyResult {
-                        ctx: result.ctx,
                         request: result.request,
                         output: PolicyOutput::Abort(err),
                     },
                     PolicyOutput::Retry => PolicyResult {
-                        ctx: result.ctx,
                         request: result.request,
                         output: PolicyOutput::Retry,
                     },
                 }
             }
             None => PolicyResult {
-                ctx,
                 request,
                 output: PolicyOutput::Ready(None),
             },
@@ -157,12 +144,8 @@ where
     type Guard = P::Guard;
     type Error = P::Error;
 
-    async fn check(
-        &self,
-        ctx: Context,
-        request: Request,
-    ) -> PolicyResult<Request, Self::Guard, Self::Error> {
-        (**self).check(ctx, request).await
+    async fn check(&self, request: Request) -> PolicyResult<Request, Self::Guard, Self::Error> {
+        (**self).check(request).await
     }
 }
 
@@ -174,12 +157,8 @@ where
     type Guard = P::Guard;
     type Error = P::Error;
 
-    async fn check(
-        &self,
-        ctx: Context,
-        request: Request,
-    ) -> PolicyResult<Request, Self::Guard, Self::Error> {
-        self.as_ref().check(ctx, request).await
+    async fn check(&self, request: Request) -> PolicyResult<Request, Self::Guard, Self::Error> {
+        self.as_ref().check(request).await
     }
 }
 
@@ -191,12 +170,8 @@ where
     type Guard = P::Guard;
     type Error = P::Error;
 
-    async fn check(
-        &self,
-        ctx: Context,
-        request: Request,
-    ) -> PolicyResult<Request, Self::Guard, Self::Error> {
-        self.as_ref().check(ctx, request).await
+    async fn check(&self, request: Request) -> PolicyResult<Request, Self::Guard, Self::Error> {
+        self.as_ref().check(request).await
     }
 }
 
@@ -220,13 +195,8 @@ where
     type Guard = ();
     type Error = Infallible;
 
-    async fn check(
-        &self,
-        ctx: Context,
-        request: Request,
-    ) -> PolicyResult<Request, Self::Guard, Self::Error> {
+    async fn check(&self, request: Request) -> PolicyResult<Request, Self::Guard, Self::Error> {
         PolicyResult {
-            ctx,
             request,
             output: PolicyOutput::Ready(()),
         }
@@ -249,26 +219,22 @@ macro_rules! impl_limit_policy_either {
 
             async fn check(
                 &self,
-                ctx: Context,
                 req: Request,
             ) -> PolicyResult<Request, Self::Guard, Self::Error> {
                 match self {
                     $(
                         crate::combinators::$id::$param(policy) => {
-                            let result = policy.check(ctx, req).await;
+                            let result = policy.check(req).await;
                             match result.output {
                                 PolicyOutput::Ready(guard) => PolicyResult {
-                                    ctx: result.ctx,
                                     request: result.request,
                                     output: PolicyOutput::Ready(crate::combinators::$id::$param(guard)),
                                 },
                                 PolicyOutput::Abort(err) => PolicyResult {
-                                    ctx: result.ctx,
                                     request: result.request,
                                     output: PolicyOutput::Abort(err.into()),
                                 },
                                 PolicyOutput::Retry => PolicyResult {
-                                    ctx: result.ctx,
                                     request: result.request,
                                     output: PolicyOutput::Retry,
                                 },

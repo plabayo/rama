@@ -7,7 +7,9 @@ use pin_project_lite::pin_project;
 use rama_core::bytes::Bytes;
 use rama_core::futures::TryStream;
 use rama_core::futures::stream::Stream;
+use rama_core::stream::json;
 use rama_error::{BoxError, OpaqueError};
+use serde::de::DeserializeOwned;
 use sse::{EventDataRead, EventStream};
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -164,6 +166,27 @@ impl Body {
     #[must_use]
     pub fn into_event_stream<T: EventDataRead>(self) -> EventStream<BodyDataStream, T> {
         EventStream::new(self.into_data_stream())
+    }
+
+    /// Convert the body into a [`JsonStream`].
+    ///
+    /// Stream of json objects, each object separated by a newline (`\n`).
+    #[must_use]
+    pub fn into_json_stream<T: DeserializeOwned>(self) -> json::JsonReadStream<T, BodyDataStream> {
+        let stream = self.into_data_stream();
+        json::JsonReadStream::new(stream)
+    }
+
+    /// Convert the body into a [`JsonStream`].
+    ///
+    /// Stream of json objects, each object separated by a newline (`\n`).
+    #[must_use]
+    pub fn into_json_stream_with_config<T: DeserializeOwned>(
+        self,
+        cfg: json::ParseConfig,
+    ) -> json::JsonReadStream<T, BodyDataStream> {
+        let stream = self.into_data_stream();
+        json::JsonReadStream::new_with_config(stream, cfg)
     }
 
     /// Convert the body into a [`Stream`] of [`sse::Event`]s with optional string data.

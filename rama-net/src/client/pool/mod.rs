@@ -2,8 +2,9 @@ use super::conn::{ConnectorService, EstablishedClientConnection};
 use crate::stream::Socket;
 use parking_lot::Mutex;
 use rama_core::error::{BoxError, ErrorContext, OpaqueError};
+use rama_core::extensions::{Extensions, ExtensionsMut, ExtensionsRef};
 use rama_core::telemetry::tracing::trace;
-use rama_core::{Context, Layer, Service};
+use rama_core::{Layer, Service};
 use rama_utils::macros::generate_set_and_with;
 use std::collections::VecDeque;
 use std::fmt::Debug;
@@ -27,7 +28,7 @@ pub mod metrics;
 /// remove one, this results in the storage deciding which mode we use for connection
 /// reuse and dropping (eg FIFO for reuse and LRU for dropping conn when pool is full)
 pub trait Pool<C, ID>: Send + Sync + 'static {
-    type Connection: Send;
+    type Connection: Send + ExtensionsMut;
     type CreatePermit: Send;
 
     /// Get a connection from the pool, if no connection is found a [`Pool::CreatePermit`] is returned
@@ -83,7 +84,7 @@ pub struct NoPool;
 
 impl<C, ID> Pool<C, ID> for NoPool
 where
-    C: Send + 'static,
+    C: Send + ExtensionsMut + 'static,
     ID: Clone + Send + Sync + PartialEq + 'static,
 {
     type Connection = C;
@@ -122,6 +123,26 @@ impl<C, ID> LeasedConnection<C, ID> {
     pub fn mark_as_failed(&self) {
         self.failed
             .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+impl<C: ExtensionsRef, ID> ExtensionsRef for LeasedConnection<C, ID> {
+    fn extensions(&self) -> &Extensions {
+        self.pooled_conn
+            .as_ref()
+            .expect("only None after drop")
+            .conn
+            .extensions()
+    }
+}
+
+impl<C: ExtensionsMut, ID> ExtensionsMut for LeasedConnection<C, ID> {
+    fn extensions_mut(&mut self) -> &mut Extensions {
+        self.pooled_conn
+            .as_mut()
+            .expect("only None after drop")
+            .conn
+            .extensions_mut()
     }
 }
 
@@ -270,7 +291,7 @@ impl<C, ID> LruDropPool<C, ID> {
 
 impl<C, ID> Pool<C, ID> for LruDropPool<C, ID>
 where
-    C: Send + 'static,
+    C: Send + ExtensionsMut + 'static,
     ID: ConnID,
 {
     type Connection = LeasedConnection<C, ID>;
@@ -496,6 +517,7 @@ where
     }
 }
 
+#[warn(clippy::missing_trait_methods)]
 impl<C, ID> AsyncWrite for LeasedConnection<C, ID>
 where
     C: AsyncWrite + Unpin,
@@ -536,6 +558,7 @@ where
     }
 }
 
+#[warn(clippy::missing_trait_methods)]
 impl<C, ID> AsyncRead for LeasedConnection<C, ID>
 where
     C: AsyncRead + Unpin,
@@ -559,8 +582,8 @@ where
     type Response = C::Response;
     type Error = C::Error;
 
-    async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
-        let result = self.as_ref().serve(ctx, req).await;
+    async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
+        let result = self.as_ref().serve(req).await;
         if result.is_err() {
             let id = &self.pooled_conn.as_ref().expect("msg").id;
             trace!(
@@ -616,10 +639,10 @@ impl<C, ID: Debug> Debug for LruDropPool<C, ID> {
 /// are not unique and multiple connections can have the same ID. IDs are used
 /// to filter which connections can be used for a specific Request in a way that
 /// is independent of what a Request is.
-pub trait ReqToConnID<Request>: Sized + Clone + Send + Sync + 'static {
+pub trait ReqToConnID<Request: ExtensionsRef>: Sized + Clone + Send + Sync + 'static {
     type ID: ConnID;
 
-    fn id(&self, ctx: &Context, request: &Request) -> Result<Self::ID, OpaqueError>;
+    fn id(&self, request: &Request) -> Result<Self::ID, OpaqueError>;
 }
 
 /// [`ConnID`] is used to identify a connection in a connection pool. These IDs
@@ -637,13 +660,14 @@ pub trait ConnID: Send + Sync + PartialEq + Clone + Debug + 'static {
 
 impl<Request, ID, F> ReqToConnID<Request> for F
 where
-    F: Fn(&Context, &Request) -> Result<ID, OpaqueError> + Clone + Send + Sync + 'static,
+    F: Fn(&Request) -> Result<ID, OpaqueError> + Clone + Send + Sync + 'static,
     ID: ConnID,
+    Request: ExtensionsRef,
 {
     type ID = ID;
 
-    fn id(&self, ctx: &Context, request: &Request) -> Result<Self::ID, OpaqueError> {
-        self(ctx, request)
+    fn id(&self, request: &Request) -> Result<Self::ID, OpaqueError> {
+        self(request)
     }
 }
 
@@ -678,21 +702,21 @@ impl<S, P, R> PooledConnector<S, P, R> {
 
 impl<Request, S, P, R> Service<Request> for PooledConnector<S, P, R>
 where
-    S: ConnectorService<Request, Connection: Send, Error: Send + 'static>,
-    Request: Send + 'static,
+    S: ConnectorService<Request>,
+    Request: Send + ExtensionsRef + 'static,
     P: Pool<S::Connection, R::ID>,
     R: ReqToConnID<Request>,
 {
     type Response = EstablishedClientConnection<P::Connection, Request>;
     type Error = BoxError;
 
-    async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
-        let conn_id = self.req_to_conn_id.id(&ctx, &req)?;
+    async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
+        let conn_id = self.req_to_conn_id.id(&req)?;
 
         // Try to get connection from pool, if no connection is found, we will have to create a new
         // one using the returned create permit
         let create_permit = {
-            let pool = if let Some(pool) = ctx.get::<P>() {
+            let pool = if let Some(pool) = req.extensions().get::<P>() {
                 trace!("pooled connector: using pool from ctx");
                 pool
             } else {
@@ -716,7 +740,7 @@ where
                     trace!(
                         "pooled connector: got connection (w/ conn id: {conn_id:?}) from pool, returning"
                     );
-                    return Ok(EstablishedClientConnection { ctx, conn: c, req });
+                    return Ok(EstablishedClientConnection { conn: c, req });
                 }
                 ConnectionResult::CreatePermit(permit) => {
                     trace!(
@@ -727,13 +751,13 @@ where
             }
         };
 
-        let EstablishedClientConnection { ctx, req, conn } =
-            self.inner.connect(ctx, req).await.map_err(Into::into)?;
+        let EstablishedClientConnection { req, conn } =
+            self.inner.connect(req).await.map_err(Into::into)?;
 
         trace!("pooled connector: returning new pooled connection (w/ conn id: {conn_id:?}");
-        let pool = ctx.get::<P>().unwrap_or(&self.pool);
+        let pool = req.extensions().get::<P>().unwrap_or(&self.pool);
         let conn = pool.create(conn_id, conn, create_permit).await;
-        Ok(EstablishedClientConnection { ctx, req, conn })
+        Ok(EstablishedClientConnection { req, conn })
     }
 }
 
@@ -782,7 +806,9 @@ impl<S, P: Clone, R: Clone> Layer<S> for PooledConnectorLayer<P, R> {
 mod tests {
     use super::*;
     use crate::client::EstablishedClientConnection;
-    use rama_core::{Context, Service};
+    use rama_core::ServiceInput;
+    use rama_core::extensions::ExtensionsMut;
+    use rama_core::{Service, extensions::Extensions};
     use std::{
         convert::Infallible,
         sync::atomic::{AtomicI16, Ordering},
@@ -801,31 +827,74 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    struct Conn {
+        items: Vec<u32>,
+        extensions: Extensions,
+    }
+
+    impl Conn {
+        fn new() -> Self {
+            Self {
+                items: vec![],
+                extensions: Extensions::new(),
+            }
+        }
+    }
+
+    impl ExtensionsRef for Conn {
+        fn extensions(&self) -> &Extensions {
+            &self.extensions
+        }
+    }
+
+    impl ExtensionsMut for Conn {
+        fn extensions_mut(&mut self) -> &mut Extensions {
+            &mut self.extensions
+        }
+    }
+
+    impl Deref for Conn {
+        type Target = Vec<u32>;
+
+        fn deref(&self) -> &Self::Target {
+            &self.items
+        }
+    }
+
+    impl DerefMut for Conn {
+        fn deref_mut(&mut self) -> &mut Self::Target {
+            &mut self.items
+        }
+    }
+
     impl<Request> Service<Request> for TestService
     where
         Request: Send + 'static,
     {
-        type Response = EstablishedClientConnection<Vec<u32>, Request>;
+        type Response = EstablishedClientConnection<Conn, Request>;
         type Error = Infallible;
 
-        async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
-            let conn = vec![];
+        async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
             self.created_connection.fetch_add(1, Ordering::Relaxed);
-            Ok(EstablishedClientConnection { ctx, req, conn })
+            Ok(EstablishedClientConnection {
+                req,
+                conn: Conn::new(),
+            })
         }
     }
 
     #[derive(Clone)]
-    /// [`StringRequestLengthID`] will map Requests of type String, to usize id representing their
+    /// [`StringRequestLengthID`] will map Requests of type ServiceInput<String>, to usize id representing their
     /// chars length. In practise this will mean that Requests of the same char length will be
     /// able to reuse the same connections
     struct StringRequestLengthID;
 
-    impl ReqToConnID<String> for StringRequestLengthID {
+    impl ReqToConnID<ServiceInput<String>> for StringRequestLengthID {
         type ID = usize;
 
-        fn id(&self, _ctx: &Context, req: &String) -> Result<Self::ID, OpaqueError> {
-            Ok(req.chars().count())
+        fn id(&self, req: &ServiceInput<String>) -> Result<Self::ID, OpaqueError> {
+            Ok(req.request.chars().count())
         }
     }
 
@@ -840,15 +909,12 @@ mod tests {
         let svc = PooledConnector::new(
             TestService::default(),
             pool,
-            |_ctx: &Context, _req: &String| Ok(()),
+            |__req: &ServiceInput<String>| Ok(()),
         );
 
         let iterations = 10;
         for _i in 0..iterations {
-            let _conn = svc
-                .connect(Context::default(), String::new())
-                .await
-                .unwrap();
+            let _conn = svc.connect(ServiceInput::new(String::new())).await.unwrap();
         }
 
         let created_connection = svc.inner.created_connection.load(Ordering::Relaxed);
@@ -862,52 +928,52 @@ mod tests {
 
         {
             let mut conn = svc
-                .connect(Context::default(), String::from("a"))
+                .connect(ServiceInput::new(String::from("a")))
                 .await
                 .unwrap()
                 .conn;
 
             conn.push(1);
-            assert_eq!(conn.as_ref(), &vec![1]);
+            assert_eq!(conn.as_ref().deref(), &vec![1]);
             assert_eq!(svc.inner.created_connection.load(Ordering::Relaxed), 1);
         }
 
         // Should reuse the same connections
         {
             let mut conn = svc
-                .connect(Context::default(), String::from("B"))
+                .connect(ServiceInput::new(String::from("B")))
                 .await
                 .unwrap()
                 .conn;
 
             conn.push(2);
-            assert_eq!(conn.as_ref(), &vec![1, 2]);
+            assert_eq!(conn.as_ref().deref(), &vec![1, 2]);
             assert_eq!(svc.inner.created_connection.load(Ordering::Relaxed), 1);
         }
 
         // Should make a new one
         {
             let mut conn = svc
-                .connect(Context::default(), String::from("aa"))
+                .connect(ServiceInput::new(String::from("aa")))
                 .await
                 .unwrap()
                 .conn;
 
             conn.push(3);
-            assert_eq!(conn.as_ref(), &vec![3]);
+            assert_eq!(conn.as_ref().deref(), &vec![3]);
             assert_eq!(svc.inner.created_connection.load(Ordering::Relaxed), 2);
         }
 
         // Should reuse
         {
             let mut conn = svc
-                .connect(Context::default(), String::from("bb"))
+                .connect(ServiceInput::new(String::from("bb")))
                 .await
                 .unwrap()
                 .conn;
 
             conn.push(4);
-            assert_eq!(conn.as_ref(), &vec![3, 4]);
+            assert_eq!(conn.as_ref().deref(), &vec![3, 4]);
             assert_eq!(svc.inner.created_connection.load(Ordering::Relaxed), 2);
         }
     }
@@ -919,16 +985,16 @@ mod tests {
             .with_wait_for_pool_timeout(Duration::from_millis(50));
 
         let conn1 = svc
-            .connect(Context::default(), String::from("a"))
+            .connect(ServiceInput::new(String::from("a")))
             .await
             .unwrap();
 
-        let conn2 = svc.connect(Context::default(), String::from("a")).await;
+        let conn2 = svc.connect(ServiceInput::new(String::from("a"))).await;
         assert_err!(conn2);
 
         drop(conn1);
         let _conn3 = svc
-            .connect(Context::default(), String::from("aaa"))
+            .connect(ServiceInput::new(String::from("aaa")))
             .await
             .unwrap();
     }
@@ -945,27 +1011,36 @@ mod tests {
         type Response = EstablishedClientConnection<InnerService, Request>;
         type Error = Infallible;
 
-        async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
+        async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
             let conn = InnerService::default();
             self.created_connection.fetch_add(1, Ordering::Relaxed);
-            Ok(EstablishedClientConnection { ctx, req, conn })
+            Ok(EstablishedClientConnection { req, conn })
         }
     }
 
     #[derive(Default, Debug)]
     struct InnerService {
         should_error: AtomicBool,
+        extensions: Extensions,
+    }
+
+    impl ExtensionsRef for InnerService {
+        fn extensions(&self) -> &Extensions {
+            &self.extensions
+        }
+    }
+
+    impl ExtensionsMut for InnerService {
+        fn extensions_mut(&mut self) -> &mut Extensions {
+            &mut self.extensions
+        }
     }
 
     impl Service<bool> for InnerService {
         type Response = ();
         type Error = OpaqueError;
 
-        async fn serve(
-            &self,
-            _ctx: Context,
-            should_error: bool,
-        ) -> Result<Self::Response, Self::Error> {
+        async fn serve(&self, should_error: bool) -> Result<Self::Response, Self::Error> {
             // Once this service is broken it will stay in this state, similar to a closed tcp connection
             if should_error {
                 self.should_error.store(true, Ordering::Relaxed);
@@ -985,35 +1060,35 @@ mod tests {
         let svc = PooledConnector::new(TestConnector::default(), pool, StringRequestLengthID {});
 
         let conn = svc
-            .connect(Context::default(), String::from(""))
+            .connect(ServiceInput::new(String::from("")))
             .await
             .unwrap();
 
-        let result = conn.conn.serve(Context::default(), false).await;
+        let result = conn.conn.serve(false).await;
         assert_ok!(result);
-        let result = conn.conn.serve(Context::default(), true).await;
+        let result = conn.conn.serve(true).await;
         assert_err!(result);
 
         // this dropped connection should not return to the pool, otherwise it will be permanently broken
         drop(conn);
 
         let conn = svc
-            .connect(Context::default(), String::from(""))
+            .connect(ServiceInput::new(String::from("")))
             .await
             .unwrap();
 
-        let result = conn.conn.serve(Context::default(), false).await;
+        let result = conn.conn.serve(false).await;
         assert_ok!(result);
 
         // this connection is not broken so it should return to the pool
         drop(conn);
 
         let conn = svc
-            .connect(Context::default(), String::from(""))
+            .connect(ServiceInput::new(String::from("")))
             .await
             .unwrap();
 
-        let result = conn.conn.serve(Context::default(), false).await;
+        let result = conn.conn.serve(false).await;
         assert_ok!(result);
 
         assert_eq!(svc.inner.created_connection.load(Ordering::Relaxed), 2);
@@ -1028,7 +1103,7 @@ mod tests {
         let svc = PooledConnector::new(TestService::default(), pool, StringRequestLengthID {});
 
         let conn = svc
-            .connect(Context::default(), String::from(""))
+            .connect(ServiceInput::new(String::from("")))
             .await
             .unwrap()
             .conn;
@@ -1041,7 +1116,7 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(100)).await;
 
         let conn = svc
-            .connect(Context::default(), String::from(""))
+            .connect(ServiceInput::new(String::from("")))
             .await
             .unwrap()
             .conn;
@@ -1065,12 +1140,12 @@ mod tests {
             .unwrap()
             .with_reuse_strategy(strategy);
 
-        let svc = PooledConnector::new(TestService::default(), pool, |_: &Context, _: &()| Ok(()));
+        let svc = PooledConnector::new(TestService::default(), pool, |_: &ServiceInput<()>| Ok(()));
 
         // Open two concurrent connections and drop them.
         let mut conns = Vec::new();
         for i in 0..2 {
-            let mut conn = svc.connect(Context::default(), ()).await.unwrap().conn;
+            let mut conn = svc.connect(ServiceInput::new(())).await.unwrap().conn;
             conn.pooled_conn.as_mut().unwrap().conn.push(i);
             conns.push(conn);
         }
@@ -1081,7 +1156,7 @@ mod tests {
         // from most to least recently used. ([conn2, conn1]). Requesting
         // another connection should return the first or last one depending on
         // the reuse policy.
-        let conn = svc.connect(Context::default(), ()).await.unwrap().conn;
+        let conn = svc.connect(ServiceInput::new(())).await.unwrap().conn;
 
         assert_eq!(conn.pooled_conn.as_ref().unwrap().conn[0], expected);
     }

@@ -2,10 +2,12 @@
 
 use super::HttpServeResult;
 use super::hyper_conn::HttpCoreConnServer;
+use rama_core::Service;
 use rama_core::error::BoxError;
+use rama_core::extensions::ExtensionsMut;
 use rama_core::graceful::ShutdownGuard;
 use rama_core::rt::Executor;
-use rama_core::{Context, Service};
+use rama_core::stream::Stream;
 use rama_http::service::web::response::IntoResponse;
 use rama_http_core::server::conn::auto::Builder as AutoConnBuilder;
 use rama_http_core::server::conn::auto::Http1Builder as InnerAutoHttp1Builder;
@@ -14,7 +16,6 @@ use rama_http_core::server::conn::http1::Builder as Http1ConnBuilder;
 use rama_http_core::server::conn::http2::Builder as H2ConnBuilder;
 use rama_http_types::Request;
 use rama_net::socket::Interface;
-use rama_net::stream::Stream;
 use rama_tcp::server::TcpListener;
 use std::convert::Infallible;
 use std::fmt;
@@ -151,19 +152,14 @@ where
     }
 
     /// Serve a single IO Byte Stream (e.g. a TCP Stream) as HTTP.
-    pub async fn serve<S, Response, IO>(
-        &self,
-        ctx: Context,
-        stream: IO,
-        service: S,
-    ) -> HttpServeResult
+    pub async fn serve<S, Response, IO>(&self, stream: IO, service: S) -> HttpServeResult
     where
         S: Service<Request, Response = Response, Error = Infallible> + Clone,
         Response: IntoResponse + Send + 'static,
-        IO: Stream,
+        IO: Stream + ExtensionsMut,
     {
         self.builder
-            .http_core_serve_connection(ctx, stream, service)
+            .http_core_serve_connection(stream, service)
             .await
     }
 
@@ -247,18 +243,16 @@ where
     B: HttpCoreConnServer,
     S: Service<Request, Response = Response, Error = Infallible>,
     Response: IntoResponse + Send + 'static,
-    IO: Stream,
+    IO: Stream + ExtensionsMut,
 {
     type Response = ();
     type Error = rama_core::error::BoxError;
 
     fn serve(
         &self,
-        ctx: Context,
         stream: IO,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
         let service = self.service.clone();
-        self.builder
-            .http_core_serve_connection(ctx, stream, service)
+        self.builder.http_core_serve_connection(stream, service)
     }
 }

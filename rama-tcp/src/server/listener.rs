@@ -1,12 +1,13 @@
-use rama_core::Context;
 use rama_core::Service;
 use rama_core::error::BoxError;
 use rama_core::error::ErrorContext;
+use rama_core::extensions::ExtensionsMut;
 use rama_core::graceful::ShutdownGuard;
 use rama_core::rt::Executor;
 use rama_core::telemetry::tracing::{self, Instrument, trace_root_span};
 use rama_net::address::SocketAddress;
 use rama_net::socket::Interface;
+use rama_net::stream::Socket;
 use rama_net::stream::SocketInfo;
 use std::pin::pin;
 use std::sync::Arc;
@@ -257,7 +258,7 @@ impl TcpListener {
     #[inline]
     pub async fn accept(&self) -> std::io::Result<(TcpStream, SocketAddress)> {
         let (stream, addr) = self.inner.accept().await?;
-        Ok((stream, addr.into()))
+        Ok((stream.into(), addr.into()))
     }
 
     /// Serve connections from this listener with the given service.
@@ -268,7 +269,6 @@ impl TcpListener {
     where
         S: Service<TcpStream>,
     {
-        let ctx = Context::new(Executor::new());
         let service = Arc::new(service);
 
         loop {
@@ -280,8 +280,9 @@ impl TcpListener {
                 }
             };
 
+            let mut socket = TcpStream::new(socket);
+
             let service = service.clone();
-            let mut ctx = ctx.clone();
 
             let local_addr = socket.local_addr().ok();
             let trace_local_addr = local_addr
@@ -298,11 +299,13 @@ impl TcpListener {
                 network.protocol.name = "tcp",
             );
 
+            let socket_info = SocketInfo::new(local_addr, peer_addr);
+            socket.extensions_mut().insert(socket_info);
+            socket.extensions_mut().insert(Executor::new());
+
             tokio::spawn(
                 async move {
-                    ctx.insert(SocketInfo::new(local_addr, peer_addr));
-
-                    let _ = service.serve(ctx, socket).await;
+                    let _ = service.serve(socket).await;
                 }
                 .instrument(span),
             );
@@ -318,7 +321,6 @@ impl TcpListener {
     where
         S: Service<TcpStream>,
     {
-        let ctx: Context = Context::new(Executor::graceful(guard.clone()));
         let service = Arc::new(service);
         let mut cancelled_fut = pin!(guard.cancelled());
 
@@ -331,8 +333,8 @@ impl TcpListener {
                 result = self.inner.accept() => {
                     match result {
                         Ok((socket, peer_addr)) => {
+                            let mut socket = TcpStream::new(socket);
                             let service = service.clone();
-                            let mut ctx = ctx.clone();
 
                             let local_addr = socket.local_addr().ok();
                             let trace_local_addr = local_addr
@@ -349,9 +351,11 @@ impl TcpListener {
                                 network.protocol.name = "tcp",
                             );
 
+                            socket.extensions_mut().insert(SocketInfo::new(local_addr, peer_addr));
+                            socket.extensions_mut().insert(Executor::graceful(guard.clone()));
+
                             guard.spawn_task(async move {
-                                ctx.insert(SocketInfo::new(local_addr, peer_addr));
-                                let _ = service.serve(ctx, socket).await;
+                                let _ = service.serve(socket).await;
                             }.instrument(span));
                         }
                         Err(err) => {

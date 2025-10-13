@@ -33,8 +33,9 @@ mod unix_example {
     use rama::{
         bytes::Bytes,
         futures::{FutureExt, SinkExt, StreamExt},
+        stream::codec::BytesCodec,
         telemetry::tracing::{self, level_filters::LevelFilter},
-        unix::{UnixDatagram, UnixDatagramFramed, UnixSocketAddress, codec::BytesCodec},
+        unix::{UnixDatagram, UnixDatagramFramed, UnixSocketAddress},
     };
 
     use std::{

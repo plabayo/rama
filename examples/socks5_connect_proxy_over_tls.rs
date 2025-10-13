@@ -21,7 +21,8 @@
 //! that goes through Tls, with the power of rama. Be empowered, be brave, go forward.
 
 use rama::{
-    Context, Service,
+    Service,
+    extensions::ExtensionsMut,
     http::{
         Body, BodyExtractExt, Request,
         client::{
@@ -35,8 +36,10 @@ use rama::{
         Protocol,
         address::{ProxyAddress, SocketAddress},
         client::{ConnectorService, EstablishedClientConnection},
-        tls::client::ServerVerifyMode,
-        tls::server::{SelfSignedData, ServerAuth, ServerConfig},
+        tls::{
+            client::ServerVerifyMode,
+            server::{SelfSignedData, ServerAuth, ServerConfig},
+        },
         user::{Basic, ProxyCredential},
     },
     proxy::socks5::{Socks5Acceptor, Socks5ProxyConnector},
@@ -83,30 +86,28 @@ async fn main() {
     ))
     .with_jit_req_inspector((HttpsAlpnModifier::default(), HttpVersionAdapter::default()));
 
-    let mut ctx = Context::default();
-    ctx.insert(ProxyAddress {
-        protocol: Some(Protocol::SOCKS5),
-        authority: proxy_socket_addr.into(),
-        credential: Some(ProxyCredential::Basic(Basic::new_static("john", "secret"))),
-    });
-
     let uri = format!("http://{http_socket_addr}/ping");
     tracing::info!(
         url.full = %uri,
         "try to establish proxied connection over SOCKS5 within a TLS Tunnel",
     );
 
-    let request = Request::builder()
+    let mut request = Request::builder()
         .uri(uri.clone())
         .body(Body::empty())
         .expect("build simple GET request");
 
+    request.extensions_mut().insert(ProxyAddress {
+        protocol: Some(Protocol::SOCKS5),
+        authority: proxy_socket_addr.into(),
+        credential: Some(ProxyCredential::Basic(Basic::new_static("john", "secret"))),
+    });
+
     let EstablishedClientConnection {
-        ctx,
         req,
         conn: http_service,
     } = client
-        .connect(ctx, request)
+        .connect(request)
         .await
         .expect("establish a proxied connection ready to make http requests");
 
@@ -116,7 +117,7 @@ async fn main() {
     );
 
     let resp = http_service
-        .serve(ctx, req)
+        .serve(req)
         .await
         .expect("make http request via socks5 proxy within TLS tunnel")
         .try_into_string()

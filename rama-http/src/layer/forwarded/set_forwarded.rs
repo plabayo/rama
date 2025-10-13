@@ -4,7 +4,8 @@ use crate::headers::forwarded::{
     ForwardHeader, Via, XForwardedFor, XForwardedHost, XForwardedProto,
 };
 use rama_core::error::BoxError;
-use rama_core::{Context, Layer, Service};
+use rama_core::extensions::ExtensionsRef;
+use rama_core::{Layer, Service};
 use rama_http_headers::forwarded::Forwarded;
 use rama_net::address::Domain;
 use rama_net::forwarded::{ForwardedElement, NodeId};
@@ -57,7 +58,7 @@ use std::marker::PhantomData;
 /// use rama_http::Request;
 /// use rama_core::service::service_fn;
 /// use rama_http::{headers::forwarded::XRealIp, layer::forwarded::SetForwardedHeaderLayer};
-/// use rama_core::{Context, Service, Layer};
+/// use rama_core::{extensions::ExtensionsMut, Service, Layer};
 /// use std::convert::Infallible;
 ///
 /// # type Body = ();
@@ -65,7 +66,7 @@ use std::marker::PhantomData;
 ///
 /// # #[tokio::main]
 /// # async fn main() {
-/// async fn svc(_ctx: Context, request: Request<Body>) -> Result<(), Infallible> {
+/// async fn svc(request: Request<Body>) -> Result<(), Infallible> {
 ///     // ...
 ///     # assert_eq!(
 ///     #     request.headers().get("X-Real-Ip").unwrap(),
@@ -77,10 +78,9 @@ use std::marker::PhantomData;
 /// let service = SetForwardedHeaderLayer::<XRealIp>::new()
 ///     .into_layer(service_fn(svc));
 ///
-/// # let req = Request::builder().uri("example.com").body(()).unwrap();
-/// # let mut ctx = Context::default();
-/// # ctx.insert(SocketInfo::new(None, "42.37.100.50:62345".parse().unwrap()));
-/// service.serve(ctx, req).await.unwrap();
+/// # let mut req = Request::builder().uri("example.com").body(()).unwrap();
+/// # req.extensions_mut().insert(SocketInfo::new(None, "42.37.100.50:62345".parse().unwrap()));
+/// service.serve(req).await.unwrap();
 /// # }
 /// ```
 pub struct SetForwardedHeaderLayer<T = Forwarded> {
@@ -322,20 +322,19 @@ where
     type Response = S::Response;
     type Error = BoxError;
 
-    async fn serve(
-        &self,
-        mut ctx: Context,
-        mut req: Request<Body>,
-    ) -> Result<Self::Response, Self::Error> {
-        let forwarded: Option<rama_net::forwarded::Forwarded> = ctx.get().cloned();
+    async fn serve(&self, mut req: Request<Body>) -> Result<Self::Response, Self::Error> {
+        let forwarded: Option<rama_net::forwarded::Forwarded> = req.extensions().get().cloned();
 
         let mut forwarded_element = ForwardedElement::forwarded_by(self.by_node.clone());
 
-        if let Some(peer_addr) = ctx.get::<SocketInfo>().map(|socket| *socket.peer_addr()) {
+        if let Some(peer_addr) = req
+            .extensions()
+            .get::<SocketInfo>()
+            .map(|socket| *socket.peer_addr())
+        {
             forwarded_element.set_forwarded_for(peer_addr);
         }
-        let request_ctx: &mut RequestContext =
-            ctx.get_or_try_insert_with_ctx(|ctx| (ctx, &req).try_into())?;
+        let request_ctx = RequestContext::try_from(&req)?;
 
         forwarded_element.set_forwarded_host(request_ctx.authority.clone());
 
@@ -357,7 +356,7 @@ where
             req.headers_mut().typed_insert(header);
         }
 
-        self.inner.serve(ctx, req).await.map_err(Into::into)
+        self.inner.serve(req).await.map_err(Into::into)
     }
 }
 
@@ -369,7 +368,7 @@ mod tests {
         headers::forwarded::{TrueClientIp, XRealIp},
         service::web::response::IntoResponse,
     };
-    use rama_core::{Layer, error::OpaqueError, service::service_fn};
+    use rama_core::{Layer, error::OpaqueError, extensions::ExtensionsMut, service::service_fn};
     use std::{convert::Infallible, net::IpAddr};
 
     fn assert_is_service<T: Service<Request<()>>>(_: T) {}
@@ -414,7 +413,7 @@ mod tests {
 
         let service = SetForwardedHeaderService::forwarded(service_fn(svc));
         let req = Request::builder().uri("example.com").body(()).unwrap();
-        service.serve(Context::default(), req).await.unwrap();
+        service.serve(req).await.unwrap();
     }
 
     #[tokio::test]
@@ -428,16 +427,17 @@ mod tests {
         }
 
         let service = SetForwardedHeaderService::forwarded(service_fn(svc));
-        let req = Request::builder()
+        let mut req = Request::builder()
             .uri("https://www.example.com")
             .body(())
             .unwrap();
-        let mut ctx = Context::default();
-        ctx.insert(rama_net::forwarded::Forwarded::new(
-            ForwardedElement::forwarded_for(IpAddr::from([12, 23, 34, 45])),
-        ));
-        ctx.insert(SocketInfo::new(None, "127.0.0.1:62345".parse().unwrap()));
-        service.serve(ctx, req).await.unwrap();
+        req.extensions_mut()
+            .insert(rama_net::forwarded::Forwarded::new(
+                ForwardedElement::forwarded_for(IpAddr::from([12, 23, 34, 45])),
+            ));
+        req.extensions_mut()
+            .insert(SocketInfo::new(None, "127.0.0.1:62345".parse().unwrap()));
+        service.serve(req).await.unwrap();
     }
 
     #[tokio::test]
@@ -451,16 +451,17 @@ mod tests {
         }
 
         let service = SetForwardedHeaderService::x_forwarded_for(service_fn(svc));
-        let req = Request::builder()
+        let mut req = Request::builder()
             .uri("https://www.example.com")
             .body(())
             .unwrap();
-        let mut ctx = Context::default();
-        ctx.insert(rama_net::forwarded::Forwarded::new(
-            ForwardedElement::forwarded_for(IpAddr::from([12, 23, 34, 45])),
-        ));
-        ctx.insert(SocketInfo::new(None, "127.0.0.1:62345".parse().unwrap()));
-        service.serve(ctx, req).await.unwrap();
+        req.extensions_mut()
+            .insert(rama_net::forwarded::Forwarded::new(
+                ForwardedElement::forwarded_for(IpAddr::from([12, 23, 34, 45])),
+            ));
+        req.extensions_mut()
+            .insert(SocketInfo::new(None, "127.0.0.1:62345".parse().unwrap()));
+        service.serve(req).await.unwrap();
     }
 
     #[tokio::test]
@@ -475,13 +476,13 @@ mod tests {
 
         let service = SetForwardedHeaderService::forwarded(service_fn(svc))
             .forward_by(IpAddr::from([12, 23, 34, 45]));
-        let req = Request::builder()
+        let mut req = Request::builder()
             .uri("https://www.example.com")
             .body(())
             .unwrap();
-        let mut ctx = Context::default();
-        ctx.insert(SocketInfo::new(None, "127.0.0.1:62345".parse().unwrap()));
-        service.serve(ctx, req).await.unwrap();
+        req.extensions_mut()
+            .insert(SocketInfo::new(None, "127.0.0.1:62345".parse().unwrap()));
+        service.serve(req).await.unwrap();
     }
 
     #[tokio::test]
@@ -495,12 +496,12 @@ mod tests {
         }
 
         let service = SetForwardedHeaderService::forwarded(service_fn(svc));
-        let req = Request::builder()
+        let mut req = Request::builder()
             .uri("https://www.example.com")
             .body(())
             .unwrap();
-        let mut ctx = Context::default();
-        ctx.insert(SocketInfo::new(None, "127.0.0.1:62345".parse().unwrap()));
-        service.serve(ctx, req).await.unwrap();
+        req.extensions_mut()
+            .insert(SocketInfo::new(None, "127.0.0.1:62345".parse().unwrap()));
+        service.serve(req).await.unwrap();
     }
 }

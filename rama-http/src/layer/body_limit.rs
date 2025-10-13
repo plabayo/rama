@@ -6,7 +6,7 @@
 //! use rama_http::{Body, Request, Response};
 //! use std::convert::Infallible;
 //! use rama_core::service::service_fn;
-//! use rama_core::{Context, Layer, Service};
+//! use rama_core::{Layer, Service};
 //! use rama_http::layer::body_limit::BodyLimitLayer;
 //!
 //! async fn handle<B>(_: Request<B>) -> Result<Response, Infallible> {
@@ -24,13 +24,13 @@
 //! // Call the service
 //! let request = Request::new(Body::default());
 //!
-//! svc.serve(Context::default(), request).await?;
+//! svc.serve(request).await?;
 //! # Ok(())
 //! # }
 //! ```
 
 use crate::{Body, Request, StreamingBody, body::util::Limited};
-use rama_core::{Context, Layer, Service, bytes::Bytes, error::BoxError};
+use rama_core::{Layer, Service, bytes::Bytes, error::BoxError};
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
 
@@ -87,11 +87,7 @@ where
     type Response = S::Response;
     type Error = S::Error;
 
-    async fn serve(
-        &self,
-        ctx: Context,
-        req: Request<ReqBody>,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
         let req = req.map(|body| {
             if self.size == 0 {
                 Body::new(body)
@@ -99,7 +95,7 @@ where
                 Body::new(Limited::new(body, self.size))
             }
         });
-        self.inner.serve(ctx, req).await
+        self.inner.serve(req).await
     }
 }
 

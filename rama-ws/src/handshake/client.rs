@@ -4,9 +4,10 @@ use std::fmt;
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 
+use rama_core::Service;
 use rama_core::error::{BoxError, ErrorContext, OpaqueError};
+use rama_core::extensions::{Extensions, ExtensionsMut};
 use rama_core::telemetry::tracing;
-use rama_core::{Context, Service};
 use rama_http::conn::TargetHttpVersion;
 use rama_http::headers::sec_websocket_extensions::{Extension, PerMessageDeflateConfig};
 use rama_http::headers::sec_websocket_protocol::AcceptedWebSocketProtocol;
@@ -347,7 +348,7 @@ pub fn validate_http_server_response<Body>(
                                 (None, None | Some(_)) => None,
                                 (Some(srv), maybe_offered) => {
                                     if !(8..=15).contains(&srv) || maybe_offered.map(|offered| srv > offered).unwrap_or_default() {
-                                        tracing::debug!("server offered invaoid client_max_window_bits (pmd)... ext mismatch!");
+                                        tracing::debug!("server offered invalid client_max_window_bits (pmd)... ext mismatch!");
                                         return Some(Err(
                                             ResponseValidateError::ExtensionMismatch(Some(
                                                 Extension::PerMessageDeflate(server_cfg.clone()),
@@ -757,7 +758,7 @@ where
     /// to [`NegotiatedHandshakeRequest`].
     pub async fn initiate_handshake(
         self,
-        mut ctx: Context,
+        mut extensions: Extensions,
     ) -> Result<NegotiatedHandshakeRequest<Body>, HandshakeError> {
         let builder = match self.protocols.as_ref() {
             Some(protocols) => self.inner.builder.overwrite_typed_header(protocols),
@@ -771,23 +772,27 @@ where
 
         let mut key = None;
         let builder = if !self.inner.is_h2 {
-            ctx.insert(TargetHttpVersion(Version::HTTP_11));
+            extensions.insert(TargetHttpVersion(Version::HTTP_11));
 
             let k = self.key.unwrap_or_else(headers::SecWebSocketKey::random);
             let builder = builder.overwrite_typed_header(&k);
             key = Some(k);
             builder
         } else {
-            ctx.insert(TargetHttpVersion(Version::HTTP_2));
+            extensions.insert(TargetHttpVersion(Version::HTTP_2));
 
             builder
         };
 
         // only required in h1, but because of layers such as tls we might anyway turn from h1 into h2
-        let builder = builder.extension(Protocol::from_static("websocket"));
+        let mut builder = builder.extension(Protocol::from_static("websocket"));
+
+        if let Some(ext) = builder.extensions_mut() {
+            ext.extend(extensions);
+        }
 
         let response = builder
-            .send(ctx)
+            .send()
             .await
             .context("send initial websocket handshake request (upgrade)")
             .map_err(HandshakeError::HttpRequestError)?;
@@ -803,8 +808,11 @@ where
 
     /// Establish a client [`WebSocket`], consuming this [`WebSocketRequestBuilder`],
     /// by doing the http-handshake, including validation and returning the socket if all is good.
-    pub async fn handshake(self, ctx: Context) -> Result<ClientWebSocket, HandshakeError> {
-        let handshake = self.initiate_handshake(ctx).await?;
+    pub async fn handshake(
+        self,
+        extensions: Extensions,
+    ) -> Result<ClientWebSocket, HandshakeError> {
+        let handshake = self.initiate_handshake(extensions).await?;
         handshake.complete().await
     }
 }
@@ -897,7 +905,8 @@ impl<Body> NegotiatedHandshakeRequest<Body> {
             None
         };
 
-        let socket = AsyncWebSocket::from_raw_socket(stream, Role::Client, maybe_ws_cfg).await;
+        let mut socket = AsyncWebSocket::from_raw_socket(stream, Role::Client, maybe_ws_cfg).await;
+        *socket.extensions_mut() = parts.extensions.clone();
 
         Ok(ClientWebSocket {
             socket,

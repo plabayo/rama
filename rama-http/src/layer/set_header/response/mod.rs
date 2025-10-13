@@ -12,7 +12,7 @@
 //! use rama_http::layer::set_header::SetResponseHeaderLayer;
 //! use rama_http::{Body, Request, Response, header::{self, HeaderValue}};
 //! use rama_core::service::service_fn;
-//! use rama_core::{Context, Service, Layer};
+//! use rama_core::{Service, Layer};
 //! use rama_core::error::BoxError;
 //!
 //! # #[tokio::main]
@@ -34,7 +34,7 @@
 //!
 //! let request = Request::new(Body::empty());
 //!
-//! let response = svc.serve(Context::default(), request).await?;
+//! let response = svc.serve(request).await?;
 //!
 //! assert_eq!(response.headers()["content-type"], "text/html");
 //! #
@@ -47,7 +47,7 @@
 //! ```
 //! use rama_core::error::BoxError;
 //! use rama_core::service::service_fn;
-//! use rama_core::{Context, Layer, Service};
+//! use rama_core::{Layer, Service};
 //! use rama_http::StreamingBody as _;
 //! use rama_http::layer::set_header::SetResponseHeaderLayer;
 //! use rama_http::{
@@ -87,7 +87,7 @@
 //!
 //!     let request = Request::new(Body::empty());
 //!
-//!     let response = svc.serve(Context::default(), request).await?;
+//!     let response = svc.serve(request).await?;
 //!
 //!     assert_eq!(response.headers()["content-length"], "10");
 //!
@@ -98,7 +98,7 @@
 //! Setting a header based on the incoming Context and response combined.
 //!
 //! ```
-//! use rama_core::{service::service_fn, Context, Service};
+//! use rama_core::{extensions::{ExtensionsRef, ExtensionsMut}, service::service_fn, Service};
 //! use rama_http::{
 //!     layer::set_header::{response::BoxMakeHeaderValueFn, SetResponseHeader},
 //!     Body, HeaderName, HeaderValue, Request, Response,
@@ -121,8 +121,8 @@
 //!             Ok::<_, Infallible>(res)
 //!         }),
 //!         HeaderName::from_static("x-used-request-id"),
-//!         async |ctx: Context| {
-//!             let factory = ctx.get::<RequestID>().cloned().map(|id| {
+//!         async |req: Request| {
+//!             let factory = req.extensions().get::<RequestID>().cloned().map(|id| {
 //!                 BoxMakeHeaderValueFn::new(async move |res: Response| {
 //!                     let header_value = res.extensions().get::<Success>().map(|_| {
 //!                         HeaderValue::from_str(id.0.as_str()).unwrap()
@@ -130,16 +130,16 @@
 //!                     (res, header_value)
 //!                 })
 //!             });
-//!             (ctx, factory)
+//!             (req, factory)
 //!         },
 //!     );
 //!
 //!     const FAKE_USER_ID: &str = "abc123";
 //!
-//!     let mut ctx = Context::default();
-//!     ctx.insert(RequestID(FAKE_USER_ID.to_owned()));
+//!     let mut req = Request::new(Body::empty());
+//!     req.extensions_mut().insert(RequestID(FAKE_USER_ID.to_owned()));
 //!
-//!     let res = svc.serve(ctx, Request::new(Body::empty())).await.unwrap();
+//!     let res = svc.serve(req).await.unwrap();
 //!
 //!     let mut values = res
 //!         .headers()
@@ -151,7 +151,7 @@
 //! ```
 
 use crate::{HeaderValue, Request, Response, header::HeaderName, headers::HeaderEncode};
-use rama_core::{Context, Layer, Service};
+use rama_core::{Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
 
@@ -319,6 +319,29 @@ pub struct SetResponseHeader<S, M> {
     mode: InsertHeaderMode,
 }
 
+impl<S> SetResponseHeader<S, HeaderValue> {
+    /// Create a new [`SetResponseHeader`] from a typed [`HeaderEncode`].
+    ///
+    /// See [`SetResponseHeader::overriding`] for more details.
+    pub fn overriding_typed<H: HeaderEncode>(inner: S, header: H) -> Self {
+        Self::overriding(inner, H::name().clone(), header.encode_to_value())
+    }
+
+    /// Create a new [`SetResponseHeader`] from a typed [`HeaderEncode`].
+    ///
+    /// See [`SetResponseHeader::appending`] for more details.
+    pub fn appending_typed<H: HeaderEncode>(inner: S, header: H) -> Self {
+        Self::appending(inner, H::name().clone(), header.encode_to_value())
+    }
+
+    /// Create a new [`SetResponseHeader`] from a typed [`HeaderEncode`].
+    ///
+    /// See [`SetResponseHeader::if_not_present`] for more details.
+    pub fn if_not_present_typed<H: HeaderEncode>(inner: S, header: H) -> Self {
+        Self::if_not_present(inner, H::name().clone(), header.encode_to_value())
+    }
+}
+
 impl<S, M> SetResponseHeader<S, M> {
     /// Create a new [`SetResponseHeader`].
     ///
@@ -417,13 +440,9 @@ where
     type Response = S::Response;
     type Error = S::Error;
 
-    async fn serve(
-        &self,
-        ctx: Context,
-        req: Request<ReqBody>,
-    ) -> Result<Self::Response, Self::Error> {
-        let (ctx, req, header_maker) = self.make.make_header_value_maker(ctx, req).await;
-        let res = self.inner.serve(ctx, req).await?;
+    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
+        let (req, header_maker) = self.make.make_header_value_maker(req).await;
+        let res = self.inner.serve(req).await?;
         let res = self.mode.apply(&self.header_name, res, header_maker).await;
         Ok(res)
     }
@@ -451,10 +470,7 @@ mod tests {
             HeaderValue::from_static("text/html"),
         );
 
-        let res = svc
-            .serve(Context::default(), Request::new(Body::empty()))
-            .await
-            .unwrap();
+        let res = svc.serve(Request::new(Body::empty())).await.unwrap();
 
         let mut values = res.headers().get_all(header::CONTENT_TYPE).iter();
         assert_eq!(values.next().unwrap(), "text/html");
@@ -475,10 +491,7 @@ mod tests {
             HeaderValue::from_static("text/html"),
         );
 
-        let res = svc
-            .serve(Context::default(), Request::new(Body::empty()))
-            .await
-            .unwrap();
+        let res = svc.serve(Request::new(Body::empty())).await.unwrap();
 
         let mut values = res.headers().get_all(header::CONTENT_TYPE).iter();
         assert_eq!(values.next().unwrap(), "good-content");
@@ -500,10 +513,7 @@ mod tests {
             HeaderValue::from_static("text/html"),
         );
 
-        let res = svc
-            .serve(Context::default(), Request::new(Body::empty()))
-            .await
-            .unwrap();
+        let res = svc.serve(Request::new(Body::empty())).await.unwrap();
 
         let mut values = res.headers().get_all(header::CONTENT_TYPE).iter();
         assert_eq!(values.next().unwrap(), "good-content");
@@ -521,10 +531,7 @@ mod tests {
             HeaderValue::from_static("text/html"),
         );
 
-        let res = svc
-            .serve(Context::default(), Request::new(Body::empty()))
-            .await
-            .unwrap();
+        let res = svc.serve(Request::new(Body::empty())).await.unwrap();
 
         let mut values = res.headers().get_all(header::CONTENT_TYPE).iter();
         assert_eq!(values.next().unwrap(), "text/html");

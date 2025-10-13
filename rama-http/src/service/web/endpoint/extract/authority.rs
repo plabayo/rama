@@ -2,7 +2,6 @@
 
 use super::FromRequestContextRefPair;
 use crate::utils::macros::define_http_rejection;
-use rama_core::Context;
 use rama_http_types::request::Parts;
 use rama_net::address;
 use rama_net::http::RequestContext;
@@ -25,18 +24,12 @@ define_http_rejection! {
 impl FromRequestContextRefPair for Authority {
     type Rejection = MissingAuthority;
 
-    async fn from_request_context_ref_pair(
-        ctx: &Context,
-        parts: &Parts,
-    ) -> Result<Self, Self::Rejection> {
-        Ok(Self(match ctx.get::<RequestContext>() {
-            Some(ctx) => ctx.authority.clone(),
-            None => {
-                RequestContext::try_from((ctx, parts))
-                    .map_err(|_| MissingAuthority)?
-                    .authority
-            }
-        }))
+    async fn from_request_context_ref_pair(parts: &Parts) -> Result<Self, Self::Rejection> {
+        Ok(Self(
+            RequestContext::try_from(parts)
+                .map_err(|_| MissingAuthority)?
+                .authority,
+        ))
     }
 }
 
@@ -69,7 +62,7 @@ mod tests {
         }
         let req = builder.body(Body::empty()).unwrap();
 
-        let res = svc.serve(Context::default(), req).await.unwrap();
+        let res = svc.serve(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
         let body = res.into_body().collect().await.unwrap().to_bytes();
         assert_eq!(body, authority);

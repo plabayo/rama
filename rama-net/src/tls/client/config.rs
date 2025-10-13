@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use rama_core::{Context, combinators::Either3};
+use rama_core::{combinators::Either3, extensions::Extensions};
 
 use super::{ClientHelloExtension, merge_client_hello_lists};
 use crate::tls::{CipherSuite, CompressionAlgorithm, DataEncoding, KeyLogIntent, ProtocolVersion};
@@ -101,12 +101,12 @@ impl ClientConfigChainRefData<'_> {
 }
 
 #[must_use]
-pub fn extract_client_config_from_ctx(ctx: &Context) -> Option<ClientConfigChainRef<'_>> {
-    match ctx.get::<ClientConfigChain>() {
+pub fn extract_client_config_from_extensions(ext: &Extensions) -> Option<ClientConfigChainRef<'_>> {
+    match ext.get::<ClientConfigChain>() {
         Some(chain) => Some(ClientConfigChainRef {
             data: ClientConfigChainRefData::Chain(chain),
         }),
-        None => ctx
+        None => ext
             .get::<Arc<ClientConfig>>()
             .map(|cfg| ClientConfigChainRef {
                 data: ClientConfigChainRefData::Single(cfg),
@@ -114,35 +114,35 @@ pub fn extract_client_config_from_ctx(ctx: &Context) -> Option<ClientConfigChain
     }
 }
 
-pub fn append_client_config_to_ctx(ctx: &mut Context, cfg: impl Into<Arc<ClientConfig>>) {
-    match ctx.get_mut::<ClientConfigChain>() {
+pub fn append_client_config_to_extensions(ext: &mut Extensions, cfg: impl Into<Arc<ClientConfig>>) {
+    match ext.get_mut::<ClientConfigChain>() {
         Some(chain) => {
             chain.configs.push(cfg.into());
         }
-        None => match ctx.remove::<Arc<ClientConfig>>() {
+        None => match ext.remove::<Arc<ClientConfig>>() {
             Some(old_cfg) => {
-                ctx.insert(ClientConfigChain {
+                ext.insert(ClientConfigChain {
                     configs: vec![old_cfg, cfg.into()],
                 });
             }
             None => {
-                ctx.insert(ClientConfigChain::from(cfg.into()));
+                ext.insert(ClientConfigChain::from(cfg.into()));
             }
         },
     }
 }
 
-pub fn append_all_client_configs_to_ctx(
-    ctx: &mut Context,
+pub fn append_all_client_configs_to_extensions(
+    ext: &mut Extensions,
     cfg_it: impl IntoIterator<Item: Into<Arc<ClientConfig>>>,
 ) {
     let cfg_it = cfg_it.into_iter();
-    match ctx.get_mut::<ClientConfigChain>() {
+    match ext.get_mut::<ClientConfigChain>() {
         Some(chain) => {
             chain.configs.extend(cfg_it.map(Into::into));
         }
         None => {
-            if let Some(old_cfg) = ctx.remove::<Arc<ClientConfig>>() {
+            if let Some(old_cfg) = ext.remove::<Arc<ClientConfig>>() {
                 let (lb, _) = cfg_it.size_hint();
                 assert!(lb < usize::MAX);
 
@@ -150,10 +150,10 @@ pub fn append_all_client_configs_to_ctx(
                 configs.push(old_cfg);
                 configs.extend(cfg_it.map(Into::into));
 
-                ctx.insert(ClientConfigChain { configs });
+                ext.insert(ClientConfigChain { configs });
             } else {
                 let chain: ClientConfigChain = cfg_it.collect();
-                ctx.insert(chain);
+                ext.insert(chain);
             }
         }
     }

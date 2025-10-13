@@ -1,14 +1,11 @@
 //! Echo service that echos the http request and tls client config
 
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD as ENGINE;
-use clap::Args;
-use itertools::Itertools;
 use rama::{
-    Context, Service,
+    Service,
     cli::ForwardKind,
     combinators::Either7,
     error::{BoxError, ErrorContext, OpaqueError},
+    extensions::{ExtensionsMut, ExtensionsRef},
     http::{
         HeaderName, HeaderValue, Request,
         header::COOKIE,
@@ -34,14 +31,7 @@ use rama::{
         AddExtensionLayer, ConsumeErrLayer, HijackLayer, Layer, LimitLayer, TimeoutLayer,
         limit::policy::ConcurrentPolicy,
     },
-    net::{
-        socket::Interface,
-        stream::layer::http::BodyLimitLayer,
-        tls::{
-            ApplicationProtocol, DataEncoding,
-            server::{ServerAuth, ServerAuthData, ServerConfig},
-        },
-    },
+    net::{socket::Interface, stream::layer::http::BodyLimitLayer, tls::ApplicationProtocol},
     proxy::haproxy::server::HaProxyLayer,
     rt::Executor,
     service::service_fn,
@@ -50,6 +40,9 @@ use rama::{
     tls::boring::server::TlsAcceptorLayer,
     utils::backoff::ExponentialBackoff,
 };
+
+use clap::Args;
+use itertools::Itertools;
 use std::{convert::Infallible, sync::Arc, time::Duration};
 
 mod data;
@@ -60,8 +53,7 @@ mod storage;
 #[doc(inline)]
 use state::State;
 
-use self::state::ACMEData;
-use crate::utils::http::HttpVersion;
+use crate::utils::{http::HttpVersion, tls::new_server_config};
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct StorageAuthorized;
@@ -79,7 +71,7 @@ pub struct CliCommandFingerprint {
     /// (0 = no limit)
     concurrent: usize,
 
-    #[arg(short = 't', long, default_value_t = 8)]
+    #[arg(short = 't', long, default_value_t = 300)]
     /// the timeout in seconds for each connection
     ///
     /// (0 = no timeout)
@@ -150,67 +142,14 @@ pub async fn run(cfg: CliCommandFingerprint) -> Result<(), BoxError> {
         Some(ForwardKind::HaProxy) => (Some(HaProxyLayer::default()), None),
     };
 
-    let acme_data = if let Ok(raw_acme_data) = std::env::var("RAMA_ACME_DATA") {
-        let acme_data: Vec<_> = raw_acme_data
-            .split(';')
-            .map(|s| {
-                let mut iter = s.trim().splitn(2, ',');
-                let key = iter.next().expect("acme data key");
-                let value = iter.next().expect("acme data value");
-                (key.to_owned(), value.to_owned())
-            })
-            .collect();
-        ACMEData::with_challenges(acme_data)
-    } else {
-        ACMEData::default()
-    };
-
     let maybe_tls_server_config = cfg.secure.then(|| {
-        if cfg.self_signed {
-            return ServerConfig {
-                application_layer_protocol_negotiation: Some(match cfg.http_version {
-                    HttpVersion::H1 => vec![ApplicationProtocol::HTTP_11],
-                    HttpVersion::H2 => vec![ApplicationProtocol::HTTP_2],
-                    HttpVersion::Auto => {
-                        vec![ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11]
-                    }
-                }),
-                ..ServerConfig::new(ServerAuth::default())
-            };
-        }
-
-        let tls_key_pem_raw = std::env::var("RAMA_TLS_KEY").expect("RAMA_TLS_KEY");
-        let tls_key_pem_raw = std::str::from_utf8(
-            &ENGINE
-                .decode(tls_key_pem_raw)
-                .expect("base64 decode RAMA_TLS_KEY")[..],
-        )
-        .expect("base64-decoded RAMA_TLS_KEY valid utf-8")
-        .try_into()
-        .expect("tls_key_pem_raw => NonEmptyStr (RAMA_TLS_KEY)");
-        let tls_crt_pem_raw = std::env::var("RAMA_TLS_CRT").expect("RAMA_TLS_CRT");
-        let tls_crt_pem_raw = std::str::from_utf8(
-            &ENGINE
-                .decode(tls_crt_pem_raw)
-                .expect("base64 decode RAMA_TLS_CRT")[..],
-        )
-        .expect("base64-decoded RAMA_TLS_CRT valid utf-8")
-        .try_into()
-        .expect("tls_crt_pem_raw => NonEmptyStr (RAMA_TLS_CRT)");
-        ServerConfig {
-            application_layer_protocol_negotiation: Some(match cfg.http_version {
-                HttpVersion::H1 => vec![ApplicationProtocol::HTTP_11],
-                HttpVersion::H2 => vec![ApplicationProtocol::HTTP_2],
-                HttpVersion::Auto => {
-                    vec![ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11]
-                }
-            }),
-            ..ServerConfig::new(ServerAuth::Single(ServerAuthData {
-                private_key: DataEncoding::Pem(tls_key_pem_raw),
-                cert_chain: DataEncoding::Pem(tls_crt_pem_raw),
-                ocsp: None,
-            }))
-        }
+        new_server_config(Some(match cfg.http_version {
+            HttpVersion::H1 => vec![ApplicationProtocol::HTTP_11],
+            HttpVersion::H2 => vec![ApplicationProtocol::HTTP_2],
+            HttpVersion::Auto => {
+                vec![ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11]
+            }
+        }))
     });
 
     let tls_acceptor_data = match maybe_tls_server_config {
@@ -296,8 +235,6 @@ pub async fn run(cfg: CliCommandFingerprint) -> Result<(), BoxError> {
                     // Navigate
                     HttpMatcher::get("/") => Redirect::temporary("/consent"),
                     HttpMatcher::get("/consent") => endpoints::get_consent,
-                    // ACME
-                    HttpMatcher::get("/.well-known/acme-challenge/:token") => endpoints::get_acme_challenge,
                     // Assets
                     HttpMatcher::get("/assets/style.css") => endpoints::get_assets_style,
                     HttpMatcher::get("/assets/script.js") => endpoints::get_assets_script,
@@ -308,7 +245,7 @@ pub async fn run(cfg: CliCommandFingerprint) -> Result<(), BoxError> {
 
         let tcp_service_builder = (
             AddExtensionLayer::new(Arc::new(
-                State::new(acme_data, pg_url, storage_auth.as_deref())
+                State::new(pg_url, storage_auth.as_deref())
                     .await
                     .expect("create state"),
             )),
@@ -411,18 +348,21 @@ where
     type Response = S::Response;
     type Error = S::Error;
 
-    async fn serve(
-        &self,
-        mut ctx: Context,
-        mut req: Request<Body>,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut req: Request<Body>) -> Result<Self::Response, Self::Error> {
         if let Some(cookie) = req.headers().typed_get::<Cookie>() {
             let cookie = cookie
                 .iter()
                 .filter_map(|(k, v)| {
                     if k.eq_ignore_ascii_case("rama-storage-auth") {
-                        if Some(v) == ctx.get::<Arc<State>>().unwrap().storage_auth.as_deref() {
-                            ctx.insert(StorageAuthorized);
+                        if Some(v)
+                            == req
+                                .extensions()
+                                .get::<Arc<State>>()
+                                .unwrap()
+                                .storage_auth
+                                .as_deref()
+                        {
+                            req.extensions_mut().insert(StorageAuthorized);
                         }
                         Some("rama-storage-auth=xxx".to_owned())
                     } else if !k.starts_with("source-") {
@@ -438,6 +378,6 @@ where
             }
         }
 
-        self.inner.serve(ctx, req).await
+        self.inner.serve(req).await
     }
 }

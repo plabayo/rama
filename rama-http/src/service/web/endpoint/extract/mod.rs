@@ -1,8 +1,7 @@
 //! Extract utilities to develop endpoint services efortless.
 
 use super::IntoResponse;
-use crate::{HeaderMap, dep::mime, header, request::Parts};
-use rama_core::Context;
+use crate::{HeaderMap, header, mime, request::Parts};
 
 pub mod host;
 #[doc(inline)]
@@ -22,6 +21,8 @@ pub use query::Query;
 
 mod method;
 mod request;
+
+mod extensions;
 
 pub mod typed_header;
 #[doc(inline)]
@@ -54,7 +55,6 @@ pub trait FromRequestContextRefPair: Sized + Send + Sync + 'static {
 
     /// Perform the extraction.
     fn from_request_context_ref_pair(
-        ctx: &Context,
         parts: &Parts,
     ) -> impl Future<Output = Result<Self, Self::Rejection>> + Send;
 }

@@ -1,8 +1,5 @@
 use super::utils;
-use rama::{
-    Context,
-    http::{BodyExtractExt, StatusCode},
-};
+use rama::http::{BodyExtractExt, StatusCode};
 
 #[tokio::test]
 #[ignore]
@@ -12,11 +9,7 @@ async fn test_http_web_service_dir_and_api() {
     let runner = utils::ExampleRunner::interactive("http_web_service_dir_and_api", None);
 
     // test index.html via directory service
-    let response = runner
-        .get("http://127.0.0.1:62013")
-        .send(Context::default())
-        .await
-        .unwrap();
+    let response = runner.get("http://127.0.0.1:62013").send().await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let homepage = response.try_into_string().await.unwrap();
     assert!(homepage.contains("<h1>Coin Clicker</h1>"));
@@ -24,7 +17,7 @@ async fn test_http_web_service_dir_and_api() {
     // test redirect
     let response = runner
         .get("http://127.0.0.1:62013/foo/bar")
-        .send(Context::default())
+        .send()
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
@@ -34,7 +27,7 @@ async fn test_http_web_service_dir_and_api() {
     // test coin fetching
     let response = runner
         .get("http://127.0.0.1:62013/coin")
-        .send(Context::default())
+        .send()
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
@@ -44,7 +37,7 @@ async fn test_http_web_service_dir_and_api() {
     // test coin post
     let response = runner
         .post("http://127.0.0.1:62013/coin")
-        .send(Context::default())
+        .send()
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
@@ -54,7 +47,7 @@ async fn test_http_web_service_dir_and_api() {
     // test coin fetching (again)
     let response = runner
         .get("http://127.0.0.1:62013/coin")
-        .send(Context::default())
+        .send()
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);

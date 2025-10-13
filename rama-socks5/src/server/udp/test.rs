@@ -30,7 +30,6 @@ where
 {
     async fn accept_udp_associate(
         &self,
-        _ctx: Context,
         mut stream: S,
         _destination: Authority,
     ) -> Result<(), Error> {

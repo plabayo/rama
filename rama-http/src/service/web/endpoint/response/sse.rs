@@ -86,11 +86,12 @@ where
 mod tests {
     use super::*;
     use crate::service::{client::HttpClientExt as _, web::Router};
+    use ahash::{HashMap, HashMapExt as _};
     use rama_core::futures::stream;
     use rama_core::{Service as _, combinators::Either};
     use rama_http_types::sse::JsonEventData;
     use smol_str::SmolStr;
-    use std::{collections::HashMap, convert::Infallible, time::Duration};
+    use std::{convert::Infallible, time::Duration};
     use tokio_stream::StreamExt as _;
 
     #[tokio::test]
@@ -117,11 +118,7 @@ mod tests {
             })
             .boxed();
 
-        let response = client
-            .get("http://example.com")
-            .send(rama_core::Context::default())
-            .await
-            .unwrap();
+        let response = client.get("http://example.com").send().await.unwrap();
 
         assert_eq!(response.headers()["content-type"], "text/event-stream");
         assert_eq!(response.headers()["cache-control"], "no-cache");
@@ -169,7 +166,7 @@ mod tests {
 
         let mut stream = client
             .get("http://example.com")
-            .send(rama_core::Context::default())
+            .send()
             .await
             .unwrap()
             .into_body();
@@ -213,7 +210,7 @@ mod tests {
 
         let mut stream = client
             .get("http://example.com")
-            .send(rama_core::Context::default())
+            .send()
             .await
             .unwrap()
             .into_body();

@@ -18,7 +18,7 @@
 //!
 //! ```
 //! use rama_core::service::service_fn;
-//! use rama_core::{Context, Service, Layer};
+//! use rama_core::{extensions::ExtensionsRef, Service, Layer};
 //! use rama_http::{Body, Request, Response, StatusCode, header};
 //! use rama_http::layer::follow_redirect::{FollowRedirectLayer, RequestUri};
 //!
@@ -41,7 +41,7 @@
 //!     .body(Body::empty())
 //!     .unwrap();
 //!
-//! let response = client.serve(Context::default(), request).await?;
+//! let response = client.serve(request).await?;
 //! // Get the final request URI.
 //! assert_eq!(response.extensions().get::<RequestUri>().unwrap().0, "https://www.rust-lang.org/");
 //! # Ok(())
@@ -58,7 +58,7 @@
 //! # use std::convert::Infallible;
 //! use rama_core::service::service_fn;
 //! use rama_core::layer::MapErrLayer;
-//! use rama_core::{Context, Service, Layer};
+//! use rama_core::{Service, Layer};
 //! use rama_http::{Body, Request, Response};
 //! use rama_http::layer::follow_redirect::{
 //!     policy::{self, PolicyExt},
@@ -94,7 +94,7 @@
 //! ).into_layer(http_client);
 //!
 //! // ...
-//! let _ = client.serve(Context::default(), Request::default()).await?;
+//! let _ = client.serve(Request::default()).await?;
 //! # Ok(())
 //! # }
 //! ```
@@ -103,7 +103,7 @@ pub mod policy;
 
 use crate::{Method, Request, Response, StatusCode, StreamingBody, Uri, header::LOCATION};
 use iri_string::types::{UriAbsoluteString, UriReferenceStr};
-use rama_core::{Context, Layer, Service};
+use rama_core::{Layer, Service, extensions::ExtensionsMut};
 use rama_http_types::{
     HeaderMap,
     header::{CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_TYPE, TRANSFER_ENCODING},
@@ -236,7 +236,7 @@ where
 
     fn serve(
         &self,
-        mut ctx: Context,
+
         mut req: Request<ReqBody>,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> {
         let mut method = req.method().clone();
@@ -247,14 +247,14 @@ where
         let mut policy = self.policy.clone();
 
         let mut body = BodyRepr::None;
-        body.try_clone_from(&ctx, &mut policy, req.body());
-        policy.on_request(&mut ctx, &mut req);
+        body.try_clone_from(&mut policy, req.body());
+        policy.on_request(&mut req);
 
         let service = &self.inner;
 
         async move {
             loop {
-                let mut res = service.serve(ctx.clone(), req).await?;
+                let mut res = service.serve(req).await?;
                 res.extensions_mut().insert(RequestUri(uri.clone()));
 
                 let drop_payload_headers = |headers: &mut HeaderMap| {
@@ -307,17 +307,17 @@ where
                     location: &location,
                     previous: &uri,
                 };
-                match policy.redirect(&ctx, &attempt)? {
+                match policy.redirect(&attempt)? {
                     Action::Follow => {
                         uri = location;
-                        body.try_clone_from(&ctx, &mut policy, &taken_body);
+                        body.try_clone_from(&mut policy, &taken_body);
 
                         req = Request::new(taken_body);
                         *req.uri_mut() = uri.clone();
                         *req.method_mut() = method.clone();
                         *req.version_mut() = version;
                         *req.headers_mut() = headers.clone();
-                        policy.on_request(&mut ctx, &mut req);
+                        policy.on_request(&mut req);
                     }
                     Action::Stop => return Ok(res),
                 }
@@ -356,14 +356,14 @@ where
         }
     }
 
-    fn try_clone_from<P, E>(&mut self, ctx: &Context, policy: &mut P, body: &B)
+    fn try_clone_from<P, E>(&mut self, policy: &mut P, body: &B)
     where
         P: Policy<B, E>,
     {
         match self {
             Self::Some(_) | Self::Empty => {}
             Self::None => {
-                if let Some(body) = clone_body(ctx, policy, body) {
+                if let Some(body) = clone_body(policy, body) {
                     *self = Self::Some(body);
                 }
             }
@@ -371,7 +371,7 @@ where
     }
 }
 
-fn clone_body<P, B, E>(ctx: &Context, policy: &mut P, body: &B) -> Option<B>
+fn clone_body<P, B, E>(policy: &mut P, body: &B) -> Option<B>
 where
     P: Policy<B, E>,
     B: StreamingBody + Default,
@@ -379,7 +379,7 @@ where
     if body.size_hint().exact() == Some(0) {
         Some(B::default())
     } else {
-        policy.clone_body(ctx, body)
+        policy.clone_body(body)
     }
 }
 
@@ -396,6 +396,7 @@ mod tests {
     use super::{policy::*, *};
     use crate::{Body, header::LOCATION};
     use rama_core::Layer;
+    use rama_core::extensions::ExtensionsRef;
     use rama_core::service::service_fn;
     use std::convert::Infallible;
 
@@ -406,7 +407,7 @@ mod tests {
             .uri("http://example.com/42")
             .body(Body::empty())
             .unwrap();
-        let res = svc.serve(Context::default(), req).await.unwrap();
+        let res = svc.serve(req).await.unwrap();
         assert_eq!(*res.body(), 0);
         assert_eq!(
             res.extensions().get::<RequestUri>().unwrap().0,
@@ -421,7 +422,7 @@ mod tests {
             .uri("http://example.com/42")
             .body(Body::empty())
             .unwrap();
-        let res = svc.serve(Context::default(), req).await.unwrap();
+        let res = svc.serve(req).await.unwrap();
         assert_eq!(*res.body(), 42);
         assert_eq!(
             res.extensions().get::<RequestUri>().unwrap().0,
@@ -436,7 +437,7 @@ mod tests {
             .uri("http://example.com/42")
             .body(Body::empty())
             .unwrap();
-        let res = svc.serve(Context::default(), req).await.unwrap();
+        let res = svc.serve(req).await.unwrap();
         assert_eq!(*res.body(), 42 - 10);
         assert_eq!(
             res.extensions().get::<RequestUri>().unwrap().0,
@@ -446,7 +447,7 @@ mod tests {
 
     /// A server with an endpoint `GET /{n}` which redirects to `/{n-1}` unless `n` equals zero,
     /// returning `n` as the response body.
-    async fn handle<B>(_ctx: Context, req: Request<B>) -> Result<Response<u64>, Infallible> {
+    async fn handle<B>(req: Request<B>) -> Result<Response<u64>, Infallible> {
         let n: u64 = req.uri().path()[1..].parse().unwrap();
         let mut res = Response::builder();
         if n > 0 {

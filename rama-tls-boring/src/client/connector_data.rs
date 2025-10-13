@@ -170,6 +170,7 @@ impl TlsConnectorDataBuilder {
         certificate_compression_algorithms: Option<Vec<CertificateCompressionAlgorithm>>,
         delegated_credential_schemes: Option<Vec<SslSignatureAlgorithm>>,
         server_name: Option<Domain>,
+        server_verify_cert_store: Option<X509Store>,
     );
 
     /// Return the SSL keylog file path if one exists.
@@ -457,7 +458,7 @@ impl TlsConnectorDataBuilder {
             rama_boring::ssl::SslConnector::builder(rama_boring::ssl::SslMethod::tls_client())
                 .context("create (boring) ssl connector builder")?;
 
-        if let Some(store) = self.server_verify_cert_store.clone() {
+        if let Some(store) = self.server_verify_cert_store().cloned() {
             trace!("boring connector: set provided cert store to verify as server");
             cfg_builder
                 .set_verify_cert_store(store)

@@ -15,6 +15,8 @@ use std::time::Duration;
 
 use futures_channel::oneshot;
 use rama::error::{BoxError, OpaqueError};
+use rama::extensions::Extensions;
+use rama::extensions::ExtensionsMut;
 use rama::futures::future::{self, Either, FutureExt};
 use rama::http::body::util::{BodyExt, Empty, Full, StreamBody, combinators::BoxBody};
 use rama::http::core::h2::client::SendRequest;
@@ -1005,7 +1007,7 @@ async fn expect_continue_waits_for_body_poll() {
         .serve_connection(
             socket,
             RamaHttpService::new(
-                rama::Context::default(),
+                Extensions::new(),
                 service_fn(async |req: Request| {
                     assert_eq!(req.headers()["expect"], "100-continue");
                     // But! We're never going to poll the body!
@@ -1189,7 +1191,7 @@ async fn disable_keep_alive_mid_request() {
     let (socket, _) = listener.accept().await.unwrap();
     let srv = http1::Builder::new().serve_connection(
         socket,
-        RamaHttpService::new(rama::Context::default(), HelloWorld),
+        RamaHttpService::new(rama::extensions::Extensions::new(), HelloWorld),
     );
     future::try_select(srv, rx1)
         .then(|r| match r {
@@ -1242,7 +1244,7 @@ async fn disable_keep_alive_post_request() {
     };
     let server = http1::Builder::new().serve_connection(
         transport,
-        RamaHttpService::new(rama::Context::default(), HelloWorld),
+        RamaHttpService::new(rama::extensions::Extensions::new(), HelloWorld),
     );
     let fut = future::try_select(server, rx1).then(|r| match r {
         Ok(Either::Left(_)) => panic!("expected rx first"),
@@ -1288,7 +1290,7 @@ async fn http1_graceful_shutdown_after_upgrade() {
 
     let (upgrades_tx, upgrades_rx) = mpsc::channel();
     let svc = RamaHttpService::new(
-        rama::Context::default(),
+        Extensions::new(),
         service_fn(move |req: Request| {
             let on_upgrade = rama::http::io::upgrade::on(req);
             let _ = upgrades_tx.send(on_upgrade);
@@ -1334,7 +1336,7 @@ async fn empty_parse_eof_does_not_return_error() {
     http1::Builder::new()
         .serve_connection(
             socket,
-            RamaHttpService::new(rama::Context::default(), HelloWorld),
+            RamaHttpService::new(rama::extensions::Extensions::new(), HelloWorld),
         )
         .await
         .expect("empty parse eof is ok");
@@ -1353,7 +1355,7 @@ async fn nonempty_parse_eof_returns_error() {
     http1::Builder::new()
         .serve_connection(
             socket,
-            RamaHttpService::new(rama::Context::default(), HelloWorld),
+            RamaHttpService::new(rama::extensions::Extensions::new(), HelloWorld),
         )
         .await
         .expect_err("partial parse eof is error");
@@ -1380,7 +1382,7 @@ async fn http1_allow_half_close() {
         .serve_connection(
             socket,
             RamaHttpService::new(
-                rama::Context::default(),
+                Extensions::new(),
                 service_fn(|_| {
                     tokio::time::sleep(Duration::from_millis(500))
                         .map(|_| Ok::<_, Infallible>(Response::new(rama::http::Body::empty())))
@@ -1408,7 +1410,7 @@ async fn disconnect_after_reading_request_before_responding() {
         .serve_connection(
             socket,
             RamaHttpService::new(
-                rama::Context::default(),
+                Extensions::new(),
                 service_fn(|_| {
                     tokio::time::sleep(Duration::from_secs(2)).map(
                         |_| -> Result<Response<IncomingBody>, Infallible> {
@@ -1441,7 +1443,7 @@ async fn returning_1xx_response_is_error() {
         .serve_connection(
             socket,
             RamaHttpService::new(
-                rama::Context::default(),
+                Extensions::new(),
                 service_fn(async |_| {
                     Ok::<_, Infallible>(
                         Response::builder()
@@ -1507,7 +1509,7 @@ async fn header_read_timeout_slow_writes() {
         .serve_connection(
             socket,
             RamaHttpService::new(
-                rama::Context::default(),
+                Extensions::new(),
                 service_fn(|_| {
                     let res = Response::builder()
                         .status(StatusCode::OK)
@@ -1537,7 +1539,7 @@ async fn header_read_timeout_starts_immediately() {
         .header_read_timeout(Duration::from_secs(2))
         .serve_connection(
             socket,
-            RamaHttpService::new(rama::Context::default(), unreachable_service()),
+            RamaHttpService::new(Extensions::new(), unreachable_service()),
         );
     assert!(conn.await.unwrap_err().is_timeout());
 }
@@ -1606,7 +1608,7 @@ async fn header_read_timeout_slow_writes_multiple_requests() {
         .serve_connection(
             socket,
             RamaHttpService::new(
-                rama::Context::default(),
+                Extensions::new(),
                 service_fn(|_| {
                     let res = Response::builder()
                         .status(200)
@@ -1651,7 +1653,7 @@ async fn header_read_timeout_as_idle_timeout() {
         .serve_connection(
             socket,
             RamaHttpService::new(
-                rama::Context::default(),
+                Extensions::new(),
                 service_fn(|_| {
                     let res = Response::builder()
                         .status(200)
@@ -1697,7 +1699,7 @@ async fn upgrades() {
     let conn = http1::Builder::new().serve_connection(
         socket,
         RamaHttpService::new(
-            rama::Context::default(),
+            Extensions::new(),
             service_fn(|_| {
                 let res = Response::builder()
                     .status(101)
@@ -1753,7 +1755,7 @@ async fn http_connect() {
     let conn = http1::Builder::new().serve_connection(
         socket,
         RamaHttpService::new(
-            rama::Context::default(),
+            Extensions::new(),
             service_fn(|_| {
                 let res = Response::builder()
                     .status(200)
@@ -1811,7 +1813,7 @@ async fn upgrades_new() {
 
     let (upgrades_tx, upgrades_rx) = mpsc::channel();
     let svc = RamaHttpService::new(
-        rama::Context::default(),
+        Extensions::new(),
         service_fn(move |req: Request| {
             let on_upgrade = rama::http::io::upgrade::on(req);
             let _ = upgrades_tx.send(on_upgrade);
@@ -1855,7 +1857,7 @@ async fn upgrades_ignored() {
     tokio::spawn(async move {
         loop {
             let svc = RamaHttpService::new(
-                rama::Context::default(),
+                Extensions::new(),
                 service_fn(move |req: Request| {
                     assert_eq!(req.headers()["upgrade"], "yolo");
                     future::ok::<_, Infallible>(Response::new(Empty::<Bytes>::new()))
@@ -1921,7 +1923,7 @@ async fn http_connect_new() {
 
     let (upgrades_tx, upgrades_rx) = mpsc::channel();
     let svc = RamaHttpService::new(
-        rama::Context::default(),
+        Extensions::new(),
         service_fn(move |req: Request| {
             let on_upgrade = rama::http::io::upgrade::on(req);
             let _ = upgrades_tx.send(on_upgrade);
@@ -1993,7 +1995,7 @@ async fn h2_connect() {
     });
 
     let svc = RamaHttpService::new(
-        rama::Context::default(),
+        Extensions::new(),
         service_fn(move |req: Request| {
             let on_upgrade = rama::http::io::upgrade::on(req);
 
@@ -2082,7 +2084,7 @@ async fn h2_connect_multiplex() {
     });
 
     let svc = RamaHttpService::new(
-        rama::Context::default(),
+        Extensions::new(),
         service_fn(move |req: Request| {
             let authority = req.uri().authority().unwrap().to_string();
             let on_upgrade = rama::http::io::upgrade::on(req);
@@ -2178,7 +2180,7 @@ async fn h2_connect_large_body() {
     });
 
     let svc = RamaHttpService::new(
-        rama::Context::default(),
+        Extensions::new(),
         service_fn(move |req: Request| {
             let on_upgrade = rama::http::io::upgrade::on(req);
 
@@ -2252,7 +2254,7 @@ async fn h2_connect_empty_frames() {
     });
 
     let svc = RamaHttpService::new(
-        rama::Context::default(),
+        Extensions::new(),
         service_fn(move |req: Request| {
             let on_upgrade = rama::http::io::upgrade::on(req);
 
@@ -2302,7 +2304,7 @@ async fn parse_errors_send_4xx_response() {
     http1::Builder::new()
         .serve_connection(
             socket,
-            RamaHttpService::new(rama::Context::default(), HelloWorld),
+            RamaHttpService::new(rama::extensions::Extensions::new(), HelloWorld),
         )
         .await
         .expect_err("HTTP parse error");
@@ -2327,7 +2329,7 @@ async fn illegal_request_length_returns_400_response() {
     http1::Builder::new()
         .serve_connection(
             socket,
-            RamaHttpService::new(rama::Context::default(), HelloWorld),
+            RamaHttpService::new(rama::extensions::Extensions::new(), HelloWorld),
         )
         .await
         .expect_err("illegal Content-Length should error");
@@ -2368,7 +2370,7 @@ async fn max_buf_size() {
         .max_buf_size(MAX)
         .serve_connection(
             socket,
-            RamaHttpService::new(rama::Context::default(), HelloWorld),
+            RamaHttpService::new(rama::extensions::Extensions::new(), HelloWorld),
         )
         .await
         .expect_err("should TooLarge error");
@@ -2383,7 +2385,7 @@ async fn graceful_shutdown_before_first_request_no_block() {
 
         let future = http1::Builder::new().serve_connection(
             socket,
-            RamaHttpService::new(rama::Context::default(), HelloWorld),
+            RamaHttpService::new(rama::extensions::Extensions::new(), HelloWorld),
         );
         pin!(future);
         future.as_mut().graceful_shutdown();
@@ -2644,7 +2646,7 @@ async fn http2_keep_alive_detects_unresponsive_client() {
         .auto_date_header(true)
         .serve_connection(
             socket,
-            RamaHttpService::new(rama::Context::default(), unreachable_service()),
+            RamaHttpService::new(Extensions::new(), unreachable_service()),
         )
         .await
         .expect_err("serve_connection should error");
@@ -2664,7 +2666,7 @@ async fn http2_keep_alive_with_responsive_client() {
             .keep_alive_timeout(Duration::from_secs(1))
             .serve_connection(
                 socket,
-                RamaHttpService::new(rama::Context::default(), HelloWorld),
+                RamaHttpService::new(rama::extensions::Extensions::new(), HelloWorld),
             )
             .await
             .expect("serve_connection");
@@ -2699,7 +2701,7 @@ async fn http2_check_date_header_disabled() {
             .keep_alive_timeout(Duration::from_secs(1))
             .serve_connection(
                 socket,
-                RamaHttpService::new(rama::Context::default(), HelloWorld),
+                RamaHttpService::new(rama::extensions::Extensions::new(), HelloWorld),
             )
             .await
             .expect("serve_connection");
@@ -2766,7 +2768,7 @@ async fn http2_keep_alive_count_server_pings() {
             .keep_alive_timeout(Duration::from_secs(1))
             .serve_connection(
                 socket,
-                RamaHttpService::new(rama::Context::default(), unreachable_service()),
+                RamaHttpService::new(Extensions::new(), unreachable_service()),
             )
             .await
             .expect("serve_connection");
@@ -3102,7 +3104,7 @@ impl Service<Request> for TestService {
 
     fn serve(
         &self,
-        _ctx: rama::Context,
+
         mut req: Request,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
         let tx = self.tx.clone();
@@ -3176,7 +3178,7 @@ impl Service<Request> for HelloWorld {
 
     fn serve(
         &self,
-        _ctx: rama::Context,
+
         _req: Request,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
         let response = Response::new(rama::http::Body::from(HELLO));
@@ -3280,7 +3282,7 @@ impl ServeOptions {
                                 tokio::task::spawn(async move {
                                     let msg_tx = msg_tx.clone();
                                     let reply_rx = reply_rx.clone();
-                                    let service = RamaHttpService::new(rama::Context::default(), TestService {
+                                    let service = RamaHttpService::new(Extensions::new(), TestService {
                                         tx: msg_tx,
                                         trailers_tx,
                                         reply: reply_rx,
@@ -3368,6 +3370,22 @@ impl<T: Read, D> Read for DebugStream<T, D> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         self.stream.read(buf)
     }
+
+    fn read_exact(&mut self, buf: &mut [u8]) -> io::Result<()> {
+        self.stream.read_exact(buf)
+    }
+
+    fn read_to_end(&mut self, buf: &mut Vec<u8>) -> io::Result<usize> {
+        self.stream.read_to_end(buf)
+    }
+
+    fn read_to_string(&mut self, buf: &mut String) -> io::Result<usize> {
+        self.stream.read_to_string(buf)
+    }
+
+    fn read_vectored(&mut self, bufs: &mut [io::IoSliceMut<'_>]) -> io::Result<usize> {
+        self.stream.read_vectored(bufs)
+    }
 }
 
 impl<T: Write, D> Write for DebugStream<T, D> {
@@ -3378,8 +3396,21 @@ impl<T: Write, D> Write for DebugStream<T, D> {
     fn flush(&mut self) -> io::Result<()> {
         self.stream.flush()
     }
+
+    fn write_all(&mut self, mut buf: &[u8]) -> io::Result<()> {
+        self.stream.write_all(buf)
+    }
+
+    fn write_fmt(&mut self, args: std::fmt::Arguments<'_>) -> io::Result<()> {
+        self.stream.write_fmt(args)
+    }
+
+    fn write_vectored(&mut self, bufs: &[io::IoSlice<'_>]) -> io::Result<usize> {
+        self.stream.write_vectored(bufs)
+    }
 }
 
+#[warn(clippy::missing_trait_methods)]
 impl<T: AsyncWrite + Unpin, D> AsyncWrite for DebugStream<T, D> {
     fn poll_write(
         mut self: Pin<&mut Self>,
@@ -3399,8 +3430,21 @@ impl<T: AsyncWrite + Unpin, D> AsyncWrite for DebugStream<T, D> {
     ) -> Poll<Result<(), io::Error>> {
         Pin::new(&mut self.stream).poll_shutdown(cx)
     }
+
+    fn is_write_vectored(&self) -> bool {
+        self.stream.is_write_vectored()
+    }
+
+    fn poll_write_vectored(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bufs: &[io::IoSlice<'_>],
+    ) -> Poll<Result<usize, io::Error>> {
+        Pin::new(&mut self.stream).poll_write_vectored(cx, bufs)
+    }
 }
 
+#[warn(clippy::missing_trait_methods)]
 impl<T: AsyncRead + Unpin, D: Unpin> AsyncRead for DebugStream<T, D> {
     fn poll_read(
         mut self: Pin<&mut Self>,

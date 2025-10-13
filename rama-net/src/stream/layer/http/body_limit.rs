@@ -1,5 +1,4 @@
-use crate::stream::Stream;
-use rama_core::{Context, Layer, Service};
+use rama_core::{Layer, Service, extensions::ExtensionsMut, stream::Stream};
 use rama_http_types::BodyLimit;
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
@@ -10,7 +9,7 @@ use std::fmt;
 /// it only is used to add the [`BodyLimit`] value to the [`Context`],
 /// such that the L7 http service can apply the limit when found in that [`Context`].
 ///
-/// [`Stream`]: crate::stream::Stream
+/// [`Stream`]: rama_core::stream::Stream
 /// [`Context`]: rama_core::Context`
 #[derive(Debug, Clone)]
 pub struct BodyLimitLayer {
@@ -121,14 +120,14 @@ impl<S> BodyLimitService<S> {
 impl<S, IO> Service<IO> for BodyLimitService<S>
 where
     S: Service<IO>,
-    IO: Stream,
+    IO: Stream + ExtensionsMut,
 {
     type Response = S::Response;
     type Error = S::Error;
 
-    async fn serve(&self, mut ctx: Context, stream: IO) -> Result<Self::Response, Self::Error> {
-        ctx.insert(self.limit);
-        self.inner.serve(ctx, stream).await
+    async fn serve(&self, mut stream: IO) -> Result<Self::Response, Self::Error> {
+        stream.extensions_mut().insert(self.limit);
+        self.inner.serve(stream).await
     }
 }
 

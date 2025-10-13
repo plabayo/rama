@@ -1,8 +1,8 @@
 use super::DnsResolveMode;
 use rama_core::username::{UsernameLabelParser, UsernameLabelState};
 use rama_core::{
-    context::Extensions,
     error::{ErrorContext, OpaqueError, error},
+    extensions::Extensions,
     telemetry::tracing,
 };
 use rama_utils::macros::str::eq_ignore_ascii_case;
@@ -13,7 +13,7 @@ use rama_utils::macros::str::eq_ignore_ascii_case;
 /// and adds it to the [`Context`]'s [`Extensions`].
 ///
 /// [`Context`]: rama_core::Context
-/// [`Extensions`]: rama_core::context::Extensions
+/// [`Extensions`]: rama_core::extensions::Extensions
 pub struct DnsResolveModeUsernameParser {
     key_found: bool,
     mode: DnsResolveMode,

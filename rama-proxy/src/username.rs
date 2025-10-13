@@ -1,7 +1,7 @@
 use super::ProxyFilter;
 use rama_core::{
-    context::Extensions,
     error::{OpaqueError, error},
+    extensions::Extensions,
     telemetry::tracing,
     username::{UsernameLabelParser, UsernameLabelState, UsernameLabelWriter},
 };
@@ -13,7 +13,7 @@ use rama_utils::macros::match_ignore_ascii_case_str;
 /// and adds it to the [`Context`]'s [`Extensions`].
 ///
 /// [`Context`]: rama_core::Context
-/// [`Extensions`]: rama_core::context::Extensions
+/// [`Extensions`]: rama_core::extensions::Extensions
 pub struct ProxyFilterUsernameParser {
     key: Option<ProxyFilterKey>,
     proxy_filter: ProxyFilter,

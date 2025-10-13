@@ -5,6 +5,7 @@ use std::{
     task::{Context, Poll, ready},
 };
 
+use crate::extensions::{Extensions, ExtensionsMut, ExtensionsRef};
 use pin_project_lite::pin_project;
 use tokio::io::{AsyncBufRead, AsyncRead, AsyncWrite, ReadBuf};
 
@@ -23,9 +24,9 @@ pin_project! {
     }
 }
 
-impl<P, S> PeekStream<P, S> {
-    /// Create a new [`PeekStream`] for the given
-    /// peek [`AsyncRead`] and inner [`Stream`].
+impl<P, S: ExtensionsMut> PeekStream<P, S> {
+    /// Create a new [`PeekStream`] for the given peek
+    /// [`AsyncRead`] and inner [`Stream`] which implements [`ExtensionsMut`].
     ///
     /// [`Stream`]: super::Stream
     pub fn new(peek: P, inner: S) -> Self {
@@ -65,6 +66,19 @@ where
     }
 }
 
+impl<P, S: ExtensionsRef> ExtensionsRef for PeekStream<P, S> {
+    fn extensions(&self) -> &Extensions {
+        self.inner.extensions()
+    }
+}
+
+impl<P, S: ExtensionsMut> ExtensionsMut for PeekStream<P, S> {
+    fn extensions_mut(&mut self) -> &mut Extensions {
+        self.inner.extensions_mut()
+    }
+}
+
+#[warn(clippy::missing_trait_methods)]
 impl<P, S> AsyncRead for PeekStream<P, S>
 where
     P: AsyncRead,
@@ -90,6 +104,7 @@ where
     }
 }
 
+#[warn(clippy::missing_trait_methods)]
 impl<P, S> AsyncBufRead for PeekStream<P, S>
 where
     P: AsyncBufRead,
@@ -137,6 +152,7 @@ where
     }
 }
 
+#[warn(clippy::missing_trait_methods)]
 impl<P, S> AsyncWrite for PeekStream<P, S>
 where
     S: AsyncWrite,
@@ -193,11 +209,29 @@ where
     fn flush(&mut self) -> std::io::Result<()> {
         self.inner.flush()
     }
+
+    #[inline]
+    fn write_all(&mut self, buf: &[u8]) -> std::io::Result<()> {
+        self.inner.write_all(buf)
+    }
+
+    #[inline]
+    fn write_fmt(&mut self, args: fmt::Arguments<'_>) -> std::io::Result<()> {
+        self.inner.write_fmt(args)
+    }
+
+    #[inline]
+    fn write_vectored(&mut self, bufs: &[IoSlice<'_>]) -> std::io::Result<usize> {
+        self.inner.write_vectored(bufs)
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::ServiceInput;
+
     use super::*;
+
     use std::io::Cursor;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -262,7 +296,7 @@ mod tests {
                 let new_stream = || {
                     let peek_data = Cursor::new(self.peek_data);
                     let inner_data = Cursor::new(self.inner_data);
-                    PeekStream::new(peek_data, inner_data)
+                    PeekStream::new(peek_data, ServiceInput::new(inner_data))
                 };
 
                 test_multi_read_async::<N>(&mut new_stream(), self.expected_reads).await;
@@ -319,10 +353,10 @@ mod tests {
         .await;
     }
 
-    fn new_peek_write_stream() -> PeekStream<Cursor<Vec<u8>>, Cursor<Vec<u8>>> {
+    fn new_peek_write_stream() -> PeekStream<Cursor<Vec<u8>>, ServiceInput<Cursor<Vec<u8>>>> {
         let peek_data = Cursor::new(Vec::new());
         let inner_data = Cursor::new(Vec::new());
-        PeekStream::new(peek_data, inner_data)
+        PeekStream::new(peek_data, ServiceInput::new(inner_data))
     }
 
     async fn test_multi_write_async(mut stream: impl AsyncWrite + Unpin, cases: &[&str]) {
@@ -364,7 +398,7 @@ mod tests {
 
                 assert_eq!(
                     self.writes.join(""),
-                    String::from_utf8(stream.inner.into_inner()).unwrap(),
+                    String::from_utf8(stream.inner.request.into_inner()).unwrap(),
                     "[async] writes: {:?}",
                     self.writes,
                 );
@@ -387,7 +421,7 @@ mod tests {
 
                 assert_eq!(
                     self.writes.join(""),
-                    String::from_utf8(stream.inner.into_inner()).unwrap(),
+                    String::from_utf8(stream.inner.request.into_inner()).unwrap(),
                     "[sync] writes: {:?}",
                     self.writes
                 );

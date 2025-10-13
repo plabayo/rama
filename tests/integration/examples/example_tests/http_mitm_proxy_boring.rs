@@ -1,6 +1,7 @@
 use super::utils;
 use rama::{
-    Context, Layer,
+    Layer,
+    extensions::Extensions,
     http::{
         BodyExtractExt, Request,
         matcher::HttpMatcher,
@@ -90,13 +91,13 @@ async fn test_http_mitm_proxy() {
 
     let runner = utils::ExampleRunner::interactive("http_mitm_proxy_boring", Some("boring"));
 
-    let mut ctx = Context::default();
-    ctx.insert(ProxyAddress::try_from("http://john:secret@127.0.0.1:62017").unwrap());
+    let proxy_address = ProxyAddress::try_from("http://john:secret@127.0.0.1:62017").unwrap();
 
     // test http request proxy flow
     let result = runner
         .get("http://127.0.0.1:63003/foo/bar")
-        .send(ctx.clone())
+        .extension(proxy_address.clone())
+        .send()
         .await
         .unwrap()
         .try_into_json::<Value>()
@@ -105,10 +106,13 @@ async fn test_http_mitm_proxy() {
     let expected_value = json!({"method":"GET","path":"/foo/bar"});
     assert_eq!(expected_value, result);
 
+    let mut extensions = Extensions::new();
+    extensions.insert(proxy_address.clone());
+
     // test ws proxy flow
     let mut ws = runner
         .websocket("ws://127.0.0.1:63003/echo")
-        .handshake(ctx.clone())
+        .handshake(extensions.clone())
         .await
         .expect("ws handshake to receive");
     ws.send_message("You bastard!".into())
@@ -128,7 +132,7 @@ async fn test_http_mitm_proxy() {
     let mut ws = runner
         .websocket("ws://127.0.0.1:63003/echo")
         .with_per_message_deflate_overwrite_extensions()
-        .handshake(ctx.clone())
+        .handshake(extensions.clone())
         .await
         .expect("ws handshake to receive");
     ws.send_message("You bastard!".into())
@@ -147,7 +151,8 @@ async fn test_http_mitm_proxy() {
     // test https request proxy flow
     let result = runner
         .get("https://127.0.0.1:63004/foo/bar")
-        .send(ctx.clone())
+        .extension(proxy_address.clone())
+        .send()
         .await
         .unwrap()
         .try_into_json::<Value>()
@@ -159,7 +164,7 @@ async fn test_http_mitm_proxy() {
     // test wss proxy flow
     let mut ws = runner
         .websocket_h2("wss://127.0.0.1:63004/echo")
-        .handshake(ctx.clone())
+        .handshake(extensions.clone())
         .await
         .expect("ws handshake to receive");
     ws.send_message("You bastard!".into())
@@ -179,7 +184,7 @@ async fn test_http_mitm_proxy() {
     let mut ws = runner
         .websocket_h2("wss://127.0.0.1:63004/echo")
         .with_per_message_deflate_overwrite_extensions()
-        .handshake(ctx.clone())
+        .handshake(extensions.clone())
         .await
         .expect("ws handshake to receive");
     ws.send_message("You bastard!".into())

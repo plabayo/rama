@@ -16,7 +16,8 @@
 //! or with yourself using different browsers or browser tabs :)
 
 use rama::{
-    Context, Layer,
+    Layer,
+    extensions::ExtensionsRef,
     http::{
         server::HttpServer,
         service::web::{Router, response::Html},
@@ -53,8 +54,8 @@ async fn main() {
         let server = HttpServer::http1().service(Router::new().get("/", Html(INDEX)).get(
             "/chat",
             WebSocketAcceptor::new().into_service(service_fn(
-                async |ctx: Context, mut ws: ServerWebSocket| {
-                    let state = ctx.get::<State>().unwrap().clone();
+                async | mut ws: ServerWebSocket| {
+                    let state = ws.extensions().get::<State>().unwrap().clone();
                     let mut handler = WsHandler {
                         nickname: None,
                         broadcast_tx: state.broadcast_tx,

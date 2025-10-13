@@ -32,6 +32,8 @@ mod http_mitm_proxy_boring;
 #[cfg(all(feature = "http-full", feature = "rustls"))]
 mod http_mitm_proxy_rustls;
 #[cfg(feature = "http-full")]
+mod http_nd_json;
+#[cfg(feature = "http-full")]
 mod http_pooled_client;
 #[cfg(all(feature = "http-full", feature = "tower"))]
 mod http_rama_tower;
@@ -73,6 +75,8 @@ mod proxy_connectivity_check;
 mod tcp_listener_hello;
 #[cfg(feature = "tcp")]
 mod tcp_listener_layers;
+#[cfg(feature = "tcp")]
+mod tcp_nd_json;
 #[cfg(all(feature = "http-full", feature = "boring"))]
 mod tls_sni_router;
 #[cfg(feature = "udp")]

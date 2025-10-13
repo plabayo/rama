@@ -2,7 +2,7 @@
 
 use std::marker::PhantomData;
 
-use crate::{Context, Service};
+use crate::Service;
 
 /// Create a [`ServiceFn`] from a function.
 pub fn service_fn<F, T, R, O, E>(f: F) -> ServiceFn<F, T, R, O, E>
@@ -32,22 +32,12 @@ where
     }
 }
 
-impl<Request, F, R, O, E> Factory<(Context, Request), R, O, E> for F
-where
-    F: Fn(Context, Request) -> R + Send + Sync + 'static,
-    R: Future<Output = Result<O, E>>,
-{
-    fn call(&self, (ctx, req): (Context, Request)) -> R {
-        (self)(ctx, req)
-    }
-}
-
-impl<Request, F, R, O, E> Factory<((), Request), R, O, E> for F
+impl<Request, F, R, O, E> Factory<(Request,), R, O, E> for F
 where
     F: Fn(Request) -> R + Send + Sync + 'static,
     R: Future<Output = Result<O, E>>,
 {
-    fn call(&self, ((), req): ((), Request)) -> R {
+    fn call(&self, (req,): (Request,)) -> R {
         (self)(req)
     }
 }
@@ -116,10 +106,10 @@ where
 
     fn serve(
         &self,
-        ctx: Context,
+
         req: Request,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
-        let param = T::from_context_request(ctx, req);
+        let param = T::from_context_request(req);
         self.hnd.call(param)
     }
 }
@@ -127,28 +117,19 @@ where
 /// Convert a context+request into a parameter for the [`ServiceFn`] handler function.
 pub trait FromContextRequest<Request>: Send + 'static {
     /// Convert a context+request into a parameter for the [`ServiceFn`] handler function.
-    fn from_context_request(ctx: Context, req: Request) -> Self;
+    fn from_context_request(req: Request) -> Self;
 }
 
 impl<Request> FromContextRequest<Request> for () {
-    fn from_context_request(_ctx: Context, _req: Request) -> Self {}
+    fn from_context_request(_req: Request) -> Self {}
 }
 
-impl<Request> FromContextRequest<Request> for ((), Request)
+impl<Request> FromContextRequest<Request> for (Request,)
 where
     Request: Send + 'static,
 {
-    fn from_context_request(_ctx: Context, req: Request) -> Self {
-        ((), req)
-    }
-}
-
-impl<Request> FromContextRequest<Request> for (Context, Request)
-where
-    Request: Send + 'static,
-{
-    fn from_context_request(ctx: Context, req: Request) -> Self {
-        (ctx, req)
+    fn from_context_request(req: Request) -> Self {
+        (req,)
     }
 }
 
@@ -157,7 +138,6 @@ mod tests {
     use std::convert::Infallible;
 
     use super::*;
-    use crate::Context;
 
     #[tokio::test]
     async fn test_service_fn() {
@@ -168,17 +148,11 @@ mod tests {
                 Ok(())
             })
             .boxed(),
-            service_fn(async |_ctx: Context, req: String| {
-                assert_eq!(req, "hello");
-                Ok(())
-            })
-            .boxed(),
         ];
 
         for service in services {
-            let ctx = Context::default();
             let req = "hello".to_owned();
-            let res: Result<(), Infallible> = service.serve(ctx, req).await;
+            let res: Result<(), Infallible> = service.serve(req).await;
             assert!(res.is_ok());
         }
     }
@@ -189,8 +163,5 @@ mod tests {
     fn test_service_fn_without_usage() {
         assert_send_sync(service_fn(async || Ok::<_, Infallible>(())));
         assert_send_sync(service_fn(async |_req: String| Ok::<_, Infallible>(())));
-        assert_send_sync(service_fn(async |_ctx: Context, _req: String| {
-            Ok::<_, Infallible>(())
-        }));
     }
 }

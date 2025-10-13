@@ -17,10 +17,11 @@
 //! You should see a response with `HTTP/1.1 200 OK` and a JSON body with the user agent info exposed by Rama.
 
 use rama::{
-    Context, Layer,
-    http::layer::ua::{UserAgent, UserAgentClassifierLayer},
+    Layer,
+    extensions::ExtensionsRef,
     http::{
         HeaderName, Request, Response,
+        layer::ua::{UserAgent, UserAgentClassifierLayer},
         server::HttpServer,
         service::web::response::{IntoResponse, Json},
     },
@@ -44,8 +45,8 @@ async fn main() {
         .unwrap();
 }
 
-async fn handle(ctx: Context, _req: Request) -> Result<Response, Infallible> {
-    let ua: &UserAgent = ctx.get().unwrap();
+async fn handle(req: Request) -> Result<Response, Infallible> {
+    let ua: &UserAgent = req.extensions().get().unwrap();
     Ok(Json(json!({
         "ua": ua.header_str(),
         "kind": ua.info().map(|info| info.kind.to_string()),

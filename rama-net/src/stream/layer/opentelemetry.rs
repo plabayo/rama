@@ -3,6 +3,7 @@
 //! [`Layer`]: rama_core::Layer
 
 use crate::stream::SocketInfo;
+use rama_core::extensions::{Extensions, ExtensionsRef};
 use rama_core::telemetry::opentelemetry::semantic_conventions::resource::{
     SERVICE_NAME, SERVICE_VERSION,
 };
@@ -15,7 +16,7 @@ use rama_core::telemetry::opentelemetry::{
     metrics::{Counter, Histogram, Meter},
     semantic_conventions,
 };
-use rama_core::{Context, Layer, Service};
+use rama_core::{Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
 use std::borrow::Cow;
 use std::net::IpAddr;
@@ -209,17 +210,17 @@ impl<S: Clone, F: Clone> Clone for NetworkMetricsService<S, F> {
 }
 
 impl<S, F> NetworkMetricsService<S, F> {
-    fn compute_attributes(&self, ctx: &Context) -> Vec<KeyValue>
+    fn compute_attributes(&self, ext: &Extensions) -> Vec<KeyValue>
     where
         F: AttributesFactory,
     {
         let mut attributes = self
             .attributes_factory
-            .attributes(2 + self.base_attributes.len(), ctx);
+            .attributes(2 + self.base_attributes.len(), ext);
         attributes.extend(self.base_attributes.iter().cloned());
 
         // client info
-        if let Some(socket_info) = ctx.get::<SocketInfo>() {
+        if let Some(socket_info) = ext.get::<SocketInfo>() {
             let peer_addr = socket_info.peer_addr();
             attributes.push(KeyValue::new(
                 NETWORK_TYPE,
@@ -241,20 +242,20 @@ impl<S, F, Stream> Service<Stream> for NetworkMetricsService<S, F>
 where
     S: Service<Stream>,
     F: AttributesFactory,
-    Stream: crate::stream::Stream,
+    Stream: rama_core::stream::Stream + ExtensionsRef,
 {
     type Response = S::Response;
     type Error = S::Error;
 
-    async fn serve(&self, ctx: Context, stream: Stream) -> Result<Self::Response, Self::Error> {
-        let attributes: Vec<KeyValue> = self.compute_attributes(&ctx);
+    async fn serve(&self, stream: Stream) -> Result<Self::Response, Self::Error> {
+        let attributes: Vec<KeyValue> = self.compute_attributes(stream.extensions());
 
         self.metrics.network_total_connections.add(1, &attributes);
 
         // used to compute the duration of the connection
         let timer = SystemTime::now();
 
-        let result = self.inner.serve(ctx, stream).await;
+        let result = self.inner.serve(stream).await;
 
         match result {
             Ok(res) => {
@@ -276,7 +277,7 @@ mod tests {
     #[test]
     fn test_default_svc_compute_attributes_default() {
         let svc = NetworkMetricsService::new(());
-        let attributes = svc.compute_attributes(&Context::default());
+        let attributes = svc.compute_attributes(&Extensions::default());
         assert!(
             attributes
                 .iter()
@@ -306,7 +307,7 @@ mod tests {
         })
         .into_layer(());
 
-        let attributes = svc.compute_attributes(&Context::default());
+        let attributes = svc.compute_attributes(&Extensions::default());
         assert!(
             attributes
                 .iter()
@@ -337,7 +338,7 @@ mod tests {
         .with_attributes(vec![KeyValue::new("test", "attribute_fn")])
         .into_layer(());
 
-        let attributes = svc.compute_attributes(&Context::default());
+        let attributes = svc.compute_attributes(&Extensions::default());
         assert!(
             attributes
                 .iter()
@@ -370,14 +371,14 @@ mod tests {
             metric_prefix: Some("foo".to_owned()),
             ..Default::default()
         })
-        .with_attributes(|size_hint: usize, _ctx: &Context| {
+        .with_attributes(|size_hint: usize, _ext: &Extensions| {
             let mut attributes = Vec::with_capacity(size_hint + 1);
             attributes.push(KeyValue::new("test", "attribute_fn"));
             attributes
         })
         .into_layer(());
 
-        let attributes = svc.compute_attributes(&Context::default());
+        let attributes = svc.compute_attributes(&Extensions::default());
         assert!(
             attributes
                 .iter()

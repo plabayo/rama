@@ -167,7 +167,7 @@ if you are planning to pick it up, as to avoid multiple people trying to solve t
 > [`needs input`](https://github.com/plabayo/rama/issues?q=is%3Aissue+is%3Aopen+label%3A%22needs+input%22+) issues require also prior R&D work:
 >
 > - add and discuss missing knowledge or other things not clear;
-> - figure out pros and cons of the solutions (as well as what if we choose to not not resolve the issue);
+> - figure out pros and cons of the solutions (as well as what if we choose to not resolve the issue);
 > - discuss and brainstorm on possible implementations, desire features, consequences, benefits, ...
 >
 > Only once this R&D is complete and alignment is confirmed, shall the feature be started to be implemented.

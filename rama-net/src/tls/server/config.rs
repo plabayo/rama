@@ -1,5 +1,5 @@
 use crate::{
-    address::Host,
+    address::Domain,
     tls::{ApplicationProtocol, DataEncoding, KeyLogIntent, ProtocolVersion, client::ClientHello},
 };
 use rama_core::error::OpaqueError;
@@ -78,7 +78,10 @@ pub struct ServerCertIssuerData {
 #[derive(Debug, Clone)]
 /// Cache kind that will be used to cache results of certificate issuers
 pub enum CacheKind {
-    MemCache { max_size: NonZeroU64 },
+    MemCache {
+        max_size: NonZeroU64,
+        ttl: Option<std::time::Duration>,
+    },
     Disabled,
 }
 
@@ -86,6 +89,7 @@ impl Default for CacheKind {
     fn default() -> Self {
         Self::MemCache {
             max_size: NonZeroU64::new(8096).unwrap(),
+            ttl: None,
         }
     }
 }
@@ -123,9 +127,7 @@ pub struct SelfSignedData {
     /// name of the organisation
     pub organisation_name: Option<String>,
     /// common name (CN): server name protected by the SSL certificate
-    ///
-    /// (usually the host domain name)
-    pub common_name: Option<Host>,
+    pub common_name: Option<Domain>,
     /// Subject Alternative Names (SAN) can be defined
     /// to create a cert which allows multiple hostnames or domains to be secured under one certificate.
     pub subject_alternative_names: Option<Vec<String>>,
@@ -160,9 +162,14 @@ impl DynamicIssuer {
     pub async fn issue_cert(
         &self,
         client_hello: ClientHello,
-        server_name: Option<Host>,
+        server_name: Option<Domain>,
     ) -> Result<ServerAuthData, OpaqueError> {
         self.issuer.issue_cert(client_hello, server_name).await
+    }
+
+    #[must_use]
+    pub fn norm_cn(&self, domain: &Domain) -> Option<&Domain> {
+        self.issuer.norm_cn(domain)
     }
 }
 
@@ -178,8 +185,23 @@ pub trait DynamicCertIssuer: Send + Sync + 'static {
     fn issue_cert(
         &self,
         client_hello: ClientHello,
-        server_name: Option<Host>,
+        server_name: Option<Domain>,
     ) -> impl Future<Output = Result<ServerAuthData, OpaqueError>> + Send + Sync + '_;
+
+    /// Can be used to return a normalized domain for purposes
+    /// such as caching.
+    ///
+    /// This is only useful for issuers where
+    /// the actual used domain might be modified such
+    /// that mutliple different input domains result
+    /// in the same output domain. E.g. because of
+    /// wildcard domains.
+    ///
+    /// Mostly useful for optimizations in caching of certs,
+    /// but not critical to have, just nice.
+    fn norm_cn(&self, _domain: &Domain) -> Option<&Domain> {
+        None
+    }
 }
 
 /// Internal trait to support dynamic dispatch of trait with async fn.
@@ -188,8 +210,12 @@ trait DynDynamicCertIssuer {
     fn issue_cert(
         &self,
         client_hello: ClientHello,
-        server_name: Option<Host>,
+        server_name: Option<Domain>,
     ) -> Pin<Box<dyn Future<Output = Result<ServerAuthData, OpaqueError>> + Send + Sync + '_>>;
+
+    fn norm_cn(&self, _domain: &Domain) -> Option<&Domain> {
+        None
+    }
 }
 
 impl<T> DynDynamicCertIssuer for T
@@ -199,9 +225,13 @@ where
     fn issue_cert(
         &self,
         client_hello: ClientHello,
-        server_name: Option<Host>,
+        server_name: Option<Domain>,
     ) -> Pin<Box<dyn Future<Output = Result<ServerAuthData, OpaqueError>> + Send + Sync + '_>> {
         Box::pin(self.issue_cert(client_hello, server_name))
+    }
+
+    fn norm_cn(&self, domain: &Domain) -> Option<&Domain> {
+        self.norm_cn(domain)
     }
 }
 

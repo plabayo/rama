@@ -1,7 +1,7 @@
 use crate::layer::cors::{AllowOrigin, CorsLayer};
 use crate::{Body, HeaderValue, Request, Response, header};
 use rama_core::service::service_fn;
-use rama_core::{Context, Layer, Service};
+use rama_core::{Layer, Service};
 use std::convert::Infallible;
 
 #[tokio::test]
@@ -23,10 +23,7 @@ async fn vary_set_by_inner_service() {
     }
 
     let svc = CorsLayer::permissive().into_layer(service_fn(inner_svc));
-    let res = svc
-        .serve(Context::default(), Request::new(Body::empty()))
-        .await
-        .unwrap();
+    let res = svc.serve(Request::new(Body::empty())).await.unwrap();
     let mut vary_headers = res.headers().get_all(header::VARY).into_iter();
     assert_eq!(vary_headers.next(), Some(&CUSTOM_VARY_HEADERS));
     assert_eq!(vary_headers.next(), Some(&PERMISSIVE_CORS_VARY_HEADERS));

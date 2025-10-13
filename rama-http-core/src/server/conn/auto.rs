@@ -1,23 +1,24 @@
 //! Http1 or Http2 connection.
 
-use rama_net::stream::rewind::Rewind;
 use std::marker::PhantomPinned;
 use std::mem::MaybeUninit;
 use std::pin::Pin;
 use std::task::ready;
 use std::task::{Context, Poll};
 use std::{io, time::Duration};
+
+use pin_project_lite::pin_project;
 use tokio::io::AsyncRead;
 use tokio::io::AsyncWrite;
 use tokio::io::ReadBuf;
 
-use pin_project_lite::pin_project;
 use rama_core::bytes::Bytes;
+use rama_core::error::BoxError;
+use rama_core::rt::Executor;
+use rama_core::stream::rewind::Rewind;
 
 use crate::body::Incoming;
 use crate::service::HttpService;
-use rama_core::error::BoxError;
-use rama_core::rt::Executor;
 
 use super::{http1, http2};
 
@@ -838,8 +839,8 @@ mod tests {
     use crate::server::conn::auto;
     use crate::service::RamaHttpService;
     use crate::{body::Bytes, client};
-    use rama_core::Context;
     use rama_core::error::BoxError;
+    use rama_core::extensions::Extensions;
     use rama_core::rt::Executor;
     use rama_core::service::service_fn;
     use rama_http::StreamingBody;
@@ -962,7 +963,7 @@ mod tests {
     #[cfg(not(miri))]
     #[tokio::test]
     async fn graceful_shutdown() {
-        use rama_core::{Context, service::service_fn};
+        use rama_core::service::service_fn;
 
         use crate::service::RamaHttpService;
 
@@ -981,7 +982,7 @@ mod tests {
         let builder = auto::Builder::new(Executor::new());
         let connection = builder.serve_connection(
             stream,
-            RamaHttpService::new(Context::default(), service_fn(hello)),
+            RamaHttpService::new(Extensions::new(), service_fn(hello)),
         );
 
         pin!(connection);
@@ -1042,7 +1043,7 @@ mod tests {
                         builder
                             .serve_connection(
                                 stream,
-                                RamaHttpService::new(Context::default(), service_fn(hello)),
+                                RamaHttpService::new(Extensions::new(), service_fn(hello)),
                             )
                             .await
                     } else if h2_only {
@@ -1050,7 +1051,7 @@ mod tests {
                         builder
                             .serve_connection(
                                 stream,
-                                RamaHttpService::new(Context::default(), service_fn(hello)),
+                                RamaHttpService::new(Extensions::new(), service_fn(hello)),
                             )
                             .await
                     } else {
@@ -1059,7 +1060,7 @@ mod tests {
                             .max_header_list_size(4096)
                             .serve_connection_with_upgrades(
                                 stream,
-                                RamaHttpService::new(Context::default(), service_fn(hello)),
+                                RamaHttpService::new(Extensions::new(), service_fn(hello)),
                             )
                             .await
                     }

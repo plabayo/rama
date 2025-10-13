@@ -1,4 +1,3 @@
-use rama_core::Context;
 use rama_core::error::BoxError;
 use std::fmt;
 use std::{convert::Infallible, sync::Arc};
@@ -8,7 +7,6 @@ use crate::client::TcpStreamConnector;
 /// Contains a `Connector` created by a [`TcpStreamConnectorFactory`],
 /// together with the [`Context`] used to create it in relation to.
 pub struct CreatedTcpStreamConnector<Connector> {
-    pub ctx: Context,
     pub connector: Connector,
 }
 
@@ -18,7 +16,6 @@ where
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("CreatedTcpStreamConnector")
-            .field("ctx", &self.ctx)
             .field("connector", &self.connector)
             .finish()
     }
@@ -30,7 +27,6 @@ where
 {
     fn clone(&self) -> Self {
         Self {
-            ctx: self.ctx.clone(),
             connector: self.connector.clone(),
         }
     }
@@ -63,7 +59,6 @@ pub trait TcpStreamConnectorFactory: Send + Sync + 'static {
     /// Try to create a [`TcpStreamConnector`], and return an error or otherwise.
     fn make_connector(
         &self,
-        ctx: Context,
     ) -> impl Future<Output = Result<CreatedTcpStreamConnector<Self::Connector>, Self::Error>> + Send + '_;
 }
 
@@ -73,10 +68,9 @@ impl TcpStreamConnectorFactory for () {
 
     fn make_connector(
         &self,
-        ctx: Context,
     ) -> impl Future<Output = Result<CreatedTcpStreamConnector<Self::Connector>, Self::Error>> + Send + '_
     {
-        std::future::ready(Ok(CreatedTcpStreamConnector { ctx, connector: () }))
+        std::future::ready(Ok(CreatedTcpStreamConnector { connector: () }))
     }
 }
 
@@ -117,11 +111,9 @@ where
 
     fn make_connector(
         &self,
-        ctx: Context,
     ) -> impl Future<Output = Result<CreatedTcpStreamConnector<Self::Connector>, Self::Error>> + Send + '_
     {
         std::future::ready(Ok(CreatedTcpStreamConnector {
-            ctx,
             connector: self.0.clone(),
         }))
     }
@@ -136,10 +128,9 @@ where
 
     fn make_connector(
         &self,
-        ctx: Context,
     ) -> impl Future<Output = Result<CreatedTcpStreamConnector<Self::Connector>, Self::Error>> + Send + '_
     {
-        (**self).make_connector(ctx)
+        (**self).make_connector()
     }
 }
 
@@ -157,14 +148,14 @@ macro_rules! impl_stream_connector_factory_either {
 
             async fn make_connector(
                 &self,
-                ctx: Context,
+
             ) -> Result<CreatedTcpStreamConnector< Self::Connector>, Self::Error> {
                 match self {
                     $(
-                        ::rama_core::combinators::$id::$param(s) => match s.make_connector(ctx).await {
+                        ::rama_core::combinators::$id::$param(s) => match s.make_connector().await {
                             Err(e) => Err(e.into()),
-                            Ok(CreatedTcpStreamConnector{ ctx, connector }) => Ok(CreatedTcpStreamConnector{
-                                ctx,
+                            Ok(CreatedTcpStreamConnector{ connector }) => Ok(CreatedTcpStreamConnector{
+
                                 connector: ::rama_core::combinators::$id::$param(connector),
                             }),
                         },

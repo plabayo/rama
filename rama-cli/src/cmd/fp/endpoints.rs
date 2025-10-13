@@ -9,8 +9,8 @@ use super::{
 use crate::cmd::fp::{StorageAuthorized, data::TlsDisplayInfoExtensionData};
 use itertools::Itertools as _;
 use rama::{
-    Context,
     error::{ErrorContext, OpaqueError},
+    extensions::ExtensionsRef,
     http::{
         Body, BodyExtractExt, Request, Response, StatusCode, Version,
         proto::h2,
@@ -69,6 +69,13 @@ pub(super) async fn get_consent() -> impl IntoResponse {
                         <li><a href="https://echo.ramaproxy.org:443">https://echo.ramaproxy.org</a>: echo service, TLS</li>
                     </ul>
                 </p>
+                </p>
+                    Need to lookup your IP Address in html/txt/json:
+                    <ul>
+                        <li><a href="https://ipv4.ramaproxy.org">https://ipv4.ramaproxy.org</a>: return your pubic IPv4 address</li>
+                        <li><a href="https://ipv6.ramaproxy.org">https://ipv6.ramaproxy.org</a>: return your pubic IPv6 address</li>
+                    </ul>
+                </p>
                 <p>You can learn move about rama at in
                     <a href="https://ramaproxy.org/book">the rama book</a>.
                     And the source code for this service is available at
@@ -93,18 +100,17 @@ pub(super) async fn get_consent() -> impl IntoResponse {
     )
 }
 
-pub(super) async fn get_report(mut ctx: Context, req: Request) -> Result<Html, Response> {
+pub(super) async fn get_report(req: Request) -> Result<Html, Response> {
     let ja4h = get_ja4h_info(&req);
 
     let (mut parts, _) = req.into_parts();
 
-    let user_agent_info = get_user_agent_info(&ctx).await;
+    let user_agent_info = get_user_agent_info(&parts.extensions).await;
 
     let request_info = get_request_info(
         FetchMode::Navigate,
         ResourceType::Document,
         Initiator::Navigator,
-        &mut ctx,
         &parts,
     )
     .await
@@ -113,7 +119,6 @@ pub(super) async fn get_report(mut ctx: Context, req: Request) -> Result<Html, R
     let user_agent = user_agent_info.user_agent.clone();
 
     let http_info = get_and_store_http_info(
-        &ctx,
         parts.headers,
         &mut parts.extensions,
         parts.version,
@@ -126,7 +131,13 @@ pub(super) async fn get_report(mut ctx: Context, req: Request) -> Result<Html, R
     let head = r#"<script src="/assets/script.js"></script>"#;
 
     let mut tables = vec![
-        ctx.get::<Arc<State>>().unwrap().data_source.clone().into(),
+        parts
+            .extensions
+            .get::<Arc<State>>()
+            .unwrap()
+            .data_source
+            .clone()
+            .into(),
         user_agent_info.into(),
         request_info.into(),
         Table {
@@ -161,7 +172,7 @@ pub(super) async fn get_report(mut ctx: Context, req: Request) -> Result<Html, R
         extend_tables_with_h2_settings(h2_settings, &mut tables);
     }
 
-    let tls_info = get_tls_display_info_and_store(&ctx, user_agent)
+    let tls_info = get_tls_display_info_and_store(&parts.extensions, user_agent)
         .await
         .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
 
@@ -308,37 +319,6 @@ fn extend_tables_with_h2_settings(h2_settings: Http2Settings, tables: &mut Vec<T
 }
 
 //------------------------------------------
-// endpoints: ACME
-//------------------------------------------
-
-#[derive(Debug, Serialize, Deserialize)]
-pub(super) struct AcmeChallengeParams {
-    token: String,
-}
-
-pub(super) async fn get_acme_challenge(
-    Path(params): Path<AcmeChallengeParams>,
-    ctx: Context,
-) -> Response {
-    match ctx
-        .get::<Arc<State>>()
-        .unwrap()
-        .acme
-        .get_challenge(params.token)
-    {
-        Some(challenge) => Response::builder()
-            .status(StatusCode::OK)
-            .header("content-type", "text/plain")
-            .body(challenge.to_owned().into())
-            .expect("build acme challenge response"),
-        None => Response::builder()
-            .status(StatusCode::NOT_FOUND)
-            .body(Body::empty())
-            .expect("build acme challenge response"),
-    }
-}
-
-//------------------------------------------
 // endpoints: XHR
 //------------------------------------------
 
@@ -358,14 +338,13 @@ pub(super) struct APINumberRequest {
 
 pub(super) async fn post_api_fetch_number(
     Path(params): Path<APINumberParams>,
-    mut ctx: Context,
     req: Request,
 ) -> Result<Json<serde_json::Value>, Response> {
     let ja4h = get_ja4h_info(&req);
 
     let (mut parts, body) = req.into_parts();
 
-    let user_agent_info = get_user_agent_info(&ctx).await;
+    let user_agent_info = get_user_agent_info(parts.extensions()).await;
 
     let user_agent = user_agent_info.user_agent.clone();
 
@@ -373,14 +352,12 @@ pub(super) async fn post_api_fetch_number(
         FetchMode::SameOrigin,
         ResourceType::Xhr,
         Initiator::Fetch,
-        &mut ctx,
         &parts,
     )
     .await
     .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
 
     let http_info = get_and_store_http_info(
-        &ctx,
         parts.headers,
         &mut parts.extensions,
         parts.version,
@@ -395,8 +372,14 @@ pub(super) async fn post_api_fetch_number(
         .await
         .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()).into_response())?;
 
-    if let Some(storage) = ctx.get::<Arc<State>>().unwrap().storage.as_ref() {
-        let auth = ctx.contains::<crate::fp::StorageAuthorized>();
+    if let Some(storage) = parts
+        .extensions
+        .get::<Arc<State>>()
+        .unwrap()
+        .storage
+        .as_ref()
+    {
+        let auth = parts.extensions.contains::<crate::fp::StorageAuthorized>();
         if let Some(js_web_apis) = request.js_web_apis.clone() {
             storage
                 .store_js_web_apis(user_agent.clone(), auth, js_web_apis)
@@ -416,7 +399,7 @@ pub(super) async fn post_api_fetch_number(
         }
     }
 
-    let tls_info = get_tls_display_info_and_store(&ctx, user_agent)
+    let tls_info = get_tls_display_info_and_store(&parts.extensions, user_agent)
         .await
         .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
 
@@ -440,14 +423,13 @@ pub(super) async fn post_api_fetch_number(
 
 pub(super) async fn post_api_xml_http_request_number(
     Path(params): Path<APINumberParams>,
-    mut ctx: Context,
     req: Request,
 ) -> Result<Json<serde_json::Value>, Response> {
     let ja4h = get_ja4h_info(&req);
 
     let (mut parts, _) = req.into_parts();
 
-    let user_agent_info = get_user_agent_info(&ctx).await;
+    let user_agent_info = get_user_agent_info(&parts.extensions).await;
 
     let user_agent = user_agent_info.user_agent.clone();
 
@@ -455,14 +437,12 @@ pub(super) async fn post_api_xml_http_request_number(
         FetchMode::SameOrigin,
         ResourceType::Xhr,
         Initiator::Fetch,
-        &mut ctx,
         &parts,
     )
     .await
     .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
 
     let http_info = get_and_store_http_info(
-        &ctx,
         parts.headers,
         &mut parts.extensions,
         parts.version,
@@ -472,7 +452,7 @@ pub(super) async fn post_api_xml_http_request_number(
     .await
     .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
 
-    let tls_info = get_tls_display_info_and_store(&ctx, user_agent)
+    let tls_info = get_tls_display_info_and_store(&parts.extensions, user_agent)
         .await
         .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
 
@@ -495,12 +475,12 @@ pub(super) async fn post_api_xml_http_request_number(
 // endpoints: form
 //------------------------------------------
 
-pub(super) async fn form(mut ctx: Context, req: Request) -> Result<Html, Response> {
+pub(super) async fn form(req: Request) -> Result<Html, Response> {
     let ja4h = get_ja4h_info(&req);
 
     let (mut parts, _) = req.into_parts();
 
-    let user_agent_info = get_user_agent_info(&ctx).await;
+    let user_agent_info = get_user_agent_info(&parts.extensions).await;
 
     let user_agent = user_agent_info.user_agent.clone();
 
@@ -508,14 +488,12 @@ pub(super) async fn form(mut ctx: Context, req: Request) -> Result<Html, Respons
         FetchMode::SameOrigin,
         ResourceType::Form,
         Initiator::Form,
-        &mut ctx,
         &parts,
     )
     .await
     .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
 
     let http_info = get_and_store_http_info(
-        &ctx,
         parts.headers,
         &mut parts.extensions,
         parts.version,
@@ -545,7 +523,13 @@ pub(super) async fn form(mut ctx: Context, req: Request) -> Result<Html, Respons
     }
 
     let mut tables = vec![
-        ctx.get::<Arc<State>>().unwrap().data_source.clone().into(),
+        parts
+            .extensions
+            .get::<Arc<State>>()
+            .unwrap()
+            .data_source
+            .clone()
+            .into(),
         user_agent_info.into(),
         request_info.into(),
         Table {
@@ -580,7 +564,7 @@ pub(super) async fn form(mut ctx: Context, req: Request) -> Result<Html, Respons
         extend_tables_with_h2_settings(h2_settings, &mut tables);
     }
 
-    let tls_info = get_tls_display_info_and_store(&ctx, user_agent)
+    let tls_info = get_tls_display_info_and_store(&parts.extensions, user_agent)
         .await
         .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
 
@@ -601,16 +585,15 @@ pub(super) async fn form(mut ctx: Context, req: Request) -> Result<Html, Respons
 // endpoints: WS(S)
 //------------------------------------------
 
-pub(super) async fn ws_api(ctx: Context, ws: ServerWebSocket) -> Result<(), OpaqueError> {
+pub(super) async fn ws_api(ws: ServerWebSocket) -> Result<(), OpaqueError> {
     tracing::debug!("ws api called");
     let (mut ws, mut parts) = ws.into_parts();
 
-    let user_agent_info = get_user_agent_info(&ctx).await;
+    let user_agent_info = get_user_agent_info(&parts.extensions).await;
 
     let user_agent = user_agent_info.user_agent.clone();
 
     let _ = get_and_store_http_info(
-        &ctx,
         parts.headers,
         &mut parts.extensions,
         parts.version,
@@ -620,12 +603,18 @@ pub(super) async fn ws_api(ctx: Context, ws: ServerWebSocket) -> Result<(), Opaq
     .await?;
     tracing::debug!("ws api: http info stored");
 
-    if let Some(hello) = ctx
+    if let Some(hello) = parts
+        .extensions
         .get::<SecureTransport>()
         .and_then(|st| st.client_hello())
-        && let Some(storage) = ctx.get::<Arc<State>>().unwrap().storage.as_ref()
+        && let Some(storage) = parts
+            .extensions
+            .get::<Arc<State>>()
+            .unwrap()
+            .storage
+            .as_ref()
     {
-        let auth = ctx.contains::<StorageAuthorized>();
+        let auth = parts.extensions.contains::<StorageAuthorized>();
         storage
             .store_tls_ws_client_overwrites_from_client_hello(user_agent, auth, hello.clone())
             .await

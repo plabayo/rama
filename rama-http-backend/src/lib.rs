@@ -11,7 +11,7 @@
     html_favicon_url = "https://raw.githubusercontent.com/plabayo/rama/main/docs/img/old_logo.png"
 )]
 #![doc(html_logo_url = "https://raw.githubusercontent.com/plabayo/rama/main/docs/img/old_logo.png")]
-#![cfg_attr(docsrs, feature(doc_auto_cfg, doc_cfg))]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(test, allow(clippy::float_cmp))]
 #![cfg_attr(not(test), warn(clippy::print_stdout, clippy::dbg_macro))]
 
@@ -22,7 +22,7 @@ pub mod server;
 mod tests {
     use super::{client::HttpConnector, server::HttpServer};
     use rama_core::futures::future::join;
-    use rama_core::{Context, Service, rt::Executor, service::service_fn};
+    use rama_core::{Service, rt::Executor, service::service_fn};
     use rama_http_types::{Body, Request, Response, Version};
     use rama_net::test_utils::client::MockConnectorService;
     use std::{
@@ -33,13 +33,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_http11_pipelining() {
-        let ctx = Context::default();
         let connector = HttpConnector::new(MockConnectorService::new(|| {
             HttpServer::auto(Executor::default()).service(service_fn(server_svc_fn))
         }));
 
         let conn = connector
-            .serve(ctx, create_test_request(Version::HTTP_11))
+            .serve(create_test_request(Version::HTTP_11))
             .await
             .unwrap()
             .conn;
@@ -52,8 +51,8 @@ mod tests {
         // For http1.1 this will result in pipelining (http2 will still be multiplexed)
         let start = Instant::now();
         let (res1, res2) = join(
-            conn.serve(Context::default(), create_test_request(Version::HTTP_11)),
-            conn.serve(Context::default(), create_test_request(Version::HTTP_11)),
+            conn.serve(create_test_request(Version::HTTP_11)),
+            conn.serve(create_test_request(Version::HTTP_11)),
         )
         .await;
         let duration = start.elapsed();
@@ -66,13 +65,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_http2_multiplex() {
-        let ctx = Context::default();
         let connector = HttpConnector::new(MockConnectorService::new(|| {
             HttpServer::auto(Executor::default()).service(service_fn(server_svc_fn))
         }));
 
         let conn = connector
-            .serve(ctx, create_test_request(Version::HTTP_2))
+            .serve(create_test_request(Version::HTTP_2))
             .await
             .unwrap()
             .conn;
@@ -80,8 +78,8 @@ mod tests {
         // We have an artificial sleep of 100ms, so multiplexing should be < 200ms
         let start = Instant::now();
         let (res1, res2) = join(
-            conn.serve(Context::default(), create_test_request(Version::HTTP_2)),
-            conn.serve(Context::default(), create_test_request(Version::HTTP_2)),
+            conn.serve(create_test_request(Version::HTTP_2)),
+            conn.serve(create_test_request(Version::HTTP_2)),
         )
         .await;
 
@@ -92,7 +90,7 @@ mod tests {
         assert!(duration < Duration::from_millis(200));
     }
 
-    async fn server_svc_fn(_ctx: Context, _req: Request) -> Result<Response, Infallible> {
+    async fn server_svc_fn(_req: Request) -> Result<Response, Infallible> {
         sleep(Duration::from_millis(100)).await;
         Ok(Response::new(Body::from("a random response body")))
     }

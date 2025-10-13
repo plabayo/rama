@@ -4,8 +4,10 @@
 
 use crate::http::RequestContext;
 use crate::{Protocol, address::Authority};
-use rama_core::{Context, error::OpaqueError};
-use rama_http_types::{HttpRequestParts, Version};
+use rama_core::error::OpaqueError;
+use rama_core::extensions::ExtensionsRef;
+use rama_http_types::request::Parts;
+use rama_http_types::{Request, Version};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// The context as relevant to the transport layer,
@@ -45,18 +47,35 @@ pub trait TryRefIntoTransportContext {
     type Error;
 
     /// Try to turn the reference to self within the given context into the TransportContext.
-    fn try_ref_into_transport_ctx(&self, ctx: &Context) -> Result<TransportContext, Self::Error>;
+    fn try_ref_into_transport_ctx(&self) -> Result<TransportContext, Self::Error>;
 }
 
-impl<T: HttpRequestParts> TryFrom<(&Context, &T)> for TransportContext {
+impl TryFrom<&Parts> for TransportContext {
     type Error = OpaqueError;
 
-    fn try_from((ctx, req): (&Context, &T)) -> Result<Self, Self::Error> {
-        Ok(if let Some(req_ctx) = ctx.get::<RequestContext>() {
-            req_ctx.into()
-        } else {
-            let req_ctx = RequestContext::try_from((ctx, req))?;
-            req_ctx.into()
-        })
+    fn try_from(parts: &Parts) -> Result<Self, Self::Error> {
+        Ok(
+            if let Some(req_ctx) = parts.extensions().get::<RequestContext>() {
+                req_ctx.into()
+            } else {
+                let req_ctx = RequestContext::try_from(parts)?;
+                req_ctx.into()
+            },
+        )
+    }
+}
+
+impl<Body> TryFrom<&Request<Body>> for TransportContext {
+    type Error = OpaqueError;
+
+    fn try_from(req: &Request<Body>) -> Result<Self, Self::Error> {
+        Ok(
+            if let Some(req_ctx) = req.extensions().get::<RequestContext>() {
+                req_ctx.into()
+            } else {
+                let req_ctx = RequestContext::try_from(req)?;
+                req_ctx.into()
+            },
+        )
     }
 }

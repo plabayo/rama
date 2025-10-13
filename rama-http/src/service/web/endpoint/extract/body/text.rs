@@ -44,8 +44,10 @@ impl FromRequest for Text {
     type Rejection = TextRejection;
 
     async fn from_request(req: Request) -> Result<Self, Self::Rejection> {
-        if !crate::service::web::extract::has_any_content_type(req.headers(), &[&mime::TEXT_PLAIN])
-        {
+        if !crate::service::web::extract::has_any_content_type(
+            req.headers(),
+            &[&crate::mime::TEXT_PLAIN],
+        ) {
             return Err(InvalidTextContentType.into());
         }
 
@@ -65,7 +67,7 @@ mod test {
     use super::*;
     use crate::service::web::WebService;
     use crate::{Method, Request, StatusCode, header};
-    use rama_core::{Context, Service};
+    use rama_core::Service;
 
     #[tokio::test]
     async fn test_text() {
@@ -78,7 +80,7 @@ mod test {
             .header(header::CONTENT_TYPE, "text/plain")
             .body("test".into())
             .unwrap();
-        let resp = service.serve(Context::default(), req).await.unwrap();
+        let resp = service.serve(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
     }
 
@@ -90,7 +92,7 @@ mod test {
             .method(Method::POST)
             .body("test".into())
             .unwrap();
-        let resp = service.serve(Context::default(), req).await.unwrap();
+        let resp = service.serve(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
     }
 
@@ -103,7 +105,7 @@ mod test {
             .header(header::CONTENT_TYPE, "application/json")
             .body("test".into())
             .unwrap();
-        let resp = service.serve(Context::default(), req).await.unwrap();
+        let resp = service.serve(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
     }
 
@@ -116,7 +118,7 @@ mod test {
             .header(header::CONTENT_TYPE, "text/plain")
             .body(vec![0, 159, 146, 150].into())
             .unwrap();
-        let resp = service.serve(Context::default(), req).await.unwrap();
+        let resp = service.serve(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 }

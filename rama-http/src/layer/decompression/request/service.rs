@@ -11,9 +11,9 @@ use crate::{
     StreamingBody,
     body::util::{BodyExt, Empty, combinators::UnsyncBoxBody},
 };
+use rama_core::Service;
 use rama_core::bytes::Buf;
 use rama_core::error::BoxError;
-use rama_core::{Context, Service};
 use rama_utils::macros::define_inner_service_accessors;
 
 /// Decompresses request bodies and calls its underlying service.
@@ -67,11 +67,7 @@ where
     type Response = Response<UnsyncBoxBody<D, BoxError>>;
     type Error = BoxError;
 
-    async fn serve(
-        &self,
-        ctx: Context,
-        req: Request<ReqBody>,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
         let (mut parts, body) = req.into_parts();
 
         let body =
@@ -107,7 +103,7 @@ where
         let body = DecompressionBody::new(body);
         let req = Request::from_parts(parts, body);
         self.inner
-            .serve(ctx, req)
+            .serve(req)
             .await
             .map(|res| res.map(|body| body.map_err(Into::into).boxed_unsync()))
             .map_err(Into::into)

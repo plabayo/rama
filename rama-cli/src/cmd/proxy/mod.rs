@@ -2,8 +2,9 @@
 
 use clap::Args;
 use rama::{
-    Context, Layer, Service,
+    Layer, Service,
     error::{BoxError, ErrorContext, OpaqueError},
+    extensions::ExtensionsMut,
     http::{
         Body, Request, Response, StatusCode,
         client::EasyHttpWebClient,
@@ -103,21 +104,15 @@ pub async fn run(cfg: CliCommandProxy) -> Result<(), BoxError> {
     Ok(())
 }
 
-async fn http_connect_accept(
-    mut ctx: Context,
-    req: Request,
-) -> Result<(Response, Context, Request), Response> {
-    match ctx
-        .get_or_try_insert_with_ctx::<RequestContext, _>(|ctx| (ctx, &req).try_into())
-        .map(|ctx| ctx.authority.clone())
-    {
+async fn http_connect_accept(mut req: Request) -> Result<(Response, Request), Response> {
+    match RequestContext::try_from(&req).map(|ctx| ctx.authority) {
         Ok(authority) => {
             tracing::info!(
                 server.address = %authority.host(),
                 server.port = %authority.port(),
                 "accept CONNECT (lazy): insert proxy target into context",
             );
-            ctx.insert(ProxyTarget(authority));
+            req.extensions_mut().insert(ProxyTarget(authority));
         }
         Err(err) => {
             tracing::error!("error extracting authority: {err:?}");
@@ -125,12 +120,12 @@ async fn http_connect_accept(
         }
     }
 
-    Ok((StatusCode::OK.into_response(), ctx, req))
+    Ok((StatusCode::OK.into_response(), req))
 }
 
-async fn http_plain_proxy(ctx: Context, req: Request) -> Result<Response, Infallible> {
+async fn http_plain_proxy(req: Request) -> Result<Response, Infallible> {
     let client = EasyHttpWebClient::default();
-    match client.serve(ctx, req).await {
+    match client.serve(req).await {
         Ok(resp) => Ok(resp),
         Err(err) => {
             tracing::error!("error in client request: {err:?}");

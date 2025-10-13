@@ -9,7 +9,7 @@ use crate::{
     headers::HeaderMapExt,
 };
 use rama_core::{
-    Context, Layer, Service,
+    Layer, Service,
     error::{BoxError, ErrorContext},
     telemetry::tracing,
 };
@@ -190,17 +190,11 @@ where
     type Response = S::Response;
     type Error = BoxError;
 
-    async fn serve(
-        &self,
-        mut ctx: Context,
-        mut req: Request<ReqBody>,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
         if self.overwrite || !req.headers().contains_key(HOST) {
-            let request_ctx: &mut RequestContext = ctx
-                .get_or_try_insert_with_ctx(|ctx| (ctx, &req).try_into())
-                .context(
-                    "AddRequiredRequestHeaders: get/compute RequestContext to set authority",
-                )?;
+            let request_ctx = RequestContext::try_from(&req).context(
+                "AddRequiredRequestHeaders: get/compute RequestContext to set authority",
+            )?;
             if request_ctx.authority_has_default_port() {
                 let host = request_ctx.authority.host().clone();
                 tracing::trace!(
@@ -209,7 +203,7 @@ where
                 );
                 req.headers_mut().typed_insert(Host::from(host));
             } else {
-                let authority = request_ctx.authority.clone();
+                let authority = request_ctx.authority;
                 tracing::trace!(
                     server.address = %authority.host(),
                     server.port = %authority.port(),
@@ -236,7 +230,7 @@ where
             );
         }
 
-        self.inner.serve(ctx, req).await.map_err(Into::into)
+        self.inner.serve(req).await.map_err(Into::into)
     }
 }
 
@@ -245,13 +239,13 @@ mod test {
     use super::*;
     use crate::{Body, Request};
     use rama_core::service::service_fn;
-    use rama_core::{Context, Layer, Service};
+    use rama_core::{Layer, Service};
     use std::convert::Infallible;
 
     #[tokio::test]
     async fn add_required_request_headers() {
         let svc = AddRequiredRequestHeadersLayer::default().into_layer(service_fn(
-            async |_ctx: Context, req: Request| {
+            async |req: Request| {
                 assert!(req.headers().contains_key(HOST));
                 assert!(req.headers().contains_key(USER_AGENT));
                 Ok::<_, Infallible>(rama_http_types::Response::new(Body::empty()))
@@ -262,7 +256,7 @@ mod test {
             .uri("http://www.example.com/")
             .body(Body::empty())
             .unwrap();
-        let resp = svc.serve(Context::default(), req).await.unwrap();
+        let resp = svc.serve(req).await.unwrap();
 
         assert!(!resp.headers().contains_key(HOST));
         assert!(!resp.headers().contains_key(USER_AGENT));
@@ -272,7 +266,7 @@ mod test {
     async fn add_required_request_headers_custom_ua() {
         let svc = AddRequiredRequestHeadersLayer::default()
             .user_agent_header_value(HeaderValue::from_static("foo"))
-            .into_layer(service_fn(async |_ctx: Context, req: Request| {
+            .into_layer(service_fn(async |req: Request| {
                 assert!(req.headers().contains_key(HOST));
                 assert_eq!(
                     req.headers().get(USER_AGENT).and_then(|v| v.to_str().ok()),
@@ -285,7 +279,7 @@ mod test {
             .uri("http://www.example.com/")
             .body(Body::empty())
             .unwrap();
-        let resp = svc.serve(Context::default(), req).await.unwrap();
+        let resp = svc.serve(req).await.unwrap();
 
         assert!(!resp.headers().contains_key(HOST));
         assert!(!resp.headers().contains_key(USER_AGENT));
@@ -295,7 +289,7 @@ mod test {
     async fn add_required_request_headers_overwrite() {
         let svc = AddRequiredRequestHeadersLayer::new()
             .overwrite(true)
-            .into_layer(service_fn(async |_ctx: Context, req: Request| {
+            .into_layer(service_fn(async |req: Request| {
                 assert_eq!(req.headers().get(HOST).unwrap(), "127.0.0.1");
                 assert_eq!(
                     req.headers().get(USER_AGENT).unwrap(),
@@ -311,7 +305,7 @@ mod test {
             .body(Body::empty())
             .unwrap();
 
-        let resp = svc.serve(Context::default(), req).await.unwrap();
+        let resp = svc.serve(req).await.unwrap();
 
         assert!(!resp.headers().contains_key(HOST));
         assert!(!resp.headers().contains_key(USER_AGENT));
@@ -322,7 +316,7 @@ mod test {
         let svc = AddRequiredRequestHeadersLayer::new()
             .overwrite(true)
             .user_agent_header_value(HeaderValue::from_static("foo"))
-            .into_layer(service_fn(async |_ctx: Context, req: Request| {
+            .into_layer(service_fn(async |req: Request| {
                 assert_eq!(req.headers().get(HOST).unwrap(), "127.0.0.1");
                 assert_eq!(
                     req.headers().get(USER_AGENT).and_then(|v| v.to_str().ok()),
@@ -338,7 +332,7 @@ mod test {
             .body(Body::empty())
             .unwrap();
 
-        let resp = svc.serve(Context::default(), req).await.unwrap();
+        let resp = svc.serve(req).await.unwrap();
 
         assert!(!resp.headers().contains_key(HOST));
         assert!(!resp.headers().contains_key(USER_AGENT));

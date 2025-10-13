@@ -1,7 +1,5 @@
 //! [`Service`] and [`BoxService`] traits.
 
-use crate::Context;
-use crate::error::BoxError;
 use std::fmt;
 use std::marker::PhantomData;
 use std::pin::Pin;
@@ -20,7 +18,7 @@ pub trait Service<Request>: Sized + Send + Sync + 'static {
     /// using the given context.
     fn serve(
         &self,
-        ctx: Context,
+
         req: Request,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_;
 
@@ -40,10 +38,10 @@ where
     #[inline]
     fn serve(
         &self,
-        ctx: Context,
+
         req: Request,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
-        self.as_ref().serve(ctx, req)
+        self.as_ref().serve(req)
     }
 }
 
@@ -57,10 +55,10 @@ where
     #[inline]
     fn serve(
         &self,
-        ctx: Context,
+
         req: Request,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
-        (**self).serve(ctx, req)
+        (**self).serve(req)
     }
 }
 
@@ -74,10 +72,10 @@ where
     #[inline]
     fn serve(
         &self,
-        ctx: Context,
+
         req: Request,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
-        self.as_ref().serve(ctx, req)
+        self.as_ref().serve(req)
     }
 }
 
@@ -92,7 +90,7 @@ trait DynService<Request> {
     #[allow(clippy::type_complexity)]
     fn serve_box(
         &self,
-        ctx: Context,
+
         req: Request,
     ) -> Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send + '_>>;
 }
@@ -106,10 +104,10 @@ where
 
     fn serve_box(
         &self,
-        ctx: Context,
+
         req: Request,
     ) -> Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send + '_>> {
-        Box::pin(self.serve(ctx, req))
+        Box::pin(self.serve(req))
     }
 }
 
@@ -158,10 +156,10 @@ where
     #[inline]
     fn serve(
         &self,
-        ctx: Context,
+
         req: Request,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
-        self.inner.serve_box(ctx, req)
+        self.inner.serve_box(req)
     }
 
     #[inline]
@@ -171,24 +169,25 @@ where
 }
 
 macro_rules! impl_service_either {
-    ($id:ident, $($param:ident),+ $(,)?) => {
-        impl<$($param),+, Request, Response> Service<Request> for crate::combinators::$id<$($param),+>
+    ($id:ident, $first:ident $(, $param:ident)* $(,)?) => {
+        impl<$first, $($param,)* Request, Response> Service<Request> for crate::combinators::$id<$first $(,$param)*>
         where
+            $first: Service<Request, Response = Response>,
             $(
-                $param: Service<Request, Response = Response, Error: Into<BoxError>>,
-            )+
+                $param: Service<Request, Response = Response, Error: Into<$first::Error>>,
+            )*
             Request: Send + 'static,
-
             Response: Send + 'static,
         {
             type Response = Response;
-            type Error = BoxError;
+            type Error = $first::Error;
 
-            async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
+            async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
                 match self {
+                    crate::combinators::$id::$first(s) => s.serve(req).await,
                     $(
-                        crate::combinators::$id::$param(s) => s.serve(ctx, req).await.map_err(Into::into),
-                    )+
+                        crate::combinators::$id::$param(s) => s.serve(req).await.map_err(Into::into),
+                    )*
                 }
             }
         }
@@ -260,7 +259,7 @@ where
     #[inline]
     fn serve(
         &self,
-        _ctx: Context,
+
         _req: Request,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
         let error = self.error.clone();
@@ -280,7 +279,7 @@ mod tests {
         type Response = usize;
         type Error = Infallible;
 
-        async fn serve(&self, _ctx: Context, req: usize) -> Result<Self::Response, Self::Error> {
+        async fn serve(&self, req: usize) -> Result<Self::Response, Self::Error> {
             Ok(self.0 + req)
         }
     }
@@ -292,7 +291,7 @@ mod tests {
         type Response = usize;
         type Error = Infallible;
 
-        async fn serve(&self, _ctx: Context, req: usize) -> Result<Self::Response, Self::Error> {
+        async fn serve(&self, req: usize) -> Result<Self::Response, Self::Error> {
             Ok(self.0 * req)
         }
     }
@@ -321,9 +320,7 @@ mod tests {
     async fn add_svc() {
         let svc = AddSvc(1);
 
-        let ctx = Context::default();
-
-        let response = svc.serve(ctx, 1).await.unwrap();
+        let response = svc.serve(1).await.unwrap();
         assert_eq!(response, 2);
     }
 
@@ -331,10 +328,8 @@ mod tests {
     async fn static_dispatch() {
         let services = vec![AddSvc(1), AddSvc(2), AddSvc(3)];
 
-        let ctx = Context::default();
-
         for (i, svc) in services.into_iter().enumerate() {
-            let response = svc.serve(ctx.clone(), i).await.unwrap();
+            let response = svc.serve(i).await.unwrap();
             assert_eq!(response, i * 2 + 1);
         }
     }
@@ -349,10 +344,8 @@ mod tests {
             MulSvc(5).boxed(),
         ];
 
-        let ctx = Context::default();
-
         for (i, svc) in services.into_iter().enumerate() {
-            let response = svc.serve(ctx.clone(), i).await.unwrap();
+            let response = svc.serve(i).await.unwrap();
             if i < 3 {
                 assert_eq!(response, i * 2 + 1);
             } else {
@@ -365,9 +358,7 @@ mod tests {
     async fn service_arc() {
         let svc = std::sync::Arc::new(AddSvc(1));
 
-        let ctx = Context::default();
-
-        let response = svc.serve(ctx, 1).await.unwrap();
+        let response = svc.serve(1).await.unwrap();
         assert_eq!(response, 2);
     }
 
@@ -375,9 +366,7 @@ mod tests {
     async fn box_service_arc() {
         let svc = std::sync::Arc::new(AddSvc(1)).boxed();
 
-        let ctx = Context::default();
-
-        let response = svc.serve(ctx, 1).await.unwrap();
+        let response = svc.serve(1).await.unwrap();
         assert_eq!(response, 2);
     }
 
@@ -385,9 +374,7 @@ mod tests {
     async fn reject_svc() {
         let svc = RejectService::default();
 
-        let ctx = Context::default();
-
-        let err = svc.serve(ctx, 1).await.unwrap_err();
+        let err = svc.serve(1).await.unwrap_err();
         assert_eq!(err.to_string(), RejectError::new().to_string());
     }
 }

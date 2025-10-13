@@ -2,6 +2,7 @@ use super::TlsConnectorDataBuilder;
 use rama_core::{
     Layer, Service,
     error::{BoxError, ErrorContext, ErrorExt, OpaqueError},
+    extensions::ExtensionsMut,
     telemetry::tracing,
 };
 use rama_net::{
@@ -38,31 +39,25 @@ impl<S> EmulateTlsProfileService<S> {
 
 impl<S, Request> Service<Request> for EmulateTlsProfileService<S>
 where
-    Request: TryRefIntoTransportContext<Error: Into<BoxError>> + Send + 'static,
+    Request: TryRefIntoTransportContext<Error: Into<BoxError>> + Send + ExtensionsMut + 'static,
     S: Service<Request, Error: Into<BoxError>>,
 {
     type Response = S::Response;
 
     type Error = BoxError;
 
-    async fn serve(
-        &self,
-        mut ctx: rama_core::Context,
-        req: Request,
-    ) -> Result<Self::Response, Self::Error> {
-        let tls_profile = ctx.get::<TlsProfile>().cloned();
+    async fn serve(&self, mut req: Request) -> Result<Self::Response, Self::Error> {
+        let tls_profile = req.extensions().get::<TlsProfile>().cloned();
 
         // Right now this is very simple, but it will get a lot more complex, which is why it is separated from the connector itself
         if let Some(profile) = tls_profile {
             let mut domain_overwrite = None;
             let mut emulate_config = Cow::Borrowed(profile.client_config.as_ref());
 
-            let transport_ctx = ctx
-                .get_or_try_insert_with_ctx(|ctx| req.try_ref_into_transport_ctx(ctx))
-                .map_err(|err| {
-                    OpaqueError::from_boxed(err.into())
-                        .context("UA TLS Emulator: compute transport context to get authority")
-                })?;
+            let transport_ctx = req.try_ref_into_transport_ctx().map_err(|err| {
+                OpaqueError::from_boxed(err.into())
+                    .context("UA TLS Emulator: compute transport context to get authority")
+            })?;
 
             if profile
                 .client_config
@@ -121,7 +116,9 @@ where
                 ));
             }
 
-            let builder = ctx.get_or_insert_default::<TlsConnectorDataBuilder>();
+            let builder = req
+                .extensions_mut()
+                .get_or_insert_default::<TlsConnectorDataBuilder>();
             builder.push_base_config(emulate_builder);
             if let Some(overwrites) = self.builder_overwrites.clone() {
                 builder.push_base_config(overwrites);
@@ -136,7 +133,7 @@ where
             }
         }
 
-        self.inner.serve(ctx, req).await.map_err(Into::into)
+        self.inner.serve(req).await.map_err(Into::into)
     }
 }
 

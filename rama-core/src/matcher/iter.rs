@@ -1,4 +1,4 @@
-use crate::{Context, context::Extensions};
+use crate::extensions::Extensions;
 
 use super::Matcher;
 
@@ -9,11 +9,11 @@ where
 {
     /// Matches in case all [`Matcher`] elements match for the given `Request`
     /// within the specified [`crate::Context`].
-    fn matches_and(self, ext: Option<&mut Extensions>, ctx: &Context, request: &Request) -> bool;
+    fn matches_and(self, ext: Option<&mut Extensions>, request: &Request) -> bool;
 
     /// Matches in case any of the [`Matcher`] elements match for the given `Request`
     /// within the specified [`crate::Context`].
-    fn matches_or(self, ext: Option<&mut Extensions>, ctx: &Context, request: &Request) -> bool;
+    fn matches_or(self, ext: Option<&mut Extensions>, request: &Request) -> bool;
 }
 
 impl<'a, I, M, Request> IteratorMatcherExt<'a, M, Request> for I
@@ -21,11 +21,11 @@ where
     I: Iterator<Item = &'a M> + 'a,
     M: Matcher<Request>,
 {
-    fn matches_and(self, ext: Option<&mut Extensions>, ctx: &Context, request: &Request) -> bool {
+    fn matches_and(self, ext: Option<&mut Extensions>, request: &Request) -> bool {
         match ext {
             None => {
                 for matcher in self {
-                    if !matcher.matches(None, ctx, request) {
+                    if !matcher.matches(None, request) {
                         return false;
                     }
                 }
@@ -34,7 +34,7 @@ where
             Some(ext) => {
                 let mut inner_ext = Extensions::new();
                 for matcher in self {
-                    if !matcher.matches(Some(&mut inner_ext), ctx, request) {
+                    if !matcher.matches(Some(&mut inner_ext), request) {
                         return false;
                     }
                 }
@@ -44,7 +44,7 @@ where
         }
     }
 
-    fn matches_or(self, ext: Option<&mut Extensions>, ctx: &Context, request: &Request) -> bool {
+    fn matches_or(self, ext: Option<&mut Extensions>, request: &Request) -> bool {
         let mut it = self.peekable();
         if it.peek().is_none() {
             return true;
@@ -53,7 +53,7 @@ where
         match ext {
             None => {
                 for matcher in it {
-                    if matcher.matches(None, ctx, request) {
+                    if matcher.matches(None, request) {
                         return true;
                     }
                 }
@@ -62,7 +62,7 @@ where
             Some(ext) => {
                 let mut inner_ext = Extensions::new();
                 for matcher in it {
-                    if matcher.matches(Some(&mut inner_ext), ctx, request) {
+                    if matcher.matches(Some(&mut inner_ext), request) {
                         ext.extend(inner_ext);
                         return true;
                     }

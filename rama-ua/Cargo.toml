@@ -23,6 +23,7 @@ embed-profiles = ["dep:serde_json"]
 tls = ["rama-net/tls"]
 
 [dependencies]
+ahash = { workspace = true }
 itertools = { workspace = true }
 rama-core = { workspace = true }
 rama-http-headers = { workspace = true }

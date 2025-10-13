@@ -22,12 +22,13 @@
 #[cfg(target_family = "unix")]
 mod unix_example {
     use rama::{
-        Context, Layer,
+        Layer,
         error::BoxError,
+        extensions::ExtensionsRef,
         graceful::ShutdownGuard,
         layer::AddExtensionLayer,
-        net::stream::Stream,
         service::service_fn,
+        stream::Stream,
         telemetry::tracing::{self, level_filters::LevelFilter},
         unix::server::UnixListener,
     };
@@ -55,12 +56,14 @@ mod unix_example {
             .expect("bind Unix socket");
 
         graceful.spawn_task_fn(async |guard| {
-            async fn handle(ctx: Context, mut stream: impl Stream + Unpin) -> Result<(), BoxError> {
+            async fn handle(
+                mut stream: impl Stream + Unpin + ExtensionsRef,
+            ) -> Result<(), BoxError> {
                 let mut buf = [0u8; 1024];
                 // TODO instead of having to do this manually, make this a lot easier by having this
                 // inserted in extensions automatically (part of executor/graceful server)
                 // Should be done when https://github.com/plabayo/rama/issues/462 is finished
-                let guard = ctx.get::<ShutdownGuard>().unwrap();
+                let guard = stream.extensions().get::<ShutdownGuard>().unwrap().clone();
 
                 loop {
                     let n = tokio::select! {

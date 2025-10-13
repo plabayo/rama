@@ -30,16 +30,36 @@
 //! You should see log output indicating progress through each ACME step,
 //! and finally the certificate download will complete successfully.
 //!
+//! ```sh
+//! curl -vik --resolve example:5004:127.0.0.1 https://example:5004
+//! ```
+//! Output
+//! ```
+//! * Server certificate:
+//! *  subject: [NONE]
+//! *  start date: Sep 16 19:08:44 2025 GMT
+//! *  expire date: Sep 16 19:08:43 2030 GMT
+//! *  issuer: CN=Pebble Intermediate CA 4224e8
+//! *  SSL certificate verify result: unable to get local issuer certificate (20), continuing anyway.
+//! ```
+//!
 //! TODO: once Rama has an ACME server implementation (https://github.com/plabayo/rama/issues/649) migrate
 //! this example to use that instead of Pebble so we can test everything automatically
 use rama::{
-    Context, Layer, Service,
-    crypto::dep::{
-        pki_types::PrivateKeyDer,
-        rcgen::{self, CertificateParams, CertificateSigningRequest, DistinguishedName, DnType},
+    Layer, Service,
+    crypto::{
+        dep::{
+            pki_types::{CertificateDer, PrivateKeyDer},
+            rcgen::{
+                self, CertificateParams, CertificateSigningRequest, DistinguishedName, DnType,
+            },
+        },
+        jose::EcdsaKey,
     },
     graceful,
-    http::client::EasyHttpWebClient,
+    http::{client::EasyHttpWebClient, server::HttpServer, service::web::response::IntoResponse},
+    layer::ConsumeErrLayer,
+    rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
     telemetry::tracing::{self, level_filters::LevelFilter},
@@ -59,7 +79,7 @@ use rama::{
                 server::{ClientHello as RustlsClientHello, ResolvesServerCert},
                 sign::CertifiedKey,
             },
-            server::{TlsAcceptorData, TlsAcceptorLayer},
+            server::{TlsAcceptorData, TlsAcceptorDataBuilder, TlsAcceptorLayer},
         },
     },
 };
@@ -99,12 +119,14 @@ async fn main() {
         .build()
         .boxed();
 
-    let client = AcmeClient::new(TEST_DIRECTORY_URL, client, Context::default())
+    let client = AcmeClient::new(TEST_DIRECTORY_URL, client)
         .await
         .expect("create acme client");
+
+    let account_key = EcdsaKey::generate().expect("generate key for account");
     let account = client
-        .create_account(
-            Context::default(),
+        .create_or_load_account(
+            account_key,
             CreateAccountOptions {
                 terms_of_service_agreed: Some(true),
                 ..Default::default()
@@ -114,18 +136,15 @@ async fn main() {
         .expect("create account");
 
     let mut order = account
-        .new_order(
-            Context::default(),
-            NewOrderPayload {
-                identifiers: vec![Identifier::Dns("example.com".into())],
-                ..Default::default()
-            },
-        )
+        .new_order(NewOrderPayload {
+            identifiers: vec![Identifier::dns("example.com")],
+            ..Default::default()
+        })
         .await
         .expect("create order");
 
     let mut authz = order
-        .get_authorizations(Context::default())
+        .get_authorizations()
         .await
         .expect("get order authorizations");
     let auth = &mut authz[0];
@@ -161,7 +180,7 @@ async fn main() {
 
     let acceptor_data = TlsAcceptorData::from(server_config);
 
-    graceful.spawn_task_fn(async move |guard| {
+    let challenge_server_handle = graceful.spawn_task_fn(async move |guard| {
         let tcp_service =
             TlsAcceptorLayer::new(acceptor_data).layer(service_fn(internal_tcp_service_fn));
 
@@ -175,29 +194,67 @@ async fn main() {
     sleep(Duration::from_millis(1000)).await;
 
     order
-        .finish_challenge(Context::default(), challenge)
+        .finish_challenge(challenge)
         .await
         .expect("finish challenge");
 
     order
-        .wait_until_all_authorizations_finished(Context::default())
+        .wait_until_all_authorizations_finished()
         .await
         .expect("wait until all authorizations are finished");
 
     assert_eq!(order.state().status, OrderStatus::Ready);
 
-    let csr = create_csr();
-    order
-        .finalize(Context::default(), csr.der())
-        .await
-        .expect("finalize order");
+    let (key_pair, csr) = create_csr();
+
+    order.finalize(csr.der()).await.expect("finalize order");
 
     let cert = order
-        .download_certificate(Context::default())
+        .download_certificate_as_pem_stack()
         .await
         .expect("download certificate");
 
-    tracing::info!(?cert, "received certificiate")
+    tracing::info!(?cert, "received certificiate");
+    challenge_server_handle.abort();
+
+    let cert_chain = cert
+        .into_iter()
+        .map(|pem| CertificateDer::from(pem.contents))
+        .collect();
+
+    let private_key = PrivateKeyDer::Pkcs8(key_pair.serialize_der().into());
+
+    // create https server using the configured certificate
+
+    graceful.spawn_task_fn(async |guard| {
+        let exec = Executor::graceful(guard.clone());
+        let http_service = HttpServer::auto(exec).service(service_fn(async || {
+            Ok::<_, Infallible>("hello".into_response())
+        }));
+
+        let acceptor_data = TlsAcceptorDataBuilder::new(cert_chain, private_key)
+            .expect("tls acceptor with self signed data")
+            .with_env_key_logger()
+            .expect("with env key logger")
+            .build();
+
+        let tcp_service = (
+            ConsumeErrLayer::default(),
+            TlsAcceptorLayer::new(acceptor_data),
+        )
+            .into_layer(http_service);
+
+        TcpListener::bind(ADDR)
+            .await
+            .expect("bind TCP Listener: http")
+            .serve_graceful(guard, tcp_service)
+            .await;
+    });
+
+    graceful
+        .shutdown_with_limit(Duration::from_secs(30))
+        .await
+        .expect("graceful shutdown");
 }
 
 #[derive(Debug)]
@@ -217,14 +274,14 @@ impl ResolvesServerCert for ResolvesServerCertAcme {
     }
 }
 
-async fn internal_tcp_service_fn<S>(_ctx: Context, _stream: S) -> Result<(), Infallible> {
+async fn internal_tcp_service_fn<S>(_stream: S) -> Result<(), Infallible> {
     Ok(())
 }
 
-fn create_csr() -> CertificateSigningRequest {
+fn create_csr() -> (rcgen::KeyPair, CertificateSigningRequest) {
     let key_pair = rcgen::KeyPair::generate().expect("create keypair");
 
-    let params =
+    let mut params =
         CertificateParams::new(vec!["example.com".to_owned()]).expect("create certificate params");
 
     let mut distinguished_name = DistinguishedName::new();
@@ -233,5 +290,11 @@ fn create_csr() -> CertificateSigningRequest {
     distinguished_name.push(DnType::OrganizationName, "Plabayo");
     distinguished_name.push(DnType::CommonName, "example.com");
 
-    params.serialize_request(&key_pair).expect("serialize csr")
+    params.distinguished_name = distinguished_name;
+
+    let csr = params
+        .serialize_request(&key_pair)
+        .expect("create certificate signing request");
+
+    (key_pair, csr)
 }

@@ -9,6 +9,7 @@ use crate::{
 };
 use pin_project_lite::pin_project;
 use rama_core::bytes::Bytes;
+use rama_core::extensions::ExtensionsRef;
 use rama_core::telemetry::opentelemetry::metrics::UpDownCounter;
 use rama_core::telemetry::opentelemetry::semantic_conventions::metric::{
     HTTP_SERVER_ACTIVE_REQUESTS, HTTP_SERVER_REQUEST_BODY_SIZE,
@@ -21,7 +22,7 @@ use rama_core::telemetry::opentelemetry::{
         resource::{SERVICE_NAME, SERVICE_VERSION},
     },
 };
-use rama_core::{Context, Layer, Service};
+use rama_core::{Layer, Service};
 use rama_error::BoxError;
 use rama_net::http::RequestContext;
 use rama_utils::macros::define_inner_service_accessors;
@@ -274,19 +275,17 @@ impl<S: Clone, F: Clone> Clone for RequestMetricsService<S, F> {
 }
 
 impl<S, F> RequestMetricsService<S, F> {
-    fn compute_attributes<Body>(&self, ctx: &mut Context, req: &Request<Body>) -> Vec<KeyValue>
+    fn compute_attributes<Body>(&self, req: &Request<Body>) -> Vec<KeyValue>
     where
         F: AttributesFactory,
     {
         let mut attributes = self
             .attributes_factory
-            .attributes(5 + self.base_attributes.len(), ctx);
+            .attributes(5 + self.base_attributes.len(), req.extensions());
         attributes.extend(self.base_attributes.iter().cloned());
 
         // server info
-        let request_ctx: Option<&mut RequestContext> = ctx
-            .get_or_try_insert_with_ctx(|ctx| (ctx, req).try_into())
-            .ok();
+        let request_ctx = RequestContext::try_from(req).ok();
         if let Some(authority) = request_ctx.as_ref().map(|rc| &rc.authority) {
             attributes.push(KeyValue::new(
                 HTTP_REQUEST_HOST,
@@ -325,12 +324,8 @@ where
     type Response = Response;
     type Error = S::Error;
 
-    async fn serve(
-        &self,
-        mut ctx: Context,
-        req: Request<Body>,
-    ) -> Result<Self::Response, Self::Error> {
-        let mut attributes: Vec<KeyValue> = self.compute_attributes(&mut ctx, &req);
+    async fn serve(&self, req: Request<Body>) -> Result<Self::Response, Self::Error> {
+        let mut attributes: Vec<KeyValue> = self.compute_attributes(&req);
 
         self.metrics.http_server_total_requests.add(1, &attributes);
         self.metrics.http_server_active_requests.add(1, &attributes);
@@ -346,7 +341,7 @@ where
             })
         });
 
-        let result = self.inner.serve(ctx, req).await;
+        let result = self.inner.serve(req).await;
 
         self.metrics
             .http_server_active_requests
@@ -438,18 +433,19 @@ where
 
 #[cfg(test)]
 mod tests {
+    use rama_core::extensions::Extensions;
+
     use super::*;
 
     #[test]
     fn test_default_svc_compute_attributes_default() {
         let svc = RequestMetricsService::new(());
-        let mut ctx = Context::default();
         let req = Request::builder()
             .uri("http://www.example.com")
             .body(())
             .unwrap();
 
-        let attributes = svc.compute_attributes(&mut ctx, &req);
+        let attributes = svc.compute_attributes(&req);
         assert!(
             attributes
                 .iter()
@@ -478,13 +474,12 @@ mod tests {
             ..Default::default()
         })
         .into_layer(());
-        let mut ctx = Context::default();
         let req = Request::builder()
             .uri("http://www.example.com")
             .body(())
             .unwrap();
 
-        let attributes = svc.compute_attributes(&mut ctx, &req);
+        let attributes = svc.compute_attributes(&req);
         assert!(
             attributes
                 .iter()
@@ -514,13 +509,12 @@ mod tests {
         })
         .with_attributes(vec![KeyValue::new("test", "attribute_fn")])
         .into_layer(());
-        let mut ctx = Context::default();
         let req = Request::builder()
             .uri("http://www.example.com")
             .body(())
             .unwrap();
 
-        let attributes = svc.compute_attributes(&mut ctx, &req);
+        let attributes = svc.compute_attributes(&req);
         assert!(
             attributes
                 .iter()
@@ -553,19 +547,18 @@ mod tests {
             metric_prefix: Some("foo".to_owned()),
             ..Default::default()
         })
-        .with_attributes(|size_hint: usize, _ctx: &Context| {
+        .with_attributes(|size_hint: usize, _extensions: &Extensions| {
             let mut attributes = Vec::with_capacity(size_hint + 1);
             attributes.push(KeyValue::new("test", "attribute_fn"));
             attributes
         })
         .into_layer(());
-        let mut ctx = Context::default();
         let req = Request::builder()
             .uri("http://www.example.com")
             .body(())
             .unwrap();
 
-        let attributes = svc.compute_attributes(&mut ctx, &req);
+        let attributes = svc.compute_attributes(&req);
         assert!(
             attributes
                 .iter()

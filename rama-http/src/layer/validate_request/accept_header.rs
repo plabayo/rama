@@ -1,10 +1,8 @@
 use super::ValidateRequest;
 use crate::{
-    Body, Request, Response, StatusCode,
-    dep::mime::{Mime, MimeIter},
-    header,
+    Body, Request, Response, StatusCode, header,
+    mime::{Mime, MimeIter},
 };
-use rama_core::Context;
 use std::{fmt, marker::PhantomData, sync::Arc};
 
 /// Type that performs validation of the Accept header.
@@ -58,13 +56,9 @@ where
 {
     type ResponseBody = ResBody;
 
-    async fn validate(
-        &self,
-        ctx: Context,
-        req: Request<B>,
-    ) -> Result<(Context, Request<B>), Response<Self::ResponseBody>> {
+    async fn validate(&self, req: Request<B>) -> Result<Request<B>, Response<Self::ResponseBody>> {
         if !req.headers().contains_key(header::ACCEPT) {
-            return Ok((ctx, req));
+            return Ok(req);
         }
         if req
             .headers()
@@ -79,8 +73,8 @@ where
                             let subtype = self.header_value.subtype();
                             match (mim.type_(), mim.subtype()) {
                                 (t, s) if t == typ && s == subtype => true,
-                                (t, mime::STAR) if t == typ => true,
-                                (mime::STAR, mime::STAR) => true,
+                                (t, crate::mime::STAR) if t == typ => true,
+                                (crate::mime::STAR, crate::mime::STAR) => true,
                                 _ => false,
                             }
                         } else {
@@ -91,7 +85,7 @@ where
                     .unwrap_or(false)
             })
         {
-            return Ok((ctx, req));
+            return Ok(req);
         }
         let mut res = Response::new(ResBody::default());
         *res.status_mut() = StatusCode::NOT_ACCEPTABLE;

@@ -1,10 +1,12 @@
+use rama_core::extensions::ExtensionsMut;
 use rama_core::telemetry::tracing::{self, Instrument, trace_span};
-use rama_core::{Context, Service, error::BoxError};
+use rama_core::{Service, error::BoxError, stream::Stream};
+use rama_net::client::ConnectorService;
 use rama_net::{
     address::Authority,
     client::EstablishedClientConnection,
     proxy::{ProxyRequest, ProxyTarget, StreamForwardService},
-    stream::{Socket, Stream},
+    stream::Socket,
 };
 use rama_tcp::client::{
     Request as TcpRequest,
@@ -35,7 +37,7 @@ impl<S, C> Socks5Connector<S> for C where C: Socks5ConnectorSeal<S> {}
 pub trait Socks5ConnectorSeal<S>: Send + Sync + 'static {
     fn accept_connect(
         &self,
-        ctx: Context,
+
         stream: S,
         destination: Authority,
     ) -> impl Future<Output = Result<(), Error>> + Send + '_;
@@ -45,12 +47,7 @@ impl<S> Socks5ConnectorSeal<S> for ()
 where
     S: Stream + Unpin,
 {
-    async fn accept_connect(
-        &self,
-        _ctx: Context,
-        mut stream: S,
-        destination: Authority,
-    ) -> Result<(), Error> {
+    async fn accept_connect(&self, mut stream: S, destination: Authority) -> Result<(), Error> {
         tracing::trace!(
             "socks5 server w/ destination {destination}: abort: command not supported: Connect",
         );
@@ -204,33 +201,25 @@ impl<C: Clone, S: Clone> Clone for Connector<C, S> {
     }
 }
 
-impl<S, T, InnerConnector, StreamService> Socks5ConnectorSeal<S>
+impl<S, InnerConnector, StreamService> Socks5ConnectorSeal<S>
     for Connector<InnerConnector, StreamService>
 where
-    S: Stream + Unpin,
-    T: Stream + Socket + Unpin,
-    InnerConnector: Service<
-            TcpRequest,
-            Response = EstablishedClientConnection<T, TcpRequest>,
-            Error: Into<BoxError>,
-        >,
-    StreamService: Service<ProxyRequest<S, T>, Response = (), Error: Into<BoxError>>,
+    S: Stream + Unpin + ExtensionsMut,
+    InnerConnector: ConnectorService<TcpRequest, Connection: Stream + Socket + Unpin>,
+    StreamService:
+        Service<ProxyRequest<S, InnerConnector::Connection>, Response = (), Error: Into<BoxError>>,
 {
-    async fn accept_connect(
-        &self,
-        ctx: Context,
-        mut stream: S,
-        destination: Authority,
-    ) -> Result<(), Error> {
+    async fn accept_connect(&self, mut stream: S, destination: Authority) -> Result<(), Error> {
         tracing::trace!(
             "socks5 server w/ destination {destination}: connect: try to establish connection",
         );
 
         // TODO: replace with timeout layer once possible
 
-        let connect_future = self
-            .connector
-            .serve(ctx, TcpRequest::new(destination.clone()));
+        let connect_future = self.connector.connect(TcpRequest::new(
+            destination.clone(),
+            stream.take_extensions(),
+        ));
 
         let result = match self.connect_timeout {
             Some(duration) => match tokio::time::timeout(duration, connect_future).await {
@@ -250,9 +239,7 @@ where
             None => connect_future.await,
         };
 
-        let EstablishedClientConnection {
-            ctx, conn: target, ..
-        } = match result {
+        let EstablishedClientConnection { conn: target, .. } = match result {
             Ok(ecs) => ecs,
             Err(err) => {
                 let err: BoxError = err.into();
@@ -302,13 +289,10 @@ where
         );
 
         self.service
-            .serve(
-                ctx,
-                ProxyRequest {
-                    source: stream,
-                    target,
-                },
-            )
+            .serve(ProxyRequest {
+                source: stream,
+                target,
+            })
             .instrument(trace_span!("socks5::connect::proxy::serve"))
             .await
             .map_err(|err| Error::service(err).with_context("serve connect pipe"))
@@ -368,15 +352,10 @@ impl<S: Clone> Clone for LazyConnector<S> {
 
 impl<S, StreamService> Socks5ConnectorSeal<S> for LazyConnector<StreamService>
 where
-    S: Stream + Unpin,
+    S: Stream + Unpin + ExtensionsMut,
     StreamService: Service<S, Response = (), Error: Into<BoxError>>,
 {
-    async fn accept_connect(
-        &self,
-        mut ctx: Context,
-        mut stream: S,
-        destination: Authority,
-    ) -> Result<(), Error> {
+    async fn accept_connect(&self, mut stream: S, destination: Authority) -> Result<(), Error> {
         tracing::trace!(
             "socks5 server w/ destination {destination}: lazy connect: try to establish connection",
         );
@@ -390,10 +369,10 @@ where
             "socks5 server w/ destination {destination}: lazy connect: reply sent, delegate to inner stream service",
         );
 
-        ctx.insert(ProxyTarget(destination));
+        stream.extensions_mut().insert(ProxyTarget(destination));
 
         self.service
-            .serve(ctx, stream)
+            .serve(stream)
             .instrument(trace_span!("socks5::connect::lazy::serve"))
             .await
             .map_err(|err| Error::service(err).with_context("inner stream (proxy) service"))
@@ -456,7 +435,6 @@ mod test {
     {
         async fn accept_connect(
             &self,
-            _ctx: Context,
             mut stream: S,
             _destination: Authority,
         ) -> Result<(), Error> {

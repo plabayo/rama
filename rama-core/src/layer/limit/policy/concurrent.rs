@@ -7,24 +7,23 @@
 //! ```
 //! use rama_core::layer::limit::{Limit, policy::ConcurrentPolicy};
 //! use rama_core::service::service_fn;
-//! use rama_core::{Context, Service};
+//! use rama_core::{Service, ServiceInput};
 //! # use std::convert::Infallible;
 //!
 //! # #[tokio::main]
 //! # async fn main() {
 //!
-//! let service = service_fn(async |_, _| {
+//! let service = service_fn(async || {
 //!     Ok::<_, Infallible>(())
 //! });
 //! let mut service = Limit::new(service, ConcurrentPolicy::max(2));
 //!
-//! let response = service.serve(Context::default(), ()).await;
+//! let response = service.serve(ServiceInput::new(())).await;
 //! assert!(response.is_ok());
 //! # }
 //! ```
 
 use super::{Policy, PolicyOutput, PolicyResult};
-use crate::Context;
 use parking_lot::Mutex;
 use rama_utils::backoff::Backoff;
 use std::fmt;
@@ -111,15 +110,10 @@ where
     type Guard = C::Guard;
     type Error = C::Error;
 
-    async fn check(
-        &self,
-        ctx: Context,
-        request: Request,
-    ) -> PolicyResult<Request, Self::Guard, Self::Error> {
+    async fn check(&self, request: Request) -> PolicyResult<Request, Self::Guard, Self::Error> {
         let tracker_err = match self.tracker.try_access() {
             Ok(guard) => {
                 return PolicyResult {
-                    ctx,
                     request,
                     output: PolicyOutput::Ready(guard),
                 };
@@ -133,11 +127,7 @@ where
             PolicyOutput::Retry
         };
 
-        PolicyResult {
-            ctx,
-            request,
-            output,
-        }
+        PolicyResult { request, output }
     }
 }
 
@@ -239,25 +229,25 @@ mod tests {
         // bit of a contrived example, but possible
 
         let policy = ConcurrentPolicy::max(0);
-        assert_abort(&policy.check(Context::default(), ()).await);
+        assert_abort(&policy.check(()).await);
     }
 
     #[tokio::test]
     async fn concurrent_policy() {
         let policy = ConcurrentPolicy::max(2);
 
-        let guard_1 = assert_ready(policy.check(Context::default(), ()).await);
-        let guard_2 = assert_ready(policy.check(Context::default(), ()).await);
+        let guard_1 = assert_ready(policy.check(()).await);
+        let guard_2 = assert_ready(policy.check(()).await);
 
-        assert_abort(&policy.check(Context::default(), ()).await);
+        assert_abort(&policy.check(()).await);
 
         drop(guard_1);
-        let _guard_3 = assert_ready(policy.check(Context::default(), ()).await);
+        let _guard_3 = assert_ready(policy.check(()).await);
 
-        assert_abort(&policy.check(Context::default(), ()).await);
+        assert_abort(&policy.check(()).await);
 
         drop(guard_2);
-        assert_ready(policy.check(Context::default(), ()).await);
+        assert_ready(policy.check(()).await);
     }
 
     #[tokio::test]
@@ -265,12 +255,12 @@ mod tests {
         let policy = ConcurrentPolicy::max(2);
         let policy_clone = policy.clone();
 
-        let guard_1 = assert_ready(policy.check(Context::default(), ()).await);
-        let _guard_2 = assert_ready(policy_clone.check(Context::default(), ()).await);
+        let guard_1 = assert_ready(policy.check(()).await);
+        let _guard_2 = assert_ready(policy_clone.check(()).await);
 
-        assert_abort(&policy.check(Context::default(), ()).await);
+        assert_abort(&policy.check(()).await);
 
         drop(guard_1);
-        assert_ready(policy.check(Context::default(), ()).await);
+        assert_ready(policy.check(()).await);
     }
 }

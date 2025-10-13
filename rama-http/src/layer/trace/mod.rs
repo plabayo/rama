@@ -7,7 +7,7 @@
 //! ```rust
 //! use rama_http::{Body, Request, Response};
 //! use rama_core::service::service_fn;
-//! use rama_core::{Context, Layer, Service};
+//! use rama_core::{Layer, Service};
 //! use rama_http::layer::trace::TraceLayer;
 //! use std::convert::Infallible;
 //!
@@ -25,7 +25,7 @@
 //! let request = Request::new(Body::from("foo"));
 //!
 //! let response = service
-//!     .serve(Context::default(), request)
+//!     .serve(request)
 //!     .await?;
 //! # Ok(())
 //! # }
@@ -47,7 +47,7 @@
 //! ```rust
 //! use rama_http::{Body, Request, Response, HeaderMap, StatusCode};
 //! use rama_core::service::service_fn;
-//! use rama_core::{Context, Service, Layer};
+//! use rama_core::{Service, Layer};
 //! use rama_core::telemetry::tracing::Level;
 //! use rama_http::layer::trace::{
 //!     TraceLayer, DefaultMakeSpan, DefaultOnRequest, DefaultOnResponse,
@@ -80,7 +80,7 @@
 //! ).into_layer(service_fn(handle));
 //! # let mut service = service;
 //! # let response = service
-//! #     .serve(Context::default(), Request::new(Body::from("foo")))
+//! #     .serve(Request::new(Body::from("foo")))
 //! #     .await?;
 //! # Ok(())
 //! # }
@@ -91,7 +91,7 @@
 //! ```rust
 //! use rama_http::{Body, Request, Response, HeaderMap, StatusCode};
 //! use rama_core::service::service_fn;
-//! use rama_core::{Context, Service, Layer};
+//! use rama_core::{Service, Layer};
 //! use rama_core::telemetry::tracing::{self, Span};
 //! use rama_http::layer::{classify::ServerErrorsFailureClass, trace::TraceLayer};
 //! use std::time::Duration;
@@ -132,7 +132,7 @@
 //! ).into_layer(service_fn(handle));
 //! # let mut service = service;
 //! # let response = service
-//! #     .serve(Context::default(), Request::new(Body::from("foo")))
+//! #     .serve(Request::new(Body::from("foo")))
 //! #     .await?;
 //! # Ok(())
 //! # }
@@ -145,7 +145,7 @@
 //! ```rust
 //! use rama_http::{Body, Request, Response, StatusCode};
 //! use rama_core::service::service_fn;
-//! use rama_core::{Context, Service, Layer};
+//! use rama_core::{Service, Layer};
 //! use rama_core::telemetry::tracing::{self, Span};
 //! use rama_http::layer::{classify::ServerErrorsFailureClass, trace::TraceLayer};
 //! use std::time::Duration;
@@ -171,7 +171,7 @@
 //! ).into_layer(service_fn(handle));
 //! # let mut service = service;
 //! # let response = service
-//! #     .serve(Context::default(), Request::new(Body::from("foo")))
+//! #     .serve(Request::new(Body::from("foo")))
 //! #     .await?;
 //! # Ok(())
 //! # }
@@ -473,7 +473,7 @@ mod tests {
     use rama_core::error::BoxError;
     use rama_core::service::service_fn;
     use rama_core::telemetry::tracing::{self, Span};
-    use rama_core::{Context, Layer, Service};
+    use rama_core::{Layer, Service};
     use std::sync::OnceLock;
     use std::{
         sync::atomic::{AtomicU32, Ordering},
@@ -529,10 +529,7 @@ mod tests {
 
         let svc = trace_layer.into_layer(service_fn(echo));
 
-        let res = svc
-            .serve(Context::default(), Request::new(Body::from("foobar")))
-            .await
-            .unwrap();
+        let res = svc.serve(Request::new(Body::from("foobar"))).await.unwrap();
 
         assert_eq!(1, ON_REQUEST_COUNT().load(Ordering::Acquire), "request");
         assert_eq!(1, ON_RESPONSE_COUNT().load(Ordering::Acquire), "request");
@@ -587,10 +584,7 @@ mod tests {
 
         let svc = trace_layer.into_layer(service_fn(streaming_body));
 
-        let res = svc
-            .serve(Context::default(), Request::new(Body::empty()))
-            .await
-            .unwrap();
+        let res = svc.serve(Request::new(Body::empty())).await.unwrap();
 
         assert_eq!(1, ON_REQUEST_COUNT().load(Ordering::Acquire), "request");
         assert_eq!(1, ON_RESPONSE_COUNT().load(Ordering::Acquire), "request");

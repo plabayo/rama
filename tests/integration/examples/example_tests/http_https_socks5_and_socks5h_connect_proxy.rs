@@ -3,8 +3,9 @@ use std::{sync::Arc, time::Duration};
 use super::utils;
 
 use rama::{
-    Context, Service,
+    Service,
     error::{ErrorContext, OpaqueError},
+    extensions::ExtensionsMut,
     http::{
         Body, BodyExtractExt, Request, client::EasyHttpWebClient, server::HttpServer,
         service::web::Router,
@@ -49,14 +50,12 @@ async fn test_http_https_socks5_and_socks5h_connect_proxy() {
         format!("https://{https_socket_addr}/ping"),
     ];
 
-    let mut ctx = Context::default();
-
     for uri in test_uris.iter() {
-        ctx.insert(ProxyAddress::try_from("http://tom:clancy@127.0.0.1:62029").unwrap());
         // test regular proxy flow
         let result = runner
             .get(uri)
-            .send(ctx.clone())
+            .extension(ProxyAddress::try_from("http://tom:clancy@127.0.0.1:62029").unwrap())
+            .send()
             .await
             .unwrap()
             .try_into_string()
@@ -67,11 +66,11 @@ async fn test_http_https_socks5_and_socks5h_connect_proxy() {
     }
 
     for uri in test_uris {
-        ctx.insert(ProxyAddress::try_from("https://tom:clancy@127.0.0.1:62029").unwrap());
         // test regular proxy flow
         let result = runner
             .get(uri)
-            .send(ctx.clone())
+            .extension(ProxyAddress::try_from("https://tom:clancy@127.0.0.1:62029").unwrap())
+            .send()
             .await
             .unwrap()
             .try_into_string()
@@ -109,13 +108,6 @@ async fn test_http_client_over_socks5_proxy_connect(
         .with_tls_support_using_boringssl(Some(tls_config))
         .build();
 
-    let mut ctx = Context::default();
-    ctx.insert(ProxyAddress {
-        protocol: Some(Protocol::SOCKS5),
-        authority: proxy_socket_addr.into(),
-        credential: Some(ProxyCredential::Basic(Basic::new_static("john", "secret"))),
-    });
-
     let test_uris = [
         format!("http://{http_socket_addr}/ping"),
         format!("https://{https_socket_addr}/ping"),
@@ -126,10 +118,16 @@ async fn test_http_client_over_socks5_proxy_connect(
             "try to establish proxied connection over SOCKS5",
         );
 
-        let request = Request::builder()
+        let mut request = Request::builder()
             .uri(uri.clone())
             .body(Body::empty())
             .expect("build simple GET request");
+
+        request.extensions_mut().insert(ProxyAddress {
+            protocol: Some(Protocol::SOCKS5),
+            authority: proxy_socket_addr.into(),
+            credential: Some(ProxyCredential::Basic(Basic::new_static("john", "secret"))),
+        });
 
         tracing::info!(
             url.full = %uri,
@@ -137,7 +135,7 @@ async fn test_http_client_over_socks5_proxy_connect(
         );
 
         let resp = client
-            .serve(ctx.clone(), request)
+            .serve(request)
             .await
             .expect("make http(s) request via socks5 proxy")
             .try_into_string()

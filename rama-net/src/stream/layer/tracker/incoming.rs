@@ -1,13 +1,12 @@
 use super::bytes::BytesRWTracker;
-use crate::stream::Stream;
-use rama_core::{Context, Layer, Service};
+use rama_core::{Layer, Service, extensions::ExtensionsMut, stream::Stream};
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
 
 /// A [`Service`] that wraps a [`Service`]'s input IO [`Stream`] with an atomic R/W tracker.
 ///
 /// [`Service`]: rama_core::Service
-/// [`Stream`]: crate::stream::Stream
+/// [`Stream`]: rama_core::stream::Stream
 pub struct IncomingBytesTrackerService<S> {
     inner: S,
 }
@@ -45,20 +44,20 @@ where
 impl<S, IO> Service<IO> for IncomingBytesTrackerService<S>
 where
     S: Service<BytesRWTracker<IO>>,
-    IO: Stream,
+    IO: Stream + ExtensionsMut,
 {
     type Response = S::Response;
     type Error = S::Error;
 
     fn serve(
         &self,
-        mut ctx: Context,
         stream: IO,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
-        let tracked_stream = BytesRWTracker::new(stream);
+        let mut tracked_stream = BytesRWTracker::new(stream);
         let handle = tracked_stream.handle();
-        ctx.insert(handle);
-        self.inner.serve(ctx, tracked_stream)
+        tracked_stream.extensions_mut().insert(handle);
+
+        self.inner.serve(tracked_stream)
     }
 }
 
@@ -66,7 +65,7 @@ where
 ///
 /// [`Layer`]: rama_core::Layer
 /// [`Service`]: rama_core::Service
-/// [`Stream`]: crate::stream::Stream
+/// [`Stream`]: rama_core::stream::Stream
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct IncomingBytesTrackerLayer;

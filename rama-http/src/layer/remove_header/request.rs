@@ -6,7 +6,7 @@
 //! use rama_http::layer::remove_header::RemoveRequestHeaderLayer;
 //! use rama_http::{Body, Request, Response, header::{self, HeaderValue}};
 //! use rama_core::service::service_fn;
-//! use rama_core::{Context, Service, Layer};
+//! use rama_core::{Service, Layer};
 //! use rama_core::error::BoxError;
 //!
 //! # #[tokio::main]
@@ -22,14 +22,14 @@
 //!
 //! let request = Request::new(Body::empty());
 //!
-//! let response = svc.serve(Context::default(), request).await?;
+//! let response = svc.serve(request).await?;
 //! #
 //! # Ok(())
 //! # }
 //! ```
 
 use crate::{HeaderName, Request, Response};
-use rama_core::{Context, Layer, Service};
+use rama_core::{Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
 use smol_str::SmolStr;
 use std::fmt;
@@ -159,7 +159,6 @@ where
 
     fn serve(
         &self,
-        ctx: Context,
         mut req: Request<ReqBody>,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
         match &self.mode {
@@ -173,7 +172,7 @@ where
                 super::remove_headers_by_exact_name(req.headers_mut(), header)
             }
         }
-        self.inner.serve(ctx, req)
+        self.inner.serve(req)
     }
 }
 
@@ -187,7 +186,7 @@ mod test {
     #[tokio::test]
     async fn remove_request_header_prefix() {
         let svc = RemoveRequestHeaderLayer::prefix("x-foo").into_layer(service_fn(
-            async |_ctx: Context, req: Request| {
+            async |req: Request| {
                 assert!(req.headers().get("x-foo-bar").is_none());
                 assert_eq!(
                     req.headers().get("foo").map(|v| v.to_str().unwrap()),
@@ -201,13 +200,13 @@ mod test {
             .header("foo", "bar")
             .body(Body::empty())
             .unwrap();
-        let _ = svc.serve(Context::default(), req).await.unwrap();
+        let _ = svc.serve(req).await.unwrap();
     }
 
     #[tokio::test]
     async fn remove_request_header_exact() {
         let svc = RemoveRequestHeaderLayer::exact(HeaderName::from_static("x-foo")).into_layer(
-            service_fn(async |_ctx: Context, req: Request| {
+            service_fn(async |req: Request| {
                 assert!(req.headers().get("x-foo").is_none());
                 assert_eq!(
                     req.headers().get("x-foo-bar").map(|v| v.to_str().unwrap()),
@@ -221,26 +220,25 @@ mod test {
             .header("x-foo-bar", "baz")
             .body(Body::empty())
             .unwrap();
-        let _ = svc.serve(Context::default(), req).await.unwrap();
+        let _ = svc.serve(req).await.unwrap();
     }
 
     #[tokio::test]
     async fn remove_request_header_hop_by_hop() {
-        let svc = RemoveRequestHeaderLayer::hop_by_hop().into_layer(service_fn(
-            async |_ctx: Context, req: Request| {
+        let svc =
+            RemoveRequestHeaderLayer::hop_by_hop().into_layer(service_fn(async |req: Request| {
                 assert!(req.headers().get("connection").is_none());
                 assert_eq!(
                     req.headers().get("foo").map(|v| v.to_str().unwrap()),
                     Some("bar")
                 );
                 Ok::<_, Infallible>(Response::new(Body::empty()))
-            },
-        ));
+            }));
         let req = Request::builder()
             .header("connection", "close")
             .header("foo", "bar")
             .body(Body::empty())
             .unwrap();
-        let _ = svc.serve(Context::default(), req).await.unwrap();
+        let _ = svc.serve(req).await.unwrap();
     }
 }

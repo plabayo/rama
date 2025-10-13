@@ -27,7 +27,7 @@ The tools are there freely to be used directly or as inspiration.
 ```dot process
 digraph {
     pad=0.2;
-    "serve(ctx, request)" -> "service A" [dir=both]
+    "serve(request)" -> "service A" [dir=both]
     "service A" -> "service B" [dir=both]
     "service A" -> "service C" [dir=both]
     "service A" -> "service D" [dir=both]
@@ -62,9 +62,9 @@ This is the more traditional form of branching and is no different from error ha
 ```dot process
 digraph {
     pad=0.2;
-    "serve(ctx, request)" -> "service A" [dir=both]
+    "serve(request)" -> "service A" [dir=both]
     "service A" -> "service B" [dir=both]
-    "service A" -> "serve(ctx, request)" [label="early return"]
+    "service A" -> "serve(request)" [label="early return"]
 }
 ```
 
@@ -79,7 +79,7 @@ This can for example be of use in case you want to serve an API over pseudo doma
 ```dot process
 digraph {
     pad=0.2;
-    "serve(ctx, request)" -> "service A" [dir=both]
+    "serve(request)" -> "service A" [dir=both]
     "service A" -> "service B" [dir=both]
     "service A" -> "service C" [dir=both]
     "service C" -> "service D" [dir=both]

@@ -3,8 +3,10 @@
 //! See [`UpgradeService`] for more details.
 
 use super::Upgraded;
+use rama_core::extensions::{ExtensionsMut, ExtensionsRef};
+use rama_core::rt::Executor;
 use rama_core::telemetry::tracing::{self, Instrument};
-use rama_core::{Context, Service, context::Extensions, matcher::Matcher, service::BoxService};
+use rama_core::{Service, extensions::Extensions, matcher::Matcher, service::BoxService};
 use rama_http::opentelemetry::version_as_protocol_version;
 use rama_http_types::Request;
 use rama_utils::macros::define_inner_service_accessors;
@@ -20,7 +22,7 @@ pub struct UpgradeService<S, O> {
 /// UpgradeHandler is a helper struct used internally to create an upgrade service.
 pub struct UpgradeHandler<O> {
     matcher: Box<dyn Matcher<Request>>,
-    responder: BoxService<Request, (O, Context, Request), O>,
+    responder: BoxService<Request, (O, Request), O>,
     handler: Arc<BoxService<Upgraded, (), Infallible>>,
     _phantom: std::marker::PhantomData<fn(O) -> ()>,
 }
@@ -30,7 +32,7 @@ impl<O> UpgradeHandler<O> {
     pub(crate) fn new<M, R, H>(matcher: M, responder: R, handler: H) -> Self
     where
         M: Matcher<Request>,
-        R: Service<Request, Response = (O, Context, Request), Error = O> + Clone,
+        R: Service<Request, Response = (O, Request), Error = O> + Clone,
         H: Service<Upgraded, Response = (), Error = Infallible> + Clone,
     {
         Self {
@@ -84,17 +86,22 @@ where
     type Response = O;
     type Error = E;
 
-    async fn serve(&self, mut ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut req: Request) -> Result<Self::Response, Self::Error> {
         let mut ext = Extensions::new();
         for handler in &self.handlers {
-            if !handler.matcher.matches(Some(&mut ext), &ctx, &req) {
+            if !handler.matcher.matches(Some(&mut ext), &req) {
                 ext.clear();
                 continue;
             }
-            ctx.extend(ext);
-            let exec = ctx.executor().clone();
-            return match handler.responder.serve(ctx, req).await {
-                Ok((resp, ctx, mut req)) => {
+            req.extensions_mut().extend(ext);
+            let exec = req
+                .extensions()
+                .get::<Executor>()
+                .cloned()
+                .unwrap_or_default();
+
+            return match handler.responder.serve(req).await {
+                Ok((resp, mut req)) => {
                     let handler = handler.handler.clone();
 
                     let span = tracing::trace_root_span!(
@@ -112,8 +119,9 @@ where
                     exec.spawn_task(
                         async move {
                             match rama_http::io::upgrade::on(&mut req).await {
-                                Ok(upgraded) => {
-                                    let _ = handler.serve(ctx, upgraded).await;
+                                Ok(mut upgraded) => {
+                                    upgraded.extensions_mut().extend(req.take_extensions());
+                                    let _ = handler.serve(upgraded).await;
                                 }
                                 Err(e) => {
                                     // TODO: do we need to allow the user to hook into this?
@@ -128,7 +136,7 @@ where
                 Err(e) => Ok(e),
             };
         }
-        self.inner.serve(ctx, req).await
+        self.inner.serve(req).await
     }
 }
 

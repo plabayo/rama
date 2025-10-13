@@ -5,8 +5,9 @@
 
 use crate::{HeaderName, Request, utils::HeaderValueGetter};
 use rama_core::{
-    Context, Layer, Service,
+    Layer, Service,
     error::{BoxError, ErrorExt, OpaqueError},
+    extensions::ExtensionsMut,
     telemetry::tracing,
 };
 use rama_utils::macros::define_inner_service_accessors;
@@ -91,16 +92,12 @@ where
     type Response = S::Response;
     type Error = BoxError;
 
-    async fn serve(
-        &self,
-        mut ctx: Context,
-        request: Request<Body>,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut request: Request<Body>) -> Result<Self::Response, Self::Error> {
         match request.header_str(&self.header_name) {
             Ok(str_value) => {
                 let str_value = str_value.trim();
                 if str_value == "1" || str_value.eq_ignore_ascii_case("true") {
-                    ctx.insert(T::default());
+                    request.extensions_mut().insert(T::default());
                 } else if str_value != "0" && !str_value.eq_ignore_ascii_case("false") {
                     return Err(OpaqueError::from_display(format!(
                         "invalid '{}' header option: '{}'",
@@ -115,7 +112,7 @@ where
                         http.header.name  = %self.header_name,
                         "failed to determine header option: {err:?}",
                     );
-                    return self.inner.serve(ctx, request).await.map_err(Into::into);
+                    return self.inner.serve(request).await.map_err(Into::into);
                 } else {
                     return Err(err
                         .with_context(|| format!("determine '{}' header option", self.header_name))
@@ -123,7 +120,7 @@ where
                 }
             }
         };
-        self.inner.serve(ctx, request).await.map_err(Into::into)
+        self.inner.serve(request).await.map_err(Into::into)
     }
 }
 
@@ -197,6 +194,8 @@ impl<T, S> Layer<S> for HeaderOptionValueLayer<T> {
 
 #[cfg(test)]
 mod test {
+    use rama_core::extensions::ExtensionsRef;
+
     use super::*;
     use crate::Method;
 
@@ -226,8 +225,8 @@ mod test {
                 .unwrap();
 
             let inner_service =
-                rama_core::service::service_fn(move |ctx: Context, _req: Request<()>| async move {
-                    assert_eq!(expected_output, ctx.contains::<UnitValue>());
+                rama_core::service::service_fn(move |req: Request<()>| async move {
+                    assert_eq!(expected_output, req.extensions().contains::<UnitValue>());
                     Ok::<_, std::convert::Infallible>(())
                 });
 
@@ -236,7 +235,7 @@ mod test {
                 HeaderName::from_static("x-unit-value"),
             );
 
-            service.serve(Context::default(), request).await.unwrap();
+            service.serve(request).await.unwrap();
         }
     }
 
@@ -263,8 +262,8 @@ mod test {
                 .unwrap();
 
             let inner_service =
-                rama_core::service::service_fn(move |ctx: Context, _req: Request<()>| async move {
-                    assert_eq!(expected_output, ctx.contains::<UnitValue>());
+                rama_core::service::service_fn(move |req: Request<()>| async move {
+                    assert_eq!(expected_output, req.extensions().contains::<UnitValue>());
                     Ok::<_, std::convert::Infallible>(())
                 });
 
@@ -273,7 +272,7 @@ mod test {
                 HeaderName::from_static("x-unit-value"),
             );
 
-            service.serve(Context::default(), request).await.unwrap();
+            service.serve(request).await.unwrap();
         }
     }
 
@@ -285,19 +284,18 @@ mod test {
             .body(())
             .unwrap();
 
-        let inner_service =
-            rama_core::service::service_fn(async |ctx: Context, _req: Request<()>| {
-                assert!(!ctx.contains::<UnitValue>());
+        let inner_service = rama_core::service::service_fn(async |req: Request<()>| {
+            assert!(!req.extensions().contains::<UnitValue>());
 
-                Ok::<_, std::convert::Infallible>(())
-            });
+            Ok::<_, std::convert::Infallible>(())
+        });
 
         let service = HeaderOptionValueService::<UnitValue, _>::optional(
             inner_service,
             HeaderName::from_static("x-unit-value"),
         );
 
-        service.serve(Context::default(), request).await.unwrap();
+        service.serve(request).await.unwrap();
     }
 
     #[tokio::test]
@@ -317,7 +315,7 @@ mod test {
             HeaderName::from_static("x-unit-value"),
         );
 
-        let result = service.serve(Context::default(), request).await;
+        let result = service.serve(request).await;
         assert!(result.is_err());
     }
 
@@ -342,7 +340,7 @@ mod test {
                 HeaderName::from_static("x-unit-value"),
             );
 
-            let result = service.serve(Context::default(), request).await;
+            let result = service.serve(request).await;
             assert!(result.is_err());
         }
     }
@@ -368,7 +366,7 @@ mod test {
                 HeaderName::from_static("x-unit-value"),
             );
 
-            let result = service.serve(Context::default(), request).await;
+            let result = service.serve(request).await;
             assert!(result.is_err());
         }
     }

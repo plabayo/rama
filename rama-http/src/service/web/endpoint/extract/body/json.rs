@@ -86,7 +86,7 @@ fn json_content_type(headers: &HeaderMap) -> bool {
     headers
         .get(header::CONTENT_TYPE)
         .and_then(|content_type| content_type.to_str().ok())
-        .and_then(|content_type| content_type.parse::<mime::Mime>().ok())
+        .and_then(|content_type| content_type.parse::<crate::mime::Mime>().ok())
         .is_some_and(|mime| {
             mime.type_() == "application"
                 && (mime.subtype() == "json" || mime.suffix().is_some_and(|name| name == "json"))
@@ -98,7 +98,7 @@ mod test {
     use super::*;
     use crate::StatusCode;
     use crate::service::web::WebService;
-    use rama_core::{Context, Service};
+    use rama_core::Service;
 
     #[tokio::test]
     async fn test_json() {
@@ -123,7 +123,7 @@ mod test {
             )
             .body(r#"{"name": "glen", "age": 42}"#.into())
             .unwrap();
-        let resp = service.serve(Context::default(), req).await.unwrap();
+        let resp = service.serve(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
     }
 
@@ -143,7 +143,7 @@ mod test {
             .header(rama_http_types::header::CONTENT_TYPE, "text/plain")
             .body(r#"{"name": "glen", "age": 42}"#.into())
             .unwrap();
-        let resp = service.serve(Context::default(), req).await.unwrap();
+        let resp = service.serve(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
     }
 
@@ -166,7 +166,7 @@ mod test {
             )
             .body(r#"deal with it, or not?!"#.into())
             .unwrap();
-        let resp = service.serve(Context::default(), req).await.unwrap();
+        let resp = service.serve(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 }

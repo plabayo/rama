@@ -1,5 +1,5 @@
-use crate::context::Extensions;
-use crate::{Context, matcher::Matcher};
+use crate::extensions::Extensions;
+use crate::matcher::Matcher;
 use std::marker::PhantomData;
 
 /// Create a [`MatchFn`] from a function.
@@ -16,42 +16,24 @@ pub fn match_fn<F, A>(f: F) -> MatchFnBox<F, A> {
 /// Instead, you need to use the [`match_fn`] function to create a [`MatchFn`].
 pub trait MatchFn<Request, A>: private::Sealed<Request, A> + Send + Sync + 'static {}
 
-impl<F, Request> MatchFn<Request, ()> for F where F: Fn() -> bool + Send + Sync + 'static {}
+// When all arguments are present
 
-impl<F, Request> MatchFn<Request, (Request,)> for F where
-    F: Fn(&Request) -> bool + Send + Sync + 'static
-{
-}
-
-impl<F, Request> MatchFn<Request, (Context, Request)> for F where
-    F: Fn(&Context, &Request) -> bool + Send + Sync + 'static
-{
-}
-
-impl<F, Request> MatchFn<Request, (Option<&mut Extensions>, Context, Request)> for F where
-    F: Fn(Option<&mut Extensions>, &Context, &Request) -> bool + Send + Sync + 'static
-{
-}
-
-impl<F, Request> MatchFn<Request, ((), (), Option<&mut Extensions>, Request)> for F where
+impl<F, Request> MatchFn<Request, ((Extensions,), (Request,))> for F where
     F: Fn(Option<&mut Extensions>, &Request) -> bool + Send + Sync + 'static
 {
 }
 
-impl<F, Request> MatchFn<Request, ((), (), (), (), Option<&mut Extensions>)> for F where
+impl<F, Request> MatchFn<Request, ((), (Request,))> for F where
+    F: Fn(&Request) -> bool + Send + Sync + 'static
+{
+}
+
+impl<F, Request> MatchFn<Request, ((Extensions,), ())> for F where
     F: Fn(Option<&mut Extensions>) -> bool + Send + Sync + 'static
 {
 }
 
-impl<F, Request> MatchFn<Request, ((), (), (), (), (), Context)> for F where
-    F: Fn(&Context) -> bool + Send + Sync + 'static
-{
-}
-
-impl<F, Request> MatchFn<Request, ((), (), (), (), (), (), Option<&mut Extensions>, Context)> for F where
-    F: Fn(Option<&mut Extensions>, &Context) -> bool + Send + Sync + 'static
-{
-}
+impl<F, Request> MatchFn<Request, ((), ())> for F where F: Fn() -> bool + Send + Sync + 'static {}
 
 /// The public wrapper type for [`MatchFn`].
 pub struct MatchFnBox<F, A> {
@@ -82,8 +64,8 @@ where
     A: Send + 'static,
     F: MatchFn<Request, A>,
 {
-    fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context, req: &Request) -> bool {
-        self.f.call(ext, ctx, req)
+    fn matches(&self, ext: Option<&mut Extensions>, req: &Request) -> bool {
+        self.f.call(ext, req)
     }
 }
 
@@ -96,78 +78,44 @@ mod private {
         /// `ext` is None in case the callee is not interested in collecting potential
         /// match metadata gathered during the matching process. An example of this
         /// path parameters for an http Uri matcher.
-        fn call(&self, ext: Option<&mut Extensions>, ctx: &Context, req: &Request) -> bool;
+        fn call(&self, ext: Option<&mut Extensions>, req: &Request) -> bool;
     }
 
-    impl<F, Request> Sealed<Request, ()> for F
-    where
-        F: Fn() -> bool + Send + Sync + 'static,
-    {
-        fn call(&self, _ext: Option<&mut Extensions>, _ctx: &Context, _req: &Request) -> bool {
-            (self)()
-        }
-    }
+    // When all options are present
 
-    impl<F, Request> Sealed<Request, (Request,)> for F
-    where
-        F: Fn(&Request) -> bool + Send + Sync + 'static,
-    {
-        fn call(&self, _ext: Option<&mut Extensions>, _ctx: &Context, req: &Request) -> bool {
-            (self)(req)
-        }
-    }
-
-    impl<F, Request> Sealed<Request, (Context, Request)> for F
-    where
-        F: Fn(&Context, &Request) -> bool + Send + Sync + 'static,
-    {
-        fn call(&self, _ext: Option<&mut Extensions>, ctx: &Context, req: &Request) -> bool {
-            (self)(ctx, req)
-        }
-    }
-
-    impl<F, Request> Sealed<Request, (Option<&mut Extensions>, Context, Request)> for F
-    where
-        F: Fn(Option<&mut Extensions>, &Context, &Request) -> bool + Send + Sync + 'static,
-    {
-        fn call(&self, ext: Option<&mut Extensions>, ctx: &Context, req: &Request) -> bool {
-            (self)(ext, ctx, req)
-        }
-    }
-
-    impl<F, Request> Sealed<Request, ((), (), Option<&mut Extensions>, Request)> for F
+    impl<F, Request> Sealed<Request, ((Extensions,), (Request,))> for F
     where
         F: Fn(Option<&mut Extensions>, &Request) -> bool + Send + Sync + 'static,
     {
-        fn call(&self, ext: Option<&mut Extensions>, _ctx: &Context, req: &Request) -> bool {
+        fn call(&self, ext: Option<&mut Extensions>, req: &Request) -> bool {
             (self)(ext, req)
         }
     }
 
-    impl<F, Request> Sealed<Request, ((), (), (), (), Option<&mut Extensions>)> for F
+    impl<F, Request> Sealed<Request, ((Extensions,), ())> for F
     where
         F: Fn(Option<&mut Extensions>) -> bool + Send + Sync + 'static,
     {
-        fn call(&self, ext: Option<&mut Extensions>, _ctx: &Context, _req: &Request) -> bool {
+        fn call(&self, ext: Option<&mut Extensions>, _req: &Request) -> bool {
             (self)(ext)
         }
     }
 
-    impl<F, Request> Sealed<Request, ((), (), (), (), (), Context)> for F
+    impl<F, Request> Sealed<Request, ((), (Request,))> for F
     where
-        F: Fn(&Context) -> bool + Send + Sync + 'static,
+        F: Fn(&Request) -> bool + Send + Sync + 'static,
     {
-        fn call(&self, _ext: Option<&mut Extensions>, ctx: &Context, _req: &Request) -> bool {
-            (self)(ctx)
+        fn call(&self, _ext: Option<&mut Extensions>, req: &Request) -> bool {
+            (self)(req)
         }
     }
 
-    impl<F, Request> Sealed<Request, ((), (), (), (), (), (), Option<&mut Extensions>, Context)> for F
+    impl<F, Request> Sealed<Request, ((), ())> for F
     where
-        F: Fn(Option<&mut Extensions>, &Context) -> bool + Send + Sync + 'static,
+        F: Fn() -> bool + Send + Sync + 'static,
     {
-        fn call(&self, ext: Option<&mut Extensions>, ctx: &Context, _req: &Request) -> bool {
-            (self)(ext, ctx)
+        fn call(&self, _ext: Option<&mut Extensions>, __req: &Request) -> bool {
+            (self)()
         }
     }
 }

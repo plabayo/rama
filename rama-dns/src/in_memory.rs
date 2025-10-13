@@ -1,9 +1,10 @@
 use crate::DnsResolver;
+use ahash::{HashMap, HashMapExt as _};
 use rama_core::error::{ErrorContext as _, OpaqueError};
-use rama_net::address::{Domain, DomainTrie};
+use rama_net::address::{AsDomainRef, Domain, DomainTrie};
 use serde::{Deserialize, Serialize};
+
 use std::{
-    collections::HashMap,
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
     ops::Deref,
     sync::Arc,
@@ -81,16 +82,20 @@ impl InMemoryDns {
     /// Inserts a TXT record to the [`InMemoryDns`].
     ///
     /// Existing mappings will be overwritten.
-    pub fn insert_txt_records(&mut self, name: &Domain, values: Vec<Vec<u8>>) -> &mut Self {
-        self.txt_trie.insert_domain(name.as_str(), values);
+    pub fn insert_txt_records(
+        &mut self,
+        name: impl AsDomainRef,
+        values: Vec<Vec<u8>>,
+    ) -> &mut Self {
+        self.txt_trie.insert_domain(name, values);
         self
     }
 
     /// Inserts a domain to IP address mapping to the [`InMemoryDns`].
     ///
     /// Existing mappings will be overwritten.
-    pub fn insert(&mut self, name: &Domain, addresses: Vec<IpAddr>) -> &mut Self {
-        self.trie.insert_domain(name.as_str(), addresses);
+    pub fn insert(&mut self, name: impl AsDomainRef, addresses: Vec<IpAddr>) -> &mut Self {
+        self.trie.insert_domain(name, addresses);
         self
     }
 
@@ -98,7 +103,11 @@ impl InMemoryDns {
     ///
     /// This method accepts any type that can be converted into an `IpAddr`,
     /// such as `Ipv4Addr` or `Ipv6Addr`.
-    pub fn insert_address<A: Into<IpAddr>>(&mut self, name: &Domain, addr: A) -> &mut Self {
+    pub fn insert_address<A: Into<IpAddr>>(
+        &mut self,
+        name: impl AsDomainRef,
+        addr: A,
+    ) -> &mut Self {
         self.insert(name, vec![addr.into()])
     }
 
@@ -108,7 +117,7 @@ impl InMemoryDns {
     /// such as `Ipv4Addr` or `Ipv6Addr`.
     pub fn insert_addresses<I: IntoIterator<Item: Into<IpAddr>>>(
         &mut self,
-        name: &Domain,
+        name: impl AsDomainRef,
         addresses: I,
     ) -> &mut Self {
         self.insert(name, addresses.into_iter().map(Into::into).collect())
@@ -138,7 +147,7 @@ impl DnsResolver for InMemoryDns {
 
     async fn ipv4_lookup(&self, domain: Domain) -> Result<Vec<Ipv4Addr>, Self::Error> {
         self.trie
-            .match_exact(domain.as_str())
+            .match_exact(domain)
             .and_then(|ips| {
                 let ips: Vec<_> = ips
                     .iter()
@@ -154,7 +163,7 @@ impl DnsResolver for InMemoryDns {
 
     async fn ipv6_lookup(&self, domain: Domain) -> Result<Vec<Ipv6Addr>, Self::Error> {
         self.trie
-            .match_exact(domain.as_str())
+            .match_exact(domain)
             .and_then(|ips| {
                 let ips: Vec<_> = ips
                     .iter()

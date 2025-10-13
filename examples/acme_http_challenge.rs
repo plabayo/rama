@@ -29,24 +29,50 @@
 //! You should see log output indicating progress through each ACME step,
 //! and finally the certificate download will complete successfully.
 //!
+//! ```sh
+//! curl -vik --resolve example:5002:127.0.0.1 https://example:5002
+//! ```
+//! Output
+//! ```
+//! * Server certificate:
+//! *  subject: [NONE]
+//! *  start date: Sep 16 19:08:44 2025 GMT
+//! *  expire date: Sep 16 19:08:43 2030 GMT
+//! *  issuer: CN=Pebble Intermediate CA 4224e8
+//! *  SSL certificate verify result: unable to get local issuer certificate (20), continuing anyway.
+//! ```
+//!
 //! TODO: once Rama has an ACME server implementation (https://github.com/plabayo/rama/issues/649) migrate
 //! this example to use that instead of Pebble so we can test everything automatically
 use rama::{
-    Context, Layer, Service,
-    crypto::dep::rcgen::{
-        self, CertificateParams, CertificateSigningRequest, DistinguishedName, DnType,
+    Layer, Service,
+    crypto::{
+        dep::{
+            aws_lc_rs::rand::SystemRandom,
+            rcgen::{
+                self, CertificateParams, CertificateSigningRequest, DistinguishedName, DnType,
+            },
+        },
+        jose::EcdsaKey,
     },
     graceful,
     http::{
-        Body, Response,
         client::EasyHttpWebClient,
-        headers::{ContentType, HeaderMapExt},
+        headers::ContentType,
         layer::{compression::CompressionLayer, trace::TraceLayer},
         server::HttpServer,
         service::web::WebService,
+        service::web::response::{Headers, IntoResponse},
     },
-    net::tls::client::ServerVerifyMode,
+    layer::ConsumeErrLayer,
+    net::tls::{
+        DataEncoding,
+        client::ServerVerifyMode,
+        server::{ServerAuth, ServerAuthData, ServerConfig},
+    },
     rt::Executor,
+    service::service_fn,
+    tcp::server::TcpListener,
     telemetry::tracing::{self, level_filters::LevelFilter},
     tls::{
         acme::{
@@ -57,10 +83,14 @@ use rama::{
                 server::{ChallengeType, OrderStatus},
             },
         },
-        boring::client::TlsConnectorDataBuilder,
+        boring::{
+            client::TlsConnectorDataBuilder,
+            server::{TlsAcceptorData, TlsAcceptorLayer},
+        },
     },
 };
-use std::{sync::Arc, time::Duration};
+
+use std::{convert::Infallible, sync::Arc, time::Duration};
 use tokio::time::sleep;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -93,34 +123,42 @@ async fn main() {
         .build()
         .boxed();
 
-    let client = AcmeClient::new(TEST_DIRECTORY_URL, client, Context::default())
+    let client = AcmeClient::new(TEST_DIRECTORY_URL, client)
         .await
         .expect("create acme client");
 
     let account = client
-        .create_account(
-            Context::default(),
-            CreateAccountOptions {
-                terms_of_service_agreed: Some(true),
-                ..Default::default()
-            },
-        )
+        .create_account(CreateAccountOptions {
+            terms_of_service_agreed: Some(true),
+            ..Default::default()
+        })
+        .await
+        .expect("create account");
+
+    // Export key used by account and save this somewhere external
+    let alg = account.key().alg();
+    let pkcs8 = account.key().pkcs8_der().expect("create der");
+
+    // Later we can then load the key from the exported pkcs8 so we dont have to create a new account
+    let account_key =
+        EcdsaKey::from_pkcs8_der(alg, pkcs8.as_ref(), SystemRandom::new()).expect("load from der");
+
+    // Load account associated with the given account key, if acme server doesn't have this account yet this will fail
+    let account = client
+        .load_account(account_key)
         .await
         .expect("create account");
 
     let mut order = account
-        .new_order(
-            Context::default(),
-            NewOrderPayload {
-                identifiers: vec![Identifier::Dns("example.com".into())],
-                ..Default::default()
-            },
-        )
+        .new_order(NewOrderPayload {
+            identifiers: vec![Identifier::dns("example.com")],
+            ..Default::default()
+        })
         .await
         .expect("create order");
 
     let authz = order
-        .get_authorizations(Context::default())
+        .get_authorizations()
         .await
         .expect("get order authorizations");
 
@@ -146,22 +184,18 @@ async fn main() {
 
     let graceful = graceful::Shutdown::default();
 
-    graceful.spawn_task_fn(async move |guard| {
+    let challenge_server_handle = graceful.spawn_task_fn(async move |guard| {
         let exec = Executor::graceful(guard.clone());
         HttpServer::auto(exec)
             .listen(
                 ADDR,
                 (TraceLayer::new_for_http(), CompressionLayer::new()).into_layer(
-                    WebService::default().get(&path, move |_ctx: Context| {
+                    WebService::default().get(&path, move || {
                         let state = state.clone();
-                        async move {
-                            let mut response = Response::new(Body::from(
-                                state.key_authorization.as_str().to_owned(),
-                            ));
-                            let headers = response.headers_mut();
-                            headers.typed_insert(ContentType::octet_stream());
-                            response
-                        }
+                        std::future::ready((
+                            Headers::single(ContentType::octet_stream()),
+                            state.key_authorization.as_str().to_owned(),
+                        ))
                     }),
                 ),
             )
@@ -172,29 +206,65 @@ async fn main() {
     sleep(Duration::from_millis(1000)).await;
 
     order
-        .finish_challenge(Context::default(), &mut challenge)
+        .finish_challenge(&mut challenge)
         .await
         .expect("finish challenge");
 
     let state = order
-        .wait_until_all_authorizations_finished(Context::default())
+        .wait_until_all_authorizations_finished()
         .await
         .expect("wait until authorizations are finished");
 
     assert_eq!(state.status, OrderStatus::Ready);
 
-    let csr = create_csr();
-    order
-        .finalize(Context::default(), csr.der())
-        .await
-        .expect("finalize order");
+    let (key_pair, csr) = create_csr();
+
+    order.finalize(csr.der()).await.expect("finalize order");
 
     let cert = order
-        .download_certificate(Context::default())
+        .download_certificate_as_pem_stack()
         .await
         .expect("download certificate");
 
-    tracing::info!(?cert, "received certificiate")
+    tracing::info!(?cert, "received certificiate");
+    challenge_server_handle.abort();
+
+    let server_auth = ServerAuthData {
+        cert_chain: DataEncoding::DerStack(cert.into_iter().map(|pem| pem.contents).collect()),
+        private_key: DataEncoding::Der(key_pair.serialize_der()),
+        ocsp: None,
+    };
+
+    // create https server using the configured certificate
+
+    graceful.spawn_task_fn(async |guard| {
+        let exec = Executor::graceful(guard.clone());
+        let http_service = HttpServer::auto(exec).service(service_fn(async || {
+            Ok::<_, Infallible>("hello".into_response())
+        }));
+
+        let tls_server_config = ServerConfig::new(ServerAuth::Single(server_auth));
+
+        let acceptor_data =
+            TlsAcceptorData::try_from(tls_server_config).expect("create acceptor data");
+
+        let tcp_service = (
+            ConsumeErrLayer::default(),
+            TlsAcceptorLayer::new(acceptor_data),
+        )
+            .into_layer(http_service);
+
+        TcpListener::bind(ADDR)
+            .await
+            .expect("bind TCP Listener: http")
+            .serve_graceful(guard, tcp_service)
+            .await;
+    });
+
+    graceful
+        .shutdown_with_limit(Duration::from_secs(30))
+        .await
+        .expect("graceful shutdown");
 }
 
 #[derive(Debug)]
@@ -202,10 +272,10 @@ struct ChallengeState {
     key_authorization: KeyAuthorization,
 }
 
-fn create_csr() -> CertificateSigningRequest {
+fn create_csr() -> (rcgen::KeyPair, CertificateSigningRequest) {
     let key_pair = rcgen::KeyPair::generate().expect("create keypair");
 
-    let params =
+    let mut params =
         CertificateParams::new(vec!["example.com".to_owned()]).expect("create certificate params");
 
     let mut distinguished_name = DistinguishedName::new();
@@ -214,7 +284,11 @@ fn create_csr() -> CertificateSigningRequest {
     distinguished_name.push(DnType::OrganizationName, "Plabayo");
     distinguished_name.push(DnType::CommonName, "example.com");
 
-    params
+    params.distinguished_name = distinguished_name;
+
+    let csr = params
         .serialize_request(&key_pair)
-        .expect("create certificate signing request")
+        .expect("create certificate signing request");
+
+    (key_pair, csr)
 }

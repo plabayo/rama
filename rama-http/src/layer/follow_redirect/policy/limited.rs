@@ -1,5 +1,4 @@
 use super::{Action, Attempt, Policy};
-use rama_core::Context;
 
 /// A redirection [`Policy`] that limits the number of successive redirections.
 #[derive(Debug)]
@@ -39,7 +38,7 @@ impl Clone for Limited {
 }
 
 impl<B, E> Policy<B, E> for Limited {
-    fn redirect(&mut self, _: &Context, _: &Attempt<'_>) -> Result<Action, E> {
+    fn redirect(&mut self, _: &Attempt<'_>) -> Result<Action, E> {
         if self.remaining > 0 {
             self.remaining -= 1;
             Ok(Action::Follow)
@@ -59,9 +58,8 @@ mod tests {
         let uri = Uri::from_static("https://example.com/");
 
         let mut policy = Limited::new(2);
-        let mut ctx = Context::default();
 
-        _inner_work(&uri, &mut policy, &mut ctx);
+        _inner_work(&uri, &mut policy);
     }
 
     #[test]
@@ -69,19 +67,18 @@ mod tests {
         let uri = Uri::from_static("https://example.com/");
 
         let mut policy = Limited::new(2);
-        let mut ctx = Context::default();
 
-        _inner_work(&uri, &mut policy, &mut ctx);
+        _inner_work(&uri, &mut policy);
 
         let mut policy = policy.clone();
 
-        _inner_work(&uri, &mut policy, &mut ctx);
+        _inner_work(&uri, &mut policy);
     }
 
-    fn _inner_work(uri: &Uri, policy: &mut Limited, ctx: &mut Context) {
+    fn _inner_work(uri: &Uri, policy: &mut Limited) {
         for _ in 0..2 {
             let mut request = Request::builder().uri(uri.clone()).body(()).unwrap();
-            Policy::<(), ()>::on_request(policy, ctx, &mut request);
+            Policy::<(), ()>::on_request(policy, &mut request);
 
             let attempt = Attempt {
                 status: Default::default(),
@@ -89,14 +86,14 @@ mod tests {
                 previous: uri,
             };
             assert!(
-                Policy::<(), ()>::redirect(policy, ctx, &attempt)
+                Policy::<(), ()>::redirect(policy, &attempt)
                     .unwrap()
                     .is_follow()
             );
         }
 
         let mut request = Request::builder().uri(uri.clone()).body(()).unwrap();
-        Policy::<(), ()>::on_request(policy, ctx, &mut request);
+        Policy::<(), ()>::on_request(policy, &mut request);
 
         let attempt = Attempt {
             status: Default::default(),
@@ -104,7 +101,7 @@ mod tests {
             previous: uri,
         };
         assert!(
-            Policy::<(), ()>::redirect(policy, ctx, &attempt)
+            Policy::<(), ()>::redirect(policy, &attempt)
                 .unwrap()
                 .is_stop()
         );

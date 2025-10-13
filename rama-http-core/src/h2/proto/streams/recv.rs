@@ -1,6 +1,7 @@
 use super::*;
 use crate::h2::codec::UserError;
 use crate::h2::proto;
+use rama_core::extensions::ExtensionsMut;
 use rama_core::telemetry::tracing;
 
 use rama_http::proto::{RequestExtensions, RequestHeaders};

@@ -1,9 +1,10 @@
 use super::utils;
 use rama::{
-    Context,
+    extensions::Extensions,
     http::{
         BodyExtractExt, StatusCode,
-        headers::{ContentType, HeaderMapExt, dep::mime},
+        headers::{ContentType, HeaderMapExt},
+        mime,
     },
 };
 
@@ -17,11 +18,7 @@ async fn test_ws_over_h2() {
     // basic html page sanity checks,
     // to at least give some basic guarantees for the human experience
 
-    let index_response = runner
-        .get("https://127.0.0.1:62035")
-        .send(Context::default())
-        .await
-        .unwrap();
+    let index_response = runner.get("https://127.0.0.1:62035").send().await.unwrap();
     assert_eq!(StatusCode::OK, index_response.status());
     assert!(
         index_response
@@ -37,7 +34,7 @@ async fn test_ws_over_h2() {
 
     let mut ws = runner
         .websocket_h2("wss://127.0.0.1:62035/echo")
-        .handshake(Context::default())
+        .handshake(Extensions::default())
         .await
         .unwrap();
     ws.send_message("hello world".into())

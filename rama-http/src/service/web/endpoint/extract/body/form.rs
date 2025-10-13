@@ -48,7 +48,7 @@ where
         async fn extract_form_body_bytes(req: Request) -> Result<Bytes, FormRejection> {
             if !crate::service::web::extract::has_any_content_type(
                 req.headers(),
-                &[&mime::APPLICATION_WWW_FORM_URLENCODED],
+                &[&crate::mime::APPLICATION_WWW_FORM_URLENCODED],
             ) {
                 return Err(InvalidFormContentType.into());
             }
@@ -81,7 +81,7 @@ mod test {
     use super::*;
     use crate::service::web::WebService;
     use crate::{Body, Method, Request, StatusCode};
-    use rama_core::{Context, Service};
+    use rama_core::Service;
 
     #[tokio::test]
     async fn test_form_post_form_urlencoded() {
@@ -102,7 +102,7 @@ mod test {
             .header("content-type", "application/x-www-form-urlencoded")
             .body(r#"name=Devan&age=29"#.into())
             .unwrap();
-        let resp = service.serve(Context::default(), req).await.unwrap();
+        let resp = service.serve(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
     }
 
@@ -123,7 +123,7 @@ mod test {
             .header("content-type", "application/x-www-form-urlencoded")
             .body(r#"age=29"#.into())
             .unwrap();
-        let resp = service.serve(Context::default(), req).await.unwrap();
+        let resp = service.serve(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
@@ -144,7 +144,7 @@ mod test {
             .header("content-type", "application/x-www-form-urlencoded")
             .body(r#"name=Devan&age=29"#.into())
             .unwrap();
-        let resp = service.serve(Context::default(), req).await.unwrap();
+        let resp = service.serve(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
@@ -166,7 +166,7 @@ mod test {
             .method(Method::GET)
             .body(Body::empty())
             .unwrap();
-        let resp = service.serve(Context::default(), req).await.unwrap();
+        let resp = service.serve(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
     }
 
@@ -186,7 +186,7 @@ mod test {
             .method(Method::GET)
             .body(Body::empty())
             .unwrap();
-        let resp = service.serve(Context::default(), req).await.unwrap();
+        let resp = service.serve(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 }

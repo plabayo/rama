@@ -19,7 +19,7 @@ jobs:
     env:
       RUSTFLAGS: -D warnings
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{env.RUST_TOOLCHAIN_MSRV}}
@@ -42,7 +42,7 @@ jobs:
     env:
       RUSTFLAGS: -D warnings
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
@@ -68,7 +68,7 @@ jobs:
     env:
       RUSTFLAGS: -D warnings
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
@@ -92,7 +92,7 @@ jobs:
     env:
       RUSTFLAGS: -D warnings
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{env.RUST_TOOLCHAIN_MSRV}}
@@ -106,7 +106,7 @@ jobs:
     needs: [check, check-msrv, check-all-features]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{env.RUST_TOOLCHAIN_BETA}}
@@ -120,7 +120,7 @@ jobs:
     needs: [check, check-msrv, check-all-features]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
@@ -134,7 +134,7 @@ jobs:
     needs: [check, check-msrv, check-all-features]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
@@ -148,7 +148,7 @@ jobs:
     needs: [check, check-msrv, check-all-features]
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{env.RUST_TOOLCHAIN_MSRV}}
@@ -162,7 +162,7 @@ jobs:
     needs: [check, check-msrv, check-all-features]
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
@@ -177,7 +177,7 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: ilammy/setup-nasm@v1
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{env.RUST_TOOLCHAIN_MSRV}}
@@ -192,7 +192,7 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: ilammy/setup-nasm@v1
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
@@ -202,27 +202,12 @@ jobs:
       - name: Run tests
         run: cargo test --all-features --workspace
 
-  test-ignored-msrv:
-    needs: [check, check-msrv, check-all-features]
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{env.RUST_TOOLCHAIN_MSRV}}
-      - uses: Swatinem/rust-cache@v2
-        with:
-          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN_MSRV}}"
-      - name: Run tests
-        run: cargo test --features=cli,compression,rustls --workspace -- --ignored
-
   test-ignored:
     needs: [check, check-msrv, check-all-features]
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
@@ -232,27 +217,12 @@ jobs:
       - name: Run tests
         run: cargo test --features=cli,compression,rustls --workspace -- --ignored
 
-  test-ignored-macos-msrv:
-    needs: [check, check-msrv, check-all-features]
-    runs-on: macos-latest
-    timeout-minutes: 90
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{env.RUST_TOOLCHAIN_MSRV}}
-      - uses: Swatinem/rust-cache@v2
-        with:
-          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN_MSRV}}"
-      - name: Run tests
-        run: cargo test --features=cli,compression,rustls --workspace -- --ignored
-
   test-ignored-macos:
     needs: [check, check-msrv, check-all-features]
     runs-on: macos-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
@@ -266,7 +236,7 @@ jobs:
     needs: [check, check-msrv, check-all-features]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
@@ -280,7 +250,7 @@ jobs:
     needs: [check, check-msrv, check-all-features]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{env.RUST_TOOLCHAIN_MSRV}}
@@ -294,7 +264,7 @@ jobs:
     needs: [check, check-msrv, check-all-features]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
@@ -308,7 +278,7 @@ jobs:
     needs: [check, check-msrv, check-all-features]
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
@@ -322,7 +292,7 @@ jobs:
     needs: [check, check-msrv, check-all-features]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
@@ -335,7 +305,7 @@ jobs:
     needs: [check, check-msrv, check-all-features]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
@@ -354,7 +324,7 @@ jobs:
     needs: [check, check-msrv, check-all-features]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           rust-version: ${{env.RUST_TOOLCHAIN_MSRV}}
@@ -363,7 +333,7 @@ jobs:
     needs: [check, check-msrv, check-all-features]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@nightly
         with:
           toolchain: ${{env.RUST_TOOLCHAIN_NIGHTLY}}
@@ -374,11 +344,26 @@ jobs:
         run: |
           cargo +nightly fuzz run ua_parse -- -max_len=131072 -max_total_time=30
 
+  cargo-fuzz-http-header:
+    needs: [check, check-msrv, check-all-features]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: ${{env.RUST_TOOLCHAIN_NIGHTLY}}
+      - name: Install cargo-fuzz
+        run: |
+          cargo install cargo-fuzz 2>/dev/null || true
+      - name: cargo fuzz check
+        run: |
+          cargo +nightly fuzz run http_header_x_robots_tag -- -max_len=131072 -max_total_time=30
+
   cargo-fuzz-h2:
     needs: [check, check-msrv, check-all-features]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@nightly
         with:
           toolchain: ${{env.RUST_TOOLCHAIN_NIGHTLY}}
@@ -395,7 +380,7 @@ jobs:
     needs: [check, check-msrv, check-all-features]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
@@ -410,7 +395,7 @@ jobs:
   #   runs-on: ubuntu-latest
   #   steps:
   #     - name: Checkout
-  #       uses: actions/checkout@v4
+  #       uses: actions/checkout@v5
   #     - name: Check semver
   #       uses: obi1kenobi/cargo-semver-checks-action@v2
   #       with:
@@ -426,7 +411,6 @@ jobs:
       - test-beta
       - test-examples-msrv
       - test-ignored
-      - test-ignored-msrv
       - test-docs
       - cargo-hack
       - cargo-deny
@@ -454,7 +438,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: deploy-rama-cli-docker
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: superfly/flyctl-actions/setup-flyctl@master
       - run: |
           cd rama-fp/infra/deployments/fp
@@ -466,10 +450,34 @@ jobs:
     runs-on: ubuntu-latest
     needs: deploy-rama-cli-docker
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: superfly/flyctl-actions/setup-flyctl@master
       - run: |
           cd rama-fp/infra/deployments/fp-h1
+          flyctl deploy --remote-only
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+  deploy-rama-ip-ipv4-fly:
+    runs-on: ubuntu-latest
+    needs: deploy-rama-cli-docker
+    steps:
+      - uses: actions/checkout@v5
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - run: |
+          cd rama-fp/infra/deployments/ipv4
+          flyctl deploy --remote-only
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+  deploy-rama-ip-ipv6-fly:
+    runs-on: ubuntu-latest
+    needs: deploy-rama-cli-docker
+    steps:
+      - uses: actions/checkout@v5
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - run: |
+          cd rama-fp/infra/deployments/ipv6
           flyctl deploy --remote-only
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
@@ -478,7 +486,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: deploy-rama-cli-docker
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: superfly/flyctl-actions/setup-flyctl@master
       - run: |
           cd rama-fp/infra/deployments/echo

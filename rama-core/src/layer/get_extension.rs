@@ -2,7 +2,7 @@
 //!
 //! [Context]: https://docs.rs/rama/latest/rama/context/struct.Context.html
 
-use crate::{Context, Layer, Service};
+use crate::{Layer, Service, extensions::ExtensionsRef};
 use rama_utils::macros::define_inner_service_accessors;
 use std::{fmt, marker::PhantomData};
 
@@ -130,7 +130,7 @@ impl<S, T, Fut, F> GetExtension<S, T, Fut, F> {
 
 impl<Request, S, T, Fut, F> Service<Request> for GetExtension<S, T, Fut, F>
 where
-    Request: Send + 'static,
+    Request: Send + ExtensionsRef + 'static,
     S: Service<Request>,
     T: Clone + Send + Sync + 'static,
     F: Fn(T) -> Fut + Send + Sync + 'static,
@@ -139,19 +139,19 @@ where
     type Response = S::Response;
     type Error = S::Error;
 
-    async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
-        if let Some(value) = ctx.get::<T>() {
+    async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
+        if let Some(value) = req.extensions().get::<T>() {
             let value = value.clone();
             (self.callback)(value).await;
         }
-        self.inner.serve(ctx, req).await
+        self.inner.serve(req).await
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Context, service::service_fn};
+    use crate::{ServiceInput, extensions::ExtensionsMut, service::service_fn};
     use std::{convert::Infallible, sync::Arc};
 
     #[derive(Debug, Clone)]
@@ -168,15 +168,16 @@ mod tests {
                 cloned_value.store(state.0, std::sync::atomic::Ordering::Release);
             }
         })
-        .into_layer(service_fn(async |ctx: Context, _req: ()| {
-            let state = ctx.get::<State>().unwrap();
+        .into_layer(service_fn(async |req: ServiceInput<()>| {
+            let state = req.extensions().get::<State>().unwrap();
             Ok::<_, Infallible>(state.0)
         }));
 
-        let mut ctx = Context::default();
-        ctx.insert(State(42));
+        let mut request = ServiceInput::new(());
+        request.extensions_mut().insert(State(42));
 
-        let res = svc.serve(ctx, ()).await.unwrap();
+        let res = svc.serve(request).await.unwrap();
+
         assert_eq!(42, res);
 
         let value = value.load(std::sync::atomic::Ordering::Acquire);

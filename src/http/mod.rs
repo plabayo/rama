@@ -7,8 +7,8 @@
 pub use ::rama_http::{
     Body, BodyDataStream, BodyExtractExt, BodyLimit, HeaderMap, HeaderName, HeaderValue, HttpError,
     HttpResult, InfiniteReader, Method, Request, Response, Scheme, StatusCode, StreamingBody, Uri,
-    Version, body, conn, convert, dep, header, headers, io, matcher, opentelemetry, proto, request,
-    response, service, sse, uri, utils,
+    Version, body, conn, convert, header, headers, io, matcher, mime, opentelemetry, proto,
+    request, response, service, sse, uri, utils,
 };
 
 #[cfg(feature = "http-full")]
@@ -39,3 +39,6 @@ pub use ::rama_http_backend::server;
 #[cfg(feature = "ws")]
 #[doc(inline)]
 pub use ::rama_ws as ws;
+
+#[cfg(feature = "tls")]
+pub mod tls;

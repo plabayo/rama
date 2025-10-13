@@ -1,5 +1,5 @@
 use super::utils;
-use rama::{Context, http::BodyExtractExt};
+use rama::http::BodyExtractExt;
 
 #[tokio::test]
 #[ignore]
@@ -13,7 +13,7 @@ async fn test_tls_boring_termination() {
 
     let reply = runner
         .get("https://127.0.0.1:63801")
-        .send(Context::default())
+        .send()
         .await
         .unwrap()
         .try_into_string()

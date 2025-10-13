@@ -1,5 +1,5 @@
 use super::Matcher;
-use crate::{Context, context::Extensions};
+use crate::extensions::Extensions;
 use rama_utils::macros::all_the_tuples_no_last_special_case;
 
 /// A matcher that matches if all of the inner matchers match.
@@ -27,13 +27,13 @@ impl<T> And<T> {
 macro_rules! impl_and_matches {
     ($($ty:ident),+ $(,)?) => {
         #[allow(non_snake_case)]
-        fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context, req: &Request) -> bool {
+        fn matches(&self, ext: Option<&mut Extensions>, req: &Request) -> bool {
             let ($($ty),+,) = &self.0;
             match ext {
                 Some(ext) => {
                     let mut inner_ext = Extensions::new();
                     $(
-                        if !$ty.matches(Some(&mut inner_ext), ctx, req) {
+                        if !$ty.matches(Some(&mut inner_ext), req) {
                             return false;
                         }
                     )+
@@ -42,7 +42,7 @@ macro_rules! impl_and_matches {
                 }
                 None => {
                     $(
-                        if !$ty.matches(None, ctx, req) {
+                        if !$ty.matches(None, req) {
                             return false;
                         }
                     )+

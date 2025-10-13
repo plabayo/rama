@@ -5,7 +5,6 @@ use crate::examples::example_tests::utils::ExampleRunner;
 use super::utils;
 
 use rama::{
-    Context,
     http::{BodyExtractExt, server::HttpServer, service::web::Router},
     net::{
         Protocol,
@@ -44,13 +43,6 @@ async fn test_http_client_over_socks5_proxy_connect(
         http_socket_addr,
     );
 
-    let mut ctx = Context::default();
-    ctx.insert(ProxyAddress {
-        protocol: Some(Protocol::SOCKS5),
-        authority: proxy_socket_addr.into(),
-        credential: Some(ProxyCredential::Basic(Basic::new_static("john", "secret"))),
-    });
-
     let uri = format!("http://{http_socket_addr}/ping");
     tracing::info!(
         url.full = %uri,
@@ -64,7 +56,12 @@ async fn test_http_client_over_socks5_proxy_connect(
 
     let resp = runner
         .get(uri)
-        .send(ctx)
+        .extension(ProxyAddress {
+            protocol: Some(Protocol::SOCKS5),
+            authority: proxy_socket_addr.into(),
+            credential: Some(ProxyCredential::Basic(Basic::new_static("john", "secret"))),
+        })
+        .send()
         .await
         .expect("make http request via socks5 proxy")
         .try_into_string()

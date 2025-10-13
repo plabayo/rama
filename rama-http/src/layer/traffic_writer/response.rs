@@ -3,9 +3,10 @@ use crate::io::write_http_response;
 use crate::{Body, Request, Response, StreamingBody, body::util::BodyExt};
 use rama_core::bytes::Bytes;
 use rama_core::error::{BoxError, ErrorContext, OpaqueError};
+use rama_core::extensions::ExtensionsRef;
 use rama_core::rt::Executor;
 use rama_core::telemetry::tracing::{self, Instrument};
-use rama_core::{Context, Layer, Service};
+use rama_core::{Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt::Debug;
 use tokio::io::{AsyncWrite, stderr, stdout};
@@ -294,13 +295,9 @@ where
     type Response = Response;
     type Error = BoxError;
 
-    async fn serve(
-        &self,
-        ctx: Context,
-        req: Request<ReqBody>,
-    ) -> Result<Self::Response, Self::Error> {
-        let do_not_print_response: Option<DoNotWriteResponse> = ctx.get().cloned();
-        let resp = self.inner.serve(ctx, req).await.map_err(Into::into)?;
+    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
+        let do_not_print_response: Option<DoNotWriteResponse> = req.extensions().get().cloned();
+        let resp = self.inner.serve(req).await.map_err(Into::into)?;
         let resp = if do_not_print_response.is_some() {
             resp.map(Body::new)
         } else {

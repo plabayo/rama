@@ -6,13 +6,13 @@ use rama_core::bytes::{Buf, Bytes, BytesMut};
 use rama_core::error::BoxError;
 use rama_core::futures::Stream;
 use rama_core::futures::ready;
+use rama_core::stream::io::StreamReader;
 use std::{
     io,
     pin::Pin,
     task::{Context, Poll},
 };
 use tokio::io::AsyncRead;
-use tokio_util::io::StreamReader;
 
 /// A `Body` that has been converted into an `AsyncRead`.
 pub(crate) type AsyncReadBody<B> = StreamReader<
@@ -99,7 +99,8 @@ where
                 this.buf.reserve(Self::INTERNAL_BUF_CAPACITY);
             }
 
-            let result = tokio_util::io::poll_read_buf(this.read.as_mut(), cx, &mut this.buf);
+            let result =
+                rama_core::stream::io::poll_read_buf(this.read.as_mut(), cx, &mut this.buf);
 
             match ready!(result) {
                 Ok(0) => {

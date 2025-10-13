@@ -1,7 +1,8 @@
 #![deny(warnings)]
 
 use h2_support::prelude::*;
-use rama_core::futures::StreamExt;
+use rama::extensions::ExtensionsMut;
+use rama_core::{extensions::ExtensionsRef, futures::StreamExt};
 use tokio::io::AsyncWriteExt;
 
 const SETTINGS: &[u8] = &[0, 0, 0, 4, 0, 0, 0, 0, 0];
@@ -1260,6 +1261,46 @@ async fn send_reset_explicitly() {
         let (_req, mut stream) = srv.next().await.unwrap().unwrap();
 
         stream.send_reset(Reason::ENHANCE_YOUR_CALM);
+
+        assert!(srv.next().await.is_none());
+    };
+
+    join(client, srv).await;
+}
+
+#[tokio::test]
+async fn send_reset_explicitly_does_not_affect_local_limit() {
+    h2_support::trace_init!();
+    let (io, mut client) = mock::new();
+
+    let client = async move {
+        let settings = client.assert_server_handshake().await;
+        assert_default_settings!(settings);
+        for s in (1..9).step_by(2) {
+            client
+                .send_frame(
+                    frames::headers(s)
+                        .request("GET", "https://example.com/")
+                        .eos(),
+                )
+                .await;
+            client
+                .recv_frame(frames::reset(s).reason(Reason::INTERNAL_ERROR))
+                .await;
+        }
+    };
+
+    let srv = async move {
+        let mut srv = server::Builder::new()
+            .max_local_error_reset_streams(Some(3))
+            .handshake::<_, Bytes>(io)
+            .await
+            .expect("handshake");
+
+        for _s in (1..9).step_by(2) {
+            let (_req, mut stream) = srv.next().await.unwrap().unwrap();
+            stream.send_reset(Reason::INTERNAL_ERROR);
+        }
 
         assert!(srv.next().await.is_none());
     };

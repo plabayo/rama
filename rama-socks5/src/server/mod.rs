@@ -13,10 +13,12 @@ use crate::proto::{
     Command, ProtocolError, ReplyKind, SocksMethod, client,
     server::{Header, Reply, UsernamePasswordResponse},
 };
-use rama_core::{Context, Service, context::Extensions, error::BoxError, telemetry::tracing};
+use rama_core::{
+    Service, error::BoxError, extensions::Extensions, extensions::ExtensionsMut, stream::Stream,
+    telemetry::tracing,
+};
 use rama_net::{
     socket::Interface,
-    stream::Stream,
     user::{self, authority::Authorizer},
 };
 use rama_tcp::{TcpStream, server::TcpListener};
@@ -358,13 +360,13 @@ impl std::error::Error for Error {
 }
 
 impl<C, B, U, A> Socks5Acceptor<C, B, U, A> {
-    pub async fn accept<S>(&self, mut ctx: Context, mut stream: S) -> Result<(), Error>
+    pub async fn accept<S>(&self, mut stream: S) -> Result<(), Error>
     where
         C: Socks5Connector<S>,
         U: Socks5UdpAssociator<S>,
         A: Authorizer<user::Basic, Error: fmt::Debug>,
         B: Socks5Binder<S>,
-        S: Stream + Unpin,
+        S: Stream + Unpin + ExtensionsMut,
     {
         let client_header = client::Header::read_from(&mut stream)
             .await
@@ -375,7 +377,7 @@ impl<C, B, U, A> Socks5Acceptor<C, B, U, A> {
             .await?;
 
         if let Some(ext) = maybe_ext {
-            ctx.extend(ext);
+            stream.extensions_mut().extend(ext);
         }
 
         tracing::trace!(
@@ -397,17 +399,17 @@ impl<C, B, U, A> Socks5Acceptor<C, B, U, A> {
         match client_request.command {
             Command::Connect => {
                 self.connector
-                    .accept_connect(ctx, stream, client_request.destination)
+                    .accept_connect(stream, client_request.destination)
                     .await
             }
             Command::Bind => {
                 self.binder
-                    .accept_bind(ctx, stream, client_request.destination)
+                    .accept_bind(stream, client_request.destination)
                     .await
             }
             Command::UdpAssociate => {
                 self.udp_associator
-                    .accept_udp_associate(ctx, stream, client_request.destination)
+                    .accept_udp_associate(stream, client_request.destination)
                     .await
             }
             Command::Unknown(_) => {
@@ -546,7 +548,7 @@ where
     U: Socks5UdpAssociator<S>,
     A: Authorizer<user::Basic, Error: fmt::Debug>,
     B: Socks5Binder<S>,
-    S: Stream + Unpin,
+    S: Stream + Unpin + ExtensionsMut,
 {
     type Response = ();
     type Error = Error;
@@ -554,10 +556,9 @@ where
     #[inline]
     fn serve(
         &self,
-        ctx: Context,
         stream: S,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
-        self.accept(ctx, stream)
+        self.accept(stream)
     }
 }
 

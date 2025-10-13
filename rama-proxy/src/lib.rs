@@ -32,7 +32,7 @@
 //! a signal, or more realistically, every x minutes.
 //!
 //! [`Context`]: rama_core::Context
-//! [`Extensions`]: rama_core::context::Extensions
+//! [`Extensions`]: rama_core::extensions::Extensions
 //!
 //! ## ProxyDB layer
 //!
@@ -65,7 +65,8 @@
 //! };
 //! use rama_core::{
 //!    service::service_fn,
-//!    Context, Service, Layer,
+//!    extensions::{ExtensionsRef, ExtensionsMut},
+//!    Service, Layer,
 //! };
 //! use rama_net::address::ProxyAddress;
 //! use rama_utils::str::NonEmptyString;
@@ -120,26 +121,25 @@
 //!
 //!     let service =
 //!         ProxyDBLayer::new(Arc::new(db)).filter_mode(ProxyFilterMode::Default)
-//!         .into_layer(service_fn(async  |ctx: Context, _: Request| {
-//!             Ok::<_, Infallible>(ctx.get::<ProxyAddress>().unwrap().clone())
+//!         .into_layer(service_fn(async  |req: Request| {
+//!             Ok::<_, Infallible>(req.extensions().get::<ProxyAddress>().unwrap().clone())
 //!         }));
 //!
-//!     let mut ctx = Context::default();
-//!     ctx.insert(ProxyFilter {
-//!         country: Some(vec!["BE".into()]),
-//!         mobile: Some(true),
-//!         residential: Some(true),
-//!         ..Default::default()
-//!     });
-//!
-//!     let req = Request::builder()
+//!     let mut req = Request::builder()
 //!         .version(Version::HTTP_3)
 //!         .method("GET")
 //!         .uri("https://example.com")
 //!         .body(Body::empty())
 //!         .unwrap();
 //!
-//!     let proxy_address = service.serve(ctx, req).await.unwrap();
+//!     req.extensions_mut().insert(ProxyFilter {
+//!         country: Some(vec!["BE".into()]),
+//!         mobile: Some(true),
+//!         residential: Some(true),
+//!         ..Default::default()
+//!     });
+//!
+//!     let proxy_address = service.serve(req).await.unwrap();
 //!     assert_eq!(proxy_address.authority.to_string(), "12.34.12.34:8080");
 //! }
 //! ```
@@ -162,7 +162,8 @@
 //! };
 //! use rama_core::{
 //!    service::service_fn,
-//!    Context, Service, Layer,
+//!    extensions::{ExtensionsRef, ExtensionsMut},
+//!    Service, Layer,
 //! };
 //! use rama_net::address::ProxyAddress;
 //! use rama_utils::str::NonEmptyString;
@@ -194,7 +195,7 @@
 //!
 //!     let service = ProxyDBLayer::new(Arc::new(proxy))
 //!         .filter_mode(ProxyFilterMode::Default)
-//!         .username_formatter(|_ctx: &Context, proxy: &Proxy, filter: &ProxyFilter, username: &str| {
+//!         .username_formatter(|_proxy: &Proxy, filter: &ProxyFilter, username: &str| {
 //!             use std::fmt::Write;
 //!
 //!             let mut output = String::new();
@@ -212,25 +213,22 @@
 //!
 //!             (!output.is_empty()).then(|| format!("{username}-{output}"))
 //!         })
-//!         .into_layer(service_fn(async |ctx: Context, _: Request| {
-//!             Ok::<_, Infallible>(ctx.get::<ProxyAddress>().unwrap().clone())
+//!         .into_layer(service_fn(async |req: Request| {
+//!             Ok::<_, Infallible>(req.extensions().get::<ProxyAddress>().unwrap().clone())
 //!         }));
 //!
-//!     let mut ctx = Context::default();
-//!     ctx.insert(ProxyFilter {
-//!         country: Some(vec!["BE".into()]),
-//!         residential: Some(true),
-//!         ..Default::default()
-//!     });
-//!
-//!     let req = Request::builder()
+//!     let mut req = Request::builder()
 //!         .version(Version::HTTP_3)
 //!         .method("GET")
 //!         .uri("https://example.com")
 //!         .body(Body::empty())
 //!         .unwrap();
-//!
-//!     let proxy_address = service.serve(ctx, req).await.unwrap();
+//!     req.extensions_mut().insert(ProxyFilter {
+//!         country: Some(vec!["BE".into()]),
+//!         residential: Some(true),
+//!         ..Default::default()
+//!     });
+//!     let proxy_address = service.serve(req).await.unwrap();
 //!     assert_eq!(
 //!         "socks5://john-country-be:secret@proxy.example.com:60000",
 //!         proxy_address.to_string()
@@ -242,7 +240,7 @@
     html_favicon_url = "https://raw.githubusercontent.com/plabayo/rama/main/docs/img/old_logo.png"
 )]
 #![doc(html_logo_url = "https://raw.githubusercontent.com/plabayo/rama/main/docs/img/old_logo.png")]
-#![cfg_attr(docsrs, feature(doc_auto_cfg, doc_cfg))]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(test, allow(clippy::float_cmp))]
 #![cfg_attr(not(test), warn(clippy::print_stdout, clippy::dbg_macro))]
 

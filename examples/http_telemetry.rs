@@ -37,7 +37,8 @@
 //! You can now use tools like grafana to collect metrics from the collector running at 127.0.0.1:4317 over GRPC.
 
 use rama::{
-    Context, Layer,
+    Layer,
+    extensions::Extensions,
     http::{
         client::EasyHttpWebClient,
         layer::{opentelemetry::RequestMetricsLayer, trace::TraceLayer},
@@ -54,6 +55,7 @@ use rama::{
     telemetry::{
         opentelemetry::{
             self, InstrumentationScope, KeyValue,
+            collector::{MetricExporter, WithExportConfig, WithHttpConfig},
             metrics::UpDownCounter,
             sdk::{
                 Resource,
@@ -65,12 +67,11 @@ use rama::{
             },
         },
         tracing::level_filters::LevelFilter,
+        tracing::subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
     },
 };
 
-use opentelemetry_otlp::{WithExportConfig, WithHttpConfig};
 use std::{sync::Arc, time::Duration};
-use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Debug)]
 struct Metrics {
@@ -110,7 +111,7 @@ async fn main() {
     let exporter_http_svc = EasyHttpWebClient::default();
     let exporter_http_client = OtelExporter::new(exporter_http_svc);
 
-    let meter_exporter = opentelemetry_otlp::MetricExporter::builder()
+    let meter_exporter = MetricExporter::builder()
         .with_http()
         .with_http_client(exporter_http_client)
         .with_endpoint("http://localhost:4317")
@@ -144,8 +145,8 @@ async fn main() {
         let exec = Executor::graceful(guard.clone());
         let http_service = HttpServer::auto(exec).service(
             (TraceLayer::new_for_http(), RequestMetricsLayer::default()).into_layer(
-                WebService::default().get("/", async |ctx: Context| {
-                    ctx.get::<Arc<Metrics>>().unwrap().counter.add(1, &[]);
+                WebService::default().get("/", async |ext: Extensions| {
+                    ext.get::<Arc<Metrics>>().unwrap().counter.add(1, &[]);
                     Html("<h1>Hello!</h1>")
                 }),
             ),

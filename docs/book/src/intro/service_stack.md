@@ -20,7 +20,7 @@ As such a topology such as the following is easily possible, where each node in 
 ```dot process
 digraph {
     pad=0.2;
-    "serve(ctx, request)" -> "service A" [dir=both]
+    "serve(request)" -> "service A" [dir=both]
     "service A" -> "service B" [dir=both]
     "service B" -> "service E" [dir=both]
     "service B" -> "service C" [dir=both]

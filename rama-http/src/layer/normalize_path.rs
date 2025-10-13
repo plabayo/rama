@@ -9,7 +9,7 @@
 //! use std::{iter::once, convert::Infallible};
 //! use rama_core::error::BoxError;
 //! use rama_core::service::service_fn;
-//! use rama_core::{Context, Layer, Service};
+//! use rama_core::{Layer, Service};
 //! use rama_http::{Body, Request, Response, StatusCode};
 //! use rama_http::layer::normalize_path::NormalizePathLayer;
 //!
@@ -31,14 +31,14 @@
 //!     .uri("/foo/")
 //!     .body(Body::default())?;
 //!
-//! service.serve(Context::default(), request).await?;
+//! service.serve(request).await?;
 //! #
 //! # Ok(())
 //! # }
 //! ```
 
 use crate::{Request, Response, Uri};
-use rama_core::{Context, Layer, Service};
+use rama_core::{Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
 use std::borrow::Cow;
 use std::fmt;
@@ -174,14 +174,13 @@ where
 
     fn serve(
         &self,
-        ctx: Context,
         mut req: Request<ReqBody>,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
         match self.mode {
             NormalizeMode::Trim => trim_trailing_slash(req.uri_mut()),
             NormalizeMode::Append => append_trailing_slash(req.uri_mut()),
         }
-        self.inner.serve(ctx, req)
+        self.inner.serve(req)
     }
 }
 
@@ -270,10 +269,7 @@ mod tests {
         let svc = NormalizePathLayer::trim_trailing_slash().into_layer(service_fn(handle));
 
         let body = svc
-            .serve(
-                Context::default(),
-                Request::builder().uri("/foo/").body(()).unwrap(),
-            )
+            .serve(Request::builder().uri("/foo/").body(()).unwrap())
             .await
             .unwrap()
             .into_body();
@@ -346,20 +342,14 @@ mod tests {
 
     #[tokio::test]
     async fn append_works() {
-        async fn handle(
-            _ctx: Context,
-            request: Request<()>,
-        ) -> Result<Response<String>, Infallible> {
+        async fn handle(request: Request<()>) -> Result<Response<String>, Infallible> {
             Ok(Response::new(request.uri().to_string()))
         }
 
         let svc = NormalizePathLayer::append_trailing_slash().into_layer(service_fn(handle));
 
         let body = svc
-            .serve(
-                Context::default(),
-                Request::builder().uri("/foo").body(()).unwrap(),
-            )
+            .serve(Request::builder().uri("/foo").body(()).unwrap())
             .await
             .unwrap()
             .into_body();

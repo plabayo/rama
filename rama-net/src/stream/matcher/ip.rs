@@ -2,12 +2,10 @@
 
 pub use crate::stream::dep::ipnet::{IpNet, Ipv4Net, Ipv6Net};
 
-use rama_core::{Context, context::Extensions};
+use rama_core::extensions::Extensions;
 
 #[cfg(feature = "http")]
-use crate::stream::SocketInfo;
-#[cfg(feature = "http")]
-use rama_http_types::Request;
+use {crate::stream::SocketInfo, rama_core::extensions::ExtensionsRef, rama_http_types::Request};
 
 #[derive(Debug, Clone)]
 /// Matcher based on whether or not the [`IpNet`] contains the [`SocketAddr`] of the peer.
@@ -46,8 +44,9 @@ impl IpNetMatcher {
 
 #[cfg(feature = "http")]
 impl<Body> rama_core::matcher::Matcher<Request<Body>> for IpNetMatcher {
-    fn matches(&self, _ext: Option<&mut Extensions>, ctx: &Context, _req: &Request<Body>) -> bool {
-        ctx.get::<SocketInfo>()
+    fn matches(&self, _ext: Option<&mut Extensions>, req: &Request<Body>) -> bool {
+        req.extensions()
+            .get::<SocketInfo>()
             .map(|info| self.net.contains(&IpNet::from(info.peer_addr().ip())))
             .unwrap_or(self.optional)
     }
@@ -57,7 +56,7 @@ impl<Socket> rama_core::matcher::Matcher<Socket> for IpNetMatcher
 where
     Socket: crate::stream::Socket,
 {
-    fn matches(&self, _ext: Option<&mut Extensions>, _ctx: &Context, stream: &Socket) -> bool {
+    fn matches(&self, _ext: Option<&mut Extensions>, stream: &Socket) -> bool {
         stream
             .peer_addr()
             .map(|addr| self.net.contains(&IpNet::from(addr.ip())))
@@ -164,38 +163,47 @@ mod test {
     #[cfg(feature = "http")]
     #[test]
     fn test_ip_net_matcher_http() {
+        use rama_core::extensions::ExtensionsMut;
+
         let matcher = IpNetMatcher::new([127, 0, 0, 1]);
 
-        let mut ctx = Context::default();
-        let req = Request::builder()
-            .method("GET")
-            .uri("/hello")
-            .body(())
-            .unwrap();
+        let create_request = || {
+            Request::builder()
+                .method("GET")
+                .uri("/hello")
+                .body(())
+                .unwrap()
+        };
 
         // test #1: no match: test with no socket info registered
-        assert!(!matcher.matches(None, &ctx, &req));
+        let req = create_request();
+        assert!(!matcher.matches(None, &req));
 
         // test #2: no match: test with different socket info (ip addr difference)
-        ctx.insert(SocketInfo::new(None, ([127, 0, 0, 2], 8080).into()));
-        assert!(!matcher.matches(None, &ctx, &req));
+        let mut req = create_request();
+        req.extensions_mut()
+            .insert(SocketInfo::new(None, ([127, 0, 0, 2], 8080).into()));
+        assert!(!matcher.matches(None, &req));
 
         // test #3: match: test with correct address
-        ctx.insert(SocketInfo::new(None, ([127, 0, 0, 1], 8080).into()));
-        assert!(matcher.matches(None, &ctx, &req));
+        let mut req = create_request();
+        req.extensions_mut()
+            .insert(SocketInfo::new(None, ([127, 0, 0, 1], 8080).into()));
+        assert!(matcher.matches(None, &req));
 
         // test #4: match: test with missing socket info, but it's seen as optional
         let matcher = IpNetMatcher::optional([127, 0, 0, 1]);
-        let mut ctx = Context::default();
-        assert!(matcher.matches(None, &ctx, &req));
+        let req = create_request();
+        assert!(matcher.matches(None, &req));
 
         // test #5: match: valid ipv4 subnets
         let matcher = IpNetMatcher::new(SUBNET_IPV4.parse::<IpNet>().unwrap());
         for subnet in SUBNET_IPV4_VALID_CASES.iter() {
+            let mut req = create_request();
             let addr = socket_addr_from_case(subnet);
-            ctx.insert(SocketInfo::new(None, addr));
+            req.extensions_mut().insert(SocketInfo::new(None, addr));
             assert!(
-                matcher.matches(None, &ctx, &req),
+                matcher.matches(None, &req),
                 "valid ipv4 subnets => {SUBNET_IPV4} >=? {addr} ({subnet})",
             );
         }
@@ -203,10 +211,11 @@ mod test {
         // test #6: match: valid ipv6 subnets
         let matcher = IpNetMatcher::new(SUBNET_IPV6.parse::<IpNet>().unwrap());
         for subnet in SUBNET_IPV6_VALID_CASES.iter() {
+            let mut req = create_request();
             let addr = socket_addr_from_case(subnet);
-            ctx.insert(SocketInfo::new(None, addr));
+            req.extensions_mut().insert(SocketInfo::new(None, addr));
             assert!(
-                matcher.matches(None, &ctx, &req),
+                matcher.matches(None, &req),
                 "valid ipv6 subnets => {SUBNET_IPV6} >=? {addr} ({subnet})",
             );
         }
@@ -214,10 +223,11 @@ mod test {
         // test #7: match: invalid ipv4 subnets
         let matcher = IpNetMatcher::new(SUBNET_IPV4.parse::<IpNet>().unwrap());
         for subnet in SUBNET_IPV4_INVALID_CASES.iter() {
+            let mut req = create_request();
             let addr = socket_addr_from_case(subnet);
-            ctx.insert(SocketInfo::new(None, addr));
+            req.extensions_mut().insert(SocketInfo::new(None, addr));
             assert!(
-                !matcher.matches(None, &ctx, &req),
+                !matcher.matches(None, &req),
                 "invalid ipv4 subnets => {SUBNET_IPV4} >=? {addr} ({subnet})",
             );
         }
@@ -225,10 +235,11 @@ mod test {
         // test #8: match: invalid ipv6 subnets
         let matcher = IpNetMatcher::new(SUBNET_IPV6.parse::<IpNet>().unwrap());
         for subnet in SUBNET_IPV6_INVALID_CASES.iter() {
+            let mut req = create_request();
             let addr = socket_addr_from_case(subnet);
-            ctx.insert(SocketInfo::new(None, addr));
+            req.extensions_mut().insert(SocketInfo::new(None, addr));
             assert!(
-                !matcher.matches(None, &ctx, &req),
+                !matcher.matches(None, &req),
                 "invalid ipv6 subnets => {SUBNET_IPV6} >=? {addr} ({subnet})",
             );
         }
@@ -237,8 +248,6 @@ mod test {
     #[test]
     fn test_ip_net_matcher_socket_trait() {
         let matcher = IpNetMatcher::new([127, 0, 0, 1]);
-
-        let ctx = Context::default();
 
         struct FakeSocket {
             local_addr: Option<SocketAddr>,
@@ -268,16 +277,16 @@ mod test {
 
         // test #1: no match: test with different socket info (ip addr difference)
         socket.peer_addr = Some(([127, 0, 0, 2], 8080).into());
-        assert!(!matcher.matches(None, &ctx, &socket));
+        assert!(!matcher.matches(None, &socket));
 
         // test #2: match: test with correct address
         socket.peer_addr = Some(([127, 0, 0, 1], 8080).into());
-        assert!(matcher.matches(None, &ctx, &socket));
+        assert!(matcher.matches(None, &socket));
 
         // test #3: match: test with missing socket info, but it's seen as optional
         let matcher = IpNetMatcher::optional([127, 0, 0, 1]);
         socket.peer_addr = None;
-        assert!(matcher.matches(None, &ctx, &socket));
+        assert!(matcher.matches(None, &socket));
 
         // test #4: match: valid ipv4 subnets
         let matcher = IpNetMatcher::new(SUBNET_IPV4.parse::<IpNet>().unwrap());
@@ -285,7 +294,7 @@ mod test {
             let addr = socket_addr_from_case(subnet);
             socket.peer_addr = Some(addr);
             assert!(
-                matcher.matches(None, &ctx, &socket),
+                matcher.matches(None, &socket),
                 "valid ipv4 subnets => {SUBNET_IPV4} >=? {addr} ({subnet})",
             );
         }
@@ -296,7 +305,7 @@ mod test {
             let addr = socket_addr_from_case(subnet);
             socket.peer_addr = Some(addr);
             assert!(
-                matcher.matches(None, &ctx, &socket),
+                matcher.matches(None, &socket),
                 "valid ipv6 subnets => {SUBNET_IPV6} >=? {addr} ({subnet})",
             );
         }
@@ -307,7 +316,7 @@ mod test {
             let addr = socket_addr_from_case(subnet);
             socket.peer_addr = Some(addr);
             assert!(
-                !matcher.matches(None, &ctx, &socket),
+                !matcher.matches(None, &socket),
                 "invalid ipv4 subnets => {SUBNET_IPV4} >=? {addr} ({subnet})",
             );
         }
@@ -318,7 +327,7 @@ mod test {
             let addr = socket_addr_from_case(subnet);
             socket.peer_addr = Some(addr);
             assert!(
-                !matcher.matches(None, &ctx, &socket),
+                !matcher.matches(None, &socket),
                 "invalid ipv6 subnets => {SUBNET_IPV6} >=? {addr} ({subnet})",
             );
         }

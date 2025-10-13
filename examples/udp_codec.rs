@@ -29,7 +29,8 @@ use rama::{
     error::BoxError,
     futures::{FutureExt, SinkExt, StreamExt},
     net::address::SocketAddress,
-    udp::{UdpFramed, UdpSocket, codec::BytesCodec},
+    stream::codec::BytesCodec,
+    udp::{UdpFramed, UdpSocket},
 };
 
 // everything else is provided by the standard library, community crates or tokio

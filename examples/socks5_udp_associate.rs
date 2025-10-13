@@ -13,19 +13,16 @@
 //! and client combined.
 
 use rama::{
-    Context,
-    net::address::SocketAddress,
-    net::user::Basic,
-    proxy::socks5::Socks5Acceptor,
+    extensions::Extensions,
+    net::{address::SocketAddress, user::Basic},
     proxy::socks5::{
-        Socks5Client,
+        Socks5Acceptor, Socks5Client,
         server::{
             DefaultUdpRelay,
             udp::{RelayDirection, UdpInspectAction},
         },
     },
-    tcp::client::default_tcp_connect,
-    tcp::server::TcpListener,
+    tcp::{client::default_tcp_connect, server::TcpListener},
     telemetry::tracing::{self, level_filters::LevelFilter},
     udp::UdpSocket,
 };
@@ -46,10 +43,10 @@ async fn main() {
 
     let socks5_socket_addr = spawn_socks5_server().await;
 
-    let (proxy_client_stream, _) =
-        default_tcp_connect(&Context::default(), socks5_socket_addr.into())
-            .await
-            .expect("establish connection to socks5 server (from client)");
+    let ext = Extensions::default();
+    let (proxy_client_stream, _) = default_tcp_connect(&ext, socks5_socket_addr.into())
+        .await
+        .expect("establish connection to socks5 server (from client)");
 
     let socks5_client = Socks5Client::new().with_auth(Basic::new_static("john", "secret"));
 
@@ -161,7 +158,6 @@ async fn spawn_socks5_server() -> SocketAddress {
 // By default it the relay will just forward all packets unchanged and unconditionally.
 
 fn udp_packet_inspect(
-    _ctx: &Context,
     dir: RelayDirection,
     _addr: SocketAddress,
     data: &[u8],

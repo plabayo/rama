@@ -1,23 +1,21 @@
 use super::TlsAcceptorData;
 use crate::{
-    core::{
-        ssl::{AlpnError, SslAcceptor, SslMethod, SslRef},
-        tokio::SslStream,
-    },
+    core::ssl::{AlpnError, SslAcceptor, SslMethod, SslRef},
     keylog::new_key_log_file_handle,
+    server::TlsStream,
     types::SecureTransport,
 };
 use parking_lot::Mutex;
-use rama_core::telemetry::tracing::{debug, trace};
 use rama_core::{
-    Context, Service,
+    Service,
     conversion::RamaTryInto,
     error::{BoxError, ErrorContext, ErrorExt, OpaqueError},
+    extensions::ExtensionsMut,
+    stream::Stream,
+    telemetry::tracing::{debug, trace},
 };
 use rama_net::{
-    address::Host,
     http::RequestContext,
-    stream::Stream,
     tls::{ApplicationProtocol, DataEncoding, client::NegotiatedTlsParameters},
     transport::TransportContext,
 };
@@ -70,17 +68,22 @@ where
 
 impl<S, IO> Service<IO> for TlsAcceptorService<S>
 where
-    IO: Stream + Unpin + 'static,
-    S: Service<SslStream<IO>, Error: Into<BoxError>>,
+    IO: Stream + Unpin + ExtensionsMut + 'static,
+    S: Service<TlsStream<IO>, Error: Into<BoxError>>,
 {
     type Response = S::Response;
     type Error = BoxError;
 
-    async fn serve(&self, mut ctx: Context, stream: IO) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, stream: IO) -> Result<Self::Response, Self::Error> {
         // allow tls acceptor data to be injected,
         // e.g. useful for TLS environments where some data (such as server auth, think ACME)
         // is updated at runtime, be it infrequent
-        let tls_config = &ctx.get::<TlsAcceptorData>().unwrap_or(&self.data).config;
+        let tls_config = stream
+            .extensions()
+            .get::<TlsAcceptorData>()
+            .unwrap_or(&self.data)
+            .config
+            .clone();
 
         let mut acceptor_builder = SslAcceptor::mozilla_intermediate_v5(SslMethod::tls_server())
             .context("create boring ssl acceptor")?;
@@ -90,17 +93,22 @@ where
             .set_default_verify_paths()
             .context("build boring ssl acceptor: set default verify paths")?;
 
-        let server_domain = ctx
+        let server_domain = stream
+            .extensions()
             .get::<SecureTransport>()
             .and_then(|t| t.client_hello())
-            .and_then(|c| c.ext_server_name().map(|domain| Host::Name(domain.clone())))
+            .and_then(|c| c.ext_server_name().cloned())
             .or_else(|| {
-                ctx.get::<TransportContext>()
-                    .map(|ctx| ctx.authority.host().clone())
+                stream
+                    .extensions()
+                    .get::<TransportContext>()
+                    .and_then(|ctx| ctx.authority.host().as_domain().cloned())
             })
             .or_else(|| {
-                ctx.get::<RequestContext>()
-                    .map(|ctx| ctx.authority.host().clone())
+                stream
+                    .extensions()
+                    .get::<RequestContext>()
+                    .and_then(|ctx| ctx.authority.host().as_domain().cloned())
             });
 
         // We use arc mutex instead of oneshot channel since it is possible that certificate callbacks
@@ -195,7 +203,7 @@ where
                 )),
             })?;
 
-        match stream.ssl().session() {
+        let negotiated_tls_params = match stream.ssl().session() {
             Some(ssl_session) => {
                 let protocol_version =
                     ssl_session
@@ -235,11 +243,11 @@ where
                     None
                 };
 
-                ctx.insert(NegotiatedTlsParameters {
+                NegotiatedTlsParameters {
                     protocol_version,
                     application_layer_protocol,
                     peer_certificate_chain: client_certificate_chain,
-                });
+                }
             }
             None => {
                 return Err(OpaqueError::from_display(
@@ -247,16 +255,19 @@ where
                 )
                 .into_boxed());
             }
-        }
+        };
 
         let secure_transport = maybe_client_hello
             .take()
             .and_then(|maybe_client_hello| maybe_client_hello.lock().take())
             .map(SecureTransport::with_client_hello)
             .unwrap_or_default();
-        ctx.insert(secure_transport);
 
-        self.inner.serve(ctx, stream).await.map_err(|err| {
+        let mut stream = TlsStream::new(stream);
+        stream.extensions_mut().insert(secure_transport);
+        stream.extensions_mut().insert(negotiated_tls_params);
+
+        self.inner.serve(stream).await.map_err(|err| {
             OpaqueError::from_boxed(err.into())
                 .context("boring acceptor: service error")
                 .into_boxed()

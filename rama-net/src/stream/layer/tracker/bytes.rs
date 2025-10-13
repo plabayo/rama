@@ -10,7 +10,10 @@
 //! [`AsyncWrite`]: crate::stream::AsyncWrite
 
 use pin_project_lite::pin_project;
-use rama_core::telemetry::tracing;
+use rama_core::{
+    extensions::{Extensions, ExtensionsMut, ExtensionsRef},
+    telemetry::tracing,
+};
 use std::{
     fmt, io,
     pin::Pin,
@@ -40,6 +43,18 @@ pin_project! {
     }
 }
 
+impl<S: ExtensionsRef> ExtensionsRef for BytesRWTracker<S> {
+    fn extensions(&self) -> &Extensions {
+        self.stream.extensions()
+    }
+}
+
+impl<S: ExtensionsMut> ExtensionsMut for BytesRWTracker<S> {
+    fn extensions_mut(&mut self) -> &mut Extensions {
+        self.stream.extensions_mut()
+    }
+}
+
 impl<S: fmt::Debug> fmt::Debug for BytesRWTracker<S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("BytesRWTracker")
@@ -50,7 +65,7 @@ impl<S: fmt::Debug> fmt::Debug for BytesRWTracker<S> {
     }
 }
 
-impl<S> BytesRWTracker<S> {
+impl<S: ExtensionsMut> BytesRWTracker<S> {
     /// Create a new [`BytesRWTracker`] that wraps the
     /// given [`AsyncRead`] and/or [`AsyncWrite`].
     ///
@@ -63,7 +78,9 @@ impl<S> BytesRWTracker<S> {
             stream,
         }
     }
+}
 
+impl<S> BytesRWTracker<S> {
     /// Get the number of bytes read (so far).
     pub fn read(&self) -> usize {
         self.read.load(Ordering::Acquire)
@@ -98,6 +115,7 @@ impl<S> BytesRWTracker<S> {
     }
 }
 
+#[warn(clippy::missing_trait_methods)]
 impl<S> AsyncRead for BytesRWTracker<S>
 where
     S: AsyncRead,
@@ -131,6 +149,7 @@ where
     }
 }
 
+#[warn(clippy::missing_trait_methods)]
 impl<S> AsyncWrite for BytesRWTracker<S>
 where
     S: AsyncWrite,
@@ -201,6 +220,7 @@ impl BytesRWTrackerHandle {
 mod tests {
     use super::*;
 
+    use rama_core::ServiceInput;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio_test::io::Builder;
 
@@ -212,6 +232,7 @@ mod tests {
             .read(b"baz")
             .build();
 
+        let stream = ServiceInput::new(stream);
         let mut tracker = BytesRWTracker::new(stream);
         let mut buf = [0u8; 3];
 
@@ -236,6 +257,7 @@ mod tests {
             .write(b"baz")
             .build();
 
+        let stream = ServiceInput::new(stream);
         let mut tracker = BytesRWTracker::new(stream);
 
         assert_eq!(tracker.read(), 0);
@@ -262,6 +284,7 @@ mod tests {
             .write(b"baz")
             .build();
 
+        let stream = ServiceInput::new(stream);
         let mut tracker = BytesRWTracker::new(stream);
         let mut buf = [0u8; 3];
 
@@ -298,6 +321,7 @@ mod tests {
             .write(b"baz")
             .build();
 
+        let stream = ServiceInput::new(stream);
         let tracker = BytesRWTracker::new(stream);
         let handle = tracker.handle();
 

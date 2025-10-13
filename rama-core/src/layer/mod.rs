@@ -134,10 +134,10 @@ where
     type Error = BoxError;
     type Response = S::Response;
 
-    async fn serve(&self, ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
         match &self.0 {
-            MaybeLayeredSvc::Enabled(svc) => svc.serve(ctx, req).await.map_err(Into::into),
-            MaybeLayeredSvc::Disabled(inner) => inner.serve(ctx, req).await.map_err(Into::into),
+            MaybeLayeredSvc::Enabled(svc) => svc.serve(req).await.map_err(Into::into),
+            MaybeLayeredSvc::Disabled(inner) => inner.serve(req).await.map_err(Into::into),
         }
     }
 }
@@ -950,7 +950,7 @@ pub use add_extension::{AddExtension, AddExtensionLayer};
 pub mod get_extension;
 pub use get_extension::{GetExtension, GetExtensionLayer};
 
-use crate::{Context, Service};
+use crate::Service;
 
 macro_rules! impl_layer_either {
     ($id:ident, $($param:ident),+ $(,)?) => {
@@ -985,27 +985,24 @@ crate::combinators::impl_either!(impl_layer_either);
 mod tests {
     use rama_error::OpaqueError;
 
-    use crate::{Context, service::service_fn};
+    use crate::{ServiceInput, service::service_fn};
 
     use super::*;
 
     #[tokio::test]
     async fn simple_layer() {
-        let svc = (GetExtensionLayer::new(async |_: String| {})).into_layer(service_fn(
-            async |_: Context, _: ()| Ok::<_, OpaqueError>(()),
-        ));
+        let svc = (GetExtensionLayer::new(async |_: String| {}))
+            .into_layer(service_fn(async || Ok::<_, OpaqueError>(())));
 
-        svc.serve(Context::default(), ()).await.unwrap();
+        svc.serve(ServiceInput::new(())).await.unwrap();
     }
 
     #[tokio::test]
     async fn simple_optional_layer() {
         let maybe_layer = Some(GetExtensionLayer::new(async |_: String| {}));
 
-        let svc = (maybe_layer).into_layer(service_fn(async |_: Context, _: ()| {
-            Ok::<_, OpaqueError>(())
-        }));
+        let svc = (maybe_layer).into_layer(service_fn(async || Ok::<_, OpaqueError>(())));
 
-        svc.serve(Context::default(), ()).await.unwrap();
+        svc.serve(ServiceInput::new(())).await.unwrap();
     }
 }

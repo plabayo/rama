@@ -56,11 +56,11 @@ hack:
 	@cargo install cargo-hack
 	cargo hack check --each-feature --no-dev-deps --workspace
 
-test:
-	cargo test --all-features --workspace
+test *ARGS:
+	cargo test --all-features --workspace {{ARGS}}
 
-test-crate CRATE:
-	cargo test --all-features -p {{CRATE}}
+test-crate CRATE *ARGS:
+	cargo test --all-features -p {{CRATE}} {{ARGS}}
 
 test-spec-h2 *ARGS:
     bash rama-http-core/ci/h2spec.sh {{ARGS}}
@@ -81,6 +81,9 @@ qa-crate CRATE:
     just test-crate {{CRATE}}
 
 qa-full: qa hack test-ignored fuzz-60s check-links
+
+clean:
+    cargo clean
 
 upgrades:
     @cargo install cargo-upgrades
@@ -129,6 +132,12 @@ fuzz-ua:
 fuzz-ua-60s:
 	cargo +nightly fuzz run ua_parse -- -max_len=131072 -max_total_time=60
 
+fuzz-http-headers-x-robots-tag:
+	cargo +nightly fuzz run http_header_x_robots_tag -- -max_len=131072
+
+fuzz-http-headers-x-robots-tag-60s:
+	cargo +nightly fuzz run http_header_x_robots_tag -- -max_len=131072 -max_total_time=60
+
 fuzz-h2-main:
     # cargo install honggfuzz
     cd rama-http-core/tests/h2-fuzz && \
@@ -148,7 +157,7 @@ fuzz-h2-60s:
 	cargo +nightly fuzz run h2_hpack -- -max_total_time=60
 	cargo +nightly fuzz run h2_e2e -- -max_total_time=60
 
-fuzz-60s: fuzz-ua-60s fuzz-h2-60s
+fuzz-60s: fuzz-ua-60s fuzz-h2-60s fuzz-http-headers-x-robots-tag-60s
 
 fuzz-full: fuzz-60s fuzz-h2-main
 
@@ -174,33 +183,8 @@ detect-biggest-crates:
 mdbook-serve:
 	cd docs/book && mdbook serve
 
-publish:
-    cargo publish -p rama-error
-    cargo publish -p rama-macros
-    cargo publish -p rama-utils
-    cargo publish -p rama-core
-    cargo publish -p rama-crypto
-    cargo publish -p rama-http-types
-    cargo publish -p rama-net
-    cargo publish -p rama-unix
-    cargo publish -p rama-http-headers
-    cargo publish -p rama-ua
-    cargo publish -p rama-dns
-    cargo publish -p rama-tcp
-    cargo publish -p rama-udp
-    cargo publish -p rama-tls-boring
-    cargo publish -p rama-tls-rustls
-    cargo publish -p rama-http
-    cargo publish -p rama-http-core
-    cargo publish -p rama-http-backend
-    cargo publish -p rama-ws
-    cargo publish -p rama-tls-acme
-    cargo publish -p rama-haproxy
-    cargo publish -p rama-proxy
-    cargo publish -p rama-socks5
-    cargo publish -p rama-tower
-    cargo publish -p rama
-    cargo publish -p rama-cli
+publish *ARGS:
+    cargo publish --workspace {{ARGS}}
 
 [working-directory: './rama-cli/manifests/winget/Plabayo/Rama/Preview']
 @submit-rama-cli-winget-preview:

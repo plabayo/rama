@@ -1,5 +1,4 @@
 use super::utils;
-use rama::Context;
 use rama::http::{BodyExtractExt, headers};
 use rama::ua::{HttpAgent, TlsAgent, UserAgentOverwrites};
 
@@ -22,7 +21,7 @@ async fn test_http_user_agent_classifier() {
 
     let ua_rama: UserAgentInfo = runner
         .get("http://127.0.0.1:62015")
-        .send(Context::default())
+        .send()
         .await
         .unwrap()
         .try_into_json()
@@ -43,7 +42,7 @@ async fn test_http_user_agent_classifier() {
     let ua_chrome: UserAgentInfo = runner
         .get("http://127.0.0.1:62015")
         .typed_header(headers::UserAgent::from_static(UA))
-        .send(Context::default())
+        .send()
         .await
         .unwrap()
         .try_into_json()
@@ -70,7 +69,7 @@ async fn test_http_user_agent_classifier() {
             })
             .unwrap(),
         )
-        .send(Context::default())
+        .send()
         .await
         .unwrap()
         .try_into_json()

@@ -2,9 +2,10 @@
 
 use clap::Args;
 use rama::{
-    Context, Layer, Service,
+    Layer, Service,
     cli::args::RequestArgsBuilder,
     error::{BoxError, ErrorContext, OpaqueError, error},
+    extensions::ExtensionsMut,
     graceful::{self, Shutdown, ShutdownGuard},
     http::{
         Request, Response, StatusCode, StreamingBody, Version,
@@ -294,10 +295,9 @@ async fn run_inner(guard: ShutdownGuard, cfg: CliCommandHttp) -> Result<(), BoxE
         request_args_builder.parse_arg(arg);
     }
 
-    let request = request_args_builder.build()?;
+    let mut request = request_args_builder.build()?;
 
     let client = create_client(guard, cfg.clone()).await?;
-    let mut ctx = Context::default();
 
     let forced_version = match (
         cfg.http_09,
@@ -319,10 +319,10 @@ async fn run_inner(guard: ShutdownGuard, cfg: CliCommandHttp) -> Result<(), BoxE
     };
 
     if let Some(forced_version) = forced_version {
-        ctx.insert(forced_version);
+        request.extensions_mut().insert(forced_version);
     }
 
-    let response = client.serve(ctx, request).await?;
+    let response = client.serve(request).await?;
 
     if cfg.check_status {
         let status = response.status();
@@ -488,11 +488,8 @@ async fn create_client(
         SetProxyAuthHttpHeaderLayer::default(),
         HijackLayer::new(
             cfg.curl,
-            service_fn(async |ctx: Context, req: Request| {
-                let Ok((ctx, req)) = UserAgentEmulateHttpRequestModifier::new()
-                    .serve(ctx, req)
-                    .await
-                else {
+            service_fn(async |req: Request| {
+                let Ok(req) = UserAgentEmulateHttpRequestModifier::new().serve(req).await else {
                     return Ok(
                         (StatusCode::INTERNAL_SERVER_ERROR, "failed to emulate UA").into_response()
                     );
@@ -500,8 +497,7 @@ async fn create_client(
 
                 let (parts, body) = req.into_parts();
                 let payload = body.collect().await.unwrap().to_bytes();
-                let curl_cmd =
-                    curl::cmd_string_for_request_parts_and_payload(&ctx, &parts, &payload);
+                let curl_cmd = curl::cmd_string_for_request_parts_and_payload(&parts, &payload);
 
                 #[allow(clippy::print_stdout)]
                 {

@@ -1,5 +1,4 @@
 use crate::{HeaderName, HeaderValue, Request};
-use rama_core::Context;
 use std::{
     future::{Future, ready},
     marker::PhantomData,
@@ -18,9 +17,9 @@ pub trait MakeHeaderValue<B>: Send + Sync + 'static {
     /// Try to create a header value from the request or response.
     fn make_header_value(
         &self,
-        ctx: Context,
+
         req: Request<B>,
-    ) -> impl Future<Output = (Context, Request<B>, Option<HeaderValue>)> + Send + '_;
+    ) -> impl Future<Output = (Request<B>, Option<HeaderValue>)> + Send + '_;
 }
 
 /// Functional version of [`MakeHeaderValue`].
@@ -28,9 +27,8 @@ pub trait MakeHeaderValueFn<B, A>: Send + Sync + 'static {
     /// Try to create a header value from the request or response.
     fn call(
         &self,
-        ctx: Context,
         req: Request<B>,
-    ) -> impl Future<Output = (Context, Request<B>, Option<HeaderValue>)> + Send + '_;
+    ) -> impl Future<Output = (Request<B>, Option<HeaderValue>)> + Send + '_;
 }
 
 impl<F, Fut, B> MakeHeaderValueFn<B, ()> for F
@@ -39,13 +37,9 @@ where
     F: Fn() -> Fut + Send + Sync + 'static,
     Fut: Future<Output = Option<HeaderValue>> + Send + 'static,
 {
-    async fn call(
-        &self,
-        ctx: Context,
-        req: Request<B>,
-    ) -> (Context, Request<B>, Option<HeaderValue>) {
+    async fn call(&self, req: Request<B>) -> (Request<B>, Option<HeaderValue>) {
         let maybe_value = self().await;
-        (ctx, req, maybe_value)
+        (req, maybe_value)
     }
 }
 
@@ -55,43 +49,9 @@ where
     F: Fn(Request<B>) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = (Request<B>, Option<HeaderValue>)> + Send + 'static,
 {
-    async fn call(
-        &self,
-        ctx: Context,
-        req: Request<B>,
-    ) -> (Context, Request<B>, Option<HeaderValue>) {
+    async fn call(&self, req: Request<B>) -> (Request<B>, Option<HeaderValue>) {
         let (req, maybe_value) = self(req).await;
-        (ctx, req, maybe_value)
-    }
-}
-
-impl<F, Fut, B> MakeHeaderValueFn<B, (Context,)> for F
-where
-    B: Send + 'static,
-    F: Fn(Context) -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = (Context, Option<HeaderValue>)> + Send + 'static,
-{
-    async fn call(
-        &self,
-        ctx: Context,
-        req: Request<B>,
-    ) -> (Context, Request<B>, Option<HeaderValue>) {
-        let (ctx, maybe_value) = self(ctx).await;
-        (ctx, req, maybe_value)
-    }
-}
-
-impl<F, Fut, B> MakeHeaderValueFn<B, (Context, B)> for F
-where
-    F: Fn(Context, Request<B>) -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = (Context, Request<B>, Option<HeaderValue>)> + Send + 'static,
-{
-    fn call(
-        &self,
-        ctx: Context,
-        req: Request<B>,
-    ) -> impl Future<Output = (Context, Request<B>, Option<HeaderValue>)> + Send + '_ {
-        self(ctx, req)
+        (req, maybe_value)
     }
 }
 
@@ -141,10 +101,9 @@ where
 {
     fn make_header_value(
         &self,
-        ctx: Context,
         req: Request<B>,
-    ) -> impl Future<Output = (Context, Request<B>, Option<HeaderValue>)> + Send + '_ {
-        self.f.call(ctx, req)
+    ) -> impl Future<Output = (Request<B>, Option<HeaderValue>)> + Send + '_ {
+        self.f.call(req)
     }
 }
 
@@ -154,10 +113,9 @@ where
 {
     fn make_header_value(
         &self,
-        ctx: Context,
         req: Request<B>,
-    ) -> impl Future<Output = (Context, Request<B>, Option<Self>)> + Send + '_ {
-        ready((ctx, req, Some(self.clone())))
+    ) -> impl Future<Output = (Request<B>, Option<Self>)> + Send + '_ {
+        ready((req, Some(self.clone())))
     }
 }
 
@@ -167,10 +125,9 @@ where
 {
     fn make_header_value(
         &self,
-        ctx: Context,
         req: Request<B>,
-    ) -> impl Future<Output = (Context, Request<B>, Self)> + Send + '_ {
-        ready((ctx, req, self.clone()))
+    ) -> impl Future<Output = (Request<B>, Self)> + Send + '_ {
+        ready((req, self.clone()))
     }
 }
 
@@ -185,39 +142,38 @@ impl InsertHeaderMode {
     pub(super) async fn apply<B, M>(
         self,
         header_name: &HeaderName,
-        ctx: Context,
         req: Request<B>,
         make: &M,
-    ) -> (Context, Request<B>)
+    ) -> Request<B>
     where
         B: Send + 'static,
         M: MakeHeaderValue<B>,
     {
         match self {
             Self::Override => {
-                let (ctx, mut req, maybe_value) = make.make_header_value(ctx, req).await;
+                let (mut req, maybe_value) = make.make_header_value(req).await;
                 if let Some(value) = maybe_value {
                     req.headers_mut().insert(header_name.clone(), value);
                 }
-                (ctx, req)
+                req
             }
             Self::IfNotPresent => {
                 if !req.headers().contains_key(header_name) {
-                    let (ctx, mut req, maybe_value) = make.make_header_value(ctx, req).await;
+                    let (mut req, maybe_value) = make.make_header_value(req).await;
                     if let Some(value) = maybe_value {
                         req.headers_mut().insert(header_name.clone(), value);
                     }
-                    (ctx, req)
+                    req
                 } else {
-                    (ctx, req)
+                    req
                 }
             }
             Self::Append => {
-                let (ctx, mut req, maybe_value) = make.make_header_value(ctx, req).await;
+                let (mut req, maybe_value) = make.make_header_value(req).await;
                 if let Some(value) = maybe_value {
                     req.headers_mut().append(header_name.clone(), value);
                 }
-                (ctx, req)
+                req
             }
         }
     }

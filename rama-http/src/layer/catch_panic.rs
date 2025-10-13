@@ -11,7 +11,7 @@
 //! use rama_http::{Request, Response, Body, header::HeaderName};
 //! use rama_http::layer::catch_panic::CatchPanicLayer;
 //! use rama_core::service::service_fn;
-//! use rama_core::{Context, Service, Layer};
+//! use rama_core::{Service, Layer};
 //! use rama_core::error::BoxError;
 //!
 //! # #[tokio::main]
@@ -28,7 +28,7 @@
 //! // Call the service.
 //! let request = Request::new(Body::default());
 //!
-//! let response = svc.serve(Context::default(), request).await?;
+//! let response = svc.serve(request).await?;
 //!
 //! assert_eq!(response.status(), 500);
 //! #
@@ -89,7 +89,7 @@
 use crate::{Body, HeaderValue, Request, Response, StatusCode};
 use rama_core::futures::FutureExt;
 use rama_core::telemetry::tracing;
-use rama_core::{Context, Layer, Service};
+use rama_core::{Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
 use std::{any::Any, panic::AssertUnwindSafe};
@@ -227,13 +227,8 @@ where
     type Response = Response;
     type Error = S::Error;
 
-    async fn serve(
-        &self,
-        ctx: Context,
-        req: Request<ReqBody>,
-    ) -> Result<Self::Response, Self::Error> {
-        let future = match std::panic::catch_unwind(AssertUnwindSafe(|| self.inner.serve(ctx, req)))
-        {
+    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
+        let future = match std::panic::catch_unwind(AssertUnwindSafe(|| self.inner.serve(req))) {
             Ok(future) => future,
             Err(panic_err) => return Ok(self.panic_handler.response_for_panic(panic_err)),
         };
@@ -301,8 +296,8 @@ mod tests {
     use super::*;
 
     use crate::{Body, Response, body::util::BodyExt};
+    use rama_core::Service;
     use rama_core::service::service_fn;
-    use rama_core::{Context, Service};
     use std::convert::Infallible;
 
     #[tokio::test]
@@ -314,7 +309,7 @@ mod tests {
 
         let req = Request::new(Body::empty());
 
-        let res = svc.serve(Context::default(), req).await.unwrap();
+        let res = svc.serve(req).await.unwrap();
 
         assert_eq!(res.status(), StatusCode::INTERNAL_SERVER_ERROR);
         let body = res.into_body().collect().await.unwrap().to_bytes();
@@ -330,7 +325,7 @@ mod tests {
 
         let req = Request::new(Body::empty());
 
-        let res = svc.serve(Context::default(), req).await.unwrap();
+        let res = svc.serve(req).await.unwrap();
 
         assert_eq!(res.status(), StatusCode::INTERNAL_SERVER_ERROR);
         let body = res.into_body().collect().await.unwrap().to_bytes();

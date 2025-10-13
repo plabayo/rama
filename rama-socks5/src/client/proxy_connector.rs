@@ -1,13 +1,14 @@
 use crate::{Socks5Client, client::proxy_error::Socks5ProxyError};
-use rama_core::telemetry::tracing;
 use rama_core::{
-    Context, Layer, Service,
+    Layer, Service,
     error::{BoxError, ErrorExt, OpaqueError},
+    extensions::ExtensionsMut,
+    stream::Stream,
+    telemetry::tracing,
 };
 use rama_net::{
     address::ProxyAddress,
     client::{ConnectorService, EstablishedClientConnection},
-    stream::Stream,
     transport::TryRefIntoTransportContext,
     user::ProxyCredential,
 };
@@ -339,14 +340,17 @@ impl<S> Socks5ProxyConnector<S> {
 
 impl<S, Request> Service<Request> for Socks5ProxyConnector<S>
 where
-    S: ConnectorService<Request, Connection: Stream + Unpin, Error: Into<BoxError>>,
-    Request: TryRefIntoTransportContext<Error: Into<BoxError> + Send + 'static> + Send + 'static,
+    S: ConnectorService<Request, Connection: Stream + Unpin>,
+    Request: TryRefIntoTransportContext<Error: Into<BoxError> + Send + 'static>
+        + Send
+        + ExtensionsMut
+        + 'static,
 {
     type Response = EstablishedClientConnection<S::Connection, Request>;
     type Error = BoxError;
 
-    async fn serve(&self, mut ctx: Context, req: Request) -> Result<Self::Response, Self::Error> {
-        let address = ctx.remove::<ProxyAddress>();
+    async fn serve(&self, mut req: Request) -> Result<Self::Response, Self::Error> {
+        let address = req.extensions_mut().remove::<ProxyAddress>();
         if !address
             .as_ref()
             .and_then(|addr| addr.protocol.as_ref())
@@ -363,9 +367,12 @@ where
         let address = match address {
             Some(addr) => {
                 let addr = self
-                    .normalize_socks5_proxy_addr(ctx.get().copied().unwrap_or_default(), addr)
+                    .normalize_socks5_proxy_addr(
+                        req.extensions().get().copied().unwrap_or_default(),
+                        addr,
+                    )
                     .await;
-                ctx.insert(addr.clone());
+                req.extensions_mut().insert(addr.clone());
                 Some(addr)
             }
             None => None,
@@ -373,7 +380,7 @@ where
 
         let established_conn =
             self.inner
-                .connect(ctx, req)
+                .connect(req)
                 .await
                 .map_err(|err| match address.as_ref() {
                     Some(address) => OpaqueError::from_std(Socks5ProxyError::Transport(
@@ -402,19 +409,12 @@ where
         };
         // and do the handshake otherwise...
 
-        let EstablishedClientConnection {
-            mut ctx,
-            req,
-            mut conn,
-        } = established_conn;
+        let EstablishedClientConnection { req, mut conn } = established_conn;
 
-        let transport_ctx = ctx
-            .get_or_try_insert_with_ctx(|ctx| req.try_ref_into_transport_ctx(ctx))
-            .map_err(|err| {
-                OpaqueError::from_boxed(err.into())
-                    .context("socks5 proxy connector: get transport context")
-            })?
-            .clone();
+        let transport_ctx = req.try_ref_into_transport_ctx().map_err(|err| {
+            OpaqueError::from_boxed(err.into())
+                .context("socks5 proxy connector: get transport context")
+        })?;
 
         tracing::trace!(
             network.peer.address = %proxy_address.authority.host(),
@@ -472,6 +472,6 @@ where
             Err(err) => return Err(Box::new(Socks5ProxyError::Handshake(err))),
         }
 
-        Ok(EstablishedClientConnection { ctx, req, conn })
+        Ok(EstablishedClientConnection { req, conn })
     }
 }

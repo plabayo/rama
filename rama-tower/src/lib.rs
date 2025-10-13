@@ -3,35 +3,6 @@
 //! See <https://github.com/plabayo/rama/blob/main/examples/http_rama_tower.rs>
 //! for an example on how to use this crate with opt-in tower support for rama.
 //!
-//! ## Overview
-//!
-//! Rama has the concept of a [`Context`], containing dynamic and static state,
-//! as well as runtime utilities. Tower does not have this. While it is possible
-//! that rama will move also away from the [`Context`] concept all together
-//! (see <https://github.com/plabayo/rama/issues/462>), it is there for now,
-//! which is an issue for [`tower::Layer`]-[`tower::Service`]s in specific.
-//!
-//! ```plain
-//! +-----------+         +-----------+         +-----------+
-//! | serviceA  |         | serviceB  |         | serviceC  |
-//! |           |         |           |         |           |
-//! | serve(ctx, req)     | call(req) |         | serve(ctx, req)
-//! |   |                 |    |      |         |     |
-//! |   |                 |    |      |         |     |
-//! |   +--> [ctx]        |    |      |         |     |
-//! |         |           |    |      |         |     |
-//! |         +---------->+---+------>+-------->+     |
-//! |        passes req   |  calls C, but only  |     |
-//! |        & ctx held   |  has req, so must   |     |
-//! |        somewhere    |  forward ctx        |     |
-//! +-----------+         +-----------+         +-----------+
-//! ```
-//!
-//! That is where the [`ContextSmuggler`] trait comes into play.
-//!
-//! Note that this is only a problem for [`tower::Layer`]-[`tower::Service`]s,
-//! and not for (leaf/endpoint) [`tower::Service`]s.
-//!
 //! ### [`tower::Service`] adapters
 //!
 //! Adapters to use a [`tower::Service`] as a [`rama::Service`].
@@ -41,10 +12,6 @@
 //!   done, but there if you really have to.
 //!
 //! ### [`tower::Layer`] adapters
-//!
-//! Adapters to use a [`tower::Layer`] as a [`rama::Layer`]. Adapting layers
-//! is a bit more complicated than _service_ adapters because of the entire
-//! [`Context`] smuggling troubles.
 //!
 //! Next to that there is the fact that a layer produces
 //! a service which also has to be wrapped, or in our case we have to wrap 2 times.
@@ -60,14 +27,6 @@
 //!   - the produced [`tower::Service`] by the [`tower::Layer`] is turned into a [`rama::Service`]
 //!     by wrapping it with a [`LayerAdapterService`].
 //!
-//! It is the [`LayerAdapterService`] which makes use of [`ContextSmuggler::inject_ctx`] to smuggle the [`Context`],
-//! such that the nested [`TowerAdapterService`] can pass it on using [`ContextSmuggler::try_extract_ctx`]
-//! to the "most" inner [`rama::Service`] from the POV of this (sub)stack.
-//!
-//! [`Context`]: rama_core::Context
-//! [`ContextSmuggler::inject_ctx`]: layer::ContextSmuggler::inject_ctx
-//! [`ContextSmuggler::try_extract_ctx`]: layer::ContextSmuggler::try_extract_ctx
-//! [`ContextSmuggler`]: layer::ContextSmuggler
 //! [`tower::Service`]: tower_service::Service
 //! [`tower::Layer`]: tower_layer::Layer
 //! [`rama::Service`]: rama_core::Service
@@ -124,7 +83,7 @@
     html_favicon_url = "https://raw.githubusercontent.com/plabayo/rama/main/docs/img/old_logo.png"
 )]
 #![doc(html_logo_url = "https://raw.githubusercontent.com/plabayo/rama/main/docs/img/old_logo.png")]
-#![cfg_attr(docsrs, feature(doc_auto_cfg, doc_cfg))]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 #![cfg_attr(test, allow(clippy::float_cmp))]
 #![cfg_attr(not(test), warn(clippy::print_stdout, clippy::dbg_macro))]
 

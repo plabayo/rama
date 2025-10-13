@@ -1,5 +1,4 @@
 use pin_project_lite::pin_project;
-use rama_core::bytes::{Buf, Bytes};
 use std::{
     fmt,
     io::{Cursor, Read},
@@ -7,6 +6,8 @@ use std::{
     task::{Context, Poll, ready},
 };
 use tokio::io::{self, AsyncBufRead, AsyncRead, ReadBuf};
+
+use crate::bytes::{Buf, Bytes};
 
 pin_project! {
     /// Reader for reading from a heap-allocated bytes buffer.
@@ -69,6 +70,7 @@ impl From<Bytes> for HeapReader {
     }
 }
 
+#[warn(clippy::missing_trait_methods)]
 impl AsyncRead for HeapReader {
     fn poll_read(
         self: Pin<&mut Self>,
@@ -79,6 +81,7 @@ impl AsyncRead for HeapReader {
     }
 }
 
+#[warn(clippy::missing_trait_methods)]
 impl AsyncBufRead for HeapReader {
     fn poll_fill_buf(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<&[u8]>> {
         self.project().inner.poll_fill_buf(cx)
@@ -93,6 +96,26 @@ impl Read for HeapReader {
     #[inline]
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         self.inner.read(buf)
+    }
+
+    #[inline]
+    fn read_exact(&mut self, buf: &mut [u8]) -> std::io::Result<()> {
+        self.inner.read_exact(buf)
+    }
+
+    #[inline]
+    fn read_to_end(&mut self, buf: &mut Vec<u8>) -> std::io::Result<usize> {
+        self.inner.read_to_end(buf)
+    }
+
+    #[inline]
+    fn read_to_string(&mut self, buf: &mut String) -> std::io::Result<usize> {
+        self.inner.read_to_string(buf)
+    }
+
+    #[inline]
+    fn read_vectored(&mut self, bufs: &mut [std::io::IoSliceMut<'_>]) -> std::io::Result<usize> {
+        self.inner.read_vectored(bufs)
     }
 }
 
@@ -350,6 +373,7 @@ where
 #[cfg(test)]
 mod test {
     use super::*;
+
     use tokio::io::AsyncReadExt;
 
     async fn test_multi_read_async<const N: usize>(

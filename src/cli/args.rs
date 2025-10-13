@@ -7,10 +7,11 @@ use crate::{
         header::{ACCEPT, CONTENT_LENGTH, CONTENT_TYPE, Entry, HeaderValue},
     },
 };
+use ahash::{HashMap, HashMapExt as _};
+use rama_core::extensions::ExtensionsMut;
 use rama_http::proto::h1::{Http1HeaderName, headers::original::OriginalHttp1Headers};
 use rama_utils::macros::match_ignore_ascii_case_str;
 use serde_json::Value;
-use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 /// A builder to create a request from command line arguments.

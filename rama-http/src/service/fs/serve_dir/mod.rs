@@ -1,11 +1,14 @@
 use crate::headers::encoding::{SupportedEncodings, parse_accept_encoding_headers};
 use crate::layer::set_status::SetStatus;
-use crate::{Body, HeaderValue, Method, Request, Response, StatusCode, StreamingBody, header};
+use crate::mime::Mime;
+use crate::{Body, Method, Request, Response, StatusCode, StreamingBody, header};
 use percent_encoding::percent_decode;
+use rama_core::Service;
 use rama_core::bytes::Bytes;
 use rama_core::error::{BoxError, OpaqueError};
+use rama_core::extensions::ExtensionsMut;
 use rama_core::telemetry::tracing;
-use rama_core::{Context, Service};
+use rama_utils::include_dir::Dir;
 use std::fmt;
 use std::str::FromStr;
 use std::{
@@ -19,6 +22,13 @@ mod open_file;
 
 #[cfg(test)]
 mod tests;
+
+/// Source of directory content - either filesystem or embedded.
+#[derive(Clone, Debug)]
+enum DirSource {
+    Filesystem(PathBuf),
+    Embedded(Dir<'static>),
+}
 
 // default capacity 64KiB
 const DEFAULT_CAPACITY: usize = 65536;
@@ -37,7 +47,7 @@ const DEFAULT_CAPACITY: usize = 65536;
 /// - We don't have necessary permissions to read the file
 #[derive(Clone, Debug)]
 pub struct ServeDir<F = DefaultServeDirFallback> {
-    base: PathBuf,
+    base: DirSource,
     buf_chunk_size: usize,
     precompressed_variants: Option<PrecompressedVariants>,
     // This is used to specialise implementation for
@@ -56,6 +66,17 @@ impl ServeDir<DefaultServeDirFallback> {
         let mut base = PathBuf::from(".");
         base.push(path.as_ref());
 
+        Self::new_with_base(DirSource::Filesystem(base))
+    }
+
+    /// Create a new [`ServeDir`] that serves files from embedded content.
+    #[must_use]
+    pub fn new_embedded(path: Dir<'static>) -> Self {
+        Self::new_with_base(DirSource::Embedded(path))
+    }
+
+    /// Create a new [`ServeDir`] with the specified directory source and default settings.
+    fn new_with_base(base: DirSource) -> Self {
         Self {
             base,
             buf_chunk_size: DEFAULT_CAPACITY,
@@ -68,12 +89,13 @@ impl ServeDir<DefaultServeDirFallback> {
         }
     }
 
-    pub(crate) fn new_single_file<P>(path: P, mime: HeaderValue) -> Self
+    /// Create a new [`ServeDir`] configured to serve a single file.
+    pub(crate) fn new_single_file<P>(path: P, mime: Mime) -> Self
     where
         P: AsRef<Path>,
     {
         Self {
-            base: path.as_ref().to_owned(),
+            base: DirSource::Filesystem(path.as_ref().to_path_buf()),
             buf_chunk_size: DEFAULT_CAPACITY,
             precompressed_variants: None,
             variant: ServeVariant::SingleFile { mime },
@@ -318,7 +340,6 @@ impl<F> ServeDir<F> {
     /// service that wraps a `ServeDir` and calls `try_call` instead of `call`.
     pub async fn try_call<ReqBody, FResBody>(
         &self,
-        ctx: Context,
         req: Request<ReqBody>,
     ) -> Result<Response, std::io::Error>
     where
@@ -328,7 +349,7 @@ impl<F> ServeDir<F> {
         if req.method() != Method::GET && req.method() != Method::HEAD {
             if self.call_fallback_on_method_not_allowed {
                 if let Some(fallback) = self.fallback.as_ref() {
-                    return future::serve_fallback(fallback, ctx, req).await;
+                    return future::serve_fallback(fallback, req).await;
                 }
             } else {
                 return Ok(future::method_not_allowed());
@@ -351,15 +372,15 @@ impl<F> ServeDir<F> {
             *fallback_req.headers_mut() = req.headers().clone();
             *fallback_req.extensions_mut() = extensions;
 
-            (fallback, ctx, fallback_req)
+            (fallback, fallback_req)
         });
 
         let Some(path_to_file) = self
             .variant
             .build_and_validate_path(&self.base, req.uri().path())
         else {
-            return if let Some((fallback, ctx, request)) = fallback_and_request {
-                future::serve_fallback(fallback, ctx, request).await
+            return if let Some((fallback, request)) = fallback_and_request {
+                future::serve_fallback(fallback, request).await
             } else {
                 Ok(future::not_found())
             };
@@ -379,14 +400,14 @@ impl<F> ServeDir<F> {
         .collect();
 
         let variant = self.variant.clone();
-
         let open_file_result = open_file::open_file(
             variant,
             path_to_file,
             req,
             negotiated_encodings,
-            range_header,
+            range_header.as_deref(),
             buf_chunk_size,
+            &self.base,
         )
         .await;
 
@@ -403,12 +424,8 @@ where
     type Response = Response;
     type Error = Infallible;
 
-    async fn serve(
-        &self,
-        ctx: Context,
-        req: Request<ReqBody>,
-    ) -> Result<Self::Response, Self::Error> {
-        let result = self.try_call(ctx, req).await;
+    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
+        let result = self.try_call(req).await;
         Ok(result.unwrap_or_else(|err| {
             tracing::error!("Failed to read file: {err:?}");
 
@@ -479,11 +496,13 @@ impl TryFrom<&str> for DirectoryServeMode {
 #[derive(Clone, Debug)]
 enum ServeVariant {
     Directory { serve_mode: DirectoryServeMode },
-    SingleFile { mime: HeaderValue },
+    SingleFile { mime: Mime },
 }
 
 impl ServeVariant {
-    fn build_and_validate_path(&self, base_path: &Path, requested_path: &str) -> Option<PathBuf> {
+    /// Build and validate the file path based on the serve variant and requested path.
+    /// Returns None if the path is invalid or unsafe.
+    fn build_and_validate_path(&self, source: &DirSource, requested_path: &str) -> Option<PathBuf> {
         match self {
             Self::Directory { serve_mode: _ } => {
                 let path = requested_path.trim_start_matches('/');
@@ -491,7 +510,11 @@ impl ServeVariant {
                 let path_decoded = percent_decode(path.as_ref()).decode_utf8().ok()?;
                 let path_decoded = Path::new(&*path_decoded);
 
-                let mut path_to_file = base_path.to_path_buf();
+                let mut path_to_file = match source {
+                    DirSource::Filesystem(base_path) => base_path.clone(),
+                    DirSource::Embedded(_) => PathBuf::new(), // For embedded files, we don't need a filesystem path
+                };
+
                 for component in path_decoded.components() {
                     match component {
                         Component::Normal(comp) => {
@@ -513,7 +536,10 @@ impl ServeVariant {
                 }
                 Some(path_to_file)
             }
-            Self::SingleFile { mime: _ } => Some(base_path.to_path_buf()),
+            Self::SingleFile { mime: _ } => match source {
+                DirSource::Filesystem(base_path) => Some(base_path.clone()),
+                DirSource::Embedded(_) => Some(PathBuf::new()), // For embedded single file
+            },
         }
     }
 }
@@ -529,11 +555,7 @@ where
     type Response = Response;
     type Error = Infallible;
 
-    async fn serve(
-        &self,
-        _ctx: Context,
-        _req: Request<ReqBody>,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, _req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
         match self.0 {}
     }
 }

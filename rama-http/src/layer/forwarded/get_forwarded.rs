@@ -2,7 +2,8 @@ use crate::Request;
 use crate::headers::forwarded::{
     ForwardHeader, Via, XForwardedFor, XForwardedHost, XForwardedProto,
 };
-use rama_core::{Context, Layer, Service};
+use rama_core::extensions::ExtensionsMut;
+use rama_core::{Layer, Service};
 use rama_http_headers::HeaderMapExt;
 use rama_http_headers::forwarded::Forwarded;
 use rama_net::forwarded::ForwardedElement;
@@ -44,7 +45,7 @@ use std::marker::PhantomData;
 /// ```rust
 /// use rama_core::{
 ///     service::service_fn,
-///     Context, Service, Layer,
+///     extensions::ExtensionsRef, Service, Layer,
 /// };
 /// use rama_http::{headers::forwarded::Forwarded, layer::forwarded::GetForwardedHeaderLayer, Request};
 /// use std::{convert::Infallible, net::IpAddr};
@@ -52,8 +53,8 @@ use std::marker::PhantomData;
 /// #[tokio::main]
 /// async fn main() {
 ///     let service = GetForwardedHeaderLayer::x_forwarded_for()
-///         .into_layer(service_fn(async |ctx: Context, _| {
-///             let forwarded = ctx.get::<rama_net::forwarded::Forwarded>().unwrap();
+///         .into_layer(service_fn(async |req: Request<()>| {
+///             let forwarded = req.extensions().get::<rama_net::forwarded::Forwarded>().unwrap();
 ///             assert_eq!(forwarded.client_ip(), Some(IpAddr::from([12, 23, 34, 45])));
 ///             assert!(forwarded.client_proto().is_none());
 ///
@@ -67,7 +68,7 @@ use std::marker::PhantomData;
 ///         .body(())
 ///         .unwrap();
 ///
-///     service.serve(Context::default(), req).await.unwrap();
+///     service.serve(req).await.unwrap();
 /// }
 /// ```
 pub struct GetForwardedHeaderLayer<T = rama_http_headers::forwarded::Forwarded> {
@@ -252,8 +253,7 @@ where
 
     fn serve(
         &self,
-        mut ctx: Context,
-        req: Request<Body>,
+        mut req: Request<Body>,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
         let mut forwarded_elements: Vec<ForwardedElement> = Vec::with_capacity(1);
 
@@ -262,17 +262,17 @@ where
         }
 
         if !forwarded_elements.is_empty() {
-            if let Some(ref mut f) = ctx.get_mut::<Forwarded>() {
+            if let Some(ref mut f) = req.extensions_mut().get_mut::<Forwarded>() {
                 f.extend(forwarded_elements);
             } else {
                 let mut it = forwarded_elements.into_iter();
                 let mut forwarded = rama_net::forwarded::Forwarded::new(it.next().unwrap());
                 forwarded.extend(it);
-                ctx.insert(forwarded);
+                req.extensions_mut().insert(forwarded);
             }
         }
 
-        self.inner.serve(ctx, req)
+        self.inner.serve(req)
     }
 }
 
@@ -280,7 +280,7 @@ where
 mod tests {
     use super::*;
     use crate::{Response, StatusCode, service::web::response::IntoResponse};
-    use rama_core::{Layer, error::OpaqueError, service::service_fn};
+    use rama_core::{Layer, error::OpaqueError, extensions::ExtensionsRef, service::service_fn};
     use rama_http_headers::forwarded::{TrueClientIp, XRealIp};
     use rama_net::forwarded::{ForwardedProtocol, ForwardedVersion};
     use std::{convert::Infallible, net::IpAddr};
@@ -321,8 +321,11 @@ mod tests {
     #[tokio::test]
     async fn test_get_forwarded_header_forwarded() {
         let service =
-            GetForwardedHeaderLayer::forwarded().into_layer(service_fn(async |ctx: Context, _| {
-                let forwarded = ctx.get::<rama_net::forwarded::Forwarded>().unwrap();
+            GetForwardedHeaderLayer::forwarded().into_layer(service_fn(async |req: Request<()>| {
+                let forwarded = req
+                    .extensions()
+                    .get::<rama_net::forwarded::Forwarded>()
+                    .unwrap();
                 assert_eq!(forwarded.client_ip(), Some(IpAddr::from([12, 23, 34, 45])));
                 assert_eq!(forwarded.client_proto(), Some(ForwardedProtocol::HTTP));
                 Ok::<_, Infallible>(())
@@ -333,14 +336,17 @@ mod tests {
             .body(())
             .unwrap();
 
-        service.serve(Context::default(), req).await.unwrap();
+        service.serve(req).await.unwrap();
     }
 
     #[tokio::test]
     async fn test_get_forwarded_header_via() {
         let service =
-            GetForwardedHeaderLayer::via().into_layer(service_fn(async |ctx: Context, _| {
-                let forwarded = ctx.get::<rama_net::forwarded::Forwarded>().unwrap();
+            GetForwardedHeaderLayer::via().into_layer(service_fn(async |req: Request<()>| {
+                let forwarded = req
+                    .extensions()
+                    .get::<rama_net::forwarded::Forwarded>()
+                    .unwrap();
                 assert!(forwarded.client_ip().is_none());
                 assert_eq!(
                     forwarded.iter().next().unwrap().ref_forwarded_by(),
@@ -356,14 +362,17 @@ mod tests {
             .body(())
             .unwrap();
 
-        service.serve(Context::default(), req).await.unwrap();
+        service.serve(req).await.unwrap();
     }
 
     #[tokio::test]
     async fn test_get_forwarded_header_x_forwarded_for() {
         let service = GetForwardedHeaderLayer::x_forwarded_for().into_layer(service_fn(
-            async |ctx: Context, _| {
-                let forwarded = ctx.get::<rama_net::forwarded::Forwarded>().unwrap();
+            async |req: Request<()>| {
+                let forwarded = req
+                    .extensions()
+                    .get::<rama_net::forwarded::Forwarded>()
+                    .unwrap();
                 assert_eq!(forwarded.client_ip(), Some(IpAddr::from([12, 23, 34, 45])));
                 assert!(forwarded.client_proto().is_none());
                 Ok::<_, Infallible>(())
@@ -375,6 +384,6 @@ mod tests {
             .body(())
             .unwrap();
 
-        service.serve(Context::default(), req).await.unwrap();
+        service.serve(req).await.unwrap();
     }
 }

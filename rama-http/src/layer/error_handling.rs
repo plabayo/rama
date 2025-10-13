@@ -5,7 +5,7 @@
 //! ```
 //! use rama_core::{
 //!     service::service_fn,
-//!     Context, Service, Layer,
+//!     Service, Layer,
 //!     telemetry::tracing,
 //! };
 //! use rama_http::{
@@ -21,7 +21,7 @@
 //! #     Ok(())
 //! # }
 //!
-//! async fn handler(_ctx: Context, _req: Request) -> Result<Response, std::io::Error> {
+//! async fn handler(_req: Request) -> Result<Response, std::io::Error> {
 //!     some_expensive_io_operation().await?;
 //!     Ok(StatusCode::OK.into_response())
 //! }
@@ -38,7 +38,7 @@
 //!
 //!     let service = WebService::default().get("/", home_handler);
 //!
-//!     let _ = service.serve(Context::default(), Request::builder()
+//!     let _ = service.serve(Request::builder()
 //!         .method("GET")
 //!         .uri("/")
 //!         .body(Body::empty())
@@ -48,7 +48,7 @@
 
 use crate::service::web::response::IntoResponse;
 use crate::{Request, Response};
-use rama_core::{Context, Layer, Service};
+use rama_core::{Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
 use std::{convert::Infallible, fmt};
 
@@ -162,8 +162,8 @@ where
     type Response = Response;
     type Error = Infallible;
 
-    async fn serve(&self, ctx: Context, req: Request<Body>) -> Result<Self::Response, Self::Error> {
-        match self.inner.serve(ctx, req).await {
+    async fn serve(&self, req: Request<Body>) -> Result<Self::Response, Self::Error> {
+        match self.inner.serve(req).await {
             Ok(response) => Ok(response.into_response()),
             Err(error) => Ok(error.into_response()),
         }
@@ -180,8 +180,8 @@ where
     type Response = Response;
     type Error = Infallible;
 
-    async fn serve(&self, ctx: Context, req: Request<Body>) -> Result<Self::Response, Self::Error> {
-        match self.inner.serve(ctx, req).await {
+    async fn serve(&self, req: Request<Body>) -> Result<Self::Response, Self::Error> {
+        match self.inner.serve(req).await {
             Ok(response) => Ok(response.into_response()),
             Err(error) => Ok((self.error_mapper)(error).into_response()),
         }

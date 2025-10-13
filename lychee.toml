@@ -1,2 +1,12 @@
 exclude_path = ["./target", "./docs/book/book", "./test-files"]
-exclude = ["^https://api.star-history.com", "hub.docker.com", "paypal.com", "www.contributor-covenant.org", "automate.browserstack.com", "nordvpn.com", "plabayo.threadless.com", "certbot.eff.org"]
+exclude = [
+    "^https://api.star-history.com",
+    "hub.docker.com",
+    "paypal.com",
+    "www.contributor-covenant.org",
+    "automate.browserstack.com",
+    "nordvpn.com",
+    "plabayo.threadless.com",
+    "certbot.eff.org",
+    "about.signpath.io",
+]

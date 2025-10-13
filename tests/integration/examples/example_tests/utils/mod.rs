@@ -1,8 +1,8 @@
 #![allow(dead_code)]
 
-use rama::telemetry::tracing::level_filters::LevelFilter;
 #[cfg(feature = "http-full")]
-use rama_http::Body;
+use rama::http::Body;
+use rama::telemetry::tracing::{self, level_filters::LevelFilter};
 use std::{
     process::{Child, ExitStatus},
     sync::Once,
@@ -270,6 +270,7 @@ impl ExampleRunner {
 
 impl std::ops::Drop for ExampleRunner {
     fn drop(&mut self) {
+        tracing::info!("kill server process");
         self.server_process.kill().expect("kill server process");
     }
 }

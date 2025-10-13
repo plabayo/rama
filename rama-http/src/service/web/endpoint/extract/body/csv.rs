@@ -47,7 +47,7 @@ where
         async fn req_to_csv_bytes(req: Request) -> Result<Bytes, CsvRejection> {
             if !crate::service::web::extract::has_any_content_type(
                 req.headers(),
-                &[&mime::TEXT_CSV],
+                &[&crate::mime::TEXT_CSV],
             ) {
                 return Err(InvalidCsvContentType.into());
             }
@@ -81,7 +81,7 @@ mod test {
     use super::*;
     use crate::StatusCode;
     use crate::service::web::WebService;
-    use rama_core::{Context, Service};
+    use rama_core::Service;
 
     #[tokio::test]
     async fn test_csv() {
@@ -113,7 +113,7 @@ mod test {
             )
             .body("name,age,alive\nglen,42,\nadr,40,true\n".into())
             .unwrap();
-        let resp = service.serve(Context::default(), req).await.unwrap();
+        let resp = service.serve(req).await.unwrap();
         println!("debug {resp:?}");
         assert_eq!(resp.status(), StatusCode::OK);
     }
@@ -135,7 +135,7 @@ mod test {
             .header(rama_http_types::header::CONTENT_TYPE, "text/plain")
             .body(r#"{"name": "glen", "age": 42}"#.into())
             .unwrap();
-        let resp = service.serve(Context::default(), req).await.unwrap();
+        let resp = service.serve(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
     }
 
@@ -160,7 +160,7 @@ mod test {
             // the missing column last line should trigger an error
             .body("name,age,alive\nglen,42,\nadr,40\n".into())
             .unwrap();
-        let resp = service.serve(Context::default(), req).await.unwrap();
+        let resp = service.serve(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 }

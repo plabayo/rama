@@ -2,6 +2,8 @@ use std::io::Result;
 use std::net::SocketAddr;
 use std::ops::{Deref, DerefMut};
 
+use rama_core::ServiceInput;
+
 /// Common information exposed by a Socket-like construct.
 ///
 /// For now this is implemented for TCP and UDP, as these
@@ -59,6 +61,18 @@ impl Socket for tokio::net::UdpSocket {
     #[inline]
     fn peer_addr(&self) -> Result<SocketAddr> {
         self.peer_addr()
+    }
+}
+
+impl<T: Socket> Socket for ServiceInput<T> {
+    #[inline]
+    fn local_addr(&self) -> std::io::Result<SocketAddr> {
+        self.request.local_addr()
+    }
+
+    #[inline]
+    fn peer_addr(&self) -> std::io::Result<SocketAddr> {
+        self.request.peer_addr()
     }
 }
 

@@ -8,8 +8,9 @@ use crate::{Body, Request, Response, StreamingBody};
 
 use chrono::{DateTime, Utc};
 
+use rama_core::extensions::ExtensionsMut;
 use rama_core::telemetry::tracing;
-use rama_core::{Context, Service, bytes::Bytes, error::BoxError};
+use rama_core::{Service, bytes::Bytes, error::BoxError};
 use rama_error::{ErrorExt, OpaqueError};
 use tokio::time::Instant;
 
@@ -31,11 +32,7 @@ where
     type Response = Response;
     type Error = BoxError;
 
-    async fn serve(
-        &self,
-        ctx: Context,
-        req: Request<ReqBody>,
-    ) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
         struct EntryStartInfo {
             start_time: DateTime<Utc>,
             begin: Instant, // TODO: replace with total time
@@ -55,8 +52,7 @@ where
                 })?
                 .to_bytes();
 
-            let har_req_result =
-                HarRequest::from_http_request_parts(&ctx, &req_parts, &req_body_bytes);
+            let har_req_result = HarRequest::from_http_request_parts(&req_parts, &req_body_bytes);
             let request = Request::from_parts(req_parts, Body::from(req_body_bytes));
 
             match har_req_result {
@@ -80,7 +76,7 @@ where
             (req.map(Body::new), None)
         };
 
-        let result = self.service.serve(ctx, request).await;
+        let result = self.service.serve(request).await;
 
         if let Some(entry_start_info) = maybe_entry_start_info {
             let (result, response) = match result {
