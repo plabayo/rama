@@ -84,7 +84,7 @@ impl InnerHttpProxyConnector {
         self,
         stream: S,
     ) -> Result<(HeaderMap, upgrade::Upgraded), HttpProxyError> {
-        let mut response = match self.version {
+        let response = match self.version {
             Some(Version::HTTP_10 | Version::HTTP_11) => {
                 Self::handshake_h1(self.req, stream).await?
             }
@@ -106,7 +106,8 @@ impl InnerHttpProxyConnector {
         };
 
         match response.status() {
-            StatusCode::OK => upgrade::on(&mut response)
+            StatusCode::OK => upgrade::on(&response)
+                .map_err(|err| HttpProxyError::Transport(err.into_boxed()))?
                 .await
                 .map(|upgraded| {
                     let (parts, _) = response.into_parts();

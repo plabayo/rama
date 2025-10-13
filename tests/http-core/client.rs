@@ -2316,7 +2316,7 @@ mod conn {
                 Extensions::new(),
                 service_fn(move |req: Request| {
                     tokio::task::spawn(async move {
-                        let io = &mut rama::http::io::upgrade::on(req).await.unwrap();
+                        let io = &mut rama::http::io::upgrade::on(req).unwrap().await.unwrap();
                         io.write_all(b"hello\n").await.unwrap();
                     });
 
@@ -2361,7 +2361,7 @@ mod conn {
 
             let resp = client.send_request(req).await.expect("req1 send");
             assert_eq!(resp.status(), 200);
-            let upgrade = rama::http::io::upgrade::on(resp).await.unwrap();
+            let upgrade = rama::http::io::upgrade::on(resp).unwrap().await.unwrap();
             tokio::task::spawn(async move {
                 let _ = rx.await;
                 drop(upgrade);
@@ -2633,7 +2633,7 @@ mod conn {
         let res = client.send_request(req).await.expect("send_request");
         assert_eq!(res.status(), StatusCode::OK);
 
-        let mut upgraded = rama::http::io::upgrade::on(res).await.unwrap();
+        let mut upgraded = rama::http::io::upgrade::on(res).unwrap().await.unwrap();
 
         let mut vec = vec![];
         upgraded.read_to_end(&mut vec).await.unwrap();

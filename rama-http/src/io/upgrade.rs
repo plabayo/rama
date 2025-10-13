@@ -101,7 +101,7 @@ pub struct Parts<T> {
 /// - `http::Response<B>`
 /// - `&mut rama_http::Request<B>`
 /// - `&mut rama_http::Response<B>`
-pub fn on<T: sealed::CanUpgrade>(msg: T) -> OnUpgrade {
+pub fn on<T: sealed::CanUpgrade>(msg: T) -> Result<OnUpgrade, OpaqueError> {
     msg.on_upgrade()
 }
 
@@ -246,14 +246,20 @@ impl fmt::Debug for Upgraded {
 // ===== impl OnUpgrade =====
 
 impl OnUpgrade {
-    pub(super) fn none() -> Self {
-        Self { rx: None }
-    }
-
     /// Returns true if no upgrade is in progress.
     #[must_use]
     pub fn is_none(&self) -> bool {
         self.rx.is_none()
+    }
+
+    /// Returns true if there was an upgrade and the upgrade has already been handled
+    #[must_use]
+    pub fn has_handled_upgrade(&self) -> bool {
+        if let Some(rx) = &self.rx {
+            rx.lock().unwrap().is_terminated()
+        } else {
+            false
+        }
     }
 }
 
@@ -304,48 +310,73 @@ impl Pending {
 }
 
 mod sealed {
-    use rama_core::extensions::ExtensionsMut;
+    use rama_core::extensions::ExtensionsRef;
+    use rama_error::OpaqueError;
     use rama_http_types::{Request, Response};
 
     use super::OnUpgrade;
 
     pub trait CanUpgrade {
-        fn on_upgrade(self) -> OnUpgrade;
+        fn on_upgrade(self) -> Result<OnUpgrade, OpaqueError>;
     }
 
-    impl<B> CanUpgrade for Request<B> {
-        fn on_upgrade(mut self) -> OnUpgrade {
-            self.extensions_mut()
+    impl<B> CanUpgrade for &'_ Request<B> {
+        fn on_upgrade(self) -> Result<OnUpgrade, OpaqueError> {
+            self.extensions()
                 .get::<OnUpgrade>()
                 .cloned()
-                .unwrap_or_else(OnUpgrade::none)
+                .map(|upgrade| {
+                    if upgrade.has_handled_upgrade() {
+                        Err(OpaqueError::from_display(
+                            "OnUpgrade has already been upgraded",
+                        ))
+                    } else {
+                        Ok(upgrade)
+                    }
+                })
+                .unwrap_or_else(|| Err(OpaqueError::from_display("no OnUpgrade found")))
         }
     }
 
     impl<B> CanUpgrade for &'_ mut Request<B> {
-        fn on_upgrade(self) -> OnUpgrade {
-            self.extensions_mut()
-                .get::<OnUpgrade>()
-                .cloned()
-                .unwrap_or_else(OnUpgrade::none)
+        fn on_upgrade(self) -> Result<OnUpgrade, OpaqueError> {
+            (&*self).on_upgrade()
         }
     }
 
-    impl<B> CanUpgrade for Response<B> {
-        fn on_upgrade(mut self) -> OnUpgrade {
-            self.extensions_mut()
+    impl<B> CanUpgrade for Request<B> {
+        fn on_upgrade(self) -> Result<OnUpgrade, OpaqueError> {
+            (&self).on_upgrade()
+        }
+    }
+
+    impl<B> CanUpgrade for &'_ Response<B> {
+        fn on_upgrade(self) -> Result<OnUpgrade, OpaqueError> {
+            self.extensions()
                 .get::<OnUpgrade>()
                 .cloned()
-                .unwrap_or_else(OnUpgrade::none)
+                .map(|upgrade| {
+                    if upgrade.has_handled_upgrade() {
+                        Err(OpaqueError::from_display(
+                            "OnUpgrade has already been upgraded",
+                        ))
+                    } else {
+                        Ok(upgrade)
+                    }
+                })
+                .unwrap_or_else(|| Err(OpaqueError::from_display("no OnUpgrade found")))
         }
     }
 
     impl<B> CanUpgrade for &'_ mut Response<B> {
-        fn on_upgrade(self) -> OnUpgrade {
-            self.extensions_mut()
-                .get::<OnUpgrade>()
-                .cloned()
-                .unwrap_or_else(OnUpgrade::none)
+        fn on_upgrade(self) -> Result<OnUpgrade, OpaqueError> {
+            (&*self).on_upgrade()
+        }
+    }
+
+    impl<B> CanUpgrade for Response<B> {
+        fn on_upgrade(self) -> Result<OnUpgrade, OpaqueError> {
+            (&self).on_upgrade()
         }
     }
 }

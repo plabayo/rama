@@ -739,7 +739,7 @@ where
 
     async fn serve(&self, req: Request<Body>) -> Result<Self::Response, Self::Error> {
         match self.acceptor.serve(req).await {
-            Ok((resp, mut req)) => {
+            Ok((resp, req)) => {
                 #[cfg(not(feature = "compression"))]
                 if let Some(Extension::PerMessageDeflate(_)) = req.extensions().get() {
                     tracing::error!(
@@ -767,7 +767,14 @@ where
 
                 exec.spawn_task(
                     async move {
-                        match upgrade::on(&mut req).await {
+                        let upgrade = match upgrade::on(&req) {
+                            Ok(upgrade) => upgrade,
+                            Err(e) =>{
+                                tracing::error!("ws upgrade error: {e:?}");
+                                return
+                            },
+                        };
+                        match upgrade.await {
                             Ok(upgraded) => {
                                 #[cfg(feature = "compression")]
                                 let maybe_ws_config = {
