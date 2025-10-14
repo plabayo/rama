@@ -453,19 +453,6 @@ impl Service<Request> for EchoService {
 
         let (mut parts, body) = req.into_parts();
 
-        let mut akamai_h2 = None;
-        if parts.version == Version::HTTP_2 {
-            akamai_h2 = AkamaiH2::compute(&parts.extensions)
-                .inspect_err(|err| tracing::trace!("akamai h2 compute failure: {err:?}"))
-                .ok()
-                .map(|akamai| {
-                    json!({
-                        "hash": format!("{akamai}"),
-                        "verbose": format!("{akamai:?}"),
-                    })
-                })
-        };
-
         let body = body
             .collect()
             .await
@@ -707,10 +694,20 @@ impl Service<Request> for EchoService {
         if parts.version == Version::HTTP_2 {
             let early_frames = parts.extensions.get::<EarlyFrameCapture>();
             let pseudo_headers = parts.extensions.get::<PseudoHeaderOrder>();
+            let akamai_h2 = AkamaiH2::compute(&parts.extensions)
+                .inspect_err(|err| tracing::trace!("akamai h2 compute failure: {err:?}"))
+                .ok()
+                .map(|akamai| {
+                    json!({
+                        "hash": format!("{akamai}"),
+                        "verbose": format!("{akamai:?}"),
+                    })
+                });
 
             h2 = Some(json!({
                 "early_frames": early_frames,
                 "pseudo_headers": pseudo_headers,
+                "akamai_h2": akamai_h2,
             }));
         }
 
@@ -724,7 +721,6 @@ impl Service<Request> for EchoService {
                 "path": parts.uri.path().to_owned(),
                 "query": parts.uri.query().map(str::to_owned),
                 "h2": h2,
-                "akamai_h2": akamai_h2,
                 "headers": headers,
                 "payload": body,
                 "ja4h": ja4h,

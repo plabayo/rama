@@ -1,6 +1,6 @@
 //! Akamai HTTP2 Fingerprinting implementation for Rama.
 //!
-//! The fingerprint format is: `S[;]|WU|P[,]|PS[,]`
+//! The fingerprint format is: `S[;]|WU|P[,]#|PS[,]`
 //!
 //! Where:
 //! - S = SETTINGS frame parameters (id:value pairs, semicolon-separated)
@@ -9,7 +9,7 @@
 //! - PS = Pseudo-header order (m=method, p=path, a=authority, s=scheme, comma-separated)
 
 use itertools::Itertools as _;
-use rama_core::context::Extensions;
+use rama_core::extensions::Extensions;
 use rama_http_types::proto::h2::{
     PseudoHeader, PseudoHeaderOrder,
     frame::{

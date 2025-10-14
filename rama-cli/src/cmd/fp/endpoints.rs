@@ -160,9 +160,9 @@ pub(super) async fn get_report(req: Request) -> Result<Html, Response> {
         && let Some(akamai_h2) = get_akamai_h2_info(&parts.extensions)
     {
         tables.push(Table {
-            title: "🆔 Akamai H2".to_owned(),
+            title: "🆔 Akamai h2".to_owned(),
             rows: vec![
-                ("Akamai HTTP2 Client Fingerprint".to_owned(), akamai_h2.hash),
+                ("Akamai h2 Client Fingerprint".to_owned(), akamai_h2.hash),
                 ("Raw (Debug) String".to_owned(), akamai_h2.human_str),
             ],
         })
@@ -552,9 +552,9 @@ pub(super) async fn form(req: Request) -> Result<Html, Response> {
         && let Some(akamai_h2) = get_akamai_h2_info(&parts.extensions)
     {
         tables.push(Table {
-            title: "🆔 Akamai H2".to_owned(),
+            title: "🆔 Akamai h2".to_owned(),
             rows: vec![
-                ("Akamai HTTP2 Client Fingerprint".to_owned(), akamai_h2.hash),
+                ("Akamai h2 Client Fingerprint".to_owned(), akamai_h2.hash),
                 ("Raw (Debug) String".to_owned(), akamai_h2.human_str),
             ],
         })
