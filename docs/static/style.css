@@ -302,6 +302,15 @@ a:visited {
     color: var(--rama-text);
 }
 
+.features h3,
+.features-table h3 {
+    text-align: center;
+    margin-top: -1rem;
+    margin-bottom: 2rem;
+    font-size: 1.75rem;
+    color: var(--rama-text);
+}
+
 .features-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
@@ -545,6 +554,25 @@ h2#partnership.section-title:target > a::before {
     position: absolute;
     content: "»";
     margin-inline-start: -20px;
+    color: var(--primary-color);
+    opacity: 0.7;
+    top: 50%;
+    transform: translateY(-50%);
+}
+
+h2.trademark.section-title > a::before {
+    position: absolute;
+    content: "🏷️";
+    margin-inline-start: -50px;
+    top: 50%;
+    transform: translateY(-50%);
+}
+
+h2.trademark.section-title > a:hover::before,
+h2.trademark.section-title:target > a::before {
+    position: absolute;
+    content: "»";
+    margin-inline-start: -30px;
     color: var(--primary-color);
     opacity: 0.7;
     top: 50%;
