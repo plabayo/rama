@@ -34,7 +34,7 @@
 [paypal-badge]: https://img.shields.io/badge/paypal-contribution?style=for-the-badge&color=blue
 [paypal-url]: https://www.paypal.com/donate/?hosted_button_id=P3KCGT2ACBVFE
 
-🦙 Rama (ラマ) is a modular service framework for the 🦀 Rust language to move and transform your network packets.
+🦙 rama™ (ラマ) is a modular service framework for the 🦀 Rust language to move and transform your network packets.
 The reasons behind the creation of rama can be read in [the "Why Rama" chapter](https://ramaproxy.org/book/why_rama).
 
 ## rama-error

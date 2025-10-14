@@ -32,7 +32,7 @@
 [paypal-badge]: https://img.shields.io/badge/paypal-contribution?style=for-the-badge&color=blue
 [paypal-url]: https://www.paypal.com/donate/?hosted_button_id=P3KCGT2ACBVFE
 
-🦙 Rama (ラマ) is a modular service framework for the 🦀 Rust language to move and transform your network packets.
+🦙 rama™ (ラマ) is a modular service framework for the 🦀 Rust language to move and transform your network packets.
 
 This framework is designed for developers who need fine-grained, programmable control over how packets are handled across
 the network stack. Whether you're intercepting traffic for security analysis, emulating clients with custom user agents,
