@@ -232,6 +232,7 @@ fn hash12(s: impl AsRef<str>) -> Cow<'static, str> {
         "000000000000".into()
     } else {
         let sha256 = Sha256::digest(s);
+        #[allow(deprecated)]
         hex::encode(&sha256.as_slice()[..6]).into()
     }
 }
