@@ -118,7 +118,6 @@ impl<T> From<Request<T>> for HyperiumRequest<T> {
         // We can't create hyper parts directly so we have to be slightly creative
         let (parts, body) = value.into_parts();
 
-        // eh remove makes sense here
         let mut hyper_extensions = parts
             .extensions
             .get::<HyperExtensions>()

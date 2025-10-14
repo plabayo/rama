@@ -248,12 +248,6 @@ impl fmt::Debug for Upgraded {
 // ===== impl OnUpgrade =====
 
 impl OnUpgrade {
-    /// Returns true if no upgrade is in progress.
-    // #[must_use]
-    // pub fn is_none(&self) -> bool {
-    //     self.rx.is_none()
-    // }
-
     /// Returns true if there was an upgrade and the upgrade has already been handled
     #[must_use]
     pub fn has_handled_upgrade(&self) -> bool {

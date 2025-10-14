@@ -289,11 +289,6 @@ where
                 };
                 if wants.contains(Wants::UPGRADE) {
                     let upgrade = self.conn.on_upgrade();
-                    // debug_assert!(!upgrade.is_none(), "empty upgrade");
-                    // debug_assert!(
-                    //     head.extensions.get::<OnUpgrade>().is_none(),
-                    //     "OnUpgrade already set"
-                    // );
                     head.extensions.insert(upgrade);
                 }
                 self.dispatch.recv_msg(Ok((head, body)))?;

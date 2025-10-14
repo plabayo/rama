@@ -263,7 +263,6 @@ where
                                 return Poll::Ready(Ok(()));
                             }
                             let (pending, upgrade) = upgrade::pending();
-                            // debug_assert!(parts.extensions.get::<OnUpgrade>().is_none());
                             parts.extensions.insert(upgrade);
                             (
                                 Request::from_parts(parts, IncomingBody::empty()),
