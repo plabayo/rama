@@ -101,7 +101,7 @@ where
                 .unwrap_or_default();
 
             return match handler.responder.serve(req).await {
-                Ok((resp, mut req)) => {
+                Ok((resp, req)) => {
                     let handler = handler.handler.clone();
 
                     let span = tracing::trace_root_span!(
@@ -120,7 +120,9 @@ where
                         async move {
                             match rama_http::io::upgrade::handle_upgrade(&req).await {
                                 Ok(mut upgraded) => {
-                                    upgraded.extensions_mut().extend(req.take_extensions());
+                                    upgraded
+                                        .extensions_mut()
+                                        .set_parent_extensions(Arc::new(req.extensions().clone()));
                                     let _ = handler.serve(upgraded).await;
                                 }
                                 Err(e) => {

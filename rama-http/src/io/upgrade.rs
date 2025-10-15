@@ -69,6 +69,13 @@ pub struct Upgraded {
 #[derive(Clone)]
 pub struct OnUpgrade {
     rx: Arc<Mutex<oneshot::Receiver<Result<Upgraded, OpaqueError>>>>,
+    id: u8,
+}
+
+impl std::fmt::Debug for OnUpgrade {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OnUpgrade").field("id", &self.id).finish()
+    }
 }
 
 /// The deconstructed parts of an [`Upgraded`] type.
@@ -110,16 +117,20 @@ pub fn handle_upgrade<T: sealed::HandleUpgrade>(
 /// A pending upgrade, created with [`pending`].
 pub struct Pending {
     tx: oneshot::Sender<Result<Upgraded, OpaqueError>>,
+    id: u8,
 }
 
 /// Initiate an upgrade.
 #[must_use]
 pub fn pending() -> (Pending, OnUpgrade) {
     let (tx, rx) = oneshot::channel();
+    let id = rand::random::<u8>();
+    trace!("creating upgrade event, {id}");
     (
-        Pending { tx },
+        Pending { tx, id },
         OnUpgrade {
             rx: Arc::new(Mutex::new(rx)),
+            id,
         },
     )
 }
@@ -245,6 +256,12 @@ impl fmt::Debug for Upgraded {
     }
 }
 
+impl fmt::Debug for Pending {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Pending").field("id", &self.id).finish()
+    }
+}
+
 // ===== impl OnUpgrade =====
 
 impl OnUpgrade {
@@ -271,18 +288,18 @@ impl Future for OnUpgrade {
     }
 }
 
-impl fmt::Debug for OnUpgrade {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("OnUpgrade").finish()
-    }
-}
+// impl fmt::Debug for OnUpgrade {
+//     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+//         f.debug_struct("OnUpgrade").finish()
+//     }
+// }
 
 // ===== impl Pending =====
 
 impl Pending {
     /// fulfill the pending upgrade with the given [`Upgraded`] stream.
     pub fn fulfill(self, upgraded: Upgraded) {
-        trace!("pending upgrade fulfill");
+        trace!("pending upgrade fulfill, {}", self.id);
         let _ = self.tx.send(Ok(upgraded));
     }
 
@@ -297,7 +314,7 @@ impl Pending {
 }
 
 mod sealed {
-    use rama_core::extensions::ExtensionsRef;
+    use rama_core::{extensions::ExtensionsRef, telemetry::tracing::trace};
     use rama_error::OpaqueError;
     use rama_http_types::{Request, Response};
 
@@ -312,8 +329,13 @@ mod sealed {
     fn handle_upgrade<T: ExtensionsRef>(
         obj: T,
     ) -> impl Future<Output = Result<Upgraded, OpaqueError>> + 'static {
-        let on_upgrade = match obj.extensions().get::<OnUpgrade>().cloned() {
+        let on_upgrade = match obj
+            .extensions()
+            .get_without_chaining::<OnUpgrade>()
+            .cloned()
+        {
             Some(on_upgrade) => {
+                trace!("upgrading this: {:?}", on_upgrade);
                 if on_upgrade.has_handled_upgrade() {
                     Err(OpaqueError::from_display(
                         "upgraded has already been handled",
@@ -341,6 +363,13 @@ mod sealed {
 
     impl<B> HandleUpgrade for &Request<B> {
         fn handle_upgrade(self) -> impl Future<Output = Result<Upgraded, OpaqueError>> + 'static {
+            let id = self.extensions().get::<OnUpgrade>().unwrap().id;
+            trace!(
+                "handling upgrade for {id}, {:?}, version: {:?}, headers: {:?}",
+                self.uri(),
+                self.version(),
+                self.headers()
+            );
             handle_upgrade(self)
         }
     }

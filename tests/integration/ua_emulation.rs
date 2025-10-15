@@ -259,6 +259,7 @@ async fn test_ua_emulation() {
         }
 
         async fn server_svc_fn(req: Request) -> Result<Response, Infallible> {
+            println!("extensions: {:?}", req.extensions());
             let state = req.extensions().get::<State>().unwrap();
             let expected = state.expected;
             let description = state.description;
@@ -303,9 +304,12 @@ async fn test_ua_emulation() {
         )
             .into_layer(service_fn(async |mut req: Request| {
                 // We can edit our current builder directly or create a new one if needed
-                let builder = req
-                    .extensions_mut()
-                    .get_or_insert_default::<TlsConnectorDataBuilder>();
+                let builder = match req.extensions_mut().get_mut::<TlsConnectorDataBuilder>() {
+                    Some(builder) => builder,
+                    None => req
+                        .extensions_mut()
+                        .insert_mut(TlsConnectorDataBuilder::default()),
+                };
                 builder.set_server_verify_mode(ServerVerifyMode::Disable);
 
                 // We dont need to set connector data on TlsConnector as it will get it from extensions
@@ -459,6 +463,7 @@ where
         let (client_socket, mut server_socket) = new_mock_sockets();
 
         if let Some(extensions) = req.extensions().get::<ServerExtensions>() {
+            println!("extensions for server: {:?}", extensions.0);
             *server_socket.extensions_mut() = extensions.0.clone();
         }
 

@@ -13,7 +13,6 @@ use rama::http::core::server;
 use rama::http::core::service::RamaHttpService;
 use rama::rt::Executor;
 use rama_core::bytes::Bytes;
-use rama_core::extensions::Extensions;
 use rama_core::telemetry::tracing;
 use tokio::net::{TcpListener, TcpStream};
 
@@ -363,42 +362,39 @@ async fn async_test(cfg: __TestConfig) {
 
             // Move a clone into the service_fn
             let serve_handles = serve_handles.clone();
-            let service = RamaHttpService::new(
-                Extensions::new(),
-                service_fn(move |req: Request| {
-                    let (sreq, sres) = serve_handles.lock().unwrap().remove(0);
+            let service = RamaHttpService::new(service_fn(move |req: Request| {
+                let (sreq, sres) = serve_handles.lock().unwrap().remove(0);
 
-                    assert_eq!(req.uri().path(), sreq.uri, "client path");
-                    assert_eq!(req.method(), &sreq.method, "client method");
-                    assert_eq!(req.version(), version, "client version");
-                    for func in &sreq.headers {
-                        func(req.headers());
-                    }
-                    let sbody = sreq.body;
-                    req.collect().map(move |result| {
-                        Ok::<_, Infallible>(match result {
-                            Ok(collected) => {
-                                let body = collected.to_bytes();
-                                assert_eq!(body.as_ref(), sbody.as_slice(), "client body");
+                assert_eq!(req.uri().path(), sreq.uri, "client path");
+                assert_eq!(req.method(), &sreq.method, "client method");
+                assert_eq!(req.version(), version, "client version");
+                for func in &sreq.headers {
+                    func(req.headers());
+                }
+                let sbody = sreq.body;
+                req.collect().map(move |result| {
+                    Ok::<_, Infallible>(match result {
+                        Ok(collected) => {
+                            let body = collected.to_bytes();
+                            assert_eq!(body.as_ref(), sbody.as_slice(), "client body");
 
-                                let mut res = Response::builder()
-                                    .status(sres.status)
-                                    .body(rama::http::Body::from(sres.body))
-                                    .expect("Response::build");
-                                *res.headers_mut() = sres.headers;
-                                res
-                            }
-                            Err(err) => {
-                                tracing::error!("failed to collect result: {err:?}");
-                                Response::builder()
-                                    .status(StatusCode::INTERNAL_SERVER_ERROR)
-                                    .body(rama::http::Body::empty())
-                                    .expect("Response::build")
-                            }
-                        })
+                            let mut res = Response::builder()
+                                .status(sres.status)
+                                .body(rama::http::Body::from(sres.body))
+                                .expect("Response::build");
+                            *res.headers_mut() = sres.headers;
+                            res
+                        }
+                        Err(err) => {
+                            tracing::error!("failed to collect result: {err:?}");
+                            Response::builder()
+                                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                                .body(rama::http::Body::empty())
+                                .expect("Response::build")
+                        }
                     })
-                }),
-            );
+                })
+            }));
 
             tokio::task::spawn(async move {
                 if http2_only {
@@ -527,23 +523,21 @@ async fn naive_proxy(cfg: ProxyConfig) -> (SocketAddr, impl Future<Output = ()>)
             loop {
                 let (stream, _) = listener.accept().await.unwrap();
 
-                let service = RamaHttpService::new(
-                    Extensions::new(),
-                    service_fn(move |mut req: Request| {
-                        async move {
-                            let uri = format!("http://{}{}", dst_addr, req.uri().path())
-                                .parse()
-                                .expect("proxy new uri parse");
-                            *req.uri_mut() = uri;
+                let service = RamaHttpService::new(service_fn(move |mut req: Request| {
+                    async move {
+                        let uri = format!("http://{}{}", dst_addr, req.uri().path())
+                            .parse()
+                            .expect("proxy new uri parse");
+                        *req.uri_mut() = uri;
 
-                            // Make the client request
-                            let uri = req.uri().host().expect("uri has no host");
-                            let port = req.uri().port_u16().expect("uri has no port");
+                        // Make the client request
+                        let uri = req.uri().host().expect("uri has no host");
+                        let port = req.uri().port_u16().expect("uri has no port");
 
-                            let stream = TcpStream::connect(format!("{uri}:{port}")).await.unwrap();
+                        let stream = TcpStream::connect(format!("{uri}:{port}")).await.unwrap();
 
-                            let result = if http2_only {
-                                let (mut sender, conn) =
+                        let result = if http2_only {
+                            let (mut sender, conn) =
                                     rama::http::core::client::conn::http2::Builder::new(
                                         Executor::new(),
                                     )
@@ -551,51 +545,50 @@ async fn naive_proxy(cfg: ProxyConfig) -> (SocketAddr, impl Future<Output = ()>)
                                     .await
                                     .unwrap();
 
-                                tokio::task::spawn(async move {
-                                    if let Err(err) = conn.await {
-                                        panic!("{err:?}");
-                                    }
-                                });
-
-                                sender.send_request(req).await
-                            } else {
-                                let builder = rama::http::core::client::conn::http1::Builder::new();
-                                let (mut sender, conn) = builder.handshake(stream).await.unwrap();
-
-                                tokio::task::spawn(async move {
-                                    if let Err(err) = conn.await {
-                                        panic!("{err:?}");
-                                    }
-                                });
-
-                                sender.send_request(req).await
-                            };
-
-                            let resp = match result {
-                                Ok(resp) => resp.map(rama::http::Body::new),
-                                Err(err) => {
-                                    tracing::error!("failed to collect result: {err:?}");
-                                    Response::builder()
-                                        .status(StatusCode::INTERNAL_SERVER_ERROR)
-                                        .body(rama::http::Body::empty())
-                                        .expect("Response::build")
+                            tokio::task::spawn(async move {
+                                if let Err(err) = conn.await {
+                                    panic!("{err:?}");
                                 }
-                            };
+                            });
 
-                            let (mut parts, body) = resp.into_parts();
+                            sender.send_request(req).await
+                        } else {
+                            let builder = rama::http::core::client::conn::http1::Builder::new();
+                            let (mut sender, conn) = builder.handshake(stream).await.unwrap();
 
-                            // Remove the Connection header for HTTP/1.1 proxy connections.
-                            if !http2_only {
-                                parts.headers.remove("Connection");
+                            tokio::task::spawn(async move {
+                                if let Err(err) = conn.await {
+                                    panic!("{err:?}");
+                                }
+                            });
+
+                            sender.send_request(req).await
+                        };
+
+                        let resp = match result {
+                            Ok(resp) => resp.map(rama::http::Body::new),
+                            Err(err) => {
+                                tracing::error!("failed to collect result: {err:?}");
+                                Response::builder()
+                                    .status(StatusCode::INTERNAL_SERVER_ERROR)
+                                    .body(rama::http::Body::empty())
+                                    .expect("Response::build")
                             }
+                        };
 
-                            let mut builder = Response::builder().status(parts.status);
-                            *builder.headers_mut().unwrap() = parts.headers;
+                        let (mut parts, body) = resp.into_parts();
 
-                            Result::<Response, Infallible>::Ok(builder.body(body).unwrap())
+                        // Remove the Connection header for HTTP/1.1 proxy connections.
+                        if !http2_only {
+                            parts.headers.remove("Connection");
                         }
-                    }),
-                );
+
+                        let mut builder = Response::builder().status(parts.status);
+                        *builder.headers_mut().unwrap() = parts.headers;
+
+                        Result::<Response, Infallible>::Ok(builder.body(body).unwrap())
+                    }
+                }));
 
                 if http2_only {
                     server::conn::http2::Builder::new(Executor::new())

@@ -16,7 +16,7 @@ use rama_http_types::{
     uri::PathAndQuery,
 };
 use rama_net::{address::ProxyAddress, http::RequestContext};
-use std::fmt;
+use std::{fmt, sync::Arc};
 use tokio::sync::Mutex;
 
 pub(super) enum SendRequest<Body> {
@@ -51,7 +51,8 @@ where
     type Error = BoxError;
 
     async fn serve(&self, mut req: Request<BodyIn>) -> Result<Self::Response, Self::Error> {
-        req.extensions_mut().extend(self.extensions.clone());
+        req.extensions_mut()
+            .set_parent_extensions(Arc::new(self.extensions.clone()));
 
         // Check if this http connection can actually be used for TargetHttpVersion
         if let Some(target_version) = req.extensions().get::<TargetHttpVersion>() {
