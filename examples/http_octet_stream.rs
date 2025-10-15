@@ -19,11 +19,10 @@
 //! ```
 
 use rama::http::layer::trace::TraceLayer;
-use rama::http::service::web::response::{IntoResponse, OctetStream};
 use rama::http::service::web::WebService;
+use rama::http::service::web::response::{IntoResponse, OctetStream};
 use rama::rt::Executor;
-use rama::{http::server::HttpServer, Layer};
-use std::time::Duration;
+use rama::{Layer, http::server::HttpServer};
 
 #[tokio::main]
 async fn main() {
@@ -50,5 +49,5 @@ async fn serve_binary_data() -> impl IntoResponse {
 /// Example 2: Binary download with Content-Disposition
 async fn serve_download() -> impl IntoResponse {
     let data = b"Binary file content".to_vec();
-    OctetStream::attachment(data, "file.bin")
+    OctetStream::new(data).with_file_name("file.bin".to_owned())
 }
