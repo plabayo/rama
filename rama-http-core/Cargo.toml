@@ -36,9 +36,9 @@ indexmap = { workspace = true, features = ["std"] }
 itoa = { workspace = true }
 pin-project-lite = { workspace = true }
 rama-core = { workspace = true }
-rama-utils = { workspace = true }
 rama-http = { workspace = true }
 rama-http-types = { workspace = true }
+rama-utils = { workspace = true }
 slab = { workspace = true }
 smallvec = { workspace = true }
 tokio = { workspace = true, features = ["io-util"] }
