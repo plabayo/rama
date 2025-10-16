@@ -12,7 +12,7 @@ use rama::{
     error::{ErrorContext, OpaqueError},
     extensions::ExtensionsRef,
     http::{
-        Body, BodyExtractExt, Request, Response, StatusCode, Version,
+        BodyExtractExt, Request, Response, StatusCode, Version,
         proto::h2,
         service::web::{
             extract::Path,
