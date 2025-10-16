@@ -22,6 +22,8 @@ You can find these integration tests at [../tests/integration/examples](../tests
 - [`http_health_check.rs`](./http_health_check.rs) - Health check endpoint implementation
 - [`http_k8s_health.rs`](./http_k8s_health.rs) - Kubernetes health check implementation
 - [`http_record_har.rs`](./http_record_har.rs) - Demo of HAR HTTP layer provided by rama
+- [`http_octet_stream.rs`](./http_octet_stream.rs) - example demonstrating `OctetStream` responses for serving binary data with optional file download headers
+
 
 ### Advanced HTTP Features
 - [`http_conn_state.rs`](./http_conn_state.rs) - Connection state management
@@ -33,10 +35,6 @@ You can find these integration tests at [../tests/integration/examples](../tests
 ### Newline Delimited JSON (ndjson)
 
 - [`http_nd_json`](./http_nd_json.rs) - example demonstrating how one can expose a json stream endpoint (see test of this example to see how client side works)
-
-### Binary Responses
-
-- [`http_octet_stream.rs`](./http_octet_stream.rs) - example demonstrating `OctetStream` responses for serving binary data with optional file download headers
 
 ### Server-Sent Events (SSE)
 - [`http_sse`](./http_sse.rs) - simple example demonstrating how one can expose an SSE endpoint
