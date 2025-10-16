@@ -4,7 +4,7 @@ use crate::{
 };
 use pin_project_lite::pin_project;
 use std::{
-    array, fmt,
+    fmt,
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
@@ -202,8 +202,7 @@ impl From<HeaderValue> for AllowOrigin {
 
 impl<const N: usize> From<[HeaderValue; N]> for AllowOrigin {
     fn from(arr: [HeaderValue; N]) -> Self {
-        #[allow(deprecated)] // Can be changed when MSRV >= 1.53
-        Self::list(array::IntoIter::new(arr))
+        Self::list(arr)
     }
 }
 

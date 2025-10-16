@@ -89,7 +89,7 @@ impl Default for CacheKind {
     fn default() -> Self {
         Self::MemCache {
             max_size: NonZeroU64::new(8096).unwrap(),
-            ttl: None,
+            ttl: Some(std::time::Duration::from_secs(60 * 60 * 24 * 7)), // 7 days
         }
     }
 }

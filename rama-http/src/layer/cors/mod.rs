@@ -55,7 +55,7 @@ use rama_core::{
     bytes::{BufMut, BytesMut},
 };
 use rama_utils::macros::define_inner_service_accessors;
-use std::{array, fmt, mem};
+use std::{fmt, mem};
 
 mod allow_credentials;
 mod allow_headers;
@@ -783,10 +783,10 @@ fn ensure_usable_cors_rules(layer: &CorsLayer) {
 ///
 /// This is the default set of header names returned in the `vary` header
 pub fn preflight_request_headers() -> impl Iterator<Item = HeaderName> {
-    #[allow(deprecated)] // Can be changed when MSRV >= 1.53
-    array::IntoIter::new([
+    [
         header::ORIGIN,
         header::ACCESS_CONTROL_REQUEST_METHOD,
         header::ACCESS_CONTROL_REQUEST_HEADERS,
-    ])
+    ]
+    .into_iter()
 }

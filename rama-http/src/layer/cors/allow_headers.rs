@@ -1,4 +1,4 @@
-use std::{array, fmt};
+use std::fmt;
 
 use crate::{
     header::{self, HeaderName, HeaderValue},
@@ -88,8 +88,7 @@ impl From<Any> for AllowHeaders {
 
 impl<const N: usize> From<[HeaderName; N]> for AllowHeaders {
     fn from(arr: [HeaderName; N]) -> Self {
-        #[allow(deprecated)] // Can be changed when MSRV >= 1.53
-        Self::list(array::IntoIter::new(arr))
+        Self::list(arr)
     }
 }
 

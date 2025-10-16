@@ -9,3 +9,5 @@ mod request_context;
 pub use request_context::{RequestContext, try_request_ctx_from_http_parts};
 
 pub mod server;
+
+pub mod uri;
