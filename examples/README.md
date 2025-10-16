@@ -34,6 +34,10 @@ You can find these integration tests at [../tests/integration/examples](../tests
 
 - [`http_nd_json`](./http_nd_json.rs) - example demonstrating how one can expose a json stream endpoint (see test of this example to see how client side works)
 
+### Binary Responses
+
+- [`http_octet_stream.rs`](./http_octet_stream.rs) - example demonstrating `OctetStream` responses for serving binary data with optional file download headers
+
 ### Server-Sent Events (SSE)
 - [`http_sse`](./http_sse.rs) - simple example demonstrating how one can expose an SSE endpoint
 - [`http_sse_json`](./http_sse_json.rs) - same as `http_sse` but using structured _json_ data

@@ -601,6 +601,10 @@ name = "http_nd_json"
 required-features = ["http-full"]
 
 [[example]]
+name = "http_octet_stream"
+required-features = ["http-full"]
+
+[[example]]
 name = "http_sse"
 required-features = ["http-full"]
 

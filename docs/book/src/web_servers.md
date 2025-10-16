@@ -93,6 +93,7 @@ Rama provides a rich set of examples demonstrating its web service capabilities.
 - [/examples/http_listener_hello.rs](https://github.com/plabayo/rama/blob/main/examples/http_listener_hello.rs): A minimal web service example
 - [/examples/http_health_check.rs](https://github.com/plabayo/rama/blob/main/examples/http_health_check.rs): A health check service
 - [/examples/http_service_hello.rs](https://github.com/plabayo/rama/blob/main/examples/http_service_hello.rs): Demonstrates transport layer control
+- [/examples/http_octet_stream.rs](https://github.com/plabayo/rama/blob/main/examples/http_octet_stream.rs): Binary data responses with file downloads
 
 ### Newline Delimited JSON (ndjson)
 
@@ -121,6 +122,7 @@ The following examples show how you can integrate ACME into you webservices (ACM
 ### More Examples
 - [/examples/http_web_router.rs](https://github.com/plabayo/rama/tree/main/examples/http_web_router.rs): Path-based routing, something you are probably already familiar with
 - [/examples/http_form.rs](https://github.com/plabayo/rama/tree/main/examples/http_form.rs): Form handling
+- [/examples/http_octet_stream.rs](https://github.com/plabayo/rama/tree/main/examples/http_octet_stream.rs): Binary data responses with file downloads
 - [/examples/http_service_fs.rs](https://github.com/plabayo/rama/tree/main/examples/http_service_fs.rs): Static file serving
 - [/examples/http_service_include_dir.rs](https://github.com/plabayo/rama/tree/main/examples/http_service_include_dir.rs): Embedded file serving
 - [/examples/http_user_agent_classifier.rs](https://github.com/plabayo/rama/tree/main/examples/http_user_agent_classifier.rs): Request classification
