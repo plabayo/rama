@@ -1,7 +1,9 @@
 use crate::{Request, Uri};
-use rama_core::combinators::Either;
+use rama_core::{combinators::Either, telemetry::tracing};
 use rama_net::http::RequestContext;
-use std::{borrow::Cow, str::FromStr};
+use smallvec::SmallVec;
+use std::borrow::Cow;
+use std::io::Write as _;
 
 // TODO: request_uri probably needs to be part of a trait which works
 // on any kind of "input" (request) which identifies its resources via an URI,
@@ -24,7 +26,9 @@ use std::{borrow::Cow, str::FromStr};
 pub fn request_uri<Body>(req: &Request<Body>) -> Cow<'_, Uri> {
     let uri = req.uri();
     if let Ok(req_ctx) = RequestContext::try_from(req) {
-        let s = smol_str::format_smolstr!(
+        let mut buffer = SmallVec::<[u8; 128]>::new();
+        let _ = write!(
+            &mut buffer,
             "{}://{}{}",
             req_ctx.protocol,
             if req_ctx.authority_has_default_port() {
@@ -36,8 +40,11 @@ pub fn request_uri<Body>(req: &Request<Body>) -> Cow<'_, Uri> {
                 .map(|paq| paq.as_str())
                 .unwrap_or_default(),
         );
-        Uri::from_str(s.as_str())
+        Uri::try_from(buffer.as_slice())
             .map(Cow::Owned)
+            .inspect_err(|err| {
+                tracing::debug!("failed to format request uri raw slice: {err}");
+            })
             .unwrap_or(Cow::Borrowed(uri))
     } else {
         Cow::Borrowed(uri)

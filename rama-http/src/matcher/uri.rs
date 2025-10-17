@@ -1,8 +1,10 @@
 //! provides a [`UriMatcher`] matcher for matching requests based on their URI.
 
 use crate::{Request, Uri};
-use rama_core::extensions::Extensions;
+use rama_core::{extensions::Extensions, telemetry::tracing};
 use rama_utils::thirdparty::{regex::Regex, wildcard::Wildcard};
+use smallvec::SmallVec;
+use std::io::Write as _;
 
 #[derive(Debug, Clone)]
 /// Matcher the request's URI, using a substring or regex pattern.
@@ -21,6 +23,17 @@ impl Engine {
         match self {
             Self::Re(regex) => regex.is_match(s),
             Self::Wc(wildcard) => wildcard.is_match(s.as_bytes()),
+        }
+    }
+
+    fn is_match_bytes(&self, bytes: &[u8]) -> bool {
+        match self {
+            Self::Re(regex) => std::str::from_utf8(bytes).map(|s| regex.is_match(s)).inspect_err(|err| {
+                tracing::debug!(
+                    "input byttes is not a valid utf-8 str: regex requires str: fallback to is_match=false; err = {err}",
+                );
+            }).unwrap_or_default(),
+            Self::Wc(wildcard) => wildcard.is_match(bytes),
         }
     }
 }
@@ -46,12 +59,17 @@ impl UriMatcher {
     pub(crate) fn matches_uri(&self, uri: &Uri) -> bool {
         match uri.authority() {
             Some(authority) => {
-                let s = smol_str::format_smolstr!(
+                let mut buffer = SmallVec::<[u8; 128]>::new();
+                let _ = write!(
+                    &mut buffer,
                     "{}://{authority}{}",
                     uri.scheme_str().unwrap_or("http"),
                     uri.path()
                 );
-                self.engine.is_match(s.trim_end_matches('/'))
+                while buffer.last() == Some(&b'/') {
+                    let _ = buffer.pop();
+                }
+                self.engine.is_match_bytes(&buffer)
             }
             None => self.engine.is_match(uri.path()),
         }

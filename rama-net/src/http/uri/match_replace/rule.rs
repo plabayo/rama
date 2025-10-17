@@ -2,11 +2,12 @@ use rama_core::{error::OpaqueError, telemetry::tracing};
 use rama_http_types::Uri;
 use rama_utils::macros::generate_set_and_with;
 use rama_utils::thirdparty::wildcard::Wildcard;
-use smol_str::SmolStr;
+
+use std::{borrow::Cow, fmt, io::Write as _};
 
 use super::{Pattern, TryIntoPattern, TryIntoUriFmt, fmt::UriFormatter};
 
-#[derive(Debug)]
+#[derive(Clone)]
 /// A rule that matches a [`Uri`] against a simple wildcard pattern and, if it
 /// matches, produces a new [`Uri`] using a capture-aware formatter.
 ///
@@ -51,16 +52,16 @@ use super::{Pattern, TryIntoPattern, TryIntoUriFmt, fmt::UriFormatter};
 /// ```rust
 /// # use std::str::FromStr;
 /// # use rama_http_types::Uri;
-/// # use rama_net::http::uri::UriMatchReplaceRule;
+/// # use rama_net::http::uri::{UriMatchReplace, UriMatchReplaceRule};
 /// let rule = UriMatchReplaceRule::try_new("http://*", "https://$1").unwrap();
 ///
 /// let input: Uri = "http://example.com/x?y=1".parse().unwrap();
-/// let out = rule.try_match_replace_uri(&input).unwrap();
+/// let out = rule.match_replace_uri(&input).unwrap();
 /// assert_eq!(out.to_string(), "https://example.com/x?y=1");
 ///
 /// // Non-matching scheme
 /// let https_in: Uri = "https://example.com".parse().unwrap();
-/// assert!(rule.try_match_replace_uri(&https_in).is_none());
+/// assert!(rule.match_replace_uri(&https_in).is_none());
 /// ```
 ///
 /// Reorder two captures:
@@ -68,14 +69,14 @@ use super::{Pattern, TryIntoPattern, TryIntoUriFmt, fmt::UriFormatter};
 /// ```rust
 /// # use std::str::FromStr;
 /// # use rama_http_types::Uri;
-/// # use rama_net::http::uri::UriMatchReplaceRule;
+/// # use rama_net::http::uri::{UriMatchReplace, UriMatchReplaceRule};
 /// let rule = UriMatchReplaceRule::try_new(
 ///     "https://*/docs/*",
 ///     "https://$1/knowledge/$2"
 /// ).unwrap();
 ///
 /// let input: Uri = "https://a.example.com/docs/rust".parse().unwrap();
-/// let out = rule.try_match_replace_uri(&input).unwrap();
+/// let out = rule.match_replace_uri(&input).unwrap();
 /// assert_eq!(out.to_string(), "https://a.example.com/knowledge/rust");
 /// ```
 ///
@@ -103,17 +104,34 @@ use super::{Pattern, TryIntoPattern, TryIntoUriFmt, fmt::UriFormatter};
 ///   `1..=3` digits, or the total potential formatted length would exceed the
 ///   configured maximum (see `UriFormatter`).
 ///
-/// `try_match_replace_uri` never panics; it returns:
+/// [`match_replace_uri`] never panics; it returns:
 ///
 /// - `Some(Uri)` when the input matches and the formatted bytes parse as a
-///   valid `Uri`.
+///   valid [`Uri`].
 /// - `None` when the input does not match the pattern **or** the formatted
-///   bytes cannot be parsed as a `Uri`.
+///   bytes cannot be parsed as a [`Uri`].
+///
+/// [`match_replace_uri`]: super::UriMatchReplace::match_replace_uri
 pub struct UriMatchReplaceRule {
     ptn: Wildcard<'static>,
     fmt: UriFormatter,
     ptn_include_query: bool,
     include_query_overwrite: bool,
+}
+
+impl fmt::Debug for UriMatchReplaceRule {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut d = f.debug_struct("UriMatchReplaceRule");
+        if let Ok(s) = std::str::from_utf8(self.ptn.pattern()) {
+            d.field("ptn", &s);
+        } else {
+            d.field("ptn", &"<[u8]>");
+        };
+        d.field("fmt", &self.fmt)
+            .field("ptn_include_query", &self.ptn_include_query)
+            .field("include_query_overwrite", &self.include_query_overwrite)
+            .finish()
+    }
 }
 
 impl UriMatchReplaceRule {
@@ -135,16 +153,24 @@ impl UriMatchReplaceRule {
     /// ```rust
     /// # use std::str::FromStr;
     /// # use rama_http_types::Uri;
-    /// # use rama_net::http::uri::UriMatchReplaceRule;
+    /// # use rama_net::http::uri::{UriMatchReplace, UriMatchReplaceRule};
     /// let rule = UriMatchReplaceRule::http_to_https();
-    /// let out = rule.try_match_replace_uri(&"http://a/b?x=1".parse::<Uri>().unwrap()).unwrap();
+    /// let out = rule.match_replace_uri(&"http://a/b?x=1".parse::<Uri>().unwrap()).unwrap();
     /// assert_eq!(out.to_string(), "https://a/b?x=1");
     /// ```
     pub fn http_to_https() -> Self {
         Self::try_new("http://*", "https://$1").expect("to be always valid")
     }
 
-    /// try to create a new `UriMatchReplaceRule`
+    /// Attempts to create a new [`UriMatchReplaceRule`].
+    ///
+    /// - `ptn` is converted to a wildcard pattern where `*` captures arbitrary
+    ///   byte sequences. Each `*` becomes `$1`, `$2`, … in the formatter.
+    /// - `fmt` is converted to a `UriFormatter` where `$N` inserts the `N`-th
+    ///   pattern capture. `$0` inserts nothing.
+    ///
+    /// See the type-level docs ([`UriMatchReplaceRule`])
+    /// for details on syntax, edge cases, and errors.
     pub fn try_new(ptn: impl TryIntoPattern, fmt: impl TryIntoUriFmt) -> Result<Self, OpaqueError> {
         let Pattern {
             wildcard: ptn,
@@ -172,82 +198,61 @@ impl UriMatchReplaceRule {
         }
     }
 
-    #[inline]
-    /// Attempts to create a new [`UriMatchReplaceRule`].
-    ///
-    /// - `ptn` is converted to a wildcard pattern where `*` captures arbitrary
-    ///   byte sequences. Each `*` becomes `$1`, `$2`, … in the formatter.
-    /// - `fmt` is converted to a `UriFormatter` where `$N` inserts the `N`-th
-    ///   pattern capture. `$0` inserts nothing.
-    ///
-    /// See the type-level docs ([`UriMatchReplaceRule`])
-    /// for details on syntax, edge cases, and errors.
-    ///
-    /// # Errors
-    ///
-    ///  [`UriMatchReplaceRule::try_match_replace_uri`] never errors; it returns:
-    ///
-    /// - `Some(Uri)` when the input matches and the formatted bytes parse as a
-    ///   valid `Uri`.
-    /// - `None` when the input does not match the pattern **or** the formatted
-    ///   bytes cannot be parsed as a `Uri`
-    pub fn try_match_replace_uri(&self, uri: &Uri) -> Option<Uri> {
-        let mut buffer = Vec::new();
-        self.try_match_replace_uri_with_buffer(uri, &mut buffer)
-    }
-
     pub(super) fn include_query(&self) -> bool {
         self.include_query_overwrite || self.ptn_include_query || self.fmt.include_query()
     }
 
-    pub(super) fn try_match_replace_uri_with_buffer(
-        &self,
-        uri: &Uri,
-        buffer: &mut Vec<u8>,
-    ) -> Option<Uri> {
-        let s = uri_to_smoll_str(uri, self.include_query());
-        self.try_match_replace_uri_str_with_buffer(&s, buffer)
-    }
-
-    pub(super) fn try_match_replace_uri_str_with_buffer(
-        &self,
-        s: &str,
-        buffer: &mut Vec<u8>,
-    ) -> Option<Uri> {
+    pub(super) fn try_match_replace_uri_slice(&self, b: &[u8]) -> Option<Uri> {
         self.ptn
-            .captures(s.as_bytes())
-            .and_then(|captures| self.fmt.fmt_uri(captures.as_ref(), buffer).inspect_err(|err| {
-                tracing::debug!("unexpected error while formatting matched uri '{s:?}: {err}; ignore as None (~ no match)");
+            .captures(b)
+            .and_then(|captures| self.fmt.fmt_uri(captures.as_ref()).inspect_err(|err| {
+                tracing::debug!("unexpected error while formatting matched uri bytes: {err}; ignore as None (~ no match)");
             }).ok())
     }
 }
 
-pub(super) fn uri_to_smoll_str(uri: &Uri, include_query: bool) -> SmolStr {
+impl super::UriMatchReplace for UriMatchReplaceRule {
+    #[inline]
+    fn match_replace_uri(&self, uri: &Uri) -> Option<Cow<'_, Uri>> {
+        let v = uri_to_small_vec(uri, self.include_query());
+        self.try_match_replace_uri_slice(&v).map(Cow::Owned)
+    }
+}
+
+pub(super) fn uri_to_small_vec(uri: &Uri, include_query: bool) -> super::SmallUriStr {
     let query = include_query
         .then(|| uri.query())
         .flatten()
         .unwrap_or_default();
 
+    let mut output = super::SmallUriStr::new();
+
     let path = uri.path().trim_matches('/');
 
     if let Some(authority) = uri.authority() {
-        smol_str::format_smolstr!(
+        let _ = write!(
+            &mut output,
             "{}://{authority}{}{path}{}{query}",
             uri.scheme_str().unwrap_or("http"),
             if path.is_empty() { "" } else { "/" },
             if query.is_empty() { "" } else { "?" },
-        )
+        );
     } else {
-        smol_str::format_smolstr!(
+        let _ = write!(
+            &mut output,
             "{}{path}{}{query}",
             if path.is_empty() { "" } else { "/" },
             if query.is_empty() { "" } else { "?" },
-        )
+        );
     }
+
+    output
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::http::uri::UriMatchReplace as _;
+
     use super::*;
     use std::str::FromStr;
 
@@ -263,9 +268,9 @@ mod tests {
     }
 
     fn apply(rule: &UriMatchReplaceRule, input: &str) -> Option<String> {
-        rule.try_match_replace_uri(&uri(input)).map(|u| {
+        rule.match_replace_uri(&uri(input)).map(|u| {
             u.to_string()
-                .trim_end_matches('/')
+                .trim_end_matches('/') // *sigh* hyperium http crate adds trailers by default
                 .to_owned()
                 .replace("/?", "?")
         })
@@ -279,6 +284,7 @@ mod tests {
         let r = rule("http://*", "https://$1");
 
         let cases = [
+            ("http://a.com", Some("https://a.com")),
             ("http://example.com", Some("https://example.com")),
             (
                 "http://example.com/x?y=1",

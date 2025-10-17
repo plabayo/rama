@@ -1,9 +1,9 @@
-use std::borrow::Cow;
+use std::{borrow::Cow, fmt};
 
 use rama_core::error::{ErrorContext as _, OpaqueError};
 use rama_http_types::Uri;
 
-#[derive(Debug)]
+#[derive(Clone)]
 pub(super) struct UriFormatter {
     template: Cow<'static, [u8]>,
     captures: Vec<RuleCapture>,
@@ -11,11 +11,38 @@ pub(super) struct UriFormatter {
     literal_len: usize,
 }
 
-#[derive(Debug)]
+impl fmt::Debug for UriFormatter {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut d = f.debug_struct("UriFormatter");
+        if let Ok(s) = std::str::from_utf8(self.template.as_ref()) {
+            d.field("template", &s);
+        } else {
+            d.field("template", &"<[u8]>");
+        };
+        d.field("captures", &self.captures)
+            .field("include_query", &self.include_query)
+            .field("literal_len", &self.literal_len)
+            .finish()
+    }
+}
+
+#[derive(Clone, Copy)]
 struct RuleCapture {
     offset: usize,
     length: usize,
     index: usize,
+}
+
+impl fmt::Debug for RuleCapture {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "[{}..{}]#{}",
+            self.offset,
+            self.offset + self.length,
+            self.index
+        )
+    }
 }
 
 impl UriFormatter {
@@ -95,14 +122,9 @@ impl UriFormatter {
         })
     }
 
-    pub(super) fn fmt_uri(
-        &self,
-        parts: &[&[u8]],
-        buffer: &mut Vec<u8>,
-    ) -> Result<Uri, OpaqueError> {
-        buffer.clear();
+    pub(super) fn fmt_uri(&self, parts: &[&[u8]]) -> Result<Uri, OpaqueError> {
         let uri_len = self.literal_len + parts.iter().map(|part| part.len()).sum::<usize>();
-        buffer.reserve(uri_len);
+        let mut buffer: super::SmallUriStr = super::SmallUriStr::with_capacity(uri_len);
 
         let bytes = self.template.as_ref();
         let mut offset = 0;
@@ -442,18 +464,7 @@ mod tests_fmt_uri {
 
     /// Render using `fmt_uri`, returning its string form for easy assertions.
     fn render(fmt: &UriFormatter, parts: &[&[u8]]) -> Result<String, OpaqueError> {
-        let mut buf = Vec::new();
-        let uri = fmt.fmt_uri(parts, &mut buf)?;
-        Ok(uri.to_string())
-    }
-
-    /// Render with a caller owned buffer (for buffer reuse assertions).
-    fn render_with_buf(
-        fmt: &UriFormatter,
-        parts: &[&[u8]],
-        buf: &mut Vec<u8>,
-    ) -> Result<String, OpaqueError> {
-        let uri = fmt.fmt_uri(parts, buf)?;
+        let uri = fmt.fmt_uri(parts)?;
         Ok(uri.to_string())
     }
 
@@ -515,28 +526,6 @@ mod tests_fmt_uri {
         assert_eq!(got, "/XX/YY");
     }
 
-    // ---------- buffer behavior ----------
-
-    #[test]
-    fn clears_and_reuses_provided_buffer() {
-        let fmt = mk("/$1/$2");
-        let mut buf = Vec::from(&b"junk that should be cleared"[..]);
-
-        // first render
-        let s1 = render_with_buf(&fmt, &[b"one", b"two"], &mut buf).expect("first render");
-        assert_eq!(s1, "/one/two");
-
-        // make sure buffer got reused rather than appended to
-        assert!(
-            s1.len() <= buf.capacity(),
-            "fmt_uri should reserve once and write exact length"
-        );
-
-        // second render with different parts should not contain previous bytes
-        let s2 = render_with_buf(&fmt, &[b"a", b"b"], &mut buf).expect("second render");
-        assert_eq!(s2, "/a/b");
-    }
-
     // ---------- error surfaces from Uri parsing ----------
 
     #[test]
@@ -579,11 +568,10 @@ mod tests_fmt_uri {
             sets
         };
 
-        let mut buf = Vec::new();
         for fmt in &templates {
             for parts in &part_sets {
                 // 1) method should not panic and should return Result
-                let res = fmt.fmt_uri(parts, &mut buf);
+                let res = fmt.fmt_uri(parts);
 
                 // 2) if it succeeds, a simple reference builder should match exactly.
                 // Reference builder: expand "$N" with 1-based index N if present, otherwise empty,
