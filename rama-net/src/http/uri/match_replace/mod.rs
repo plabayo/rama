@@ -1,6 +1,6 @@
 //! Uri match and replace rules.
 
-use std::borrow::Cow;
+use std::{borrow::Cow, sync::Arc};
 
 use rama_http_types::Uri;
 use rama_utils::thirdparty::wildcard::Wildcard;
@@ -105,6 +105,18 @@ pub trait UriMatchReplace {
     /// assert!(rule.match_replace_uri(&miss).is_none());
     /// ```
     fn match_replace_uri(&self, uri: &Uri) -> Option<Cow<'_, Uri>>;
+}
+
+impl<R: UriMatchReplace> UriMatchReplace for &R {
+    fn match_replace_uri(&self, uri: &Uri) -> Option<Cow<'_, Uri>> {
+        (*self).match_replace_uri(uri)
+    }
+}
+
+impl<R: UriMatchReplace> UriMatchReplace for Arc<R> {
+    fn match_replace_uri(&self, uri: &Uri) -> Option<Cow<'_, Uri>> {
+        (**self).match_replace_uri(uri)
+    }
 }
 
 /// Private trait used by this module to easily create patterns from
