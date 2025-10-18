@@ -139,7 +139,9 @@ where
 
     async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
         let full_uri = request_uri(&req);
-        if let Some(uri) = self.match_replace.match_replace_uri(&full_uri) {
+        if let Some(uri) = self.match_replace.match_replace_uri(&full_uri)
+            && uri != full_uri
+        {
             return Ok((
                 Headers::single(Location::from(uri.as_ref())),
                 self.status_code,
@@ -149,5 +151,59 @@ where
 
         let resp = self.inner.serve(req).await?;
         Ok(resp.map(Body::new))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::Uri;
+    use crate::service::web::IntoEndpointService;
+    use rama_http_headers::HeaderMapExt;
+    use rama_net::http::uri::UriMatchReplaceRule;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn test_redirect_svc() {
+        let svc = UriMatchRedirectService::moved(
+            [
+                UriMatchReplaceRule::http_to_https(),
+                UriMatchReplaceRule::try_new("https://www.*", "https://$1").unwrap(),
+                UriMatchReplaceRule::try_new("*", "$1").unwrap(), // always matches, but redirect should ignore same uris
+            ],
+            StatusCode::OK.into_endpoint_service(),
+        );
+
+        for (input_uri, expected_option) in [
+            ("http://example.com", Some("https://example.com")),
+            ("http://example.com/foo", Some("https://example.com/foo")),
+            ("https://www.example.com", Some("https://example.com")),
+            (
+                "https://www.example.com/foo",
+                Some("https://example.com/foo"),
+            ),
+            ("https://example.com", None),
+            ("https://example.com/foo", None),
+        ] {
+            let req = Request::builder()
+                .uri(input_uri)
+                .body(Body::empty())
+                .unwrap();
+            let resp = svc.serve(req).await.unwrap();
+            match expected_option {
+                Some(loc) => {
+                    assert_eq!(StatusCode::MOVED_PERMANENTLY, resp.status());
+                    assert_eq!(
+                        resp.headers()
+                            .typed_get::<Location>()
+                            .and_then(|loc| loc.to_str().ok().and_then(|s| Uri::try_from(s).ok())),
+                        Some(Uri::from_static(loc)),
+                    );
+                }
+                None => {
+                    assert_eq!(StatusCode::OK, resp.status());
+                }
+            }
+        }
     }
 }

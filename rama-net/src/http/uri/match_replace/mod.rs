@@ -119,6 +119,32 @@ impl<R: UriMatchReplace> UriMatchReplace for Arc<R> {
     }
 }
 
+impl<R: UriMatchReplace> UriMatchReplace for Option<R> {
+    #[inline]
+    fn match_replace_uri(&self, uri: &Uri) -> Option<Cow<'_, Uri>> {
+        self.as_ref().and_then(|r| r.match_replace_uri(uri))
+    }
+}
+
+macro_rules! impl_uri_match_replace_either {
+    ($id:ident, $($param:ident),+ $(,)?) => {
+        impl<$($param),+> UriMatchReplace for rama_core::combinators::$id<$($param),+>
+        where
+            $($param: UriMatchReplace),+,
+        {
+            fn match_replace_uri(&self, uri: &Uri) -> Option<Cow<'_, Uri>> {
+                match self {
+                    $(
+                        rama_core::combinators::$id::$param(r) => r.match_replace_uri(uri),
+                    )+
+                }
+            }
+        }
+    };
+}
+
+rama_core::combinators::impl_either!(impl_uri_match_replace_either);
+
 /// Private trait used by this module to easily create patterns from
 /// owned or static byte-like objects.
 #[allow(private_bounds)]
