@@ -5,6 +5,7 @@ use crate::utils::request_uri;
 use crate::{Body, Request, Response, StatusCode, StreamingBody};
 use rama_core::Service;
 use rama_core::bytes::Bytes;
+use rama_core::telemetry::tracing;
 use rama_error::BoxError;
 use rama_http_headers::Location;
 use rama_net::http::uri::UriMatchReplace;
@@ -142,6 +143,10 @@ where
         if let Some(uri) = self.match_replace.match_replace_uri(&full_uri)
             && uri != full_uri
         {
+            tracing::debug!(
+                "redirct request '{full_uri}' to '{uri}' w/ status code {}",
+                self.status_code
+            );
             return Ok((
                 Headers::single(Location::from(uri.as_ref())),
                 self.status_code,
