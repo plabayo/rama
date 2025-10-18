@@ -202,7 +202,8 @@ impl Router {
     where
         I: IntoEndpointService<T>,
     {
-        let path = format!("{}/{}", prefix.trim().trim_end_matches(['/']), "{*nest}");
+        let path =
+            smol_str::format_smolstr!("{}/{}", prefix.trim().trim_end_matches(['/']), "{*nest}");
         let nested = Arc::new(service.into_endpoint_service().boxed());
 
         let nested_router_service = NestedRouterService {
@@ -227,7 +228,7 @@ impl Router {
         let service = service.into_endpoint_service().boxed();
 
         let path = path.trim().trim_matches('/');
-        let path = format!("/{path}");
+        let path = smol_str::format_smolstr!("/{path}");
 
         if let Ok(matched) = self.routes.at_mut(&path) {
             matched.value.push((matcher, service));
@@ -271,7 +272,7 @@ impl Service<Request> for NestedRouterService {
                     params.iter().filter(|(key, _)| *key != "nest").collect();
 
                 // build the nested path and update the request URI
-                let path = format!("/{nested_path}");
+                let path = smol_str::format_smolstr!("/{nested_path}");
                 *req.uri_mut() = path.parse().unwrap();
 
                 filtered_params

@@ -1,5 +1,3 @@
-use std::array;
-
 use crate::{
     HeaderValue,
     header::{self, HeaderName},
@@ -51,8 +49,7 @@ impl Default for Vary {
 
 impl<const N: usize> From<[HeaderName; N]> for Vary {
     fn from(arr: [HeaderName; N]) -> Self {
-        #[allow(deprecated)] // Can be changed when MSRV >= 1.53
-        Self::list(array::IntoIter::new(arr))
+        Self::list(arr)
     }
 }
 

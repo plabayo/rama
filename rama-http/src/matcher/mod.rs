@@ -11,6 +11,7 @@ use rama_net::{
     address::{AsDomainRef, Domain},
     stream::matcher::SocketMatcher,
 };
+use rama_utils::thirdparty::{regex::Regex, wildcard::Wildcard};
 use std::fmt;
 use std::sync::Arc;
 
@@ -485,11 +486,20 @@ impl<Body> HttpMatcher<Body> {
         self.or(Self::version(version))
     }
 
-    /// Create a [`UriMatcher`] matcher.
+    /// Create a [`UriMatcher`] matcher using a regex pattern.
     #[must_use]
-    pub fn uri(re: impl AsRef<str>) -> Self {
+    pub fn uri_regex(re: Regex) -> Self {
         Self {
-            kind: HttpMatcherKind::Uri(UriMatcher::new(re)),
+            kind: HttpMatcherKind::Uri(UriMatcher::regex(re)),
+            negate: false,
+        }
+    }
+
+    /// Create a [`UriMatcher`] matcher using a wildcard pattern.
+    #[must_use]
+    pub fn uri_wildcard(wc: Wildcard<'static>) -> Self {
+        Self {
+            kind: HttpMatcherKind::Uri(UriMatcher::wildcard(wc)),
             negate: false,
         }
     }
@@ -498,16 +508,32 @@ impl<Body> HttpMatcher<Body> {
     ///
     /// See [`UriMatcher`] for more information.
     #[must_use]
-    pub fn and_uri(self, re: impl AsRef<str>) -> Self {
-        self.and(Self::uri(re))
+    pub fn and_uri_regex(self, re: Regex) -> Self {
+        self.and(Self::uri_regex(re))
+    }
+
+    /// Create a [`UriMatcher`] matcher to match on top of the existing set of [`HttpMatcher`] matchers.
+    ///
+    /// See [`UriMatcher`] for more information.
+    #[must_use]
+    pub fn and_uri_wildcard(self, wc: Wildcard<'static>) -> Self {
+        self.and(Self::uri_wildcard(wc))
     }
 
     /// Create a [`UriMatcher`] matcher to match as an alternative to the existing set of [`HttpMatcher`] matchers.
     ///
     /// See [`UriMatcher`] for more information.
     #[must_use]
-    pub fn or_uri(self, re: impl AsRef<str>) -> Self {
-        self.or(Self::uri(re))
+    pub fn or_uri_regex(self, re: Regex) -> Self {
+        self.or(Self::uri_regex(re))
+    }
+
+    /// Create a [`UriMatcher`] matcher to match as an alternative to the existing set of [`HttpMatcher`] matchers.
+    ///
+    /// See [`UriMatcher`] for more information.
+    #[must_use]
+    pub fn or_uri_wildcard(self, wc: Wildcard<'static>) -> Self {
+        self.or(Self::uri_wildcard(wc))
     }
 
     /// Create a [`PathMatcher`] matcher.

@@ -21,9 +21,11 @@ rustdoc-args = ["--cfg", "docsrs"]
 parking_lot = { workspace = true }
 pin-project-lite = { workspace = true }
 rama-macros = { workspace = true }
+regex = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 smol_str = { workspace = true }
 tokio = { workspace = true, features = ["time", "macros"] }
+wildcard = { workspace = true }
 
 [dev-dependencies]
 quickcheck = { workspace = true }

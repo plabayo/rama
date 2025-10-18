@@ -1,4 +1,4 @@
-use rama_http_types::HeaderValue;
+use rama_http_types::{HeaderValue, Uri, header::ToStrError};
 
 /// `Location` header, defined in
 /// [RFC7231](https://datatracker.ietf.org/doc/html/rfc7231#section-7.1.2)
@@ -26,6 +26,32 @@ pub struct Location(HeaderValue);
 derive_header! {
     Location(_),
     name: LOCATION
+}
+
+impl Location {
+    pub fn new(value: HeaderValue) -> Self {
+        Self(value)
+    }
+
+    pub fn to_str(&self) -> Result<&str, ToStrError> {
+        self.0.to_str()
+    }
+}
+
+impl From<Uri> for Location {
+    #[inline]
+    fn from(value: Uri) -> Self {
+        Self::from(&value)
+    }
+}
+
+impl From<&Uri> for Location {
+    fn from(value: &Uri) -> Self {
+        Self(
+            HeaderValue::try_from(value.to_string())
+                .expect("uri to be always a valid header value"),
+        )
+    }
 }
 
 #[cfg(test)]

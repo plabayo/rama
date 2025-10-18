@@ -19,11 +19,9 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 default = []
-http = ["dep:rama-http-types"]
 
 [dependencies]
 rama-core = { workspace = true }
-rama-http-types = { workspace = true, optional = true }
 tokio = { workspace = true }
 tower-layer = { workspace = true }
 tower-service = { workspace = true }

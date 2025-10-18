@@ -1,26 +1,25 @@
-//! Service that redirects all requests.
-
 use crate::Request;
+use crate::Response;
 use crate::service::web::response;
-use crate::{Response, header};
 use rama_core::Service;
+use rama_http_headers::{HeaderMapExt, Location};
 use std::{convert::Infallible, fmt, marker::PhantomData};
 
-/// Service that redirects all requests.
-pub struct Redirect<ResBody> {
+/// Service that redirects all requests to a static location.
+pub struct RedirectStatic<ResBody> {
     resp: response::Redirect,
     // Covariant over ResBody, no dropping of ResBody
     _marker: PhantomData<fn() -> ResBody>,
 }
 
-impl<ResBody> Redirect<ResBody> {
-    /// Create a new [`Redirect`] that uses a [`303 See Other`][mdn] status code.
+impl<ResBody> RedirectStatic<ResBody> {
+    /// Create a new [`RedirectStatic`] that uses a [`303 See Other`][mdn] status code.
     ///
     /// This redirect instructs the client to change the method to GET for the subsequent request
     /// to the given location, which is useful after successful form submission, file upload or when
     /// you generally don't want the redirected-to page to observe the original request method and
     /// body (if non-empty). If you want to preserve the request method and body,
-    /// [`Redirect::temporary`] should be used instead.
+    /// [`RedirectStatic::temporary`] should be used instead.
     ///
     /// [mdn]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/303
     pub fn to(loc: impl response::redirect::IntoRedirectLoc) -> Self {
@@ -70,7 +69,7 @@ impl<ResBody> Redirect<ResBody> {
     }
 }
 
-impl<Body, ResBody> Service<Request<Body>> for Redirect<ResBody>
+impl<Body, ResBody> Service<Request<Body>> for RedirectStatic<ResBody>
 where
     Body: Send + 'static,
     ResBody: Default + Send + 'static,
@@ -82,20 +81,20 @@ where
         let mut res = Response::default();
         *res.status_mut() = self.resp.status_code();
         res.headers_mut()
-            .insert(&header::LOCATION, self.resp.location().clone());
+            .typed_insert(Location::new(self.resp.location().clone()));
         Ok(res)
     }
 }
 
-impl<ResBody> fmt::Debug for Redirect<ResBody> {
+impl<ResBody> fmt::Debug for RedirectStatic<ResBody> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Redirect")
+        f.debug_struct("RedirectStatic")
             .field("response", &self.resp)
             .finish()
     }
 }
 
-impl<ResBody> Clone for Redirect<ResBody> {
+impl<ResBody> Clone for RedirectStatic<ResBody> {
     fn clone(&self) -> Self {
         Self {
             resp: self.resp.clone(),
