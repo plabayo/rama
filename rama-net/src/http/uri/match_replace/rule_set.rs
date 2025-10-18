@@ -1,6 +1,6 @@
 use super::{UriMatchReplace, UriMatchReplaceRule};
 use rama_http_types::Uri;
-use std::{borrow::Cow, sync::Arc};
+use std::borrow::Cow;
 
 macro_rules! impl_uri_match_replace_on_iter {
     () => {
@@ -34,10 +34,6 @@ impl UriMatchReplace for Vec<UriMatchReplaceRule> {
     impl_uri_match_replace_on_iter!();
 }
 
-impl UriMatchReplace for Arc<[UriMatchReplaceRule]> {
-    impl_uri_match_replace_on_iter!();
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -57,20 +53,16 @@ mod tests {
 
     /// Apply the given rules as different container types to a single input URI string.
     /// Returns the produced strings (or None) in the order: array, slice, vec, arc.
-    fn apply_multiple_views(slice: &[UriMatchReplaceRule], input: &str) -> [Option<String>; 3] {
+    fn apply_multiple_views(slice: &[UriMatchReplaceRule], input: &str) -> [Option<String>; 2] {
         let u = uri(input);
 
         // vec view
         let vec_rules = slice.to_vec();
 
-        // arc<[T]> view
-        let arc_rules: Arc<[UriMatchReplaceRule]> = Arc::<[_]>::from(slice);
-
         let out_slice = UriMatchReplace::match_replace_uri(&slice, &u).map(|c| c.to_string());
         let out_vec = UriMatchReplace::match_replace_uri(&vec_rules, &u).map(|c| c.to_string());
-        let out_arc = UriMatchReplace::match_replace_uri(&arc_rules, &u).map(|c| c.to_string());
 
-        [out_slice, out_vec, out_arc]
+        [out_slice, out_vec]
     }
 
     /// Assert that for every container view the output equals `want`.

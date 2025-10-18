@@ -113,7 +113,7 @@ async fn main() {
 
     let middlewares = (
         TraceLayer::new_for_http(),
-        UriMatchRedirectLayer::permanent(Arc::from([
+        UriMatchRedirectLayer::permanent(Arc::new([
             UriMatchReplaceRule::try_new("*/v1/*", "$1/v2/$2").unwrap(), // upgrade users as-is to v2 (backwards compatible)
             // this is now a new endpoint,
             // NOTE though that query matches are pretty fragile,
