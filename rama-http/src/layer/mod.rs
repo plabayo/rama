@@ -39,6 +39,7 @@ pub mod remove_header;
 pub mod request_id;
 pub mod required_header;
 pub mod retry;
+pub mod rewrite_uri;
 pub mod sensitive_headers;
 pub mod set_header;
 pub mod set_status;

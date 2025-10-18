@@ -124,7 +124,7 @@ impl UriFormatter {
 
     pub(super) fn fmt_uri(&self, parts: &[&[u8]]) -> Result<Uri, OpaqueError> {
         let uri_len = self.literal_len + parts.iter().map(|part| part.len()).sum::<usize>();
-        let mut buffer: super::SmallUriStr = super::SmallUriStr::with_capacity(uri_len);
+        let mut buffer = Vec::with_capacity(uri_len); // allocate on heap already, as Uri requires this anyway
 
         let bytes = self.template.as_ref();
         let mut offset = 0;
@@ -141,9 +141,7 @@ impl UriFormatter {
         // (maybe) trailer data
         buffer.extend_from_slice(&bytes[offset..bytes.len()]);
 
-        (&buffer[..])
-            .try_into()
-            .context("parse formatted bytes as Uri")
+        buffer.try_into().context("parse formatted bytes as Uri")
     }
 }
 
