@@ -10,7 +10,7 @@ use rama::{
         request::Parts,
     },
     net::{
-        fingerprint::{Ja3, Ja4, Ja4H, PeetPrint},
+        fingerprint::{AkamaiH2, Ja3, Ja4, Ja4H, PeetPrint},
         http::RequestContext,
         stream::SocketInfo,
         tls::{
@@ -213,6 +213,22 @@ pub(super) fn get_ja4h_info<B>(req: &Request<B>) -> Option<Ja4HInfo> {
         .map(|ja4h| Ja4HInfo {
             hash: format!("{ja4h}"),
             human_str: format!("{ja4h:?}"),
+        })
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(super) struct AkamaiH2Info {
+    pub(super) hash: String,
+    pub(super) human_str: String,
+}
+
+pub(super) fn get_akamai_h2_info(ext: &Extensions) -> Option<AkamaiH2Info> {
+    AkamaiH2::compute(ext)
+        .inspect_err(|err| tracing::error!("akamai h2 compute failure: {err:?}"))
+        .ok()
+        .map(|akamai_h2| AkamaiH2Info {
+            hash: format!("{akamai_h2}"),
+            human_str: format!("{akamai_h2:?}"),
         })
 }
 
