@@ -31,6 +31,7 @@ use crate::{
         ws::handshake::server::{WebSocketAcceptor, WebSocketEchoService, WebSocketMatcher},
     },
     layer::{ConsumeErrLayer, LimitLayer, TimeoutLayer, limit::policy::ConcurrentPolicy},
+    net::fingerprint::AkamaiH2,
     net::fingerprint::Ja4H,
     net::forwarded::Forwarded,
     net::http::RequestContext,
@@ -51,7 +52,7 @@ use crate::tls::rustls::server::{TlsAcceptorData, TlsAcceptorLayer};
 
 #[cfg(any(feature = "rustls", feature = "boring"))]
 use crate::{
-    net::fingerprint::{AkamaiH2, Ja3, Ja4, PeetPrint},
+    net::fingerprint::{Ja3, Ja4, PeetPrint},
     net::tls::{
         SecureTransport,
         client::ClientHelloExtension,
