@@ -105,6 +105,7 @@ pub fn try_request_ctx_from_http_parts(
         .extensions()
         .get()
         .and_then(try_get_sni_from_secure_transport);
+
     let authority = match (proxy_authority_opt, sni_host_opt) {
             (Some(authority), _) => {
                 tracing::trace!(url.full = %uri, "request context: use proxy target as authority: {authority}");
@@ -173,7 +174,13 @@ pub fn try_request_ctx_from_http_parts(
 
 #[allow(clippy::unnecessary_lazy_evaluations)]
 fn protocol_from_uri_or_extensions(ext: &Extensions, uri: &Uri, method: &Method) -> Protocol {
-    Protocol::maybe_from_uri_scheme_str_and_method(uri.scheme(), Some(method)).or_else(|| ext.get::<Forwarded>()
+    Protocol::maybe_from_uri_scheme_str_and_method(uri.scheme(), Some(method)).or_else(|| {
+        // Can be inserted by a server stack to notify the protocol that's being served.
+        // This is especially useful for marking a HTTPS server as HTTPS,
+        // despite it not showing up anywhere due to a non-default port
+        // and it being http/1
+        ext.get::<Protocol>().cloned()
+    }).or_else(|| ext.get::<Forwarded>()
         .and_then(|f| f.client_proto().map(|p| {
             tracing::trace!(url.furi = %uri, "request context: detected protocol from forwarded client proto");
             p.into()
