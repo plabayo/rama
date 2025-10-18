@@ -524,6 +524,14 @@ impl<Body> HttpMatcher<Body> {
     ///
     /// See [`UriMatcher`] for more information.
     #[must_use]
+    pub fn or_uri_regex(self, re: Regex) -> Self {
+        self.or(Self::uri_regex(re))
+    }
+
+    /// Create a [`UriMatcher`] matcher to match as an alternative to the existing set of [`HttpMatcher`] matchers.
+    ///
+    /// See [`UriMatcher`] for more information.
+    #[must_use]
     pub fn or_uri_wildcard(self, wc: Wildcard<'static>) -> Self {
         self.or(Self::uri_wildcard(wc))
     }
