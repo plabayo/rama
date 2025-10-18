@@ -32,6 +32,7 @@ pub mod header_from_str_config;
 pub mod header_option_value;
 pub mod map_request_body;
 pub mod map_response_body;
+pub mod match_redirect;
 pub mod normalize_path;
 pub mod propagate_headers;
 pub mod proxy_auth;

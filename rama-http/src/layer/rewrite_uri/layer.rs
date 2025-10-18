@@ -38,6 +38,8 @@ impl<R: Clone, S> Layer<S> for RewriteUriLayer<R> {
 impl<R> RewriteUriLayer<R> {
     /// Creates a new [`RewriteUriLayer`]
     /// with the given [`UriMatchReplace`] implementation.
+    ///
+    /// [`UriMatchReplace`]: rama_net::http::uri::UriMatchReplace
     #[must_use]
     pub fn new(match_replace: R) -> Self {
         Self { match_replace }

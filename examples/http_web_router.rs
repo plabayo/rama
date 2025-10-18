@@ -1,4 +1,10 @@
-//! This example demonstrates how to create a web router
+//! This example demonstrates how to create a web router.
+//!
+//! Within this example you also find the use of middleware
+//! that can be used to redirect incoming uris to dynamic
+//! uri's (derived from request Uri), as well as static one.
+//! This can be useful to direct requests to a central destination
+//! or to migrate users to new versions.
 //!
 //! ```sh
 //! cargo run --example http_web_router --features=http-full
@@ -11,8 +17,9 @@
 //! ```sh
 //! open http://127.0.0.1:62018
 //! curl -v -X POST http://127.0.0.1:62018/greet/world
-//! curl -v http://127.0.0.1:62018/lang/{en,fr,es}
-//! curl -v http://127.0.0.1:62018/api/v1/status
+//! curl -v http://127.0.0.1:62018/lang/fr
+//! curl -v -L 'http://127.0.0.1:62018/greet?lang=fr'
+//! curl -v -L http://127.0.0.1:62018/api/v1/status
 //! curl -v http://127.0.0.1:62018/api/v2/status
 //! ```
 //!
@@ -36,9 +43,11 @@ use rama::{
     telemetry::tracing::{self, level_filters::LevelFilter},
 };
 
+use rama_http::layer::match_redirect::UriMatchRedirectLayer;
+use rama_net::http::uri::UriMatchReplaceRule;
 /// Everything else we need is provided by the standard library, community crates or tokio.
 use serde_json::json;
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, fmt};
@@ -91,31 +100,34 @@ async fn main() {
         // sub route support - api version health check
         .sub(
             "/api",
-            Router::new()
-                .sub(
-                    "/v1",
-                    Router::new().get("/status", async || {
-                        Json(json!({
-                            "status": "API v1 is up and running",
-                        }))
-                    }),
-                )
-                .sub(
-                    "/v2",
-                    Router::new().get("/status", async || {
-                        Json(json!({
-                            "status": "API v2 is up and running",
-                        }))
-                    }),
-                ),
+            Router::new().sub(
+                "/v2",
+                Router::new().get("/status", async || {
+                    Json(json!({
+                        "status": "API v2 is up and running",
+                    }))
+                }),
+            ),
         )
         .not_found(Redirect::temporary("/"));
+
+    let middlewares = (
+        TraceLayer::new_for_http(),
+        UriMatchRedirectLayer::permanent(Arc::from([
+            UriMatchReplaceRule::try_new("*/v1/*", "$1/v2/$2").unwrap(), // upgrade users as-is to v2 (backwards compatible)
+            // this is now a new endpoint,
+            // NOTE though that query matches are pretty fragile,
+            // and instead you should try to keep it to the authority, scheme and path only,
+            // and instead either preserve or drop the query parameter
+            UriMatchReplaceRule::try_new("*/greet\\?lang=*", "$1/lang/$2").unwrap(),
+        ])),
+    );
 
     graceful.spawn_task_fn(async |guard| {
         tracing::info!("running service at: {ADDRESS}");
         let exec = Executor::graceful(guard);
         HttpServer::auto(exec)
-            .listen(ADDRESS, TraceLayer::new_for_http().into_layer(router))
+            .listen(ADDRESS, middlewares.into_layer(router))
             .await
             .unwrap();
     });
