@@ -46,6 +46,10 @@ impl fmt::Debug for RuleCapture {
 }
 
 impl UriFormatter {
+    pub(super) fn template(&self) -> &[u8] {
+        &self.template
+    }
+
     pub(super) fn include_query(&self) -> bool {
         self.include_query
     }

@@ -3,6 +3,7 @@ use rama_http_types::Uri;
 use rama_utils::macros::generate_set_and_with;
 use rama_utils::thirdparty::wildcard::Wildcard;
 
+use serde::{Deserialize, Serialize, de::Error as _, ser::Error as _};
 use std::{borrow::Cow, fmt, io::Write as _};
 
 use super::{Pattern, TryIntoPattern, TryIntoUriFmt, fmt::UriFormatter};
@@ -131,6 +132,46 @@ impl fmt::Debug for UriMatchReplaceRule {
             .field("ptn_include_query", &self.ptn_include_query)
             .field("include_query_overwrite", &self.include_query_overwrite)
             .finish()
+    }
+}
+
+impl Serialize for UriMatchReplaceRule {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        #[derive(Debug, Serialize)]
+        struct Presentation<'a> {
+            pattern: Cow<'a, str>,
+            template: Cow<'a, str>,
+        }
+
+        let presentation = Presentation {
+            pattern: Cow::Borrowed(
+                std::str::from_utf8(self.ptn.pattern()).map_err(S::Error::custom)?,
+            ),
+            template: Cow::Borrowed(
+                std::str::from_utf8(self.fmt.template()).map_err(S::Error::custom)?,
+            ),
+        };
+
+        presentation.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for UriMatchReplaceRule {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Debug, Deserialize)]
+        struct Presentation {
+            pattern: String,
+            template: String,
+        }
+
+        let Presentation { pattern, template } = Presentation::deserialize(deserializer)?;
+        Self::try_new(pattern, template).map_err(D::Error::custom)
     }
 }
 
@@ -419,6 +460,49 @@ mod tests {
         let https_inputs = ["https://a.com", "https://a.com/p?q=1", "https://x.y/p/q"];
         for input in https_inputs {
             assert_eq!(apply(&r, input), None, "should not match: {input}");
+        }
+    }
+
+    //------------------- deserialize / serialize tests --------------------------
+
+    #[test]
+    fn deserialize_uri_match_replace_rule() {
+        for (raw_json_input, uri_input, expected_output) in [
+            (
+                r##"{"pattern":"http://*","template":"https://$1"}"##,
+                "http://example.com?foo=bar",
+                Some("https://example.com?foo=bar"),
+            ),
+            (
+                r##"{"pattern":"http://example.org/*","template":"http://example.com/$1"}"##,
+                "http://example.org/foo?q=v",
+                Some("http://example.com/foo?q=v"),
+            ),
+        ] {
+            let rule: UriMatchReplaceRule = serde_json::from_str(raw_json_input).unwrap();
+            assert_eq!(
+                rule.match_replace_uri(&Uri::from_static(uri_input))
+                    .map(|uri| uri
+                        .to_string()
+                        .replace("/?", "?")
+                        .trim_end_matches('/')
+                        .to_owned()),
+                expected_output.map(ToOwned::to_owned),
+            )
+        }
+    }
+
+    #[test]
+    fn deserialize_serialize_uri_match_replace_rule() {
+        for raw_json_input in [
+            r##"{"pattern":"http://*","template":"https://$1"}"##,
+            r##"{"pattern":"http://example.org/*","template":"http://example.com/$1"}"##,
+            r##"{"pattern":"*/v1/*","template":"$1/v2/$2"}"##,
+            r##"{"pattern":"*","template":"any.com"}"##,
+        ] {
+            let rule: UriMatchReplaceRule = serde_json::from_str(raw_json_input).unwrap();
+            let raw_json_output = serde_json::to_string(&rule).unwrap();
+            assert_eq!(raw_json_input, raw_json_output);
         }
     }
 }
