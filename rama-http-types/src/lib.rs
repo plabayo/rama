@@ -77,6 +77,9 @@ pub mod header {
         "x-robots-tag"
     ];
 
+    // new standard sec-headers
+    static_header!["sec-gpc"];
+
     // standard
     static_header!["keep-alive", "proxy-connection", "last-event-id"];
 

@@ -12,62 +12,6 @@
 //! - More difficult to typo, since typos in types should be caught by the compiler
 //! - Parsing to a proper type by default
 //!
-//! # Defining Custom Headers
-//!
-//! ## Implementing the `Header` trait
-//!
-//! Consider a Do Not Track header. It can be true or false, but it represents
-//! that via the numerals `1` and `0`.
-//!
-//! ```
-//! use rama_http_types::{HeaderName, HeaderValue};
-//! use rama_http_headers::{TypedHeader, HeaderEncode, HeaderDecode};
-//!
-//! struct Dnt(bool);
-//!
-//! impl TypedHeader for Dnt {
-//!     fn name() -> &'static HeaderName {
-//!          &rama_http_types::header::DNT
-//!     }
-//! }
-//!
-//! impl HeaderDecode for Dnt {
-//!     fn decode<'i, I>(values: &mut I) -> Result<Self, rama_http_headers::Error>
-//!     where
-//!         I: Iterator<Item = &'i HeaderValue>,
-//!     {
-//!         let value = values
-//!             .next()
-//!             .ok_or_else(rama_http_headers::Error::invalid)?;
-//!
-//!         if value == "0" {
-//!             Ok(Dnt(false))
-//!         } else if value == "1" {
-//!             Ok(Dnt(true))
-//!         } else {
-//!             Err(rama_http_headers::Error::invalid())
-//!         }
-//!     }
-//! }
-//!
-//! impl HeaderEncode for Dnt {
-//!     fn encode<E>(&self, values: &mut E)
-//!     where
-//!         E: Extend<HeaderValue>,
-//!     {
-//!         let s = if self.0 {
-//!             "1"
-//!         } else {
-//!             "0"
-//!         };
-//!
-//!         let value = HeaderValue::from_static(s);
-//!
-//!         values.extend(std::iter::once(value));
-//!     }
-//! }
-//! ```
-//!
 //! # Rama
 //!
 //! Crate used by the end-user `rama` crate and `rama` crate authors alike.
@@ -96,6 +40,8 @@ mod common;
 mod map_ext;
 mod req_builder_ext;
 mod resp_builder_ext;
+
+pub mod privacy;
 
 pub mod x_robots_tag;
 pub use x_robots_tag::XRobotsTag;
