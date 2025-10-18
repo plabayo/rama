@@ -288,7 +288,7 @@ impl<H> ServeServiceBuilder<H> {
 
 impl<H> ServeServiceBuilder<H>
 where
-    H: Layer<ServeService, Service: Service<Request, Response = Response, Error = BoxError>>,
+    H: Layer<ServeService, Service: Service<Request, Response = Response, Error: Into<BoxError>>>,
 {
     /// build a tcp service ready to serve files
     pub fn build(

@@ -4,7 +4,6 @@
 //!
 //! Direct copy of [tower-layer](https://docs.rs/tower-layer/0.3.0/tower_layer/trait.Layer.html).
 
-use rama_error::BoxError;
 use std::fmt::Debug;
 
 /// A layer that produces a Layered service (middleware(inner service)).
@@ -126,18 +125,18 @@ where
 
 impl<S, L, Request> Service<Request> for MaybeLayeredService<S, L>
 where
-    S: Service<Request, Error: Into<BoxError>>,
+    S: Service<Request>,
     L: Layer<S> + 'static,
-    L::Service: Service<Request, Response = S::Response, Error: Into<BoxError>>,
+    L::Service: Service<Request, Response = S::Response, Error: Into<S::Error>>,
     Request: Send + 'static,
 {
-    type Error = BoxError;
+    type Error = S::Error;
     type Response = S::Response;
 
     async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
         match &self.0 {
             MaybeLayeredSvc::Enabled(svc) => svc.serve(req).await.map_err(Into::into),
-            MaybeLayeredSvc::Disabled(inner) => inner.serve(req).await.map_err(Into::into),
+            MaybeLayeredSvc::Disabled(inner) => inner.serve(req).await,
         }
     }
 }
