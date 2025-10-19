@@ -734,7 +734,7 @@ fn merge_http_headers<'a>(
 
 fn compute_sec_fetch_site_value(
     original_header_referer_value: Option<&HeaderValue>,
-    method: Option<&Method>,
+    _method: Option<&Method>,
     protocol: Option<&Protocol>,
     request_authority: Option<&Authority>,
 ) -> HeaderValue {
@@ -748,8 +748,7 @@ fn compute_sec_fetch_site_value(
                         .context("turn referer header value str into http Uri")
                 }) {
                 Ok(uri) => {
-                    let referer_protocol =
-                        Protocol::maybe_from_uri_scheme_str_and_method(uri.scheme(), method);
+                    let referer_protocol = uri.scheme().map(Protocol::from);
 
                     let default_port = uri
                         .port_u16()

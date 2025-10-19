@@ -9,7 +9,7 @@ use rama_core::error::OpaqueError;
 use rama_core::extensions::Extensions;
 use rama_core::telemetry::tracing;
 use rama_http_types::request::Parts;
-use rama_http_types::{HttpRequestParts, Method, Request};
+use rama_http_types::{HttpRequestParts, Request};
 use rama_http_types::{Uri, Version};
 
 #[cfg(feature = "tls")]
@@ -84,7 +84,7 @@ pub fn try_request_ctx_from_http_parts(
 ) -> Result<RequestContext, OpaqueError> {
     let uri = parts.uri();
 
-    let protocol = protocol_from_uri_or_extensions(parts.extensions(), uri, parts.method());
+    let protocol = protocol_from_uri_or_extensions(parts.extensions(), uri);
     tracing::trace!(
         url.full = %uri,
         "request context: detected protocol: {protocol} (scheme: {:?}",
@@ -96,57 +96,59 @@ pub fn try_request_ctx_from_http_parts(
         .unwrap_or_else(|| protocol.default_port().unwrap_or(80));
     tracing::trace!(url.full = %uri, "request context: detected default port: {default_port}");
 
-    let proxy_authority_opt: Option<Authority> = parts
-        .extensions()
-        .get::<ProxyTarget>()
-        .and_then(|t| t.0.host().is_domain().then(|| t.0.clone()));
-
-    let sni_host_opt = parts
-        .extensions()
-        .get()
-        .and_then(try_get_sni_from_secure_transport);
-
-    let authority = match (proxy_authority_opt, sni_host_opt) {
-            (Some(authority), _) => {
-                tracing::trace!(url.full = %uri, "request context: use proxy target as authority: {authority}");
-                authority
-            },
-            (None, Some(h)) => {
-                tracing::trace!(url.full = %uri, "request context: detected host {h} from SNI");
-                (h, default_port).into()
-            },
-            (None, None) => uri
-                .host()
-                .and_then(|h| Host::try_from(h).ok().map(|h| {
-                    tracing::trace!(url.full = %uri, "request context: detected host {h} from (abs) uri");
-                    (h, default_port).into()
-                }))
-                .or_else(|| {
-                    parts.extensions().get::<Forwarded>().and_then(|f| {
-                        f.client_host().map(|fauth| {
-                            let (host, port) = fauth.clone().into_parts();
-                            let port = port.unwrap_or(default_port);
-                            tracing::trace!(url.full = %uri, "request context: detected host {host} from forwarded info");
-                            (host, port).into()
-                        })
+    let authority = uri
+        .host()
+        .and_then(|h| Host::try_from(h).ok().map(|h| {
+            tracing::trace!(url.full = %uri, "request context: detected host {h} from (abs) uri");
+            (h, default_port).into()
+        }))
+        .or_else(|| {
+            parts
+                .extensions()
+                .get::<ProxyTarget>()
+                .and_then(|t| {
+                    t.0.host().is_domain().then(|| {
+                        let authority = t.0.clone();
+                        tracing::trace!(url.full = %uri, "request context: use proxy target as authority: {authority}");
+                        authority
                     })
                 })
-                .or_else(|| {
-                    parts.headers()
-                        .get(rama_http_types::header::HOST)
-                        .and_then(|host| {
-                            host.try_into() // try to consume as Authority, otherwise as Host
-                                .or_else(|_| Host::try_from(host).map(|h| {
-                                    tracing::trace!(url.full = %uri, "request context: detected host {h} from host header");
-                                    (h, default_port).into()
-                                }))
-                                .ok()
-                        })
+        })
+        .or_else(|| {
+            parts
+                .extensions()
+                .get()
+                .and_then(try_get_sni_from_secure_transport)
+                .map(|host| {
+                    tracing::trace!(url.full = %uri, "request context: detected host {host} from SNI");
+                    (host, default_port).into()
                 })
-                .ok_or_else(|| {
-                    OpaqueError::from_display("RequestContext: no authourity found in http::Request")
-                })?
-        };
+        })
+        .or_else(|| {
+            parts.extensions().get::<Forwarded>().and_then(|f| {
+                f.client_host().map(|fauth| {
+                    let (host, port) = fauth.clone().into_parts();
+                    let port = port.unwrap_or(default_port);
+                    tracing::trace!(url.full = %uri, "request context: detected host {host} from forwarded info");
+                    (host, port).into()
+                })
+            })
+        })
+        .or_else(|| {
+            parts.headers()
+                .get(rama_http_types::header::HOST)
+                .and_then(|host| {
+                    host.try_into() // try to consume as Authority, otherwise as Host
+                        .or_else(|_| Host::try_from(host).map(|h| {
+                            tracing::trace!(url.full = %uri, "request context: detected host {h} from host header");
+                            (h, default_port).into()
+                        }))
+                        .ok()
+                })
+        })
+        .ok_or_else(|| {
+            OpaqueError::from_display("RequestContext: no authourity found in http::Request")
+        })?;
 
     tracing::trace!(url.full = %uri, "request context: detected authority: {authority}");
 
@@ -173,8 +175,8 @@ pub fn try_request_ctx_from_http_parts(
 }
 
 #[allow(clippy::unnecessary_lazy_evaluations)]
-fn protocol_from_uri_or_extensions(ext: &Extensions, uri: &Uri, method: &Method) -> Protocol {
-    Protocol::maybe_from_uri_scheme_str_and_method(uri.scheme(), Some(method)).or_else(|| {
+fn protocol_from_uri_or_extensions(ext: &Extensions, uri: &Uri) -> Protocol {
+    uri.scheme().map(Protocol::from).or_else(|| {
         // Can be inserted by a server stack to notify the protocol that's being served.
         // This is especially useful for marking a HTTPS server as HTTPS,
         // despite it not showing up anywhere due to a non-default port
@@ -185,15 +187,12 @@ fn protocol_from_uri_or_extensions(ext: &Extensions, uri: &Uri, method: &Method)
             tracing::trace!(url.furi = %uri, "request context: detected protocol from forwarded client proto");
             p.into()
         })))
-        .unwrap_or_else(|| {
-            if method == Method::CONNECT {
-                tracing::trace!(url.full = %uri, http.method = %method, "request context: CONNECT: defaulting protocol to HTTPS");
-                Protocol::HTTPS
-            } else {
-                tracing::trace!(url.full = %uri, http.method = %method, "request context: defaulting protocol to HTTP");
-                Protocol::HTTP
-            }
-        })
+        .unwrap_or_else(||
+    if ext.contains::<SecureTransport>() {
+        Protocol::HTTPS
+    } else {
+        Protocol::HTTP
+    })
 }
 
 impl From<RequestContext> for TransportContext {
@@ -372,66 +371,5 @@ mod tests {
         assert_eq!(req_ctx.http_version, Version::HTTP_11);
         assert_eq!(req_ctx.protocol, "http");
         assert_eq!(req_ctx.authority.to_string(), "echo.ramaproxy.org:80");
-    }
-
-    #[test]
-    fn test_request_ctx_connect_req_no_scheme() {
-        let test_cases = [
-            (80, Protocol::HTTPS),
-            (433, Protocol::HTTPS),
-            (8080, Protocol::HTTPS),
-        ];
-        for (port, expected_protocol) in test_cases {
-            let req = Request::builder()
-                .uri(format!("www.example.com:{port}"))
-                .version(Version::HTTP_11)
-                .method(Method::CONNECT)
-                .header("host", "www.example.com")
-                .header("user-agent", "test/42")
-                .body(())
-                .unwrap();
-
-            let req_ctx = RequestContext::try_from(&req).unwrap();
-
-            assert_eq!(req_ctx.http_version, Version::HTTP_11);
-            assert_eq!(req_ctx.protocol, expected_protocol);
-            assert_eq!(
-                req_ctx.authority.to_string(),
-                format!("www.example.com:{port}")
-            );
-        }
-    }
-
-    #[test]
-    fn test_request_ctx_connect_req() {
-        let test_cases = [
-            ("http", Protocol::HTTPS),
-            ("https", Protocol::HTTPS),
-            ("ws", Protocol::WSS),
-            ("wss", Protocol::WSS),
-            ("ftp", Protocol::from_static("ftp")),
-        ];
-        for (scheme, expected_protocol) in test_cases {
-            let req = Request::builder()
-                .uri(format!("{scheme}://www.example.com"))
-                .version(Version::HTTP_11)
-                .method(Method::CONNECT)
-                .header("host", "www.example.com")
-                .header("user-agent", "test/42")
-                .body(())
-                .unwrap();
-
-            let req_ctx = RequestContext::try_from(&req).unwrap();
-
-            assert_eq!(req_ctx.http_version, Version::HTTP_11);
-            assert_eq!(req_ctx.protocol, expected_protocol);
-            assert_eq!(
-                req_ctx.authority.to_string(),
-                format!(
-                    "www.example.com:{}",
-                    expected_protocol.default_port().unwrap_or(80)
-                )
-            );
-        }
     }
 }

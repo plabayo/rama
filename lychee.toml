@@ -9,4 +9,5 @@ exclude = [
     "plabayo.threadless.com",
     "certbot.eff.org",
     "about.signpath.io",
+    "www.softwareishard.com",
 ]
