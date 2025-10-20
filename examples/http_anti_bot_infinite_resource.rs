@@ -37,12 +37,12 @@ use rama::{
         layer::{required_header::AddRequiredResponseHeadersLayer, trace::TraceLayer},
         server::HttpServer,
         service::web::{
-            Router,
+            Router, State,
             extract::Query,
             response::{Headers, Html, IntoResponse},
         },
     },
-    layer::{AddExtensionLayer, ConsumeErrLayer},
+    layer::ConsumeErrLayer,
     net::{address::SocketAddress, stream::SocketInfo},
     rt::Executor,
     tcp::{TcpStream, server::TcpListener},
@@ -71,9 +71,10 @@ async fn main() {
 
     let graceful = rama::graceful::Shutdown::default();
 
-    let state = State::default();
+    let state = AppState::default();
 
     let router = Router::new()
+        .with_state(state.clone())
         .get("/", Html(r##"<h1>Hello, Human!?</h1>"##.to_owned()))
         .get("/robots.txt", ROBOTS_TXT)
         .get("/internal/clients.csv", infinite_resource);
@@ -88,9 +89,8 @@ async fn main() {
     );
 
     let tcp_svc = (
-        AddExtensionLayer::new(state),
         ConsumeErrLayer::default(),
-        IpFirewall,
+        IpFirewall::new(state.block_list.clone()),
     )
         .into_layer(app);
 
@@ -110,9 +110,11 @@ async fn main() {
 }
 
 #[derive(Debug, Clone, Default)]
-struct State {
-    block_list: Arc<Mutex<HashSet<IpAddr>>>,
+struct AppState {
+    block_list: BlockList,
 }
+
+type BlockList = Arc<Mutex<HashSet<IpAddr>>>;
 
 const ROBOTS_TXT: &str = r##"User-agent: *
 Disallow: /internal/
@@ -125,6 +127,7 @@ struct InfiniteResourceParameters {
 }
 
 async fn infinite_resource(
+    State(state): State<AppState>,
     Query(parameters): Query<InfiniteResourceParameters>,
     request: Request,
 ) -> impl IntoResponse {
@@ -133,13 +136,7 @@ async fn infinite_resource(
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
     let ip_addr = socket_info.peer_addr().ip();
-    let mut block_list = request
-        .extensions()
-        .get::<State>()
-        .unwrap()
-        .block_list
-        .lock()
-        .await;
+    let mut block_list = state.block_list.lock().await;
     block_list.insert(ip_addr);
     tracing::info!(
         "blocking bad ip: {ip_addr}; serve content (limit: {:?})",
@@ -157,15 +154,37 @@ async fn infinite_resource(
 }
 
 #[derive(Debug, Clone)]
-struct IpFirewall;
+struct IpFirewall {
+    block_list: BlockList,
+}
+
+impl IpFirewall {
+    fn new(block_list: BlockList) -> Self {
+        Self { block_list }
+    }
+}
+
 #[derive(Debug, Clone)]
-struct IpFirewallService<S>(S);
+struct IpFirewallService<S> {
+    inner: S,
+    block_list: BlockList,
+}
 
 impl<S> Layer<S> for IpFirewall {
     type Service = IpFirewallService<S>;
 
     fn layer(&self, inner: S) -> Self::Service {
-        IpFirewallService(inner)
+        IpFirewallService {
+            inner,
+            block_list: self.block_list.clone(),
+        }
+    }
+
+    fn into_layer(self, inner: S) -> Self::Service {
+        IpFirewallService {
+            inner,
+            block_list: self.block_list,
+        }
     }
 }
 
@@ -183,13 +202,7 @@ where
             .ok_or_else(|| OpaqueError::from_display("no socket info found").into_boxed())?
             .peer_addr()
             .ip();
-        let block_list = stream
-            .extensions()
-            .get::<State>()
-            .unwrap()
-            .block_list
-            .lock()
-            .await;
+        let block_list = self.block_list.lock().await;
         if block_list.contains(&ip_addr) {
             return Err(OpaqueError::from_display(format!(
                 "drop connection for blocked ip: {ip_addr}"
@@ -197,6 +210,6 @@ where
             .into_boxed());
         }
         std::mem::drop(block_list);
-        self.0.serve(stream).await.map_err(Into::into)
+        self.inner.serve(stream).await.map_err(Into::into)
     }
 }
