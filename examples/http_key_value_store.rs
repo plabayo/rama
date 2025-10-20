@@ -53,9 +53,8 @@
 
 use rama::{
     Layer,
-    extensions::ExtensionsRef,
     http::{
-        Method, Request, StatusCode,
+        Method, StatusCode,
         layer::{
             compression::CompressionLayer, trace::TraceLayer,
             validate_request::ValidateRequestHeaderLayer,
@@ -135,7 +134,7 @@ async fn main() {
                                 .delete("/keys", async |State(state): State<Arc<AppState>>| {
                                     state.db.write().await.clear();
                                 })
-                                .delete("/item/:key", async |State(state): State<Arc<AppState>>,Path(params): Path<ItemParam>| {
+                                .delete("/item/:key", async |State(state): State<Arc<AppState>>, Path(params): Path<ItemParam>| {
                                     match state.db.write().await.remove(&params.key) {
                                         Some(_) => StatusCode::OK,
                                         None => StatusCode::NOT_FOUND,
@@ -186,19 +185,12 @@ async fn main() {
 }
 
 /// a service_fn can be a regular fn, instead of a closure
-async fn list_keys(req: Request) -> impl IntoResponse {
-    req.extensions()
-        .get::<Arc<AppState>>()
-        .unwrap()
-        .db
-        .read()
-        .await
-        .keys()
-        .fold(String::new(), |a, b| {
-            if a.is_empty() {
-                b.clone()
-            } else {
-                format!("{a}, {b}")
-            }
-        })
+async fn list_keys(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    state.db.read().await.keys().fold(String::new(), |a, b| {
+        if a.is_empty() {
+            b.clone()
+        } else {
+            format!("{a}, {b}")
+        }
+    })
 }
