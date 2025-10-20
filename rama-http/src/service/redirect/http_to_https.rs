@@ -98,7 +98,7 @@ impl<R> RedirectHttpToHttps<R> {
 
     /// Opt-in to a uri-match-replace rule that conditionally
     /// can replace the request's full Uri prior to doing the work on it.
-    pub fn rewrite_uri_rule<S: UriMatchReplace>(self, rule: S) -> RedirectHttpToHttps<S> {
+    pub fn with_rewrite_uri_rule<S: UriMatchReplace>(self, rule: S) -> RedirectHttpToHttps<S> {
         RedirectHttpToHttps {
             status_code: self.status_code,
             overwrite_port: self.overwrite_port,
