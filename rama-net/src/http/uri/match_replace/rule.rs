@@ -6,7 +6,7 @@ use rama_utils::thirdparty::wildcard::Wildcard;
 use serde::{Deserialize, Serialize, de::Error as _, ser::Error as _};
 use std::{borrow::Cow, fmt, io::Write as _};
 
-use super::{Pattern, TryIntoPattern, TryIntoUriFmt, fmt::UriFormatter};
+use super::{Pattern, TryIntoPattern, TryIntoUriFmt, UriMatchError, fmt::UriFormatter};
 
 #[derive(Clone)]
 /// A rule that matches a [`Uri`] against a simple wildcard pattern and, if it
@@ -52,23 +52,25 @@ use super::{Pattern, TryIntoPattern, TryIntoUriFmt, fmt::UriFormatter};
 ///
 /// ```rust
 /// # use std::str::FromStr;
+/// # use std::borrow::Cow;
 /// # use rama_http_types::Uri;
 /// # use rama_net::http::uri::{UriMatchReplace, UriMatchReplaceRule};
 /// let rule = UriMatchReplaceRule::try_new("http://*", "https://$1").unwrap();
 ///
-/// let input: Uri = "http://example.com/x?y=1".parse().unwrap();
-/// let out = rule.match_replace_uri(&input).unwrap();
+/// let input = Uri::from_static("http://example.com/x?y=1");
+/// let out = rule.match_replace_uri(Cow::Owned(input)).unwrap();
 /// assert_eq!(out.to_string(), "https://example.com/x?y=1");
 ///
 /// // Non-matching scheme
-/// let https_in: Uri = "https://example.com".parse().unwrap();
-/// assert!(rule.match_replace_uri(&https_in).is_none());
+/// let https_in = Uri::from_static("https://example.com");
+/// assert!(rule.match_replace_uri(Cow::Owned(https_in)).is_err());
 /// ```
 ///
 /// Reorder two captures:
 ///
 /// ```rust
 /// # use std::str::FromStr;
+/// # use std::borrow::Cow;
 /// # use rama_http_types::Uri;
 /// # use rama_net::http::uri::{UriMatchReplace, UriMatchReplaceRule};
 /// let rule = UriMatchReplaceRule::try_new(
@@ -76,8 +78,8 @@ use super::{Pattern, TryIntoPattern, TryIntoUriFmt, fmt::UriFormatter};
 ///     "https://$1/knowledge/$2"
 /// ).unwrap();
 ///
-/// let input: Uri = "https://a.example.com/docs/rust".parse().unwrap();
-/// let out = rule.match_replace_uri(&input).unwrap();
+/// let input = Uri::from_static("https://a.example.com/docs/rust");
+/// let out = rule.match_replace_uri(Cow::Owned(input)).unwrap();
 /// assert_eq!(out.to_string(), "https://a.example.com/knowledge/rust");
 /// ```
 ///
@@ -182,6 +184,10 @@ impl UriMatchReplaceRule {
     /// any `http://…` URI to `https://…` while preserving everything
     /// after the scheme.
     ///
+    /// Note in case this is the only `rule` (within its group) that you need
+    /// you might want to use [`super::UriMatchReplaceScheme::http_to_https`]
+    /// instead as it is more efficient.
+    ///
     /// Equivalent to:
     ///
     /// ```rust
@@ -193,10 +199,11 @@ impl UriMatchReplaceRule {
     ///
     /// ```rust
     /// # use std::str::FromStr;
+    /// # use std::borrow::Cow;
     /// # use rama_http_types::Uri;
     /// # use rama_net::http::uri::{UriMatchReplace, UriMatchReplaceRule};
     /// let rule = UriMatchReplaceRule::http_to_https();
-    /// let out = rule.match_replace_uri(&"http://a/b?x=1".parse::<Uri>().unwrap()).unwrap();
+    /// let out = rule.match_replace_uri(Cow::Owned(Uri::from_static("http://a/b?x=1"))).unwrap();
     /// assert_eq!(out.to_string(), "https://a/b?x=1");
     /// ```
     pub fn http_to_https() -> Self {
@@ -254,25 +261,39 @@ impl UriMatchReplaceRule {
 
 impl super::UriMatchReplace for UriMatchReplaceRule {
     #[inline]
-    fn match_replace_uri(&self, uri: &Uri) -> Option<Cow<'_, Uri>> {
-        let v = uri_to_small_vec(uri, self.include_query());
-        self.try_match_replace_uri_slice(&v).map(Cow::Owned)
+    fn match_replace_uri<'a>(&self, uri: Cow<'a, Uri>) -> Result<Cow<'a, Uri>, UriMatchError<'a>> {
+        let v = uri_to_small_vec(uri.as_ref(), self.include_query());
+        match self.try_match_replace_uri_slice(&v) {
+            Some(new_uri) => Ok(Cow::Owned(new_uri)),
+            None => Err(UriMatchError::NoMatch(uri)),
+        }
     }
 }
 
+#[inline]
 pub(super) fn uri_to_small_vec(uri: &Uri, include_query: bool) -> super::SmallUriStr {
+    let mut output = super::SmallUriStr::new();
+    uri_to_small_vec_with_buffer(uri, include_query, &mut output);
+    output
+}
+
+pub(super) fn uri_to_small_vec_with_buffer(
+    uri: &Uri,
+    include_query: bool,
+    output: &mut super::SmallUriStr,
+) {
     let query = include_query
         .then(|| uri.query())
         .flatten()
         .unwrap_or_default();
 
-    let mut output = super::SmallUriStr::new();
+    output.clear();
 
     let path = uri.path().trim_matches('/');
 
     if let Some(authority) = uri.authority() {
         let _ = write!(
-            &mut output,
+            output,
             "{}://{authority}{}{path}{}{query}",
             uri.scheme_str().unwrap_or("http"),
             if path.is_empty() { "" } else { "/" },
@@ -280,14 +301,12 @@ pub(super) fn uri_to_small_vec(uri: &Uri, include_query: bool) -> super::SmallUr
         );
     } else {
         let _ = write!(
-            &mut output,
+            output,
             "{}{path}{}{query}",
             if path.is_empty() { "" } else { "/" },
             if query.is_empty() { "" } else { "?" },
         );
     }
-
-    output
 }
 
 #[cfg(test)]
@@ -308,13 +327,26 @@ mod tests {
         Uri::from_str(s).unwrap_or_else(|_| panic!("valid URI expected: {s:?}"))
     }
 
+    fn match_replace_uri_to_test_option_str(
+        result: Result<Cow<'_, Uri>, UriMatchError<'_>>,
+    ) -> Option<String> {
+        match result {
+            Ok(uri) => Some(uri.to_string()),
+            Err(UriMatchError::NoMatch(_)) => None,
+            Err(UriMatchError::Unexpected(err)) => {
+                panic!("unexpected match replace uri error: {err}")
+            }
+        }
+    }
+
     fn apply(rule: &UriMatchReplaceRule, input: &str) -> Option<String> {
-        rule.match_replace_uri(&uri(input)).map(|u| {
-            u.to_string()
-                .trim_end_matches('/') // *sigh* hyperium http crate adds trailers by default
-                .to_owned()
-                .replace("/?", "?")
-        })
+        match_replace_uri_to_test_option_str(rule.match_replace_uri(Cow::Owned(uri(input)))).map(
+            |s| {
+                s.trim_end_matches('/') // *sigh* hyperium http crate adds trailers by default
+                    .to_owned()
+                    .replace("/?", "?")
+            },
+        )
     }
 
     // ---------- main cases ----------
@@ -481,12 +513,10 @@ mod tests {
         ] {
             let rule: UriMatchReplaceRule = serde_json::from_str(raw_json_input).unwrap();
             assert_eq!(
-                rule.match_replace_uri(&Uri::from_static(uri_input))
-                    .map(|uri| uri
-                        .to_string()
-                        .replace("/?", "?")
-                        .trim_end_matches('/')
-                        .to_owned()),
+                match_replace_uri_to_test_option_str(
+                    rule.match_replace_uri(Cow::Owned(Uri::from_static(uri_input)))
+                )
+                .map(|s| s.replace("/?", "?").trim_end_matches('/').to_owned()),
                 expected_output.map(ToOwned::to_owned),
             )
         }

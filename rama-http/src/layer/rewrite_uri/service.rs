@@ -2,8 +2,8 @@ use std::fmt;
 
 use crate::Request;
 use crate::utils::request_uri;
-use rama_core::Service;
-use rama_net::http::uri::UriMatchReplace;
+use rama_core::{Service, telemetry::tracing};
+use rama_net::http::uri::{UriMatchError, UriMatchReplace};
 use rama_utils::macros::define_inner_service_accessors;
 
 // TODO: in future we can move this outside of rama-http
@@ -82,7 +82,18 @@ where
 
     async fn serve(&self, mut req: Request<ReqBody>) -> Result<Self::Response, Self::Error> {
         let full_uri = request_uri(&req);
-        if let Some(uri) = self.match_replace.match_replace_uri(&full_uri) {
+        if let Ok(uri) = self
+            .match_replace
+            .match_replace_uri(full_uri)
+            .inspect_err(|err| match err {
+                UriMatchError::NoMatch(uri) => {
+                    tracing::trace!("no match found for uri: {uri}; ignore")
+                }
+                UriMatchError::Unexpected(err) => {
+                    tracing::trace!("unexpected error while trying to match uri: {err}; ignore")
+                }
+            })
+        {
             *req.uri_mut() = uri.into_owned()
         }
         self.inner.serve(req).await

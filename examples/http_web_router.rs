@@ -31,7 +31,7 @@ use rama::{
     extensions::ExtensionsRef,
     http::{
         Request,
-        layer::trace::TraceLayer,
+        layer::{match_redirect::UriMatchRedirectLayer, trace::TraceLayer},
         matcher::UriParams,
         server::HttpServer,
         service::web::{
@@ -39,15 +39,14 @@ use rama::{
             response::{Html, Json, Redirect},
         },
     },
+    net::http::uri::UriMatchReplaceRule,
     rt::Executor,
     telemetry::tracing::{self, level_filters::LevelFilter},
 };
 
-use rama_http::layer::match_redirect::UriMatchRedirectLayer;
-use rama_net::http::uri::UriMatchReplaceRule;
 /// Everything else we need is provided by the standard library, community crates or tokio.
 use serde_json::json;
-use std::{sync::Arc, time::Duration};
+use std::time::Duration;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, fmt};
@@ -113,14 +112,14 @@ async fn main() {
 
     let middlewares = (
         TraceLayer::new_for_http(),
-        UriMatchRedirectLayer::permanent(Arc::new([
+        UriMatchRedirectLayer::permanent([
             UriMatchReplaceRule::try_new("*/v1/*", "$1/v2/$2").unwrap(), // upgrade users as-is to v2 (backwards compatible)
             // this is now a new endpoint,
             // NOTE though that query matches are pretty fragile,
             // and instead you should try to keep it to the authority, scheme and path only,
             // and instead either preserve or drop the query parameter
             UriMatchReplaceRule::try_new("*/greet\\?lang=*", "$1/lang/$2").unwrap(),
-        ])),
+        ]),
     );
 
     graceful.spawn_task_fn(async |guard| {

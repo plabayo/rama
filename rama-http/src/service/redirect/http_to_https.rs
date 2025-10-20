@@ -5,20 +5,20 @@ use crate::{
     utils::request_uri,
 };
 use rama_core::{Service, telemetry::tracing};
-use rama_net::http::uri::{UriMatchReplace, UriMatchReplaceRule};
+use rama_net::http::uri::{UriMatchError, UriMatchReplace, match_replace::UriMatchReplaceNever};
 use rama_utils::macros::generate_set_and_with;
 use std::convert::Infallible;
 
 /// Service that redirects all HTTP requests to HTTPS
 #[derive(Debug, Clone)]
-pub struct RedirectHttpToHttps {
+pub struct RedirectHttpToHttps<R> {
     status_code: StatusCode,
     overwrite_port: Option<u16>,
     drop_query: bool,
-    match_replace_uri_rule: Option<UriMatchReplaceRule>,
+    rewrite_uri_rule: R,
 }
 
-impl RedirectHttpToHttps {
+impl RedirectHttpToHttps<UriMatchReplaceNever> {
     #[must_use]
     /// Create a new [`RedirectHttpToHttps`] using its [`Default`] implementation.
     pub fn new() -> Self {
@@ -26,18 +26,18 @@ impl RedirectHttpToHttps {
     }
 }
 
-impl Default for RedirectHttpToHttps {
+impl Default for RedirectHttpToHttps<UriMatchReplaceNever> {
     fn default() -> Self {
         Self {
             status_code: StatusCode::PERMANENT_REDIRECT,
             overwrite_port: None,
             drop_query: false,
-            match_replace_uri_rule: None,
+            rewrite_uri_rule: UriMatchReplaceNever::new(),
         }
     }
 }
 
-impl RedirectHttpToHttps {
+impl<R> RedirectHttpToHttps<R> {
     generate_set_and_with! {
         /// Overwrite status code with 301 — Moved Permanently.
         ///
@@ -96,33 +96,42 @@ impl RedirectHttpToHttps {
         }
     }
 
-    generate_set_and_with! {
-        /// Opt-in to a uri-match-replace rule that conditionally
-        /// can replace the request's full Uri prior to doing the work on it.
-        pub fn match_replace_uri_rule(mut self, rule: Option<UriMatchReplaceRule>) -> Self {
-            self.match_replace_uri_rule = rule;
-            self
+    /// Opt-in to a uri-match-replace rule that conditionally
+    /// can replace the request's full Uri prior to doing the work on it.
+    pub fn rewrite_uri_rule<S: UriMatchReplace>(self, rule: S) -> RedirectHttpToHttps<S> {
+        RedirectHttpToHttps {
+            status_code: self.status_code,
+            overwrite_port: self.overwrite_port,
+            drop_query: self.drop_query,
+            rewrite_uri_rule: rule,
         }
     }
 }
 
-impl<Body> Service<Request<Body>> for RedirectHttpToHttps
+impl<R, Body> Service<Request<Body>> for RedirectHttpToHttps<R>
 where
+    R: UriMatchReplace + Send + Sync + 'static,
     Body: Send + 'static,
 {
     type Response = Response;
     type Error = Infallible;
 
     async fn serve(&self, req: Request<Body>) -> Result<Self::Response, Self::Error> {
-        let full_uri = request_uri(&req);
+        let full_uri = match self.rewrite_uri_rule.match_replace_uri(request_uri(&req)) {
+            Ok(uri) => uri,
+            Err(UriMatchError::NoMatch(uri)) => {
+                tracing::trace!("no uri match found for uri {uri}; do not rewrite");
+                uri
+            }
+            Err(UriMatchError::Unexpected(err)) => {
+                tracing::debug!(
+                    "an unexpected error ({err}happened while rewriting uri; re-compute og uri and use it preserved"
+                );
+                request_uri(&req)
+            }
+        };
 
-        let mut uri_parts = self
-            .match_replace_uri_rule
-            .as_ref()
-            .and_then(|rule| rule.match_replace_uri(&full_uri))
-            .unwrap_or(full_uri) // fallback to regular Uri in case of no match or no rule specified
-            .into_owned()
-            .into_parts();
+        let mut uri_parts = full_uri.into_owned().into_parts();
 
         uri_parts.scheme = Some(Scheme::HTTPS);
 

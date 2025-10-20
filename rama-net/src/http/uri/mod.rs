@@ -6,4 +6,7 @@
 
 pub mod match_replace;
 #[doc(inline)]
-pub use match_replace::{UriMatchReplace, UriMatchReplaceRule};
+pub use match_replace::{
+    UriMatchError, UriMatchReplace, UriMatchReplaceDomain, UriMatchReplaceFallthrough,
+    UriMatchReplaceRule, UriMatchReplaceRuleset, UriMatchReplaceScheme,
+};
