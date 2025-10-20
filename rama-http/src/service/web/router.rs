@@ -222,7 +222,7 @@ where
         let path = format!("{}/{}", prefix.trim().trim_end_matches(['/']), "{*nest}");
 
         let router = router.with_state(self.state.clone());
-        let nested = Arc::new(router.boxed());
+        let nested = router.boxed();
 
         let nested_router_service = NestedRouterService {
             prefix: Arc::from(prefix),
@@ -250,7 +250,7 @@ where
     {
         let path =
             smol_str::format_smolstr!("{}/{}", prefix.trim().trim_end_matches(['/']), "{*nest}");
-        let nested = Arc::new(service.into_endpoint_service().boxed());
+        let nested = service.into_endpoint_service().boxed();
 
         let nested_router_service = NestedRouterService {
             prefix: Arc::from(prefix),
@@ -308,7 +308,7 @@ where
 struct NestedRouterService {
     #[expect(unused)]
     prefix: Arc<str>,
-    nested: Arc<BoxService<Request, Response, Infallible>>,
+    nested: BoxService<Request, Response, Infallible>,
 }
 
 impl Service<Request> for NestedRouterService {

@@ -27,7 +27,7 @@ use super::{IntoEndpointService, endpoint::Endpoint};
 /// e.g. `((MethodMatcher::GET, service_a), (MethodMatcher::POST, service_b), service_fallback)`.
 pub struct WebService<State = ()> {
     endpoints: Vec<Arc<Endpoint>>,
-    not_found: Arc<BoxService<Request, Response, Infallible>>,
+    not_found: BoxService<Request, Response, Infallible>,
     state: State,
 }
 
@@ -52,9 +52,8 @@ impl WebService {
     pub(crate) fn new() -> Self {
         Self {
             endpoints: Vec::new(),
-            not_found: Arc::new(
-                service_fn(async || Ok(StatusCode::NOT_FOUND.into_response())).boxed(),
-            ),
+            not_found: service_fn(async || Ok(StatusCode::NOT_FOUND.into_response())).boxed(),
+
             state: (),
         }
     }
@@ -260,11 +259,10 @@ where
     where
         I: IntoEndpointServiceWithState<T, State>,
     {
-        self.not_found = Arc::new(
-            service
-                .into_endpoint_service_with_state(self.state.clone())
-                .boxed(),
-        );
+        self.not_found = service
+            .into_endpoint_service_with_state(self.state.clone())
+            .boxed();
+
         self
     }
 }
