@@ -121,7 +121,7 @@ where
 
 mod service;
 #[doc(inline)]
-pub use service::{EndpointServiceFn, State};
+pub use service::EndpointServiceFn;
 
 struct EndpointServiceFnWrapper<F, T, State> {
     inner: F,
@@ -168,7 +168,7 @@ where
     type Error = Infallible;
 
     async fn serve(&self, req: Request) -> Result<Self::Response, Self::Error> {
-        Ok(self.inner.call(self.state.clone(), req).await)
+        Ok(self.inner.call(req, &self.state).await)
     }
 }
 
@@ -226,11 +226,9 @@ mod private {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        Body, Method, Request, StatusCode, body::util::BodyExt,
-        service::web::endpoint::service::State,
-    };
+    use crate::{Body, Method, Request, StatusCode, body::util::BodyExt};
     use extract::*;
+    use rama_core::conversion::FromRef;
 
     fn assert_into_endpoint_service<T, I>(_: I)
     where
@@ -319,6 +317,43 @@ mod tests {
     #[tokio::test]
     async fn test_service_fn_wrapper_with_state() {
         let state = "test_string".to_owned();
+        let svc = async |State(state): State<String>| state;
+        let svc = svc.into_endpoint_service_with_state(state.clone());
+
+        let resp = svc
+            .serve(
+                Request::builder()
+                    .uri("http://example.com")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(body, "test_string");
+    }
+
+    #[tokio::test]
+    async fn test_service_fn_wrapper_with_derived_state() {
+        #[derive(Clone, Debug, Default)]
+        #[allow(dead_code)]
+        struct GlobalState {
+            numbers: u8,
+            text: String,
+        }
+
+        let state = GlobalState {
+            text: "test_string".to_owned(),
+            ..Default::default()
+        };
+
+        impl FromRef<GlobalState> for String {
+            fn from_ref(input: &GlobalState) -> Self {
+                input.text.clone()
+            }
+        }
+
         let svc = async |State(state): State<String>| state;
         let svc = svc.into_endpoint_service_with_state(state.clone());
 

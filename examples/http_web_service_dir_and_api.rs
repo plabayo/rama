@@ -32,7 +32,8 @@ use rama::{
         matcher::HttpMatcher,
         server::HttpServer,
         service::web::{
-            State, WebService,
+            WebService,
+            extract::State,
             response::{Html, Redirect},
         },
     },

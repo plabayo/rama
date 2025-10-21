@@ -40,13 +40,17 @@ impl<T: Clone> Clone for Path<T> {
     }
 }
 
-impl<T> FromRequestContextRefPair for Path<T>
+impl<T, State> FromRequestContextRefPair<State> for Path<T>
 where
     T: DeserializeOwned + Send + Sync + 'static,
+    State: Send + Sync,
 {
     type Rejection = PathRejection;
 
-    async fn from_request_context_ref_pair(parts: &Parts) -> Result<Self, Self::Rejection> {
+    async fn from_request_context_ref_pair(
+        parts: &Parts,
+        _state: &State,
+    ) -> Result<Self, Self::Rejection> {
         match parts.extensions.get::<UriParams>() {
             Some(params) => {
                 let params = params.deserialize::<T>()?;

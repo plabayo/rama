@@ -7,8 +7,8 @@ pub use service::{WebService, match_service};
 mod endpoint;
 #[doc(inline)]
 pub use endpoint::{
-    EndpointServiceFn, IntoEndpointService, IntoEndpointServiceWithState, State, StaticService,
-    extract, response,
+    EndpointServiceFn, IntoEndpointService, IntoEndpointServiceWithState, StaticService, extract,
+    response,
 };
 
 pub mod k8s;

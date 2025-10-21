@@ -22,6 +22,9 @@ pub use query::Query;
 mod method;
 mod request;
 
+mod state;
+pub use state::State;
+
 mod extensions;
 
 pub mod typed_header;
@@ -48,7 +51,7 @@ pub use option::{OptionalFromRequest, OptionalFromRequestContextRefPair};
 #[diagnostic::on_unimplemented(
     note = "Function argument is not a valid web endpoint extractor. \nSee `https://ramaproxy.org/docs/rama/http/service/web/extract/index.html` for details"
 )]
-pub trait FromRequestContextRefPair: Sized + Send + Sync + 'static {
+pub trait FromRequestContextRefPair<State>: Sized + Send + Sync + 'static {
     /// If the extractor fails it'll use this "rejection" type. A rejection is
     /// a kind of error that can be converted into a response.
     type Rejection: IntoResponse;
@@ -56,6 +59,7 @@ pub trait FromRequestContextRefPair: Sized + Send + Sync + 'static {
     /// Perform the extraction.
     fn from_request_context_ref_pair(
         parts: &Parts,
+        state: &State,
     ) -> impl Future<Output = Result<Self, Self::Rejection>> + Send;
 }
 

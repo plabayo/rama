@@ -53,6 +53,7 @@
 
 use rama::{
     Layer,
+    conversion::FromRef,
     http::{
         Method, StatusCode,
         layer::{
@@ -62,14 +63,15 @@ use rama::{
         matcher::HttpMatcher,
         server::HttpServer,
         service::web::{
-            IntoEndpointServiceWithState, State, WebService,
-            extract::{Bytes, Path},
+            IntoEndpointServiceWithState, WebService,
+            extract::{Bytes, Path, State},
             response::{IntoResponse, Json},
         },
     },
     net::{address::SocketAddress, user::Bearer},
     rt::Executor,
     telemetry::tracing::{self, level_filters::LevelFilter},
+    utils::macros::impl_deref,
 };
 
 use ahash::HashMap;
@@ -81,9 +83,39 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, fmt};
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
+/// Contains the global shared state
+///
+/// It's best practise to make sure this is splittable in
+/// smaller more focussed parts so handlers can request
+/// only the things they need
 struct AppState {
-    db: RwLock<HashMap<String, bytes::Bytes>>,
+    db: Db,
+}
+
+#[derive(Debug, Clone, Default)]
+struct Db(Arc<RwLock<HashMap<String, bytes::Bytes>>>);
+
+impl_deref!(Db: Arc<RwLock<HashMap<String, bytes::Bytes>>>);
+
+// By implementing FromRef for all parts of our State, handlers can
+// now only request the parts they need.
+
+impl FromRef<AppState> for Db {
+    fn from_ref(input: &AppState) -> Self {
+        input.db.clone()
+    }
+}
+
+// AppState is cloneable so implement FromRef<AppState> is enough. But here
+// we decided that our GlobalState will be `Arc<AppState>`. We do this so we can
+// add more fields to AppState but cloning it stays the same size. For this
+// specific use case this is way too overkill, but we do it do demonstrate that it's possible.
+
+impl FromRef<Arc<AppState>> for Db {
+    fn from_ref(input: &Arc<AppState>) -> Self {
+        input.db.clone()
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -131,11 +163,11 @@ async fn main() {
                         .get("/keys", list_keys)
                         .nest_service("/admin", ValidateRequestHeaderLayer::auth(Bearer::new_static("secret-token"))
                             .into_layer(WebService::default().with_state(state.clone())
-                                .delete("/keys", async |State(state): State<Arc<AppState>>| {
-                                    state.db.write().await.clear();
+                                .delete("/keys", async |State(db): State<Db>| {
+                                    db.write().await.clear();
                                 })
-                                .delete("/item/:key", async |State(state): State<Arc<AppState>>, Path(params): Path<ItemParam>| {
-                                    match state.db.write().await.remove(&params.key) {
+                                .delete("/item/:key", async |State(db): State<Db>, Path(params): Path<ItemParam>| {
+                                    match db.write().await.remove(&params.key) {
                                         Some(_) => StatusCode::OK,
                                         None => StatusCode::NOT_FOUND,
                                     }
@@ -144,16 +176,16 @@ async fn main() {
                             HttpMatcher::method_get().or_method_head().and_path("/item/:key"),
                             // only compress the get Action, not the Post Action
                             CompressionLayer::new()
-                                .into_layer((async |State(state): State<Arc<AppState>>, Path(params): Path<ItemParam>, method: Method| {
+                                .into_layer((async |State(db): State<Db>, Path(params): Path<ItemParam>, method: Method| {
                                     match method {
                                         Method::GET => {
-                                            match state.db.read().await.get(&params.key) {
+                                            match db.read().await.get(&params.key) {
                                                 Some(b) => b.clone().into_response(),
                                                 None => StatusCode::NOT_FOUND.into_response(),
                                             }
                                         }
                                         Method::HEAD => {
-                                            if state.db.read().await.contains_key(&params.key) {
+                                            if db.read().await.contains_key(&params.key) {
                                                 StatusCode::OK
                                             } else {
                                                 StatusCode::NOT_FOUND
@@ -163,19 +195,19 @@ async fn main() {
                                     }
                                 }).into_endpoint_service_with_state(state.clone())),
                         )
-                        .post("/items", async |State(state): State<Arc<AppState>>, Json(dict): Json<HashMap<String, String>>| {
-                            let mut db = state.db.write().await;
+                        .post("/items", async |State(db): State<Db>, Json(dict): Json<HashMap<String, String>>| {
+                            let mut db = db.write().await;
                             for (k, v) in dict {
                                 db.insert(k, bytes::Bytes::from(v));
                             }
                             StatusCode::OK
                         })
 
-                        .post("/item/:key", async |State(state): State<Arc<AppState>>, Path(params): Path<ItemParam>, Bytes(value): Bytes| {
+                        .post("/item/:key", async |State(db): State<Db>, Path(params): Path<ItemParam>, Bytes(value): Bytes| {
                             if value.is_empty() {
                                 return StatusCode::BAD_REQUEST;
                             }
-                           state.db.write().await.insert(params.key, value);
+                           db.write().await.insert(params.key, value);
                             StatusCode::OK
                         }),
                 ),
@@ -185,8 +217,8 @@ async fn main() {
 }
 
 /// a service_fn can be a regular fn, instead of a closure
-async fn list_keys(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    state.db.read().await.keys().fold(String::new(), |a, b| {
+async fn list_keys(State(db): State<Db>) -> impl IntoResponse {
+    db.read().await.keys().fold(String::new(), |a, b| {
         if a.is_empty() {
             b.clone()
         } else {

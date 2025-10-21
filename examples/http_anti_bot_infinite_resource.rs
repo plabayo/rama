@@ -29,6 +29,7 @@
 // rama provides everything out of the box to build a complete web service.
 use rama::{
     Layer, Service,
+    conversion::FromRef,
     error::{BoxError, OpaqueError},
     extensions::ExtensionsRef,
     http::{
@@ -37,8 +38,8 @@ use rama::{
         layer::{required_header::AddRequiredResponseHeadersLayer, trace::TraceLayer},
         server::HttpServer,
         service::web::{
-            Router, State,
-            extract::Query,
+            Router,
+            extract::{Query, State},
             response::{Headers, Html, IntoResponse},
         },
     },
@@ -47,6 +48,7 @@ use rama::{
     rt::Executor,
     tcp::{TcpStream, server::TcpListener},
     telemetry::tracing::{self, level_filters::LevelFilter},
+    utils::macros::impl_deref,
 };
 
 use ahash::HashSet;
@@ -114,7 +116,16 @@ struct AppState {
     block_list: BlockList,
 }
 
-type BlockList = Arc<Mutex<HashSet<IpAddr>>>;
+#[derive(Clone, Debug, Default)]
+struct BlockList(Arc<Mutex<HashSet<IpAddr>>>);
+
+impl_deref!(BlockList: Arc<Mutex<HashSet<IpAddr>>>);
+
+impl FromRef<AppState> for BlockList {
+    fn from_ref(input: &AppState) -> Self {
+        input.block_list.clone()
+    }
+}
 
 const ROBOTS_TXT: &str = r##"User-agent: *
 Disallow: /internal/
@@ -127,7 +138,12 @@ struct InfiniteResourceParameters {
 }
 
 async fn infinite_resource(
-    State(state): State<AppState>,
+    // We can access global state like this, the easy option for fast prototyping
+    State(_global_state): State<AppState>,
+    // But for production usage we should only use the specific state this handler needs by implementing:
+    // `FromRef<AppState> for BlockList`. This is considered better practise because
+    // handlers only take what they need and never need to know what to GlobalState is.
+    State(block_list): State<BlockList>,
     Query(parameters): Query<InfiniteResourceParameters>,
     request: Request,
 ) -> impl IntoResponse {
@@ -136,7 +152,7 @@ async fn infinite_resource(
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
     let ip_addr = socket_info.peer_addr().ip();
-    let mut block_list = state.block_list.lock().await;
+    let mut block_list = block_list.lock().await;
     block_list.insert(ip_addr);
     tracing::info!(
         "blocking bad ip: {ip_addr}; serve content (limit: {:?})",
