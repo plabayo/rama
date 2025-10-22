@@ -93,12 +93,13 @@ impl Extensions {
     }
 
     #[must_use]
+    /// Convert [`Extensions`] into a frozen/readonly variant
     pub fn into_frozen_extensions(self) -> Arc<Self> {
         Arc::new(self)
     }
 
     generate_set_and_with! {
-        /// TODO
+        /// Set parent extensions
         pub fn parent_extensions(mut self, frozen_extensions: Option<Arc<Extensions>>) -> Self {
             self.parent_extensions = frozen_extensions;
             self

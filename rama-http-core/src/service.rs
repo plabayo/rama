@@ -33,7 +33,7 @@ impl<S> RamaHttpService<S> {
     }
 
     generate_set_and_with! {
-        /// TODO
+        /// Set the parent Extensions that will be applied by [`RamaHttpService`] on each [`Request`]
         pub fn parent_extensions(mut self, frozen_extensions: Option<Arc<Extensions>>) -> Self {
             self.parent_extensions = frozen_extensions;
             self
