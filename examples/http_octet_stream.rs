@@ -23,6 +23,7 @@ use rama::http::service::web::WebService;
 use rama::http::service::web::response::{IntoResponse, OctetStream};
 use rama::rt::Executor;
 use rama::{Layer, http::server::HttpServer};
+use rama::stream::io::ReaderStream;
 
 #[tokio::main]
 async fn main() {
@@ -43,11 +44,15 @@ async fn main() {
 /// Example 1: Simple binary response
 async fn serve_binary_data() -> impl IntoResponse {
     let data = vec![0x48, 0x65, 0x6C, 0x6C, 0x6F]; // "Hello" in bytes
-    OctetStream::new(data)
+    let cursor = std::io::Cursor::new(data);
+    let stream = ReaderStream::new(cursor);
+    OctetStream::new(stream)
 }
 
 /// Example 2: Binary download with Content-Disposition
 async fn serve_download() -> impl IntoResponse {
     let data = b"Binary file content".to_vec();
-    OctetStream::new(data).with_file_name("file.bin".to_owned())
+    let cursor = std::io::Cursor::new(data);
+    let stream = ReaderStream::new(cursor);
+    OctetStream::new(stream).with_file_name("file.bin".to_owned())
 }
