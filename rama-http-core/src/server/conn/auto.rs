@@ -840,7 +840,6 @@ mod tests {
     use crate::service::RamaHttpService;
     use crate::{body::Bytes, client};
     use rama_core::error::BoxError;
-    use rama_core::extensions::Extensions;
     use rama_core::rt::Executor;
     use rama_core::service::service_fn;
     use rama_http::StreamingBody;
@@ -980,10 +979,7 @@ mod tests {
 
         let (stream, _) = listen_task.await.unwrap();
         let builder = auto::Builder::new(Executor::new());
-        let connection = builder.serve_connection(
-            stream,
-            RamaHttpService::new(Extensions::new(), service_fn(hello)),
-        );
+        let connection = builder.serve_connection(stream, RamaHttpService::new(service_fn(hello)));
 
         pin!(connection);
 
@@ -1041,18 +1037,12 @@ mod tests {
                     if h1_only {
                         builder = builder.http1_only();
                         builder
-                            .serve_connection(
-                                stream,
-                                RamaHttpService::new(Extensions::new(), service_fn(hello)),
-                            )
+                            .serve_connection(stream, RamaHttpService::new(service_fn(hello)))
                             .await
                     } else if h2_only {
                         builder = builder.http2_only();
                         builder
-                            .serve_connection(
-                                stream,
-                                RamaHttpService::new(Extensions::new(), service_fn(hello)),
-                            )
+                            .serve_connection(stream, RamaHttpService::new(service_fn(hello)))
                             .await
                     } else {
                         builder
@@ -1060,7 +1050,7 @@ mod tests {
                             .max_header_list_size(4096)
                             .serve_connection_with_upgrades(
                                 stream,
-                                RamaHttpService::new(Extensions::new(), service_fn(hello)),
+                                RamaHttpService::new(service_fn(hello)),
                             )
                             .await
                     }

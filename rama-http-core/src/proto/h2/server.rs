@@ -10,7 +10,7 @@ use rama_core::error::BoxError;
 use rama_core::rt::Executor;
 use rama_core::telemetry::tracing::{Instrument, debug, trace, trace_root_span, warn};
 use rama_http::StreamingBody;
-use rama_http::io::upgrade::{self, OnUpgrade, Pending, Upgraded};
+use rama_http::io::upgrade::{self, Pending, Upgraded};
 use rama_http::opentelemetry::version_as_protocol_version;
 use rama_http_types::{Method, Request, Response, header};
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -263,7 +263,6 @@ where
                                 return Poll::Ready(Ok(()));
                             }
                             let (pending, upgrade) = upgrade::pending();
-                            debug_assert!(parts.extensions.get::<OnUpgrade>().is_none());
                             parts.extensions.insert(upgrade);
                             (
                                 Request::from_parts(parts, IncomingBody::empty()),

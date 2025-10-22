@@ -116,9 +116,13 @@ where
                 ));
             }
 
-            let builder = req
-                .extensions_mut()
-                .get_or_insert_default::<TlsConnectorDataBuilder>();
+            let builder = match req.extensions_mut().get_mut::<TlsConnectorDataBuilder>() {
+                Some(builder) => builder,
+                None => req
+                    .extensions_mut()
+                    .insert_mut(TlsConnectorDataBuilder::default()),
+            };
+
             builder.push_base_config(emulate_builder);
             if let Some(overwrites) = self.builder_overwrites.clone() {
                 builder.push_base_config(overwrites);

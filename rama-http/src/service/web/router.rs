@@ -11,7 +11,7 @@ use crate::{
 
 use matchit::Router as MatchitRouter;
 use rama_core::{
-    extensions::{Extensions, ExtensionsMut},
+    extensions::{Extensions, ExtensionsMut, ExtensionsRef},
     matcher::Matcher,
     service::{BoxService, Service},
 };
@@ -264,7 +264,7 @@ impl Service<Request> for NestedRouterService {
     type Error = Infallible;
 
     async fn serve(&self, mut req: Request) -> Result<Self::Response, Self::Error> {
-        let params: UriParams = match req.extensions_mut().remove::<UriParams>() {
+        let params = match req.extensions().get::<UriParams>() {
             Some(params) => {
                 let nested_path = params.get("nest").unwrap_or_default();
 
@@ -303,14 +303,15 @@ impl Service<Request> for Router {
         if let Ok(matched) = self.routes.at(&uri) {
             let uri_params = matched.params.iter();
 
-            let params: UriParams = match req.extensions_mut().remove::<UriParams>() {
-                Some(mut params) => {
+            match req.extensions_mut().get_mut::<UriParams>() {
+                Some(params) => {
                     params.extend(uri_params);
-                    params
                 }
-                None => uri_params.collect(),
-            };
-            req.extensions_mut().insert(params);
+                None => {
+                    req.extensions_mut()
+                        .insert(uri_params.collect::<UriParams>());
+                }
+            }
 
             for (matcher, service) in matched.value.iter() {
                 if matcher.matches(Some(&mut ext), &req) {

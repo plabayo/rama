@@ -303,9 +303,12 @@ async fn test_ua_emulation() {
         )
             .into_layer(service_fn(async |mut req: Request| {
                 // We can edit our current builder directly or create a new one if needed
-                let builder = req
-                    .extensions_mut()
-                    .get_or_insert_default::<TlsConnectorDataBuilder>();
+                let builder = match req.extensions_mut().get_mut::<TlsConnectorDataBuilder>() {
+                    Some(builder) => builder,
+                    None => req
+                        .extensions_mut()
+                        .insert_mut(TlsConnectorDataBuilder::default()),
+                };
                 builder.set_server_verify_mode(ServerVerifyMode::Disable);
 
                 // We dont need to set connector data on TlsConnector as it will get it from extensions

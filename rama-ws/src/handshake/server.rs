@@ -739,7 +739,7 @@ where
 
     async fn serve(&self, req: Request<Body>) -> Result<Self::Response, Self::Error> {
         match self.acceptor.serve(req).await {
-            Ok((resp, mut req)) => {
+            Ok((resp, req)) => {
                 #[cfg(not(feature = "compression"))]
                 if let Some(Extension::PerMessageDeflate(_)) = req.extensions().get() {
                     tracing::error!(
@@ -767,7 +767,7 @@ where
 
                 exec.spawn_task(
                     async move {
-                        match upgrade::on(&mut req).await {
+                        match upgrade::handle_upgrade(&req).await {
                             Ok(upgraded) => {
                                 #[cfg(feature = "compression")]
                                 let maybe_ws_config = {
@@ -904,7 +904,7 @@ impl Service<upgrade::Upgraded> for WebSocketEchoService {
     type Response = ();
     type Error = OpaqueError;
 
-    async fn serve(&self, mut io: upgrade::Upgraded) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, io: upgrade::Upgraded) -> Result<Self::Response, Self::Error> {
         #[cfg(not(feature = "compression"))]
         let maybe_ws_config = {
             if let Some(Extension::PerMessageDeflate(_)) = io.extensions().get() {
@@ -935,7 +935,8 @@ impl Service<upgrade::Upgraded> for WebSocketEchoService {
         };
 
         // TODO improve extensions handling in AsyncWebSocket
-        let extensions = io.take_extensions();
+        let parent_extensions = io.extensions().clone().into_frozen_extensions();
+        let extensions = Extensions::new().with_parent_extensions(parent_extensions);
         let mut socket = AsyncWebSocket::from_raw_socket(io, Role::Server, maybe_ws_config).await;
         *socket.extensions_mut() = extensions;
         self.serve(socket).await

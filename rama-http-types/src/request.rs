@@ -110,11 +110,12 @@ impl<T> From<HyperiumRequest<T>> for Request<T> {
 impl<T> From<Request<T>> for HyperiumRequest<T> {
     fn from(value: Request<T>) -> Self {
         // We can't create hyper parts directly so we have to be slightly creative
-        let (mut parts, body) = value.into_parts();
+        let (parts, body) = value.into_parts();
 
         let mut hyper_extensions = parts
             .extensions
-            .remove::<HyperExtensions>()
+            .get::<HyperExtensions>()
+            .cloned()
             .unwrap_or_default();
 
         hyper_extensions.insert(parts.extensions);

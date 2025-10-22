@@ -2,7 +2,7 @@ use super::{HttpClientService, svc::SendRequest};
 use rama_core::{
     Layer, Service,
     error::{BoxError, OpaqueError},
-    extensions::{ExtensionsMut, ExtensionsRef},
+    extensions::{Extensions, ExtensionsMut, ExtensionsRef},
     inspect::RequestInspector,
     rt::Executor,
     stream::Stream,
@@ -110,8 +110,11 @@ where
         let EstablishedClientConnection { mut req, mut conn } =
             self.inner.connect(req).await.map_err(Into::into)?;
 
-        let conn_extensions = conn.take_extensions();
-        req.extensions_mut().extend(conn_extensions.clone());
+        let parent_extensions = std::mem::take(conn.extensions_mut()).into_frozen_extensions();
+        let extensions = Extensions::new().with_parent_extensions(parent_extensions.clone());
+
+        req.extensions_mut()
+            .set_parent_extensions(parent_extensions);
 
         let req = self
             .http_req_inspector_jit
@@ -199,7 +202,7 @@ where
                 let svc = HttpClientService {
                     sender: SendRequest::Http2(sender),
                     http_req_inspector: self.http_req_inspector_svc.clone(),
-                    extensions: conn_extensions,
+                    extensions,
                 };
 
                 Ok(EstablishedClientConnection { req, conn: svc })
@@ -240,7 +243,7 @@ where
                 let svc = HttpClientService {
                     sender: SendRequest::Http1(Mutex::new(sender)),
                     http_req_inspector: self.http_req_inspector_svc.clone(),
-                    extensions: conn_extensions,
+                    extensions,
                 };
 
                 Ok(EstablishedClientConnection { req, conn: svc })

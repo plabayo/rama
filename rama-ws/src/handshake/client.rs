@@ -852,7 +852,7 @@ pub struct NegotiatedHandshakeRequest<Body> {
 
 impl<Body> NegotiatedHandshakeRequest<Body> {
     /// Fulfill the websocket handshake and return the upgraded [`ClientWebSocket`].
-    pub async fn complete(mut self) -> Result<ClientWebSocket, HandshakeError> {
+    pub async fn complete(self) -> Result<ClientWebSocket, HandshakeError> {
         let accepted_data = validate_http_server_response(
             &self.response,
             self.key,
@@ -867,7 +867,7 @@ impl<Body> NegotiatedHandshakeRequest<Body> {
             "websocket handshake http response is valid",
         );
 
-        let stream = rama_http::io::upgrade::on(&mut self.response)
+        let stream = rama_http::io::upgrade::handle_upgrade(&self.response)
             .await
             .context("upgrade http connection into a raw web socket")
             .map_err(HandshakeError::HttpUpgradeError)?;

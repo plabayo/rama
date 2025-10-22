@@ -68,7 +68,7 @@ pub struct Upgraded {
 /// If no upgrade was available, or it doesn't succeed, yields an `Error`.
 #[derive(Clone)]
 pub struct OnUpgrade {
-    rx: Option<Arc<Mutex<oneshot::Receiver<Result<Upgraded, OpaqueError>>>>>,
+    rx: Arc<Mutex<oneshot::Receiver<Result<Upgraded, OpaqueError>>>>,
 }
 
 /// The deconstructed parts of an [`Upgraded`] type.
@@ -93,16 +93,18 @@ pub struct Parts<T> {
     pub extensions: Extensions,
 }
 
-/// Gets a pending HTTP upgrade from this message.
+/// Gets a pending HTTP upgrade from this message and handles it.
 ///
 /// This can be called on the following types:
 ///
 /// - `http::Request<B>`
 /// - `http::Response<B>`
-/// - `&mut rama_http::Request<B>`
-/// - `&mut rama_http::Response<B>`
-pub fn on<T: sealed::CanUpgrade>(msg: T) -> OnUpgrade {
-    msg.on_upgrade()
+/// - `&rama_http::Request<B>`
+/// - `&rama_http::Response<B>`
+pub fn handle_upgrade<T: sealed::HandleUpgrade>(
+    msg: T,
+) -> impl Future<Output = Result<Upgraded, OpaqueError>> {
+    msg.handle_upgrade()
 }
 
 /// A pending upgrade, created with [`pending`].
@@ -114,10 +116,11 @@ pub struct Pending {
 #[must_use]
 pub fn pending() -> (Pending, OnUpgrade) {
     let (tx, rx) = oneshot::channel();
+
     (
         Pending { tx },
         OnUpgrade {
-            rx: Some(Arc::new(Mutex::new(rx))),
+            rx: Arc::new(Mutex::new(rx)),
         },
     )
 }
@@ -243,17 +246,19 @@ impl fmt::Debug for Upgraded {
     }
 }
 
+impl fmt::Debug for Pending {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Pending").finish()
+    }
+}
+
 // ===== impl OnUpgrade =====
 
 impl OnUpgrade {
-    pub(super) fn none() -> Self {
-        Self { rx: None }
-    }
-
-    /// Returns true if no upgrade is in progress.
+    /// Returns true if there was an upgrade and the upgrade has already been handled
     #[must_use]
-    pub fn is_none(&self) -> bool {
-        self.rx.is_none()
+    pub fn has_handled_upgrade(&self) -> bool {
+        self.rx.lock().unwrap().is_terminated()
     }
 }
 
@@ -261,20 +266,15 @@ impl Future for OnUpgrade {
     type Output = Result<Upgraded, OpaqueError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        match self.rx {
-            Some(ref rx) => Pin::new(&mut *rx.lock().unwrap())
-                .poll(cx)
-                .map(|res| match res {
-                    Ok(Ok(upgraded)) => Ok(upgraded),
-                    Ok(Err(err)) => Err(err),
-                    Err(_oneshot_canceled) => Err(OpaqueError::from_display(
-                        "OnUpgrade: cancelled while expecting upgrade",
-                    )),
-                }),
-            None => Poll::Ready(Err(OpaqueError::from_display(
-                "OnUpgrade: polled for upgrade while none was expected",
-            ))),
-        }
+        Pin::new(&mut *self.rx.lock().unwrap())
+            .poll(cx)
+            .map(|res| match res {
+                Ok(Ok(upgraded)) => Ok(upgraded),
+                Ok(Err(err)) => Err(err),
+                Err(_oneshot_canceled) => Err(OpaqueError::from_display(
+                    "OnUpgrade: cancelled while expecting upgrade",
+                )),
+            })
     }
 }
 
@@ -304,44 +304,64 @@ impl Pending {
 }
 
 mod sealed {
-    use rama_core::extensions::ExtensionsMut;
+    use rama_core::{extensions::ExtensionsRef, telemetry::tracing::trace};
+    use rama_error::OpaqueError;
     use rama_http_types::{Request, Response};
+
+    use crate::io::upgrade::Upgraded;
 
     use super::OnUpgrade;
 
-    pub trait CanUpgrade {
-        fn on_upgrade(self) -> OnUpgrade;
+    pub trait HandleUpgrade {
+        fn handle_upgrade(self) -> impl Future<Output = Result<Upgraded, OpaqueError>> + 'static;
     }
 
-    impl<B> CanUpgrade for Request<B> {
-        fn on_upgrade(mut self) -> OnUpgrade {
-            self.extensions_mut()
-                .remove::<OnUpgrade>()
-                .unwrap_or_else(OnUpgrade::none)
+    fn handle_upgrade<T: ExtensionsRef>(
+        obj: T,
+    ) -> impl Future<Output = Result<Upgraded, OpaqueError>> + 'static {
+        let on_upgrade = match obj.extensions().get::<OnUpgrade>().cloned() {
+            Some(on_upgrade) => {
+                trace!("upgrading this: {:?}", on_upgrade);
+                if on_upgrade.has_handled_upgrade() {
+                    Err(OpaqueError::from_display(
+                        "upgraded has already been handled",
+                    ))
+                } else {
+                    Ok(on_upgrade)
+                }
+            }
+            None => Err(OpaqueError::from_display("no pending update found")),
+        };
+
+        async {
+            match on_upgrade {
+                Ok(on_upgrade) => on_upgrade.await,
+                Err(err) => Err(err),
+            }
         }
     }
 
-    impl<B> CanUpgrade for &'_ mut Request<B> {
-        fn on_upgrade(self) -> OnUpgrade {
-            self.extensions_mut()
-                .remove::<OnUpgrade>()
-                .unwrap_or_else(OnUpgrade::none)
+    impl<B> HandleUpgrade for Request<B> {
+        fn handle_upgrade(self) -> impl Future<Output = Result<Upgraded, OpaqueError>> + 'static {
+            handle_upgrade(self)
         }
     }
 
-    impl<B> CanUpgrade for Response<B> {
-        fn on_upgrade(mut self) -> OnUpgrade {
-            self.extensions_mut()
-                .remove::<OnUpgrade>()
-                .unwrap_or_else(OnUpgrade::none)
+    impl<B> HandleUpgrade for &Request<B> {
+        fn handle_upgrade(self) -> impl Future<Output = Result<Upgraded, OpaqueError>> + 'static {
+            handle_upgrade(self)
         }
     }
 
-    impl<B> CanUpgrade for &'_ mut Response<B> {
-        fn on_upgrade(self) -> OnUpgrade {
-            self.extensions_mut()
-                .remove::<OnUpgrade>()
-                .unwrap_or_else(OnUpgrade::none)
+    impl<B> HandleUpgrade for Response<B> {
+        fn handle_upgrade(self) -> impl Future<Output = Result<Upgraded, OpaqueError>> + 'static {
+            handle_upgrade(self)
+        }
+    }
+
+    impl<B> HandleUpgrade for &Response<B> {
+        fn handle_upgrade(self) -> impl Future<Output = Result<Upgraded, OpaqueError>> + 'static {
+            handle_upgrade(self)
         }
     }
 }

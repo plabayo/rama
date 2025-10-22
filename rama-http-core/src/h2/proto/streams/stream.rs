@@ -74,8 +74,8 @@ pub(super) struct Stream {
     /// Set to true when a push is pending for this stream
     pub is_pending_push: bool,
 
-    /// The extensions map of the last processed encoded http request
-    pub encoded_request_extensions: Option<rama_core::extensions::Extensions>,
+    /// The extensions map of the last processed encoded http request/response
+    pub encoded_extensions: Option<rama_core::extensions::Extensions>,
 
     // ===== Fields related to receiving =====
     /// Next node in the accept linked list
@@ -143,10 +143,7 @@ impl fmt::Debug for Stream {
             .h2_field_some("next_open", &self.next_open)
             .h2_field_if("is_pending_open", self.is_pending_open)
             .h2_field_if("is_pending_push", self.is_pending_push)
-            .h2_field_some(
-                "encoded_request_extensions",
-                &self.encoded_request_extensions,
-            )
+            .h2_field_some("encoded_extensions", &self.encoded_extensions)
             .h2_field_some("next_pending_accept", &self.next_pending_accept)
             .h2_field_if("is_pending_accept", self.is_pending_accept)
             .field("recv_flow", &self.recv_flow)
@@ -239,7 +236,7 @@ impl Stream {
             is_pending_open: false,
             next_open: None,
             is_pending_push: false,
-            encoded_request_extensions: None,
+            encoded_extensions: None,
 
             // ===== Fields related to receiving =====
             next_pending_accept: None,

@@ -27,6 +27,7 @@
 //! assert_eq!(ext.get::<i32>(), Some(&5i32));
 //! ```
 
+use rama_utils::macros::generate_set_and_with;
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::fmt;
@@ -75,6 +76,7 @@ pub struct Extensions {
     map: Option<Box<AnyMap>>,
     #[cfg(debug_assertions)]
     type_map: Option<Box<TypeIdMap>>,
+    parent_extensions: Option<Arc<Extensions>>,
 }
 
 impl Extensions {
@@ -86,6 +88,21 @@ impl Extensions {
             map: None,
             #[cfg(debug_assertions)]
             type_map: None,
+            parent_extensions: None,
+        }
+    }
+
+    #[must_use]
+    /// Convert [`Extensions`] into a frozen/readonly variant
+    pub fn into_frozen_extensions(self) -> Arc<Self> {
+        Arc::new(self)
+    }
+
+    generate_set_and_with! {
+        /// Set parent extensions
+        pub fn parent_extensions(mut self, frozen_extensions: Option<Arc<Extensions>>) -> Self {
+            self.parent_extensions = frozen_extensions;
+            self
         }
     }
 
@@ -103,6 +120,12 @@ impl Extensions {
             .get_or_insert_with(Box::default)
             .insert(TypeId::of::<T>(), Box::new(val))
             .and_then(|boxed| boxed.into_any().downcast().ok().map(|boxed| *boxed))
+    }
+
+    /// Insert a type into this `Extensions` and get mutable reference
+    pub fn insert_mut<T: Clone + Send + Sync + 'static>(&mut self, val: T) -> &mut T {
+        self.insert(val);
+        self.get_mut().unwrap()
     }
 
     /// Insert a type only into this `Extensions`, if the value is `Some(T)`.
@@ -143,22 +166,32 @@ impl Extensions {
         }
     }
 
-    /// Returns true if the `Extensions` contains the given type.
+    /// Returns true if the `Extensions` or parents contains the given type.
     #[must_use]
     pub fn contains<T: Send + Sync + 'static>(&self) -> bool {
         self.map
             .as_ref()
             .map(|map| map.contains_key(&TypeId::of::<T>()))
-            .unwrap_or_default()
+            .unwrap_or_else(|| {
+                self.parent_extensions
+                    .as_ref()
+                    .map(|parent| parent.contains::<T>())
+                    .unwrap_or_default()
+            })
     }
 
-    /// Get a shared reference to a type previously inserted on this `Extensions`.
+    /// Get a shared reference to a type previously inserted on this `Extensions` or any of the parents
     #[must_use]
     pub fn get<T: Send + Sync + 'static>(&self) -> Option<&T> {
         self.map
             .as_ref()
             .and_then(|map| map.get(&TypeId::of::<T>()))
             .and_then(|boxed| (**boxed).as_any().downcast_ref())
+            .or_else(|| {
+                self.parent_extensions
+                    .as_ref()
+                    .and_then(|parent| parent.get())
+            })
     }
 
     /// Get an exclusive reference to a type previously inserted on this `Extensions`.
@@ -167,97 +200,6 @@ impl Extensions {
             .as_mut()
             .and_then(|map| map.get_mut(&TypeId::of::<T>()))
             .and_then(|boxed| (**boxed).as_any_mut().downcast_mut())
-    }
-
-    /// Inserts a value into the map computed from `f` into if it is [`None`],
-    /// then returns an exclusive reference to the contained value.
-    ///
-    /// Use the cheaper [`Self::get_or_insert_with`] in case you do not need access to
-    /// the extensions for the creation of `T`, as this function comes with
-    /// an extra cost.
-    pub fn get_or_insert_with_ext<T: Clone + Send + Sync + 'static>(
-        &mut self,
-        f: impl FnOnce(&Self) -> T,
-    ) -> &mut T {
-        if self.contains::<T>() {
-            // NOTE: once <https://github.com/rust-lang/polonius>
-            // is merged into rust we can use directly `if let Some(v) = self.extensions.get_mut()`,
-            // until then we need this work around.
-            return self.get_mut().unwrap();
-        }
-        let v = f(self);
-        self.insert(v);
-        self.get_mut().unwrap()
-    }
-
-    /// Inserts a value into the map computed from `f` into if it is [`None`],
-    /// then returns an exclusive reference to the contained value.
-    pub fn get_or_insert_with<T: Send + Sync + Clone + 'static>(
-        &mut self,
-        f: impl FnOnce() -> T,
-    ) -> &mut T {
-        #[cfg(debug_assertions)]
-        self.type_map
-            .get_or_insert_with(Box::default)
-            .insert(TypeId::of::<T>(), type_name::<T>().to_owned());
-
-        let map = self.map.get_or_insert_with(Box::default);
-        let entry = map.entry(TypeId::of::<T>());
-
-        let boxed = entry.or_insert_with(|| Box::new(f()));
-        (**boxed)
-            .as_any_mut()
-            .downcast_mut()
-            .expect("type mismatch")
-    }
-
-    /// Inserts a value into the map computed by converting `U` into `T` if it is `None`
-    /// then returns an exclusive reference to the contained value.
-    pub fn get_or_insert_from<T, U>(&mut self, src: U) -> &mut T
-    where
-        T: Send + Sync + Clone + 'static,
-        U: Into<T>,
-    {
-        #[cfg(debug_assertions)]
-        self.type_map
-            .get_or_insert_with(Box::default)
-            .insert(TypeId::of::<T>(), type_name::<T>().to_owned());
-
-        let map = self.map.get_or_insert_with(Box::default);
-        let entry = map.entry(TypeId::of::<T>());
-
-        let boxed = entry.or_insert_with(|| Box::new(src.into()));
-        (**boxed)
-            .as_any_mut()
-            .downcast_mut()
-            .expect("type mismatch")
-    }
-
-    /// Retrieves a value of type `T` from the context.
-    ///
-    /// If the value does not exist, the given value is inserted and an exclusive reference to it is returned.
-    pub fn get_or_insert<T: Clone + Send + Sync + 'static>(&mut self, fallback: T) -> &mut T {
-        self.get_or_insert_with(|| fallback)
-    }
-
-    /// Get an extension or `T`'s [`Default`].
-    ///
-    /// see [`Extensions::get`] for more details.
-    pub fn get_or_insert_default<T: Default + Clone + Send + Sync + 'static>(&mut self) -> &mut T {
-        self.get_or_insert_with(T::default)
-    }
-
-    /// Remove a type from this `Extensions`.
-    pub fn remove<T: Clone + Send + Sync + 'static>(&mut self) -> Option<T> {
-        #[cfg(debug_assertions)]
-        self.type_map
-            .as_mut()
-            .and_then(|map| map.remove(&TypeId::of::<T>()));
-
-        self.map
-            .as_mut()
-            .and_then(|map| map.remove(&TypeId::of::<T>()))
-            .and_then(|boxed| boxed.into_any().downcast().ok().map(|boxed| *boxed))
     }
 }
 
@@ -275,7 +217,10 @@ impl fmt::Debug for Extensions {
                 .collect::<Vec<&String>>()
         });
 
-        f.debug_struct("Extensions").field("items", &items).finish()
+        f.debug_struct("Extensions")
+            .field("items", &items)
+            .field("parent_extensions", &self.parent_extensions)
+            .finish()
     }
 
     #[cfg(not(debug_assertions))]
@@ -377,10 +322,16 @@ where
 
 impl<T> ExtensionsMut for Pin<Box<T>>
 where
-    T: ExtensionsMut + Unpin,
+    T: ExtensionsMut,
 {
     fn extensions_mut(&mut self) -> &mut Extensions {
-        (**self).extensions_mut()
+        let pinned_t = self.as_mut();
+        // SAFETY: `extensions_mut` only has a mutable reference to a specific
+        // field and does not move T itself, so this is safe
+        unsafe {
+            let t_mut = pinned_t.get_unchecked_mut();
+            t_mut.extensions_mut()
+        }
     }
 }
 
@@ -561,4 +512,15 @@ fn test_extensions() {
     extensions2.clear();
     assert_eq!(extensions2.get::<i32>(), None);
     assert_eq!(extensions2.get::<MyType>(), None);
+}
+
+#[test]
+fn test_extensions_chaining() {
+    let mut conn_extensions = Extensions::new();
+    conn_extensions.insert(String::new());
+
+    let conn_extensions = conn_extensions.into_frozen_extensions();
+
+    let req_extensions = Extensions::new().with_parent_extensions(conn_extensions);
+    assert!(req_extensions.get::<String>().is_some());
 }

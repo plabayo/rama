@@ -1,8 +1,13 @@
 use std::{fmt, time::Duration};
 
 use rama_core::{
-    Service, combinators::Either, error::BoxError, extensions::ExtensionsMut,
-    layer::timeout::DefaultTimeout, stream::Stream, telemetry::tracing,
+    Service,
+    combinators::Either,
+    error::BoxError,
+    extensions::{Extensions, ExtensionsMut},
+    layer::timeout::DefaultTimeout,
+    stream::Stream,
+    telemetry::tracing,
 };
 use rama_net::{
     address::{Authority, Host, SocketAddress},
@@ -440,7 +445,6 @@ where
 {
     async fn accept_udp_associate(
         &self,
-
         mut stream: S,
         destination: Authority,
     ) -> Result<(), Error> {
@@ -448,7 +452,8 @@ where
             "socks5 server w/ destination {destination}: udp associate: try to bind incoming socket to destination {destination}",
         );
 
-        let extensions = stream.take_extensions();
+        let parent_extensions = std::mem::take(stream.extensions_mut()).into_frozen_extensions();
+        let extensions = Extensions::new().with_parent_extensions(parent_extensions);
 
         let (dest_host, dest_port) = destination.into_parts();
         let dest_addr = match dest_host {

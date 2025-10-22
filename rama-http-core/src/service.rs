@@ -7,6 +7,8 @@ use rama_http::StreamingBody;
 use rama_http::opentelemetry::version_as_protocol_version;
 use rama_http::service::web::response::IntoResponse;
 use rama_http_types::{Request, Response};
+use rama_utils::macros::generate_set_and_with;
+use std::sync::Arc;
 use std::{convert::Infallible, fmt};
 
 pub trait HttpService<ReqBody>: sealed::Sealed<ReqBody> {
@@ -19,12 +21,23 @@ pub trait HttpService<ReqBody>: sealed::Sealed<ReqBody> {
 
 pub struct RamaHttpService<S> {
     svc: S,
-    extensions: Extensions,
+    parent_extensions: Option<Arc<Extensions>>,
 }
 
 impl<S> RamaHttpService<S> {
-    pub fn new(extensions: Extensions, svc: S) -> Self {
-        Self { svc, extensions }
+    pub fn new(svc: S) -> Self {
+        Self {
+            svc,
+            parent_extensions: None,
+        }
+    }
+
+    generate_set_and_with! {
+        /// Set the parent Extensions that will be applied by [`RamaHttpService`] on each [`Request`]
+        pub fn parent_extensions(mut self, frozen_extensions: Option<Arc<Extensions>>) -> Self {
+            self.parent_extensions = frozen_extensions;
+            self
+        }
     }
 }
 
@@ -35,7 +48,7 @@ where
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("RamaHttpService")
             .field("svc", &self.svc)
-            .field("extensions", &self.extensions)
+            .field("parent_extensions", &self.parent_extensions)
             .finish()
     }
 }
@@ -47,7 +60,7 @@ where
     fn clone(&self) -> Self {
         Self {
             svc: self.svc.clone(),
-            extensions: self.extensions.clone(),
+            parent_extensions: self.parent_extensions.clone(),
         }
     }
 }
@@ -62,10 +75,16 @@ where
         &self,
         req: Request<ReqBody>,
     ) -> impl Future<Output = Result<Response, Infallible>> + Send + 'static {
-        let Self { svc, extensions } = self.clone();
+        let Self {
+            svc,
+            parent_extensions,
+        } = self.clone();
         async move {
             let mut req = req.map(rama_http_types::Body::new);
-            req.extensions_mut().extend(extensions);
+            if let Some(parent_extensions) = parent_extensions {
+                req.extensions_mut()
+                    .set_parent_extensions(parent_extensions);
+            }
 
             let span = trace_root_span!(
                 "http::serve",

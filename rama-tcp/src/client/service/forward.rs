@@ -3,7 +3,7 @@ use crate::client::Request as TcpRequest;
 use rama_core::{
     Service,
     error::{BoxError, ErrorExt, OpaqueError},
-    extensions::ExtensionsMut,
+    extensions::{Extensions, ExtensionsMut},
     stream::Stream,
 };
 use rama_net::{
@@ -94,7 +94,7 @@ where
     type Response = ();
     type Error = BoxError;
 
-    async fn serve(&self, mut source: T) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, source: T) -> Result<Self::Response, Self::Error> {
         let authority = match &self.kind {
             ForwarderKind::Static(target) => target.clone(),
             ForwarderKind::Dynamic => source
@@ -106,7 +106,10 @@ where
                 })?,
         };
 
-        let req = TcpRequest::new(authority.clone(), source.take_extensions());
+        // Clone them here so we also have them on source still
+        let parent_extensions = source.extensions().clone().into_frozen_extensions();
+        let extensions = Extensions::new().with_parent_extensions(parent_extensions);
+        let req = TcpRequest::new(authority.clone(), extensions);
 
         let EstablishedClientConnection { conn: target, .. } =
             self.connector.connect(req).await.map_err(|err| {

@@ -385,7 +385,7 @@ macro_rules! test {
             // Always check that HttpConnector has set the "extra" info...
             let extra = resp
                 .extensions_mut()
-                .remove::<HttpInfo>()
+                .get::<HttpInfo>()
                 .expect("HttpConnector should set HttpInfo");
 
             assert_eq!(extra.remote_addr, addr, "HttpInfo should have server addr");
@@ -1489,7 +1489,6 @@ mod conn {
 
     use futures_channel::{mpsc, oneshot};
     use rama::bytes::{Buf, Bytes};
-    use rama::extensions::Extensions;
     use rama::extensions::ExtensionsRef;
     use rama::futures::future::{self, FutureExt, TryFutureExt, poll_fn};
     use rama_http::StreamingBody;
@@ -1501,7 +1500,6 @@ mod conn {
     use rama::http::core::body::Frame;
     use rama::http::core::client::conn;
     use rama::http::core::service::RamaHttpService;
-    use rama::http::io::upgrade::OnUpgrade;
     use rama::http::{Method, Request, Response, StatusCode};
     use rama::rt::Executor;
 
@@ -2232,7 +2230,7 @@ mod conn {
                         let (stream, _) = res.unwrap();
 
                         let service = RamaHttpService::new(
-                            Extensions::new(),
+
                             service_fn(|_:Request| future::ok::<_, Infallible>(Response::new(rama::http::Body::empty()))));
 
                         let mut shdn_rx = shdn_rx.clone();
@@ -2312,17 +2310,14 @@ mod conn {
             let res = listener.accept().await;
             let (stream, _) = res.unwrap();
 
-            let service = RamaHttpService::new(
-                Extensions::new(),
-                service_fn(move |req: Request| {
-                    tokio::task::spawn(async move {
-                        let io = &mut rama::http::io::upgrade::on(req).await.unwrap();
-                        io.write_all(b"hello\n").await.unwrap();
-                    });
+            let service = RamaHttpService::new(service_fn(move |req: Request| {
+                tokio::task::spawn(async move {
+                    let io = &mut rama::http::io::upgrade::handle_upgrade(req).await.unwrap();
+                    io.write_all(b"hello\n").await.unwrap();
+                });
 
-                    future::ok::<_, Infallible>(Response::new(rama::http::Body::empty()))
-                }),
-            );
+                future::ok::<_, Infallible>(Response::new(rama::http::Body::empty()))
+            }));
 
             tokio::task::spawn(async move {
                 let conn = http2::Builder::new(Executor::new()).serve_connection(stream, service);
@@ -2361,7 +2356,7 @@ mod conn {
 
             let resp = client.send_request(req).await.expect("req1 send");
             assert_eq!(resp.status(), 200);
-            let upgrade = rama::http::io::upgrade::on(resp).await.unwrap();
+            let upgrade = rama::http::io::upgrade::handle_upgrade(resp).await.unwrap();
             tokio::task::spawn(async move {
                 let _ = rx.await;
                 drop(upgrade);
@@ -2492,17 +2487,12 @@ mod conn {
             rama::http::core::server::conn::http2::Builder::new(Executor::new())
                 .serve_connection(
                     sock,
-                    RamaHttpService::new(
-                        Extensions::new(),
-                        service_fn(async |req: Request| {
-                            tokio::spawn(async move {
-                                let _ = concat(req).await.expect("server req body aggregate");
-                            });
-                            Ok::<_, Infallible>(
-                                rama::http::Response::new(rama::http::Body::empty()),
-                            )
-                        }),
-                    ),
+                    RamaHttpService::new(service_fn(async |req: Request| {
+                        tokio::spawn(async move {
+                            let _ = concat(req).await.expect("server req body aggregate");
+                        });
+                        Ok::<_, Infallible>(rama::http::Response::new(rama::http::Body::empty()))
+                    })),
                 )
                 .await
                 .expect("serve_connection");
@@ -2549,14 +2539,11 @@ mod conn {
             rama::http::core::server::conn::http2::Builder::new(Executor::new())
                 .serve_connection(
                     sock,
-                    RamaHttpService::new(
-                        Extensions::new(),
-                        service_fn(async |_req| {
-                            Ok::<_, Infallible>(Response::new(rama::http::Body::from(
-                                "No bread for you!",
-                            )))
-                        }),
-                    ),
+                    RamaHttpService::new(service_fn(async |_req| {
+                        Ok::<_, Infallible>(Response::new(rama::http::Body::from(
+                            "No bread for you!",
+                        )))
+                    })),
                 )
                 .await
                 .expect("serve_connection");
@@ -2633,7 +2620,7 @@ mod conn {
         let res = client.send_request(req).await.expect("send_request");
         assert_eq!(res.status(), StatusCode::OK);
 
-        let mut upgraded = rama::http::io::upgrade::on(res).await.unwrap();
+        let mut upgraded = rama::http::io::upgrade::handle_upgrade(res).await.unwrap();
 
         let mut vec = vec![];
         upgraded.read_to_end(&mut vec).await.unwrap();
@@ -2680,7 +2667,6 @@ mod conn {
         let req = Request::connect("localhost").body(Empty::new()).unwrap();
         let res = client.send_request(req).await.expect("send_request");
         assert_eq!(res.status(), StatusCode::BAD_REQUEST);
-        assert!(res.extensions().get::<OnUpgrade>().is_none());
 
         let mut body = String::new();
         concat(res)

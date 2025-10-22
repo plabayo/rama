@@ -8,7 +8,7 @@ use rama_core::bytes::{Buf, Bytes};
 use rama_core::error::BoxError;
 use rama_core::extensions::ExtensionsMut;
 use rama_core::telemetry::tracing::{debug, error, trace};
-use rama_http::{StreamingBody, io::upgrade::OnUpgrade};
+use rama_http::StreamingBody;
 use rama_http_types::{Request, Response, StatusCode};
 use std::task::ready;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -289,11 +289,6 @@ where
                 };
                 if wants.contains(Wants::UPGRADE) {
                     let upgrade = self.conn.on_upgrade();
-                    debug_assert!(!upgrade.is_none(), "empty upgrade");
-                    debug_assert!(
-                        head.extensions.get::<OnUpgrade>().is_none(),
-                        "OnUpgrade already set"
-                    );
                     head.extensions.insert(upgrade);
                 }
                 self.dispatch.recv_msg(Ok((head, body)))?;

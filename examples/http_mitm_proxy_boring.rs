@@ -449,9 +449,9 @@ where
 
     tokio::spawn(async move {
         tracing::debug!("egresss websocket active: starting ingress WS upgrade...");
-        let mut request = Request::from_parts(parts_copy, Body::empty());
+        let request = Request::from_parts(parts_copy, Body::empty());
 
-        let ingress_socket = match upgrade::on(&mut request).await {
+        let ingress_socket = match upgrade::handle_upgrade(&request).await {
             Ok(upgraded) => {
                 let mut socket = AsyncWebSocket::from_raw_socket(
                     upgraded,
@@ -459,7 +459,9 @@ where
                     Some(ingress_socket_cfg),
                 )
                 .await;
-                *socket.extensions_mut() = request.take_extensions();
+                socket
+                    .extensions_mut()
+                    .set_parent_extensions(Arc::new(request.extensions().clone()));
                 socket
             }
             Err(err) => {

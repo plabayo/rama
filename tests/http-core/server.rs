@@ -1006,21 +1006,18 @@ async fn expect_continue_waits_for_body_poll() {
     http1::Builder::new()
         .serve_connection(
             socket,
-            RamaHttpService::new(
-                Extensions::new(),
-                service_fn(async |req: Request| {
-                    assert_eq!(req.headers()["expect"], "100-continue");
-                    // But! We're never going to poll the body!
-                    drop(req);
-                    tokio::time::sleep(Duration::from_millis(50)).await;
-                    Ok::<_, Infallible>(
-                        Response::builder()
-                            .status(StatusCode::BAD_REQUEST)
-                            .body(rama::http::Body::empty())
-                            .unwrap(),
-                    )
-                }),
-            ),
+            RamaHttpService::new(service_fn(async |req: Request| {
+                assert_eq!(req.headers()["expect"], "100-continue");
+                // But! We're never going to poll the body!
+                drop(req);
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .status(StatusCode::BAD_REQUEST)
+                        .body(rama::http::Body::empty())
+                        .unwrap(),
+                )
+            })),
         )
         .await
         .expect("serve_connection");
@@ -1189,10 +1186,7 @@ async fn disable_keep_alive_mid_request() {
     });
 
     let (socket, _) = listener.accept().await.unwrap();
-    let srv = http1::Builder::new().serve_connection(
-        socket,
-        RamaHttpService::new(rama::extensions::Extensions::new(), HelloWorld),
-    );
+    let srv = http1::Builder::new().serve_connection(socket, RamaHttpService::new(HelloWorld));
     future::try_select(srv, rx1)
         .then(|r| match r {
             Ok(Either::Left(_)) => panic!("expected rx first"),
@@ -1242,10 +1236,8 @@ async fn disable_keep_alive_post_request() {
         stream: socket,
         _debug: dropped2,
     };
-    let server = http1::Builder::new().serve_connection(
-        transport,
-        RamaHttpService::new(rama::extensions::Extensions::new(), HelloWorld),
-    );
+    let server =
+        http1::Builder::new().serve_connection(transport, RamaHttpService::new(HelloWorld));
     let fut = future::try_select(server, rx1).then(|r| match r {
         Ok(Either::Left(_)) => panic!("expected rx first"),
         Ok(Either::Right(((), mut conn))) => {
@@ -1289,20 +1281,17 @@ async fn http1_graceful_shutdown_after_upgrade() {
     });
 
     let (upgrades_tx, upgrades_rx) = mpsc::channel();
-    let svc = RamaHttpService::new(
-        Extensions::new(),
-        service_fn(move |req: Request| {
-            let on_upgrade = rama::http::io::upgrade::on(req);
-            let _ = upgrades_tx.send(on_upgrade);
-            future::ok::<_, Infallible>(
-                Response::builder()
-                    .status(101)
-                    .header("upgrade", "foobar")
-                    .body(rama::http::Body::empty())
-                    .unwrap(),
-            )
-        }),
-    );
+    let svc = RamaHttpService::new(service_fn(move |req: Request| {
+        let on_upgrade = rama::http::io::upgrade::handle_upgrade(req);
+        let _ = upgrades_tx.send(on_upgrade);
+        future::ok::<_, Infallible>(
+            Response::builder()
+                .status(101)
+                .header("upgrade", "foobar")
+                .body(rama::http::Body::empty())
+                .unwrap(),
+        )
+    }));
 
     let (socket, _) = listener.accept().await.unwrap();
 
@@ -1334,10 +1323,7 @@ async fn empty_parse_eof_does_not_return_error() {
 
     let (socket, _) = listener.accept().await.unwrap();
     http1::Builder::new()
-        .serve_connection(
-            socket,
-            RamaHttpService::new(rama::extensions::Extensions::new(), HelloWorld),
-        )
+        .serve_connection(socket, RamaHttpService::new(HelloWorld))
         .await
         .expect("empty parse eof is ok");
 }
@@ -1353,10 +1339,7 @@ async fn nonempty_parse_eof_returns_error() {
 
     let (socket, _) = listener.accept().await.unwrap();
     http1::Builder::new()
-        .serve_connection(
-            socket,
-            RamaHttpService::new(rama::extensions::Extensions::new(), HelloWorld),
-        )
+        .serve_connection(socket, RamaHttpService::new(HelloWorld))
         .await
         .expect_err("partial parse eof is error");
 }
@@ -1381,13 +1364,10 @@ async fn http1_allow_half_close() {
         .half_close(true)
         .serve_connection(
             socket,
-            RamaHttpService::new(
-                Extensions::new(),
-                service_fn(|_| {
-                    tokio::time::sleep(Duration::from_millis(500))
-                        .map(|_| Ok::<_, Infallible>(Response::new(rama::http::Body::empty())))
-                }),
-            ),
+            RamaHttpService::new(service_fn(|_| {
+                tokio::time::sleep(Duration::from_millis(500))
+                    .map(|_| Ok::<_, Infallible>(Response::new(rama::http::Body::empty())))
+            })),
         )
         .await
         .unwrap();
@@ -1409,16 +1389,13 @@ async fn disconnect_after_reading_request_before_responding() {
         .half_close(false)
         .serve_connection(
             socket,
-            RamaHttpService::new(
-                Extensions::new(),
-                service_fn(|_| {
-                    tokio::time::sleep(Duration::from_secs(2)).map(
-                        |_| -> Result<Response<IncomingBody>, Infallible> {
-                            panic!("response future should have been dropped");
-                        },
-                    )
-                }),
-            ),
+            RamaHttpService::new(service_fn(|_| {
+                tokio::time::sleep(Duration::from_secs(2)).map(
+                    |_| -> Result<Response<IncomingBody>, Infallible> {
+                        panic!("response future should have been dropped");
+                    },
+                )
+            })),
         )
         .await
         .expect_err("socket disconnected");
@@ -1442,17 +1419,14 @@ async fn returning_1xx_response_is_error() {
     http1::Builder::new()
         .serve_connection(
             socket,
-            RamaHttpService::new(
-                Extensions::new(),
-                service_fn(async |_| {
-                    Ok::<_, Infallible>(
-                        Response::builder()
-                            .status(StatusCode::CONTINUE)
-                            .body(rama::http::Body::empty())
-                            .unwrap(),
-                    )
-                }),
-            ),
+            RamaHttpService::new(service_fn(async |_| {
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .status(StatusCode::CONTINUE)
+                        .body(rama::http::Body::empty())
+                        .unwrap(),
+                )
+            })),
         )
         .await
         .expect_err("1xx status code should error");
@@ -1508,16 +1482,13 @@ async fn header_read_timeout_slow_writes() {
         .header_read_timeout(Duration::from_secs(5))
         .serve_connection(
             socket,
-            RamaHttpService::new(
-                Extensions::new(),
-                service_fn(|_| {
-                    let res = Response::builder()
-                        .status(StatusCode::OK)
-                        .body(rama::http::Body::empty())
-                        .unwrap();
-                    future::ready(Ok::<_, Infallible>(res))
-                }),
-            ),
+            RamaHttpService::new(service_fn(|_| {
+                let res = Response::builder()
+                    .status(StatusCode::OK)
+                    .body(rama::http::Body::empty())
+                    .unwrap();
+                future::ready(Ok::<_, Infallible>(res))
+            })),
         );
     conn.without_shutdown().await.expect_err("header timeout");
 }
@@ -1537,10 +1508,7 @@ async fn header_read_timeout_starts_immediately() {
     let (socket, _) = listener.accept().await.unwrap();
     let conn = http1::Builder::new()
         .header_read_timeout(Duration::from_secs(2))
-        .serve_connection(
-            socket,
-            RamaHttpService::new(Extensions::new(), unreachable_service()),
-        );
+        .serve_connection(socket, RamaHttpService::new(unreachable_service()));
     assert!(conn.await.unwrap_err().is_timeout());
 }
 
@@ -1607,16 +1575,13 @@ async fn header_read_timeout_slow_writes_multiple_requests() {
         .header_read_timeout(Duration::from_secs(5))
         .serve_connection(
             socket,
-            RamaHttpService::new(
-                Extensions::new(),
-                service_fn(|_| {
-                    let res = Response::builder()
-                        .status(200)
-                        .body(Empty::<Bytes>::new())
-                        .unwrap();
-                    future::ready(Ok::<_, Infallible>(res))
-                }),
-            ),
+            RamaHttpService::new(service_fn(|_| {
+                let res = Response::builder()
+                    .status(200)
+                    .body(Empty::<Bytes>::new())
+                    .unwrap();
+                future::ready(Ok::<_, Infallible>(res))
+            })),
         );
     assert!(conn.without_shutdown().await.unwrap_err().is_timeout());
 }
@@ -1652,16 +1617,13 @@ async fn header_read_timeout_as_idle_timeout() {
         .header_read_timeout(Duration::from_secs(3))
         .serve_connection(
             socket,
-            RamaHttpService::new(
-                Extensions::new(),
-                service_fn(|_| {
-                    let res = Response::builder()
-                        .status(200)
-                        .body(Empty::<Bytes>::new())
-                        .unwrap();
-                    future::ready(Ok::<_, Infallible>(res))
-                }),
-            ),
+            RamaHttpService::new(service_fn(|_| {
+                let res = Response::builder()
+                    .status(200)
+                    .body(Empty::<Bytes>::new())
+                    .unwrap();
+                future::ready(Ok::<_, Infallible>(res))
+            })),
         );
     assert!(conn.without_shutdown().await.unwrap_err().is_timeout());
 }
@@ -1698,17 +1660,14 @@ async fn upgrades() {
     let (socket, _) = listener.accept().await.unwrap();
     let conn = http1::Builder::new().serve_connection(
         socket,
-        RamaHttpService::new(
-            Extensions::new(),
-            service_fn(|_| {
-                let res = Response::builder()
-                    .status(101)
-                    .header("upgrade", "foobar")
-                    .body(Empty::<Bytes>::new())
-                    .unwrap();
-                future::ready(Ok::<_, Infallible>(res))
-            }),
-        ),
+        RamaHttpService::new(service_fn(|_| {
+            let res = Response::builder()
+                .status(101)
+                .header("upgrade", "foobar")
+                .body(Empty::<Bytes>::new())
+                .unwrap();
+            future::ready(Ok::<_, Infallible>(res))
+        })),
     );
 
     let parts = conn.without_shutdown().await.unwrap();
@@ -1754,16 +1713,13 @@ async fn http_connect() {
     let (socket, _) = listener.accept().await.unwrap();
     let conn = http1::Builder::new().serve_connection(
         socket,
-        RamaHttpService::new(
-            Extensions::new(),
-            service_fn(|_| {
-                let res = Response::builder()
-                    .status(200)
-                    .body(Empty::<Bytes>::new())
-                    .unwrap();
-                future::ready(Ok::<_, Infallible>(res))
-            }),
-        ),
+        RamaHttpService::new(service_fn(|_| {
+            let res = Response::builder()
+                .status(200)
+                .body(Empty::<Bytes>::new())
+                .unwrap();
+            future::ready(Ok::<_, Infallible>(res))
+        })),
     );
 
     let parts = conn.without_shutdown().await.unwrap();
@@ -1812,20 +1768,17 @@ async fn upgrades_new() {
     });
 
     let (upgrades_tx, upgrades_rx) = mpsc::channel();
-    let svc = RamaHttpService::new(
-        Extensions::new(),
-        service_fn(move |req: Request| {
-            let on_upgrade = rama::http::io::upgrade::on(req);
-            let _ = upgrades_tx.send(on_upgrade);
-            future::ok::<_, Infallible>(
-                Response::builder()
-                    .status(101)
-                    .header("upgrade", "foobar")
-                    .body(Empty::<Bytes>::new())
-                    .unwrap(),
-            )
-        }),
-    );
+    let svc = RamaHttpService::new(service_fn(move |req: Request| {
+        let on_upgrade = rama::http::io::upgrade::handle_upgrade(req);
+        let _ = upgrades_tx.send(on_upgrade);
+        future::ok::<_, Infallible>(
+            Response::builder()
+                .status(101)
+                .header("upgrade", "foobar")
+                .body(Empty::<Bytes>::new())
+                .unwrap(),
+        )
+    }));
 
     let (socket, _) = listener.accept().await.unwrap();
     http1::Builder::new()
@@ -1856,13 +1809,10 @@ async fn upgrades_ignored() {
 
     tokio::spawn(async move {
         loop {
-            let svc = RamaHttpService::new(
-                Extensions::new(),
-                service_fn(move |req: Request| {
-                    assert_eq!(req.headers()["upgrade"], "yolo");
-                    future::ok::<_, Infallible>(Response::new(Empty::<Bytes>::new()))
-                }),
-            );
+            let svc = RamaHttpService::new(service_fn(move |req: Request| {
+                assert_eq!(req.headers()["upgrade"], "yolo");
+                future::ok::<_, Infallible>(Response::new(Empty::<Bytes>::new()))
+            }));
             let (socket, _) = listener.accept().await.unwrap();
             tokio::task::spawn(async move {
                 http1::Builder::new()
@@ -1922,19 +1872,16 @@ async fn http_connect_new() {
     });
 
     let (upgrades_tx, upgrades_rx) = mpsc::channel();
-    let svc = RamaHttpService::new(
-        Extensions::new(),
-        service_fn(move |req: Request| {
-            let on_upgrade = rama::http::io::upgrade::on(req);
-            let _ = upgrades_tx.send(on_upgrade);
-            future::ok::<_, Infallible>(
-                Response::builder()
-                    .status(200)
-                    .body(Empty::<Bytes>::new())
-                    .unwrap(),
-            )
-        }),
-    );
+    let svc = RamaHttpService::new(service_fn(move |req: Request| {
+        let on_upgrade = rama::http::io::upgrade::handle_upgrade(req);
+        let _ = upgrades_tx.send(on_upgrade);
+        future::ok::<_, Infallible>(
+            Response::builder()
+                .status(200)
+                .body(Empty::<Bytes>::new())
+                .unwrap(),
+        )
+    }));
 
     let (socket, _) = listener.accept().await.unwrap();
     http1::Builder::new()
@@ -1994,30 +1941,27 @@ async fn h2_connect() {
         assert!(recv_stream.data().await.unwrap().unwrap().is_empty());
     });
 
-    let svc = RamaHttpService::new(
-        Extensions::new(),
-        service_fn(move |req: Request| {
-            let on_upgrade = rama::http::io::upgrade::on(req);
+    let svc = RamaHttpService::new(service_fn(move |req: Request| {
+        let on_upgrade = rama::http::io::upgrade::handle_upgrade(req);
 
-            tokio::spawn(async move {
-                let mut upgraded = on_upgrade.await.expect("on_upgrade");
-                upgraded.write_all(b"Bread?").await.unwrap();
+        tokio::spawn(async move {
+            let mut upgraded = on_upgrade.await.expect("on_upgrade");
+            upgraded.write_all(b"Bread?").await.unwrap();
 
-                let mut vec = vec![];
-                upgraded.read_to_end(&mut vec).await.unwrap();
-                assert_eq!(s(&vec), "Baguette!");
+            let mut vec = vec![];
+            upgraded.read_to_end(&mut vec).await.unwrap();
+            assert_eq!(s(&vec), "Baguette!");
 
-                upgraded.shutdown().await.unwrap();
-            });
+            upgraded.shutdown().await.unwrap();
+        });
 
-            future::ok::<_, Infallible>(
-                Response::builder()
-                    .status(200)
-                    .body(Empty::<Bytes>::new())
-                    .unwrap(),
-            )
-        }),
-    );
+        future::ok::<_, Infallible>(
+            Response::builder()
+                .status(200)
+                .body(Empty::<Bytes>::new())
+                .unwrap(),
+        )
+    }));
 
     let (socket, _) = listener.accept().await.unwrap();
     http2::Builder::new(Executor::new())
@@ -2083,53 +2027,50 @@ async fn h2_connect_multiplex() {
         futures.for_each(future::ready).await;
     });
 
-    let svc = RamaHttpService::new(
-        Extensions::new(),
-        service_fn(move |req: Request| {
-            let authority = req.uri().authority().unwrap().to_string();
-            let on_upgrade = rama::http::io::upgrade::on(req);
+    let svc = RamaHttpService::new(service_fn(move |req: Request| {
+        let authority = req.uri().authority().unwrap().to_string();
+        let on_upgrade = rama::http::io::upgrade::handle_upgrade(req);
 
-            tokio::spawn(async move {
-                let upgrade_res = on_upgrade.await;
-                if authority == "localhost_0" {
-                    upgrade_res.expect_err("upgrade cancelled");
-                    return;
-                }
-                let mut upgraded = upgrade_res.expect("upgrade successful");
+        tokio::spawn(async move {
+            let upgrade_res = on_upgrade.await;
+            if authority == "localhost_0" {
+                upgrade_res.expect_err("upgrade cancelled");
+                return;
+            }
+            let mut upgraded = upgrade_res.expect("upgrade successful");
 
-                upgraded.write_all(b"Bread?").await.unwrap();
+            upgraded.write_all(b"Bread?").await.unwrap();
 
-                let mut vec = vec![];
-                let read_res = upgraded.read_to_end(&mut vec).await;
+            let mut vec = vec![];
+            let read_res = upgraded.read_to_end(&mut vec).await;
 
-                if authority == "localhost_1" || authority == "localhost_2" {
-                    let err = read_res.expect_err("read failed");
-                    assert_eq!(err.kind(), io::ErrorKind::Other);
-                    assert_eq!(
-                        err.get_ref()
-                            .unwrap()
-                            .downcast_ref::<rama::http::core::h2::Error>()
-                            .unwrap()
-                            .reason(),
-                        Some(rama::http::core::h2::Reason::CANCEL),
-                    );
-                    return;
-                }
+            if authority == "localhost_1" || authority == "localhost_2" {
+                let err = read_res.expect_err("read failed");
+                assert_eq!(err.kind(), io::ErrorKind::Other);
+                assert_eq!(
+                    err.get_ref()
+                        .unwrap()
+                        .downcast_ref::<rama::http::core::h2::Error>()
+                        .unwrap()
+                        .reason(),
+                    Some(rama::http::core::h2::Reason::CANCEL),
+                );
+                return;
+            }
 
-                read_res.unwrap();
-                assert_eq!(s(&vec), "Baguette!");
+            read_res.unwrap();
+            assert_eq!(s(&vec), "Baguette!");
 
-                upgraded.shutdown().await.unwrap();
-            });
+            upgraded.shutdown().await.unwrap();
+        });
 
-            future::ok::<_, Infallible>(
-                Response::builder()
-                    .status(200)
-                    .body(Empty::<Bytes>::new())
-                    .unwrap(),
-            )
-        }),
-    );
+        future::ok::<_, Infallible>(
+            Response::builder()
+                .status(200)
+                .body(Empty::<Bytes>::new())
+                .unwrap(),
+        )
+    }));
 
     let (socket, _) = listener.accept().await.unwrap();
     http2::Builder::new(Executor::new())
@@ -2179,32 +2120,29 @@ async fn h2_connect_large_body() {
         assert!(recv_stream.data().await.unwrap().unwrap().is_empty());
     });
 
-    let svc = RamaHttpService::new(
-        Extensions::new(),
-        service_fn(move |req: Request| {
-            let on_upgrade = rama::http::io::upgrade::on(req);
+    let svc = RamaHttpService::new(service_fn(move |req: Request| {
+        let on_upgrade = rama::http::io::upgrade::handle_upgrade(req);
 
-            tokio::spawn(async move {
-                let mut upgraded = on_upgrade.await.expect("on_upgrade");
-                upgraded.write_all(b"Bread?").await.unwrap();
+        tokio::spawn(async move {
+            let mut upgraded = on_upgrade.await.expect("on_upgrade");
+            upgraded.write_all(b"Bread?").await.unwrap();
 
-                let mut vec = vec![];
-                if upgraded.read_to_end(&mut vec).await.is_err() {
-                    return;
-                }
-                assert_eq!(vec.len(), NO_BREAD.len() * 9000 * 2);
+            let mut vec = vec![];
+            if upgraded.read_to_end(&mut vec).await.is_err() {
+                return;
+            }
+            assert_eq!(vec.len(), NO_BREAD.len() * 9000 * 2);
 
-                upgraded.shutdown().await.unwrap();
-            });
+            upgraded.shutdown().await.unwrap();
+        });
 
-            future::ok::<_, Infallible>(
-                Response::builder()
-                    .status(200)
-                    .body(Empty::<Bytes>::new())
-                    .unwrap(),
-            )
-        }),
-    );
+        future::ok::<_, Infallible>(
+            Response::builder()
+                .status(200)
+                .body(Empty::<Bytes>::new())
+                .unwrap(),
+        )
+    }));
 
     let (socket, _) = listener.accept().await.unwrap();
     http2::Builder::new(Executor::new())
@@ -2253,30 +2191,27 @@ async fn h2_connect_empty_frames() {
         assert!(recv_stream.data().await.unwrap().unwrap().is_empty());
     });
 
-    let svc = RamaHttpService::new(
-        Extensions::new(),
-        service_fn(move |req: Request| {
-            let on_upgrade = rama::http::io::upgrade::on(req);
+    let svc = RamaHttpService::new(service_fn(move |req: Request| {
+        let on_upgrade = rama::http::io::upgrade::handle_upgrade(req);
 
-            tokio::spawn(async move {
-                let mut upgraded = on_upgrade.await.expect("on_upgrade");
-                upgraded.write_all(b"Bread?").await.unwrap();
+        tokio::spawn(async move {
+            let mut upgraded = on_upgrade.await.expect("on_upgrade");
+            upgraded.write_all(b"Bread?").await.unwrap();
 
-                let mut vec = vec![];
-                upgraded.read_to_end(&mut vec).await.unwrap();
-                assert_eq!(s(&vec), "Baguette!");
+            let mut vec = vec![];
+            upgraded.read_to_end(&mut vec).await.unwrap();
+            assert_eq!(s(&vec), "Baguette!");
 
-                upgraded.shutdown().await.unwrap();
-            });
+            upgraded.shutdown().await.unwrap();
+        });
 
-            future::ok::<_, Infallible>(
-                Response::builder()
-                    .status(200)
-                    .body(Empty::<Bytes>::new())
-                    .unwrap(),
-            )
-        }),
-    );
+        future::ok::<_, Infallible>(
+            Response::builder()
+                .status(200)
+                .body(Empty::<Bytes>::new())
+                .unwrap(),
+        )
+    }));
 
     let (socket, _) = listener.accept().await.unwrap();
     http2::Builder::new(Executor::new())
@@ -2302,10 +2237,7 @@ async fn parse_errors_send_4xx_response() {
 
     let (socket, _) = listener.accept().await.unwrap();
     http1::Builder::new()
-        .serve_connection(
-            socket,
-            RamaHttpService::new(rama::extensions::Extensions::new(), HelloWorld),
-        )
+        .serve_connection(socket, RamaHttpService::new(HelloWorld))
         .await
         .expect_err("HTTP parse error");
 }
@@ -2327,10 +2259,7 @@ async fn illegal_request_length_returns_400_response() {
 
     let (socket, _) = listener.accept().await.unwrap();
     http1::Builder::new()
-        .serve_connection(
-            socket,
-            RamaHttpService::new(rama::extensions::Extensions::new(), HelloWorld),
-        )
+        .serve_connection(socket, RamaHttpService::new(HelloWorld))
         .await
         .expect_err("illegal Content-Length should error");
 }
@@ -2368,10 +2297,7 @@ async fn max_buf_size() {
     let (socket, _) = listener.accept().await.unwrap();
     http1::Builder::new()
         .max_buf_size(MAX)
-        .serve_connection(
-            socket,
-            RamaHttpService::new(rama::extensions::Extensions::new(), HelloWorld),
-        )
+        .serve_connection(socket, RamaHttpService::new(HelloWorld))
         .await
         .expect_err("should TooLarge error");
 }
@@ -2383,10 +2309,8 @@ async fn graceful_shutdown_before_first_request_no_block() {
     tokio::spawn(async move {
         let socket = listener.accept().await.unwrap().0;
 
-        let future = http1::Builder::new().serve_connection(
-            socket,
-            RamaHttpService::new(rama::extensions::Extensions::new(), HelloWorld),
-        );
+        let future =
+            http1::Builder::new().serve_connection(socket, RamaHttpService::new(HelloWorld));
         pin!(future);
         future.as_mut().graceful_shutdown();
 
@@ -2644,10 +2568,7 @@ async fn http2_keep_alive_detects_unresponsive_client() {
         .keep_alive_interval(Duration::from_secs(1))
         .keep_alive_timeout(Duration::from_secs(1))
         .auto_date_header(true)
-        .serve_connection(
-            socket,
-            RamaHttpService::new(Extensions::new(), unreachable_service()),
-        )
+        .serve_connection(socket, RamaHttpService::new(unreachable_service()))
         .await
         .expect_err("serve_connection should error");
 
@@ -2664,10 +2585,7 @@ async fn http2_keep_alive_with_responsive_client() {
         http2::Builder::new(Executor::new())
             .keep_alive_interval(Duration::from_secs(1))
             .keep_alive_timeout(Duration::from_secs(1))
-            .serve_connection(
-                socket,
-                RamaHttpService::new(rama::extensions::Extensions::new(), HelloWorld),
-            )
+            .serve_connection(socket, RamaHttpService::new(HelloWorld))
             .await
             .expect("serve_connection");
     });
@@ -2699,10 +2617,7 @@ async fn http2_check_date_header_disabled() {
             .keep_alive_interval(Duration::from_secs(1))
             .auto_date_header(false)
             .keep_alive_timeout(Duration::from_secs(1))
-            .serve_connection(
-                socket,
-                RamaHttpService::new(rama::extensions::Extensions::new(), HelloWorld),
-            )
+            .serve_connection(socket, RamaHttpService::new(HelloWorld))
             .await
             .expect("serve_connection");
     });
@@ -2766,10 +2681,7 @@ async fn http2_keep_alive_count_server_pings() {
         http2::Builder::new(Executor::new())
             .keep_alive_interval(Duration::from_secs(1))
             .keep_alive_timeout(Duration::from_secs(1))
-            .serve_connection(
-                socket,
-                RamaHttpService::new(Extensions::new(), unreachable_service()),
-            )
+            .serve_connection(socket, RamaHttpService::new(unreachable_service()))
             .await
             .expect("serve_connection");
     });
@@ -3282,7 +3194,7 @@ impl ServeOptions {
                                 tokio::task::spawn(async move {
                                     let msg_tx = msg_tx.clone();
                                     let reply_rx = reply_rx.clone();
-                                    let service = RamaHttpService::new(Extensions::new(), TestService {
+                                    let service = RamaHttpService::new(  TestService {
                                         tx: msg_tx,
                                         trailers_tx,
                                         reply: reply_rx,

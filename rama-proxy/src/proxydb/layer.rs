@@ -200,9 +200,12 @@ where
         let maybe_filter = match self.mode {
             ProxyFilterMode::Optional => req.extensions().get::<ProxyFilter>().cloned(),
             ProxyFilterMode::Default => Some(
-                req.extensions_mut()
-                    .get_or_insert_default::<ProxyFilter>()
-                    .clone(),
+                if let Some(stored) = req.extensions().get::<ProxyFilter>() {
+                    stored.clone()
+                } else {
+                    req.extensions_mut().insert(ProxyFilter::default());
+                    ProxyFilter::default()
+                },
             ),
             ProxyFilterMode::Required => Some(
                 req.extensions()
@@ -211,9 +214,12 @@ where
                     .context("missing proxy filter")?,
             ),
             ProxyFilterMode::Fallback(ref filter) => Some(
-                req.extensions_mut()
-                    .get_or_insert_with(|| filter.clone())
-                    .clone(),
+                if let Some(stored) = req.extensions().get::<ProxyFilter>() {
+                    stored.clone()
+                } else {
+                    req.extensions_mut().insert(filter.clone());
+                    filter.clone()
+                },
             ),
         };
 

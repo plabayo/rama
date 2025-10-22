@@ -337,8 +337,9 @@ impl Recv {
         // frame or the user violated the contract.
         match stream.pending_recv.pop_front(&mut self.buffer) {
             Some(Event::Headers(peer::PollMessage::Client(mut response))) => {
-                if let Some(mut request_ext) = stream.encoded_request_extensions.take() {
-                    if let Some(request_headers) = request_ext.remove::<RequestHeaders>() {
+                if let Some(request_ext) = stream.encoded_extensions.take() {
+                    // TODO instead of this manual stuff do we just see request extensions as parent extensions for response?
+                    if let Some(request_headers) = request_ext.get::<RequestHeaders>().cloned() {
                         response.extensions_mut().insert(request_headers);
                     }
                     response

@@ -6,7 +6,6 @@ use std::net::{SocketAddr, TcpStream};
 use std::sync::mpsc;
 use std::time::Duration;
 
-use rama::extensions::Extensions;
 use rama_core::bytes::Bytes;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
@@ -50,14 +49,13 @@ fn hello_world_16(b: divan::Bencher) {
                         .pipeline_flush(true)
                         .serve_connection(
                             stream,
-                            rama::http::core::service::RamaHttpService::new(
-                                Extensions::new(),
-                                service_fn(async |_| {
+                            rama::http::core::service::RamaHttpService::new(service_fn(
+                                async |_| {
                                     Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(
                                         "Hello, World!",
                                     ))))
-                                }),
-                            ),
+                                },
+                            )),
                         )
                         .await
                         .unwrap();

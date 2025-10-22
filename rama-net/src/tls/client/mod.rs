@@ -20,11 +20,7 @@ pub use parser::{
 
 mod config;
 #[doc(inline)]
-pub use config::{
-    ClientAuth, ClientAuthData, ClientConfig, ClientConfigChain, ProxyClientConfig,
-    ServerVerifyMode, append_all_client_configs_to_extensions, append_client_config_to_extensions,
-    extract_client_config_from_extensions,
-};
+pub use config::{ClientAuth, ClientAuthData, ClientConfig, ProxyClientConfig, ServerVerifyMode};
 
 use super::{ApplicationProtocol, DataEncoding, ProtocolVersion};
 

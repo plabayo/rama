@@ -34,7 +34,10 @@ async fn test_ws_tls_server() {
     // test the actual ws content
 
     let mut extensions = Extensions::new();
-    let builder = extensions.get_or_insert_default::<TlsConnectorDataBuilder>();
+    let builder = match extensions.get_mut::<TlsConnectorDataBuilder>() {
+        Some(builder) => builder,
+        None => extensions.insert_mut(TlsConnectorDataBuilder::default()),
+    };
     builder.push_base_config(TlsConnectorDataBuilder::new_http_1().into());
 
     let mut ws = runner
