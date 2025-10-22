@@ -22,8 +22,8 @@ use rama::http::layer::trace::TraceLayer;
 use rama::http::service::web::WebService;
 use rama::http::service::web::response::{IntoResponse, OctetStream};
 use rama::rt::Executor;
-use rama::{Layer, http::server::HttpServer};
 use rama::stream::io::ReaderStream;
+use rama::{Layer, http::server::HttpServer};
 
 #[tokio::main]
 async fn main() {
