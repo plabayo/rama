@@ -33,7 +33,7 @@ use std::ops::RangeBounds;
 /// use rama_http::service::web::response::{IntoResponse, OctetStream};
 ///
 /// async fn download() -> impl IntoResponse {
-///     let data = b"file contents".to_vec();
+///     let data = b"file contents";
 ///     OctetStream::new(data).with_file_name("data.bin".to_string())
 /// }
 /// ```
