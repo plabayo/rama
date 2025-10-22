@@ -336,7 +336,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_service_fn_wrapper_with_derived_state() {
-        #[derive(Clone, Debug, Default)]
+        #[derive(Clone, Debug, Default, FromRef)]
         #[allow(dead_code)]
         struct GlobalState {
             numbers: u8,
@@ -347,12 +347,6 @@ mod tests {
             text: "test_string".to_owned(),
             ..Default::default()
         };
-
-        impl FromRef<GlobalState> for String {
-            fn from_ref(input: &GlobalState) -> Self {
-                input.text.clone()
-            }
-        }
 
         let svc = async |State(state): State<String>| state;
         let svc = svc.into_endpoint_service_with_state(state.clone());

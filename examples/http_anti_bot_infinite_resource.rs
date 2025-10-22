@@ -111,7 +111,7 @@ async fn main() {
         .expect("graceful shutdown");
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, FromRef)]
 struct AppState {
     block_list: BlockList,
 }
@@ -120,12 +120,6 @@ struct AppState {
 struct BlockList(Arc<Mutex<HashSet<IpAddr>>>);
 
 impl_deref!(BlockList: Arc<Mutex<HashSet<IpAddr>>>);
-
-impl FromRef<AppState> for BlockList {
-    fn from_ref(input: &AppState) -> Self {
-        input.block_list.clone()
-    }
-}
 
 const ROBOTS_TXT: &str = r##"User-agent: *
 Disallow: /internal/

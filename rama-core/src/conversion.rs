@@ -93,6 +93,8 @@ pub trait FromRef<T> {
     fn from_ref(input: &T) -> Self;
 }
 
+pub use rama_macros::FromRef;
+
 impl<T> FromRef<T> for T
 where
     T: Clone,

@@ -83,7 +83,7 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, fmt};
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, FromRef)]
 /// Contains the global shared state
 ///
 /// It's best practise to make sure this is splittable in
@@ -98,19 +98,11 @@ struct Db(Arc<RwLock<HashMap<String, bytes::Bytes>>>);
 
 impl_deref!(Db: Arc<RwLock<HashMap<String, bytes::Bytes>>>);
 
-// By implementing FromRef for all parts of our State, handlers can
-// now only request the parts they need.
-
-impl FromRef<AppState> for Db {
-    fn from_ref(input: &AppState) -> Self {
-        input.db.clone()
-    }
-}
-
-// AppState is cloneable so implement FromRef<AppState> is enough. But here
+// AppState is cloneable so implement `FromRef<AppState>` (by deriving it) is enough. But here
 // we decided that our GlobalState will be `Arc<AppState>`. We do this so we can
 // add more fields to AppState but cloning it stays the same size. For this
-// specific use case this is way too overkill, but we do it do demonstrate that it's possible.
+// specific use case this is way too overkill, but we do it do demonstrate that it's possible,
+// by manually implementing `FromRef`
 
 impl FromRef<Arc<AppState>> for Db {
     fn from_ref(input: &Arc<AppState>) -> Self {
