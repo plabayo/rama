@@ -259,7 +259,6 @@ async fn test_ua_emulation() {
         }
 
         async fn server_svc_fn(req: Request) -> Result<Response, Infallible> {
-            println!("extensions: {:?}", req.extensions());
             let state = req.extensions().get::<State>().unwrap();
             let expected = state.expected;
             let description = state.description;
@@ -463,7 +462,6 @@ where
         let (client_socket, mut server_socket) = new_mock_sockets();
 
         if let Some(extensions) = req.extensions().get::<ServerExtensions>() {
-            println!("extensions for server: {:?}", extensions.0);
             *server_socket.extensions_mut() = extensions.0.clone();
         }
 

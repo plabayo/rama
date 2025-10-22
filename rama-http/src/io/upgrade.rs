@@ -319,11 +319,7 @@ mod sealed {
     fn handle_upgrade<T: ExtensionsRef>(
         obj: T,
     ) -> impl Future<Output = Result<Upgraded, OpaqueError>> + 'static {
-        let on_upgrade = match obj
-            .extensions()
-            .get_without_chaining::<OnUpgrade>()
-            .cloned()
-        {
+        let on_upgrade = match obj.extensions().get::<OnUpgrade>().cloned() {
             Some(on_upgrade) => {
                 trace!("upgrading this: {:?}", on_upgrade);
                 if on_upgrade.has_handled_upgrade() {

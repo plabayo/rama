@@ -169,42 +169,29 @@ impl Extensions {
     /// Returns true if the `Extensions` or parents contains the given type.
     #[must_use]
     pub fn contains<T: Send + Sync + 'static>(&self) -> bool {
-        if self.contains_without_chaining::<T>() {
-            true
-        } else {
-            self.parent_extensions
-                .as_ref()
-                .map(|parent| parent.contains::<T>())
-                .unwrap_or_default()
-        }
-    }
-
-    /// Returns true if the `Extensions` contains the given type.
-    #[must_use]
-    pub fn contains_without_chaining<T: Send + Sync + 'static>(&self) -> bool {
         self.map
             .as_ref()
             .map(|map| map.contains_key(&TypeId::of::<T>()))
-            .unwrap_or_default()
+            .unwrap_or_else(|| {
+                self.parent_extensions
+                    .as_ref()
+                    .map(|parent| parent.contains::<T>())
+                    .unwrap_or_default()
+            })
     }
 
     /// Get a shared reference to a type previously inserted on this `Extensions` or any of the parents
     #[must_use]
     pub fn get<T: Send + Sync + 'static>(&self) -> Option<&T> {
-        self.get_without_chaining().or_else(|| {
-            self.parent_extensions
-                .as_ref()
-                .and_then(|parent| parent.get())
-        })
-    }
-
-    /// Get a shared reference to a type previously inserted on this `Extensions`.
-    #[must_use]
-    pub fn get_without_chaining<T: Send + Sync + 'static>(&self) -> Option<&T> {
         self.map
             .as_ref()
             .and_then(|map| map.get(&TypeId::of::<T>()))
             .and_then(|boxed| (**boxed).as_any().downcast_ref())
+            .or_else(|| {
+                self.parent_extensions
+                    .as_ref()
+                    .and_then(|parent| parent.get())
+            })
     }
 
     /// Get an exclusive reference to a type previously inserted on this `Extensions`.
