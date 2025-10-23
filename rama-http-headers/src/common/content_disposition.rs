@@ -6,6 +6,7 @@
 // Browser conformance tests at: http://greenbytes.de/tech/tc2231/
 // IANA assignment: http://www.iana.org/assignments/cont-disp/cont-disp.xhtml
 
+use rama_core::telemetry::tracing;
 use rama_http_types::{HeaderName, HeaderValue};
 
 use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
@@ -56,17 +57,24 @@ impl ContentDisposition {
         Self(HeaderValue::from_static("inline"))
     }
 
-    /*
-    pub fn attachment(filename: &str) -> ContentDisposition {
-        let full = Bytes::from(format!("attachment; filename={}", filename));
-        match ::HeaderValue::from_maybe_shared(full) {
-            Ok(val) => ContentDisposition(val),
-            Err(_) => {
-                unimplemented!("filename that isn't ASCII");
+    /// Construct a `Content-Disposition: attachment` header with a filename.
+    ///
+    /// If the filename contains non-ASCII characters or invalid header value bytes,
+    /// this will fall back to a simple `attachment` header without the filename parameter.
+    pub fn attachment(filename: &str) -> Self {
+        let full = format!("attachment; filename={filename}");
+        match HeaderValue::from_maybe_shared(full) {
+            Ok(val) => Self(val),
+            Err(err) => {
+                tracing::trace!(
+                    "Failed to create Content-Disposition header with filename '{}': {:?}. ",
+                    filename,
+                    err
+                );
+                Self(HeaderValue::from_static("attachment"))
             }
         }
     }
-    */
 
     /// Check if the disposition-type is `inline`.
     pub fn is_inline(&self) -> bool {

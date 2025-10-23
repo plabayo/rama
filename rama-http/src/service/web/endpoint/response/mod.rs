@@ -45,6 +45,10 @@ mod form;
 #[doc(inline)]
 pub use form::Form;
 
+mod octet_stream;
+#[doc(inline)]
+pub use octet_stream::OctetStream;
+
 pub mod redirect;
 #[doc(inline)]
 pub use redirect::Redirect;

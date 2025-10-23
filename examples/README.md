@@ -22,6 +22,7 @@ You can find these integration tests at [../tests/integration/examples](../tests
 - [`http_health_check.rs`](./http_health_check.rs) - Health check endpoint implementation
 - [`http_k8s_health.rs`](./http_k8s_health.rs) - Kubernetes health check implementation
 - [`http_record_har.rs`](./http_record_har.rs) - Demo of HAR HTTP layer provided by rama
+- [`http_octet_stream.rs`](./http_octet_stream.rs) - Binary data responses with file downloads
 
 ### Advanced HTTP Features
 - [`http_conn_state.rs`](./http_conn_state.rs) - Connection state management
