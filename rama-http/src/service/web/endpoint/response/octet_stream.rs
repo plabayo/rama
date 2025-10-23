@@ -46,7 +46,7 @@ use tokio::fs::File;
 /// use rama_core::stream::io::ReaderStream;
 ///
 /// async fn download() -> impl IntoResponse {
-///     let data = b"file contents".to_vec();
+///     let data = b"file contents";
 ///     let size = data.len() as u64;
 ///     let cursor = std::io::Cursor::new(data);
 ///     let stream = ReaderStream::new(cursor);
