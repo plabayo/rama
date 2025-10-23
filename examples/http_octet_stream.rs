@@ -43,7 +43,7 @@ async fn main() {
 
 /// Example 1: Simple binary response
 async fn serve_binary_data() -> impl IntoResponse {
-    let data = vec![0x48, 0x65, 0x6C, 0x6C, 0x6F]; // "Hello" in bytes
+    let data = b"Hello";
     let cursor = std::io::Cursor::new(data);
     let stream = ReaderStream::new(cursor);
     OctetStream::new(stream)
