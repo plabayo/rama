@@ -101,7 +101,7 @@ impl<S> OctetStream<S> {
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Set the content size for `Content-Length` header.
+        /// Set the content size for `Content-Length`- or as part of the `Content-Range` header.
         ///
         /// This indicates the total size of the resource in bytes. When set, it will
         /// be included as `Content-Length` header in normal responses, or used as the
