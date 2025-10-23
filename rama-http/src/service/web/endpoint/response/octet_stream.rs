@@ -64,7 +64,7 @@ use tokio::fs::File;
 ///
 /// # fn example() -> Result<(), rama_http_headers::Error> {
 /// // Serving first 5 bytes of "Hello, World!" (13 bytes total)
-/// let partial_data = b"Hello".to_vec();
+/// let partial_data = b"Hello";
 /// let cursor = std::io::Cursor::new(partial_data);
 /// let stream = ReaderStream::new(cursor);
 /// let response = OctetStream::new(stream)
