@@ -441,6 +441,10 @@ mod tests {
             .unwrap();
 
         assert_eq!(stream.filename, Some("hello.txt".to_owned()));
+
+        #[cfg(target_os = "windows")]
+        assert_eq!(stream.content_size, Some(15)); // "Hello, World!\r\n" is 15 bytes
+        #[cfg(not(target_os = "windows"))]
         assert_eq!(stream.content_size, Some(14)); // "Hello, World!\n" is 14 bytes
     }
 
@@ -456,11 +460,12 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
 
-        // Verify Content-Range header: bytes 0-4/14
-        assert_eq!(
-            response.headers().get(CONTENT_RANGE).unwrap(),
-            "bytes 0-4/14"
-        );
+        // Verify Content-Range header
+        let value = response.headers().get(CONTENT_RANGE).unwrap();
+        #[cfg(target_os = "windows")]
+        assert_eq!(value, "bytes 0-4/15"); // "Hello, World!\r\n" is 15 bytes
+        #[cfg(not(target_os = "windows"))]
+        assert_eq!(value, "bytes 0-4/14"); // "Hello, World!\n" is 14 bytes
 
         // Verify Content-Disposition header with filename
         assert_eq!(
