@@ -20,6 +20,9 @@ use tokio::fs::File;
 /// - Downloadable content that doesn't fit other MIME types
 /// - Raw binary data streams
 ///
+/// User Agents often treat it as if the `Content-Disposition` header was set to attachment,
+/// and propose a "Save As" dialog.
+///
 /// # Examples
 ///
 /// ## Basic binary response
