@@ -51,7 +51,7 @@ async fn serve_binary_data() -> impl IntoResponse {
 
 /// Example 2: Binary download with Content-Disposition
 async fn serve_download() -> impl IntoResponse {
-    let data = b"Binary file content".to_vec();
+    let data = b"Binary file content";
     let cursor = std::io::Cursor::new(data);
     let stream = ReaderStream::new(cursor);
     OctetStream::new(stream).with_file_name("file.bin".to_owned())
