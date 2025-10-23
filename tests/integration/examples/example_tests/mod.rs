@@ -67,6 +67,8 @@ mod http_web_router;
 mod http_web_service_dir_and_api;
 #[cfg(all(feature = "http-full", feature = "rustls"))]
 mod https_connect_proxy;
+#[cfg(all(feature = "http-full", feature = "rustls",))]
+mod https_web_service_with_hsts;
 #[cfg(all(feature = "http-full", feature = "rustls"))]
 mod mtls_tunnel_and_service;
 #[cfg(all(feature = "tls", feature = "socks5", feature = "http-full",))]

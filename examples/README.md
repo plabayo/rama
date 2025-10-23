@@ -111,6 +111,8 @@ The following examples show how you can integrate ACME into you webservices (ACM
 
 ## TLS and Security
 
+- [`https_web_service_with_hsts.rs`](./https_web_service_with_hsts.rs) - HTTP Strict Transport Security (HSTS) example
+
 ### Rustls
 - [`tls_rustls_termination.rs`](./tls_rustls_termination.rs) - TLS termination with Rustls
 - [`tls_rustls_dynamic_certs.rs`](./tls_rustls_dynamic_certs.rs) - Dynamic certificate management with Rustls

@@ -35,3 +35,37 @@ digraph {
 [Reverse proxies](./reverse.md) are a superset of proxies that also
 include TLS Termination Proxies. It's very common for a reverse proxy
 to also terminate the TLS tunnel.
+
+## HTTP Strict Transport Security (HSTS)
+
+HTTP Strict Transport Security (HSTS), defined in
+[RFC 6797](https://www.rfc-editor.org/rfc/rfc6797),
+lets a website declare that it must only be accessed over HTTPS.
+A server does this by sending a
+[`Strict-Transport-Security` response header](https://ramaproxy.org/docs/rama/http/headers/struct.StrictTransportSecurity.html)
+over a secure connection.
+
+nce a browser (user agent) receives this header,
+it marks the host as an HSTS host and automatically enforces
+HTTPS for future requests—refusing to load the site over plain HTTP or
+when certificate errors occur. This protects users against downgrade attacks
+and cookie hijacking over insecure connections.
+
+Flow of operation:
+1. The client first connects via HTTPS.
+2. The server responds with `Strict-Transport-Security: max-age=… [; includeSubDomains]`.
+3. The browser caches this rule for the `max-age` duration.
+4. All future HTTP requests to that host (and optionally its subdomains) are upgraded to HTTPS automatically.
+5. If a TLS or certificate error occurs, the connection is aborted without user override.
+
+This ensures that, after the first secure visit, the browser always enforces secure transport for that domain.
+
+This is usually also coupled with
+[an http-to-https redirect](https://ramaproxy.org/docs/rama/http/service/redirect/struct.RedirectHttpToHttps.html)
+to ensure clients that connect via insecure http do still land
+on the same resource but over a secure connection instead.
+
+[Examples](https://github.com/plabayo/rama/tree/main/examples):
+
+- [/examples/https_web_service_with_hsts.rs](https://github.com/plabayo/rama/tree/main/examples/https_web_service_with_hsts.rs):
+  HTTP Strict Transport Security (HSTS) example

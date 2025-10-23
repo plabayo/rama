@@ -621,6 +621,10 @@ name = "https_connect_proxy"
 required-features = ["http-full", "rustls"]
 
 [[example]]
+name = "https_web_service_with_hsts"
+required-features = ["http-full", "rustls"]
+
+[[example]]
 name = "mtls_tunnel_and_service"
 required-features = ["http-full", "rustls"]
 
