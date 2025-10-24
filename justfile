@@ -191,6 +191,5 @@ publish *ARGS:
     wingetcreate submit -p 'Plabayo.Rama.Preview version bump' .
 
 update-deps:
-    cargo upgrade
     cargo upgrades
     cargo update
