@@ -1,5 +1,3 @@
-//! An async service which echoes the incoming bytes back on the same stream.
-
 use rama_core::{Service, error::BoxError, stream::Stream};
 
 /// An async service which echoes the incoming bytes back on the same stream.
@@ -21,19 +19,20 @@ use rama_core::{Service, error::BoxError, stream::Stream};
 /// # }
 /// ```
 #[derive(Debug, Clone)]
-pub struct EchoService {
-    _phantom: (),
-}
+#[non_exhaustive]
+pub struct EchoService;
 
 impl EchoService {
     /// Creates a new [`EchoService`],
     #[must_use]
+    #[inline(always)]
     pub const fn new() -> Self {
-        Self { _phantom: () }
+        Self
     }
 }
 
 impl Default for EchoService {
+    #[inline(always)]
     fn default() -> Self {
         Self::new()
     }

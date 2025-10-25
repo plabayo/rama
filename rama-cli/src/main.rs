@@ -7,7 +7,7 @@
 use clap::{Parser, Subcommand};
 
 pub mod cmd;
-use cmd::{echo, fp, http, ip, proxy, serve, tls, ws};
+use self::cmd::{discard, echo, fp, http, ip, proxy, serve, tls, ws};
 
 pub mod trace;
 pub mod utils;
@@ -37,6 +37,7 @@ enum CliCommands {
     Tls(tls::CliCommandTls),
     Proxy(proxy::CliCommandProxy),
     Echo(echo::CliCommandEcho),
+    Discard(discard::CliCommandDiscard),
     Ip(ip::CliCommandIp),
     Fp(fp::CliCommandFingerprint),
     Serve(serve::CliCommandServe),
@@ -53,6 +54,7 @@ async fn main() {
         CliCommands::Tls(cfg) => tls::run(cfg).await,
         CliCommands::Proxy(cfg) => proxy::run(cfg).await,
         CliCommands::Echo(cfg) => echo::run(cfg).await,
+        CliCommands::Discard(cfg) => discard::run(cfg).await,
         CliCommands::Ip(cfg) => ip::run(cfg).await,
         CliCommands::Fp(cfg) => fp::run(cfg).await,
         CliCommands::Serve(cfg) => serve::run(cfg).await,

@@ -5,3 +5,7 @@
 mod echo;
 #[doc(inline)]
 pub use echo::EchoService;
+
+mod discard;
+#[doc(inline)]
+pub use discard::DiscardService;

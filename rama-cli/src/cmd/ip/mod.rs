@@ -57,6 +57,10 @@ pub struct CliCommandIp {
     #[arg(long, short = 's')]
     /// run IP service in secure mode (enable TLS)
     secure: bool,
+
+    #[arg(long, default_value_t = 5)]
+    /// the graceful shutdown timeout in seconds (0 = no timeout)
+    graceful: u64,
 }
 
 /// run the rama ip service
@@ -115,7 +119,14 @@ pub async fn run(cfg: CliCommandIp) -> Result<(), BoxError> {
         tcp_listener.serve_graceful(guard, tcp_service).await;
     });
 
-    graceful.shutdown_with_limit(Duration::from_secs(5)).await?;
+    let delay = if cfg.graceful > 0 {
+        graceful
+            .shutdown_with_limit(Duration::from_secs(cfg.graceful))
+            .await?
+    } else {
+        graceful.shutdown().await
+    };
+    tracing::info!("IP address echo service gracefully shutdown with a delay of: {delay:?}");
 
     Ok(())
 }

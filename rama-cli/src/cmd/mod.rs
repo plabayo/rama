@@ -1,5 +1,6 @@
 //! rama cli subcommands
 
+pub mod discard;
 pub mod echo;
 pub mod fp;
 pub mod http;

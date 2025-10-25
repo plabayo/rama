@@ -38,6 +38,10 @@ pub struct CliCommandEcho {
     /// (0 = no timeout)
     timeout: u64,
 
+    #[arg(long, default_value_t = 5)]
+    /// the graceful shutdown timeout in seconds (0 = no timeout)
+    graceful: u64,
+
     #[arg(long, short = 'f')]
     /// enable support for one of the following "forward" headers or protocols
     ///
@@ -125,7 +129,14 @@ pub async fn run(cfg: CliCommandEcho) -> Result<(), BoxError> {
             .await;
     });
 
-    graceful.shutdown_with_limit(Duration::from_secs(5)).await?;
+    let delay = if cfg.graceful > 0 {
+        graceful
+            .shutdown_with_limit(Duration::from_secs(cfg.graceful))
+            .await?
+    } else {
+        graceful.shutdown().await
+    };
+    tracing::info!("echo service gracefully shutdown with a delay of: {delay:?}");
 
     Ok(())
 }

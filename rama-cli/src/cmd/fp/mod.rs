@@ -102,6 +102,10 @@ pub struct CliCommandFingerprint {
     #[arg(long)]
     /// use self-signed certs in case secure is enabled
     self_signed: bool,
+
+    #[arg(long, default_value_t = 8)]
+    /// the graceful shutdown timeout in seconds (0 = no timeout)
+    graceful: u64,
 }
 
 /// run the rama FP service
@@ -310,9 +314,14 @@ pub async fn run(cfg: CliCommandFingerprint) -> Result<(), BoxError> {
         }
     });
 
-    graceful
-        .shutdown_with_limit(Duration::from_secs(30))
-        .await?;
+    let delay = if cfg.graceful > 0 {
+        graceful
+            .shutdown_with_limit(Duration::from_secs(cfg.graceful))
+            .await?
+    } else {
+        graceful.shutdown().await
+    };
+    tracing::info!("FP service gracefully shutdown with a delay of: {delay:?}");
 
     Ok(())
 }

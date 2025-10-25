@@ -43,6 +43,10 @@ pub struct CliCommandProxy {
     #[arg(long, short = 't', default_value_t = 8)]
     /// the timeout in seconds for each connection (0 = no timeout)
     timeout: u64,
+
+    #[arg(long, default_value_t = 30)]
+    /// the graceful shutdown timeout in seconds (0 = no timeout)
+    graceful: u64,
 }
 
 /// run the rama proxy service
@@ -97,9 +101,14 @@ pub async fn run(cfg: CliCommandProxy) -> Result<(), BoxError> {
             .await;
     });
 
-    graceful
-        .shutdown_with_limit(Duration::from_secs(30))
-        .await?;
+    let delay = if cfg.graceful > 0 {
+        graceful
+            .shutdown_with_limit(Duration::from_secs(cfg.graceful))
+            .await?
+    } else {
+        graceful.shutdown().await
+    };
+    tracing::info!("proxy gracefully shutdown with a delay of: {delay:?}");
 
     Ok(())
 }
