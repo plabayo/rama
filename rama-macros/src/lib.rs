@@ -147,7 +147,7 @@
 
 use proc_macro::TokenStream;
 
-mod axum_macros;
+mod from_ref_macro;
 mod include_dir_macro;
 mod paste_macro;
 
@@ -182,5 +182,5 @@ pub fn include_dir(input: TokenStream) -> TokenStream {
 /// `#[from_ref(skip)]` can be used to skip specific fields
 #[proc_macro_derive(FromRef, attributes(from_ref))]
 pub fn derive_from_ref(item: TokenStream) -> TokenStream {
-    axum_macros::expand_with(item, axum_macros::from_ref::expand)
+    from_ref_macro::expand_with(item, from_ref_macro::from_ref::expand)
 }
