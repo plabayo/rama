@@ -83,3 +83,23 @@ where
         U::rama_try_from(self)
     }
 }
+
+/// Create `Self` from a reference `T`
+///
+/// This is mostly used for extractors, but it can be used for anything
+/// that needs to create an owned type from a reference
+pub trait FromRef<T> {
+    /// Converts to this type from a reference to the input type.
+    fn from_ref(input: &T) -> Self;
+}
+
+pub use rama_macros::FromRef;
+
+impl<T> FromRef<T> for T
+where
+    T: Clone,
+{
+    fn from_ref(input: &T) -> Self {
+        input.clone()
+    }
+}

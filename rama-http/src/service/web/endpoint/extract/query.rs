@@ -44,25 +44,33 @@ where
     }
 }
 
-impl<T> FromRequestContextRefPair for Query<T>
+impl<T, State> FromRequestContextRefPair<State> for Query<T>
 where
     T: DeserializeOwned + Send + Sync + 'static,
+    State: Send + Sync,
 {
     type Rejection = FailedToDeserializeQueryString;
 
-    async fn from_request_context_ref_pair(parts: &Parts) -> Result<Self, Self::Rejection> {
+    async fn from_request_context_ref_pair(
+        parts: &Parts,
+        _state: &State,
+    ) -> Result<Self, Self::Rejection> {
         let query = parts.uri.query().unwrap_or_default();
         Self::parse_query_str(query)
     }
 }
 
-impl<T> OptionalFromRequestContextRefPair for Query<T>
+impl<T, State> OptionalFromRequestContextRefPair<State> for Query<T>
 where
     T: DeserializeOwned + Send + Sync + 'static,
+    State: Send + Sync,
 {
     type Rejection = FailedToDeserializeQueryString;
 
-    async fn from_request_context_ref_pair(parts: &Parts) -> Result<Option<Self>, Self::Rejection> {
+    async fn from_request_context_ref_pair(
+        parts: &Parts,
+        _state: &State,
+    ) -> Result<Option<Self>, Self::Rejection> {
         match parts.uri.query() {
             Some(query) => {
                 let params = serde_html_form::from_str(query)

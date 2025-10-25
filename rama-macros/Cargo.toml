@@ -24,6 +24,7 @@ proc-macro = true
 proc-macro-crate = { workspace = true }
 proc-macro2 = { workspace = true }
 quote = { workspace = true }
+syn = { workspace = true, features = ["full"] }
 
 [dev-dependencies]
 paste-test-suite = { version = "0", path = "tests/macros" }

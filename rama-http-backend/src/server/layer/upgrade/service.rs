@@ -23,7 +23,7 @@ pub struct UpgradeService<S, O> {
 pub struct UpgradeHandler<O> {
     matcher: Box<dyn Matcher<Request>>,
     responder: BoxService<Request, (O, Request), O>,
-    handler: Arc<BoxService<Upgraded, (), Infallible>>,
+    handler: BoxService<Upgraded, (), Infallible>,
     _phantom: std::marker::PhantomData<fn(O) -> ()>,
 }
 
@@ -38,7 +38,7 @@ impl<O> UpgradeHandler<O> {
         Self {
             matcher: Box::new(matcher),
             responder: responder.boxed(),
-            handler: Arc::new(handler.boxed()),
+            handler: handler.boxed(),
             _phantom: std::marker::PhantomData,
         }
     }
