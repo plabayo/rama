@@ -405,9 +405,9 @@ dependencies = [
 
 [[package]]
 name = "cc"
-version = "1.2.42"
+version = "1.2.43"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "81bbf3b3619004ad9bd139f62a9ab5cfe467f307455a0d307b0cf58bf070feaa"
+checksum = "739eb0f94557554b3ca9a86d2d37bebd49c5e6d0c1d2bda35ba5bdac830befc2"
 dependencies = [
  "find-msvc-tools",
  "jobserver",
@@ -752,9 +752,9 @@ dependencies = [
 
 [[package]]
 name = "deranged"
-version = "0.5.4"
+version = "0.5.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a41953f86f8a05768a6cda24def994fd2f424b04ec5c719cf89989779f199071"
+checksum = "ececcb659e7ba858fb4f10388c250a7252eb0a27373f1a72b8748afdd248e587"
 dependencies = [
  "powerfmt",
 ]
@@ -2324,9 +2324,9 @@ dependencies = [
 
 [[package]]
 name = "psl"
-version = "2.1.151"
+version = "2.1.153"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6fd2e88c2c28854abe53489ce679f9dad712e2ac01a342dbeccae851cf0654d9"
+checksum = "ab8c4b41a31d1cbda3972635f0879cb495c5db2e9157a6c3391479fd87eb93a9"
 dependencies = [
  "psl-types",
 ]
