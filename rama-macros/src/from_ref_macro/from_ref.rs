@@ -1,5 +1,6 @@
-use proc_macro2::{Ident, TokenStream};
-use quote::quote_spanned;
+use proc_macro_crate::{FoundCrate, crate_name};
+use proc_macro2::{Ident, Span, TokenStream};
+use quote::{quote, quote_spanned};
 use syn::{
     Field, ItemStruct, Token, Type,
     parse::{Parse, ParseStream},
@@ -16,17 +17,19 @@ pub(crate) fn expand(item: ItemStruct) -> syn::Result<TokenStream> {
         ));
     }
 
+    let root_crate = support_root_ts();
+
     let tokens = item
         .fields
         .iter()
         .enumerate()
-        .map(|(idx, field)| expand_field(&item.ident, idx, field))
+        .map(|(idx, field)| expand_field(&item.ident, idx, field, &root_crate))
         .collect();
 
     Ok(tokens)
 }
 
-fn expand_field(state: &Ident, idx: usize, field: &Field) -> TokenStream {
+fn expand_field(state: &Ident, idx: usize, field: &Field, root_crate: &TokenStream) -> TokenStream {
     let FieldAttrs { skip } = match parse_attrs("from_ref", &field.attrs) {
         Ok(attrs) => attrs,
         Err(err) => return err.into_compile_error(),
@@ -55,7 +58,7 @@ fn expand_field(state: &Ident, idx: usize, field: &Field) -> TokenStream {
 
     quote_spanned! {span=>
         #[allow(clippy::clone_on_copy, clippy::clone_on_ref_ptr)]
-        impl ::rama_core::conversion::FromRef<#state> for #field_ty {
+        impl #root_crate::conversion::FromRef<#state> for #field_ty {
             fn from_ref(state: &#state) -> Self {
                 #body
             }
@@ -102,4 +105,33 @@ impl Combine for FieldAttrs {
 #[test]
 fn ui() {
     super::run_ui_tests("from_ref");
+}
+
+fn support_root_ts() -> proc_macro2::TokenStream {
+    // Prefer the umbrella crate
+    if let Ok(found) = crate_name("rama") {
+        let ident = match found {
+            FoundCrate::Itself => Ident::new("rama", Span::call_site()),
+            FoundCrate::Name(name) => Ident::new(&name, Span::call_site()),
+        };
+        return quote!(::#ident);
+    }
+
+    // Fall back to the rama-core crate directly
+    if let Ok(found) = crate_name("rama-core") {
+        return match found {
+            FoundCrate::Itself => quote!(crate),
+            FoundCrate::Name(name) => {
+                let ident = Ident::new(&name, Span::call_site());
+                quote!(::#ident)
+            }
+        };
+    }
+
+    quote! {
+        { compile_error!(
+            "from_ref could not find FromRef trait. \
+             Add a dependency on `rama` or `rama-core`."
+        ); }
+    }
 }
