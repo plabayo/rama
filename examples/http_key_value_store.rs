@@ -98,18 +98,6 @@ struct Db(Arc<RwLock<HashMap<String, bytes::Bytes>>>);
 
 impl_deref!(Db: Arc<RwLock<HashMap<String, bytes::Bytes>>>);
 
-// AppState is cloneable so implement `FromRef<AppState>` (by deriving it) is enough. But here
-// we decided that our GlobalState will be `Arc<AppState>`. We do this so we can
-// add more fields to AppState but cloning it stays the same size. For this
-// specific use case this is way too overkill, but we do it do demonstrate that it's possible,
-// by manually implementing `FromRef`
-
-impl FromRef<Arc<AppState>> for Db {
-    fn from_ref(input: &Arc<AppState>) -> Self {
-        input.db.clone()
-    }
-}
-
 #[derive(Debug, Deserialize)]
 struct ItemParam {
     key: String,
@@ -133,7 +121,7 @@ async fn main() {
         "running service",
     );
     let exec = Executor::default();
-    let state = Arc::new(AppState::default());
+    let state = AppState::default();
     HttpServer::auto(exec)
         .listen(
             addr,
