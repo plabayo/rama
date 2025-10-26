@@ -97,9 +97,9 @@ enum Mode {
     /// prior to the echo'ng of bytes kicking in.
     Tls,
     /// Serve the echo service in http mode
+    #[default]
     Http,
     /// Serve the echo service in http mode over TLS
-    #[default]
     Https,
 }
 
