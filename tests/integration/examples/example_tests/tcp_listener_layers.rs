@@ -13,7 +13,10 @@ async fn test_tcp_listener_layers() {
     for i in 0..5 {
         let extensions = Extensions::new();
         match default_tcp_connect(&extensions, ([127, 0, 0, 1], 62501).into()).await {
-            Ok((s, _)) => stream = Some(s),
+            Ok((s, _)) => {
+                stream = Some(s);
+                break;
+            }
             Err(e) => {
                 eprintln!("connect_tcp error: {e}");
                 tokio::time::sleep(std::time::Duration::from_millis(500 + 250 * i)).await;

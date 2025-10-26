@@ -1,19 +1,37 @@
 use rama::{
     extensions::Extensions,
-    http::{client::EasyHttpWebClient, ws::handshake::client::HttpClientWebSocketExt},
+    http::{
+        client::EasyHttpWebClient, headers::SecWebSocketProtocol,
+        ws::handshake::client::HttpClientWebSocketExt,
+    },
+    net::address::SocketAddress,
+    tcp::client::default_tcp_connect,
+    telemetry::tracing,
+    udp::UdpSocket,
 };
-use rama_http::headers::SecWebSocketProtocol;
+
+#[cfg(feature = "boring")]
+use ::{
+    rama::{
+        net::client::{ConnectorService, EstablishedClientConnection},
+        net::tls::client::ServerVerifyMode,
+        tcp::client::{Request as TcpRequest, service::TcpConnector},
+        tls::boring::client::{TlsConnector, TlsConnectorDataBuilder},
+    },
+    std::sync::Arc,
+};
 
 use super::utils;
+use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
 #[tokio::test]
 #[ignore]
 async fn test_http_echo() {
     utils::init_tracing();
 
-    let _guard = utils::RamaService::echo(63101, false);
+    let _guard = utils::RamaService::echo(63101, "http");
 
-    let lines = utils::RamaService::http(vec!["http://127.0.0.1:63101"]).unwrap();
+    let lines = utils::RamaService::http(vec!["--http1.1", "http://127.0.0.1:63101"]).unwrap();
     assert!(lines.contains("HTTP/1.1 200 OK"), "lines: {lines:?}");
 
     let lines =
@@ -73,18 +91,104 @@ async fn test_http_echo() {
     );
 }
 
+#[tokio::test]
+#[ignore]
+async fn test_tcp_echo() {
+    utils::init_tracing();
+
+    let _guard = utils::RamaService::echo(63110, "tcp");
+
+    let mut stream = None;
+    for i in 0..5 {
+        let extensions = Extensions::new();
+        match default_tcp_connect(&extensions, ([127, 0, 0, 1], 63110).into()).await {
+            Ok((s, _)) => {
+                stream = Some(s);
+                break;
+            }
+            Err(e) => {
+                tracing::error!("connect_tcp error: {e}");
+                tokio::time::sleep(std::time::Duration::from_millis(500 + 250 * i)).await;
+            }
+        }
+    }
+    let mut stream = stream.expect("connect to tcp listener");
+
+    stream.write_all(b"hello").await.unwrap();
+    let mut buf = [0; 5];
+    stream.read_exact(&mut buf).await.unwrap();
+    assert_eq!(&buf, b"hello");
+}
+
 #[cfg(feature = "boring")]
 #[tokio::test]
 #[ignore]
-async fn test_http_echo_secure() {
-    use std::sync::Arc;
-
-    use rama_net::tls::client::ServerVerifyMode;
-    use rama_tls_boring::client::TlsConnectorDataBuilder;
-
+async fn test_tls_tcp_echo() {
     utils::init_tracing();
 
-    let _guard = utils::RamaService::echo(63103, true);
+    let _guard = utils::RamaService::echo(63111, "tls");
+
+    let mut stream = None;
+    for i in 0..5 {
+        let extensions = Extensions::new();
+        let connector = TlsConnector::secure(TcpConnector::new()).with_connector_data(Arc::new(
+            TlsConnectorDataBuilder::new().with_server_verify_mode(ServerVerifyMode::Disable),
+        ));
+        match connector
+            .connect(TcpRequest::new(([127, 0, 0, 1], 63111).into(), extensions))
+            .await
+        {
+            Ok(EstablishedClientConnection { conn, .. }) => {
+                stream = Some(conn);
+                break;
+            }
+            Err(e) => {
+                tracing::error!("tls(tcp) connect error: {e}");
+                tokio::time::sleep(std::time::Duration::from_millis(500 + 250 * i)).await;
+            }
+        }
+    }
+    let mut stream = stream.expect("connect to tls-tcp listener");
+
+    stream.write_all(b"hello").await.unwrap();
+    let mut buf = [0; 5];
+    stream.read_exact(&mut buf).await.unwrap();
+    assert_eq!(&buf, b"hello");
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_udp_echo() {
+    utils::init_tracing();
+
+    let _guard = utils::RamaService::echo(63112, "udp");
+    let socket = UdpSocket::bind(SocketAddress::local_ipv4(63113))
+        .await
+        .unwrap();
+
+    for i in 0..5 {
+        match socket.connect(SocketAddress::local_ipv4(63112)).await {
+            Ok(_) => break,
+            Err(e) => {
+                tracing::error!("UdpSocket::connect error: {e}");
+                tokio::time::sleep(std::time::Duration::from_millis(500 + 250 * i)).await;
+            }
+        }
+    }
+
+    socket.send(b"hello").await.unwrap();
+    let mut buf = [0; 5];
+    socket.recv(&mut buf).await.unwrap();
+    assert_eq!(&buf, b"hello");
+}
+
+#[cfg(feature = "boring")]
+#[tokio::test]
+#[ignore]
+async fn test_https_echo() {
+    utils::init_tracing();
+
+    let _guard = utils::RamaService::echo(63103, "https");
 
     let lines = utils::RamaService::http(vec!["https://127.0.0.1:63103", "foo:bar", "a=4", "q==1"])
         .unwrap();
@@ -160,10 +264,10 @@ async fn test_http_echo_secure() {
 #[cfg(feature = "boring")]
 #[tokio::test]
 #[ignore]
-async fn test_http_forced_version() {
+async fn test_https_forced_version() {
     utils::init_tracing();
 
-    let _guard = utils::RamaService::echo(63104, true);
+    let _guard = utils::RamaService::echo(63104, "https");
 
     struct Test {
         cli_flag: &'static str,

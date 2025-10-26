@@ -1,10 +1,10 @@
 use super::stream::TcpStream;
-use rama::{Service, error::BoxError, extensions::ExtensionsMut, telemetry::tracing};
-use rama_net::{
+use rama::net::{
     client::EstablishedClientConnection,
     stream::{ClientSocketInfo, SocketInfo},
     transport::TryRefIntoTransportContext,
 };
+use rama::{Service, error::BoxError, extensions::ExtensionsMut, telemetry::tracing};
 
 /// A newtype for managing a `[turmoil::net::TcpStream]` 'connector' implementing `[rama::Service]`
 #[derive(Debug, Clone)]

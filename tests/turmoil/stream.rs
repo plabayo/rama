@@ -6,11 +6,11 @@ use std::{
 };
 
 use pin_project_lite::pin_project;
-use rama_core::{
+use rama::net::stream::Socket;
+use rama::{
     extensions::Extensions,
     extensions::{ExtensionsMut, ExtensionsRef},
 };
-use rama_net::stream::Socket;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 pub use turmoil::net::TcpStream as TurmoilTcpStream;
 

@@ -20,14 +20,16 @@ pub(super) struct RamaService {
 
 impl RamaService {
     /// Start the rama Ip service with the given port.
-    pub(super) fn ip(port: u16) -> Self {
-        let mut process = escargot::CargoBuild::new()
+    pub(super) fn ip(port: u16, transport: bool, secure: bool) -> Self {
+        let mut builder = escargot::CargoBuild::new()
             .package("rama-cli")
             .bin("rama")
             .target_dir("./target/")
             .run()
             .unwrap()
-            .command()
+            .command();
+
+        builder
             .stdout(std::process::Stdio::piped())
             .arg("ip")
             .arg("--bind")
@@ -35,9 +37,28 @@ impl RamaService {
             .env(
                 "RUST_LOG",
                 std::env::var("RUST_LOG").unwrap_or("info".into()),
-            )
-            .spawn()
-            .unwrap();
+            );
+
+        if secure {
+            const BASE64: base64::engine::GeneralPurpose =
+                base64::engine::general_purpose::STANDARD;
+
+            builder.env(
+                "RAMA_TLS_CRT",
+                BASE64.encode(include_bytes!("./example_tls.crt")),
+            );
+            builder.env(
+                "RAMA_TLS_KEY",
+                BASE64.encode(include_bytes!("./example_tls.key")),
+            );
+            builder.arg("-s");
+        }
+
+        if transport {
+            builder.arg("-T");
+        }
+
+        let mut process = builder.spawn().unwrap();
 
         let stdout = process.stdout.take().unwrap();
         let mut stdout = BufReader::new(stdout).lines();
@@ -60,7 +81,7 @@ impl RamaService {
     }
 
     /// Start the rama echo service with the given port.
-    pub(super) fn echo(port: u16, secure: bool) -> Self {
+    pub(super) fn echo(port: u16, mode: &'static str) -> Self {
         let mut builder = escargot::CargoBuild::new()
             .package("rama-cli")
             .bin("rama")
@@ -69,7 +90,7 @@ impl RamaService {
             .unwrap()
             .command();
 
-        if secure {
+        if mode.eq_ignore_ascii_case("tls") || mode.eq_ignore_ascii_case("https") {
             const BASE64: base64::engine::GeneralPurpose =
                 base64::engine::general_purpose::STANDARD;
 
@@ -86,16 +107,17 @@ impl RamaService {
         builder
             .stdout(std::process::Stdio::piped())
             .arg("echo")
-            .arg("--ws")
             .arg("--bind")
             .arg(format!("127.0.0.1:{port}"))
+            .arg("--mode")
+            .arg(mode)
             .env(
                 "RUST_LOG",
                 std::env::var("RUST_LOG").unwrap_or("info".into()),
             );
 
-        if secure {
-            builder.arg("-s");
+        if mode.eq_ignore_ascii_case("http") || mode.eq_ignore_ascii_case("https") {
+            builder.arg("--ws");
         }
 
         let mut process = builder.spawn().unwrap();
@@ -114,6 +136,64 @@ impl RamaService {
             for line in stdout {
                 let line = line.unwrap();
                 println!("rama echo >> {line}");
+            }
+        });
+
+        Self { process }
+    }
+
+    /// Start the rama discard service with the given port.
+    pub(super) fn discard(port: u16, mode: &'static str) -> Self {
+        let mut builder = escargot::CargoBuild::new()
+            .package("rama-cli")
+            .bin("rama")
+            .target_dir("./target/")
+            .run()
+            .unwrap()
+            .command();
+
+        if mode.eq_ignore_ascii_case("tls") {
+            const BASE64: base64::engine::GeneralPurpose =
+                base64::engine::general_purpose::STANDARD;
+
+            builder.env(
+                "RAMA_TLS_CRT",
+                BASE64.encode(include_bytes!("./example_tls.crt")),
+            );
+            builder.env(
+                "RAMA_TLS_KEY",
+                BASE64.encode(include_bytes!("./example_tls.key")),
+            );
+        }
+
+        builder
+            .stdout(std::process::Stdio::piped())
+            .arg("discard")
+            .arg("--bind")
+            .arg(format!("127.0.0.1:{port}"))
+            .arg("--mode")
+            .arg(mode)
+            .env(
+                "RUST_LOG",
+                std::env::var("RUST_LOG").unwrap_or("info".into()),
+            );
+
+        let mut process = builder.spawn().unwrap();
+
+        let stdout = process.stdout.take().unwrap();
+        let mut stdout = BufReader::new(stdout).lines();
+
+        for line in &mut stdout {
+            let line = line.unwrap();
+            if line.contains("discard service ready") {
+                break;
+            }
+        }
+
+        thread::spawn(move || {
+            for line in stdout {
+                let line = line.unwrap();
+                println!("rama discard >> {line}");
             }
         });
 

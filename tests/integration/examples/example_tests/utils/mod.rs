@@ -53,7 +53,7 @@ pub(super) struct ExampleRunner {
     #[cfg(feature = "http-full")]
     pub(super) client: ClientService,
     #[cfg(not(feature = "http-full"))]
-    _phantom: std::marker::PhantomData,
+    _phantom: std::marker::PhantomData<()>,
 }
 
 /// to ensure we only ever register tracing once,

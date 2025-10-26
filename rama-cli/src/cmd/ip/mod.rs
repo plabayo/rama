@@ -50,10 +50,6 @@ pub struct CliCommandIp {
     /// operate the IP service on transport layer (tcp)
     transport: bool,
 
-    #[arg(long)]
-    /// operate the IP service on transport layer (http)
-    http: bool,
-
     #[arg(long, short = 's')]
     /// run IP service in secure mode (enable TLS)
     secure: bool,
@@ -68,7 +64,7 @@ pub async fn run(cfg: CliCommandIp) -> Result<(), BoxError> {
     crate::trace::init_tracing(LevelFilter::INFO);
 
     let maybe_tls_server_config = cfg.secure.then(|| {
-        new_server_config(cfg.http.then_some(vec![
+        new_server_config((!cfg.transport).then_some(vec![
             ApplicationProtocol::HTTP_2,
             ApplicationProtocol::HTTP_11,
         ]))
