@@ -29,6 +29,7 @@
 // rama provides everything out of the box to build a complete web service.
 use rama::{
     Layer, Service,
+    conversion::FromRef,
     error::{BoxError, OpaqueError},
     extensions::ExtensionsRef,
     http::{
@@ -38,15 +39,16 @@ use rama::{
         server::HttpServer,
         service::web::{
             Router,
-            extract::Query,
+            extract::{Query, State},
             response::{Headers, Html, IntoResponse},
         },
     },
-    layer::{AddExtensionLayer, ConsumeErrLayer},
+    layer::ConsumeErrLayer,
     net::{address::SocketAddress, stream::SocketInfo},
     rt::Executor,
     tcp::{TcpStream, server::TcpListener},
     telemetry::tracing::{self, level_filters::LevelFilter},
+    utils::macros::impl_deref,
 };
 
 use ahash::HashSet;
@@ -71,9 +73,10 @@ async fn main() {
 
     let graceful = rama::graceful::Shutdown::default();
 
-    let state = State::default();
+    let state = AppState::default();
 
     let router = Router::new()
+        .with_state(state.clone())
         .get("/", Html(r##"<h1>Hello, Human!?</h1>"##.to_owned()))
         .get("/robots.txt", ROBOTS_TXT)
         .get("/internal/clients.csv", infinite_resource);
@@ -88,9 +91,8 @@ async fn main() {
     );
 
     let tcp_svc = (
-        AddExtensionLayer::new(state),
         ConsumeErrLayer::default(),
-        IpFirewall,
+        IpFirewall::new(state.block_list.clone()),
     )
         .into_layer(app);
 
@@ -109,10 +111,15 @@ async fn main() {
         .expect("graceful shutdown");
 }
 
-#[derive(Debug, Clone, Default)]
-struct State {
-    block_list: Arc<Mutex<HashSet<IpAddr>>>,
+#[derive(Debug, Clone, Default, FromRef)]
+struct AppState {
+    block_list: BlockList,
 }
+
+#[derive(Clone, Debug, Default)]
+struct BlockList(Arc<Mutex<HashSet<IpAddr>>>);
+
+impl_deref!(BlockList: Arc<Mutex<HashSet<IpAddr>>>);
 
 const ROBOTS_TXT: &str = r##"User-agent: *
 Disallow: /internal/
@@ -125,6 +132,12 @@ struct InfiniteResourceParameters {
 }
 
 async fn infinite_resource(
+    // We can access global state like this, the easy option for fast prototyping
+    State(_global_state): State<AppState>,
+    // But for production usage we should only use the specific state this handler needs by implementing:
+    // `FromRef<AppState> for BlockList`. This is considered better practise because
+    // handlers only take what they need and never need to know what to GlobalState is.
+    State(block_list): State<BlockList>,
     Query(parameters): Query<InfiniteResourceParameters>,
     request: Request,
 ) -> impl IntoResponse {
@@ -133,13 +146,7 @@ async fn infinite_resource(
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
     let ip_addr = socket_info.peer_addr().ip();
-    let mut block_list = request
-        .extensions()
-        .get::<State>()
-        .unwrap()
-        .block_list
-        .lock()
-        .await;
+    let mut block_list = block_list.lock().await;
     block_list.insert(ip_addr);
     tracing::info!(
         "blocking bad ip: {ip_addr}; serve content (limit: {:?})",
@@ -157,15 +164,37 @@ async fn infinite_resource(
 }
 
 #[derive(Debug, Clone)]
-struct IpFirewall;
+struct IpFirewall {
+    block_list: BlockList,
+}
+
+impl IpFirewall {
+    fn new(block_list: BlockList) -> Self {
+        Self { block_list }
+    }
+}
+
 #[derive(Debug, Clone)]
-struct IpFirewallService<S>(S);
+struct IpFirewallService<S> {
+    inner: S,
+    block_list: BlockList,
+}
 
 impl<S> Layer<S> for IpFirewall {
     type Service = IpFirewallService<S>;
 
     fn layer(&self, inner: S) -> Self::Service {
-        IpFirewallService(inner)
+        IpFirewallService {
+            inner,
+            block_list: self.block_list.clone(),
+        }
+    }
+
+    fn into_layer(self, inner: S) -> Self::Service {
+        IpFirewallService {
+            inner,
+            block_list: self.block_list,
+        }
     }
 }
 
@@ -183,13 +212,7 @@ where
             .ok_or_else(|| OpaqueError::from_display("no socket info found").into_boxed())?
             .peer_addr()
             .ip();
-        let block_list = stream
-            .extensions()
-            .get::<State>()
-            .unwrap()
-            .block_list
-            .lock()
-            .await;
+        let block_list = self.block_list.lock().await;
         if block_list.contains(&ip_addr) {
             return Err(OpaqueError::from_display(format!(
                 "drop connection for blocked ip: {ip_addr}"
@@ -197,6 +220,6 @@ where
             .into_boxed());
         }
         std::mem::drop(block_list);
-        self.0.serve(stream).await.map_err(Into::into)
+        self.inner.serve(stream).await.map_err(Into::into)
     }
 }

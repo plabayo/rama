@@ -2731,6 +2731,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "rustversion",
+ "syn",
  "trybuild",
 ]
 

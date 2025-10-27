@@ -21,10 +21,16 @@ define_http_rejection! {
     pub struct MissingAuthority;
 }
 
-impl FromRequestContextRefPair for Authority {
+impl<State> FromRequestContextRefPair<State> for Authority
+where
+    State: Send + Sync,
+{
     type Rejection = MissingAuthority;
 
-    async fn from_request_context_ref_pair(parts: &Parts) -> Result<Self, Self::Rejection> {
+    async fn from_request_context_ref_pair(
+        parts: &Parts,
+        _state: &State,
+    ) -> Result<Self, Self::Rejection> {
         Ok(Self(
             RequestContext::try_from(parts)
                 .map_err(|_| MissingAuthority)?

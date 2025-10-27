@@ -53,10 +53,9 @@
 
 use rama::{
     Layer,
-    extensions::Extensions,
-    extensions::ExtensionsRef,
+    conversion::FromRef,
     http::{
-        Method, Request, StatusCode,
+        Method, StatusCode,
         layer::{
             compression::CompressionLayer, trace::TraceLayer,
             validate_request::ValidateRequestHeaderLayer,
@@ -64,15 +63,15 @@ use rama::{
         matcher::HttpMatcher,
         server::HttpServer,
         service::web::{
-            IntoEndpointService, WebService,
-            extract::{Bytes, Path},
+            IntoEndpointServiceWithState, WebService,
+            extract::{Bytes, Path, State},
             response::{IntoResponse, Json},
         },
     },
-    layer::AddExtensionLayer,
     net::{address::SocketAddress, user::Bearer},
     rt::Executor,
     telemetry::tracing::{self, level_filters::LevelFilter},
+    utils::macros::impl_deref,
 };
 
 use ahash::HashMap;
@@ -84,10 +83,20 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, fmt};
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default, FromRef)]
+/// Contains the global shared state
+///
+/// It's best practise to make sure this is splittable in
+/// smaller more focussed parts so handlers can request
+/// only the things they need
 struct AppState {
-    db: RwLock<HashMap<String, bytes::Bytes>>,
+    db: Db,
 }
+
+#[derive(Debug, Clone, Default)]
+struct Db(Arc<RwLock<HashMap<String, bytes::Bytes>>>);
+
+impl_deref!(Db: Arc<RwLock<HashMap<String, bytes::Bytes>>>);
 
 #[derive(Debug, Deserialize)]
 struct ItemParam {
@@ -112,12 +121,14 @@ async fn main() {
         "running service",
     );
     let exec = Executor::default();
+    let state = AppState::default();
     HttpServer::auto(exec)
         .listen(
             addr,
-            (AddExtensionLayer::new(Arc::new(AppState::default())),TraceLayer::new_for_http())
+            (TraceLayer::new_for_http())
                 .into_layer(
                     WebService::default()
+                        .with_state(state.clone())
                         .get("/", Json(json!({
                                 "GET /": "show this API documentation in Json Format",
                                 "GET /keys": "list all keys for which (bytes) data is stored",
@@ -130,13 +141,13 @@ async fn main() {
                                 }
                             })))
                         .get("/keys", list_keys)
-                        .nest("/admin", ValidateRequestHeaderLayer::auth(Bearer::new_static("secret-token"))
-                            .into_layer(WebService::default()
-                                .delete("/keys", async |req: Request| {
-                                    req.extensions().get::<Arc<AppState>>().unwrap().db.write().await.clear();
+                        .nest_service("/admin", ValidateRequestHeaderLayer::auth(Bearer::new_static("secret-token"))
+                            .into_layer(WebService::default().with_state(state.clone())
+                                .delete("/keys", async |State(db): State<Db>| {
+                                    db.write().await.clear();
                                 })
-                                .delete("/item/:key", async |Path(params): Path<ItemParam>, req: Request| {
-                                    match req.extensions().get::<Arc<AppState>>().unwrap().db.write().await.remove(&params.key) {
+                                .delete("/item/:key", async |State(db): State<Db>, Path(params): Path<ItemParam>| {
+                                    match db.write().await.remove(&params.key) {
                                         Some(_) => StatusCode::OK,
                                         None => StatusCode::NOT_FOUND,
                                     }
@@ -145,16 +156,16 @@ async fn main() {
                             HttpMatcher::method_get().or_method_head().and_path("/item/:key"),
                             // only compress the get Action, not the Post Action
                             CompressionLayer::new()
-                                .into_layer((async |Path(params): Path<ItemParam>, method: Method, req: Request| {
+                                .into_layer((async |State(db): State<Db>, Path(params): Path<ItemParam>, method: Method| {
                                     match method {
                                         Method::GET => {
-                                            match req.extensions().get::<Arc<AppState>>().unwrap().db.read().await.get(&params.key) {
+                                            match db.read().await.get(&params.key) {
                                                 Some(b) => b.clone().into_response(),
                                                 None => StatusCode::NOT_FOUND.into_response(),
                                             }
                                         }
                                         Method::HEAD => {
-                                            if req.extensions().get::<Arc<AppState>>().unwrap().db.read().await.contains_key(&params.key) {
+                                            if db.read().await.contains_key(&params.key) {
                                                 StatusCode::OK
                                             } else {
                                                 StatusCode::NOT_FOUND
@@ -162,21 +173,21 @@ async fn main() {
                                         }
                                         _ => StatusCode::INTERNAL_SERVER_ERROR.into_response()
                                     }
-                                }).into_endpoint_service()),
+                                }).into_endpoint_service_with_state(state.clone())),
                         )
-                        .post("/items", async |ext: Extensions, Json(dict): Json<HashMap<String, String>>| {
-                            let mut db = ext.get::<Arc<AppState>>().unwrap().db.write().await;
+                        .post("/items", async |State(db): State<Db>, Json(dict): Json<HashMap<String, String>>| {
+                            let mut db = db.write().await;
                             for (k, v) in dict {
                                 db.insert(k, bytes::Bytes::from(v));
                             }
                             StatusCode::OK
                         })
 
-                        .post("/item/:key", async |Path(params): Path<ItemParam>, ext: Extensions, Bytes(value): Bytes| {
+                        .post("/item/:key", async |State(db): State<Db>, Path(params): Path<ItemParam>, Bytes(value): Bytes| {
                             if value.is_empty() {
                                 return StatusCode::BAD_REQUEST;
                             }
-                            ext.get::<Arc<AppState>>().unwrap().db.write().await.insert(params.key, value);
+                           db.write().await.insert(params.key, value);
                             StatusCode::OK
                         }),
                 ),
@@ -186,19 +197,12 @@ async fn main() {
 }
 
 /// a service_fn can be a regular fn, instead of a closure
-async fn list_keys(req: Request) -> impl IntoResponse {
-    req.extensions()
-        .get::<Arc<AppState>>()
-        .unwrap()
-        .db
-        .read()
-        .await
-        .keys()
-        .fold(String::new(), |a, b| {
-            if a.is_empty() {
-                b.clone()
-            } else {
-                format!("{a}, {b}")
-            }
-        })
+async fn list_keys(State(db): State<Db>) -> impl IntoResponse {
+    db.read().await.keys().fold(String::new(), |a, b| {
+        if a.is_empty() {
+            b.clone()
+        } else {
+            format!("{a}, {b}")
+        }
+    })
 }

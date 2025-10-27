@@ -21,10 +21,16 @@ define_http_rejection! {
     pub struct MissingHost;
 }
 
-impl FromRequestContextRefPair for Host {
+impl<State> FromRequestContextRefPair<State> for Host
+where
+    State: Send + Sync,
+{
     type Rejection = MissingHost;
 
-    async fn from_request_context_ref_pair(parts: &Parts) -> Result<Self, Self::Rejection> {
+    async fn from_request_context_ref_pair(
+        parts: &Parts,
+        _state: &State,
+    ) -> Result<Self, Self::Rejection> {
         Ok(Self(
             RequestContext::try_from(parts)
                 .map_err(|_| MissingHost)?
