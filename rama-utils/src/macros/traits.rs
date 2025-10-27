@@ -6,19 +6,21 @@ macro_rules! __impl_inner_traits {
             $trait:ident for $struct:ident $(<$($generic:ident),*>
             where
                 {$($where_clause:tt)*}
-            )?
-                $(target: {$($target:tt)*})?
-                $(target_mut: {$($target_mut:tt)*})?
-        ); *$(;)?
+            )? {
+                $(ref $self_token:ident: {$($target:tt)*})?
+                $(&mut $self_token_mut:ident: {$($target_mut:tt)*})?
+            }
+        )*
     ) => {
         $(
             $crate::macros::traits::impl_inner_traits!{
                 @$trait for $struct$(<$($generic),*>
                 where
                     {$($where_clause)*}
-                )?
-                    $(target: {$($target)*})?
-                    $(target_mut: {$($target_mut)*})?
+                )? {
+                    $(ref $self_token: {$($target)*})?
+                    $(&mut $self_token_mut: {$($target_mut)*})?
+                }
             }
         )*
 
@@ -27,8 +29,9 @@ macro_rules! __impl_inner_traits {
         @Socket for $struct:ident $(<$($generic:ident),*>
         where
             {$($where_clause:tt)*}
-        )?
-            target: {$($target:tt)*}
+        )? {
+            ref $self_token:ident: {$($target:tt)*}
+        }
 
     ) => {
         #[warn(clippy::missing_trait_methods)]
@@ -37,33 +40,36 @@ macro_rules! __impl_inner_traits {
             $($where_clause)*
         )?
         {
-            fn local_addr(&self) -> std::io::Result<SocketAddr> {
-                self.$($target)*.local_addr()
+            fn local_addr(&$self_token) -> std::io::Result<SocketAddr> {
+                ($($target)*).local_addr()
             }
 
-            fn peer_addr(&self) -> std::io::Result<SocketAddr> {
-                self.$($target)*.peer_addr()
+            fn peer_addr(&$self_token) -> std::io::Result<SocketAddr> {
+                ($($target)*).peer_addr()
             }
         }
     };
 
     (
-        @AsyncRead for $struct:ident <$($generic:ident),*>
+        @AsyncRead for $struct:ident $(<$($generic:ident),*>
         where
             {$($where_clause:tt)*}
-            target_mut: {$($target_mut:tt)*}
+        )? {
+            &mut $self_token_mut:ident: {$($target_mut:tt)*}
+        }
     ) => {
         #[warn(clippy::missing_trait_methods)]
-        impl<$($generic),*> AsyncRead for $struct<$($generic),*>
+        impl$(<$($generic),*>)? AsyncRead for $struct$(<$($generic),*>
         where
             $($where_clause)*
+        )?
         {
             fn poll_read(
-                mut self: Pin<&mut Self>,
+                mut $self_token_mut: std::pin::Pin<&mut Self>,
                 cx: &mut std::task::Context<'_>,
                 buf: &mut tokio::io::ReadBuf<'_>,
             ) -> std::task::Poll<std::io::Result<()>> {
-                Pin::new(&mut self.$($target_mut)*).poll_read(cx, buf)
+                std::pin::Pin::new(&mut $($target_mut)*).poll_read(cx, buf)
             }
         }
     };
@@ -72,9 +78,10 @@ macro_rules! __impl_inner_traits {
         @AsyncWrite for $struct:ident $(<$($generic:ident),*>
         where
             {$($where_clause:tt)*}
-        )?
-            target: {$($target:tt)*}
-            target_mut: {$($target_mut:tt)*}
+        )? {
+            ref $self_token:ident: {$($target:tt)*}
+            &mut $self_token_mut:ident: {$($target_mut:tt)*}
+        }
     ) => {
         #[warn(clippy::missing_trait_methods)]
         impl$(<$($generic),*>)? AsyncWrite for $struct$(<$($generic),*>
@@ -83,37 +90,37 @@ macro_rules! __impl_inner_traits {
         )?
         {
             fn poll_write(
-                mut self: std::pin::Pin<&mut Self>,
+                mut $self_token_mut: std::pin::Pin<&mut Self>,
                 cx: &mut std::task::Context<'_>,
                 buf: &[u8],
             ) -> std::task::Poll<Result<usize, std::io::Error>> {
-                Pin::new(&mut self.$($target_mut)*).poll_write(cx, buf)
+                std::pin::Pin::new(&mut $($target_mut)*).poll_write(cx, buf)
             }
 
             fn poll_flush(
-                mut self: std::pin::Pin<&mut Self>,
+                mut $self_token_mut: std::pin::Pin<&mut Self>,
                 cx: &mut std::task::Context<'_>,
             ) -> std::task::Poll<Result<(), std::io::Error>> {
-                Pin::new(&mut self.$($target_mut)*).poll_flush(cx)
+                std::pin::Pin::new(&mut $($target_mut)*).poll_flush(cx)
             }
 
             fn poll_shutdown(
-                mut self: std::pin::Pin<&mut Self>,
+                mut $self_token_mut: std::pin::Pin<&mut Self>,
                 cx: &mut std::task::Context<'_>,
             ) -> std::task::Poll<Result<(), std::io::Error>> {
-                Pin::new(&mut self.$($target_mut)*).poll_shutdown(cx)
+                std::pin::Pin::new(&mut $($target_mut)*).poll_shutdown(cx)
             }
 
-            fn is_write_vectored(&self) -> bool {
-                self.$($target)*.is_write_vectored()
+            fn is_write_vectored(&$self_token) -> bool {
+                $($target)*.is_write_vectored()
             }
 
             fn poll_write_vectored(
-                mut self: Pin<&mut Self>,
+                mut $self_token_mut: std::pin::Pin<&mut Self>,
                 cx: &mut std::task::Context<'_>,
                 bufs: &[std::io::IoSlice<'_>],
             ) -> std::task::Poll<Result<usize, std::io::Error>> {
-                Pin::new(&mut self.$($target_mut)*).poll_write_vectored(cx, bufs)
+                std::pin::Pin::new(&mut $($target_mut)*).poll_write_vectored(cx, bufs)
             }
         }
     }

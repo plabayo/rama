@@ -480,24 +480,35 @@ impl<C, ID> Drop for LeasedConnection<C, ID> {
     }
 }
 
+// impl_inner_traits! {
+//     @Socket for LeasedConnection<C, ID> where {
+//         C: Socket,
+//         ID: Send + Sync + 'static,
+//     } self: {self.pooled_conn.as_ref().expect("only None after drop").conn}
+// }
+
 impl_inner_traits! {
     Socket for LeasedConnection<C, ID> where {
         C: Socket,
         ID: Send + Sync + 'static,
-    } target: {pooled_conn.as_ref().expect("only None after drop").conn};
+    } {
+        ref self: {self.pooled_conn.as_ref().expect("only None after drop").conn}
+    }
 
     AsyncWrite for LeasedConnection<C, ID> where {
         C: AsyncWrite + Unpin,
         ID: Unpin,
+    } {
+        ref self: {self.pooled_conn.as_ref().expect("only None after drop").conn}
+        &mut self: {self.pooled_conn.as_mut().expect("only None after drop").conn}
     }
-    target: {pooled_conn.as_ref().expect("only None after drop").conn}
-    target_mut: {pooled_conn.as_mut().expect("only None after drop").conn};
 
     AsyncRead for LeasedConnection<C, ID> where {
         C: AsyncRead + Unpin,
         ID: Unpin,
+    } {
+        &mut self: {self.pooled_conn.as_mut().expect("only None after drop").conn}
     }
-    target_mut: {pooled_conn.as_mut().expect("only None after drop").conn};
 }
 
 impl<Request, C, ID> Service<Request> for LeasedConnection<C, ID>

@@ -497,26 +497,25 @@ struct MockSocket {
 }
 
 impl_inner_traits! {
-    AsyncWrite for MockSocket
-    target: { &stream }
-    target_mut: { &mut stream };
+    AsyncWrite for MockSocket {
+        ref self: {self.stream}
+        &mut self: {self.stream}
+    }
 
-    // AsyncRead for MockSocket where {
-    //     C: AsyncRead + Unpin,
-    //     ID: Unpin,
-    // }
-    // target_mut: {pooled_conn.as_mut().expect("only None after drop").conn};
-}
-
-impl AsyncRead for MockSocket {
-    fn poll_read(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        buf: &mut tokio::io::ReadBuf<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        std::pin::Pin::new(&mut self.stream).poll_read(cx, buf)
+    AsyncRead for MockSocket {
+        &mut self: {self.stream}
     }
 }
+
+// impl AsyncRead for MockSocket {
+//     fn poll_read(
+//         mut self: std::pin::Pin<&mut Self>,
+//         cx: &mut std::task::Context<'_>,
+//         buf: &mut tokio::io::ReadBuf<'_>,
+//     ) -> std::task::Poll<std::io::Result<()>> {
+//         std::pin::Pin::new(&mut self.stream).poll_read(cx, buf)
+//     }
+// }
 
 // impl AsyncWrite for MockSocket {
 //     fn poll_write(
