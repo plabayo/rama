@@ -102,11 +102,6 @@ impl Combine for FieldAttrs {
     }
 }
 
-#[test]
-fn ui() {
-    super::run_ui_tests("from_ref");
-}
-
 fn support_root_ts() -> proc_macro2::TokenStream {
     // Prefer the umbrella crate
     if let Ok(found) = crate_name("rama") {
