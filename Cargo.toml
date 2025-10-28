@@ -122,7 +122,7 @@ itertools = "0.14"
 itoa = "1"
 jemallocator = { package = "tikv-jemallocator", version = "0.6" }
 libfuzzer-sys = "0.4"
-matchit = "0.8"
+matchit = "0.9"
 md5 = "0.8"
 memchr = "2.7"
 mimalloc = { version = "0.1", default-features = false }
