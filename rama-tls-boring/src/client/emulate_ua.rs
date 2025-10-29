@@ -116,12 +116,11 @@ where
                 ));
             }
 
-            let builder = match req.extensions_mut().get_mut::<TlsConnectorDataBuilder>() {
-                Some(builder) => builder,
-                None => req
-                    .extensions_mut()
-                    .insert_mut(TlsConnectorDataBuilder::default()),
-            };
+            let mut builder = req
+                .extensions_mut()
+                .get::<TlsConnectorDataBuilder>()
+                .cloned()
+                .unwrap_or_default();
 
             builder.push_base_config(emulate_builder);
             if let Some(overwrites) = self.builder_overwrites.clone() {
@@ -135,6 +134,8 @@ where
             if let Some(overwrite) = ws_overwrite.take() {
                 builder.push_base_config(overwrite);
             }
+
+            req.extensions_mut().insert(builder);
         }
 
         self.inner.serve(req).await.map_err(Into::into)

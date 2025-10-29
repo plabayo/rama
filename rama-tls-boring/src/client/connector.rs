@@ -359,10 +359,11 @@ impl<S, K> TlsConnector<S, K> {
             .map(|version| ApplicationProtocol::try_from(version.0))
             .transpose()?;
 
-        let builder = match extensions.get_mut::<TlsConnectorDataBuilder>() {
-            Some(builder) => builder,
-            None => extensions.insert_mut(TlsConnectorDataBuilder::default()),
-        };
+        // TODO do we want different style of builder?
+        let mut builder = extensions
+            .get::<TlsConnectorDataBuilder>()
+            .cloned()
+            .unwrap_or_default();
 
         if let Some(base_builder) = self.connector_data.clone() {
             builder.prepend_base_config(base_builder);
@@ -371,6 +372,9 @@ impl<S, K> TlsConnector<S, K> {
         if let Some(target_version) = target_version {
             builder.try_set_rama_alpn_protos(&[target_version])?;
         }
+
+        // We dont have to insert, but it's nice to have...
+        extensions.insert(builder.clone());
         builder.build()
     }
 }
