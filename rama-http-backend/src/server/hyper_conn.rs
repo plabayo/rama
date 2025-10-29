@@ -112,8 +112,8 @@ mod private {
                 .and_then(|exec| exec.guard())
                 .cloned();
 
-            let parent_extensions = std::mem::take(io.extensions_mut()).into_frozen_extensions();
-            let service = RamaHttpService::new(service).with_parent_extensions(parent_extensions);
+            let service =
+                RamaHttpService::new(service).with_extensions(std::mem::take(io.extensions_mut()));
 
             let stream = Box::pin(io);
 
@@ -160,8 +160,8 @@ mod private {
                 .and_then(|exec| exec.guard())
                 .cloned();
 
-            let parent_extensions = std::mem::take(io.extensions_mut()).into_frozen_extensions();
-            let service = RamaHttpService::new(service).with_parent_extensions(parent_extensions);
+            let service =
+                RamaHttpService::new(service).with_extensions(std::mem::take(io.extensions_mut()));
 
             let stream = Box::pin(io);
 
@@ -208,8 +208,8 @@ mod private {
                 .and_then(|exec| exec.guard())
                 .cloned();
 
-            let parent_extensions = std::mem::take(io.extensions_mut()).into_frozen_extensions();
-            let service = RamaHttpService::new(service).with_parent_extensions(parent_extensions);
+            let service =
+                RamaHttpService::new(service).with_extensions(std::mem::take(io.extensions_mut()));
             let stream = Box::pin(io);
 
             let mut conn = pin!(self.serve_connection_with_upgrades(stream, service));

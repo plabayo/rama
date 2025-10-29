@@ -60,13 +60,12 @@ where
                 false
             }
             Some(ext) => {
-                let mut inner_ext = Extensions::new();
                 for matcher in it {
+                    let mut inner_ext = Extensions::new();
                     if matcher.matches(Some(&mut inner_ext), request) {
                         ext.extend(inner_ext);
                         return true;
                     }
-                    inner_ext.clear();
                 }
                 false
             }

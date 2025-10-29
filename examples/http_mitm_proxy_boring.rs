@@ -459,9 +459,9 @@ where
                     Some(ingress_socket_cfg),
                 )
                 .await;
-                socket
-                    .extensions_mut()
-                    .set_parent_extensions(Arc::new(request.extensions().clone()));
+                // TODO in a place like this we dont really want to extend but instead prepend
+                // which probably means we should do it here, but it should have already happened
+                socket.extensions_mut().extend(request.extensions().clone());
                 socket
             }
             Err(err) => {

@@ -34,11 +34,12 @@ async fn test_ws_tls_server() {
     // test the actual ws content
 
     let mut extensions = Extensions::new();
-    let builder = match extensions.get_mut::<TlsConnectorDataBuilder>() {
-        Some(builder) => builder,
-        None => extensions.insert_mut(TlsConnectorDataBuilder::default()),
-    };
+    let mut builder = extensions
+        .get::<TlsConnectorDataBuilder>()
+        .cloned()
+        .unwrap_or_default();
     builder.push_base_config(TlsConnectorDataBuilder::new_http_1().into());
+    extensions.insert(builder);
 
     let mut ws = runner
         .websocket("wss://127.0.0.1:62034/echo")
