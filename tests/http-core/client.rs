@@ -49,7 +49,7 @@ async fn tcp_connect(addr: &SocketAddr) -> std::io::Result<TcpStream> {
     TcpStream::connect(*addr).await
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct HttpInfo {
     remote_addr: SocketAddr,
 }

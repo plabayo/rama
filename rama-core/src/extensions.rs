@@ -48,7 +48,7 @@ pub struct Extensions {
 }
 
 #[derive(Clone)]
-struct Extension(TypeId, Box<dyn AnyClone + Send + Sync>);
+struct Extension(TypeId, Box<dyn ExtensionType>);
 
 impl Extensions {
     /// Create an empty `Extensions`.
@@ -62,32 +62,36 @@ impl Extensions {
     }
 
     /// Insert a type into this `Extensions`.
-    pub fn insert<T: Clone + Send + Sync + 'static>(&mut self, val: T) {
+    pub fn insert<T>(&mut self, val: T) -> &mut Self
+    where
+        T: Clone + Send + Sync + std::fmt::Debug + 'static,
+    {
         let extension = Extension(TypeId::of::<T>(), Box::new(val));
         self.extensions.push(extension);
+        self
     }
 
     /// Insert a type into this `Extensions`.
-    pub fn maybe_insert<T: Clone + Send + Sync + 'static>(&mut self, val: Option<T>) {
+    pub fn maybe_insert<T>(&mut self, val: Option<T>) -> &mut Self
+    where
+        T: Clone + Send + Sync + std::fmt::Debug + 'static,
+    {
         if let Some(val) = val {
             self.insert(val);
         }
+        self
     }
 
-    pub fn extend(&mut self, extensions: Extensions) {
+    pub fn extend(&mut self, extensions: Self) -> &mut Self {
         self.extensions.extend(extensions.extensions);
+        self
     }
 
     /// Returns true if the `Extensions` or parents contains the given type.
     #[must_use]
     pub fn contains<T: Send + Sync + 'static>(&self) -> bool {
         let type_id = TypeId::of::<T>();
-        self.extensions
-            .iter()
-            .rev()
-            // .chain(self.parent_extensions.iter())
-            .find(|item| item.0 == type_id)
-            .is_some()
+        self.extensions.iter().rev().any(|item| item.0 == type_id)
     }
 
     /// Get a shared reference to a type previously inserted on this `Extensions` or any of the parents
@@ -97,7 +101,6 @@ impl Extensions {
         self.extensions
             .iter()
             .rev()
-            // .chain(self.parent_extensions.iter())
             .find(|item| item.0 == type_id)
             .map(|ext| &ext.1)
             .and_then(|boxed| (**boxed).as_any().downcast_ref())
@@ -286,32 +289,22 @@ where
     }
 }
 
-trait AnyClone: Any {
-    fn clone_box(&self) -> Box<dyn AnyClone + Send + Sync>;
+trait ExtensionType: Any + Send + Sync + std::fmt::Debug {
+    fn clone_box(&self) -> Box<dyn ExtensionType>;
     fn as_any(&self) -> &dyn Any;
-    // fn as_any_mut(&mut self) -> &mut dyn Any;
-    // fn into_any(self: Box<Self>) -> Box<dyn Any>;
 }
 
-impl<T: Clone + Send + Sync + 'static> AnyClone for T {
-    fn clone_box(&self) -> Box<dyn AnyClone + Send + Sync> {
+impl<T: Clone + Send + Sync + std::fmt::Debug + 'static> ExtensionType for T {
+    fn clone_box(&self) -> Box<dyn ExtensionType> {
         Box::new(self.clone())
     }
 
     fn as_any(&self) -> &dyn Any {
         self
     }
-
-    // fn as_any_mut(&mut self) -> &mut dyn Any {
-    //     self
-    // }
-
-    // fn into_any(self: Box<Self>) -> Box<dyn Any> {
-    //     self
-    // }
 }
 
-impl Clone for Box<dyn AnyClone + Send + Sync> {
+impl Clone for Box<dyn ExtensionType> {
     fn clone(&self) -> Self {
         (**self).clone_box()
     }

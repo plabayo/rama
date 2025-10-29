@@ -78,7 +78,7 @@ where
         async move {
             let mut req = req.map(rama_http_types::Body::new);
             if let Some(extensions) = extensions {
-                req.extensions_mut().extend(extensions)
+                req.extensions_mut().extend(extensions);
             }
 
             let span = trace_root_span!(

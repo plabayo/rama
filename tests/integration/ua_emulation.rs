@@ -447,7 +447,7 @@ impl<S> MockConnectorService<S> {
     }
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Debug)]
 /// [`ServerExtensions`] will be transfered from the client extensions to the server side
 struct ServerExtensions(Extensions);
 
