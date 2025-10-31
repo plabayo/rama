@@ -557,7 +557,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_router_nest() {
-        let cases = vec![
+        let cases = [
             (Method::GET, "/", "Hello, World!", StatusCode::OK),
             (Method::GET, "/api/users", "List Users", StatusCode::OK),
             (Method::POST, "/api/users", "Create User", StatusCode::OK),
