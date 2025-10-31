@@ -578,7 +578,8 @@ fn self_signed_server_auth_gen_cert(
         .append_extension(
             BasicConstraints::new()
                 .build()
-                .context("x509 cert builder: build basic constraints")?,
+                .context("x509 cert builder: build basic constraints")?
+                .as_ref(),
         )
         .context("x509 cert builder: add basic constraints as x509 extension")?;
     cert_builder
@@ -589,7 +590,8 @@ fn self_signed_server_auth_gen_cert(
                 .digital_signature()
                 .key_encipherment()
                 .build()
-                .context("x509 cert builder: create key usage")?,
+                .context("x509 cert builder: create key usage")?
+                .as_ref(),
         )
         .context("x509 cert builder: add key usage x509 extension")?;
 
@@ -600,14 +602,14 @@ fn self_signed_server_auth_gen_cert(
         .context("x509 cert builder: build subject alt name")?;
 
     cert_builder
-        .append_extension(subject_alt_name)
+        .append_extension(subject_alt_name.as_ref())
         .context("x509 cert builder: add subject alt name")?;
 
     let subject_key_identifier = SubjectKeyIdentifier::new()
         .build(&cert_builder.x509v3_context(Some(ca_cert), None))
         .context("x509 cert builder: build subject key id")?;
     cert_builder
-        .append_extension(subject_key_identifier)
+        .append_extension(subject_key_identifier.as_ref())
         .context("x509 cert builder: add subject key id x509 extension")?;
 
     let auth_key_identifier = AuthorityKeyIdentifier::new()
@@ -616,7 +618,7 @@ fn self_signed_server_auth_gen_cert(
         .build(&cert_builder.x509v3_context(Some(ca_cert), None))
         .context("x509 cert builder: build auth key id")?;
     cert_builder
-        .append_extension(auth_key_identifier)
+        .append_extension(auth_key_identifier.as_ref())
         .context("x509 cert builder: set auth key id extension")?;
 
     cert_builder
@@ -698,7 +700,8 @@ fn self_signed_server_auth_gen_ca(
                 .critical()
                 .ca()
                 .build()
-                .context("x509 cert builder: build basic constraints")?,
+                .context("x509 cert builder: build basic constraints")?
+                .as_ref(),
         )
         .context("x509 cert builder: add basic constraints as x509 extension")?;
     ca_cert_builder
@@ -708,7 +711,8 @@ fn self_signed_server_auth_gen_ca(
                 .key_cert_sign()
                 .crl_sign()
                 .build()
-                .context("x509 cert builder: create key usage")?,
+                .context("x509 cert builder: create key usage")?
+                .as_ref(),
         )
         .context("x509 cert builder: add key usage x509 extension")?;
 
@@ -716,7 +720,7 @@ fn self_signed_server_auth_gen_ca(
         .build(&ca_cert_builder.x509v3_context(None, None))
         .context("x509 cert builder: build subject key id")?;
     ca_cert_builder
-        .append_extension(subject_key_identifier)
+        .append_extension(subject_key_identifier.as_ref())
         .context("x509 cert builder: add subject key id x509 extension")?;
 
     ca_cert_builder

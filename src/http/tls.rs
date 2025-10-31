@@ -87,7 +87,7 @@ impl CertIssuerHttpClient {
                 )
                 .expect("add CA cert to store builder");
             let store = store_builder.build();
-            tls_config.set_server_verify_cert_store(store);
+            tls_config.set_server_verify_cert_store(Arc::new(store));
         }
 
         let client = EasyHttpWebClient::builder()
