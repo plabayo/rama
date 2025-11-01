@@ -501,14 +501,10 @@ impl TlsConnectorDataBuilder {
                         Ok(builder.build())
                     });
 
-                let store = WINDOWS_ROOT_CA
-                    .as_ref()
-                    .context("create windows root CA")?
-                    .clone();
-
+                let store_ref = WINDOWS_ROOT_CA.as_ref().context("create windows root CA")?;
                 cfg_builder
-                    .set_verify_cert_store(store)
-                    .context("set default windows verify cert store")?;
+                    .set_cert_store_ref(store_ref)
+                    .context("set default windows verify cert store by ref")?;
             }
             #[cfg(not(target_os = "windows"))]
             trace!("boring connector: do not set (root) ca file"); // on non-windows we assume that the default is fine
