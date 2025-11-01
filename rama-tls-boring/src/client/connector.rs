@@ -359,12 +359,20 @@ impl<S, K> TlsConnector<S, K> {
             .map(|version| ApplicationProtocol::try_from(version.0))
             .transpose()?;
 
-        let builder = match extensions.get_mut::<TlsConnectorDataBuilder>() {
-            Some(builder) => builder,
-            None => extensions.insert_mut(TlsConnectorDataBuilder::default()),
+        let builder = if let Some(builder) = extensions.get_mut::<TlsConnectorDataBuilder>() {
+            tracing::trace!(
+                "use TlsConnectorDataBuilder from extensions as foundation for connector cfg"
+            );
+            builder
+        } else {
+            tracing::trace!(
+                "start from Default TlsConnectorDataBuilder as foundation for connector cfg"
+            );
+            extensions.insert_mut(TlsConnectorDataBuilder::default())
         };
 
         if let Some(base_builder) = self.connector_data.clone() {
+            tracing::trace!("prepend connector data (base) config to TlsConnectorDataBuilder");
             builder.prepend_base_config(base_builder);
         }
 

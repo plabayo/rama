@@ -123,16 +123,20 @@ where
                     .insert_mut(TlsConnectorDataBuilder::default()),
             };
 
+            tracing::trace!("push emulate TLS builder as base config");
             builder.push_base_config(emulate_builder);
             if let Some(overwrites) = self.builder_overwrites.clone() {
+                tracing::trace!("push TLS builder static overwrites as base config");
                 builder.push_base_config(overwrites);
             }
 
             if let Some(overwrite) = domain_overwrite.take() {
+                tracing::trace!("push TLS builder domain overwrites as base config");
                 builder.push_base_config(overwrite);
             }
 
             if let Some(overwrite) = ws_overwrite.take() {
+                tracing::trace!("push TLS builder ws overwrites as base config");
                 builder.push_base_config(overwrite);
             }
         }

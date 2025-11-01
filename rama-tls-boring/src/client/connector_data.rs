@@ -502,9 +502,7 @@ impl TlsConnectorDataBuilder {
                     });
 
                 let store_ref = WINDOWS_ROOT_CA.as_ref().context("create windows root CA")?;
-                cfg_builder
-                    .set_cert_store_ref(store_ref)
-                    .context("set default windows verify cert store by ref")?;
+                cfg_builder.set_cert_store_ref(store_ref);
             }
             #[cfg(not(target_os = "windows"))]
             trace!("boring connector: do not set (root) ca file"); // on non-windows we assume that the default is fine
@@ -996,8 +994,8 @@ impl TlsConnectorDataBuilder {
             .as_ref()
             .map(|v| v.iter().copied().map(Into::into).collect());
         trace!(
-            "TlsConnectorData: builder: from std client config: cipher list: {:?}",
-            cipher_list
+            "TlsConnectorData: builder: from std client config: cipher list: {:?}; supported groups: {:?}",
+            cipher_list, curves,
         );
 
         let client_auth = client_auth
