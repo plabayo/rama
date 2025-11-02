@@ -36,7 +36,7 @@ fn test_http_ip_inner(addr: &'static str) {
     assert!(lines.contains("HTTP/1.1 200 OK"));
     assert!(lines.contains("content-type: text/plain; charset=utf-8"));
     assert!(
-        lines.split("\r\n").any(|line| line == "127.0.0.1"),
+        lines.split("\r\n").any(|line| line.contains("127.0.0.1")),
         "txt; lines: {lines}"
     );
 

@@ -90,9 +90,11 @@ upgrades:
     cargo upgrades
 
 watch-docs:
+	@cargo install cargo-watch
 	cargo watch -x doc
 
 watch-check:
+	@cargo install cargo-watch
 	cargo watch -x check -x test
 
 rama +ARGS:
@@ -102,6 +104,7 @@ rama-fp *ARGS:
 	cargo run -p rama-fp -- {{ARGS}}
 
 watch-rama-fp *ARGS:
+	@cargo install cargo-watch
 	cargo watch -x 'run -p rama-fp -- {{ARGS}}'
 
 docker-build-rama-fp:
