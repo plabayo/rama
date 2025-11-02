@@ -115,6 +115,10 @@ impl BidirectionalWriter<UnboundedSender<BidirectionalMessage>> {
                     tracing::error!("failed to write separator to writer: {err:?}")
                 }
             }
+
+            if let Err(err) = writer.flush().await {
+                tracing::error!("failed to flush writer: {err:?}")
+            }
         });
 
         Self { sender: tx }
@@ -208,6 +212,10 @@ impl BidirectionalWriter<Sender<BidirectionalMessage>> {
                         tracing::error!("failed to write separator to writer: {err:?}")
                     }
                 }
+
+                if let Err(err) = writer.flush().await {
+                    tracing::error!("failed to flush writer: {err:?}")
+                }
             }
             .instrument(span),
         );
@@ -287,6 +295,10 @@ impl BidirectionalWriter<Sender<BidirectionalMessage>> {
                     if let Err(err) = writer.write_all(b"\r\n").await {
                         tracing::error!("failed to write separator to writer: {err:?}")
                     }
+                }
+
+                if let Err(err) = writer.flush().await {
+                    tracing::error!("failed to flush writer: {err:?}")
                 }
             }
             .instrument(span),
