@@ -1,4 +1,4 @@
-use rama_http_types::{
+use rama_http::{
     HeaderName, Method, Version,
     proto::{
         h1::Http1HeaderMap,

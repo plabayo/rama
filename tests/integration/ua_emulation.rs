@@ -18,8 +18,9 @@ use rama::service::service_fn;
 use rama::tls::boring::client::TlsConnector;
 use rama::tls::boring::client::{EmulateTlsProfileLayer, TlsConnectorDataBuilder};
 use rama::tls::boring::server::TlsAcceptorLayer;
-use rama::ua::emulate::{
-    UserAgentEmulateHttpConnectModifier, UserAgentEmulateHttpRequestModifier, UserAgentEmulateLayer,
+use rama::ua::layer::emulate::{
+    SelectedUserAgentProfile, UserAgentEmulateHttpConnectModifier,
+    UserAgentEmulateHttpRequestModifier, UserAgentEmulateLayer,
 };
 use rama::ua::profile::HttpProfile;
 use rama::ua::profile::UserAgentDatabase;
@@ -29,7 +30,6 @@ use rama::ua::profile::{
 use rama::ua::profile::{TlsProfile, UserAgentProfile};
 use rama::ua::{PlatformKind, UserAgentKind};
 use rama::{Layer, Service};
-use rama_ua::emulate::SelectedUserAgentProfile;
 use std::convert::Infallible;
 use std::fmt;
 use std::sync::Arc;

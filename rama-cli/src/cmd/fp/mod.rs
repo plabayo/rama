@@ -17,7 +17,7 @@ use rama::{
         layer::{
             catch_panic::CatchPanicLayer, compression::CompressionLayer,
             forwarded::GetForwardedHeaderLayer, required_header::AddRequiredResponseHeadersLayer,
-            set_header::SetResponseHeaderLayer, trace::TraceLayer, ua::UserAgentClassifierLayer,
+            set_header::SetResponseHeaderLayer, trace::TraceLayer,
         },
         matcher::HttpMatcher,
         server::HttpServer,
@@ -38,6 +38,7 @@ use rama::{
     tcp::server::TcpListener,
     telemetry::tracing::{self, level_filters::LevelFilter},
     tls::boring::server::TlsAcceptorLayer,
+    ua::layer::classifier::UserAgentClassifierLayer,
     utils::backoff::ExponentialBackoff,
 };
 

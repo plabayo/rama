@@ -26,12 +26,12 @@ tls = ["rama-net/tls"]
 ahash = { workspace = true }
 itertools = { workspace = true }
 rama-core = { workspace = true }
-rama-http-headers = { workspace = true }
-rama-http-types = { workspace = true }
+rama-http = { workspace = true }
 rama-net = { workspace = true, features = ["http"] }
 rama-utils = { workspace = true }
 rand = { workspace = true }
 serde = { workspace = true, features = ["derive", "rc"] }
+serde_html_form = { workspace = true }
 serde_json = { workspace = true, optional = true }
 
 [dev-dependencies]

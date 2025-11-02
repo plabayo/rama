@@ -1,7 +1,7 @@
 use std::fmt;
 
 use rama_core::Layer;
-use rama_http_types::HeaderName;
+use rama_http::HeaderName;
 
 use super::UserAgentSelectFallback;
 

@@ -26,7 +26,7 @@ use rama::{
     },
     tls::boring::client::{EmulateTlsProfileLayer, TlsConnectorDataBuilder},
     ua::{
-        emulate::{
+        layer::emulate::{
             UserAgentEmulateHttpConnectModifier, UserAgentEmulateHttpRequestModifier,
             UserAgentEmulateLayer, UserAgentSelectFallback,
         },

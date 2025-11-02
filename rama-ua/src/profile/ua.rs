@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use rama_http_types::header::USER_AGENT;
+use rama_http::header::USER_AGENT;
 use serde::{Deserialize, Serialize};
 
 use crate::{PlatformKind, UserAgentKind};

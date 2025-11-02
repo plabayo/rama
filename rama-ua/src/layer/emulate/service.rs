@@ -6,8 +6,8 @@ use rama_core::{
     extensions::{ExtensionsMut, ExtensionsRef},
     telemetry::tracing,
 };
-use rama_http_headers::{ClientHint, all_client_hints};
-use rama_http_types::{
+use rama_http::headers::{ClientHint, all_client_hints};
+use rama_http::{
     HeaderMap, HeaderName, HeaderValue, Method, Request, Uri, Version,
     conn::{H2ClientContextParams, Http1ClientContextParams},
     header::{
@@ -29,14 +29,13 @@ use rama_utils::str::{starts_with_ignore_ascii_case, submatch_ignore_ascii_case}
 
 use crate::{
     HttpAgent, UserAgent,
-    emulate::SelectedUserAgentProfile,
     profile::{
         CUSTOM_HEADER_MARKER, HttpHeadersProfile, HttpProfile, PreserveHeaderUserAgent,
         RequestInitiator,
     },
 };
 
-use super::{UserAgentProvider, UserAgentSelectFallback};
+use super::{SelectedUserAgentProfile, UserAgentProvider, UserAgentSelectFallback};
 
 /// Service to select a [`UserAgentProfile`] and inject its info into the input [`Context`].
 ///
@@ -826,10 +825,10 @@ mod tests {
     use itertools::Itertools as _;
     use rama_core::extensions::Extensions;
     use rama_core::{Layer, inspect::RequestInspectorLayer, service::service_fn};
-    use rama_http_types::{Body, HeaderValue, header::ETAG, proto::h1::Http1HeaderName};
+    use rama_http::{Body, HeaderValue, header::ETAG, proto::h1::Http1HeaderName};
     use rama_net::address::Host;
 
-    use crate::emulate::UserAgentEmulateLayer;
+    use crate::layer::emulate::UserAgentEmulateLayer;
     use crate::profile::{
         Http1Profile, Http1Settings, Http2Profile, Http2Settings, HttpHeadersProfile, HttpProfile,
         UserAgentProfile,

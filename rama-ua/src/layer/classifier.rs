@@ -1,12 +1,15 @@
-//! User-Agent (see also `rama-ua`) http layer support
+//! User-Agent http layer support
 //!
 //! # Example
 //!
 //! ```
 //! use rama_http::{
-//!     service::client::HttpClientExt, Request, Response, StatusCode,
-//!     layer::ua::{PlatformKind, UserAgent, UserAgentClassifierLayer, UserAgentKind, UserAgentInfo},
+//!     Request, Response, StatusCode, service::client::HttpClientExt,
 //!     service::web::response::IntoResponse,
+//! };
+//! use rama_ua::{
+//!     PlatformKind, UserAgent, UserAgentInfo, UserAgentKind,
+//!     layer::classifier::UserAgentClassifierLayer,
 //! };
 //! use rama_core::{extensions::ExtensionsRef, Layer, service::service_fn};
 //! use std::convert::Infallible;
@@ -36,18 +39,15 @@
 //! # }
 //! ```
 
-use crate::{
+use rama_core::{Layer, Service, extensions::ExtensionsMut};
+use rama_http::{
     HeaderName, Request,
     headers::{self, HeaderMapExt},
 };
-use rama_core::{Layer, Service, extensions::ExtensionsMut};
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt::{self, Debug};
 
-pub use rama_ua::{
-    DeviceKind, HttpAgent, PlatformKind, TlsAgent, UserAgent, UserAgentInfo, UserAgentKind,
-    UserAgentOverwrites,
-};
+use crate::{UserAgent, UserAgentOverwrites};
 
 /// A [`Service`] that classifies the [`UserAgent`] of incoming [`Request`]s.
 ///
@@ -201,13 +201,15 @@ impl<S> Layer<S> for UserAgentClassifierLayer {
 
 #[cfg(test)]
 mod tests {
+    use crate::{HttpAgent, PlatformKind, TlsAgent, UserAgentKind};
+
     use super::*;
-    use crate::layer::required_header::AddRequiredRequestHeadersLayer;
-    use crate::service::client::HttpClientExt;
-    use crate::service::web::response::IntoResponse;
-    use crate::{Response, StatusCode, headers};
     use rama_core::extensions::ExtensionsRef;
     use rama_core::service::service_fn;
+    use rama_http::layer::required_header::AddRequiredRequestHeadersLayer;
+    use rama_http::service::client::HttpClientExt;
+    use rama_http::service::web::response::IntoResponse;
+    use rama_http::{Response, StatusCode, headers};
     use std::convert::Infallible;
 
     #[tokio::test]

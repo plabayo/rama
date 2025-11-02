@@ -79,7 +79,7 @@ use rama::{
         server::{TlsAcceptorData, TlsAcceptorLayer},
     },
     ua::{
-        emulate::{
+        layer::emulate::{
             UserAgentEmulateHttpConnectModifier, UserAgentEmulateHttpRequestModifier,
             UserAgentEmulateLayer,
         },

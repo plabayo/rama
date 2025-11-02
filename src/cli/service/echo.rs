@@ -19,10 +19,8 @@ use crate::{
         header::USER_AGENT,
         headers::forwarded::{CFConnectingIp, ClientIp, TrueClientIp, XClientIp, XRealIp},
         layer::{
-            forwarded::GetForwardedHeaderLayer,
-            required_header::AddRequiredResponseHeadersLayer,
+            forwarded::GetForwardedHeaderLayer, required_header::AddRequiredResponseHeadersLayer,
             trace::TraceLayer,
-            ua::{UserAgent, UserAgentClassifierLayer},
         },
         proto::h1::Http1HeaderMap,
         proto::h2::PseudoHeaderOrder,
@@ -40,7 +38,7 @@ use crate::{
     rt::Executor,
     tcp::TcpStream,
     telemetry::tracing,
-    ua::profile::UserAgentDatabase,
+    ua::{UserAgent, layer::classifier::UserAgentClassifierLayer, profile::UserAgentDatabase},
 };
 
 use serde::Serialize;
