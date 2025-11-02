@@ -37,7 +37,7 @@ use rama::{
     telemetry::tracing::level_filters::LevelFilter,
     tls::boring::client::{EmulateTlsProfileLayer, TlsConnectorDataBuilder},
     ua::{
-        emulate::{
+        layer::emulate::{
             UserAgentEmulateHttpConnectModifier, UserAgentEmulateHttpRequestModifier,
             UserAgentEmulateLayer, UserAgentSelectFallback,
         },

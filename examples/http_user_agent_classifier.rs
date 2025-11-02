@@ -21,12 +21,12 @@ use rama::{
     extensions::ExtensionsRef,
     http::{
         HeaderName, Request, Response,
-        layer::ua::{UserAgent, UserAgentClassifierLayer},
         server::HttpServer,
         service::web::response::{IntoResponse, Json},
     },
     rt::Executor,
     service::service_fn,
+    ua::{UserAgent, layer::classifier::UserAgentClassifierLayer},
 };
 use serde_json::json;
 use std::convert::Infallible;

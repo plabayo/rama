@@ -269,7 +269,7 @@ mod tests {
     use std::sync::Arc;
 
     use ahash::{HashSet, HashSetExt as _};
-    use rama_http_types::{HeaderValue, header::USER_AGENT, proto::h1::Http1HeaderMap};
+    use rama_http::{HeaderValue, header::USER_AGENT, proto::h1::Http1HeaderMap};
 
     use super::*;
 

@@ -10,7 +10,7 @@ use crate::{
         headers::forwarded::{CFConnectingIp, ClientIp, TrueClientIp, XClientIp, XRealIp},
         layer::{
             forwarded::GetForwardedHeaderLayer, required_header::AddRequiredResponseHeadersLayer,
-            trace::TraceLayer, ua::UserAgentClassifierLayer,
+            trace::TraceLayer,
         },
         server::HttpServer,
         service::{
@@ -25,6 +25,7 @@ use crate::{
     rt::Executor,
     tcp::TcpStream,
     telemetry::tracing,
+    ua::layer::classifier::UserAgentClassifierLayer,
 };
 
 use std::{convert::Infallible, path::PathBuf, time::Duration};

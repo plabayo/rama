@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use rama_http_types::proto::h1::Http1HeaderMap;
+use rama_http::proto::h1::Http1HeaderMap;
 use serde::Deserialize;
 
 use crate::profile::*;

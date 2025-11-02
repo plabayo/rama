@@ -1,5 +1,5 @@
 use rama_core::error::OpaqueError;
-use rama_http_headers::ClientHint;
+use rama_http::headers::ClientHint;
 use rama_utils::macros::match_ignore_ascii_case_str;
 use serde::{Deserialize, Deserializer, Serialize};
 use std::{fmt, str::FromStr};
