@@ -154,14 +154,14 @@ impl AsyncWrite for MockSocket {
 impl Socket for MockSocket {
     fn local_addr(&self) -> std::io::Result<std::net::SocketAddr> {
         Ok(std::net::SocketAddr::V4(std::net::SocketAddrV4::new(
-            Ipv4Addr::new(127, 0, 0, 1),
+            Ipv4Addr::LOCALHOST,
             0,
         )))
     }
 
     fn peer_addr(&self) -> std::io::Result<std::net::SocketAddr> {
         Ok(std::net::SocketAddr::V4(std::net::SocketAddrV4::new(
-            Ipv4Addr::new(127, 0, 0, 1),
+            Ipv4Addr::LOCALHOST,
             0,
         )))
     }

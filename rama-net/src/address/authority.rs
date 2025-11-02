@@ -1,3 +1,5 @@
+use crate::address::ip::{IPV4_BROADCAST, IPV4_UNSPECIFIED, IPV6_UNSPECIFIED};
+
 use super::{Domain, DomainAddress, Host, SocketAddress, parse_utils};
 use rama_core::error::{ErrorContext, OpaqueError};
 use std::net::{Ipv4Addr, Ipv6Addr};
@@ -36,7 +38,7 @@ impl Authority {
     #[must_use]
     pub const fn local_ipv4(port: u16) -> Self {
         Self {
-            host: Host::Address(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))),
+            host: Host::LOCALHOST_IPV4,
             port,
         }
     }
@@ -54,7 +56,7 @@ impl Authority {
     #[must_use]
     pub const fn local_ipv6(port: u16) -> Self {
         Self {
-            host: Host::Address(IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1))),
+            host: Host::LOCALHOST_IPV6,
             port,
         }
     }
@@ -72,7 +74,7 @@ impl Authority {
     #[must_use]
     pub const fn default_ipv4(port: u16) -> Self {
         Self {
-            host: Host::Address(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0))),
+            host: Host::Address(IPV4_UNSPECIFIED),
             port,
         }
     }
@@ -90,7 +92,7 @@ impl Authority {
     #[must_use]
     pub const fn default_ipv6(port: u16) -> Self {
         Self {
-            host: Host::Address(IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0))),
+            host: Host::Address(IPV6_UNSPECIFIED),
             port,
         }
     }
@@ -108,7 +110,7 @@ impl Authority {
     #[must_use]
     pub const fn broadcast_ipv4(port: u16) -> Self {
         Self {
-            host: Host::Address(IpAddr::V4(Ipv4Addr::new(255, 255, 255, 255))),
+            host: Host::Address(IPV4_BROADCAST),
             port,
         }
     }

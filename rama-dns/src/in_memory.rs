@@ -196,7 +196,7 @@ mod tests {
                 .into_iter()
                 .next()
                 .unwrap(),
-            Ipv4Addr::new(127, 0, 0, 1)
+            Ipv4Addr::LOCALHOST
         );
         assert!(
             dns_overwrite
@@ -223,7 +223,7 @@ mod tests {
                 .into_iter()
                 .next()
                 .unwrap(),
-            Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1)
+            Ipv6Addr::LOCALHOST
         );
     }
 
@@ -236,7 +236,7 @@ mod tests {
             .await
             .unwrap()
             .into_iter();
-        assert_eq!(ipv4_it.next().unwrap(), Ipv4Addr::new(127, 0, 0, 1));
+        assert_eq!(ipv4_it.next().unwrap(), Ipv4Addr::LOCALHOST);
         assert_eq!(ipv4_it.next().unwrap(), Ipv4Addr::new(127, 0, 0, 2));
         assert!(ipv4_it.next().is_none());
         assert!(
@@ -259,7 +259,7 @@ mod tests {
                 .into_iter()
                 .next()
                 .unwrap(),
-            Ipv4Addr::new(127, 0, 0, 1)
+            Ipv4Addr::LOCALHOST
         );
         assert_eq!(
             dns_overwrite
@@ -269,7 +269,7 @@ mod tests {
                 .into_iter()
                 .next()
                 .unwrap(),
-            Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1)
+            Ipv6Addr::LOCALHOST
         );
     }
 

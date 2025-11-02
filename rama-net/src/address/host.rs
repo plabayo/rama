@@ -1,4 +1,7 @@
 use super::{Domain, parse_utils};
+use crate::address::ip::{
+    IPV4_BROADCAST, IPV4_LOCALHOST, IPV4_UNSPECIFIED, IPV6_LOCALHOST, IPV6_UNSPECIFIED,
+};
 use rama_core::error::{ErrorContext, OpaqueError};
 use std::{
     fmt,
@@ -71,23 +74,22 @@ impl Host {
 
 impl Host {
     /// Local loopback address (IPv4)
-    pub const LOCALHOST_IPV4: Self = Self::Address(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)));
+    pub const LOCALHOST_IPV4: Self = Self::Address(IPV4_LOCALHOST);
 
     /// Local loopback address (IPv6)
-    pub const LOCALHOST_IPV6: Self =
-        Self::Address(IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1)));
+    pub const LOCALHOST_IPV6: Self = Self::Address(IPV6_LOCALHOST);
 
     /// Local loopback name
     pub const LOCALHOST_NAME: Self = Self::Name(Domain::from_static("localhost"));
 
     /// Default address, not routable
-    pub const DEFAULT_IPV4: Self = Self::Address(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)));
+    pub const DEFAULT_IPV4: Self = Self::Address(IPV4_UNSPECIFIED);
 
     /// Default address, not routable (IPv6)
-    pub const DEFAULT_IPV6: Self = Self::Address(IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0)));
+    pub const DEFAULT_IPV6: Self = Self::Address(IPV6_UNSPECIFIED);
 
     /// Broadcast address (IPv4)
-    pub const BROADCAST_IPV4: Self = Self::Address(IpAddr::V4(Ipv4Addr::new(255, 255, 255, 255)));
+    pub const BROADCAST_IPV4: Self = Self::Address(IPV4_BROADCAST);
 
     /// `example.com` domain name
     pub const EXAMPLE_NAME: Self = Self::Name(Domain::from_static("example.com"));
@@ -479,12 +481,12 @@ mod tests {
             (
                 true,
                 "127.0.0.1".parse::<Host>().unwrap(),
-                Ipv4Addr::new(127, 0, 0, 1),
+                Ipv4Addr::LOCALHOST,
             ),
             (
                 false,
                 "127.0.0.2".parse::<Host>().unwrap(),
-                Ipv4Addr::new(127, 0, 0, 1),
+                Ipv4Addr::LOCALHOST,
             ),
             (
                 false,
@@ -501,16 +503,8 @@ mod tests {
     #[test]
     fn compare_host_with_ipv6_bidirectional() {
         let test_cases = [
-            (
-                true,
-                "::1".parse::<Host>().unwrap(),
-                Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1),
-            ),
-            (
-                false,
-                "::2".parse::<Host>().unwrap(),
-                Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1),
-            ),
+            (true, "::1".parse::<Host>().unwrap(), Ipv6Addr::LOCALHOST),
+            (false, "::2".parse::<Host>().unwrap(), Ipv6Addr::LOCALHOST),
             (
                 false,
                 "::1".parse::<Host>().unwrap(),
@@ -526,26 +520,14 @@ mod tests {
     #[test]
     fn compare_host_with_ip_bidirectional() {
         let test_cases = [
-            (
-                true,
-                "127.0.0.1".parse::<Host>().unwrap(),
-                IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
-            ),
-            (
-                false,
-                "127.0.0.2".parse::<Host>().unwrap(),
-                IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
-            ),
+            (true, "127.0.0.1".parse::<Host>().unwrap(), IPV4_LOCALHOST),
+            (false, "127.0.0.2".parse::<Host>().unwrap(), IPV4_LOCALHOST),
             (
                 false,
                 "127.0.0.1".parse::<Host>().unwrap(),
                 IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
             ),
-            (
-                false,
-                "::2".parse::<Host>().unwrap(),
-                IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
-            ),
+            (false, "::2".parse::<Host>().unwrap(), IPV4_LOCALHOST),
         ];
         for (expected, a, b) in test_cases {
             assert_eq!(expected, a == b, "a[{a}] == b[{b}]");

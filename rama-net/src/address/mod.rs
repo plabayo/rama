@@ -7,6 +7,8 @@
 //! regardless if they are domains or IPs, or have ports explicitly
 //! specified or not.
 
+pub mod ip;
+
 mod host;
 #[doc(inline)]
 pub use host::Host;

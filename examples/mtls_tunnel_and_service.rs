@@ -36,7 +36,7 @@ use rama::{
         service::web::response::{Html, Redirect},
     },
     layer::TraceErrLayer,
-    net::address::{Authority, Host},
+    net::address::Authority,
     rt::Executor,
     tcp::{
         client::service::{Forwarder, TcpConnector},
@@ -54,16 +54,12 @@ use rama::{
 };
 
 // everything else is provided by the standard library, community crates or tokio
+use std::sync::Arc;
 use std::time::Duration;
-use std::{
-    net::{IpAddr, Ipv4Addr},
-    sync::Arc,
-};
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
-const LOCALHOST: Host = Host::Address(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)));
-const SERVER_AUTHORITY: Authority = Authority::new(LOCALHOST, 63014);
-const TUNNEL_AUTHORITY: Authority = Authority::new(LOCALHOST, 62014);
+const SERVER_AUTHORITY: Authority = Authority::local_ipv4(63014);
+const TUNNEL_AUTHORITY: Authority = Authority::local_ipv4(62014);
 
 #[tokio::main]
 async fn main() {

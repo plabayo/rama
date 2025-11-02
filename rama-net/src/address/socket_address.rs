@@ -1,3 +1,6 @@
+use crate::address::ip::{
+    IPV4_BROADCAST, IPV4_LOCALHOST, IPV4_UNSPECIFIED, IPV6_LOCALHOST, IPV6_UNSPECIFIED,
+};
 use crate::address::parse_utils::try_to_parse_str_to_ip;
 use rama_core::error::{ErrorContext, OpaqueError};
 #[cfg(feature = "http")]
@@ -33,7 +36,7 @@ impl SocketAddress {
     #[must_use]
     pub const fn local_ipv4(port: u16) -> Self {
         Self {
-            ip_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+            ip_addr: IPV4_LOCALHOST,
             port,
         }
     }
@@ -51,7 +54,7 @@ impl SocketAddress {
     #[must_use]
     pub const fn local_ipv6(port: u16) -> Self {
         Self {
-            ip_addr: IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1)),
+            ip_addr: IPV6_LOCALHOST,
             port,
         }
     }
@@ -69,7 +72,7 @@ impl SocketAddress {
     #[must_use]
     pub const fn default_ipv4(port: u16) -> Self {
         Self {
-            ip_addr: IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
+            ip_addr: IPV4_UNSPECIFIED,
             port,
         }
     }
@@ -87,7 +90,7 @@ impl SocketAddress {
     #[must_use]
     pub const fn default_ipv6(port: u16) -> Self {
         Self {
-            ip_addr: IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0)),
+            ip_addr: IPV6_UNSPECIFIED,
             port,
         }
     }
@@ -105,7 +108,7 @@ impl SocketAddress {
     #[must_use]
     pub const fn broadcast_ipv4(port: u16) -> Self {
         Self {
-            ip_addr: IpAddr::V4(Ipv4Addr::new(255, 255, 255, 255)),
+            ip_addr: IPV4_BROADCAST,
             port,
         }
     }

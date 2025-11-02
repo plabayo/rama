@@ -80,14 +80,14 @@ mod tests {
             &self,
             _domain: Domain,
         ) -> impl Future<Output = Result<Vec<Ipv4Addr>, Self::Error>> {
-            std::future::ready(Ok(vec![Ipv4Addr::new(127, 0, 0, 1)]))
+            std::future::ready(Ok(vec![Ipv4Addr::LOCALHOST]))
         }
 
         fn ipv6_lookup(
             &self,
             _domain: Domain,
         ) -> impl Future<Output = Result<Vec<Ipv6Addr>, Self::Error>> {
-            std::future::ready(Ok(vec![Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1)]))
+            std::future::ready(Ok(vec![Ipv6Addr::LOCALHOST]))
         }
     }
 
@@ -148,7 +148,7 @@ mod tests {
         let domain = "example.com".parse::<Domain>().unwrap();
 
         let result1 = resolver1.ipv4_lookup(domain.clone()).await.unwrap();
-        assert_eq!(result1, vec![Ipv4Addr::new(127, 0, 0, 1)]);
+        assert_eq!(result1, vec![Ipv4Addr::LOCALHOST]);
 
         let result2 = resolver2.ipv4_lookup(domain).await.unwrap();
         assert_eq!(result2, vec![Ipv4Addr::new(192, 168, 1, 1)]);
@@ -162,7 +162,7 @@ mod tests {
         let domain = "example.com".parse::<Domain>().unwrap();
 
         let result1 = resolver1.ipv6_lookup(domain.clone()).await.unwrap();
-        assert_eq!(result1, vec![Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1)]);
+        assert_eq!(result1, vec![Ipv6Addr::LOCALHOST]);
 
         let result2 = resolver2.ipv6_lookup(domain).await.unwrap();
         assert_eq!(result2, vec![Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 2)]);

@@ -17,8 +17,6 @@
 //!
 //! You should see a response with `HTTP/1.1 200 OK` and a JSON body with the method and path of the request.
 
-use std::net::{IpAddr, Ipv4Addr};
-
 use rama::{
     http::service::web::response::Json,
     http::{Request, server::HttpServer},
@@ -36,7 +34,7 @@ async fn main() {
         .listen(
             // The below string type will also work
             // "127.0.0.1:62007",
-            SocketAddress::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 62007),
+            SocketAddress::local_ipv4(62007),
             service_fn(async |req: Request| {
                 Ok(Json(json!({
                     "method": req.method().as_str(),
