@@ -1060,24 +1060,29 @@ pub trait HttpRequestParts: ExtensionsRef {
 }
 
 impl<T: HttpRequestParts> HttpRequestParts for &T {
+    #[inline(always)]
     fn method(&self) -> &Method {
         (*self).method()
     }
 
+    #[inline(always)]
     fn uri(&self) -> &Uri {
         (*self).uri()
     }
 
+    #[inline(always)]
     fn version(&self) -> Version {
         (*self).version()
     }
 
+    #[inline(always)]
     fn headers(&self) -> &HeaderMap<HeaderValue> {
         (*self).headers()
     }
 }
 
 impl<T: HttpRequestParts> HttpRequestParts for &mut T {
+    #[inline(always)]
     fn method(&self) -> &Method {
         (**self).method()
     }

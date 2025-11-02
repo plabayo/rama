@@ -308,6 +308,7 @@ impl PartialEq<Protocol> for String {
 }
 
 impl PartialEq<Protocol> for &str {
+    #[inline(always)]
     fn eq(&self, other: &Protocol) -> bool {
         other == *self
     }

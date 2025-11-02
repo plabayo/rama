@@ -139,12 +139,14 @@ impl PartialEq<NonEmptyString> for String {
 }
 
 impl PartialEq<NonEmptyString> for &String {
+    #[inline(always)]
     fn eq(&self, other: &NonEmptyString) -> bool {
         other == *self
     }
 }
 
 impl PartialEq<NonEmptyString> for &str {
+    #[inline(always)]
     fn eq(&self, other: &NonEmptyString) -> bool {
         other == *self
     }

@@ -94,6 +94,7 @@ impl<Request, T> Matcher<Request> for &'static T
 where
     T: Matcher<Request>,
 {
+    #[inline(always)]
     fn matches(&self, ext: Option<&mut Extensions>, req: &Request) -> bool {
         (**self).matches(ext, req)
     }

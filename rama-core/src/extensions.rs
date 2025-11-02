@@ -54,12 +54,12 @@ impl Hasher for IdHasher {
         unreachable!("TypeId calls write_u64");
     }
 
-    #[inline]
+    #[inline(always)]
     fn write_u64(&mut self, id: u64) {
         self.0 = id;
     }
 
-    #[inline]
+    #[inline(always)]
     fn finish(&self) -> u64 {
         self.0
     }
@@ -81,7 +81,7 @@ pub struct Extensions {
 
 impl Extensions {
     /// Create an empty `Extensions`.
-    #[inline]
+    #[inline(always)]
     #[must_use]
     pub const fn new() -> Self {
         Self {
@@ -244,6 +244,7 @@ impl<T> ExtensionsRef for &T
 where
     T: ExtensionsRef,
 {
+    #[inline(always)]
     fn extensions(&self) -> &Extensions {
         (**self).extensions()
     }
@@ -253,6 +254,7 @@ impl<T> ExtensionsRef for &mut T
 where
     T: ExtensionsRef,
 {
+    #[inline(always)]
     fn extensions(&self) -> &Extensions {
         (**self).extensions()
     }
@@ -306,6 +308,7 @@ impl<T> ExtensionsMut for &mut T
 where
     T: ExtensionsMut,
 {
+    #[inline(always)]
     fn extensions_mut(&mut self) -> &mut Extensions {
         (**self).extensions_mut()
     }

@@ -52,10 +52,9 @@ where
     type Response = S::Response;
     type Error = S::Error;
 
-    #[inline]
+    #[inline(always)]
     fn serve(
         &self,
-
         req: Request,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
         (**self).serve(req)

@@ -32,6 +32,7 @@ where
 {
     type Service = T::Service;
 
+    #[inline(always)]
     fn layer(&self, inner: S) -> Self::Service {
         (**self).layer(inner)
     }

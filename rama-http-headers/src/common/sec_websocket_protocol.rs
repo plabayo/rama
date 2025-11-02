@@ -197,6 +197,7 @@ impl PartialEq<AcceptedWebSocketProtocol> for str {
 }
 
 impl PartialEq<AcceptedWebSocketProtocol> for &str {
+    #[inline(always)]
     fn eq(&self, other: &AcceptedWebSocketProtocol) -> bool {
         self.trim().eq_ignore_ascii_case(other.as_str())
     }

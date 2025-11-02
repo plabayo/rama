@@ -34,18 +34,21 @@ impl Chunk for u8 {
 }
 
 impl Chunk for &[u8] {
+    #[inline(always)]
     fn push(&self, dst: &mut Vec<u8>) {
         dst.extend(*self)
     }
 }
 
 impl Chunk for &str {
+    #[inline(always)]
     fn push(&self, dst: &mut Vec<u8>) {
         dst.extend(self.as_bytes())
     }
 }
 
 impl Chunk for Vec<u8> {
+    #[inline(always)]
     fn push(&self, dst: &mut Vec<u8>) {
         dst.extend(self.iter())
     }

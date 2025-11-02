@@ -380,18 +380,21 @@ impl PartialOrd<&str> for Domain {
 }
 
 impl PartialOrd<Domain> for &str {
+    #[inline(always)]
     fn partial_cmp(&self, other: &Domain) -> Option<Ordering> {
         Some(cmp_domain(self, other))
     }
 }
 
 impl PartialOrd<String> for Domain {
+    #[inline(always)]
     fn partial_cmp(&self, other: &String) -> Option<Ordering> {
         Some(cmp_domain(self, other))
     }
 }
 
 impl PartialOrd<Domain> for String {
+    #[inline(always)]
     fn partial_cmp(&self, other: &Domain) -> Option<Ordering> {
         Some(cmp_domain(self, other))
     }
@@ -434,18 +437,21 @@ impl PartialEq<Domain> for str {
 }
 
 impl PartialEq<Domain> for &str {
+    #[inline(always)]
     fn eq(&self, other: &Domain) -> bool {
         partial_eq_domain(self, other)
     }
 }
 
 impl PartialEq<String> for Domain {
+    #[inline(always)]
     fn eq(&self, other: &String) -> bool {
         partial_eq_domain(self, other)
     }
 }
 
 impl PartialEq<Domain> for String {
+    #[inline(always)]
     fn eq(&self, other: &Domain) -> bool {
         partial_eq_domain(self, other)
     }
@@ -595,6 +601,7 @@ pub(super) mod seal {
     }
 
     impl<T: AsDomainRefPrivate> AsDomainRefPrivate for &T {
+        #[inline(always)]
         fn domain_as_str(&self) -> &str {
             (**self).domain_as_str()
         }
@@ -605,7 +612,7 @@ pub(super) mod seal {
     }
 
     impl IntoDomainImpl for &'static str {
-        #[inline]
+        #[inline(always)]
         fn into_domain(self) -> super::Domain {
             super::Domain::from_static(self)
         }

@@ -14,7 +14,7 @@ pub trait TypedHeader {
 }
 
 impl<H: TypedHeader> TypedHeader for &H {
-    #[inline]
+    #[inline(always)]
     fn name() -> &'static HeaderName {
         H::name()
     }
@@ -55,7 +55,7 @@ pub trait HeaderEncode: TypedHeader {
 }
 
 impl<H: HeaderEncode> HeaderEncode for &H {
-    #[inline]
+    #[inline(always)]
     fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
         (*self).encode(values);
     }

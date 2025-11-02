@@ -14,7 +14,7 @@ macro_rules! impl_u16_is_grease {
             #[must_use]
             pub fn is_grease(&self) -> bool {
                 match self {
-                    $enum_name::Unknown(x) if x & 0x0f0f == 0x0a0a => true,
+                    $enum_name::Unknown(x) if is_u16_grease(*x) => true,
                     _ => false,
                 }
             }
@@ -22,11 +22,39 @@ macro_rules! impl_u16_is_grease {
     };
 }
 
+#[inline(always)]
+fn is_u16_grease(n: u16) -> bool {
+    n & 0x0f0f == 0x0a0a
+}
+
+fn display_unknown_u16_maybe_as_grease(
+    f: &mut std::fmt::Formatter<'_>,
+    n: u16,
+) -> Option<std::fmt::Result> {
+    if is_u16_grease(n) {
+        Some(write!(f, "GREASE ({n:#06x})"))
+    } else {
+        None
+    }
+}
+
+fn display_byte_slice_maybe_as_grease(
+    f: &mut std::fmt::Formatter<'_>,
+    b: &[u8],
+) -> Option<std::fmt::Result> {
+    if b.len() == 2 && b[0] & 0x0f == 0x0a && b[1] & 0x0f == 0x0a {
+        Some(write!(f, "GREASE (0x{:x}{:x})", b[0], b[1]))
+    } else {
+        None
+    }
+}
+
 enum_builder! {
     /// The `ProtocolVersion` TLS protocol enum.  Values in this enum are taken
     /// from the various RFCs covering TLS, and are listed by IANA.
     /// The `Unknown` item is used when processing unrecognised ordinals.
     @U16
+    #[display_unknown = display_unknown_u16_maybe_as_grease]
     pub enum ProtocolVersion {
         SSLv2 => 0x0200,
         SSLv3 => 0x0300,
@@ -47,6 +75,7 @@ enum_builder! {
     /// from the various RFCs covering TLS, and are listed by IANA.
     /// The `Unknown` item is used when processing unrecognised ordinals.
     @U16
+    #[display_unknown = display_unknown_u16_maybe_as_grease]
     pub enum CipherSuite {
         TLS_NULL_WITH_NULL_NULL => 0x0000,
         TLS_RSA_WITH_NULL_MD5 => 0x0001,
@@ -457,6 +486,7 @@ enum_builder! {
     /// from the various RFCs covering TLS, and are listed by IANA.
     /// The `Unknown` item is used when processing unrecognised ordinals.
     @U16
+    #[display_unknown = display_unknown_u16_maybe_as_grease]
     pub enum SignatureScheme {
         RSA_PKCS1_SHA1 => 0x0201,
         ECDSA_SHA1_Legacy => 0x0203,
@@ -509,6 +539,7 @@ enum_builder! {
     /// from the various RFCs covering TLS, and are listed by IANA.
     /// The `Unknown` item is used when processing unrecognised ordinals.
     @U16
+    #[display_unknown = display_unknown_u16_maybe_as_grease]
     pub enum ExtensionId {
         SERVER_NAME => 0,
         MAX_FRAGMENT_LENGTH => 1,
@@ -608,6 +639,7 @@ enum_builder! {
     /// from the various RFCs covering TLS, and are listed by IANA.
     /// The `Unknown` item is used when processing unrecognised ordinals.
     @U16
+    #[display_unknown = display_unknown_u16_maybe_as_grease]
     pub enum SupportedGroup {
         SECT163K1 => 0x0001,
         SECT163R1 => 0x0002,
@@ -673,6 +705,7 @@ enum_builder! {
     /// The Application Layer Negotiation Protocol (ALPN) identifiers
     /// as found in the IANA registry for Tls ExtensionType values.
     @Bytes
+    #[display_unknown = display_byte_slice_maybe_as_grease]
     pub enum ApplicationProtocol {
         HTTP_09 => b"http/0.9",
         HTTP_10 => b"http/1.0",

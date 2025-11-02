@@ -103,6 +103,7 @@ mod sealed {
     impl AsCoding for &str {}
 
     impl Sealed for &str {
+        #[inline(always)]
         fn as_coding(&self) -> &str {
             self
         }

@@ -271,12 +271,14 @@ mod private {
     }
 
     impl IntoUrlSealed for String {
+        #[inline(always)]
         fn into_url(self) -> Result<Uri, OpaqueError> {
             self.as_str().into_url()
         }
     }
 
     impl IntoUrlSealed for &String {
+        #[inline(always)]
         fn into_url(self) -> Result<Uri, OpaqueError> {
             self.as_str().into_url()
         }
@@ -311,12 +313,14 @@ mod private {
     }
 
     impl IntoHeaderNameSealed for String {
+        #[inline(always)]
         fn into_header_name(self) -> Result<crate::HeaderName, OpaqueError> {
             self.as_str().into_header_name()
         }
     }
 
     impl IntoHeaderNameSealed for &String {
+        #[inline(always)]
         fn into_header_name(self) -> Result<crate::HeaderName, OpaqueError> {
             self.as_str().into_header_name()
         }
@@ -355,6 +359,7 @@ mod private {
     }
 
     impl IntoHeaderValueSealed for &String {
+        #[inline(always)]
         fn into_header_value(self) -> Result<crate::HeaderValue, OpaqueError> {
             self.as_str().into_header_value()
         }

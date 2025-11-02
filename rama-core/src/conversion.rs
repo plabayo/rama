@@ -32,7 +32,7 @@ impl<T, U, CrateMarker> RamaInto<U, CrateMarker> for T
 where
     U: RamaFrom<T, CrateMarker>,
 {
-    #[inline]
+    #[inline(always)]
     fn rama_into(self) -> U {
         U::rama_from(self)
     }
@@ -78,7 +78,7 @@ where
 {
     type Error = U::Error;
 
-    #[inline]
+    #[inline(always)]
     fn rama_try_into(self) -> Result<U, U::Error> {
         U::rama_try_from(self)
     }

@@ -53,28 +53,34 @@ mod tls_utils {
         }
 
         impl ClientHelloProviderPriv for &ClientHello {
+            #[inline(always)]
             fn protocol_version(&self) -> ProtocolVersion {
                 (*self).protocol_version()
             }
 
+            #[inline(always)]
             fn cipher_suites(&self) -> impl Iterator<Item = CipherSuite> {
                 (*self).cipher_suites().iter().copied()
             }
 
+            #[inline(always)]
             fn extensions(&self) -> impl Iterator<Item = &ClientHelloExtension> {
                 (*self).extensions().iter()
             }
         }
 
         impl ClientHelloProviderPriv for &ClientConfig {
+            #[inline(always)]
             fn protocol_version(&self) -> ProtocolVersion {
                 ProtocolVersion::TLSv1_2
             }
 
+            #[inline(always)]
             fn cipher_suites(&self) -> impl Iterator<Item = CipherSuite> {
                 self.cipher_suites.iter().flatten().copied()
             }
 
+            #[inline(always)]
             fn extensions(&self) -> impl Iterator<Item = &ClientHelloExtension> {
                 self.extensions.iter().flatten()
             }
@@ -125,6 +131,7 @@ mod http_utils {
         }
 
         impl HttpRequestProviderPriv for HttpRequestInput {
+            #[inline(always)]
             fn http_request_input(self) -> HttpRequestInput {
                 self
             }

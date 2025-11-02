@@ -5,8 +5,9 @@ macro_rules! __enum_builder {
     (
         $(#[$m:meta])*
         @U8
+        $(#[display_unknown = $display_unknown_fn:ident])?
         $enum_vis:vis enum $enum_name:ident
-        { $( $(#[$enum_meta:meta])* $enum_var: ident => $enum_val: expr ),* $(,)? }
+        { $( $(#[$enum_meta:meta])* $enum_var:ident => $enum_val:expr ),* $(,)? }
     ) => {
         $(#[$m])*
         #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy)]
@@ -40,7 +41,14 @@ macro_rules! __enum_builder {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 match self {
                     $( $enum_name::$enum_var => write!(f, concat!(stringify!($enum_var), " ({:#06x})"), $enum_val)),*
-                    ,$enum_name::Unknown(x) => write!(f, "Unknown ({x:#06x})"),
+                    ,$enum_name::Unknown(x) => {
+                        $(
+                          if let Some(result) = $display_unknown_fn(f, *x) {
+                              return result;
+                          }
+                        )?
+                        write!(f, "Unknown ({x:#06x})")
+                    },
                 }
             }
         }
@@ -81,6 +89,7 @@ macro_rules! __enum_builder {
     (
         $(#[$m:meta])*
         @U16
+        $(#[display_unknown = $display_unknown_fn:ident])?
         $enum_vis:vis enum $enum_name:ident
         { $( $(#[$enum_meta:meta])* $enum_var: ident => $enum_val: expr ),* $(,)? }
     ) => {
@@ -116,11 +125,14 @@ macro_rules! __enum_builder {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> ::std::fmt::Result {
                 match self {
                     $( $enum_name::$enum_var => write!(f, concat!(stringify!($enum_var), " ({:#06x})"), $enum_val)),*
-                    ,$enum_name::Unknown(x) => if x & 0x0f0f == 0x0a0a {
-                        write!(f, "GREASE ({x:#06x})")
-                        } else {
+                    ,$enum_name::Unknown(x) => {
+                        $(
+                          if let Some(result) = $display_unknown_fn(f, *x) {
+                              return result;
+                          }
+                        )?
                         write!(f, "Unknown ({x:#06x})")
-                        }
+                    }
                 }
             }
         }
@@ -161,6 +173,7 @@ macro_rules! __enum_builder {
     (
         $(#[$m:meta])*
         @Bytes
+        $(#[display_unknown = $display_unknown_fn:ident])?
         $enum_vis:vis enum $enum_name:ident
         { $( $(#[$enum_meta:meta])* $enum_var: ident => $enum_val: expr ),* $(,)? }
     ) => {
@@ -270,15 +283,18 @@ macro_rules! __enum_builder {
                         Ok(x) => write!(f, "{x}"),
                         Err(_) => write!(f, concat!(stringify!($enum_var), " (0x{:x?})"), $enum_val),
                     }),*
-                    ,$enum_name::Unknown(x) =>
-                        if x.len() == 2 && x[0] & 0x0f == 0x0a && x[1] & 0x0f == 0x0a {
-                            write!(f, "GREASE (0x{})", hex::encode(x))
-                        } else {
-                            match ::std::str::from_utf8(x) {
-                                Ok(x) => write!(f, "Unknown ({x})"),
-                                Err(_) => write!(f, "Unknown (0x{})", hex::encode(x)),
-                            }
+                    ,$enum_name::Unknown(x) => {
+                        $(
+                          if let Some(result) = $display_unknown_fn(f, x.as_slice()) {
+                              return result;
+                          }
+                        )?
+
+                        match ::std::str::from_utf8(x) {
+                            Ok(x) => write!(f, "Unknown ({x})"),
+                            Err(_) => write!(f, "Unknown (0x{})", hex::encode(x)),
                         }
+                    },
                 }
             }
         }

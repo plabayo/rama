@@ -102,6 +102,7 @@ impl<const SEPARATOR: char> UsernameLabelWriter<SEPARATOR> for String {
 }
 
 impl<const SEPARATOR: char> UsernameLabelWriter<SEPARATOR> for &str {
+    #[inline(always)]
     fn write_labels(&self, composer: &mut Composer<SEPARATOR>) -> Result<(), ComposeError> {
         composer.write_label(self)
     }
@@ -135,6 +136,7 @@ impl<const SEPARATOR: char, W> UsernameLabelWriter<SEPARATOR> for &W
 where
     W: UsernameLabelWriter<SEPARATOR>,
 {
+    #[inline(always)]
     fn write_labels(&self, composer: &mut Composer<SEPARATOR>) -> Result<(), ComposeError> {
         (*self).write_labels(composer)
     }

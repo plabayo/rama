@@ -189,6 +189,7 @@ impl WriteToHeader for [u8] {
 }
 
 impl<T: ?Sized + WriteToHeader> WriteToHeader for &T {
+    #[inline(always)]
     fn write_to(&self, writer: &mut Writer) -> io::Result<usize> {
         (*self).write_to(writer)
     }

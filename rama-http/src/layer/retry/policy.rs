@@ -98,6 +98,7 @@ impl<P, R, E> Policy<R, E> for &'static P
 where
     P: Policy<R, E>,
 {
+    #[inline(always)]
     fn retry(
         &self,
         req: Request<RetryBody>,
@@ -106,6 +107,7 @@ where
         (**self).retry(req, result)
     }
 
+    #[inline(always)]
     fn clone_input(&self, req: &Request<RetryBody>) -> Option<Request<RetryBody>> {
         (**self).clone_input(req)
     }
@@ -115,6 +117,7 @@ impl<P, R, E> Policy<R, E> for std::sync::Arc<P>
 where
     P: Policy<R, E>,
 {
+    #[inline(always)]
     fn retry(
         &self,
 
@@ -124,6 +127,7 @@ where
         (**self).retry(req, result)
     }
 
+    #[inline(always)]
     fn clone_input(&self, req: &Request<RetryBody>) -> Option<Request<RetryBody>> {
         (**self).clone_input(req)
     }

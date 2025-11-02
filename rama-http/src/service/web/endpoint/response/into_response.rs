@@ -123,18 +123,21 @@ impl IntoResponse for Body {
 }
 
 impl IntoResponse for &'static str {
+    #[inline(always)]
     fn into_response(self) -> Response {
         Cow::Borrowed(self).into_response()
     }
 }
 
 impl IntoResponse for String {
+    #[inline(always)]
     fn into_response(self) -> Response {
         Cow::<'static, str>::Owned(self).into_response()
     }
 }
 
 impl IntoResponse for Box<str> {
+    #[inline(always)]
     fn into_response(self) -> Response {
         String::from(self).into_response()
     }
@@ -251,12 +254,14 @@ impl IntoResponse for &'static [u8] {
 }
 
 impl<const N: usize> IntoResponse for &'static [u8; N] {
+    #[inline(always)]
     fn into_response(self) -> Response {
         self.as_slice().into_response()
     }
 }
 
 impl<const N: usize> IntoResponse for [u8; N] {
+    #[inline(always)]
     fn into_response(self) -> Response {
         self.to_vec().into_response()
     }

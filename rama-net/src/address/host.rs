@@ -115,12 +115,14 @@ impl PartialEq<&str> for Host {
 }
 
 impl PartialEq<Host> for &str {
+    #[inline(always)]
     fn eq(&self, other: &Host) -> bool {
         other == *self
     }
 }
 
 impl PartialEq<String> for Host {
+    #[inline(always)]
     fn eq(&self, other: &String) -> bool {
         self == other.as_str()
     }

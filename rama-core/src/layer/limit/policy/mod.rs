@@ -144,6 +144,7 @@ where
     type Guard = P::Guard;
     type Error = P::Error;
 
+    #[inline(always)]
     async fn check(&self, request: Request) -> PolicyResult<Request, Self::Guard, Self::Error> {
         (**self).check(request).await
     }

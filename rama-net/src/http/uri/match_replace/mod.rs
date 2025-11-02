@@ -167,24 +167,28 @@ impl UriMatchReplace for UriMatchReplaceNever {
 }
 
 impl<R: UriMatchReplace> UriMatchReplace for &R {
+    #[inline(always)]
     fn match_replace_uri<'a>(&self, uri: Cow<'a, Uri>) -> Result<Cow<'a, Uri>, UriMatchError<'a>> {
         (*self).match_replace_uri(uri)
     }
 }
 
 impl<R: UriMatchReplace> UriMatchReplace for Arc<R> {
+    #[inline(always)]
     fn match_replace_uri<'a>(&self, uri: Cow<'a, Uri>) -> Result<Cow<'a, Uri>, UriMatchError<'a>> {
         (**self).match_replace_uri(uri)
     }
 }
 
 impl UriMatchReplace for Arc<dyn UriMatchReplace> {
+    #[inline(always)]
     fn match_replace_uri<'a>(&self, uri: Cow<'a, Uri>) -> Result<Cow<'a, Uri>, UriMatchError<'a>> {
         (**self).match_replace_uri(uri)
     }
 }
 
 impl UriMatchReplace for Box<dyn UriMatchReplace> {
+    #[inline(always)]
     fn match_replace_uri<'a>(&self, uri: Cow<'a, Uri>) -> Result<Cow<'a, Uri>, UriMatchError<'a>> {
         (**self).match_replace_uri(uri)
     }
@@ -257,14 +261,13 @@ mod private_ptn {
     }
 
     impl TryIntoPatternPriv for &'static str {
-        #[inline]
+        #[inline(always)]
         fn try_into_wildcard(self) -> Result<Pattern, OpaqueError> {
             self.as_bytes().try_into_wildcard()
         }
     }
 
     impl TryIntoPatternPriv for &'static [u8] {
-        #[inline]
         fn try_into_wildcard(self) -> Result<Pattern, OpaqueError> {
             let wildcard = WildcardBuilder::new(self)
                 .case_insensitive(true)
@@ -310,28 +313,28 @@ mod private_fmt {
     }
 
     impl TryIntoUriFmtPriv for &'static str {
-        #[inline]
+        #[inline(always)]
         fn try_into_fmt(self) -> Result<fmt::UriFormatter, OpaqueError> {
             self.as_bytes().try_into_fmt()
         }
     }
 
     impl TryIntoUriFmtPriv for &'static [u8] {
-        #[inline]
+        #[inline(always)]
         fn try_into_fmt(self) -> Result<fmt::UriFormatter, OpaqueError> {
             fmt::UriFormatter::try_new(self.into())
         }
     }
 
     impl TryIntoUriFmtPriv for String {
-        #[inline]
+        #[inline(always)]
         fn try_into_fmt(self) -> Result<fmt::UriFormatter, OpaqueError> {
             self.into_bytes().try_into_fmt()
         }
     }
 
     impl TryIntoUriFmtPriv for Vec<u8> {
-        #[inline]
+        #[inline(always)]
         fn try_into_fmt(self) -> Result<fmt::UriFormatter, OpaqueError> {
             fmt::UriFormatter::try_new(self.into())
         }

@@ -348,6 +348,7 @@ mod sealed {
     }
 
     impl<B> HandleUpgrade for &Request<B> {
+        #[inline(always)]
         fn handle_upgrade(self) -> impl Future<Output = Result<Upgraded, OpaqueError>> + 'static {
             handle_upgrade(self)
         }
@@ -360,6 +361,7 @@ mod sealed {
     }
 
     impl<B> HandleUpgrade for &Response<B> {
+        #[inline(always)]
         fn handle_upgrade(self) -> impl Future<Output = Result<Upgraded, OpaqueError>> + 'static {
             handle_upgrade(self)
         }

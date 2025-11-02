@@ -136,18 +136,21 @@ macro_rules! create_obf_type {
         }
 
         impl PartialEq<$name> for &str {
+            #[inline(always)]
             fn eq(&self, other: &$name) -> bool {
                 other == *self
             }
         }
 
         impl PartialEq<String> for $name {
+            #[inline(always)]
             fn eq(&self, other: &String) -> bool {
                 self.as_str() == other
             }
         }
 
         impl PartialEq<$name> for String {
+            #[inline(always)]
             fn eq(&self, other: &$name) -> bool {
                 other == self
             }

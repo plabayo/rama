@@ -22,18 +22,21 @@ mod private {
     }
 
     impl IntoRedirectLocSeal for &'static str {
+        #[inline(always)]
         fn into_redirect_loc(self) -> HeaderValue {
             HeaderValue::from_static(self)
         }
     }
 
     impl IntoRedirectLocSeal for HeaderName {
+        #[inline(always)]
         fn into_redirect_loc(self) -> HeaderValue {
             HeaderValue::from_name(self)
         }
     }
 
     impl IntoRedirectLocSeal for HeaderValue {
+        #[inline(always)]
         fn into_redirect_loc(self) -> HeaderValue {
             self
         }

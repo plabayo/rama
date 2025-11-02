@@ -129,6 +129,7 @@ mod sealed {
     pub trait Sealed {}
 
     impl AsConnectionOption for &str {
+        #[inline(always)]
         fn as_connection_option(&self) -> &str {
             self
         }
@@ -137,6 +138,7 @@ mod sealed {
     impl Sealed for &str {}
 
     impl AsConnectionOption for &HeaderName {
+        #[inline(always)]
         fn as_connection_option(&self) -> &str {
             self.as_ref()
         }
