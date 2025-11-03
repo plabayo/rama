@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use httparse::ParserConfig;
 use rama_core::bytes::{Buf, Bytes};
+use rama_core::extensions::ExtensionsMut;
 use rama_core::telemetry::tracing::{debug, error, trace, warn};
 use rama_http::io::upgrade;
 use rama_http_types::body::Frame;
@@ -39,7 +40,7 @@ pub(crate) struct Conn<I, B, T> {
 
 impl<I, B, T> Conn<I, B, T>
 where
-    I: AsyncRead + AsyncWrite + Unpin,
+    I: AsyncRead + AsyncWrite + Unpin + ExtensionsMut,
     B: Buf,
     T: Http1Transaction,
 {

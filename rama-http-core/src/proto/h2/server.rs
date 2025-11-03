@@ -7,6 +7,7 @@ use crate::h2::{Reason, RecvStream};
 use pin_project_lite::pin_project;
 use rama_core::bytes::Bytes;
 use rama_core::error::BoxError;
+use rama_core::extensions::ExtensionsMut;
 use rama_core::rt::Executor;
 use rama_core::telemetry::tracing::{Instrument, debug, trace, trace_root_span, warn};
 use rama_http::StreamingBody;
@@ -107,7 +108,7 @@ struct Serving<T> {
 
 impl<T, S> Server<T, S>
 where
-    T: AsyncRead + AsyncWrite + Unpin,
+    T: AsyncRead + AsyncWrite + Unpin + ExtensionsMut,
     S: HttpService<IncomingBody>,
 {
     pub(crate) fn new(io: T, service: S, config: &Config, exec: Executor) -> Self {
@@ -174,7 +175,7 @@ where
 
 impl<T, S> Future for Server<T, S>
 where
-    T: AsyncRead + AsyncWrite + Unpin,
+    T: AsyncRead + AsyncWrite + Unpin + ExtensionsMut,
     S: HttpService<IncomingBody>,
 {
     type Output = crate::Result<Dispatched>;
@@ -217,7 +218,7 @@ where
 
 impl<T> Serving<T>
 where
-    T: AsyncRead + AsyncWrite + Unpin,
+    T: AsyncRead + AsyncWrite + Unpin + ExtensionsMut,
 {
     #[allow(clippy::needless_pass_by_ref_mut)]
     fn poll_server<S>(

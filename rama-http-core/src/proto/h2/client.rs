@@ -171,7 +171,7 @@ pub(crate) async fn handshake<T, B>(
     exec: Executor,
 ) -> crate::Result<ClientTask<B, T>>
 where
-    T: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+    T: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsMut + 'static,
     B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     handshake_with_builder(new_builder(config), io, req_rx, config, exec).await
@@ -185,7 +185,7 @@ pub(crate) async fn handshake_with_builder<T, B>(
     exec: Executor,
 ) -> crate::Result<ClientTask<B, T>>
 where
-    T: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+    T: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsMut + 'static,
     B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     let (h2_tx, mut conn) = builder
@@ -273,7 +273,7 @@ where
 impl<T, B> Future for Conn<T, B>
 where
     B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
-    T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    T: AsyncRead + AsyncWrite + Unpin + Send + ExtensionsMut + 'static,
 {
     type Output = Result<(), crate::h2::Error>;
 
@@ -321,7 +321,7 @@ pin_project! {
 impl<T, B> Future for ConnMapErr<T, B>
 where
     B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
-    T: AsyncRead + AsyncWrite + Unpin + Send,
+    T: AsyncRead + AsyncWrite + Unpin + Send + ExtensionsMut,
 {
     type Output = Result<(), ()>;
 
@@ -344,7 +344,7 @@ where
 impl<T, B> FusedFuture for ConnMapErr<T, B>
 where
     B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
-    T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    T: AsyncRead + AsyncWrite + Unpin + Send + ExtensionsMut + 'static,
 {
     fn is_terminated(&self) -> bool {
         self.is_terminated
@@ -397,7 +397,7 @@ where
 impl<T, B> Future for ConnTask<T, B>
 where
     B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
-    T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    T: AsyncRead + AsyncWrite + Unpin + Send + ExtensionsMut + 'static,
 {
     type Output = ();
 
@@ -456,7 +456,7 @@ pin_project! {
 impl<B, T> Future for H2ClientFuture<B, T>
 where
     B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
-    T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    T: AsyncRead + AsyncWrite + Unpin + Send + ExtensionsMut + 'static,
 {
     type Output = ();
 
@@ -554,7 +554,7 @@ where
 impl<B, T> ClientTask<B, T>
 where
     B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
-    T: AsyncRead + AsyncWrite + Send + Unpin,
+    T: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsMut,
 {
     #[allow(clippy::needless_pass_by_ref_mut)]
     fn poll_pipe(&mut self, f: FutCtx<B>, cx: &mut Context<'_>) {
@@ -708,7 +708,7 @@ where
 impl<B, T> Future for ClientTask<B, T>
 where
     B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
-    T: AsyncRead + AsyncWrite + Unpin + Send,
+    T: AsyncRead + AsyncWrite + Unpin + Send + ExtensionsMut,
 {
     type Output = crate::Result<Dispatched>;
 

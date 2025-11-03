@@ -5,6 +5,7 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use rama_core::bytes::{Buf, BufMut, Bytes, BytesMut};
+use rama_core::extensions::ExtensionsMut;
 use rama_core::telemetry::tracing::{debug, trace};
 use std::task::ready;
 use tokio::io::AsyncRead;
@@ -56,7 +57,7 @@ where
 
 impl<T, B> Buffered<T, B>
 where
-    T: AsyncRead + AsyncWrite + Unpin,
+    T: AsyncRead + AsyncWrite + Unpin + ExtensionsMut,
     B: Buf,
 {
     pub(crate) fn new(io: T) -> Self {
@@ -327,7 +328,7 @@ pub(crate) trait MemRead {
 
 impl<T, B> MemRead for Buffered<T, B>
 where
-    T: AsyncRead + AsyncWrite + Unpin,
+    T: AsyncRead + AsyncWrite + Unpin + ExtensionsMut,
     B: Buf,
 {
     fn read_mem(&mut self, cx: &mut Context<'_>, len: usize) -> Poll<io::Result<Bytes>> {
@@ -669,6 +670,7 @@ mod tests {
     #[tokio::test]
     async fn parse_reads_until_blocked() {
         use rama_core::ServiceInput;
+        use rama_core::extensions::Extensions;
 
         use crate::proto::h1::ClientTransaction;
 

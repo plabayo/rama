@@ -7,6 +7,7 @@ use std::task::{Context, Poll, ready};
 use httparse::ParserConfig;
 use rama_core::bytes::Bytes;
 use rama_core::error::BoxError;
+use rama_core::extensions::ExtensionsMut;
 use rama_core::telemetry::tracing::{debug, trace};
 use rama_http::StreamingBody;
 use rama_http_types::{Request, Response};
@@ -61,7 +62,7 @@ where
 
 impl<T, B> Connection<T, B>
 where
-    T: AsyncRead + AsyncWrite + Unpin,
+    T: AsyncRead + AsyncWrite + Unpin + ExtensionsMut,
     B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     /// Return the inner IO object, and additional information.
@@ -123,7 +124,7 @@ pub struct Builder {
 /// See [`client::conn`](crate::client::conn) for more.
 pub async fn handshake<T, B>(io: T) -> crate::Result<(SendRequest<B>, Connection<T, B>)>
 where
-    T: AsyncRead + AsyncWrite + Unpin,
+    T: AsyncRead + AsyncWrite + Unpin + ExtensionsMut,
     B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     Builder::new().handshake(io).await
@@ -271,7 +272,7 @@ where
 
 impl<T, B> Future for Connection<T, B>
 where
-    T: AsyncRead + AsyncWrite + Unpin,
+    T: AsyncRead + AsyncWrite + Unpin + ExtensionsMut,
     B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     type Output = crate::Result<()>;
@@ -482,7 +483,7 @@ impl Builder {
         io: T,
     ) -> impl Future<Output = crate::Result<(SendRequest<B>, Connection<T, B>)>>
     where
-        T: AsyncRead + AsyncWrite + Unpin,
+        T: AsyncRead + AsyncWrite + Unpin + ExtensionsMut,
         B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
     {
         let opts = self.clone();
@@ -545,7 +546,7 @@ mod upgrades {
 
     impl<I, B> Future for UpgradeableConnection<I, B>
     where
-        I: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+        I: AsyncRead + AsyncWrite + Unpin + Send + ExtensionsMut + 'static,
         B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
     {
         type Output = crate::Result<()>;

@@ -72,7 +72,7 @@ where
             RecvItem = MessageHead<T::Incoming>,
         > + Unpin,
     D::PollError: Into<BoxError>,
-    I: AsyncRead + AsyncWrite + Unpin,
+    I: AsyncRead + AsyncWrite + Unpin + ExtensionsMut,
     T: Http1Transaction + Unpin,
     Bs: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
@@ -449,7 +449,7 @@ where
             RecvItem = MessageHead<T::Incoming>,
         > + Unpin,
     D::PollError: Into<BoxError>,
-    I: AsyncRead + AsyncWrite + Unpin,
+    I: AsyncRead + AsyncWrite + Unpin + ExtensionsMut,
     T: Http1Transaction + Unpin,
     Bs: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {

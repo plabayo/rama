@@ -8,6 +8,7 @@ use std::task::{Context, Poll};
 use std::{io, time::Duration};
 
 use pin_project_lite::pin_project;
+use rama_core::extensions::ExtensionsMut;
 use tokio::io::AsyncRead;
 use tokio::io::AsyncWrite;
 use tokio::io::ReadBuf;
@@ -101,7 +102,7 @@ impl Builder {
     pub fn serve_connection<I, S>(&self, io: I, service: S) -> Connection<'_, I, S>
     where
         S: HttpService<Incoming>,
-        I: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+        I: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsMut + 'static,
     {
         let state = match self.version {
             Some(Version::H1) => {
@@ -287,7 +288,7 @@ pin_project! {
 impl<I, S> Connection<'_, I, S>
 where
     S: HttpService<Incoming>,
-    I: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+    I: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsMut + 'static,
 {
     /// Start a graceful shutdown process for this connection.
     ///
@@ -331,7 +332,7 @@ where
 impl<I, S> Future for Connection<'_, I, S>
 where
     S: HttpService<Incoming>,
-    I: AsyncRead + AsyncWrite + Send + Unpin + 'static + 'static,
+    I: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsMut + 'static,
 {
     type Output = Result<()>;
 
@@ -413,7 +414,7 @@ pin_project! {
 impl<I, S> UpgradeableConnection<'_, I, S>
 where
     S: HttpService<Incoming>,
-    I: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+    I: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsMut + 'static,
 {
     /// Start a graceful shutdown process for this connection.
     ///
@@ -457,7 +458,7 @@ where
 impl<I, S> Future for UpgradeableConnection<'_, I, S>
 where
     S: HttpService<Incoming>,
-    I: AsyncRead + AsyncWrite + Send + Unpin + 'static + Send + 'static,
+    I: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsMut + 'static,
 {
     type Output = Result<()>;
 
@@ -632,7 +633,7 @@ impl Http1Builder<'_> {
     pub async fn serve_connection<I, S>(&self, io: I, service: S) -> Result<()>
     where
         S: HttpService<Incoming>,
-        I: AsyncRead + AsyncWrite + Send + Unpin + 'static + Send + 'static,
+        I: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsMut + 'static,
     {
         self.inner.serve_connection(io, service).await
     }
@@ -812,7 +813,7 @@ impl Http2Builder<'_> {
     pub async fn serve_connection<I, S>(&self, io: I, service: S) -> Result<()>
     where
         S: HttpService<Incoming>,
-        I: AsyncRead + AsyncWrite + Send + Unpin + 'static + Send + 'static,
+        I: AsyncRead + AsyncWrite + Send + Unpin + ExtensionsMut + 'static,
     {
         self.inner.serve_connection(io, service).await
     }

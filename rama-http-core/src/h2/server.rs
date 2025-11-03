@@ -190,8 +190,9 @@ pub struct Handshake<T, B: Buf = Bytes> {
 /// # use tokio::io::{AsyncRead, AsyncWrite};
 /// # use rama_http_core::h2::server;
 /// # use rama_http_core::h2::server::*;
+/// # use rama_core::extensions::ExtensionsMut;
 /// #
-/// # async fn doc<T: AsyncRead + AsyncWrite + Unpin>(my_io: T) {
+/// # async fn doc<T: AsyncRead + AsyncWrite + Unpin + ExtensionsMut>(my_io: T) {
 /// let mut server = server::handshake(my_io).await.unwrap();
 /// while let Some(request) = server.accept().await {
 ///     tokio::spawn(async move {
@@ -229,8 +230,9 @@ pub struct Connection<T, B: Buf> {
 /// ```
 /// # use tokio::io::{AsyncRead, AsyncWrite};
 /// # use rama_http_core::h2::server::*;
+/// # use rama_core::extensions::ExtensionsMut;
 /// #
-/// # fn doc<T: AsyncRead + AsyncWrite + Unpin>(my_io: T)
+/// # fn doc<T: AsyncRead + AsyncWrite + Unpin + ExtensionsMut>(my_io: T)
 /// # -> Handshake<T>
 /// # {
 /// // `server_fut` is a future representing the completion of the HTTP/2
@@ -364,8 +366,9 @@ const PREFACE: [u8; 24] = *b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 /// # use tokio::io::{AsyncRead, AsyncWrite};
 /// # use rama_http_core::h2::server;
 /// # use rama_http_core::h2::server::*;
+/// # use rama_core::extensions::ExtensionsMut;
 /// #
-/// # async fn doc<T: AsyncRead + AsyncWrite + Unpin>(my_io: T)
+/// # async fn doc<T: AsyncRead + AsyncWrite + Unpin + ExtensionsMut>(my_io: T)
 /// # {
 /// let connection = server::handshake(my_io).await.unwrap();
 /// // The HTTP/2 handshake has completed, now use `connection` to
@@ -376,7 +379,7 @@ const PREFACE: [u8; 24] = *b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 /// ```
 pub fn handshake<T>(io: T) -> Handshake<T, Bytes>
 where
-    T: AsyncRead + AsyncWrite + Unpin,
+    T: AsyncRead + AsyncWrite + Unpin + ExtensionsMut,
 {
     Builder::new().handshake(io)
 }
@@ -385,7 +388,7 @@ where
 
 impl<T, B> Connection<T, B>
 where
-    T: AsyncRead + AsyncWrite + Unpin,
+    T: AsyncRead + AsyncWrite + Unpin + ExtensionsMut,
     B: Buf,
 {
     fn handshake2(io: T, builder: Builder) -> Handshake<T, B> {
@@ -608,7 +611,7 @@ where
 
 impl<T, B> rama_core::futures::Stream for Connection<T, B>
 where
-    T: AsyncRead + AsyncWrite + Unpin,
+    T: AsyncRead + AsyncWrite + Unpin + ExtensionsMut,
     B: Buf,
 {
     type Item = Result<(Request<RecvStream>, SendResponse<B>), crate::h2::Error>;
@@ -643,8 +646,9 @@ impl Builder {
     /// ```
     /// # use tokio::io::{AsyncRead, AsyncWrite};
     /// # use rama_http_core::h2::server::*;
+    /// # use rama_core::extensions::ExtensionsMut;
     /// #
-    /// # fn doc<T: AsyncRead + AsyncWrite + Unpin>(my_io: T)
+    /// # fn doc<T: AsyncRead + AsyncWrite + Unpin + ExtensionsMut>(my_io: T)
     /// # -> Handshake<T>
     /// # {
     /// // `server_fut` is a future representing the completion of the HTTP/2
@@ -687,8 +691,9 @@ impl Builder {
     /// ```
     /// # use tokio::io::{AsyncRead, AsyncWrite};
     /// # use rama_http_core::h2::server::*;
+    /// # use rama_core::extensions::ExtensionsMut;
     /// #
-    /// # fn doc<T: AsyncRead + AsyncWrite + Unpin>(my_io: T)
+    /// # fn doc<T: AsyncRead + AsyncWrite + Unpin + ExtensionsMut>(my_io: T)
     /// # -> Handshake<T>
     /// # {
     /// // `server_fut` is a future representing the completion of the HTTP/2
@@ -721,8 +726,9 @@ impl Builder {
     /// ```
     /// # use tokio::io::{AsyncRead, AsyncWrite};
     /// # use rama_http_core::h2::server::*;
+    /// # use rama_core::extensions::ExtensionsMut;
     /// #
-    /// # fn doc<T: AsyncRead + AsyncWrite + Unpin>(my_io: T)
+    /// # fn doc<T: AsyncRead + AsyncWrite + Unpin + ExtensionsMut>(my_io: T)
     /// # -> Handshake<T>
     /// # {
     /// // `server_fut` is a future representing the completion of the HTTP/2
@@ -754,8 +760,9 @@ impl Builder {
     /// ```
     /// # use tokio::io::{AsyncRead, AsyncWrite};
     /// # use rama_http_core::h2::server::*;
+    /// # use rama_core::extensions::ExtensionsMut;
     /// #
-    /// # fn doc<T: AsyncRead + AsyncWrite + Unpin>(my_io: T)
+    /// # fn doc<T: AsyncRead + AsyncWrite + Unpin + ExtensionsMut>(my_io: T)
     /// # -> Handshake<T>
     /// # {
     /// // `server_fut` is a future representing the completion of the HTTP/2
@@ -793,8 +800,9 @@ impl Builder {
     /// ```
     /// # use tokio::io::{AsyncRead, AsyncWrite};
     /// # use rama_http_core::h2::server::*;
+    /// # use rama_core::extensions::ExtensionsMut;
     /// #
-    /// # fn doc<T: AsyncRead + AsyncWrite + Unpin>(my_io: T)
+    /// # fn doc<T: AsyncRead + AsyncWrite + Unpin + ExtensionsMut>(my_io: T)
     /// # -> Handshake<T>
     /// # {
     /// // `server_fut` is a future representing the completion of the HTTP/2
@@ -841,8 +849,9 @@ impl Builder {
     /// ```
     /// # use tokio::io::{AsyncRead, AsyncWrite};
     /// # use rama_http_core::h2::server::*;
+    /// # use rama_core::extensions::ExtensionsMut;
     /// #
-    /// # fn doc<T: AsyncRead + AsyncWrite + Unpin>(my_io: T)
+    /// # fn doc<T: AsyncRead + AsyncWrite + Unpin + ExtensionsMut>(my_io: T)
     /// # -> Handshake<T>
     /// # {
     /// // `server_fut` is a future representing the completion of the HTTP/2
@@ -887,8 +896,9 @@ impl Builder {
     /// ```
     /// # use tokio::io::{AsyncRead, AsyncWrite};
     /// # use rama_http_core::h2::server::*;
+    /// # use rama_core::extensions::ExtensionsMut;
     /// #
-    /// # fn doc<T: AsyncRead + AsyncWrite + Unpin>(my_io: T)
+    /// # fn doc<T: AsyncRead + AsyncWrite + Unpin + ExtensionsMut>(my_io: T)
     /// # -> Handshake<T>
     /// # {
     /// // `server_fut` is a future representing the completion of the HTTP/2
@@ -948,8 +958,9 @@ impl Builder {
     /// ```
     /// # use tokio::io::{AsyncRead, AsyncWrite};
     /// # use rama_http_core::h2::server::*;
+    /// # use rama_core::extensions::ExtensionsMut;
     /// #
-    /// # fn doc<T: AsyncRead + AsyncWrite + Unpin>(my_io: T)
+    /// # fn doc<T: AsyncRead + AsyncWrite + Unpin + ExtensionsMut>(my_io: T)
     /// # -> Handshake<T>
     /// # {
     /// // `server_fut` is a future representing the completion of the HTTP/2
@@ -1013,8 +1024,9 @@ impl Builder {
     /// # use tokio::io::{AsyncRead, AsyncWrite};
     /// # use rama_http_core::h2::server::*;
     /// # use std::time::Duration;
+    /// # use rama_core::extensions::ExtensionsMut;
     /// #
-    /// # fn doc<T: AsyncRead + AsyncWrite + Unpin>(my_io: T)
+    /// # fn doc<T: AsyncRead + AsyncWrite + Unpin + ExtensionsMut>(my_io: T)
     /// # -> Handshake<T>
     /// # {
     /// // `server_fut` is a future representing the completion of the HTTP/2
@@ -1063,8 +1075,9 @@ impl Builder {
     /// ```
     /// # use tokio::io::{AsyncRead, AsyncWrite};
     /// # use rama_http_core::h2::server::*;
+    /// # use rama_core::extensions::ExtensionsMut;
     /// #
-    /// # fn doc<T: AsyncRead + AsyncWrite + Unpin>(my_io: T)
+    /// # fn doc<T: AsyncRead + AsyncWrite + Unpin + ExtensionsMut>(my_io: T)
     /// # -> Handshake<T>
     /// # {
     /// // `server_fut` is a future representing the completion of the HTTP/2
@@ -1083,8 +1096,9 @@ impl Builder {
     /// ```
     /// # use tokio::io::{AsyncRead, AsyncWrite};
     /// # use rama_http_core::h2::server::*;
+    /// # use rama_core::extensions::ExtensionsMut;
     /// #
-    /// # fn doc<T: AsyncRead + AsyncWrite + Unpin>(my_io: T)
+    /// # fn doc<T: AsyncRead + AsyncWrite + Unpin + ExtensionsMut>(my_io: T)
     /// # -> Handshake<T, &'static [u8]>
     /// # {
     /// // `server_fut` is a future representing the completion of the HTTP/2
@@ -1098,7 +1112,7 @@ impl Builder {
     /// ```
     pub fn handshake<T, B>(&self, io: T) -> Handshake<T, B>
     where
-        T: AsyncRead + AsyncWrite + Unpin,
+        T: AsyncRead + AsyncWrite + Unpin + ExtensionsMut,
         B: Buf,
     {
         Connection::handshake2(io, self.clone())
@@ -1355,7 +1369,7 @@ where
 
 impl<T, B: Buf> Future for Handshake<T, B>
 where
-    T: AsyncRead + AsyncWrite + Unpin,
+    T: AsyncRead + AsyncWrite + Unpin + ExtensionsMut,
     B: Buf,
 {
     type Output = Result<Connection<T, B>, crate::h2::Error>;
