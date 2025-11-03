@@ -6,6 +6,7 @@ use std::net::{SocketAddr, TcpStream};
 use std::sync::mpsc;
 use std::time::Duration;
 
+use rama::ServiceInput;
 use rama_core::bytes::Bytes;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
@@ -44,6 +45,7 @@ fn hello_world_16(b: divan::Bencher) {
             rt.spawn(async move {
                 loop {
                     let (stream, _addr) = listener.accept().await.expect("accept");
+                    let stream = ServiceInput::new(stream);
 
                     http1::Builder::new()
                         .pipeline_flush(true)

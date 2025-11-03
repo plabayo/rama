@@ -66,6 +66,7 @@
 //!
 //! ```rust, no_run
 //!
+//! use rama_core::ServiceInput;
 //! use rama_http_core::h2::client;
 //! use rama_http_types::{Request, Method};
 //! use std::error::Error;
@@ -75,6 +76,8 @@
 //! pub async fn main() -> Result<(), Box<dyn Error>> {
 //!     // Establish TCP connection to the server.
 //!     let tcp = TcpStream::connect("127.0.0.1:5928").await?;
+//!     // Convert to a rama compatible tcp stream
+//!     let tcp = ServiceInput::new(tcp);
 //!     let (h2, connection) = client::handshake(tcp).await?;
 //!     tokio::spawn(async move {
 //!         connection.await.unwrap();

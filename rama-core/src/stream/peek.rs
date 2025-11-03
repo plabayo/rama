@@ -398,7 +398,7 @@ mod tests {
 
                 assert_eq!(
                     self.writes.join(""),
-                    String::from_utf8(stream.inner.request.into_inner()).unwrap(),
+                    String::from_utf8(stream.inner.input.into_inner()).unwrap(),
                     "[async] writes: {:?}",
                     self.writes,
                 );
@@ -421,7 +421,7 @@ mod tests {
 
                 assert_eq!(
                     self.writes.join(""),
-                    String::from_utf8(stream.inner.request.into_inner()).unwrap(),
+                    String::from_utf8(stream.inner.input.into_inner()).unwrap(),
                     "[sync] writes: {:?}",
                     self.writes
                 );

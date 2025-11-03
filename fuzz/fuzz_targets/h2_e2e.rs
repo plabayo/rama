@@ -1,9 +1,9 @@
 #![no_main]
-use rama::http::{Method, Request};
-
 use libfuzzer_sys::fuzz_target;
+use rama::ServiceInput;
 use rama::futures::stream::FuturesUnordered;
 use rama::futures::{Stream, future};
+use rama::http::{Method, Request};
 
 use std::io;
 use std::pin::Pin;
@@ -85,6 +85,7 @@ impl AsyncWrite for MockIo<'_> {
 
 async fn run(script: &[u8]) -> Result<(), rama_http_core::h2::Error> {
     let io = MockIo { input: script };
+    let io = ServiceInput::new(io);
     let (mut h2, mut connection) = rama_http_core::h2::client::handshake(io).await?;
     let mut futs = FuturesUnordered::new();
     let future = future::poll_fn(|cx| {

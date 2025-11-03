@@ -28,6 +28,7 @@
 //! ~~~~~~~~~~~ H2 connection CLOSE !!!!!! ~~~~~~~~~~~
 //! ```
 
+use rama_core::ServiceInput;
 use rama_error::BoxError;
 use rama_http_core::h2::RecvStream;
 use rama_http_core::h2::server::{self, SendResponse};
@@ -56,6 +57,7 @@ async fn main() -> Result<(), BoxError> {
 }
 
 async fn serve(socket: TcpStream) -> Result<(), BoxError> {
+    let socket = ServiceInput::new(socket);
     let mut connection = server::handshake(socket).await?;
     println!("H2 connection bound");
 

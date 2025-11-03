@@ -2,6 +2,7 @@
 
 use h2_support::prelude::*;
 use h2_support::util::yield_once;
+use rama::ServiceInput;
 use rama_core::futures::future::lazy;
 use rama_core::futures::{FutureExt, StreamExt, TryStreamExt};
 use rama_http::proto::h1::headers::original::OriginalHttp1Headers;
@@ -24,6 +25,7 @@ async fn send_recv_headers_only() {
         // Read response
         .read(&[0, 0, 1, 1, 5, 0, 0, 0, 1, 0x89])
         .build();
+    let mock = ServiceInput::new(mock);
 
     let (mut client, mut h2) = client::handshake(mock).await.unwrap();
 
@@ -66,6 +68,7 @@ async fn send_recv_data() {
             0, 0, 5, 0, 1, 0, 0, 0, 1, 119, 111, 114, 108, 100,
         ])
         .build();
+    let mock = ServiceInput::new(mock);
 
     let (mut client, mut h2) = client::Builder::new().handshake(mock).await.unwrap();
 
@@ -124,6 +127,7 @@ async fn send_headers_recv_data_single_frame() {
             0, 5, 0, 1, 0, 0, 0, 1, 119, 111, 114, 108, 100,
         ])
         .build();
+    let mock = ServiceInput::new(mock);
 
     let (mut client, mut h2) = client::handshake(mock).await.unwrap();
 

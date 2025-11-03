@@ -1,5 +1,6 @@
 #[cfg(not(target_os = "windows"))]
 mod test {
+    use rama_core::ServiceInput;
     use rama_core::futures::Stream;
     use rama_core::futures::future;
     use rama_core::futures::stream::FuturesUnordered;
@@ -88,6 +89,7 @@ mod test {
 
     async fn run(script: &[u8]) -> Result<(), rama_http_core::h2::Error> {
         let io = MockIo { input: script };
+        let io = ServiceInput::new(io);
         let (mut h2, mut connection) = rama_http_core::h2::client::handshake(io).await?;
         let mut futs = FuturesUnordered::new();
         let future = future::poll_fn(|cx| {

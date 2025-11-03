@@ -64,6 +64,7 @@
 //! will use the HTTP/2 protocol without prior negotiation.
 //!
 //! ```no_run
+//! use rama_core::ServiceInput;
 //! use rama_http_core::h2::server;
 //! use rama_http_types::{Response, StatusCode};
 //! use tokio::net::TcpListener;
@@ -75,6 +76,8 @@
 //!     // Accept all incoming TCP connections.
 //!     loop {
 //!         if let Ok((socket, _peer_addr)) = listener.accept().await {
+//!             // Convert socket to a rama compatible socket (one that implements ExtensionsMut)
+//!             let socket = ServiceInput::new(socket);
 //!             // Spawn a new task to process each connection.
 //!             tokio::spawn(async {
 //!                 // Start the HTTP/2 connection handshake

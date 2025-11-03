@@ -25,6 +25,7 @@
 //! You should see an HTTP Status 200 OK with a HTML payload containing the
 //! connection index and count of requests within that connection.
 
+use rama_core::ServiceInput;
 use rama_error::BoxError;
 use rama_http_core::h2::client;
 use rama_http_types::{
@@ -38,6 +39,7 @@ pub async fn main() -> Result<(), BoxError> {
     let _ = env_logger::try_init();
 
     let tcp = TcpStream::connect("127.0.0.1:5928").await?;
+    let tcp = ServiceInput::new(tcp);
     let (mut client, h2) = client::handshake(tcp).await?;
 
     println!("sending request");

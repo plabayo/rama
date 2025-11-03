@@ -5,6 +5,7 @@
 use std::convert::Infallible;
 use std::net::SocketAddr;
 
+use rama::ServiceInput;
 use rama::futures::future::join_all;
 use rama::http::body::util::BodyExt;
 use rama::http::{Method, Request, Response};
@@ -309,6 +310,7 @@ impl Opts {
         let client = rt.block_on(async {
             if self.http2 {
                 let tcp = tokio::net::TcpStream::connect(&addr).await.unwrap();
+                let tcp = ServiceInput::new(tcp);
                 let (tx, conn) =
                     rama::http::core::client::conn::http2::Builder::new(Executor::new())
                         .initial_stream_window_size(self.http2_stream_window)
@@ -321,6 +323,7 @@ impl Opts {
                 Client::Http2(tx)
             } else {
                 let tcp = tokio::net::TcpStream::connect(&addr).await.unwrap();
+                let tcp = ServiceInput::new(tcp);
                 let (tx, conn) = rama::http::core::client::conn::http1::Builder::new()
                     .handshake(tcp)
                     .await
@@ -414,6 +417,7 @@ fn spawn_server(rt: &tokio::runtime::Runtime, opts: &Opts) -> SocketAddr {
     rt.spawn(async move {
         let _ = &opts;
         while let Ok((sock, _)) = listener.accept().await {
+            let sock = ServiceInput::new(sock);
             if opts.http2 {
                 tokio::spawn(
                     rama::http::core::server::conn::http2::Builder::new(Executor::new())

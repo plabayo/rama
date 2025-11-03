@@ -839,6 +839,7 @@ mod tests {
     use crate::server::conn::auto;
     use crate::service::RamaHttpService;
     use crate::{body::Bytes, client};
+    use rama_core::ServiceInput;
     use rama_core::error::BoxError;
     use rama_core::rt::Executor;
     use rama_core::service::service_fn;
@@ -962,7 +963,7 @@ mod tests {
     #[cfg(not(miri))]
     #[tokio::test]
     async fn graceful_shutdown() {
-        use rama_core::service::service_fn;
+        use rama_core::{ServiceInput, service::service_fn};
 
         use crate::service::RamaHttpService;
 
@@ -978,6 +979,8 @@ mod tests {
         let _stream = TcpStream::connect(listener_addr).await.unwrap();
 
         let (stream, _) = listen_task.await.unwrap();
+        let stream = ServiceInput::new(stream);
+
         let builder = auto::Builder::new(Executor::new());
         let connection = builder.serve_connection(stream, RamaHttpService::new(service_fn(hello)));
 
@@ -1001,6 +1004,7 @@ mod tests {
         B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
     {
         let stream = TcpStream::connect(addr).await.unwrap();
+        let stream = ServiceInput::new(stream);
         let (sender, connection) = http1::handshake(stream).await.unwrap();
 
         tokio::spawn(connection);
@@ -1013,6 +1017,7 @@ mod tests {
         B: StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
     {
         let stream = TcpStream::connect(addr).await.unwrap();
+        let stream = ServiceInput::new(stream);
         let (sender, connection) = client::conn::http2::Builder::new(Executor::new())
             .handshake(stream)
             .await
@@ -1032,6 +1037,7 @@ mod tests {
         tokio::spawn(async move {
             loop {
                 let (stream, _) = listener.accept().await.unwrap();
+                let stream = ServiceInput::new(stream);
                 tokio::spawn(async move {
                     let mut builder = auto::Builder::new(Executor::new());
                     if h1_only {

@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use tokio::sync::oneshot;
 
+use rama::ServiceInput;
 use rama::http::Response;
 use rama::http::core::server::conn::http1;
 use rama::service::service_fn;
@@ -38,6 +39,7 @@ macro_rules! bench_server {
                 rt.spawn(async move {
                     loop {
                         let (stream, _) = listener.accept().await.expect("accept");
+                        let stream = ServiceInput::new(stream);
 
                         async fn f() -> Result<Response, std::convert::Infallible> {
                             let body = $body;

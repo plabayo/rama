@@ -548,7 +548,7 @@ impl Builder {
 
 #[cfg(test)]
 mod tests {
-    use rama_core::rt::Executor;
+    use rama_core::{extensions::ExtensionsMut, rt::Executor};
     use rama_http_types::body::util::Empty;
     use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -556,7 +556,7 @@ mod tests {
     #[ignore] // only compilation is checked
     async fn send_sync_executor_of_send_futures() {
         #[allow(unused)]
-        async fn run(io: impl AsyncRead + AsyncWrite + Send + Unpin + 'static) {
+        async fn run(io: impl AsyncRead + AsyncWrite + Send + Unpin + ExtensionsMut + 'static) {
             let (_sender, conn) = crate::client::conn::http2::handshake::<
                 _,
                 Empty<rama_core::bytes::Bytes>,

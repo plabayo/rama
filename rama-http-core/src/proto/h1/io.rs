@@ -668,6 +668,8 @@ mod tests {
     #[cfg(not(miri))]
     #[tokio::test]
     async fn parse_reads_until_blocked() {
+        use rama_core::ServiceInput;
+
         use crate::proto::h1::ClientTransaction;
 
         let mock = Mock::new()
@@ -677,6 +679,8 @@ mod tests {
             // missing last line ending
             .wait(Duration::from_secs(1))
             .build();
+
+        let mock = ServiceInput::new(mock);
 
         let mut buffered = Buffered::<_, Cursor<Vec<u8>>>::new(mock);
 
@@ -689,7 +693,8 @@ mod tests {
                 h1_max_headers: None,
                 h09_responses: false,
                 on_informational: &mut None,
-                encoded_request_extensions: &mut None,
+                io_extensions: &Extensions::default(),
+                request_extensions: &mut None,
             };
             assert!(
                 buffered
@@ -815,7 +820,10 @@ mod tests {
     #[should_panic]
     #[cfg(debug_assertions)] // needs to trigger a debug_assert
     fn write_buf_requires_non_empty_bufs() {
+        use rama_core::ServiceInput;
+
         let mock = Mock::new().build();
+        let mock = ServiceInput::new(mock);
         let mut buffered = Buffered::<_, Cursor<Vec<u8>>>::new(mock);
 
         buffered.buffer(Cursor::new(Vec::new()));
@@ -847,7 +855,10 @@ mod tests {
     #[cfg(not(miri))]
     #[tokio::test]
     async fn write_buf_flatten() {
+        use rama_core::ServiceInput;
+
         let mock = Mock::new().write(b"hello world, it's rama!").build();
+        let mock = ServiceInput::new(mock);
 
         let mut buffered = Buffered::<_, Cursor<Vec<u8>>>::new(mock);
         buffered.write_buf.set_strategy(WriteStrategy::Flatten);
@@ -897,12 +908,16 @@ mod tests {
     #[cfg(not(miri))]
     #[tokio::test]
     async fn write_buf_queue_disable_auto() {
+        use rama_core::ServiceInput;
+
         let mock = Mock::new()
             .write(b"hello ")
             .write(b"world, ")
             .write(b"it's ")
             .write(b"rama!")
             .build();
+
+        let mock = ServiceInput::new(mock);
 
         let mut buffered = Buffered::<_, Cursor<Vec<u8>>>::new(mock);
         buffered.write_buf.set_strategy(WriteStrategy::Queue);

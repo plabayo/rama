@@ -1,4 +1,5 @@
 use h2_support::prelude::*;
+use rama::ServiceInput;
 
 #[tokio::test]
 #[ignore]
@@ -86,6 +87,7 @@ async fn client_settings_header_table_size() {
         ])
         .read(&[0, 0, 1, 1, 5, 0, 0, 0, 3, 137])
         .build();
+    let io = ServiceInput::new(io);
 
     let (mut client, mut conn) = client::handshake(io).await.expect("handshake");
 
@@ -126,6 +128,7 @@ async fn server_settings_header_table_size() {
         //.write(&[0, 0, 6, 1, 5, 0, 0, 0, 1, 136, 64, 129, 31, 129, 143])
         .write(&[0, 0, 7, 1, 5, 0, 0, 0, 1, 32, 136, 0, 129, 31, 129, 143])
         .build();
+    let io = ServiceInput::new(io);
 
     let mut srv = server::handshake(io).await.expect("handshake");
 

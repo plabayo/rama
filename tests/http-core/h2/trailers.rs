@@ -1,4 +1,5 @@
 use h2_support::prelude::*;
+use rama::ServiceInput;
 use rama_core::futures::StreamExt;
 use rama_http::HeaderName;
 use rama_http::proto::h1::headers::original::OriginalHttp1Headers;
@@ -22,6 +23,7 @@ async fn recv_trailers_only() {
             0x9B, 0x51, 0x82, 0x3F, 0x5F,
         ])
         .build();
+    let mock = ServiceInput::new(mock);
 
     let (mut client, mut h2) = client::handshake(mock).await.unwrap();
 
@@ -74,6 +76,7 @@ async fn send_trailers_immediately() {
             0x6F, 0x20, 0x77, 0x6F, 0x72, 0x6C, 0x64,
         ])
         .build();
+    let mock = ServiceInput::new(mock);
 
     let (mut client, mut h2) = client::handshake(mock).await.unwrap();
 
