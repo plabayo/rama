@@ -7,7 +7,7 @@
 use clap::{Parser, Subcommand};
 
 pub mod cmd;
-use self::cmd::{discard, echo, fp, http, ip, proxy, serve, tls, ws};
+use self::cmd::{discard, echo, fp, http, ip, proxy, serve, stunnel, tls, ws};
 
 pub mod trace;
 pub mod utils;
