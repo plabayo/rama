@@ -309,7 +309,6 @@ jobs:
         working-directory: "./rama-ws"
         run: ./autobahn/server.sh
 
-  # keep in sync with rama-ws/autobahn/client.sh
   test-ws-autobahn-client:
     needs: [check, check-msrv, check-all-features]
     runs-on: ubuntu-latest

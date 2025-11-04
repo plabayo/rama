@@ -8,7 +8,7 @@ cd "${SOURCE_DIR}/.."
 CONTAINER_NAME=fuzzingserver
 
 cleanup() {
-  docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+  docker container stop "${CONTAINER_NAME}"
 }
 trap cleanup TERM EXIT
 

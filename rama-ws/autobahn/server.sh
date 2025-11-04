@@ -6,7 +6,9 @@ SOURCE_DIR=$(readlink -f "${BASH_SOURCE[0]}")
 SOURCE_DIR=$(dirname "$SOURCE_DIR")
 cd "${SOURCE_DIR}/.."
 
-cleanup() { kill -9 "${WSSERVER_PID}"; }
+cleanup() {
+    kill -9 ${WSSERVER_PID}
+}
 trap cleanup TERM EXIT
 
 test_diff() {
