@@ -3,6 +3,7 @@ use crate::h2::proto::*;
 use crate::h2::{client, server};
 
 use rama_core::bytes::Bytes;
+use rama_core::extensions::ExtensionsMut;
 use rama_core::futures::Stream;
 use rama_core::telemetry::tracing;
 use rama_http::proto::h2::frame::EarlyFrameStreamContext;
@@ -103,11 +104,11 @@ enum State {
 
 impl<T, P, B> Connection<T, P, B>
 where
-    T: AsyncRead + AsyncWrite + Unpin,
+    T: AsyncRead + AsyncWrite + Unpin + ExtensionsMut,
     P: Peer,
     B: Buf,
 {
-    pub(crate) fn new(codec: Codec<T, Prioritized<B>>, config: Config) -> Self {
+    pub(crate) fn new(mut codec: Codec<T, Prioritized<B>>, config: Config) -> Self {
         fn streams_config(config: &Config) -> streams::Config {
             streams::Config {
                 initial_max_send_streams: config.initial_max_send_streams,
@@ -131,7 +132,12 @@ where
                 early_frame_ctx: config.early_frame_ctx.clone(),
             }
         }
-        let streams = Streams::new(streams_config(&config));
+        // Transfer ownership of extensions to Streams as at this point our connection is esthablished
+        // and we only need these extensions as parents for our inner Stream's
+        let streams = Streams::new(
+            streams_config(&config),
+            std::mem::take(codec.extensions_mut()),
+        );
         Self {
             codec,
             inner: ConnectionInner {

@@ -1564,7 +1564,7 @@ where
 
 impl<T, B> Future for Connection<T, B>
 where
-    T: AsyncRead + AsyncWrite + Unpin,
+    T: AsyncRead + AsyncWrite + Unpin + ExtensionsMut,
     B: Buf,
 {
     type Output = Result<(), crate::h2::Error>;
@@ -1727,7 +1727,7 @@ impl Peer {
         end_of_stream: bool,
         headers_pseudo_order: Option<PseudoHeaderOrder>,
         headers_priority: Option<StreamDependency>,
-    ) -> Result<Headers, SendError> {
+    ) -> Result<(Headers, Extensions), SendError> {
         use request::Parts;
 
         let (
@@ -1795,7 +1795,7 @@ impl Peer {
             frame.set_end_stream()
         }
 
-        Ok(frame)
+        Ok((frame, extensions))
     }
 }
 
@@ -1820,8 +1820,10 @@ impl proto::Peer for Peer {
         field_order: OriginalHttp1Headers,
         header_size: usize,
         stream_id: StreamId,
+        extensions: Extensions,
     ) -> Result<Self::Poll, Error> {
         let mut b = Response::builder();
+        *b.extensions_mut().unwrap() = extensions;
 
         b = b.version(Version::HTTP_2);
 

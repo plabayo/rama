@@ -123,7 +123,7 @@ use crate::h2::proto::{self, Config, Error, Prioritized};
 use crate::h2::{FlowControl, PingPong, RecvStream, SendStream};
 
 use rama_core::bytes::{Buf, Bytes};
-use rama_core::extensions::ExtensionsMut;
+use rama_core::extensions::{Extensions, ExtensionsMut};
 use rama_core::telemetry::tracing::{
     self,
     instrument::{Instrument, Instrumented},
@@ -1454,7 +1454,7 @@ impl Peer {
         id: StreamId,
         response: Response<()>,
         end_of_stream: bool,
-    ) -> frame::Headers {
+    ) -> (frame::Headers, Extensions) {
         use rama_http_types::response::Parts;
 
         // Extract the components of the HTTP request
@@ -1488,7 +1488,7 @@ impl Peer {
             frame.set_end_stream()
         }
 
-        frame
+        (frame, extensions)
     }
 
     pub(crate) fn convert_push_message(
@@ -1568,10 +1568,12 @@ impl proto::Peer for Peer {
         field_order: OriginalHttp1Headers,
         header_size: usize,
         stream_id: StreamId,
+        extensions: Extensions,
     ) -> Result<Self::Poll, Error> {
         use rama_http_types::{Version, uri};
 
         let mut b = Request::builder();
+        *b.extensions_mut().unwrap() = extensions;
 
         macro_rules! malformed {
             ($($arg:tt)*) => {{

@@ -6,7 +6,7 @@ use crate::h2::proto::{Error, Initiator, Open, Peer, WindowSize, peer};
 use crate::h2::{client, proto, server};
 
 use rama_core::bytes::{Buf, Bytes};
-use rama_core::extensions::{ExtensionsMut, ExtensionsRef};
+use rama_core::extensions::{Extensions, ExtensionsMut, ExtensionsRef};
 use rama_core::telemetry::tracing;
 use rama_http::proto::RequestHeaders;
 use rama_http::proto::h1::Http1HeaderMap;
@@ -74,6 +74,8 @@ pub(crate) struct OpaqueStreamRef {
 /// TODO: better name
 #[derive(Debug)]
 struct Inner {
+    extensions: Extensions,
+
     /// Tracks send & recv stream concurrency.
     counts: Counts,
 
@@ -121,11 +123,11 @@ where
     B: Buf,
     P: Peer,
 {
-    pub(crate) fn new(config: Config) -> Self {
+    pub(crate) fn new(config: Config, extensions: Extensions) -> Self {
         let peer = P::r#dyn();
 
         Self {
-            inner: Inner::new(peer, config),
+            inner: Inner::new(peer, config, extensions),
             send_buffer: Arc::new(SendBuffer::new()),
             _p: ::std::marker::PhantomData,
         }
@@ -318,30 +320,20 @@ where
             return Err(UserError::UnexpectedFrameType.into());
         }
 
-        let stream_id = me.actions.send.open()?;
-
-        let mut stream = Stream::new(
-            stream_id,
-            me.actions.send.init_window_sz(),
-            me.actions.recv.init_window_sz(),
-        );
-
-        if *request.method() == Method::HEAD {
-            stream.content_length = ContentLength::Head;
-        }
-
         // TODO: with a bit of trickery we can perhaps in future
         // do better than just cloning here...
 
-        let mut request_ext = request.extensions().clone();
         let request_headers = request.headers().clone();
-        let request_headers = Http1HeaderMap::new(request_headers, Some(&mut request_ext));
+        let request_headers = Http1HeaderMap::new(request_headers, Some(request.extensions()));
+        request
+            .extensions_mut()
+            .insert(RequestHeaders::from(request_headers));
 
-        request_ext.insert(RequestHeaders::from(request_headers));
-        stream.encoded_extensions = Some(request_ext);
+        let stream_id = me.actions.send.open()?;
 
         // Convert the message
-        let headers = client::Peer::convert_send_message(
+        let is_content_length_head = *request.method() == Method::HEAD;
+        let (headers, extensions) = client::Peer::convert_send_message(
             stream_id,
             request,
             protocol,
@@ -349,6 +341,17 @@ where
             me.headers_pseudo_order.clone(),
             None,
         )?;
+
+        let mut stream = Stream::new(
+            stream_id,
+            me.actions.send.init_window_sz(),
+            me.actions.recv.init_window_sz(),
+            extensions,
+        );
+
+        if is_content_length_head {
+            stream.content_length = ContentLength::Head;
+        }
 
         let mut stream = me.store.insert(stream.id, stream);
 
@@ -495,9 +498,10 @@ impl<B> DynStreams<'_, B> {
 }
 
 impl Inner {
-    fn new(peer: peer::Dyn, config: Config) -> Arc<Mutex<Self>> {
+    fn new(peer: peer::Dyn, config: Config, extensions: Extensions) -> Arc<Mutex<Self>> {
         Arc::new(Mutex::new(Self {
             counts: Counts::new(peer, &config),
+            extensions,
             actions: Actions {
                 recv: Recv::new(peer, &config),
                 send: Send::new(&config),
@@ -557,6 +561,7 @@ impl Inner {
                             stream_id,
                             self.actions.send.init_window_sz(),
                             self.actions.recv.init_window_sz(),
+                            self.extensions.clone(),
                         );
 
                         e.insert(stream)
@@ -893,6 +898,7 @@ impl Inner {
                     promised_id,
                     self.actions.send.init_window_sz(),
                     self.actions.recv.init_window_sz(),
+                    self.extensions.clone(),
                 )
             });
 
@@ -1031,7 +1037,7 @@ impl Inner {
                     self.actions.recv.maybe_reset_next_stream_id(id);
                 }
 
-                let stream = Stream::new(id, 0, 0);
+                let stream = Stream::new(id, 0, 0, self.extensions.clone());
 
                 e.insert(stream)
             }
@@ -1249,6 +1255,9 @@ impl<B> StreamRef<B> {
         response: Response<()>,
         end_of_stream: bool,
     ) -> Result<(), UserError> {
+        // We need to only drop extensions after we release our locks or there is risk for deadlocking
+        let _extensions_ref = &mut Option::None;
+
         let mut me = self.opaque.inner.lock().unwrap();
         let me = &mut *me;
 
@@ -1258,8 +1267,9 @@ impl<B> StreamRef<B> {
         let send_buffer = &mut *send_buffer;
 
         me.counts.transition(stream, |counts, stream| {
-            stream.encoded_extensions = Some(response.extensions().clone());
-            let frame = server::Peer::convert_send_message(stream.id, response, end_of_stream);
+            let (frame, extensions) =
+                server::Peer::convert_send_message(stream.id, response, end_of_stream);
+            *_extensions_ref = Some(extensions);
 
             actions
                 .send
@@ -1269,6 +1279,9 @@ impl<B> StreamRef<B> {
 
     #[allow(clippy::needless_pass_by_ref_mut)]
     pub(crate) fn send_push_promise(&mut self, request: Request<()>) -> Result<Self, UserError> {
+        // We need to keep extensions around so they are dropped after our locks or we risk deadlocking
+        let _extensions_ref = request.extensions().clone();
+
         let mut me = self.opaque.inner.lock().unwrap();
         let me = &mut *me;
 
@@ -1285,6 +1298,7 @@ impl<B> StreamRef<B> {
                     promised_id,
                     actions.send.init_window_sz(),
                     actions.recv.init_window_sz(),
+                    me.extensions.clone(),
                 ),
             );
             child_stream.state.reserve_local()?;
@@ -1294,8 +1308,6 @@ impl<B> StreamRef<B> {
 
         let pushed = {
             let mut stream = me.store.resolve(self.opaque.key);
-
-            stream.encoded_extensions = Some(request.extensions().clone());
 
             let frame =
                 crate::h2::server::Peer::convert_push_message(stream.id, promised_id, request)?;
