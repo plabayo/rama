@@ -11,13 +11,27 @@ function cleanup() {
 trap cleanup TERM EXIT
 
 function test_diff() {
-    if ! diff -q \
-        <(jq -S 'del(."Rama" | .. | .duration?)' 'autobahn/expected-server-results.json') \
-        <(jq -S 'del(."Rama" | .. | .duration?)' 'autobahn/server/index.json')
-    then
-        echo 'Difference in results, either this is a regression or' \
-             'one should update autobahn/expected-server-results.json with the new results.'
+    echo "Comparing server Autobahn results…"
+
+    DIFF_OUTPUT=$(diff -q \
+        <(jq -S 'del(."Rama" | .. | .duration?)' autobahn/expected-server-results.json) \
+        <(jq -S 'del(."Rama" | .. | .duration?)' autobahn/server/index.json)
+    )
+
+    STATUS=$?
+
+    if [[ $STATUS -eq 1 ]]; then
+        echo "❌ Difference detected between expected and actual results:"
+        echo
+        echo "$DIFF_OUTPUT"
+        echo
+        echo "Either this is a regression, or you should update autobahn/expected-server-results.json with the new results."
         exit 64
+    elif [[ $STATUS -ne 0 ]]; then
+        echo "⚠️ Diff command failed (status $STATUS)"
+        exit $STATUS
+    else
+        echo "✅ No differences found."
     fi
 }
 
@@ -31,8 +45,8 @@ case "$(uname -s)" in
       PLATFORM_SPECIFIC_DOCKER_ARGS="--network host"
       ;;
   *)
-      ECHO_BIND_ADDR="127.0.0.1:9002"
-      PLATFORM_SPECIFIC_DOCKER_ARGS="--network host"
+      echo "unsupported platform"
+      exit 1
       ;;
 esac
 

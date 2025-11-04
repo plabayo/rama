@@ -12,13 +12,27 @@ function cleanup() {
 trap cleanup TERM EXIT
 
 function test_diff() {
-    if ! diff -q \
-        <(jq -S 'del(."Rama" | .. | .duration?)' 'autobahn/expected-client-results.json') \
-        <(jq -S 'del(."Rama" | .. | .duration?)' 'autobahn/client/index.json')
-    then
-        echo 'Difference in results, either this is a regression or' \
-             'one should update autobahn/expected-client-results.json with the new results.'
+    echo "Comparing client Autobahn results…"
+
+    DIFF_OUTPUT=$(diff -q \
+        <(jq -S 'del(."Rama" | .. | .duration?)' autobahn/client-server-results.json) \
+        <(jq -S 'del(."Rama" | .. | .duration?)' autobahn/client/index.json)
+    )
+
+    STATUS=$?
+
+    if [[ $STATUS -eq 1 ]]; then
+        echo "❌ Difference detected between expected and actual results:"
+        echo
+        echo "$DIFF_OUTPUT"
+        echo
+        echo "Either this is a regression, or you should update autobahn/expected-client-results.json with the new results."
         exit 64
+    elif [[ $STATUS -ne 0 ]]; then
+        echo "⚠️ Diff command failed (status $STATUS)"
+        exit $STATUS
+    else
+        echo "✅ No differences found."
     fi
 }
 
