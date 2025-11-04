@@ -289,9 +289,7 @@ jobs:
         run: cargo test --all-features --examples --workspace
 
   test-ws-autobahn-server:
-    needs:
-      - test
-      - test-all-features
+    needs: [check, check-msrv, check-all-features]
     runs-on: ubuntu-latest
     timeout-minutes: 90
     env:
@@ -313,9 +311,7 @@ jobs:
 
   # keep in sync with rama-ws/autobahn/client.sh
   test-ws-autobahn-client:
-    needs:
-      - test
-      - test-all-features
+    needs: [check, check-msrv, check-all-features]
     runs-on: ubuntu-latest
     timeout-minutes: 90
     env:
