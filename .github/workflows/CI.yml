@@ -288,6 +288,163 @@ jobs:
       - name: Run doc tests
         run: cargo test --all-features --examples --workspace
 
+  # keep in sync with rama-ws/autobahn/server.sh
+  test-ws-autobahn-server:
+    name: Autobahn (server-conformance) on ${{ matrix.os }}
+    needs: [check, check-msrv, check-all-features, test, test-all-features]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    env:
+      RUSTFLAGS: -D warnings
+      WS_PORT: 9002
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
+      - name: Build server binary
+        run: cargo build --release -p rama-cli
+
+      - name: Install jq (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y jq
+      - name: Install jq (macOS)
+        if: matrix.os == 'macos-latest'
+        run: brew install jq
+      - name: Install jq (Windows)
+        if: matrix.os == 'windows-latest'
+        run: choco install jq -y
+
+      - name: Setup Python for wstest (macOS/Windows)
+        if: matrix.os != 'ubuntu-latest'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install AutobahnTestsuite (macOS/Windows)
+        if: matrix.os != 'ubuntu-latest'
+        run: python -m pip install --upgrade pip && pip install autobahntestsuite
+
+      - name: Start Rama WS server (Linux/macOS)
+        if: matrix.os != 'windows-latest'
+        run: ./target/release/rama-cli echo --ws --bind 127.0.0.1:${WS_PORT} &
+        shell: bash
+      - name: Start Rama WS server (Windows)
+        if: matrix.os == 'windows-latest'
+        run: Start-Process -FilePath "$env:GITHUB_WORKSPACE\target\release\rama-cli.exe" -ArgumentList "echo","--ws","--bind","127.0.0.1:$env:WS_PORT"
+        shell: pwsh
+      - name: Wait for server
+        run: |
+          echo "Waiting for server..."
+          sleep 5
+        shell: bash
+
+      - name: Run Autobahn fuzzingclient (Linux via Docker)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          docker run --rm \
+            -v "${PWD}/autobahn:/autobahn" \
+            --network host \
+            crossbario/autobahn-testsuite \
+            wstest -m fuzzingclient -s 'autobahn/fuzzingclient.json'
+      - name: Run Autobahn fuzzingclient (macOS/Windows)
+        if: matrix.os != 'ubuntu-latest'
+        run: wstest -m fuzzingclient -s autobahn/fuzzingclient.json
+
+      - name: Compare server report with expected
+        run: |
+          jq -S 'del(."Rama" | .. | .duration?)' autobahn/expected-server-results.json > /tmp/exp.json
+          jq -S 'del(."Rama" | .. | .duration?)' autobahn/server/index.json > /tmp/act.json
+          diff -u /tmp/exp.json /tmp/act.json
+        shell: bash
+
+  # keep in sync with rama-ws/autobahn/client.sh
+  test-ws-autobahn-client:
+    name: Autobahn (client-conformance) on ${{ matrix.os }}
+    needs: [check, check-msrv, check-all-features, test, test-all-features]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    env:
+      RUSTFLAGS: -D warnings
+      FUZZ_PORT: 9001
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
+      - name: Build examples
+        run: cargo build --release --examples -p rama --features=http-full
+
+      - name: Install jq (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y jq
+      - name: Install jq (macOS)
+        if: matrix.os == 'macos-latest'
+        run: brew install jq
+      - name: Install jq (Windows)
+        if: matrix.os == 'windows-latest'
+        run: choco install jq -y
+
+      - name: Setup Python for wstest (macOS/Windows)
+        if: matrix.os != 'ubuntu-latest'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install AutobahnTestsuite (macOS/Windows)
+        if: matrix.os != 'ubuntu-latest'
+        run: python -m pip install --upgrade pip && pip install autobahntestsuite
+
+      - name: Start fuzzingserver (Linux via Docker)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          docker run -d --rm \
+            -v "${PWD}/autobahn:/autobahn" \
+            -p ${FUZZ_PORT}:9001 \
+            --init \
+            --name fuzzingserver \
+            crossbario/autobahn-testsuite \
+            wstest -m fuzzingserver -s 'autobahn/fuzzingserver.json'
+      - name: Start fuzzingserver (macOS/Windows)
+        if: matrix.os != 'ubuntu-latest'
+        run: |
+          nohup wstest -m fuzzingserver -s autobahn/fuzzingserver.json > fuzzingserver.log 2>&1 &
+        shell: bash
+      - name: Wait for fuzzingserver
+        run: |
+          echo "Waiting for fuzzingserver..."
+          sleep 5
+        shell: bash
+
+      - name: Run Autobahn client example
+        if: matrix.os != 'windows-latest'
+        run: ./target/release/examples/autobahn_client
+      - name: Run Autobahn client example (Windows)
+        if: matrix.os == 'windows-latest'
+        run: .\target\release\examples\autobahn_client.exe
+        shell: pwsh
+
+      - name: Compare client report with expected
+        run: |
+          jq -S 'del(."Rama" | .. | .duration?)' autobahn/expected-client-results.json > /tmp/exp.json
+          jq -S 'del(."Rama" | .. | .duration?)' autobahn/client/index.json > /tmp/act.json
+          diff -u /tmp/exp.json /tmp/act.json
+        shell: bash
+
   cargo-hack:
     needs: [check, check-msrv, check-all-features]
     runs-on: ubuntu-latest
@@ -412,6 +569,8 @@ jobs:
       - test-examples-msrv
       - test-ignored
       - test-docs
+      - test-ws-autobahn-client
+      - test-ws-autobahn-server
       - cargo-hack
       - cargo-deny
       - test-spec-h2
