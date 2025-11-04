@@ -2,8 +2,7 @@
 set -euo pipefail
 set -x
 
-SOURCE_DIR=$(readlink -f "${BASH_SOURCE[0]}")
-SOURCE_DIR=$(dirname "$SOURCE_DIR")
+SOURCE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 cd "${SOURCE_DIR}/.."
 
 cleanup() {
