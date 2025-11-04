@@ -25,9 +25,15 @@ cargo build --release -p rama-cli
 cargo run --release -p rama-cli -- echo --ws --bind 127.0.0.1:9002 & WSSERVER_PID=$!
 sleep 5
 
+PLATFORM_SPECIFIC_DOCKER_ARGS=""
+if [[ "$(uname -s)" == "Linux" ]]; then
+  PLATFORM_SPECIFIC_DOCKER_ARGS="--add-host=host.docker.internal:host-gateway"
+fi
+
 docker run --rm \
     -v "${PWD}/autobahn:/autobahn" \
     --network host \
+    $PLATFORM_SPECIFIC_DOCKER_ARGS \
     crossbario/autobahn-testsuite \
     wstest -m fuzzingclient -s 'autobahn/fuzzingclient.json'
 
