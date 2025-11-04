@@ -374,9 +374,8 @@ impl Http1Transaction for Server {
             extend(dst, b"\r\n");
         }
 
-        let mut extensions = std::mem::take(msg.head.extensions);
-        let encoder =
-            Self::encode_h1_headers(msg, &mut extensions, dst, is_last, orig_len, wrote_len)?;
+        let extensions = std::mem::take(msg.head.extensions);
+        let encoder = Self::encode_h1_headers(msg, &extensions, dst, is_last, orig_len, wrote_len)?;
         ret.map(|()| encoder)
     }
 
@@ -440,7 +439,7 @@ impl Server {
     #[inline(never)]
     fn encode_h1_headers(
         msg: Encode<'_, StatusCode>,
-        ext: &mut Extensions,
+        ext: &Extensions,
         dst: &mut Vec<u8>,
         is_last: bool,
         orig_len: usize,
@@ -497,7 +496,7 @@ impl Server {
     #[inline]
     fn encode_headers<W>(
         msg: Encode<'_, StatusCode>,
-        ext: &mut Extensions,
+        ext: &Extensions,
         dst: &mut Vec<u8>,
         mut is_last: bool,
         orig_len: usize,
@@ -1384,7 +1383,7 @@ pub(crate) fn write_headers(headers: &HeaderMap, dst: &mut Vec<u8>) {
 fn write_h1_headers(
     headers: HeaderMap,
     title_case_headers: bool,
-    ext: &mut Extensions,
+    ext: &Extensions,
     dst: &mut Vec<u8>,
 ) -> Http1HeaderMap {
     let mut out_h1_headers = Http1HeaderMap::with_capacity(headers.len());
@@ -2685,7 +2684,7 @@ mod tests {
 
         let mut dst = Vec::new();
 
-        let headers = super::write_h1_headers(headers, false, &mut ext, &mut dst);
+        let headers = super::write_h1_headers(headers, false, &ext, &mut dst);
         assert!(headers.get("x-empty").unwrap().is_empty());
 
         assert_eq!(
@@ -2710,7 +2709,7 @@ mod tests {
 
         let mut dst = Vec::new();
 
-        let headers = super::write_h1_headers(headers, false, &mut ext, &mut dst);
+        let headers = super::write_h1_headers(headers, false, &ext, &mut dst);
 
         assert_eq!("a", headers.get("x-empty").unwrap().to_str().unwrap());
         let mut values = headers.headers().get_all("x-empty").iter();

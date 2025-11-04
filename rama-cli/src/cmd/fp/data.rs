@@ -240,7 +240,7 @@ pub(super) struct HttpInfo {
 
 pub(super) async fn get_and_store_http_info(
     headers: HeaderMap,
-    ext: &mut Extensions,
+    ext: &Extensions,
     http_version: http::Version,
     ua: String,
     initiator: Initiator,
